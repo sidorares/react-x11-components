@@ -192,6 +192,9 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 99     | `text-align-last`, family names, line heights      | 5,646 (95%) | 5,102 (86%) |
 | 100    | ntk 8.14.1: kerning off, a family list's fallback  | 5,649 (95%) | 5,102 (86%) |
 | 101    | `line-clamp` through a flow, `lh`, `-webkit-box`   | 5,649 (95%) | 5,102 (86%) |
+| 102    | `fit-content()`, a content's intrinsic sizes       | 5,649 (95%) | 5,102 (86%) |
+| 103    | ntk 8.14.2: a word shaped across elements          | 5,651 (95%) | 5,102 (86%) |
+| 104    | flex `order` and baselines, inherited flex styles  | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2964,6 +2967,81 @@ css-values together from 187 to 335 of 852 on Cocoa.
      ahead of the declarations that read it, with this element's `em`; the
      `max-height: 4lh` most of css-overflow's `line-clamp: auto` tests size
      their box with was no height at all.
+
+### Round 102
+
+The CSS 2.1 suite has neither; css-sizing went from 230 to 245 of 562 on
+X11.
+
+255. **`fit-content()` was no width.** `width: fit-content(100px)` — and
+     `min-width` and `max-width` of it — fits the content in the room its
+     argument makes (CSS Sizing 3, 3.1): no wider than the content at its
+     widest, nor narrower than its longest word, a percentage being of the
+     containing block. The argument is a width of the box's own, its
+     padding and border outside it where `box-sizing` says so.
+256. **A box with a width measured its content at the probe's width.** The
+     content's intrinsic sizes that `min-width: min-content` and its kin
+     are made of were measured by laying the box out at no width at all,
+     and a box with a `width` of its own answered with that, which was the
+     probe's nought: `width: 10px; min-width: min-content` was 10px wide
+     where its longest word is wider. They are the content's now, whatever
+     the box's own width (`min-content-min-width-000`,
+     `shrink-to-fit-sizing-max-width-min-content`). A percentage inside
+     `fit-content()` measured for a parent's intrinsic size, which CSS
+     Sizing 3 treats as cyclic, is still resolved against the probe's
+     width.
+
+### Round 103
+
+257. **A word was shaped a span at a time.** ntk 8.14.2 shapes a word that
+     runs across spans shaped alike as one (sidorares/ntk#438): kerned
+     across a `<span>`'s boundary, and in Arabic joined across it, as CSS
+     Text 3 (7.3) has it and browsers shape it. The text of an inline box
+     with a margin, border or padding at a side is shaped on its own, as
+     CSS breaks shaping across the edge — at both of its sides, which is
+     one more than CSS asks of a box with an edge at one; the engine
+     parts a span from both of its neighbours or neither. CSS 2.1 went
+     from 5,649 to 5,651 (`generated-content`), css-content from 16 to 29
+     of 63 (its quotes) and css-text from 644 to 656 (shaping,
+     `text-transform`, `boundary-shaping`).
+
+### Round 104
+
+The CSS 2.1 suite has few flex boxes and none of these; css-flexbox went
+from 564 to 585 of 1,012 on X11, css-grid four more, and css-flexbox and
+CSS 2.1 together 19 more on Cocoa.
+
+258. **`order` was read and never used.** Flex items are laid out in
+     `order`, and in the document's where two have the same (CSS Flexbox
+     5.4) — Tailwind's `order-first` and `order-last` — and an `order`
+     that is no integer is dropped (`flexbox_order`, `flexbox_rtl-order`,
+     `flexible-order`, `order-with-row-reverse`).
+259. **Items aligned by their baselines were lined up by their bottoms.**
+     Yoga has no baseline for an item it measures, and takes a leaf's
+     bottom edge for one. With the items laid out, each line's items
+     aligned by their baselines are set at its start with the margins that
+     line up their first baselines, and the flex layout runs again, so the
+     line is as tall as that makes it, and the lines after it and the
+     items across it are placed by it (`flexbox-align-self-horiz-001`,
+     `flexbox_align-items-baseline`).
+260. **A flex box sat on its last line box's baseline**, as an inline
+     block does. Its baseline is that of the first item on its first line
+     aligned by its baseline, or of its first item, in `order` (CSS
+     Flexbox 8.5), and an item with none gives its border box's bottom
+     edge. A grid whose items have none falls back to its own box (CSS
+     Grid 1, 9), as it did (`flexbox-baseline-multi-item-horiz-001a`, and
+     four of css-grid's alignment tests).
+261. **Yoga dropped a margin across a wrapped line.** In the pass Yoga
+     takes for a flex box that wraps, or aligns by baselines, an item
+     aligned to its line's start is set as though it had no margin at
+     that side, and a centred one as though it had none at either (Yoga
+     3.2.1): `items-start` in a wrapping row of cards put every card's top
+     margin under it. Placement adds the margin back, and half the
+     difference for a centred item; a column whose cross axis runs right
+     to left is left as Yoga has it.
+262. **`inherit`, `initial` and `unset` reached no flex or grid
+     property**, 29 of them: `align-self: inherit` in the suite's flex
+     boxes was `auto`.
 
 ## What `<Html>` supports
 

@@ -41,6 +41,7 @@ import {
   resolveEdges,
 } from './block.js';
 import { layoutGrid } from './css-grid.js';
+import { firstBaselineIn } from './inline.js';
 import type { LayoutContext } from './block.js';
 
 // `react-x11/yoga` re-exports yoga's own declarations, so the node shape and
@@ -119,13 +120,23 @@ export function layoutFlex(
     if (Number.isFinite(max)) root.setMaxHeight(Math.max(0, max));
   }
 
-  const items: { box: Box; node: YogaNode; laid: Laid }[] = [];
+  const flowing: Box[] = [];
+  let reordered = false;
   for (const child of box.children) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
       ctx.positioned.push({ box: child, containing: box });
       continue;
     }
+    if (child.style.order !== 0) reordered = true;
+    flowing.push(child);
+  }
+  // in `order`, and where two have the same, in the document's (CSS
+  // Flexbox 5.4): Yoga places its children in the order they were given
+  if (reordered) flowing.sort((a, b) => a.style.order - b.style.order);
+
+  const items: { box: Box; node: YogaNode; laid: Laid }[] = [];
+  for (const child of flowing) {
     const node = Y.Node.create(flexConfig());
     resolveEdges(child, contentWidth);
     const laid: Laid = { width: NaN, height: NaN, set: NaN, stretch: NaN };
@@ -137,13 +148,15 @@ export function layoutFlex(
   const direction =
     box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR;
   const row = box.style.flexDirection.startsWith('row');
-  ctx.flexDepth = depth + 1;
-  try {
+  const calculate = (): void =>
     root.calculateLayout(
       bounded ? contentWidth : Number.NaN,
       height ?? Number.NaN,
       direction,
     );
+  ctx.flexDepth = depth + 1;
+  try {
+    calculate();
     // an item Yoga shrank under what its content comes to is kept to it,
     // and the row is laid out again (`autoMinimums`) — which may shrink
     // another under its own, a few times over at most
@@ -152,20 +165,87 @@ export function layoutFlex(
       pass < 4 && autoMinimums(items, row, ctx, contentWidth);
       pass += 1
     ) {
-      root.calculateLayout(
-        bounded ? contentWidth : Number.NaN,
-        height ?? Number.NaN,
-        direction,
-      );
+      calculate();
     }
   } finally {
     ctx.flexDepth = depth;
   }
 
+  // Yoga aligns the lines of a box that wraps, or aligns by baselines, in
+  // one pass of its own, which drops a margin (`lineMarginFix`)
+  const baselines =
+    box.style.alignItems === 'baseline' ||
+    items.some(({ box: child }) => child.style.alignSelf === 'baseline');
+  let bottom = placeItems(
+    box,
+    ctx,
+    items,
+    row,
+    height,
+    box.style.flexWrap === 'wrap' || baselines,
+  );
+  // Items aligned by their baselines, which Yoga cannot see, are aligned
+  // with their baselines known (`baselineLines`)
+  // by the flex layout again, set at their lines' starts with the margins
+  // that put their baselines together, which makes each line as tall as
+  // that does
+  const lines = row && baselines ? baselineLines(box.style, items) : null;
+  if (lines) {
+    // every one of them, and the box's own `baseline` too, which is what
+    // takes Yoga down that pass
+    const started = new Set<Box>();
+    for (const line of lines) {
+      line.forEach(({ box: child, node }, i) => {
+        node.setAlignSelf(Y.ALIGN_FLEX_START);
+        node.setMargin(Y.EDGE_TOP, line.margins[i]);
+        started.add(child);
+      });
+    }
+    if (box.style.alignItems === 'baseline') {
+      root.setAlignItems(Y.ALIGN_FLEX_START);
+    }
+    ctx.flexDepth = depth + 1;
+    try {
+      calculate();
+    } finally {
+      ctx.flexDepth = depth;
+    }
+    bottom = placeItems(
+      box,
+      ctx,
+      items,
+      row,
+      height,
+      box.style.flexWrap === 'wrap',
+      started,
+    );
+  }
+
+  const contentHeight = root.getComputedHeight();
+  root.freeRecursive();
+  return Math.max(contentHeight, bottom - box.contentY);
+}
+
+/** Lay each item out where the flex layout put it, at the size it gave it,
+ *  and answer where the lowest ends. `started` are items set at their
+ *  lines' starts whatever their own alignment says (`baselineLines`). */
+function placeItems(
+  box: Box,
+  ctx: LayoutContext,
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  row: boolean,
+  height: number | null,
+  /** Whether Yoga aligned the lines in its pass that drops a margin. */
+  lined: boolean,
+  started?: ReadonlySet<Box>,
+): number {
   let bottom = 0;
   for (const { box: child, node, laid } of items) {
-    const left = box.contentX + node.getComputedLeft();
-    const top = box.contentY + node.getComputedTop();
+    const across = lined
+      ? lineMarginFix(box.style, child, node, row, started?.has(child))
+      : 0;
+    const left = box.contentX + node.getComputedLeft() + (row ? 0 : across);
+    const top = box.contentY + node.getComputedTop() + (row ? across : 0);
     const width = meant(
       node.getComputedWidth(),
       laid.set,
@@ -203,10 +283,7 @@ export function layoutFlex(
     );
     bottom = Math.max(bottom, top + child.height);
   }
-
-  const contentHeight = root.getComputedHeight();
-  root.freeRecursive();
-  return Math.max(contentHeight, bottom - box.contentY);
+  return bottom;
 }
 
 function layoutItemAt(
@@ -668,6 +745,115 @@ function contentBottom(box: Box): number {
     );
   }
   return bottom;
+}
+
+/**
+ * A row's items aligned by their baselines (CSS Flexbox 8.3, 9.4 step 8),
+ * which Yoga cannot see: an item is a leaf there, and a leaf's baseline is
+ * its bottom edge, so it lined them up by their bottoms. With the items laid
+ * out, each line's, and for each the top margin that sets it at the line's
+ * start with its first baseline where the lowest-reaching one's is — or
+ * null where no line has two to align.
+ */
+function baselineLines<T extends { box: Box }>(
+  style: ComputedStyle,
+  items: readonly T[],
+): (T[] & { margins: number[] })[] | null {
+  // a line that grows from its end is aligned from there, and left to Yoga
+  if (style.flexWrap === 'wrap-reverse') return null;
+  const wraps = style.flexWrap !== 'nowrap';
+  // along a line the items go the way the main axis does, and the next
+  // line starts where one does not
+  const back =
+    (style.flexDirection === 'row-reverse') !== (style.direction === 'rtl');
+  const out: (T[] & { margins: number[] })[] = [];
+  let line: T[] = [];
+  let last = NaN;
+  let several = false;
+  const close = (): void => {
+    if (!line.length) return;
+    if (line.length > 1) several = true;
+    let reach = -Infinity;
+    const ascents = line.map(({ box }) => {
+      const ascent = box.marginTop + itemBaseline(box);
+      reach = Math.max(reach, ascent);
+      return ascent;
+    });
+    const margins = line.map(
+      ({ box }, i) => box.marginTop + reach - ascents[i],
+    );
+    out.push(Object.assign(line, { margins }));
+  };
+  for (const item of items) {
+    const box = item.box;
+    if (wraps && line.length && (back ? box.x >= last : box.x <= last)) {
+      close();
+      line = [];
+    }
+    last = box.x;
+    const own = box.style;
+    const aligned = own.alignSelf === AUTO ? style.alignItems : own.alignSelf;
+    // an `auto` margin across the line takes it over alignment
+    if (
+      aligned === 'baseline' &&
+      own.marginTop !== AUTO &&
+      own.marginBottom !== AUTO
+    ) {
+      line.push(item);
+    }
+  }
+  close();
+  // one alone on its line is at its start already
+  return several ? out : null;
+}
+
+/**
+ * How far an item is from where it belongs across its line, where Yoga
+ * (3.2.1) aligned the lines in the pass it takes for a box that wraps or
+ * aligns by baselines: it sets an item aligned to its line's start there
+ * as though it had no margin at that side, and one centred as though it had
+ * none at either — `items-start` in a wrapping row put every card's top
+ * margin under it. By the margin at the start of the line's cross axis, and
+ * by half what it exceeds the one at the end by, as Yoga holds them: for an
+ * item set at its line's start (`started`), its baseline's. A column's,
+ * whose cross axis runs right to left, and a box that wraps in reverse are
+ * left as Yoga has them.
+ */
+function lineMarginFix(
+  container: ComputedStyle,
+  item: Box,
+  node: YogaNode,
+  row: boolean,
+  started = false,
+): number {
+  if (container.flexWrap === 'wrap-reverse') return 0;
+  if (!row && container.direction === 'rtl') return 0;
+  const style = item.style;
+  // a margin that is `auto` takes the item over its alignment
+  const lead = row ? style.marginTop : style.marginLeft;
+  const trail = row ? style.marginBottom : style.marginRight;
+  if (lead === AUTO || trail === AUTO) return 0;
+  const align = started
+    ? 'flex-start'
+    : style.alignSelf === AUTO
+      ? container.alignItems
+      : style.alignSelf;
+  if (align !== 'flex-start' && align !== 'center') return 0;
+  const leading = node.getComputedMargin(row ? Y.EDGE_TOP : Y.EDGE_LEFT);
+  if (align === 'flex-start') return leading;
+  const trailing = node.getComputedMargin(row ? Y.EDGE_BOTTOM : Y.EDGE_RIGHT);
+  return (leading - trailing) / 2;
+}
+
+/** An item's first baseline, down from its border edge: its content's
+ *  first line's, or where it has none, or is replaced, one synthesized
+ *  from its border box — its bottom edge. */
+function itemBaseline(item: Box): number {
+  if (item.kind !== 'replaced') {
+    const found = firstBaselineIn(item);
+    if (found !== null) return Math.min(found - item.y, item.height);
+  }
+  return item.height;
 }
 
 /** Whether an item is stretched across its line: `stretch`, its own or its

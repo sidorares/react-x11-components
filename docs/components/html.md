@@ -205,7 +205,10 @@ test suite on both backends, is in
 [`<Html>` against the CSS 2.1 test suite](../html-conformance.md).
 
 **Layout:** block flow with margin collapsing, inline formatting with
-bidi and full shaping, `inline-block`, floats and `clear`, lists with their
+bidi and full shaping — a word that runs across elements shaped as one,
+kerned and joined across them, but for an element with a margin, border or
+padding at a side, whose text is shaped on its own — `inline-block`, floats
+and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
 and `rowspan`, and the anonymous table CSS builds around table parts that
 have none), `position: relative | absolute | fixed`, `display: flex` (and
@@ -258,7 +261,10 @@ own and its content's, and an item with an `aspect-ratio` counts its width
 through the ratio as content. An item stretched across its row, or flexed
 along a column of a height of its own, has the height it was given for what
 it holds to take a percentage of, so an `h-full` list in a sidebar fills
-the sidebar. Items meet where
+the sidebar. Items go in `order`, and in the document's where two have the
+same. Items aligned by their `baseline` line up their first lines, their
+line as tall as that makes it, and a flex box sits on the baseline of its
+first line's item aligned so, or of its first item. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
 A grid (CSS Grid 1) takes its column tracks from `grid-template-columns` —
 lengths, percentages, `fr`s, `auto`, `minmax()`, and `repeat()` by a count
@@ -395,8 +401,12 @@ loaded.
 and `min-w-max` — as CSS Sizing 3 has them: a block as wide as its content
 where its room holds it, auto margins centring it; one as wide as its
 longest line, or as its longest word, whatever the room; a flex item of one
-not stretched across a column, and a row item not shrunk below it. A
-height of one is its content's, which is `auto`.
+not stretched across a column, and a row item not shrunk below it. And
+`fit-content()` of a length or a percentage, which fits the content in the
+room its argument makes: no wider than the content at its widest, nor
+narrower than its longest word. The sizes are the content's, whatever
+`width` the box has beside them. A height of one is its content's, which
+is `auto`.
 
 **Transforms:** `translate`, and the translation in a `transform` —
 `translate(-50%, -50%)`, Tailwind's `-translate-x-1/2` in either of the

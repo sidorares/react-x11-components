@@ -2056,9 +2056,12 @@ export function contentSizedWidth(
   available: number,
   percentBase: number,
 ): number {
+  // the content's sizes, whatever width the box has of its own: a
+  // `min-width: max-content` beside a `width` is its content's widest,
+  // and a probe of the box at no width answered the probe's width
   let probed = false;
   if (box.intrinsicMaxContent < 0) {
-    box.intrinsicMaxContent = measureIntrinsicWidth(box, ctx, Infinity);
+    box.intrinsicMaxContent = measureIntrinsicWidth(box, ctx, Infinity, true);
     probed = true;
   }
   if (size !== 'max-content' && box.intrinsicMinContent < 0) {
@@ -2066,6 +2069,7 @@ export function contentSizedWidth(
       box,
       ctx,
       MIN_CONTENT_PROBE,
+      true,
     );
     probed = true;
   }
@@ -2074,7 +2078,27 @@ export function contentSizedWidth(
   if (size === 'max-content') return max;
   const min = box.intrinsicMinContent;
   if (size === 'min-content') return min;
-  return Math.min(max, Math.max(min, available));
+  return Math.min(
+    max,
+    Math.max(min, fitRoom(box, size, available, percentBase)),
+  );
+}
+
+/** The room `fit-content` fits a box's content in: what its margins leave,
+ *  or `fit-content()`'s argument as a width of its own, of `percentBase`
+ *  where it is a percentage — an indefinite one leaving the content its
+ *  widest. */
+function fitRoom(
+  box: Box,
+  size: ContentSize,
+  available: number,
+  percentBase: number,
+): number {
+  if (typeof size !== 'object') return available;
+  const fit = Math.max(0, resolve(size.fit, percentBase, 0));
+  return box.style.boxSizing === 'border-box'
+    ? Math.max(fit, box.horizontalExtra)
+    : fit + box.horizontalExtra;
 }
 
 /**
@@ -2107,9 +2131,10 @@ function shrinkToFitWidth(
     return clampWidth(box, borderBox, available, ctx);
   }
   // `fit-content` is what shrink-to-fit is; the other two are not bounded
-  // by the room, or not by the longest line
+  // by the room, or not by the longest line, and `fit-content()` by a room
+  // of its own
   const keyword = style.widthKeyword;
-  if (keyword === 'max-content' || keyword === 'min-content') {
+  if (keyword !== null && keyword !== 'fit-content') {
     const width = contentSizedWidth(box, ctx, keyword, available, available);
     return clampWidth(box, width, available, ctx);
   }

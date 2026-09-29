@@ -162,8 +162,10 @@ export type BorderStyle =
 /** A background layer's image: a url, a gradient, or none. */
 export type BackgroundImage = string | LinearGradient | null;
 
-/** An intrinsic size: `min-content`, `max-content` or `fit-content`. */
-export type ContentSize = 'min-content' | 'max-content' | 'fit-content';
+/** An intrinsic size: `min-content`, `max-content` or `fit-content`, and
+ *  `fit-content()`, whose argument stands in for the room (`fit`). */
+export type ContentSize =
+  'min-content' | 'max-content' | 'fit-content' | { fit: Len };
 
 export interface ComputedStyle {
   // --- inherited ------------------------------------------------------------
@@ -1324,7 +1326,7 @@ export function applyDeclaration(
     case 'height':
     case 'min-width':
     case 'min-height': {
-      const keyword = contentSizeOf(value);
+      const keyword = contentSizeOf(value, ctx, name.endsWith('width'));
       if (keyword) {
         // `auto` beside it, which is a height's content height already
         (style as unknown as Record<string, unknown>)[camel(name)] = AUTO;
@@ -1346,7 +1348,7 @@ export function applyDeclaration(
     }
     case 'max-width':
     case 'max-height': {
-      const keyword = contentSizeOf(value);
+      const keyword = contentSizeOf(value, ctx, name === 'max-width');
       if (keyword || value.toLowerCase() === 'none') {
         (style as unknown as Record<string, unknown>)[camel(name)] = 'none';
         if (name === 'max-width') style.maxWidthKeyword = keyword;
@@ -2207,8 +2209,9 @@ export function applyDeclaration(
       return;
     }
     case 'order': {
-      const n = parseNumber(value);
-      if (n !== null) style.order = Math.trunc(n);
+      // an integer, and nothing else (CSS Flexbox 5.4)
+      const v = value.trim();
+      if (/^[+-]?\d+$/.test(v)) style.order = Number(v);
       return;
     }
     case 'gap':
@@ -3012,16 +3015,27 @@ function addLen(a: Len, b: Len): Len | null {
   return { pct: pa.pct + pb.pct, px: (pa.px ?? 0) + (pb.px ?? 0) };
 }
 
-/** An intrinsic size keyword, with the prefixes browsers still read;
+/** An intrinsic size keyword, with the prefixes browsers still read, or
+ *  `fit-content()` of a length or a percentage (CSS Sizing 3, 3.1) — a
+ *  width's, where a height's is its content height as the keyword is;
  *  null for anything else. */
-function contentSizeOf(value: string): ContentSize | null {
+function contentSizeOf(
+  value: string,
+  ctx: UnitContext,
+  inline: boolean,
+): ContentSize | null {
   const v = value
     .trim()
     .toLowerCase()
     .replace(/^-(?:webkit|moz)-/, '');
-  return v === 'min-content' || v === 'max-content' || v === 'fit-content'
-    ? v
-    : null;
+  if (v === 'min-content' || v === 'max-content' || v === 'fit-content') {
+    return v;
+  }
+  const m = /^fit-content\((.*)\)$/s.exec(v);
+  if (!m) return null;
+  const fit = parseLength(m[1], ctx);
+  if (fit === null || fit === AUTO || !notNegative(fit)) return null;
+  return inline ? { fit } : 'fit-content';
 }
 
 /** A `background-size`: `cover`, `contain`, `auto`, or one or two of a
@@ -3831,7 +3845,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'counter-increment': ['counterIncrement'],
   'counter-set': ['counterSet'],
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
-  display: ['display', 'flowRoot', 'webkitBox'],
+  display: ['display', 'flowRoot', 'webkitBox', 'grid'],
   width: ['width', 'widthKeyword'],
   height: ['height'],
   'min-width': ['minWidth', 'minWidthKeyword'],
@@ -3892,6 +3906,41 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'column-count': ['columns'],
   'column-width': ['columns'],
   'text-overflow': ['textOverflow'],
+  // a flex box's and its items', and a grid's
+  'flex-direction': ['flexDirection'],
+  'flex-wrap': ['flexWrap'],
+  'flex-flow': ['flexDirection', 'flexWrap'],
+  'justify-content': ['justifyContent'],
+  'align-items': ['alignItems'],
+  'align-self': ['alignSelf'],
+  'align-content': ['alignContent'],
+  flex: ['flexGrow', 'flexShrink', 'flexBasis'],
+  'flex-grow': ['flexGrow'],
+  'flex-shrink': ['flexShrink'],
+  'flex-basis': ['flexBasis'],
+  order: ['order'],
+  gap: ['rowGap', 'columnGap'],
+  'row-gap': ['rowGap'],
+  'column-gap': ['columnGap'],
+  'grid-template-columns': ['gridColumns'],
+  'grid-template-rows': ['gridRows'],
+  'grid-auto-rows': ['gridAutoRows'],
+  'grid-area': [
+    'gridRowStart',
+    'gridColumnStart',
+    'gridRowEnd',
+    'gridColumnEnd',
+  ],
+  'grid-row': ['gridRowStart', 'gridRowEnd'],
+  'grid-row-start': ['gridRowStart'],
+  'grid-row-end': ['gridRowEnd'],
+  'grid-column': ['gridColumnStart', 'gridColumnEnd'],
+  'grid-column-start': ['gridColumnStart'],
+  'grid-column-end': ['gridColumnEnd'],
+  'justify-items': ['justifyItems'],
+  'justify-self': ['justifySelf'],
+  'place-items': ['alignItems', 'justifyItems'],
+  'place-self': ['alignSelf', 'justifySelf'],
   'border-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-left-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-right-radius': ['borderRadius', 'borderRadiusY'],

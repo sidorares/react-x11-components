@@ -9904,6 +9904,121 @@ test('a nested rule and a media range reach the document', async () => {
 
 // --- flex items ------------------------------------------------------------------
 
+test('a flex and a grid property is inherited, and set back to its initial value', async () => {
+  // `inherit`, `initial` and `unset` reached none of them: `align-self:
+  // inherit` in the suite's flex boxes was `auto`
+  const { node } = await render(
+    '<div style="display:flex;flex-flow:column wrap;justify-content:center;' +
+      'align-items:flex-end;align-self:center;align-content:space-between;' +
+      'flex:2 3 40px;order:4;gap:6px 8px;grid-template-columns:10px 20px;' +
+      'justify-items:center;grid-column:2 / 3">' +
+      '<div id="a" style="flex-flow:inherit;justify-content:inherit;' +
+      'align-items:inherit;align-self:inherit;align-content:inherit;' +
+      'flex:inherit;order:inherit;gap:inherit;' +
+      'grid-template-columns:inherit;justify-items:inherit;' +
+      'grid-column:inherit"></div>' +
+      '<div id="b" style="flex-direction:row-reverse;order:3;flex-grow:2;' +
+      'order:initial;flex-grow:initial;flex-direction:unset"></div></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+  const a = style('a');
+  assert.strictEqual(a.flexDirection, 'column');
+  assert.strictEqual(a.flexWrap, 'wrap');
+  assert.strictEqual(a.justifyContent, 'center');
+  assert.strictEqual(a.alignItems, 'flex-end');
+  assert.strictEqual(a.alignSelf, 'center');
+  assert.strictEqual(a.alignContent, 'space-between');
+  assert.deepStrictEqual([a.flexGrow, a.flexShrink, a.flexBasis], [2, 3, 40]);
+  assert.strictEqual(a.order, 4);
+  assert.deepStrictEqual([a.rowGap, a.columnGap], [6, 8]);
+  assert.ok(a.gridColumns !== null, 'the template');
+  assert.strictEqual(a.justifyItems, 'center');
+  const b = style('b');
+  assert.strictEqual(b.order, 0);
+  assert.strictEqual(b.flexGrow, 0);
+  assert.strictEqual(b.flexDirection, 'row');
+});
+
+metric('flex items are laid out in `order`', async () => {
+  // CSS Flexbox 5.4: `order` first, the document's where it is the same;
+  // an `order` that is no integer is no value
+  const { node } = await render(
+    '<style>body{margin:0} .r{display:flex} .r>div{width:20px;height:10px}' +
+      '</style><div class="r"><div id="a" style="order:2"></div>' +
+      '<div id="b"></div><div id="c" style="order:-1"></div>' +
+      '<div id="d" style="order:1.5"></div></div>',
+  );
+  const el = view(node);
+  const x = (id: string) => boxOf(el, id).x;
+  assert.deepStrictEqual(
+    ['a', 'b', 'c', 'd'].map(x),
+    [60, 20, 0, 40],
+    'c, then b and d as they come, then a',
+  );
+});
+
+metric(
+  'flex items aligned by their baselines line up their first lines',
+  async () => {
+    // Yoga has no baseline for an item it measures, and lined them up by
+    // their bottoms; a line of them is as tall as their baselines make it,
+    // and a box that wraps sets one at its line's start below its margin
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex;align-items:baseline;width:300px}' +
+        '.r>div{width:60px}</style>' +
+        '<div class="r" id="row"><div id="a" style="font-size:40px;' +
+        'line-height:40px">A</div><div id="b" style="font-size:10px;' +
+        'line-height:10px;padding-bottom:40px">b</div></div>' +
+        '<div class="r" id="wrap" style="flex-wrap:wrap;align-items:flex-start;' +
+        'width:120px"><div id="c" style="margin-top:10px;height:8px"></div>' +
+        '<div style="height:30px"></div><div style="height:16px"></div></div>',
+    );
+    const el = view(node);
+    const baseline = (id: string) => {
+      const [line] = linesOf(el, id);
+      return line.y + line.baseline;
+    };
+    assert.ok(
+      Math.abs(baseline('a') - baseline('b')) < 0.01,
+      `${baseline('a')} and ${baseline('b')}`,
+    );
+    const row = boxOf(el, 'row');
+    const b = boxOf(el, 'b');
+    assert.ok(b.y > row.y, 'the small one lower');
+    assert.ok(
+      Math.abs(row.y + row.height - (b.y + b.height)) < 0.01,
+      'and the line as tall as it reaches',
+    );
+    assert.strictEqual(
+      boxOf(el, 'c').y - boxOf(el, 'wrap').y,
+      10,
+      'its margin above it',
+    );
+  },
+);
+
+metric("an inline flex box sits on its first item's baseline", async () => {
+  // CSS Flexbox 8.5: its first line's items aligned by their baselines, or
+  // its first item — not its last line box, as an inline block does
+  const { node } = await render(
+    '<style>body{margin:0}</style><div id="p">x<span id="f" ' +
+      'style="display:inline-flex"><span style="font-size:10px;' +
+      'line-height:10px">b</span><span style="font-size:30px;' +
+      'line-height:30px">C</span></span></div>',
+  );
+  const el = view(node);
+  const [line] = linesOf(el, 'p');
+  const flex = boxOf(el, 'f');
+  const small = flex.children[0] as unknown as { lines: PlacedLine[] };
+  const [first] = small.lines;
+  assert.ok(
+    Math.abs(first.y + first.baseline - (line.y + line.baseline)) < 0.01,
+    'the small item on the line',
+  );
+});
+
 metric(
   "a flex item takes its padding once, and its content's width",
   async () => {
@@ -11259,6 +11374,38 @@ metric(
 );
 
 metric(
+  'fit-content() fits the content in the room its argument makes',
+  async () => {
+    // CSS Sizing 3, 3.1: min(max-content, max(min-content, the argument)),
+    // for a width, a least width and a greatest width alike — and the
+    // content's own sizes, whatever width the box has beside them: probed
+    // at no width, a box with a width answered the probe's
+    const { node } = await render(
+      '<style>body{margin:0} i{display:inline-block;width:60px;' +
+        'height:10px}</style><div style="width:400px">' +
+        '<div id="a" style="width:fit-content(100px)"><i></i> <i></i></div>' +
+        '<div id="b" style="width:fit-content(10%)"><i></i> <i></i></div>' +
+        '<div id="c" style="width:fit-content(500px)"><i></i> <i></i></div>' +
+        '<div id="d" style="width:200px;max-width:fit-content(100px)">' +
+        '<i></i> <i></i></div>' +
+        '<div id="e" style="width:50px;min-width:fit-content(100px)">' +
+        '<i></i> <i></i></div>' +
+        '<div id="f" style="width:10px;min-width:min-content">' +
+        '<i></i> <i></i></div></div>',
+    );
+    const el = view(node);
+    const width = (id: string) => boxOf(el, id).width;
+    assert.strictEqual(width('a'), 100, 'the argument, between the two');
+    assert.strictEqual(width('b'), 60, 'no narrower than its widest word');
+    const widest = width('c');
+    assert.ok(widest > 120 && widest < 130, `its content's widest: ${widest}`);
+    assert.strictEqual(width('d'), 100);
+    assert.strictEqual(width('e'), 100);
+    assert.strictEqual(width('f'), 60, "its content's, not its width's");
+  },
+);
+
+metric(
   "an intrinsic size is a flex item's width, stretched or not",
   async () => {
     const { node } = await render(
@@ -12058,6 +12205,34 @@ test('a pseudo-element no rule gives a content to is none, whatever reaches it',
     'a ::before box and its text',
   );
 });
+
+metric(
+  "the text of an inline box with an edge is shaped apart from its neighbours'",
+  async () => {
+    // CSS Text 3, 7.3: shaping is broken across an inline box's margin,
+    // border or padding, where the engine shapes a word that runs across
+    // spans shaped alike as one — kerned, and joined in Arabic
+    const { node } = await render(
+      '<p id="a">Wa<span style="padding-left:4px">ve</span> Wa<b>ve</b> ' +
+        'Wa<i style="margin-right:2px">ve</i></p>',
+    );
+    const el = view(node);
+    const apart: string[] = [];
+    for (const line of linesOf(el, 'a')) {
+      for (const text of line.texts) {
+        const layout = text.layout as unknown as {
+          lines: {
+            runs: { span?: { text: string; shapeApart?: boolean } }[];
+          }[];
+        };
+        for (const run of layout.lines[text.layoutLine].runs) {
+          if (run.span?.shapeApart) apart.push(run.span.text);
+        }
+      }
+    }
+    assert.deepStrictEqual(apart, ['ve', 've']);
+  },
+);
 
 // --- line-clamp and text-overflow ------------------------------------------------
 
