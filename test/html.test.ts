@@ -9551,6 +9551,41 @@ metric(
   },
 );
 
+metric(
+  'a replaced flex item is the size the flex layout makes it',
+  async () => {
+    // An image was measured as nothing wide — its content's width, of which
+    // it has none — and then laid out at its natural size whatever the
+    // flex layout said: it did not grow, stretch or shrink. It grows and
+    // stretches now; it shrinks no further than its natural width; a line
+    // of a definite height that stretches it gives it the width its ratio
+    // makes of that height; and `flex-basis: content` is its content's
+    // width whatever width it has
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex;width:200px}</style>' +
+        '<div class="r"><canvas id="a" width="20" height="10" ' +
+        'style="flex-grow:1"></canvas></div>' +
+        '<div class="r" style="width:10px"><canvas id="b" width="60" ' +
+        'height="60"></canvas></div>' +
+        '<div class="r" style="height:50px"><canvas id="c" width="20" ' +
+        'height="150"></canvas></div>' +
+        '<div class="r"><div id="d" style="flex-basis:content;width:0">' +
+        '<span style="display:inline-block;width:30px"></span></div></div>',
+    );
+    const el = view(node);
+    const size = (id: string) => {
+      const box = boxOf(el, id);
+      return [box.width, box.height];
+    };
+    assert.deepStrictEqual(size('a'), [200, 10], 'grown along its row');
+    assert.deepStrictEqual(size('b'), [60, 60], 'not shrunk under its width');
+    const [width, height] = size('c');
+    assert.strictEqual(height, 50, 'stretched across its line');
+    assert.ok(Math.abs(width - (50 * 20) / 150) < 0.01, `${width}`);
+    assert.strictEqual(size('d')[0], 30, "its content's width, not its own");
+  },
+);
+
 metric('flex items are laid out in `order`', async () => {
   // CSS Flexbox 5.4: `order` first, the document's where it is the same;
   // an `order` that is no integer is no value
