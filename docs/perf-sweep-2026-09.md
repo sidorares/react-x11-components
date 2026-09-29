@@ -3586,6 +3586,115 @@ PR's Node 20 leg. The probe now waits for every child it started, and
 the stub answers a best job last on purpose, so the race happens on every
 run and the old tests fail on every run.
 
+## Round 38: what a style value could throw, and what a fling measures
+
+The Linux machine again, after round 37's fuzzing of the 2D context found
+five ways a degenerate argument blanked a paint (ntk #440, #441, #443,
+#444). This round fuzzed the style vocabulary the same way, then profiled
+two cells in a production build over node-x11's in-process server, where a
+profile is the client's alone once the server's frames are set aside.
+
+### Six ways a style value took the process down
+
+Random trees with extreme style values, rendered twice: once in development
+through `react-x11/test`, and once in a production build through
+`createRoot` over the in-process server. Development's style check throws
+at the commit for most bad values, which is what it is for, and a random
+tree nearly always holds one. So the development run found what the check
+did not know about — colours — and the lengths yoga refused at the commit
+with messages of its own, which led to the query blocks that refuse them
+mid-frame. The production run found the text values and the glyph. Every
+one of these threw from inside a frame, where no error boundary can catch
+anything, so the process exited.
+
+| value                                       | what happened                                                                  | fix                            |
+| ------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------ |
+| `backgroundColor: 'nonsense'`, `7`, `'#12'` | ntk threw `Not a color` from the paint; the shared context painted black       | react-x11 #749 (with ntk #445) |
+| `'@width >= 600': { width: 'hidden' }`      | passed the commit (the block did not match), threw when a resize made it match | react-x11 #750                 |
+| `'@width >= 600': { padding: '$gutter' }`   | a token in a query block was never resolved: yoga was handed `'$gutter'`       | react-x11 #750                 |
+| `fontStyle: 7`, `lineHeight: '24px'`        | a throw from ntk's face matching; a paragraph NaN pixels tall                  | react-x11 #751, ntk #447       |
+| `fontSize: 1e12`                            | a vector glyph's mask the size of the glyph, past what `CreatePixmap` carries  | ntk #446                       |
+
+Two finds were not crashes, and were worse for it:
+
+- **`fontSize: '20px'` set no text at all**, a 0×0 box, where
+  `fontSize: '20'` worked. The text engines coerced a numeric string and
+  not a length.
+- **`ctx.font = '2000px sans-serif'` drew nothing.** ntk read the
+  shorthand through canvas-fontstyle, whose regular expression allows no
+  space after a weight, so every size from 1000px up that begins with a
+  weight was that weight at size 0. It also kept every string it was
+  handed as a property on an LRU object it never evicted from, so an
+  animated size grew the heap for as long as it ran. ntk reads the
+  shorthand itself now (#447), and the dependency is gone.
+
+The colour fix waits on an ntk release: the Wayland context parsed colours
+with a table of its own, which read CSS Color 4's `rgb(255 128 0)` where
+ntk's parser did not. Checking colours against ntk's parser alone would have
+stopped Wayland painting that spelling, so ntk learned the syntax first
+(#445). It also found that parse-color read `rgb(100%, 0%, 0%)` as 39% red
+and clamped nothing.
+
+### The rule they share
+
+Every one of the six is a value checked only where it was applied, and
+applied inside a frame: a paint, a query block matching on a resize, a
+measure. So each fix has the same two halves. Development asks at the
+commit, wherever the value is written — a state block, a gradient stop, a
+query block that does not match yet — and names the property. And what
+reaches the frame anyway is dropped there, the way CSS drops a declaration
+it cannot parse: no fill, the inherited ink, the property's default. For a
+layout value the development check asks the frame's own question, of the
+same appliers on a scratch yoga node, so the two cannot disagree about what
+a length is. Cached per value, it adds 110 ns a style in development, and
+nothing in production.
+
+### What an `<Html>` edit allocates
+
+Round 37 put an edit's garbage collection at about 15 ms. The same edit
+over the in-process server, with the sampling heap profiler keeping
+collected objects too: 77 MB allocated per edit at 600 KB, 21 ms of
+collection. The box build is about 22 MB of it and the inline layout
+about 26. A `Box` has 56 fields, some 470 bytes, and the document has
+20,063 of them, 10,948 of them text boxes that never hold a child. Most of
+the rest is per paragraph, rebuilt for every paragraph on every edit,
+though the text engine's layouts are already kept from one pass to the
+next (`layout/cache.ts`).
+
+Slimming `Box` would take a few MB of the 77. What would take most of it
+is the edit rebuilding only what changed. That needs a parse that keeps the
+identity of what it did not change, and a box build that can restart
+mid-document with the white space, first-letter, counter and sibling
+context it had at that point. It is a rework of `src/html/`'s core, which
+another session is changing daily, so it is recorded here and not started.
+
+### What a production `<Table>` fling spends
+
+A four-second fling of the 100,000-row log table, production build,
+profiled in process. Of the client's time, yoga's WebAssembly and its
+bindings are the largest part, 775 ms, and most of that is not the layout:
+
+| yoga's time, by the caller                                  | ms  |
+| ----------------------------------------------------------- | --- |
+| `_measureSpineRootOnCopy`: rows' floors, laid out on copies | 171 |
+| `onExactCopy`: building and freeing those copies            | 104 |
+| the other floor writes and reads                            | 99  |
+| `_layoutRoot`: the layout itself                            | 132 |
+
+A row that scrolls in is measured for its floor on a copy of its boxes, in
+two or three passes of its own, and that costs about three times the
+frame's real layout. The rule that measures it is deliberate. A row of
+wrapping text has no named height, and yoga's own measurement of an auto
+basis can come out short of what the content needs
+(`floorIsNamedSize`). So it is recorded with react-x11 #737, which is the
+same machinery's decision, and not changed here.
+
+The same profile's smallest find was the easiest: `paletteFor` spelled a
+four-part key to its map of accent palettes for every node a mount
+creates, 200 ns each on a desktop with an accent. The appearance snapshot
+is frozen and replaced whole on a change, so it answers by identity now,
+in 4–8 ns (react-x11 #753).
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -3822,6 +3931,20 @@ run and the old tests fail on every run.
     moved nothing there. A number from twenty rounds before describes the
     tree it was taken on.
 
+52. **Fuzz the production build too.** A random tree nearly always holds
+    some value development's style check rejects, and the check throws at
+    the commit, so in development the tree never reaches a paint or a
+    measure. The development run found the colour, which the check did not
+    know about. The production run, where nothing is checked at the commit,
+    found the text values that threw from a measure and the glyph too big
+    for any mask.
+53. **A value is checked everywhere it is applied, not just where it is
+    applied first.** The layout fix guarded `applyLayoutStyle`, and the
+    content floors still threw: they put a width and a minimum back
+    straight from the style, past it. The same was true of the colours,
+    which the paint, the blit planners and the window's background each
+    read on their own.
+
 ## Still open
 
 Ordered by practical impact, after round 12, and `<Html>`'s edit after
@@ -3844,6 +3967,12 @@ round 15.
   them; a split-pane drag does not. The fix is content-based minimum sizes
   in yoga; parked in round 12, with no workaround here or in core short of
   that.
+- **A row's floor in a fling**: every row that scrolls into a `<Table>` is
+  measured for its floor on a copy of its boxes, in two or three passes of
+  its own. In a production fling that is about three times the frame's
+  real layout (round 38). The rule is deliberate, since an auto basis can
+  come out short of its content, and react-x11 #737's decision is about the
+  same machinery.
 - **`<Markdown>` first paint** (0.77–0.78 s on XQuartz with #143 and ntk
   #387; 1.04–1.08 s on Cocoa with #143, measured on a core without the
   kept typesetters): the height floors, React's development render and the
@@ -3852,7 +3981,8 @@ round 15.
   and 8.8 ms at 20 KB after round 14): the parse, the box build and the
   layout with its bounds still run over the whole document, at about 8, 11
   and 25 ms of an edit at 600 KB in process. A parse that kept the identity
-  of what it did not change would let each of them skip it.
+  of what it did not change would let each of them skip it. An edit
+  allocates 77 MB at that size, and collecting it takes 21 ms (round 38).
 - **Cocoa scroll**: what is left is the band copy itself, about 1.4 ms a
   frame at 2x, memory-bound; see "The Cocoa scroll's double copy".
 - **`<RichTextEditor>`**: large pastes, mostly React's development render.
