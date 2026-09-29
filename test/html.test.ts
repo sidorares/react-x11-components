@@ -14855,6 +14855,41 @@ metric(
 );
 
 metric(
+  "an inline element's rect is its border box down, not its line's height",
+  async () => {
+    // CSSOM View 6.1: a fragment's border box is its font's content area
+    // about its baseline, with the padding and border above and below it,
+    // which take no room on the line (CSS 2.1 10.6.1). It was the line's
+    // band: design 021 pads its sidebar links 10px below, and each measured
+    // as tall as its line and no taller
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;font-size:16px;line-height:40px}' +
+        '</style><p><span id="bare">word</span> <a id="padded" href="#" ' +
+        'style="padding:0 0 10px;border-top:2px solid">word</a></p>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const bare = rect('bare');
+    const padded = rect('padded');
+    assert.ok(
+      bare.height < 30,
+      `its font's height, not the line's: ${bare.height}`,
+    );
+    assert.ok(bare.y > 5, `about its baseline in the 40px line: ${bare.y}`);
+    assert.ok(
+      Math.abs(padded.height - (bare.height + 12)) < 0.01,
+      `${padded.height} tall for ${bare.height} of text`,
+    );
+    assert.ok(
+      Math.abs(padded.y - (bare.y - 2)) < 0.01,
+      'its border above its text',
+    );
+  },
+);
+
+metric(
   "an inline element's rect is its border box across, padding and all",
   async () => {
     // It was its text alone: a padded link measured as wide as its words,
