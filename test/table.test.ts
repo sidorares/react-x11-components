@@ -23,6 +23,8 @@ import type { DrawnNode, KeyboardEvent, ScrollableNode } from 'react-x11';
 
 import { Table } from '../src/index.js';
 import { orderRows, resolveGetId } from '../src/table/rows.js';
+import { windowClock } from '../src/internal/window.js';
+import { holdClock } from './held-clock.js';
 import type {
   TableColumn,
   TableHandle,
@@ -662,7 +664,7 @@ test('a wheel burst then idle: the view stays where the user left it', async () 
   );
 });
 
-test('a long flick keeps the window to its budget, and the rows it keeps hold still', async () => {
+test('a long flick keeps the window to its budget, and the rows it keeps hold still', async (t) => {
   // A flick defers measuring to the settle, and the trim used to drop only
   // rows the index had measured — so a long flick downward dropped nothing,
   // and every row it passed stayed mounted: four seconds of trackpad fling
@@ -670,6 +672,15 @@ test('a long flick keeps the window to its budget, and the rows it keeps hold st
   // trim measures a row on its way out now, so the spacer that takes its
   // place is exactly as tall, and nothing still mounted moves. At scale 2,
   // because the height it records is read off `abs`, which is device.
+  //
+  // The window's clock is held from the mount, so the flick is a scroll a
+  // frame however long the runner takes over one. On the real clock a step
+  // that took longer than the window's idle wait ended the flick there, and
+  // the settle after it moved the scroll by what it measured, outside the
+  // step's `act`: the rows were read at the new offset against the layout
+  // before it, and every one was a few pixels off ("row 377 moved in the
+  // content, 11292 -> 11298", under the full suite's load).
+  const clock = holdClock(t, windowClock);
   const LONG =
     'a message long enough to wrap over more than one line of this column';
   await mount(
@@ -694,6 +705,8 @@ test('a long flick keeps the window to its budget, and the rows it keeps hold st
     2,
   );
   await idle(600);
+  // the band it grows while nothing scrolls, on the window's time
+  await clock.finish();
   const s = 2;
   /** Where each laid-out row sits in the content, logical, by its place in
    *  the list. */
@@ -715,8 +728,8 @@ test('a long flick keeps the window to its budget, and the rows it keeps hold st
   let before = offsets();
   for (let i = 0; i < 150; i++) {
     bodyPane().scrollTo({ y: bodyPane().scrollY / s + 96 });
-    await new Promise((res) => setTimeout(res, 15));
     await act();
+    await clock.frame();
     most = Math.max(most, rowNodes().length);
     const now = offsets();
     for (const [row, y] of now) {

@@ -34,6 +34,8 @@ import type {
 } from '../src/index.js';
 import { resolveAccessors } from '../src/tree/rows.js';
 import { groupRows, isGroup } from '../src/tree/rows.js';
+import { windowClock } from '../src/internal/window.js';
+import { holdClock } from './held-clock.js';
 
 const h = React.createElement;
 
@@ -1162,12 +1164,15 @@ test('a big tree builds only the rows near the viewport', async () => {
   assert.strictEqual(retained(rowNodes()[0]).props['aria-setsize'], 10000);
 });
 
-test('a long flick keeps the window to its budget, and the rows it keeps hold still', async () => {
+test('a long flick keeps the window to its budget, and the rows it keeps hold still', async (t) => {
   // The table's case (its test of the same name), on the window the two
   // share: a flick defers measuring to the settle, and the trim used to drop
   // only rows the index had measured, so a long flick downward kept every
   // row it passed. Measured on their way out, they go, and the spacer that
-  // takes their place is exactly as tall.
+  // takes their place is exactly as tall. The window's clock is held for
+  // the table's reason: a runner slow enough over one step ended the flick
+  // there, and the settle moved the scroll outside the step's `act`.
+  const clock = holdClock(t, windowClock);
   const LONG = 'a label long enough to wrap onto a second line';
   const items = Array.from({ length: 2000 }, (_, i) => ({
     id: i,
@@ -1181,6 +1186,8 @@ test('a long flick keeps the window to its budget, and the rows it keeps hold st
     ),
   );
   await idle(600);
+  // the band it grows while nothing scrolls, on the window's time
+  await clock.finish();
   /** Where each laid-out row sits in the content, by its place in the list. */
   const offsets = (): Map<number, number> => {
     const pane = treePane();
@@ -1200,8 +1207,8 @@ test('a long flick keeps the window to its budget, and the rows it keeps hold st
   let before = offsets();
   for (let i = 0; i < 150; i++) {
     treePane().scrollTo({ y: treePane().scrollY + 96 });
-    await new Promise((res) => setTimeout(res, 15));
     await act();
+    await clock.frame();
     most = Math.max(most, rowNodes().length);
     const now = offsets();
     for (const [row, y] of now) {
