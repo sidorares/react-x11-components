@@ -33,7 +33,7 @@
 import { codePointAtOffset, codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
-import { INLINE_BEFORE_ABSOLUTE } from '../css/style.js';
+import { INLINE_BEFORE_ABSOLUTE, scrolls } from '../css/style.js';
 import { inkColor, isTransparent, resolve } from '../css/values.js';
 import {
   BOX_RAISES,
@@ -2102,11 +2102,7 @@ function atomicRaise(
  */
 function atomicBaseline(box: Box): number {
   const bottom = box.height + box.marginTop + box.marginBottom;
-  if (
-    box.kind === 'replaced' ||
-    box.style.overflowX !== 'visible' ||
-    box.style.overflowY !== 'visible'
-  ) {
+  if (box.kind === 'replaced' || scrolls(box.style)) {
     return bottom;
   }
   const baseline =
@@ -2238,10 +2234,7 @@ function childBaseline(
   if (child.outOfFlow || child.isFloat || child.kind === 'replaced') {
     return null;
   }
-  if (
-    child.style.overflowX !== 'visible' ||
-    child.style.overflowY !== 'visible'
-  ) {
+  if (scrolls(child.style)) {
     return child.y + child.height + child.marginBottom;
   }
   return inside(child);

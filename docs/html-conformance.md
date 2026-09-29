@@ -200,6 +200,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 111    | grid areas and line names, `grid-auto-flow`        | 5,651 (95%) | 5,102 (86%) |
 | 112    | `object-fit`, `object-position`, posters, embeds   | 5,651 (95%) | 5,102 (86%) |
 | 113    | counter styles and `@counter-style`                | 5,651 (95%) | 5,102 (86%) |
+| 114    | `aspect-ratio` both ways, `overflow: clip`, `body` | 5,652 (95%) | 5,103 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3296,6 +3297,76 @@ which `<Html>` does not evaluate, and matched its reference only while
 neither's `@counter-style` rules were read. The `-extended` tests of the
 Japanese and Korean longhands fail in every browser too, and the Chinese
 ones reach 9,999,999,999,999,999, which a JavaScript number cannot hold.
+
+### Round 114
+
+285. **A box with a ratio and a height was as wide as its container**, and
+     one whose width was `min-content`, `max-content` or `fit-content` as
+     wide as what was in it. Its width is its height's through the ratio
+     (CSS Sizing 4, 5.1) — a height of its own, or, for an absolute box
+     with a `top` and a `bottom`, the height they leave it — and a
+     `min-content`, `max-content` or `fit-content` height is `auto`. A
+     least or greatest height is a least or greatest width through the
+     ratio wherever the box's width is its own to find: a block's, a
+     shrink-to-fit one's, and an absolute box's that both its offsets
+     stretch.
+286. **A box with a ratio grew to hold its content whatever its
+     `min-height` said.** Its content is only its automatic minimum
+     (5.2), so `min-height: 0` lets the ratio hold what overflows it. And
+     its two margins went on through it as an empty block's do, where the
+     height its ratio gives it parts them.
+287. **A flex item with a ratio was as wide across a column as its
+     content**, whatever height it was flexed to; it is that height's width
+     through the ratio (CSS Flexbox 9.4). Along a row, its automatic
+     minimum is a definite height's width through the ratio — its own, or
+     its line's where it is stretched across one of a definite height — or
+     its content's at its narrowest, the wider, and no more than a width of
+     its own (4.5); and a `min-height` holds it to a width through the
+     ratio even where its content is no wider than its padding, which let
+     it shrink to nothing. Down a column, its flex base size is its width's
+     height through the ratio (9.2.3), and its automatic minimum is held
+     within what its least and greatest widths make of heights. An image
+     grown along a row is as tall as its ratio makes its new width.
+288. **Yoga takes a `flex-basis` only in a flex box whose main size is
+     definite**, and down a column of no height of its own it read
+     `flex: 0 0 3rem` as the item's height, or as its content's. There the
+     basis is handed to it as the item's height, which is what the height
+     is to a basis anyway. A `content-box` basis down a column took the
+     item's left and right padding for its top and bottom.
+289. **A stretched flex item was never shorter than what it held.** It is
+     its line's height (9.4, step 11), so an item with a ratio no longer
+     grows past its line to the height of its width.
+290. **`overflow: clip` was read as `hidden`**, and so made a formatting
+     context of its own and a scroll container. It clips the same, and
+     makes neither (CSS Overflow 3, 3.1): a margin in it collapses through
+     its edge, the floats in it are not held in it, and a flex or grid item
+     keeps its automatic minimum. The two axes compute together: beside a value that
+     scrolls, `visible` is `auto` and `clip` is `hidden`.
+291. **A written `<html>` had no body.** htmlparser2 puts content where it
+     stands, and HTML's parser puts it in a body (13.2.6.4), so the root
+     box stood in for a body around the `<html>`, and a first paragraph's
+     margin stood below the body's rather than collapsing with it. The
+     first thing in an `<html>` that is not head content opens a body now;
+     content before a written `<body>`, or after it ends, goes in it; and a
+     second `<body>`'s attributes go on the first. Thirteen tests across
+     CSS 2.1, css-overflow, css-tables, css-text, css-values and css-align
+     wrote their pages so.
+292. **An SVG image's root background was not painted.** A browser paints
+     it over the canvas, which for an image is the whole of it, wherever
+     the `viewBox` puts the drawing.
+
+css-sizing went from 258 to 336 of 562 on X11 and from 257 to 335 on
+Cocoa, css-flexbox from 646 to 669 of 1,012 and from 644 to 665,
+css-overflow from 265 to 268 and css-text from 656 to 662 on X11; the CSS
+2.1 suite went from 5,651 to 5,652 on X11 and from 5,102 to 5,103 on
+Cocoa. One test passed by an
+accident this ends: `balance-percentage-size-002` lays out three squares
+in two lines with the experimental `flex-wrap: balance`, which `<Html>`
+does not do, and matched its reference only while each item's width was
+not its height's through its ratio. `flex-aspect-ratio-038` fails because
+Yoga shares out a column's free space from each item's size within its
+limits rather than from its flex base size, as Chrome 101 and Firefox 99
+did.
 
 ## What `<Html>` supports
 

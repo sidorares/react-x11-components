@@ -55,7 +55,11 @@ const HEAD_CONTENT = new Set([
   'style',
   'script',
   'base',
+  'basefont',
+  'bgsound',
+  'noframes',
   'noscript',
+  'template',
 ]);
 
 /** Whether an element is head content with no `<head>` around it: at the
@@ -373,6 +377,11 @@ function freshFacts(): ScannedFacts {
  */
 class Handler extends DomHandler {
   private _afterPre = false;
+  /** A written `<html>` at the top of the document, and the document's
+   *  body, written or implied: where HTML's parser puts content the markup
+   *  leaves outside them. */
+  private _html: Element | null = null;
+  private _body: Element | null = null;
 
   /**
    * Past `MAX_DEPTH` open elements, what is opened goes into the element at
@@ -399,10 +408,94 @@ class Handler extends DomHandler {
     this.lastNode = null;
   }
 
+  /**
+   * HTML's parser puts a document's content in a `<body>` whether or not
+   * the markup wrote one, and htmlparser2's puts it where it stands. So
+   * with a written `<html>`, the first thing that is not head content opens
+   * the body it goes in (HTML 13.2.6.4.6, "after head"); without one, a
+   * `<body>` written after content takes that content in, which HTML's
+   * parser had put in the body it implied; and what comes after the body
+   * has ended goes back into it ("after body"), as does a second
+   * `<body>`'s attributes. Without it the root box stood in for a body
+   * around the `<html>`, and a first paragraph's margin stood below the
+   * body's rather than collapsing with it. A fragment — no `<html>`, no
+   * `<body>` — is left as it was written, and the root box stands in.
+   */
   override onopentag(name: string, attribs: Record<string, string>): void {
+    if (name === 'body' && this._body) {
+      // a second body is its attributes, on the first; the parser will end
+      // it, so what it ends is the body outside one, or else what is open
+      for (const key in attribs) this._body.attribs[key] ??= attribs[key];
+      const stack = this.tagStack;
+      if (this._outsideBody()) this._reopen();
+      else stack.push(stack[stack.length - 1]);
+      this._afterPre = false;
+      return;
+    }
+    if (this._outsideBody()) {
+      if (this._body) {
+        if (name !== 'html') this._reopen();
+      } else if (this._html && inBody(name)) this._reopen();
+    }
     super.onopentag(name, attribs);
+    const opened = this.tagStack[this.tagStack.length - 1] as Element;
+    if (name === 'html' && !this._html && opened.parent === this.root) {
+      this._html = opened;
+    } else if (name === 'body' && !this._body) {
+      if (opened.parent === this._html) this._body = opened;
+      else if (!this._html && opened.parent === this.root) {
+        this._body = opened;
+        this._adopt(opened);
+      }
+    }
     this._afterPre =
       name === 'pre' || name === 'listing' || name === 'textarea';
+  }
+
+  /** Whether what is open is the top of the document, or the written
+   *  `<html>`: where content is outside any body. */
+  private _outsideBody(): boolean {
+    const top = this.tagStack[this.tagStack.length - 1];
+    return top === this.root || (top === this._html && top !== null);
+  }
+
+  /** Open the `<html>` and its body again, or the body for the first time.
+   *  The parser never saw them open, so it closes them in the place of what
+   *  it did open — which is where they would end anyway. */
+  private _reopen(): void {
+    const stack = this.tagStack;
+    if (stack[stack.length - 1] === this.root && this._html) {
+      stack.push(this._html);
+    }
+    if (this._body) stack.push(this._body);
+    else {
+      super.onopentag('body', {});
+      this._body = stack[stack.length - 1] as Element;
+    }
+    this.lastNode = null;
+  }
+
+  /** Move into a `<body>` written at the top of the document what went
+   *  before it there from the first thing that is not head content on. */
+  private _adopt(body: Element): void {
+    const kids = this.root.children;
+    const end = kids.length - 1;
+    let start = 0;
+    while (start < end && !startsBody(kids[start])) start += 1;
+    if (start === end) return;
+    const moved = kids.splice(start, end - start);
+    const before = kids[start - 1] ?? null;
+    body.prev = before;
+    if (before) before.next = body;
+    moved[0].prev = null;
+    moved[moved.length - 1].next = null;
+    for (const node of moved) node.parent = body;
+    body.children.unshift(...moved);
+    if (body.children.length > moved.length) {
+      const first = body.children[moved.length];
+      first.prev = moved[moved.length - 1];
+      moved[moved.length - 1].next = first;
+    }
   }
 
   override onclosetag(): void {
@@ -416,6 +509,13 @@ class Handler extends DomHandler {
   }
 
   override ontext(data: string): void {
+    if (
+      (this._html || this._body) &&
+      NOT_SPACE.test(data) &&
+      this._outsideBody()
+    ) {
+      this._reopen();
+    }
     if (this._afterPre) {
       this._afterPre = false;
       const skip = data.startsWith('\r\n') ? 2 : data.startsWith('\n') ? 1 : 0;
@@ -430,6 +530,28 @@ class Handler extends DomHandler {
 
 /** How deep a document's elements nest (`Handler.addNode`). */
 const MAX_DEPTH = 256;
+
+/** Text that is not all the white space HTML's parser leaves in the head. */
+const NOT_SPACE = /[^ \t\n\f\r]/;
+
+/** Whether an element opened before the body goes in the body HTML's
+ *  parser implies, rather than in the head or the `<html>` itself. */
+function inBody(name: string): boolean {
+  return (
+    name !== 'body' &&
+    name !== 'frameset' &&
+    name !== 'head' &&
+    name !== 'html' &&
+    !HEAD_CONTENT.has(name)
+  );
+}
+
+/** Whether a node at the top of a document is where HTML's parser would
+ *  have opened the body: an element that goes in one, or text. */
+function startsBody(node: ChildNode): boolean {
+  if (node instanceof Element) return inBody(node.name);
+  return node instanceof Text && NOT_SPACE.test(node.data);
+}
 
 function createParser(): { parser: Parser; handler: DomHandler } {
   const handler = new Handler(null, {

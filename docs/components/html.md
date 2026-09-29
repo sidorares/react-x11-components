@@ -177,13 +177,17 @@ container with no height of its own gives its `flex: 1` items what its
 `min-height` leaves them, so a page `min-h-screen flex flex-col` puts its
 footer at the bottom of the window. An item is shrunk no smaller than its
 content comes to — its min-content width in a row, its content's height in a
-column — unless its own minimum or an `overflow` that clips lets it go, as
-Tailwind's `min-w-0` does; in a column that is the lesser of a height of its
-own and its content's, and an item with an `aspect-ratio` counts its width
-through the ratio as content. An item stretched across its row, or flexed
-along a column of a height of its own, has the height it was given for what
-it holds to take a percentage of, so an `h-full` list in a sidebar fills
-the sidebar. Items go in `order`, and in the document's where two have the
+column — unless its own minimum or an `overflow` that scrolls lets it go,
+as Tailwind's `min-w-0` does; in a column that is the lesser of a height of
+its own and its content's, and an item with an `aspect-ratio` counts its
+width through the ratio as content, and along a row a definite height
+through it. An item with a ratio is as wide, down a column, as the height
+it was flexed to makes it, and an image grown along a row is as tall. A
+`flex-basis` holds down a column with no height of its own, where Yoga
+would read the item's height in its place. An item stretched across its
+row, or flexed along a column of a height of its own, has the height it was
+given — no taller for what it holds — for what it holds to take a
+percentage of, so an `h-full` list in a sidebar fills the sidebar. Items go in `order`, and in the document's where two have the
 same, and are painted so; one with a `z-index` is a stacking context
 whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines, their
 line as tall as that makes it, and a flex box sits on the baseline of its
@@ -235,8 +239,9 @@ element before and after the block are on lines of their own, without an
 edge where the block cut them, and the block stands between them as a
 block, so `<font>` around paragraphs, or a link around a card, keeps its
 blocks stacked.
-A block that makes a formatting context of its own — `overflow` other than
-`visible`, a table, `display: flow-root` — holds its floats and sits beside
+A block that makes a formatting context of its own — an `overflow` that
+scrolls (any but `visible` and `clip`), a table, `display: flow-root` —
+holds its floats and sits beside
 another block's rather than under them, its margins its containing
 block's: a column with `overflow: hidden` and a 220px margin beside a
 200px sidebar starts 220px in, the margin overlapping the float, and one
@@ -292,7 +297,10 @@ pays. A box whose `overflow` is not `visible`
 clips what it holds to its padding box, rounded where the box is — all of
 it but a positioned box whose containing block is outside — and `scroll`
 and `auto` clip the same, with no scroll bars: the element around the
-document is what scrolls. A table clips to its table box, with its
+document is what scrolls. `clip` clips as `hidden` does and makes no
+scroll container, so it makes no formatting context and leaves a flex or
+grid item its automatic minimum; beside a value that scrolls, a `visible`
+axis is `auto` and a `clip` one `hidden`. A table clips to its table box, with its
 captions outside the clip. `clip` shows the part of an absolutely positioned
 box it names. Inline elements have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
@@ -352,9 +360,12 @@ nothing, as CSS has it.
 **Ratios:** `aspect-ratio` makes an `auto` height of the width, of the box
 `box-sizing` names — Tailwind's `aspect-video` and `aspect-square` — and
 that height is one a percentage inside resolves against. A box grows past
-it to hold its content, as CSS Sizing 4 has it, unless it clips; a
-replaced element takes it over its own ratio, or, written `auto 16 / 9`,
-only where it has none.
+it to hold its content, as CSS Sizing 4 has it, unless it clips or has a
+`min-height` of its own; a replaced element takes it over its own ratio,
+or, written `auto 16 / 9`, only where it has none. The ratio runs the other
+way too: a box with a height and an `auto` width, or one of its content's,
+is as wide as the height makes it, and a least or greatest height is a
+least or greatest width through it.
 
 **SVG:** an inline `<svg>`, an SVG image and an SVG background are drawn by
 ntk's `SvgView`, which core's own `<svg>` element draws with, so they draw
@@ -365,8 +376,10 @@ CSS lengths, a percentage one too; its intrinsic size is what of them is
 absolute, and its ratio comes from them or from its `viewBox`, which is
 fitted to its box as `preserveAspectRatio` says. A percentage in its
 geometry is of its viewport, and `currentColor` is the `color` the element
-inherits. XHTML's `<svg:svg>`, under a prefix declared for the SVG
-namespace, is the same element.
+inherits. An SVG image's root `background-color`, in its `style`, covers
+the whole image, as a browser paints it over the canvas. XHTML's
+`<svg:svg>`, under a prefix declared for the SVG namespace, is the same
+element.
 
 **Backgrounds:** `background-color`, and `background-image` — through
 `onResource`, like an `<img>` — with `background-repeat` and
@@ -674,7 +687,10 @@ implied `<html>` that author `html { … }` rules reach. Without it the same
 markup renders differently inside and outside `<html><body>`, which reads as
 a bug rather than as a missing element. A `<body>` with no `<html>` around
 it, which is how a lot of mail starts, is still the body: its background
-covers the whole canvas.
+covers the whole canvas. A document that writes `<html>` gets the body
+element HTML's parser would have made — the first thing in it that is not
+head content opens one — and content before a written `<body>`, or after
+it ends, goes in the body, as a browser puts it there.
 
 **The user-agent stylesheet is themed.** `color`, the link colour and every
 rule and border in it come from the react-x11 palette, so an unstyled

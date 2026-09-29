@@ -18,6 +18,7 @@ import type {
   ContentSize,
   GridLine,
 } from '../css/style.js';
+import { scrolls } from '../css/style.js';
 import { lineOf, spanToName } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import {
@@ -417,15 +418,16 @@ function topOpen(box: Box): boolean {
 }
 
 /** Whether nothing at an empty block's bottom holds its margins apart: no
- *  border, padding or height there, and no marker to stand a line tall. A
- *  percentage says no, whatever it resolves to. */
+ *  border, padding or height there — nor a height its ratio gives it from
+ *  its width — and no marker to stand a line tall. A percentage says no,
+ *  whatever it resolves to. */
 function bottomOpen(box: Box): boolean {
-  const { height, minHeight } = box.style;
+  const { height, minHeight, aspectRatio } = box.style;
   return (
     box.borderBottom === 0 &&
     box.padBottom === 0 &&
     !box.marker &&
-    (height === AUTO || height === 0) &&
+    (height === 0 || (height === AUTO && !aspectRatio)) &&
     (minHeight === AUTO || minHeight === 0)
   );
 }
@@ -1818,14 +1820,121 @@ function handPercentBase(box: Box, base: number): void {
  * it has none, or a height of its own; a replaced box is sized apart.
  */
 export function ratioHeight(box: Box): number | null {
-  const aspect = box.style.aspectRatio;
-  if (!aspect || box.kind === 'replaced') return null;
+  const ratio = boxRatio(box);
+  if (!ratio) return null;
   if (resolveOrNull(box.style.height, box.percentHeightBase) !== null) {
     return null;
   }
-  return box.style.boxSizing === 'border-box'
-    ? Math.max(0, box.width / aspect.ratio - box.verticalExtra)
-    : Math.max(0, box.contentWidth / aspect.ratio);
+  return ratio.border
+    ? Math.max(0, box.width / ratio.ratio - box.verticalExtra)
+    : Math.max(0, box.contentWidth / ratio.ratio);
+}
+
+/**
+ * A box's `aspect-ratio` where it is not replaced, and whether it is of its
+ * border box — a ratio written alone under `box-sizing: border-box` — or
+ * of its content box, as one written `auto` with it is whatever the
+ * `box-sizing` (CSS Sizing 4, 5.1).
+ */
+function boxRatio(box: Box): { ratio: number; border: boolean } | null {
+  const aspect = box.style.aspectRatio;
+  if (!aspect || box.kind === 'replaced' || !(aspect.ratio > 0)) return null;
+  return {
+    ratio: aspect.ratio,
+    border: box.style.boxSizing === 'border-box' && !aspect.auto,
+  };
+}
+
+/** A border-box height through a box's ratio into its border-box width,
+ *  or null where the box has no ratio of its own. */
+export function widthFromHeight(box: Box, height: number): number | null {
+  const ratio = boxRatio(box);
+  return ratio ? acrossRatio(box, ratio, height) : null;
+}
+
+/** A border-box width through a box's ratio into its border-box height,
+ *  or null where the box has no ratio of its own. */
+export function heightFromWidth(box: Box, width: number): number | null {
+  const ratio = boxRatio(box);
+  if (!ratio) return null;
+  return ratio.border
+    ? width / ratio.ratio
+    : Math.max(0, width - box.horizontalExtra) / ratio.ratio +
+        box.verticalExtra;
+}
+
+/** A border-box height through a box's ratio into its border-box width. */
+function acrossRatio(
+  box: Box,
+  ratio: { ratio: number; border: boolean },
+  height: number,
+): number {
+  return ratio.border
+    ? height * ratio.ratio
+    : Math.max(0, height - box.verticalExtra) * ratio.ratio +
+        box.horizontalExtra;
+}
+
+/**
+ * The border-box width `aspect-ratio` gives a box whose width is `auto`
+ * from a height of its own, within its least and greatest heights (CSS
+ * Sizing 4, 5.1): a block is that wide, not as wide as its room — and so
+ * is one whose width is its content's, `min-content` or `fit-content`, as
+ * its content is that height through its ratio (5.3). Null where it has
+ * no ratio, no height or a length for a width.
+ */
+export function ratioWidth(box: Box): number | null {
+  const ratio = boxRatio(box);
+  const style = box.style;
+  if (!ratio || style.width !== AUTO) return null;
+  const set = resolveOrNull(style.height, box.percentHeightBase);
+  if (set === null) return null;
+  const outer = clampHeight(
+    box,
+    style.boxSizing === 'border-box'
+      ? Math.max(set, box.verticalExtra)
+      : set + box.verticalExtra,
+  );
+  return acrossRatio(box, ratio, outer);
+}
+
+/**
+ * A width its ratio gave a box, no narrower than its content at its
+ * narrowest where its least width is `auto` and it shows what overflows
+ * it — the automatic minimum of a box with a ratio (5.2) — though no
+ * wider for that than its greatest width.
+ */
+function ratioMinimum(
+  box: Box,
+  width: number,
+  containingWidth: number,
+  ctx?: LayoutContext,
+): number {
+  const style = box.style;
+  if (
+    !ctx ||
+    style.minWidth !== AUTO ||
+    style.minWidthKeyword ||
+    scrolls(style)
+  ) {
+    return width;
+  }
+  if (box.intrinsicMinContent < 0) {
+    const saved = box.lines;
+    box.intrinsicMinContent = measureIntrinsicWidth(
+      box,
+      ctx,
+      MIN_CONTENT_PROBE,
+    );
+    box.lines = saved;
+    resolveEdges(box, containingWidth);
+  }
+  const max =
+    style.maxWidth === 'none'
+      ? Infinity
+      : (resolveOrNull(style.maxWidth, containingWidth) ?? Infinity) +
+        (style.boxSizing === 'border-box' ? 0 : box.horizontalExtra);
+  return Math.max(width, Math.min(box.intrinsicMinContent, max));
 }
 
 /** A table cell's height as its content came to, border box, apart from a
@@ -1858,10 +1967,13 @@ function finishHeight(box: Box, contentHeight: number): void {
     const ratio = ratioHeight(box);
     if (ratio !== null) {
       // the ratio's height, grown to what the box holds unless it clips it
-      // (5.2: the automatic minimum of a box with a ratio is its content)
-      const clips =
-        box.style.overflowX !== 'visible' || box.style.overflowY !== 'visible';
-      contentHeight = clips ? ratio : Math.max(ratio, contentHeight);
+      // or has a least height of its own (5.2: the automatic minimum of a
+      // box with a ratio is its content, and `min-height: 0` is none)
+      const automatic =
+        box.style.minHeight === AUTO &&
+        box.style.minHeightKeyword === null &&
+        !scrolls(box.style);
+      contentHeight = automatic ? Math.max(ratio, contentHeight) : ratio;
     }
   }
   const height = specified ?? contentHeight;
@@ -1944,12 +2056,18 @@ function blockWidth(
   const style = box.style;
   const available = containingWidth - box.marginLeft - box.marginRight;
   if (style.width === AUTO) {
+    // a width its height gives it through its ratio
+    const fromRatio = ratioWidth(box);
+    if (fromRatio !== null) {
+      const clamped = clampWidth(box, fromRatio, percentBase, ctx);
+      return ratioMinimum(box, clamped, percentBase, ctx);
+    }
     const room = Math.max(0, available);
     const width =
       style.widthKeyword && ctx
         ? contentSizedWidth(box, ctx, style.widthKeyword, room, percentBase)
         : room;
-    return clampWidth(box, width, percentBase, ctx);
+    return clampWidth(box, transferredWidth(box, width), percentBase, ctx);
   }
   // at least zero: a `calc()` may come to less
   const specified = Math.max(0, resolve(style.width, percentBase, 0));
@@ -1960,9 +2078,66 @@ function blockWidth(
   return clampWidth(box, borderBox, percentBase, ctx);
 }
 
+/**
+ * A width a box with a ratio and no height of its own works out for itself
+ * within the least and greatest widths its least and greatest heights make
+ * through its ratio (CSS Sizing 4, 5.2) — those of its own winning where
+ * the two disagree, as `clampWidth` after this makes them. A block the
+ * room would stretch is no wider than its greatest height lets it be. A
+ * width a flex box or a grid gives an item is not, which is theirs.
+ */
+export function transferredWidth(box: Box, width: number): number {
+  const style = box.style;
+  const ratio = boxRatio(box);
+  if (!ratio || resolveOrNull(style.height, box.percentHeightBase) !== null) {
+    return width;
+  }
+  const heightOf = (len: Len) => {
+    const px = resolveOrNull(len, box.percentHeightBase);
+    if (px === null || !Number.isFinite(px)) return null;
+    return style.boxSizing === 'border-box'
+      ? Math.max(px, box.verticalExtra)
+      : px + box.verticalExtra;
+  };
+  const maxH = style.maxHeight === 'none' ? null : heightOf(style.maxHeight);
+  const minH = style.minHeight === AUTO ? null : heightOf(style.minHeight);
+  let out = width;
+  if (maxH !== null) out = Math.min(out, acrossRatio(box, ratio, maxH));
+  if (minH !== null) out = Math.max(out, acrossRatio(box, ratio, minH));
+  return out;
+}
+
+/**
+ * A border-box height within what a box's ratio makes of its least and
+ * greatest widths: how a flex item's content size suggestion down a
+ * column is held (CSS Flexbox 4.5). Unchanged where it has no ratio.
+ */
+export function transferredHeight(
+  box: Box,
+  height: number,
+  containingWidth: number,
+): number {
+  const ratio = boxRatio(box);
+  if (!ratio) return height;
+  const style = box.style;
+  const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
+  const down = (width: number) => heightFromWidth(box, width + extra)!;
+  let out = height;
+  if (style.maxWidth !== 'none') {
+    const most = resolveOrNull(style.maxWidth, containingWidth);
+    if (most !== null) out = Math.min(out, down(most));
+  }
+  const least =
+    style.minWidth === AUTO
+      ? null
+      : resolveOrNull(style.minWidth, containingWidth);
+  if (least !== null && least > 0) out = Math.max(out, down(least));
+  return out;
+}
+
 /** A width within `min-width` and `max-width` — the minimum winning — the
  *  intrinsic ones among them where `ctx` is there to measure them. */
-function clampWidth(
+export function clampWidth(
   box: Box,
   width: number,
   containingWidth: number,
@@ -2026,6 +2201,9 @@ export function contentSizedWidth(
   available: number,
   percentBase: number,
 ): number {
+  // a height of its own through a ratio is its content's width at any size
+  const fromRatio = ratioWidth(box);
+  if (fromRatio !== null) return fromRatio;
   // the content's sizes, whatever width the box has of its own: a
   // `min-width: max-content` beside a `width` is its content's widest,
   // and a probe of the box at no width answered the probe's width
@@ -2100,13 +2278,19 @@ function shrinkToFitWidth(
         : specified + box.horizontalExtra;
     return clampWidth(box, borderBox, available, ctx);
   }
+  // a width its height gives it through its ratio, as a block's
+  const fromRatio = ratioWidth(box);
+  if (fromRatio !== null) {
+    const clamped = clampWidth(box, fromRatio, available, ctx);
+    return ratioMinimum(box, clamped, available, ctx);
+  }
   // `fit-content` is what shrink-to-fit is; the other two are not bounded
   // by the room, or not by the longest line, and `fit-content()` by a room
   // of its own
   const keyword = style.widthKeyword;
   if (keyword !== null && keyword !== 'fit-content') {
     const width = contentSizedWidth(box, ctx, keyword, available, available);
-    return clampWidth(box, width, available, ctx);
+    return clampWidth(box, transferredWidth(box, width), available, ctx);
   }
   const probe = new FloatContext(0, Infinity);
   const saved = box.lines;
@@ -2166,7 +2350,7 @@ function shrinkToFitWidth(
   }
   if (width > room)
     width = Math.min(width, Math.max(box.intrinsicMinContent, room));
-  return clampWidth(box, width, available, ctx);
+  return clampWidth(box, transferredWidth(box, width), available, ctx);
 }
 
 /** A shrink-to-fit box's content width at no width limit, the once
@@ -2695,17 +2879,37 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   let stretched = NaN;
   if (style.width !== AUTO) {
     width = blockWidth(box, cbWidth, cbWidth, ctx);
-  } else if (style.widthKeyword) {
-    // an intrinsic size, which both offsets do not stretch
+  } else if (style.widthKeyword || ratioWidth(box) !== null) {
+    // an intrinsic size, which both offsets do not stretch, or a height of
+    // its own through its ratio
     width = shrinkToFitWidth(box, ctx, cbWidth, offset);
+  } else if (
+    boxRatio(box) &&
+    (left === null || right === null) &&
+    top !== null &&
+    bottom !== null
+  ) {
+    // the height its offsets leave it through its ratio, where its width
+    // has no pair of them to stretch it (CSS Sizing 4, 5.1)
+    const fill = clampHeight(
+      box,
+      Math.max(0, cbHeight - top - bottom - box.marginTop - box.marginBottom),
+    );
+    width = ratioMinimum(
+      box,
+      clampWidth(box, widthFromHeight(box, fill)!, cbWidth, ctx),
+      cbWidth,
+      ctx,
+    );
   } else if (left !== null && right !== null) {
     stretched = Math.max(
       0,
       cbWidth - left - right - box.marginLeft - box.marginRight,
     );
     // within its least and greatest width, which make it a width as one
-    // set would, and the margins' rules run again with it (CSS 2.1 10.4)
-    width = clampWidth(box, stretched, cbWidth, ctx);
+    // set would, and the margins' rules run again with it (CSS 2.1 10.4) —
+    // and those of its height, through a ratio (CSS Sizing 4, 5.1)
+    width = clampWidth(box, transferredWidth(box, stretched), cbWidth, ctx);
   } else {
     width = shrinkToFitWidth(box, ctx, cbWidth, offset);
   }
@@ -2775,7 +2979,9 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
       0,
       cbHeight - top - bottom - box.marginTop - box.marginBottom,
     );
-    const stretches = style.height === AUTO && box.kind !== 'replaced';
+    // — a box with a ratio has its height from its width
+    const stretches =
+      style.height === AUTO && box.kind !== 'replaced' && !boxRatio(box);
     // both offsets and no height: the box fills what they leave, its
     // `auto` margins nothing (10.6.4, rule 5) — unless `min-height` or
     // `max-height` moves that, which makes it a height like one set, and
@@ -3384,8 +3590,7 @@ function isInlineLevel(box: Box): boolean {
  *  floats, and does not collapse margins through its edges. */
 export function establishesBFC(box: Box): boolean {
   const style = box.style;
-  if (style.overflowX !== 'visible' || style.overflowY !== 'visible')
-    return true;
+  if (scrolls(style)) return true;
   if (style.flowRoot) return true;
   // `continue: collapse` makes a block container a formatting context of
   // its own (CSS Overflow 4, 5.3)
