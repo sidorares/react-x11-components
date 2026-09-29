@@ -895,6 +895,69 @@ test('a scroll copies the lines it keeps, and paints what a full repaint would',
   }
 });
 
+test('a selection across lines is one band, and a scroll copies it as drawn', async () => {
+  // A line is as tall as its face says, which is a fraction of a pixel, and
+  // a fill at a fractional edge is rounded by the backend: X11 cut each
+  // band's top and its height separately, so every seventh or eighth
+  // selected line left a row of background between it and the next. And the
+  // cut moved with the scroll — a band at the top of the view is clipped
+  // before it is cut — so a frame that copied the seam kept a row a full
+  // repaint no longer had. Every line here starts with blanks, so the
+  // column held is band and nothing else, top of the view to the bottom.
+  const value = Array.from(
+    { length: 120 },
+    (_, i) => `    const v${i} = ${i};`,
+  ).join('\n');
+  for (const scale of [1, 2]) {
+    const { ctx, windowNode } = await renderX11(
+      h(CodeEditor, { defaultValue: value, style: { flexGrow: 1 } }),
+      { scale, width: 400, height: 320, screen: { width: 1000, height: 800 } },
+    );
+    const node = editorNode();
+    const { abs } = node as unknown as DrawnNode;
+    // the caret at the start of the first line, where the text starts
+    await act(() => {
+      node.select({ line: 100, ch: 0 }, { line: 0, ch: 0 });
+    });
+    const x = Math.round((node.caretRect().x + 2) * scale);
+    const inset = Math.ceil(9 * scale); // the default padding and border
+    const column = async (): Promise<string[]> => {
+      const data = await editorPixels(ctx, node);
+      const rows: string[] = [];
+      for (let y = inset; y < abs.height - inset; y++) {
+        const at = (y * abs.width + x) * 4;
+        rows.push(`${data[at]},${data[at + 1]},${data[at + 2]}`);
+      }
+      return rows;
+    };
+    const oneBand = (rows: string[], what: string): void => {
+      const seams = rows.flatMap((px, y) => (px === rows[0] ? [] : [y]));
+      assert.deepStrictEqual(seams, [], `${what}: rows that are not the band`);
+    };
+    oneBand(await column(), `at ${scale}x`);
+    for (const dy of [17, 51, 31, 64, -45]) {
+      const what = `after a scroll by ${dy} at ${scale}x`;
+      await act(() => {
+        assert.ok(node.scrollBy(0, dy), `${what}, moved`);
+      });
+      const blitted = await column();
+      await act(() => {
+        (
+          windowNode as unknown as { invalidate(all: boolean): void }
+        ).invalidate(true);
+      });
+      const whole = await column();
+      assert.deepStrictEqual(
+        blitted,
+        whole,
+        `${what} the copy and a full repaint differ`,
+      );
+      oneBand(whole, what);
+    }
+    await cleanup();
+  }
+});
+
 test("a caret blink repaints the caret's row, not the editor", async () => {
   const value = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
   const { ctx, windowNode } = await renderX11(

@@ -3005,6 +3005,19 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       last = Math.min(last, Math.ceil((from + damage.height) / lineH) + 1);
     }
     const lineY = (i: number): number => content.y + i * lineH - this._scrollY;
+    // A fill as tall as a line, on whole device pixels. A line is as tall as
+    // its face says, a fraction of a pixel, and a backend rounds a fill's
+    // fractional edges its own way: X11 cut a band's top and its height
+    // separately, which left a row of background between two selected lines
+    // every seventh or eighth line — at a row that moved with the scroll, so
+    // a blit copied a seam a repaint did not draw. Edges rounded from the
+    // same arithmetic meet whichever line they are shared by.
+    const fillRow = (i: number, x0: number, x1: number): void => {
+      const left = Math.round(x0);
+      const top = Math.round(lineY(i));
+      const bottom = Math.round(lineY(i + 1));
+      c.fillRect!(left, top, Math.round(x1) - left, bottom - top);
+    };
 
     // Everything the editor draws — gutter included — stays inside the
     // content box. The first and last visible rows are partial when
@@ -3043,12 +3056,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       c.fillStyle =
         this._resolveColor(props.activeLineColor) ??
         (dark ? 'rgba(255,255,255,0.06)' : 'rgba(120,140,180,0.10)');
-      c.fillRect(
-        content.x + gutterW,
-        lineY(this._caret.line),
-        content.width - gutterW,
-        lineH,
-      );
+      fillRow(this._caret.line, content.x + gutterW, content.x + content.width);
     }
 
     // selection bands
@@ -3068,8 +3076,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
             ? this._caretX({ line: i, ch: b.ch })
             : (entry.layout?.width ?? 0) + this._charW * 0.5; // the newline
         const band = within(startX, startX + Math.max(2 * s, endX - startX));
-        if (band)
-          c.fillRect(textX + band[0], lineY(i), band[1] - band[0], lineH);
+        if (band) fillRow(i, textX + band[0], textX + band[1]);
       }
     }
 
@@ -3085,8 +3092,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
           const x0 = this._caretX(pos);
           const x1 = this._caretX({ line: pos.line, ch: pos.ch + 1 });
           const box = within(x0, x0 + Math.max(s, x1 - x0));
-          if (box)
-            c.fillRect(textX + box[0], lineY(pos.line), box[1] - box[0], lineH);
+          if (box) fillRow(pos.line, textX + box[0], textX + box[1]);
         }
       }
     }
