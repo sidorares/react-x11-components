@@ -3689,6 +3689,24 @@ or `corner-shape`. Of the rest, two need `background-blend-mode` and
 `html` background, and `clip-border-area-on-root` passes by accident,
 test and reference both blank.
 
+### Round 125
+
+323. **What `position: relative` moved off a line was drawn only where the
+     line was.** A block's lines are drawn where the damage meets them,
+     and the window bounds every paint. An inline-block moved up off a
+     line below the window, or a relative span's text, went undrawn with
+     its line, wherever it landed. The `background-origin` references build
+     their picture that way, the second row of it moved up from below the
+     window. A block knows the lines something was moved off now, and
+     draws those whose moved text or inline-block meets the damage.
+
+css-backgrounds went from 519 to 524 of 711 on X11, five `background-origin`
+tests, and the other sets are unchanged. Two more of them fail on the
+order: the reference's absolutely positioned image goes under a relative
+inline-block's border that CSS paints after it. A positioned inline-block
+is drawn with its line here, not among the positioned boxes, and that is
+still to do.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,

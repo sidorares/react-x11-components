@@ -56,6 +56,7 @@ import {
   FADED_BLOCKS,
   PAINT_ORDER,
   INLINE_OFFSETS,
+  MOVED_OFF_LINES,
   SHADOWED_TEXT,
   SHIFTED_LINES,
   TEXT_RAISES,
@@ -4113,6 +4114,17 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
       if (line.y >= bottom) break;
       if (line.y + line.height > top) visible.push(line);
     }
+    // and a line the damage misses whose text or inline-block `position:
+    // relative` moved into it: drawn by its line, it went undrawn with it
+    const moved = MOVED_OFF_LINES.get(lines);
+    if (moved && reachedOff(visible, moved, top, bottom)) {
+      const drawn = new Set(visible);
+      for (const line of moved) {
+        if (movedInto(line, top, bottom)) drawn.add(line);
+      }
+      visible.length = 0;
+      for (const line of lines) if (drawn.has(line)) visible.push(line);
+    }
   } else {
     visible.push(...lines);
   }
@@ -4177,6 +4189,39 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
       paintBox(ctx, placed.box, options);
     }
   }
+}
+
+/** Whether any of the lines moved content was taken off, and the damage
+ *  does not already draw, has it within the damage's rows. */
+function reachedOff(
+  visible: readonly LineBox[],
+  moved: ReadonlySet<LineBox>,
+  top: number,
+  bottom: number,
+): boolean {
+  for (const line of moved) {
+    if (!visible.includes(line) && movedInto(line, top, bottom)) return true;
+  }
+  return false;
+}
+
+/** Whether what was moved off a line — its inline-blocks and images, where
+ *  their ink is, and its texts, where they are drawn — reaches the rows
+ *  between `top` and `bottom`. */
+function movedInto(line: LineBox, top: number, bottom: number): boolean {
+  for (const placed of line.atomics) {
+    const box = placed.box;
+    if (box.boundsY < bottom && box.boundsY + box.boundsHeight > top) {
+      return true;
+    }
+  }
+  for (const text of line.texts) {
+    const natural = text.layout.lines[text.layoutLine];
+    if (!natural) continue;
+    const y = text.drawY + natural.y;
+    if (y < bottom && y + natural.height > top) return true;
+  }
+  return false;
 }
 
 /** An inline box's fragment whose padding or border reaches up over the
