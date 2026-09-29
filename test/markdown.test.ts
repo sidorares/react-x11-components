@@ -891,3 +891,60 @@ test('a code chip at the start of a line is claimed with the pad past the box', 
     );
   }
 });
+
+/** A line of code longer than any viewport these tests give it. */
+const LONG_LINE =
+  'const answer = someFunctionWithAVeryLongName(argumentNumberOne, ' +
+  'argumentNumberTwo, argumentNumberThree);';
+
+/** The one box that scrolls — the code's viewport. */
+function viewportBox(): {
+  scrollTo(to: { x: number; y: number }): void;
+  scrollX: number;
+} {
+  const [box] = screen.all(
+    (n) =>
+      (n as unknown as { kind: string }).kind === 'box' &&
+      (n as unknown as { style?: { overflow?: string } }).style?.overflow ===
+        'scroll',
+  );
+  assert.ok(box, 'a viewport');
+  return box as unknown as {
+    scrollTo(to: { x: number; y: number }): void;
+    scrollX: number;
+  };
+}
+
+test('a fence’s long line scrolls inside the fence, and draws nothing past it', async () => {
+  // Stretched to the fence, the code's box held none of a long line past
+  // it, so core heard that nothing in the fence reached outside and left
+  // it unclipped: the rest of the line was drawn across whatever stood
+  // beside the document, and nothing could scroll to it.
+  const { ctx } = await renderX11(
+    h(
+      'box',
+      { style: { width: 240, padding: 10, backgroundColor: '#ffffff' } },
+      h(Markdown, { source: '```js\n' + LONG_LINE + '\n```\n' }),
+    ),
+    { backend: 'xserver', width: 400, height: 120 },
+  );
+  await act();
+  const beside = (
+    await (
+      ctx as unknown as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+        ): Promise<{ data: Uint8ClampedArray }>;
+      }
+    ).getImageData(262, 0, 138, 120)
+  ).data;
+  let inked = 0;
+  for (let i = 0; i < beside.length; i += 4) if (beside[i] < 200) inked++;
+  assert.strictEqual(inked, 0, 'nothing drawn beside the document');
+  const viewport = viewportBox();
+  await act(() => viewport.scrollTo({ x: 200, y: 0 }));
+  assert.strictEqual(viewport.scrollX, 200);
+});

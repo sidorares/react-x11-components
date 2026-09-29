@@ -234,3 +234,44 @@ test(
     near(x('E', 'abcdefg\tE'), 8 * ch, 'a tab after seven letters');
   },
 );
+
+/** A line of code longer than any viewport these tests give it. */
+const LONG_LINE =
+  'const answer = someFunctionWithAVeryLongName(argumentNumberOne, ' +
+  'argumentNumberTwo, argumentNumberThree);';
+
+/** The one box that scrolls — the code's viewport. */
+function viewportBox(): {
+  scrollTo(to: { x: number; y: number }): void;
+  scrollX: number;
+} {
+  const [box] = screen.all(
+    (n) =>
+      (n as unknown as { kind: string }).kind === 'box' &&
+      (n as unknown as { style?: { overflow?: string } }).style?.overflow ===
+        'scroll',
+  );
+  assert.ok(box, 'a viewport');
+  return box as unknown as {
+    scrollTo(to: { x: number; y: number }): void;
+    scrollX: number;
+  };
+}
+
+test('an unwrapped line wider than the viewport is scrolled to, not cut off', async () => {
+  // The code stretched to its viewport, as a column stretches what it holds,
+  // so its box held none of a line past the viewport's edge: the viewport
+  // had nothing to scroll, and the end of every long line was out of reach.
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 240 } },
+      h(Code, { source: LONG_LINE, lang: 'js' }),
+    ),
+    { backend: 'xserver', width: 400, height: 120 },
+  );
+  await act();
+  const viewport = viewportBox();
+  await act(() => viewport.scrollTo({ x: 200, y: 0 }));
+  assert.strictEqual(viewport.scrollX, 200);
+});
