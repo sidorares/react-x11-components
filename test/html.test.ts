@@ -10979,6 +10979,132 @@ metric(
   },
 );
 
+test('a grid item with a ratio is sized by it, and justify-items: normal starts an image', async () => {
+  // An item with an aspect-ratio and a height was as wide as its column,
+  // and `normal` stretched an image across it, where CSS Grid 1, 6.2 sizes
+  // either as a block would be: an image at its own width, a box with a
+  // ratio from a height it has, and else filling the column
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:grid;grid-template-columns:300px">' +
+      '<div id="a" style="height:100px;aspect-ratio:1"></div>' +
+      '<div id="b" style="aspect-ratio:3"></div>' +
+      '<img id="c" src="r.png"></div>' +
+      // stretched down a row, as wide as its ratio makes that height
+      '<div style="display:grid;grid-template:100px/300px">' +
+      '<canvas id="d" width="10" height="10" style="align-self:stretch">' +
+      '</canvas></div>' +
+      // and stretched across, as tall as its ratio makes that width
+      '<div style="display:grid;grid-template-columns:60px">' +
+      '<img id="e" src="r.png" style="justify-self:stretch"></div>' +
+      // its percentage height is of a row that has a length, and its
+      // column as wide as that makes it
+      '<div id="fg" style="display:inline-grid;grid-template-rows:80px">' +
+      '<div id="f" style="height:100%;aspect-ratio:1/2"></div></div>' +
+      // stretched down a row another item sizes
+      '<div style="display:grid;grid-template-columns:300px 50px">' +
+      '<canvas id="h" width="10" height="10" style="align-self:stretch">' +
+      '</canvas><div style="height:80px"></div></div>' +
+      // and what is in an item takes its percentages of that item's height
+      '<div id="ig" style="display:inline-grid;grid-template-rows:50px">' +
+      '<div style="height:100%"><canvas width="20" height="10" ' +
+      'style="height:100%;display:block"></canvas></div></div>' +
+      // but a scroll container's sizes are not its ratio's
+      '<div style="float:left"><div id="g" style="display:grid">' +
+      '<div style="height:100px;aspect-ratio:2;overflow:auto"></div>' +
+      '</div></div>',
+    { 'r.png': RED_PNG },
+  );
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  await waitFor(() => assert.deepStrictEqual(size('c'), [10, 10]));
+  assert.deepStrictEqual(size('a'), [100, 100]);
+  assert.deepStrictEqual(size('b'), [300, 100], 'no height: the column');
+  assert.deepStrictEqual(size('d'), [100, 100]);
+  assert.deepStrictEqual(size('e'), [60, 60]);
+  assert.deepStrictEqual(size('f'), [40, 80]);
+  assert.strictEqual(boxOf(el, 'fg').width, 40, 'its column too');
+  assert.deepStrictEqual(size('h'), [80, 80]);
+  assert.strictEqual(boxOf(el, 'ig').width, 100);
+  assert.strictEqual(boxOf(el, 'g').width, 0);
+});
+
+test("a grid item's percentage height is of its area", async () => {
+  // It was of the grid's height, so `height: 100%` in one of two rows was
+  // as tall as both; and what is in a stretched item takes its percentages
+  // of the item's height, as in a stretched flex item
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:grid;height:100px;grid-template-rows:50px 50px">' +
+      '<div id="a" style="height:100%"><div id="b" style="height:50%">' +
+      '</div></div><div id="c" style="height:100%"></div></div>' +
+      '<div style="display:grid;height:200px;grid-template-rows:auto 60px">' +
+      '<div><div id="d" style="height:50%"></div></div><div></div></div>' +
+      // and of a row whose size is known only once the rows are sized
+      '<div style="display:grid;height:200px;grid-template-rows:auto 60px">' +
+      '<div id="e" style="height:50%"></div><div></div></div>',
+  );
+  const el = view(node);
+  const height = (id: string) => boxOf(el, id).height;
+  assert.deepStrictEqual([height('a'), height('b'), height('c')], [50, 25, 50]);
+  assert.strictEqual(height('d'), 70, 'half the 140 its auto row is');
+  assert.strictEqual(height('e'), 70);
+});
+
+test('auto-fit tracks no item is in collapse, gaps and all', async () => {
+  // `repeat(auto-fit, …)` was `auto-fill`: every repetition stayed, empty,
+  // and took its share of the space `justify-content` distributes
+  const { node } = await render(
+    '<style>body{margin:0} .g{display:grid;width:200px;height:200px;' +
+      'grid-template-columns:repeat(auto-fit,25px);' +
+      'grid-template-rows:repeat(auto-fit,25px);' +
+      'justify-content:space-evenly;align-content:space-evenly}' +
+      '.g>div{width:25px;height:25px}</style>' +
+      '<div class="g"><div id="a" style="grid-area:2/3"></div>' +
+      '<div id="b" style="grid-area:3/4"></div></div>' +
+      // a collapsed track's gaps collapse with it
+      '<div style="display:grid;width:500px;gap:100px;' +
+      'grid-template-columns:repeat(auto-fit,200px);justify-content:center">' +
+      '<div id="c"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('a'), [50, 50], 'two tracks, spaced evenly');
+  assert.deepStrictEqual(at('b'), [125, 125]);
+  assert.strictEqual(boxOf(el, 'c').x, 150, 'one track centred, no gap');
+});
+
+test('gaps may be percentages, and a grid is as wide as its tracks', async () => {
+  // A percentage gap was dropped whole: it is of the content box's size
+  // along it, and where that is not known, of the size the tracks come to
+  // without it (CSS Box Alignment 3, 8.3)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:grid;width:200px;height:200px;gap:10%;' +
+      'grid-template:90px 90px/90px 90px">' +
+      '<div></div><div id="a"></div><div id="b"></div></div>' +
+      '<div style="display:flex;width:200px;column-gap:25%">' +
+      '<div style="width:20px"></div><div id="c" style="width:20px"></div>' +
+      '</div>' +
+      // a grid's own size is its tracks', not where an item past its
+      // column ends
+      '<div style="float:left"><div id="d" style="display:grid;' +
+      'grid-template-columns:50px"><div style="width:200px"></div></div>' +
+      '</div>' +
+      // and an item whose width is its content's widest counts it so
+      '<div style="float:left"><div id="e" style="display:grid;' +
+      'grid-template-columns:min-content"><div style="width:max-content">' +
+      '<span style="display:inline-block;width:60px"></span> ' +
+      '<span style="display:inline-block;width:60px"></span></div></div>' +
+      '</div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').x, 110, 'a column gap of 10% of 200');
+  assert.strictEqual(boxOf(el, 'b').y, 110, 'a row gap of 10% of 200');
+  assert.strictEqual(boxOf(el, 'c').x, 70);
+  assert.strictEqual(boxOf(el, 'd').width, 50);
+  assert.ok(boxOf(el, 'e').width >= 120, `${boxOf(el, 'e').width}`);
+});
+
 // --- rounded borders -------------------------------------------------------------
 
 test("a rounded box's border is a ring that follows its corners", async () => {

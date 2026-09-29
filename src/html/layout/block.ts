@@ -12,6 +12,7 @@
 // formatting context it is inside.
 import {
   AUTO,
+  gapOf,
   isPct,
   isTransparent,
   resolve,
@@ -1813,6 +1814,37 @@ export function percentBaseInside(box: Box): number {
   return Math.max(0, clampHeight(box, borderBox) - box.verticalExtra);
 }
 
+/** Whether anything in a box takes a percentage of a height: what a height
+ *  a flex or grid layout makes definite changes. Kept for the tree's life. */
+export function percentHeightsIn(box: Box): boolean {
+  let found = PERCENT_HEIGHTS.get(box);
+  if (found === undefined) {
+    found = false;
+    // a column's basis is a height too
+    const column =
+      box.kind === 'flex' &&
+      !box.style.grid &&
+      box.style.flexDirection.startsWith('column');
+    for (const child of box.children) {
+      const style = child.style;
+      if (
+        isPct(style.height) ||
+        isPct(style.minHeight) ||
+        (style.maxHeight !== 'none' && isPct(style.maxHeight)) ||
+        (column && style.flexBasis !== 'content' && isPct(style.flexBasis)) ||
+        percentHeightsIn(child)
+      ) {
+        found = true;
+        break;
+      }
+    }
+    PERCENT_HEIGHTS.set(box, found);
+  }
+  return found;
+}
+
+const PERCENT_HEIGHTS = new WeakMap<Box, boolean>();
+
 /**
  * The content height a flex layout made definite for an item — a stretched
  * item's, a flexed one's in a container of a definite height (CSS Flexbox
@@ -1866,7 +1898,7 @@ export function ratioHeight(box: Box): number | null {
  * of its content box, as one written `auto` with it is whatever the
  * `box-sizing` (CSS Sizing 4, 5.1).
  */
-function boxRatio(box: Box): { ratio: number; border: boolean } | null {
+export function boxRatio(box: Box): { ratio: number; border: boolean } | null {
   const aspect = box.style.aspectRatio;
   if (!aspect || box.kind === 'replaced' || !(aspect.ratio > 0)) return null;
   return {
@@ -1880,6 +1912,36 @@ function boxRatio(box: Box): { ratio: number; border: boolean } | null {
 export function widthFromHeight(box: Box, height: number): number | null {
   const ratio = boxRatio(box);
   return ratio ? acrossRatio(box, ratio, height) : null;
+}
+
+/** A replaced element's ratio: its `aspect-ratio`, unless that says `auto`
+ *  and it has one of its own, as `sizeReplaced` takes it. */
+export function replacedRatio(box: Box): number {
+  const own = box.intrinsic;
+  const aspect = box.style.aspectRatio;
+  const natural = own ? own.ratio : 0;
+  return aspect && !(aspect.auto && natural > 0) ? aspect.ratio : natural;
+}
+
+/** A border-box height through any box's ratio into its border-box width
+ *  — a replaced element's is of its content box — or null where it has
+ *  none. */
+export function widthThroughRatio(box: Box, height: number): number | null {
+  if (box.kind !== 'replaced') return widthFromHeight(box, height);
+  const ratio = replacedRatio(box);
+  return ratio > 0
+    ? Math.max(0, height - box.verticalExtra) * ratio + box.horizontalExtra
+    : null;
+}
+
+/** A border-box width through any box's ratio into its border-box height,
+ *  or null where it has none. */
+export function heightThroughRatio(box: Box, width: number): number | null {
+  if (box.kind !== 'replaced') return heightFromWidth(box, width);
+  const ratio = replacedRatio(box);
+  return ratio > 0
+    ? Math.max(0, width - box.horizontalExtra) / ratio + box.verticalExtra
+    : null;
 }
 
 /** A border-box width through a box's ratio into its border-box height,
@@ -2534,8 +2596,11 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
  */
 export function intrinsicWidth(box: Box): number {
   // a grid laid out at no width limit has its columns at their widest, and
-  // is as wide as where its items end
+  // is as wide as they are — an item that runs past its column makes it no
+  // wider — or, where it has none, as where its items end
   if (box.style.grid) {
+    const cols = GRID_TRACKS.get(box)?.cols;
+    if (cols?.length) return cols[cols.length - 1][1] - cols[0][0];
     let right = 0;
     for (const child of box.children) {
       if (child.outOfFlow || child.kind === 'text') continue;
@@ -2624,7 +2689,8 @@ export function intrinsicWidth(box: Box): number {
   }
   widest = Math.max(widest, left + right);
   if (row && items) {
-    widest = Math.max(widest, total + box.style.columnGap * (items - 1));
+    const gap = gapOf(box.style.columnGap, NaN);
+    widest = Math.max(widest, total + gap * (items - 1));
   }
   return widest;
 }

@@ -56,6 +56,13 @@ export function resolve(len: Len, base: number, fallback = 0): number {
   return px > LARGEST ? LARGEST : px < -LARGEST ? -LARGEST : px;
 }
 
+/** A gap between flex items or grid tracks: a length, or a percentage of
+ *  the content box's size along it — of nothing where that is not known,
+ *  as a gap in an intrinsic size is (CSS Box Alignment 3, 8.3). */
+export function gapOf(len: Len, base: number): number {
+  return Math.max(0, resolve(len, Number.isFinite(base) ? base : 0));
+}
+
 /** Resolve, but keep "indefinite" distinguishable from zero — what a height
  *  needs, since `height: 50%` of an auto-height parent is not `0`, it is
  *  "there is no height here". */
