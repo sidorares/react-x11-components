@@ -27,6 +27,7 @@ import { parse } from '../internal/markdown/parse.js';
 import { stringify } from '../internal/markdown/stringify.js';
 import type {
   BlockNode,
+  Document,
   InlineNode,
   LinkInline,
   ListItem,
@@ -43,8 +44,42 @@ export interface MarkdownCodec {
 /** The codec for `schema`: the reference names, TipTap's, or both. */
 export function markdownCodec(schema: Schema): MarkdownCodec {
   return {
-    parse: (source) => docFromMarkdown(schema, source),
+    parse: markdownReader(schema),
     serialize: (doc) => markdownFromDoc(doc),
+  };
+}
+
+/**
+ * `docFromMarkdown` for a document read again and again: a value that
+ * streams in, or a controlled value an app keeps handing over. Each parse
+ * resumes from the last one (`ParseOptions.previous`), which hands back
+ * the blocks it did not have to read again as the same objects, and a
+ * block seen before becomes the nodes it became then. So a word streamed
+ * into a long document converts the paragraph it lands in, and the
+ * document's other blocks are the nodes the editor already holds.
+ */
+function markdownReader(schema: Schema): (source: string) => PMNode {
+  let last: Document | null = null;
+  const converted = new WeakMap<BlockNode, PMNode[]>();
+  return (source) => {
+    const ast = parse(
+      source,
+      last ? { partial: false, previous: last } : { partial: false },
+    );
+    last = ast;
+    const blocks: PMNode[] = [];
+    for (const block of ast.blocks) {
+      let nodes = converted.get(block);
+      if (!nodes) {
+        nodes = blockToNodes(schema, block);
+        converted.set(block, nodes);
+      }
+      for (const node of nodes) blocks.push(node);
+    }
+    return (
+      schema.topNodeType.createAndFill(null, blocks) ??
+      schema.topNodeType.createAndFill()!
+    );
   };
 }
 

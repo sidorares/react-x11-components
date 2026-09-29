@@ -1499,6 +1499,19 @@ What to know before changing it:
   And a block whose node, key and place are what they were gets its last
   element back (`blockElement` in `render.ts`), so React reconciles the
   block a key changed rather than every block in the window.
+- **A value handed in is a reset made of the nodes already there**
+  (`replace.ts`). Its first step replaces the whole document with its own
+  content. So the history, the caret and a plugin's positions see the reset
+  they always saw, and an undo reaches nothing from before it. Then come the
+  steps of the change alone, found by `findDiffStart`/`findDiffEnd`. The
+  order is load-bearing. With the whole-document step last, a position at
+  the edge of the change lands on that step's edge and survives, and an undo
+  after an app cleared the draft brought a letter of it back. Narrowing the
+  change without the whole-document step does that far more often: the
+  typing on either side of it stays undoable. The codec keeps its last parse
+  and the nodes each block became (`markdownReader`), so an unchanged block
+  is the same node object and its key and element survive through
+  `keys.ts`'s identity match.
 - **`InlineMap` is the one bridge** between ProseMirror positions (UTF-16, an
   inline leaf counts one) and what `<richtext>` draws (code points, an image
   as its alt text, widgets with no document width, the filler an empty block
