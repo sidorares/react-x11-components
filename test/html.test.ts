@@ -14530,3 +14530,42 @@ metric(
     assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'top')), '#top');
   },
 );
+
+metric(
+  "an inline element's rect is its border box across, padding and all",
+  async () => {
+    // It was its text alone: a padded link measured as wide as its words,
+    // and a link around an inline-block as nothing. An element's client
+    // rects are its fragments' border boxes (CSSOM View 6.1). The Zen
+    // Garden's second design pads the links in its footer
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0}</style>' +
+        '<p><span id="bare">word</span> <a id="padded" href="#" style="' +
+        'padding:0 6px;border-right:3px solid;margin:0 10px">word</a></p>' +
+        '<p><a id="around" href="#"><span style="display:inline-block;' +
+        'width:40px;height:10px"></span></a></p>' +
+        '<p><a id="outer" href="#"><span style="padding-left:7px">word' +
+        '</span></a></p>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const bare = rect('bare');
+    const padded = rect('padded');
+    // the same word, padded 6px each side and bordered 3px at its end; its
+    // margins are outside it
+    assert.ok(
+      Math.abs(padded.width - (bare.width + 15)) < 0.5,
+      `${padded.width} wide for ${bare.width} of text`,
+    );
+    assert.ok(
+      Math.abs(rect('around').width - 40) < 0.5,
+      `as wide as what it holds: ${rect('around').width}`,
+    );
+    assert.ok(
+      Math.abs(rect('outer').width - (bare.width + 7)) < 0.5,
+      `and the padding of an inline box inside it: ${rect('outer').width}`,
+    );
+  },
+);
