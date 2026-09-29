@@ -1422,16 +1422,8 @@ function paintPositioned(
   const clips = options.clips;
   if (clips?.length && box.outOfFlow) {
     let escaped = clips.length;
-    if (box.style.position !== 'fixed') {
-      let containing = box.parent;
-      while (
-        containing?.parent &&
-        containing.style.position === 'static' &&
-        !containing.style.translate &&
-        !containing.style.transformTranslate
-      ) {
-        containing = containing.parent;
-      }
+    const containing = containingBlockOf(box);
+    if (containing) {
       escaped = 0;
       for (let i = clips.length - 1; i >= 0; i -= 1) {
         if (holds(clips[i].box, containing)) break;
@@ -1446,9 +1438,29 @@ function paintPositioned(
   paintBox(ctx, box, options);
 }
 
+/**
+ * The box an out-of-flow box is positioned in, whose clips are the ones it
+ * is under (`paintPositioned`, and the hit test's `deepestAt`): its nearest
+ * positioned or translated ancestor, or the root. Null for a fixed box,
+ * which is under none.
+ */
+export function containingBlockOf(box: Box): Box | null {
+  if (box.style.position === 'fixed') return null;
+  let containing = box.parent;
+  while (
+    containing?.parent &&
+    containing.style.position === 'static' &&
+    !containing.style.translate &&
+    !containing.style.transformTranslate
+  ) {
+    containing = containing.parent;
+  }
+  return containing;
+}
+
 /** Whether anything in a box is positioned out of the flow, which may be
  *  outside the box's clip; kept for the tree's life. */
-function holdsAbsolute(box: Box): boolean {
+export function holdsAbsolute(box: Box): boolean {
   let holds = HOLDS_ABSOLUTE.get(box);
   if (holds === undefined) {
     holds = false;
@@ -1466,7 +1478,7 @@ function holdsAbsolute(box: Box): boolean {
 const HOLDS_ABSOLUTE = new WeakMap<Box, boolean>();
 
 /** Whether `inner` is `outer` or inside it. */
-function holds(outer: Box, inner: Box | null): boolean {
+export function holds(outer: Box, inner: Box | null): boolean {
   for (let at = inner; at; at = at.parent) if (at === outer) return true;
   return false;
 }

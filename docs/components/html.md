@@ -843,10 +843,14 @@ is not loaded, and falls back as its list would.
 the hover, `elementAt` and `hrefAt` share one hit test. It reaches every
 place a box draws, including what overflows it, as long as the box does
 not clip. So a page that sets `html, body { height: 100% }` and runs longer
-than that still has links below the first screen. Where two boxes overlap,
-the answer follows CSS paint order. An infobox floated out of one section
-and hanging over the next keeps its links, and the next section's box does
-not take them.
+than that still has links below the first screen. A clip hides only what
+it holds, not a positioned box whose containing block is outside it, and
+paint draws such a box past the edge. The hit test finds it there too:
+the Zen Garden's archive links are absolute items in an `overflow: hidden`
+list that has no height of its own. Where two boxes overlap, the answer
+follows CSS paint order, `z-index` included. An infobox floated out of
+one section and hanging over the next keeps its links, and the next
+section's box does not take them.
 
 **Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
 Everything from the cascade to paint recurses on tree depth, so a

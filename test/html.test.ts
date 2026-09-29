@@ -13944,3 +13944,75 @@ metric(
     assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'f')), '#f');
   },
 );
+
+metric(
+  'a positioned link escapes the clip of a box its containing block is outside of',
+  async () => {
+    // the Zen Garden's archive links: absolute `<li>`s in an `overflow:
+    // hidden` list with no height of its own, positioned in the box around
+    // it — which the list's clip does not reach (CSS 2.1 11.1.1)
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="position:relative;height:100px">' +
+        '<ul style="overflow:hidden;margin:0;padding:0">' +
+        '<li style="position:absolute;top:20px;left:0;list-style:none">' +
+        '<a id="out" href="#out">escapes</a></li></ul>' +
+        '<div style="position:relative;height:10px;overflow:hidden">' +
+        '<a id="in" href="#in" style="position:absolute;top:40px">clipped</a>' +
+        '</div></div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'out')), '#out');
+    assert.strictEqual(
+      el.cursorAt(...pointIn(el, 'out')),
+      'pointer',
+      'and shows the pointer',
+    );
+    // positioned in the box that clips it: gone past its edge
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'in')), null);
+
+    // and one positioned inside the clip stays clipped where an escaping
+    // one takes the clip's reach over it
+    const { node: second } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="position:relative;height:100px">' +
+        '<div style="overflow:hidden;height:10px">' +
+        '<div style="position:relative">' +
+        '<a id="under" href="#under" style="position:absolute;top:40px">' +
+        'clipped</a></div>' +
+        '<a id="over" href="#over" style="position:absolute;top:30px;' +
+        'left:0;width:200px;height:50px"></a>' +
+        '</div></div>',
+      300,
+    );
+    const el2 = view(second);
+    await act();
+    assert.strictEqual(
+      el2.hrefAtPoint(...pointIn(el2, 'under')),
+      '#over',
+      'the escaping link over it, not it',
+    );
+  },
+);
+
+metric(
+  'of two positioned boxes over a point, the one with the higher z-index is under the pointer',
+  async () => {
+    // the Zen Garden's `›`, `z-index: 3`, over the bar the "View All
+    // Designs" link fills, which comes after it in the document
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="position:relative;height:60px">' +
+        '<a id="top" href="#top" style="position:absolute;left:0;top:0;' +
+        'width:100px;height:40px;z-index:3"></a>' +
+        '<div style="position:absolute;left:0;top:0;width:200px;height:40px">' +
+        '</div></div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'top')), '#top');
+  },
+);
