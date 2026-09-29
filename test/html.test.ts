@@ -13191,6 +13191,200 @@ metric("an SVG image's root background covers the image", async () => {
   await expectPixel(ctx, 5, 20, '#00ff00', { message: 'beside the viewBox' });
 });
 
+test('stretch fills what the margins leave of the containing block', async () => {
+  // `stretch`, `-webkit-fill-available` and `-moz-available` were dropped
+  // (CSS Sizing 3, 4.2): a float, an inline block or an absolute box was
+  // as wide as its content
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:200px">' +
+      '<div id="a" style="float:left;width:stretch;margin:0 10px;height:5px">' +
+      '</div></div>' +
+      '<div style="width:200px"><span id="b" style="display:inline-block;' +
+      'width:-webkit-fill-available;height:5px"></span></div>' +
+      '<div style="position:relative;width:200px;height:200px">' +
+      '<div id="c" style="position:absolute;left:30px;width:stretch;' +
+      'height:stretch;bottom:50px"></div>' +
+      // with neither offset, from where the flow put it (CSS Position 3)
+      '<div style="padding:40px 0 0 60px"><canvas id="d" width="2" ' +
+      'height="1" style="position:absolute;width:stretch;height:stretch">' +
+      '</canvas></div></div>' +
+      // down a parent, less the margins but those that meet no border or
+      // padding of the parent's, which would collapse through it
+      '<div id="ep" style="height:100px;border-top:1px solid">' +
+      '<div id="e" style="height:stretch;margin:10px 0"></div></div>' +
+      '<div id="fp" style="height:100px"><div id="f" style="min-height:stretch;' +
+      'margin-bottom:50px"></div></div>' +
+      '<div style="height:100px"><div id="j" style="height:stretch;' +
+      'margin-top:20px"></div></div>' +
+      '<div style="height:100px"><div id="g" style="height:500px;' +
+      'max-height:stretch"></div></div>' +
+      // a replaced box beside a float fills what the float leaves
+      '<div style="width:200px"><div style="float:left;width:120px;' +
+      'height:10px"></div><canvas id="h" width="1" height="1" ' +
+      'style="display:block;width:stretch"></canvas></div>' +
+      '<div style="width:200px"><div id="i" style="width:10px;' +
+      'min-width:stretch;height:5px"></div></div>',
+    {},
+  );
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.strictEqual(boxOf(el, 'a').width, 180);
+  assert.strictEqual(boxOf(el, 'b').width, 200);
+  assert.deepStrictEqual(size('c'), [170, 150]);
+  assert.deepStrictEqual(size('d'), [140, 160]);
+  assert.strictEqual(
+    boxOf(el, 'e').height,
+    90,
+    'its top margin, not its bottom',
+  );
+  assert.strictEqual(boxOf(el, 'f').height, 100);
+  // and its margin is not taken for one an empty block's would collapse
+  // through
+  assert.strictEqual(boxOf(el, 'fp').y, boxOf(el, 'ep').y + 101);
+  assert.strictEqual(boxOf(el, 'j').height, 100);
+  assert.strictEqual(boxOf(el, 'g').height, 100);
+  assert.deepStrictEqual(size('h'), [80, 80]);
+  assert.strictEqual(boxOf(el, 'i').width, 200);
+});
+
+test('a flex item stretched across a column is as tall as its ratio makes it', async () => {
+  // a replaced item was measured at the width it was given and answered
+  // its natural height, along a column as it did along a row before
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;flex-direction:column;width:200px">' +
+      '<canvas id="a" width="100" height="50" style="width:stretch;' +
+      'align-self:start;min-height:0"></canvas>' +
+      '<canvas id="b" width="100" height="50" style="width:50%;' +
+      'align-self:start;min-height:0"></canvas></div>',
+  );
+  const box = (id: string) => boxOf(view(node), id);
+  assert.deepStrictEqual([box('a').width, box('a').height], [200, 100]);
+  assert.deepStrictEqual([box('b').width, box('b').height], [100, 50]);
+});
+
+// --- containment -----------------------------------------------------------------
+
+test('contain: size lays a box out as though it held nothing', async () => {
+  // `contain` was dropped whole (CSS Containment 2): a size-contained box
+  // is its `contain-intrinsic-size`, or nothing, whatever it holds
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0} .w{width:120px;height:30px}</style>' +
+      '<div id="a" style="float:left;contain:size"><div class="w"></div>' +
+      '</div>' +
+      '<div id="b" style="float:left;contain:size;' +
+      'contain-intrinsic-size:70px 40px;padding:5px"><div class="w"></div>' +
+      '</div>' +
+      // `inline-size` holds its width and leaves its height its content's
+      '<div id="c" style="float:left;contain:inline-size;' +
+      'contain-intrinsic-width:25px"><div class="w"></div></div>' +
+      '<div id="d" style="contain:strict;contain-intrinsic-height:15px">' +
+      '<div class="w"></div></div>' +
+      // an image is as though it had no size or ratio of its own
+      '<img id="e" src="r.png" style="contain:size;display:block;' +
+      'width:80px">' +
+      // but the one its width and height attributes give it
+      '<img id="f" src="r.png" width="4" height="2" style="contain:size;' +
+      'display:block;width:80px;height:auto">',
+    { 'r.png': RED_PNG },
+  );
+  await waitFor(() =>
+    assert.strictEqual((boxOf(el, 'e') as ReplacedBox).replaced, 'image'),
+  );
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('a'), [0, 0]);
+  assert.deepStrictEqual(size('b'), [80, 50]);
+  assert.deepStrictEqual(size('c'), [25, 30]);
+  assert.strictEqual(boxOf(el, 'd').height, 15);
+  assert.strictEqual(boxOf(el, 'e').height, 0);
+  assert.deepStrictEqual(size('f'), [80, 40]);
+});
+
+test('layout and paint containment make a formatting context, a containing block and a clip', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      // an absolute box is placed against the box with layout containment
+      '<div style="height:20px"></div>' +
+      '<div id="a" style="contain:layout;margin-left:30px;height:40px">' +
+      '<div id="b" style="position:absolute;left:0;top:0;width:5px;' +
+      'height:5px"></div></div>' +
+      // which holds its floats, and parts its child's margin from its own
+      '<div id="c" style="contain:paint"><div style="float:left;width:5px;' +
+      'height:25px"></div></div>' +
+      '<div id="d" style="contain:layout"><p id="e" style="margin:10px 0">' +
+      'x</p></div>' +
+      // and keeps its baseline in: an inline-block with it sits on its
+      // bottom, where one without sits on its first line
+      '<div style="line-height:20px"><span id="f" style="display:inline-block;' +
+      'contain:layout;height:40px">x</span><span id="g" ' +
+      'style="display:inline-block;height:40px">x</span></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('b'), at('a'));
+  assert.strictEqual(boxOf(el, 'c').height, 25, 'its float held in');
+  assert.strictEqual(boxOf(el, 'e').y - boxOf(el, 'd').y, 10);
+  assert.ok(boxOf(el, 'f').y < boxOf(el, 'g').y, 'sat on its bottom');
+});
+
+metric('paint containment clips what overflows', async () => {
+  const { result } = await renderWithBytes(
+    '<style>body{margin:0;background:#ff0000;' +
+      'width:50px;height:100px}</style>' +
+      '<div style="contain:paint;width:20px;height:20px">' +
+      '<div style="width:60px;height:20px;background:#0000ff"></div></div>',
+    {},
+  );
+  const ctx = result.ctx;
+  await expectPixel(ctx, 10, 10, '#0000ff', { message: 'inside the clip' });
+  await expectPixel(ctx, 40, 10, '#ff0000', { message: 'clipped' });
+});
+
+test("containment keeps the body's background to the body", async () => {
+  // it was the canvas's: the whole document red around a 50px body
+  const fills = await fillsIn(
+    '<html style="contain:layout"><body style="background:#fe0000;' +
+      'width:50px;height:40px"></body></html>',
+    '#fe0000',
+  );
+  assert.deepStrictEqual(
+    fills.map((f) => [f.w, f.h]),
+    [[50, 40]],
+  );
+});
+
+metric('layout containment makes a stacking context', async () => {
+  // what is in it is stacked in it, however high its `z-index`: under a
+  // positioned box after it
+  const { result } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      '<div style="contain:layout;height:20px"><div style="position:absolute;' +
+      'z-index:10;width:20px;height:20px;background:#ff0000"></div></div>' +
+      '<div style="position:relative;z-index:1;top:-20px;width:20px;' +
+      'height:20px;background:#00ff00"></div>',
+    {},
+  );
+  await expectPixel(result.ctx, 10, 10, '#00ff00', { message: 'on top' });
+});
+
+test('style containment keeps counters and quotes in its subtree', async () => {
+  // a counter made outside is not counted on inside: a new one is made,
+  // for the element that counts and its later siblings; and the quotes
+  // are as deep after it as they were before it
+  const counters = await documentText(
+    '<style>div{contain:style;counter-increment:c 123}' +
+      'span{counter-increment:c}span::before{content:counter(c)}</style>' +
+      '<div><span></span> <span></span></div>',
+  );
+  assert.ok(counters.includes('1 2'), JSON.stringify(counters));
+  const quotes = await documentText(
+    '<style>div{quotes:"A" "Z" "1" "9"}div::before,span::before' +
+      '{content:open-quote}div::after{content:close-quote}' +
+      'span{contain:style}</style><div><span></span></div>',
+  );
+  assert.ok(quotes.includes('A1Z'), JSON.stringify(quotes));
+});
+
 // --- a restyle's cost --------------------------------------------------------------
 
 test('a style takes from its parent the fields INHERITED names, and no others', () => {

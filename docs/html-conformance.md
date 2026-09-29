@@ -206,6 +206,8 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 113    | counter styles and `@counter-style`                | 5,651 (95%) | 5,102 (86%) |
 | 114    | `aspect-ratio` both ways, `overflow: clip`, `body` | 5,652 (95%) | 5,103 (86%) |
 | 115    | grid items with ratios, `auto-fit`, `%` gaps       | 5,652 (95%) | 5,103 (86%) |
+| 116    | `stretch` and `-webkit-fill-available`             | 5,652 (95%) | 5,103 (86%) |
+| 117    | containment and `content-visibility`               | 5,652 (95%) | 5,103 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3416,6 +3418,69 @@ ends: `row-auto-repeat-024`'s reference is a grid of items `height: 100%`
 tall, which matched the test's unstyled blocks only while the percentage
 was of the whole grid, and `column-subgrid-grid-gap-008` matched its
 reference only while a percentage gap was none.
+
+### Round 116
+
+298. **`stretch` was dropped**, and with it `-webkit-fill-available` and
+     `-moz-available`, the names pages wrote it in first: a float, an
+     inline-block or an absolute box with one was as wide as its content.
+     It is what the box's margins leave of its containing block (CSS
+     Sizing 3, 4.2), in `width`, `height`, and their least and greatest:
+     an absolute box's what its offsets leave, from its static position
+     where it has neither (CSS Position 3, 4.1); a block with a
+     formatting context of its own, or an image, what the floats beside it
+     leave; and an image one way, as tall or as wide as its ratio makes
+     the other. Down a block, a margin that meets no border or padding of
+     its parent, in a parent that is no formatting context of its own,
+     counts for nothing, as it would collapse through the parent's edge.
+     Where the containing block's height is not known, `stretch` is
+     `auto`, and as a least height nothing; `max-height` keeps it, where
+     it kept no keyword at all.
+299. **An empty block with a `min-height` or a `height` of `stretch`** was
+     taken by the margin walk for one its margins collapse through, and a
+     parent was placed a margin lower than it is.
+300. **A replaced flex item given a width down a column** answered the
+     height its own style made at that width rather than the one its ratio
+     makes of it, as along a row since round 114: one `width: 50%` wide
+     took the percentage of its own width, and was half as tall as it
+     is.
+
+css-sizing went from 352 to 373 of 562 on X11 and from 351 to 373 on
+Cocoa, one of the latter a fieldset whose radio buttons pass or fail with
+the timing of their native drawing; the CSS 2.1 suite is unchanged.
+
+### Round 117
+
+301. **`contain` was not read.** Size containment lays a box out as though
+     it held nothing (CSS Containment 2, 3.2): its content's widths and
+     height are what `contain-intrinsic-size` gives, or none, and an image
+     is as though it had no size or ratio of its own; `inline-size` does it
+     across alone. Neither applies to a table or to a table's parts.
+302. **Layout and paint containment** make the box a formatting context of
+     its own, a stacking context — painted whole in its place, where a
+     block of the flow is painted with its parent's — and the containing
+     block of the absolute and fixed boxes in it (3.3, 3.5); layout
+     containment keeps its baseline in, so an inline-block with it sits on
+     its bottom; paint containment clips what it holds to its padding box.
+303. **Style containment** keeps what its subtree does to counters and
+     quotes in it (3.4): an increment or a set of a counter made outside it
+     makes a new one instead, as though the element counting reset it for
+     itself and its later siblings, and the quotes are as deep after it as
+     they were before it. `display: contents` has none.
+304. **Any containment on `<html>` or `<body>`** keeps the body's
+     background and its `overflow` its own, rather than the canvas's and
+     the viewport's.
+305. **`content-visibility` was not read**: `auto` is layout, style and
+     paint containment, and `hidden` all four, the box's content not
+     painted (4). Whether an `auto` box is on screen, which would give it
+     size containment off it, a document laid out whole does not ask.
+306. **An image's `width` and `height` attributes** give it a ratio as well
+     as a size (HTML 15.4.3): `aspect-ratio: auto w / h`, which an image
+     with none of its own yet, or under size containment, is laid out by.
+
+css-contain went from 110 to 243 of 431 on X11 and from 101 to 229 on
+Cocoa, css-sizing from 373 to 397 of 562 on both; the CSS 2.1 suite is
+unchanged.
 
 ## What `<Html>` supports
 

@@ -747,7 +747,6 @@ function applyItem(
           : innerWidth(width, wm, content);
     if (
       box.kind === 'replaced' &&
-      alongRow &&
       exact &&
       ratio > 0 &&
       style.height === AUTO

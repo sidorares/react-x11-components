@@ -30,7 +30,13 @@ import { alphaOf, inkColor, isTransparent, resolve } from './css/values.js';
 import { blend, borderShades } from './css/color.js';
 import type { Len } from './css/values.js';
 import type { BoxShadow, ComputedStyle, LinearGradient } from './css/style.js';
-import { copyStyle } from './css/style.js';
+import {
+  CONTAIN_LAYOUT,
+  CONTAIN_PAINT,
+  CONTAIN_SIZE,
+  copyStyle,
+} from './css/style.js';
+import { contained } from './layout/block.js';
 import {
   BOX_RAISES,
   LINE_BOX_RAISES,
@@ -414,7 +420,9 @@ function canvasBackground(root: Box): { source: Box; anchor: Box } | null {
   const top = childNamed(root, 'html') ?? root;
   if (has(top)) return { source: top, anchor: top };
   const body = childNamed(top, 'body');
-  return body && has(body) ? { source: body, anchor: top } : null;
+  // containment on either keeps the body's to the body (CSS Containment 2)
+  if (!body || top.style.contain || body.style.contain) return null;
+  return has(body) ? { source: body, anchor: top } : null;
 }
 
 /** A box's child element of that name, or one inside the anonymous boxes
@@ -637,6 +645,16 @@ function paintContent(
 ): void {
   const visible = box.style.visibility === 'visible';
   if (visible) paintOwnBackground(ctx, box, options);
+  // `content-visibility: hidden` skips what the box holds, its own
+  // background, borders and outline drawn (CSS Containment 2, 4)
+  if (
+    box.style.contentVisibility === 'hidden' &&
+    box.kind !== 'replaced' &&
+    contained(box, CONTAIN_SIZE)
+  ) {
+    if (box.style.outlineStyle !== 'none') paintOutline(ctx, box, options);
+    return;
+  }
   // a stacking context's descendants with a negative `z-index`, over its
   // background and under everything else in it (CSS 2.1 Appendix E)
   const below = options.negative ? NEGATIVE.get(box) : undefined;
@@ -1272,7 +1290,9 @@ function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
   return (
     style.overflowX === 'visible' &&
     style.overflowY === 'visible' &&
-    opacityOf(child) >= 1
+    opacityOf(child) >= 1 &&
+    // containment makes it a stacking context, painted whole
+    !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
   );
 }
 
@@ -1297,7 +1317,8 @@ function flowFlex(parent: Box, child: Box, options: PaintOptions): boolean {
   return (
     style.overflowX === 'visible' &&
     style.overflowY === 'visible' &&
-    !(child.outOfFlow && style.clip)
+    !(child.outOfFlow && style.clip) &&
+    !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
   );
 }
 
@@ -1493,7 +1514,13 @@ export function holds(outer: Box, inner: Box | null): boolean {
 export function clipsOverflow(box: Box): boolean {
   if (CLIPPED_CELLS.has(box)) return true;
   const style = box.style;
-  if (style.overflowX === 'visible' && style.overflowY === 'visible') {
+  if (
+    style.overflowX === 'visible' &&
+    style.overflowY === 'visible' &&
+    // paint containment clips as `overflow: clip` does (CSS Containment
+    // 2, 3.5)
+    !contained(box, CONTAIN_PAINT)
+  ) {
     return false;
   }
   const parent = box.parent;
@@ -1513,9 +1540,14 @@ export function clipsOverflow(box: Box): boolean {
   if (name === 'html') return false;
   if (name === 'body') {
     if (parent.el?.name !== 'html') return !!parent.parent;
+    // where the root's `overflow` is `visible`, the body's is the
+    // viewport's — but not where either has any containment (CSS
+    // Containment 2), which keeps it the body's own
     return (
       parent.style.overflowX !== 'visible' ||
-      parent.style.overflowY !== 'visible'
+      parent.style.overflowY !== 'visible' ||
+      !!parent.style.contain ||
+      !!box.style.contain
     );
   }
   return true;
@@ -1892,6 +1924,8 @@ function stacksLayers(box: Box): boolean {
   const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
   if (style.opacity < 1 || FADED_BLOCKS.has(box)) return true;
+  // layout and paint containment make one (CSS Containment 2, 3.3, 3.5)
+  if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
   if (typeof style.zIndex !== 'number') return false;
   return style.position !== 'static' || flexItem(box);
 }

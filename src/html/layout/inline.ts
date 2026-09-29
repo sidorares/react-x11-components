@@ -33,7 +33,11 @@
 import { codePointAtOffset, codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
-import { INLINE_BEFORE_ABSOLUTE, scrolls } from '../css/style.js';
+import {
+  CONTAIN_LAYOUT,
+  INLINE_BEFORE_ABSOLUTE,
+  scrolls,
+} from '../css/style.js';
 import { inkColor, isTransparent, resolve } from '../css/values.js';
 import {
   BOX_RAISES,
@@ -2102,7 +2106,12 @@ function atomicRaise(
  */
 function atomicBaseline(box: Box): number {
   const bottom = box.height + box.marginTop + box.marginBottom;
-  if (box.kind === 'replaced' || scrolls(box.style)) {
+  if (
+    box.kind === 'replaced' ||
+    scrolls(box.style) ||
+    // layout containment keeps its baseline in (CSS Containment 2, 3.3)
+    box.style.contain & CONTAIN_LAYOUT
+  ) {
     return bottom;
   }
   const baseline =

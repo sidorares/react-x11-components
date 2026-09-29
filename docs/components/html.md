@@ -444,7 +444,16 @@ not stretched across a column, and a row item not shrunk below it. And
 room its argument makes: no wider than the content at its widest, nor
 narrower than its longest word. The sizes are the content's, whatever
 `width` the box has beside them. A height of one is its content's, which
-is `auto`.
+is `auto`. `stretch` — and `-webkit-fill-available` and `-moz-available`,
+as pages still write it — is what the box's margins leave of its
+containing block, in `width`, `height` and their limits: a float, an
+inline-block or an absolute box fills its room as a block does, an
+absolute one from its static position where it has no offsets, and a
+block with a formatting context of its own, or an image, the room the
+floats beside it leave. Down a block, a margin that meets no border or
+padding of its parent counts for nothing, as it would collapse through the
+parent's edge; where the containing block's height is not known,
+`stretch` is `auto`, and as a least height nothing.
 
 **Transforms:** `translate`, and the translation in a `transform` —
 `translate(-50%, -50%)`, Tailwind's `-translate-x-1/2` in either of the
@@ -455,6 +464,25 @@ absolute and fixed boxes inside it and is painted with the positioned
 boxes, as in a browser. Rotating, scaling and skewing are read and not
 drawn, and a transform on an inline box that is not an atomic one moves
 nothing, as CSS has it.
+
+**Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
+`style`, and `strict` and `content` for them — and `contain-intrinsic-size`
+(CSS Containment 2). A box with size containment is laid out as though it
+held nothing, as large as `contain-intrinsic-size` says or no larger than
+its padding and border, and an image as though it had no size or ratio of
+its own; `inline-size` does that across alone. Layout and paint
+containment make the box a formatting context, a stacking context and the
+containing block of every absolute and fixed box in it, and layout
+containment keeps its baseline in; paint containment clips what the box
+holds to its padding box, as `overflow: clip` does. Style containment keeps
+what the box's subtree does to counters and quotes in it: a counter made
+outside it is not counted on inside, and the quotes are as deep after it as
+before it. Any containment on `<html>` or `<body>` keeps the body's
+background and `overflow` its own rather than the canvas's and the
+viewport's. `content-visibility: auto` is layout, paint and style
+containment, and `hidden` all four and the box's content left unpainted.
+An image's `width` and `height` attributes give it the ratio they make as
+well, as HTML maps them.
 
 **Ratios:** `aspect-ratio` makes an `auto` height of the width, of the box
 `box-sizing` names — Tailwind's `aspect-video` and `aspect-square` — and

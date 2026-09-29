@@ -25,7 +25,13 @@ import type {
   ContentSize,
   GridLine,
 } from '../css/style.js';
-import { scrolls } from '../css/style.js';
+import {
+  CONTAIN_INLINE_SIZE,
+  CONTAIN_LAYOUT,
+  CONTAIN_PAINT,
+  CONTAIN_SIZE,
+  scrolls,
+} from '../css/style.js';
 import { lineOf, spanToName } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import {
@@ -458,8 +464,12 @@ function bottomOpen(box: Box): boolean {
     box.borderBottom === 0 &&
     box.padBottom === 0 &&
     !box.marker &&
-    (height === 0 || (height === AUTO && !aspectRatio)) &&
-    (minHeight === AUTO || minHeight === 0)
+    (height === 0 ||
+      (height === AUTO &&
+        !aspectRatio &&
+        box.style.heightKeyword !== 'stretch')) &&
+    (minHeight === AUTO || minHeight === 0) &&
+    box.style.minHeightKeyword !== 'stretch'
   );
 }
 
@@ -1396,7 +1406,7 @@ function layoutBlockLevel(
   resolveEdges(box, percentBase);
 
   if (box.kind === 'replaced') {
-    sizeReplaced(box, percentBase);
+    sizeReplaced(box, percentBase, containingWidth);
     placeBlock(box, contentLeft, y, containingWidth);
     return;
   }
@@ -1796,7 +1806,7 @@ export function percentBaseInside(box: Box): number {
   const flexed = FLEXED_HEIGHT.get(box);
   if (flexed !== undefined) return flexed;
   if (!box.el && !box.pseudo) return box.percentHeightBase;
-  const resolved = resolveOrNull(box.style.height, box.percentHeightBase);
+  const resolved = specifiedHeight(box);
   if (resolved === null) {
     // a height `aspect-ratio` gives from a width is as definite as the width
     const ratio = ratioHeight(box);
@@ -1844,6 +1854,88 @@ export function percentHeightsIn(box: Box): boolean {
 }
 
 const PERCENT_HEIGHTS = new WeakMap<Box, boolean>();
+
+/**
+ * A box's own height, where it has one, as `box-sizing` measures it: a
+ * length, a percentage of a height that resolves, or `stretch`'s, and else
+ * none, which is `auto`.
+ */
+function specifiedHeight(box: Box): number | null {
+  const style = box.style;
+  if (style.heightKeyword === 'stretch') {
+    const outer = stretchHeight(box);
+    if (outer === null) return null;
+    return style.boxSizing === 'border-box'
+      ? outer
+      : Math.max(0, outer - box.verticalExtra);
+  }
+  return resolveOrNull(style.height, box.percentHeightBase);
+}
+
+/** Where an absolutely positioned box's `stretch` height starts in its
+ *  containing block: its `top`, or its static position where it has
+ *  neither offset (`layoutPositioned`). */
+const STRETCH_TOP = new WeakMap<Box, number>();
+
+/**
+ * A replaced box's `stretch` sizes, which `sizeReplaced` knows nothing of:
+ * the width it was given for one across, the height its offsets leave for
+ * one down, and through its ratio, the other where that is `auto`.
+ */
+function stretchReplaced(
+  box: Box,
+  across: number | null,
+  containingWidth: number,
+): void {
+  const style = box.style;
+  const down = style.heightKeyword === 'stretch' ? stretchHeight(box) : null;
+  if (across === null && down === null) return;
+  if (across !== null) box.width = across;
+  if (down !== null) box.height = clampHeight(box, down);
+  if (across !== null && down === null && style.height === AUTO) {
+    const tall = heightThroughRatio(box, across);
+    if (tall !== null) box.height = clampHeight(box, tall);
+  } else if (down !== null && across === null && style.width === AUTO) {
+    const wide = widthThroughRatio(box, box.height);
+    if (wide !== null) box.width = clampWidth(box, wide, containingWidth);
+  }
+}
+
+/**
+ * The border-box height `stretch` makes of a box (CSS Sizing 3, 4.2): what
+ * its margins leave of the height its percentages are of, where that is
+ * definite, and else none. A margin of an in-flow block that its parent's
+ * border or padding does not part from the parent's edge, in a parent that
+ * is no formatting context of its own, counts as none, as the margin would
+ * collapse with the parent's.
+ */
+function stretchHeight(box: Box): number | null {
+  const base = box.percentHeightBase;
+  if (!Number.isFinite(base)) return null;
+  const style = box.style;
+  if (style.position === 'absolute' || style.position === 'fixed') {
+    // what its offsets leave of its containing block, an `auto` one none
+    // — or its static position, where both are (`layoutPositioned`)
+    const top = STRETCH_TOP.get(box) ?? resolveOrNull(style.top, base) ?? 0;
+    const bottom = resolveOrNull(style.bottom, base) ?? 0;
+    return Math.max(
+      box.verticalExtra,
+      base - top - bottom - box.marginTop - box.marginBottom,
+    );
+  }
+  const parent = box.parent;
+  const inFlow =
+    parent !== null &&
+    !box.outOfFlow &&
+    !box.isFloat &&
+    box.kind !== 'replaced' &&
+    !isInlineLevel(box) &&
+    !establishesBFC(parent);
+  const top = inFlow && !parent.borderTop && !parent.padTop ? 0 : box.marginTop;
+  const bottom =
+    inFlow && !parent.borderBottom && !parent.padBottom ? 0 : box.marginBottom;
+  return Math.max(box.verticalExtra, base - top - bottom);
+}
 
 /**
  * The content height a flex layout made definite for an item — a stretched
@@ -2034,10 +2126,14 @@ function ratioMinimum(
 export const CELL_CONTENT = new WeakMap<Box, number>();
 
 function finishHeight(box: Box, contentHeight: number): void {
+  // as though it held nothing, under size containment
+  if (contained(box, CONTAIN_SIZE)) {
+    contentHeight = box.style.containIntrinsicHeight ?? 0;
+  }
   if (box.kind === 'table-cell') {
     CELL_CONTENT.set(box, contentHeight + box.verticalExtra);
   }
-  const set = resolveOrNull(box.style.height, box.percentHeightBase);
+  const set = specifiedHeight(box);
   // at least zero: a `calc()` may come to less
   const specified = set === null ? null : Math.max(0, set);
   if (specified !== null && box.kind === 'table') {
@@ -2080,7 +2176,14 @@ export function clampHeight(box: Box, height: number): number {
   let out = height;
   const base = box.percentHeightBase;
   // a percentage of a height nothing sets is zero for a minimum (CSS 2.1
-  // 10.7), which leaves a `calc()` its pixels
+  // 10.7), which leaves a `calc()` its pixels; so is `stretch`, which is a
+  // border-box height where it is one
+  if (box.style.maxHeightKeyword === 'stretch') {
+    out = Math.min(out, stretchHeight(box) ?? Infinity);
+  }
+  if (box.style.minHeightKeyword === 'stretch') {
+    out = Math.max(out, stretchHeight(box) ?? 0);
+  }
   const min =
     box.style.minHeight === AUTO
       ? 0
@@ -2169,7 +2272,13 @@ function blockWidth(
       style.widthKeyword && ctx
         ? contentSizedWidth(box, ctx, style.widthKeyword, room, percentBase)
         : room;
-    return clampWidth(box, transferredWidth(box, width), percentBase, ctx);
+    return clampWidth(
+      box,
+      transferredWidth(box, width),
+      percentBase,
+      ctx,
+      containingWidth,
+    );
   }
   // at least zero: a `calc()` may come to less
   const specified = Math.max(0, resolve(style.width, percentBase, 0));
@@ -2177,7 +2286,7 @@ function blockWidth(
     style.boxSizing === 'border-box'
       ? Math.max(specified, box.horizontalExtra)
       : specified + box.horizontalExtra;
-  return clampWidth(box, borderBox, percentBase, ctx);
+  return clampWidth(box, borderBox, percentBase, ctx, containingWidth);
 }
 
 /**
@@ -2244,6 +2353,9 @@ export function clampWidth(
   width: number,
   containingWidth: number,
   ctx?: LayoutContext,
+  /** The room a `stretch` limit fills, where it is less than the
+   *  containing block beside floats. */
+  room = containingWidth,
 ): number {
   const style = box.style;
   const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
@@ -2256,7 +2368,7 @@ export function clampWidth(
   if (style.maxWidthKeyword && ctx) {
     out = Math.min(
       out,
-      keywordWidth(box, ctx, style.maxWidthKeyword, containingWidth),
+      keywordWidth(box, ctx, style.maxWidthKeyword, containingWidth, room),
     );
   }
   // `auto` is 0 but for a flex item, which `flex.ts` answers
@@ -2268,7 +2380,7 @@ export function clampWidth(
   if (style.minWidthKeyword && ctx) {
     out = Math.max(
       out,
-      keywordWidth(box, ctx, style.minWidthKeyword, containingWidth),
+      keywordWidth(box, ctx, style.minWidthKeyword, containingWidth, room),
     );
   }
   return Math.max(0, out);
@@ -2282,8 +2394,10 @@ function keywordWidth(
   ctx: LayoutContext,
   keyword: ContentSize,
   containingWidth: number,
+  stretchRoom = containingWidth,
 ): number {
-  const room = Math.max(0, containingWidth - box.marginLeft - box.marginRight);
+  const of = keyword === 'stretch' ? stretchRoom : containingWidth;
+  const room = Math.max(0, of - box.marginLeft - box.marginRight);
   return contentSizedWidth(box, ctx, keyword, room, containingWidth);
 }
 
@@ -2303,6 +2417,8 @@ export function contentSizedWidth(
   available: number,
   percentBase: number,
 ): number {
+  // `stretch` is the room, whatever the content (CSS Sizing 4)
+  if (size === 'stretch') return Math.max(0, available);
   // a height of its own through a ratio is its content's width at any size
   const fromRatio = ratioWidth(box);
   if (fromRatio !== null) return fromRatio;
@@ -2379,6 +2495,11 @@ function shrinkToFitWidth(
         ? Math.max(specified, box.horizontalExtra)
         : specified + box.horizontalExtra;
     return clampWidth(box, borderBox, available, ctx);
+  }
+  // `stretch` fills the room its margins leave, as a block's `auto` does
+  if (style.widthKeyword === 'stretch') {
+    const room = available - offset - box.marginLeft - box.marginRight;
+    return clampWidth(box, Math.max(0, room), available, ctx);
   }
   // a width its height gives it through its ratio, as a block's
   const fromRatio = ratioWidth(box);
@@ -2473,7 +2594,7 @@ const PREFERRED = new WeakMap<Box, number>();
  * or is indented, a block with widths of its own.
  */
 export function exactMinContent(box: Box, fonts: FontsLike): number | null {
-  if (hasWidths(box.style)) return null;
+  if (hasWidths(box.style) || contained(box, CONTAIN_WIDTH)) return null;
   const inner = exactWords(box, fonts);
   return inner === null ? null : inner + box.horizontalExtra;
 }
@@ -2595,6 +2716,11 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
  * `Infinity` for every box that contains a paragraph.
  */
 export function intrinsicWidth(box: Box): number {
+  // under size containment, as though it held nothing: the size
+  // `contain-intrinsic-size` gives it, or none (CSS Containment 2, 3.2)
+  if (contained(box, CONTAIN_WIDTH)) {
+    return box.style.containIntrinsicWidth ?? 0;
+  }
   // a grid laid out at no width limit has its columns at their widest, and
   // is as wide as they are — an item that runs past its column makes it no
   // wider — or, where it has none, as where its items end
@@ -2719,7 +2845,13 @@ function contentExtra(box: Box): number {
  * clamping each axis alone squashed it — the `<img width="600">` of every
  * mail template, in a narrow column.
  */
-function sizeReplaced(box: Box, containingWidth: number): void {
+function sizeReplaced(
+  box: Box,
+  containingWidth: number,
+  /** The room `stretch` fills: the containing block's width, or less of
+   *  it beside floats (CSS Sizing 3, 4.2). */
+  stretchRoom = containingWidth,
+): void {
   const style = box.style;
   const base = box.percentHeightBase;
   // everything below is the content box's; a `border-box` length is not
@@ -2733,20 +2865,52 @@ function sizeReplaced(box: Box, containingWidth: number): void {
     const v = resolveOrNull(len, base);
     return v === null ? null : Math.max(0, v - vx);
   };
-  const width = across(style.width);
-  const height = down(style.height);
-  const minW = across(style.minWidth) ?? 0;
+  // `stretch` is what the margins leave of the containing block, as a
+  // content box, and of its height where that is definite
+  const stretchedHeight =
+    style.heightKeyword === 'stretch' ? stretchHeight(box) : null;
+  const stretchedWidth = Number.isFinite(stretchRoom)
+    ? Math.max(
+        0,
+        stretchRoom - box.marginLeft - box.marginRight - box.horizontalExtra,
+      )
+    : null;
+  const width =
+    style.widthKeyword === 'stretch' && stretchedWidth !== null
+      ? stretchedWidth
+      : across(style.width);
+  const height =
+    stretchedHeight !== null
+      ? Math.max(0, stretchedHeight - box.verticalExtra)
+      : down(style.height);
+  const minW =
+    (style.minWidthKeyword === 'stretch' ? stretchedWidth : null) ??
+    across(style.minWidth) ??
+    0;
   const minH = down(style.minHeight) ?? 0;
   // a maximum below the minimum is the minimum (10.4)
   const maxW = Math.max(
     minW,
-    style.maxWidth === 'none' ? Infinity : (across(style.maxWidth) ?? Infinity),
+    style.maxWidthKeyword === 'stretch' && stretchedWidth !== null
+      ? stretchedWidth
+      : style.maxWidth === 'none'
+        ? Infinity
+        : (across(style.maxWidth) ?? Infinity),
   );
   const maxH = Math.max(
     minH,
     style.maxHeight === 'none' ? Infinity : (down(style.maxHeight) ?? Infinity),
   );
-  const own = box.intrinsic ?? NO_INTRINSIC;
+  // under size containment, as though it had no size or ratio of its own
+  // but the one `contain-intrinsic-size` gives it (CSS Containment 2, 3.2)
+  const own = contained(box, CONTAIN_SIZE)
+    ? {
+        width: style.containIntrinsicWidth ?? 0,
+        height: style.containIntrinsicHeight ?? 0,
+        ratio: 0,
+        missing: 0,
+      }
+    : (box.intrinsic ?? NO_INTRINSIC);
   const iw = own.missing & 1 ? null : own.width;
   const ih = own.missing & 2 ? null : own.height;
   // `aspect-ratio` over its own, unless written `auto` and it has one
@@ -2985,6 +3149,14 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   let stretched = NaN;
   if (style.width !== AUTO) {
     width = blockWidth(box, cbWidth, cbWidth, ctx);
+  } else if (style.widthKeyword === 'stretch') {
+    // what its offsets and margins leave of its containing block — an
+    // `auto` offset leaving all it has, but where both are, the start is
+    // its static position (CSS Position 3, 4.1)
+    const start = left ?? (right === null ? offset : 0);
+    const room =
+      cbWidth - start - (right ?? 0) - box.marginLeft - box.marginRight;
+    width = clampWidth(box, Math.max(0, room), cbWidth, ctx);
   } else if (style.widthKeyword || ratioWidth(box) !== null) {
     // an intrinsic size, which both offsets do not stretch, or a height of
     // its own through its ratio
@@ -3020,8 +3192,25 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     width = shrinkToFitWidth(box, ctx, cbWidth, offset);
   }
 
-  if (box.kind === 'replaced') sizeReplaced(box, cbWidth);
-  else layoutOwn(box, ctx, width);
+  // `stretch` down: what its offsets leave, from its static position where
+  // it has neither
+  if (
+    style.heightKeyword === 'stretch' ||
+    style.minHeightKeyword === 'stretch'
+  ) {
+    STRETCH_TOP.set(
+      box,
+      top ?? (bottom === null && at ? at.from.y + at.y - cbY : 0),
+    );
+  }
+  if (box.kind === 'replaced') {
+    sizeReplaced(box, cbWidth);
+    stretchReplaced(
+      box,
+      style.widthKeyword === 'stretch' ? width : null,
+      cbWidth,
+    );
+  } else layoutOwn(box, ctx, width);
 
   let x: number;
   if (
@@ -3547,13 +3736,15 @@ function staticAlignment(
  *  positioned ancestor". */
 function containingBlockFor(box: Box): Box | null {
   // a fixed box's is the viewport, whatever is positioned around it — but
-  // a transformed box is one for it too
+  // a transformed box is one for it too, and one with layout or paint
+  // containment (CSS Containment 2, 3.3)
   const fixed = box.style.position === 'fixed';
   let node = box.parent;
   while (node) {
     if (
       (!fixed && node.style.position !== 'static') ||
       transformed(node.style) ||
+      contained(node, CONTAIN_LAYOUT | CONTAIN_PAINT) ||
       node.parent === null
     ) {
       return node;
@@ -3561,6 +3752,31 @@ function containingBlockFor(box: Box): Box | null {
     node = node.parent;
   }
   return null;
+}
+
+/** The size containments that hold a box's width: `size` and
+ *  `inline-size`. */
+const CONTAIN_WIDTH = CONTAIN_SIZE | CONTAIN_INLINE_SIZE;
+
+/**
+ * Whether a box has any of the containments `bits` names, as they apply
+ * to it (CSS Containment 2, 3): none to an inline box that is no atomic
+ * one, and none to a table's inner parts but a cell — nor size
+ * containment to a table or a cell.
+ */
+export function contained(box: Box, bits: number): boolean {
+  if (!(box.style.contain & bits)) return false;
+  switch (box.kind) {
+    case 'block':
+    case 'flex':
+    case 'replaced':
+      return true;
+    case 'table':
+    case 'table-cell':
+      return !!(box.style.contain & bits & ~CONTAIN_WIDTH);
+    default:
+      return false;
+  }
 }
 
 /** Move a box and everything under it, keeping the subtree's shape. */
@@ -3706,6 +3922,8 @@ export function establishesBFC(box: Box): boolean {
   const style = box.style;
   if (scrolls(style)) return true;
   if (style.flowRoot) return true;
+  // layout and paint containment make an independent formatting context
+  if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
   // `continue: collapse` makes a block container a formatting context of
   // its own (CSS Overflow 4, 5.3)
   if (style.lineClamp !== null) return true;
