@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.11.0](https://github.com/sidorares/react-x11-components/compare/v0.10.0...v0.11.0) (2026-09-29)
+
+
+### Features
+
+* **html:** a background clipped to border-area is painted where the border is ([#389](https://github.com/sidorares/react-x11-components/issues/389)) ([dc0c86d](https://github.com/sidorares/react-x11-components/commit/dc0c86d6a279cc1b51c51b7837f6571f3d6b75cf))
+
+
+### Bug Fixes
+
+* **html:** a ::first-line's text-transform sets the first line in capitals ([#387](https://github.com/sidorares/react-x11-components/issues/387)) ([4289cb6](https://github.com/sidorares/react-x11-components/commit/4289cb6d8f0a6fa04def9e44e5a6a6cd5210329a))
+* **html:** a document with no html tag paints its html background ([#392](https://github.com/sidorares/react-x11-components/issues/392)) ([47cb6ee](https://github.com/sidorares/react-x11-components/commit/47cb6ee97d8922de323fd6e1402ec6254c1cfa8f))
+* **html:** a last child's margin collapses through a percentage height that computes to auto ([#376](https://github.com/sidorares/react-x11-components/issues/376)) ([a654d4e](https://github.com/sidorares/react-x11-components/commit/a654d4e6693ad40289e7b6e023e3af8bedea3484))
+* **html:** a line of smaller text alone is as tall as the block's strut ([#368](https://github.com/sidorares/react-x11-components/issues/368)) ([118a44b](https://github.com/sidorares/react-x11-components/commit/118a44b49b90e5beba1cdd523477571671f456ce))
+* **html:** a list item's first line is as tall as its marker ([#388](https://github.com/sidorares/react-x11-components/issues/388)) ([6282f94](https://github.com/sidorares/react-x11-components/commit/6282f94aa4a204fcea205795cb717e156f731d3f))
+* **html:** a list, a definition and a figure are indented 40px, as the HTML standard indents them ([#373](https://github.com/sidorares/react-x11-components/issues/373)) ([3b16e19](https://github.com/sidorares/react-x11-components/commit/3b16e191dac26a70116a933ec6adda6d8e68d3ca))
+* **html:** an ex, a ch and an lh are the element's own face ([#372](https://github.com/sidorares/react-x11-components/issues/372)) ([bb0bfc9](https://github.com/sidorares/react-x11-components/commit/bb0bfc99b4a49250612b47650aa05a3db67f5555))
+* **html:** an inline box's background images are drawn, as its colour is ([#384](https://github.com/sidorares/react-x11-components/issues/384)) ([647848c](https://github.com/sidorares/react-x11-components/commit/647848c924a6acfa078f5d3e5fb9e415e7dc5032))
+* **html:** an inline element's rect is as tall as its border box, not its line ([#382](https://github.com/sidorares/react-x11-components/issues/382)) ([37f183a](https://github.com/sidorares/react-x11-components/commit/37f183a106c80ec40c8a29cd47940ee92eecc63b))
+* **html:** an inline element's rect leaves out a positioned box inside it ([#385](https://github.com/sidorares/react-x11-components/issues/385)) ([5e54444](https://github.com/sidorares/react-x11-components/commit/5e544447bbeda6b295b83e570e05d6afd279f092))
+* **html:** an SVG image fills the size it is drawn at ([#379](https://github.com/sidorares/react-x11-components/issues/379)) ([912096b](https://github.com/sidorares/react-x11-components/commit/912096b56cb87adaf94f4c6d5bddff4c2a99c00c))
+* **html:** small capitals a face does not have are made of its capitals ([#378](https://github.com/sidorares/react-x11-components/issues/378)) ([aa35381](https://github.com/sidorares/react-x11-components/commit/aa35381c3a8bd74e8f7fa352033de719c8186fc1))
+* **html:** what position: relative moves off a line is drawn where it goes ([#390](https://github.com/sidorares/react-x11-components/issues/390)) ([019fb18](https://github.com/sidorares/react-x11-components/commit/019fb18bef682c9bb33aa12c26750f3b3ea98fa2))
+
+
+### Performance Improvements
+
+* **code-language:** a block of code that changes at its end is tokenized from there ([#381](https://github.com/sidorares/react-x11-components/issues/381)) ([b81d1d2](https://github.com/sidorares/react-x11-components/commit/b81d1d245f0c60c083f08562931436c3dea62f26))
+* **code:** a long source is drawn in blocks, so a streamed line repaints one ([#377](https://github.com/sidorares/react-x11-components/issues/377)) ([7850aca](https://github.com/sidorares/react-x11-components/commit/7850acaeed8d832e74e7864cee20b96c28d844cb))
+* **markdown:** a table that streams keeps the rows it had ([#383](https://github.com/sidorares/react-x11-components/issues/383)) ([d4d9370](https://github.com/sidorares/react-x11-components/commit/d4d9370f5932a4fe1b3a4ccd0f7404dae61752cb))
+* **rich-text-editor:** a value that streams in costs the blocks it changes ([#391](https://github.com/sidorares/react-x11-components/issues/391)) ([1b691fe](https://github.com/sidorares/react-x11-components/commit/1b691fe84afd0848f2913fa9caf1506f415dfa22))
+* **terminal-output:** a long capture is drawn as blocks, so an append lays out one ([#375](https://github.com/sidorares/react-x11-components/issues/375)) ([21fa865](https://github.com/sidorares/react-x11-components/commit/21fa8659227e98195bfb1f375cf30902fb11985b))
+
 ## [0.10.0](https://github.com/sidorares/react-x11-components/compare/v0.9.0...v0.10.0) (2026-09-29)
 
 
