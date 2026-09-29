@@ -369,7 +369,9 @@ optimisation is the wrong one below the threshold.
 ### Gestures repaint what moved, and nothing else
 
 A drag step does not repaint the graph. The pane claims a damage rect — the
-moved nodes old and new, plus the routed bounds of every edge on them — and
+moved nodes old and new, plus the ink of every edge on them: its route, its
+arrowheads, which reach past the route by half their width, and its pen
+where that reaches past the claim's margin — and
 the paint pass culls to the rect the renderer hands back: grid, edges, nodes,
 minimap and controls outside it are skipped, and their pixels survive on the
 window from the previous frame. The window's backing is the composition

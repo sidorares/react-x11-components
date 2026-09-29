@@ -91,6 +91,7 @@ import {
   SceneCache,
   CULL_MARGIN,
   edgeCoarseBox,
+  edgeInkBox,
   withLabelPlate,
   edgeRoute,
   endpoint,
@@ -1034,13 +1035,16 @@ export class FlowGraphNode extends Node implements FlowInstance {
     let box = this._screenRect(entry);
     const edges = this._edgesByNode.get(entry.node.id) ?? [];
     const tight = edges.length <= 16;
-    const zoom = this._viewport().zoom;
+    const sv = this._screenViewport();
     for (const edge of edges) {
       const geometry = tight ? this._edgeGeometry(edge) : null;
-      const bounds = geometry
-        ? pathBounds(geometry.points)
-        : this._edgeCoarseBox(edge);
-      if (bounds) box = unionRects(box, withLabelPlate(bounds, edge, zoom));
+      // the route's own ink, heads and pen and all — the pen only past the
+      // margin every caller grows this by — or the coarse box, whose slack
+      // holds both
+      const ink = geometry
+        ? edgeInkBox(sv, edge, geometry.points, CULL_MARGIN)
+        : this._edgeInkBox(edge);
+      if (ink) box = unionRects(box, ink);
     }
     return box;
   }

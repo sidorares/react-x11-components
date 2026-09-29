@@ -212,49 +212,21 @@ function buildRoute(
   if (!routed) return null;
   const markerKey = markerKeyOf(markerEnd, markerStart);
   const loop = edge.source === edge.target;
-  // The tip stops short of the handle rather than at it: the handle dot is
-  // drawn *over* the edges, with the nodes, so an arrow aimed at the
-  // handle's centre is an arrow mostly hidden under a white circle.
-  const inset = v.zoom >= HANDLE_ZOOM ? handleRadius(v.zoom) + 1 : 1;
   const all = routed.points;
-  let trimmed: XYPosition[] | null = null;
-  let endHead: XYPosition[] | null = null;
-  let startHead: XYPosition[] | null = null;
-  if (markerEnd) {
-    const size = (markerEnd.size ?? DEFAULT_MARKER_SIZE) * v.zoom;
-    const last = all[all.length - 1];
-    const angle = endAngle(all);
-    // and the stroke stops behind the head, so a filled triangle is a
-    // triangle rather than a triangle with a line through it
-    // Copied vertex by vertex, not just sliced. `trimEnd` returns a shallow
-    // copy — the same point *objects* as the route, less the last — and a
-    // pan moves both arrays in place, so a shared vertex moved twice: the
-    // stroke slid away from its own head by the pan's distance. Caught by
-    // test/flow-scene.test.ts, which the gesture tests could not have seen.
-    trimmed = trimEnd(all, size * 0.8 + inset).map((p) => ({ x: p.x, y: p.y }));
-    endHead = markerPoints(
-      {
-        x: last.x - Math.cos(angle) * inset,
-        y: last.y - Math.sin(angle) * inset,
-      },
-      angle,
-      markerEnd.type,
-      size,
-    );
-  }
-  if (markerStart) {
-    const size = (markerStart.size ?? DEFAULT_MARKER_SIZE) * v.zoom;
-    const angle = startAngle(all);
-    startHead = markerPoints(
-      {
-        x: all[0].x - Math.cos(angle) * inset,
-        y: all[0].y - Math.sin(angle) * inset,
-      },
-      angle,
-      markerStart.type,
-      size,
-    );
-  }
+  const { endHead, startHead, endTrim } = routeHeads(
+    v,
+    all,
+    markerEnd,
+    markerStart,
+  );
+  // Copied vertex by vertex, not just sliced. `trimEnd` returns a shallow
+  // copy — the same point *objects* as the route, less the last — and a
+  // pan moves both arrays in place, so a shared vertex moved twice: the
+  // stroke slid away from its own head by the pan's distance. Caught by
+  // test/flow-scene.test.ts, which the gesture tests could not have seen.
+  const trimmed = endHead
+    ? trimEnd(all, endTrim).map((p) => ({ x: p.x, y: p.y }))
+    : null;
   // Written over the entry this edge already had, where there is one. A
   // zoom misses on every edge of every frame, and allocating a fresh record
   // for each — plus the `Map.set` to file it — cost more than the routing
@@ -288,7 +260,7 @@ function buildRoute(
     startHead,
     from: routed.from,
     to: routed.to,
-    bounds: pathBounds(all),
+    bounds: withHeads(pathBounds(all), endHead, startHead),
     middle: null,
   });
   return entry;
@@ -309,22 +281,154 @@ function middleOf(route: CachedRoute): XYPosition {
 }
 
 /**
- * How far an edge's arrowheads can reach past its route's box: a head is
- * drawn back from a tip set `inset` short of the route's end, and no point
- * of it is farther from that tip than its size (`buildRoute`).
+ * An edge's arrowheads on a route, and how much of the route's end the
+ * stroke leaves to the one at the end: the one place a head is placed, so
+ * what is drawn and what a move claims ({@link edgeInkBox}) cannot disagree.
  */
-function headsReach(
+function routeHeads(
   v: Viewport,
+  all: readonly XYPosition[],
   markerEnd: EdgeMarker | null,
   markerStart: EdgeMarker | null,
-): number {
-  if (!markerEnd && !markerStart) return 0;
+): {
+  endHead: XYPosition[] | null;
+  startHead: XYPosition[] | null;
+  endTrim: number;
+} {
+  // The tip stops short of the handle rather than at it: the handle dot is
+  // drawn *over* the edges, with the nodes, so an arrow aimed at the
+  // handle's centre is an arrow mostly hidden under a white circle.
   const inset = v.zoom >= HANDLE_ZOOM ? handleRadius(v.zoom) + 1 : 1;
-  const size = Math.max(
-    markerEnd ? (markerEnd.size ?? DEFAULT_MARKER_SIZE) : 0,
-    markerStart ? (markerStart.size ?? DEFAULT_MARKER_SIZE) : 0,
+  let endHead: XYPosition[] | null = null;
+  let startHead: XYPosition[] | null = null;
+  let endTrim = 0;
+  if (markerEnd) {
+    const size = (markerEnd.size ?? DEFAULT_MARKER_SIZE) * v.zoom;
+    const last = all[all.length - 1];
+    const angle = endAngle(all);
+    // and the stroke stops behind the head, so a filled triangle is a
+    // triangle rather than a triangle with a line through it
+    endTrim = size * 0.8 + inset;
+    endHead = markerPoints(
+      {
+        x: last.x - Math.cos(angle) * inset,
+        y: last.y - Math.sin(angle) * inset,
+      },
+      angle,
+      markerEnd.type,
+      size,
+    );
+  }
+  if (markerStart) {
+    const size = (markerStart.size ?? DEFAULT_MARKER_SIZE) * v.zoom;
+    const angle = startAngle(all);
+    startHead = markerPoints(
+      {
+        x: all[0].x - Math.cos(angle) * inset,
+        y: all[0].y - Math.sin(angle) * inset,
+      },
+      angle,
+      markerStart.type,
+      size,
+    );
+  }
+  return { endHead, startHead, endTrim };
+}
+
+/**
+ * A route's box with its arrowheads in it. A head lies along the route's
+ * last stretch, but as wide as it is long: where the route runs along its
+ * box's side, a wing of it is outside the box — by nine pixels at `zoom` 2.
+ */
+function withHeads(
+  box: FlowRect,
+  endHead: XYPosition[] | null,
+  startHead: XYPosition[] | null,
+): FlowRect {
+  if (endHead) box = unionRects(box, pathBounds(endHead));
+  if (startHead) box = unionRects(box, pathBounds(startHead));
+  return box;
+}
+
+/** The head an edge ends in. Left out, it is an arrow: a directed graph
+ *  whose edges do not say which way they point is a set of lines. `null`
+ *  opts out. */
+function endMarkerOf(edge: AnyEdge): EdgeMarker | null {
+  return normalizeMarker(
+    edge.markerEnd === undefined ? 'arrowclosed' : edge.markerEnd,
   );
-  return size * v.zoom + inset;
+}
+
+/** An edge's pen, on screen. */
+function edgeLineWidth(edge: AnyEdge, zoom: number): number {
+  return Math.max(
+    1,
+    (edge.style?.strokeWidth ?? (edge.selected ? 2 : 1.5)) * zoom,
+  );
+}
+
+/** How far ink reaches from a segment, as a cull asks it: the pen and its
+ *  join — a miter at the sharpest corner a route takes, or at an
+ *  arrowhead's tip, stays well inside three widths. Loose on purpose: a
+ *  cull that keeps an edge too many draws it clipped away. */
+function penReach(lineWidth: number): number {
+  return lineWidth * 3 + 2;
+}
+
+/** How far it reaches in fact, as a claim asks it, where too much is pixels
+ *  repainted for nothing: an edge and an open head are stroked round-joined
+ *  and round-capped, so half the pen, and a filled head is not stroked at
+ *  all — plus the edge pixels and the device grid every point is put on. */
+function inkReach(lineWidth: number): number {
+  return lineWidth / 2 + 2;
+}
+
+/**
+ * Everything drawing `edge` along `points` can ink, in the same pixels: the
+ * route and its arrowheads, the pen's reach past both, and the label's
+ * plate — what a change that moves the edge has to claim. From the heads
+ * and the pen {@link buildScene} draws with: a claim that took the route's
+ * points alone reached a head's wing only through the margin it was grown
+ * by, and a large head, a deep zoom or a wide pen outgrows any margin.
+ *
+ * `margin` is what the caller grows the box by afterwards, and the pen and
+ * the heads count only past it: an ordinary pen and a default arrow stay
+ * inside a claim's margin at any zoom a pane allows by default, and adding
+ * them again made every move on a small graph claim a fifth more.
+ */
+export function edgeInkBox(
+  v: Viewport,
+  edge: AnyEdge,
+  points: readonly XYPosition[],
+  margin = 0,
+): FlowRect {
+  const { endHead, startHead } = routeHeads(
+    v,
+    points,
+    endMarkerOf(edge),
+    normalizeMarker(edge.markerStart),
+  );
+  // how far ink reaches past the geometry, less the margin: below zero for
+  // any pen short of the margin's width
+  const past = inkReach(edgeLineWidth(edge, v.zoom)) - margin;
+  let box = withLabelPlate(pathBounds(points), edge, v.zoom);
+  if (past > 0) box = inflateRect(box, past);
+  if (endHead) box = reachingPast(box, pathBounds(endHead), past);
+  if (startHead) box = reachingPast(box, pathBounds(startHead), past);
+  return box;
+}
+
+/** `box`, grown on each side until it reaches `by` past `part` — or, where
+ *  `by` is negative, until it comes within that much of it. */
+function reachingPast(box: FlowRect, part: FlowRect, by: number): FlowRect {
+  const x = Math.min(box.x, part.x - by);
+  const y = Math.min(box.y, part.y - by);
+  return {
+    x,
+    y,
+    width: Math.max(box.x + box.width, part.x + part.width + by) - x,
+    height: Math.max(box.y + box.height, part.y + part.height + by) - y,
+  };
 }
 
 /** Which arrowheads a route was built for — their shapes and sizes, never
@@ -1185,11 +1289,7 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     const reached = !clip || rectsOverlap(coarse, clip);
     if (!reached && !edge.animated) continue;
 
-    // `markerEnd` left out means an arrow: a directed graph whose edges do
-    // not say which way they point is a set of lines. `null` opts out.
-    const markerEnd = normalizeMarker(
-      edge.markerEnd === undefined ? 'arrowclosed' : edge.markerEnd,
-    );
+    const markerEnd = endMarkerOf(edge);
     const markerStart = normalizeMarker(edge.markerStart);
 
     const selected = edge.selected ?? false;
@@ -1197,13 +1297,8 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     const stroke =
       edge.style?.stroke ??
       (selected ? palette.edgeSelected : hovered ? palette.text : palette.edge);
-    const lineWidth = Math.max(
-      1,
-      (edge.style?.strokeWidth ?? (selected ? 2 : 1.5)) * v.zoom,
-    );
-    // How far ink reaches from a segment is the pen and its join — a miter
-    // at the sharpest corner a route takes stays well inside three widths.
-    const reach = lineWidth * 3 + 2;
+    const lineWidth = edgeLineWidth(edge, v.zoom);
+    const reach = penReach(lineWidth);
 
     // The route, from the cache where there is one: a pan keeps the zoom, so
     // the cached route is the same curve translated, and re-deriving it —
@@ -1214,19 +1309,28 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
     // near — the lattice's diagonals reach every corner of the pane — and
     // carrying each such route to the frame, cutting it to the pass and
     // finding it empty was most of what a 2D pan's strips cost. Only where
-    // nothing of the edge could land there: its stroke and heads stay
-    // within `within` of its route's box; a label's plate is sized by its
+    // nothing of the edge could land there: its stroke stays within `reach`
+    // of its route's box, heads and all; a label's plate is sized by its
     // text, and a marching edge's box is tracked whatever it reaches.
     const within =
       clip && reached && !edge.animated && !(labels && edge.label)
-        ? inflateRect(clip, reach + headsReach(v, markerEnd, markerStart))
+        ? inflateRect(clip, reach)
         : null;
     const routed = cache
       ? cache.route(v, edge, from, to, markerEnd, markerStart, within)
       : uncachedRoute(v, edge, from, to, markerEnd, markerStart);
     if (!routed) continue;
     const bounds = routed.bounds;
-    if (!rectsOverlap(withLabelPlate(bounds, edge, v.zoom), kept)) continue;
+    // the heads are in the box and the pen reaches past it: an edge whose
+    // route had just left the pane culled the wing of a head still on it
+    if (
+      !rectsOverlap(
+        inflateRect(withLabelPlate(bounds, edge, v.zoom), reach),
+        kept,
+      )
+    ) {
+      continue;
+    }
     if (edge.animated) {
       // The coarse box carries the bezier's slack, and a tick that repaints
       // slack repaints a card-sized halo of neighbours sixteen times a
