@@ -13535,7 +13535,7 @@ metric(
     assert.strictEqual(at('t'), 'text');
     assert.strictEqual(at('m'), 'move');
     assert.strictEqual(at('u'), 'text', 'a cursor it cannot load');
-    assert.strictEqual(at('e'), null);
+    assert.strictEqual(at('e'), 'default', 'and over nothing, the arrow');
   },
 );
 
@@ -13547,7 +13547,8 @@ metric(
     const { node } = await render(
       '<style>body{margin:0}</style>' +
         '<p><span id="t">plain text here</span></p>' +
-        '<p><a id="a" href="#x">a link</a></p>',
+        '<p><a id="a" href="#x">a link</a></p>' +
+        '<div id="e" style="height:40px"></div>',
       300,
     );
     const el = view(node);
@@ -13579,6 +13580,9 @@ metric(
     };
     assert.strictEqual(await over('a'), 'pointer');
     assert.strictEqual(await over('t'), 'text');
+    // not the I-beam a selectable surface defaults to, which is where a
+    // null from the element falls through to
+    assert.strictEqual(await over('e'), 'default');
     assert.strictEqual(await over('a'), 'pointer');
   },
 );
