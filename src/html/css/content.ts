@@ -5,6 +5,11 @@
 // in document order and the builder is that walk.
 
 import { parseUrl, urlEnd } from './parse.js';
+import {
+  CounterStyles,
+  counterStyleName,
+  symbolsFunction,
+} from './counter-styles.js';
 
 /** One part of a `content` value, in the order it was written. */
 export type ContentItem =
@@ -34,7 +39,7 @@ export interface CounterChange {
  *  which CSS 2.1 leaves to the user agent. */
 export const DEFAULT_QUOTES: readonly string[] = ['“', '”', '‘', '’'];
 
-type Token =
+export type Token =
   | { kind: 'string'; text: string }
   | { kind: 'url'; url: string }
   | { kind: 'ident'; name: string }
@@ -89,6 +94,18 @@ function contentFunction(
     const arg = args[i];
     return arg?.length === 1 && arg[0].kind === 'ident' ? arg[0].name : null;
   };
+  // a counter style: a name, as `list-style-type` takes one, `symbols()`,
+  // or `none`
+  const styleOf = (i: number): string | null => {
+    const arg = args[i];
+    if (arg?.length !== 1) return null;
+    const token = arg[0];
+    if (token.kind === 'function') return symbolsFunction(token);
+    if (token.kind !== 'ident') return null;
+    return token.name.toLowerCase() === 'none'
+      ? 'none'
+      : counterStyleName(token.name);
+  };
   if (name === 'attr') {
     const attr = ident(0);
     // an HTML attribute's name is case-insensitive, and the DOM keeps it
@@ -100,10 +117,8 @@ function contentFunction(
   if (name === 'counter') {
     const counter = ident(0);
     if (!counter || args.length > 2) return null;
-    const style = args.length > 1 ? ident(1) : 'decimal';
-    return style
-      ? { kind: 'counter', name: counter, style: style.toLowerCase() }
-      : null;
+    const style = args.length > 1 ? styleOf(1) : 'decimal';
+    return style ? { kind: 'counter', name: counter, style } : null;
   }
   if (name === 'counters') {
     const counter = ident(0);
@@ -117,13 +132,13 @@ function contentFunction(
     ) {
       return null;
     }
-    const style = args.length > 2 ? ident(2) : 'decimal';
+    const style = args.length > 2 ? styleOf(2) : 'decimal';
     return style
       ? {
           kind: 'counters',
           name: counter,
           separator: separator[0].text,
-          style: style.toLowerCase(),
+          style,
         }
       : null;
   }
@@ -192,16 +207,24 @@ export function parseCounterList(
 }
 
 /**
- * `list-style-type`: a counter style's name, lower-cased, or a string the
- * marker is written as (CSS Lists 3, 3.3), kept with the `"` it was quoted
- * in so it cannot be taken for a name. Null when the value is neither.
+ * `list-style-type`: `none`, a counter style — its name, lower-cased where
+ * the specification defines it and kept as it is written where a document
+ * does (CSS Counter Styles 3, 3), or `symbols()` — or a string the marker
+ * is written as (CSS Lists 3, 3.3), kept with the `"` it was quoted in so
+ * it cannot be taken for a name. Null when the value is none of those.
  */
 export function parseListStyleType(value: string): string | null {
   const tokens = tokenize(value);
   if (tokens?.length !== 1) return null;
   const token = tokens[0];
   if (token.kind === 'string') return `"${token.text}`;
-  return token.kind === 'ident' ? token.name.toLowerCase() : null;
+  if (token.kind === 'function') return symbolsFunction(token);
+  if (token.kind !== 'ident') return null;
+  const lower = token.name.toLowerCase();
+  if (/^(inherit|initial|unset|default|revert|revert-layer)$/.test(lower)) {
+    return null;
+  }
+  return lower === 'none' ? 'none' : counterStyleName(token.name);
 }
 
 /** `quotes`: `none`, or pairs of strings, outermost first. Null when the
@@ -239,113 +262,13 @@ export function quoteAt(
 
 // --- counter styles -----------------------------------------------------------
 
-const GREEK = 'αβγδεζηθικλμνξοπρστυφχψω';
+let predefined: CounterStyles | null = null;
 
-/** The Armenian and Georgian letters by place and digit — units, tens,
- *  hundreds, thousands — as CSS Counter Styles 3 tabulates them. */
-const ARMENIAN = ['ԱԲԳԴԵԶԷԸԹ', 'ԺԻԼԽԾԿՀՁՂ', 'ՃՄՅՆՇՈՉՊՋ', 'ՌՍՎՏՐՑՒՓՔ'];
-const GEORGIAN = ['აბგდევზჱთ', 'იკლმნჲოპჟ', 'რსტჳფქღყშ', 'ჩცძწჭხჴჯჰ'];
-
-/**
- * A counter's value written in a list style. A value a style has no form for
- * — below 1 in an alphabetic one, past 3,999 in Roman numerals — falls back
- * to decimal, as CSS Counter Styles 3 has every such style do.
- */
+/** A counter's value in one of the styles the specification defines, or
+ *  `none`'s nothing, where no document's rules are in reach. */
 export function counterText(n: number, style: string): string {
-  switch (style) {
-    case 'none':
-      return '';
-    case 'disc':
-      return '•';
-    case 'circle':
-      return '◦';
-    case 'square':
-      return '▪';
-    case 'disclosure-closed':
-      return '▸';
-    case 'disclosure-open':
-      return '▾';
-    case 'decimal-leading-zero': {
-      const digits = String(Math.abs(n));
-      return `${n < 0 ? '-' : ''}${digits.length < 2 ? '0' : ''}${digits}`;
-    }
-    case 'lower-roman':
-    case 'upper-roman': {
-      if (n < 1 || n > 3999) return String(n);
-      const out = roman(n);
-      return style === 'upper-roman' ? out : out.toLowerCase();
-    }
-    case 'lower-alpha':
-    case 'lower-latin':
-      return n < 1 ? String(n) : alphabetic(n, 'abcdefghijklmnopqrstuvwxyz');
-    case 'upper-alpha':
-    case 'upper-latin':
-      return n < 1 ? String(n) : alphabetic(n, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ');
-    case 'lower-greek':
-      return n < 1 ? String(n) : alphabetic(n, GREEK);
-    case 'armenian':
-    case 'upper-armenian':
-      return n < 1 || n > 9999 ? String(n) : placed(n, ARMENIAN);
-    case 'georgian':
-      return n < 1 || n > 19999
-        ? String(n)
-        : n >= 10000
-          ? 'ჵ' + (n > 10000 ? placed(n - 10000, GEORGIAN) : '')
-          : placed(n, GEORGIAN);
-    default:
-      return String(n);
-  }
-}
-
-/** A bijective base-`letters.length` numeral: a, b, … z, aa, ab. */
-function alphabetic(n: number, letters: string): string {
-  const symbols = [...letters];
-  let out = '';
-  let v = n;
-  while (v > 0) {
-    const rem = (v - 1) % symbols.length;
-    out = symbols[rem] + out;
-    v = Math.floor((v - 1) / symbols.length);
-  }
-  return out;
-}
-
-const ROMAN: [number, string][] = [
-  [1000, 'M'],
-  [900, 'CM'],
-  [500, 'D'],
-  [400, 'CD'],
-  [100, 'C'],
-  [90, 'XC'],
-  [50, 'L'],
-  [40, 'XL'],
-  [10, 'X'],
-  [9, 'IX'],
-  [5, 'V'],
-  [4, 'IV'],
-  [1, 'I'],
-];
-
-function roman(n: number): string {
-  let v = n;
-  let out = '';
-  for (const [value, sym] of ROMAN) {
-    while (v >= value) {
-      out += sym;
-      v -= value;
-    }
-  }
-  return out;
-}
-
-/** An additive numeral with one letter per nonzero place, largest first. */
-function placed(n: number, places: string[]): string {
-  let out = '';
-  for (let place = places.length - 1; place >= 0; place -= 1) {
-    const digit = Math.floor(n / 10 ** place) % 10;
-    if (digit) out += [...places[place]][digit - 1];
-  }
-  return out;
+  if (style === 'none') return '';
+  return (predefined ??= new CounterStyles()).text(n, style);
 }
 
 // --- the tokenizer ------------------------------------------------------------
@@ -356,7 +279,7 @@ function placed(n: number, places: string[]): string {
  * The declaration reaching here has had its comments removed by the
  * stylesheet parser.
  */
-function tokenize(value: string): Token[] | null {
+export function tokenize(value: string): Token[] | null {
   const out: Token[] = [];
   let i = 0;
   const n = value.length;

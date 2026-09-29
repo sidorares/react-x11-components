@@ -28,6 +28,11 @@ import { Html } from '../src/index.js';
 import { HtmlViewNode } from '../src/html/index.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
 import { featuresOf, hungSpaces } from '../src/html/layout/inline.js';
+import {
+  CounterStyles,
+  counterStyleRule,
+} from '../src/html/css/counter-styles.js';
+import type { CounterStyleRule } from '../src/html/css/counter-styles.js';
 import { sizeTracks } from '../src/html/layout/tracks.js';
 import { cocoaShapedLayout } from './cocoa-shaped.js';
 import type { ShapedLayout } from './cocoa-shaped.js';
@@ -1237,9 +1242,11 @@ test('counter styles, and decimal past where a style has a form', () => {
     [at(1, 'armenian'), at(1999, 'armenian'), at(10001, 'georgian')],
     ['Ա', 'ՌՋՂԹ', 'ჵა'],
   );
+  // `pad` counts the negative sign among the two (CSS Counter Styles 3,
+  // 3.6)
   assert.deepStrictEqual(
     [at(7, 'decimal-leading-zero'), at(-3, 'decimal-leading-zero')],
-    ['07', '-03'],
+    ['07', '-3'],
   );
   assert.deepStrictEqual([at(5, 'none'), at(5, 'square')], ['', '▪']);
 });
@@ -1249,6 +1256,95 @@ async function documentText(source: string): Promise<string> {
   const { node } = await render(source, 300);
   return (view(node) as unknown as { _tree: { text: string } })._tree.text;
 }
+
+test('the predefined counter styles write what CSS Counter Styles 3 has them write', () => {
+  // Past a dozen of them every style name was decimal: the numeric ones of
+  // twenty-odd scripts, the kana, the CJK longhands and ethiopic-numeric
+  const styles = new CounterStyles();
+  const cases: [number, string, string][] = [
+    [42, 'arabic-indic', '٤٢'],
+    [0, 'cjk-decimal', '〇'],
+    [15, 'hebrew', 'טו'],
+    [3, 'katakana-iroha', 'ハ'],
+    [13, 'cjk-earthly-branch', '一三'],
+    [1111, 'japanese-informal', '千百十一'],
+    [6001, 'japanese-formal', '六阡壱'],
+    [-5, 'korean-hangul-formal', '마이너스 오'],
+    [10000, 'korean-hanja-informal', '10000'],
+    [101, 'trad-chinese-formal', '壹佰零壹'],
+    [11, 'simp-chinese-informal', '十一'],
+    [10010, 'simp-chinese-informal', '一万零十'],
+    [1001001001001, 'simp-chinese-formal', '壹万亿零壹拾亿零壹佰万壹仟零壹'],
+    [78010092, 'ethiopic-numeric', '፸፰፻፩፼፺፪'],
+    [4000, 'upper-roman', '4000'],
+  ];
+  for (const [n, style, text] of cases) {
+    assert.strictEqual(styles.text(n, style), text, `${n} in ${style}`);
+  }
+  assert.deepStrictEqual(styles.marker(3, 'cjk-decimal'), {
+    prefix: '',
+    text: '三',
+    suffix: '、',
+  });
+});
+
+test('@counter-style defines a style, extends one, and falls back', () => {
+  const styles = (css: string) => {
+    const sheet = parseStylesheet(css);
+    const rules = new Map<string, CounterStyleRule>();
+    for (const { prelude, declarations } of sheet.counterStyles ?? []) {
+      const style = counterStyleRule(prelude, declarations);
+      if (style) rules.set(style.name, style.rule);
+    }
+    return new CounterStyles(rules);
+  };
+  const s = styles(
+    '@counter-style chapter { system: extends upper-roman; ' +
+      'prefix: "Ch. "; range: 1 3; fallback: lower-alpha }' +
+      "@counter-style box { system: fixed; symbols: ◰ ◳; suffix: ': ' }" +
+      '@counter-style w { system: additive; additive-symbols: 5 V, 1 I, ' +
+      'calc(-1) Z; negative: "(" ")"; pad: 3 "*"; range: infinite infinite }' +
+      '@counter-style bad { system: alphabetic; symbols: a inherit }' +
+      '@counter-style decimal { system: cyclic; symbols: x }',
+  );
+  assert.deepStrictEqual(
+    [1, 3, 4].map((n) => s.text(n, 'chapter')),
+    ['I', 'III', 'd'],
+    'its range, and its fallback past it',
+  );
+  assert.deepStrictEqual(s.marker(4, 'chapter').prefix, 'Ch. ', 'its prefix');
+  assert.deepStrictEqual(
+    [1, 2, 3].map((n) => s.text(n, 'box')),
+    ['◰', '◳', '3'],
+    'fixed: its symbols, then decimal',
+  );
+  assert.deepStrictEqual(
+    [6, 0, -2].map((n) => s.text(n, 'w')),
+    ['*VI', '**Z', '(II)'],
+    'additive, a calc() of -1 clamped to 0, pad and a negative sign',
+  );
+  assert.strictEqual(s.text(2, 'bad'), '2', 'inherit is no symbol');
+  assert.strictEqual(s.text(2, 'decimal'), '2', 'decimal is not redefined');
+});
+
+metric("a list's marker is written in its counter style", async () => {
+  // A `@counter-style` was skipped whole and every style past a dozen was
+  // decimal. A marker is its style's prefix, its number and its suffix:
+  // `、` sets it against the text, where a suffix that ends in a space is
+  // set off by that space's width in the marker's face
+  const text = await documentText(
+    '<style>@counter-style star { system: cyclic; symbols: "*"; ' +
+      'suffix: " " } ol { list-style-position: inside }</style>' +
+      '<ol style="list-style-type: star"><li>a</li></ol>' +
+      '<ol style="list-style-type: cjk-decimal"><li>b</li></ol>' +
+      '<ol style="list-style-type: symbols(alphabetic \'x\' \'y\')" start="3">' +
+      '<li>c</li></ol><p style="counter-reset: n 12">' +
+      '<span style="content: none"></span></p>',
+  );
+  assert.ok(text.includes('* a'), JSON.stringify(text));
+  assert.ok(text.includes('一、b'), JSON.stringify(text));
+  assert.ok(text.includes('xx c'), JSON.stringify(text));
+});
 
 test('a <q> is in quotation marks, and a nested one in the next pair', async () => {
   // HTML's rendering: `q::before { content: open-quote }` and its close,

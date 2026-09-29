@@ -199,6 +199,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 110    | the grid track sizing algorithm, content alignment | 5,651 (95%) | 5,102 (86%) |
 | 111    | grid areas and line names, `grid-auto-flow`        | 5,651 (95%) | 5,102 (86%) |
 | 112    | `object-fit`, `object-position`, posters, embeds   | 5,651 (95%) | 5,102 (86%) |
+| 113    | counter styles and `@counter-style`                | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3257,6 +3258,44 @@ was not read.
 
 css-images went from 132 to 262 of 470 on X11 and from 126 to 257 on
 Cocoa, css-sizing from 256 to 258; the CSS 2.1 suite is unchanged on both.
+
+### Round 113
+
+283. **Past a dozen of them, every counter style was decimal**, and an
+     `@counter-style` rule was skipped whole. The styles are written by the
+     counter algorithms of CSS Counter Styles 3 (3.1) — cyclic, fixed,
+     symbolic, alphabetic, numeric and additive, and `extends` — with their
+     negative signs, prefixes, suffixes, ranges, padding and fallbacks, and
+     every style the specification predefines is one of them (6, 7): the
+     numeric ones of twenty-odd scripts, the kana, the CJK decimal and
+     cyclic ones, Armenian, Georgian and Hebrew, `ethiopic-numeric`, and the
+     Chinese, Japanese and Korean longhands. The Chinese longhands count
+     past 9999 by the extended algorithm (7.1.2), as browsers do; the
+     Japanese and Korean ones stop at it, as browsers do, and a Korean one
+     falls back to decimal past it where its rule says `cjk-decimal`, as
+     they all do. `@counter-style` defines a style, over a predefined one
+     but the six that may not be, and `symbols()` an anonymous one; a
+     name the specification defines is lower-cased and any other keeps its
+     case. A `calc()` in a descriptor is the integer it rounds to, clamped
+     to 0 where the descriptor takes no negative. `pad` counts grapheme
+     clusters and the negative sign, so `decimal-leading-zero` writes -3 as
+     `-3` where it wrote `-03`.
+284. **A marker was its number, a full stop and a gap of 0.4em**, whatever
+     its style. It is the style's prefix, number and suffix: a suffix that
+     ends in a space is set off from the text by that space's width in the
+     marker's face, and one that does not, `、`, is set against it; an
+     inside marker's direction is its own (the HTML style sheet's
+     `::marker { unicode-bidi: isolate }`) unless a `::marker` rule says
+     otherwise.
+
+css-counter-styles went from 46 to 209 of 248 on X11 and from 45 to 209
+on Cocoa, css-lists from 120 to 124, css-pseudo from 55 to 58; the CSS
+2.1 suite is unchanged on both. One test passed by the accident this
+ends: `descriptor-calc` writes its descriptors with `sign()` of lengths,
+which `<Html>` does not evaluate, and matched its reference only while
+neither's `@counter-style` rules were read. The `-extended` tests of the
+Japanese and Korean longhands fail in every browser too, and the Chinese
+ones reach 9,999,999,999,999,999, which a JavaScript number cannot hold.
 
 ## What `<Html>` supports
 
