@@ -336,6 +336,10 @@ function boxesOf(snapshot: Snapshot): Map<string, Rect> {
     // the document is the root every path starts from
     if (nodeType[i] === 9 && parentIndex[i] < 0) paths[i] = '';
     if (nodeType[i] !== 1) continue;
+    // a pseudo-element is in the snapshot as a node of its own —
+    // `::marker`, `::before` — and no element <Html> has a path to: it is
+    // compared in the pixels, with the rest of what is drawn
+    if (names[i].startsWith('::')) continue;
     const parent = parentIndex[i];
     let seen = counts.get(parent);
     if (!seen) counts.set(parent, (seen = new Map()));
