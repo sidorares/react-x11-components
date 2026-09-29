@@ -5,7 +5,12 @@
 // parser said "ANSI 2", `../ansi/palette.ts` said which pixels that is, and
 // here it becomes a run the text layout can take.
 import { resolveAnsiColors } from '../ansi/index.js';
-import type { AnsiDocument, AnsiPalette, AnsiSpan } from '../ansi/index.js';
+import type {
+  AnsiDocument,
+  AnsiLine,
+  AnsiPalette,
+  AnsiSpan,
+} from '../ansi/index.js';
 import type { TextRun } from '../richtext/index.js';
 
 /** The font a capture is set in. The palette is separate because it changes
@@ -65,8 +70,17 @@ export function documentRuns(
   font: OutputFont,
   palette: AnsiPalette,
 ): TextRun[] {
+  return linesRuns(document.lines, font, palette);
+}
+
+/** Some of a document's lines as runs, the way {@link documentRuns} makes
+ *  all of them: a block of `<TerminalOutput>`'s output. */
+export function linesRuns(
+  lines: readonly AnsiLine[],
+  font: OutputFont,
+  palette: AnsiPalette,
+): TextRun[] {
   const runs: TextRun[] = [];
-  const { lines } = document;
   for (let i = 0; i < lines.length; i++) {
     for (const span of lines[i]!.spans) {
       if (span.text) runs.push(spanRun(span, font, palette));

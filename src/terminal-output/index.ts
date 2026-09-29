@@ -32,6 +32,7 @@ import { ansiPalette, parseAnsi } from '../ansi/index.js';
 import type {
   AnsiDocument,
   AnsiInput,
+  AnsiLine,
   AnsiPaletteOptions,
 } from '../ansi/index.js';
 import {
@@ -40,13 +41,13 @@ import {
   useLinkClicks,
   useSelectionMenu,
 } from '../richtext/index.js';
-import type { RichTextProps, TextRun } from '../richtext/index.js';
+import type { RichTextProps } from '../richtext/index.js';
 import {
   codeBlockLook,
   codeBlockStyle,
   codeTextStyle,
 } from '../codeblock/index.js';
-import { documentRuns } from './runs.js';
+import { linesRuns } from './runs.js';
 import { hx } from './hx.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 
@@ -55,6 +56,27 @@ const h = React.createElement;
 // The shared-module registration, at this component's own module scope — see
 // the note in `../richtext/node.ts`.
 registerRichText();
+
+/**
+ * Lines a block of output holds.
+ *
+ * The output is a column of blocks rather than one element, so an append
+ * lays out again the block it lands in and not the whole capture: one
+ * `<richtext>` for all of it was laid out whole for every line appended,
+ * 0.9 s an append at 20,000 lines. A block keeps its element while its lines
+ * are the same objects, which the parser shares from one snapshot to the
+ * next. Blocks start at multiples of this in the capture's own numbering,
+ * `truncated` counted in, so `maxLines` dropping lines off the top changes
+ * only the first block.
+ */
+const BLOCK_LINES = 256;
+
+/** One block's lines, and the elements they were drawn as. */
+interface Block {
+  lines: readonly AnsiLine[];
+  output: ReactElement;
+  gutter: ReactElement | null;
+}
 
 /** What `data` accepts on top of raw bytes: a document parsed elsewhere. */
 export type TerminalOutputSource = AnsiInput | AnsiDocument;
@@ -273,41 +295,105 @@ export function TerminalOutput(props: TerminalOutputProps): ReactElement {
     [colors, look.color, theme.background],
   );
 
-  const runs: TextRun[] = React.useMemo(
-    () =>
-      documentRuns(document, { family: look.family, size: look.size }, palette),
-    [document, look.family, look.size, palette],
-  );
-
-  const outputProps: RichTextProps = {
-    runs,
-    style: codeTextStyle(look, wrap),
+  // Kept across renders while what a block is drawn with holds.
+  const blocks = React.useRef<{
+    look: typeof look;
+    palette: typeof palette;
+    wrap: boolean;
+    lineNumbers: boolean;
+    byIndex: Map<number, Block>;
+  } | null>(null);
+  if (
+    blocks.current?.look !== look ||
+    blocks.current.palette !== palette ||
+    blocks.current.wrap !== wrap ||
+    blocks.current.lineNumbers !== lineNumbers
+  ) {
+    blocks.current = { look, palette, wrap, lineNumbers, byIndex: new Map() };
+  }
+  const byIndex = blocks.current.byIndex;
+  const font = { family: look.family, size: look.size };
+  const outputStyle = codeTextStyle(look, wrap);
+  const gutterStyle: Style = {
+    lineHeight: look.lineHeight,
+    textAlign: 'right',
   };
-  if (!wrap) outputProps.wrap = false;
 
-  const lineCount = document.lines.length;
+  // The capture's own numbering: the first line shown is the one after
+  // every line `maxLines` has dropped.
+  const first = document.truncated;
+  const end = first + document.lines.length;
+  const outputs: ReactElement[] = [];
+  const gutters: ReactElement[] = [];
+  const kept = new Set<number>();
+  for (
+    let start = first - (first % BLOCK_LINES);
+    start < end || outputs.length === 0;
+    start += BLOCK_LINES
+  ) {
+    const index = start / BLOCK_LINES;
+    const from = Math.max(start, first) - first;
+    const to = Math.min(start + BLOCK_LINES, end) - first;
+    const lines = document.lines.slice(from, to);
+    let block = byIndex.get(index);
+    if (!block || !sameLines(block.lines, lines)) {
+      const outputProps: RichTextProps = {
+        runs: linesRuns(lines, font, palette),
+        style: outputStyle,
+      };
+      if (!wrap) outputProps.wrap = false;
+      block = {
+        lines,
+        output: h(RICHTEXT_ELEMENT, {
+          key: index,
+          ...outputProps,
+        } as Record<string, unknown>),
+        gutter: lineNumbers
+          ? h(RICHTEXT_ELEMENT, {
+              key: index,
+              // The numbers are chrome, not text: `selectable={false}` keeps
+              // them out of a drag and out of the copied text.
+              selectable: false,
+              runs: lines.map((_, i) => ({
+                text:
+                  i === lines.length - 1
+                    ? `${first + from + i + 1}`
+                    : `${first + from + i + 1}\n`,
+                family: look.family,
+                size: look.size,
+                color: look.dim,
+              })),
+              wrap: false,
+              style: gutterStyle,
+            } as Record<string, unknown>)
+          : null,
+      };
+      byIndex.set(index, block);
+    }
+    kept.add(index);
+    outputs.push(block.output);
+    if (block.gutter) gutters.push(block.gutter);
+  }
+  for (const index of byIndex.keys()) {
+    if (!kept.has(index)) byIndex.delete(index);
+  }
+
+  // One column of numbers per column of output, block beside block: the
+  // same font and line height keep them in register.
   const gutter = lineNumbers
-    ? h(RICHTEXT_ELEMENT, {
-        // One richtext for all the numbers: same font, same line height, so
-        // it stays in register with the output beside it. `selectable={false}`
-        // is what keeps it out of a drag and out of the copied text.
-        selectable: false,
-        runs: Array.from({ length: lineCount }, (_, i) => ({
-          text: i === lineCount - 1 ? `${i + 1}` : `${i + 1}\n`,
-          family: look.family,
-          size: look.size,
-          color: look.dim,
-        })),
-        wrap: false,
-        style: {
-          lineHeight: look.lineHeight,
-          textAlign: 'right',
-          minWidth:
-            Math.max(String(lineCount).length, 2) * Math.ceil(look.size * 0.62),
-          marginRight: look.padding,
-          flexShrink: 0,
+    ? hx(
+        'box',
+        {
+          style: {
+            flexDirection: 'column',
+            minWidth:
+              Math.max(String(end).length, 2) * Math.ceil(look.size * 0.62),
+            marginRight: look.padding,
+            flexShrink: 0,
+          },
         },
-      } as Record<string, unknown>)
+        ...gutters,
+      )
     : null;
 
   const rootStyle: Style = {
@@ -339,7 +425,14 @@ export function TerminalOutput(props: TerminalOutputProps): ReactElement {
     hx(
       'box',
       { style: { overflow: 'scroll', flexDirection: 'column', flexGrow: 1 } },
-      h(RICHTEXT_ELEMENT, outputProps as unknown as Record<string, unknown>),
+      ...outputs,
     ),
   );
+}
+
+/** Whether two runs of lines are the same objects, one for one. */
+function sameLines(a: readonly AnsiLine[], b: readonly AnsiLine[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
