@@ -66,7 +66,10 @@ GFM, parsed by `src/internal/markdown/parse.ts`:
 - fenced and indented code, highlighted through the same
   [language seam](code-language.md) `<CodeEditor>` uses; `resolveLanguage`
   is where tags the built-ins do not cover come from. A block does not wrap:
-  a line longer than the block scrolls inside it.
+  a line longer than the block scrolls inside it. A long one is drawn a
+  block of lines at a time, as [`<Code>`](code.md#a-long-source-is-drawn-in-blocks)
+  is, so a fence that streams lays out the lines it gains rather than
+  itself.
 
 ### The deliberate deviations
 
