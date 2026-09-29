@@ -3376,6 +3376,33 @@ test("html and body at 100% follow the viewport's height", async () => {
   assert.strictEqual(el.abs.height, 450);
 });
 
+metric(
+  'a positioned box a clipping box holds makes the document no taller',
+  async () => {
+    // The document scrolls its scrollable overflow, and that takes in a
+    // positioned box only where no box on the way to it clips it (CSS
+    // Overflow 3, 2.2): one inside a box that clips it is that box's to
+    // scroll. One whose containing block is outside the clipping box is not
+    // clipped by it and still counts. Every positioned box counted, and a
+    // page a browser shows no taller than its window scrolled on into blank
+    const { node } = await render(
+      '<style>body{margin:0}.clip{position:absolute;top:50px;width:100px;' +
+        'height:150px;overflow:hidden}.deep{position:absolute;top:900px;' +
+        'width:50px;height:50px}.flow{overflow:hidden;height:20px}' +
+        '.out{position:absolute;top:400px;left:200px;width:10px;height:10px}' +
+        '</style><div class="clip"><div class="deep"></div></div>' +
+        '<div class="flow"><div class="out"></div></div>',
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(
+      el.abs.height,
+      410,
+      'as tall as the box that escapes its clip, not the one clipped',
+    );
+  },
+);
+
 test('a box placed against the initial containing block follows the viewport', async () => {
   // nothing positioned around it: `bottom: 0` is the viewport's bottom
   const { el, resize } = await renderScrolled(
