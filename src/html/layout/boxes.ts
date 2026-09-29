@@ -678,6 +678,11 @@ export interface BoxTree {
   /** Whether any box paints its background through its text
    *  (`background-clip: text`): where none does, no paragraph looks. */
   clipText: boolean;
+  /** The style of the `<html>` a document with neither an `<html>` nor a
+   *  `<body>` implies around the body the root box stands in for
+   *  (`Cascade.rootStyle`), whose background is the canvas's; null where
+   *  the document has either. */
+  impliedHtml: ComputedStyle | null;
 }
 
 export interface BuildOptions {
@@ -782,7 +787,10 @@ class Builder {
   run(root: Element): BoxTree {
     const cascade = this._options.cascade;
     cascade.beginSharing();
-    const rootStyle = cascade.rootStyle(hasBody(root), hasHtml(root));
+    const { style: rootStyle, html: impliedHtml } = cascade.rootStyle(
+      hasBody(root),
+      hasHtml(root),
+    );
     const rootBox = new Box('block', null, rootStyle);
     // a fragment's root stands in for a `<body>`, counters and all
     this._scopes.open();
@@ -816,6 +824,7 @@ class Builder {
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,
       clipText: this._clipText,
+      impliedHtml,
     };
   }
 

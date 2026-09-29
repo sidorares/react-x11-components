@@ -860,7 +860,11 @@ the root box takes the style a `<body>` would have had: the user-agent
 margin, the font, and any author `body { … }` rule, inheriting from an
 implied `<html>` that author `html { … }` rules reach. Without it the same
 markup renders differently inside and outside `<html><body>`, which reads as
-a bug rather than as a missing element. A `<body>` with no `<html>` around
+a bug rather than as a missing element. The implied `<html>` has no box of
+its own, so what it does not pass down is drawn only where it can be: its
+background covers the canvas, and the body keeps its own. The root box is as
+tall as the body says where that is definite, as `html, body { height:
+100% }` makes it a window tall. A `<body>` with no `<html>` around
 it, which is how a lot of mail starts, is still the body: its background
 covers the whole canvas. A document that writes `<html>` gets the body
 element HTML's parser would have made — the first thing in it that is not

@@ -402,7 +402,7 @@ export function paintDocument(
 ): void {
   if (!canFill(ctx)) return;
   ctx.save();
-  const canvas = canvasBackground(tree.root);
+  const canvas = canvasBackground(tree);
   if (canvas) paintCanvas(ctx, canvas, tree.root, options);
   paintBox(ctx, tree.root, {
     ...options,
@@ -412,27 +412,51 @@ export function paintDocument(
   ctx.restore();
 }
 
+/** What covers the canvas: a style's background, the box that would have
+ *  painted it and now paints none, and the box its image is placed by. */
+interface CanvasBackground {
+  style: ComputedStyle;
+  source: Box | null;
+  anchor: Box;
+}
+
 /**
  * Whose background covers the canvas (CSS 2.1 14.2): the root element's,
  * or — where `<html>` has neither a colour nor an image — the first
  * `<body>`'s, which then paints no background of its own. A document with
  * no `<html>` tag has the root box standing in for its root element, and a
  * `<body>` in it is still the body: mail often starts at `<body style>`.
- * `anchor` is the box the image is positioned against: the root element's,
- * whichever box it came from.
+ * With neither tag, the root box stands in for the body, and the `<html>`
+ * around it is implied: an `html { … }` or a `:root { … }` background, which
+ * a test's reference sets on a document with no tags at all, has no box
+ * but the canvas to be painted on. `anchor` is the box the image is
+ * positioned against: the root element's, whichever box it came from.
  */
-function canvasBackground(root: Box): { source: Box; anchor: Box } | null {
-  const has = (b: Box) =>
-    !isTransparent(b.style.backgroundColor) ||
-    !!b.style.backgroundImage ||
-    !!b.style.backgroundGradient ||
-    !!b.style.backgroundImages;
+function canvasBackground(tree: BoxTree): CanvasBackground | null {
+  const root = tree.root;
+  const has = (s: ComputedStyle) =>
+    !isTransparent(s.backgroundColor) ||
+    !!s.backgroundImage ||
+    !!s.backgroundGradient ||
+    !!s.backgroundImages;
+  const implied = tree.impliedHtml;
+  if (implied) {
+    // an `<html>` that is not displayed has no background to give
+    if (implied.display === 'none') return null;
+    if (has(implied)) return { style: implied, source: null, anchor: root };
+    // containment on either keeps the body's to the body (CSS Containment 2)
+    if (implied.contain || root.style.contain) return null;
+    return has(root.style)
+      ? { style: root.style, source: root, anchor: root }
+      : null;
+  }
   const top = childNamed(root, 'html') ?? root;
-  if (has(top)) return { source: top, anchor: top };
+  if (has(top.style)) return { style: top.style, source: top, anchor: top };
   const body = childNamed(top, 'body');
-  // containment on either keeps the body's to the body (CSS Containment 2)
   if (!body || top.style.contain || body.style.contain) return null;
-  return has(body) ? { source: body, anchor: top } : null;
+  return has(body.style)
+    ? { style: body.style, source: body, anchor: top }
+    : null;
 }
 
 /** A box's child element of that name, or one inside the anonymous boxes
@@ -451,7 +475,7 @@ function childNamed(box: Box, name: string): Box | null {
 
 function paintCanvas(
   ctx: PaintContext,
-  { source, anchor }: { source: Box; anchor: Box },
+  { style: source, anchor }: CanvasBackground,
   root: Box,
   options: PaintOptions,
 ): void {
@@ -469,8 +493,8 @@ function paintCanvas(
     Math.ceil(whole.height),
   );
   if (!area) return;
-  const layers = layersOf(source.style) ?? [source.style];
-  const visible = source.style.visibility === 'visible';
+  const layers = layersOf(source) ?? [source];
+  const visible = source.visibility === 'visible';
   for (let i = layers.length - 1; i >= 0; i -= 1) {
     const style = layers[i];
     if (!isTransparent(style.backgroundColor) && visible) {

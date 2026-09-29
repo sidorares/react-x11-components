@@ -3707,6 +3707,33 @@ inline-block's border that CSS paints after it. A positioned inline-block
 is drawn with its line here, not among the positioned boxes, and that is
 still to do.
 
+### Round 126
+
+324. **A document with no `<html>` tag painted no `html` background.** With
+     neither an `<html>` nor a `<body>` tag, the root box stands in for
+     the body, and the `<html>` around it is implied. An `html` or `:root`
+     rule reached that `<html>` only through what it passes down, so its
+     background was drawn nowhere, and a reftest's reference sets
+     `:root { background-color: green }` on just such a document. The
+     canvas takes it now, as it takes a root element's (CSS 2.1 14.2), and
+     the body keeps its own background on its box. An `<html>` that is
+     `display: none` gives none.
+325. **…and the box standing in for the body was as tall as what it
+     held.** `html, body { height: 100% }` fills a window, and left a page
+     as short as its text. A definite height is the box's now: a length,
+     `100vh`, or a percentage of the implied `<html>`'s where that is a
+     length or a percentage of the viewport. What the body holds takes its
+     percentages of it.
+
+css-backgrounds went from 524 to 528 of 711 on X11, two of them the
+`border-area` tests round 124 left to this. The CSS values suite lost
+`viewport-units-scrollbars-auto-vhw-001`, which had passed by accident:
+its body is the viewport's size, with a border down its right side and
+along its bottom that a browser's scrollbars cover, and it was as tall as
+its border before. The implied `<html>` still has no box of its own, so
+its margins and its height do not place its background's image, which
+the three `background-margin-root` tests ask for.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
