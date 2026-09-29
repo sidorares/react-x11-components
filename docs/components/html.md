@@ -177,7 +177,10 @@ own and its content's, and an item with an `aspect-ratio` counts its width
 through the ratio as content. An item stretched across its row, or flexed
 along a column of a height of its own, has the height it was given for what
 it holds to take a percentage of, so an `h-full` list in a sidebar fills
-the sidebar. Items meet where
+the sidebar. Items go in `order`, and in the document's where two have the
+same. Items aligned by their `baseline` line up their first lines, their
+line as tall as that makes it, and a flex box sits on the baseline of its
+first line's item aligned so, or of its first item. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
 A grid (CSS Grid 1) takes its column tracks from `grid-template-columns` —
 lengths, percentages, `fr`s, `auto`, `minmax()`, and `repeat()` by a count
