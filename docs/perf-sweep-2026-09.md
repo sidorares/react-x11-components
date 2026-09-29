@@ -4244,6 +4244,120 @@ The probes came back clean with these fixes:
   the surface, sent 19% more bytes before the edges were scaled to the
   share of the stroke the surface could show.
 
+## Round 43: what a streamed line costs
+
+Round 42 gave the damage probe a `<TerminalOutput>` mode, and the first
+thing measuring it turned up was not a damage bug. A build log streamed
+into the component got slower with every line. Every other component had
+been measured mounting, scrolling and editing, and none had been measured
+growing. The case matters for an app built on this package that shows a
+model's answer or a build's output as it arrives. So this round measured
+what one more line costs as the document grows, in process, for each
+component that streams.
+
+### One element for a whole capture (#375)
+
+`<TerminalOutput>` drew a capture as one `<richtext>`. So every line
+appended laid out the whole capture again, and the shape cache, 4,000
+entries a generation, was too small to spare it the shaping:
+
+| log          | a line appended, before |  after |
+| ------------ | ----------------------: | -----: |
+| 1,000 lines  |                 50.1 ms | 3.6 ms |
+| 5,000 lines  |                  254 ms | 3.2 ms |
+| 20,000 lines |                  916 ms | 4.1 ms |
+
+The capture is now a column of blocks of 256 lines. The parser was already
+sharing finished lines by reference from one snapshot to the next, so a
+block keeps its element while its lines are the same objects. Blocks are
+counted in the capture's own numbering, so `maxLines` trimming the top
+changes only the first. The gutter now numbers a line by its place in the
+capture: numbered from the first line shown, every number moved with
+every line appended once the log was being trimmed.
+
+### And for a whole block of code (#377, #381)
+
+`<Code>` and `<Markdown>`'s fences had the same shape: 388 ms and 392 ms
+for a line appended to 5,000. They draw through blocks too now
+(`src/internal/codelines.ts`), which took them to about 0.1 s. Most of
+what was left on the client was tokenizing the whole source again, since
+`codeRuns` built a new tokenizer for every call. `CodeRunCache` keeps one
+and tells it which lines changed through the same `edit()` the code
+editor drives. It asks for tokens in order from the top, so the stream
+engine walks its frontier and never answers from a guess, and a line
+whose tokens are the same array keeps its runs as the same objects.
+
+| source       | runs, tokenized afresh | from the cache |
+| ------------ | ---------------------: | -------------: |
+| 1,000 lines  |                7.47 ms |        0.49 ms |
+| 5,000 lines  |                39.1 ms |        2.14 ms |
+| 20,000 lines |                 140 ms |        9.93 ms |
+
+End to end, a line appended to 5,000 lines is about 50 ms in process.
+Most of that is now the in-process X server's own painting.
+
+### A table that streams (#383)
+
+A `<Markdown>` table is one block, so a row added re-rendered the whole
+table: every cell measured, every row rebuilt. The table now keeps its
+cells' widths and its rows' elements between renders, which took a row at
+800 rows from 115 to 93 ms. Of what is left, about 33 ms is core's
+height-floor pass laying the document out a second time. That is
+react-x11 #737's question, and not changed here.
+
+### What needed nothing
+
+- Streamed prose: a word appended costs 1.5 ms at 50 paragraphs and 3.8
+  ms at 800, since the block cache already renders only the block that
+  changed.
+- `<Table>` rows appended at the end: 17–19 ms a row from 1,000 to 50,000
+  rows, virtualized. Kept sorted, 50,000 rows cost 32 ms, which is the
+  sort; left alone.
+- A `<LineChart>` whose window slides over its data: 65 ms an update at
+  100,000 rows handed in as a new array, and 42 ms through `ChartData`,
+  nearly all of it the in-process server filling the plot. In React's
+  development build the same slide cost 648 ms. React's performance tracks
+  diff every changed prop, and the diff stops after 100 keys only when
+  the keys it passes are equal. So an array whose objects differ at every
+  index, as they do after a slide, a sort or a re-fetch, is walked to its
+  end and handed to `performance.measure`. That is React's to fix, and it
+  applies to any component handed such an array; react-x11 #789 has the
+  measurements and a report ready to file upstream. The streaming
+  components here come within 15% of their production numbers in the
+  development build.
+
+### A value that streams into the editor (#391)
+
+`<RichTextEditor>` took a new `value` as a reset: the whole document
+replaced, every block a new node. So a model writing into the editor had
+every block keyed and drawn again, and walked by prosemirror-tables'
+repair, for every word it wrote. The reset is now made of the nodes
+already there. Its first step replaces the whole document with its own
+content, so the history and the caret see the reset they always saw. Then
+come the steps of the change alone. The markdown codec resumes its last
+parse and reuses the nodes each unchanged block became.
+
+| document         | a streamed word, before |  after |
+| ---------------- | ----------------------: | -----: |
+| 50 paragraphs    |                 23.2 ms | 3.2 ms |
+| 800 paragraphs   |                 30.7 ms | 3.2 ms |
+| 3,200 paragraphs |                 74.9 ms | 4.9 ms |
+
+The first version replaced only the change, and made the same documents.
+It also made a different history. The typing on either side of the change
+stayed undoable, so an undo after an app cleared a draft brought a letter
+of it back. The whole-document step also has to come first: last, it let
+a position at the edge of the change through.
+
+### Where the sweep stops
+
+Each of the last rounds found less than the one before, and what they
+found was in components growing, not in the frame. So the loop stops
+here. What is left is in "Still open", and most of it is a decision rather
+than a fix: core's height-floor pass (react-x11 #737), the geometry a
+partial pass cuts (ntk #462), and React's development-build prop diff
+(react-x11 #789).
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -4597,6 +4711,32 @@ The probes came back clean with these fixes:
     it holds under a pan. It still does not hold between a pass that
     strokes part of an edge and a repaint that strokes all of it, which is
     why that case is a decision rather than a fix.
+74. **A value that grows must cost what it grew by.** A capture, a code
+    block or a table drawn as one element was laid out whole for every line
+    it gained, so a stream slowed down with its own length. The fix each
+    time was to cut the value into pieces keyed by what they hold. The
+    identity to key on was often already there, as with the parser's
+    shared lines.
+75. **Measure the stream, not only the mount.** Every component here had
+    been measured mounting, scrolling and editing, and none growing, which
+    is what a model's answer or a build's log does all the time. The
+    slowest thing found in weeks was the first one measured that way.
+76. **An in-process server's work lands in the client's next frame.** The
+    X server the harness runs shares the client's thread, so what it
+    spends drawing one frame shows up in the time around the next. Split
+    client from server with a profile rather than with timestamps, and
+    weigh the server's share against what native Xorg would do.
+77. **A faster path has to keep the old path's semantics, not just its
+    result.** The narrowed replace made exactly the document the whole one
+    did, and a fuzz over 50,000 edits said so. It still changed what an
+    undo could reach, which no comparison of documents can see. Write the
+    guarantee the old path gave as a test that passes on master, before
+    trusting the new one.
+78. **Measure in the build people run.** A react-x11 app started with
+    `node` runs React's development build unless told otherwise, and there
+    one chart update cost ten times what it does in production. Keep both
+    numbers, and read a profile's top frames for whose code they are
+    before fixing anything.
 
 ## Still open
 
@@ -4619,7 +4759,8 @@ round 15.
   103 ms on XQuartz with ntk #387 as well. A live resize on Cocoa defers
   them; a split-pane drag does not. The fix is content-based minimum sizes
   in yoga; parked in round 12, with no workaround here or in core short of
-  that.
+  that. The same second pass is most of what a row costs a streamed
+  `<Markdown>` table at 800 rows, about 33 ms of 93 (round 43).
 - **Rounded corners under a partial repaint**: a pass that reaches a
   rounded box's corner redraws it through `keepCorners` or a group
   surface, and the antialiased corner comes out up to seven levels from
@@ -4668,3 +4809,10 @@ round 15.
   up to about ten levels apart at the edges (round 42). Forcing one route
   removes it. What is left to decide: a sparse local upload, a route a
   caller pins, or leaving it.
+- **React's development-build prop diff** (react-x11 #789): a component
+  handed an array whose objects differ at every index pays for a walk of
+  all of them on each render, only in development: 387 ms for 100,000
+  objects shifted by one, and a sliding `<LineChart>` at 648 ms against
+  65 in production (round 43). It is React's to fix. The decision is
+  whether to file the report the issue drafts, and whether core's docs
+  should tell apps to run with `NODE_ENV=production`.
