@@ -1351,22 +1351,32 @@ export class Cascade {
    * that implied `<html>` instead, so an `html { font-size }` still reaches
    * the body. Taken as the initial style, the rule matched nothing and the
    * whole page came out at the theme's size.
+   *
+   * `html` is the implied `<html>`'s own style where the root box stands in
+   * for the body inside it, and null otherwise: what an `html { … }` or a
+   * `:root { … }` rule gives it that is not inherited has no box to be
+   * drawn on, and its background is the canvas's (`paintDocument`).
    */
-  rootStyle(hasBody: boolean, hasHtml = true): ComputedStyle {
+  rootStyle(
+    hasBody: boolean,
+    hasHtml = true,
+  ): { style: ComputedStyle; html: ComputedStyle | null } {
     const style = copyStyle(this.initial);
     style.display = 'block';
-    if (hasBody && hasHtml) return style;
+    if (hasBody && hasHtml) return { style, html: null };
     const synthetic = new DomElement('body', {}, []);
     let parent = style;
+    let html: ComputedStyle | null = null;
     if (!hasHtml) {
-      const html = new DomElement('html', {}, hasBody ? [] : [synthetic]);
-      synthetic.parent = html;
-      parent = this.styleFor(html, style, false);
-      if (hasBody) return asRoot(parent);
+      const element = new DomElement('html', {}, hasBody ? [] : [synthetic]);
+      synthetic.parent = element;
+      parent = this.styleFor(element, style, false);
+      if (hasBody) return { style: asRoot(parent), html: null };
+      html = parent;
     }
     // Only the box the body would have drawn is taken, not its layout role:
     // the root is still the initial containing block.
-    return asRoot(this.styleFor(synthetic, parent, false));
+    return { style: asRoot(this.styleFor(synthetic, parent, false)), html };
   }
 
   /** The rules of `index` that match `el`, pushed onto `out` as candidates,

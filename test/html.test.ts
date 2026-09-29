@@ -7524,6 +7524,40 @@ metric(
   },
 );
 
+metric(
+  "a fragment's implied html paints the canvas, and its body is as tall as it says",
+  async () => {
+    // A document with neither tag has the root box standing in for its
+    // body, and the `<html>` around it implied: what an `html` or `:root`
+    // rule gave that `<html>` beyond what it passes down was drawn nowhere
+    // — its background, which a reftest's reference sets on a document
+    // with no tags at all — and the box took the body's font and colours
+    // but not its height, so `html, body { height: 100% }` left a page as
+    // short as its text
+    const first = await renderWithBytes(
+      '<style>:root{background:#00ff00}</style><p>x</p>',
+      {},
+    );
+    await expectPixel(first.result.ctx, 200, 10, '#00ff00', {
+      message: "the implied html's background",
+    });
+    cleanup();
+    // a body a quarter of the window tall, and a page taller than it
+    const { result } = await renderWithBytes(
+      '<style>html{height:100%;background:#00ff00}' +
+        'body{margin:0;height:25%;background:#0000ff}div{height:300px}' +
+        '</style><div></div>',
+      {},
+    );
+    await expectPixel(result.ctx, 200, 50, '#0000ff', {
+      message: "the body's own background",
+    });
+    await expectPixel(result.ctx, 200, 200, '#00ff00', {
+      message: 'the canvas below the body, under what overflows it',
+    });
+  },
+);
+
 metric('a viewBox of no height, or no width, draws nothing', async () => {
   // SVG: a zero extent disables the drawing, where a negative one is an
   // error and as though there were no viewBox. Both were read as no
