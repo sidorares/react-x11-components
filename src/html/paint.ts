@@ -4892,6 +4892,20 @@ function decoratedAncestors(box: Box): Box[] {
   return found;
 }
 
+/** A restyle in place (a `:hover`) gave an inline box a decoration where it
+ *  had none, or took it away, and the lists kept above do not know: every
+ *  box whose list could name it — inside it, through the inline boxes the
+ *  walk above climbs — looks again. A document built again has new boxes,
+ *  and so no lists. */
+export function forgetDecoratedAncestors(box: Box): void {
+  const stack = [...box.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    DECORATED.delete(at);
+    if (at.kind === 'inline') stack.push(...at.children);
+  }
+}
+
 /**
  * The band the document selection covers on one line.
  *
