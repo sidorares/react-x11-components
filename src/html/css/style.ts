@@ -191,7 +191,13 @@ export type BackgroundImage = string | LinearGradient | null;
 /** An intrinsic size: `min-content`, `max-content` or `fit-content`, and
  *  `fit-content()`, whose argument stands in for the room (`fit`). */
 export type ContentSize =
-  'min-content' | 'max-content' | 'fit-content' | { fit: Len };
+  | 'min-content'
+  | 'max-content'
+  | 'fit-content'
+  /** What the box's margins leave of its containing block (CSS Sizing 4),
+   *  `-webkit-fill-available` and `-moz-available` as browsers wrote it. */
+  | 'stretch'
+  | { fit: Len };
 
 export interface ComputedStyle {
   // --- inherited ------------------------------------------------------------
@@ -394,6 +400,9 @@ export interface ComputedStyle {
   /** `min-height` as one: the content's height, which a flex item in a
    *  column is no shorter than whatever its `overflow` (`flex.ts`). */
   minHeightKeyword: ContentSize | null;
+  /** `max-height` as one: only `stretch` holds a height to anything, the
+   *  content ones being its content's, which it is anyway. */
+  maxHeightKeyword: ContentSize | null;
   /** `height` as one, which is its content's as `auto` is — but it is not
    *  `auto`, and what stretches an item of `auto` height does not stretch
    *  it (CSS Grid 1, 10.3). */
@@ -740,6 +749,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     minWidthKeyword: null,
     minHeightKeyword: null,
     maxWidthKeyword: null,
+    maxHeightKeyword: null,
     heightKeyword: null,
 
     marginTop: 0,
@@ -1395,12 +1405,14 @@ export function applyDeclaration(
       if (keyword || value.toLowerCase() === 'none') {
         (style as unknown as Record<string, unknown>)[camel(name)] = 'none';
         if (name === 'max-width') style.maxWidthKeyword = keyword;
+        else style.maxHeightKeyword = keyword;
         return;
       }
       const len = parseLength(value, ctx);
       if (len !== null && notNegative(len)) {
         (style as unknown as Record<string, unknown>)[camel(name)] = len;
         if (name === 'max-width') style.maxWidthKeyword = null;
+        else style.maxHeightKeyword = null;
       }
       return;
     }
@@ -3263,10 +3275,15 @@ function contentSizeOf(
   ctx: UnitContext,
   inline: boolean,
 ): ContentSize | null {
-  const v = value
-    .trim()
-    .toLowerCase()
-    .replace(/^-(?:webkit|moz)-/, '');
+  const word = value.trim().toLowerCase();
+  if (
+    word === 'stretch' ||
+    word === '-webkit-fill-available' ||
+    word === '-moz-available'
+  ) {
+    return 'stretch';
+  }
+  const v = word.replace(/^-(?:webkit|moz)-/, '');
   if (v === 'min-content' || v === 'max-content' || v === 'fit-content') {
     return v;
   }
@@ -4342,7 +4359,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'min-width': ['minWidth', 'minWidthKeyword'],
   'max-width': ['maxWidth', 'maxWidthKeyword'],
   'min-height': ['minHeight', 'minHeightKeyword'],
-  'max-height': ['maxHeight'],
+  'max-height': ['maxHeight', 'maxHeightKeyword'],
   'box-sizing': ['boxSizing'],
   margin: sides((s) => `margin${s}`),
   'margin-top': ['marginTop'],

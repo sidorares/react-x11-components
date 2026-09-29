@@ -202,6 +202,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 113    | counter styles and `@counter-style`                | 5,651 (95%) | 5,102 (86%) |
 | 114    | `aspect-ratio` both ways, `overflow: clip`, `body` | 5,652 (95%) | 5,103 (86%) |
 | 115    | grid items with ratios, `auto-fit`, `%` gaps       | 5,652 (95%) | 5,103 (86%) |
+| 116    | `stretch` and `-webkit-fill-available`             | 5,652 (95%) | 5,103 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3412,6 +3413,36 @@ ends: `row-auto-repeat-024`'s reference is a grid of items `height: 100%`
 tall, which matched the test's unstyled blocks only while the percentage
 was of the whole grid, and `column-subgrid-grid-gap-008` matched its
 reference only while a percentage gap was none.
+
+### Round 116
+
+298. **`stretch` was dropped**, and with it `-webkit-fill-available` and
+     `-moz-available`, the names pages wrote it in first: a float, an
+     inline-block or an absolute box with one was as wide as its content.
+     It is what the box's margins leave of its containing block (CSS
+     Sizing 3, 4.2), in `width`, `height`, and their least and greatest:
+     an absolute box's what its offsets leave, from its static position
+     where it has neither (CSS Position 3, 4.1); a block with a
+     formatting context of its own, or an image, what the floats beside it
+     leave; and an image one way, as tall or as wide as its ratio makes
+     the other. Down a block, a margin that meets no border or padding of
+     its parent, in a parent that is no formatting context of its own,
+     counts for nothing, as it would collapse through the parent's edge.
+     Where the containing block's height is not known, `stretch` is
+     `auto`, and as a least height nothing; `max-height` keeps it, where
+     it kept no keyword at all.
+299. **An empty block with a `min-height` or a `height` of `stretch`** was
+     taken by the margin walk for one its margins collapse through, and a
+     parent was placed a margin lower than it is.
+300. **A replaced flex item given a width down a column** answered the
+     height its own style made at that width rather than the one its ratio
+     makes of it, as along a row since round 114: one `width: 50%` wide
+     took the percentage of its own width, and was half as tall as it
+     is.
+
+css-sizing went from 352 to 373 of 562 on X11 and from 351 to 373 on
+Cocoa, one of the latter a fieldset whose radio buttons pass or fail with
+the timing of their native drawing; the CSS 2.1 suite is unchanged.
 
 ## What `<Html>` supports
 

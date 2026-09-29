@@ -683,11 +683,13 @@ function layoutItem(
         ? resolve(keyword.fit, area, room) + child.horizontalExtra
         : room;
     width =
-      keyword === 'min-content'
-        ? narrowest
-        : keyword === 'max-content'
-          ? widest
-          : Math.min(widest, Math.max(narrowest, fit));
+      keyword === 'stretch'
+        ? room
+        : keyword === 'min-content'
+          ? narrowest
+          : keyword === 'max-content'
+            ? widest
+            : Math.min(widest, Math.max(narrowest, fit));
   } else if (across) {
     width = room;
   } else {
