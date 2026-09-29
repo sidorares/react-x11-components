@@ -14665,3 +14665,26 @@ metric(
     assert.ok(long.x < 0.5, `the next box starts the line: at ${long.x}`);
   },
 );
+
+test('an abbreviation with a title is underlined dotted, as the HTML standard sets it', async () => {
+  // HTML 15.3.4: `abbr[title], acronym[title] { text-decoration: dotted
+  // underline }`. The user-agent sheet said `none`, so the Zen Garden's
+  // first design had its W3C and WaSP plain where a browser marks them
+  const { node } = await render(
+    '<p><abbr id="t" title="World Wide Web Consortium">W3C</abbr> ' +
+      '<acronym id="a" title="Web Standards Project">WaSP</acronym> ' +
+      '<abbr id="n">CSS</abbr></p>',
+  );
+  const el = view(node);
+  const styleOf = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: { textDecorationLine: string; textDecorationStyle: string };
+      }
+    ).style;
+  for (const id of ['t', 'a']) {
+    assert.strictEqual(styleOf(id).textDecorationLine, 'underline', id);
+    assert.strictEqual(styleOf(id).textDecorationStyle, 'dotted', id);
+  }
+  assert.strictEqual(styleOf('n').textDecorationLine, 'none', 'no title');
+});
