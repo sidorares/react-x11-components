@@ -23,7 +23,7 @@
 // AGENTS.md on tree-shaking, and `textmate.ts` for the same shape.
 import { languageForTag, tokenizeText } from './registry.js';
 import { tokenStyleFor } from './theme.js';
-import type { Language, TokenStyles } from './types.js';
+import type { Language, Token, Tokenizer, TokenStyles } from './types.js';
 
 /** One styled run of code. Structurally a `<richtext>` run. */
 export interface CodeRun {
@@ -125,4 +125,114 @@ function push(
   } else {
     out.push(run);
   }
+}
+
+/**
+ * `codeRuns`, kept between calls for a text that changes a little at a
+ * time: a fence being streamed, a source being appended to.
+ *
+ * One tokenizer lives as long as the cache. It is told which lines changed
+ * (`Tokenizer.edit`, the interface `<CodeEditor>` already drives) and asked
+ * again only for those and the lines after them its state has to walk
+ * through, and every other line keeps the runs it had. `codeRuns` tokenized
+ * the whole text afresh: at 5,000 lines, most of the time an appended line
+ * took on the client.
+ *
+ * The runs are the same text in the same colours `codeRuns` gives, cut a
+ * little differently: a line's runs never reach into the next, and each
+ * newline is a run of its own, so that a line keeps its runs while others
+ * change. `decorate` is applied to every run once, when it is made — the
+ * family and size a block of code is set in, say.
+ *
+ * Call `dispose()` when done with it: an engine may keep timers.
+ */
+export class CodeRunCache<R = CodeRun> {
+  private key: readonly unknown[] | null = null;
+  private tokenizer: Tokenizer | null = null;
+  private lines: string[] = [];
+  private tokens: (readonly Token[] | undefined)[] = [];
+  private lineRuns: (R[] | undefined)[] = [];
+  private newline: R | null = null;
+
+  constructor(
+    private readonly decorate: (run: CodeRun) => R = (run) => run as R,
+  ) {}
+
+  runs(text: string, tag: string, opts: CodeRunOptions): R[] {
+    if (text.length === 0)
+      return [this.decorate({ text: '', color: opts.color })];
+    const language =
+      opts.language ??
+      (tag ? (opts.resolveLanguage?.(tag) ?? languageForTag(tag)) : null);
+    if (!language) return [this.decorate({ text, color: opts.color })];
+
+    const key = [language, opts.styles, opts.color, opts.resolveToken];
+    if (!this.key || key.some((part, i) => part !== this.key![i])) {
+      this.dispose();
+      this.key = key;
+      this.lines = [];
+      this.tokens = [];
+      this.lineRuns = [];
+      this.newline = this.decorate({ text: '\n', color: opts.color });
+      this.tokenizer = language.createTokenizer({ invalidate: () => {} });
+      this.tokenizer.setLines(this.lines);
+    }
+    const tokenizer = this.tokenizer!;
+
+    // the lines the text shares with the last one, from the top: the edit
+    // is everything after them
+    const next = text.split('\n');
+    const lines = this.lines;
+    const shared = Math.min(lines.length, next.length);
+    let from = 0;
+    while (from < shared && lines[from] === next[from]) from++;
+    if (from < lines.length || from < next.length) {
+      const removed = lines.length - from;
+      const inserted = next.length - from;
+      lines.length = from;
+      for (let i = from; i < next.length; i++) lines.push(next[i]!);
+      tokenizer.edit({ fromLine: from, removed, inserted });
+      this.tokens.length = from;
+      this.lineRuns.length = from;
+    }
+
+    // Asked in order from the top, so a stream engine walks its frontier
+    // line by line and answers each exactly, never from a guess.
+    const out: R[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) out.push(this.newline!);
+      const tokens = tokenizer.lineTokens(i);
+      let runs = this.lineRuns[i];
+      if (!runs || this.tokens[i] !== tokens) {
+        runs = lineRuns(lines[i]!, tokens, opts).map(this.decorate);
+        this.lineRuns[i] = runs;
+        this.tokens[i] = tokens;
+      }
+      for (const run of runs) out.push(run);
+    }
+    return out;
+  }
+
+  dispose(): void {
+    this.tokenizer?.dispose?.();
+    this.tokenizer = null;
+    this.key = null;
+  }
+}
+
+/** One line's runs, as `codeRuns` makes them, up to its end. */
+function lineRuns(
+  line: string,
+  tokens: readonly Token[],
+  opts: CodeRunOptions,
+): CodeRun[] {
+  const out: CodeRun[] = [];
+  let at = 0;
+  for (const t of tokens) {
+    if (t.from > at) push(out, line.slice(at, t.from), undefined, opts);
+    push(out, line.slice(t.from, t.to), t.type, opts);
+    at = t.to;
+  }
+  if (at < line.length) push(out, line.slice(at), undefined, opts);
+  return out;
 }

@@ -5,6 +5,7 @@ import {
   CODE_LINE_HEIGHT,
   codeBlockLook,
   codeBlockRuns,
+  CodeBlockRunCache,
   codeBlockStyle,
   codeTextStyle,
   themeTokenResolver,
@@ -66,6 +67,13 @@ interface CodeBlockRunOptions {
   highlight?: boolean; // false leaves the code unhighlighted, tag or no tag
 }
 ```
+
+`new CodeBlockRunCache()` is the same kept between calls, through
+[`CodeRunCache`](code-language.md#static-highlighting): `.runs(source, look,
+options?)` tokenizes again only from the line that changed, and
+`.dispose()` lets its tokenizer go. `<Code>` and a `<Markdown>` fence each
+hold one, so a block of code that streams is not tokenized from the top for
+every line it gains.
 
 ## `codeBlockStyle(look)` and `codeTextStyle(look, wrap?)`
 
