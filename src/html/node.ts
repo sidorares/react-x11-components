@@ -61,6 +61,7 @@ import {
   buildBoxes,
   CONTENT_IMAGES,
   CUT_BLOCKS,
+  GENERATED_FROM,
   INLINE_OFFSETS,
   LINE_BOX_RAISES,
   SHIFTED_LINES,
@@ -444,13 +445,15 @@ export class HtmlViewNode extends Node {
    */
   private _requestBackgrounds(tree: BoxTree): void {
     for (const box of tree.backgrounds) {
-      if (!box.el) continue;
+      // a pseudo-element's are its element's
+      const element = box.el ?? GENERATED_FROM.get(box);
+      if (!element) continue;
       // each layer's, where there is more than one
       for (const url of box.style.backgroundImages ?? [
         box.style.backgroundImage,
       ]) {
         if (typeof url === 'string') {
-          this._resources.request({ url, kind: 'image', element: box.el });
+          this._resources.request({ url, kind: 'image', element });
         }
       }
       const border = box.style.borderImage.source;
@@ -458,7 +461,7 @@ export class HtmlViewNode extends Node {
         this._resources.request({
           url: border,
           kind: 'image',
-          element: box.el,
+          element,
         });
       }
     }

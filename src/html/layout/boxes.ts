@@ -621,6 +621,11 @@ export const PAINT_ORDER = new WeakMap<Box, Box[]>();
  *  a browser's does (`elementRect`). */
 export const CUT_BLOCKS = new WeakMap<Box, Box[]>();
 
+/** The element a pseudo-element's box is generated from, which has no
+ *  element of its own (`Box.pseudo`): whose the images its styles name are,
+ *  when the host is asked for them. */
+export const GENERATED_FROM = new WeakMap<Box, Element>();
+
 /** The blocks that broke an inline box under full opacity in pieces, and
  *  the opacity they take from it — from each such inline box around them,
  *  multiplied. They stand outside it (CSS 2.1 9.2.1.1) and are still its
@@ -1026,13 +1031,7 @@ class Builder {
         this._firstLine = true;
       }
     }
-    if (
-      style.backgroundImage ||
-      style.backgroundImages ||
-      typeof style.borderImage.source === 'string'
-    ) {
-      this._backgrounds.push(box);
-    }
+    if (namesImages(style)) this._backgrounds.push(box);
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
@@ -1159,13 +1158,7 @@ class Builder {
     const box = new Box('replaced', el, style);
     box.replaced = replaced;
     into.append(box);
-    if (
-      style.backgroundImage ||
-      style.backgroundImages ||
-      typeof style.borderImage.source === 'string'
-    ) {
-      this._backgrounds.push(box);
-    }
+    if (namesImages(style)) this._backgrounds.push(box);
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
@@ -1296,6 +1289,10 @@ class Builder {
     const box = new Box(boxKindFor(style.display), null, style);
     box.pseudo = which;
     into.append(box);
+    // its images are its element's to ask for: a `::after` with no content
+    // but a background, which designs hang a picture on, drew nothing
+    GENERATED_FROM.set(box, el);
+    if (namesImages(style)) this._backgrounds.push(box);
     // a list item it generates has a marker as an element's has, of the
     // `list-item` counter it has just counted (CSS 2.1 12.5): outside it,
     // or at the start of its content
@@ -1715,6 +1712,10 @@ class Builder {
     const letterStyle = cascade.firstLetterStyle(search.rules, style);
     const box = new Box(boxKindFor(letterStyle.display), null, letterStyle);
     box.pseudo = 'first-letter';
+    if (owner) {
+      GENERATED_FROM.set(box, owner);
+      if (namesImages(letterStyle)) this._backgrounds.push(box);
+    }
     if (letterStyle.float !== 'none') {
       box.isFloat = true;
       if (into.kind === 'inline') this._nestedOutOfLine = true;
@@ -2617,6 +2618,16 @@ function breakAround(inline: Box): Box[] | null {
     }
   }
   return out;
+}
+
+/** Whether a style names an image for its box to be drawn with: a
+ *  background's, or a border's. */
+function namesImages(style: ComputedStyle): boolean {
+  return (
+    !!style.backgroundImage ||
+    !!style.backgroundImages ||
+    typeof style.borderImage.source === 'string'
+  );
 }
 
 /**
