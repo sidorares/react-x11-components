@@ -8083,6 +8083,37 @@ metric(
 );
 
 metric(
+  "::first-line's text-transform sets the first line in capitals, and nothing else",
+  async () => {
+    // CSS 2.1 5.12.1: `text-transform` applies to the first line. Design
+    // 030's summary is capitals on its first line in Chrome, which wrap it
+    // onto three lines where the lower case made two
+    const { el } = await renderWithBytes(
+      '<style>body{margin:0}p{margin:0;width:300px;font:16px sans-serif}' +
+        '#t::first-line{text-transform:uppercase}</style>' +
+        '<p id="t">straße and words</p><p id="u">straße and words</p>' +
+        '<p id="w" style="width:60px" class="w">abc def</p>' +
+        '<style>#w::first-line{text-transform:uppercase}</style>',
+      {},
+    );
+    const width = (id: string) =>
+      (boxOf(el, id) as unknown as { lines: { width: number }[] }).lines[0]
+        .width;
+    assert.ok(
+      width('t') > width('u') * 1.1,
+      `capitals are wider: ${width('t')} against ${width('u')}`,
+    );
+    // the document's text is its own, capitals or not
+    assert.ok(el.textContent().startsWith('straße and words'));
+    // and a second line is not the first
+    const lines = (boxOf(el, 'w') as unknown as { lines: { width: number }[] })
+      .lines;
+    assert.strictEqual(lines.length, 2);
+    assert.ok(lines[1].width < lines[0].width, 'def in lower case');
+  },
+);
+
+metric(
   '::first-line fonts break the first line, and what is on it inherits them (CSS Pseudo 4, 2.1.2)',
   async () => {
     const { el } = await renderWithBytes(
