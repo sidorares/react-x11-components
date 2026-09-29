@@ -140,7 +140,24 @@ export function codeBlockStyle(look: CodeBlockLook): Style {
   };
 }
 
-/** The style the runs are laid out with, in both components. */
-export function codeTextStyle(look: CodeBlockLook): Style {
-  return { lineHeight: look.lineHeight };
+/**
+ * The style the runs are laid out with, in both components — `wrap` as the
+ * `<richtext>` is given it.
+ *
+ * Unwrapped, the text is as wide as its longest line, and at least as wide
+ * as its viewport. Stretched to the viewport, as a column stretches what it
+ * holds, its box held none of a line past the viewport's edge: the viewport
+ * had nothing to scroll to, and core, asked whether the text reached past
+ * the viewport, heard that it did not and left it unclipped — so a fence,
+ * with nothing round it to clip it either, drew the rest of a long line
+ * across whatever stood beside the document.
+ */
+export function codeTextStyle(look: CodeBlockLook, wrap = true): Style {
+  return wrap
+    ? { lineHeight: look.lineHeight }
+    : {
+        lineHeight: look.lineHeight,
+        alignSelf: 'flex-start',
+        minWidth: '100%',
+      };
 }

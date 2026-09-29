@@ -279,7 +279,10 @@ export function TerminalOutput(props: TerminalOutputProps): ReactElement {
     [document, look.family, look.size, palette],
   );
 
-  const outputProps: RichTextProps = { runs, style: codeTextStyle(look) };
+  const outputProps: RichTextProps = {
+    runs,
+    style: codeTextStyle(look, wrap),
+  };
   if (!wrap) outputProps.wrap = false;
 
   const lineCount = document.lines.length;

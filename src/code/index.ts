@@ -114,7 +114,7 @@ export function Code(props: CodeProps): ReactElement {
 
   const lineCount = React.useMemo(() => source.split('\n').length, [source]);
 
-  const codeProps: RichTextProps = { runs, style: codeTextStyle(look) };
+  const codeProps: RichTextProps = { runs, style: codeTextStyle(look, wrap) };
   if (!wrap) codeProps.wrap = false;
 
   const gutter = lineNumbers

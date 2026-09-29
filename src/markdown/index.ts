@@ -516,7 +516,7 @@ function renderCode(
         flexDirection: 'column',
       },
     },
-    richtext('code', runs, codeTextStyle(code), false),
+    richtext('code', runs, codeTextStyle(code, false), false),
   );
 }
 

@@ -65,7 +65,8 @@ GFM, parsed by `src/internal/markdown/parse.ts`:
 - thematic breaks;
 - fenced and indented code, highlighted through the same
   [language seam](code-language.md) `<CodeEditor>` uses; `resolveLanguage`
-  is where tags the built-ins do not cover come from.
+  is where tags the built-ins do not cover come from. A block does not wrap:
+  a line longer than the block scrolls inside it.
 
 ### The deliberate deviations
 

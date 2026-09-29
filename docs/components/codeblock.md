@@ -67,11 +67,19 @@ interface CodeBlockRunOptions {
 }
 ```
 
-## `codeBlockStyle(look)` and `codeTextStyle(look)`
+## `codeBlockStyle(look)` and `codeTextStyle(look, wrap?)`
 
 The block's own `Style` (fill, padding, radius) and the text style
 (family, size, colour, line height). Two functions rather than one because
 the block and the text are different nodes.
+
+`wrap` is what the `<richtext>` is given, and defaults to true as it does.
+Unwrapped, the text is as wide as its longest line and at least as wide as
+its viewport — `alignSelf: 'flex-start'` and `minWidth: '100%'`. A column
+stretches what it holds, and stretched to the viewport the text's box held
+none of a long line past the viewport's edge: the viewport had nothing to
+scroll to, and core, asked whether anything in it reached outside, heard
+no and left it unclipped.
 
 ## `themeTokenResolver(theme)`
 
