@@ -123,7 +123,9 @@ big { font-size: 1.17em; }
 sub { vertical-align: sub; font-size: 0.75em; }
 sup { vertical-align: super; font-size: 0.75em; }
 mark { background-color: #fff2a8; color: #1a1a1a; }
-abbr { text-decoration: none; }
+/* the HTML standard's rendering (15.3.4): an abbreviation with its
+   expansion in a title says so */
+abbr[title], acronym[title] { text-decoration: dotted underline; }
 center { text-align: -webkit-center; }
 nobr { white-space: nowrap; }
 q::before { content: open-quote; }
