@@ -3403,6 +3403,30 @@ metric(
   },
 );
 
+metric(
+  'what a positioned box holds past its end makes the document taller',
+  async () => {
+    // A positioned box's scrollable overflow is its border box and what it
+    // holds, where it does not clip it (CSS Overflow 3, 2.2), and the
+    // document's takes it in. It took the border box alone: design 094 sets
+    // its page in an absolute wrapper 497px tall, and its text ran on
+    // below the document's end, where no scroll could reach it
+    const { node } = await render(
+      '<style>body{margin:0}.w{position:absolute;top:0;width:300px;' +
+        'height:200px}.t{height:900px}.c{overflow:hidden}</style>' +
+        '<div class="w"><div class="t"></div></div>' +
+        '<div class="w c"><div class="t" style="height:1500px"></div></div>',
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(
+      el.abs.height,
+      900,
+      'as tall as what runs past the wrapper, not what a clip cuts',
+    );
+  },
+);
+
 test('a box placed against the initial containing block follows the viewport', async () => {
   // nothing positioned around it: `bottom: 0` is the viewport's bottom
   const { el, resize } = await renderScrolled(
