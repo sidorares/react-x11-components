@@ -4745,6 +4745,189 @@ test('a pass that cuts the turn out of a folded edge draws its doubled line as a
   assert.strictEqual(differ, 0, `${differ} pixels of the line moved`);
 });
 
+/** A pane's pixels in `rect`, window coordinates. */
+async function pixelsOf(
+  ctx: unknown,
+  rect: { x: number; y: number; width: number; height: number },
+): Promise<Uint8ClampedArray> {
+  return (
+    await (
+      ctx as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+        ): Promise<{ data: Uint8ClampedArray }>;
+      }
+    ).getImageData(rect.x, rect.y, rect.width, rect.height)
+  ).data;
+}
+
+/** How many pixels two reads disagree on by more than rounding. */
+function pixelsApart(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+  let apart = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    const d = Math.max(
+      Math.abs(a[i] - b[i]),
+      Math.abs(a[i + 1] - b[i + 1]),
+      Math.abs(a[i + 2] - b[i + 2]),
+    );
+    if (d > 2) apart++;
+  }
+  return apart;
+}
+
+/** A parent and three children below it on step edges, which share their
+ *  first leg out of the parent's handle — off the pixel grid, where the
+ *  leg's edges are partly covered — and a chain of `others` more edges, each
+ *  node where `place` puts it. */
+function fanOut(
+  others: number,
+  place: (i: number) => XYPosition,
+): { nodes: FlowNode[]; edges: FlowEdge[] } {
+  const nodes: FlowNode[] = [
+    { id: 'p', position: { x: 180.4, y: 20 }, width: 80, height: 30, data: {} },
+    { id: 'c1', position: { x: 40, y: 140 }, width: 60, height: 30, data: {} },
+    { id: 'c2', position: { x: 190, y: 140 }, width: 60, height: 30, data: {} },
+    { id: 'c3', position: { x: 340, y: 140 }, width: 60, height: 30, data: {} },
+  ];
+  const edges: FlowEdge[] = ['c1', 'c2', 'c3'].map((c) => ({
+    id: `p-${c}`,
+    source: 'p',
+    target: c,
+    type: 'smoothstep',
+  }));
+  for (let i = 0; i <= others; i++) {
+    nodes.push({
+      id: `o${i}`,
+      position: place(i),
+      width: 30,
+      height: 12,
+      data: {},
+    });
+    if (i > 0)
+      edges.push({ id: `o${i}`, source: `o${i - 1}`, target: `o${i}` });
+  }
+  return { nodes, edges };
+}
+
+test('a pass over a fan-out’s shared leg draws it as a repaint of the pane does', async () => {
+  // From `EDGE_BATCH` edges on the pane every pen is stroked as one path,
+  // where overlapping runs add their coverage; a pass that reached fewer of
+  // them stroked each alone, laid one over the other. Step edges out of one
+  // handle share their first leg, and its edges came out as much as 35
+  // levels apart: the pane stroked a pen at a time, the pass an edge.
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, {
+      // below the fan-out, all on the pane
+      ...fanOut(30, (i) => ({
+        x: 20 + (i % 6) * 70,
+        y: 260 + Math.floor(i / 6) * 60,
+      })),
+      background: false,
+      controls: false,
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 480, height: 600 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+  };
+  const leg = { x: 190, y: 50, width: 60, height: 40 };
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  const whole = await pixelsOf(ctx, leg);
+  await act(() => node.invalidate(false, leg, 'content'));
+  await motionLands();
+  assert.strictEqual(pixelsApart(whole, await pixelsOf(ctx, leg)), 0);
+});
+
+test('a pass strokes crossing edges in the order a repaint of the pane does', async () => {
+  // The pens were stroked in the order a pass met them. A plain edge listed
+  // first put the plain pen before the selected one in a repaint, so a
+  // selected edge crossed a plain one on top; a pass that never reached the
+  // first edge met the selected pen first and put the plain edge on top.
+  const level = (id: string, x: number, y: number): FlowNode => ({
+    id,
+    position: { x, y },
+    width: 60,
+    height: 30,
+    sourcePosition: 'right',
+    targetPosition: 'left',
+    data: {},
+  });
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: [
+        level('e', 40, 320),
+        level('f', 300, 320),
+        level('a', 40, 40),
+        level('b', 300, 200),
+        level('c', 40, 200),
+        level('d', 300, 40),
+      ],
+      edges: [
+        { id: 'far', source: 'e', target: 'f' },
+        { id: 'chosen', source: 'a', target: 'b', selected: true },
+        { id: 'plain', source: 'c', target: 'd' },
+      ],
+      background: false,
+      controls: false,
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+  };
+  const crossing = { x: 180, y: 115, width: 40, height: 40 };
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  const whole = await pixelsOf(ctx, crossing);
+  await act(() => node.invalidate(false, crossing, 'content'));
+  await motionLands();
+  assert.strictEqual(pixelsApart(whole, await pixelsOf(ctx, crossing)), 0);
+});
+
+test('a pan that brings the pane past `EDGE_BATCH` edges repaints it whole, and strokes a pen at a time after', async () => {
+  // How edges are stroked is the pane's, and changes only with a repaint
+  // of all of it: a pan's strips cannot change it under the pixels the pan
+  // copied. The chain starts past the pane's left edge, so the fan-out is
+  // stroked an edge at a time; the pan brings the chain on, and a pass
+  // after it has to stroke the fan-out a pen at a time, as a repaint does.
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, {
+      ...fanOut(30, (i) => ({
+        x: -450 + (i % 2) * 70,
+        y: Math.floor(i / 2) * 36,
+      })),
+      background: false,
+      controls: false,
+      defaultViewport: { x: 0, y: 0, zoom: 1 },
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 900, height: 600 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+    setViewport(v: object): void;
+  };
+  await act(() => node.setViewport({ x: 450, y: 0, zoom: 1 }));
+  await motionLands();
+  await motionLands();
+  const leg = { x: 640, y: 50, width: 60, height: 40 };
+  await act(() => node.invalidate(false, leg, 'content'));
+  await motionLands();
+  const part = await pixelsOf(ctx, leg);
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  assert.strictEqual(pixelsApart(part, await pixelsOf(ctx, leg)), 0);
+});
+
 test('2D dashes hold still through a pan whose frames come slowly, and keep their speed when ticks are cheap', async () => {
   // A tick repaints the box the dashes are in. Over a dense graph in a
   // large window that was 75 ms on XQuartz against a 60 ms timer, and the

@@ -97,6 +97,34 @@ export const MIN_GRID_PX = 16;
  */
 export const CULL_MARGIN = 16;
 
+/**
+ * From this many edges on the pane, they are stroked a pen at a time — every
+ * run of a pen, and every arrowhead of a colour, as one path — and below
+ * it an edge at a time, in the graph's order.
+ *
+ * A path's mask is its bounding box, so a pen's scattered runs as one path
+ * cost a mask the size of the pane where each alone costs its own small
+ * one: nineteen long edges criss-crossing a pane measured 634 KB a repaint
+ * batched against 97 KB one at a time, and seven hundred measured 3.9 MB
+ * one at a time against 1.3 MB batched. And the two do not draw the same
+ * pixels where edges overlap: coverage adds inside one path and lays one
+ * over the other between two, so a fan-out's shared leg came out as much
+ * as 35 levels apart at its edges. So the choice is the pane's, never a
+ * pass's — decided from the edges on the pane and kept across the passes
+ * of every frame until a repaint of the whole pane takes the other one
+ * ({@link SceneInput.batch}).
+ */
+export const EDGE_BATCH = 24;
+/** …and below this many a batched pane goes back, so that a pan across the
+ *  threshold does not change the way every step. */
+const EDGE_UNBATCH = 16;
+
+/** Whether `onPane` edges are stroked a pen at a time, given whether they
+ *  were (`EDGE_BATCH`). */
+export function batchesEdges(onPane: number, was = false): boolean {
+  return onPane >= (was ? EDGE_UNBATCH : EDGE_BATCH);
+}
+
 const DEFAULT_DASH = [7, 5];
 
 // --- the cache ----------------------------------------------------------------
@@ -864,6 +892,14 @@ export interface SceneInput {
   /** What survived the last frame. Optional: without one every route is
    *  computed again, which is correct and slower. */
   cache?: SceneCache;
+  /**
+   * Whether the edges are stroked a pen at a time ({@link EDGE_BATCH}) —
+   * the pane's choice, which every pass that repaints part of it has to
+   * follow. Left out, this pass makes it from the edges on the pane, going
+   * by `batchWas` for which side of the threshold it was on.
+   */
+  batch?: boolean;
+  batchWas?: boolean;
 }
 
 // --- what comes out -----------------------------------------------------------
@@ -932,6 +968,9 @@ export interface SceneEdge {
    *  starting again at every cut. */
   runStarts?: readonly number[];
   markers: readonly SceneMarker[];
+  /** Which edges a batched pane strokes over which: a selected one over a
+   *  hovered one over the rest. Left out, the rest. */
+  layer?: number;
   /** The plate behind a label, so it sits above every edge. */
   chip?: SceneRect;
   label?: SceneText;
@@ -1042,6 +1081,11 @@ export interface FlowScene {
   /** The box those animated edges actually inked, so a dash tick repaints
    *  that rather than the pane. Null when this pass drew none. */
   animBox: FlowRect | null;
+  /** Whether the edges are stroked a pen at a time (`SceneInput.batch`). */
+  batch: boolean;
+  /** How many edges reach the pane, whatever this pass reaches: what the
+   *  next choice of `batch` goes by. */
+  edgesOnPane: number;
 }
 
 // --- geometry -----------------------------------------------------------------
@@ -1204,6 +1248,8 @@ export function buildScene(input: SceneInput): FlowScene {
     controls: null,
     animated: false,
     animBox: null,
+    batch: input.batch ?? input.batchWas ?? false,
+    edgesOnPane: 0,
   };
   if (!region) return scene;
 
@@ -1275,9 +1321,12 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
   // Two rejects: one from the nodes alone — the coarse box, culled once for
   // every pass of a frame where there is a cache — and one from the route
   // the edge took.
-  for (const { edge, from, to, coarse } of cache
+  const onPane = cache
     ? cache.edgesOnScreen(v, kept, input.edges, input.all, scale)
-    : cullEdges(v, kept, input.edges, indexOf(input.all), scale)) {
+    : cullEdges(v, kept, input.edges, indexOf(input.all), scale);
+  scene.edgesOnPane = onPane.length;
+  scene.batch = input.batch ?? batchesEdges(onPane.length, input.batchWas);
+  for (const { edge, from, to, coarse } of onPane) {
     // Tracked before the damage skip, deliberately: whether the dash timer
     // runs is a question about the viewport, not about what this particular
     // pass repaints — deciding it after the skip is how a drag in one corner
@@ -1373,6 +1422,7 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
       dashOffset: edge.animated ? -input.dashPhase * v.zoom : 0,
       animated: edge.animated ?? false,
       markers,
+      layer: selected ? 2 : hovered ? 1 : 0,
     };
     // A pass over part of the edge draws the part it reaches: a strip down
     // the pane's edge crossed by a hundred long edges traced every point of
