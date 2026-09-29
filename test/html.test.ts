@@ -12862,3 +12862,47 @@ metric(
     assert.strictEqual(at('e'), null);
   },
 );
+
+metric(
+  'over a link the window shows the pointer, and over text the I-beam',
+  async () => {
+    // end to end: core asks the element as the pointer moves over it, and
+    // puts what it names on the window
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<p><span id="t">plain text here</span></p>' +
+        '<p><a id="a" href="#x">a link</a></p>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const drawn = el as unknown as DrawnNode;
+    const wnd = (
+      drawn as unknown as {
+        root: { window: { setCursor(name: string | null): void } };
+      }
+    ).root.window;
+    const shown: (string | null)[] = [];
+    const set = wnd.setCursor.bind(wnd);
+    wnd.setCursor = (name) => {
+      shown.push(name);
+      set(name);
+    };
+    // each step changes the cursor, which is when core sets one
+    const over = async (id: string) => {
+      const before = shown.length;
+      const [x, y] = pointIn(el, id);
+      const { abs } = drawn;
+      fireEvent.mouseMove(drawn, {
+        dx: x - (abs.x + abs.width / 2),
+        dy: y - (abs.y + abs.height / 2),
+      });
+      await act();
+      await waitFor(() => assert.ok(shown.length > before));
+      return shown.at(-1);
+    };
+    assert.strictEqual(await over('a'), 'pointer');
+    assert.strictEqual(await over('t'), 'text');
+    assert.strictEqual(await over('a'), 'pointer');
+  },
+);

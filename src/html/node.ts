@@ -1213,7 +1213,7 @@ export class HtmlViewNode extends Node {
    * nothing, text's I-beam over text, as a browser shows it. Null over
    * nothing in particular, which is the default arrow.
    */
-  cursorAt(x: number, y: number): string | null {
+  override cursorAt(x: number, y: number): string | null {
     const tree = this._tree;
     if (!tree) return null;
     const hit = { text: false };

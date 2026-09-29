@@ -410,8 +410,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.22.8` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.22.8` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.23.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.23.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -514,6 +514,14 @@ it up. **The floor is a running one and moves often** — every move since
   leaves the white space a line ends on out of its width (windowkit/appkit#80,
   #81). All of it was found running the CSS 2.1 test suite through `<Html>`
   on both backends (`docs/html-conformance.md`).
+- `^2.23.0` — `cursorAt` (react-x11#757): an element that draws what is
+  inside it names the cursor for the point under the pointer, and `<Html>`
+  answers it — a link's `pointer`, text's I-beam — where core set one cursor
+  a node and a document is one node. The same release keeps a `<Frame>`
+  pane's wheel to its notch (#755) and stops a press scrolling a document
+  to its top, which turned every selection in a scrolled page into one from
+  its start (#756); with 2.22.13's `<Frame>` pane that stays on its main
+  thread on macOS (#747), all four were found in the browser example.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
