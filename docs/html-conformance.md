@@ -207,6 +207,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 118    | `overflow-clip-margin`, `background-clip`, borders | 5,652 (95%) | 5,103 (86%) |
 | 119    | `background-repeat: space` and `round`             | 5,652 (95%) | 5,103 (86%) |
 | 120    | `border-image`                                     | 5,652 (95%) | 5,103 (86%) |
+| 121    | a table's height given out to its rows             | 5,652 (95%) | 5,103 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3577,6 +3578,25 @@ css-backgrounds went from 338 to 393 of 711 on X11 and from 327 to 370 on
 Cocoa; the CSS 2.1 suite is unchanged. The Cocoa sweep also reported 16
 tests lost, fifteen of them `background-size` ones with no border image
 in them; run alone, three times on each tree, every one passes on both.
+
+### Round 121
+
+316. **A table's height went to its rows in proportion to theirs.** CSS
+     2.1 leaves open how a table taller than its rows gives them the rest
+     (17.5.3), and so does the CSS Tables 3 draft (csswg-drafts#4418).
+     Browsers give it first to the rows a percentage sets, up to their
+     percentage. Next it goes to the rows with content that nothing sets,
+     in proportion to their heights. Where every row with content is set,
+     by its own height or a cell's, it goes to the empty rows, those
+     nothing sets first, evenly. Otherwise every row with content takes
+     it in proportion. So rows whose cells set a height kept growing while
+     an empty row between them stayed empty; three `border-image` tests'
+     references are such tables.
+
+Four css-grid tests pass on both backends, their references such tables;
+the CSS 2.1 suite and css-tables are unchanged, and so is css-backgrounds,
+whose three tests still differ where their images are scaled across stripes
+they ask to be drawn `pixelated`.
 
 ## What `<Html>` supports
 
