@@ -3959,6 +3959,66 @@ on screen checked so that a blank pane could not pass.
   under a rectangular clip now reaches the bounded composite instead of a
   mask.
 
+## Round 40: what rounds 96 to 121 cost a long document
+
+The M1 Pro again, after twenty-six more rounds of `<Html>` conformance
+work since round 32 measured the last five, #300 to #349. The pipeline
+alone, as round 32 took it: the box build and the layout of the 600 KB
+report over the node's own cascade and fonts, one install (react-x11
+2.24.0, ntk 8.14.4) under every tree, medians of three runs at every commit
+that touched `src/html`.
+
+| commit                                    | box build |    layout |
+| ----------------------------------------- | --------: | --------: |
+| dcdca94, where round 32 ended             |   14.7 ms |   24.4 ms |
+| #300 to #320                              | 14.3–15.5 | 23.2–24.3 |
+| 851f79f, #321: a word shaped across spans |   15.4 ms |   27.4 ms |
+| #323 to #333                              | 14.7–15.4 | 26.4–28.0 |
+| bf71869, #334: counter styles             |   18.3 ms |   30.8 ms |
+| #337 to #349                              | 18.5–19.4 | 29.6–32.1 |
+
+Two steps, and nothing between them: the rounds that added flex and grid
+algorithms, containment, border images and the rest moved neither number
+outside its noise. The paint walk, measured the same way over the report
+and over 3,000 cards, did not move either.
+
+### A bullet's clusters, and its space
+
+#334 wrote every marker through the counter style algorithm, which counts
+the grapheme clusters of what it writes so that `pad` can make it up to a
+width: an `Intl.Segmenter` walk for every bullet of every list, 2.9 ms of
+a 19 ms build. Almost no style pads, and the count is now only taken where
+one does. The same round measured the space after each marker by laying a
+no-break space out in the marker's face, 1,500 layouts a pass to find one
+width per face; it is kept per face now.
+
+### A run's shape
+
+#321 marked the text of an inline box with a margin, border or padding at
+a side `shapeApart`, after the run was made. The runs of a document then
+had that property or not, and the layout cache, which compares every
+paragraph's runs to find its layout again, spent 3 ms more a pass doing it:
+its lookup's own time went from 52 to 214 ms over sixty passes, for the
+same 7,390 lookups. A run is made with `shapeApart: false` now and set true
+later, and the pass is back where it was. Declaring every optional field of
+a run up front as well measured no better.
+
+### Where it ends
+
+| tree                    | box build |  layout |
+| ----------------------- | --------: | ------: |
+| dcdca94                 |   16.1 ms | 25.4 ms |
+| master, 1656e62         |   20.4 ms | 30.4 ms |
+| with this round's fixes |   18.1 ms | 26.3 ms |
+
+Six runs of each, interleaved, which on this afternoon read round 32's tree
+1.4 ms slower than the bisect did. What is left of the build is mostly a
+map from every element to its style and whether it is in a flex box, which
+#264 added for restyling on hover: an object and a map entry an element.
+Counter scopes also allocated a list for every element a counter might be
+made at, which is every element; a level makes one now only when a counter
+is made there.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new

@@ -3131,6 +3131,11 @@ export function runFor(text: string, style: ComputedStyle): TextRun {
       style.textFillColor === null
         ? style.color
         : inkColor(style.textFillColor, style.color),
+    // set here, and made true later for an inline box's text (`collect`):
+    // added to a run after it was made, it gave the runs of a document two
+    // shapes where the layout cache compares them, and a pass over 600 KB
+    // took 3 ms longer finding every paragraph's layout again
+    shapeApart: false,
   };
   if (style.letterSpacing) run.letterSpacing = style.letterSpacing;
   const features = featuresOf(style);

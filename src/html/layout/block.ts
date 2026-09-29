@@ -64,6 +64,7 @@ import {
   widestWord,
 } from './inline.js';
 import type { FontsLike, InlineOptions, InlineResult } from './inline.js';
+import type { TextRun } from '../../richtext/index.js';
 import { layoutFlex } from './flex.js';
 import { finishCaptions, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
@@ -1718,6 +1719,26 @@ function firstLineIn(box: Box): LineBox | null {
  * content: it must not join the selection, or copying a list would paste a
  * bullet before every line.
  */
+const MARKER_GAPS = new WeakMap<FontsLike, Map<string, number>>();
+
+/**
+ * The gap after a marker, a space's width in its face: kept per face and
+ * fonts, since a list is a column of markers set alike, and laying the
+ * space out for each of them was most of what a long document's markers
+ * cost.
+ */
+function markerGap(fonts: FontsLike, face: Omit<TextRun, 'text'>): number {
+  let gaps = MARKER_GAPS.get(fonts);
+  if (!gaps) MARKER_GAPS.set(fonts, (gaps = new Map()));
+  const key = `${face.family}\u0001${face.size}\u0001${String(face.weight ?? '')}\u0001${String(face.style ?? '')}`;
+  let gap = gaps.get(key);
+  if (gap === undefined) {
+    gap = fonts.layout([{ text: '\u00a0', ...face }], face, {}).width;
+    gaps.set(key, gap);
+  }
+  return gap;
+}
+
 function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const fonts = ctx.fonts;
   if (!fonts) return;
@@ -1766,11 +1787,7 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   // a space between it and the content — the one its style's suffix ends
   // in, or its own text's — in its own face: a line measures without it
   const gap =
-    marker.flush && !/\s$/.test(marker.text)
-      ? 0
-      : fonts.layout([{ text: '\u00a0', ...face }], face, {
-          lineHeight: lineHeightMultiplier(fonts, style),
-        }).width;
+    marker.flush && !/\s$/.test(marker.text) ? 0 : markerGap(fonts, face);
   // The marker sits on the first line of the item's *content*, which is not
   // always the item's own: an `<li>` holding a paragraph, or one holding text
   // and a nested list, has its inline content in an anonymous block. Looking
