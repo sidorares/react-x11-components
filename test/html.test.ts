@@ -12987,6 +12987,43 @@ test('a flex item is no smaller than its content, unless its minimum says', asyn
   assert.strictEqual(box('f').y, box('e').y + 60, 'and the one after it');
 });
 
+test('a flex item with a width is held to the lesser of it and its content', async () => {
+  // CSS Flexbox 4.5: its automatic minimum is the lesser of its specified
+  // size suggestion and its content size suggestion. It was given none: a
+  // `width: 250px; flex-basis: 0` sidebar beside `flex: 1 1 0` content was
+  // no width at all, and drawn over the content (iana.org's root zone)
+  const { node } = await render(
+    '<style>body{margin:0} .i{display:inline-block;height:10px}</style>' +
+      '<div style="display:flex;flex-direction:row-reverse;width:600px">' +
+      '<main id="m" style="flex-grow:1;flex-basis:0"></main>' +
+      '<nav id="n" style="flex-basis:0;width:250px">' +
+      '<div style="width:230px;margin-right:20px;height:10px"></div></nav>' +
+      '</div>' +
+      // content wider than the width: the width
+      '<div style="display:flex;width:100px"><div id="w" style="width:250px">' +
+      '<span class="i" style="width:300px"></span></div></div>' +
+      // content narrower than it: the content
+      '<div style="display:flex;width:300px">' +
+      '<div id="a" style="width:50%;flex-basis:0">' +
+      '<span class="i" style="width:10px"></span></div>' +
+      '<div id="b" style="width:50%;flex-basis:0">' +
+      '<div style="width:200px;height:10px"></div></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.deepStrictEqual(
+    [box('n').x, box('n').width, box('m').x, box('m').width],
+    [0, 250, 250, 350],
+    'the sidebar is its width, the content the rest',
+  );
+  assert.strictEqual(box('w').width, 250, 'no wider than its width');
+  assert.deepStrictEqual(
+    [box('a').width, box('b').width],
+    [10, 150],
+    'no narrower than the lesser',
+  );
+});
+
 test('what is in a stretched or flexed item takes its percentages of its height', async () => {
   // CSS Flexbox 9.8: an item stretched across its line, or flexed in a
   // column of a height of its own, has a definite height, and `h-full` in
