@@ -354,7 +354,16 @@ not stretched across a column, and a row item not shrunk below it. And
 room its argument makes: no wider than the content at its widest, nor
 narrower than its longest word. The sizes are the content's, whatever
 `width` the box has beside them. A height of one is its content's, which
-is `auto`.
+is `auto`. `stretch` — and `-webkit-fill-available` and `-moz-available`,
+as pages still write it — is what the box's margins leave of its
+containing block, in `width`, `height` and their limits: a float, an
+inline-block or an absolute box fills its room as a block does, an
+absolute one from its static position where it has no offsets, and a
+block with a formatting context of its own, or an image, the room the
+floats beside it leave. Down a block, a margin that meets no border or
+padding of its parent counts for nothing, as it would collapse through the
+parent's edge; where the containing block's height is not known,
+`stretch` is `auto`, and as a least height nothing.
 
 **Transforms:** `translate`, and the translation in a `transform` —
 `translate(-50%, -50%)`, Tailwind's `-translate-x-1/2` in either of the

@@ -12711,6 +12711,78 @@ metric("an SVG image's root background covers the image", async () => {
   await expectPixel(ctx, 5, 20, '#00ff00', { message: 'beside the viewBox' });
 });
 
+test('stretch fills what the margins leave of the containing block', async () => {
+  // `stretch`, `-webkit-fill-available` and `-moz-available` were dropped
+  // (CSS Sizing 3, 4.2): a float, an inline block or an absolute box was
+  // as wide as its content
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:200px">' +
+      '<div id="a" style="float:left;width:stretch;margin:0 10px;height:5px">' +
+      '</div></div>' +
+      '<div style="width:200px"><span id="b" style="display:inline-block;' +
+      'width:-webkit-fill-available;height:5px"></span></div>' +
+      '<div style="position:relative;width:200px;height:200px">' +
+      '<div id="c" style="position:absolute;left:30px;width:stretch;' +
+      'height:stretch;bottom:50px"></div>' +
+      // with neither offset, from where the flow put it (CSS Position 3)
+      '<div style="padding:40px 0 0 60px"><canvas id="d" width="2" ' +
+      'height="1" style="position:absolute;width:stretch;height:stretch">' +
+      '</canvas></div></div>' +
+      // down a parent, less the margins but those that meet no border or
+      // padding of the parent's, which would collapse through it
+      '<div id="ep" style="height:100px;border-top:1px solid">' +
+      '<div id="e" style="height:stretch;margin:10px 0"></div></div>' +
+      '<div id="fp" style="height:100px"><div id="f" style="min-height:stretch;' +
+      'margin-bottom:50px"></div></div>' +
+      '<div style="height:100px"><div id="j" style="height:stretch;' +
+      'margin-top:20px"></div></div>' +
+      '<div style="height:100px"><div id="g" style="height:500px;' +
+      'max-height:stretch"></div></div>' +
+      // a replaced box beside a float fills what the float leaves
+      '<div style="width:200px"><div style="float:left;width:120px;' +
+      'height:10px"></div><canvas id="h" width="1" height="1" ' +
+      'style="display:block;width:stretch"></canvas></div>' +
+      '<div style="width:200px"><div id="i" style="width:10px;' +
+      'min-width:stretch;height:5px"></div></div>',
+    {},
+  );
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.strictEqual(boxOf(el, 'a').width, 180);
+  assert.strictEqual(boxOf(el, 'b').width, 200);
+  assert.deepStrictEqual(size('c'), [170, 150]);
+  assert.deepStrictEqual(size('d'), [140, 160]);
+  assert.strictEqual(
+    boxOf(el, 'e').height,
+    90,
+    'its top margin, not its bottom',
+  );
+  assert.strictEqual(boxOf(el, 'f').height, 100);
+  // and its margin is not taken for one an empty block's would collapse
+  // through
+  assert.strictEqual(boxOf(el, 'fp').y, boxOf(el, 'ep').y + 101);
+  assert.strictEqual(boxOf(el, 'j').height, 100);
+  assert.strictEqual(boxOf(el, 'g').height, 100);
+  assert.deepStrictEqual(size('h'), [80, 80]);
+  assert.strictEqual(boxOf(el, 'i').width, 200);
+});
+
+test('a flex item stretched across a column is as tall as its ratio makes it', async () => {
+  // a replaced item was measured at the width it was given and answered
+  // its natural height, along a column as it did along a row before
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;flex-direction:column;width:200px">' +
+      '<canvas id="a" width="100" height="50" style="width:stretch;' +
+      'align-self:start;min-height:0"></canvas>' +
+      '<canvas id="b" width="100" height="50" style="width:50%;' +
+      'align-self:start;min-height:0"></canvas></div>',
+  );
+  const box = (id: string) => boxOf(view(node), id);
+  assert.deepStrictEqual([box('a').width, box('a').height], [200, 100]);
+  assert.deepStrictEqual([box('b').width, box('b').height], [100, 50]);
+});
+
 // --- a restyle's cost --------------------------------------------------------------
 
 test('a style takes from its parent the fields INHERITED names, and no others', () => {
