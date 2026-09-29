@@ -193,6 +193,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 104    | flex `order` and baselines, inherited flex styles  | 5,651 (95%) | 5,102 (86%) |
 | 105    | a flex item's `z-index`, painting in `order`       | 5,651 (95%) | 5,102 (86%) |
 | 106    | a flex box's background with the flow's            | 5,651 (95%) | 5,102 (86%) |
+| 107    | `justify-content`'s start, end, left and right     | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3063,6 +3064,21 @@ CSS 2.1 together 19 more on Cocoa.
      covered by its background, which is how css-flexbox's tests hide their
      red: it went from 590 to 607 of 1,012 on X11 (`flex-shrink`,
      `align-self`, `flex-basis`).
+
+### Round 107
+
+265. **`justify-content: start` was the main axis's start.** `start` and
+     `end` are the writing mode's, so a reversed row or column turns them
+     round, and `left` and `right` are the page's along a row and `start`
+     along a column, which has neither (CSS Box Alignment 3, 6.1): read as
+     the main axis's own ends, `right` put a column's items at its bottom,
+     and `start` a reversed row's at its right. `unsafe` is read past, as
+     what an alignment does anyway, and `self-start`, `self-end` and
+     `first baseline` are read; a `safe` alignment is still dropped.
+     css-flexbox went from 607 to 619 of 1,012 on X11. One css-grid test
+     passed by an accident this ends: a masonry `grid-lanes` box, which is
+     laid out as blocks here, matched its reference grid only while
+     neither read `unsafe`.
 
 ## What `<Html>` supports
 

@@ -465,9 +465,16 @@ export interface ComputedStyle {
   // flex — handed to yoga rather than interpreted here
   flexDirection: 'row' | 'row-reverse' | 'column' | 'column-reverse';
   flexWrap: 'nowrap' | 'wrap' | 'wrap-reverse';
+  /** `start` and `end` are the writing mode's, and `left` and `right`
+   *  the page's sides, which a flex box resolves against its direction
+   *  (`flex.ts`); `flex-start` and `flex-end` are its main axis's. */
   justifyContent:
     | 'flex-start'
     | 'flex-end'
+    | 'start'
+    | 'end'
+    | 'left'
+    | 'right'
     | 'center'
     | 'space-between'
     | 'space-around'
@@ -2148,8 +2155,8 @@ export function applyDeclaration(
       return;
     }
     case 'justify-content': {
-      const v = alignKeyword(value);
-      if (v) style.justifyContent = v as ComputedStyle['justifyContent'];
+      const v = justifyKeyword(value);
+      if (v) style.justifyContent = v;
       return;
     }
     case 'align-items': {
@@ -2394,17 +2401,57 @@ function overflowKeyword(
   return null;
 }
 
+/** A `justify-content`: the writing mode's `start` and `end`, and `left`
+ *  and `right`, kept for the flex box to resolve against its direction;
+ *  `normal` and `stretch` pack as `flex-start` does (`overflowAligned`). */
+function justifyKeyword(value: string): ComputedStyle['justifyContent'] | null {
+  const v = overflowAligned(value);
+  switch (v) {
+    case 'start':
+    case 'end':
+    case 'left':
+    case 'right':
+    case 'flex-start':
+    case 'flex-end':
+    case 'center':
+    case 'space-between':
+    case 'space-around':
+    case 'space-evenly':
+      return v;
+    case 'normal':
+    case 'stretch':
+      return 'flex-start';
+    default:
+      return null;
+  }
+}
+
+/** An alignment's keyword, with `unsafe` before it read past, which is
+ *  what an alignment does anyway. A `safe` one sets the subject at the
+ *  start where it overflows its room, which is not done here: it is no
+ *  value, and the declaration is dropped — which is the start's for the
+ *  flex box that overflows, as it was before `safe` was read at all. */
+function overflowAligned(value: string): string {
+  const v = value.trim().toLowerCase().replace(/\s+/g, ' ');
+  const m = /^unsafe (.+)$/.exec(v);
+  return m ? m[1] : v;
+}
+
 function alignKeyword(value: string): string | null {
-  const v = value.trim().toLowerCase();
+  const v = overflowAligned(value);
   switch (v) {
     case 'start':
     case 'flex-start':
+    case 'self-start':
     case 'left':
       return 'flex-start';
     case 'end':
     case 'flex-end':
+    case 'self-end':
     case 'right':
       return 'flex-end';
+    case 'first baseline':
+      return 'baseline';
     case 'center':
       return 'center';
     case 'stretch':
