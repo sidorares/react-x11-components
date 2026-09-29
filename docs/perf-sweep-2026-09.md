@@ -3423,6 +3423,30 @@ them. The pane's time now reads through a `flowClock` the test holds
 (#308). Stalling one step 250 ms reproduced the failure on the old test,
 and the new one passes through it.
 
+## Round 36: XQuartz's first paints, measured
+
+Round 35 left the XQuartz half of ntk #429 and #430 to measure. Round 12
+had timed `fc-match` there at 80–150 ms when a first layout launched it
+from inside the mounting app, so the best face beside the chain should
+have halved that wait. Nothing moved.
+
+| XQuartz, first paint, ms | ntk 8.13.1 | ntk 8.14.0 |
+| ------------------------ | ---------- | ---------- |
+| small                    | 459.8      | 450.5      |
+| menubar                  | 458.4      | 459.1      |
+| editor                   | 469.8      | 467.0      |
+
+The startup probe (#309), react-x11 2.22.12 on both sides, interleaved,
+the median of 7 warm starts a cell; 8.14.0 carries #424 as well as #429
+and #430. `createRoot` to the first paint is 52–59 ms in all six cells,
+where round 12's editor took 143–158 ms to its first frame; the rest of a
+start is the process and its modules. The wait round 12 measured is off
+the path already: the families are warmed before a layout asks for them
+(rounds 30 and 31), and `fc-match` answers here in 10–40 ms for a chain
+and about 10 for the best face alone — Homebrew's fontconfig 2.18.1 — so
+none of the three apps' first layouts waits on it, and there is nothing
+for #430 to halve on this Mac. A face nobody names still pays.
+
 ## Round 37: the releases, and two crashes a first frame could reach
 
 The Linux machine, after react-x11 2.22.12 and ntk 8.14.0 shipped rounds
@@ -3791,6 +3815,13 @@ run and the old tests fail on every run.
     it. A corpus wide enough to compare two versions is a crash test of
     both, and the crash is worth more than the comparison.
 
+51. **Re-time a wait before predicting what halves it.** Round 35
+    expected XQuartz's first layout to wait half as long with #430, from
+    round 12's 80–150 ms. By round 36 the wait was no longer on the path —
+    the families were warmed before any layout asked — and the change
+    moved nothing there. A number from twenty rounds before describes the
+    tree it was taken on.
+
 ## Still open
 
 Ordered by practical impact, after round 12, and `<Html>`'s edit after
@@ -3802,8 +3833,10 @@ round 15.
   code editor's 143–158 ms first frame. Sans-serif is warmed while the
   connection is set up. The components now warm the families they set
   (round 30), and core warms a menu's medium (round 31). Both shipped in
-  ntk 8.14.0 and react-x11 2.22.12 (round 37). A face nobody names still
-  pays, such as `<Html>`'s `th` at 600.
+  ntk 8.14.0 and react-x11 2.22.12 (round 37). On the Mac, a small app's,
+  a menubar's and an editor's `createRoot` to first paint is 52–59 ms with
+  them, none of it waiting on `fc-match` (round 36). A face nobody names
+  still pays, such as `<Html>`'s `th` at 600.
 - **Markdown reflow's second layout pass**: the floors emulating
   `min-height: auto` come from the previous layout, so a width change lays
   the document out twice — 10,188 nodes at 600 KB with #143, in a frame of
