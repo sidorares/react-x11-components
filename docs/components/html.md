@@ -305,8 +305,12 @@ loaded.
 and `min-w-max` — as CSS Sizing 3 has them: a block as wide as its content
 where its room holds it, auto margins centring it; one as wide as its
 longest line, or as its longest word, whatever the room; a flex item of one
-not stretched across a column, and a row item not shrunk below it. A
-height of one is its content's, which is `auto`.
+not stretched across a column, and a row item not shrunk below it. And
+`fit-content()` of a length or a percentage, which fits the content in the
+room its argument makes: no wider than the content at its widest, nor
+narrower than its longest word. The sizes are the content's, whatever
+`width` the box has beside them. A height of one is its content's, which
+is `auto`.
 
 **Transforms:** `translate`, and the translation in a `transform` —
 `translate(-50%, -50%)`, Tailwind's `-translate-x-1/2` in either of the

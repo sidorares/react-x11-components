@@ -10783,6 +10783,38 @@ metric(
 );
 
 metric(
+  'fit-content() fits the content in the room its argument makes',
+  async () => {
+    // CSS Sizing 3, 3.1: min(max-content, max(min-content, the argument)),
+    // for a width, a least width and a greatest width alike — and the
+    // content's own sizes, whatever width the box has beside them: probed
+    // at no width, a box with a width answered the probe's
+    const { node } = await render(
+      '<style>body{margin:0} i{display:inline-block;width:60px;' +
+        'height:10px}</style><div style="width:400px">' +
+        '<div id="a" style="width:fit-content(100px)"><i></i> <i></i></div>' +
+        '<div id="b" style="width:fit-content(10%)"><i></i> <i></i></div>' +
+        '<div id="c" style="width:fit-content(500px)"><i></i> <i></i></div>' +
+        '<div id="d" style="width:200px;max-width:fit-content(100px)">' +
+        '<i></i> <i></i></div>' +
+        '<div id="e" style="width:50px;min-width:fit-content(100px)">' +
+        '<i></i> <i></i></div>' +
+        '<div id="f" style="width:10px;min-width:min-content">' +
+        '<i></i> <i></i></div></div>',
+    );
+    const el = view(node);
+    const width = (id: string) => boxOf(el, id).width;
+    assert.strictEqual(width('a'), 100, 'the argument, between the two');
+    assert.strictEqual(width('b'), 60, 'no narrower than its widest word');
+    const widest = width('c');
+    assert.ok(widest > 120 && widest < 130, `its content's widest: ${widest}`);
+    assert.strictEqual(width('d'), 100);
+    assert.strictEqual(width('e'), 100);
+    assert.strictEqual(width('f'), 60, "its content's, not its width's");
+  },
+);
+
+metric(
   "an intrinsic size is a flex item's width, stretched or not",
   async () => {
     const { node } = await render(
