@@ -351,7 +351,7 @@ function applyContainer(node: YogaNode, style: ComputedStyle): void {
   if (direction !== Y.FLEX_DIRECTION_COLUMN) node.setFlexDirection(direction);
   const wrap = WRAP[style.flexWrap] ?? Y.WRAP_NO_WRAP;
   if (wrap !== Y.WRAP_NO_WRAP) node.setFlexWrap(wrap);
-  const justify = JUSTIFY[style.justifyContent] ?? Y.JUSTIFY_FLEX_START;
+  const justify = JUSTIFY[mainJustify(style)] ?? Y.JUSTIFY_FLEX_START;
   if (justify !== Y.JUSTIFY_FLEX_START) node.setJustifyContent(justify);
   const items = ALIGN[style.alignItems] ?? Y.ALIGN_STRETCH;
   if (items !== Y.ALIGN_STRETCH) node.setAlignItems(items);
@@ -883,6 +883,32 @@ const WRAP: Record<string, number> = {
   wrap: Y?.WRAP_WRAP,
   'wrap-reverse': Y?.WRAP_WRAP_REVERSE,
 };
+/**
+ * A `justify-content` as the main axis takes it (CSS Box Alignment 3,
+ * 6.1): `start` and `end` are the writing mode's, the main axis's own ends
+ * turned round in a reversed direction; `left` and `right` are the page's
+ * along a row, and `start` along a column, which has neither.
+ */
+function mainJustify(style: ComputedStyle): string {
+  const justify = style.justifyContent;
+  if (
+    justify !== 'start' &&
+    justify !== 'end' &&
+    justify !== 'left' &&
+    justify !== 'right'
+  ) {
+    return justify;
+  }
+  const reverse = style.flexDirection.endsWith('-reverse');
+  const row = style.flexDirection.startsWith('row');
+  let start: boolean;
+  if (justify === 'start') start = true;
+  else if (justify === 'end') start = false;
+  else if (!row) start = true;
+  else start = (justify === 'left') === (style.direction !== 'rtl');
+  return start !== reverse ? 'flex-start' : 'flex-end';
+}
+
 const JUSTIFY: Record<string, number> = {
   'flex-start': Y?.JUSTIFY_FLEX_START,
   'flex-end': Y?.JUSTIFY_FLEX_END,

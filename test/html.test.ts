@@ -9507,6 +9507,50 @@ metric(
   },
 );
 
+metric(
+  "justify-content's start, end, left and right follow the flex box's direction",
+  async () => {
+    // CSS Box Alignment 3, 6.1: `start` and `end` are the writing mode's,
+    // so a reversed row turns them round; `left` and `right` are the
+    // page's along a row, and `start` along a column. Read as the main
+    // axis's own ends, `right` put a column's items at its bottom
+    const place = async (css: string) => {
+      const { node } = await render(
+        '<style>body{margin:0} .f{display:flex;width:100px;height:100px}' +
+          '.f>div{width:20px;height:20px}</style>' +
+          `<div class="f" style="${css}"><div id="i"></div></div>`,
+      );
+      const box = boxOf(view(node), 'i');
+      cleanup();
+      return [box.x, box.y];
+    };
+    assert.deepStrictEqual(
+      await place('flex-direction:column;justify-content:right'),
+      [0, 0],
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:row-reverse;justify-content:start'),
+      [0, 0],
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:row-reverse;justify-content:right'),
+      [80, 0],
+    );
+    assert.deepStrictEqual(
+      await place('direction:rtl;justify-content:left'),
+      [0, 0],
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:column-reverse;justify-content:end'),
+      [0, 80],
+    );
+    assert.deepStrictEqual(
+      await place('justify-content:unsafe center'),
+      [40, 0],
+    );
+  },
+);
+
 metric('flex items are laid out in `order`', async () => {
   // CSS Flexbox 5.4: `order` first, the document's where it is the same;
   // an `order` that is no integer is no value
