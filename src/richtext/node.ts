@@ -649,6 +649,19 @@ export class RichTextNode extends Node {
   }
 
   /**
+   * How far this element draws past its box: a code chip is padded two
+   * pixels past the run behind it (`paintRunBackgrounds`), and at the start
+   * or the end of a line the pad is outside the box. Said for every
+   * paragraph, chips or not — core reads it when it rebuilds the paint
+   * bounds a claim covers, and the claim after an edit that took the last
+   * chip away still has to cover the chip the frame before drew. An older
+   * core never asks.
+   */
+  override paintOverhang(): number {
+    return Math.round(2 * this.scale);
+  }
+
+  /**
    * The selection band, between the run backgrounds and the ink. The default
    * is core's document selection: the band the `selectable` surface above
    * has claimed of this element's text, translucent so the ink keeps its
