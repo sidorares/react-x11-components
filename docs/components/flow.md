@@ -361,7 +361,11 @@ measuring, and they pull in opposite directions:
   which are small and scattered, it is a loss. So edges and arrowheads
   batch **above a threshold** and everything else is drawn one at a time.
   (Filed upstream as ntk#264; a tiled fill would take the grid out of the
-  question entirely — ntk#263.)
+  question entirely — ntk#263.) Below the threshold one edge is still one
+  path, however many pieces a pass cuts it into: a step edge that doubles
+  back along its own line adds its two legs' coverage in one path and lays
+  one over the other in two, and a pass that drew the pieces apart drew
+  the shared line's edges lighter than a repaint did.
 
 The second rule is the one worth remembering, because the obvious
 optimisation is the wrong one below the threshold.

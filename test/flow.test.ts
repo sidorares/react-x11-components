@@ -4669,6 +4669,82 @@ test('a pass over part of a dashed edge draws its dashes where the whole edge ha
   assert.strictEqual(differ, 0, `${differ} pixels of the strip moved`);
 });
 
+test('a pass that cuts the turn out of a folded edge draws its doubled line as a repaint does', async () => {
+  // A step edge whose target is above it leaves its handle downward and
+  // doubles straight back along its own line. Stroked whole, that is one
+  // path, and the two legs' coverage adds where they lie together; a pass
+  // whose clip ends between the handle and the turn cuts the edge into two
+  // runs, and stroked as two paths one leg lay over the other instead, so
+  // the shared line's edges came out lighter than a repaint drew them.
+  const result = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: [
+        {
+          id: 's',
+          position: { x: 100, y: 100 },
+          width: 60,
+          height: 30,
+          data: {},
+        },
+        {
+          id: 't',
+          position: { x: 220, y: 20 },
+          width: 60,
+          height: 30,
+          targetPosition: 'left',
+          data: {},
+        },
+      ],
+      edges: [{ id: 's-t', source: 's', target: 't', type: 'smoothstep' }],
+      background: false,
+      controls: false,
+      defaultViewport: { x: 0, y: 0, zoom: 2 },
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 600, height: 400 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+  };
+  // the handle's ring ends at 266 and the turn is at 287.7: the pass ends at
+  // 270, far enough above the turn that its runs are cut before it
+  const pass = { x: 240, y: 240, width: 40, height: 30 };
+  const seen = { x: 250, y: 267, width: 20, height: 3 };
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        result.ctx as unknown as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(seen.x, seen.y, seen.width, seen.height)
+    ).data;
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  const whole = await read();
+  await act(() => node.invalidate(false, pass, 'content'));
+  await motionLands();
+  const part = await read();
+  let inked = 0;
+  let differ = 0;
+  for (let i = 0; i < whole.length; i += 4) {
+    const d = Math.max(
+      Math.abs(whole[i] - part[i]),
+      Math.abs(whole[i + 1] - part[i + 1]),
+      Math.abs(whole[i + 2] - part[i + 2]),
+    );
+    if (d > 2) differ++;
+    if (whole[i] < 250) inked++;
+  }
+  assert.ok(inked > 0, 'precondition: the doubled line is under the handle');
+  assert.strictEqual(differ, 0, `${differ} pixels of the line moved`);
+});
+
 test('2D dashes hold still through a pan whose frames come slowly, and keep their speed when ticks are cheap', async () => {
   // A tick repaints the box the dashes are in. Over a dense graph in a
   // large window that was 75 ms on XQuartz against a 60 ms timer, and the
