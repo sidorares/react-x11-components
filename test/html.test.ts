@@ -7957,6 +7957,36 @@ metric(
   },
 );
 
+metric(
+  '::first-line fonts break the first line, and what is on it inherits them (CSS Pseudo 4, 2.1.2)',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<style>body{margin:0}p{margin:0;width:300px;font:12px/13px monospace}' +
+        'p::first-line{font:24px/30px monospace}small{font-size:50%}</style>' +
+        '<p id="p"><span id="a">aaaa</span> bbbb <small id="c">cccc</small> ' +
+        'dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn</p>',
+      {},
+    );
+    const { lines } = boxOf(el, 'p') as unknown as {
+      lines: { height: number; textStart: number; textEnd: number }[];
+    };
+    // the first line in the pseudo-element's 24px holds what fits in them:
+    // in the block's 12px it held some forty letters
+    assert.strictEqual(lines.length, 3, 'the text is on three lines');
+    assert.ok(lines[0].textEnd <= 25, `line 1 ends at ${lines[0].textEnd}`);
+    // at the pseudo-element's line height, the block's strut still on it,
+    // and the lines after it at the block's
+    assert.ok(lines[0].height >= 30, `line 1 is ${lines[0].height} tall`);
+    assert.strictEqual(lines[1].height, 13);
+    assert.strictEqual(lines[2].height, 13);
+    // an element on the line computes its size from the line's font: the
+    // <small> is half of 24px, not half of the block's 12px
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const ratio = rect('a').width / rect('c').width;
+    assert.ok(Math.abs(ratio - 2) < 0.1, `aaaa is ${ratio} times cccc`);
+  },
+);
+
 // --- CSS syntax: comments, numbers, escapes, white space --------------------
 
 test('a comment ends the token before it in a declaration, and not in a selector', () => {

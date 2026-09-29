@@ -51,6 +51,7 @@ import type {
   AtomicPlacement,
   Box,
   EdgePlacement,
+  FirstLineStyler,
   InlineDecoration,
   LineBox,
   LineText,
@@ -293,6 +294,12 @@ export interface InlineOptions {
   /** A `::first-line` colour, for the text before `end` — the first line's
    *  end, in the document index — whose colour is `from`, the block's. */
   firstLine?: { color: string; from: string; end: number };
+  /**
+   * A `::first-line` that sets the first line's fonts, which move where it
+   * breaks: its style, and each box's style on the line (`FirstLineStyler`)
+   * — which the line is found in, a piece at a time (CSS 2.1 5.12.1).
+   */
+  firstLineStyle?: { style: ComputedStyle; styler: FirstLineStyler };
   /** Whether any box in the document paints its background through its
    *  text (`BoxTree.clipText`). */
   clipText?: boolean;
@@ -528,11 +535,13 @@ function linesOf(
   // box between edges is moved afterwards, which needs its text apart.
   const spaced =
     hasEdges && !hasAtomics && !hasOffset && spacersHold(style, items);
+  // a first line in fonts of its own is found a piece at a time, in them
+  const restyled = options.firstLineStyle !== undefined;
 
   // Inline boxes' edges as spacers in one layout, where the engine left
   // every edge on the line of the content it belongs to (`layoutSpaced`);
   // the lines a piece at a time, below, where it did not.
-  if (spaced && !floated && !indent && !alignedApart) {
+  if (spaced && !floated && !indent && !alignedApart && !restyled) {
     const laid = layoutSpaced(
       items,
       base,
@@ -553,7 +562,8 @@ function linesOf(
     !raised &&
     !floated &&
     !indent &&
-    !alignedApart
+    !alignedApart &&
+    !restyled
   ) {
     // no atomics and no edges, so everything is text
     const textItems = items as Extract<Item, { kind: 'text' }>[];
@@ -766,9 +776,21 @@ function linesOf(
           },
         }
       : null;
+  // The first line in its `::first-line` fonts, until a line is closed
+  const lineOne = options.firstLineStyle
+    ? firstLineSetting(
+        block,
+        items,
+        options.firstLineStyle,
+        fonts,
+        strut,
+        lineJustify,
+      )
+    : null;
   /** Close the open line; `last` where the text or a forced break ends it,
    *  which `text-align-last` aligns. */
   const close = (last = false): void => {
+    const onFirst = lineOne !== null && !lines.length;
     const line = finishLine(
       open,
       y,
@@ -777,10 +799,12 @@ function linesOf(
       (height) => bandAt(options, y, Math.max(height, guess)),
       last || !wraps(style) ? lastShift : restShift,
       rtl,
-      strut,
-      lifts,
+      onFirst ? lineOne.strut : strut,
+      onFirst ? lineOne.lifts : lifts,
       (last || !wraps(style) ? justify.last : justify.rest)
-        ? lineJustify
+        ? onFirst
+          ? lineOne.justify
+          : lineJustify
         : null,
     );
     if (!line) {
@@ -799,6 +823,9 @@ function linesOf(
     const band = bandAt(options, y, guess);
     const available = band.right - band.left;
     const item = items[index];
+    const onFirst = lineOne !== null && !lines.length;
+    const lineItems = onFirst ? lineOne.items : items;
+    const lineBase = onFirst ? lineOne.base : base;
 
     if (item.kind === 'float') {
       // No higher than the top of the line it is met on (CSS 2.1 9.5.1):
@@ -816,7 +843,13 @@ function linesOf(
         !deferred.length &&
         (isEmpty(open) || open.x + pendingWidth + outer <= available);
       if (fits && !isEmpty(open) && !breaksAtEnd(open, style)) {
-        const after = unbreakableAfter(items, index + 1, style, fonts!, base);
+        const after = unbreakableAfter(
+          lineItems,
+          index + 1,
+          style,
+          fonts!,
+          lineBase,
+        );
         fits = open.x + pendingWidth + after + outer <= available;
       }
       if (fits) {
@@ -908,7 +941,7 @@ function linesOf(
       continue;
     }
 
-    const plain = segmentFrom(items, index, offset);
+    const plain = segmentFrom(lineItems, index, offset);
     // measured as it will be drawn where it is justified, its spaces
     // spaced apart (`HAIR`) — the same text, so every offset holds
     const segment = lineJustify
@@ -936,6 +969,7 @@ function linesOf(
     // `text-align-last` sets it apart)
     const tailIsPlain =
       !alignedApart &&
+      !onFirst &&
       segment.nextIndex >= items.length &&
       open.x === 0 &&
       !open.atomics.length &&
@@ -1012,11 +1046,11 @@ function linesOf(
       wraps(style) &&
       items[segment.nextIndex]?.kind === 'float' &&
       !BREAKS_AFTER.test(segment.runs[segment.runs.length - 1].text)
-        ? unbreakableAfter(items, segment.nextIndex, style, fonts, base)
+        ? unbreakableAfter(lineItems, segment.nextIndex, style, fonts, lineBase)
         : 0;
-    const fragment = fonts.layout(segment.runs, base, {
+    const fragment = fonts.layout(segment.runs, lineBase, {
       maxWidth: wraps(style) ? Math.max(1, room - tied) : undefined,
-      lineHeight: lineHeightMul,
+      lineHeight: onFirst ? lineOne.lineHeight : lineHeightMul,
       // Never aligned by the text layout: the alignment belongs to the whole
       // line — its text, its atomics and its inline boxes' edges together —
       // which only this loop can see, and `finishLine` shifts it all. Laid
@@ -2883,6 +2917,133 @@ function faceExtent(fonts: FontsLike, style: ComputedStyle): InlineDecoration {
   return extent;
 }
 
+/** A first line in its `::first-line` fonts (`firstLineSetting`). */
+interface FirstLineSetting {
+  /** The content, its text in the styles its boxes have on the line. */
+  items: Item[];
+  base: Record<string, unknown>;
+  lineHeight: number;
+  strut: InlineDecoration | null;
+  lifts: Lifts;
+  justify: LineJustify | null;
+}
+
+/**
+ * What a first line is made with where its `::first-line` sets its fonts
+ * (CSS 2.1 5.12.1). Its text is in the styles its boxes have on it — each
+ * element's own rules over what it inherits there, which takes the fonts
+ * from `::first-line` (CSS Pseudo 4, 2.1.2), so a `<small>` is smaller
+ * than the line's font and not than the block's — and it is laid out at
+ * the pseudo-element's line height. The pseudo-element is an inline box
+ * around the line's content, so its face at its line height is on the line
+ * with the block's strut, which stays: a `::first-line` of a smaller line
+ * height leaves the line as tall as the block's.
+ */
+function firstLineSetting(
+  block: Box,
+  items: Item[],
+  how: NonNullable<InlineOptions['firstLineStyle']>,
+  fonts: FontsLike,
+  strut: InlineDecoration | null,
+  justify: LineJustify | null,
+): FirstLineSetting {
+  const style = how.style;
+  const of = (box: Box): ComputedStyle =>
+    box === block || !box.parent
+      ? style
+      : styleOnFirstLine(box, of(box.parent), how.styler);
+  const restyled = items.map((item): Item => {
+    if (item.kind !== 'text') return item;
+    const run = restyledRun(item.run, item.box.style, of(item.box));
+    return run === item.run ? item : { ...item, run };
+  });
+  const lineHeight = lineHeightMultiplier(fonts, style);
+  const base = {
+    family: style.fontFamily,
+    size: style.fontSize,
+    weight: style.fontWeight,
+    style: style.fontStyle,
+    color: style.color,
+  };
+  const own = strutOf(fonts, style);
+  return {
+    items: restyled,
+    base,
+    lineHeight,
+    strut: strut && {
+      ascent: Math.max(strut.ascent, own.ascent),
+      descent: Math.max(strut.descent, own.descent),
+    },
+    lifts: new Lifts(fonts, style, of),
+    justify: justify && {
+      ...justify,
+      base,
+      options: { ...justify.options, lineHeight },
+    },
+  };
+}
+
+/**
+ * Each box's style on a first line (`FirstLineStyler`), kept for the style
+ * its parent has there: every pass asks again, and a style that is a new
+ * object each time is a new face to every cache that keys on one.
+ */
+const ON_FIRST_LINE = new WeakMap<
+  Box,
+  { parent: ComputedStyle; style: ComputedStyle }
+>();
+
+/** A box's style on a first line, where its parent's there is `parent`. */
+function styleOnFirstLine(
+  box: Box,
+  parent: ComputedStyle,
+  styler: FirstLineStyler,
+): ComputedStyle {
+  const known = ON_FIRST_LINE.get(box);
+  if (known && known.parent === parent) return known.style;
+  const style = styler(box, parent);
+  ON_FIRST_LINE.set(box, { parent, style });
+  return style;
+}
+
+/** What a run takes from its style (`runFor`). */
+const RUN_STYLE = [
+  'family',
+  'size',
+  'weight',
+  'style',
+  'color',
+  'letterSpacing',
+  'features',
+  'underline',
+  'underlineStyle',
+  'underlineOffset',
+  'underlineThickness',
+  'strike',
+] as const;
+
+/**
+ * A run of text in `style` rather than `own`, the style it was made in:
+ * what it has of neither — the room a tab or `word-spacing` adds to its
+ * letter spacing, a `nowrap` group, where its shaping is broken — kept.
+ */
+function restyledRun(
+  run: TextRun,
+  own: ComputedStyle,
+  style: ComputedStyle,
+): TextRun {
+  if (style === own) return run;
+  const fresh = runFor(run.text, style) as unknown as Record<string, unknown>;
+  const out = { ...run } as unknown as Record<string, unknown>;
+  for (const name of RUN_STYLE) {
+    if (fresh[name] === undefined) delete out[name];
+    else out[name] = fresh[name];
+  }
+  const added = (run.letterSpacing ?? 0) - (own.letterSpacing || 0);
+  if (added) out.letterSpacing = ((out.letterSpacing as number) ?? 0) + added;
+  return out as unknown as TextRun;
+}
+
 /**
  * The first line's text in its `::first-line` colour: the runs before the
  * line's end whose colour is the block's own, the one that ends past it cut
@@ -4145,6 +4306,9 @@ class Lifts {
   constructor(
     private readonly fonts: FontsLike,
     private readonly block: ComputedStyle,
+    /** A box's style on the lines these are for: its own, or the one it
+     *  has on a first line (`firstLineSetting`). */
+    private readonly styleOf: (box: Box) => ComputedStyle = ownStyle,
   ) {}
 
   /** Where a text goes, or null for one that is on the line's baseline and
@@ -4157,7 +4321,7 @@ class Lifts {
     if (!raise && !edge && !lead) return null;
     // the room of every box whose text is in it: no raised box starts or
     // ends inside a fragment, but one it holds may be set larger
-    const own = { ...strutOf(this.fonts, owner.style) };
+    const own = { ...strutOf(this.fonts, this.styleOf(owner)) };
     // and of the inline boxes around it, each about its own baseline: each
     // is on the line with its line height, which the text's may not reach.
     // Not only where one sets a line height of its own: a raised `<sup>`
@@ -4166,16 +4330,17 @@ class Lifts {
     if (lead || raise) {
       for (let at: Box | null = parent; at?.kind === 'inline'; at = at.parent) {
         const box = this._box(at);
-        const room = strutOf(this.fonts, at.style);
+        const room = strutOf(this.fonts, this.styleOf(at));
         own.ascent = Math.max(own.ascent, room.ascent + box.raise - raise);
         own.descent = Math.max(own.descent, room.descent - box.raise + raise);
         if (box.edge === at) break;
       }
     }
     const natural = text.layout.lines[text.layoutLine];
-    let seen = owner.style;
+    let seen = this.styleOf(owner);
     for (const run of natural?.runs ?? []) {
-      const style = text.spans.boxAt?.(run.start)?.style;
+      const at = text.spans.boxAt?.(run.start);
+      const style = at && this.styleOf(at);
       if (!style || style === seen) continue;
       seen = style;
       const room = strutOf(this.fonts, style);
@@ -4184,10 +4349,10 @@ class Lifts {
     }
     let to: Lift['edge'] = null;
     if (edge) {
-      const room = strutOf(this.fonts, edge.style);
+      const room = strutOf(this.fonts, this.styleOf(edge));
       to = {
         box: edge,
-        to: edge.style.verticalAlign === 'top' ? 'top' : 'bottom',
+        to: this.styleOf(edge).verticalAlign === 'top' ? 'top' : 'bottom',
         ascent: room.ascent,
         descent: room.descent,
       };
@@ -4204,7 +4369,7 @@ class Lifts {
     if (!raise && !lead && !tallerStrut(this.fonts, this.block, box)) {
       return null;
     }
-    const room = strutOf(this.fonts, box.style);
+    const room = strutOf(this.fonts, this.styleOf(box));
     return { raise, ascent: room.ascent, descent: room.descent };
   }
 
@@ -4219,8 +4384,8 @@ class Lifts {
     if (box.kind !== 'inline' || !box.parent) return NO_LIFT;
     const known = this._boxes.get(box);
     if (known) return known;
-    const va = box.style.verticalAlign;
-    const own = ownsLeading(this.fonts, this.block, box.style);
+    const va = this.styleOf(box).verticalAlign;
+    const own = ownsLeading(this.fonts, this.block, this.styleOf(box));
     let lift: { raise: number; edge: Box | null; lead: boolean };
     if (va === 'top' || va === 'bottom') {
       // what is in it is raised from its baseline, which the line's edge
@@ -4242,8 +4407,8 @@ class Lifts {
   /** How far a box's own `vertical-align` raises it from its parent's
    *  baseline. */
   private _own(box: Box, parent: Box): number {
-    const va = box.style.verticalAlign;
-    const size = parent.style.fontSize;
+    const va = this.styleOf(box).verticalAlign;
+    const size = this.styleOf(parent).fontSize;
     switch (va) {
       case 'baseline':
       case 'top':
@@ -4255,28 +4420,30 @@ class Lifts {
         return size / 3 + size / 16;
       case 'text-top':
         return (
-          faceExtent(this.fonts, parent.style).ascent -
-          strutOf(this.fonts, box.style).ascent
+          faceExtent(this.fonts, this.styleOf(parent)).ascent -
+          strutOf(this.fonts, this.styleOf(box)).ascent
         );
       case 'text-bottom':
         return (
-          strutOf(this.fonts, box.style).descent -
-          faceExtent(this.fonts, parent.style).descent
+          strutOf(this.fonts, this.styleOf(box)).descent -
+          faceExtent(this.fonts, this.styleOf(parent)).descent
         );
       case 'middle': {
-        const own = strutOf(this.fonts, box.style);
+        const own = strutOf(this.fonts, this.styleOf(box));
         return (
-          xHeightOf(this.fonts, parent.style) / 2 -
+          xHeightOf(this.fonts, this.styleOf(parent)) / 2 -
           (own.ascent - own.descent) / 2
         );
       }
       default:
         return typeof va === 'number'
           ? va
-          : resolve(va, lineHeightOf(this.fonts, box.style));
+          : resolve(va, lineHeightOf(this.fonts, this.styleOf(box)));
     }
   }
 }
+
+const ownStyle = (box: Box): ComputedStyle => box.style;
 
 const NO_LIFT = { raise: 0, edge: null, lead: false };
 
