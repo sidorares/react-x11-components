@@ -78,7 +78,12 @@ import {
   layoutOffsets as layoutOffsetsOf,
 } from './layout/inline.js';
 import { lineBands as bandsFor } from '../richtext/runs.js';
-import { paintDocument, queryChildIndex } from './paint.js';
+import {
+  clipsOverflow,
+  hasRect,
+  paintDocument,
+  queryChildIndex,
+} from './paint.js';
 import type { PaintContext } from './paint.js';
 import { controlRectsOf, measureControl } from './controls.js';
 import type { BareField, ControlRect } from './controls.js';
@@ -1904,6 +1909,13 @@ function collectBands(
   }
 }
 
+/** The layers of a hit test, in the order CSS paints them within a
+ *  context (`deepestAt`). */
+const HIT_BLOCK = 0;
+const HIT_FLOAT = 1;
+const HIT_INLINE = 2;
+const HIT_POSITIONED = 3;
+
 /** The deepest element box containing a document-space point. */
 function deepestAt(
   tree: BoxTree,
@@ -1915,8 +1927,62 @@ function deepestAt(
 ): Element | null {
   const box = tree.root;
   let found: Element | null = box.el;
+  let foundKey: readonly number[] = [];
   let viaText = false;
-  const visit = (node: Box): void => {
+  // What is under a point is what was painted there last (CSS 2.1 Appendix
+  // E): within a context, an in-flow block's own box, then a float over it,
+  // then a line's text and atomics, then a positioned box — and a float, an
+  // atomic or a positioned box paints its own content whole in its turn,
+  // those layers again inside it. So a hit carries the layers down to it,
+  // and takes the place of the one before where those come after them, or
+  // tie: an infobox floated out of one section hangs over the next, whose
+  // own box took every link in it, and a skin that puts the article in a
+  // `position: relative` box put all of it in one layer.
+  const take = (el: Element, key: readonly number[], text: boolean) => {
+    if (compareKeys(key, foundKey) < 0) return;
+    found = el;
+    foundKey = key;
+    viaText = text;
+  };
+  // A box is walked into wherever it draws — its reach, overflow and all
+  // (`computePaintBounds`) — and named only where its own rectangle is. A
+  // page's `html, body { height: 100% }` is one viewport tall and its
+  // article overflows it, and a walk that went no further than a box's own
+  // rectangle found nothing below the first screen: once Wikipedia was
+  // scrolled, no link lit up. A box that clips what overflows it ends the
+  // walk at its edge, and one whose reach is not known yet — before its
+  // first paint — at its rectangle, as before.
+  const enter = (child: Box, context: readonly number[]): void => {
+    const style = child.style;
+    if (style.position !== 'static') context = [...context, HIT_POSITIONED];
+    else if (style.float !== 'none') context = [...context, HIT_FLOAT];
+    const inside =
+      x >= child.x &&
+      x < child.x + child.width &&
+      y >= child.y &&
+      y < child.y + child.height;
+    const own = inside && hasRect(child);
+    if (!own) {
+      const reach = child.boundsY;
+      const known =
+        Number.isFinite(reach) &&
+        (child.boundsWidth > 0 || child.boundsHeight > 0);
+      if (!known) {
+        if (!inside) return;
+      } else if (
+        x < child.boundsX ||
+        x >= child.boundsX + child.boundsWidth ||
+        y < reach ||
+        y >= reach + child.boundsHeight ||
+        clipsOverflow(child)
+      ) {
+        return;
+      }
+    }
+    if (own && child.el) take(child.el, [...context, HIT_BLOCK], false);
+    visit(child, context);
+  };
+  const visit = (node: Box, context: readonly number[]): void => {
     // The paint index answers a point query too — the wide level of a flat
     // document is the root's child list, and a hit test that walked all of
     // it would run per pointer move once hover is in the picture.
@@ -1925,50 +1991,15 @@ function deepestAt(
       : node.children;
     for (const child of candidates) {
       if (child.kind === 'text' || child.kind === 'break') continue;
-      if (
-        x >= child.x &&
-        x < child.x + child.width &&
-        y >= child.y &&
-        y < child.y + child.height
-      ) {
-        if (child.el) {
-          found = child.el;
-          viaText = false;
-        }
-        visit(child);
-      }
+      enter(child, context);
     }
     if (node.paintIndex && node.positionedPaint) {
-      for (const child of node.positionedPaint) {
-        if (
-          x >= child.x &&
-          x < child.x + child.width &&
-          y >= child.y &&
-          y < child.y + child.height
-        ) {
-          if (child.el) {
-            found = child.el;
-            viaText = false;
-          }
-          visit(child);
-        }
-      }
+      for (const child of node.positionedPaint) enter(child, context);
     }
     if (node.lines) {
       for (const line of node.lines) {
         for (const placed of line.atomics) {
-          if (
-            x >= placed.box.x &&
-            x < placed.box.x + placed.box.width &&
-            y >= placed.box.y &&
-            y < placed.box.y + placed.box.height
-          ) {
-            if (placed.box.el) {
-              found = placed.box.el;
-              viaText = false;
-            }
-            visit(placed.box);
-          }
+          enter(placed.box, [...context, HIT_INLINE]);
         }
         // An inline box has no box of its own — its extent is the runs on
         // this line — so the element under a point inside a paragraph is
@@ -1988,10 +2019,7 @@ function deepestAt(
                   tree.textBoxes,
                   text.spans.documentAt(run.start),
                 );
-                if (owner) {
-                  found = owner;
-                  viaText = true;
-                }
+                if (owner) take(owner, [...context, HIT_INLINE], true);
               }
             }
           }
@@ -1999,9 +2027,17 @@ function deepestAt(
       }
     }
   };
-  visit(box);
+  visit(box, []);
   if (hit) hit.text = viaText;
   return found;
+}
+
+/** Paint order between two hits' layers, outermost first: negative where
+ *  `a` was painted under `b`. */
+function compareKeys(a: readonly number[], b: readonly number[]): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
+  return a.length - b.length;
 }
 
 // --- a pointer move restyled where it happened (`_hoverInPlace`) -----------

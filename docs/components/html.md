@@ -794,6 +794,15 @@ element for the point as the pointer moves (`cursorAt`, react-x11#757): a
 document is one node with a cursor for each part of it. A `url()` cursor
 is not loaded, and falls back as its list would.
 
+**What is under the pointer is what was painted there last.** The cursor,
+the hover, `elementAt` and `hrefAt` share one hit test. It reaches every
+place a box draws, including what overflows it, as long as the box does
+not clip. So a page that sets `html, body { height: 100% }` and runs longer
+than that still has links below the first screen. Where two boxes overlap,
+the answer follows CSS paint order. An infobox floated out of one section
+and hanging over the next keeps its links, and the next section's box does
+not take them.
+
 **Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
 Everything from the cascade to paint recurses on tree depth, so a
 degenerately nested document — a few hundred unclosed `<div>`s, a runaway

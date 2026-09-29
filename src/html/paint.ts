@@ -299,7 +299,7 @@ export function computePaintBounds(box: Box, moved = false): number {
  * document — and a paint low in a long document went through every block
  * above the viewport, as did a hit test during a selection drag.
  */
-function hasRect(box: Box): boolean {
+export function hasRect(box: Box): boolean {
   if (box.kind === 'inline') return false;
   if (box.kind !== 'block') return true;
   const display = box.style.display;
@@ -1478,7 +1478,7 @@ function holds(outer: Box, inner: Box | null): boolean {
  * `<body>`'s where the root's is `visible`, an `<html>` the markup left out
  * among them; the viewport here is the element, which clips anyway.
  */
-function clipsOverflow(box: Box): boolean {
+export function clipsOverflow(box: Box): boolean {
   if (CLIPPED_CELLS.has(box)) return true;
   const style = box.style;
   if (style.overflowX === 'visible' && style.overflowY === 'visible') {

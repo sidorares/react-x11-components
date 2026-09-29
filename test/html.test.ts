@@ -12906,3 +12906,50 @@ metric(
     assert.strictEqual(await over('a'), 'pointer');
   },
 );
+
+metric(
+  'a link past the box its page overflows is found, and one a box clips away is not',
+  async () => {
+    // `html, body { height: 100% }` makes both one viewport tall and the
+    // page overflow them: a hit test that went into a box only where its
+    // own rectangle was found nothing below the first screen — a scrolled
+    // Wikipedia article lit no link at all
+    const { node } = await render(
+      '<html><head><style>html, body { height: 100%; margin: 0 }' +
+        ' .clip { height: 20px; overflow: hidden }</style></head><body>' +
+        '<div style="height:700px">tall</div>' +
+        '<p><a id="below" href="#b">below the first screen</a></p>' +
+        '<div class="clip"><div style="height:20px">top</div>' +
+        '<a id="hidden" href="#h">clipped away</a></div></body></html>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'below')), '#b');
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'hidden')), null);
+  },
+);
+
+metric(
+  'a float hanging over the next block is what is under the pointer there',
+  async () => {
+    // a float is painted after the in-flow blocks around it (CSS 2.1
+    // Appendix E): an infobox floated out of a short section, over the
+    // next one, keeps its links — and a `position: relative` article
+    // around both puts them in one context rather than one layer
+    const { node } = await render(
+      '<div style="position:relative">' +
+        '<div><div style="float:right;width:120px;height:200px">' +
+        '<p style="margin:150px 0 0"><a id="f" href="#f">in the float</a></p>' +
+        '</div>short</div>' +
+        '<div id="next" style="height:300px">the next section</div></div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const link = el.elementRect(findById(el.document, 'f')!)!;
+    const next = el.elementRect(findById(el.document, 'next')!)!;
+    assert.ok(link.y > next.y, 'the link hangs over the next section');
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'f')), '#f');
+  },
+);
