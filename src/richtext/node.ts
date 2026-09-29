@@ -129,6 +129,13 @@ export interface TextRun {
    *  either side of an inline box's margin, border or padding. ntk's, from
    *  8.14.2. */
   shapeApart?: boolean;
+  /** Kerned with the runs either side of it though its letter spacing is
+   *  not theirs: the spacing a justified line or `word-spacing` gives a
+   *  space is in addition to kerning and no element's (CSS Text 3, 7.2,
+   *  7.3), where a run of an element's own letter spacing is shaped apart,
+   *  as a browser shapes it. ntk's, from 8.15.0; CoreText takes a spaced
+   *  glyph's spacing in place of its pairs either way. */
+  kernAcross?: boolean;
 }
 
 /** The props `<richtext>` takes. */

@@ -27,6 +27,7 @@ import { ThemeProvider } from 'react-x11';
 import { Html } from '../src/index.js';
 import { HtmlViewNode } from '../src/html/index.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
+import type { TextRun } from '../src/richtext/index.js';
 import { featuresOf, hungSpaces } from '../src/html/layout/inline.js';
 import {
   CounterStyles,
@@ -15363,5 +15364,45 @@ metric(
       line.height >= 16 - 0.01 && line.height < 18,
       `as tall as its boxes, not 19: ${line.height}`,
     );
+  },
+);
+
+metric(
+  "the spaces justification and word-spacing space out keep their kerning, and an element's letter-spacing does not",
+  async () => {
+    // A space justification spaces out is a run of its own, and the engine
+    // shaped it apart for its letter spacing: Arial's space–T and L–space
+    // pairs were lost, a line of the Zen Garden's 037 measured 0.6px wider
+    // than it does unjustified, and broke a word early. That spacing is in
+    // addition to kerning and no element's (CSS Text 3, 7.2, 7.3), so the
+    // run says so; an element's own letter-spacing is where a browser
+    // breaks the shaping, and says nothing
+    const words = 'The quick brown fox jumps over the lazy dog, and back. ';
+    const { result, node } = await render(
+      '<style>body{margin:0}p{margin:0;width:200px}</style>' +
+        `<p style="text-align:justify">${words.repeat(3)}</p>` +
+        '<p style="word-spacing:4px">alpha beta gamma</p>' +
+        '<p><span style="letter-spacing:2px">spaced</span> text</p>',
+    );
+    const el = view(node);
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const seen: TextRun[] = [];
+    const recording: FontsLike = {
+      layout: (runs, style, options) => {
+        seen.push(...(runs as TextRun[]));
+        return fonts.layout(runs, style, options);
+      },
+      match: (...args) => fonts.match(...args),
+    };
+    const { layoutDocument } = await import('../src/html/layout/block.js');
+    const tree = (el as unknown as { _tree: unknown })._tree;
+    layoutDocument(tree as never, recording, 400, 600);
+    const spaced = seen.filter((run) => run.letterSpacing && run.text === ' ');
+    assert.ok(spaced.length > 10, `${spaced.length} spaced spaces`);
+    for (const run of spaced) assert.strictEqual(run.kernAcross, true);
+    const own = seen.filter((run) => run.text === 'spaced');
+    assert.ok(own.length > 0 && own.every((run) => run.letterSpacing === 2));
+    for (const run of own)
+      assert.ok(!run.kernAcross, 'an element spaces apart');
   },
 );

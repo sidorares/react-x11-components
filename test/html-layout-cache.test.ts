@@ -146,6 +146,7 @@ const other: Record<(typeof RUN_FIELDS)[number], TextRun[keyof TextRun]> = {
   features: { tnum: 1 },
   nowrap: true,
   shapeApart: true,
+  kernAcross: true,
 };
 
 test('every field of a run is what it is found by', () => {

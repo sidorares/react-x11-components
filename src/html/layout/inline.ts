@@ -2815,7 +2815,12 @@ function wordSpaced(
       run: {
         ...run,
         text: text.slice(from, to),
-        ...(extra ? { letterSpacing: (run.letterSpacing ?? 0) + extra } : null),
+        ...(extra
+          ? {
+              letterSpacing: (run.letterSpacing ?? 0) + extra,
+              kernAcross: true,
+            }
+          : null),
       },
       box,
       length: to - from,
@@ -4111,14 +4116,17 @@ function unwrappedPlacer(
 
 /**
  * The spacing a space is given to be laid out as one that may be spaced
- * apart, too little to move a glyph. It is not nothing, because neither
- * engine measures a space that is a spaced run of its own as it measures
- * the same space inside its run: ntk shapes each run apart, so the kerning
- * pair a space made with the letter beside it is gone (Arial's `A` and
- * `T` have them), and CoreText spaces a glyph with its kerning attribute,
- * which takes the place of the font's pairs. A line justified from a
- * measure of its spaces as they were came out wider than its box and
- * broke a word early: on macOS, in Helvetica, half of a paragraph did.
+ * apart, too little to move a glyph. It is not nothing, because CoreText
+ * does not measure a space that is a spaced run of its own as it measures
+ * the same space inside its run: it spaces a glyph with its kerning
+ * attribute, which takes the place of the font's pairs. A line justified
+ * from a measure of its spaces as they were came out wider than its box
+ * and broke a word early: on macOS, in Helvetica, half of a paragraph did.
+ * ntk keeps the pairs a spaced space makes with the letters beside it
+ * (Arial's space and `T`, its `L` and space) where the run is marked
+ * `kernAcross` — spacing that justifies a line is in addition to kerning
+ * (CSS Text 3, 7.2) — so there the measure is the unjustified line's, as
+ * a browser's is.
  */
 const HAIR = 1e-6;
 
@@ -4136,6 +4144,7 @@ function spacedApart(runs: TextRun[]): TextRun[] {
         ...run,
         text: text[at],
         letterSpacing: (run.letterSpacing ?? 0) + HAIR,
+        kernAcross: true,
       });
       piece = at + 1;
     }
@@ -4215,6 +4224,7 @@ function widenedAt(runs: TextRun[], extra: Map<number, number>): TextRun[] {
         ...run,
         text: text[at],
         letterSpacing: (run.letterSpacing ?? 0) + add,
+        kernAcross: true,
       });
       piece = at + 1;
     }
