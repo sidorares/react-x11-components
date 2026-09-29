@@ -52,6 +52,7 @@ interface Laid {
   width: number;
   children: Laid[];
   el: Element | null;
+  layoutSerial: number;
 }
 
 /** A document `depth` elements deep, each opened with `open`. */
@@ -65,6 +66,50 @@ function coldLayout(node: Awaited<ReturnType<typeof render>>): number {
   const t = performance.now();
   node._prepare(600);
   return performance.now() - t;
+}
+
+/**
+ * How many times a cold layout lays out each box of a kind, and how many of
+ * its own kind it is inside. Counted where every layout of a box is:
+ * `layoutBox` numbers the box it lays out (`Box.layoutSerial`), and it is
+ * the only caller of `layoutTable`. The boxes are the fresh tree's, counted
+ * from when the node is handed it, before anything lays it out.
+ */
+function coldLayouts(
+  node: Awaited<ReturnType<typeof render>>,
+  kind: string,
+): { depth: number; layouts: number }[] {
+  let counts: { depth: number; layouts: number }[] = [];
+  const count = (box: Laid, depth: number): void => {
+    if (box.kind === kind) {
+      const seen = { depth, layouts: 0 };
+      counts.push(seen);
+      let serial = box.layoutSerial;
+      Object.defineProperty(box, 'layoutSerial', {
+        get: () => serial,
+        set: (value: number) => {
+          serial = value;
+          seen.layouts += 1;
+        },
+      });
+    }
+    const inside = box.kind === kind ? depth + 1 : depth;
+    for (const child of box.children) count(child, inside);
+  };
+  let tree = node._tree;
+  Object.defineProperty(node, '_tree', {
+    get: () => tree,
+    set: (value: TestNode['_tree']) => {
+      tree = value;
+      counts = [];
+      if (value) count(value.root, 0);
+    },
+    configurable: true,
+  });
+  node._stale = 2;
+  node._prepare(600);
+  Object.defineProperty(node, '_tree', { value: tree, writable: true });
+  return counts;
 }
 
 for (const [kind, open, close] of [
@@ -198,8 +243,19 @@ test('a table asked for again at the same width is not laid out again', async ()
       '<table><tr><td>x</td></tr></table>'.repeat(500) +
       '</table>'.repeat(100),
   );
-  const ms = coldLayout(node);
-  assert.ok(ms < 500, `${ms.toFixed(0)} ms`);
+  const tables = coldLayouts(node, 'table');
+  assert.strictEqual(tables.length, 600, 'every table counted');
+  // A table is laid out as the cell around it is measured, at min content
+  // and at max content, and as that cell is laid out: three times at any
+  // depth. Laid out again at every level, the one k tables deep was laid
+  // out 2k + 1 times — 201 at the bottom, 110,500 layouts in all. Counted
+  // rather than timed, that is the same answer on a loaded machine as on
+  // an idle one.
+  const most = tables.reduce((a, b) => (b.layouts > a.layouts ? b : a));
+  assert.ok(
+    tables.every(({ layouts }) => layouts >= 1 && layouts <= 3),
+    `the table ${most.depth} deep was laid out ${most.layouts} times`,
+  );
 });
 
 test('a thousand nested table cells render', async () => {
