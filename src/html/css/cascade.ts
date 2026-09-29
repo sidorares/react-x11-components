@@ -33,6 +33,7 @@ import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import {
   applyDeclaration,
   blockify,
+  settleContentVisibility,
   settleOverflow,
   settleClamp,
   copyStyle,
@@ -935,6 +936,7 @@ export class Cascade {
     }
     settleClamp(style, parentStyle);
     settleOverflow(style);
+    settleContentVisibility(style);
     blockify(style, inFlexContainer);
     decorate(style);
     return style;
@@ -1421,6 +1423,16 @@ function presentationHints(el: Element): Declaration[] {
     if (width) push('width', lengthAttr(width));
     const height = attr(el, 'height');
     if (height) push('height', lengthAttr(height));
+    // and, both numbers, an image's the ratio it has before it loads, or
+    // where it has none of its own (HTML 15.4.3, "map to the aspect-ratio
+    // property")
+    if (width && height && RATIO_SIZED.has(tag)) {
+      const w = parseFloat(width);
+      const h = parseFloat(height);
+      if (w > 0 && h > 0 && !/%/.test(width + height)) {
+        push('aspect-ratio', `auto ${w} / ${h}`);
+      }
+    }
   } else if (tag === 'svg') {
     // an SVG's are CSS lengths of their own, units and all (SVG 2, 5.1.1)
     const width = attr(el, 'width');
@@ -1556,6 +1568,9 @@ function closestBody(el: Element): Element | null {
   }
   return null;
 }
+
+/** What the `width` and `height` attributes give a ratio as well. */
+const RATIO_SIZED = new Set(['img', 'video']);
 
 const SIZED = new Set([
   'img',
