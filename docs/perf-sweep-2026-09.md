@@ -4313,6 +4313,50 @@ react-x11 #737's question, and not changed here.
 - `<Table>` rows appended at the end: 17–19 ms a row from 1,000 to 50,000
   rows, virtualized. Kept sorted, 50,000 rows cost 32 ms, which is the
   sort; left alone.
+- A `<LineChart>` whose window slides over its data: 65 ms an update at
+  100,000 rows handed in as a new array, and 42 ms through `ChartData`,
+  nearly all of it the in-process server filling the plot. In React's
+  development build the same slide cost 648 ms. React's performance tracks
+  diff every changed prop, and the diff stops after 100 keys only when
+  the keys it passes are equal. So an array whose objects differ at every
+  index, as they do after a slide, a sort or a re-fetch, is walked to its
+  end and handed to `performance.measure`. That is React's to fix, and it
+  applies to any component handed such an array; react-x11 #789 has the
+  measurements and a report ready to file upstream. The streaming
+  components here come within 15% of their production numbers in the
+  development build.
+
+### A value that streams into the editor (#391)
+
+`<RichTextEditor>` took a new `value` as a reset: the whole document
+replaced, every block a new node. So a model writing into the editor had
+every block keyed and drawn again, and walked by prosemirror-tables'
+repair, for every word it wrote. The reset is now made of the nodes
+already there. Its first step replaces the whole document with its own
+content, so the history and the caret see the reset they always saw. Then
+come the steps of the change alone. The markdown codec resumes its last
+parse and reuses the nodes each unchanged block became.
+
+| document         | a streamed word, before |  after |
+| ---------------- | ----------------------: | -----: |
+| 50 paragraphs    |                 23.2 ms | 3.2 ms |
+| 800 paragraphs   |                 30.7 ms | 3.2 ms |
+| 3,200 paragraphs |                 74.9 ms | 4.9 ms |
+
+The first version replaced only the change, and made the same documents.
+It also made a different history. The typing on either side of the change
+stayed undoable, so an undo after an app cleared a draft brought a letter
+of it back. The whole-document step also has to come first: last, it let
+a position at the edge of the change through.
+
+### Where the sweep stops
+
+Each of the last rounds found less than the one before, and what they
+found was in components growing, not in the frame. So the loop stops
+here. What is left is in "Still open", and most of it is a decision rather
+than a fix: core's height-floor pass (react-x11 #737), the geometry a
+partial pass cuts (ntk #462), and React's development-build prop diff
+(react-x11 #789).
 
 ## Lessons
 
@@ -4682,6 +4726,17 @@ react-x11 #737's question, and not changed here.
     spends drawing one frame shows up in the time around the next. Split
     client from server with a profile rather than with timestamps, and
     weigh the server's share against what native Xorg would do.
+77. **A faster path has to keep the old path's semantics, not just its
+    result.** The narrowed replace made exactly the document the whole one
+    did, and a fuzz over 50,000 edits said so. It still changed what an
+    undo could reach, which no comparison of documents can see. Write the
+    guarantee the old path gave as a test that passes on master, before
+    trusting the new one.
+78. **Measure in the build people run.** A react-x11 app started with
+    `node` runs React's development build unless told otherwise, and there
+    one chart update cost ten times what it does in production. Keep both
+    numbers, and read a profile's top frames for whose code they are
+    before fixing anything.
 
 ## Still open
 
@@ -4754,3 +4809,10 @@ round 15.
   up to about ten levels apart at the edges (round 42). Forcing one route
   removes it. What is left to decide: a sparse local upload, a route a
   caller pins, or leaving it.
+- **React's development-build prop diff** (react-x11 #789): a component
+  handed an array whose objects differ at every index pays for a walk of
+  all of them on each render, only in development: 387 ms for 100,000
+  objects shifted by one, and a sliding `<LineChart>` at 648 ms against
+  65 in production (round 43). It is React's to fix. The decision is
+  whether to file the report the issue drafts, and whether core's docs
+  should tell apps to run with `NODE_ENV=production`.
