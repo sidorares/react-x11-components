@@ -2110,8 +2110,73 @@ function atomicBaseline(box: Box): number {
     return bottom;
   }
   const baseline =
-    box.kind === 'table' ? tableBaseline(box) : lastBaselineIn(box);
+    box.kind === 'table'
+      ? tableBaseline(box)
+      : // an inline flex box sits on its first (CSS Flexbox 8.5), where an
+        // inline block sits on its last line's
+        box.kind === 'flex'
+        ? firstBaselineIn(box)
+        : lastBaselineIn(box);
   return baseline === null ? bottom : box.marginTop + (baseline - box.y);
+}
+
+/**
+ * A flex container's first baseline, or its last (CSS Flexbox 8.5): that
+ * of the first item on its first line that is aligned by its baseline — the
+ * last on its last line — or where none is, of its first item, or last,
+ * in `order`. An item gives its own, or where it has none, its border
+ * box's bottom edge. Not its last child's: an `inline-flex` of a small
+ * item and a big one sat on the big one's baseline. Null for a box with no
+ * item.
+ */
+function flexBaseline(box: Box, first: boolean): number | null {
+  let items: Box[] = [];
+  let reordered = false;
+  for (const child of box.children) {
+    if (child.outOfFlow || child.isFloat) continue;
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (child.style.order !== 0) reordered = true;
+    items.push(child);
+  }
+  if (!items.length) return null;
+  if (reordered) items.sort((a, b) => a.style.order - b.style.order);
+  if (!first) items = items.reverse();
+  const style = box.style;
+  if (style.flexDirection.startsWith('row') && !style.grid) {
+    // a line ends where the next item does not go on along the main axis,
+    // which from the last item is where it goes on
+    const back =
+      ((style.flexDirection === 'row-reverse') !==
+        (style.direction === 'rtl')) !==
+      !first;
+    let last = NaN;
+    for (const item of items) {
+      if (!Number.isNaN(last) && (back ? item.x >= last : item.x <= last)) {
+        break;
+      }
+      last = item.x;
+      const align =
+        item.style.alignSelf === 'auto'
+          ? style.alignItems
+          : item.style.alignSelf;
+      if (align === 'baseline') return itemBaselineOf(item, first, style);
+    }
+  }
+  return itemBaselineOf(items[0], first, style);
+}
+
+/** A flex item's baseline, in document coordinates: its first line's or
+ *  its last's — its bottom margin edge where it clips what it holds — or
+ *  where it has none, its border box's bottom edge, which a grid does not
+ *  take from its item, and has none of its own then (CSS Grid 1, 9). */
+function itemBaselineOf(
+  item: Box,
+  first: boolean,
+  container: ComputedStyle,
+): number | null {
+  const found = childBaseline(item, first ? firstBaselineIn : lastBaselineIn);
+  if (found !== null) return found;
+  return container.grid ? null : item.y + item.height;
 }
 
 /**
@@ -2141,6 +2206,8 @@ function tableBaseline(table: Box): number | null {
  * nothing in it has one.
  */
 function lastBaselineIn(box: Box): number | null {
+  // a flex box's is its items', in the order it lays them out
+  if (box.kind === 'flex') return flexBaseline(box, false);
   if (box.lines?.length) {
     const line = box.lines[box.lines.length - 1];
     return line.y + line.baseline;
@@ -2155,6 +2222,7 @@ function lastBaselineIn(box: Box): number | null {
 /** The same, from the first line box or child: a table's baseline is its
  *  first row's, and so is a table cell's. */
 export function firstBaselineIn(box: Box): number | null {
+  if (box.kind === 'flex') return flexBaseline(box, true);
   if (box.lines?.length) return box.lines[0].y + box.lines[0].baseline;
   for (const child of box.children) {
     const found = childBaseline(child, firstBaselineIn);

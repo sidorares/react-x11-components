@@ -2194,8 +2194,9 @@ export function applyDeclaration(
       return;
     }
     case 'order': {
-      const n = parseNumber(value);
-      if (n !== null) style.order = Math.trunc(n);
+      // an integer, and nothing else (CSS Flexbox 5.4)
+      const v = value.trim();
+      if (/^[+-]?\d+$/.test(v)) style.order = Number(v);
       return;
     }
     case 'gap':
@@ -3829,7 +3830,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'counter-increment': ['counterIncrement'],
   'counter-set': ['counterSet'],
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
-  display: ['display', 'flowRoot', 'webkitBox'],
+  display: ['display', 'flowRoot', 'webkitBox', 'grid'],
   width: ['width', 'widthKeyword'],
   height: ['height'],
   'min-width': ['minWidth', 'minWidthKeyword'],
@@ -3890,6 +3891,41 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'column-count': ['columns'],
   'column-width': ['columns'],
   'text-overflow': ['textOverflow'],
+  // a flex box's and its items', and a grid's
+  'flex-direction': ['flexDirection'],
+  'flex-wrap': ['flexWrap'],
+  'flex-flow': ['flexDirection', 'flexWrap'],
+  'justify-content': ['justifyContent'],
+  'align-items': ['alignItems'],
+  'align-self': ['alignSelf'],
+  'align-content': ['alignContent'],
+  flex: ['flexGrow', 'flexShrink', 'flexBasis'],
+  'flex-grow': ['flexGrow'],
+  'flex-shrink': ['flexShrink'],
+  'flex-basis': ['flexBasis'],
+  order: ['order'],
+  gap: ['rowGap', 'columnGap'],
+  'row-gap': ['rowGap'],
+  'column-gap': ['columnGap'],
+  'grid-template-columns': ['gridColumns'],
+  'grid-template-rows': ['gridRows'],
+  'grid-auto-rows': ['gridAutoRows'],
+  'grid-area': [
+    'gridRowStart',
+    'gridColumnStart',
+    'gridRowEnd',
+    'gridColumnEnd',
+  ],
+  'grid-row': ['gridRowStart', 'gridRowEnd'],
+  'grid-row-start': ['gridRowStart'],
+  'grid-row-end': ['gridRowEnd'],
+  'grid-column': ['gridColumnStart', 'gridColumnEnd'],
+  'grid-column-start': ['gridColumnStart'],
+  'grid-column-end': ['gridColumnEnd'],
+  'justify-items': ['justifyItems'],
+  'justify-self': ['justifySelf'],
+  'place-items': ['alignItems', 'justifyItems'],
+  'place-self': ['alignSelf', 'justifySelf'],
   'border-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-left-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-right-radius': ['borderRadius', 'borderRadiusY'],
