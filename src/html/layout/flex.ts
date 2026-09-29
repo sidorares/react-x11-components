@@ -954,17 +954,32 @@ function autoMinimums(
         continue;
       }
     }
-    // An item its content sizes along a row: one with a width of its own
-    // may shrink under it to what its content comes to, which that width
-    // hides from a measure, and keeps Yoga's minimum of none
     if (
       row
-        ? style.minWidth !== AUTO ||
-          style.minWidthKeyword ||
-          style.width !== AUTO ||
-          style.widthKeyword
+        ? style.minWidth !== AUTO || style.minWidthKeyword || style.widthKeyword
         : style.minHeight !== AUTO && !asked
     ) {
+      continue;
+    }
+    // One with a width of its own is no narrower along a row than the
+    // lesser of that width and its content at its narrowest (4.5's
+    // specified and content size suggestions): a `width: 250px` sidebar
+    // with `flex-basis: 0` is 250 wide beside the item that takes the
+    // rest, and one holding a longer word is still no wider than 250
+    if (row && style.width !== AUTO) {
+      const own = resolveOrNull(style.width, containingWidth);
+      if (own === null) continue;
+      const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
+      let least = own + extra;
+      if (style.maxWidth !== 'none') {
+        const most = resolveOrNull(style.maxWidth, containingWidth);
+        if (most !== null) least = Math.min(least, most + extra);
+      }
+      if (width >= least - 0.01) continue;
+      least = Math.min(least, minContentOf(box, ctx, laid));
+      if (node.getComputedWidth() >= least - 0.01) continue;
+      node.setMinWidth(least);
+      changed = true;
       continue;
     }
     // no narrower than its content at its widest, where Yoga measured that
@@ -1044,12 +1059,13 @@ function autoMinimums(
   return changed;
 }
 
-/** An item's min-content width, its border box's, taken the once. */
+/** An item's min-content width, its border box's, taken the once: its
+ *  content's, whatever width it has of its own (`keywordWidth`'s too). */
 function minContentOf(box: Box, ctx: LayoutContext, laid: Laid): number {
   if (box.intrinsicMinContent < 0) {
     const exact = ctx.fonts ? exactMinContent(box, ctx.fonts) : null;
     box.intrinsicMinContent =
-      exact ?? measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE);
+      exact ?? measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE, true);
     // a probe lays the box out where the kept layout was
     if (exact === null) laid.width = NaN;
   }
