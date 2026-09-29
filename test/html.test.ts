@@ -10195,6 +10195,167 @@ metric(
   },
 );
 
+metric(
+  'a grid places its items by the names of its areas and its lines',
+  async () => {
+    // CSS Grid 1, 7.3 and 8.3: `grid-template-areas`, the names in a track
+    // list and the `-start` and `-end` lines an area's name makes were not
+    // read, so every named item was placed in order — and a list with two
+    // names in one bracket was no list at all
+    const cells = async (css: string, items: string) => {
+      const { node } = await render(
+        '<style>body{margin:0} #g>div{height:10px}</style>' +
+          `<div id="g" style="display:grid;${css}">${items}</div>`,
+      );
+      const g = boxOf(view(node), 'g');
+      const out = g.children
+        .filter((c) => (c as unknown as { kind: string }).kind !== 'text')
+        .map((c) => [c.x, c.y, c.width, c.height]);
+      cleanup();
+      return out;
+    };
+    assert.deepStrictEqual(
+      await cells(
+        "grid-template-areas:'head head' 'nav main' 'foot foot';" +
+          'grid-template-columns:100px 200px;grid-template-rows:30px 60px 20px',
+        '<div style="grid-area:foot"></div><div style="grid-area:main"></div>' +
+          '<div style="grid-area:head"></div><div style="grid-area:nav"></div>',
+      ),
+      [
+        [0, 90, 300, 10],
+        [100, 30, 200, 10],
+        [0, 0, 300, 10],
+        [0, 30, 100, 10],
+      ],
+      'each in its area, in any order',
+    );
+    assert.deepStrictEqual(
+      (
+        await cells(
+          'grid-template-columns:[full-start] 50px [content-start a b] 100px ' +
+            '[content-end] 50px [full-end]',
+          '<div style="grid-column:content"></div>' +
+            '<div style="grid-column:full"></div>' +
+            '<div style="grid-column:b / span full-end"></div>',
+        )
+      ).map(([x, , w]) => [x, w]),
+      [
+        [50, 100],
+        [0, 200],
+        [50, 150],
+      ],
+      "an area's lines, two names in a bracket, and a span to a name",
+    );
+    assert.deepStrictEqual(
+      (
+        await cells(
+          "grid-template:[top] 'a b' 30px [mid] / [l] 40px [m] 60px;" +
+            'grid-template-columns:repeat(2, [col] 50px)',
+          '<div style="grid-area:b"></div><div style="grid-column:col 2;' +
+            'grid-row:mid"></div>',
+        )
+      ).map(([x, y, w]) => [x, y, w]),
+      [
+        [50, 0, 50],
+        [50, 30, 50],
+      ],
+      "the shorthand's areas, and a repeated name counted",
+    );
+  },
+);
+
+metric(
+  'grid-auto-flow fills the columns, or goes back for the holes',
+  async () => {
+    // `grid-auto-flow: column` and `dense` were not read: the items went
+    // along the rows, and a hole a wide item left stayed a hole. And the
+    // gaps' old names, `grid-gap` and its longhands, were not read either
+    const place = async (css: string, items: string) => {
+      const { node } = await render(
+        '<style>body{margin:0} #g>div{height:10px}</style>' +
+          `<div id="g" style="display:grid;${css}">${items}</div>`,
+      );
+      const g = boxOf(view(node), 'g');
+      const out = g.children
+        .filter((c) => (c as unknown as { kind: string }).kind !== 'text')
+        .map((c) => [c.x, c.y]);
+      cleanup();
+      return out;
+    };
+    assert.deepStrictEqual(
+      await place(
+        'grid-auto-flow:column;grid-template-rows:10px 10px;' +
+          'grid-auto-columns:50px',
+        '<div></div><div></div><div></div>',
+      ),
+      [
+        [0, 0],
+        [0, 10],
+        [50, 0],
+      ],
+      'down the columns',
+    );
+    const holes =
+      '<div style="grid-column:span 2"></div>'.repeat(2) + '<div></div>';
+    assert.deepStrictEqual(
+      await place('grid-template-columns:repeat(3,50px)', holes),
+      [
+        [0, 0],
+        [0, 10],
+        [100, 10],
+      ],
+      'sparse: on from the last',
+    );
+    assert.deepStrictEqual(
+      await place(
+        'grid-template-columns:repeat(3,50px);grid-auto-flow:dense',
+        holes,
+      ),
+      [
+        [0, 0],
+        [0, 10],
+        [100, 0],
+      ],
+      'dense: back into the hole',
+    );
+    assert.deepStrictEqual(
+      await place(
+        'grid-template-columns:repeat(2,50px);grid-gap:5px 10px',
+        '<div></div><div></div><div></div>',
+      ),
+      [
+        [0, 0],
+        [60, 0],
+        [0, 15],
+      ],
+      'grid-gap',
+    );
+  },
+);
+
+metric(
+  'a percentage row of a grid with no height is of the height its rows come to',
+  async () => {
+    // CSS Grid 1, 7.2.1: sized as `auto` to find the grid's height, and then
+    // a percentage of it — a grid with no height kept it `auto`; and an
+    // `auto-fill` of rows counted against the grid's height, which only the
+    // columns' width did
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="display:grid;grid-template-rows:auto 20% auto">' +
+        '<div style="height:40px"></div><div id="p" style="height:60px"></div>' +
+        '<div id="q" style="height:40px"></div></div>' +
+        '<div style="display:grid;height:100px;' +
+        'grid-template-rows:repeat(auto-fill,30px);grid-auto-rows:5px">' +
+        '<div id="r" style="grid-row:-2"></div></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'p').y, 56, 'after an auto row stretched');
+    assert.strictEqual(boxOf(el, 'q').y, 84, '20% of 140 before it');
+    assert.strictEqual(boxOf(el, 'r').y, 140 + 60, 'the last of three rows');
+  },
+);
+
 // --- rounded borders -------------------------------------------------------------
 
 test("a rounded box's border is a ring that follows its corners", async () => {

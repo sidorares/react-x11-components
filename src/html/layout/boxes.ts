@@ -37,6 +37,7 @@ import { AUTO } from '../css/values.js';
 import { svgIntrinsics } from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
 import type { ComputedStyle } from '../css/style.js';
+import type { GridLines } from './grid-lines.js';
 
 export type BoxKind =
   | 'block'
@@ -572,14 +573,14 @@ export const CLIPPED_CELLS = new WeakSet<Box>();
 export const CLAMPED = new WeakSet<Box>();
 
 /** A grid's tracks as its layout left them, each column's and each row's
- *  start and end from the content box's corner, with how many of each the
- *  template names: what an absolutely positioned box's grid area is found
- *  in (CSS Grid 1, 9.1). */
+ *  start and end from the content box's corner, with the lines of each
+ *  axis by number and by name: what an absolutely positioned box's grid
+ *  area is found in (CSS Grid 1, 9.1). */
 export interface GridTracks {
   cols: [number, number][];
   rows: [number, number][];
-  explicitCols: number;
-  explicitRows: number;
+  colLines: GridLines;
+  rowLines: GridLines;
 }
 export const GRID_TRACKS = new WeakMap<Box, GridTracks>();
 

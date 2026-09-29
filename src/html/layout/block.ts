@@ -18,6 +18,8 @@ import type {
   ContentSize,
   GridLine,
 } from '../css/style.js';
+import { lineOf, spanToName } from './grid-lines.js';
+import type { GridLines } from './grid-lines.js';
 import {
   BOX_RAISES,
   Box,
@@ -2866,7 +2868,7 @@ function gridArea(
     style.gridColumnStart,
     style.gridColumnEnd,
     tracks.cols,
-    tracks.explicitCols,
+    tracks.colLines,
     containing.contentX,
     pad.x,
     pad.width,
@@ -2875,7 +2877,7 @@ function gridArea(
     style.gridRowStart,
     style.gridRowEnd,
     tracks.rows,
-    tracks.explicitRows,
+    tracks.rowLines,
     containing.contentY,
     pad.y,
     pad.height,
@@ -2885,42 +2887,53 @@ function gridArea(
 
 /** One axis of a grid area: its start and its size in document
  *  coordinates. A line is a track's start where it starts one and a
- *  track's end where it ends one, so a gap is in neither. */
+ *  track's end where it ends one, so a gap is in neither; a line by name
+ *  is the one the placement would take. */
 function areaSpan(
   start: GridLine,
   end: GridLine,
   tracks: readonly [number, number][],
-  explicit: number,
+  lines: GridLines,
   origin: number,
   edge: number,
   size: number,
 ): [number, number] {
-  const lines = tracks.length + 1;
-  const numbered = (line: GridLine): number | null => {
-    if (!line || !('line' in line) || !tracks.length) return null;
-    // a negative line counts back from the explicit grid's end
-    const n = line.line > 0 ? line.line : explicit + 2 + line.line;
-    return n >= 1 && n <= lines ? n : null;
+  const count = tracks.length;
+  // a line the grid has, or null for auto, a span and one it has not
+  const at = (line: GridLine, side: 'start' | 'end'): number | null => {
+    const index = lineOf(lines, line, side);
+    return index !== null && count > 0 && index >= 0 && index <= count
+      ? index
+      : null;
   };
-  const spanOf = (line: GridLine) => (line && 'span' in line ? line.span : 0);
-  let from = numbered(start);
-  let to = numbered(end);
-  if (from === null && to !== null && spanOf(start)) {
-    from = to - spanOf(start) >= 1 ? to - spanOf(start) : null;
+  const spanOf = (line: GridLine) => (line && 'span' in line ? line : null);
+  let from = at(start, 'start');
+  let to = at(end, 'end');
+  const startSpan = spanOf(start);
+  const endSpan = spanOf(end);
+  if (from === null && to !== null && startSpan) {
+    const f =
+      startSpan.name !== undefined
+        ? spanToName(lines, startSpan.name, startSpan.span, to, false)
+        : to - startSpan.span;
+    from = f >= 0 ? f : null;
   }
-  if (to === null && from !== null && spanOf(end)) {
-    to = from + spanOf(end) <= lines ? from + spanOf(end) : null;
+  if (to === null && from !== null && endSpan) {
+    const t =
+      endSpan.name !== undefined
+        ? spanToName(lines, endSpan.name, endSpan.span, from, true)
+        : from + endSpan.span;
+    to = t <= count ? t : null;
   }
   if (from !== null && to !== null && to < from) [from, to] = [to, from];
   const a =
     from === null
       ? edge
-      : origin +
-        (from <= tracks.length ? tracks[from - 1][0] : tracks[from - 2][1]);
+      : origin + (from < count ? tracks[from][0] : tracks[from - 1][1]);
   const b =
     to === null || to === from
       ? edge + size
-      : origin + (to >= 2 ? tracks[to - 2][1] : tracks[0][0]);
+      : origin + (to >= 1 ? tracks[to - 1][1] : tracks[0][0]);
   return [a, Math.max(0, b - a)];
 }
 
