@@ -56,10 +56,17 @@ import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
 import { uaStylesheet } from './css/ua.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
-import { buildBoxes, CONTENT_IMAGES } from './layout/boxes.js';
+import {
+  BOX_RAISES,
+  buildBoxes,
+  CONTENT_IMAGES,
+  LINE_BOX_RAISES,
+  SHIFTED_LINES,
+} from './layout/boxes.js';
 import type {
   Box,
   BoxTree,
+  LineBox,
   LineText,
   ReplacedKind,
   TextLayoutLike,
@@ -68,7 +75,7 @@ import { layoutDocument } from './layout/block.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { shapingSafe } from './layout/shaping.js';
 import { SurfaceCache } from './surfaces.js';
-import { inlineDecoration, runFor } from './layout/inline.js';
+import { faceExtentOf, inlineDecoration, runFor } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
 import type { TextRun } from '../richtext/index.js';
 // Through the inline module rather than a second cache: the offsets table for
@@ -1199,7 +1206,11 @@ export class HtmlViewNode extends Node {
           bands,
         );
       }
-      if (box.kind === 'inline') fragmentReach(box, bands);
+      if (box.kind === 'inline') {
+        fragmentReach(box, bands);
+        const fonts = this._layouts?.fonts;
+        if (fonts) fragmentHeights(box, bands, fonts);
+      }
       for (const band of bands) rect = rect ? unionRect(rect, band) : band;
       if (!rect) {
         // an empty subtree's range is `[0, 0)`, wherever it stands: where
@@ -1934,6 +1945,37 @@ function fragmentReach(box: Box, out: Rect[]): void {
         height: line.height,
       });
     }
+  }
+}
+
+/**
+ * An inline element's bands made as tall as its fragments' border boxes,
+ * as CSSOM View takes an inline box's client rects (6.1): its font's
+ * content area about its own baseline, with the padding and the border
+ * above and below it, which take no room on the line (CSS 2.1 10.6.1) and
+ * which paint draws the background over (`paintInlineBoxes`). A band is a
+ * line's height across until then: a link padded 10px below measured as
+ * tall as its line and no taller.
+ */
+function fragmentHeights(box: Box, bands: Rect[], fonts: FontsLike): void {
+  let block = box.parent;
+  while (block && !block.lines) block = block.parent;
+  if (!block?.lines?.length) return;
+  const face = faceExtentOf(fonts, box.style);
+  const byTop = new Map<number, LineBox>();
+  for (const line of block.lines) byTop.set(line.y, line);
+  for (let i = 0; i < bands.length; i += 1) {
+    const band = bands[i];
+    const line = byTop.get(band.y);
+    if (!line) continue;
+    // on its own baseline, which `vertical-align` may raise off the line's
+    const raise = SHIFTED_LINES.has(line)
+      ? (LINE_BOX_RAISES.get(line)?.get(box) ?? BOX_RAISES.get(box) ?? 0)
+      : 0;
+    const baseline = line.y + line.baseline - raise;
+    const top = baseline - face.ascent - box.padTop - box.borderTop;
+    const bottom = baseline + face.descent + box.padBottom + box.borderBottom;
+    bands[i] = { x: band.x, y: top, width: band.width, height: bottom - top };
   }
 }
 
