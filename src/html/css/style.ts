@@ -502,6 +502,8 @@ export interface ComputedStyle {
   gridColumns: GridTemplate | null;
   gridRows: GridTemplate | null;
   gridAutoRows: GridTrack;
+  /** `grid-auto-columns`: a column the placement makes past the template. */
+  gridAutoColumns: GridTrack;
   gridColumnStart: GridLine;
   gridColumnEnd: GridLine;
   gridRowStart: GridLine;
@@ -779,6 +781,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     gridColumns: null,
     gridRows: null,
     gridAutoRows: AUTO_TRACK,
+    gridAutoColumns: AUTO_TRACK,
     gridColumnStart: null,
     gridColumnEnd: null,
     gridRowStart: null,
@@ -2226,9 +2229,70 @@ export function applyDeclaration(
       else style.gridRows = template;
       return;
     }
-    case 'grid-auto-rows': {
+    case 'grid-auto-rows':
+    case 'grid-auto-columns': {
       const track = parseGridTrack(splitValue(value)[0] ?? '', ctx);
-      if (track) style.gridAutoRows = track;
+      if (!track) return;
+      if (name === 'grid-auto-rows') style.gridAutoRows = track;
+      else style.gridAutoColumns = track;
+      return;
+    }
+    case 'grid-template': {
+      // rows, a slash and columns, or `none` (CSS Grid 1, 7.4)
+      if (value.trim().toLowerCase() === 'none') {
+        style.gridRows = null;
+        style.gridColumns = null;
+        return;
+      }
+      const template = parseTemplateShorthand(value, ctx);
+      if (!template) return;
+      style.gridRows = template.rows;
+      style.gridColumns = template.columns;
+      return;
+    }
+    case 'grid': {
+      // a template, or one axis's template and the other's `auto-flow`
+      // tracks (7.8); every longhand it does not name back to its initial
+      const parts = splitTopLevelSlash(value);
+      const flows = (part: string | undefined) =>
+        part !== undefined && /(^|\s)auto-flow(\s|$)/i.test(part);
+      const autoTrack = (part: string): GridTrack | null => {
+        const words = splitValue(part).filter(
+          (w) => !/^(auto-flow|dense)$/i.test(w),
+        );
+        return words.length ? parseGridTrack(words[0], ctx) : AUTO_TRACK;
+      };
+      const axis = (part: string): GridTemplate | null | undefined =>
+        part.trim().toLowerCase() === 'none'
+          ? null
+          : parseGridTemplate(part, ctx);
+      if (parts.length === 2 && flows(parts[0])) {
+        const rows = autoTrack(parts[0]);
+        const columns = axis(parts[1]);
+        if (!rows || columns === undefined) return;
+        style.gridRows = null;
+        style.gridColumns = columns;
+        style.gridAutoRows = rows;
+        style.gridAutoColumns = AUTO_TRACK;
+        return;
+      }
+      if (parts.length === 2 && flows(parts[1])) {
+        const rows = axis(parts[0]);
+        const columns = autoTrack(parts[1]);
+        if (rows === undefined || !columns) return;
+        style.gridRows = rows;
+        style.gridColumns = null;
+        style.gridAutoRows = AUTO_TRACK;
+        style.gridAutoColumns = columns;
+        return;
+      }
+      const none = value.trim().toLowerCase() === 'none';
+      const template = none ? null : parseTemplateShorthand(value, ctx);
+      if (!none && !template) return;
+      style.gridRows = template?.rows ?? null;
+      style.gridColumns = template?.columns ?? null;
+      style.gridAutoRows = AUTO_TRACK;
+      style.gridAutoColumns = AUTO_TRACK;
       return;
     }
     case 'grid-column':
@@ -3391,6 +3455,51 @@ function parseGridTemplate(
   return out;
 }
 
+/**
+ * `grid-template`'s rows and columns, either side of a slash — the rows,
+ * where they are written as the strings of `grid-template-areas`, each
+ * string's row the size after it or `auto` (7.4). The areas' names are not
+ * read here, only the tracks they make. Undefined for no value.
+ */
+function parseTemplateShorthand(
+  value: string,
+  ctx: UnitContext,
+): { rows: GridTemplate | null; columns: GridTemplate | null } | undefined {
+  const parts = splitTopLevelSlash(value);
+  if (parts.length !== 2) return undefined;
+  const columns =
+    parts[1].trim().toLowerCase() === 'none'
+      ? null
+      : parseGridTemplate(parts[1], ctx);
+  if (columns === undefined) return undefined;
+  if (!/["']/.test(parts[0])) {
+    const rows =
+      parts[0].trim().toLowerCase() === 'none'
+        ? null
+        : parseGridTemplate(parts[0], ctx);
+    return rows === undefined ? undefined : { rows, columns };
+  }
+  const tracks: GridTrack[] = [];
+  let open = false;
+  for (const part of splitValue(parts[0])) {
+    if (part.startsWith('[')) continue;
+    if (/^["']/.test(part)) {
+      if (open) tracks.push(AUTO_TRACK);
+      open = true;
+      continue;
+    }
+    if (!open) return undefined;
+    const track = parseGridTrack(part, ctx);
+    if (!track) return undefined;
+    tracks.push(track);
+    open = false;
+  }
+  if (open) tracks.push(AUTO_TRACK);
+  return tracks.length
+    ? { rows: { tracks, repeat: null }, columns }
+    : undefined;
+}
+
 /** A grid line (CSS Grid 1, 8.3): a number, `span` and a number, or
  *  `auto`; a name is not read, and is auto. Undefined for no value. */
 function parseGridLine(value: string | undefined): GridLine | undefined {
@@ -3957,6 +4066,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'grid-template-columns': ['gridColumns'],
   'grid-template-rows': ['gridRows'],
   'grid-auto-rows': ['gridAutoRows'],
+  'grid-auto-columns': ['gridAutoColumns'],
+  'grid-template': ['gridRows', 'gridColumns'],
+  grid: ['gridRows', 'gridColumns', 'gridAutoRows', 'gridAutoColumns'],
   'grid-area': [
     'gridRowStart',
     'gridColumnStart',

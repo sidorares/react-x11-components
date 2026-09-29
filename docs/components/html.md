@@ -183,12 +183,18 @@ whether or not it is positioned, a grid's item too. Items aligned by their `base
 line as tall as that makes it, and a flex box sits on the baseline of its
 first line's item aligned so, or of its first item. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
-A grid (CSS Grid 1) takes its column tracks from `grid-template-columns` —
+A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
+`grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, and `repeat()` by a count
-or by what fits, `auto-fill` and `auto-fit` alike — and places its items by
-line or span, or in order into the first cells free; a row is as tall as
-what is in it, or as the row the template names, and an item is stretched
-to its area or aligned in it by `justify-self` and `align-self`. Named
+or by what fits, `auto-fill` and `auto-fit` alike — and those past the
+template from `grid-auto-columns` and `grid-auto-rows`. It places its items
+by line or span, or in order into the first cells free; a row is as tall
+as what is in it, or as the row the template names, and `auto` rows share
+a height the grid has of its own. An item is stretched to its area or
+aligned in it by `justify-self` and `align-self`, and one that is not
+stretched is as wide as its content fits. An absolutely positioned box
+takes the grid area its lines name for its containing block, and a grid's
+or a flex box's child is where it would be as the box's one item. Named
 lines and areas, `dense` and column-first placement, and subgrids are not
 read.
 A table's borders collapse where it asks: one border along each edge of its

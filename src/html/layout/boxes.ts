@@ -83,6 +83,17 @@ export interface StaticPosition {
   x: number;
   right: number;
   y: number;
+  /**
+   * For a flex box's or a grid's child, the box it is where it would be as
+   * the one item in — `from`'s content box or its padding box, whose size
+   * is read once its layout is done — and how far along the free room in
+   * it its alignment puts it, from the start across and from the top down.
+   */
+  inside?: {
+    box: 'content' | 'padding';
+    across: number;
+    down: number;
+  };
 }
 
 /** The ascent and descent of a decorated inline box's own face. */
@@ -559,6 +570,18 @@ export const CLIPPED_CELLS = new WeakSet<Box>();
  *  which leaves them where the last layout put them, and passed over by
  *  paint and the paint bounds. */
 export const CLAMPED = new WeakSet<Box>();
+
+/** A grid's tracks as its layout left them, each column's and each row's
+ *  start and end from the content box's corner, with how many of each the
+ *  template names: what an absolutely positioned box's grid area is found
+ *  in (CSS Grid 1, 9.1). */
+export interface GridTracks {
+  cols: [number, number][];
+  rows: [number, number][];
+  explicitCols: number;
+  explicitRows: number;
+}
+export const GRID_TRACKS = new WeakMap<Box, GridTracks>();
 
 /** A flex box's children in the order it lays them out and paints them,
  *  `order` first and the document's after it (CSS Flexbox 5.4), where

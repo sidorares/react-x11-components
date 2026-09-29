@@ -18,12 +18,14 @@
 // the smallest, and its height at a width — is what tables already ask.
 import { AUTO, isPct, resolve } from '../css/values.js';
 import type { GridLine, GridTrack } from '../css/style.js';
-import { Box, isBlank } from './boxes.js';
+import { Box, GRID_TRACKS, isBlank } from './boxes.js';
 import {
   MIN_CONTENT_PROBE,
   exactMinContent,
   measureIntrinsicWidth,
   moveTo,
+  percentBaseInside,
+  positionOutOfFlow,
   resolveEdges,
 } from './block.js';
 import type { LayoutContext } from './block.js';
@@ -52,7 +54,9 @@ export function layoutGrid(
   for (const child of box.children) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
-      ctx.positioned.push({ box: child, containing: box });
+      // where it is as the grid's one item, in an area whose edges are the
+      // grid's padding edges (9.1)
+      positionOutOfFlow(child, box, ctx, false);
       continue;
     }
     resolveEdges(child, Number.isFinite(contentWidth) ? contentWidth : 0);
@@ -69,7 +73,7 @@ export function layoutGrid(
     (n, item) => Math.max(n, item.col + item.cols),
     0,
   );
-  while (cols.length < widest) cols.push(AUTO_TRACK);
+  while (cols.length < widest) cols.push(style.gridAutoColumns);
 
   const measure = (item: Item): void => {
     if (item.max >= 0) return;
@@ -102,11 +106,28 @@ export function layoutGrid(
   for (const item of items)
     layoutItem(item, areaWidth(item, widths, colGap), ctx);
 
+  // every row the template names, whether or not an item is in it
   const rowCount = items.reduce(
     (n, item) => Math.max(n, item.row + item.rows),
-    0,
+    style.gridRows?.tracks.length ?? 0,
   );
   const heights = sizeRows(box, rowCount, items, rowGap);
+  // `auto` rows share what a height of the grid's own leaves them, as
+  // `align-content: normal` stretches them (11.8)
+  const definite = percentBaseInside(box);
+  if (Number.isFinite(definite) && style.alignContent === 'stretch') {
+    const explicit = style.gridRows?.tracks ?? [];
+    const stretchy: number[] = [];
+    let used = rowGap * Math.max(0, heights.length - 1);
+    heights.forEach((h, r) => {
+      used += h;
+      if ((explicit[r] ?? style.gridAutoRows).max === AUTO) stretchy.push(r);
+    });
+    const free = definite - used;
+    if (free > 0 && stretchy.length) {
+      for (const r of stretchy) heights[r] += free / stretchy.length;
+    }
+  }
   const tops: number[] = [];
   let y = 0;
   for (const h of heights) {
@@ -114,6 +135,12 @@ export function layoutGrid(
     y += h + rowGap;
   }
   const height = heights.length ? y - rowGap : 0;
+  GRID_TRACKS.set(box, {
+    cols: widths.map((w, i) => [lefts[i], lefts[i] + w]),
+    rows: heights.map((h, i) => [tops[i], tops[i] + h]),
+    explicitCols: template.length,
+    explicitRows: style.gridRows?.tracks.length ?? 0,
+  });
 
   for (const item of items) {
     const child = item.box;
@@ -456,8 +483,20 @@ function layoutItem(item: Item, area: number, ctx: LayoutContext): void {
     width = resolve(style.width, area, room - extra) + extra;
   } else if (justify === 'stretch') width = room;
   else {
+    // fit-content: no wider than its content at its widest, nor narrower
+    // than at its narrowest, which may run past its area
     if (item.max < 0) item.max = maxContentOf(child, ctx) + margins;
-    width = Math.min(item.max - margins, room);
+    if (child.intrinsicMinContent < 0) {
+      child.intrinsicMinContent = measureIntrinsicWidth(
+        child,
+        ctx,
+        MIN_CONTENT_PROBE,
+      );
+    }
+    width = Math.min(
+      item.max - margins,
+      Math.max(child.intrinsicMinContent, room),
+    );
   }
   ctx.layoutSubtree(child, width);
 }
