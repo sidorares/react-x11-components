@@ -25,7 +25,13 @@ import type {
   ContentSize,
   GridLine,
 } from '../css/style.js';
-import { scrolls } from '../css/style.js';
+import {
+  CONTAIN_INLINE_SIZE,
+  CONTAIN_LAYOUT,
+  CONTAIN_PAINT,
+  CONTAIN_SIZE,
+  scrolls,
+} from '../css/style.js';
 import { lineOf, spanToName } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import {
@@ -2096,6 +2102,10 @@ function ratioMinimum(
 export const CELL_CONTENT = new WeakMap<Box, number>();
 
 function finishHeight(box: Box, contentHeight: number): void {
+  // as though it held nothing, under size containment
+  if (contained(box, CONTAIN_SIZE)) {
+    contentHeight = box.style.containIntrinsicHeight ?? 0;
+  }
   if (box.kind === 'table-cell') {
     CELL_CONTENT.set(box, contentHeight + box.verticalExtra);
   }
@@ -2550,7 +2560,7 @@ const PREFERRED = new WeakMap<Box, number>();
  * or is indented, a block with widths of its own.
  */
 export function exactMinContent(box: Box, fonts: FontsLike): number | null {
-  if (hasWidths(box.style)) return null;
+  if (hasWidths(box.style) || contained(box, CONTAIN_WIDTH)) return null;
   const inner = exactWords(box, fonts);
   return inner === null ? null : inner + box.horizontalExtra;
 }
@@ -2672,6 +2682,11 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
  * `Infinity` for every box that contains a paragraph.
  */
 export function intrinsicWidth(box: Box): number {
+  // under size containment, as though it held nothing: the size
+  // `contain-intrinsic-size` gives it, or none (CSS Containment 2, 3.2)
+  if (contained(box, CONTAIN_WIDTH)) {
+    return box.style.containIntrinsicWidth ?? 0;
+  }
   // a grid laid out at no width limit has its columns at their widest, and
   // is as wide as they are — an item that runs past its column makes it no
   // wider — or, where it has none, as where its items end
@@ -2852,7 +2867,16 @@ function sizeReplaced(
     minH,
     style.maxHeight === 'none' ? Infinity : (down(style.maxHeight) ?? Infinity),
   );
-  const own = box.intrinsic ?? NO_INTRINSIC;
+  // under size containment, as though it had no size or ratio of its own
+  // but the one `contain-intrinsic-size` gives it (CSS Containment 2, 3.2)
+  const own = contained(box, CONTAIN_SIZE)
+    ? {
+        width: style.containIntrinsicWidth ?? 0,
+        height: style.containIntrinsicHeight ?? 0,
+        ratio: 0,
+        missing: 0,
+      }
+    : (box.intrinsic ?? NO_INTRINSIC);
   const iw = own.missing & 1 ? null : own.width;
   const ih = own.missing & 2 ? null : own.height;
   // `aspect-ratio` over its own, unless written `auto` and it has one
@@ -3675,13 +3699,15 @@ function staticAlignment(
  *  positioned ancestor". */
 function containingBlockFor(box: Box): Box | null {
   // a fixed box's is the viewport, whatever is positioned around it — but
-  // a transformed box is one for it too
+  // a transformed box is one for it too, and one with layout or paint
+  // containment (CSS Containment 2, 3.3)
   const fixed = box.style.position === 'fixed';
   let node = box.parent;
   while (node) {
     if (
       (!fixed && node.style.position !== 'static') ||
       transformed(node.style) ||
+      contained(node, CONTAIN_LAYOUT | CONTAIN_PAINT) ||
       node.parent === null
     ) {
       return node;
@@ -3689,6 +3715,31 @@ function containingBlockFor(box: Box): Box | null {
     node = node.parent;
   }
   return null;
+}
+
+/** The size containments that hold a box's width: `size` and
+ *  `inline-size`. */
+const CONTAIN_WIDTH = CONTAIN_SIZE | CONTAIN_INLINE_SIZE;
+
+/**
+ * Whether a box has any of the containments `bits` names, as they apply
+ * to it (CSS Containment 2, 3): none to an inline box that is no atomic
+ * one, and none to a table's inner parts but a cell — nor size
+ * containment to a table or a cell.
+ */
+export function contained(box: Box, bits: number): boolean {
+  if (!(box.style.contain & bits)) return false;
+  switch (box.kind) {
+    case 'block':
+    case 'flex':
+    case 'replaced':
+      return true;
+    case 'table':
+    case 'table-cell':
+      return !!(box.style.contain & bits & ~CONTAIN_WIDTH);
+    default:
+      return false;
+  }
 }
 
 /** Move a box and everything under it, keeping the subtree's shape. */
@@ -3829,6 +3880,8 @@ export function establishesBFC(box: Box): boolean {
   const style = box.style;
   if (scrolls(style)) return true;
   if (style.flowRoot) return true;
+  // layout and paint containment make an independent formatting context
+  if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
   // `continue: collapse` makes a block container a formatting context of
   // its own (CSS Overflow 4, 5.3)
   if (style.lineClamp !== null) return true;

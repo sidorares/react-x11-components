@@ -303,6 +303,15 @@ export interface ComputedStyle {
   /** `display: flow-root`: a block that makes a formatting context of its
    *  own, which is what `display` is then (CSS Display 3, 2.3). */
   flowRoot: boolean;
+  /** `contain` (CSS Containment 2), the `CONTAIN_*` bits it sets, and
+   *  those `content-visibility` adds. */
+  contain: number;
+  /** `content-visibility`: `hidden` skips painting what the box holds. */
+  contentVisibility: 'visible' | 'auto' | 'hidden';
+  /** `contain-intrinsic-size`'s two lengths: the size a box's content
+   *  comes to under size containment, none where it says `none`. */
+  containIntrinsicWidth: number | null;
+  containIntrinsicHeight: number | null;
   position: 'static' | 'relative' | 'absolute' | 'fixed' | 'sticky';
   float: 'none' | 'left' | 'right';
   clear: 'none' | 'left' | 'right' | 'both';
@@ -708,6 +717,10 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
 
     display: 'inline',
     flowRoot: false,
+    contain: 0,
+    contentVisibility: 'visible',
+    containIntrinsicWidth: null,
+    containIntrinsicHeight: null,
     position: 'static',
     float: 'none',
     clear: 'none',
@@ -1283,6 +1296,55 @@ export function applyDeclaration(
     case 'object-fit': {
       const v = value.trim().toLowerCase();
       if (OBJECT_FITS.has(v)) style.objectFit = v as ComputedStyle['objectFit'];
+      return;
+    }
+    case 'contain': {
+      const bits = containOf(value);
+      if (bits !== null) style.contain = bits;
+      return;
+    }
+    case 'content-visibility': {
+      const v = value.trim().toLowerCase();
+      if (v === 'visible' || v === 'auto' || v === 'hidden') {
+        style.contentVisibility = v;
+      }
+      return;
+    }
+    case 'contain-intrinsic-size':
+    case 'contain-intrinsic-width':
+    case 'contain-intrinsic-height':
+    case 'contain-intrinsic-inline-size':
+    case 'contain-intrinsic-block-size': {
+      const parts = splitValue(value);
+      const sizes: (number | null)[] = [];
+      for (let i = 0; i < parts.length; i += 1) {
+        const word = parts[i].toLowerCase();
+        // `auto` beside a length remembers a size last laid out, which a
+        // document that does not change has not got: the length
+        if (word === 'auto' && i + 1 < parts.length) continue;
+        if (word === 'none') {
+          sizes.push(null);
+          continue;
+        }
+        const len = parseLength(parts[i], ctx);
+        if (typeof len !== 'number' || len < 0) return;
+        sizes.push(len);
+      }
+      if (!sizes.length || sizes.length > 2) return;
+      const across =
+        name === 'contain-intrinsic-size' ||
+        name === 'contain-intrinsic-width' ||
+        name === 'contain-intrinsic-inline-size';
+      const down =
+        name !== 'contain-intrinsic-width' &&
+        name !== 'contain-intrinsic-inline-size';
+      if (name === 'contain-intrinsic-size') {
+        style.containIntrinsicWidth = sizes[0];
+        style.containIntrinsicHeight = sizes.length > 1 ? sizes[1] : sizes[0];
+      } else if (sizes.length === 1) {
+        if (across) style.containIntrinsicWidth = sizes[0];
+        else if (down) style.containIntrinsicHeight = sizes[0];
+      }
       return;
     }
     case 'object-position': {
@@ -2592,12 +2654,70 @@ function overflowKeyword(
   return null;
 }
 
+/** `contain`'s containments (CSS Containment 2, 3). */
+export const CONTAIN_SIZE = 1;
+export const CONTAIN_INLINE_SIZE = 2;
+export const CONTAIN_LAYOUT = 4;
+export const CONTAIN_STYLE = 8;
+export const CONTAIN_PAINT = 16;
+
+/** A `contain` value as its bits, or null where it is none: `strict` and
+ *  `content` are shorthands, and the rest a set of the five, `size` and
+ *  `inline-size` not both. */
+function containOf(value: string): number | null {
+  const words = value.trim().toLowerCase().split(/\s+/);
+  if (words.length === 1) {
+    if (words[0] === 'none') return 0;
+    if (words[0] === 'strict') {
+      return CONTAIN_SIZE | CONTAIN_LAYOUT | CONTAIN_STYLE | CONTAIN_PAINT;
+    }
+    if (words[0] === 'content') {
+      return CONTAIN_LAYOUT | CONTAIN_STYLE | CONTAIN_PAINT;
+    }
+  }
+  let bits = 0;
+  for (const word of words) {
+    const bit =
+      word === 'size'
+        ? CONTAIN_SIZE
+        : word === 'inline-size'
+          ? CONTAIN_INLINE_SIZE
+          : word === 'layout'
+            ? CONTAIN_LAYOUT
+            : word === 'style'
+              ? CONTAIN_STYLE
+              : word === 'paint'
+                ? CONTAIN_PAINT
+                : 0;
+    if (!bit || bits & bit) return null;
+    bits |= bit;
+  }
+  if (bits & CONTAIN_SIZE && bits & CONTAIN_INLINE_SIZE) return null;
+  return bits;
+}
+
 /**
  * The two axes' `overflow` as they compute together (CSS Overflow 3, 3.1):
  * `visible` and `clip` hold beside each other, and beside a value that
  * makes the box a scroll container, `visible` is `auto` and `clip` is
  * `hidden`.
  */
+/**
+ * The containment `content-visibility` brings with it (CSS Containment 2,
+ * 4): `auto` layout, style and paint containment — and size containment
+ * where the box is not on screen, which a document laid out whole never
+ * tells — and `hidden` all four.
+ */
+export function settleContentVisibility(style: ComputedStyle): void {
+  if (style.contentVisibility === 'auto') {
+    style.contain |= CONTAIN_LAYOUT | CONTAIN_STYLE | CONTAIN_PAINT;
+  } else if (style.contentVisibility === 'hidden') {
+    style.contain |=
+      CONTAIN_SIZE | CONTAIN_LAYOUT | CONTAIN_STYLE | CONTAIN_PAINT;
+    style.contain &= ~CONTAIN_INLINE_SIZE;
+  }
+}
+
 export function settleOverflow(style: ComputedStyle): void {
   const x = style.overflowX;
   const y = style.overflowY;
@@ -4502,6 +4622,13 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   ],
   'aspect-ratio': ['aspectRatio'],
   'object-fit': ['objectFit'],
+  contain: ['contain'],
+  'content-visibility': ['contentVisibility'],
+  'contain-intrinsic-size': ['containIntrinsicWidth', 'containIntrinsicHeight'],
+  'contain-intrinsic-width': ['containIntrinsicWidth'],
+  'contain-intrinsic-height': ['containIntrinsicHeight'],
+  'contain-intrinsic-inline-size': ['containIntrinsicWidth'],
+  'contain-intrinsic-block-size': ['containIntrinsicHeight'],
   'object-position': ['objectPositionX', 'objectPositionY'],
   position: ['position'],
   top: ['top'],

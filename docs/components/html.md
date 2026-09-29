@@ -375,6 +375,25 @@ boxes, as in a browser. Rotating, scaling and skewing are read and not
 drawn, and a transform on an inline box that is not an atomic one moves
 nothing, as CSS has it.
 
+**Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
+`style`, and `strict` and `content` for them — and `contain-intrinsic-size`
+(CSS Containment 2). A box with size containment is laid out as though it
+held nothing, as large as `contain-intrinsic-size` says or no larger than
+its padding and border, and an image as though it had no size or ratio of
+its own; `inline-size` does that across alone. Layout and paint
+containment make the box a formatting context, a stacking context and the
+containing block of every absolute and fixed box in it, and layout
+containment keeps its baseline in; paint containment clips what the box
+holds to its padding box, as `overflow: clip` does. Style containment keeps
+what the box's subtree does to counters and quotes in it: a counter made
+outside it is not counted on inside, and the quotes are as deep after it as
+before it. Any containment on `<html>` or `<body>` keeps the body's
+background and `overflow` its own rather than the canvas's and the
+viewport's. `content-visibility: auto` is layout, paint and style
+containment, and `hidden` all four and the box's content left unpainted.
+An image's `width` and `height` attributes give it the ratio they make as
+well, as HTML maps them.
+
 **Ratios:** `aspect-ratio` makes an `auto` height of the width, of the box
 `box-sizing` names — Tailwind's `aspect-video` and `aspect-square` — and
 that height is one a percentage inside resolves against. A box grows past

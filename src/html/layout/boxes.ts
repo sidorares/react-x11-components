@@ -33,7 +33,7 @@ import type { CollapsedTable } from './collapse.js';
 import { quoteAt } from '../css/content.js';
 import type { CounterStyles } from '../css/counter-styles.js';
 import type { ContentItem } from '../css/content.js';
-import { copyStyle, inherit } from '../css/style.js';
+import { CONTAIN_STYLE, copyStyle, inherit } from '../css/style.js';
 import { AUTO } from '../css/values.js';
 import { svgIntrinsics } from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
@@ -835,12 +835,19 @@ class Builder {
     // what follows it where its parent has no such counter
     // (`CounterScopes`)
     this._scopes.open();
+    // style containment keeps what the element's subtree does to counters
+    // and quotes in it (CSS Containment 2, 3.4)
+    const contains =
+      (style.contain & CONTAIN_STYLE) !== 0 && style.display !== 'contents';
+    const quoteDepth = this._quoteDepth;
+    if (contains) this._scopes.contain();
     this._elementIn(el, tag, style, key, into, inFlex, {
       node: el,
       style,
       key,
       parent: { style: parentStyle, key: parentKey, inFlex },
     });
+    if (contains) this._quoteDepth = quoteDepth;
     this._scopes.close();
   }
 
@@ -1741,6 +1748,9 @@ class CounterScopes {
   /** The names each open level made an instance of, so closing it drops
    *  exactly those. */
   private _made: string[][] = [[]];
+  /** The levels of the open elements with style containment, innermost
+   *  last: below one, a counter made further out is not counted on. */
+  private _contained: number[] = [];
 
   open(): void {
     this._made.push([]);
@@ -1752,6 +1762,13 @@ class CounterScopes {
       const stack = this._instances.get(name);
       if (stack && stack[stack.length - 1]?.level === level) stack.pop();
     }
+    const contained = this._contained;
+    if (contained[contained.length - 1] === level) contained.pop();
+  }
+
+  /** The element whose level is open has style containment. */
+  contain(): void {
+    this._contained.push(this._made.length - 1);
   }
 
   /** Whether the parent of the element whose level is open has a counter
@@ -1804,12 +1821,31 @@ class CounterScopes {
   }
 
   increment(name: string, by: number): void {
-    const instance = this._innermost(name);
+    const instance = this._counted(name);
     instance.value = clampCounter(instance.value + by);
   }
 
   set(name: string, value: number): void {
-    this._innermost(name).value = value;
+    this._counted(name).value = value;
+  }
+
+  /** The instance an increment or a set counts on: the innermost, unless
+   *  it was made outside an element with style containment that this is
+   *  inside, where a new one is made instead, as though this reset it for
+   *  itself and its later siblings — which one outside the element's parent
+   *  then does not see (CSS Containment 2, 3.4). */
+  private _counted(name: string): CounterInstance {
+    const instance = this._innermost(name);
+    const bound = this._contained[this._contained.length - 1];
+    const level = this._made.length - 1;
+    if (bound === undefined || level <= bound || instance.level >= bound) {
+      return instance;
+    }
+    const parent = level - 1;
+    const fresh = { level: parent, own: false, value: 0, reversed: false };
+    this._instances.get(name)!.push(fresh);
+    this._made[parent].push(name);
+    return fresh;
   }
 
   /** Whether the innermost instance counts down: a list item takes one

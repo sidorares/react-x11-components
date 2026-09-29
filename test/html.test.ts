@@ -12783,6 +12783,128 @@ test('a flex item stretched across a column is as tall as its ratio makes it', a
   assert.deepStrictEqual([box('b').width, box('b').height], [100, 50]);
 });
 
+// --- containment -----------------------------------------------------------------
+
+test('contain: size lays a box out as though it held nothing', async () => {
+  // `contain` was dropped whole (CSS Containment 2): a size-contained box
+  // is its `contain-intrinsic-size`, or nothing, whatever it holds
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0} .w{width:120px;height:30px}</style>' +
+      '<div id="a" style="float:left;contain:size"><div class="w"></div>' +
+      '</div>' +
+      '<div id="b" style="float:left;contain:size;' +
+      'contain-intrinsic-size:70px 40px;padding:5px"><div class="w"></div>' +
+      '</div>' +
+      // `inline-size` holds its width and leaves its height its content's
+      '<div id="c" style="float:left;contain:inline-size;' +
+      'contain-intrinsic-width:25px"><div class="w"></div></div>' +
+      '<div id="d" style="contain:strict;contain-intrinsic-height:15px">' +
+      '<div class="w"></div></div>' +
+      // an image is as though it had no size or ratio of its own
+      '<img id="e" src="r.png" style="contain:size;display:block;' +
+      'width:80px">' +
+      // but the one its width and height attributes give it
+      '<img id="f" src="r.png" width="4" height="2" style="contain:size;' +
+      'display:block;width:80px;height:auto">',
+    { 'r.png': RED_PNG },
+  );
+  await waitFor(() =>
+    assert.strictEqual((boxOf(el, 'e') as ReplacedBox).replaced, 'image'),
+  );
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('a'), [0, 0]);
+  assert.deepStrictEqual(size('b'), [80, 50]);
+  assert.deepStrictEqual(size('c'), [25, 30]);
+  assert.strictEqual(boxOf(el, 'd').height, 15);
+  assert.strictEqual(boxOf(el, 'e').height, 0);
+  assert.deepStrictEqual(size('f'), [80, 40]);
+});
+
+test('layout and paint containment make a formatting context, a containing block and a clip', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      // an absolute box is placed against the box with layout containment
+      '<div style="height:20px"></div>' +
+      '<div id="a" style="contain:layout;margin-left:30px;height:40px">' +
+      '<div id="b" style="position:absolute;left:0;top:0;width:5px;' +
+      'height:5px"></div></div>' +
+      // which holds its floats, and parts its child's margin from its own
+      '<div id="c" style="contain:paint"><div style="float:left;width:5px;' +
+      'height:25px"></div></div>' +
+      '<div id="d" style="contain:layout"><p id="e" style="margin:10px 0">' +
+      'x</p></div>' +
+      // and keeps its baseline in: an inline-block with it sits on its
+      // bottom, where one without sits on its first line
+      '<div style="line-height:20px"><span id="f" style="display:inline-block;' +
+      'contain:layout;height:40px">x</span><span id="g" ' +
+      'style="display:inline-block;height:40px">x</span></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('b'), at('a'));
+  assert.strictEqual(boxOf(el, 'c').height, 25, 'its float held in');
+  assert.strictEqual(boxOf(el, 'e').y - boxOf(el, 'd').y, 10);
+  assert.ok(boxOf(el, 'f').y < boxOf(el, 'g').y, 'sat on its bottom');
+});
+
+metric('paint containment clips what overflows', async () => {
+  const { result } = await renderWithBytes(
+    '<style>body{margin:0;background:#ff0000;' +
+      'width:50px;height:100px}</style>' +
+      '<div style="contain:paint;width:20px;height:20px">' +
+      '<div style="width:60px;height:20px;background:#0000ff"></div></div>',
+    {},
+  );
+  const ctx = result.ctx;
+  await expectPixel(ctx, 10, 10, '#0000ff', { message: 'inside the clip' });
+  await expectPixel(ctx, 40, 10, '#ff0000', { message: 'clipped' });
+});
+
+test("containment keeps the body's background to the body", async () => {
+  // it was the canvas's: the whole document red around a 50px body
+  const fills = await fillsIn(
+    '<html style="contain:layout"><body style="background:#fe0000;' +
+      'width:50px;height:40px"></body></html>',
+    '#fe0000',
+  );
+  assert.deepStrictEqual(
+    fills.map((f) => [f.w, f.h]),
+    [[50, 40]],
+  );
+});
+
+metric('layout containment makes a stacking context', async () => {
+  // what is in it is stacked in it, however high its `z-index`: under a
+  // positioned box after it
+  const { result } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      '<div style="contain:layout;height:20px"><div style="position:absolute;' +
+      'z-index:10;width:20px;height:20px;background:#ff0000"></div></div>' +
+      '<div style="position:relative;z-index:1;top:-20px;width:20px;' +
+      'height:20px;background:#00ff00"></div>',
+    {},
+  );
+  await expectPixel(result.ctx, 10, 10, '#00ff00', { message: 'on top' });
+});
+
+test('style containment keeps counters and quotes in its subtree', async () => {
+  // a counter made outside is not counted on inside: a new one is made,
+  // for the element that counts and its later siblings; and the quotes
+  // are as deep after it as they were before it
+  const counters = await documentText(
+    '<style>div{contain:style;counter-increment:c 123}' +
+      'span{counter-increment:c}span::before{content:counter(c)}</style>' +
+      '<div><span></span> <span></span></div>',
+  );
+  assert.ok(counters.includes('1 2'), JSON.stringify(counters));
+  const quotes = await documentText(
+    '<style>div{quotes:"A" "Z" "1" "9"}div::before,span::before' +
+      '{content:open-quote}div::after{content:close-quote}' +
+      'span{contain:style}</style><div><span></span></div>',
+  );
+  assert.ok(quotes.includes('A1Z'), JSON.stringify(quotes));
+});
+
 // --- a restyle's cost --------------------------------------------------------------
 
 test('a style takes from its parent the fields INHERITED names, and no others', () => {
