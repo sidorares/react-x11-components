@@ -189,6 +189,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 100    | ntk 8.14.1: kerning off, a family list's fallback  | 5,649 (95%) | 5,102 (86%) |
 | 101    | `line-clamp` through a flow, `lh`, `-webkit-box`   | 5,649 (95%) | 5,102 (86%) |
 | 102    | `fit-content()`, a content's intrinsic sizes       | 5,649 (95%) | 5,102 (86%) |
+| 103    | ntk 8.14.2: a word shaped across elements          | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -2984,6 +2985,20 @@ X11.
      `fit-content()` measured for a parent's intrinsic size, which CSS
      Sizing 3 treats as cyclic, is still resolved against the probe's
      width.
+
+### Round 103
+
+257. **A word was shaped a span at a time.** ntk 8.14.2 shapes a word that
+     runs across spans shaped alike as one (sidorares/ntk#438): kerned
+     across a `<span>`'s boundary, and in Arabic joined across it, as CSS
+     Text 3 (7.3) has it and browsers shape it. The text of an inline box
+     with a margin, border or padding at a side is shaped on its own, as
+     CSS breaks shaping across the edge — at both of its sides, which is
+     one more than CSS asks of a box with an edge at one; the engine
+     parts a span from both of its neighbours or neither. CSS 2.1 went
+     from 5,649 to 5,651 (`generated-content`), css-content from 16 to 29
+     of 63 (its quotes) and css-text from 644 to 656 (shaping,
+     `text-transform`, `boundary-shaping`).
 
 ## What `<Html>` supports
 

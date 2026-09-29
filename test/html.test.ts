@@ -11615,6 +11615,34 @@ test('a pseudo-element no rule gives a content to is none, whatever reaches it',
   );
 });
 
+metric(
+  "the text of an inline box with an edge is shaped apart from its neighbours'",
+  async () => {
+    // CSS Text 3, 7.3: shaping is broken across an inline box's margin,
+    // border or padding, where the engine shapes a word that runs across
+    // spans shaped alike as one — kerned, and joined in Arabic
+    const { node } = await render(
+      '<p id="a">Wa<span style="padding-left:4px">ve</span> Wa<b>ve</b> ' +
+        'Wa<i style="margin-right:2px">ve</i></p>',
+    );
+    const el = view(node);
+    const apart: string[] = [];
+    for (const line of linesOf(el, 'a')) {
+      for (const text of line.texts) {
+        const layout = text.layout as unknown as {
+          lines: {
+            runs: { span?: { text: string; shapeApart?: boolean } }[];
+          }[];
+        };
+        for (const run of layout.lines[text.layoutLine].runs) {
+          if (run.span?.shapeApart) apart.push(run.span.text);
+        }
+      }
+    }
+    assert.deepStrictEqual(apart, ['ve', 've']);
+  },
+);
+
 // --- line-clamp and text-overflow ------------------------------------------------
 
 test('line-clamp and text-overflow are read', async () => {

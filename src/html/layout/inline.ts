@@ -2312,6 +2312,9 @@ function collect(
   /** Where each absolutely positioned box among the content is: before the
    *  item at `index`. No item of the stream, which reads none of them. */
   statics?: StaticMark[],
+  /** Whether the text is an inline box's that has a margin, border or
+   *  padding at a side, which parts it from the text beside it. */
+  apart = false,
 ): number {
   let floated = 0;
   for (const child of box.children) {
@@ -2330,6 +2333,11 @@ function collect(
       case 'text':
         if (child.text) {
           const run = runFor(heldText(child), child.style);
+          // shaping is broken across the edge (CSS Text 3, 7.3), and the
+          // engine shapes a word that runs across spans shaped alike as one:
+          // its text is shaped on its own. At both of its sides, the one
+          // with no edge among them, as the engine takes it
+          if (apart) run.shapeApart = true;
           if (child.style.wordSpacing) {
             wordSpaced(out, child, run, child.style.wordSpacing);
           } else {
@@ -2400,7 +2408,16 @@ function collect(
         if (controls) {
           pushControls(out, controls[0], child, child.subtreeTextStart);
         }
-        floated += collect(child, out, width, fonts, block, floats, statics);
+        floated += collect(
+          child,
+          out,
+          width,
+          fonts,
+          block,
+          floats,
+          statics,
+          start !== 0 || end !== 0,
+        );
         if (controls) {
           pushControls(out, controls[1], child, child.subtreeTextEnd);
         }
