@@ -12873,6 +12873,126 @@ test("containment keeps the body's background to the body", async () => {
   );
 });
 
+test('overflow-clip-margin moves the edge overflow: clip cuts at', async () => {
+  // it was not read: `overflow: clip` cut at the padding box however far
+  // out the margin let what overflows show; a scroller keeps its padding
+  // box, and an axis let overflow is not cut (CSS Overflow 4, 3.2)
+  const box = (id: string, extra: string) =>
+    `<div id="${id}" style="width:100px;height:50px;padding:10px;` +
+    `border:5px solid #0000fe;${extra}">` +
+    '<div style="height:200px;background:#fe0000"></div></div>';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      box('a', 'overflow:clip;overflow-clip-margin:20px') +
+      box('b', 'overflow:clip;overflow-clip-margin:content-box -2px') +
+      box('c', 'overflow:hidden;contain:paint;overflow-clip-margin:20px') +
+      box('d', 'overflow-x:clip;overflow-clip-margin:border-box'),
+  );
+  const el = view(node);
+  const ops: PaintOp[] = [];
+  await fillsOf(el, ops);
+  const top = (id: string) => Math.round(boxOf(el, id).y);
+  assert.deepStrictEqual(
+    clipsAround(ops, '#fe0000').map(
+      ([c]) => c.op === 'clip' && [c.x, c.y, c.w, c.h],
+    ),
+    [
+      [-15, top('a') - 15, 160, 110],
+      [17, top('b') + 17, 96, 46],
+      [5, top('c') + 5, 120, 70],
+      [0, -30000, 130, 60000],
+    ],
+  );
+});
+
+test('an overflow clip edge rounds out as a spread shadow does', async () => {
+  // The corners grow with the margin, by less where the radius is small
+  // beside it — but an ellipse stays an ellipse (CSS Backgrounds 3, 4.2) —
+  // from the padding box's, as browsers draw them
+  const clip = async (radius: string, border = '') => {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="width:100px;height:100px;overflow:clip;' +
+        `overflow-clip-margin:20px;border-radius:${radius};${border}">` +
+        '<div style="height:200px;background:#fe0000"></div></div>',
+    );
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops);
+    const [[c]] = clipsAround(ops, '#fe0000');
+    const radii = c.op === 'clip' ? c.radii : null;
+    return radii?.map((r) => Math.round(r * 100) / 100);
+  };
+  assert.deepStrictEqual(await clip('50%'), [70, 70, 70, 70]);
+  // 5 + 20 × (1 − (1 − 5/20)³ × (1 − 0.1³))
+  assert.deepStrictEqual(await clip('5px'), [16.57, 16.57, 16.57, 16.57]);
+  // the padding box's 10px, 20px and 30px, moved out by 20px
+  assert.deepStrictEqual(
+    await clip('0 15px 25px 35px', 'border:5px solid'),
+    [0, 27.52, 40, 50],
+  );
+});
+
+test('background-clip and background-origin name the boxes a layer takes', async () => {
+  // only `text` was read: a background was painted over the border box
+  // and placed at the padding box's corner whatever they said (CSS
+  // Backgrounds 3, 3.7 and 3.8)
+  const frame =
+    'width:100px;height:50px;padding:10px;border:5px solid transparent;';
+  const fills = await fillsIn(
+    `<div style="${frame}background:#fe0000 content-box"></div>` +
+      `<div style="${frame}background:#fe0000;background-clip:padding-box;` +
+      'border-radius:20px"></div>' +
+      // two boxes: the origin, and then the clip
+      `<div style="${frame}background:#fe0000 padding-box content-box"></div>`,
+    '#fe0000',
+  );
+  assert.deepStrictEqual(
+    fills.map((f) => [f.x, f.y, f.w, f.h, f.radii]),
+    [
+      [15, 15, 100, 50, null],
+      [5, 85, 120, 70, [15, 15, 15, 15]],
+      [15, 175, 100, 50, null],
+    ],
+  );
+  const { node } = await render(
+    '<style>body{margin:0}div{background:linear-gradient(#0000fe,#0000fe) ' +
+      `no-repeat;background-size:10px 10px;${frame}}</style>` +
+      '<div style="background-origin:content-box"></div>' +
+      '<div style="background-origin:border-box"></div>' +
+      '<div></div>',
+  );
+  assert.deepStrictEqual(
+    gradientFills(await fillsOf(view(node))).map((t) => [t.x, t.y]),
+    [
+      [15, 15],
+      [0, 80],
+      [5, 165],
+    ],
+  );
+});
+
+test('a border is as wide as the whole device pixels it covers', async () => {
+  // Snapped as a border width (CSS Values 4): down to the pixel, and a
+  // hairline up to one — two borders of 49.75px left their box half a
+  // pixel, which painted nothing, where a browser leaves two
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="a" style="box-sizing:border-box;height:100px;' +
+      'border-top:49.75px solid;border-bottom:49.75px solid"></div>' +
+      '<div id="b" style="border:0.25px solid;outline:1.9px solid"></div>',
+  );
+  const el = view(node);
+  type Bordered = {
+    borderTop: number;
+    borderBottom: number;
+    borderLeft: number;
+  };
+  const a = boxOf(el, 'a') as unknown as Bordered;
+  assert.deepStrictEqual([a.borderTop, a.borderBottom], [49, 49]);
+  const b = boxOf(el, 'b') as unknown as Bordered & { style: ComputedStyle };
+  assert.deepStrictEqual([b.borderLeft, b.style.outlineWidth], [1, 1]);
+});
+
 metric('layout containment makes a stacking context', async () => {
   // what is in it is stacked in it, however high its `z-index`: under a
   // positioned box after it

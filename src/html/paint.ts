@@ -29,12 +29,18 @@ import type { FillContext } from '../richtext/runs.js';
 import { alphaOf, inkColor, isTransparent, resolve } from './css/values.js';
 import { blend, borderShades } from './css/color.js';
 import type { Len } from './css/values.js';
-import type { BoxShadow, ComputedStyle, LinearGradient } from './css/style.js';
+import type {
+  BoxShadow,
+  ComputedStyle,
+  LinearGradient,
+  VisualBox,
+} from './css/style.js';
 import {
   CONTAIN_LAYOUT,
   CONTAIN_PAINT,
   CONTAIN_SIZE,
   copyStyle,
+  scrolls,
 } from './css/style.js';
 import { contained } from './layout/block.js';
 import {
@@ -465,7 +471,7 @@ function paintCanvas(
       const box =
         style.backgroundAttachment === 'fixed' && options.canvas
           ? options.canvas
-          : paddingBox(anchor, options);
+          : originBox(anchor, options, style);
       paintGradient(
         ctx,
         style,
@@ -479,7 +485,7 @@ function paintCanvas(
         ctx,
         style,
         area,
-        paddingBox(anchor, options),
+        originBox(anchor, options, style),
         options,
       );
     }
@@ -520,6 +526,12 @@ function layersOf(style: ComputedStyle): ComputedStyle[] | null {
       style.backgroundAttachment,
       i,
     );
+    layer.backgroundClip = nth(style.backgroundClips, style.backgroundClip, i);
+    layer.backgroundOrigin = nth(
+      style.backgroundOrigins,
+      style.backgroundOrigin,
+      i,
+    );
     [layer.backgroundPositionX, layer.backgroundPositionY] = nth(
       style.backgroundPositions,
       [style.backgroundPositionX, style.backgroundPositionY],
@@ -558,8 +570,7 @@ function paintLayers(
   }
 }
 
-/** A box's padding box in window coordinates: where a background image is
- *  positioned. */
+/** A box's padding box in window coordinates. */
 function paddingBox(box: Box, options: PaintOptions): Rect {
   return {
     x: box.x + box.borderLeft + options.originX,
@@ -567,6 +578,73 @@ function paddingBox(box: Box, options: PaintOptions): Rect {
     width: box.width - box.borderLeft - box.borderRight,
     height: frameHeight(box) - box.borderTop - box.borderBottom,
   };
+}
+
+/** Where a layer of a box's background is placed, in window coordinates:
+ *  the box its `background-origin` names (CSS Backgrounds 3, 3.8). */
+function originBox(
+  box: Frame,
+  options: PaintOptions,
+  style: ComputedStyle,
+): Rect {
+  const [t, r, b, l] = edgeInsets(box, style.backgroundOrigin);
+  return {
+    x: box.x + l + options.originX,
+    y: frameY(box) + t + options.originY,
+    width: box.width - l - r,
+    height: frameHeight(box) - t - b,
+  };
+}
+
+/**
+ * Where a layer of a box's background is painted: the box its
+ * `background-clip` names (CSS Backgrounds 3, 3.7), each edge on the pixel
+ * it falls nearest, as browsers snap a box — boxes that meet share the
+ * column their edge is in, and a rule 1.33px wide is one pixel, not two —
+ * with the border box's corners less the widths between (5.3), where
+ * `rounded` asks for them. Null where it has no area.
+ */
+function clipArea(
+  box: Frame,
+  options: PaintOptions,
+  style: ComputedStyle,
+  rounded: boolean,
+): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  corners: Corners | null;
+} | null {
+  const left = box.x + options.originX;
+  const top = frameY(box) + options.originY;
+  const right = left + box.width;
+  const bottom = top + frameHeight(box);
+  const [t, r, b, l] = edgeInsets(box, style.backgroundClip);
+  const x = Math.round(left + l);
+  const y = Math.round(top + t);
+  const w = Math.round(right - r) - x;
+  const h = Math.round(bottom - b) - y;
+  if (!(w > 0 && h > 0)) return null;
+  let corners = rounded
+    ? cornersOf(
+        style,
+        Math.round(right) - Math.round(left),
+        Math.round(bottom) - Math.round(top),
+      )
+    : null;
+  if (corners && (t || r || b || l)) {
+    corners = spreadCorners(
+      corners,
+      box.width,
+      frameHeight(box),
+      -t,
+      -r,
+      -b,
+      -l,
+    );
+  }
+  return { x, y, w, h, corners };
 }
 
 /** What the background and border painters read of a box — which an
@@ -584,7 +662,9 @@ type Frame = Pick<
   | 'borderBottom'
   | 'borderLeft'
   | 'style'
->;
+> &
+  // the padding a `content-box` background is inset by, where it has any
+  Partial<Pick<Box, 'padTop' | 'padRight' | 'padBottom' | 'padLeft'>>;
 
 /** Where a box's background and border go: its border box, which for a
  *  table leaves out the captions around it (CSS 2.1 17.4). */
@@ -661,7 +741,7 @@ function paintContent(
     }
   }
   if (clips) {
-    const rect = overflowClip(box, options);
+    const { rect, radii } = clipEdge(box, options);
     // Clipped to no area, nothing in the box shows but an absolute box
     // whose containing block is outside it, and where it holds none what it
     // holds is not painted at all: a menu at `max-height: 0`. Clipped to an
@@ -674,7 +754,7 @@ function paintContent(
       }
       return;
     }
-    if (pushClip(ctx, rect, innerRadii(box))) {
+    if (pushClip(ctx, rect, radii)) {
       level = { box, deferred: [] };
       (options.clips ??= []).push(level);
     }
@@ -735,27 +815,18 @@ function paintOwnBackground(
   if (style.boxShadow) paintShadows(ctx, box, options, false);
   if (box !== options.canvasSource) {
     paintLayers(ctx, box, options, (layer) => {
-      const left = box.x + options.originX;
-      const top = frameY(box) + options.originY;
-      const area = clampRect(
-        options,
-        Math.round(left),
-        Math.round(top),
-        Math.round(left + box.width) - Math.round(left),
-        Math.round(top + frameHeight(box)) - Math.round(top),
-      );
+      const painted = clipArea(box, options, layer, true);
+      const area =
+        painted &&
+        clampRect(options, painted.x, painted.y, painted.w, painted.h);
       if (area) {
         paintBackgroundImage(
           ctx,
           layer,
           area,
-          paddingBox(box, options),
+          originBox(box, options, layer),
           options,
-          cornersOf(
-            style,
-            Math.round(left + box.width) - Math.round(left),
-            Math.round(top + frameHeight(box)) - Math.round(top),
-          ),
+          painted.corners,
         );
       }
     });
@@ -773,14 +844,28 @@ function shadowReach(blur: number): number {
 
 const SQUARE: Corners = { x: [0, 0, 0, 0], y: [0, 0, 0, 0] };
 
-/** Corners grown by `by` — a spread's, which rounds a shadow with its box —
- *  or shrunk where it is negative; a square corner stays square. */
+/** Corners shrunk by `by` — an inner shadow's spread — or grown where it
+ *  is negative; a square corner stays square. */
 function grownCorners(c: Corners, by: number): Corners {
   const grow = (r: number) => (r > 0 ? Math.max(0, r + by) : 0);
   return {
     x: [grow(c.x[0]), grow(c.x[1]), grow(c.x[2]), grow(c.x[3])],
     y: [grow(c.y[0]), grow(c.y[1]), grow(c.y[2]), grow(c.y[3])],
   };
+}
+
+/**
+ * One dimension of a corner's radius moved out by `by`, or in where it is
+ * negative (CSS Backgrounds 3, 4.2, the outset-adjusted border radius): a
+ * radius small beside the outset grows by less than it, and the less the
+ * rounder the corner already is — `coverage` is how much of the box's side
+ * its two corners take, 1 for an ellipse — so a small rounded corner on a
+ * big outset stays nearly square and a circle stays a circle.
+ */
+function spreadRadius(radius: number, by: number, coverage: number): number {
+  if (by <= 0) return radius + by;
+  if (radius > by || coverage > 1) return radius + by;
+  return radius + by * (1 - (1 - radius / by) ** 3 * (1 - coverage ** 3));
 }
 
 /**
@@ -845,7 +930,16 @@ function paintShadows(
       if (!cut) continue;
       Object.assign(shape, cut);
       const own = clampAround(options, rect, within) ?? rect;
-      const around = grownCorners(corners, s.spread);
+      const around =
+        spreadCorners(
+          corners,
+          rect.width,
+          rect.height,
+          s.spread,
+          s.spread,
+          s.spread,
+          s.spread,
+        ) ?? SQUARE;
       const color = inkColor(s.color, style.color);
       if (!(s.blur > 0) && !s.x && !s.y && s.spread >= 0 && !covered) {
         // a ring about the box: the band between it and the spread
@@ -1395,6 +1489,139 @@ function overflowClip(
   };
 }
 
+/**
+ * The edge a box that clips cuts what it holds at: its padding box where it
+ * scrolls, and for `overflow: clip` and paint containment its overflow clip
+ * edge — the box `overflow-clip-margin` names moved out by its length, or
+ * in where that is negative (CSS Overflow 4, 3.2). Its corners are the
+ * padding box's moved out as a spread moves them, which is what browsers
+ * draw where the text measures from the border edge. Along an axis it lets
+ * overflow show, nothing is cut.
+ */
+function clipEdge(
+  box: Box,
+  options: PaintOptions,
+): {
+  rect: { x: number; y: number; w: number; h: number };
+  radii: Corners | null;
+} {
+  const style = box.style;
+  const painted = contained(box, CONTAIN_PAINT);
+  if (
+    scrolls(style) ||
+    (!painted && style.overflowX !== 'clip' && style.overflowY !== 'clip')
+  ) {
+    return { rect: overflowClip(box, options), radii: innerRadii(box) };
+  }
+  // From the padding box, as a browser draws it: out to the box the
+  // margin is from and then by the margin, its rounded corners moving out
+  // with it as a spread moves them
+  const margin = style.overflowClipMargin * (options.scale ?? 1);
+  const bt = box.borderTop;
+  const br = box.borderRight;
+  const bb = box.borderBottom;
+  const bl = box.borderLeft;
+  const [it, ir, ib, il] = edgeInsets(box, style.overflowClipBox);
+  const t = bt - it + margin;
+  const r = br - ir + margin;
+  const b = bb - ib + margin;
+  const l = bl - il + margin;
+  const left = box.x + options.originX + bl;
+  const top = frameY(box) + options.originY + bt;
+  const width = box.width - bl - br;
+  const height = frameHeight(box) - bt - bb;
+  let x = Math.round(left - l);
+  let y = Math.round(top - t);
+  let w = Math.round(left + width + r) - x;
+  let h = Math.round(top + height + b) - y;
+  const corners = cornersOf(style, box.width, frameHeight(box));
+  let radii = corners
+    ? spreadCorners(
+        insetCorners(corners, bt, br, bb, bl),
+        width,
+        height,
+        t,
+        r,
+        b,
+        l,
+      )
+    : null;
+  const openX = !painted && style.overflowX === 'visible';
+  const openY = !painted && style.overflowY === 'visible';
+  if (openX || openY) {
+    // as far as the damage reaches, or the coordinates a clip can carry
+    const damage = options.damage;
+    radii = null;
+    if (openX) {
+      x = damage ? damage.x - CLAMP_PAD : -COORD_LIMIT;
+      w = damage ? damage.width + 2 * CLAMP_PAD : 2 * COORD_LIMIT;
+    }
+    if (openY) {
+      y = damage ? damage.y - CLAMP_PAD : -COORD_LIMIT;
+      h = damage ? damage.height + 2 * CLAMP_PAD : 2 * COORD_LIMIT;
+    }
+  }
+  return { rect: { x, y, w, h }, radii };
+}
+
+/**
+ * The corners of a box `width` by `height` moved out by each side's
+ * distance, or in where it is negative (`spreadRadius`) — an outer
+ * shadow's spread, an overflow clip edge; a square corner stays square,
+ * and so does one that comes to nothing either way. Null where none is
+ * left rounded.
+ */
+function spreadCorners(
+  c: Corners,
+  width: number,
+  height: number,
+  top: number,
+  right: number,
+  bottom: number,
+  left: number,
+): Corners | null {
+  const x: Corners['x'] = [0, 0, 0, 0];
+  const y: Corners['y'] = [0, 0, 0, 0];
+  let rounded = false;
+  for (let i = 0; i < 4; i += 1) {
+    if (!(c.x[i] > 0 && c.y[i] > 0)) continue;
+    const coverage = 2 * Math.min(c.x[i] / width, c.y[i] / height);
+    const rx = spreadRadius(
+      c.x[i],
+      i === 0 || i === 3 ? left : right,
+      coverage,
+    );
+    const ry = spreadRadius(c.y[i], i < 2 ? top : bottom, coverage);
+    if (!(rx > 0 && ry > 0)) continue;
+    x[i] = rx;
+    y[i] = ry;
+    rounded = true;
+  }
+  return rounded ? { x, y } : null;
+}
+
+/** How far in from a box's border box the box a `<visual-box>` names is:
+ *  top, right, bottom and left. */
+function edgeInsets(
+  box: Frame,
+  which: VisualBox,
+): readonly [number, number, number, number] {
+  if (which === 'border-box') return NO_INSETS;
+  const t = box.borderTop;
+  const r = box.borderRight;
+  const b = box.borderBottom;
+  const l = box.borderLeft;
+  if (which === 'padding-box') return [t, r, b, l];
+  return [
+    t + (box.padTop ?? 0),
+    r + (box.padRight ?? 0),
+    b + (box.padBottom ?? 0),
+    l + (box.padLeft ?? 0),
+  ];
+}
+
+const NO_INSETS = [0, 0, 0, 0] as const;
+
 /** A box clipping what it holds, and the positioned boxes inside it that
  *  escape the clip, waiting for it to end. */
 interface ClipLevel {
@@ -1940,9 +2167,9 @@ function paintStacked(
       else if (pushClip(ctx, rect, null)) pushed += 1;
     }
     if (!empty && clipsOverflow(clipper)) {
-      const rect = overflowClip(clipper, options);
+      const { rect, radii } = clipEdge(clipper, options);
       if (rect.w <= 0 || rect.h <= 0) empty = true;
-      else if (pushClip(ctx, rect, innerRadii(clipper))) pushed += 1;
+      else if (pushClip(ctx, rect, radii)) pushed += 1;
     }
     if (empty) break;
   }
@@ -2075,19 +2302,15 @@ function paintBackground(
   const gradient = style.backgroundGradient;
   const solid = !isTransparent(color);
   if (!solid && !gradient) return;
-  // each edge on the pixel it falls nearest, as browsers snap a box: boxes
-  // that meet share the column their edge is in, and a rule 1.33px wide is
-  // one pixel, not two
-  const left = box.x + options.originX;
-  const top = frameY(box) + options.originY;
-  const x = Math.round(left);
-  const y = Math.round(top);
-  const w = Math.round(left + box.width) - x;
-  const h = Math.round(top + frameHeight(box)) - y;
-  const rect = clampRect(options, x, y, w, h);
+  const area = clipArea(
+    box,
+    options,
+    style,
+    !!(ctx.roundRect && ctx.fill && ctx.beginPath),
+  );
+  const rect = area && clampRect(options, area.x, area.y, area.w, area.h);
   if (!rect) return;
-  const rounded =
-    ctx.roundRect && ctx.fill && ctx.beginPath ? cornersOf(style, w, h) : null;
+  const rounded = area.corners;
   const fill = (): void => {
     if (rounded) {
       // The clamp can only have cut edges further than CLAMP_PAD outside
@@ -2108,14 +2331,8 @@ function paintBackground(
     // the viewport's, where it is fixed; its line runs across the whole of
     // it, not the part this paint reaches
     const fixed = style.backgroundAttachment === 'fixed' && options.canvas;
-    const at = fixed
-      ? snapped(fixed.x, fixed.y, fixed.width, fixed.height)
-      : snapped(
-          left + box.borderLeft,
-          top + box.borderTop,
-          box.width - box.borderLeft - box.borderRight,
-          frameHeight(box) - box.borderTop - box.borderBottom,
-        );
+    const origin = fixed || originBox(box, options, style);
+    const at = snapped(origin.x, origin.y, origin.width, origin.height);
     if (rounded && style.backgroundSize !== 'auto' && ctx.clip) {
       // tiles of the size it was given, cut to the rounded shape
       ctx.save();
@@ -3967,6 +4184,10 @@ function paintInlineBoxes(
       borderBottom: box.borderBottom,
       borderLeft: leftEnds ? box.borderLeft : 0,
       borderRight: rightEnds ? box.borderRight : 0,
+      padTop: box.padTop,
+      padBottom: box.padBottom,
+      padLeft: leftEnds ? box.padLeft : 0,
+      padRight: rightEnds ? box.padRight : 0,
       style,
     };
     if (fragment.width <= 0) continue;

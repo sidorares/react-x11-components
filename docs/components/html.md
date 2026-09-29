@@ -272,7 +272,8 @@ is centred with its images, not text first and the image after it.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
 on an inline box takes its room back from the line), `padding`,
-`border` (width, style, colour, radius), `box-sizing`, `overflow`, `clip`,
+`border` (width, style, colour, radius; a width is whole device pixels,
+rounded down, and a hairline one), `box-sizing`, `overflow`, `clip`,
 `opacity`, `visibility` — a hidden element keeps its room and draws
 nothing, its text included, and a visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
@@ -309,7 +310,11 @@ and `auto` clip the same, with no scroll bars: the element around the
 document is what scrolls. `clip` clips as `hidden` does and makes no
 scroll container, so it makes no formatting context and leaves a flex or
 grid item its automatic minimum; beside a value that scrolls, a `visible`
-axis is `auto` and a `clip` one `hidden`. A table clips to its table box, with its
+axis is `auto` and a `clip` one `hidden`. `clip` on one axis cuts only that
+one. `overflow-clip-margin` moves the edge `clip` and paint containment
+cut at: out from the box it names by its length, or in where the length is
+negative, the rounded corners moving out as a browser's do. A box that
+scrolls cuts at its padding box whatever the margin says. A table clips to its table box, with its
 captions outside the clip. `clip` shows the part of an absolutely positioned
 box it names. Inline elements have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
@@ -420,13 +425,17 @@ element.
 
 **Backgrounds:** `background-color`, and `background-image` — through
 `onResource`, like an `<img>` — with `background-repeat` and
-`background-position`, positioned in the padding box and repeated across the
-border box, or against the viewport with `background-attachment: fixed`. An
+`background-position`, placed in the box `background-origin` names — the
+padding box unless it says otherwise — and painted, and repeated, across
+the box `background-clip` names, the border box unless it says otherwise,
+with that box's rounded corners; or placed against the viewport with
+`background-attachment: fixed`. An
 image with no size of its own, an SVG's, is sized in that area as CSS Images
 says, and `background-size` sizes any image: `cover`, `contain`, or a width
 and a height, either `auto` and taken from the image's ratio. A background
-has any number of layers, each with its own image, repeat, size, position
-and attachment, painted bottom first over the colour. `background-clip:
+has any number of layers, each with its own image, repeat, size, position,
+attachment, origin and clip, painted bottom first over the colour, which
+is clipped with the bottom layer. `background-clip:
 text` paints the background through the element's text instead of behind its
 box — Tailwind's `bg-clip-text text-transparent` headline, with
 `-webkit-text-fill-color` read as the glyphs' own fill — as the text laid
@@ -448,7 +457,10 @@ the stripes a browser shows.
 **Shadows:** `box-shadow`, outer and inset, with offsets, blur, spread and
 any number of them, under the box's background and over it: a card's,
 Tailwind's `shadow-*`, and its `ring-*`, which is a shadow that only
-spreads and draws a border without taking room. An outer shadow is not
+spreads and draws a border without taking room. A spread rounds a corner
+out by less than itself where the radius is small beside it and the box
+is not already round, as browsers do, so a ring keeps a card's corners
+nearly square and a circle's round. An outer shadow is not
 drawn under its box, which a box's own opaque colour usually sees to and
 a cut sees to where it does not. A blurred shadow is drawn once for its
 size, corners, blur and colour on a surface of its own and composited
