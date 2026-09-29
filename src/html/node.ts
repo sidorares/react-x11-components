@@ -1215,8 +1215,10 @@ export class HtmlViewNode extends Node {
    * asks a drawn element as the pointer moves over it (`cursorAt`,
    * react-x11#757). The `cursor` the document's styles give what is under
    * it — a link's `pointer`, the user-agent sheet's — and where they say
-   * nothing, text's I-beam over text, as a browser shows it. Null over
-   * nothing in particular, which is the default arrow.
+   * nothing, text's I-beam over text and the arrow elsewhere, as a browser
+   * shows them. The arrow is named rather than left to null: null lets
+   * core fall through to the element's `defaultCursor`, which is the
+   * I-beam on a selectable surface, and every `<Html>` is one.
    */
   override cursorAt(x: number, y: number): string | null {
     const tree = this._tree;
@@ -1226,7 +1228,7 @@ export class HtmlViewNode extends Node {
     const cursor = el ? tree.styles.get(el)?.style.cursor : null;
     // a keyword; a `url()` this cannot load falls back, as its list would
     if (cursor && cursor !== 'auto' && /^[a-z-]+$/.test(cursor)) return cursor;
-    return hit.text ? 'text' : null;
+    return hit.text ? 'text' : 'default';
   }
 
   /**
