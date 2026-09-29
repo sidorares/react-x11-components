@@ -66,7 +66,8 @@ export type Display =
  *  items' min-content and a maximum of their max-content. */
 export interface GridTrack {
   min: Len | 'min-content' | 'max-content';
-  max: Len | 'min-content' | 'max-content' | { fr: number };
+  /** `fit-content()`'s argument is `fit`. */
+  max: Len | 'min-content' | 'max-content' | { fr: number } | { fit: Len };
 }
 
 /** `grid-template-columns` or `-rows`: its tracks, and a `repeat()` whose
@@ -368,6 +369,10 @@ export interface ComputedStyle {
   /** `min-height` as one: the content's height, which a flex item in a
    *  column is no shorter than whatever its `overflow` (`flex.ts`). */
   minHeightKeyword: ContentSize | null;
+  /** `height` as one, which is its content's as `auto` is — but it is not
+   *  `auto`, and what stretches an item of `auto` height does not stretch
+   *  it (CSS Grid 1, 10.3). */
+  heightKeyword: ContentSize | null;
 
   marginTop: Len;
   marginRight: Len;
@@ -469,6 +474,8 @@ export interface ComputedStyle {
    *  the page's sides, which a flex box resolves against its direction
    *  (`flex.ts`); `flex-start` and `flex-end` are its main axis's. */
   justifyContent:
+    | 'normal'
+    | 'stretch'
     | 'flex-start'
     | 'flex-end'
     | 'start'
@@ -698,6 +705,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     minWidthKeyword: null,
     minHeightKeyword: null,
     maxWidthKeyword: null,
+    heightKeyword: null,
 
     marginTop: 0,
     marginRight: 0,
@@ -767,7 +775,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
 
     flexDirection: 'row',
     flexWrap: 'nowrap',
-    justifyContent: 'flex-start',
+    justifyContent: 'normal',
     alignItems: 'stretch',
     alignSelf: 'auto',
     alignContent: 'stretch',
@@ -1329,6 +1337,7 @@ export function applyDeclaration(
         if (name === 'width') style.widthKeyword = keyword;
         else if (name === 'min-width') style.minWidthKeyword = keyword;
         else if (name === 'min-height') style.minHeightKeyword = keyword;
+        else style.heightKeyword = keyword;
         return;
       }
       // a negative size is no value, and the declaration goes (CSS 2.1
@@ -1339,6 +1348,7 @@ export function applyDeclaration(
         if (name === 'width') style.widthKeyword = null;
         else if (name === 'min-width') style.minWidthKeyword = null;
         else if (name === 'min-height') style.minHeightKeyword = null;
+        else style.heightKeyword = null;
       }
       return;
     }
@@ -2484,7 +2494,7 @@ function justifyKeyword(value: string): ComputedStyle['justifyContent'] | null {
       return v;
     case 'normal':
     case 'stretch':
-      return 'flex-start';
+      return v;
     default:
       return null;
   }
@@ -3393,7 +3403,12 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
   if (fr) return { min: 'auto', max: { fr: Number(fr[1]) } };
   const fn = /^(minmax|fit-content)\((.*)\)$/s.exec(t);
   if (fn) {
-    if (fn[1] === 'fit-content') return { min: 'auto', max: 'max-content' };
+    if (fn[1] === 'fit-content') {
+      const fit = parseLength(fn[2].trim(), ctx);
+      if (fit === null || fit === AUTO) return null;
+      if (typeof fit === 'number' && fit < 0) return null;
+      return { min: AUTO, max: { fit } };
+    }
     const [a, b] = splitCommas(fn[2]).map((p) => p.trim());
     if (a === undefined || b === undefined) return null;
     const min = parseGridTrack(a, ctx);
@@ -3988,7 +4003,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
   display: ['display', 'flowRoot', 'webkitBox', 'grid'],
   width: ['width', 'widthKeyword'],
-  height: ['height'],
+  height: ['height', 'heightKeyword'],
   'min-width': ['minWidth', 'minWidthKeyword'],
   'max-width': ['maxWidth', 'maxWidthKeyword'],
   'min-height': ['minHeight', 'minHeightKeyword'],

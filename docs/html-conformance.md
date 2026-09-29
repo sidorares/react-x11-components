@@ -196,6 +196,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 107    | `justify-content`'s start, end, left and right     | 5,651 (95%) | 5,102 (86%) |
 | 108    | a replaced flex item's size, `flex-basis: content` | 5,651 (95%) | 5,102 (86%) |
 | 109    | absolute boxes in grids, `grid-template`, `grid`   | 5,651 (95%) | 5,102 (86%) |
+| 110    | the grid track sizing algorithm, content alignment | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3147,6 +3148,54 @@ multi-column boxes, which `<Html>` does not fragment, matched their green
 squares only while the shorthands, the rows a template names and no item
 fills, and the stretch of an `auto` row were not there to push their items
 past the column.
+
+### Round 110
+
+272. **A grid's tracks were sized by rules of its own.** An item spanning
+     several tracks grew the last of them by what it needed past them,
+     whether that track was a length or not; the free space grew the
+     tracks in proportion to what each wanted; an `fr` row was as tall as
+     what was in it; and `fit-content()` was a max-content track with no
+     limit. They are sized by the track sizing algorithm now (CSS Grid 1,
+     11.3 to 11.8), the same for the columns and the rows
+     (`layout/tracks.ts`). The items in one track set its base size and its
+     growth limit, where its least is `auto` from what each item can be at
+     least: its content's narrowest only where it shows what overflows it
+     and spans no `fr` track beside another. An item spanning several
+     shares out what it needs past them, equally as far as each track's
+     limit and past the limits only to the tracks its content sizes, the
+     fewest spans first. The free space then grows every track equally
+     towards its limit, the `fr` tracks share what is left — a track whose
+     content is more than its share frozen at it, and in a grid with no
+     height of its own the `fr` that holds every track and every item,
+     which fills its `min-height` — and the `auto` tracks stretch into what
+     remains. A grid item's own length for a width is its size at any
+     constraint: measured at no limit, it was its content's.
+273. **`justify-content` and `align-content` did not place a grid's
+     tracks**, nor `auto` margins its items. The space the tracks leave is
+     before them, after them, between them or around each (CSS Box
+     Alignment 3, 5.1), `center` and `end` running past the start where the
+     tracks are larger than a height the grid has of its own; and an item's
+     `auto` margins take the free space in its area before its alignment
+     does (10.2). `justify-content: normal` is a value of its own, since a
+     grid stretches its `auto` columns for it and not for `start`.
+274. **Placement did not move its cursor past an item with a column**, so
+     the next such item went in beside it rather than on the next row, and
+     an item that named only its row was placed among the others in
+     document order rather than before them (8.5).
+275. **A stretched grid item was never shorter than what it held.** It is
+     its area's height (10.3), so a main area that scrolls in an `fr` row
+     is the row's height. An image, a control or a box with an
+     `aspect-ratio` keeps its own height, as `normal` has one, unless the
+     item's own `align-self` is `stretch`; and a `width` or `height` of
+     `min-content`, `max-content` or `fit-content` is not stretched at all.
+
+css-grid went from 418 to 450 of 1,651 on X11 and from 382 to 409 on
+Cocoa, css-sizing from 252 to 256; the CSS 2.1 suite is unchanged. Eleven
+tests passed by the accidents this ends: six of baseline alignment in a
+grid, which `<Html>` does not do, matched their references only while an
+item spanning two rows grew the last of them, and five `grid-lanes`
+masonry tests matched theirs only while the same rules sized both.
 
 ## What `<Html>` supports
 

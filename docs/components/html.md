@@ -185,18 +185,21 @@ first line's item aligned so, or of its first item. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
-lengths, percentages, `fr`s, `auto`, `minmax()`, and `repeat()` by a count
-or by what fits, `auto-fill` and `auto-fit` alike — and those past the
-template from `grid-auto-columns` and `grid-auto-rows`. It places its items
-by line or span, or in order into the first cells free; a row is as tall
-as what is in it, or as the row the template names, and `auto` rows share
-a height the grid has of its own. An item is stretched to its area or
-aligned in it by `justify-self` and `align-self`, and one that is not
+lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
+`repeat()` by a count or by what fits, `auto-fill` and `auto-fit` alike —
+and those past the template from `grid-auto-columns` and `grid-auto-rows`.
+It places its items by line or span, or in order into the first cells
+free, and sizes its columns and its rows by the track sizing algorithm:
+an item spanning several tracks grows the ones its content sizes, and the
+`fr` rows of a grid with a height or a `min-height` fill it, which puts a
+page's footer at the bottom. `justify-content` and `align-content` place
+the tracks. An item is stretched to its area or aligned in it by
+`justify-self`, `align-self` and its `auto` margins, and one that is not
 stretched is as wide as its content fits. An absolutely positioned box
 takes the grid area its lines name for its containing block, and a grid's
 or a flex box's child is where it would be as the box's one item. Named
-lines and areas, `dense` and column-first placement, and subgrids are not
-read.
+lines and areas, `dense` and column-first placement, baseline alignment
+and subgrids are not read.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —
