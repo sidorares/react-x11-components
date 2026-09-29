@@ -60,7 +60,7 @@ is phase 2 — see [the PRD](../prd-terminal-output.md).
 | `tabWidth`       | `number`                      | Default 8, the terminal's.                                                                                                                                                                                                                                                                                                          |
 | `maxLines`       | `number`                      | Keep only the last N lines. Unbounded by default: the app read the file, so the app decided how big it is. `onDocument`'s `truncated` counts what went.                                                                                                                                                                             |
 | `wrap`           | `boolean`                     | Wrap long lines instead of scrolling horizontally. Default false — a terminal's lines are the length they are.                                                                                                                                                                                                                      |
-| `lineNumbers`    | `boolean`                     | A gutter. The numbers are `selectable={false}`, so a copied log carries none of them. Ignored when `wrap` is on, for the reason `<Code>` ignores it: a wrapped line puts the numbering out of register.                                                                                                                             |
+| `lineNumbers`    | `boolean`                     | A gutter. The numbers are `selectable={false}`, so a copied log carries none of them. A line is numbered by its place in the capture: with `maxLines`, the first line shown follows the lines dropped. Ignored when `wrap` is on, for the reason `<Code>` ignores it: a wrapped line puts the numbering out of register.            |
 | `selectable`     | `boolean`                     | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                                                                                                                                                            |
 | `selectionColor` | `string`                      | Selection band fill. Default: the theme accent at 35% opacity.                                                                                                                                                                                                                                                                      |
 | `fontSize`       | `number`                      | Default 0.9 × the theme `fontSize`, matching `<Code>` and `<Markdown>`'s fenced blocks.                                                                                                                                                                                                                                             |
@@ -89,6 +89,15 @@ const [chunks, setChunks] = useState([]);
 
 <TerminalOutput data={chunks} />;
 ```
+
+**A long capture is drawn as blocks of lines**, 256 to a block, so an append
+lays out again the block it lands in rather than the whole capture. One
+element for everything was laid out whole for every line appended: 50 ms an
+append at 1,000 lines, 0.9 s at 20,000. As blocks it is about 4 ms at
+either. A block keeps its element while its lines are the ones the parser
+already made, and blocks are counted from the start of the capture, so
+`maxLines` dropping lines off the top changes only the first. A selection
+runs across the blocks, and copies as one text.
 
 ## What flow mode honours, and what it drops
 

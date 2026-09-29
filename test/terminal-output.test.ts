@@ -319,3 +319,80 @@ test('an unwrapped line wider than the viewport is scrolled to, not cut off', as
   await act(() => viewport.scrollTo({ x: 200, y: 0 }));
   assert.strictEqual(viewport.scrollX, 200);
 });
+
+/** `count` numbered lines of plain output, newline-terminated. */
+function numberedLines(count: number, from = 0): string[] {
+  return Array.from({ length: count }, (_, i) => `line ${from + i}`);
+}
+
+test('a capture longer than a block is drawn as blocks, and an append rebuilds only the last', async () => {
+  // One `<richtext>` for the whole capture was laid out whole for every line
+  // appended: 0.9 s an append at 20,000 lines. The earlier blocks keep their
+  // runs — the same array, so nothing is laid out again.
+  const lines = numberedLines(600);
+  const data = `${lines.join('\n')}\n`;
+  const r = await renderX11(h(TerminalOutput, { data }), { backend: 'mock' });
+  const before = richNodes().map(runsOf);
+  assert.equal(before.length, 3, 'three blocks of 256 lines');
+  await act(() => r.rerender(h(TerminalOutput, { data: `${data}line 600\n` })));
+  const after = richNodes().map(runsOf);
+  assert.strictEqual(after[0], before[0], 'the first block was not rebuilt');
+  assert.strictEqual(after[1], before[1], 'nor the second');
+  assert.notStrictEqual(after[2], before[2], 'the last took the line');
+  assert.equal(
+    richNodes()
+      .map((n) => n.textContent())
+      .join('\n'),
+    [...lines, 'line 600'].join('\n'),
+    'and together they are the capture',
+  );
+});
+
+test(
+  'Ctrl+A / Ctrl+C copy a capture of several blocks as one text',
+  { skip: !FONTS },
+  async () => {
+    const lines = numberedLines(600);
+    const r = await renderX11(
+      h(TerminalOutput, {
+        data: lines.join('\n'),
+        lineNumbers: true,
+        'data-testname': 'out',
+      }),
+      { fonts: FONTS!, width: 520, height: 200 },
+    );
+    const output = richNodes().find((n) => n.textContent().startsWith('line'));
+    assert.ok(output);
+    // near the top: a block is taller than the window, and its centre is
+    // off it
+    const top = { dx: 0, dy: -output.abs.height / 2 + 5 };
+    await act(async () => {
+      fireEvent.mouseDown(drawn(output), top);
+      fireEvent.mouseUp(drawn(output), top);
+    });
+    await act(async () => {
+      fireEvent.key(0x61, { modifiers: ['Control'] });
+    });
+    await act(async () => {
+      fireEvent.key(0x63, { modifiers: ['Control'] });
+    });
+    assert.equal(
+      await clipboardOf(r).read({ selection: 'CLIPBOARD' }),
+      lines.join('\n'),
+      'one newline between lines across a block boundary, and no numbers',
+    );
+  },
+);
+
+test('with maxLines, the gutter numbers a line by its place in the capture', async () => {
+  // Numbering from the first line shown renumbered every line of the gutter
+  // with every line appended once the capture was being trimmed — and laid
+  // every block of it out again.
+  await renderX11(
+    h(TerminalOutput, { data: 'a\nb\nc\nd', maxLines: 2, lineNumbers: true }),
+    { backend: 'mock' },
+  );
+  const gutter = richNodes().find((n) => /^\d/.test(n.textContent()));
+  assert.ok(gutter);
+  assert.equal(gutter.textContent(), '3\n4');
+});
