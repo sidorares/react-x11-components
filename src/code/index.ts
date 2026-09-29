@@ -17,12 +17,8 @@ import type { ReactElement } from 'react';
 import { useTheme } from 'react-x11';
 import type { Style } from 'react-x11/style';
 
-import {
-  registerRichText,
-  RICHTEXT_ELEMENT,
-  useSelectionMenu,
-} from '../richtext/index.js';
-import type { RichTextProps, TextRun } from '../richtext/index.js';
+import { registerRichText, useSelectionMenu } from '../richtext/index.js';
+import type { TextRun } from '../richtext/index.js';
 import {
   codeBlockLook,
   codeBlockRuns,
@@ -32,6 +28,7 @@ import {
 import type { Language, TokenStyles } from '../code-language/index.js';
 import { hx } from './hx.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
+import { CodeGutter, CodeLines } from '../internal/codelines.js';
 
 const h = React.createElement;
 
@@ -114,32 +111,31 @@ export function Code(props: CodeProps): ReactElement {
 
   const lineCount = React.useMemo(() => source.split('\n').length, [source]);
 
-  const codeProps: RichTextProps = { runs, style: codeTextStyle(look, wrap) };
-  if (!wrap) codeProps.wrap = false;
+  // In blocks of lines, so a change lays out the blocks it touches
+  // (`../internal/codelines.ts`).
+  const code = h(CodeLines, { runs, style: codeTextStyle(look, wrap), wrap });
 
   const gutter = lineNumbers
-    ? h(RICHTEXT_ELEMENT, {
-        // one richtext for all the numbers: same font, same line height, so
-        // it stays in register with the code beside it. `selectable={false}`
-        // is what keeps it out of a drag and out of the copied text — the
-        // numbering is chrome, and CSS spells that `user-select: none`.
-        selectable: false,
-        runs: Array.from({ length: lineCount }, (_, i) => ({
-          text: `${i + 1}\n`,
-          family: look.family,
-          size: look.size,
-          color: look.dim,
-        })),
-        wrap: false,
-        style: {
-          lineHeight: look.lineHeight,
-          textAlign: 'right',
-          minWidth:
-            Math.max(String(lineCount).length, 2) * Math.ceil(look.size * 0.62),
-          marginRight: look.padding,
-          flexShrink: 0,
+    ? hx(
+        'box',
+        {
+          style: {
+            flexDirection: 'column',
+            minWidth:
+              Math.max(String(lineCount).length, 2) *
+              Math.ceil(look.size * 0.62),
+            marginRight: look.padding,
+            flexShrink: 0,
+          },
         },
-      } as Record<string, unknown>)
+        // numbers in the same font and line height as the code, blocked the
+        // same way, so the two stay in register
+        h(CodeGutter, {
+          lines: lineCount,
+          run: { family: look.family, size: look.size, color: look.dim },
+          style: { lineHeight: look.lineHeight, textAlign: 'right' },
+        }),
+      )
     : null;
 
   const rootStyle: Style = {
@@ -170,7 +166,7 @@ export function Code(props: CodeProps): ReactElement {
     hx(
       'box',
       { style: { overflow: 'scroll', flexDirection: 'column', flexGrow: 1 } },
-      h(RICHTEXT_ELEMENT, codeProps as unknown as Record<string, unknown>),
+      code,
     ),
   );
 }

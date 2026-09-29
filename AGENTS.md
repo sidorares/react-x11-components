@@ -137,9 +137,10 @@ finds out from a blank window has been failed by the page.
   the typed `hx()` every composed widget writes its
   elements
   with, the change event and dismiss-on-blur subscription under
-  `<Calendar>`/`<DatePicker>` and `<ColorPicker>`/`<ColorField>`, and the
+  `<Calendar>`/`<DatePicker>` and `<ColorPicker>`/`<ColorField>`, the
   signed distance field `<Map>`'s and `<Flow>`'s GL labels are drawn from
-  (`sdf.ts`) — that no app needs yet. Deliberately without an `index.ts`,
+  (`sdf.ts`), and the blocks of lines `<Code>` and `<Markdown>`'s fences
+  draw code in (`codelines.ts`) — that no app needs yet. Deliberately without an `index.ts`,
   so it has no subpath and no docs page; `test/docs.test.ts` and
   `scripts/check-package.ts` both key on `src/<name>/index.ts`, and that
   is the seam this uses. Giving it an `index.ts` and the full

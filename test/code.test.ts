@@ -13,6 +13,8 @@ import { renderX11, cleanup, screen, fireEvent, act } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 
 import { Code, RichTextNode } from '../src/index.js';
+import type { TextRun } from '../src/index.js';
+import { codeBlocks } from '../src/internal/codelines.js';
 
 const h = React.createElement;
 
@@ -275,3 +277,112 @@ test('an unwrapped line wider than the viewport is scrolled to, not cut off', as
   await act(() => viewport.scrollTo({ x: 200, y: 0 }));
   assert.strictEqual(viewport.scrollX, 200);
 });
+
+/** `count` lines of a script, numbered. */
+function script(count: number): string {
+  return Array.from({ length: count }, (_, i) => `let v${i} = ${i};`).join(
+    '\n',
+  );
+}
+
+function runsOf(node: RichTextNode): TextRun[] {
+  return (node.props as unknown as { runs: TextRun[] }).runs;
+}
+
+test('codeBlocks cuts runs into blocks of whole lines that stack back into the text', () => {
+  const runs: TextRun[] = [
+    { text: 'a\nb', color: '#1' },
+    { text: '\nc\nd\n', color: '#2' },
+    { text: 'e', color: '#3' },
+  ];
+  const blocks = codeBlocks(runs, 2);
+  const texts = blocks.map((block) => block.map((r) => r.text).join(''));
+  assert.deepStrictEqual(texts, ['a\nb', 'c\nd', 'e'], 'two lines a block');
+  assert.equal(texts.join('\n'), 'a\nb\nc\nd\ne', 'and stacked, the text');
+  assert.equal(blocks[1]![0]!.color, '#2', 'a run cut in two keeps its style');
+  // a newline that ends the text stays in its block, which draws the empty
+  // last line it always drew rather than a block of nothing after it
+  const ending = codeBlocks([{ text: 'a\nb\n' }], 2);
+  assert.deepStrictEqual(
+    ending.map((block) => block.map((r) => r.text).join('')),
+    ['a\nb\n'],
+  );
+});
+
+test('a long source is drawn in blocks, and an edit to its end rebuilds only the last', async () => {
+  // One `<richtext>` for the whole source was laid out, and repainted, whole
+  // for every line a stream appended: 0.4 s at 5,000 lines.
+  const source = script(600);
+  const r = await renderX11(
+    h(Code, { source, lang: 'js', lineNumbers: true }),
+    {
+      backend: 'mock',
+    },
+  );
+  const blocks = () => richNodes().filter((n) => !/^\d/.test(n.textContent()));
+  const gutter = () => richNodes().filter((n) => /^\d/.test(n.textContent()));
+  const before = blocks().map(runsOf);
+  assert.equal(before.length, 3, 'three blocks of 256 lines');
+  assert.equal(
+    blocks()
+      .map((n) => n.textContent())
+      .join('\n'),
+    source,
+    'the blocks stacked are the source',
+  );
+  assert.deepStrictEqual(
+    gutter().map((n) => n.textContent().split('\n').filter(Boolean).length),
+    [256, 256, 88],
+    'a block of numbers beside each block of code',
+  );
+  await act(() =>
+    r.rerender(
+      h(Code, {
+        source: `${source}\nlet tail = 1;`,
+        lang: 'js',
+        lineNumbers: true,
+      }),
+    ),
+  );
+  const after = blocks().map(runsOf);
+  assert.strictEqual(after[0], before[0], 'the first block was not rebuilt');
+  assert.strictEqual(after[1], before[1], 'nor the second');
+  assert.notStrictEqual(after[2], before[2], 'the last took the line');
+});
+
+test(
+  'Ctrl+A / Ctrl+C copy a source of several blocks as one text',
+  { skip: !FONTS },
+  async () => {
+    const source = script(600);
+    const r = await renderX11(
+      h(Code, {
+        source,
+        lang: 'js',
+        lineNumbers: true,
+        'data-testname': 'code',
+      }),
+      { fonts: FONTS!, width: 520, height: 200 },
+    );
+    const first = richNodes().find((n) => n.textContent().startsWith('let'));
+    assert.ok(first);
+    // near the top: a block is taller than the window, and its centre is
+    // off it
+    const top = { dx: 0, dy: -first.abs.height / 2 + 5 };
+    await act(async () => {
+      fireEvent.mouseDown(drawn(first), top);
+      fireEvent.mouseUp(drawn(first), top);
+    });
+    await act(async () => {
+      fireEvent.key(0x61, { modifiers: ['Control'] });
+    });
+    await act(async () => {
+      fireEvent.key(0x63, { modifiers: ['Control'] });
+    });
+    assert.equal(
+      await clipboardOf(r).read({ selection: 'CLIPBOARD' }),
+      source,
+      'one newline between lines across a block boundary, and no numbers',
+    );
+  },
+);

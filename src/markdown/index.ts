@@ -77,6 +77,7 @@ import { runsOf, plainTextOf } from './spans.js';
 import type { InlineStyles } from './spans.js';
 import { useLinkClicks } from '../richtext/index.js';
 import { hx } from './hx.js';
+import { CodeLines } from '../internal/codelines.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 
 export type {
@@ -516,7 +517,14 @@ function renderCode(
         flexDirection: 'column',
       },
     },
-    richtext('code', runs, codeTextStyle(code, false), false),
+    // in blocks of lines, so a fence that streams lays out the block its
+    // new lines land in (`../internal/codelines.ts`)
+    h(CodeLines, {
+      key: 'code',
+      runs,
+      style: codeTextStyle(code, false),
+      wrap: false,
+    }),
   );
 }
 
