@@ -194,6 +194,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 105    | a flex item's `z-index`, painting in `order`       | 5,651 (95%) | 5,102 (86%) |
 | 106    | a flex box's background with the flow's            | 5,651 (95%) | 5,102 (86%) |
 | 107    | `justify-content`'s start, end, left and right     | 5,651 (95%) | 5,102 (86%) |
+| 108    | a replaced flex item's size, `flex-basis: content` | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3079,6 +3080,28 @@ CSS 2.1 together 19 more on Cocoa.
      passed by an accident this ends: a masonry `grid-lanes` box, which is
      laid out as blocks here, matched its reference grid only while
      neither read `unsafe`.
+
+### Round 108
+
+266. **A replaced flex item ignored the flex layout.** An image was
+     measured as nothing wide — its content's width, and it has no
+     content — and then laid out at its natural size whatever Yoga said:
+     it did not grow, stretch or shrink. It is the size the flex layout
+     makes it now, from its natural width along a row and fitted to the
+     room across a column; it shrinks no further than its natural width,
+     or what its ratio makes of a height of its own, within its least and
+     greatest heights (CSS Flexbox 4.5); and one that a line of a
+     definite size stretches takes its flex base size from the stretched
+     size through its ratio (9.2, 9.8) — which Yoga's own `aspectRatio`
+     would do for its border box, where a replaced element's ratio is its
+     content box's. css-flexbox went from 619 to 639 of 1,012 on X11. One
+     test passed by the accident this ends: Yoga grows an item from its
+     basis within its least width, as Chrome 86 did, and an image of 1px
+     with `min-width: 100px` beside a growing sibling comes out 149.5px
+     wide where browsers now make it 100.
+267. **`flex-basis: content` took a row item's width** for its basis, as
+     `auto` does; it is its max-content width, or a replaced element's
+     natural one, whatever width it has (7.2.3).
 
 ## What `<Html>` supports
 

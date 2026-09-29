@@ -228,9 +228,130 @@ export function layoutFlex(
     );
   }
 
+  // A replaced item with a ratio that is stretched across a line of a
+  // definite size takes its flex base size from the stretched one through
+  // the ratio (CSS Flexbox 9.2 and 9.8), where Yoga took its natural size —
+  // which Yoga's own `aspectRatio` would do for its border box, where a
+  // replaced element's ratio is its content box's. Laid out again with it.
+  // where the line's cross size is definite: one line, in a box of that
+  // size of its own (9.8)
+  const definiteCross =
+    box.style.flexWrap === 'nowrap' && (row ? height !== null : bounded);
+  if (definiteCross && keepRatios(box, items, row)) {
+    ctx.flexDepth = depth + 1;
+    try {
+      calculate();
+    } finally {
+      ctx.flexDepth = depth;
+    }
+    bottom = placeItems(
+      box,
+      ctx,
+      items,
+      row,
+      height,
+      box.style.flexWrap === 'wrap' || baselines,
+    );
+  }
+
   const contentHeight = root.getComputedHeight();
   root.freeRecursive();
   return Math.max(contentHeight, bottom - box.contentY);
+}
+
+/** Give each replaced item with a ratio that its line stretched the flex
+ *  base size the ratio makes of the stretched size; whether any changed. */
+function keepRatios(
+  container: Box,
+  items: readonly { box: Box; node: YogaNode }[],
+  row: boolean,
+): boolean {
+  let changed = false;
+  for (const { box, node } of items) {
+    if (box.kind !== 'replaced' || !stretches(box, container.style, row)) {
+      continue;
+    }
+    const style = box.style;
+    if ((row ? style.width : style.height) !== AUTO) continue;
+    const ratio = replacedRatio(box);
+    if (!(ratio > 0)) continue;
+    const basis = row
+      ? Math.max(0, node.getComputedHeight() - box.verticalExtra) * ratio +
+        box.horizontalExtra
+      : Math.max(0, node.getComputedWidth() - box.horizontalExtra) / ratio +
+        box.verticalExtra;
+    const main = row ? node.getComputedWidth() : node.getComputedHeight();
+    if (Math.abs(basis - main) < 0.5) continue;
+    node.setFlexBasis(basis);
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * A replaced row item's automatic least width, its border box (CSS
+ * Flexbox 4.5): its natural width, or through its ratio what a height of
+ * its own makes of it, and no more than a width of its own, within its
+ * `max-width`. Null where it has neither a natural width nor a ratio to
+ * take one through.
+ */
+function replacedMinimum(box: Box, containingWidth: number): number | null {
+  const style = box.style;
+  const own = box.intrinsic;
+  const ratio = replacedRatio(box);
+  const hx = style.boxSizing === 'border-box' ? box.horizontalExtra : 0;
+  const vx = style.boxSizing === 'border-box' ? box.verticalExtra : 0;
+  const base = box.percentHeightBase;
+  const height = resolveOrNull(style.height, base);
+  let content: number | null =
+    height !== null && ratio > 0
+      ? Math.max(0, height - vx) * ratio
+      : own && !(own.missing & 1)
+        ? own.width
+        : null;
+  if (content === null) return null;
+  // and through its ratio, within its least and greatest heights
+  if (ratio > 0) {
+    const least =
+      style.minHeight === AUTO ? null : resolveOrNull(style.minHeight, base);
+    if (least !== null)
+      content = Math.max(content, Math.max(0, least - vx) * ratio);
+    const most =
+      style.maxHeight === 'none' ? null : resolveOrNull(style.maxHeight, base);
+    if (most !== null)
+      content = Math.min(content, Math.max(0, most - vx) * ratio);
+  }
+  const width = resolveOrNull(style.width, containingWidth);
+  if (width !== null) content = Math.min(content, Math.max(0, width - hx));
+  if (style.maxWidth !== 'none') {
+    const most = resolveOrNull(style.maxWidth, containingWidth);
+    if (most !== null) content = Math.min(content, Math.max(0, most - hx));
+  }
+  return content + box.horizontalExtra;
+}
+
+/** A replaced element's ratio: its `aspect-ratio`, unless that says `auto`
+ *  and it has one of its own, as `sizeReplaced` takes it. */
+function replacedRatio(box: Box): number {
+  const own = box.intrinsic;
+  const aspect = box.style.aspectRatio;
+  const natural = own ? own.ratio : 0;
+  return aspect && !(aspect.auto && natural > 0) ? aspect.ratio : natural;
+}
+
+/** A row item's `flex-basis: content`, its border box: its max-content
+ *  width, or a replaced element's natural one. */
+function contentBasis(
+  box: Box,
+  ctx: LayoutContext,
+  containingWidth: number,
+): number {
+  if (box.kind === 'replaced') {
+    const own = box.intrinsic;
+    if (own && !(own.missing & 1)) return own.width + box.horizontalExtra;
+  }
+  const room = Math.max(0, containingWidth - box.marginLeft - box.marginRight);
+  return contentSizedWidth(box, ctx, 'max-content', room, containingWidth);
 }
 
 /** A child's `order`, which an absolutely positioned one takes as 0 when
@@ -308,7 +429,9 @@ function layoutItemAt(
    *  whatever its own says: flexed, it is shrunk as well as grown. */
   column = false,
 ): void {
-  if (box.kind === 'text' || box.kind === 'break') {
+  // a replaced item is the size the flex layout made it — flexed,
+  // stretched — which its natural size was only the start of
+  if (box.kind === 'text' || box.kind === 'break' || box.kind === 'replaced') {
     box.x = x;
     box.y = y;
     box.width = width;
@@ -421,7 +544,15 @@ function applyItem(
     if (maxHeight !== null) node.setMaxHeight(maxHeight + down);
   }
 
-  if (style.flexBasis === 'content' || style.flexBasis === AUTO) {
+  if (
+    style.flexBasis === 'content' &&
+    (box.parent?.style.flexDirection.startsWith('row') ?? true)
+  ) {
+    // the content's size along a row, whatever the item's own width says
+    // (CSS Flexbox 7.2.3), which Yoga reads as `auto` and takes the width
+    // for; along a column, Yoga's measure is the content's
+    node.setFlexBasis(contentBasis(box, ctx, containingWidth));
+  } else if (style.flexBasis === 'content' || style.flexBasis === AUTO) {
     // Yoga's own
   } else if (isPct(style.flexBasis)) {
     // a percentage of the main size, which is known across a row
@@ -453,7 +584,16 @@ function applyItem(
   // table cell's is: taken per layout of the container, a flex box in a
   // flex box in a flex box laid its innermost out three times a level,
   // and twelve levels took two seconds.
+  const alongRow = box.parent?.style.flexDirection.startsWith('row') ?? true;
   const content = (): number => {
+    // a replaced element's is the width it has with no limit — its
+    // natural one, or what its ratio makes of a height of its own — which
+    // its image, loading, may change, so it is not kept; taken as its
+    // content's, it was none, and Yoga measured an image as nothing wide
+    if (box.kind === 'replaced') {
+      ctx.layoutSubtree(box, Infinity);
+      return Math.max(0, box.width - box.horizontalExtra);
+    }
     let width = MAX_CONTENT.get(box);
     if (width === undefined) {
       width = measureIntrinsicWidth(box, ctx, Infinity) - box.horizontalExtra;
@@ -466,7 +606,15 @@ function applyItem(
   node.setMeasureFunc((w, wm, h, hm) => {
     void h;
     void hm;
-    const inner = innerWidth(w, wm, content);
+    // along a row, a replaced element is its own width wherever there is
+    // room for less — its flex base size is not fitted to the room (9.2)
+    // — and across a column it is fitted, as any item is
+    const inner =
+      box.kind === 'replaced' &&
+      alongRow &&
+      !(wm === Y.MEASURE_MODE_EXACTLY && Number.isFinite(w))
+        ? content()
+        : innerWidth(w, wm, content);
     let answer = answers.get(inner);
     if (answer === undefined) {
       answer = measureBox(box, ctx, inner);
@@ -587,6 +735,15 @@ function autoMinimums(
       continue;
     }
     const width = node.getComputedWidth();
+    // a replaced item's content along a row is its natural width
+    if (row && box.kind === 'replaced') {
+      if (style.minWidth !== AUTO || style.minWidthKeyword) continue;
+      const least = replacedMinimum(box, containingWidth);
+      if (least === null || width >= least - 0.01) continue;
+      node.setMinWidth(least);
+      changed = true;
+      continue;
+    }
     // An item its content sizes along a row: one with a width of its own
     // may shrink under it to what its content comes to, which that width
     // hides from a measure, and keeps Yoga's minimum of none
@@ -804,16 +961,24 @@ function itemBaseline(item: Box): number {
 
 /** Whether an item is stretched across its line: `stretch`, its own or its
  *  container's, with no height of its own and no `auto` margin across. */
-function stretches(box: Box, container: ComputedStyle): boolean {
+function stretches(
+  box: Box,
+  container: ComputedStyle,
+  /** Whether the line is a row's, across which the item's height is
+   *  stretched; a column's stretches its width. */
+  row = true,
+): boolean {
   const style = box.style;
   const align =
     style.alignSelf === AUTO ? container.alignItems : style.alignSelf;
-  return (
-    align === 'stretch' &&
-    style.height === AUTO &&
-    style.marginTop !== AUTO &&
-    style.marginBottom !== AUTO
-  );
+  if (align !== 'stretch') return false;
+  return row
+    ? style.height === AUTO &&
+        style.marginTop !== AUTO &&
+        style.marginBottom !== AUTO
+    : style.width === AUTO &&
+        style.marginLeft !== AUTO &&
+        style.marginRight !== AUTO;
 }
 
 /** Whether anything in a box takes a percentage of a height: what a height
