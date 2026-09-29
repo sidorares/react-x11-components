@@ -14405,6 +14405,67 @@ metric('a hover in a long document builds and lays out nothing', async () => {
   assert.ok(updates.n < 1000, 'a hover built the document again');
 });
 
+test("a :hover in a :has() names the element that holds it, and is no rule's nested pointer", async () => {
+  const { pointerCompounds } = await import('../src/html/css/cascade.js');
+  // what iana.org writes, which made every hover on the page build it again
+  assert.deepStrictEqual(
+    pointerCompounds('#rir-map:has(tr[data-rir]:hover) svg .rir'),
+    {
+      compounds: [],
+      siblings: false,
+      nested: false,
+      has: [{ anchor: '#rir-map', siblings: false }],
+    },
+  );
+  // an argument that starts at a sibling reaches the siblings before
+  assert.deepStrictEqual(pointerCompounds('h2:has(+ p a:hover)').has, [
+    { anchor: 'h2', siblings: true },
+  ]);
+  // with a :hover of its own too, and whatever else is in the compound
+  const both = pointerCompounds('li.x:hover:has(> a:hover)');
+  assert.deepStrictEqual(both.compounds, ['li.x']);
+  assert.deepStrictEqual(both.has, [{ anchor: 'li.x', siblings: false }]);
+  // a :has() inside another function is not the compound's own
+  assert.strictEqual(pointerCompounds(':not(:has(a:hover))').nested, true);
+  assert.strictEqual(pointerCompounds('a:not(:hover)').nested, true);
+});
+
+metric(
+  'a :hover in a :has() restyles where it is: the element that holds it, and its siblings',
+  async () => {
+    const { result, node } = await render(
+      '<style>body{margin:0} a{color:#0000ee} .m{color:#000000}' +
+        ' #box:has(a:hover) .m{color:#00aa00}' +
+        ' #t:has(+ p a:hover){color:#aa0000}</style>' +
+        '<div id="box"><p><a id="a" href="#x">a link</a></p>' +
+        '<p class="m" id="m">marked</p></div>' +
+        '<p id="t">title</p><p><a id="b" href="#y">another link</a></p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+    const colour = (id: string) =>
+      (boxOf(el, id) as unknown as { style: { color: string } }).style.color;
+
+    el.setHover(...pointIn(el, 'a'));
+    const inBox = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), tree, 'the document was built again');
+    assert.notDeepStrictEqual(inBox, quiet, 'the hover drew nothing');
+    assert.strictEqual(colour('m'), '#00aa00');
+    assert.deepStrictEqual(inBox, await rebuilt(result, el));
+
+    // to the link after the title: the box's mark back, the title marked
+    const again = treeOf(el);
+    el.setHover(...pointIn(el, 'b'));
+    const after = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), again, 'the document was built again');
+    assert.strictEqual(colour('m'), '#000000');
+    assert.strictEqual(colour('t'), '#aa0000');
+    assert.deepStrictEqual(after, await rebuilt(result, el));
+  },
+);
+
 metric(
   "the cursor under the pointer is the document's: a link's pointer, text's I-beam",
   async () => {

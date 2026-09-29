@@ -1324,12 +1324,21 @@ export class HtmlViewNode extends Node {
     const before = new Set(was);
     const after = new Set(now);
     const roots: Element[] = [];
-    for (const el of was) {
-      if (!after.has(el) && cascade.hoverTouches(el)) roots.push(el);
-    }
-    for (const el of now) {
-      if (!before.has(el) && cascade.hoverTouches(el)) roots.push(el);
-    }
+    // and the elements a `:has()` testing the pointer may flip, which
+    // are around the ones that changed; the chains are ancestor chains,
+    // so the deepest that changed on each side is where to look from
+    const flipped = (el: Element, other: Set<Element>): void => {
+      if (other.has(el)) return;
+      if (cascade.hoverTouches(el)) roots.push(el);
+    };
+    for (const el of was) flipped(el, after);
+    for (const el of now) flipped(el, before);
+    const deepest = (chain: readonly Element[], other: Set<Element>) => {
+      const el = chain[0];
+      if (el && !other.has(el)) cascade.hoverAnchors(el, roots);
+    };
+    deepest(was, after);
+    deepest(now, before);
     if (!roots.length) return 'none';
 
     // what may restyle: the roots' subtrees, which inherit from them and a
@@ -1366,8 +1375,10 @@ export class HtmlViewNode extends Node {
       if (!reach.has(el)) return kept.style;
       const done = fresh.get(el);
       if (done) return done;
+      // an element at the top of the document is styled from the box above
+      // it all, as the builder styled it (`BoxBuilder.run`)
       const parent = isElement(el.parent) ? el.parent : null;
-      const parentStyle = parent ? styleOf(parent) : null;
+      const parentStyle = parent ? styleOf(parent) : tree.root.style;
       if (!parentStyle) {
         refused = true;
         return null;
