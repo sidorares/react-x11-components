@@ -631,7 +631,8 @@ function automaticMinimum(
   margins: number,
   content: number,
 ): number {
-  if (overflow !== 'visible') return 0;
+  // a scroll container has none; `clip` is not one (CSS Overflow 3, 3.1)
+  if (overflow !== 'visible' && overflow !== 'clip') return 0;
   const end = Math.min(tracks.length, start + count);
   let auto = false;
   let flexible = false;

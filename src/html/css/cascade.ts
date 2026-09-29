@@ -33,6 +33,7 @@ import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import {
   applyDeclaration,
   blockify,
+  settleOverflow,
   settleClamp,
   copyStyle,
   decorate,
@@ -1108,6 +1109,7 @@ export class Cascade {
       style.alignBlocks = null;
     }
     settleClamp(style, parentStyle);
+    settleOverflow(style);
     blockify(style, inFlexContainer);
     decorate(style);
     // which faces of the document's own families this family, weight and
