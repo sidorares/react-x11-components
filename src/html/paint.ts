@@ -30,9 +30,11 @@ import { alphaOf, inkColor, isTransparent, resolve } from './css/values.js';
 import { blend, borderShades } from './css/color.js';
 import type { Len } from './css/values.js';
 import type {
+  BackgroundRepeat,
   BoxShadow,
   ComputedStyle,
   LinearGradient,
+  RepeatMode,
   VisualBox,
 } from './css/style.js';
 import {
@@ -2392,7 +2394,13 @@ function paintGradient(
   // a gradient has no size of its own: the positioning area's, unless
   // `background-size` gives it one, and then `background-position` places
   // it in the area as it does an image
-  const [w, h] = sizedTile(style.backgroundSize, NO_SIZE, at, 1);
+  const repeat = style.backgroundRepeat;
+  const [w, h] = roundedTile(
+    style.backgroundSize,
+    repeat,
+    sizedTile(style.backgroundSize, NO_SIZE, at, 1),
+    at,
+  );
   if (!(w > 0 && h > 0)) return;
   const x0 =
     w === at.width
@@ -2402,14 +2410,30 @@ function paintGradient(
     h === at.height
       ? at.y
       : at.y + resolve(style.backgroundPositionY, at.height - h);
-  const repeat = style.backgroundRepeat;
-  const acrossX = repeat === 'repeat' || repeat === 'repeat-x';
-  const acrossY = repeat === 'repeat' || repeat === 'repeat-y';
-  const fromX = acrossX ? x0 - Math.ceil((x0 - area.x) / w) * w : x0;
-  const fromY = acrossY ? y0 - Math.ceil((y0 - area.y) / h) * h : y0;
-  const toX = acrossX ? area.x + area.w : x0 + w;
-  const toY = acrossY ? area.y + area.h : y0 + h;
-  if (Math.ceil((toX - fromX) / w) * Math.ceil((toY - fromY) / h) > MAX_TILES) {
+  const across = tileRun(
+    repeat[0],
+    x0,
+    w,
+    area.x,
+    area.x + area.w,
+    at.x,
+    at.width,
+  );
+  const down = tileRun(
+    repeat[1],
+    y0,
+    h,
+    area.y,
+    area.y + area.h,
+    at.y,
+    at.height,
+  );
+  const { from: fromX, to: toX, step: stepX } = across;
+  const { from: fromY, to: toY, step: stepY } = down;
+  if (
+    Math.ceil((toX - fromX) / stepX) * Math.ceil((toY - fromY) / stepY) >
+    MAX_TILES
+  ) {
     // a sliver of a root repeated down a long canvas: the one tile, and
     // its end colours on past it
     ctx.fillStyle = linearGradient(
@@ -2425,11 +2449,11 @@ function paintGradient(
     ctx.fillRect(area.x, area.y, area.w, area.h);
     return;
   }
-  for (let y = fromY; y < toY; y += h) {
+  for (let y = fromY; y < toY; y += stepY) {
     const top = Math.max(y, area.y);
     const bottom = Math.min(y + h, area.y + area.h);
     if (bottom <= top) continue;
-    for (let x = fromX; x < toX; x += w) {
+    for (let x = fromX; x < toX; x += stepX) {
       const left = Math.max(x, area.x);
       const right = Math.min(x + w, area.x + area.w);
       if (right <= left) continue;
@@ -2807,7 +2831,13 @@ function paintBackgroundImage(
   if (!svg && !ctx.drawImage) return;
   // an image pixel is a CSS pixel, and the box is device
   const scale = options.scale ?? 1;
-  const [iw, ih] = sizedTile(style.backgroundSize, loaded, at, scale);
+  const repeat = style.backgroundRepeat;
+  const [iw, ih] = roundedTile(
+    style.backgroundSize,
+    repeat,
+    sizedTile(style.backgroundSize, loaded, at, scale),
+    at,
+  );
   if (!(iw > 0 && ih > 0)) return;
   const offset = (len: Len, extent: number, size: number): number =>
     resolve(len, extent - size);
@@ -2815,14 +2845,27 @@ function paintBackgroundImage(
   const y0 = Math.round(
     at.y + offset(style.backgroundPositionY, at.height, ih),
   );
-  const repeat = style.backgroundRepeat;
-  const acrossX = repeat === 'repeat' || repeat === 'repeat-x';
-  const acrossY = repeat === 'repeat' || repeat === 'repeat-y';
   // the tiles that reach the area: from the first at or before its edge
-  const fromX = acrossX ? x0 - Math.ceil((x0 - area.x) / iw) * iw : x0;
-  const fromY = acrossY ? y0 - Math.ceil((y0 - area.y) / ih) * ih : y0;
-  const toX = acrossX ? area.x + area.w : x0 + iw;
-  const toY = acrossY ? area.y + area.h : y0 + ih;
+  const across = tileRun(
+    repeat[0],
+    x0,
+    iw,
+    area.x,
+    area.x + area.w,
+    at.x,
+    at.width,
+  );
+  const down = tileRun(
+    repeat[1],
+    y0,
+    ih,
+    area.y,
+    area.y + area.h,
+    at.y,
+    at.height,
+  );
+  const { from: fromX, to: toX, step: stepX } = across;
+  const { from: fromY, to: toY, step: stepY } = down;
 
   ctx.save();
   if (ctx.beginPath && ctx.rect && ctx.clip) {
@@ -2833,13 +2876,14 @@ function paintBackgroundImage(
     } else ctx.rect(area.x, area.y, area.w, area.h);
     ctx.clip();
   }
-  const tiles = Math.ceil((toX - fromX) / iw) * Math.ceil((toY - fromY) / ih);
+  const tiles =
+    Math.ceil((toX - fromX) / stepX) * Math.ceil((toY - fromY) / stepY);
   if (svg) {
     // a drawing is drawn a tile at a time, at the size it was given
     if (tiles <= MAX_TILES) {
-      for (let y = fromY; y < toY; y += ih) {
-        for (let x = fromX; x < toX; x += iw)
-          svg.draw(ctx, x, y, iw, ih, scale);
+      for (let y = fromY; y < toY; y += stepY) {
+        for (let x = fromX; x < toX; x += stepX)
+          svg.draw(ctx, Math.round(x), Math.round(y), iw, ih, scale);
       }
     } else {
       svg.draw(ctx, x0, y0, iw, ih, scale);
@@ -2848,6 +2892,8 @@ function paintBackgroundImage(
     tiles > 1 &&
     iw === loaded.width &&
     ih === loaded.height &&
+    stepX === iw &&
+    stepY === ih &&
     ctx.createPattern &&
     ctx.translate
   ) {
@@ -2858,15 +2904,89 @@ function paintBackgroundImage(
     ctx.translate(x0, y0);
     ctx.fillRect(fromX - x0, fromY - y0, toX - fromX, toY - fromY);
   } else if (tiles <= MAX_TILES) {
-    for (let y = fromY; y < toY; y += ih) {
-      for (let x = fromX; x < toX; x += iw) {
-        ctx.drawImage!(loaded.image, x, y, iw, ih);
+    // each tile's edges on the pixels they fall nearest, so tiles `space`
+    // sets apart or `round` sizes to a fraction meet without a seam
+    for (let y = fromY; y < toY; y += stepY) {
+      const top = Math.round(y);
+      const height = Math.round(y + ih) - top;
+      for (let x = fromX; x < toX; x += stepX) {
+        const left = Math.round(x);
+        ctx.drawImage!(
+          loaded.image,
+          left,
+          top,
+          Math.round(x + iw) - left,
+          height,
+        );
       }
     }
   } else {
     ctx.drawImage!(loaded.image, x0, y0, iw, ih);
   }
   ctx.restore();
+}
+
+/**
+ * Where a background's tiles fall along one axis (CSS Backgrounds 3, 3.4):
+ * from the first at or before the painting area's start, a step apart, to
+ * its end. `space` fits as many whole tiles into the positioning area as it
+ * holds, the first and last against its edges and the rest spread evenly
+ * between — or one, where two do not fit, placed as `background-position`
+ * says — and `round`'s tile is already the size that fits (`roundedTile`).
+ */
+function tileRun(
+  mode: RepeatMode,
+  start: number,
+  size: number,
+  areaStart: number,
+  areaEnd: number,
+  originStart: number,
+  originSize: number,
+): { from: number; step: number; to: number } {
+  let step = size;
+  if (mode === 'space') {
+    const fits = Math.floor(originSize / size + 1e-6);
+    if (fits < 2) return { from: start, step, to: start + size };
+    step = size + (originSize - fits * size) / (fits - 1);
+    start = originStart;
+  } else if (mode === 'no-repeat') {
+    return { from: start, step, to: start + size };
+  }
+  return {
+    from: start - Math.ceil((start - areaStart) / step) * step,
+    step,
+    to: areaEnd,
+  };
+}
+
+/**
+ * A tile that `round` fits a whole number of times into the positioning
+ * area along the axes it rounds (CSS Backgrounds 3, 3.9): the nearest whole
+ * number, and one at least. Rounded one way only, with the size `auto` the
+ * other way, the tile keeps its ratio.
+ */
+function roundedTile(
+  size: ComputedStyle['backgroundSize'],
+  [modeX, modeY]: BackgroundRepeat,
+  [w, h]: [number, number],
+  at: Rect,
+): [number, number] {
+  const acrossRounds = modeX === 'round' && w > 0 && at.width > 0;
+  const downRounds = modeY === 'round' && h > 0 && at.height > 0;
+  if (!acrossRounds && !downRounds) return [w, h];
+  const w2 = acrossRounds
+    ? at.width / Math.max(1, Math.round(at.width / w))
+    : w;
+  const h2 = downRounds
+    ? at.height / Math.max(1, Math.round(at.height / h))
+    : h;
+  const autoW =
+    size === 'auto' || (typeof size !== 'string' && size[0] === 'auto');
+  const autoH =
+    size === 'auto' || (typeof size !== 'string' && size[1] === 'auto');
+  if (acrossRounds && !downRounds && autoH) return [w2, (h * w2) / w];
+  if (downRounds && !acrossRounds && autoW) return [(w * h2) / h, h2];
+  return [w2, h2];
 }
 
 /**

@@ -205,6 +205,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 116    | `stretch` and `-webkit-fill-available`             | 5,652 (95%) | 5,103 (86%) |
 | 117    | containment and `content-visibility`               | 5,652 (95%) | 5,103 (86%) |
 | 118    | `overflow-clip-margin`, `background-clip`, borders | 5,652 (95%) | 5,103 (86%) |
+| 119    | `background-repeat: space` and `round`             | 5,652 (95%) | 5,103 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3527,6 +3528,23 @@ on Cocoa; the CSS 2.1 suite is unchanged. The Cocoa sweep of it, run beside
 other work, reported 217 tests lost and 98 won; each of those run alone
 passes, and each of these fails on both trees — the load, not the change.
 
+### Round 119
+
+312. **`background-repeat`'s `space` and `round` were read as `repeat`**
+     (CSS Backgrounds 3, 3.4). `space` sets as many whole tiles as the
+     positioning area holds, the first and last against its edges and the
+     rest spread evenly between, or one placed by `background-position`
+     where two do not fit; past the area, the painting area is tiled on at
+     the same step. `round` sizes the tile so that a whole number of them
+     fit, the nearest, and a tile rounded one way only keeps its ratio
+     where the other way's size is `auto` (3.9). Each axis has its own, so
+     `space round` is read too, and a tile set apart or sized to a fraction
+     is drawn with its edges on whole pixels, so that tiles meet without a
+     seam.
+
+css-backgrounds went from 311 to 338 of 711 on X11 and from 300 to 327 on
+Cocoa; the CSS 2.1 suite is unchanged.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -3540,7 +3558,7 @@ checked against the code.
 | margins, padding, borders                          | 682   | 95%     | **supported**, inline boxes and collapsed table borders included; the `double`/`groove` families are approximations                                                                                                                         |
 | floats and `clear`                                 | 311   | 46–67%  | **supported**, a float inside a paragraph at the top of the line it is met on; a word wider than its line is broken where CSS lets it overflow                                                                                              |
 | relative and absolute positioning                  | 513   | 84%     | **supported**, against an inline box too; an absolute box inside a line is where the text before it left off                                                                                                                                |
-| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed`, `background-size`, any number of layers and SVG images included                                                                                                                              |
+| backgrounds: colour, image, repeat, position       | 336   | 85%     | **supported**, `background-attachment: fixed`, `background-size`, `background-clip` and `background-origin`, `space` and `round`, any number of layers and SVG images included                                                              |
 | fonts: family, style, weight, size                 | 159   | 81%     | **supported**; `font-variant` is the font's own OpenType features, so small capitals are drawn where the font has them and not synthesized                                                                                                  |
 | line height, `vertical-align`                      | 191   | 87%     | **supported**: every inline box's own line height, and `vertical-align` on text as well as on images and inline blocks; text in a font with taller natural lines than its paragraph's takes a bit more room than CSS gives it               |
 | `white-space`                                      | 217   | 46%     | **supported**; collapsing is CSS 2.1's across elements                                                                                                                                                                                      |
