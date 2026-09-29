@@ -15283,6 +15283,45 @@ metric(
 );
 
 metric(
+  "an inline element broken around a block takes the block's line in, as a browser does",
+  async () => {
+    // CSS 2.1 9.2.1.1 breaks an inline box around a block inside it, and a
+    // browser reports the inline's box across the lines between its pieces
+    // too: Blink's block-in-inline and Gecko's split inline each give it a
+    // fragment around the block, across the box the block is in and as
+    // tall as its border box. Design 050 makes its archive list items
+    // inline around block links, and each measured as the empty edge after
+    // its link, nowhere near it
+    const { node } = await render(
+      '<style>body{margin:0}div{width:120px;padding-left:10px}' +
+        'ul{margin:0;padding:40px 0 0}li{display:inline}' +
+        'a{display:block;margin:4px 0 4px 5px;height:14px}</style>' +
+        '<div><ul><li id="one"><a href="#">first</a></li>' +
+        '<li id="two">before <a href="#">second</a> after</li></ul></div>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const one = rect('one');
+    assert.deepStrictEqual(
+      [one.x, one.y, one.width, one.height],
+      [10, 44, 120, 14],
+      `a link's line, across the list: ${JSON.stringify(one)}`,
+    );
+    const two = rect('two');
+    assert.ok(
+      two.x === 10 && two.width === 120,
+      `across the list, the text either side in it: ${JSON.stringify(two)}`,
+    );
+    assert.ok(
+      two.y < one.y + one.height + 10 && two.y + two.height > one.y + 60,
+      `from the line before its link to the line after it: ${JSON.stringify(two)}`,
+    );
+  },
+);
+
+metric(
   "an inline element's rect is its border box down, not its line's height",
   async () => {
     // CSSOM View 6.1: a fragment's border box is its font's content area
