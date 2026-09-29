@@ -22,18 +22,6 @@ import type {
   SceneText,
 } from './scene.js';
 
-/**
- * Below this many runs in one pen, they are stroked one at a time.
- *
- * A path's mask is its bounding box, so batching scattered geometry trades
- * many small masks for one the size of the pane — about three quarters of a
- * megabyte at a normal window size. That is a large win at seven hundred
- * edges (measured: 3.9 MB a frame down to 1.3) and a loss at twenty, where
- * the individual masks never add up to a paneful. The threshold is where
- * they start to.
- */
-const BATCH_MIN = 24;
-
 /** How a renderer draws the grid, when it can do better than the runs below
  *  — the element's pattern-tile path (ntk#263). Answers whether it did. */
 export type GridPainter = (painter: FlowPainter, grid: SceneGrid) => boolean;
@@ -66,71 +54,45 @@ function paintText(painter: FlowPainter, item: SceneText): void {
 }
 
 /**
- * Strokes grouped by the pen that will draw them.
+ * Strokes grouped by the pen that will draw them, for a pane whose edges are
+ * stroked a pen at a time (`FlowScene.batch`, `EDGE_BATCH` in `scene.ts`).
  *
  * Everything a graph strokes is the same two or three pens — the default
  * edge, the selected one, the animated dash — so grouping collapses a
  * per-edge request into a per-pen one. The key carries the dash *and* its
  * offset: two edges marching out of phase cannot share a path, because the
- * offset is set on the context, not on the subpath.
- *
- * And below the batch, one edge is still one path, however many runs a pass
- * cut it into. Where a route crosses itself — a step edge that leaves its
- * handle and doubles straight back along its own line — one path adds the
- * two legs' coverage and two paths lay one over the other, so a pass that
- * cut the fold's turn out of the edge drew the legs' shared line lighter at
- * its edges than a repaint of the whole edge did.
+ * offset is set on the context, not on the subpath. And it leads with the
+ * layer, so that the pens are stroked in the same order by every pass —
+ * the order a pass happened to meet them in put the default pen over the
+ * selected one in one pass and under it in the next.
  */
 class StrokeBuckets {
   private readonly byPen = new Map<
     string,
-    {
-      options: StrokeOptions;
-      runs: (readonly XYPosition[])[];
-      // where each edge's runs start in `runs`, and whose the last were
-      starts: number[];
-      owner: object | null;
-    }
+    { options: StrokeOptions; runs: (readonly XYPosition[])[] }
   >();
 
   push(
     points: readonly XYPosition[],
+    layer: number,
     stroke: string,
     lineWidth: number,
     dash: readonly number[] | undefined,
     dashOffset: number,
-    owner: object,
   ): void {
-    const key = `${stroke}|${lineWidth}|${dash?.join(',') ?? ''}|${dashOffset}`;
+    const key = `${layer}|${stroke}|${lineWidth}|${dash?.join(',') ?? ''}|${dashOffset}`;
     let entry = this.byPen.get(key);
     if (!entry) {
-      entry = {
-        options: { stroke, lineWidth, dash, dashOffset },
-        runs: [],
-        starts: [],
-        owner: null,
-      };
+      entry = { options: { stroke, lineWidth, dash, dashOffset }, runs: [] };
       this.byPen.set(key, entry);
-    }
-    if (entry.owner !== owner) {
-      entry.starts.push(entry.runs.length);
-      entry.owner = owner;
     }
     entry.runs.push(points);
   }
 
   paint(painter: FlowPainter): void {
-    for (const { options, runs, starts } of this.byPen.values()) {
-      if (runs.length >= BATCH_MIN) {
-        painter.strokeRuns(runs, options);
-        continue;
-      }
-      for (let i = 0; i < starts.length; i++) {
-        const from = starts[i];
-        const to = i + 1 < starts.length ? starts[i + 1] : runs.length;
-        if (to - from === 1) painter.polyline(runs[from], options);
-        else painter.strokeRuns(runs.slice(from, to), options);
-      }
+    for (const key of [...this.byPen.keys()].sort()) {
+      const { options, runs } = this.byPen.get(key)!;
+      painter.strokeRuns(runs, options);
     }
   }
 }
@@ -144,27 +106,61 @@ interface MarkerBucket {
   open: (readonly XYPosition[])[];
 }
 
-function paintEdges(painter: FlowPainter, edges: readonly SceneEdge[]): void {
+/** The runs a pass strokes of an edge — the part of the route it reaches,
+ *  where it reaches only part. */
+function runsOf(edge: SceneEdge): readonly (readonly XYPosition[])[] {
+  return edge.runs ?? [edge.points];
+}
+
+function paintEdges(
+  painter: FlowPainter,
+  edges: readonly SceneEdge[],
+  batch: boolean,
+): void {
+  if (batch) paintEdgesByPen(painter, edges);
+  else paintEdgesInOrder(painter, edges);
+
+  // The chips and then the labels, both above every edge — which is the
+  // point of a chip. The text is not collected, because a glyph run is
+  // already one request and nothing is gained by holding it.
+  for (const edge of edges) {
+    if (edge.chip) paintRect(painter, edge.chip);
+  }
+  for (const edge of edges) {
+    if (edge.label) paintText(painter, edge.label);
+  }
+}
+
+/**
+ * Every run of a pen as one path, and every arrowhead of a colour. A pass
+ * draws the pens it reaches in the same order and with the same compositing
+ * as the whole pane does: where two of a pen's runs overlap, their coverage
+ * adds, in a pass as in a repaint.
+ */
+function paintEdgesByPen(
+  painter: FlowPainter,
+  edges: readonly SceneEdge[],
+): void {
   const strokes = new StrokeBuckets();
   const markers = new Map<string, MarkerBucket>();
   for (const edge of edges) {
-    // the part of the route this pass reaches, where it reaches only part —
+    const layer = edge.layer ?? 0;
     // a dashed run picking its pattern up where it starts along the edge
-    const runs = edge.runs ?? [edge.points];
+    const runs = runsOf(edge);
     for (let i = 0; i < runs.length; i++) {
       const points = runs[i];
       if (points.length < 2) continue;
       strokes.push(
         points,
+        layer,
         edge.stroke,
         edge.lineWidth,
         edge.dash,
         edge.dashOffset + (edge.runStarts?.[i] ?? 0),
-        edge,
       );
     }
     for (const marker of edge.markers) {
-      const key = `${marker.color}|${marker.lineWidth}`;
+      const key = `${layer}|${marker.color}|${marker.lineWidth}`;
       let bucket = markers.get(key);
       if (!bucket) {
         bucket = {
@@ -179,33 +175,68 @@ function paintEdges(painter: FlowPainter, edges: readonly SceneEdge[]): void {
     }
   }
   strokes.paint(painter);
-
-  for (const bucket of markers.values()) {
-    // the same threshold, for the same reason: a handful of arrowheads
-    // scattered over the pane is cheaper drawn as a handful
-    if (bucket.filled.length >= BATCH_MIN) {
+  for (const key of [...markers.keys()].sort()) {
+    const bucket = markers.get(key)!;
+    if (bucket.filled.length > 0) {
       painter.polygons(bucket.filled, { fill: bucket.color });
+    }
+    if (bucket.open.length > 0) {
+      painter.strokeRuns(bucket.open, {
+        stroke: bucket.color,
+        lineWidth: bucket.lineWidth,
+      });
+    }
+  }
+}
+
+/**
+ * An edge at a time, in the graph's order, and the arrowheads after all of
+ * them: what a pane with few edges draws, where a path per pen would be a
+ * mask the size of the pane (`EDGE_BATCH`). One edge is still one path,
+ * however many pieces a pass cut it into: a step edge that doubles back
+ * along its own line adds its two legs' coverage in one path and lays one
+ * over the other in two, and a pass that drew the pieces apart drew the
+ * shared line lighter at its edges than a repaint did. A dashed edge's
+ * pieces are the exception — each picks its pattern up where it starts, and
+ * a dash offset is the context's, not a subpath's.
+ */
+function paintEdgesInOrder(
+  painter: FlowPainter,
+  edges: readonly SceneEdge[],
+): void {
+  for (const edge of edges) {
+    const runs = runsOf(edge);
+    const pen = {
+      stroke: edge.stroke,
+      lineWidth: edge.lineWidth,
+      dash: edge.dash,
+      dashOffset: edge.dashOffset,
+    };
+    if (edge.dash && edge.runStarts) {
+      for (let i = 0; i < runs.length; i++) {
+        if (runs[i].length < 2) continue;
+        painter.polyline(runs[i], {
+          ...pen,
+          dashOffset: edge.dashOffset + (edge.runStarts[i] ?? 0),
+        });
+      }
+    } else if (runs.length === 1) {
+      painter.polyline(runs[0], pen);
     } else {
-      for (const head of bucket.filled) {
-        painter.polygon(head, { fill: bucket.color });
+      painter.strokeRuns(runs, pen);
+    }
+  }
+  for (const edge of edges) {
+    for (const marker of edge.markers) {
+      if (marker.filled) {
+        painter.polygon(marker.points, { fill: marker.color });
+      } else {
+        painter.strokeRuns([marker.points], {
+          stroke: marker.color,
+          lineWidth: marker.lineWidth,
+        });
       }
     }
-    const stroke = { stroke: bucket.color, lineWidth: bucket.lineWidth };
-    if (bucket.open.length >= BATCH_MIN) {
-      painter.strokeRuns(bucket.open, stroke);
-    } else {
-      for (const head of bucket.open) painter.strokeRuns([head], stroke);
-    }
-  }
-
-  // The chips and then the labels, both above every edge — which is the
-  // point of a chip. The text is not collected, because a glyph run is
-  // already one request and nothing is gained by holding it.
-  for (const edge of edges) {
-    if (edge.chip) paintRect(painter, edge.chip);
-  }
-  for (const edge of edges) {
-    if (edge.label) paintText(painter, edge.label);
   }
 }
 
@@ -393,7 +424,7 @@ export function paintGraph(painter: FlowPainter, scene: FlowScene): void {
 /** The graph's edges alone: the first half of `paintGraph`, which a drag's
  *  pictures take apart so the dragged node's edges go between them. */
 export function paintGraphEdges(painter: FlowPainter, scene: FlowScene): void {
-  paintEdges(painter, scene.edges);
+  paintEdges(painter, scene.edges, scene.batch);
 }
 
 /** The graph's nodes, and the connection line over them: the second half. */

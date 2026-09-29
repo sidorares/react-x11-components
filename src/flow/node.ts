@@ -94,6 +94,7 @@ import {
   edgeInkBox,
   withLabelPlate,
   edgeRoute,
+  batchesEdges,
   endpoint,
   HANDLE_ZOOM,
   screenRect,
@@ -520,6 +521,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
    * when the app applies the changes it is being sent. Cleared on release,
    * which is also how a refused drag snaps back. */
   private _dragTo: Map<string, XYPosition> | null = null;
+  /** Whether the pane's edges are stroked a pen at a time (`EDGE_BATCH`):
+   *  chosen by a pass over the whole pane, and followed by every pass over
+   *  part of it until the next. */
+  private _batch = false;
   /** The box a resize is currently making, for the same reason. */
   private _resizeTo: { id: string; rect: FlowRect } | null = null;
   /** The bodies last sent, re-sent as the same array when only the origin
@@ -3366,7 +3371,20 @@ export class FlowGraphNode extends Node implements FlowInstance {
       this._restZoom();
       this._reportFrame(built - started, now() - built);
     } else {
-      scene = buildScene(this._sceneInput(palette));
+      // Only a pass over the whole pane may change how edges are stroked;
+      // one over part of it follows what the rest was drawn with, and asks
+      // for the whole when the edges on the pane have crossed over
+      // (`EDGE_BATCH`) — so a pan's copy never meets a strip drawn the
+      // other way.
+      const input = this._sceneInput(palette);
+      const whole = this._coversPane(clip);
+      scene = buildScene(
+        whole ? { ...input, batch: undefined, batchWas: this._batch } : input,
+      );
+      if (whole) this._batch = scene.batch;
+      else if (batchesEdges(scene.edgesOnPane, this._batch) !== this._batch) {
+        this._repaint('content');
+      }
       const built = now();
       paintScene(painter, scene, this._grid);
       const done = now();
@@ -3747,6 +3765,21 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   /** Whether a pass over `clip` painted the whole pane — what a zoom step
    *  paints, and the only pass whose cost says what one would. */
+  /** Whether a pass (`paintDamage()`, device pixels) repaints every pixel
+   *  of the pane, unlike {@link _wholePane}'s nine tenths. */
+  private _coversPane(clip: FlowRect | null): boolean {
+    if (clip === null) return true;
+    const pane = this._pane();
+    const c = this._logical(clip);
+    const slack = 0.5 / this._scale;
+    return (
+      c.x <= pane.x + slack &&
+      c.y <= pane.y + slack &&
+      c.x + c.width >= pane.x + pane.width - slack &&
+      c.y + c.height >= pane.y + pane.height - slack
+    );
+  }
+
   private _wholePane(clip: FlowRect | null): boolean {
     if (clip === null) return true;
     const pane = this._pane();
@@ -4181,6 +4214,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
         scale: this._scale,
         measure: this._measureBox,
         cache: this._sceneCache,
+        batch: this._batch,
       };
     }
     const order = this._paintOrder();
@@ -4276,6 +4310,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
       scale: this._scale,
       measure: this._measureBox,
       cache: this._sceneCache,
+      batch: this._batch,
     };
   }
 
