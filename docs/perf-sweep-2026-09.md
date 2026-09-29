@@ -4096,6 +4096,154 @@ bodies, is unchanged at 0.65.
   other work on the machine: one run of the map was slow in every cell
   at once.
 
+## Round 42: what a frame leaked, and what the repaint found next
+
+Round 40's probes, run longer and over more of the package. Hundreds of
+roots in one process turned up two leaks. Tracing which edges a pass
+strokes, where and under what clip took the new classes apart.
+
+### Two leaks, found by their own warnings
+
+Hundreds of roots in one process tripped node's `MaxListeners` warning,
+which is a sign of a leak rather than proof of one. Both were real:
+
+- **react-x11 #782.** Each root's XSETTINGS and compositing watches added
+  `event` listeners to the connection and made an XFixes InputOnly window,
+  and unmounting the root left all of it. A session's `stop()` now runs a
+  teardown list, and a watch that fires after its session stopped does
+  nothing.
+- **ntk #457.** A 2D context's `destroy()` left its listeners on the
+  drawable it drew to, so every `Surface.render()` leaked three closures
+  and the dead context with them.
+
+Heap probes with steady operations then found no growth in `<Flow>` (a
+plateau at 44.5 MB), `<Tree>`, `<Table>` or the vt `<Terminal>`.
+`<Table>`'s edits grow the shape cache, which is bounded.
+
+### What core missed (react-x11 #784, #785, #786)
+
+- **A subtree under `display: none`** (#784). Yoga leaves it unlaid, so a
+  node moved or inserted there has NaN for its layout. `absolutize` walked
+  it anyway and `contentReach` read it, so a scroll pane in a hidden tab
+  threw from the frame. Neither looks under a hidden box now.
+- **A fade's first frame** (#785). A text's ink was measured only once its
+  layout was placed, so the first paint of an `opacity` group made its
+  surface too small for a label that inks past its box, and cut the ink
+  off at the surface's edge. When the first paint finds ink past the
+  surface, it draws again at the new size.
+- **A glyph's ink past its line** (#786). A paragraph's ink was its lines'
+  advance boxes. A `j` that starts a line hooks back over its start (1.3
+  px at 24 px in the test face), an `f` that ends one reaches past its
+  end, and a line set tighter than its face has ascenders over its top.
+  None of it was claimed past the damage rect's pixel of slop, so a
+  relayout left an old hook behind. The ink now takes each line's end
+  glyphs by their own boxes and the outer lines' faces by their ascent and
+  descent, found once per layout.
+
+### What the components missed
+
+- **An arrowhead is not in its route's box** (#357). A head lies along the
+  route's last stretch but is as wide as it is long: nine pixels either
+  side at zoom 2. The cull kept an edge by its route's box, so a route
+  running level just under the pane was culled with its head's wing still
+  on the pane. A move claimed a node's edges by their route points, so
+  once a head or the zoom was large enough it left the old wings' tips
+  behind. The heads are in the box a route is cached with now, and a
+  move's claim counts heads and pen past its margin.
+- **Coverage adds in one path and composites between two** (#358, #364).
+  - A step edge whose target sits above it doubles straight back along its
+    own line.
+  - Three step edges out of one handle share a leg.
+  - Stroked as one path, the overlaps add their coverage. Stroked apart,
+    one is laid over the other, and the line's edges come out as much as
+    35 levels lighter.
+  - A pass that split an edge into runs, or reached fewer edges than the
+    batch threshold, stroked them apart where a repaint of the pane
+    stroked them together.
+
+  One edge is one path now (#358). Batching a pane's pens is the pane's
+  choice (#364): a repaint of all of it decides, and every pass follows
+  until the next. Pens are stroked in a fixed order, a selected edge over
+  a hovered one over the rest. The order a pass met them in had put a
+  plain edge over a selected one in one pass and under it in the next.
+
+- **Unwrapped code wider than its viewport** (#365). `<Code>`,
+  `<TerminalOutput>` and `<Markdown>`'s fences lay code out unwrapped in a
+  scrolling column, and the column stretched the text to its own width.
+  - The text's box held none of a long line, so no viewport could scroll
+    to the end of one: `scrollX` was pinned at 0 in all three.
+  - Core asks whether anything reaches past a viewport before clipping it.
+    It heard no, and did not clip.
+  - A fence has no rounded box around it to clip it anyway, so it drew the
+    rest of the line across whatever stood beside the document.
+
+  The probe saw only a stale glyph in the window's last column after an
+  edit. Unwrapped code is as wide as its longest line now.
+
+### Two rasterizers, chosen by position (ntk #461, #462)
+
+ntk draws a mask with its own rasterizer or has the X server rasterize
+it, choosing by the mask's area and number of edges. The two antialias a
+few levels apart at a stroke's edges.
+
+- **The route came from the part of a drawing on the surface.** It went
+  by the box clamped to the window and the triangles left once those
+  wholly off it were culled.
+- **So a pan could change it.** A long, round-capped `<Flow>` edge whose
+  start cap had just left the window had three triangles fewer to count.
+  It went to the server instead, and came out up to ten levels different
+  along its whole length: a pan's copy one way, the repaint the other
+  (Flow seeds 74 and 76).
+- **The fix (#461).** The route now comes from the drawing's own size and
+  edges, capped at what the surface could ever show. Culling still bounds
+  the work, and bytes a frame are unchanged.
+
+Moving a drawing changes nothing now, but drawing different geometry for
+the same pixels still can. A pass over part of a `<Flow>` pane strokes an
+edge's runs inside its clip, where a repaint strokes the whole route, and
+the two can take different routes. With the policy forced to local, every
+seed is clean. The choice left is ntk #462: rasterize locally and upload
+only what is covered, let a caller pin a route, or accept it.
+
+The probes came back clean with these fixes:
+
+- Flow seeds 42 to 82, three of them at scale 2, apart from the class
+  above;
+- `<Code>`, `<Tree>`, `<Table>`, `<Markdown>`, the rich text editor, the
+  terminal, the charts, the widgets and `<Map>`, on five fresh seeds each;
+- core's random trees on seeds 83 to 110, except seed 99 (see "Still
+  open").
+
+### What the fixes cost
+
+- **#357.** A move's claim covers the same area as before at every
+  default zoom on the bench's grid, fan and spiral graphs. It is 0.6–0.9%
+  larger on the spiral at zoom 2–2.5, where short edges' heads are longer
+  than their routes. The first cut grew every claim by the cull's reach,
+  three widths of the pen, and repainted 4 to 22% more for pixels the
+  claim's margin already covered.
+- **#786.** Each new layout costs:
+
+  | paragraph | glyph ink | laying it out |
+  | --------- | --------: | ------------: |
+  | 2 lines   |    3.9 µs |        7.5 µs |
+  | 24 lines  |    7.1 µs |         31 µs |
+  | 236 lines |     74 µs |        237 µs |
+
+  Measuring every glyph cost as much again as the layout. A cache of glyph
+  boxes measured no faster than the lookups it cached.
+
+- **#364.** No change to a repaint, which draws what it drew before: a
+  pane below the threshold an edge at a time, one above it batched.
+  Batching every pass would also have made passes agree, but on a sparse
+  graph whose long edges criss-cross the pane it cost 634 KB a repaint
+  against 97.
+- **ntk #461.** The same bytes a frame as 8.14.5 on two hundred curves
+  inside the surface and a hundred crossing it, and times within the runs'
+  own spread. Routing by every edge of a stroke, including the ones past
+  the surface, sent 19% more bytes before the edges were scaled to the
+  share of the stroke the surface could show.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -4409,6 +4557,46 @@ bodies, is unchanged at 0.65.
     clip arrived as null, because the scene it is built in is built
     unclipped, and the change measured no gain until a probe counted
     what each pass built. When adding a cull, count what it keeps.
+67. **A shape's data has a box, and its ink has another.** A route's
+    points, a line's advances and a stretched text's width each have a
+    box, and what is drawn from them reaches past it: an arrowhead as wide
+    as it is long, a `j` that hooks back over the start of its line, a
+    code line longer than the box it was stretched to. Every cull, claim
+    and clip sized by the data missed the ink. Each showed only where the
+    data had just left the pane or the damage rect.
+68. **Coverage adds inside one path and composites between two.** The same
+    overlapping strokes come out differently drawn as one path and as
+    several. So whatever decides how they are grouped has to decide it
+    the same way for every pass: a pass's clip cutting an edge in two, a
+    threshold counted per pass, the order a pass meets its pens. Otherwise
+    the partial frame and the repaint disagree wherever strokes overlap.
+69. **Grow a claim only past the margin it already has.** Growing every
+    claim by a cull's generous reach made a small graph's moves claim a
+    fifth more, for pixels the margin already covered. Counting only what
+    reaches past the margin claims exactly what it claimed before, until
+    something really does reach past it.
+70. **Measure only where the answer can change, and measure a cache
+    before keeping it.** A paragraph's ink can leave its box only at a
+    line's two ends and over its first and last lines. Looking there alone
+    cost a quarter of looking at every glyph. The obvious next step, a
+    cache of glyph boxes, measured no faster than the lookups it replaced.
+71. **A threshold that changes how things are drawn has to change it
+    everywhere at once.** A pane crossing from batched edges to single
+    ones cannot let one strip of a pan draw the new way beside the copy of
+    the old. The change waits for a repaint of the whole pane, which the
+    crossing asks for.
+72. **Follow a stale pixel to what drew it.** A glyph left in the window's
+    last column looked like a missing claim. It was a code line drawn past
+    its fence and past the document's scrollbar, in a viewport that had
+    never been able to scroll to it. Three viewports could not reach the
+    ends of their long lines, and the missing claim was the least of it.
+73. **Choose between two implementations by what is drawn, never by
+    where.** ntk's rasterizer and the server's come out a few levels apart
+    at a stroke's edges. Chosen by the part of a stroke on the surface,
+    the choice changed as the stroke panned. Chosen by the stroke itself,
+    it holds under a pan. It still does not hold between a pass that
+    strokes part of an edge and a repaint that strokes all of it, which is
+    why that case is a decision rather than a fix.
 
 ## Still open
 
@@ -4438,6 +4626,11 @@ round 15.
   what a whole repaint draws (round 40). Invisible, and set aside by the
   damage probe's threshold; exact agreement would need the corner's
   coverage computed the same way on both paths.
+- **A translucent box's rounded corners**: one pass composites them
+  through a group surface and another draws them directly, which puts the
+  antialiased edge up to nine levels apart (core seed 99, round 42). The
+  same class as the rounded corners above, and set aside for the same
+  reason.
 - **A row's floor in a fling**: every row that scrolls into a `<Table>` is
   measured for its floor on a copy of its boxes, in two passes of its own,
   about half of a 14 ms production frame. The rule is deliberate, since an
@@ -4465,3 +4658,13 @@ round 15.
 - **Bold over a whole small document** in `<RichTextEditor>`: 55–72 ms to
   the screen in production, proportional to the document below the 200
   blocks at which the editor draws a window; see round 12.
+- **Glyph boxes on other engines**: #786 takes a line end's ink from
+  `glyphExtents`, which ntk's faces answer and the Cocoa and Windows faces
+  do not yet. On those, a paragraph's ink is its lines' boxes, grown by
+  the face's ascent and descent over the first line and under the last.
+- **Geometry cut differently per pass** (ntk #462): a pass over part of a
+  `<Flow>` pane strokes the runs of an edge it reaches, and a repaint
+  strokes the whole route, so ntk can send them to different rasterizers,
+  up to about ten levels apart at the edges (round 42). Forcing one route
+  removes it. What is left to decide: a sparse local upload, a route a
+  caller pins, or leaving it.
