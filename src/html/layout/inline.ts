@@ -497,7 +497,14 @@ function linesOf(
   let raised = false;
   for (const item of items) {
     if (item.kind === 'atomic') hasAtomics = true;
-    else if (item.kind === 'edge') {
+    else if (item.kind === 'text') {
+      // text in an inline box with a line height of its own, which an
+      // inline box of no edges has as much as one with them
+      if (!raised && fonts && inBoxOwningLeading(fonts, block, item.box)) {
+        hasOffset = true;
+        raised = true;
+      }
+    } else if (item.kind === 'edge') {
       hasEdges = true;
       if (
         item.box.style.verticalAlign !== 'baseline' ||
@@ -527,6 +534,7 @@ function linesOf(
   if (
     !hasAtomics &&
     (!hasEdges || spaced) &&
+    !raised &&
     !floated &&
     !indent &&
     !alignedApart
@@ -4262,14 +4270,19 @@ class Lifts {
 const NO_LIFT = { raise: 0, edge: null, lead: false };
 
 /**
- * Whether an inline box's own line height is more than the one a
- * paragraph's layout gives its text. That layout sets every run at the
- * block's line height, as a multiple of the run's font's natural one;
+ * Whether an inline box's own line height sets its line otherwise than the
+ * one a paragraph's layout gives its text. That layout sets every run at
+ * the block's line height, as a multiple of the run's font's natural one;
  * CSS gives each inline box its own, and the line box holds them all (CSS
- * 2.1 10.8.1), so a box whose own is more makes its line taller. One whose
- * own is less, a `<code>` in a font with taller natural lines, is left to
- * the one layout: the line at a time it would take instead costs a long
- * document dear.
+ * 2.1 10.8.1). So a box whose own is more makes its line taller, and a box
+ * whose own is less makes it shorter than the multiple does, where the
+ * multiple is more than the block's line height too: a larger face under
+ * a `line-height` length, which every inline box inherits as that length —
+ * `font: 11px/15px` on the body and a 14px heading run inline, which the
+ * multiple set 19px tall on a line CSS makes 16.5. One whose own is less
+ * but which the block's line height holds anyway, a `<code>` in a font
+ * with taller natural lines, is left to the one layout: its lines come out
+ * the same, and the line at a time costs a long document dear.
  *
  * Asked of every inline box in every paragraph, so it has to cost nothing
  * for the ones that are nothing: a box with its block's line height, family
@@ -4294,11 +4307,24 @@ function ownsLeading(
   if (known && known.block === block && known.fonts === fonts) {
     return known.own;
   }
+  const multiple =
+    lineHeightMultiplier(fonts, block) * naturalLineHeight(fonts, style);
+  const height = lineHeightOf(fonts, style);
   const own =
-    lineHeightOf(fonts, style) >
-    lineHeightMultiplier(fonts, block) * naturalLineHeight(fonts, style) + 0.5;
+    height > multiple + 0.5 ||
+    multiple > Math.max(height, lineHeightOf(fonts, block)) + 0.5;
   LEADS.set(style, { fonts, block, own });
   return own;
+}
+
+/** Whether a text is in an inline box that owns its leading
+ *  (`ownsLeading`), below the block it is laid out in. */
+function inBoxOwningLeading(fonts: FontsLike, block: Box, text: Box): boolean {
+  for (let at = text.parent; at && at !== block; at = at.parent) {
+    if (at.kind !== 'inline') break;
+    if (ownsLeading(fonts, block.style, at.style)) return true;
+  }
+  return false;
 }
 
 const LEADS = new WeakMap<

@@ -8965,8 +8965,11 @@ metric(
     const el = view(node);
     const all = baselinesOf(el, 'p');
     const [line] = linesOf(el, 'p');
-    // one fragment: nothing raised starts or ends between them
-    const t = all.find((f) => f.text === 'tB')!;
+    // the box's text on one baseline, whether the big letter is a fragment
+    // of its own (its box has a line height of its own) or not
+    const t = all.find((f) => f.text.startsWith('t'))!;
+    const big = all.find((f) => f.text.includes('B'))!;
+    assert.ok(Math.abs(t.at - big.at) < 0.01, `${t.at} and ${big.at}`);
     // the big letter's ascent, not the box's own small font's, from the top
     assert.ok(t.at - line.y > 20, `${t.at - line.y} below the line's top`);
     assert.ok(t.at < all.find((f) => f.text.startsWith('x'))!.at);
@@ -14633,6 +14636,31 @@ metric(
     assert.ok(
       Math.abs(rect('outer').width - (bare.width + 7)) < 0.5,
       `and the padding of an inline box inside it: ${rect('outer').width}`,
+    );
+  },
+);
+
+metric(
+  "an inline box of a larger face has its own line height, not a multiple of the block's",
+  async () => {
+    // A `line-height` length is inherited as that length, and a box that
+    // sets its own keeps it (CSS 2.1 10.8.1). The one layout set every run
+    // at the block's line height as a multiple of the run's face: a 14px
+    // box under `font: 11px/15px` came out 15 × 14/11, 19px, on a line
+    // CSS makes its own 16px and the strut's 15. The Zen Garden's third
+    // design runs a heading inline under its body's `11px/15px`
+    const { node } = await render(
+      '<style>body{margin:0}div{font:11px/15px serif}' +
+        'span{font:14px/16px serif}</style>' +
+        '<div id="d"><span>Archives</span></div>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const [line] = linesOf(el, 'd');
+    assert.ok(
+      line.height >= 16 - 0.01 && line.height < 18,
+      `as tall as its boxes, not 19: ${line.height}`,
     );
   },
 );
