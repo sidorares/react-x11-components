@@ -24,7 +24,7 @@ import type { Element } from 'domhandler';
 import { attr, tagOf } from './dom.js';
 import type { ComputedStyle } from './css/style.js';
 import { isTransparent } from './css/values.js';
-import type { BoxTree, ReplacedKind } from './layout/boxes.js';
+import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import type { FontsLike } from './layout/inline.js';
 
 /** The palette numbers a control's box has to reserve room for. */
@@ -54,6 +54,14 @@ export interface ControlRect {
    * of its own and its text in the element's colour and font.
    */
   bare?: BareField;
+  /**
+   * How opaque the widget is drawn, where it is less than 1: the element's
+   * own `opacity` times every ancestor's, since each fades what is in it as
+   * a group. At 0 the widget is not seen and still takes a press, as the
+   * element does in a browser — the checkbox a CSS-only dropdown lays,
+   * invisible, over its label.
+   */
+  opacity?: number;
 }
 
 /** Where a styled text field's widget goes, and how its text looks. */
@@ -73,6 +81,8 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
   for (const box of tree.controls) {
     if (!box.el) continue;
     if (box.width <= 0 || box.height <= 0) continue;
+    // a hidden element draws nothing and takes no press (CSS 2.1 11.2)
+    if (box.style.visibility !== 'visible') continue;
     const rect: ControlRect = {
       element: box.el,
       kind: box.replaced,
@@ -81,6 +91,11 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
       width: box.width,
       height: box.height,
     };
+    let opacity = 1;
+    for (let at: Box | null = box; at; at = at.parent) {
+      opacity *= at.style.opacity;
+    }
+    if (opacity < 1) rect.opacity = Math.max(0, opacity);
     if (styledField(box.replaced, box.style)) {
       rect.bare = {
         x: box.contentX,

@@ -838,6 +838,12 @@ element, at the rectangles layout reserved for them — the escape hatch
 would take no focus, say nothing to a screen reader, and have to reimplement
 every keyboard convention the platform already has.
 
+A widget is drawn at the opacity its element and every ancestor come to,
+and at 0 not at all while it still takes a press, as the element does in a
+browser: a CSS-only dropdown lays an invisible checkbox over its label, and
+a press anywhere on the label opens it, since a checkbox's widget takes its
+element's whole box. A `visibility: hidden` control is not mounted.
+
 A `<button>` is the exception, because its content is the document's: an
 icon, a label in spans, a pill of the page's own design — most of the
 buttons on the web — which a widget's text label drew as "Button". It is

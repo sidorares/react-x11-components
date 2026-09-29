@@ -15949,3 +15949,65 @@ test('`:focus` matches no element, and a rule that names it stays in the cascade
   assert.strictEqual(boxOf(el, 'p').y, 0, 'and takes no room in the flow');
   assert.strictEqual(boxOf(el, 'p').x, 0, 'nothing is focused');
 });
+
+metric(
+  "a form control is drawn at its element's opacity, and a hidden one is not mounted",
+  async () => {
+    // A CSS-only dropdown lays an invisible checkbox over its label —
+    // Wikipedia's language button, `opacity: 0` and as big as the label —
+    // and the widget was drawn over the label regardless. A browser draws
+    // it at the opacity its element and every ancestor come to, and at 0
+    // not at all, while its whole box still takes the press.
+    const changes: [string | undefined, unknown][] = [];
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}.menu{position:relative;width:160px;' +
+            'height:32px}.menu input{position:absolute;top:0;left:0;' +
+            'width:100%;height:100%;margin:0;opacity:0}</style>' +
+            '<div class="menu"><input type="checkbox" id="c">' +
+            '<label for="c">52 languages</label></div>' +
+            '<div style="opacity:.5"><p style="opacity:.5">' +
+            '<input type="checkbox" id="half"></p></div>' +
+            '<p style="visibility:hidden"><input type="checkbox" id="h"></p>',
+          partial: false,
+          onControlChange: (
+            el: { attribs: Record<string, string> },
+            v: unknown,
+          ) => void changes.push([el.attribs.id, v]),
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 200, fonts: FONTS! },
+    );
+    await act();
+    const widgets = screen.getAllByRole('checkbox');
+    assert.strictEqual(widgets.length, 2, 'the hidden one is not mounted');
+    const opacityOf = (n: DrawnNode) =>
+      (n.parent as unknown as { style: { opacity?: number } }).style.opacity;
+    const [menu, half] = widgets as DrawnNode[];
+    assert.strictEqual(opacityOf(menu), 0, 'the menu checkbox is not seen');
+    assert.strictEqual(opacityOf(half), 0.25, 'a faded one is faded twice');
+    assert.deepStrictEqual(
+      [menu.abs.width, menu.abs.height],
+      [160, 32],
+      'and it takes the whole of its box',
+    );
+    // a press over the label's end toggles it, as a browser's does
+    const at = { x: menu.abs.x + 150, y: menu.abs.y + 16 };
+    await act(async () => {
+      fireEvent.mouseDown(menu, {
+        dx: at.x - (menu.abs.x + menu.abs.width / 2),
+        dy: at.y - (menu.abs.y + menu.abs.height / 2),
+      });
+      fireEvent.mouseUp(menu, {
+        dx: at.x - (menu.abs.x + menu.abs.width / 2),
+        dy: at.y - (menu.abs.y + menu.abs.height / 2),
+      });
+    });
+    assert.deepStrictEqual(changes, [['c', true]]);
+  },
+);

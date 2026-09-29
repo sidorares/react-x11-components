@@ -1806,6 +1806,7 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.y !== q.y ||
       p.width !== q.width ||
       p.height !== q.height ||
+      p.opacity !== q.opacity ||
       !sameBare(p.bare, q.bare)
     ) {
       return false;
