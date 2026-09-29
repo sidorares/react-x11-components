@@ -809,3 +809,90 @@ withFonts(
     assert.strictEqual(familyOf(app, boxOf(node, 'p').style), 'KaTeX_Main');
   },
 );
+
+/** A face's metrics at a size, as the font manager answers for a family
+ *  list at a weight. */
+function metricsOf(
+  app: unknown,
+  family: string,
+  size: number,
+  weight = 400,
+): { xHeight: number; lineHeight: number } {
+  const fonts = (
+    app as {
+      fonts: {
+        match(
+          f: string,
+          o: object,
+        ): { metrics(size: number): { xHeight: number; lineHeight: number } };
+      };
+    }
+  ).fonts;
+  return fonts.match(family, { size, weight, style: 'normal' }).metrics(size);
+}
+
+/** A length a computed style holds, in pixels. */
+const px = (box: LaidBox, prop: 'width' | 'height'): number =>
+  (box.style as unknown as Record<string, number>)[prop];
+
+withFonts(
+  'an ex and an lh are measured in the face the element is set in',
+  async () => {
+    // A family's faces can be different fonts: a page's bold is often
+    // another file. The units were measured in the family's regular face
+    // whatever the weight, and before an inline weight that came after the
+    // rule holding them had been applied at all.
+    const { result, node } = await mount(
+      `<style>${FACES} div { font-family: Doc; font-size: 100px;` +
+        ' width: 10ex; height: 2lh }</style>' +
+        '<div id="r"></div><div id="b" style="font-weight: 700"></div>',
+      fontHost([]),
+      {},
+      true,
+    );
+    await settle(node);
+    const r = boxOf(node, 'r');
+    const b = boxOf(node, 'b');
+    const regular = metricsOf(result.app, r.style.fontFamily, 100, 400);
+    const bold = metricsOf(result.app, b.style.fontFamily, 100, 700);
+    assert.notStrictEqual(regular.xHeight, bold.xHeight, 'two faces');
+    assert.ok(Math.abs(px(r, 'width') - 10 * regular.xHeight) < 0.01);
+    assert.ok(
+      Math.abs(px(b, 'width') - 10 * bold.xHeight) < 0.01,
+      `the bold face's ex: ${px(b, 'width')} for ${10 * bold.xHeight}`,
+    );
+    assert.ok(
+      Math.abs(px(b, 'height') - 2 * bold.lineHeight) < 0.01,
+      `and its line height: ${px(b, 'height')} for ${2 * bold.lineHeight}`,
+    );
+  },
+);
+
+withFonts(
+  "an ex in a rule is the element's font, whatever the rule sets",
+  async () => {
+    // The cascade applies every declaration in order, the rule's own
+    // `font-family` just ahead of its `width`, and the width was read in
+    // the rule's family under an inline family that outranks it.
+    const { result, node } = await mount(
+      `<style>${FACES} div { font-family: Doc; font-size: 100px;` +
+        ' width: 10ex; height: 4px }</style>' +
+        '<div id="d"></div><div id="s" style="font-family: sans-serif"></div>',
+      fontHost([]),
+      {},
+      true,
+    );
+    await settle(node);
+    const d = boxOf(node, 'd');
+    const s = boxOf(node, 's');
+    assert.strictEqual(s.style.fontFamily, 'sans-serif');
+    const doc = metricsOf(result.app, d.style.fontFamily, 100).xHeight;
+    const sans = metricsOf(result.app, 'sans-serif', 100).xHeight;
+    assert.notStrictEqual(doc, sans, 'two fonts');
+    assert.ok(Math.abs(px(d, 'width') - 10 * doc) < 0.01);
+    assert.ok(
+      Math.abs(px(s, 'width') - 10 * sans) < 0.01,
+      `sans-serif's ex: ${px(s, 'width')} for ${10 * sans}`,
+    );
+  },
+);

@@ -51,6 +51,7 @@ import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
 import { attr, HtmlSource, imageUrlOf, isElement, tagOf } from './dom.js';
 import type { Document } from './dom.js';
 import { Cascade } from './css/cascade.js';
+import type { MetricFace } from './css/cascade.js';
 import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
 import { uaStylesheet } from './css/ua.js';
@@ -583,9 +584,9 @@ export class HtmlViewNode extends Node {
         width,
         this._viewportHeight(),
         this._scale,
-        fonts ? (family, size) => xHeightOf(fonts, family, size) : null,
-        fonts ? (family, size) => zeroWidthOf(fonts, family, size) : null,
-        fonts ? (family, size) => normalLineOf(fonts, family, size) : null,
+        fonts ? (face) => xHeightOf(fonts, face) : null,
+        fonts ? (face) => zeroWidthOf(fonts, face) : null,
+        fonts ? (face) => normalLineOf(fonts, face) : null,
         faces.length ? this._webFonts : null,
       );
       this._sheetsRead = {
@@ -2375,45 +2376,42 @@ function ownerOf(boxes: readonly Box[], index: number): Element | null {
 
 export type { ControlRect, ReplacedKind, ResourceRequest, ResourceResult };
 
-/** The advance of a font's "0" at a size, laid out: null where the engine
- *  cannot lay it out. */
-function zeroWidthOf(
-  fonts: FontsLike,
-  family: string,
-  size: number,
-): number | null {
+/** The advance of a face's "0", laid out: null where the engine cannot
+ *  lay it out. */
+function zeroWidthOf(fonts: FontsLike, face: MetricFace): number | null {
+  const { family, size, weight } = face;
+  // a run is upright or slanted, as `inline.ts` sets one
+  const style = face.style === 'normal' ? 'normal' : 'italic';
   try {
-    return fonts.layout([{ text: '0', family, size }], { family, size }, {})
-      .width;
+    const run = { family, size, weight, style } as const;
+    return fonts.layout([{ text: '0', ...run }], run, {}).width;
   } catch {
     return null;
   }
 }
 
-/** A font's own line height at a size, as the engine reports it: null
- *  where it cannot say. */
-function normalLineOf(
-  fonts: FontsLike,
-  family: string,
-  size: number,
-): number | null {
+/** A face's own line height, as the engine reports it: null where it
+ *  cannot say. */
+function normalLineOf(fonts: FontsLike, face: MetricFace): number | null {
+  const { family, size, weight, style } = face;
   try {
-    const line = fonts.match(family, { size }).metrics(size).lineHeight;
+    const line = fonts
+      .match(family, { size, weight, style })
+      .metrics(size).lineHeight;
     return line > 0 ? line : null;
   } catch {
     return null;
   }
 }
 
-/** A font's x-height at a size, as the engine reports it: null where the
- *  face states none, or the engine does not say. */
-function xHeightOf(
-  fonts: FontsLike,
-  family: string,
-  size: number,
-): number | null {
+/** A face's x-height, as the engine reports it: null where the face
+ *  states none, or the engine does not say. */
+function xHeightOf(fonts: FontsLike, face: MetricFace): number | null {
+  const { family, size, weight, style } = face;
   try {
-    const metrics = fonts.match(family, { size }).metrics(size) as {
+    const metrics = fonts
+      .match(family, { size, weight, style })
+      .metrics(size) as {
       xHeight?: number | null;
     };
     const x = metrics.xHeight;
