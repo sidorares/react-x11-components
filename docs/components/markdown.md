@@ -61,7 +61,8 @@ GFM, parsed by `src/internal/markdown/parse.ts`:
 - lists, nested, ordered, bullet and task (`- [x]`), with the tight/loose
   distinction;
 - blockquotes, including lazy continuation;
-- tables with per-column alignment and measured column widths;
+- tables with per-column alignment and measured column widths — a table
+  that streams measures and lays out the rows it gains, and keeps the rest;
 - thematic breaks;
 - fenced and indented code, highlighted through the same
   [language seam](code-language.md) `<CodeEditor>` uses; `resolveLanguage`
