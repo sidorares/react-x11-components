@@ -18,6 +18,18 @@
 //   came out in Times.
 // - **The palette is a browser's**: black text on white, links #0000ee, a
 //   16px serif — what a page that says nothing about them is drawn in.
+// - **A face's line metrics are Blink's** (`blinkMetrics`): its ascent,
+//   descent and line gap each rounded to a whole pixel, and Times,
+//   Helvetica and Courier given 15% more ascent, which Blink does on a Mac
+//   to set them as Windows sets their Microsoft counterparts. `line-height:
+//   normal` is the user agent's to choose from the font (CSS 2.1 10.8.1),
+//   and these are that choice, not CSS: <Html> takes the font's own, and
+//   without this every line of Times drifted two pixels from Chrome's.
+// - **Text is set at Blink's size** (`blinkSize`): a font size down to the
+//   hundredth of a pixel, which Blink's font cache makes a face at — 10pt
+//   is 13.333px to `em` and 13.33px to its glyphs. A paragraph of 10pt
+//   Trebuchet was a tenth of a pixel wider a line than Chrome's, which
+//   wrapped a word that fitted Chrome's line exactly.
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -67,6 +79,69 @@ export function chromeGenerics(list: string): string {
 interface FontManagerLike {
   match(family?: string, opts?: unknown): unknown;
   fallbackFor(codepoint: number, family?: string, opts?: unknown): unknown;
+  layout(content: unknown, style: unknown, options: unknown): unknown;
+}
+
+/**
+ * A font size as Blink sets glyphs at it: down to the hundredth of a pixel,
+ * its font cache's key (`FontCacheKey`), which the face is made at. Chrome
+ * measures 13.33px, 13.333px, 13.3399px and 10pt alike, and 13.34px apart.
+ */
+export function blinkSize(size: number): number {
+  return Math.floor(size * 100 + 1e-6) / 100;
+}
+
+/** A run, or a layout's base style, at Blink's size. */
+function atBlinkSize<T>(run: T): T {
+  const size = (run as { size?: unknown } | null)?.size;
+  if (typeof size !== 'number') return run;
+  const set = blinkSize(size);
+  return set === size ? run : { ...run, size: set };
+}
+
+interface Metrics {
+  ascent: number;
+  descent: number;
+  lineGap: number;
+  lineHeight: number;
+}
+
+interface FaceLike {
+  fk?: { familyName?: string };
+  metrics(size: number): Metrics;
+}
+
+/** The families Blink pads on a Mac (`SimpleFontData::PlatformInit`). */
+const PADDED = new Set(['Times', 'Helvetica', 'Courier']);
+const BLINKED = new WeakSet<object>();
+
+/**
+ * A face's line metrics as Blink on a Mac takes them: ascent, descent and
+ * line gap each rounded to a whole pixel, and for Times, Helvetica and
+ * Courier, 15% of the two added to the ascent. Measured against Chrome
+ * over ten faces at six sizes, `line-height: normal` agreed at every one.
+ */
+export function blinkMetrics(face: unknown): unknown {
+  const f = face as FaceLike | null;
+  if (!f || typeof f.metrics !== 'function' || BLINKED.has(f)) return face;
+  BLINKED.add(f);
+  const own = f.metrics.bind(f);
+  const padded = PADDED.has(f.fk?.familyName ?? '');
+  f.metrics = (size: number) => {
+    const m = own(blinkSize(size));
+    let ascent = Math.round(m.ascent);
+    const descent = Math.round(m.descent);
+    const lineGap = Math.round(m.lineGap);
+    if (padded) ascent += Math.floor((ascent + descent) * 0.15 + 0.5);
+    return {
+      ...m,
+      ascent,
+      descent,
+      lineGap,
+      lineHeight: ascent + descent + lineGap,
+    };
+  };
+  return face;
 }
 
 /** The browser's network, over a cache on disk. */
@@ -299,10 +374,17 @@ export async function capture(
     const fonts = result.app.fonts as unknown as FontManagerLike;
     const match = fonts.match.bind(fonts);
     const fallbackFor = fonts.fallbackFor.bind(fonts);
+    const layout = fonts.layout.bind(fonts);
+    fonts.layout = (content, style, options) =>
+      layout(
+        Array.isArray(content) ? content.map(atBlinkSize) : content,
+        atBlinkSize(style),
+        options,
+      );
     fonts.match = (family = 'sans-serif', opts) =>
-      match(chromeGenerics(family), opts);
+      blinkMetrics(match(chromeGenerics(family), opts));
     fonts.fallbackFor = (codepoint, family = 'sans-serif', opts) =>
-      fallbackFor(codepoint, chromeGenerics(family), opts);
+      blinkMetrics(fallbackFor(codepoint, chromeGenerics(family), opts));
     await result.rerender(tree(true));
     // until nothing is in flight, and nothing has landed for a moment: a
     // stylesheet's @import and its fonts arrive after the sheet does
