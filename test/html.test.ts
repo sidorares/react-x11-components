@@ -6745,7 +6745,9 @@ metric(
     await act();
     const laid = await laidOutDuring(el, async () => {
       await act(() => result.rerender(doc([one, two])));
-      await waitFor(() => assert.ok(el.textContent().includes('other')));
+      await waitFor(() =>
+        assert.ok(el.textContent().includes('other'), 'the new text is in'),
+      );
       await act();
     });
     assert.ok(!laid.includes(one), `the first is kept: ${laid.join(' | ')}`);
@@ -6930,7 +6932,9 @@ metric(
     const el = view(screen.getByTestName('doc') as DrawnNode);
     const laid = await laidOutDuring(el, async () => {
       await act(() => result.rerender(doc('two')));
-      await waitFor(() => assert.ok(el.textContent().includes('two')));
+      await waitFor(() =>
+        assert.ok(el.textContent().includes('two'), 'the new text is in'),
+      );
       await act();
     });
     assert.ok(!laid.some((t) => t.includes('the link')), 'kept, not laid out');
@@ -13575,7 +13579,11 @@ metric(
         dy: y - (abs.y + abs.height / 2),
       });
       await act();
-      await waitFor(() => assert.ok(shown.length > before));
+      // with a message: without one, a failed `assert.ok` on Node 20 parses
+      // this file again to quote the expression — seconds a try at this
+      // size, so the first try (the motion lands an `act()` later) ran the
+      // wait past its deadline
+      await waitFor(() => assert.ok(shown.length > before, 'a new cursor'));
       return shown.at(-1);
     };
     assert.strictEqual(await over('a'), 'pointer');
