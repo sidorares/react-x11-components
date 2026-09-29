@@ -33,7 +33,13 @@ import type { CollapsedTable } from './collapse.js';
 import { quoteAt } from '../css/content.js';
 import type { CounterStyles } from '../css/counter-styles.js';
 import type { ContentItem } from '../css/content.js';
-import { CONTAIN_STYLE, copyStyle, inherit } from '../css/style.js';
+import {
+  CONTAIN_STYLE,
+  FIRST_LINE_INHERITED,
+  copyStyle,
+  firstLineParent,
+  inherit,
+} from '../css/style.js';
 import { AUTO } from '../css/values.js';
 import { svgIntrinsics } from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
@@ -525,6 +531,17 @@ export interface Intrinsic {
  *  kept beside the boxes: few documents have any (`BoxTree.firstLine`). */
 export const FIRST_LINE = new WeakMap<Box, ComputedStyle>();
 
+/**
+ * A box's style on the first line of the block it is in, given its
+ * parent's style there (CSS Pseudo 4, 2.1.2): an element's own rules over
+ * what it inherits on the line, which takes the properties `::first-line`
+ * applies to from `parent` and the rest from its parent's own style.
+ */
+export type FirstLineStyler = (
+  box: Box,
+  parent: ComputedStyle,
+) => ComputedStyle;
+
 /** The url of an image generated content put in a pseudo-element: it has
  *  no element of its own to name it (`imageUrlOf`). */
 export const CONTENT_IMAGES = new WeakMap<Box, string>();
@@ -639,6 +656,9 @@ export interface BoxTree {
   /** Whether any block has a `::first-line` style (`FIRST_LINE`): where
    *  none has, layout looks for none. */
   firstLine: boolean;
+  /** Each box's style on a first line (`FirstLineStyler`), where any
+   *  block has a `::first-line`. */
+  firstLineStyler: FirstLineStyler | null;
   /** Whether a float or an out-of-flow box sits in an inline box: where
    *  none does, layout looks for them among a block's own children and
    *  goes through no inline box to find them. */
@@ -784,9 +804,37 @@ class Builder {
       relative: this._relative || isRelative(rootStyle),
       negative: this._negative,
       firstLine: this._firstLine,
+      firstLineStyler: this._firstLine ? this._firstLineStyler() : null,
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,
       clipText: this._clipText,
+    };
+  }
+
+  /** `BoxTree.firstLineStyler`, over this build's cascade. */
+  private _firstLineStyler(): FirstLineStyler {
+    const cascade = this._options.cascade;
+    const styles = this._styles;
+    return (box, parent) => {
+      const up = box.parent?.style ?? box.style;
+      const inherits = firstLineParent(up, parent);
+      const el = box.kind === 'text' ? null : box.el;
+      const own = el ? styles.get(el) : undefined;
+      if (el && own && own.style === box.style) {
+        return cascade.styleFor(el, inherits, own.inFlex);
+      }
+      // text, an anonymous box, a pseudo-element's: no rules of its own to
+      // be asked again, so what it took from its parent it takes from the
+      // parent's style on the line, and what it set it keeps
+      const out = copyStyle(box.style);
+      const to = out as unknown as Record<string, unknown>;
+      const mine = box.style as unknown as Record<string, unknown>;
+      const theirs = up as unknown as Record<string, unknown>;
+      const line = inherits as unknown as Record<string, unknown>;
+      for (const name of FIRST_LINE_INHERITED) {
+        if (mine[name] === theirs[name]) to[name] = line[name];
+      }
+      return out;
     };
   }
 

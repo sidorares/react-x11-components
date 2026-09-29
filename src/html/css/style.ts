@@ -999,6 +999,56 @@ export function inherit(
   return out;
 }
 
+/**
+ * The properties that apply to `::first-line` and inherit (CSS Pseudo 4,
+ * 2.1.1): its fonts, colour, spacing, transform and decorations. Only
+ * these are inherited through it by what is on the line; the rest are the
+ * parent's own (2.1.2).
+ */
+export const FIRST_LINE_INHERITED = [
+  'color',
+  'textFillColor',
+  'fontFamily',
+  'fontSize',
+  'fontWeight',
+  'fontStyle',
+  'lineHeight',
+  'lineHeightIsLength',
+  'textTransform',
+  'textUnderlineOffset',
+  'letterSpacing',
+  'wordSpacing',
+  'textShadow',
+  'fontVariantNumeric',
+  'fontVariantCaps',
+  'fontVariantLigatures',
+  'fontVariantPosition',
+  'fontKerning',
+  'fontFeatureSettings',
+  'underline',
+  'underlineStyle',
+  'underlineThickness',
+  'underlineOffset',
+  'lineThrough',
+] as const satisfies readonly (keyof ComputedStyle)[];
+
+/**
+ * What a box on its block's first line inherits from: its parent's style,
+ * with the properties `::first-line` takes from the parent's style on that
+ * line (CSS Pseudo 4, 2.1.2) — the pseudo-element's own, for the block's
+ * children.
+ */
+export function firstLineParent(
+  parent: ComputedStyle,
+  onLine: ComputedStyle,
+): ComputedStyle {
+  const out = copyStyle(parent);
+  const to = out as unknown as Record<string, unknown>;
+  const from = onLine as unknown as Record<string, unknown>;
+  for (const name of FIRST_LINE_INHERITED) to[name] = from[name];
+  return out;
+}
+
 // --- applying a declaration -------------------------------------------------
 
 /** Longhands that take a colour and nothing else, by property name. */

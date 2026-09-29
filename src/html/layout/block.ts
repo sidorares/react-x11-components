@@ -49,6 +49,7 @@ import {
 } from './boxes.js';
 import type {
   BoxTree,
+  FirstLineStyler,
   Intrinsic,
   LineBox,
   MarginStrut,
@@ -74,6 +75,8 @@ export interface LayoutContext {
   fonts: FontsLike | null;
   /** Whether any block has a `::first-line` (`BoxTree.firstLine`). */
   firstLine?: boolean;
+  /** Each box's style on a first line (`BoxTree.firstLineStyler`). */
+  firstLineStyler?: FirstLineStyler | null;
   /** Whether a float or an out-of-flow box is in an inline box
    *  (`BoxTree.nestedOutOfLine`). */
   nestedOutOfLine?: boolean;
@@ -159,6 +162,7 @@ export function layoutDocument(
     positioned: [],
     layoutSubtree: (box, width) => layoutSubtree(box, ctx, width),
     firstLine: tree.firstLine,
+    firstLineStyler: tree.firstLineStyler,
     nestedOutOfLine: tree.nestedOutOfLine,
     clipText: tree.clipText,
   };
@@ -1076,9 +1080,24 @@ function layoutInlineContent(
           }
         : undefined,
   };
-  let result = layoutInline(box, options);
   const firstLine = ctx.firstLine ? firstLineOf(box) : null;
-  if (firstLine && firstLine.color !== box.style.color && result.lines.length) {
+  // A `::first-line` that sets the line's fonts moves where it breaks, so
+  // the line is found in them (`InlineOptions.firstLineStyle`); its text
+  // takes the pseudo-element's colour there too
+  const restyled =
+    firstLine && ctx.firstLineStyler && setsFonts(firstLine, box.style)
+      ? { style: firstLine, styler: ctx.firstLineStyler }
+      : undefined;
+  let result = layoutInline(
+    box,
+    restyled ? { ...options, firstLineStyle: restyled } : options,
+  );
+  if (
+    firstLine &&
+    !restyled &&
+    firstLine.color !== box.style.color &&
+    result.lines.length
+  ) {
     // the first line's text in its `::first-line` colour, laid out again
     // with its runs cut where the line ends (CSS 2.1 5.12.1), beside the
     // floats the first pass placed — and measured with them
@@ -1238,6 +1257,26 @@ function makesNothing(box: Box): boolean {
     if (!makesNothing(child)) return false;
   }
   return true;
+}
+
+/** Whether a `::first-line` style sets its line's text otherwise than its
+ *  block's: in another face, size or line height, or spaced apart. */
+function setsFonts(line: ComputedStyle, block: ComputedStyle): boolean {
+  return (
+    line.fontFamily !== block.fontFamily ||
+    line.fontSize !== block.fontSize ||
+    line.fontWeight !== block.fontWeight ||
+    line.fontStyle !== block.fontStyle ||
+    line.lineHeight !== block.lineHeight ||
+    line.lineHeightIsLength !== block.lineHeightIsLength ||
+    line.letterSpacing !== block.letterSpacing ||
+    line.fontVariantCaps !== block.fontVariantCaps ||
+    line.fontVariantNumeric !== block.fontVariantNumeric ||
+    line.fontVariantLigatures !== block.fontVariantLigatures ||
+    line.fontVariantPosition !== block.fontVariantPosition ||
+    line.fontKerning !== block.fontKerning ||
+    line.fontFeatureSettings !== block.fontFeatureSettings
+  );
 }
 
 /** `::first-line` styles handed down to the first child in flow of a box
