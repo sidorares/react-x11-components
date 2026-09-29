@@ -3204,6 +3204,25 @@ test("an empty block's margins collapse through it", async () => {
   assert.strictEqual(f.y, p.y + 200, 'and stays inside its parent');
 });
 
+test("a last child's margin collapses through a percentage height of an auto height, and not a definite one", async () => {
+  // a percentage of a height that depends on content computes to `auto`
+  // (CSS 2.1 10.5), and a last child's bottom margin collapses through a
+  // parent of `auto` height (8.3.1): a `height: 100%` page wrapper in an
+  // `auto` body kept its last child's margin inside it, a design 100px
+  // taller than a browser sets it
+  const { node } = await render(
+    '<style>body{margin:0}p{margin:0 0 30px;height:10px}' +
+      '.w{height:100%}</style>' +
+      '<div class="w" id="w"><p></p><p></p></div><div id="n">next</div>' +
+      '<div style="height:200px"><div class="w" id="d"><p></p></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.strictEqual(box('w').height, 50, 'the margin collapses through');
+  assert.strictEqual(box('n').y, 80, 'and is after the wrapper');
+  assert.strictEqual(box('d').height, 200, 'a definite 100% is the height');
+});
+
 test("a margin collapses through an empty block into its parent's", async () => {
   // An empty block's two margins adjoin each other, so the margin after it
   // adjoins its parent's top margin through it (CSS 2.1 8.3.1): a `<div>`
@@ -8843,6 +8862,44 @@ metric(
     assert.ok((await heightWith('')) > 20, 'the raised figure takes room');
     // Tailwind's preflight and normalize.css give it none
     assert.strictEqual(await heightWith('line-height:0'), 20);
+  },
+);
+
+metric(
+  'small capitals a face does not have are made of its capitals, smaller',
+  async (t) => {
+    // CSS Fonts 4, 6.2: a face with no `smcp` of its own has its small
+    // capitals made of its capitals at a smaller size — 70%, rounded to a
+    // pixel as Blink rounds it — where they drew as lower case. A space
+    // keeps its size under `small-caps`, and is small under
+    // `all-small-caps`, which makes the whole text small capitals.
+    const { el } = await renderWithBytes(
+      '<style>body{margin:0;font:16px sans-serif}span{white-space:pre}</style>' +
+        '<p><span id="native" style="font-feature-settings:\'smcp\'">' +
+        'abcdef</span> <span id="plain">abcdef</span></p>' +
+        '<p><span id="sc" style="font-variant:small-caps">Abc def</span></p>' +
+        '<p><span id="a">A</span><span id="bc" style="font-size:11px">BC' +
+        '</span><span id="s"> </span><span id="def" style="font-size:11px">' +
+        'DEF</span></p>' +
+        '<p><span id="asc" style="font-variant-caps:all-small-caps">Abc def' +
+        '</span></p>' +
+        '<p><span id="all" style="font-size:11px">ABC DEF</span></p>',
+      {},
+    );
+    const w = (id: string) => el.elementRect(findById(el.document, id)!)!.width;
+    if (Math.abs(w('native') - w('plain')) > 0.01) {
+      t.skip('the face has small capitals of its own');
+      return;
+    }
+    const made = w('a') + w('bc') + w('s') + w('def');
+    assert.ok(
+      Math.abs(w('sc') - made) < 0.05,
+      `small-caps ${w('sc')}, made of capitals ${made}`,
+    );
+    assert.ok(
+      Math.abs(w('asc') - w('all')) < 0.05,
+      `all-small-caps ${w('asc')}, capitals ${w('all')}`,
+    );
   },
 );
 
