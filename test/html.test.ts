@@ -9486,6 +9486,27 @@ metric(
   },
 );
 
+metric(
+  "a flex box's background goes with the flow's, and its items with its lines",
+  async () => {
+    // CSS 2.1 Appendix E: a block-level flex box's background and borders
+    // are painted with the other blocks', in the document's order, and its
+    // items as inline blocks are, over all of them — painted whole in its
+    // place, it covered the block after it that a negative margin drew up
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="display:flex;height:40px;background:#ff0000">' +
+        '<div style="width:20px;background:#0000ff"></div></div>' +
+        '<div style="height:40px;margin-top:-40px;background:#00ff00"></div>',
+    );
+    const fills = await fillsOf(view(node));
+    const at = (color: string) =>
+      fills.findIndex((f) => f.style === parseColor(color));
+    assert.ok(at('#ff0000') < at('#00ff00'), 'the next block over the box');
+    assert.ok(at('#00ff00') < at('#0000ff'), 'and the item over both');
+  },
+);
+
 metric('flex items are laid out in `order`', async () => {
   // CSS Flexbox 5.4: `order` first, the document's where it is the same;
   // an `order` that is no integer is no value

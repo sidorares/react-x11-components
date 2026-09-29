@@ -1252,6 +1252,24 @@ function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
   return style.overflowX === 'visible' && style.overflowY === 'visible';
 }
 
+/** Whether a child is a flex box of its parent's flow — or a grid — that
+ *  clips nothing and is no stacking context holding a negative `z-index`:
+ *  its background and borders go with the flow's backgrounds, in the
+ *  document's order, and its items with the flow's lines, each painted
+ *  whole as an inline block is (CSS 2.1 Appendix E, CSS Flexbox 5.4).
+ *  Painted whole in its place, its background covered a block after it
+ *  that a negative margin drew up over it. */
+function flowFlex(parent: Box, child: Box, options: PaintOptions): boolean {
+  if (child.kind !== 'flex' || parent.kind === 'flex') return false;
+  if (options.negative && NEGATIVE.has(child)) return false;
+  const style = child.style;
+  return (
+    style.overflowX === 'visible' &&
+    style.overflowY === 'visible' &&
+    !(child.outOfFlow && style.clip)
+  );
+}
+
 /**
  * The first pass over a box's flow: each plain block's background and
  * borders, in document order and at any depth, while the floats met on the
@@ -1275,6 +1293,12 @@ function paintFlowBackgrounds(
       floats.push(child);
       continue;
     }
+    if (flowFlex(box, child, options)) {
+      if (child.style.visibility === 'visible' && intersects(child, options)) {
+        paintOwnBackground(ctx, child, options);
+      }
+      continue;
+    }
     if (!inFlow(box, child, options) || !intersects(child, options)) continue;
     if (child.style.visibility === 'visible') {
       paintOwnBackground(ctx, child, options);
@@ -1296,6 +1320,17 @@ function paintFlowLines(
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (layered(box, child) || onLine(box, child) || child.isFloat) continue;
     if (CLAMPED.has(child)) continue;
+    if (flowFlex(box, child, options)) {
+      if (!intersects(child, options)) continue;
+      // its items, each whole, in `order` — one `float` makes no float of
+      for (const item of paintedChildren(child, options)) {
+        if (item.kind === 'text' || item.kind === 'break') continue;
+        if (layered(child, item) || CLAMPED.has(item)) continue;
+        paintBox(ctx, item, options);
+      }
+      if (child.style.outlineStyle !== 'none') outlines.push(child);
+      continue;
+    }
     if (!inFlow(box, child, options)) {
       // a clipping table's captions were painted before its clip
       if (child.kind === 'table-caption' && clipsOverflow(box)) continue;

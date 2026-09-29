@@ -192,6 +192,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 103    | ntk 8.14.2: a word shaped across elements          | 5,651 (95%) | 5,102 (86%) |
 | 104    | flex `order` and baselines, inherited flex styles  | 5,651 (95%) | 5,102 (86%) |
 | 105    | a flex item's `z-index`, painting in `order`       | 5,651 (95%) | 5,102 (86%) |
+| 106    | a flex box's background with the flow's            | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3050,6 +3051,18 @@ CSS 2.1 together 19 more on Cocoa.
      items the same. css-flexbox went from 585 to 590 of 1,012 on X11
      (`flex-item-z-ordering`, `order-painting`), and css-grid 22 more (its
      items' z-axis ordering).
+
+### Round 106
+
+264. **A flex box was painted whole in its place**, as a table or a box
+     that clips is, after every block's background in its flow. It is a
+     block of the flow: its background and borders are painted with the
+     flow's, in the document's order, and its items with the flow's lines,
+     each whole, as inline blocks are (CSS 2.1 Appendix E) — a grid the
+     same. A block after it that a negative margin drew up over it was
+     covered by its background, which is how css-flexbox's tests hide their
+     red: it went from 590 to 607 of 1,012 on X11 (`flex-shrink`,
+     `align-self`, `flex-basis`).
 
 ## What `<Html>` supports
 
