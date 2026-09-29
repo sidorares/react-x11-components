@@ -529,38 +529,41 @@ function linesOf(
   const spaced =
     hasEdges && !hasAtomics && !hasOffset && spacersHold(style, items);
 
+  // Inline boxes' edges as spacers in one layout, where the engine left
+  // every edge on the line of the content it belongs to (`layoutSpaced`);
+  // the lines a piece at a time, below, where it did not.
+  if (spaced && !floated && !indent && !alignedApart) {
+    const laid = layoutSpaced(
+      items,
+      base,
+      style,
+      options.width,
+      lineHeightMul,
+      align,
+      fonts,
+    );
+    if (laid) return laid;
+  }
+
   // The text-only, float-free, unindented case: one call, every line — or
   // one call per *chunk*, when the text is long and carries hard breaks.
   if (
     !hasAtomics &&
-    (!hasEdges || spaced) &&
+    !hasEdges &&
     !raised &&
     !floated &&
     !indent &&
     !alignedApart
   ) {
-    // no atomics, so what is not an edge is text
-    const textItems = hasEdges
-      ? items.filter(isText)
-      : (items as Extract<Item, { kind: 'text' }>[]);
+    // no atomics and no edges, so everything is text
+    const textItems = items as Extract<Item, { kind: 'text' }>[];
     let total = 0;
     let hasNewline = false;
     for (const item of textItems) {
       total += item.length;
       if (!hasNewline && item.run.text.includes('\n')) hasNewline = true;
     }
-    if (!total && !hasEdges) return EMPTY;
-    if (spaced) {
-      return layoutSpaced(
-        items,
-        base,
-        style,
-        options.width,
-        lineHeightMul,
-        align,
-        fonts,
-      );
-    }
+    if (!total) return EMPTY;
     // `text-overflow` cuts every line that overflows, and a layout can cut
     // only its last: one that a forced break ends is laid out apart, a hard
     // line at a time, or the lines after the first were lost. A clamp is
@@ -1272,9 +1275,16 @@ function spacersHold(style: ComputedStyle, items: Item[]): boolean {
   return true;
 }
 
-/** A paragraph whose inline boxes have edges, as one layout with the edges
- *  in it as spacers (`spacerRun`), each line told where its spacers are and
- *  where they put the edges. */
+/**
+ * A paragraph whose inline boxes have edges, as one layout with the edges
+ * in it as spacers (`spacerRun`), each line told where its spacers are and
+ * where they put the edges. Null where the engine began a line with an
+ * edge that closes a box: a break after a box's last character is after
+ * its end edge, which stays on the line of the content it closes (CSS Text
+ * 3, 5.1), and a line break after a space may come before a no-break space
+ * (UAX #14, LB12a), which is what a spacer is. The lines a piece at a time
+ * keep it there.
+ */
 function layoutSpaced(
   items: Item[],
   base: Record<string, unknown>,
@@ -1283,7 +1293,7 @@ function layoutSpaced(
   lineHeightMul: number,
   align: string,
   fonts: FontsLike,
-): InlineResult {
+): InlineResult | null {
   const wrapWords = overflowWrapOf(style, items);
   const runs: TextRun[] = [];
   const spans = new SpanMap();
@@ -1343,6 +1353,7 @@ function layoutSpaced(
       const { at, edge } = spacers[next];
       next += 1;
       if (at < natural.start) continue;
+      if (i > 0 && edge.side === 'end' && at === natural.start) return null;
       const run = natural.runs?.find((r) => r.start === at);
       const x = run
         ? natural.x + run.x
