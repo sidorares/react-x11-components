@@ -197,7 +197,9 @@ export interface HtmlHandle {
    * Where an element is, in logical pixels from the document's top left:
    * the space the offset of a box scrolling the document is in, so a link
    * to `#section` is `scroller.scrollTo({ y: handle.elementRect(el).y })`.
-   * Null for an element with no box.
+   * A block's border box; an inline element's across its fragments, padding
+   * and border included, as `getBoundingClientRect` measures it, and as
+   * tall as its lines. Null for an element with no box.
    */
   elementRect(element: Element): Rect | null;
   /** The document's `<title>`, if it had one. */
