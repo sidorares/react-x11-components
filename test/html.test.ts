@@ -28,6 +28,7 @@ import { Html } from '../src/index.js';
 import { HtmlViewNode } from '../src/html/index.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
 import { featuresOf, hungSpaces } from '../src/html/layout/inline.js';
+import { sizeTracks } from '../src/html/layout/tracks.js';
 import { cocoaShapedLayout } from './cocoa-shaped.js';
 import type { ShapedLayout } from './cocoa-shaped.js';
 import {
@@ -9994,6 +9995,203 @@ metric(
     assert.strictEqual(boxOf(el, 'e').height, 20, 'align-content: start');
     const w = boxOf(el, 'w');
     assert.ok(w.width > 50, `as wide as its word: ${w.width}`);
+  },
+);
+
+test('grid tracks are sized as CSS Grid 11.5 to 11.8 has it', () => {
+  const item = (
+    start: number,
+    span: number,
+    min: number,
+    max: number,
+    minimum = min,
+  ) => ({
+    start,
+    span,
+    minContent: () => min,
+    maxContent: () => max,
+    minimum: () => minimum,
+  });
+  const space = (available: number, least = 0) => ({
+    available,
+    least,
+    gap: 0,
+    stretch: true,
+  });
+  const auto = { min: 'auto', max: 'auto' } as const;
+  const fr = (n: number) => ({ min: 'auto' as const, max: { fr: n } });
+  // An item spanning a length and a content-sized track grows the second
+  // alone — the last spanned track grew, a length or not — and two
+  // content-sized ones by what each maximum lets it take: the tracks of
+  // `grid-intrinsic-maximums`, with an item 40 at its narrowest and 90 at
+  // its widest
+  assert.deepStrictEqual(
+    sizeTracks(
+      [
+        { min: 0, max: 'min-content' },
+        { min: 5, max: 5 },
+      ],
+      [item(0, 2, 40, 90, 15)],
+      space(100),
+    ),
+    [35, 5],
+  );
+  assert.deepStrictEqual(
+    sizeTracks(
+      [
+        { min: 0, max: 'min-content' },
+        { min: 5, max: 5 },
+        { min: 0, max: 'max-content' },
+      ],
+      [item(0, 3, 40, 90, 15)],
+      space(100),
+    ),
+    [17.5, 5, 67.5],
+  );
+  // the free space grows the tracks equally, each as far as its limit —
+  // it grew them in proportion to what each wanted
+  assert.deepStrictEqual(
+    sizeTracks(
+      [auto, auto],
+      [item(0, 1, 10, 30), item(1, 1, 50, 300)],
+      space(200),
+    ),
+    [30, 170],
+  );
+  // an `fr` track whose content is more than its share keeps its content's
+  assert.deepStrictEqual(
+    sizeTracks([fr(1), fr(1)], [item(0, 1, 250, 250)], space(300)),
+    [250, 50],
+  );
+  // with no size of its own, an axis's `fr` rows fill its least size
+  assert.deepStrictEqual(
+    sizeTracks(
+      [auto, fr(1), auto],
+      [item(0, 1, 50, 50), item(1, 1, 100, 100), item(2, 1, 50, 50)],
+      space(Infinity, 600),
+    ),
+    [50, 500, 50],
+  );
+});
+
+metric(
+  "a grid's fr rows fill its height, and an item stretched into a row is its height",
+  async () => {
+    // `auto 1fr auto`, the page with a footer at the bottom: the `fr` row was
+    // as tall as what was in it. And a main area that scrolls, in a grid of
+    // a height, is the row's height — it was as tall as what it held
+    const { node } = await render(
+      '<style>body{margin:0} .g{display:grid;grid-template-rows:auto 1fr auto}' +
+        '</style>' +
+        '<div class="g" style="min-height:300px"><div style="height:40px"></div>' +
+        '<div id="m"><div style="height:50px"></div></div>' +
+        '<div id="f" style="height:30px"></div></div>' +
+        '<div class="g" style="height:200px"><div style="height:40px"></div>' +
+        '<div id="s" style="overflow:auto"><div style="height:1000px"></div>' +
+        '</div><div style="height:30px"></div></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'm').height, 230, 'what min-height leaves');
+    assert.strictEqual(boxOf(el, 'f').y, 270, 'the footer at the bottom');
+    assert.strictEqual(boxOf(el, 's').height, 130, 'the row, not its content');
+  },
+);
+
+metric(
+  'a grid places its tracks by justify-content and align-content, and an item by its auto margins',
+  async () => {
+    // CSS Box Alignment 3, 5.1, and CSS Grid 1, 10.2: the space the tracks
+    // leave was all after them, and an auto margin was none
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="display:grid;width:300px;height:100px;' +
+        'grid-template:20px / 50px 50px;justify-content:space-between;' +
+        'align-content:center"><div></div><div id="b"></div></div>' +
+        '<div style="display:grid;grid-template:100px / 100px">' +
+        '<div id="c" style="margin:auto;width:20px;height:20px"></div></div>' +
+        '<div style="display:grid;grid-template:100px / 100px">' +
+        '<div id="d" style="margin-left:auto;height:20px">' +
+        '<span style="display:inline-block;width:20px"></span></div></div>',
+    );
+    const el = view(node);
+    const at = (id: string) => {
+      const b = boxOf(el, id);
+      return [b.x, b.y, b.width, b.height];
+    };
+    assert.deepStrictEqual(at('b'), [250, 40, 50, 20], 'spread, and centred');
+    assert.deepStrictEqual(at('c'), [40, 140, 20, 20], 'centred in its area');
+    assert.deepStrictEqual(
+      at('d'),
+      [80, 200, 20, 20],
+      'at the end, unstretched',
+    );
+  },
+);
+
+metric(
+  'grid placement moves its cursor past an item with a column, and places an item locked to a row first',
+  async () => {
+    // CSS Grid 1, 8.5: an item whose column is before the cursor goes to the
+    // next row — it went in beside the last one — and an item that names
+    // its row is placed before the ones that name neither
+    const place = async (items: string) => {
+      const { node } = await render(
+        '<style>body{margin:0} div div{height:10px}</style>' +
+          `<div id="g" style="display:grid;grid-template-columns:repeat(3,50px)">${items}</div>`,
+      );
+      const g = boxOf(view(node), 'g');
+      const out = g.children
+        .filter((c) => (c as unknown as { kind: string }).kind !== 'text')
+        .map((c) => [c.x, c.y]);
+      cleanup();
+      return out;
+    };
+    assert.deepStrictEqual(
+      await place(
+        '<div></div><div style="grid-column:3"></div>' +
+          '<div style="grid-column:2"></div>',
+      ),
+      [
+        [0, 0],
+        [100, 0],
+        [50, 10],
+      ],
+    );
+    assert.deepStrictEqual(
+      await place('<div></div><div style="grid-row:1"></div>'),
+      [
+        [50, 0],
+        [0, 0],
+      ],
+    );
+  },
+);
+
+metric(
+  'a grid item of a content width is that width, and fit-content() stops at its argument',
+  async () => {
+    // A grid item's `width: min-content` was stretched across its area, and
+    // `height: max-content` down it; and `fit-content(100px)` was a
+    // max-content track with no limit
+    const { node } = await render(
+      '<style>body{margin:0;font:14px/20px sans-serif}</style>' +
+        '<div style="display:grid;grid-template:100px / 300px">' +
+        '<div id="a" style="width:min-content;height:max-content">aa bb</div>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:fit-content(100px) 1fr">' +
+        '<div id="b">words enough to be wider than the argument</div><div></div>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:fit-content(100px) 1fr">' +
+        '<div id="c">ab</div><div></div></div>',
+      400,
+    );
+    const el = view(node);
+    const a = boxOf(el, 'a');
+    assert.ok(a.width < 30, `its narrowest: ${a.width}`);
+    assert.strictEqual(a.height, 40, 'its two lines, not its row');
+    assert.strictEqual(boxOf(el, 'b').width, 100, 'no wider than the argument');
+    const c = boxOf(el, 'c');
+    assert.ok(c.width < 30, `no wider than its content: ${c.width}`);
   },
 );
 
