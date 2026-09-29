@@ -417,7 +417,14 @@ the sides its `direction` says (CSS 2.1 8.6) — and its background, images
 and gradients included, and its border are painted a fragment a line, over
 its face's height plus its vertical padding, which is why they do not make
 the line taller. Where it wraps it is
-sliced: no border and no rounded corner on a side it goes on from. A padded
+sliced (`box-decoration-break: slice`, CSS's default): no border and no
+rounded corner on a side it goes on from, and its images and gradients
+placed as though its fragments were one box laid end to end in its
+`direction`, each showing its slice — so an icon `no-repeat` at its start is
+on its first line alone, and a gradient runs once across every line.
+`box-decoration-break: clone` places them in each fragment's own box
+instead; its fragments still take their borders and padding at the box's
+two ends alone, where a browser gives every fragment its own. A padded
 `<a>` set as an email's button, a pill badge and a `<kbd>` keycap render as
 a browser renders them.
 
