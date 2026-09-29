@@ -12,7 +12,12 @@
 // - **Every element's border box** (`DOMSnapshot.captureSnapshot`): an
 //   inline element's is the union of its fragments, as `elementRect` gives
 //   it. Taken at the viewport the page was laid out in, before the
-//   screenshot, which may grow it.
+//   screenshot.
+// - **The page a viewport at a time**, scrolled and stitched, as `ours.tsx`
+//   reads its own: a page shot whole beyond the viewport paints a
+//   `background-attachment: fixed` image only where the first viewport
+//   was, and left the rest of a design's page white. Scrolled with the
+//   DevTools' own evaluation, which runs with the page's scripts off.
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -198,17 +203,8 @@ export class Chrome {
       };
       const docHeight = Math.ceil(metrics.cssContentSize.height);
       const shotHeight = Math.min(Math.max(docHeight, height), maxHeight);
-      const shot = (await send('Page.captureScreenshot', {
-        format: 'png',
-        captureBeyondViewport: true,
-        clip: { x: 0, y: 0, width, height: shotHeight, scale: 1 },
-      })) as { data: string };
-      const png = PNG.sync.read(Buffer.from(shot.data, 'base64'));
-      return {
-        boxes,
-        height: docHeight,
-        image: { width: png.width, height: png.height, data: png.data },
-      };
+      const image = await viewports(send, width, height, shotHeight);
+      return { boxes, height: docHeight, image };
     } finally {
       await this.send('Target.closeTarget', { targetId }).catch(() => {});
     }
@@ -280,6 +276,40 @@ export class Chrome {
       retryDelay: 200,
     });
   }
+}
+
+/** The page from the top to `total`, a viewport at a time: scrolled to
+ *  each, shot, and the rows the viewport stopped at copied into place. */
+async function viewports(
+  send: (m: string, p?: Record<string, unknown>) => Promise<unknown>,
+  width: number,
+  height: number,
+  total: number,
+): Promise<Image> {
+  const out = new Uint8Array(width * total * 4);
+  for (let top = 0; top < total; top += height) {
+    const scrolled = (await send('Runtime.evaluate', {
+      expression: `window.scrollTo(0, ${top}); window.scrollY`,
+      returnByValue: true,
+    })) as { result: { value: number } };
+    const at = scrolled.result.value;
+    const shot = (await send('Page.captureScreenshot', {
+      format: 'png',
+    })) as { data: string };
+    const png = PNG.sync.read(Buffer.from(shot.data, 'base64'));
+    // the rows of the page this shot covers, the viewport having stopped
+    // at `at` — short of `top` at the bottom of the page
+    for (let row = 0; row < Math.min(height, png.height); row += 1) {
+      const y = at + row;
+      if (y < top || y >= total) continue;
+      const from = row * png.width * 4;
+      out.set(
+        png.data.subarray(from, from + Math.min(width, png.width) * 4),
+        y * width * 4,
+      );
+    }
+  }
+  return { width, height: total, data: out };
 }
 
 interface Snapshot {
