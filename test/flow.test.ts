@@ -5005,6 +5005,153 @@ test('a node just outside the pane still draws the handle that reaches in', asyn
   assert.ok(inked > 0, 'the lower half of the ring is drawn');
 });
 
+test('an edge just outside the pane still draws the arrowhead that reaches in', async () => {
+  // An edge was kept by its route's box, and an arrowhead is as wide as it
+  // is long: a route running level just under the pane had the upper wing
+  // of its head still on the pane — which a pan's copy kept, and a repaint
+  // culled with the route.
+  const level = (id: string, x: number): FlowNode => ({
+    id,
+    position: { x, y: 0 },
+    width: 60,
+    height: 30,
+    sourcePosition: 'right',
+    targetPosition: 'left',
+    data: {},
+  });
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: [level('a', 10), level('b', 130)],
+      edges: edges(),
+      background: false,
+      controls: false,
+      defaultViewport: { x: 0, y: 330, zoom: 2 },
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+    setViewport(v: object): void;
+    contentBox(): { x: number; y: number; width: number; height: number };
+  };
+  const box = node.contentBox();
+  const rows = 8;
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        ctx as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(box.x, box.y + box.height - rows, box.width, rows)
+    ).data;
+  // the route at 15 · 2 + 354 = 384, four pixels under the pane; the head's
+  // wings spread nine either side of it, a little way short of b's handle
+  await act(() => node.setViewport({ x: 0, y: 354, zoom: 2 }));
+  await motionLands();
+  const panned = await read();
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  const whole = await read();
+  assert.ok(
+    Buffer.from(panned).equals(Buffer.from(whole)),
+    'the bottom rows a repaint draws are the ones the copy kept',
+  );
+  let inked = 0;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 226; x < 256; x++) {
+      if (whole[(y * box.width + x) * 4] < 200) inked++;
+    }
+  }
+  assert.ok(inked > 0, 'the upper wing of the head is drawn');
+});
+
+test('a node that moves takes the whole of its edge’s arrowhead with it', async () => {
+  // A move claimed its node's box and each of its edges by the route's
+  // points, grown by a margin, and a head's wing reaches past the route by
+  // half the head's width: a large head, or a deep zoom, on a flat node left
+  // the tip of the old wing behind.
+  const at = (y: number): FlowNode[] => [
+    {
+      id: 'a',
+      position: { x: 10, y: 40 },
+      width: 60,
+      height: 30,
+      sourcePosition: 'right',
+      data: {},
+    },
+    {
+      id: 'b',
+      position: { x: 140, y },
+      width: 60,
+      height: 10,
+      targetPosition: 'left',
+      data: {},
+    },
+  ];
+  // one props object for every render: a fresh `style` is a restyle, and
+  // core repaints the whole pane for it
+  const props = {
+    edges: [
+      {
+        id: 'a-b',
+        source: 'a',
+        target: 'b',
+        markerEnd: { type: 'arrowclosed' as const, size: 40 },
+      },
+    ],
+    background: false,
+    controls: false,
+    defaultViewport: { x: 0, y: 0, zoom: 2 },
+    style: { flexGrow: 1 },
+  };
+  const { ctx, rerender } = await renderX11(
+    h(FLOW_ELEMENT, { ...props, nodes: at(50) }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+    contentBox(): { x: number; y: number; width: number; height: number };
+  };
+  const box = node.contentBox();
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        ctx as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(box.x, box.y, box.width, box.height)
+    ).data;
+  const repaint = async (): Promise<Uint8ClampedArray> => {
+    await act(() => node.invalidate(false, null, 'content'));
+    await motionLands();
+    return read();
+  };
+  // the route runs level at y 110 into b's box, 100 to 120, and the head's
+  // wings spread 32.6 either side of it: the upper one's tip is past the
+  // sixteen the claim was grown by, and b moving down claims nothing higher
+  await repaint();
+  await act(() => rerender(h(FLOW_ELEMENT, { ...props, nodes: at(100) })));
+  await motionLands();
+  const moved = await read();
+  assert.ok(
+    Buffer.from(moved).equals(Buffer.from(await repaint())),
+    'the head the move left is the head a repaint draws',
+  );
+});
+
 test('a handle is one closed ring, stroked the same in any pass', async () => {
   // A context keeps the join and the cap of the last stroke, and an edge is
   // stroked round: a whole pass drew the edges first and every handle after
