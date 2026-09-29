@@ -27,7 +27,7 @@ import type { Config as YogaConfig, Node as YogaNode } from 'react-x11/yoga';
 
 import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { ComputedStyle, ContentSize } from '../css/style.js';
-import { Box, isBlank } from './boxes.js';
+import { Box, PAINT_ORDER, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
@@ -132,8 +132,15 @@ export function layoutFlex(
     flowing.push(child);
   }
   // in `order`, and where two have the same, in the document's (CSS
-  // Flexbox 5.4): Yoga places its children in the order they were given
-  if (reordered) flowing.sort((a, b) => a.style.order - b.style.order);
+  // Flexbox 5.4): Yoga places its children in the order they were given,
+  // and paint paints them in it
+  if (reordered) {
+    flowing.sort((a, b) => a.style.order - b.style.order);
+    PAINT_ORDER.set(
+      box,
+      [...box.children].sort((a, b) => orderOf(a) - orderOf(b)),
+    );
+  } else PAINT_ORDER.delete(box);
 
   const items: { box: Box; node: YogaNode; laid: Laid }[] = [];
   for (const child of flowing) {
@@ -224,6 +231,12 @@ export function layoutFlex(
   const contentHeight = root.getComputedHeight();
   root.freeRecursive();
   return Math.max(contentHeight, bottom - box.contentY);
+}
+
+/** A child's `order`, which an absolutely positioned one takes as 0 when
+ *  it is painted among the items. */
+function orderOf(box: Box): number {
+  return box.outOfFlow || box.kind === 'text' ? 0 : box.style.order;
 }
 
 /** Lay each item out where the flex layout put it, at the size it gave it,
