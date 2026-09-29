@@ -15472,3 +15472,136 @@ metric(
       assert.ok(!run.kernAcross, 'an element spaces apart');
   },
 );
+
+/** The images a paint drew that show through the clips around them. */
+function shownImages(ops: PaintOp[]) {
+  type Area = { x: number; y: number; w: number; h: number };
+  const meet = (a: Area, b: Area): Area => {
+    const x = Math.max(a.x, b.x);
+    const y = Math.max(a.y, b.y);
+    return {
+      x,
+      y,
+      w: Math.min(a.x + a.w, b.x + b.w) - x,
+      h: Math.min(a.y + a.h, b.y + b.h) - y,
+    };
+  };
+  let clip: Area | null = null;
+  const saved: (Area | null)[] = [];
+  const shown: Area[] = [];
+  for (const op of ops) {
+    if (op.op === 'save') saved.push(clip);
+    else if (op.op === 'restore') clip = saved.pop() ?? null;
+    else if (op.op === 'clip') clip = clip ? meet(clip, op) : op;
+    else if (op.op === 'image') {
+      const seen = clip ? meet(clip, op) : op;
+      if (seen.w > 0 && seen.h > 0) {
+        shown.push({ x: op.x, y: op.y, w: op.w, h: op.h });
+      }
+    }
+  }
+  return shown;
+}
+
+metric(
+  "a wrapped inline box's image is placed in its fragments laid end to end",
+  async () => {
+    // CSS Fragmentation 3, 5.4: `box-decoration-break: slice`, CSS's
+    // default, places a box's background as though its fragments were one
+    // box end to end, of which each shows its slice. An arrow `no-repeat`
+    // in a link's left padding was placed in each fragment's own padding
+    // box, and so drawn again over the text at the start of every line the
+    // link wrapped onto
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/30px sans-serif}p{margin:0;' +
+        'width:160px}a{padding-left:20px;background:#ffff00 url(i.png) ' +
+        '0 3px no-repeat}</style><p>Read <a href="#">the guide for the ' +
+        'whole design team</a> first.</p>',
+    );
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops, {
+      backgroundImageFor: () => ({
+        image: {},
+        width: 10,
+        height: 10,
+        ratio: 1,
+      }),
+    });
+    const yellow = parseColor('#ffff00');
+    const fragments = ops.flatMap((op) =>
+      op.op === 'fill' && op.style === yellow ? [op] : [],
+    );
+    assert.ok(fragments.length >= 2, 'the link wraps');
+    assert.deepStrictEqual(
+      shownImages(ops).map((r) => [r.x, r.y]),
+      [[fragments[0].x, fragments[0].y + 3]],
+      'on the first fragment alone',
+    );
+  },
+);
+
+metric(
+  "a wrapped inline box's gradient runs across its fragments, and `clone` starts it on each",
+  async () => {
+    // Sliced, a gradient spans the strip a box's fragments make laid end
+    // to end in its direction, the first line's fragment at its start —
+    // the left, or the right where the box is right to left — and each
+    // line's carries on where the line before's stopped; it started again
+    // on each. `box-decoration-break: clone` places it in each fragment's
+    // own box, as it was
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/30px sans-serif}p{margin:0;' +
+        'width:160px;height:150px}span{background:linear-gradient(' +
+        'to right,#ff0000,#0000ff)}#c{box-decoration-break:clone}</style>' +
+        '<p>A <span>gradient across every line this wraps onto</span></p>' +
+        '<p dir="rtl">A <span>gradient across every line this wraps onto' +
+        '</span></p><p>A <span id="c">gradient across every line this ' +
+        'wraps onto</span></p><p><i id="w" style="-webkit-box-decoration-' +
+        'break:clone">prefixed</i></p>',
+    );
+    const el = view(node);
+    const fills = gradientFills(await fillsOf(el));
+    // each paragraph's fragments, a line at a time, and each one's slice
+    // of its gradient's line: from how far along it its left edge is to
+    // how far its right edge is, in pixels
+    const slices = (p: number) =>
+      fills
+        .filter((f) => f.y >= p * 150 && f.y < (p + 1) * 150)
+        .sort((a, b) => a.y - b.y)
+        .map((f) => ({
+          from: f.x - f.line[0],
+          to: f.x + f.w - f.line[0],
+          length: f.line[2] - f.line[0],
+        }));
+    const near = (a: number, b: number, message: string) =>
+      assert.ok(Math.abs(a - b) <= 1, `${message}: ${a} against ${b}`);
+    const ltr = slices(0);
+    assert.ok(ltr.length >= 2, 'the span wraps');
+    near(ltr[0].from, 0, 'the first line starts it');
+    for (let i = 1; i < ltr.length; i += 1) {
+      near(ltr[i].from, ltr[i - 1].to, `line ${i + 1} carries it on`);
+    }
+    near(ltr.at(-1)!.to, ltr.at(-1)!.length, 'and the last ends it');
+
+    const rtl = slices(1);
+    assert.ok(rtl.length >= 2, 'the right-to-left span wraps');
+    near(rtl[0].to, rtl[0].length, 'its first line is at the right end');
+    for (let i = 1; i < rtl.length; i += 1) {
+      near(rtl[i].to, rtl[i - 1].from, `line ${i + 1} carries it on leftward`);
+    }
+    near(rtl.at(-1)!.from, 0, 'and its last is at the left');
+
+    const cloned = slices(2);
+    assert.ok(cloned.length >= 2, 'the cloned span wraps');
+    for (const [i, slice] of cloned.entries()) {
+      near(slice.from, 0, `line ${i + 1} starts it again`);
+      near(slice.to, slice.length, `and line ${i + 1} ends it`);
+    }
+    assert.strictEqual(
+      (boxOf(el, 'w') as unknown as { style: ComputedStyle }).style
+        .boxDecorationBreak,
+      'clone',
+      'under its prefixed name too',
+    );
+  },
+);
