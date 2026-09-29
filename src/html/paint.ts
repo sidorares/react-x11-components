@@ -167,6 +167,14 @@ export interface PaintOptions {
  * document's height — handed up rather than kept on every box, where
  * writing it and reading it back cost this walk a fifth of its time.
  */
+/**
+ * How far down an out-of-flow box's scrollable overflow reaches: its border
+ * box, and what it holds where it does not clip it (`computePaintBounds`),
+ * which the box it is in does not take in and the document does
+ * (`layoutDocument`).
+ */
+export const OUT_OF_FLOW_REACH = new WeakMap<Box, number>();
+
 export function computePaintBounds(box: Box, moved = false): number {
   // A box with no rectangle of its own gives only what it holds: nothing,
   // until a child with bounds is met.
@@ -254,6 +262,7 @@ export function computePaintBounds(box: Box, moved = false): number {
     }
     const reach = computePaintBounds(child, moved);
     if (!child.outOfFlow) bottom = Math.max(bottom, reach);
+    else OUT_OF_FLOW_REACH.set(child, reach);
     if (child.boundsY === Infinity) continue;
     x1 = Math.min(x1, child.boundsX);
     y1 = Math.min(y1, child.boundsY);

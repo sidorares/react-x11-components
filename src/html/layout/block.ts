@@ -75,6 +75,7 @@ import {
   clipsFor,
   computePaintBounds,
   hoistNegative,
+  OUT_OF_FLOW_REACH,
   stackLayers,
 } from '../paint.js';
 
@@ -260,7 +261,11 @@ export function layoutDocument(
   for (const { box } of ctx.positioned) {
     if (box.style.position === 'fixed') continue;
     if (clipsFor(box, root).length) continue;
-    bottom = Math.max(bottom, box.y + box.height);
+    // and what it holds, where it does not clip it: a page set in an
+    // absolute wrapper 497px tall runs on below it, and the document with
+    // it — design 094 was a window tall and no taller, its text past the
+    // end of the scroll
+    bottom = Math.max(bottom, OUT_OF_FLOW_REACH.get(box) ?? box.y + box.height);
   }
   return {
     width: viewportWidth,
