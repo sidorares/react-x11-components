@@ -5539,6 +5539,44 @@ test('the grid keeps the shape of its marks as the view pans', async () => {
   }
 });
 
+/** The pane as the frames so far left it, against a repaint of all of it:
+ *  what a pass missed, or drew that a repaint does not. */
+async function matchesRepaint(ctx: unknown, what: string): Promise<void> {
+  await motionLands();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+    contentBox(): { x: number; y: number; width: number; height: number };
+  };
+  const box = node.contentBox();
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        ctx as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(box.x, box.y, box.width, box.height)
+    ).data;
+  const frame = await read();
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  const whole = await read();
+  let differ = 0;
+  for (let i = 0; i < whole.length; i += 4) {
+    const d = Math.max(
+      Math.abs(whole[i] - frame[i]),
+      Math.abs(whole[i + 1] - frame[i + 1]),
+      Math.abs(whole[i + 2] - frame[i + 2]),
+    );
+    if (d > 4) differ++;
+  }
+  assert.strictEqual(differ, 0, `${what}: ${differ} pixels differ`);
+}
+
 test('a node that moves takes its place in the minimap with it', async () => {
   // The minimap draws every node where it is. Where the pane draws it
   // itself — no node type mounts a body — only a change of selection
@@ -5547,41 +5585,6 @@ test('a node that moves takes its place in the minimap with it', async () => {
   // showing it where it had been.
   const props = { edges: edges(), minimap: true, style: { flexGrow: 1 } };
   const options = { backend: 'xserver', width: 420, height: 380 } as const;
-  const matchesRepaint = async (ctx: unknown, what: string): Promise<void> => {
-    await motionLands();
-    const node = pane() as unknown as {
-      invalidate(layout: boolean, rect: unknown, reason: string): void;
-      contentBox(): { x: number; y: number; width: number; height: number };
-    };
-    const box = node.contentBox();
-    const read = async (): Promise<Uint8ClampedArray> =>
-      (
-        await (
-          ctx as {
-            getImageData(
-              x: number,
-              y: number,
-              w: number,
-              h: number,
-            ): Promise<{ data: Uint8ClampedArray }>;
-          }
-        ).getImageData(box.x, box.y, box.width, box.height)
-      ).data;
-    const frame = await read();
-    await act(() => node.invalidate(false, null, 'content'));
-    await motionLands();
-    const whole = await read();
-    let differ = 0;
-    for (let i = 0; i < whole.length; i += 4) {
-      const d = Math.max(
-        Math.abs(whole[i] - frame[i]),
-        Math.abs(whole[i + 1] - frame[i + 1]),
-        Math.abs(whole[i + 2] - frame[i + 2]),
-      );
-      if (d > 4) differ++;
-    }
-    assert.strictEqual(differ, 0, `${what}: ${differ} pixels differ`);
-  };
 
   const moved = nodes().map((n) =>
     n.id === 'a' ? { ...n, position: { x: 20, y: 40 } } : n,
@@ -5625,4 +5628,66 @@ test('a node that moves takes its place in the minimap with it', async () => {
   });
   await matchesRepaint(held.ctx, 'a drag the app does not store');
   await act(() => fireEvent.mouseUp(pane2, at(175, 190)));
+});
+
+test('a drag claims its node’s places in the minimap, and all of it when the fit moves', async () => {
+  // A node a drag moves changes two places in the minimap while the fit
+  // holds — the graph's bounds with the viewport's, which put every node
+  // where it is there. Claiming the whole corner on every step had every
+  // pass build and fill every node of the graph, which doubled what a step
+  // cost to draw at 2,000 nodes.
+  const { ctx } = await renderX11(
+    h(TypedFlow, {
+      edges: edges(),
+      minimap: true,
+      defaultNodes: nodes(),
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as DrawnNode;
+  const corner = (
+    pane() as unknown as { _miniMapCorner(): FlowRect }
+  )._miniMapCorner();
+  const inCorner = (c: FlowRect | null): c is FlowRect =>
+    c !== null &&
+    c.x >= corner.x - 3 &&
+    c.y >= corner.y - 3 &&
+    c.x + c.width <= corner.x + corner.width + 3 &&
+    c.y + c.height <= corner.y + corner.height + 3;
+  await act(() => {
+    fireEvent.mouseDown(node, at(115, 110));
+    fireEvent.mouseMove(node, at(125, 118));
+  });
+  await motionLands();
+  const small = claimsOf(pane());
+  await act(() => fireEvent.mouseMove(node, at(135, 126)));
+  await motionLands();
+  const mapped = small.filter(inCorner);
+  assert.ok(mapped.length > 0, 'the step claims in the minimap');
+  assert.ok(
+    mapped.every((c) => c.width * c.height * 16 < corner.width * corner.height),
+    `its places there, not the corner: ${JSON.stringify(mapped)}`,
+  );
+  await matchesRepaint(ctx, 'a step inside the fit');
+
+  // past the pane's right edge, where the viewport stops the bounds: the
+  // fit moves, and every node in the minimap with it
+  const wide = claimsOf(pane());
+  await act(() => fireEvent.mouseMove(node, at(405, 126)));
+  await motionLands();
+  assert.ok(
+    wide.some(
+      (c) =>
+        c !== null &&
+        c.x === corner.x &&
+        c.y === corner.y &&
+        c.width === corner.width &&
+        c.height === corner.height,
+    ),
+    `the corner: ${JSON.stringify(wide.filter(inCorner))}`,
+  );
+  await matchesRepaint(ctx, 'a step that moves the fit');
+  await act(() => fireEvent.mouseUp(node, at(405, 126)));
 });

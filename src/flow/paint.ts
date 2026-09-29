@@ -37,11 +37,6 @@ function paintRect(painter: FlowPainter, item: SceneRect): void {
   );
 }
 
-/** A rect `paintRect` would fill and nothing else. */
-function plainSquare(item: SceneRect): boolean {
-  return item.radius <= 0 && !item.stroke && item.fill != null;
-}
-
 function paintText(painter: FlowPainter, item: SceneText): void {
   painter.text(item.text, item.x, item.y, {
     size: item.size,
@@ -467,21 +462,15 @@ export function paintPanels(
     );
     // A run of square, unstroked nodes of one colour is one path and one
     // fill — every node of a graph's minimap is usually one run, and a call
-    // apiece was 400 of them on every repaint of a drag.
+    // apiece was 400 of them on every repaint of a drag. The scene says
+    // which run a node is in, worked out over the whole graph, so a pass
+    // that kept a few of a run fills them as the whole run's path does.
     const nodes = map.nodes;
     for (let i = 0; i < nodes.length;) {
       const first = nodes[i];
       let end = i + 1;
-      if (plainSquare(first)) {
-        while (
-          end < nodes.length &&
-          plainSquare(nodes[end]) &&
-          nodes[end].fill === first.fill
-        ) {
-          end++;
-        }
-      }
-      if (end - i > 1) {
+      while (end < nodes.length && nodes[end].run === first.run) end++;
+      if (first.batched) {
         const shapes: XYPosition[][] = [];
         for (let k = i; k < end; k++) {
           const { x, y, width, height } = nodes[k].rect;
