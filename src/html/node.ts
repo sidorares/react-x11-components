@@ -347,6 +347,14 @@ export class HtmlViewNode extends Node {
           this._resources.request({ url, kind: 'image', element: box.el });
         }
       }
+      const border = box.style.borderImage.source;
+      if (typeof border === 'string') {
+        this._resources.request({
+          url: border,
+          kind: 'image',
+          element: box.el,
+        });
+      }
     }
     // and every image generated content names, which is only known there
     // too
