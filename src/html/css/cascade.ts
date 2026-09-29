@@ -1490,10 +1490,20 @@ function asRoot(style: ComputedStyle): ComputedStyle {
 
 /** `:root` is the `<html>` element: the one a browser implies around a
  *  fragment, whose style the root box takes (`rootStyle`), and never a
- *  fragment's top-level elements, which css-select would take for it. */
+ *  fragment's top-level elements, which css-select would take for it.
+ *
+ *  `:focus` and its two kin match nothing: no element of the document takes
+ *  the focus — a control's widget does, beside it. css-select has none of
+ *  the three and throws on them, which dropped every rule that named one,
+ *  `:not(:focus)` among them: Wikipedia's skip link hides with
+ *  `.mw-jump-link:not(:focus)`, and without it stood in the flow at the top
+ *  of every page. */
 const PSEUDOS = {
   root: (el: Element) =>
     el.name === 'html' && !(el.parent && isTag(el.parent as Element)),
+  focus: () => false,
+  'focus-visible': () => false,
+  'focus-within': () => false,
   // css-select's, but its ranges and tags lower-cased as ASCII has it, and
   // no other script (CSS 2.1 4.1.3): Unicode's took `:lang(\u212Al)`, a
   // Kelvin sign for the K, for `:lang(kl)`

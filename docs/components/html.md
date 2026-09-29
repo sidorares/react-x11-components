@@ -762,7 +762,10 @@ did not know them would drop it.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
-from this renderer's own pointer state. Escapes are read wherever they stand,
+from this renderer's own pointer state. `:focus`, `:focus-visible` and
+`:focus-within` match nothing: no element of the document takes the focus,
+a control's widget does, beside it. So `:not(:focus)` holds, and
+Wikipedia's skip link, hidden with it, stays hidden. Escapes are read wherever they stand,
 so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A group
 with a selector in it that is not one — an unknown pseudo-class, a name that
 starts with a digit — is dropped whole, as CSS 2.1 drops it. Rules nest

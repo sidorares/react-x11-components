@@ -15930,3 +15930,22 @@ metric(
     );
   },
 );
+
+test('`:focus` matches no element, and a rule that names it stays in the cascade', async () => {
+  // css-select has no `:focus`, and threw on one: every rule naming it was
+  // dropped, `:not(:focus)` among them, and Wikipedia's skip link stood in
+  // the flow at the top of every page
+  const { node } = await render(
+    '<style>body,p{margin:0}' +
+      '.skip:not(:focus){position:absolute;width:1px;height:1px;' +
+      'overflow:hidden}' +
+      'a:focus,p:focus-within,p:focus-visible{margin-left:50px}</style>' +
+      '<a id="skip" class="skip" href="#p">Jump to content</a>' +
+      '<p id="p"><a id="a" href="#">text</a></p>',
+  );
+  const el = view(node);
+  const skip = boxOf(el, 'skip');
+  assert.deepStrictEqual([skip.width, skip.height], [1, 1]);
+  assert.strictEqual(boxOf(el, 'p').y, 0, 'and takes no room in the flow');
+  assert.strictEqual(boxOf(el, 'p').x, 0, 'nothing is focused');
+});
