@@ -3660,6 +3660,35 @@ css-backgrounds went from 393 to 504 of 711 on X11, every one of them in
 from 375 to 486 on Cocoa. The CSS 2.1 suite lost `background-intrinsic-006`,
 and the other sets are unchanged.
 
+### Round 124
+
+321. **`background-clip: border-area` was not read**, and a layer that
+     asked for it was painted over the whole border box. CSS Backgrounds 4
+     paints it in what the border paints: the border's widths and styles,
+     whatever its colour, so a transparent border shows the layer through
+     its shape. The clip is built from the shapes the border is drawn
+     with. A rounded solid border is its ring, and a 3D style is the ring
+     its trapezoids make. Any other border is the rectangles `fillEdge`
+     fills a side at a time: a double border's two lines, a dotted one's
+     dots. The reference draws the same border in a colour, so the
+     two match to the pixel. With `text`, the layer is painted in the
+     border and through the text.
+322. **An inline box was drawn only where it had a background colour, a
+     border or an outline.** A span whose background was an image alone,
+     or a gradient alone, as a highlighter's is, drew nothing. #384 drew a
+     fragment's images; this draws a fragment that has nothing else.
+
+css-backgrounds went from 504 to 519 of 711 on X11, 15 of the 20
+`border-area` tests, and from 486 to 498 on Cocoa, and the other sets are
+unchanged. The three Cocoa does not pass look the same there and differ
+along curves and glyph edges, where a clip's antialiasing is not a
+fill's, by more pixels than a test allows at twice the scale. Three of the 15
+pass without what they are about, since neither side draws `border-shape`
+or `corner-shape`. Of the rest, two need `background-blend-mode` and
+`border-shape`. Two need a document with no `<html>` tag to paint its
+`html` background, and `clip-border-area-on-root` passes by accident,
+test and reference both blank.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,

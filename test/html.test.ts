@@ -13809,6 +13809,124 @@ test('background-clip and background-origin name the boxes a layer takes', async
   );
 });
 
+test('background-clip reads border-area, alone and with text', async () => {
+  // CSS Backgrounds 4, 2.1: a layer painted in what its border paints; and
+  // in the shorthand a clip of its own, where a box is the origin
+  const { node } = await render(
+    '<div id="a" style="background-clip:border-area"></div>' +
+      '<div id="b" style="background-clip:text border-area"></div>' +
+      '<div id="c" style="background-clip:border-area, padding-box"></div>' +
+      '<div id="d" style="background:url(x.png) border-area content-box"></div>' +
+      '<div id="e" style="background:url(x.png) content-box border-area"></div>' +
+      // three boxes is one too many
+      '<div id="f" style="background:url(x.png) padding-box content-box ' +
+      'border-area"></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: Pick<
+          ComputedStyle,
+          | 'backgroundClip'
+          | 'backgroundClips'
+          | 'backgroundClipText'
+          | 'backgroundOrigin'
+          | 'backgroundImage'
+        >;
+      }
+    ).style;
+  assert.deepStrictEqual(
+    [style('a').backgroundClip, style('a').backgroundClipText],
+    ['border-area', false],
+  );
+  assert.deepStrictEqual(
+    [style('b').backgroundClip, style('b').backgroundClipText],
+    ['border-area', true],
+    'the text as well',
+  );
+  assert.deepStrictEqual(style('c').backgroundClips, [
+    'border-area',
+    'padding-box',
+  ]);
+  for (const id of ['d', 'e']) {
+    assert.deepStrictEqual(
+      [style(id).backgroundOrigin, style(id).backgroundClip],
+      ['content-box', 'border-area'],
+      id,
+    );
+  }
+  assert.strictEqual(style('f').backgroundImage, null, 'dropped');
+});
+
+metric(
+  'background-clip: border-area paints where the border would, whatever its colour',
+  async () => {
+    // A transparent border still has its width and style, and a layer so
+    // clipped is painted in them: a solid border's band, a double border's
+    // two lines, a rounded border's ring. The value was not read, and the
+    // background filled the box under the border.
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}div{width:60px;height:30px;margin-bottom:10px;' +
+        'border:21px solid transparent;' +
+        'background:linear-gradient(#0000ff,#0000ff);' +
+        'background-clip:border-area}</style>' +
+        '<div></div>' +
+        '<div style="border-style:double"></div>' +
+        '<div style="border-radius:50%"></div>' +
+        // and in the border where the text has nothing to show it through
+        '<div style="background-clip:text border-area"></div>',
+      {},
+    );
+    const ctx = result.ctx;
+    // each 102 by 72, 82 apart
+    await expectPixel(ctx, 10, 10, '#0000ff', { message: 'in the border' });
+    await expectPixel(ctx, 92, 36, '#0000ff', { message: 'its right side' });
+    await expectPixel(ctx, 51, 36, '#ffffff', { message: 'inside it' });
+    await expectPixel(ctx, 51, 85, '#0000ff', { message: 'the outer line' });
+    await expectPixel(ctx, 51, 92, '#ffffff', { message: 'between the two' });
+    await expectPixel(ctx, 51, 99, '#0000ff', { message: 'the inner line' });
+    await expectPixel(ctx, 2, 166, '#ffffff', { message: 'past the curve' });
+    await expectPixel(ctx, 51, 170, '#0000ff', { message: 'in the ring' });
+    await expectPixel(ctx, 51, 200, '#ffffff', { message: 'inside the ring' });
+    await expectPixel(ctx, 10, 256, '#0000ff', {
+      message: 'with the text, in the border too',
+    });
+    await expectPixel(ctx, 51, 282, '#ffffff', {
+      message: 'and nowhere else',
+    });
+  },
+);
+
+metric(
+  'an inline box whose background is an image or a gradient alone is painted',
+  async () => {
+    // A span was painted where it had a background colour, a border or an
+    // outline, so an image with no colour under it was asked for and never
+    // drawn, and a gradient alone — a highlighter's — was not drawn either
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}p{margin:0;font:20px/40px sans-serif;' +
+        'color:transparent}span{background:url(b.svg)}</style>' +
+        '<p><span>xxxxxxxx</span></p>' +
+        '<p><span style="border:6px solid transparent;' +
+        'background-clip:border-area">xxxxxxxx</span></p>' +
+        '<p><span style="background:linear-gradient(#00ff00,#00ff00)">' +
+        'xxxxxxxx</span></p>',
+      {
+        'b.svg': svgBytes(
+          `<svg ${SVG_NS} width="10" height="10">` +
+            '<rect width="10" height="10" fill="#0000ff"/></svg>',
+        ),
+      },
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 30, 20, '#0000ff', { message: 'the image' });
+    await expectPixel(ctx, 3, 60, '#0000ff', { message: 'in its border' });
+    await expectPixel(ctx, 30, 60, '#ffffff', { message: 'and not inside it' });
+    await expectPixel(ctx, 30, 100, '#00ff00', { message: 'the gradient' });
+  },
+);
+
 test("a table's height goes to its rows as a browser gives it", async () => {
   // It went to every row in proportion to its height, so the rows whose
   // cells set one grew, and an empty row between them stayed empty. CSS

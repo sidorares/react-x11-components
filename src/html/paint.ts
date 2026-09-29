@@ -30,13 +30,13 @@ import { alphaOf, inkColor, isTransparent, resolve } from './css/values.js';
 import { blend, borderShades } from './css/color.js';
 import type { Len } from './css/values.js';
 import type {
+  BackgroundClip,
   BackgroundRepeat,
   BoxShadow,
   ComputedStyle,
   ImageRepeat,
   LinearGradient,
   RepeatMode,
-  VisualBox,
 } from './css/style.js';
 import {
   CONTAIN_LAYOUT,
@@ -568,18 +568,35 @@ function paintLayers(
   image?: (layer: ComputedStyle) => void,
 ): void {
   // a background painted through the text is painted with it
-  // (`paintClippedText`), and not as a box
-  if (box.style.backgroundClipText) return;
-  const layers = layersOf(box.style);
+  // (`paintClippedText`), and not as a box — but for what `border-area
+  // text` paints in the border as well
+  const style = box.style;
+  if (style.backgroundClipText && style.backgroundClip !== 'border-area') {
+    return;
+  }
+  const layers = layersOf(style);
   if (!layers) {
-    paintBackground(ctx, box, options, box.style);
-    if (image && box.style.backgroundImage) image(box.style);
+    paintLayer(ctx, box, options, style, image);
     return;
   }
   for (let i = layers.length - 1; i >= 0; i -= 1) {
-    paintBackground(ctx, box, options, layers[i]);
-    if (image && layers[i].backgroundImage) image(layers[i]);
+    paintLayer(ctx, box, options, layers[i], image);
   }
+}
+
+function paintLayer(
+  ctx: PaintContext,
+  box: Frame,
+  options: PaintOptions,
+  layer: ComputedStyle,
+  image?: (layer: ComputedStyle) => void,
+): void {
+  // painted over the border box, inside what the border paints
+  const area = layer.backgroundClip === 'border-area';
+  if (area && !pushBorderArea(ctx, box, options)) return;
+  paintBackground(ctx, box, options, layer);
+  if (image && layer.backgroundImage) image(layer);
+  if (area) ctx.restore();
 }
 
 /** A box's padding box in window coordinates. */
@@ -1647,12 +1664,13 @@ function spreadCorners(
 }
 
 /** How far in from a box's border box the box a `<visual-box>` names is:
- *  top, right, bottom and left. */
+ *  top, right, bottom and left — none for `border-area`, whose layer is
+ *  painted over the border box inside what the border paints. */
 function edgeInsets(
   box: Frame,
-  which: VisualBox,
+  which: BackgroundClip,
 ): readonly [number, number, number, number] {
-  if (which === 'border-box') return NO_INSETS;
+  if (which === 'border-box' || which === 'border-area') return NO_INSETS;
   const t = box.borderTop;
   const r = box.borderRight;
   const b = box.borderBottom;
@@ -3572,6 +3590,94 @@ function roundedRing(
   return true;
 }
 
+/**
+ * Clip to what a box's border paints, for a layer of `background-clip:
+ * border-area` (CSS Backgrounds 4, 2.1): each side's width and style, and
+ * not its colour — a transparent border still has an area, which is what
+ * the value is for. The shapes are the border painter's own, so that the
+ * background shows exactly where that border would: the ring `roundedRing`
+ * fills where a rounded border is solid, the ring the trapezoids of a 3D
+ * style make, and otherwise the rectangles `fillEdge` fills a side at a
+ * time — the dots, the dashes, the two lines of a double border. All of
+ * them run clockwise and a ring's inside the other way, so the clip is the
+ * union by the non-zero rule, the one every context's `clip` takes. False
+ * where the border paints nothing or the context cannot clip, and nothing
+ * is pushed.
+ */
+function pushBorderArea(
+  ctx: PaintContext,
+  box: Frame,
+  options: PaintOptions,
+): boolean {
+  const t = box.borderTop;
+  const r = box.borderRight;
+  const b = box.borderBottom;
+  const l = box.borderLeft;
+  if (!(t || r || b || l) || !ctx.beginPath || !ctx.rect || !ctx.clip) {
+    return false;
+  }
+  const s = box.style;
+  const left = box.x + options.originX;
+  const top = frameY(box) + options.originY;
+  const x = Math.round(left);
+  const y = Math.round(top);
+  const w = Math.round(left + box.width) - x;
+  const h = Math.round(top + frameHeight(box)) - y;
+  if (w <= 0 || h <= 0) return false;
+  const area = clampRect(options, x, y, w, h);
+  if (!area) return false;
+  const corners = cornersOf(s, w, h);
+  ctx.save();
+  ctx.beginPath();
+  if (corners && canCurve(ctx) && solidBorder(box)) {
+    roundedRect(ctx, area.x, area.y, area.w, area.h, corners, true);
+    const iw = area.w - l - r;
+    const ih = area.h - t - b;
+    if (iw > 0 && ih > 0) {
+      const inner = insetCorners(corners, t, r, b, l);
+      roundedRect(ctx, area.x + l, area.y + t, iw, ih, inner, true, true);
+    }
+  } else if (sculpted(s)) {
+    // a band a side, which the trapezoids cover between them
+    ctx.rect(area.x, area.y, area.w, t);
+    ctx.rect(area.x, area.y + area.h - b, area.w, b);
+    ctx.rect(area.x, area.y + t, l, area.h - t - b);
+    ctx.rect(area.x + area.w - r, area.y + t, r, area.h - t - b);
+  } else {
+    const path = { fillRect: ctx.rect.bind(ctx) };
+    const edge = (
+      ex: number,
+      ey: number,
+      ew: number,
+      eh: number,
+      style: ComputedStyle['borderTopStyle'],
+      horizontal: boolean,
+    ): void => {
+      const rect = clampRect(options, ex, ey, ew, eh);
+      if (rect) fillEdge(path, rect, horizontal ? ex : ey, style, horizontal);
+    };
+    const between = h - t - b;
+    if (t > 0) edge(x, y, w, t, s.borderTopStyle, true);
+    if (b > 0) edge(x, y + h - b, w, b, s.borderBottomStyle, true);
+    if (l > 0) edge(x, y + t, l, between, s.borderLeftStyle, false);
+    if (r > 0) edge(x + w - r, y + t, r, between, s.borderRightStyle, false);
+  }
+  ctx.clip();
+  return true;
+}
+
+/** Whether every side a box has a border on is solid, which a rounded box
+ *  draws as one ring (`roundedRing`). */
+function solidBorder(box: Frame): boolean {
+  const s = box.style;
+  return (
+    (!box.borderTop || s.borderTopStyle === 'solid') &&
+    (!box.borderRight || s.borderRightStyle === 'solid') &&
+    (!box.borderBottom || s.borderBottomStyle === 'solid') &&
+    (!box.borderLeft || s.borderLeftStyle === 'solid')
+  );
+}
+
 /** The border styles drawn in two shades, as though lit from the top left. */
 const SCULPTED = new Set(['groove', 'ridge', 'inset', 'outset']);
 
@@ -3770,7 +3876,7 @@ function paintCollapsedBorders(
 }
 
 function fillEdge(
-  ctx: PaintContext,
+  ctx: Pick<FillContext, 'fillRect'>,
   rect: { x: number; y: number; w: number; h: number },
   phaseOrigin: number,
   style: ComputedStyle['borderTopStyle'],

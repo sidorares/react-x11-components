@@ -2873,8 +2873,13 @@ export function inlineDecoration(
   box: Box,
   s: ComputedStyle,
 ): InlineDecoration | null {
+  // a background is a colour, a gradient or an image: a span a gradient
+  // underlines, a highlighter's, was painted only where it had a border
   const decorated =
     !isTransparent(s.backgroundColor) ||
+    s.backgroundGradient !== null ||
+    s.backgroundImage !== null ||
+    s.backgroundImages !== null ||
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0 ||
     s.outlineStyle !== 'none';
   return !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
