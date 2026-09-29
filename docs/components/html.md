@@ -614,6 +614,11 @@ aligned in its box as well, and one too long for it overflows its end),
 `text-indent`, `text-transform`, `letter-spacing` and `word-spacing` (the
 first is the text engine's; the second is spacing added to each space and
 no-break space, so only text that asks for it is split into more runs),
+and a space that justification or `word-spacing` widens keeps the
+kerning it makes with the letters beside it, since spacing is in
+addition to kerning, while the text of an element with its own
+`letter-spacing` is shaped apart from its neighbours, as a browser
+shapes it (on ntk's engine; CoreText drops a spaced glyph's pairs),
 `white-space` (including
 `pre` and `pre-wrap`, on an element as well as on its block: a `nowrap`
 element's text stays together, at its hyphens as well as its spaces, and
