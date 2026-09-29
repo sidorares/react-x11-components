@@ -2017,6 +2017,30 @@ function transformText(
   }
 }
 
+/**
+ * `text` transformed as `transform` says, where it stands for text laid out
+ * already — a first line's, whose `::first-line` transforms it (CSS 2.1
+ * 5.12.1): a character at a time where the transform would change its
+ * length, which moves every offset after it — `ß` is `SS` in capitals —
+ * and that character kept as it is.
+ */
+export function transformInPlace(
+  text: string,
+  transform: ComputedStyle['textTransform'],
+  lettered = false,
+): string {
+  const whole = transformText(text, transform, lettered);
+  if (whole.length === text.length) return whole;
+  let out = '';
+  let state = lettered;
+  for (const ch of text) {
+    const one = transformText(ch, transform, state);
+    out += one.length === ch.length ? one : ch;
+    state = letteredAfter(ch, state);
+  }
+  return out;
+}
+
 /** A letter or a number: what a word's first typographic letter unit is
  *  (CSS Text 3, 2.1). */
 const LETTER_UNIT = /[\p{L}\p{N}]/u;
@@ -2089,7 +2113,7 @@ function titleCase(ch: string): string {
  * nothing but joining punctuation leaves it as it was. Asked of every text,
  * from the end, where it is almost always decided by the last character.
  */
-function letteredAfter(text: string, lettered: boolean): boolean {
+export function letteredAfter(text: string, lettered: boolean): boolean {
   for (let i = text.length - 1; i >= 0; i -= 1) {
     const c = text.charCodeAt(i);
     if (c < 0x80) {

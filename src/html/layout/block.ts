@@ -1271,7 +1271,8 @@ function makesNothing(box: Box): boolean {
 }
 
 /** Whether a `::first-line` style sets its line's text otherwise than its
- *  block's: in another face, size or line height, or spaced apart. */
+ *  block's: in another face, size or line height, spaced apart, or in
+ *  capitals. */
 function setsFonts(line: ComputedStyle, block: ComputedStyle): boolean {
   return (
     line.fontFamily !== block.fontFamily ||
@@ -1286,7 +1287,8 @@ function setsFonts(line: ComputedStyle, block: ComputedStyle): boolean {
     line.fontVariantLigatures !== block.fontVariantLigatures ||
     line.fontVariantPosition !== block.fontVariantPosition ||
     line.fontKerning !== block.fontKerning ||
-    line.fontFeatureSettings !== block.fontFeatureSettings
+    line.fontFeatureSettings !== block.fontFeatureSettings ||
+    line.textTransform !== block.textTransform
   );
 }
 

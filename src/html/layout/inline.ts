@@ -43,9 +43,11 @@ import {
   BOX_RAISES,
   LINE_BOX_RAISES,
   isOffset,
+  letteredAfter,
   SHADOWED_TEXT,
   SHIFTED_LINES,
   TEXT_RAISES,
+  transformInPlace,
 } from './boxes.js';
 import type {
   AtomicPlacement,
@@ -2880,8 +2882,13 @@ export function inlineDecoration(
   box: Box,
   s: ComputedStyle,
 ): InlineDecoration | null {
+  // a background is a colour, a gradient or an image: a span a gradient
+  // underlines, a highlighter's, was painted only where it had a border
   const decorated =
     !isTransparent(s.backgroundColor) ||
+    s.backgroundGradient !== null ||
+    s.backgroundImage !== null ||
+    s.backgroundImages !== null ||
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0 ||
     s.outlineStyle !== 'none';
   return !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
@@ -2984,9 +2991,26 @@ function firstLineSetting(
     box === block || !box.parent
       ? style
       : styleOnFirstLine(box, of(box.parent), how.styler);
+  // and in its `text-transform` where the line has one of its own, which
+  // the boxes' text was not made with: a word carried from one run into
+  // the next, as the box builder carries it (`letteredAfter`)
+  let lettered = false;
   const restyled = items.map((item): Item => {
+    if (item.kind === 'atomic') lettered = false;
     if (item.kind !== 'text') return item;
-    const run = restyledRun(item.run, item.box.style, of(item.box));
+    const own = item.box.style;
+    const on = of(item.box);
+    let run = restyledRun(item.run, own, on);
+    const transform = on.textTransform;
+    if (
+      !item.control &&
+      transform !== own.textTransform &&
+      transform !== 'none'
+    ) {
+      const text = transformInPlace(run.text, transform, lettered);
+      if (text !== run.text) run = { ...run, text };
+    }
+    lettered = letteredAfter(run.text, lettered);
     return run === item.run ? item : { ...item, run };
   });
   const lineHeight = lineHeightMultiplier(fonts, style);

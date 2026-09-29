@@ -497,9 +497,9 @@ export interface ComputedStyle {
   /** `background-clip` and `background-origin` (CSS Backgrounds 3, 3.7 and
    *  3.8): the box a layer is painted in and the box it is placed in, the
    *  colour painted in the bottom layer's; each a list as the four above. */
-  backgroundClip: VisualBox;
+  backgroundClip: BackgroundClip;
   backgroundOrigin: VisualBox;
-  backgroundClips: VisualBox[] | null;
+  backgroundClips: BackgroundClip[] | null;
   backgroundOrigins: VisualBox[] | null;
   /** `border-image` and its longhands (CSS Backgrounds 3, 6): one object,
    *  replaced whole when any of them changes, and `NO_BORDER_IMAGE` where
@@ -1799,14 +1799,29 @@ export function applyDeclaration(
     }
     case 'background-clip':
     case '-webkit-background-clip': {
-      // `text` the first layer's alone, which paints through the text
+      // `text` the first layer's alone, which paints through the text —
+      // and with `border-area` through its border as well, in either order
+      // (CSS Backgrounds 4, 2.1)
       const clips = layerValues(value, (part) => {
         const v = part.toLowerCase();
-        return v === 'text' || isVisualBox(v) ? v : null;
+        if (v === 'text' || isBackgroundClip(v)) return v;
+        const [a, b, more] = splitValue(v);
+        return !more &&
+          ((a === 'border-area' && b === 'text') ||
+            (a === 'text' && b === 'border-area'))
+          ? 'border-area text'
+          : null;
       });
       if (!clips) return;
-      style.backgroundClipText = clips[0] === 'text';
-      const boxes = clips.map((c) => (c === 'text' ? 'border-box' : c));
+      style.backgroundClipText =
+        clips[0] === 'text' || clips[0] === 'border-area text';
+      const boxes = clips.map((c): BackgroundClip =>
+        c === 'text'
+          ? 'border-box'
+          : c === 'border-area text'
+            ? 'border-area'
+            : (c as BackgroundClip),
+      );
       style.backgroundClip = boxes[0];
       style.backgroundClips = boxes.length > 1 ? boxes : null;
       return;
@@ -2877,12 +2892,6 @@ export function settleOverflow(style: ComputedStyle): void {
   else style.overflowX = x === 'visible' ? 'auto' : 'hidden';
 }
 
-/**
- * Whether a box is a scroll container: its `overflow` is neither `visible`
- * nor `clip`. `clip` cuts what overflows as `hidden` does, but makes no
- * formatting context and keeps a flex or grid item's automatic minimum
- * (CSS Overflow 3, 3.1) — so only this asks it apart from `hidden`.
- */
 /** A `<visual-box>` (CSS Box 4): the edge of a box a property names. */
 export type VisualBox = 'border-box' | 'padding-box' | 'content-box';
 
@@ -2890,6 +2899,20 @@ function isVisualBox(v: string): v is VisualBox {
   return v === 'border-box' || v === 'padding-box' || v === 'content-box';
 }
 
+/** Where a background layer is painted: inside one of the box's edges, or
+ *  `border-area`, in what its border paints (CSS Backgrounds 4, 2.1). */
+export type BackgroundClip = VisualBox | 'border-area';
+
+function isBackgroundClip(v: string): v is BackgroundClip {
+  return v === 'border-area' || isVisualBox(v);
+}
+
+/**
+ * Whether a box is a scroll container: its `overflow` is neither `visible`
+ * nor `clip`. `clip` cuts what overflows as `hidden` does, but makes no
+ * formatting context and keeps a flex or grid item's automatic minimum
+ * (CSS Overflow 3, 3.1) — so only this asks it apart from `hidden`.
+ */
 export function scrolls(style: ComputedStyle): boolean {
   const x = style.overflowX;
   const y = style.overflowY;
@@ -3485,7 +3508,7 @@ interface BackgroundLayer {
   size: ComputedStyle['backgroundSize'];
   attachment: ComputedStyle['backgroundAttachment'];
   origin: VisualBox;
-  clip: VisualBox;
+  clip: BackgroundClip;
   position: [Len, Len] | null;
 }
 
@@ -3545,9 +3568,14 @@ function readBackgroundLayer(
       layer.attachment = v;
       i += 1;
     } else if (isVisualBox(v)) {
-      // one box is both the origin and the clip, and a second the clip
-      if ((boxes += 1) > 2) return null;
+      // one box is both the origin and the clip, and a second the clip —
+      // which `border-area` is instead of, and the one box the origin
+      if ((boxes += 1) > (seen & 32 ? 1 : 2)) return null;
       if (boxes === 1) layer.origin = v;
+      if (!(seen & 32)) layer.clip = v;
+      i += 1;
+    } else if (v === 'border-area') {
+      if (boxes > 1 || !once(32)) return null;
       layer.clip = v;
       i += 1;
     } else if (isPositionPart(v, ctx)) {

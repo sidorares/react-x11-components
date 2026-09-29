@@ -413,9 +413,10 @@ captions outside the clip. `clip` shows the part of an absolutely positioned
 box it names. Inline elements have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on
-the sides its `direction` says (CSS 2.1 8.6) — and its background and border
-are painted a fragment a line, over its face's height plus its vertical
-padding, which is why they do not make the line taller. Where it wraps it is
+the sides its `direction` says (CSS 2.1 8.6) — and its background, images
+and gradients included, and its border are painted a fragment a line, over
+its face's height plus its vertical padding, which is why they do not make
+the line taller. Where it wraps it is
 sliced: no border and no rounded corner on a side it goes on from. A padded
 `<a>` set as an email's button, a pill badge and a `<kbd>` keycap render as
 a browser renders them.
@@ -535,7 +536,11 @@ text` paints the background through the element's text instead of behind its
 box — Tailwind's `bg-clip-text text-transparent` headline, with
 `-webkit-text-fill-color` read as the glyphs' own fill — as the text laid
 out again with no ink of its own and filled with the gradient, which both
-text engines do natively. A `linear-gradient()` is drawn over the colour as
+text engines do natively. `background-clip: border-area` (CSS Backgrounds 4)
+paints a layer where the border paints: its widths and styles and not its
+colour, so a transparent border shows the layer through a double border's
+two lines, a dotted one's dots or a rounded one's ring, the shapes the
+border itself is drawn with. With `text` it paints in both. A `linear-gradient()` is drawn over the colour as
 an image the size of the padding box, or the size `background-size` gives
 it, repeated like one: by angle, side or corner, with its stops where they
 say or spread between their neighbours, and a colour interpolation method,

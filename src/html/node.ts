@@ -1196,15 +1196,32 @@ export class HtmlViewNode extends Node {
       rect = { x: box.x, y: box.y, width: box.width, height: box.height };
     } else {
       const bands: Rect[] = [];
+      // an inline box's fragments are on the lines of the block it is laid
+      // out in, and no text of a float or a positioned box inside it — on
+      // lines of their own — is one of them (CSSOM View 6.1): a list item
+      // made inline around an absolute link measured as the link
+      let block: Box | null = box.parent;
+      while (block && !block.lines) block = block.parent;
       if (box.subtreeTextEnd > box.subtreeTextStart) {
-        collectBands(
-          tree.root,
-          box.subtreeTextStart,
-          box.subtreeTextEnd,
-          0,
-          0,
-          bands,
-        );
+        if (box.kind === 'inline' && block?.lines) {
+          lineBands(
+            block.lines,
+            box.subtreeTextStart,
+            box.subtreeTextEnd,
+            0,
+            0,
+            bands,
+          );
+        } else {
+          collectBands(
+            tree.root,
+            box.subtreeTextStart,
+            box.subtreeTextEnd,
+            0,
+            0,
+            bands,
+          );
+        }
       }
       if (box.kind === 'inline') {
         fragmentReach(box, bands);
@@ -1979,6 +1996,54 @@ function fragmentHeights(box: Box, bands: Rect[], fonts: FontsLike): void {
   }
 }
 
+/** The bands of a text range on one block's own lines. */
+function lineBands(
+  lines: readonly LineBox[],
+  from: number,
+  to: number,
+  dx: number,
+  dy: number,
+  out: Rect[],
+): void {
+  // First line whose text can reach `from`, by binary search over the
+  // sorted text starts; stop at the first line past `to`.
+  let lo = 0;
+  let hi = lines.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid].textEnd > from) hi = mid;
+    else lo = mid + 1;
+  }
+  for (let i = lo; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.textStart >= to) break;
+    if (line.textEnd > from && line.textStart < to) {
+      for (const text of line.texts) {
+        const natural = text.layout.lines[text.layoutLine];
+        if (!natural) continue;
+        const a = Math.max(from, text.textStart);
+        const b = Math.min(to, text.textEnd);
+        if (b <= a) continue;
+        const offsets = layoutOffsetsOf(text.layout);
+        for (const band of bandsFor(
+          text.layout,
+          natural,
+          offsets,
+          layoutOffsetOf(text, a),
+          layoutOffsetOf(text, b, true),
+        )) {
+          out.push({
+            x: dx + band.x + text.drawX,
+            y: dy + line.y,
+            width: band.width,
+            height: line.height,
+          });
+        }
+      }
+    }
+  }
+}
+
 function collectBands(
   box: Box,
   from: number,
@@ -1989,46 +2054,7 @@ function collectBands(
 ): void {
   if (box.subtreeTextEnd <= box.subtreeTextStart) return;
   if (box.subtreeTextEnd <= from || box.subtreeTextStart >= to) return;
-  if (box.lines) {
-    const lines = box.lines;
-    // First line whose text can reach `from`, by binary search over the
-    // sorted text starts; stop at the first line past `to`.
-    let lo = 0;
-    let hi = lines.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (lines[mid].textEnd > from) hi = mid;
-      else lo = mid + 1;
-    }
-    for (let i = lo; i < lines.length; i += 1) {
-      const line = lines[i];
-      if (line.textStart >= to) break;
-      if (line.textEnd > from && line.textStart < to) {
-        for (const text of line.texts) {
-          const natural = text.layout.lines[text.layoutLine];
-          if (!natural) continue;
-          const a = Math.max(from, text.textStart);
-          const b = Math.min(to, text.textEnd);
-          if (b <= a) continue;
-          const offsets = layoutOffsetsOf(text.layout);
-          for (const band of bandsFor(
-            text.layout,
-            natural,
-            offsets,
-            layoutOffsetOf(text, a),
-            layoutOffsetOf(text, b, true),
-          )) {
-            out.push({
-              x: dx + band.x + text.drawX,
-              y: dy + line.y,
-              width: band.width,
-              height: line.height,
-            });
-          }
-        }
-      }
-    }
-  }
+  if (box.lines) lineBands(box.lines, from, to, dx, dy, out);
   // Atomics are ordinary children, reached below.
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
