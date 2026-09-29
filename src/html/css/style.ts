@@ -83,6 +83,8 @@ export interface GridTemplate {
     tracks: GridTrack[];
     names: string[][];
     after: string[];
+    /** `auto-fit`, whose repetitions no item is in collapse. */
+    fit: boolean;
   } | null;
 }
 
@@ -523,8 +525,9 @@ export interface ComputedStyle {
   flexShrink: number;
   flexBasis: Len | 'auto' | 'content';
   order: number;
-  rowGap: number;
-  columnGap: number;
+  /** A length or a percentage of the box's content size along it. */
+  rowGap: Len;
+  columnGap: Len;
 
   // grid (CSS Grid 1): a grid container is a flex box to the box tree, and
   // laid out by `layout/css-grid.ts`
@@ -543,8 +546,12 @@ export interface ComputedStyle {
   gridColumnEnd: GridLine;
   gridRowStart: GridLine;
   gridRowEnd: GridLine;
-  justifyItems: 'stretch' | 'flex-start' | 'flex-end' | 'center';
-  justifySelf: 'auto' | 'stretch' | 'flex-start' | 'flex-end' | 'center';
+  /** `normal` stretches a grid item unless it is replaced or has a ratio,
+   *  which it starts (CSS Box Alignment 3, 6.1): kept apart from
+   *  `stretch`, which stretches every item. */
+  justifyItems: 'normal' | 'stretch' | 'flex-start' | 'flex-end' | 'center';
+  justifySelf:
+    'auto' | 'normal' | 'stretch' | 'flex-start' | 'flex-end' | 'center';
 
   tableLayout: 'auto' | 'fixed';
 
@@ -824,7 +831,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     gridColumnEnd: null,
     gridRowStart: null,
     gridRowEnd: null,
-    justifyItems: 'stretch',
+    justifyItems: 'normal',
     justifySelf: 'auto',
 
     tableLayout: 'auto',
@@ -2257,12 +2264,22 @@ export function applyDeclaration(
     case 'grid-row-gap':
     case 'grid-column-gap': {
       const which = name.replace(/^grid-/, '');
-      const parts = splitValue(value).map((p) => parseLength(p, ctx));
-      const row = typeof parts[0] === 'number' ? parts[0] : null;
-      const col = typeof parts[1] === 'number' ? parts[1] : row;
-      if (row === null) return;
+      // a length or a percentage, not below nought, or `normal`, which is
+      // nought outside columns of text
+      const gap = (part: string | undefined): Len | null => {
+        if (part === undefined) return null;
+        if (part.toLowerCase() === 'normal') return 0;
+        const len = parseLength(part, ctx);
+        if (typeof len === 'number') return len >= 0 ? len : null;
+        return len !== null && isPct(len) && !(len.pct < 0) ? len : null;
+      };
+      const parts = splitValue(value);
+      if (!parts.length || parts.length > (which === 'gap' ? 2 : 1)) return;
+      const row = gap(parts[0]);
+      const col = parts.length > 1 ? gap(parts[1]) : row;
+      if (row === null || col === null) return;
       if (which !== 'column-gap') style.rowGap = row;
-      if (which !== 'row-gap') style.columnGap = col ?? row;
+      if (which !== 'row-gap') style.columnGap = col;
       return;
     }
     case 'grid-template-columns':
@@ -2426,10 +2443,11 @@ export function applyDeclaration(
         v === 'auto' && name === 'justify-self'
           ? 'auto'
           : v === 'normal' || v === 'stretch'
-            ? 'stretch'
+            ? v
             : alignKeyword(v);
       if (
         keyword === 'auto' ||
+        keyword === 'normal' ||
         keyword === 'stretch' ||
         keyword === 'flex-start' ||
         keyword === 'flex-end' ||
@@ -3644,6 +3662,7 @@ function parseGridTemplate(
             tracks: inner,
             names: innerNames,
             after: [],
+            fit: n === 'auto-fit',
           };
           pending = out.repeat.after;
           continue;

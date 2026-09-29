@@ -201,6 +201,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 112    | `object-fit`, `object-position`, posters, embeds   | 5,651 (95%) | 5,102 (86%) |
 | 113    | counter styles and `@counter-style`                | 5,651 (95%) | 5,102 (86%) |
 | 114    | `aspect-ratio` both ways, `overflow: clip`, `body` | 5,652 (95%) | 5,103 (86%) |
+| 115    | grid items with ratios, `auto-fit`, `%` gaps       | 5,652 (95%) | 5,103 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3367,6 +3368,50 @@ not its height's through its ratio. `flex-aspect-ratio-038` fails because
 Yoga shares out a column's free space from each item's size within its
 limits rather than from its flex base size, as Chrome 101 and Firefox 99
 did.
+
+### Round 115
+
+293. **A grid item with a ratio was sized as one without.** `normal`
+     stretched an image across its column, and a box with an
+     `aspect-ratio` and a height was as wide as its column. CSS Grid 1, 6.2
+     sizes either as a block would be: an image at its own size, and a box
+     with a ratio as wide as a height it has makes it — its own, a
+     percentage of rows whose sizes are lengths, or those rows' where its
+     own `align-self` stretches it — and else as wide as its column; and
+     that width is what it gives its column. An item stretched down its
+     area by its own `align-self` is as wide as its ratio makes that
+     height, and one stretched across by its own `justify-self` as tall as
+     it makes that width. `justify-items` and `justify-self` keep `normal`
+     apart from `stretch`. A scroll container's sizes take nothing from its
+     ratio.
+294. **A grid item's percentage height was of the grid's height**, so
+     `height: 100%` in one of two rows was as tall as both. It is of its
+     area: of the rows it spans where their sizes are lengths, and once the
+     rows are sized, of what they came to, the item laid out again; and
+     what is in a stretched item takes its percentages of the item's
+     height, as in a stretched flex item.
+295. **`auto-fit` was `auto-fill`.** A repetition that no item is in
+     collapses: out of the sizing and of the space `justify-content` and
+     `align-content` share out, the gaps on either side of it one gap
+     (7.2.3.2).
+296. **A percentage gap was dropped.** `gap`, `row-gap` and `column-gap`
+     are a percentage of the content box's size along them, in a grid and
+     a flex box alike, and where that size is not known — a grid with no
+     height of its own — of the size the tracks come to without them (CSS
+     Box Alignment 3, 8.3); `normal` is nought.
+297. **A grid was as wide as where its items ended**, so an item wider than
+     its column made the grid wider than its tracks. It is as wide as its
+     tracks. An item whose width is `min-content` or `max-content` gives
+     its column that width at its narrowest and at its widest.
+
+css-grid went from 473 to 550 of 1,651 on X11 and from 432 to 509 on
+Cocoa, css-sizing from 336 to 352 of 562 and from 336 to 351, css-flexbox
+from 669 to 671 and from 665 to 668; the CSS 2.1 suite is unchanged. Two `grid-lanes`
+masonry tests, which `<Html>` does not do, passed by the accidents this
+ends: `row-auto-repeat-024`'s reference is a grid of items `height: 100%`
+tall, which matched the test's unstyled blocks only while the percentage
+was of the whole grid, and `column-subgrid-grid-gap-008` matched its
+reference only while a percentage gap was none.
 
 ## What `<Html>` supports
 

@@ -25,7 +25,7 @@
 import { Yoga, layoutLoaded } from 'react-x11/yoga';
 import type { Config as YogaConfig, Node as YogaNode } from 'react-x11/yoga';
 
-import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
+import { AUTO, gapOf, isPct, resolve, resolveOrNull } from '../css/values.js';
 import { scrolls } from '../css/style.js';
 import type { ComputedStyle, ContentSize } from '../css/style.js';
 import { Box, PAINT_ORDER, isBlank } from './boxes.js';
@@ -40,7 +40,9 @@ import {
   measureIntrinsicWidth,
   moveTo,
   percentBaseInside,
+  percentHeightsIn,
   positionOutOfFlow,
+  replacedRatio,
   transferredHeight,
   transferredWidth,
   heightFromWidth,
@@ -102,6 +104,12 @@ export function layoutFlex(
 
   const root = Y.Node.create(flexConfig());
   applyContainer(root, box.style);
+  // the gaps, a percentage of the content box's size along them where it
+  // has one, and else of nothing (CSS Box Alignment 3, 8.3)
+  const rowGap = gapOf(box.style.rowGap, percentBaseInside(box));
+  const columnGap = gapOf(box.style.columnGap, contentWidth);
+  if (rowGap) root.setGap(Y.GUTTER_ROW, rowGap);
+  if (columnGap) root.setGap(Y.GUTTER_COLUMN, columnGap);
   // Laid out at no width limit — a flex item's max-content measured, a
   // table column's — the container is as wide as its content, which Yoga
   // works out from an `auto` width. Handed an infinite one, it took it for
@@ -337,15 +345,6 @@ function replacedMinimum(box: Box, containingWidth: number): number | null {
   return content + box.horizontalExtra;
 }
 
-/** A replaced element's ratio: its `aspect-ratio`, unless that says `auto`
- *  and it has one of its own, as `sizeReplaced` takes it. */
-function replacedRatio(box: Box): number {
-  const own = box.intrinsic;
-  const aspect = box.style.aspectRatio;
-  const natural = own ? own.ratio : 0;
-  return aspect && !(aspect.auto && natural > 0) ? aspect.ratio : natural;
-}
-
 /** A row item's `flex-basis: content`, its border box: its max-content
  *  width, or a replaced element's natural one. */
 function contentBasis(
@@ -546,8 +545,6 @@ function applyContainer(node: YogaNode, style: ComputedStyle): void {
   if (items !== Y.ALIGN_STRETCH) node.setAlignItems(items);
   const lines = ALIGN[style.alignContent] ?? Y.ALIGN_STRETCH;
   if (lines !== Y.ALIGN_FLEX_START) node.setAlignContent(lines);
-  if (style.rowGap) node.setGap(Y.GUTTER_ROW, style.rowGap);
-  if (style.columnGap) node.setGap(Y.GUTTER_COLUMN, style.columnGap);
 }
 
 function applyItem(
@@ -1152,37 +1149,6 @@ function stretches(
         style.marginLeft !== AUTO &&
         style.marginRight !== AUTO;
 }
-
-/** Whether anything in a box takes a percentage of a height: what a height
- *  the flex layout makes definite changes. Kept for the tree's life. */
-function percentHeightsIn(box: Box): boolean {
-  let found = PERCENT_HEIGHTS.get(box);
-  if (found === undefined) {
-    found = false;
-    // a column's basis is a height too
-    const column =
-      box.kind === 'flex' &&
-      !box.style.grid &&
-      box.style.flexDirection.startsWith('column');
-    for (const child of box.children) {
-      const style = child.style;
-      if (
-        isPct(style.height) ||
-        isPct(style.minHeight) ||
-        (style.maxHeight !== 'none' && isPct(style.maxHeight)) ||
-        (column && style.flexBasis !== 'content' && isPct(style.flexBasis)) ||
-        percentHeightsIn(child)
-      ) {
-        found = true;
-        break;
-      }
-    }
-    PERCENT_HEIGHTS.set(box, found);
-  }
-  return found;
-}
-
-const PERCENT_HEIGHTS = new WeakMap<Box, boolean>();
 
 /** How deep flex boxes are laid out by Yoga, one inside another's measure
  *  (`layoutFlex`). */
