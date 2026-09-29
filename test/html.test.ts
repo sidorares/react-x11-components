@@ -7423,11 +7423,19 @@ metric(
 );
 
 metric(
-  'an SVG background with no size of its own is sized in its area, its root by its percentages',
+  'an SVG image fills the size it is drawn at, whatever its root says',
   async () => {
+    // A root's width and height are what an image's intrinsic size is read
+    // from. Drawn, it fills the size that sizing gave it, as every browser
+    // draws one: `width="40%"` in an 80 by 100 area is all of it, where it
+    // was drawn 32 wide and left `background-size: contain` two fifths
+    // full. (CSS 2.1's background-intrinsic-006 asks for the old reading,
+    // and no browser passes it.)
     const { result } = await renderWithBytes(
       '<style>body{margin:0}div{width:80px;height:100px;' +
-        'background:#ffffff url(g.svg) no-repeat}</style><div></div>',
+        'background:#ffffff url(g.svg) no-repeat}' +
+        '.c{background-size:contain}</style>' +
+        '<div></div><div class="c"></div>',
       {
         'g.svg': svgBytes(
           `<svg ${SVG_NS} width="40%" height="60%">` +
@@ -7436,12 +7444,47 @@ metric(
       },
     );
     const ctx = result.ctx;
-    // 40% by 60% of the 80 by 100 area: 32 by 60
-    await expectPixel(ctx, 30, 55, '#00ff00', { message: 'inside' });
-    await expectPixel(ctx, 36, 10, '#ffffff', { message: 'past its width' });
-    await expectPixel(ctx, 10, 64, '#ffffff', { message: 'past its height' });
+    for (const [top, what] of [
+      [0, 'no size of its own'],
+      [100, 'contained'],
+    ] as const) {
+      await expectPixel(ctx, 30, top + 55, '#00ff00', { message: what });
+      await expectPixel(ctx, 70, top + 10, '#00ff00', {
+        message: `${what}: past two fifths of its width`,
+      });
+      await expectPixel(ctx, 10, top + 90, '#00ff00', {
+        message: `${what}: past three fifths of its height`,
+      });
+    }
   },
 );
+
+metric('a viewBox of no height, or no width, draws nothing', async () => {
+  // SVG: a zero extent disables the drawing, where a negative one is an
+  // error and as though there were no viewBox. Both were read as no
+  // viewBox, and the drawing filled its viewport.
+  const { result } = await renderWithBytes(
+    '<style>body{margin:0}div{width:80px;height:40px;' +
+      'background:#ffffff url(z.svg) no-repeat}svg{display:block}</style>' +
+      '<div></div>' +
+      '<svg width="80" height="40" viewBox="0 0 0 8" preserveAspectRatio="none">' +
+      '<rect width="100%" height="100%" fill="#ff0000"/></svg>' +
+      '<svg width="80" height="40" viewBox="0 0 -8 8">' +
+      '<rect width="100%" height="100%" fill="#0000ff"/></svg>',
+    {
+      'z.svg': svgBytes(
+        `<svg ${SVG_NS} viewBox="0 0 8 0" preserveAspectRatio="none">` +
+          '<rect width="100%" height="100%" fill="#ff0000"/></svg>',
+      ),
+    },
+  );
+  const ctx = result.ctx;
+  await expectPixel(ctx, 40, 20, '#ffffff', { message: 'the image' });
+  await expectPixel(ctx, 40, 60, '#ffffff', { message: 'the inline one' });
+  await expectPixel(ctx, 40, 100, '#0000ff', {
+    message: 'a negative extent is no viewBox, and draws',
+  });
+});
 
 // --- columns and column groups -------------------------------------------------
 

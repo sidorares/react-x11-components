@@ -213,6 +213,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 120    | `border-image`                                     | 5,652 (95%) | 5,103 (86%) |
 | 121    | a table's height given out to its rows             | 5,652 (95%) | 5,103 (86%) |
 | 122    | `ex`, `ch` and `lh` in the element's own face      | 5,654 (95%) | 5,104 (86%) |
+| 123    | an SVG image fills its size, a zero `viewBox`      | 5,653 (95%) | 5,103 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3634,11 +3635,30 @@ loaded, test and reference alike falling back to the same face.
 are still to do: a first available font that passes over a face whose
 `unicode-range` leaves out the space, a tab measured by the space the text
 is set in, a `normal` line height over every font a line uses, and shaping
-across a web font's glyphs. Two more
-lose only after another test's face has joined the fallback chain in the
-same process, which #264 does on purpose, and pass on their own.
+across a web font's glyphs. Two more lose only after another test's face
+has joined the fallback chain in the same process, which #264 does on
+purpose, and pass on their own.
 
-## What `<Html>` supports
+### Round 123
+
+319. **An SVG image was drawn at its root's percentages of the size it was
+     given.** A root's `width` and `height` are what an image's intrinsic
+     size is read from, and a percentage is none. The image is then drawn
+     at the size CSS gives it, a background's tile or an `<img>`'s box,
+     and browsers fill that size with it whatever the root says: Blink
+     sizes an SVG embedded through an image to its container. Drawn at two
+     fifths of its tile, `width="40%"` left a `background-size: contain`
+     three fifths empty. CSS 2.1's `background-intrinsic-006` asks for the
+     old reading, which no browser gives, and it fails here now too.
+320. **A `viewBox` with no width or no height drew the whole viewport.**
+     SVG makes a negative extent an error, as though there were no
+     `viewBox`, and a zero one a drawing of nothing. Both were read as the
+     first.
+
+css-backgrounds went from 393 to 504 of 711 on X11, every one of them in
+`background-size`'s vector suite, 15 of them the zero `viewBox`es, and
+from 375 to 486 on Cocoa. The CSS 2.1 suite lost `background-intrinsic-006`,
+and the other sets are unchanged.
 
 ## What `<Html>` supports
 
