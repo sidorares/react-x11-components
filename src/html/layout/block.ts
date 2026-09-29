@@ -870,12 +870,15 @@ function layoutChildren(
   // escapes, and the caller merges it into the box's own bottom margin so
   // the next sibling still sees it. Dropping it here was the bug that made
   // `<div><p>…</p></div><p>…</p>` set the two paragraphs solid.
+  // A percentage of a height that depends on content computes to `auto`
+  // (CSS 2.1 10.5), and lets it through as `auto` does: a `height: 100%`
+  // wrapper in an `auto` body kept its last child's margin inside it
   if (
     !first &&
     !cleared &&
     !box.borderBottom &&
     !box.padBottom &&
-    box.style.height === AUTO &&
+    specifiedHeight(box) === null &&
     !establishesBFC(box)
   ) {
     const height = y - contentTop;

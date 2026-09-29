@@ -3204,6 +3204,25 @@ test("an empty block's margins collapse through it", async () => {
   assert.strictEqual(f.y, p.y + 200, 'and stays inside its parent');
 });
 
+test("a last child's margin collapses through a percentage height of an auto height, and not a definite one", async () => {
+  // a percentage of a height that depends on content computes to `auto`
+  // (CSS 2.1 10.5), and a last child's bottom margin collapses through a
+  // parent of `auto` height (8.3.1): a `height: 100%` page wrapper in an
+  // `auto` body kept its last child's margin inside it, a design 100px
+  // taller than a browser sets it
+  const { node } = await render(
+    '<style>body{margin:0}p{margin:0 0 30px;height:10px}' +
+      '.w{height:100%}</style>' +
+      '<div class="w" id="w"><p></p><p></p></div><div id="n">next</div>' +
+      '<div style="height:200px"><div class="w" id="d"><p></p></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.strictEqual(box('w').height, 50, 'the margin collapses through');
+  assert.strictEqual(box('n').y, 80, 'and is after the wrapper');
+  assert.strictEqual(box('d').height, 200, 'a definite 100% is the height');
+});
+
 test("a margin collapses through an empty block into its parent's", async () => {
   // An empty block's two margins adjoin each other, so the margin after it
   // adjoins its parent's top margin through it (CSS 2.1 8.3.1): a `<div>`
