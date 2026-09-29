@@ -537,6 +537,11 @@ function linesOf(
     hasEdges && !hasAtomics && !hasOffset && spacersHold(style, items);
   // a first line in fonts of its own is found a piece at a time, in them
   const restyled = options.firstLineStyle !== undefined;
+  // and where one layout makes a line shorter than the strut, its text all
+  // smaller than the block's, the lines are made a piece at a time too,
+  // where every line holds it (`shortOfStrut`)
+  const strut = fonts ? strutOf(fonts, style) : null;
+  let strutted = false;
 
   // Inline boxes' edges as spacers in one layout, where the engine left
   // every edge on the line of the content it belongs to (`layoutSpaced`);
@@ -551,19 +556,21 @@ function linesOf(
       align,
       fonts,
     );
-    if (laid) return laid;
+    if (laid && !shortOfStrut(laid.lines, strut)) return laid;
+    if (laid) strutted = true;
   }
 
   // The text-only, float-free, unindented case: one call, every line — or
   // one call per *chunk*, when the text is long and carries hard breaks.
-  if (
+  fast: if (
     !hasAtomics &&
     !hasEdges &&
     !raised &&
     !floated &&
     !indent &&
     !alignedApart &&
-    !restyled
+    !restyled &&
+    !strutted
   ) {
     // no atomics and no edges, so everything is text
     const textItems = items as Extract<Item, { kind: 'text' }>[];
@@ -596,7 +603,7 @@ function linesOf(
     }
     if (perLine) cut = null;
     if (total > CHUNK_TRIGGER_CHARS && hasNewline && !hasControls(items)) {
-      return layoutChunked(
+      const chunked = layoutChunked(
         textItems,
         base,
         style,
@@ -605,6 +612,9 @@ function linesOf(
         align,
         fonts,
       );
+      if (!shortOfStrut(chunked.lines, strut)) return chunked;
+      strutted = true;
+      break fast;
     }
     let runs: TextRun[] = [];
     let spans = new SpanMap();
@@ -705,6 +715,11 @@ function linesOf(
           ? unwrappedPlacer(style, options.width, false)
           : null,
     );
+    // a clamp and a cut are the one layout's to make
+    if (!clamp && !cut && shortOfStrut(lines, strut)) {
+      strutted = true;
+      break fast;
+    }
     return clampCut
       ? { lines, height: layout.height, width: widest, cut: true }
       : { lines, height: layout.height, width: widest };
@@ -751,7 +766,6 @@ function linesOf(
     deferred = [];
   };
 
-  const strut = fonts ? strutOf(fonts, style) : null;
   // How tall a line is taken to be before it is made, for its room beside
   // the floats: the paragraph's strut, a line of its text. An item taller
   // asks over its own height, and the line made over its whole (`close`).
@@ -970,6 +984,7 @@ function linesOf(
     const tailIsPlain =
       !alignedApart &&
       !onFirst &&
+      !strutted &&
       segment.nextIndex >= items.length &&
       open.x === 0 &&
       !open.atomics.length &&
@@ -998,6 +1013,7 @@ function linesOf(
         Math.max(1, available),
         justify,
       ).layout;
+      const tail: LineBox[] = [];
       for (let i = 0; i < layout.lines.length; i += 1) {
         const natural = layout.lines[i];
         const text: LineText = {
@@ -1011,7 +1027,7 @@ function linesOf(
           spans: segment.spans,
         };
         segment.spans.giveGaps(text, natural.start, natural.end);
-        lines.push({
+        tail.push({
           x: band.left + natural.x,
           y: y + natural.y,
           width: natural.width,
@@ -1022,12 +1038,19 @@ function linesOf(
           textEnd: text.textEnd,
           atomics: [],
         });
-        widest = Math.max(widest, natural.width);
       }
-      y += layout.height;
-      index = segment.nextIndex;
-      offset = 0;
-      continue;
+      // or a line at a time, where one of them is shorter than the strut
+      if (!shortOfStrut(tail, strut)) {
+        for (const line of tail) {
+          lines.push(line);
+          widest = Math.max(widest, line.width);
+        }
+        y += layout.height;
+        index = segment.nextIndex;
+        offset = 0;
+        continue;
+      }
+      strutted = true;
     }
 
     // One line: `maxLines: 1` cuts the layout at the first break and its
@@ -3306,6 +3329,33 @@ function heldText(box: Box): string {
 }
 
 const HELD = new WeakMap<Box, string>();
+
+/**
+ * Whether a line one layout made is shorter about its baseline than the
+ * block's strut. Every line box starts with the strut, the block's font at
+ * its line height (CSS 2.1 10.8.1), and a layout has none: it makes a line
+ * as tall as the text on it, at the block's line height as a multiple of
+ * each face's natural one. So a line of `<small>` text alone came out as
+ * short as the small text, and overlapped what followed. A paragraph with
+ * such a line is made a line at a time instead, where `finishLine` puts
+ * the strut on every line; one whose lines all hold text of the block's
+ * own face is kept as it was laid out.
+ */
+function shortOfStrut(
+  lines: readonly LineBox[],
+  strut: InlineDecoration | null,
+): boolean {
+  if (!strut) return false;
+  for (const line of lines) {
+    if (
+      line.baseline < strut.ascent - 0.5 ||
+      line.height - line.baseline < strut.descent - 0.5
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * The OpenType features a style's text is shaped with: the `font-variant`

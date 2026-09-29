@@ -8830,6 +8830,42 @@ metric(
 );
 
 metric(
+  "a line of smaller text alone is as tall as the block's strut",
+  async () => {
+    // every line box starts with the strut, the block's font at its line
+    // height (CSS 2.1 10.8.1); a paragraph laid out as one text had lines
+    // only as tall as the small text on them
+    const { node } = await render(
+      '<style>p{margin:0;width:120px;font-size:16px;line-height:24px}' +
+        'small{font-size:10px;line-height:10px}</style>' +
+        '<p id="p"><small>several small words that wrap onto more than ' +
+        'one line</small></p>' +
+        // and the lines a paragraph made a line at a time end as one text
+        '<p id="q" style="text-indent:4px"><small>several small words ' +
+        'that wrap onto more than one line</small></p>',
+    );
+    const el = view(node);
+    for (const id of ['p', 'q']) {
+      const lines = linesOf(el, id);
+      assert.ok(lines.length > 1, `#${id} wraps`);
+      for (const line of lines) {
+        assert.ok(
+          line.height >= 24 - 0.01,
+          `#${id}: a line ${line.height} tall`,
+        );
+      }
+      for (let i = 1; i < lines.length; i += 1) {
+        const above = lines[i - 1];
+        assert.ok(
+          lines[i].y >= above.y + above.height - 0.01,
+          `#${id} overlaps`,
+        );
+      }
+    }
+  },
+);
+
+metric(
   'vertical-align takes a length, a percentage of the line height, and the edges of the font',
   async () => {
     const { node } = await render(
