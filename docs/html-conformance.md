@@ -188,6 +188,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 99     | `text-align-last`, family names, line heights      | 5,646 (95%) | 5,102 (86%) |
 | 100    | ntk 8.14.1: kerning off, a family list's fallback  | 5,649 (95%) | 5,102 (86%) |
 | 101    | `line-clamp` through a flow, `lh`, `-webkit-box`   | 5,649 (95%) | 5,102 (86%) |
+| 102    | `fit-content()`, a content's intrinsic sizes       | 5,649 (95%) | 5,102 (86%) |
 | 103    | ntk 8.14.2: a word shaped across elements          | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
@@ -2961,6 +2962,29 @@ css-values together from 187 to 335 of 852 on Cocoa.
      ahead of the declarations that read it, with this element's `em`; the
      `max-height: 4lh` most of css-overflow's `line-clamp: auto` tests size
      their box with was no height at all.
+
+### Round 102
+
+The CSS 2.1 suite has neither; css-sizing went from 230 to 245 of 562 on
+X11.
+
+255. **`fit-content()` was no width.** `width: fit-content(100px)` — and
+     `min-width` and `max-width` of it — fits the content in the room its
+     argument makes (CSS Sizing 3, 3.1): no wider than the content at its
+     widest, nor narrower than its longest word, a percentage being of the
+     containing block. The argument is a width of the box's own, its
+     padding and border outside it where `box-sizing` says so.
+256. **A box with a width measured its content at the probe's width.** The
+     content's intrinsic sizes that `min-width: min-content` and its kin
+     are made of were measured by laying the box out at no width at all,
+     and a box with a `width` of its own answered with that, which was the
+     probe's nought: `width: 10px; min-width: min-content` was 10px wide
+     where its longest word is wider. They are the content's now, whatever
+     the box's own width (`min-content-min-width-000`,
+     `shrink-to-fit-sizing-max-width-min-content`). A percentage inside
+     `fit-content()` measured for a parent's intrinsic size, which CSS
+     Sizing 3 treats as cyclic, is still resolved against the probe's
+     width.
 
 ### Round 103
 
