@@ -18,6 +18,13 @@
 //   came out in Times.
 // - **The palette is a browser's**: black text on white, links #0000ee, a
 //   16px serif — what a page that says nothing about them is drawn in.
+// - **A face's line metrics are Blink's** (`blinkMetrics`): its ascent,
+//   descent and line gap each rounded to a whole pixel, and Times,
+//   Helvetica and Courier given 15% more ascent, which Blink does on a Mac
+//   to set them as Windows sets their Microsoft counterparts. `line-height:
+//   normal` is the user agent's to choose from the font (CSS 2.1 10.8.1),
+//   and these are that choice, not CSS: <Html> takes the font's own, and
+//   without this every line of Times drifted two pixels from Chrome's.
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -67,6 +74,51 @@ export function chromeGenerics(list: string): string {
 interface FontManagerLike {
   match(family?: string, opts?: unknown): unknown;
   fallbackFor(codepoint: number, family?: string, opts?: unknown): unknown;
+}
+
+interface Metrics {
+  ascent: number;
+  descent: number;
+  lineGap: number;
+  lineHeight: number;
+}
+
+interface FaceLike {
+  fk?: { familyName?: string };
+  metrics(size: number): Metrics;
+}
+
+/** The families Blink pads on a Mac (`SimpleFontData::PlatformInit`). */
+const PADDED = new Set(['Times', 'Helvetica', 'Courier']);
+const BLINKED = new WeakSet<object>();
+
+/**
+ * A face's line metrics as Blink on a Mac takes them: ascent, descent and
+ * line gap each rounded to a whole pixel, and for Times, Helvetica and
+ * Courier, 15% of the two added to the ascent. Measured against Chrome
+ * over ten faces at six sizes, `line-height: normal` agreed at every one.
+ */
+export function blinkMetrics(face: unknown): unknown {
+  const f = face as FaceLike | null;
+  if (!f || typeof f.metrics !== 'function' || BLINKED.has(f)) return face;
+  BLINKED.add(f);
+  const own = f.metrics.bind(f);
+  const padded = PADDED.has(f.fk?.familyName ?? '');
+  f.metrics = (size: number) => {
+    const m = own(size);
+    let ascent = Math.round(m.ascent);
+    const descent = Math.round(m.descent);
+    const lineGap = Math.round(m.lineGap);
+    if (padded) ascent += Math.floor((ascent + descent) * 0.15 + 0.5);
+    return {
+      ...m,
+      ascent,
+      descent,
+      lineGap,
+      lineHeight: ascent + descent + lineGap,
+    };
+  };
+  return face;
 }
 
 /** The browser's network, over a cache on disk. */
@@ -300,9 +352,9 @@ export async function capture(
     const match = fonts.match.bind(fonts);
     const fallbackFor = fonts.fallbackFor.bind(fonts);
     fonts.match = (family = 'sans-serif', opts) =>
-      match(chromeGenerics(family), opts);
+      blinkMetrics(match(chromeGenerics(family), opts));
     fonts.fallbackFor = (codepoint, family = 'sans-serif', opts) =>
-      fallbackFor(codepoint, chromeGenerics(family), opts);
+      blinkMetrics(fallbackFor(codepoint, chromeGenerics(family), opts));
     await result.rerender(tree(true));
     // until nothing is in flight, and nothing has landed for a moment: a
     // stylesheet's @import and its fonts arrive after the sheet does
