@@ -188,8 +188,10 @@ A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
 `repeat()` by a count or by what fits, `auto-fill` and `auto-fit` alike —
 and those past the template from `grid-auto-columns` and `grid-auto-rows`.
-It places its items by line or span, or in order into the first cells
-free, and sizes its columns and its rows by the track sizing algorithm:
+It places its items by line, span, line name or the area
+`grid-template-areas` names, or in order into the first cells free, along
+the rows or down the columns by `grid-auto-flow`, `dense` or not, and
+sizes its columns and its rows by the track sizing algorithm:
 an item spanning several tracks grows the ones its content sizes, and the
 `fr` rows of a grid with a height or a `min-height` fill it, which puts a
 page's footer at the bottom. `justify-content` and `align-content` place
@@ -197,9 +199,8 @@ the tracks. An item is stretched to its area or aligned in it by
 `justify-self`, `align-self` and its `auto` margins, and one that is not
 stretched is as wide as its content fits. An absolutely positioned box
 takes the grid area its lines name for its containing block, and a grid's
-or a flex box's child is where it would be as the box's one item. Named
-lines and areas, `dense` and column-first placement, baseline alignment
-and subgrids are not read.
+or a flex box's child is where it would be as the box's one item.
+Baseline alignment and subgrids are not read.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —

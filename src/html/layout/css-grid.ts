@@ -5,11 +5,12 @@
 // `auto 1fr auto` rows: tracks of lengths, percentages, `fr`s, `auto`,
 // `minmax()` and `fit-content()`, with `repeat()` by a count or by what
 // fits, sized by what is in them as the track sizing algorithm has it
-// (`tracks.ts`); items placed by line or span, or in order into the first
-// cell free; gaps; the tracks placed by `justify-content` and
-// `align-content`; and each item stretched to its area or aligned in it.
-// Not here: named lines and areas, `dense` and column-first placement,
-// subgrids, and baseline alignment.
+// (`tracks.ts`); items placed by line, span, name or area, or in order into
+// the first cell free along the rows or down the columns, `dense` or not
+// (the lines and their names are `grid-lines.ts`'s); gaps; the tracks
+// placed by `justify-content` and `align-content`; and each item stretched
+// to its area or aligned in it. Not here: subgrids, and baseline
+// alignment.
 //
 // A grid container is a flex container to the box tree (`display: grid`
 // reads as `flex` and sets `ComputedStyle.grid`): its children are the
@@ -19,7 +20,12 @@
 // the smallest, and its height at a width — is what tables already ask.
 import { AUTO, isPct, resolve, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
-import type { ContentSize, GridLine, GridTrack } from '../css/style.js';
+import type {
+  ComputedStyle,
+  ContentSize,
+  GridTemplate,
+  GridTrack,
+} from '../css/style.js';
 import { Box, GRID_TRACKS, isBlank } from './boxes.js';
 import {
   MIN_CONTENT_PROBE,
@@ -32,6 +38,8 @@ import {
   resolveEdges,
 } from './block.js';
 import type { LayoutContext } from './block.js';
+import { gridLines, placement } from './grid-lines.js';
+import type { GridLines } from './grid-lines.js';
 import { sizeTracks } from './tracks.js';
 import type { SizingTrack, TrackItem, TrackMax, TrackMin } from './tracks.js';
 
@@ -70,13 +78,23 @@ export function layoutGrid(
   const colGap = style.columnGap;
   const rowGap = style.rowGap;
 
-  const template = columnTracks(box, contentWidth, colGap);
-  const items = place(boxes, template.length);
-  const cols = template.slice();
-  // an item placed past the template's last column makes columns of its own
+  // the explicit grid: the templates' tracks, and as many more as the
+  // areas need, sized as the ones the placement makes past it are
+  const areas = style.gridAreas;
+  // a height of the grid's own, which the rows' `repeat()` counts against
+  const definite = percentBaseInside(box);
+  const template = trackList(style.gridColumns, contentWidth, colGap);
+  const rowList = trackList(style.gridRows, definite, rowGap);
+  const explicitCols = Math.max(template.tracks.length, areas?.columns ?? 0);
+  const explicitRows = Math.max(rowList.tracks.length, areas?.rows ?? 0);
+  const colLines = gridLines(explicitCols, template.names, areas, 'columns');
+  const rowLines = gridLines(explicitRows, rowList.names, areas, 'rows');
+  const items = place(boxes, colLines, rowLines, style.gridAutoFlow);
+  const cols = template.tracks.slice();
+  // an item placed past the explicit grid makes tracks of its own
   const widest = items.reduce(
     (n, item) => Math.max(n, item.col + item.cols),
-    0,
+    Math.max(1, explicitCols),
   );
   while (cols.length < widest) cols.push(style.gridAutoColumns);
 
@@ -138,31 +156,42 @@ export function layoutGrid(
   for (const item of items)
     layoutItem(item, extent(widths, lefts, item.col, item.cols), ctx);
 
-  // every row the template names, whether or not an item is in it
+  // every row the explicit grid has, whether or not an item is in it
   const rowCount = items.reduce(
     (n, item) => Math.max(n, item.row + item.rows),
-    style.gridRows?.tracks.length ?? 0,
+    explicitRows,
   );
   // a height of the grid's own, or else the least it may be, which the
   // `fr` rows and the `auto` ones fill
-  const definite = percentBaseInside(box);
   const own = Number.isFinite(definite);
   const least = own ? 0 : leastHeight(box);
-  const explicit = style.gridRows?.tracks ?? [];
-  const rowTracks: SizingTrack[] = [];
-  for (let r = 0; r < rowCount; r += 1) {
-    rowTracks.push(sizing(explicit[r] ?? style.gridAutoRows, definite));
+  const explicit = rowList.tracks;
+  // the rows against a height: percentages of it, or `auto` without one
+  const sizeRows = (base: number, available: number, atLeast: number) => {
+    const rowTracks: SizingTrack[] = [];
+    for (let r = 0; r < rowCount; r += 1) {
+      rowTracks.push(sizing(explicit[r] ?? style.gridAutoRows, base));
+    }
+    return sizeTracks(
+      rowTracks,
+      items.map((item) => rowItem(item, rowTracks, rowGap)),
+      {
+        available,
+        least: atLeast,
+        gap: rowGap,
+        stretch: style.alignContent === 'stretch',
+      },
+    );
+  };
+  let heights = sizeRows(definite, own ? definite : Infinity, least);
+  // with no height of its own, the grid is as tall as its rows come to with
+  // their percentages `auto`, and the percentages are of that (7.2.1)
+  if (!own && [...explicit, style.gridAutoRows].some(percentTrack)) {
+    let tall = rowGap * Math.max(0, heights.length - 1);
+    for (const h of heights) tall += h;
+    tall = Math.max(tall, least);
+    heights = sizeRows(tall, tall, 0);
   }
-  const heights = sizeTracks(
-    rowTracks,
-    items.map((item) => rowItem(item, rowTracks, rowGap)),
-    {
-      available: own ? definite : Infinity,
-      least,
-      gap: rowGap,
-      stretch: style.alignContent === 'stretch',
-    },
-  );
   let height = rowGap * Math.max(0, heights.length - 1);
   for (const h of heights) height += h;
   // the rows are placed in the grid's height — which one from its
@@ -179,8 +208,8 @@ export function layoutGrid(
   GRID_TRACKS.set(box, {
     cols: widths.map((w, i) => [lefts[i], lefts[i] + w]),
     rows: heights.map((h, i) => [tops[i], tops[i] + h]),
-    explicitCols: template.length,
-    explicitRows: style.gridRows?.tracks.length ?? 0,
+    colLines,
+    rowLines,
   });
 
   for (const item of items) {
@@ -237,158 +266,174 @@ export function layoutGrid(
   return height;
 }
 
-const AUTO_TRACK: GridTrack = { min: AUTO, max: AUTO };
-
-/** The explicit column tracks, a `repeat()` of what fits counted out
- *  against the width (CSS Grid 1, 7.2.3.2). */
-function columnTracks(box: Box, width: number, gap: number): GridTrack[] {
-  const template = box.style.gridColumns;
-  if (!template) return [AUTO_TRACK];
-  const tracks = template.tracks.slice();
-  if (template.repeat) {
-    const { at, tracks: unit } = template.repeat;
-    // what one repetition takes: its tracks' maximums where those are
-    // lengths, and their minimums where not (7.2.3.2)
-    const base = Number.isFinite(width) ? width : 0;
-    const fixed = (track: GridTrack): number =>
-      lengthOf(track.max, base) ?? lengthOf(track.min, base) ?? 0;
-    const others = tracks.reduce((sum, t) => sum + fixed(t), 0);
-    const each = unit.reduce((sum, t) => sum + fixed(t), 0);
-    let count = 1;
-    if (Number.isFinite(width) && each > 0) {
-      const room = width - others - gap * tracks.length;
-      count = Math.max(
-        1,
-        Math.floor((room + gap) / (each + gap * unit.length)),
-      );
-    }
-    const repeated: GridTrack[] = [];
-    for (let i = 0; i < Math.min(count, 1000); i += 1) repeated.push(...unit);
-    tracks.splice(at, 0, ...repeated);
+/** An axis's explicit tracks and the names of their lines, a `repeat()`
+ *  of what fits counted out against its size where it has one, and once
+ *  where it has none (CSS Grid 1, 7.2.3.2). */
+function trackList(
+  template: GridTemplate | null,
+  width: number,
+  gap: number,
+): { tracks: GridTrack[]; names: string[][] } {
+  if (!template) return { tracks: [], names: [[]] };
+  const { repeat } = template;
+  if (!repeat) return { tracks: template.tracks, names: template.names };
+  const outer = template.tracks;
+  const unit = repeat.tracks;
+  // what one repetition takes: its tracks' maximums where those are
+  // lengths, and their minimums where not (7.2.3.2)
+  const base = Number.isFinite(width) ? width : 0;
+  const fixed = (track: GridTrack): number =>
+    lengthOf(track.max, base) ?? lengthOf(track.min, base) ?? 0;
+  const others = outer.reduce((sum, t) => sum + fixed(t), 0);
+  const each = unit.reduce((sum, t) => sum + fixed(t), 0);
+  let count = 1;
+  if (Number.isFinite(width) && each > 0) {
+    const room = width - others - gap * outer.length;
+    count = Math.max(1, Math.floor((room + gap) / (each + gap * unit.length)));
   }
-  return tracks.length ? tracks : [AUTO_TRACK];
+  // the repetitions' lines where they meet carry the names of both sides
+  const tracks: GridTrack[] = [];
+  const names: string[][] = [];
+  for (let i = 0; i < repeat.at; i += 1) {
+    names.push(template.names[i]);
+    tracks.push(outer[i]);
+  }
+  let line = [...template.names[repeat.at]];
+  for (let k = 0; k < Math.min(count, 1000); k += 1) {
+    line.push(...repeat.names[0]);
+    for (let j = 0; j < unit.length; j += 1) {
+      names.push(line);
+      tracks.push(unit[j]);
+      line = [...repeat.names[j + 1]];
+    }
+  }
+  line.push(...repeat.after);
+  for (let i = repeat.at; i < outer.length; i += 1) {
+    names.push(line);
+    tracks.push(outer[i]);
+    line = [...template.names[i + 1]];
+  }
+  names.push(line);
+  return { tracks, names };
 }
 
 /**
- * Place the items (CSS Grid 1, 8.5), as `grid-auto-flow: row` has it: an
- * item with a definite row and column where it says; one locked to a row
- * in the first columns free in it past the ones placed there before it;
- * and the rest in order from a cursor that moves through the rows — to the
- * next row where an item's definite column is before it, and on past each
- * item it places.
+ * Place the items (CSS Grid 1, 8.5): an item with both its lines where it
+ * says; one that names only the lines across the flow — its row, where the
+ * grid fills its rows — in the first place free along them, past the ones
+ * placed there before it; and the rest in order from a cursor that moves
+ * along the flow and on to the next line of it — to the next where an
+ * item's own line is before it — or, `dense`, from the start each time.
+ * `grid-auto-flow: column` is the same with the axes turned round.
  */
-function place(boxes: Box[], columns: number): Item[] {
+function place(
+  boxes: Box[],
+  cols: GridLines,
+  rows: GridLines,
+  flow: ComputedStyle['gridAutoFlow'],
+): Item[] {
+  const byColumn = flow.startsWith('column');
+  const dense = flow.endsWith('dense');
+  // in the flow's terms: `a` along it, `b` across it
   const taken: boolean[][] = [];
-  const free = (row: number, col: number, rows: number, cols: number) => {
-    for (let r = row; r < row + rows; r += 1) {
-      for (let c = col; c < col + cols; c += 1) if (taken[r]?.[c]) return false;
+  const free = (b: number, a: number, bs: number, as: number) => {
+    for (let r = b; r < b + bs; r += 1) {
+      for (let c = a; c < a + as; c += 1) if (taken[r]?.[c]) return false;
     }
     return true;
   };
-  const take = (row: number, col: number, rows: number, cols: number) => {
-    for (let r = row; r < row + rows; r += 1) {
+  const take = (b: number, a: number, bs: number, as: number) => {
+    for (let r = b; r < b + bs; r += 1) {
       const line = (taken[r] ??= []);
-      for (let c = col; c < col + cols; c += 1) line[c] = true;
+      for (let c = a; c < a + as; c += 1) line[c] = true;
     }
   };
-  const items: Item[] = boxes.map((box) => {
+  const placed = boxes.map((box) => {
     const style = box.style;
-    const [col, cols] = span(
+    const [col, colSpan] = placement(
       style.gridColumnStart,
       style.gridColumnEnd,
-      columns,
-    );
-    const [row, rows] = span(style.gridRowStart, style.gridRowEnd, Infinity);
-    return {
-      box,
-      row: row ?? -1,
-      rows,
-      col: col ?? -1,
       cols,
-      min: -1,
-      max: -1,
-    };
+    );
+    const [row, rowSpan] = placement(
+      style.gridRowStart,
+      style.gridRowEnd,
+      rows,
+    );
+    return byColumn
+      ? { box, a: row ?? -1, as: rowSpan, b: col ?? -1, bs: colSpan }
+      : { box, a: col ?? -1, as: colSpan, b: row ?? -1, bs: rowSpan };
   });
   // 1. what says both where it goes
-  for (const item of items) {
-    if (item.row >= 0 && item.col >= 0) {
-      take(item.row, item.col, item.rows, item.cols);
-    }
-  }
-  // 2. what says which row: the first columns free, past the items this
-  // step put in the row before it
+  for (const p of placed) if (p.a >= 0 && p.b >= 0) take(p.b, p.a, p.bs, p.as);
+  // 2. what says only which line of the flow
   const past = new Map<number, number>();
-  for (const item of items) {
-    if (item.row < 0 || item.col >= 0) continue;
-    let c = past.get(item.row) ?? 0;
-    while (!free(item.row, c, item.rows, item.cols) && c < 10_000) c += 1;
-    item.col = c;
-    take(item.row, c, item.rows, item.cols);
-    past.set(item.row, c + item.cols);
+  for (const p of placed) {
+    if (p.b < 0 || p.a >= 0) continue;
+    let a = dense ? 0 : (past.get(p.b) ?? 0);
+    while (!free(p.b, a, p.bs, p.as) && a < 10_000) a += 1;
+    p.a = a;
+    take(p.b, a, p.bs, p.as);
+    past.set(p.b, a + p.as);
   }
-  // 3. the columns every item with a column needs, and the widest span of
-  // the ones without
-  let width = columns;
-  for (const item of items) {
-    width = Math.max(width, item.col >= 0 ? item.col + item.cols : item.cols);
-  }
+  // 3. how long a line of the flow is: the explicit grid's, and as long as
+  // the items with a place along it and the longest span without one need
+  let length = byColumn ? rows.tracks : cols.tracks;
+  for (const p of placed)
+    length = Math.max(length, p.a >= 0 ? p.a + p.as : p.as);
   // 4. the rest, in order, from the cursor
-  let cursorRow = 0;
-  let cursorCol = 0;
-  for (const item of items) {
-    if (item.row >= 0) continue;
-    if (item.col >= 0) {
-      let r = item.col < cursorCol ? cursorRow + 1 : cursorRow;
-      while (!free(r, item.col, item.rows, item.cols)) r += 1;
-      item.row = r;
+  let cursorB = 0;
+  let cursorA = 0;
+  for (const p of placed) {
+    if (p.b >= 0) continue;
+    if (dense) {
+      cursorB = 0;
+      cursorA = 0;
+    }
+    if (p.a >= 0) {
+      let b = p.a < cursorA ? cursorB + 1 : cursorB;
+      while (!free(b, p.a, p.bs, p.as)) b += 1;
+      p.b = b;
     } else {
-      let r = cursorRow;
-      let c = cursorCol;
+      let b = cursorB;
+      let a = cursorA;
       for (;;) {
-        if (c + item.cols > width) {
-          r += 1;
-          c = 0;
+        if (a + p.as > length) {
+          b += 1;
+          a = 0;
           continue;
         }
-        if (free(r, c, item.rows, item.cols)) break;
-        c += 1;
+        if (free(b, a, p.bs, p.as)) break;
+        a += 1;
       }
-      item.row = r;
-      item.col = c;
+      p.b = b;
+      p.a = a;
     }
-    take(item.row, item.col, item.rows, item.cols);
-    cursorRow = item.row;
-    cursorCol = item.col + item.cols;
+    take(p.b, p.a, p.bs, p.as);
+    cursorB = p.b;
+    cursorA = p.a + p.as;
   }
-  return items;
-}
-
-/** A start and an end line as a zero-based start, or null for auto, and a
- *  span; a negative line counts back from the explicit grid's end. */
-function span(
-  start: GridLine,
-  end: GridLine,
-  tracks: number,
-): [number | null, number] {
-  const line = (l: GridLine): number | null => {
-    if (!l || !('line' in l)) return null;
-    if (l.line > 0) return l.line - 1;
-    return Number.isFinite(tracks) ? Math.max(0, tracks + 1 + l.line) : null;
-  };
-  const from = line(start);
-  const to = line(end);
-  const count = (l: GridLine) => (l && 'span' in l ? l.span : null);
-  if (from !== null && to !== null) {
-    return to > from
-      ? [from, to - from]
-      : [Math.min(from, to), Math.max(1, from - to)];
-  }
-  if (from !== null) return [from, count(end) ?? 1];
-  if (to !== null) {
-    const n = count(start) ?? 1;
-    return [Math.max(0, to - n), n];
-  }
-  return [null, count(start) ?? count(end) ?? 1];
+  return placed.map((p) =>
+    byColumn
+      ? {
+          box: p.box,
+          row: p.a,
+          rows: p.as,
+          col: p.b,
+          cols: p.bs,
+          min: -1,
+          max: -1,
+        }
+      : {
+          box: p.box,
+          row: p.b,
+          rows: p.bs,
+          col: p.a,
+          cols: p.as,
+          min: -1,
+          max: -1,
+        },
+  );
 }
 
 /** A track's minimum or maximum where it is a length or a percentage of
@@ -704,4 +749,14 @@ function autoMargins(box: Box, axis: 'x' | 'y'): [boolean, boolean] {
   return axis === 'x'
     ? [style.marginLeft === AUTO, style.marginRight === AUTO]
     : [style.marginTop === AUTO, style.marginBottom === AUTO];
+}
+
+/** Whether a track's least or greatest size is a percentage. */
+function percentTrack(track: GridTrack): boolean {
+  const { min, max } = track;
+  if (typeof min === 'object' && isPct(min)) return true;
+  if (typeof max !== 'object' || max === null) return false;
+  if ('fr' in max) return false;
+  if ('fit' in max) return typeof max.fit === 'object' && isPct(max.fit);
+  return isPct(max);
 }

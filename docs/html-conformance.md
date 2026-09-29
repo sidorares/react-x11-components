@@ -197,6 +197,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 108    | a replaced flex item's size, `flex-basis: content` | 5,651 (95%) | 5,102 (86%) |
 | 109    | absolute boxes in grids, `grid-template`, `grid`   | 5,651 (95%) | 5,102 (86%) |
 | 110    | the grid track sizing algorithm, content alignment | 5,651 (95%) | 5,102 (86%) |
+| 111    | grid areas and line names, `grid-auto-flow`        | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3196,6 +3197,40 @@ tests passed by the accidents this ends: six of baseline alignment in a
 grid, which `<Html>` does not do, matched their references only while an
 item spanning two rows grew the last of them, and five `grid-lanes`
 masonry tests matched theirs only while the same rules sized both.
+
+### Round 111
+
+276. **A grid's areas and the names of its lines were not read.**
+     `grid-template-areas` names the areas its strings make — every name a
+     rectangle, every row as wide as the first, or the declaration goes —
+     and with it the lines at their edges, `<name>-start` and
+     `<name>-end`; a track list names the lines between its tracks, a
+     `repeat()`'s names repeated with it and those where two repetitions
+     meet carrying both (CSS Grid 1, 7.2 and 7.3). A placement takes a
+     name wherever it takes a number (8.3): alone it is an area's edge, and
+     else the first line of that name; with a number, the lines of that
+     name counted, the implicit lines past the grid counting as having it;
+     and after `span`, the lines to the next of that name. A grid's
+     explicit grid is as large as its areas as well as its templates. The
+     shorthands copy a name to the lines they leave out (8.4). A bracket of
+     two names, `[a b]`, was two words to the tokenizer, and the second was
+     no size, so a template with one was dropped whole.
+277. **`grid-auto-flow` was not read.** `column` fills the columns, and
+     `dense` goes back to the start for each item, into a hole a wider
+     item left (8.5).
+278. **A percentage row in a grid with no height was `auto`.** It is
+     `auto` to find the grid's height, and then a percentage of it, the
+     rows sized again (7.2.1); and an `auto-fill` of rows counts its
+     repetitions against the grid's height, as the columns' count against
+     its width. `grid-gap`, `grid-row-gap` and `grid-column-gap`, the gaps'
+     first names, are read.
+
+css-grid went from 450 to 473 of 1,651 on X11 and from 409 to 432 on
+Cocoa; the CSS 2.1 suite is unchanged. Six tests passed by the accidents
+this ends: five `grid-lanes` masonry tests whose references are grids
+with the names, the flow and the percentage rows this reads, and a
+`subgrid` whose items flowed down one column only while `grid-auto-flow`
+was not read.
 
 ## What `<Html>` supports
 
