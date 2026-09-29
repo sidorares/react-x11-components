@@ -4711,6 +4711,73 @@ metric('a justified paragraph fills every line but its last', async () => {
   assert.ok(Math.abs(width(last(rtl)) - width(last(rtlRagged))) < 0.5);
 });
 
+metric('a justified line fills its room however it was made', async () => {
+  // Only a paragraph laid out as one text layout was justified (CSS Text 3,
+  // 7.4 justifies every line but the last): a line beside a float, the
+  // lines past the float's bottom, a line with an inline-block on it and
+  // one between an inline box's padding were all set at their start. The
+  // Zen Garden's first design has its text beside a float
+  const words = 'the quick brown fox jumps over the lazy dog and back again ';
+  const { node } = await render(
+    '<style>body{margin:0}p{margin:0;width:200px;text-align:justify}' +
+      '.f{float:left;width:60px;height:40px}</style>' +
+      `<div><div class="f"></div><p id="float">${words.repeat(3)}</p></div>` +
+      `<p id="atomic">${words}<span style="display:inline-block;` +
+      `width:20px;height:8px"></span> ${words.repeat(2)}</p>` +
+      `<p id="padded">${words}<span style="padding:0 6px;` +
+      `border-left:2px solid">quick brown</span> ${words.repeat(2)}</p>`,
+    400,
+  );
+  const el = view(node);
+  const extentsOf = (id: string) =>
+    linesOf(el, id).map((line) => {
+      let from = Infinity;
+      let to = -Infinity;
+      for (const text of line.texts) {
+        const [a, b] = extentOf(text);
+        from = Math.min(from, a);
+        to = Math.max(to, b);
+      }
+      for (const placed of line.atomics) {
+        from = Math.min(from, placed.x);
+        to = Math.max(to, placed.x + placed.box.width);
+      }
+      return [from, to] as [number, number];
+    });
+  const beside = extentsOf('float');
+  assert.ok(beside.length > 3, `${beside.length} lines`);
+  for (const [from, to] of beside.slice(0, -1)) {
+    // beside the float from its right edge, past it from the box's
+    const left = from < 30 ? 0 : 60;
+    assert.ok(
+      Math.abs(from - left) < 0.5 && to > 199.5,
+      `a full line: ${from}..${to}`,
+    );
+  }
+  assert.ok(
+    beside.slice(0, -1).some(([from]) => from > 59.5) &&
+      beside.slice(0, -1).some(([from]) => from < 0.5),
+    'lines beside the float and past it',
+  );
+  for (const id of ['atomic', 'padded']) {
+    const lines = extentsOf(id);
+    assert.ok(lines.length > 2, `${id}: ${lines.length} lines`);
+    for (const [from, to] of lines.slice(0, -1)) {
+      assert.ok(from < 0.5 && to > 199.5, `${id}, a full line: ${from}..${to}`);
+    }
+  }
+  // and an edge is no space: the text after the padding starts at its end
+  const edged = linesOf(el, 'padded').find((line) =>
+    line.edges?.some((edge) => edge.side === 'start'),
+  )!;
+  const edge = edged.edges!.find((e) => e.side === 'start')!;
+  const next = textRunsOf(edged).find(([from]) => from >= edge.x);
+  assert.ok(
+    next && Math.abs(next[0] - (edge.x + edge.width)) < 0.5,
+    `the text after the edge at ${next?.[0]}, the edge ending at ${edge.x + edge.width}`,
+  );
+});
+
 metric(
   'text-align-last sets the last line, and each a forced break ends, apart',
   async () => {
@@ -14528,6 +14595,45 @@ metric(
     const el = view(node);
     await act();
     assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'top')), '#top');
+  },
+);
+
+metric(
+  "an inline element's rect is its border box across, padding and all",
+  async () => {
+    // It was its text alone: a padded link measured as wide as its words,
+    // and a link around an inline-block as nothing. An element's client
+    // rects are its fragments' border boxes (CSSOM View 6.1). The Zen
+    // Garden's second design pads the links in its footer
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0}</style>' +
+        '<p><span id="bare">word</span> <a id="padded" href="#" style="' +
+        'padding:0 6px;border-right:3px solid;margin:0 10px">word</a></p>' +
+        '<p><a id="around" href="#"><span style="display:inline-block;' +
+        'width:40px;height:10px"></span></a></p>' +
+        '<p><a id="outer" href="#"><span style="padding-left:7px">word' +
+        '</span></a></p>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const bare = rect('bare');
+    const padded = rect('padded');
+    // the same word, padded 6px each side and bordered 3px at its end; its
+    // margins are outside it
+    assert.ok(
+      Math.abs(padded.width - (bare.width + 15)) < 0.5,
+      `${padded.width} wide for ${bare.width} of text`,
+    );
+    assert.ok(
+      Math.abs(rect('around').width - 40) < 0.5,
+      `as wide as what it holds: ${rect('around').width}`,
+    );
+    assert.ok(
+      Math.abs(rect('outer').width - (bare.width + 7)) < 0.5,
+      `and the padding of an inline box inside it: ${rect('outer').width}`,
+    );
   },
 );
 

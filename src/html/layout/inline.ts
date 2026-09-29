@@ -659,25 +659,15 @@ function linesOf(
         balanced = true;
       }
     }
-    if (
-      (justifyRest && layout.lines.length > 1) ||
-      (justifyLast && layout.lines.length > 0)
-    ) {
-      // measured as it will be drawn, its spaces spaced apart (`HAIR`)
-      const spaced = spacedApart(runs);
-      const measured = fonts.layout(spaced, base, layoutOptions);
-      const justified = justifiedRuns(
-        spaced,
-        measured,
-        options.width,
-        justifyRest,
-        justifyLast,
-      );
-      layout = justified
-        ? fonts.layout(justified, base, layoutOptions)
-        : measured;
-      LAYOUT_RUNS.set(layout, justified ?? spaced);
-    }
+    layout = justifiedLayout(
+      fonts,
+      runs,
+      base,
+      layoutOptions,
+      layout,
+      options.width,
+      { rest: justifyRest, last: justifyLast },
+    ).layout;
     const lines: LineBox[] = [];
     const widest = emitLayout(
       layout,
@@ -747,6 +737,21 @@ function linesOf(
   const lifts = raised && fonts ? new Lifts(fonts, block.style) : null;
   const restShift = alignShift(style.textAlign, rtl);
   const lastShift = alignShift(lastAlign, rtl);
+  // a justified line fills its room, whatever made it a piece at a time
+  const justify = justification(style);
+  const lineJustify: LineJustify | null =
+    fonts && (justify.rest || justify.last)
+      ? {
+          fonts,
+          base,
+          options: {
+            lineHeight: lineHeightMul,
+            align: 'left',
+            direction: style.direction,
+            overflowWrap: wrapWords,
+          },
+        }
+      : null;
   /** Close the open line; `last` where the text or a forced break ends it,
    *  which `text-align-last` aligns. */
   const close = (last = false): void => {
@@ -760,6 +765,9 @@ function linesOf(
       rtl,
       strut,
       lifts,
+      (last || !wraps(style) ? justify.last : justify.rest)
+        ? lineJustify
+        : null,
     );
     if (!line) {
       open = openLine(0);
@@ -886,7 +894,12 @@ function linesOf(
       continue;
     }
 
-    const segment = segmentFrom(items, index, offset);
+    const plain = segmentFrom(items, index, offset);
+    // measured as it will be drawn where it is justified, its spaces
+    // spaced apart (`HAIR`) — the same text, so every offset holds
+    const segment = lineJustify
+      ? { ...plain, runs: spacedApart(plain.runs) }
+      : plain;
     // `segmentFrom` always passes at least the text item it started on, so
     // this advances even when the slice came out empty — which is what stops
     // a zero-length tail from spinning the loop.
@@ -917,14 +930,26 @@ function linesOf(
       !deferred.length &&
       !(options.floats?.intersects(options.startY + y, Infinity) ?? false);
     if (tailIsPlain) {
-      const layout = fonts.layout(segment.runs, base, {
+      const tailOptions = {
         maxWidth: wraps(style) ? Math.max(1, available) : undefined,
         lineHeight: lineHeightMul,
         align,
         direction: style.direction,
         overflowWrap: wrapWords,
-      });
+      };
+      let layout = fonts.layout(segment.runs, base, tailOptions);
       LAYOUT_RUNS.set(layout, segment.runs);
+      // the lines past the floats are justified as the lines beside them
+      // were (`finishLine`), in the room they have
+      layout = justifiedLayout(
+        fonts,
+        segment.runs,
+        base,
+        tailOptions,
+        layout,
+        Math.max(1, available),
+        justify,
+      ).layout;
       for (let i = 0; i < layout.lines.length; i += 1) {
         const natural = layout.lines[i];
         const text: LineText = {
@@ -1281,14 +1306,26 @@ function layoutSpaced(
       if (!item.control) doc = item.start + item.run.text.length;
     }
   }
-  const layout = fonts.layout(runs, base, {
+  const layoutOptions = {
     maxWidth: wraps(style) ? width : undefined,
     lineHeight: lineHeightMul,
     align,
     direction: style.direction,
     overflowWrap: wrapWords,
-  });
+  };
+  let layout = fonts.layout(runs, base, layoutOptions);
   LAYOUT_RUNS.set(layout, runs);
+  // justified with its spacers in it, which are edges and not spaces
+  layout = justifiedLayout(
+    fonts,
+    runs,
+    base,
+    layoutOptions,
+    layout,
+    width,
+    justification(style),
+    new Set(spacers.map((spacer) => spacer.at)),
+  ).layout;
   const place = wraps(style) ? null : unwrappedPlacer(style, width);
   let offsets: number[] | null = null;
   const lines: LineBox[] = [];
@@ -1484,15 +1521,27 @@ function layoutChunked(
   const place = wraps(style) || cut ? null : unwrappedPlacer(style, width);
   const flush = (): void => {
     if (!chunkRuns.length) return;
-    const layout = fonts.layout(chunkRuns, base, {
+    const chunkOptions = {
       maxWidth: wraps(style) || cut ? width : undefined,
       lineHeight: lineHeightMul,
       align,
       direction: style.direction,
       overflowWrap: cutWrap(style, cut, wrapWords),
       ...cut,
-    });
+    };
+    let layout = fonts.layout(chunkRuns, base, chunkOptions);
     LAYOUT_RUNS.set(layout, chunkRuns);
+    // a chunk ends at a forced break or at the paragraph's end, which is
+    // where `justifiedRuns` takes a chunk's last line to end
+    layout = justifiedLayout(
+      fonts,
+      chunkRuns,
+      base,
+      chunkOptions,
+      layout,
+      width,
+      justification(style),
+    ).layout;
     widest = Math.max(
       widest,
       emitLayout(layout, chunkSpans, 0, y, lines, place),
@@ -1671,11 +1720,13 @@ function finishLine(
   rtl: boolean,
   strut: InlineDecoration | null,
   lifts: Lifts | null = null,
+  justify: LineJustify | null = null,
 ): LineBox | null {
   if (!open.texts.length && !open.atomics.length && !open.edges.length) {
     return null;
   }
-  if (open.order.some((p) => needsOrdering(p, rtl))) reorderLine(open, rtl);
+  const reordered = open.order.some((p) => needsOrdering(p, rtl));
+  if (reordered) reorderLine(open, rtl);
   // Every line box starts with the block's strut, its face at its line
   // height, so a line of images alone is still as tall as `line-height`
   // makes a line (CSS 2.1 10.8.1). Not one with nothing on it that takes
@@ -1789,8 +1840,17 @@ function finishLine(
   // the room it takes is at the other end (CSS 2.1 16.1).
   const band = bandFor(height);
   const indent = rtl ? open.indent : 0;
-  const used = open.x - open.hang - indent;
-  const free = band.right - indent - band.left - used;
+  let used = open.x - open.hang - indent;
+  let free = band.right - indent - band.left - used;
+  // A justified line fills its room (CSS Text 3, 7.4). Not yet one that
+  // reads right to left, whose pieces are in visual order by now and would
+  // take their shares from the wrong end: that is left at its start, as it
+  // was.
+  if (justify && !rtl && !reordered && Number.isFinite(free) && free > 0) {
+    const grew = justifyLine(open, free, justify);
+    used += grew;
+    free -= grew;
+  }
   let dx = band.left - open.left - indent;
   if (shift > 0 && Number.isFinite(free) && free > 0) dx += free * shift;
   if (dx) {
@@ -3673,7 +3733,10 @@ function spacedApart(runs: TextRun[]): TextRun[] {
  * `letter-spacing` a `word-spacing` is drawn with — so the same breaks fill
  * their lines. A line that is the paragraph's last, or that a forced break
  * ends, is not justified, nor one with no space inside it; the spaces a
- * line ends on hang, and take no share. Null where no line is justified.
+ * line ends on hang, and take no share. `skip` is the offsets of spaces
+ * that are no word separators — an inline box's edge laid out as a spacer
+ * (`layoutSpaced`) — which take no share either. Null where no line is
+ * justified.
  */
 function justifiedRuns(
   runs: TextRun[],
@@ -3681,6 +3744,7 @@ function justifiedRuns(
   width: number,
   rest = true,
   last = false,
+  skip?: ReadonlySet<number>,
 ): TextRun[] | null {
   const text = runs.map((run) => run.text).join('');
   // each space's extra, by its offset in the paragraph
@@ -3696,19 +3760,29 @@ function justifiedRuns(
     if (!(ends ? last : rest)) continue;
     while (
       end > line.start &&
-      (text[end - 1] === ' ' || text[end - 1] === '\u00a0')
+      (text[end - 1] === ' ' ||
+        text[end - 1] === '\u00a0' ||
+        !!skip?.has(end - 1))
     )
       end -= 1;
     const spaces: number[] = [];
     for (let at = line.start; at < end; at += 1) {
-      if (text[at] === ' ' || text[at] === '\u00a0') spaces.push(at);
+      if ((text[at] === ' ' || text[at] === '\u00a0') && !skip?.has(at)) {
+        spaces.push(at);
+      }
     }
     // a hair short, so that the engine breaks where it did
     const slack = width - line.width - 0.01;
     if (!spaces.length || !(slack > 0)) continue;
     for (const at of spaces) extra.set(at, slack / spaces.length);
   }
-  if (!extra.size) return null;
+  return extra.size ? widenedAt(runs, extra) : null;
+}
+
+/** The runs with the character at each offset of `extra` a run of its
+ *  own, spaced that much more. */
+function widenedAt(runs: TextRun[], extra: Map<number, number>): TextRun[] {
+  const text = runs.map((run) => run.text).join('');
   const out: TextRun[] = [];
   let from = 0;
   for (const run of runs) {
@@ -3729,6 +3803,158 @@ function justifiedRuns(
     from = end;
   }
   return out;
+}
+
+/** A word separator, as justification spaces them out (CSS Text 3, 7.4):
+ *  a space, or a no-break one. */
+function isSeparator(code: number): boolean {
+  return code === 0x20 || code === 0xa0;
+}
+
+/** What `finishLine` lays a justified line's text out again with. */
+interface LineJustify {
+  fonts: FontsLike;
+  base: Record<string, unknown>;
+  options: Parameters<FontsLike['layout']>[2];
+}
+
+/**
+ * A line made a piece at a time — beside a float, around an inline-block,
+ * between an inline box's edges — justified where it is (CSS Text 3, 7.4):
+ * the room it leaves, `free`, shared out equally among its word
+ * separators, as `justifiedRuns` shares out a paragraph's. A space inside a
+ * piece of text takes its share as letter spacing, the piece laid out again
+ * with it; a space a piece ends on, with something after it on the line,
+ * takes it as room before what follows. The spaces the line ends on hang
+ * (7.3), whatever inline box closes after them, and take none. Whatever
+ * follows a share on the line moves over by it. How much wider the line
+ * is.
+ */
+function justifyLine(open: OpenLine, free: number, how: LineJustify): number {
+  const order = open.order;
+  let lastContent = -1;
+  for (let i = order.length - 1; i >= 0; i -= 1) {
+    if (order[i].kind !== 'edge') {
+      lastContent = i;
+      break;
+    }
+  }
+  const plans = new Map<
+    LineText,
+    { runs: TextRun[]; inside: number[]; after: number }
+  >();
+  let count = 0;
+  for (let i = 0; i < order.length; i += 1) {
+    const placed = order[i];
+    if (placed.kind !== 'text') continue;
+    const text = placed.item;
+    // the runs it was laid out from, where they are still what is kept
+    // (a selection keeps its offsets in their place)
+    const kept = LAYOUT_RUNS.get(text.layout);
+    const runs =
+      kept?.length && typeof kept[0] !== 'number' ? (kept as TextRun[]) : null;
+    const line = text.layout.lines[text.layoutLine];
+    if (!runs || !line) continue;
+    const all = runs.map((run) => run.text).join('');
+    let end = line.end;
+    while (end > line.start && isSeparator(all.charCodeAt(end - 1))) end -= 1;
+    const inside: number[] = [];
+    for (let at = line.start; at < end; at += 1) {
+      if (isSeparator(all.charCodeAt(at))) inside.push(at);
+    }
+    // the spaces it ends on, before what follows it on the line
+    let after = 0;
+    if (i < lastContent) {
+      for (let at = end; at < all.length; at += 1) {
+        if (!isSeparator(all.charCodeAt(at))) break;
+        after += 1;
+      }
+    }
+    count += inside.length + after;
+    plans.set(text, { runs, inside, after });
+  }
+  if (!count) return 0;
+  const share = free / count;
+  let moved = 0;
+  for (const placed of order) {
+    if (placed.kind !== 'text') {
+      placed.item.x += moved;
+      continue;
+    }
+    const text = placed.item;
+    text.drawX += moved;
+    const plan = plans.get(text);
+    if (!plan) continue;
+    if (plan.inside.length) {
+      const line = text.layout.lines[text.layoutLine];
+      const widened = widenedAt(
+        plan.runs,
+        new Map(plan.inside.map((at) => [at, share])),
+      );
+      // as wide as the piece is to be, and the piece alone: the text after
+      // it did not fit beside it before it was any wider
+      const layout = how.fonts.layout(widened, how.base, {
+        ...how.options,
+        maxWidth: line.width + plan.inside.length * share + 0.5,
+        maxLines: 1,
+      });
+      const first = layout.lines[0];
+      if (first && first.start === line.start && first.end === line.end) {
+        LAYOUT_RUNS.set(layout, widened);
+        text.layout = layout;
+        text.layoutLine = 0;
+        moved += first.width - line.width;
+      }
+    }
+    moved += plan.after * share;
+  }
+  return moved;
+}
+
+/** Which of a paragraph's lines are justified (CSS Text 3, 7.4): those
+ *  its end or a forced break does not end, where `text-align` is
+ *  `justify`, and those it does, where `text-align-last` is — neither
+ *  where the text does not wrap, nor under `text-justify: none`. */
+function justification(style: ComputedStyle): { rest: boolean; last: boolean } {
+  const on = wraps(style) && style.textJustify !== 'none';
+  return {
+    rest: on && style.textAlign === 'justify',
+    last: on && lastAlignOf(style) === 'justify',
+  };
+}
+
+/**
+ * A layout of `runs` whose justified lines fill `width`: measured as it
+ * will be drawn, its spaces spaced apart (`HAIR`), then laid out again with
+ * each space inside a justified line widened by its share
+ * (`justifiedRuns`), which keeps the lines where they broke. The layout
+ * that is given where no line is to be justified. Every path that lays a
+ * paragraph out as one layout justifies through this, so that a paragraph
+ * is justified whichever it took.
+ */
+function justifiedLayout(
+  fonts: FontsLike,
+  runs: TextRun[],
+  base: Record<string, unknown>,
+  options: Parameters<FontsLike['layout']>[2],
+  layout: TextLayoutLike,
+  width: number,
+  { rest, last }: { rest: boolean; last: boolean },
+  skip?: ReadonlySet<number>,
+): { layout: TextLayoutLike; runs: TextRun[] } {
+  if (
+    !Number.isFinite(width) ||
+    !((rest && layout.lines.length > 1) || (last && layout.lines.length > 0))
+  ) {
+    return { layout, runs };
+  }
+  const spaced = spacedApart(runs);
+  const measured = fonts.layout(spaced, base, options);
+  const justified = justifiedRuns(spaced, measured, width, rest, last, skip);
+  const out = justified ? fonts.layout(justified, base, options) : measured;
+  const outRuns = justified ?? spaced;
+  LAYOUT_RUNS.set(out, outRuns);
+  return { layout: out, runs: outRuns };
 }
 
 /** An alignment as the text engine takes it. It has no justification:

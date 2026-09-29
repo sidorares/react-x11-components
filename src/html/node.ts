@@ -1169,10 +1169,13 @@ export class HtmlViewNode extends Node {
    * Where an element is, in document coordinates: logical pixels from this
    * element's top left, the space the scroll offset of a box around it is
    * in — so scrolling to a fragment is `scrollTo({ y: rect.y })`. A block's
-   * border box; an inline element's text, from its first line to its last,
-   * or where its text would start when it has none, as `<a name>` has none.
-   * Null for an element with no box — `display: none`, or not in the
-   * document.
+   * border box. An inline element's fragments, from its first line to its
+   * last, each across its text, the inline-blocks and inline boxes' edges
+   * it holds, and its own padding and border where it starts or ends — its
+   * border box across, as `getBoundingClientRect` is (CSSOM View 6.1) — and
+   * as tall as its lines; or where its text would start when it has none,
+   * as `<a name>` has none. Null for an element with no box — `display:
+   * none`, or not in the document.
    */
   elementRect(element: Element): Rect | null {
     this._prepare(this.abs.width || 1);
@@ -1195,6 +1198,7 @@ export class HtmlViewNode extends Node {
           bands,
         );
       }
+      if (box.kind === 'inline') fragmentReach(box, bands);
       for (const band of bands) rect = rect ? unionRect(rect, band) : band;
       if (!rect) {
         // an empty subtree's range is `[0, 0)`, wherever it stands: where
@@ -1865,6 +1869,62 @@ function caretAt(
 /** Every band a document range covers, in window coordinates. The subtree
  *  text ranges prune the walk to the boxes the range actually crosses, so a
  *  drag's small range costs its own paragraphs; only Ctrl+A pays for all. */
+/**
+ * What an inline box reaches on each line besides its text, as `out`
+ * rectangles as tall as the line: its own padding and border where it
+ * starts or ends there — its edge less its margin, which is outside it —
+ * and the inline-blocks and inline boxes' edges inside it, whole. The rest
+ * of its border box across, which its text alone missed: a padded link was
+ * as wide as its words (`elementRect`).
+ */
+function fragmentReach(box: Box, out: Rect[]): void {
+  let block = box.parent;
+  while (block && !block.lines) block = block.parent;
+  if (!block?.lines) return;
+  const inside = (b: Box | null): boolean => {
+    for (let at = b; at && at !== block; at = at.parent) {
+      if (at === box) return true;
+    }
+    return false;
+  };
+  const rtl = box.style.direction === 'rtl';
+  for (const line of block.lines) {
+    let left = Infinity;
+    let right = -Infinity;
+    for (const edge of line.edges ?? []) {
+      if (edge.box === box) {
+        // the element's `direction` says which side its start is on, as
+        // paint reads it (`paintInlineBoxes`)
+        const onLeft = (edge.side === 'start') !== rtl;
+        left = Math.min(left, onLeft ? edge.x + box.marginLeft : edge.x);
+        right = Math.max(
+          right,
+          onLeft ? edge.x + edge.width : edge.x + edge.width - box.marginRight,
+        );
+      } else if (inside(edge.box)) {
+        left = Math.min(left, edge.x);
+        right = Math.max(right, edge.x + edge.width);
+      }
+    }
+    for (const placed of line.atomics) {
+      if (!inside(placed.box)) continue;
+      left = Math.min(left, placed.x - placed.box.marginLeft);
+      right = Math.max(
+        right,
+        placed.x + placed.box.width + placed.box.marginRight,
+      );
+    }
+    if (right > left) {
+      out.push({
+        x: left,
+        y: line.y,
+        width: right - left,
+        height: line.height,
+      });
+    }
+  }
+}
+
 function collectBands(
   box: Box,
   from: number,

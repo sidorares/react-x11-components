@@ -83,13 +83,20 @@ export function compareBoxes(
       continue;
     }
     const up = parentOf(path);
-    const pc = up ? chrome.get(up)! : { x: 0, y: 0 };
-    const po = up ? ours.get(up)! : { x: 0, y: 0 };
+    const pc = up ? chrome.get(up)! : { x: 0, y: 0, height: 0 };
+    const po = up ? ours.get(up)! : { x: 0, y: 0, height: 0 };
     const dx = c.x - pc.x - (o.x - po.x);
     // an inline element is its content area to Chrome and its line's band
-    // to us: the same middle, a different top and height
+    // to us: the same middle, a different top and height — so its middle
+    // is compared, and measured from its parent's middle where that is
+    // inline too
+    const middleOf = (r: { y: number; height: number }, inline?: boolean) =>
+      inline ? r.y + r.height / 2 : r.y;
+    const parentInline = up ? chrome.get(up)!.inline : false;
     const dy = c.inline
-      ? c.y + c.height / 2 - pc.y - (o.y + o.height / 2 - po.y)
+      ? middleOf(c, true) -
+        middleOf(pc, parentInline) -
+        (middleOf(o, true) - middleOf(po, parentInline))
       : c.y - pc.y - (o.y - po.y);
     if (Math.abs(dx) > tolerance.offset || Math.abs(dy) > tolerance.offset) {
       findings.push({
