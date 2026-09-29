@@ -61,8 +61,10 @@ import {
   buildBoxes,
   CONTENT_IMAGES,
   CUT_BLOCKS,
+  INLINE_OFFSETS,
   LINE_BOX_RAISES,
   SHIFTED_LINES,
+  TEXT_SHIFTS,
 } from './layout/boxes.js';
 import type {
   Box,
@@ -1702,6 +1704,7 @@ function inlineBands(
         0,
         0,
         bands,
+        true,
       );
     } else {
       collectBands(root, box.subtreeTextStart, box.subtreeTextEnd, 0, 0, bands);
@@ -1710,8 +1713,35 @@ function inlineBands(
   if (box.kind === 'inline') {
     fragmentReach(box, bands);
     if (fonts) fragmentHeights(box, bands, fonts);
+    // where `position: relative` on it or an inline box around it moved
+    // it, all of it (CSS 2.1 9.4.3), as `getBoundingClientRect` has it
+    // (CSSOM View 6.1): the bands are where the lines put it, and a link
+    // moved 120px down measured on its line, as wide as from where it was
+    // laid out to where it was drawn
+    const { x, y } = relativeOffsetOf(box);
+    if (x || y) {
+      for (const band of bands) {
+        band.x += x;
+        band.y += y;
+      }
+    }
   }
   out.push(...bands);
+}
+
+/** How far an inline box and the inline boxes around it moved it by their
+ *  relative offsets (`INLINE_OFFSETS`). */
+function relativeOffsetOf(box: Box): { x: number; y: number } {
+  let x = 0;
+  let y = 0;
+  for (let at: Box | null = box; at?.kind === 'inline'; at = at.parent) {
+    const offset = INLINE_OFFSETS.get(at);
+    if (offset) {
+      x += offset.x;
+      y += offset.y;
+    }
+  }
+  return { x, y };
 }
 
 /** Where the document's text goes on after a box with none: the start of
@@ -2062,6 +2092,9 @@ function lineBands(
   dx: number,
   dy: number,
   out: Rect[],
+  /** Where the lines put the text, not where a relative offset moved it
+   *  (`TEXT_SHIFTS`): what an inline box's own offset is added to. */
+  laidOut = false,
 ): void {
   // First line whose text can reach `from`, by binary search over the
   // sorted text starts; stop at the first line past `to`.
@@ -2090,8 +2123,9 @@ function lineBands(
           layoutOffsetOf(text, a),
           layoutOffsetOf(text, b, true),
         )) {
+          const moved = laidOut ? (TEXT_SHIFTS.get(text)?.x ?? 0) : 0;
           out.push({
-            x: dx + band.x + text.drawX,
+            x: dx + band.x + text.drawX - moved,
             y: dy + line.y,
             width: band.width,
             height: line.height,
