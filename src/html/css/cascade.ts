@@ -235,7 +235,13 @@ function splitPseudoElement(
  * without an `:active` beside it), and whether one is followed by a sibling
  * combinator, which reaches the element's later siblings. `nested` where a
  * `:hover` sits inside a functional pseudo-class — `:not(:hover)`,
- * `:has(:hover)` — and reaches elements no compound names.
+ * `:is(:hover)` — and reaches elements no compound names.
+ *
+ * A `:hover` in a compound's `:has()` is the one exception, since what it
+ * reaches is known: the compound, without its `:has()`, is an ancestor of
+ * the element the pointer is over — or an earlier sibling of it or of an
+ * ancestor, where the argument starts at a sibling (Selectors 4, 4.5). So
+ * it is given as an anchor (`has`) rather than making the rule `nested`.
  *
  * `:active` is not the pointer's here: nothing sets it (`setPointer` is
  * handed none), so a selector that tests only it never changes as the
@@ -246,8 +252,14 @@ export function pointerCompounds(selector: string): {
   compounds: string[];
   siblings: boolean;
   nested: boolean;
+  has: { anchor: string; siblings: boolean }[];
 } {
-  const out = { compounds: [] as string[], siblings: false, nested: false };
+  const out = {
+    compounds: [] as string[],
+    siblings: false,
+    nested: false,
+    has: [] as { anchor: string; siblings: boolean }[],
+  };
   // the compounds at the top level, each with the combinator after it
   const parts: { text: string; next: string }[] = [];
   let start = 0;
@@ -279,6 +291,13 @@ export function pointerCompounds(selector: string): {
     let pointer = false;
     depth = 0;
     quote = '';
+    /** Where a top-level `:has(` starts in `bare`, and its argument in
+     *  `text`, while one is open. */
+    let hasAt = -1;
+    let argAt = -1;
+    let hasPointer = false;
+    let anchored = false;
+    const args: string[] = [];
     for (let i = 0; i < text.length; i += 1) {
       const c = text[i];
       if (quote) {
@@ -293,14 +312,35 @@ export function pointerCompounds(selector: string): {
         continue;
       }
       if (c === '"' || c === "'") quote = c;
-      else if (c === '(' || c === '[') depth += 1;
-      else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
-      else if (c === ':' && text[i + 1] !== ':') {
+      else if (c === '(' || c === '[') {
+        if (depth === 0 && c === '(' && /:has$/i.test(bare)) {
+          hasAt = bare.length - 4;
+          argAt = i + 1;
+          hasPointer = false;
+        }
+        depth += 1;
+      } else if (c === ')' || c === ']') {
+        depth = Math.max(0, depth - 1);
+        if (depth === 0 && hasAt >= 0 && c === ')') {
+          // the compound is kept without it: its argument is what the
+          // pointer changes
+          if (hasPointer) {
+            anchored = true;
+            args.push(text.slice(argAt, i));
+            bare = bare.slice(0, hasAt);
+          } else bare += c;
+          hasAt = -1;
+          continue;
+        }
+      } else if (c === ':' && text[i + 1] !== ':') {
         const m = POINTER_PSEUDO_AT.exec(text.slice(i));
         if (m) {
           const hover = m[0].length === 6;
           if (depth > 0) {
-            if (hover) out.nested = true;
+            // whatever holds it in the argument, the element it tests is
+            // in the anchor's subtree or a later sibling's
+            if (hover && hasAt >= 0) hasPointer = true;
+            else if (hover) out.nested = true;
           } else {
             if (hover) pointer = true;
             i += m[0].length - 1;
@@ -309,6 +349,14 @@ export function pointerCompounds(selector: string): {
         }
       }
       bare += c;
+    }
+    if (anchored) {
+      out.has.push({
+        anchor: bare.trim() || '*',
+        siblings: args.some((arg) =>
+          arg.split(',').some((one) => /^\s*[+~]/.test(one)),
+        ),
+      });
     }
     if (!pointer) continue;
     out.compounds.push(bare.trim() || '*');
@@ -319,6 +367,32 @@ export function pointerCompounds(selector: string): {
 
 /** `:hover` or `:active` at the start of a string, and nothing longer. */
 const POINTER_PSEUDO_AT = /^:(?:hover|active)(?![\w-])/i;
+
+/** `:hover` or `:active` anywhere in a selector. */
+const POINTER_PSEUDO = /:(?:hover|active)(?![\w-])/i;
+
+/**
+ * A selector compiled to a matcher over this adapter. css-select keeps the
+ * answers of a `:has()` above the subject, or of the ancestors a
+ * descendant combinator tried under one, for as long as the matcher lives
+ * (`cacheResults`) — which is the cascade's life, and a pointer move is no
+ * new cascade. So a selector that tests the pointer keeps none: with them,
+ * `#box:has(a:hover) .m` answered what it did before the first move, for
+ * good.
+ */
+function compileSelector(
+  selector: string,
+  adapter: CssSelectAdapter,
+): (el: Element) => boolean {
+  return compile(noEmptyWords(selector), {
+    adapter,
+    xmlMode: false,
+    pseudos: PSEUDOS,
+    cacheResults: !POINTER_PSEUDO.test(selector),
+  } as unknown as Parameters<typeof compile>[1]) as unknown as (
+    node: Element,
+  ) => boolean;
+}
 
 function mapBucket(
   map: Map<string, IndexedRule[]>,
@@ -469,6 +543,11 @@ export class Cascade {
   /** Whether a compound that tests the pointer is followed by a sibling
    *  combinator, so an element's later siblings restyle with it. */
   hoverSiblings = false;
+  /** The compounds whose `:has()` tests the pointer, each without it, and
+   *  whether its argument starts at a sibling (`hoverAnchors`). */
+  private _hoverAnchors = new Map<string, boolean>();
+  private _anchorMatchers:
+    { match: (el: Element) => boolean; siblings: boolean }[] | null = null;
   private _pointer: PointerState = NO_POINTER;
   readonly initial: ComputedStyle;
   readonly look: RootLook;
@@ -624,25 +703,66 @@ export class Cascade {
     return false;
   }
 
+  /**
+   * The elements whose `:has()` may have changed its answer as `el` was
+   * hovered or left: the ancestors of it a compound whose `:has()` tests
+   * the pointer names, and their earlier siblings and its own where the
+   * argument starts at a sibling — a superset, which is restyled and found
+   * the same where it did not. Into `into`.
+   */
+  hoverAnchors(el: Element, into: Element[]): void {
+    if (!this._hoverAnchors.size) return;
+    this._anchorMatchers ??= [...this._hoverAnchors].flatMap(
+      ([anchor, siblings]) => {
+        const match = this._compile(anchor);
+        return match ? [{ match, siblings }] : [];
+      },
+    );
+    const siblings = this._anchorMatchers.some((m) => m.siblings);
+    for (let at: Element | null = el; at;) {
+      if (at !== el) {
+        for (const { match } of this._anchorMatchers) {
+          if (match(at)) {
+            into.push(at);
+            break;
+          }
+        }
+      }
+      if (siblings) {
+        for (let s = at.prev; s; s = s.prev) {
+          if (!isTag(s as Element)) continue;
+          for (const { match, siblings: apart } of this._anchorMatchers) {
+            if (apart && match(s as Element)) {
+              into.push(s as Element);
+              break;
+            }
+          }
+        }
+      }
+      const parent: Element['parent'] = at.parent;
+      at = parent && isTag(parent as Element) ? (parent as Element) : null;
+    }
+  }
+
   private _noteHover(selector: string): void {
     if (!/:(?:hover|active)/i.test(selector)) return;
     const found = pointerCompounds(selector);
     if (found.nested) this.hoverLocal = false;
     if (found.siblings) this.hoverSiblings = true;
     for (const c of found.compounds) this._hoverCompounds.add(c);
+    for (const { anchor, siblings } of found.has) {
+      this._hoverAnchors.set(
+        anchor,
+        siblings || (this._hoverAnchors.get(anchor) ?? false),
+      );
+    }
   }
 
   /** A selector compiled as a rule's is, or null where css-select refuses
    *  it, as a rule it refuses drops out of the cascade. */
   private _compile(selector: string): ((el: Element) => boolean) | null {
     try {
-      return compile(noEmptyWords(selector), {
-        adapter: this._adapter,
-        xmlMode: false,
-        pseudos: PSEUDOS,
-      } as unknown as Parameters<typeof compile>[1]) as unknown as (
-        node: Element,
-      ) => boolean;
+      return compileSelector(selector, this._adapter);
     } catch {
       return null;
     }
@@ -1200,13 +1320,7 @@ export class Cascade {
         if (!indexed.compiled) {
           indexed.compiled = true;
           try {
-            indexed.match = compile(noEmptyWords(rule.selector), {
-              adapter: this._adapter,
-              xmlMode: false,
-              pseudos: PSEUDOS,
-            } as unknown as Parameters<typeof compile>[1]) as unknown as (
-              node: Element,
-            ) => boolean;
+            indexed.match = compileSelector(rule.selector, this._adapter);
           } catch {
             // A selector this matcher does not know (`::-moz-…`, a CSS4 form
             // it has not learnt) drops out of the cascade rather than out of
