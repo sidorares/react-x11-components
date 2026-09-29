@@ -410,8 +410,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.22.8` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.22.8` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.23.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.23.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -514,6 +514,14 @@ it up. **The floor is a running one and moves often** — every move since
   leaves the white space a line ends on out of its width (windowkit/appkit#80,
   #81). All of it was found running the CSS 2.1 test suite through `<Html>`
   on both backends (`docs/html-conformance.md`).
+- `^2.23.0` — `cursorAt` (react-x11#757): an element that draws what is
+  inside it names the cursor for the point under the pointer, and `<Html>`
+  answers it — a link's `pointer`, text's I-beam — where core set one cursor
+  a node and a document is one node. The same release keeps a `<Frame>`
+  pane's wheel to its notch (#755) and stops a press scrolling a document
+  to its top, which turned every selection in a scrolled page into one from
+  its start (#756); with 2.22.13's `<Frame>` pane that stays on its main
+  thread on macOS (#747), all four were found in the browser example.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1121,7 +1129,15 @@ coordinates). Both are properties of the data shapes in `css/values.ts` and
 `layout/boxes.ts`. Breaking either turns every resize into a full restyle,
 silently and only on large documents. `@media` is the deliberate exception:
 the widths at which some rule changes its mind are collected at parse time,
-so a resize restyles only when it crossed one.
+so a resize restyles only when it crossed one. The viewport units are the
+other, handled the same way: a `vw` or a `vh` is a number once computed, so
+the cascade notes at parse time whether any declaration uses one, and only
+those documents restyle when that side of the viewport moves. The viewport
+is the box that scrolls the element, whose height core's layout pass
+decides _after_ the element was measured — so a document that reads it (a
+`vh`, the root's percentage height, a box against the initial containing
+block; `LayoutResult.readsViewportHeight`) finds the move at paint and asks
+to be measured again, which costs a frame per resize and only for those.
 
 **Form controls are real widgets, mounted beside the element.** `<Flow>`'s
 escape hatch, and the same reason: a drawn control takes no focus, says
@@ -1132,7 +1148,13 @@ same font metrics and the same palette tokens (`paddingY`, `borderWidth`,
 `radius`) core's own widgets read. `<textinput>` and `<textarea>` are
 elements rather than components and draw no frame of their own, so the
 component supplies one from those tokens — a form in a document and a form in
-the window around it have to be the same height.
+the window around it have to be the same height. Two things are not widgets
+of the palette's: a `<button>`, whose content is the document's and which is
+drawn like any box (its press reported through `onControlChange`), and a
+field the page styled — a border, a background, or `appearance: none`
+(`styledField`) — whose box the document draws, the widget mounted bare in
+its content box. A design system restyles every control it has, and a
+palette frame inside the page's drew two boxes where it designed one.
 
 **Nothing is fetched and nothing is executed, by construction.**
 `onResource` is the only way anything loads and `onScript` never runs
@@ -1155,6 +1177,57 @@ Two things it changed elsewhere, both extractions rather than copies:
 - **`src/internal/text.ts`** is `src/richtext/internal.ts` promoted, now that
   two directories need the code-point/code-unit conversions. Exactly the
   promotion path "Layout" describes for `src/internal/`.
+
+**Resolving a URL is the component's; fetching one is not.** A host cannot
+resolve a `url()` in a linked stylesheet: by the time a background is asked
+for it is a computed value, and nothing says which sheet it was written in.
+So given `baseUrl` (or an absolute `<base href>`) the component resolves
+everything itself — markup against the document's base, a sheet's `url()`s,
+`@import`s and `@font-face` sources against the sheet's own URL as it is
+parsed (`absoluteUrls`, `css/parse.ts`) — and `onResource` and `onLink` see
+absolute URLs. Without a base nothing is resolved, which is what every host
+before it saw. `examples/browser/` is the host that does fetch, and the
+place a fetching policy belongs: a cache per page process, per-host pacing,
+`file:` only for `file:` pages, no cookies.
+
+**The browser runs each tab's page in a `<Frame>`, and two things about a
+pane are worth knowing before the next example makes one.** A pane is a
+real child window on X11, so the pointer decides who gets a key: X hands it
+to the deepest window under the pointer, and while that is the page the
+browser's handlers never run (core's `<foreign>` documents the gap). The
+page watches for the browser's chords and passes them back through a
+callback (`examples/browser/keys.ts`) — only where the pane is its own
+window, since on Cocoa the host forwards every key and would see a chord
+twice. And a pane that is not showing is kept beside the window rather than
+under `display: 'none'`: a `<foreign>` in a hidden subtree stays mapped and
+is squeezed to one pixel, so the page inside would lay itself out again at
+that width on every switch of tab. Both are core's to fix — an embeddable
+window that selected no keys, a `<foreign>` that unmapped when hidden — and
+the example's workarounds say so where they are.
+
+**A document's fonts are registered under names nothing else has.**
+`@font-face` faces go through `onResource` as `kind: 'font'` and into
+react-x11's font manager with `loadFont` — the application's manager, so
+`fonts.ts` registers each family as `html webfont <letters>`, keyed by its
+files, weights and range, and rewrites the cascade's `font-family` lists to
+it. A page's `Inter` must not change what `Inter` means to the window around
+it, and two sites' `Icons` are two fonts. A face loads when a computed style
+wants it and the document has a character in its `unicode-range`, and its
+family is out of the list until then: the list changing is what tells every
+cache keyed by a family string — the text layouts', the metrics', ntk's —
+to set the text again.
+
+**A probe of an unbounded width places nothing at infinity.** A
+shrink-to-fit probe lays a subtree out in infinite room, where sharing room
+out — auto margins, a table's columns — comes to `Infinity`; the pass after
+moved the box from there by a finite amount, `NaN`, and one `NaN` in the ink
+bounds culls every ancestor from paint. Wikipedia's navboxes in a flex item
+did it, and its whole article drew nothing. `placeBlock` shares no infinite
+slack and `moveTo` refuses a non-finite destination. The same pass found
+that `translate` moves an inline box's `x`/`y`, which are never laid out,
+with the rest — they add up across passes — so nothing may read an inline
+box's rect: `computePaintBounds` read it as the box's reach and measured a
+card grid three times its height.
 
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
@@ -1527,6 +1600,7 @@ npm run examples:media-player -- <file>   # X11 only, and mpv or VLC
 npm run examples:tray-host   # X11 only, and no other tray on that display
 npm run examples:three       # a GL context: see docs/components/three.md
 npm run examples:tree -- <dir>  # defaults to cwd
+npm run examples:browser -- [url]  # and a network; BROWSER_DEBUG=1 logs requests
 npm run examples:tree -- --stress[=rows]  # generated 100k-row tree instead
 npm run examples:flow-stress    # the measured pan loop, with an X-traffic HUD
 ```

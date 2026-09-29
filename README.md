@@ -378,9 +378,12 @@ with full shaping and bidi, floats, lists, tables and positioning are this
 package's; `display: flex` is Yoga's, which is already in the process.
 
 **Nothing is fetched and nothing is executed**, and neither is a setting.
-`onResource` is asked for every `<img>`, `<link rel=stylesheet>` and
-`@import` — absent, images draw a frame at their attribute size and linked
-sheets are skipped. `onScript` is handed a `<script>`'s type, `src` and text
+`onResource` is asked for every `<img>`, `<link rel=stylesheet>`, `@import`
+and `@font-face` font a page uses — absent, images draw a frame at their
+attribute size, linked sheets are skipped and text is set in the system's
+fonts. Given `baseUrl`, every URL it hands over is absolute, one in a
+stylesheet resolved against the stylesheet, as a browser resolves it.
+`onScript` is handed a `<script>`'s type, `src` and text
 verbatim; there is no parser and no sandbox, because a renderer that
 half-runs a script is one nobody can reason about. An application that wants
 scripting brings an engine and drives the result through the DOM handle.
@@ -404,7 +407,10 @@ selection bands.
 speaks); mutate it and call `handle.refresh()`. That is explicit rather than
 observed on purpose: watching a plain object graph costs a proxy per node,
 and the budget went on the static render instead. `npm run examples:html`
-drives both seams for real.
+drives both seams for real, and `npm run examples:browser` is the other end
+of them: a tabbed web browser — `<Tabs>`, `<Html>` and an address bar, each
+tab's page in a process of its own through core's `<Frame>` — whose host
+fetches what a page asks for and runs none of its scripts.
 
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils

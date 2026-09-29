@@ -202,6 +202,9 @@ export interface DocumentFacts {
   resources: Element[];
   /** `<title>`, when the document had one. */
   title: string | null;
+  /** The first `<base>` with an `href`, as written: the document's base URL
+   *  wherever in the document it stands (HTML 2.5.3). */
+  base: string | null;
 }
 
 export type SheetRef =
@@ -344,6 +347,9 @@ export class HtmlSource {
         if (imageUrlOf(el)) facts.resources.push(el);
       } else if (tag === 'title' && facts.title === null) {
         facts.title = rawTextOf(el).trim();
+      } else if (tag === 'base' && facts.base === null) {
+        const href = attr(el, 'href');
+        if (href !== undefined) facts.base = href;
       }
     }
     this._facts = facts;
@@ -363,7 +369,14 @@ interface ScannedFacts extends DocumentFacts {
 }
 
 function freshFacts(): ScannedFacts {
-  return { sheets: [], scripts: [], resources: [], title: null, scanned: -1 };
+  return {
+    sheets: [],
+    scripts: [],
+    resources: [],
+    title: null,
+    base: null,
+    scanned: -1,
+  };
 }
 
 /**

@@ -22,7 +22,7 @@ import {
   Select,
   useTheme,
 } from 'react-x11';
-import type { DrawnNode, MouseEvent as X11MouseEvent } from 'react-x11';
+import type { DrawnNode, MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 
@@ -31,7 +31,7 @@ import type {} from 'react-x11/jsx-runtime';
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
-import { attr } from './dom.js';
+import { attr, tagOf } from './dom.js';
 import type { Document, Element } from './dom.js';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
 import type { HtmlViewProps, ScriptRequest } from './node.js';
@@ -106,15 +106,29 @@ export interface HtmlProps {
    */
   charset?: string;
   /**
+   * The URL the document came from. Given one — or a document with an
+   * absolute `<base href>` — every URL the document names reaches
+   * `onResource` and `onLink` absolute: resolved against its `<base href>`
+   * or this, and a `url()` in a linked stylesheet against the stylesheet's
+   * own URL, as a browser resolves it. Absent, URLs are handed over as the
+   * document wrote them.
+   *
+   * Nothing is fetched because of it: it says where relative URLs point,
+   * and `onResource` still decides whether anything goes there.
+   */
+  baseUrl?: string | null;
+  /**
    * An external resource is wanted — an `<img src>`, a `<link rel=stylesheet>`
-   * or an `@import`. Return the bytes or the text, or a promise of them, or
-   * `null` to decline. A stylesheet's bytes are decoded as CSS says, from
-   * the `charset` the protocol named, if the host passes it on.
+   * or an `@import`, or a font an `@font-face` declares and the document
+   * uses. Return the bytes or the text, or a promise of them, or `null` to
+   * decline. A stylesheet's bytes are decoded as CSS says, from the
+   * `charset` the protocol named, if the host passes it on, and its `url`,
+   * if the host passes that, is where it came from after redirects.
    *
    * **Absent, nothing loads.** This component has no network and no
-   * filesystem of its own; images render as a frame and linked stylesheets
-   * are skipped. The host is the one that knows its cache, its proxy and
-   * whether this document is trusted.
+   * filesystem of its own; images render as a frame, linked stylesheets are
+   * skipped and text is set in the fonts the system has. The host is the one
+   * that knows its cache, its proxy and whether this document is trusted.
    */
   onResource?: (
     request: ResourceRequest,
@@ -127,15 +141,17 @@ export interface HtmlProps {
   onScript?: (script: ScriptRequest) => void;
   /**
    * A link was activated. Absent means clicks do nothing: this component
-   * never navigates by itself.
+   * never navigates by itself. The `href` is resolved against the
+   * document's base where it has one (`baseUrl`), and as written where not.
    */
   onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
   /** The parsed document, each time it is re-parsed — the DOM handle. */
   onDocument?: (document: Document) => void;
   /**
-   * A form control changed. The element is the one in the DOM, so a handler
-   * that wants to keep the value writes it back with `setAttribute`-shaped
-   * mutation and calls the handle's `refresh()`.
+   * A form control changed, or a `<button>` was pressed — reported with its
+   * `value`. The element is the one in the DOM, so a handler that wants to
+   * keep the value writes it back with `setAttribute`-shaped mutation and
+   * calls the handle's `refresh()`.
    */
   onControlChange?: (element: Element, value: string | boolean) => void;
   /** Base text style. Defaults: theme `fontSize` (14), `sans-serif`. */
@@ -174,8 +190,21 @@ export interface HtmlHandle {
   refresh(): void;
   /** The element under a point, in the window's coordinates. */
   elementAt(x: number, y: number): Element | null;
+  /** The link under a point, in the window's coordinates — resolved, as
+   *  `onLink` is handed one — for a status bar, or a menu on a link. */
+  hrefAt(x: number, y: number): string | null;
+  /**
+   * Where an element is, in logical pixels from the document's top left:
+   * the space the offset of a box scrolling the document is in, so a link
+   * to `#section` is `scroller.scrollTo({ y: handle.elementRect(el).y })`.
+   * Null for an element with no box.
+   */
+  elementRect(element: Element): Rect | null;
   /** The document's `<title>`, if it had one. */
   readonly title: string | null;
+  /** The URL the document's relative URLs resolve against — its
+   *  `<base href>`, or `baseUrl` — or null where it has none. */
+  readonly base: string | null;
 }
 
 // --- the look ---------------------------------------------------------------
@@ -248,6 +277,7 @@ export function Html(props: HtmlProps): ReactElement {
     selectable = true,
     stylesheet,
     charset,
+    baseUrl,
     onLink,
     onResource,
     onScript,
@@ -258,6 +288,7 @@ export function Html(props: HtmlProps): ReactElement {
 
   const theme = useTheme() as unknown as Record<string, unknown>;
   const links = useLinkClicks(onLink);
+  const buttons = useButtonPresses(onControlChange);
   const menu = useSelectionMenu(selectable);
 
   const look = React.useMemo(
@@ -297,6 +328,7 @@ export function Html(props: HtmlProps): ReactElement {
     complete: !partial,
     stylesheet,
     charset,
+    baseUrl,
     look,
     selectionColor,
     onResource,
@@ -338,6 +370,14 @@ export function Html(props: HtmlProps): ReactElement {
       selectable,
       selectionColor: props.selectionColor,
       ...links,
+      onMouseDown: (ev: X11MouseEvent<DrawnNode>) => {
+        links.onMouseDown(ev);
+        buttons.onMouseDown(ev);
+      },
+      onMouseUp: (ev: X11MouseEvent<DrawnNode>) => {
+        links.onMouseUp(ev);
+        buttons.onMouseUp(ev);
+      },
       ...menu,
       'data-testname': props['data-testname'],
     } as Record<string, unknown>,
@@ -368,15 +408,70 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       get title() {
         return nodeRef.current?.title ?? null;
       },
+      get base() {
+        return nodeRef.current?.documentBase ?? null;
+      },
       refresh: () => {
         nodeRef.current?.touchDocument();
         force();
       },
       elementAt: (x: number, y: number) =>
         nodeRef.current?.elementAtPoint(x, y) ?? null,
+      hrefAt: (x: number, y: number) =>
+        nodeRef.current?.hrefAtPoint(x, y) ?? null,
+      elementRect: (element: Element) =>
+        nodeRef.current?.elementRect(element) ?? null,
     }),
     [],
   );
+}
+
+/**
+ * A press and a release on the same `<button>` the document draws, reported
+ * as a pressed widget reports one: `onControlChange` with the button and its
+ * `value`. A `<button>` is laid out and drawn like any box (the UA sheet's
+ * `button` rule) — its content is the page's, and most of the buttons on
+ * the web are an icon or a pill of a page's own design — so it is the
+ * element that finds out it was pressed, not a widget. A disabled one, or
+ * a press that lands in a link inside one, is not a press of it.
+ */
+function useButtonPresses(onControlChange: HtmlProps['onControlChange']): {
+  onMouseDown: (ev: X11MouseEvent<DrawnNode>) => void;
+  onMouseUp: (ev: X11MouseEvent<DrawnNode>) => void;
+} {
+  const press = React.useRef<Element | null>(null);
+  const buttonAt = (ev: X11MouseEvent<DrawnNode>): Element | null => {
+    const target = ev.target as {
+      elementAtPoint?: (x: number, y: number) => Element | null;
+    } | null;
+    let node =
+      typeof target?.elementAtPoint === 'function'
+        ? target.elementAtPoint(ev.x, ev.y)
+        : null;
+    for (
+      ;
+      node;
+      node = node.parent?.type === 'tag' ? (node.parent as Element) : null
+    ) {
+      if (tagOf(node) === 'a' && attr(node, 'href') !== undefined) return null;
+      if (tagOf(node) === 'button') {
+        return attr(node, 'disabled') === undefined ? node : null;
+      }
+    }
+    return null;
+  };
+  return {
+    onMouseDown: (ev) => {
+      press.current = onControlChange && ev.button === 1 ? buttonAt(ev) : null;
+    },
+    onMouseUp: (ev) => {
+      const pressed = press.current;
+      press.current = null;
+      if (!pressed || !onControlChange || ev.button !== 1) return;
+      if (buttonAt(ev) !== pressed) return;
+      onControlChange(pressed, attr(pressed, 'value') ?? '');
+    },
+  };
 }
 
 // --- the widgets ------------------------------------------------------------

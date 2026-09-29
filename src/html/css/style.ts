@@ -363,6 +363,9 @@ export interface ComputedStyle {
   aspectRatio: { ratio: number; auto: boolean } | null;
   /** How an image fills its content box, and where in it. */
   objectFit: 'fill' | 'contain' | 'cover' | 'none' | 'scale-down';
+  /** A form control's own look (`auto`), or `none`: the page draws it,
+   *  with its own background, borders and padding (`ControlFace`). */
+  appearance: 'auto' | 'none';
   objectPositionX: Len;
   objectPositionY: Len;
   overflowX: 'visible' | 'hidden' | 'scroll' | 'auto' | 'clip';
@@ -758,6 +761,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     textOverflow: 'clip',
     aspectRatio: null,
     objectFit: 'fill',
+    appearance: 'auto',
     objectPositionX: { pct: 50 },
     objectPositionY: { pct: 50 },
     overflowX: 'visible',
@@ -1322,6 +1326,16 @@ export function applyDeclaration(
       if (OBJECT_FITS.has(v)) style.objectFit = v as ComputedStyle['objectFit'];
       return;
     }
+    case 'appearance':
+    case '-webkit-appearance':
+    case '-moz-appearance': {
+      // every keyword but `none` is some control's own look, which is the
+      // only other thing this engine has
+      const v = value.trim().toLowerCase();
+      if (/^[a-z-]+$/.test(v))
+        style.appearance = v === 'none' ? 'none' : 'auto';
+      return;
+    }
     case 'contain': {
       const bits = containOf(value);
       if (bits !== null) style.contain = bits;
@@ -1867,7 +1881,7 @@ export function applyDeclaration(
       // and an unquoted name is its identifiers joined by one space each,
       // however they were spaced: `Courier   New` over two lines is
       // `Courier New`, and was a name no font has
-      style.fontFamily = names
+      const list = names
         .map((f) =>
           /^['"]/.test(f)
             ? f.replace(/^['"]|['"]$/g, '')
@@ -1875,6 +1889,7 @@ export function applyDeclaration(
         )
         .filter(Boolean)
         .join(', ');
+      style.fontFamily = ctx.families ? ctx.families(list) : list;
       return;
     }
     case 'font-size': {
@@ -4975,6 +4990,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   ],
   'aspect-ratio': ['aspectRatio'],
   'object-fit': ['objectFit'],
+  appearance: ['appearance'],
+  '-webkit-appearance': ['appearance'],
+  '-moz-appearance': ['appearance'],
   contain: ['contain'],
   'content-visibility': ['contentVisibility'],
   'overflow-clip-margin': ['overflowClipBox', 'overflowClipMargin'],

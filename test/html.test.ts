@@ -1020,6 +1020,65 @@ metric('display:flex lays out through yoga', async () => {
 });
 
 metric(
+  'an inline box laid out again reaches no further than its text',
+  async () => {
+    // A flex item's subtree is laid out and then moved into place, and the
+    // move shifted the inline boxes in it too, whose position is never laid
+    // out, so each pass added to it. A page whose first layout was at a
+    // width of 1 — a window before its size is known — measured a card grid
+    // with a <span> in each card three times its height.
+    const { node } = await render(
+      '<style>body{margin:0}.grid{display:flex;flex-wrap:wrap}' +
+        '.grid a{display:block;width:120px;height:40px}' +
+        '.grid b{display:block}</style>' +
+        '<div class="grid">' +
+        '<a><b>One</b><span>a note</span></a><a><b>Two</b><span>a note</span></a>' +
+        '<a><b>Three</b><span>a note</span></a><a><b>Four</b><span>a note</span></a>' +
+        '</div>',
+      300,
+    );
+    const el = view(node) as unknown as {
+      measureContent(constraints: { width: number }): { height: number };
+    };
+    const settled = el.measureContent({ width: 300 }).height;
+    // two cards a row at 300px, and room for them at every width below
+    for (const width of [1, 290, 2, 280, 3, 270]) el.measureContent({ width });
+    assert.strictEqual(el.measureContent({ width: 260 }).height, settled);
+  },
+);
+
+metric('a probe of an unbounded width puts no box at infinity', async () => {
+  // A flex item is measured at its max-content width, a layout in unbounded
+  // room. Its table's cell centred a block by its auto margins in that room
+  // — at x = Infinity — and the pass after moved the image in it from there
+  // by a finite amount: NaN, which went up every ink bound above it and left
+  // everything under the flex container unpainted. Wikipedia's navboxes are
+  // this shape, and the article under them did not draw.
+  const { node } = await render(
+    '<div style="display:flex"><div><table><tr><td>list</td><td>' +
+      '<div style="margin:0 auto;width:80px"><img width="64" height="64">' +
+      '</div></td></tr></table></div></div><p>after</p>',
+    400,
+  );
+  type Laid = {
+    x: number;
+    y: number;
+    boundsX: number;
+    boundsWidth: number;
+    children: Laid[];
+  };
+  const root = (view(node) as unknown as { _tree: { root: Laid } })._tree.root;
+  const bad: Laid[] = [];
+  const walk = (box: Laid): void => {
+    if (!Number.isFinite(box.x) || !Number.isFinite(box.y)) bad.push(box);
+    for (const child of box.children) walk(child);
+  };
+  walk(root);
+  assert.strictEqual(bad.length, 0, 'every box has a place');
+  assert.ok(Number.isFinite(root.boundsX) && Number.isFinite(root.boundsWidth));
+});
+
+metric(
   'a fragment gets the body margin it would have had inside <body>',
   async () => {
     const { node } = await render(
@@ -3225,6 +3284,251 @@ test('html and body at 100% are a window tall, and hold what is longer', async (
   assert.ok(el._documentHeight >= 900, 'and the document holds all 900px');
 });
 
+/**
+ * A document in a box `height` tall that scrolls it — the viewport a `vh`,
+ * the root's percentage height and the initial containing block are
+ * measured against — with a `resize` that sets the box's size again.
+ */
+async function renderScrolled(source: string, height: number, width = 400) {
+  const doc = (height: number, width: number) =>
+    h(
+      'box',
+      { style: { width, height, flexDirection: 'column' } },
+      h(
+        'box',
+        { style: { flexGrow: 1, overflow: 'scroll' } },
+        h(Html, { source, partial: false, 'data-testname': 'doc' }),
+      ),
+    );
+  const result = await renderX11(
+    doc(height, width),
+    FONTS
+      ? { width: 640, height: 800, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  // How tall the scroll box came out is a layout pass's to decide, and the
+  // element reads it after that pass, so a frame of its own is where a
+  // change of viewport is seen — and the one after, where core asks again.
+  await act();
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const resize = async (height: number, w = width): Promise<void> => {
+    await act(() => result.rerender(doc(height, w)));
+    await act();
+  };
+  return { el, resize };
+}
+
+test('a 100vh page follows the height of the box that scrolls it', async () => {
+  // A page's own "fill the window" — a column at least 100vh tall with its
+  // footer pushed to the bottom — in a browser's page area. The viewport is
+  // the box that scrolls the document, whose height only core's layout
+  // decides, so the element read the old one while it was being measured
+  // and the page kept the height the window had when it loaded.
+  const { el, resize } = await renderScrolled(
+    '<body style="margin:0"><div style="min-height:100vh;display:flex;' +
+      'flex-direction:column"><div style="flex:1"></div>' +
+      '<div id="foot" style="height:20px"></div></div></body>',
+    300,
+  );
+  const bottomOf = (id: string): number => {
+    const box = boxOf(el, id);
+    return box.y + box.height;
+  };
+  assert.strictEqual(el.abs.height, 300);
+  assert.strictEqual(bottomOf('foot'), 300);
+  await resize(500);
+  assert.strictEqual(el.abs.height, 500, 'the page grows with the viewport');
+  assert.strictEqual(bottomOf('foot'), 500, 'with its footer at the bottom');
+  await resize(200);
+  assert.strictEqual(el.abs.height, 200, 'and shrinks with it');
+  assert.strictEqual(bottomOf('foot'), 200);
+});
+
+test("html and body at 100% follow the viewport's height", async () => {
+  const { el, resize } = await renderScrolled(
+    '<html style="height:100%"><body style="height:100%;margin:0">' +
+      '<div id="fill" style="height:100%"></div></body></html>',
+    300,
+  );
+  assert.strictEqual(boxOf(el, 'fill').height, 300);
+  await resize(450);
+  assert.strictEqual(boxOf(el, 'fill').height, 450);
+  assert.strictEqual(el.abs.height, 450);
+});
+
+test('a box placed against the initial containing block follows the viewport', async () => {
+  // nothing positioned around it: `bottom: 0` is the viewport's bottom
+  const { el, resize } = await renderScrolled(
+    '<body style="margin:0"><div id="pin" style="position:absolute;' +
+      'bottom:0;width:10px;height:10px"></div></body>',
+    300,
+  );
+  assert.strictEqual(boxOf(el, 'pin').y, 290);
+  await resize(400);
+  assert.strictEqual(boxOf(el, 'pin').y, 390);
+});
+
+test('a document that reads no viewport height is not laid out for one', async () => {
+  // The layout says whether it read the height (a `vh`, the root's
+  // percentage, the initial containing block's bottom), and a document that
+  // read none of them — most — is left alone when the window only grows
+  // taller: a page a hundred screens long is not laid out again per frame
+  // of a vertical resize for nothing.
+  const { el, resize } = await renderScrolled(
+    '<body style="margin:0"><div id="a" style="height:40px"></div></body>',
+    300,
+  );
+  const under = () =>
+    (el as unknown as { _laidOutUnder: number })._laidOutUnder;
+  const before = under();
+  await resize(500);
+  assert.strictEqual(under(), before, 'not laid out again');
+  assert.strictEqual(boxOf(el, 'a').height, 40);
+  assert.strictEqual(el.abs.height, 40);
+});
+
+test('a vw length follows the width of the viewport', async () => {
+  // A `vw` is a number by the time the computed style holds it, so a resize
+  // that crossed no `@media` breakpoint — the one kind that restyled —
+  // left it at the width the page loaded at.
+  const { el, resize } = await renderScrolled(
+    '<body style="margin:0"><div id="half" style="width:50vw;' +
+      'height:10px"></div></body>',
+    300,
+    400,
+  );
+  assert.strictEqual(boxOf(el, 'half').width, 200);
+  await resize(300, 600);
+  assert.strictEqual(boxOf(el, 'half').width, 300);
+});
+
+test('a document a hair past a whole pixel measures that pixel', async () => {
+  // A sum of Yoga's single-precision positions carries noise — a page
+  // exactly 100vh tall came to 737.0000076 under a 737 pixel viewport — and
+  // rounding that up scrolled the page by a pixel under a scrollbar.
+  const { node } = await render(
+    '<body style="margin:0"><div style="height:100.004px"></div></body>',
+  );
+  const el = view(node);
+  const measure = () =>
+    el.measureContent({
+      width: 400,
+      height: Infinity,
+      widthMode: 'at-most',
+      heightMode: 'unconstrained',
+    }).height;
+  assert.strictEqual(measure(), 100);
+  const { node: over } = await render(
+    '<body style="margin:0"><div style="height:100.3px"></div></body>',
+  );
+  assert.strictEqual(
+    view(over).measureContent({
+      width: 400,
+      height: Infinity,
+      widthMode: 'at-most',
+      heightMode: 'unconstrained',
+    }).height,
+    101,
+    'a fraction that is ink is a pixel of it',
+  );
+});
+
+test('a flex item as wide as its content keeps it on one line', async () => {
+  // An item exactly as wide as its content — `width: fit-content` in a
+  // column, an item its content sizes in a row, a flex box sized to what it
+  // holds — has that width held by Yoga as a float32, and a width rounded
+  // down under the content laid it out a hair too narrow: meetup.com's
+  // "About us" and "Related topics" headings wrapped their last word. Two
+  // boxes whose widths sum to 116.728px, which a float32 holds as
+  // 116.72799682…, stand in for a line of text.
+  const line = (n: number) =>
+    `<div style="line-height:10px">` +
+    `<span id="a${n}" style="display:inline-block;width:106.728px;height:10px"></span>` +
+    `<span id="b${n}" style="display:inline-block;width:10px;height:10px"></span>` +
+    `</div>`;
+  const shapes = [
+    (n: number) =>
+      `<div style="display:flex;flex-direction:column">` +
+      `<div id="fit${n}" style="width:fit-content">${line(n)}</div></div>`,
+    (n: number) =>
+      `<div style="display:flex;align-items:baseline;justify-content:space-between">` +
+      `<div style="display:flex;gap:8px">${line(n)}</div></div>`,
+    (n: number) =>
+      `<div style="display:flex">` +
+      `<div style="display:flex;flex-direction:column">${line(n)}</div></div>`,
+    (n: number) =>
+      `<div style="display:flex;flex-direction:column;width:fit-content">` +
+      `<div style="display:flex">${line(n)}</div></div>`,
+  ];
+  const { node } = await render(shapes.map((shape, n) => shape(n)).join(''));
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'fit0').width, 116.728);
+  shapes.forEach((_, n) =>
+    assert.strictEqual(
+      boxOf(el, `b${n}`).y,
+      boxOf(el, `a${n}`).y,
+      `shape ${n}: the second box beside the first, not under it`,
+    ),
+  );
+});
+
+metric(
+  'a character the engine cannot shape costs itself, not the document',
+  async () => {
+    // A bitmap-only colour emoji font (CBDT) is what fontconfig answers first
+    // for an emoji on most Linux desktops, and fontkit has no glyph to make
+    // from it: its shaper threw on meetup.com's pin, and the page was left
+    // blank. The character is drawn as U+FFFD instead, at the same length in
+    // UTF-16, so every offset past it still lands.
+    const pin = '\u{1F4CD}';
+    const { result } = await render('<p id="p">x</p>');
+    const engine = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const inner = engine.layout;
+    const shaped: string[] = [];
+    engine.layout = function (content, style, options) {
+      const text = content.map((r) => r.text).join('');
+      if (text.includes(pin)) {
+        throw new TypeError("Cannot read properties of null (reading 'id')");
+      }
+      shaped.push(text);
+      return inner.call(this, content, style, options);
+    };
+    const warn = console.warn;
+    const warned: string[] = [];
+    console.warn = (message: string) => void warned.push(String(message));
+    try {
+      await act(() =>
+        result.rerender(
+          h(
+            'box',
+            { style: { width: 400, flexDirection: 'column' } },
+            h(Html, {
+              source: `<p id="p">${pin} Melbourne, AU</p><p id="q">after</p>`,
+              partial: false,
+              'data-testname': 'doc',
+            }),
+          ),
+        ),
+      );
+      await act();
+    } finally {
+      engine.layout = inner;
+      console.warn = warn;
+    }
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    assert.ok(el['_tree' as keyof typeof el], 'laid out, not left blank');
+    assert.ok(boxOf(el, 'q').height > 0, 'and what follows is there');
+    // the document is the page's; only what is drawn stands in
+    assert.ok(el.textContent().startsWith(`${pin} Melbourne`));
+    assert.ok(
+      shaped.includes('\uFFFD\uFE0F Melbourne, AU'),
+      `the stand-in is shaped: ${JSON.stringify(shaped)}`,
+    );
+    assert.strictEqual(warned.length, 1, 'said once');
+    assert.match(warned[0], /U\+1F4CD/);
+  },
+);
+
 metric("a table column is the table's, not a row of its own", async () => {
   // A <colgroup> was taken for a stray child, wrapped in a row and a cell of
   // its own, and drawn as one — a table of one row had two.
@@ -4789,6 +5093,109 @@ metric('a click on a link reports its href; a drag does not', async () => {
   void result;
 });
 
+metric(
+  'a <button> is drawn with its content, and a press on it is reported',
+  async () => {
+    // A `<button>` was a mounted widget labelled with its text — or with
+    // "Button", where its content was an icon or spans, as most buttons on the
+    // web are — and the look the page gave it was lost. It is laid out and
+    // drawn like any box, and pressing it is reported through
+    // `onControlChange`, as pressing a widget is.
+    const pressed: [string | undefined, unknown][] = [];
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<button id="b" value="go"><span>Search</span></button> ' +
+            '<button id="off" disabled><span>Off</span></button>',
+          partial: false,
+          onControlChange: (
+            el: { attribs: Record<string, string> },
+            v: unknown,
+          ) => void pressed.push([el.attribs.id, v]),
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 200, fonts: FONTS! },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const tree = (el as unknown as { _tree: { controls: unknown[] } })._tree;
+    assert.strictEqual(tree.controls.length, 0, 'no widget is mounted for it');
+    assert.ok(
+      el.textContent().includes('Search'),
+      "its text is the document's",
+    );
+    const press = async (id: string) => {
+      const box = boxOf(el, id);
+      const target = el as unknown as DrawnNode;
+      const dx = box.x + box.width / 2 - target.abs.width / 2;
+      const dy = box.y + box.height / 2 - target.abs.height / 2;
+      await act(async () => {
+        fireEvent.mouseDown(target, { dx, dy });
+        fireEvent.mouseUp(target, { dx, dy });
+      });
+    };
+    await press('b');
+    assert.deepStrictEqual(pressed, [['b', 'go']]);
+    await press('off');
+    assert.strictEqual(pressed.length, 1, 'a disabled one is not pressed');
+  },
+);
+
+test("a field set to appearance: none is the page's to draw", async () => {
+  // `appearance: none` says a field's native look is off whether or not
+  // the page gave it a border or a background — and it is how a design
+  // system writes every field it has: meetup.com's search pill holds two
+  // with no background, only one of them with a rule, and the other was
+  // framed by the theme inside the pill.
+  const { node } = await render(
+    '<input id="own" style="appearance:none;margin:0;padding:2px 0;' +
+      'border:0;background:transparent">' +
+      '<input id="plain">',
+  );
+  const el = view(node);
+  const rects = (
+    el as unknown as {
+      _controls: {
+        element: { attribs: Record<string, string> };
+        bare?: { height: number } | null;
+      }[];
+    }
+  )._controls;
+  const own = rects.find((r) => r.element.attribs.id === 'own')!;
+  const plain = rects.find((r) => r.element.attribs.id === 'plain')!;
+  assert.ok(own.bare, 'mounted bare');
+  assert.strictEqual(
+    own.bare.height,
+    boxOf(el, 'own').height - 4,
+    'inside its padding',
+  );
+  assert.ok(!plain.bare, "a field left alone keeps the theme's frame");
+});
+
+test('a replaced flex item is as wide as the flex layout made it', async () => {
+  // Laid out alone a replaced box takes its own `width` or its intrinsic
+  // one: two fields `width: 0; flex: 1` were no width at all, and so never
+  // mounted, and images `flex: 1` overlapped at their own widths.
+  const { node } = await render(
+    '<div style="display:flex;width:300px">' +
+      '<input id="a" style="width:0;flex:1;margin:0">' +
+      '<input id="b" style="width:0;flex:1;margin:0">' +
+      '<img id="c" width="50" height="20" style="flex:1">' +
+      '</div>',
+  );
+  const el = view(node);
+  const [a, b, c] = ['a', 'b', 'c'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual(
+    [a.width, b.width, c.width],
+    [100, 100, 100],
+    'each takes a third',
+  );
+  assert.deepStrictEqual([a.x, b.x, c.x], [a.x, a.x + 100, a.x + 200]);
+});
+
 // --- the seams --------------------------------------------------------------
 
 test('a script is handed over, unparsed and unevaluated', async () => {
@@ -5869,6 +6276,75 @@ test('an image handed over as bytes is decoded and drawn', async (t) => {
   });
 });
 
+test('an element at no opacity is not drawn, and at half is drawn faded', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // `opacity` was read and never painted, so the control a page keeps at
+  // `opacity: 0` until its row is hovered — meetup.com's "Homepage" behind
+  // its logo, the share button on each event card — was drawn over what it
+  // hides. At 0 nothing in the element is drawn, a positioned child
+  // included; between, each thing drawn is multiplied by it.
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 200, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<body style="margin:0;background:#ffffff">' +
+          '<div style="opacity:0;height:20px;background:#ff0000">' +
+          '<div style="position:absolute;left:40px;top:0;width:20px;' +
+          'height:20px;background:#0000ff"></div></div>' +
+          '<div style="opacity:0.5;height:20px;background:#ff0000"></div>' +
+          '</body>',
+        partial: false,
+      }),
+    ),
+    { width: 240, height: 100, fonts: FONTS },
+  );
+  await expectPixel(result.ctx, 10, 10, '#ffffff', {
+    message: 'the transparent block is not drawn',
+  });
+  await expectPixel(result.ctx, 50, 10, '#ffffff', {
+    message: 'nor its positioned child',
+  });
+  await expectPixel(result.ctx, 10, 30, '#ff8080', {
+    tolerance: 3,
+    message: 'the half-opaque block is its colour at half over the page',
+  });
+});
+
+test('a block inside an inline element is faded with it', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CSS 2.1 9.2.1.1: the block breaks the inline box in pieces and stands
+  // outside it, and is still its content, which the inline box's opacity
+  // fades as a group (WPT's stacking-context/opacity-affects-block-in-inline).
+  // Around two inline boxes, it takes both.
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 200, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<body style="margin:0;background:#ffffff">' +
+          '<span style="opacity:0.5"><div style="height:20px;' +
+          'background:#ff0000"></div></span>' +
+          '<span style="opacity:0.5"><b style="opacity:0.5">' +
+          '<div style="height:20px;background:#ff0000"></div></b></span>' +
+          '</body>',
+        partial: false,
+      }),
+    ),
+    { width: 240, height: 100, fonts: FONTS },
+  );
+  await expectPixel(result.ctx, 10, 10, '#ff8080', {
+    tolerance: 3,
+    message: 'the block is its colour at half over the page',
+  });
+  await expectPixel(result.ctx, 10, 30, '#ffc0c0', {
+    tolerance: 3,
+    message: 'and at a quarter inside two such boxes',
+  });
+});
+
 // a 10x10 PNG, solid #ff0000
 const RED_PNG = new Uint8Array(
   Buffer.from(
@@ -6334,7 +6810,9 @@ metric(
     await act();
     const laid = await laidOutDuring(el, async () => {
       await act(() => result.rerender(doc([one, two])));
-      await waitFor(() => assert.ok(el.textContent().includes('other')));
+      await waitFor(() =>
+        assert.ok(el.textContent().includes('other'), 'the new text is in'),
+      );
       await act();
     });
     assert.ok(!laid.includes(one), `the first is kept: ${laid.join(' | ')}`);
@@ -6519,7 +6997,9 @@ metric(
     const el = view(screen.getByTestName('doc') as DrawnNode);
     const laid = await laidOutDuring(el, async () => {
       await act(() => result.rerender(doc('two')));
-      await waitFor(() => assert.ok(el.textContent().includes('two')));
+      await waitFor(() =>
+        assert.ok(el.textContent().includes('two'), 'the new text is in'),
+      );
       await act();
     });
     assert.ok(!laid.some((t) => t.includes('the link')), 'kept, not laid out');
@@ -13651,5 +14131,377 @@ metric(
     assert.ok(asked.includes('warm 400 italic'), 'and the emphasis');
     // a face is asked once, however many boxes are set in it
     assert.strictEqual(asked.filter((a) => a === 'warm 600 normal').length, 1);
+  },
+);
+
+// --- a pointer move restyled where it happened (`_hoverInPlace`) ------------
+
+/** The element's pixels, as the server has them. */
+async function snapshot(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+): Promise<Uint8ClampedArray> {
+  const { abs } = el as unknown as DrawnNode;
+  await act();
+  return new Promise((ok, fail) =>
+    (
+      result.ctx as unknown as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+          cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+        ): void;
+      }
+    ).getImageData(abs.x, abs.y, abs.width, abs.height, (e, d) =>
+      e ? fail(e) : ok(d.data),
+    ),
+  );
+}
+
+/** A logical window point inside an element of the document. */
+function pointIn(el: HtmlViewNode, id: string): [number, number] {
+  const target = findById(el.document, id)!;
+  const rect = el.elementRect(target)!;
+  const { abs } = el as unknown as DrawnNode;
+  return [abs.x + rect.x + rect.width / 2, abs.y + rect.y + rect.height / 2];
+}
+
+type DocElement = Parameters<HtmlViewNode['elementRect']>[0];
+
+function findById(node: unknown, id: string): DocElement | null {
+  const n = node as { attribs?: Record<string, string>; children?: unknown[] };
+  if (n.attribs?.id === id) return n as unknown as DocElement;
+  for (const child of n.children ?? []) {
+    const found = findById(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** The box tree, to tell a restyle in place from a document built again. */
+const treeOf = (el: HtmlViewNode) =>
+  (el as unknown as { _tree: unknown })._tree;
+
+/** What a document built again from its sheets makes of the same hover. */
+async function rebuilt(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+): Promise<Uint8ClampedArray> {
+  (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
+  return snapshot(result, el);
+}
+
+const HOVER_PAGE =
+  '<style>body{margin:0} a{color:#0000ee;text-decoration:none}' +
+  ' a:hover{color:#ff0000;text-decoration:underline}' +
+  ' .b{display:inline-block;padding:2px;border:2px solid #888888}' +
+  ' .b:hover{background:#ffff00;border-color:#00aa00}' +
+  ' li:hover{color:#008800}</style>' +
+  '<p id="p">Some text with <a id="a" href="#x">a <span id="s">link</span>' +
+  ' in it</a> and more text after it, long enough to wrap onto a second' +
+  ' line in a paragraph this narrow.</p>' +
+  '<p id="q">Another paragraph, with no link.</p>' +
+  '<p><span class="b" id="b">button</span></p>' +
+  '<ul><li id="li">an item</li></ul>';
+
+metric(
+  'a hovered link is restyled where it is, to the pixels a rebuild draws',
+  async () => {
+    const { result, node } = await render(HOVER_PAGE, 300);
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+
+    el.setHover(...pointIn(el, 's'));
+    const hovered = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), tree, 'the document was built again');
+    assert.notDeepStrictEqual(hovered, quiet, 'the hover drew nothing');
+    assert.deepStrictEqual(hovered, await rebuilt(result, el));
+
+    // …and back off it, in place again
+    const again = treeOf(el);
+    el.setHover(...pointIn(el, 'q'));
+    const left = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), again);
+    assert.deepStrictEqual(left, quiet);
+    assert.deepStrictEqual(left, await rebuilt(result, el));
+  },
+);
+
+metric(
+  'a hovered box takes its background and border colour in place',
+  async () => {
+    const { result, node } = await render(HOVER_PAGE, 300);
+    const el = view(node);
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'b'));
+    const hovered = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), tree);
+    assert.deepStrictEqual(hovered, await rebuilt(result, el));
+  },
+);
+
+metric(
+  'a move that touches no rule restyles nothing, and one that changes more than ink builds the document again',
+  async () => {
+    const { result, node } = await render(
+      HOVER_PAGE.replace('</style>', ' #q:hover{font-weight:bold}</style>'),
+      300,
+    );
+    const el = view(node);
+    const tree = treeOf(el);
+    // from nothing to the plain paragraph: no compound testing the pointer
+    // matches a `<p>` but `#q`'s
+    el.setHover(...pointIn(el, 'p'));
+    await snapshot(result, el);
+    assert.strictEqual(treeOf(el), tree, 'a move over nothing hovered');
+    // bold text is another shape
+    el.setHover(...pointIn(el, 'q'));
+    const bold = await snapshot(result, el);
+    assert.notStrictEqual(treeOf(el), tree, 'bold was restyled in place');
+    assert.deepStrictEqual(bold, await rebuilt(result, el));
+  },
+);
+
+metric(
+  'a list item, whose marker takes its colour, is built again',
+  async () => {
+    const { result, node } = await render(HOVER_PAGE, 300);
+    const el = view(node);
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'li'));
+    const hovered = await snapshot(result, el);
+    assert.notStrictEqual(treeOf(el), tree);
+    assert.deepStrictEqual(hovered, await rebuilt(result, el));
+  },
+);
+
+metric('a hover in a long document builds and lays out nothing', async () => {
+  // what took a Wikipedia article 270 ms a link on X11: every hover built
+  // the boxes of the whole document again and laid it out
+  const paragraphs = Array.from(
+    { length: 400 },
+    (_, i) =>
+      `<p id="p${i}">Paragraph ${i} with <a id="a${i}" href="#${i}">a link</a> in the middle of enough text to wrap.</p>`,
+  ).join('');
+  const { result, node } = await render(
+    `<style>body{margin:0} a{color:#0000ee} a:hover{color:#ff0000;text-decoration:underline}</style>${paragraphs}`,
+    300,
+  );
+  const el = view(node);
+  const updates = { n: 0 };
+  const proto = el as unknown as { _update(width: number): void };
+  const update = proto._update.bind(el);
+  proto._update = (width: number) => {
+    updates.n += 1;
+    const tree = treeOf(el);
+    update(width);
+    if (treeOf(el) !== tree) updates.n += 1000;
+  };
+  await snapshot(result, el);
+  const tree = treeOf(el);
+  for (const id of ['a0', 'p1', 'a2', 'a3', 'p3']) {
+    el.setHover(...pointIn(el, id));
+    await snapshot(result, el);
+  }
+  assert.strictEqual(treeOf(el), tree);
+  assert.ok(updates.n < 1000, 'a hover built the document again');
+});
+
+metric(
+  "the cursor under the pointer is the document's: a link's pointer, text's I-beam",
+  async () => {
+    // what core asks a drawn element for as the pointer moves (`cursorAt`,
+    // react-x11#757), in device pixels — at a scale of 1, the window's
+    const { node } = await render(
+      '<style>body{margin:0} .m{cursor:move} .u{cursor:url(x.cur)}</style>' +
+        '<p><span id="t">plain text here</span></p>' +
+        '<p><a id="a" href="#x">a <b id="ab">link</b></a></p>' +
+        '<p><span class="m" id="m">moving</span></p>' +
+        '<p><span class="u" id="u">unloaded</span></p>' +
+        '<div id="e" style="height:40px"></div>',
+      300,
+    );
+    const el = view(node);
+    const at = (id: string) => el.cursorAt(...pointIn(el, id));
+    assert.strictEqual(at('a'), 'pointer');
+    assert.strictEqual(at('ab'), 'pointer', "and the link's own elements");
+    assert.strictEqual(at('t'), 'text');
+    assert.strictEqual(at('m'), 'move');
+    assert.strictEqual(at('u'), 'text', 'a cursor it cannot load');
+    assert.strictEqual(at('e'), 'default', 'and over nothing, the arrow');
+  },
+);
+
+metric(
+  'over a link the window shows the pointer, and over text the I-beam',
+  async () => {
+    // end to end: core asks the element as the pointer moves over it, and
+    // puts what it names on the window
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<p><span id="t">plain text here</span></p>' +
+        '<p><a id="a" href="#x">a link</a></p>' +
+        '<div id="e" style="height:40px"></div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const drawn = el as unknown as DrawnNode;
+    const wnd = (
+      drawn as unknown as {
+        root: { window: { setCursor(name: string | null): void } };
+      }
+    ).root.window;
+    const shown: (string | null)[] = [];
+    const set = wnd.setCursor.bind(wnd);
+    wnd.setCursor = (name) => {
+      shown.push(name);
+      set(name);
+    };
+    // each step changes the cursor, which is when core sets one
+    const over = async (id: string) => {
+      const before = shown.length;
+      const [x, y] = pointIn(el, id);
+      const { abs } = drawn;
+      fireEvent.mouseMove(drawn, {
+        dx: x - (abs.x + abs.width / 2),
+        dy: y - (abs.y + abs.height / 2),
+      });
+      await act();
+      // with a message: without one, a failed `assert.ok` on Node 20 parses
+      // this file again to quote the expression — seconds a try at this
+      // size, so the first try (the motion lands an `act()` later) ran the
+      // wait past its deadline
+      await waitFor(() => assert.ok(shown.length > before, 'a new cursor'));
+      return shown.at(-1);
+    };
+    assert.strictEqual(await over('a'), 'pointer');
+    assert.strictEqual(await over('t'), 'text');
+    // not the I-beam a selectable surface defaults to, which is where a
+    // null from the element falls through to
+    assert.strictEqual(await over('e'), 'default');
+    assert.strictEqual(await over('a'), 'pointer');
+  },
+);
+
+metric(
+  'a link past the box its page overflows is found, and one a box clips away is not',
+  async () => {
+    // `html, body { height: 100% }` makes both one viewport tall and the
+    // page overflow them: a hit test that went into a box only where its
+    // own rectangle was found nothing below the first screen — a scrolled
+    // Wikipedia article lit no link at all
+    const { node } = await render(
+      '<html><head><style>html, body { height: 100%; margin: 0 }' +
+        ' .clip { height: 20px; overflow: hidden }</style></head><body>' +
+        '<div style="height:700px">tall</div>' +
+        '<p><a id="below" href="#b">below the first screen</a></p>' +
+        '<div class="clip"><div style="height:20px">top</div>' +
+        '<a id="hidden" href="#h">clipped away</a></div></body></html>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'below')), '#b');
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'hidden')), null);
+  },
+);
+
+metric(
+  'a float hanging over the next block is what is under the pointer there',
+  async () => {
+    // a float is painted after the in-flow blocks around it (CSS 2.1
+    // Appendix E): an infobox floated out of a short section, over the
+    // next one, keeps its links — and a `position: relative` article
+    // around both puts them in one context rather than one layer
+    const { node } = await render(
+      '<div style="position:relative">' +
+        '<div><div style="float:right;width:120px;height:200px">' +
+        '<p style="margin:150px 0 0"><a id="f" href="#f">in the float</a></p>' +
+        '</div>short</div>' +
+        '<div id="next" style="height:300px">the next section</div></div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const link = el.elementRect(findById(el.document, 'f')!)!;
+    const next = el.elementRect(findById(el.document, 'next')!)!;
+    assert.ok(link.y > next.y, 'the link hangs over the next section');
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'f')), '#f');
+  },
+);
+
+metric(
+  'a positioned link escapes the clip of a box its containing block is outside of',
+  async () => {
+    // the Zen Garden's archive links: absolute `<li>`s in an `overflow:
+    // hidden` list with no height of its own, positioned in the box around
+    // it — which the list's clip does not reach (CSS 2.1 11.1.1)
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="position:relative;height:100px">' +
+        '<ul style="overflow:hidden;margin:0;padding:0">' +
+        '<li style="position:absolute;top:20px;left:0;list-style:none">' +
+        '<a id="out" href="#out">escapes</a></li></ul>' +
+        '<div style="position:relative;height:10px;overflow:hidden">' +
+        '<a id="in" href="#in" style="position:absolute;top:40px">clipped</a>' +
+        '</div></div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'out')), '#out');
+    assert.strictEqual(
+      el.cursorAt(...pointIn(el, 'out')),
+      'pointer',
+      'and shows the pointer',
+    );
+    // positioned in the box that clips it: gone past its edge
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'in')), null);
+
+    // and one positioned inside the clip stays clipped where an escaping
+    // one takes the clip's reach over it
+    const { node: second } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="position:relative;height:100px">' +
+        '<div style="overflow:hidden;height:10px">' +
+        '<div style="position:relative">' +
+        '<a id="under" href="#under" style="position:absolute;top:40px">' +
+        'clipped</a></div>' +
+        '<a id="over" href="#over" style="position:absolute;top:30px;' +
+        'left:0;width:200px;height:50px"></a>' +
+        '</div></div>',
+      300,
+    );
+    const el2 = view(second);
+    await act();
+    assert.strictEqual(
+      el2.hrefAtPoint(...pointIn(el2, 'under')),
+      '#over',
+      'the escaping link over it, not it',
+    );
+  },
+);
+
+metric(
+  'of two positioned boxes over a point, the one with the higher z-index is under the pointer',
+  async () => {
+    // the Zen Garden's `›`, `z-index: 3`, over the bar the "View All
+    // Designs" link fills, which comes after it in the document
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="position:relative;height:60px">' +
+        '<a id="top" href="#top" style="position:absolute;left:0;top:0;' +
+        'width:100px;height:40px;z-index:3"></a>' +
+        '<div style="position:absolute;left:0;top:0;width:200px;height:40px">' +
+        '</div></div>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(el.hrefAtPoint(...pointIn(el, 'top')), '#top');
   },
 );

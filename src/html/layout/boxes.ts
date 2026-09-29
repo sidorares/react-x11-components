@@ -595,6 +595,13 @@ export const PAINT_ORDER = new WeakMap<Box, Box[]>();
  *  though they stand outside it (`breakAround`). */
 export const CUT_BLOCKS = new WeakMap<Box, Box[]>();
 
+/** The blocks that broke an inline box under full opacity in pieces, and
+ *  the opacity they take from it — from each such inline box around them,
+ *  multiplied. They stand outside it (CSS 2.1 9.2.1.1) and are still its
+ *  content, which its opacity fades as a group: a green square in a
+ *  `<span style="opacity: .5">` was drawn at full strength. */
+export const FADED_BLOCKS = new WeakMap<Box, number>();
+
 /** What the builder produced, plus the document-wide text it indexed. */
 export interface BoxTree {
   root: Box;
@@ -607,6 +614,10 @@ export interface BoxTree {
    *  laying the text out, found here rather than by walking `textBoxes`
    *  again after every build. */
   textStyles: Set<ComputedStyle>;
+  /** Each element the build gave a style, with it and whether its parent
+   *  was a flex container: what a pointer move restyles an element from
+   *  where it did not change the rest (`HtmlViewNode._hoverInPlace`). */
+  styles: Map<Element, { style: ComputedStyle; inFlex: boolean }>;
   /** Every replaced box that needs a real widget, in document order. */
   controls: Box[];
   /** Every box carrying an `href`, for click and hover. */
@@ -698,6 +709,10 @@ class Builder {
   private _length = 0;
   private _textBoxes: Box[] = [];
   private _textStyles = new Set<ComputedStyle>();
+  private _styles = new Map<
+    Element,
+    { style: ComputedStyle; inFlex: boolean }
+  >();
   /** The last text box's style: runs of text share their parent's, so
    *  most text boxes repeat it and add nothing to `_textStyles`. */
   private _lastTextStyle: ComputedStyle | null = null;
@@ -761,6 +776,7 @@ class Builder {
       text: this._chunks.join(''),
       textBoxes: this._textBoxes,
       textStyles: this._textStyles,
+      styles: this._styles,
       controls: this._controls,
       links: this._links,
       backgrounds: this._backgrounds,
@@ -829,6 +845,7 @@ class Builder {
       parentKey,
       inFlex,
     );
+    this._styles.set(el, { style, inFlex });
     if (style.display === 'none') return;
     if (onlyColumns && style.display !== 'table-column') return;
     // what an element counts is in scope for it and what it holds, and for
@@ -2244,8 +2261,9 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       return 'textarea';
     case 'select':
       return 'select';
-    case 'button':
-      return 'button';
+    // A `<button>` is not one: its content is the document's, laid out and
+    // drawn like any box's (the UA sheet's `button` rule), where an
+    // `<input type=submit>` has only a value to show and is a widget.
     case 'input': {
       const type = (attr(el, 'type') ?? 'text').toLowerCase();
       if (type === 'checkbox') return 'checkbox';
@@ -2498,6 +2516,12 @@ function breakAround(inline: Box): Box[] | null {
     pieces[i].cut = (i > 0 ? 1 : 0) | (i < pieces.length - 1 ? 2 : 0);
   }
   if (isRelative(inline.style)) CUT_BLOCKS.set(pieces[0], blocks);
+  const fade = inline.style.opacity;
+  if (fade < 1) {
+    for (const block of blocks) {
+      FADED_BLOCKS.set(block, (FADED_BLOCKS.get(block) ?? 1) * fade);
+    }
+  }
   return out;
 }
 

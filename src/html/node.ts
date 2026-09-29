@@ -51,16 +51,25 @@ import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
 import { attr, HtmlSource, imageUrlOf, isElement, tagOf } from './dom.js';
 import type { Document } from './dom.js';
 import { Cascade } from './css/cascade.js';
-import { parseStylesheet } from './css/parse.js';
+import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
 import { uaStylesheet } from './css/ua.js';
-import type { RootLook } from './css/style.js';
+import type { ComputedStyle, RootLook } from './css/style.js';
 import { buildBoxes, CONTENT_IMAGES } from './layout/boxes.js';
-import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
+import type {
+  Box,
+  BoxTree,
+  LineText,
+  ReplacedKind,
+  TextLayoutLike,
+} from './layout/boxes.js';
 import { layoutDocument } from './layout/block.js';
 import { TextLayoutCache } from './layout/cache.js';
+import { shapingSafe } from './layout/shaping.js';
 import { SurfaceCache } from './surfaces.js';
+import { inlineDecoration, runFor } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
+import type { TextRun } from '../richtext/index.js';
 // Through the inline module rather than a second cache: the offsets table for
 // a layout is built once, on the first selection that needs it.
 import {
@@ -69,12 +78,23 @@ import {
   layoutOffsets as layoutOffsetsOf,
 } from './layout/inline.js';
 import { lineBands as bandsFor } from '../richtext/runs.js';
-import { paintDocument, queryChildIndex } from './paint.js';
+import {
+  clipsOverflow,
+  containingBlockOf,
+  hasRect,
+  holds,
+  holdsAbsolute,
+  paintDocument,
+  queryChildIndex,
+} from './paint.js';
 import type { PaintContext } from './paint.js';
 import { controlRectsOf, measureControl } from './controls.js';
 import type { BareField, ControlRect } from './controls.js';
 import { ResourceStore } from './resources.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
+import { WebFonts } from './fonts.js';
+import type { DeclaredFace } from './fonts.js';
+import { resolveUrl, UrlResolver } from './url.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
 export const ELEMENT = 'htmlview';
@@ -104,6 +124,9 @@ export interface HtmlViewProps {
   /** The encoding the host decoded `source` from: what a stylesheet handed
    *  over as bytes falls back to. */
   charset?: string;
+  /** The URL the document came from, which its relative URLs resolve
+   *  against — see `url.ts`. */
+  baseUrl?: string | null;
   look: RootLook;
   selectionColor?: string;
   onResource?: (
@@ -127,7 +150,14 @@ export function registerHtmlView(): void {
     // `source` and `look` are this element's own vocabulary and neither is a
     // style name today; declaring them keeps the DEV flat-style-prop
     // assertion honest if core's vocabulary grows underneath us.
-    semanticNames: ['source', 'look', 'stylesheet', 'charset', 'complete'],
+    semanticNames: [
+      'source',
+      'look',
+      'stylesheet',
+      'charset',
+      'complete',
+      'baseUrl',
+    ],
     childrenAllowed: false,
   });
 }
@@ -136,6 +166,23 @@ export function registerHtmlView(): void {
  *  two a frame of a resize asks, and a little slack for a drag that turns
  *  back. */
 const SIZES_KEPT = 4;
+
+/**
+ * A size in the whole pixels core lays out in, rounded up — less the float
+ * noise a sum of Yoga's single-precision positions carries: a page exactly
+ * `100vh` tall came to 737.0000076 under a 737-pixel viewport, and a
+ * rounding that took it for 738 scrolled it by a pixel under a scrollbar.
+ */
+function wholePixels(n: number): number {
+  return Math.max(0, Math.ceil(n - 1 / 64));
+}
+
+/** How deep `@import`s are followed: an import in an import in an import is
+ *  a stylesheet; sixteen of them is a loop that changes its URL each time. */
+const MAX_IMPORT_DEPTH = 16;
+
+/** A scheme at the start: an absolute URL, a base that means something. */
+const ABSOLUTE_URL = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 
 /** What warming a document's faces needs of the fonts: ntk's
  *  `FontManager#prewarm`, which names faces from the release that added
@@ -156,7 +203,12 @@ const enum Stale {
 
 export class HtmlViewNode extends Node {
   private _source = new HtmlSource();
+  /** Where the document's relative URLs resolve: its `<base href>` against
+   *  the `baseUrl` prop, or the prop, or nowhere (`url.ts`). */
+  private _urls = new UrlResolver();
   private _resources: ResourceStore;
+  /** The families the document's `@font-face` rules declare (`fonts.ts`). */
+  private _webFonts: WebFonts;
   /** The sheets the last restyle read, and the cascade built from them. */
   private _sheetsRead: SheetsRead | null = null;
   /** Blurred shadows, drawn once each. */
@@ -172,13 +224,22 @@ export class HtmlViewNode extends Node {
    *  `Node` has a method of that name, which a field would hide. */
   private _laidOutWidth = -1;
   private _mediaBand = -1;
+  /** The viewport the box tree's styles were computed at, for the ones
+   *  that read it (`vw`, `vh`). */
+  private _styledWidth = -1;
+  private _styledHeight = -1;
   private _documentHeight = 0;
   private _documentWidth = 0;
+  /** The viewport height the document was last laid out under, and whether
+   *  that layout read it (`LayoutResult.readsViewportHeight`). */
+  private _laidOutUnder = -1;
+  private _layoutReadsViewport = false;
+  /** Whether core is asking for this element's size right now — inside
+   *  its layout pass, where a node must not ask to be measured again. */
+  private _measuring = false;
   /** What the document came to at the widths it was last laid out at, while
-   *  nothing a layout reads has changed, and the viewport height those
-   *  layouts were made under (`_sizeAt`). */
+   *  nothing a layout reads has changed (`_sizeAt`). */
   private _sizes = new Map<number, { width: number; height: number }>();
-  private _sizesUnder = -1;
   private _textPoints: number[] | null = null;
   /** Whether code points and code units are the same index — true unless
    *  the text carries surrogate pairs. null until checked. */
@@ -190,14 +251,32 @@ export class HtmlViewNode extends Node {
 
   constructor(props: Record<string, unknown>, app: NtkApp) {
     super(ELEMENT, props, app);
+    const ask = (request: ResourceRequest) =>
+      this._props().onResource?.(request) ?? null;
     this._resources = new ResourceStore(
-      (request) => this._props().onResource?.(request) ?? null,
+      ask,
+      (what) => {
+        // A late stylesheet is a new cascade: its rules, what it imports,
+        // the faces it declares. A late image changes intrinsic sizes, so
+        // the box tree is what has to be rebuilt — not merely repainted.
+        // Either arriving after first paint is the ordinary case, not an
+        // error path: a host on a network answers every request that way.
+        this._invalidate(what === 'stylesheet' ? Stale.Style : Stale.Boxes);
+      },
+      this._urls,
+    );
+    this._webFonts = new WebFonts(
+      app,
+      ask,
       () => {
-        // A late resource changes intrinsic sizes, so the box tree is what
-        // has to be rebuilt — not merely repainted. An image that arrives
-        // after first paint is the ordinary case, not an error path.
+        // A face arrived: the family lists change, so the styles do, and
+        // every text layout kept from before was set in the face it
+        // replaces — under the same list, where a family of the document's
+        // had loaded one weight and now has another.
+        this._layouts = null;
         this._invalidate(Stale.Boxes);
       },
+      'sans-serif',
     );
     this._read();
   }
@@ -291,7 +370,22 @@ export class HtmlViewNode extends Node {
       props.onDocument?.(this._source.document);
       this._reportedDomRevision = props.domRevision ?? 0;
     }
+    this._updateBase();
     this._sweep();
+  }
+
+  /**
+   * The document's base URL: its first `<base href>`, resolved against the
+   * `baseUrl` prop, or the prop — and only an absolute one, since a relative
+   * base resolves nothing. Everything resolved against the old one is
+   * stale when it moves, the sheets' URLs with it, so the cascade is.
+   */
+  private _updateBase(): void {
+    const given = this._props().baseUrl || null;
+    const href = this._source.facts().base;
+    let base = href ? resolveUrl(href, given) : given;
+    if (base && !ABSOLUTE_URL.test(base)) base = null;
+    if (this._urls.setBase(base)) this._invalidate(Stale.Style);
   }
 
   /**
@@ -408,9 +502,12 @@ export class HtmlViewNode extends Node {
   private _restyle(width: number): void {
     const props = this._props();
     const look = this._deviceLook();
+    const documentBase = this._urls.base;
     // What the sheets are read from, in order: a `<style>`'s text or a
-    // fetched `<link>`'s, and after them the host's.
-    const read: { text: string; encoding?: string; element: Element }[] = [];
+    // fetched `<link>`'s, and after them the host's — each with the URL its
+    // own relative URLs resolve against: the document's for a `<style>`,
+    // the sheet's own for a `<link>`.
+    const read: SheetText[] = [];
     for (const ref of this._source.facts().sheets) {
       // A sheet handed over as bytes that names no encoding of its own is in
       // its referrer's: a `<link charset>`, then the document's (CSS 2.1
@@ -425,7 +522,11 @@ export class HtmlViewNode extends Node {
       const text = ref.kind === 'inline' ? ref.text : linked?.text;
       if (!text) continue;
       const encoding = linked ? linked.encoding : props.charset;
-      read.push({ text, encoding, element: ref.element });
+      const base =
+        ref.kind === 'inline'
+          ? documentBase
+          : this._resources.sheetBase(ref.href);
+      read.push({ text, encoding, element: ref.element, base });
     }
     const extra = props.stylesheet;
     const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
@@ -435,6 +536,7 @@ export class HtmlViewNode extends Node {
     // restyles the elements without parsing a framework's stylesheet again
     // or indexing its thousand rules again.
     const kept = this._sheetsRead;
+    let faces: DeclaredFace[];
     if (
       kept &&
       kept.look === look &&
@@ -445,37 +547,30 @@ export class HtmlViewNode extends Node {
       this._cascade = kept.cascade;
       kept.cascade.viewportWidth = width;
       kept.cascade.viewportHeight = this._viewportHeight();
+      faces = kept.faces;
     } else {
       const sheets: Stylesheet[] = [uaStylesheet(look)];
-      const imports: { url: string; text: string | null }[][] = [];
+      const imports: ImportRead[][] = [];
+      faces = [];
       let order = 0;
       const layers = new Map<string, number>();
-      for (const { text, encoding, element } of read) {
-        const sheet = parseStylesheet(text, order, layers);
-        // `@import` is a resource like any other, and its rules sit *before*
-        // the importing sheet's (CSS 2.1 6.4.1): a fetched import takes the
-        // order the sheet's own rules were given, and they move up past it,
-        // or an imported rule would win a tie against the sheet importing it.
-        let imported = 0;
-        const seen: { url: string; text: string | null }[] = [];
-        for (const url of sheet.imports) {
-          this._resources.request({ url, kind: 'stylesheet', element });
-          const fetched = this._resources.stylesheet(url, [encoding]);
-          seen.push({ url, text: fetched?.text ?? null });
-          if (fetched) {
-            const parsed = parseStylesheet(
-              fetched.text,
-              order + imported,
-              layers,
-            );
-            imported += parsed.rules.length + 1;
-            sheets.push(parsed);
-          }
-        }
-        imports.push(seen);
-        if (imported) for (const rule of sheet.rules) rule.order += imported;
-        order += imported + sheet.rules.length + 1;
+      // A sheet takes its place in the cascade's order once everything it
+      // imports has taken theirs: `@import` is a resource like any other,
+      // and an imported sheet's rules sit *before* the importing sheet's
+      // (CSS 2.1 6.4.1), or an imported rule would win a tie against the
+      // sheet importing it.
+      const place = (sheet: Stylesheet, element: Element): void => {
+        for (const rule of sheet.rules) rule.order = order++;
+        order += 1;
         sheets.push(sheet);
+        for (const rule of sheet.fontFaces) faces.push({ rule, element });
+      };
+      for (const { text, encoding, element, base } of read) {
+        const sheet = parseStylesheet(text, 0, layers, base);
+        const seen: ImportRead[] = [];
+        this._placeImports(sheet, encoding, element, layers, seen, place);
+        imports.push(seen);
+        place(sheet, element);
       }
       for (const text of extras) {
         const sheet = parseStylesheet(text, order, layers);
@@ -491,6 +586,7 @@ export class HtmlViewNode extends Node {
         fonts ? (family, size) => xHeightOf(fonts, family, size) : null,
         fonts ? (family, size) => zeroWidthOf(fonts, family, size) : null,
         fonts ? (family, size) => normalLineOf(fonts, family, size) : null,
+        faces.length ? this._webFonts : null,
       );
       this._sheetsRead = {
         look,
@@ -498,11 +594,22 @@ export class HtmlViewNode extends Node {
         fonts,
         texts: read.map((r) => r.text),
         encodings: read.map((r) => r.encoding),
+        bases: read.map((r) => r.base),
         imports,
         extras,
+        faces,
         cascade: this._cascade,
       };
     }
+    // The faces this width and scheme declare: a `@font-face` may sit in a
+    // `@media` block like any rule.
+    const cssWidth = width / this._scale;
+    this._webFonts.setFallback(look.fontFamily);
+    this._webFonts.setFaces(
+      faces.filter((f) =>
+        mediaMatches(f.rule.media, cssWidth, look.colorScheme),
+      ),
+    );
     this._cascade.setPointer({
       hovered: new Set(this._hovered),
       active: EMPTY_SET,
@@ -510,12 +617,53 @@ export class HtmlViewNode extends Node {
     this._mediaBand = this._cascade.mediaBand(width);
   }
 
+  /**
+   * Place what a sheet imports, and what each of those imports, depth
+   * first — asking for each through the seam, as a parse of the sheet has
+   * to. `seen` records every import read, in order, which is what tells the
+   * next restyle whether the sheets read the same (`_sameSheets`). A sheet
+   * that imports itself, or one of the sheets importing it, is read once.
+   */
+  private _placeImports(
+    sheet: Stylesheet,
+    encoding: string | undefined,
+    element: Element,
+    layers: Map<string, number>,
+    seen: ImportRead[],
+    place: (sheet: Stylesheet, element: Element) => void,
+    depth = 0,
+    chain: Set<string> = new Set(),
+  ): void {
+    for (const url of sheet.imports) {
+      this._resources.request({ url, kind: 'stylesheet', element });
+      const fetched = this._resources.stylesheet(url, [encoding]);
+      const base = this._resources.sheetBase(url);
+      seen.push({ url, text: fetched?.text ?? null, base });
+      const key = base ?? url;
+      if (!fetched || depth >= MAX_IMPORT_DEPTH || chain.has(key)) continue;
+      const imported = parseStylesheet(fetched.text, 0, layers, base);
+      chain.add(key);
+      this._placeImports(
+        imported,
+        fetched.encoding,
+        element,
+        layers,
+        seen,
+        place,
+        depth + 1,
+        chain,
+      );
+      chain.delete(key);
+      place(imported, element);
+    }
+  }
+
   /** Whether the sheets read the same as the ones `kept` was built from,
    *  down to what each imports — asking for the imports again, as a parse
    *  of the sheet would have. */
   private _sameSheets(
     kept: SheetsRead,
-    read: { text: string; encoding?: string; element: Element }[],
+    read: SheetText[],
     extras: string[],
   ): boolean {
     if (read.length !== kept.texts.length) return false;
@@ -525,10 +673,17 @@ export class HtmlViewNode extends Node {
     }
     for (let i = 0; i < read.length; i += 1) {
       const r = read[i];
-      if (r.text !== kept.texts[i] || r.encoding !== kept.encodings[i]) {
+      if (
+        r.text !== kept.texts[i] ||
+        r.encoding !== kept.encodings[i] ||
+        r.base !== kept.bases[i]
+      ) {
         return false;
       }
-      for (const { url, text } of kept.imports[i]) {
+      // The encodings an import falls back to are its importer's, which
+      // only a parse knows; the text an import decoded to under them is what
+      // was kept, and bytes that decode differently now are a new sheet.
+      for (const { url, text, base } of kept.imports[i]) {
         this._resources.request({
           url,
           kind: 'stylesheet',
@@ -536,15 +691,27 @@ export class HtmlViewNode extends Node {
         });
         const fetched = this._resources.stylesheet(url, [r.encoding]);
         if ((fetched?.text ?? null) !== text) return false;
+        if (this._resources.sheetBase(url) !== base) return false;
       }
     }
     return true;
   }
 
   private _viewportHeight(): number {
-    // The viewport a `vh` resolves against is the window's, not the
-    // document's — a document taller than the window does not make `100vh`
-    // taller with it.
+    // The viewport a `vh` resolves against is the one the document is seen
+    // through, not the document — a document taller than it does not make
+    // `100vh` taller with it. That is the box that scrolls the element,
+    // where one does: a browser's page area, below its tab strip and its
+    // toolbar, where `100vh` measured by the window put a page's footer the
+    // toolbar's height below the fold. The window, where nothing scrolls it.
+    for (let node = this.parent; node; node = node.parent) {
+      // `Scrollable`'s, and not every node's: asked the way core asks it
+      const scroller = node as { isScroller?: () => boolean };
+      if (!scroller.isScroller?.()) continue;
+      const height = node.contentBox().height;
+      if (height > 0) return height;
+      break;
+    }
     const root = this.root;
     const height = root?.abs?.height;
     return height && height > 0 ? height : 600;
@@ -552,7 +719,9 @@ export class HtmlViewNode extends Node {
 
   private _fonts(): FontsLike | null {
     const fonts = (this.app as { fonts?: FontsLike } | null)?.fonts;
-    return fonts ?? null;
+    // a face the engine cannot shape from costs its characters, not the
+    // document (`shaping.ts`)
+    return fonts ? shapingSafe(fonts) : null;
   }
 
   /** The text layouts the last pass made, for this one to reuse. */
@@ -619,12 +788,32 @@ export class HtmlViewNode extends Node {
     if ((props.domRevision ?? 0) !== this._reportedDomRevision) {
       this._reportedDomRevision = props.domRevision ?? 0;
       this._source.touch();
+      this._updateBase();
       this._sweep();
       if (this._stale < Stale.Style) this._stale = Stale.Style;
     }
+    // A document that reads its viewport's height — a `vh`, a percentage
+    // height on the root, a box placed against the initial containing block
+    // — is laid out again when that height moves. One that reads none, which
+    // is most, goes on skipping layout when the window only grew taller.
+    const viewport = this._viewportHeight();
+    const viewportMoved =
+      viewport !== this._laidOutUnder && this._readsViewportHeight();
     // the sizes other widths came to were read from what just changed
-    if (this._stale !== Stale.Nothing) this._sizes.clear();
-    if (this._stale === Stale.Nothing && this._laidOutWidth === target) return;
+    if (this._stale !== Stale.Nothing || viewportMoved) this._sizes.clear();
+    if (
+      this._stale === Stale.Nothing &&
+      this._laidOutWidth === target &&
+      !viewportMoved
+    ) {
+      return;
+    }
+    // Nothing but the viewport: the size core laid this element out at came
+    // from a layout under the old one, and nothing else will tell it so.
+    const onlyViewport =
+      this._stale === Stale.Nothing && this._laidOutWidth === target;
+    const wasWidth = this._documentWidth;
+    const wasHeight = this._documentHeight;
 
     if (this._stale >= Stale.Style || !this._cascade) {
       this._restyle(target);
@@ -640,10 +829,17 @@ export class HtmlViewNode extends Node {
     const cascade = this._cascade;
     if (!cascade) return;
     cascade.viewportWidth = target;
-    cascade.viewportHeight = this._viewportHeight();
-    if (cascade.viewportHeight !== this._sizesUnder) {
-      this._sizes.clear();
-      this._sizesUnder = cascade.viewportHeight;
+    cascade.viewportHeight = viewport;
+    // A `vw` or a `vh` is a number by the time a style holds it, so the
+    // styles computed for another viewport are wrong for this one: built
+    // again, where some style reads the side that moved. A document that
+    // reads neither — most — goes on skipping the cascade on a resize.
+    if (
+      this._stale < Stale.Boxes &&
+      ((cascade.readsViewportWidth && this._styledWidth !== target) ||
+        (cascade.readsViewportHeight && this._styledHeight !== viewport))
+    ) {
+      this._stale = Stale.Boxes;
     }
 
     if (this._stale >= Stale.Boxes || !this._tree) {
@@ -658,8 +854,17 @@ export class HtmlViewNode extends Node {
             measureControl(el, kind, style, this._fonts(), look),
         });
       this._tree = build();
+      this._styledWidth = target;
+      this._styledHeight = viewport;
       this._requestBackgrounds(this._tree);
-      if (this._contentImagesArrived(this._tree)) this._tree = build();
+      let again = this._contentImagesArrived(this._tree);
+      // the faces the styles just asked for, of the families the document
+      // loads itself — which, answered at once, change the styles asking
+      if (this._webFonts.request(this._tree.text)) {
+        this._layouts = null;
+        again = true;
+      }
+      if (again) this._tree = build();
       this._warmFaces(this._tree);
       this._textPoints = null;
       this._pointsAreUnits = null;
@@ -668,17 +873,21 @@ export class HtmlViewNode extends Node {
 
     if (
       this._tree &&
-      (this._laidOutWidth !== target || this._stale >= Stale.Layout)
+      (this._laidOutWidth !== target ||
+        viewportMoved ||
+        this._stale >= Stale.Layout)
     ) {
       const result = layoutDocument(
         this._tree,
         this._layoutFonts(),
         target,
-        this._viewportHeight(),
+        viewport,
       );
       this._documentWidth = result.width;
       this._documentHeight = result.height;
       this._laidOutWidth = target;
+      this._laidOutUnder = viewport;
+      this._layoutReadsViewport = result.readsViewportHeight;
       this._sizes.delete(target);
       this._sizes.set(target, { width: result.width, height: result.height });
       if (this._sizes.size > SIZES_KEPT) {
@@ -687,6 +896,24 @@ export class HtmlViewNode extends Node {
       this._reportControls();
     }
     this._stale = Stale.Nothing;
+    // Read after core's layout pass — the viewport is the box around this
+    // one, whose new height only that pass decides — so it is a paint that
+    // finds it moved, and the next frame that measures this element again.
+    // Inside a measure the answer already is the new size.
+    if (
+      onlyViewport &&
+      !this._measuring &&
+      (this._documentWidth !== wasWidth || this._documentHeight !== wasHeight)
+    ) {
+      this.invalidateMeasure('content');
+    }
+  }
+
+  /** Whether the document as laid out reads its viewport's height. */
+  private _readsViewportHeight(): boolean {
+    return (
+      this._layoutReadsViewport || this._cascade?.readsViewportHeight === true
+    );
   }
 
   private _reportControls(): void {
@@ -735,13 +962,19 @@ export class HtmlViewNode extends Node {
    */
   override measureContent({ width }: MeasureConstraints): MeasuredSize {
     const offered = Number.isFinite(width) ? width : 800;
-    const size = this._sizeAt(offered);
+    this._measuring = true;
+    let size: { width: number; height: number };
+    try {
+      size = this._sizeAt(offered);
+    } finally {
+      this._measuring = false;
+    }
     // core takes finite numbers only, and throws on any other from the
     // layout — a document of lengths no clamp foresaw is none too tall
     const finite = (n: number): number => (Number.isFinite(n) ? n : 0);
     return {
-      width: Math.ceil(Math.min(finite(size.width), offered)),
-      height: Math.ceil(finite(size.height)),
+      width: wholePixels(Math.min(finite(size.width), offered)),
+      height: wholePixels(finite(size.height)),
     };
   }
 
@@ -765,7 +998,8 @@ export class HtmlViewNode extends Node {
       target !== this._laidOutWidth &&
       this._stale === Stale.Nothing &&
       (this._props().domRevision ?? 0) === this._reportedDomRevision &&
-      this._viewportHeight() === this._sizesUnder
+      (!this._readsViewportHeight() ||
+        this._viewportHeight() === this._laidOutUnder)
     ) {
       const known = this._sizes.get(target);
       if (known) return known;
@@ -792,11 +1026,16 @@ export class HtmlViewNode extends Node {
       this._read();
     } else if ((next.domRevision ?? 0) !== (prev.domRevision ?? 0)) {
       this._invalidate(Stale.Style);
+    } else if ((next.baseUrl ?? null) !== (prev.baseUrl ?? null)) {
+      // the same document somewhere else: every URL in it is another one
+      this._updateBase();
+      this._sweep();
     }
   }
 
   override destroySubtree(): void {
     this._resources.destroy();
+    this._webFonts.destroy();
     this._source.destroy();
     this._shadowCache?.destroy();
     this._shadowCache = null;
@@ -903,18 +1142,75 @@ export class HtmlViewNode extends Node {
   // handler hand over — and are the one place the two units meet on the way
   // in. `_toDocument` multiplies.
 
-  /** The link under a logical window point, if any. Not part of the
-   *  selection seam: core deliberately left hover and `cursorAt` out of
-   *  #291, so following a link stays this package's. */
+  /** The link under a logical window point, if any — resolved against the
+   *  document's base where it has one. Not part of the selection seam: core
+   *  deliberately left hover and `cursorAt` out of #291, so following a
+   *  link stays this package's. */
   hrefAtPoint(x: number, y: number): string | null {
     const el = this.elementAtPoint(x, y);
     let node: Element | null = el;
     while (node) {
       const href = attr(node, 'href');
-      if (href && (tagOf(node) === 'a' || tagOf(node) === 'area')) return href;
+      if (href && (tagOf(node) === 'a' || tagOf(node) === 'area')) {
+        return this._urls.resolve(href);
+      }
       node = isElement(node.parent) ? node.parent : null;
     }
     return null;
+  }
+
+  /** The URL the document's relative URLs resolve against, or null where
+   *  it has none (`_updateBase`). */
+  get documentBase(): string | null {
+    return this._urls.base;
+  }
+
+  /**
+   * Where an element is, in document coordinates: logical pixels from this
+   * element's top left, the space the scroll offset of a box around it is
+   * in — so scrolling to a fragment is `scrollTo({ y: rect.y })`. A block's
+   * border box; an inline element's text, from its first line to its last,
+   * or where its text would start when it has none, as `<a name>` has none.
+   * Null for an element with no box — `display: none`, or not in the
+   * document.
+   */
+  elementRect(element: Element): Rect | null {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (!tree) return null;
+    const box = boxFor(tree.root, element);
+    if (!box) return null;
+    let rect: Rect | null = null;
+    if (box.kind !== 'inline' && box.kind !== 'text') {
+      rect = { x: box.x, y: box.y, width: box.width, height: box.height };
+    } else {
+      const bands: Rect[] = [];
+      if (box.subtreeTextEnd > box.subtreeTextStart) {
+        collectBands(
+          tree.root,
+          box.subtreeTextStart,
+          box.subtreeTextEnd,
+          0,
+          0,
+          bands,
+        );
+      }
+      for (const band of bands) rect = rect ? unionRect(rect, band) : band;
+      if (!rect) {
+        // an empty subtree's range is `[0, 0)`, wherever it stands: where
+        // its text would be is where the text after it starts
+        const caret = caretAt(tree.root, textAfter(tree.root, box));
+        if (!caret) return null;
+        rect = { x: caret.x, y: caret.y, width: 0, height: caret.height };
+      }
+    }
+    const s = this._scale;
+    return {
+      x: rect.x / s,
+      y: rect.y / s,
+      width: rect.width / s,
+      height: rect.height / s,
+    };
   }
 
   /** The deepest element whose box contains a logical window point. */
@@ -923,6 +1219,27 @@ export class HtmlViewNode extends Node {
     if (!tree) return null;
     const local = this._toDocument(x, y);
     return deepestAt(tree, local.x, local.y);
+  }
+
+  /**
+   * The cursor for a point of this element's, in device pixels: what core
+   * asks a drawn element as the pointer moves over it (`cursorAt`,
+   * react-x11#757). The `cursor` the document's styles give what is under
+   * it — a link's `pointer`, the user-agent sheet's — and where they say
+   * nothing, text's I-beam over text and the arrow elsewhere, as a browser
+   * shows them. The arrow is named rather than left to null: null lets
+   * core fall through to the element's `defaultCursor`, which is the
+   * I-beam on a selectable surface, and every `<Html>` is one.
+   */
+  override cursorAt(x: number, y: number): string | null {
+    const tree = this._tree;
+    if (!tree) return null;
+    const hit = { text: false };
+    const el = deepestAt(tree, x - this.abs.x, y - this.abs.y, hit);
+    const cursor = el ? tree.styles.get(el)?.style.cursor : null;
+    // a keyword; a `url()` this cannot load falls back, as its list would
+    if (cursor && cursor !== 'auto' && /^[a-z-]+$/.test(cursor)) return cursor;
+    return hit.text ? 'text' : 'default';
   }
 
   /**
@@ -941,18 +1258,194 @@ export class HtmlViewNode extends Node {
       node = isElement(node.parent) ? node.parent : null;
     }
     if (sameChain(chain, this._hovered)) return false;
+    const was = this._hovered;
     this._hovered = chain;
     cascade.setPointer({ hovered: new Set(chain), active: EMPTY_SET });
-    this._invalidate(Stale.Boxes);
+    this._restyleHover(was, chain);
     return true;
   }
 
   clearHover(): boolean {
     if (!this._hovered.length) return false;
+    const was = this._hovered;
     this._hovered = [];
     this._cascade?.setPointer({ hovered: new Set(), active: EMPTY_SET });
-    this._invalidate(Stale.Boxes);
+    this._restyleHover(was, []);
     return true;
+  }
+
+  /** The hovered chain moved: restyle where it did, or the document. */
+  private _restyleHover(was: readonly Element[], now: readonly Element[]) {
+    const done = this._hoverInPlace(was, now);
+    if (done === 'painted') this.invalidate(false, this, 'props');
+    else if (done === false) this._invalidate(Stale.Boxes);
+  }
+
+  /**
+   * A pointer move restyled where it happened, when all it changed is ink.
+   *
+   * A move to another element is a change to the cascade, and the pipeline
+   * answers one by building every box again and laying the document out:
+   * 270 ms on X11 and twice that on Cocoa for a Wikipedia article, on every
+   * link the pointer crossed. But the rules a page writes for `:hover`
+   * nearly all change a colour, an underline, a background or a border's
+   * colour — 77 of that article's 79 — and those move nothing. So:
+   *
+   *  - Only an element whose hover state flipped and that a compound testing
+   *    the pointer could match can change (`Cascade.hoverTouches`), with its
+   *    subtree, and its later siblings where a sibling combinator follows.
+   *    A move between two paragraphs under `a:hover` touches nothing.
+   *  - Those are styled again from their parents. Where anything but ink
+   *    differs (`PAINT_ONLY`), or a box is not the element's own — an
+   *    anonymous or a pseudo-element box, a marker, a control — this is
+   *    not the move to take.
+   *  - The boxes take their new styles, and each layout of their text is
+   *    made again from the runs it was made from (`TextLayoutCache.inputsOf`)
+   *    with the new ink (`runFor`), where its geometry comes out the same.
+   *
+   * Everything is checked before anything is changed. 'none' where nothing
+   * could change, 'painted' where it was restyled here, false where the
+   * document has to be built again.
+   */
+  private _hoverInPlace(
+    was: readonly Element[],
+    now: readonly Element[],
+  ): 'none' | 'painted' | false {
+    const cascade = this._cascade;
+    const tree = this._tree;
+    const layouts = this._layouts;
+    if (!cascade || !tree || !layouts || !cascade.hoverLocal) return false;
+    if (this._stale !== Stale.Nothing || this._laidOutWidth < 0) return false;
+
+    const before = new Set(was);
+    const after = new Set(now);
+    const roots: Element[] = [];
+    for (const el of was) {
+      if (!after.has(el) && cascade.hoverTouches(el)) roots.push(el);
+    }
+    for (const el of now) {
+      if (!before.has(el) && cascade.hoverTouches(el)) roots.push(el);
+    }
+    if (!roots.length) return 'none';
+
+    // what may restyle: the roots' subtrees, which inherit from them and a
+    // descendant combinator reaches, and their later siblings' too where a
+    // sibling combinator follows a compound that tests the pointer
+    const reach = new Set<Element>();
+    const collect = (el: Element): boolean => {
+      const stack: Element[] = [el];
+      while (stack.length) {
+        const at = stack.pop()!;
+        if (reach.has(at)) continue;
+        reach.add(at);
+        if (reach.size > HOVER_RESTYLE_LIMIT) return false;
+        for (const child of at.children)
+          if (isElement(child)) stack.push(child);
+      }
+      return true;
+    };
+    for (const root of roots) {
+      if (!collect(root)) return false;
+      if (!cascade.hoverSiblings) continue;
+      for (let s = root.nextSibling; s; s = s.nextSibling) {
+        if (isElement(s) && !collect(s)) return false;
+      }
+    }
+
+    // styled again from their parents, a parent first
+    const fresh = new Map<Element, ComputedStyle>();
+    const changed = new Map<Element, ComputedStyle>();
+    let refused = false;
+    const styleOf = (el: Element): ComputedStyle | null => {
+      const kept = tree.styles.get(el);
+      if (!kept) return null;
+      if (!reach.has(el)) return kept.style;
+      const done = fresh.get(el);
+      if (done) return done;
+      const parent = isElement(el.parent) ? el.parent : null;
+      const parentStyle = parent ? styleOf(parent) : null;
+      if (!parentStyle) {
+        refused = true;
+        return null;
+      }
+      const style = cascade.styleFor(el, parentStyle, kept.inFlex);
+      fresh.set(el, style);
+      const diff = inkOnly(kept.style, style);
+      if (diff === false) refused = true;
+      else if (diff) changed.set(el, style);
+      return style;
+    };
+    for (const el of reach) {
+      styleOf(el);
+      if (refused) return false;
+    }
+    if (!changed.size) return 'none';
+    for (const el of changed.keys()) {
+      const tag = tagOf(el);
+      // their backgrounds are the canvas's
+      if (tag === 'html' || tag === 'body') return false;
+    }
+
+    // the boxes: each changed element's own, and nothing that takes its
+    // style from one without being it
+    const fonts = layouts.fonts;
+    const restyled: [Box, ComputedStyle][] = [];
+    const redecorated: [Box, Box['decoration']][] = [];
+    const walk: Box[] = [tree.root];
+    while (walk.length) {
+      const box = walk.pop()!;
+      for (const child of box.children) walk.push(child);
+      const owner = box.el ?? nearestElement(box);
+      if (!owner) continue;
+      const style = changed.get(owner);
+      if (!style) continue;
+      const kept = tree.styles.get(owner)!;
+      // an anonymous box, a pseudo-element, a marker, a control: a style
+      // derived from the element's, or drawn from it somewhere else
+      if (!box.el || box.style !== kept.style) return false;
+      if (box.marker || box.replaced !== 'none') return false;
+      restyled.push([box, style]);
+      if (box.kind === 'inline') {
+        const decoration = inlineDecoration(fonts, box, style);
+        if ((decoration === null) !== (box.decoration === null)) {
+          // a rounded box with a background is laid out with its edges
+          if (style.borderRadius.some((r) => r !== 0)) return false;
+        }
+        if (decoration !== box.decoration) redecorated.push([box, decoration]);
+      }
+    }
+
+    // the text: each layout holding a run of a changed element's, made
+    // again with its new ink, where it comes out the same shape
+    const relaid = new Map<TextLayoutLike, TextLayoutLike | null>();
+    const texts: LineText[] = [];
+    walk.push(tree.root);
+    while (walk.length) {
+      const box = walk.pop()!;
+      for (const child of box.children) walk.push(child);
+      if (!box.lines) continue;
+      for (const line of box.lines) {
+        for (const text of line.texts) {
+          texts.push(text);
+          if (relaid.has(text.layout)) continue;
+          const next = reinked(text, layouts, changed, tree.styles);
+          if (next === false) return false;
+          relaid.set(text.layout, next);
+        }
+      }
+    }
+
+    // and only now, all of it
+    for (const [box, style] of restyled) box.style = style;
+    for (const [box, decoration] of redecorated) box.decoration = decoration;
+    for (const text of texts) {
+      const next = relaid.get(text.layout);
+      if (next) text.layout = next;
+    }
+    for (const [el, style] of changed) {
+      tree.styles.set(el, { style, inFlex: tree.styles.get(el)!.inFlex });
+    }
+    return 'painted';
   }
 
   /** The document, for an application that wants to read or change it. */
@@ -969,6 +1462,7 @@ export class HtmlViewNode extends Node {
    */
   touchDocument(): void {
     this._source.touch();
+    this._updateBase();
     this._sweep();
     this._invalidate(Stale.Style);
   }
@@ -1072,18 +1566,84 @@ export class HtmlViewNode extends Node {
 
 const EMPTY_SET: ReadonlySet<Element> = new Set();
 
+/** A sheet as the restyle reads it: its text, the encoding it was decoded
+ *  from, the element that brought it, and what its URLs resolve against. */
+interface SheetText {
+  text: string;
+  encoding?: string;
+  element: Element;
+  base: string | null;
+}
+
+/** One `@import` a sheet read, and what it read as. */
+interface ImportRead {
+  url: string;
+  text: string | null;
+  base: string | null;
+}
+
 /** What a cascade was built from, to tell whether the next would be the
- *  same one: the look, scale and fonts, each sheet's text and encoding, the
- *  texts of what each imports, and the host's own. */
+ *  same one: the look, scale and fonts, each sheet's text, encoding and
+ *  base, the texts of everything each imports, and the host's own — and
+ *  the faces all of them declare. */
 interface SheetsRead {
   look: RootLook;
   scale: number;
   fonts: unknown;
   texts: string[];
   encodings: (string | undefined)[];
-  imports: { url: string; text: string | null }[][];
+  bases: (string | null)[];
+  imports: ImportRead[][];
   extras: string[];
+  faces: DeclaredFace[];
   cascade: Cascade;
+}
+
+/** The first box an element made, depth first. */
+function boxFor(root: Box, element: Element): Box | null {
+  const stack: Box[] = [root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (box.el === element) return box;
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      stack.push(box.children[i]);
+    }
+  }
+  return null;
+}
+
+/** Where the document's text goes on after a box with none: the start of
+ *  the next text in document order, or the end of the last before it. */
+function textAfter(root: Box, target: Box): number {
+  const stack: Box[] = [root];
+  let passed = false;
+  let before = 0;
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (box === target) {
+      passed = true;
+      continue;
+    }
+    if (box.kind === 'text' && box.textEnd > box.textStart) {
+      if (passed) return box.textStart;
+      before = box.textEnd;
+    }
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      stack.push(box.children[i]);
+    }
+  }
+  return before;
+}
+
+function unionRect(a: Rect, b: Rect): Rect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return {
+    x,
+    y,
+    width: Math.max(a.x + a.width, b.x + b.width) - x,
+    height: Math.max(a.y + a.height, b.y + b.height) - y,
+  };
 }
 
 function textOf(el: Element): string {
@@ -1362,11 +1922,118 @@ function collectBands(
   }
 }
 
+/** The layers of a hit test, in the order CSS paints them within a
+ *  context (`deepestAt`). */
+const HIT_NEGATIVE = -1;
+const HIT_BLOCK = 0;
+const HIT_FLOAT = 1;
+const HIT_INLINE = 2;
+const HIT_POSITIONED = 3;
+
 /** The deepest element box containing a document-space point. */
-function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
+function deepestAt(
+  tree: BoxTree,
+  x: number,
+  y: number,
+  /** Told whether what was found was found under text: a run's, rather
+   *  than a box's. */
+  hit?: { text: boolean },
+): Element | null {
   const box = tree.root;
   let found: Element | null = box.el;
-  const visit = (node: Box): void => {
+  let foundKey: readonly number[] = [];
+  let viaText = false;
+  // What is under a point is what was painted there last (CSS 2.1 Appendix
+  // E): within a context, an in-flow block's own box, then a float over it,
+  // then a line's text and atomics, then a positioned box — and a float, an
+  // atomic or a positioned box paints its own content whole in its turn,
+  // those layers again inside it. So a hit carries the layers down to it,
+  // and takes the place of the one before where those come after them, or
+  // tie: an infobox floated out of one section hangs over the next, whose
+  // own box took every link in it, and a skin that puts the article in a
+  // `position: relative` box put all of it in one layer. Positioned boxes
+  // are painted in `z-index` order and then the document's (`byZIndex`),
+  // the negative ones under the flow: the Zen Garden's `›` has
+  // `z-index: 3` over the bar the "View All Designs" link fills after it.
+  const take = (el: Element, key: readonly number[], text: boolean) => {
+    if (compareKeys(key, foundKey) < 0) return;
+    found = el;
+    foundKey = key;
+    viaText = text;
+  };
+  // A box is walked into wherever it draws — its reach, overflow and all
+  // (`computePaintBounds`) — and named only where its own rectangle is. A
+  // page's `html, body { height: 100% }` is one viewport tall and its
+  // article overflows it, and a walk that went no further than a box's own
+  // rectangle found nothing below the first screen: once Wikipedia was
+  // scrolled, no link lit up. One whose reach is not known yet — before its
+  // first paint — is walked into at its rectangle, as before.
+  //
+  // A box that clips what overflows it hides what it holds past its edge —
+  // but not the positioned boxes whose containing block is outside it (CSS
+  // 2.1 11.1.1), which paint puts off until its clip ends
+  // (`paintPositioned`). So past the edge the walk goes on only into a box
+  // that holds positioned ones, carrying the clips the point is outside
+  // of, and names nothing until a positioned box escapes them all: the
+  // Zen Garden's archive links are absolute `<li>`s in an `overflow:
+  // hidden` list with no height of its own, and not one of them could be
+  // hovered or pressed.
+  const enter = (
+    child: Box,
+    context: readonly number[],
+    clipped: readonly Box[],
+  ): void => {
+    const style = child.style;
+    if (
+      style.position !== 'static' ||
+      (child.parent?.kind === 'flex' && typeof style.zIndex === 'number')
+    ) {
+      // a flex item with a `z-index` is layered unpositioned (`layered`)
+      const z = style.zIndex === 'auto' ? 0 : style.zIndex;
+      context = [...context, z < 0 ? HIT_NEGATIVE : HIT_POSITIONED, z];
+    } else if (style.float !== 'none') context = [...context, HIT_FLOAT];
+    if (clipped.length !== 0 && child.outOfFlow) {
+      const containing = containingBlockOf(child);
+      clipped = containing
+        ? clipped.filter((clip) => holds(clip, containing))
+        : [];
+    }
+    const inside =
+      x >= child.x &&
+      x < child.x + child.width &&
+      y >= child.y &&
+      y < child.y + child.height;
+    const own = inside && hasRect(child);
+    if (!own) {
+      const reach = child.boundsY;
+      const known =
+        Number.isFinite(reach) &&
+        (child.boundsWidth > 0 || child.boundsHeight > 0);
+      if (!known) {
+        if (!inside) return;
+      } else if (
+        x < child.boundsX ||
+        x >= child.boundsX + child.boundsWidth ||
+        y < reach ||
+        y >= reach + child.boundsHeight
+      ) {
+        return;
+      }
+      if (clipsOverflow(child)) {
+        if (!holdsAbsolute(child)) return;
+        clipped = [...clipped, child];
+      }
+    }
+    if (own && child.el && clipped.length === 0) {
+      take(child.el, [...context, HIT_BLOCK], false);
+    }
+    visit(child, context, clipped);
+  };
+  const visit = (
+    node: Box,
+    context: readonly number[],
+    clipped: readonly Box[],
+  ): void => {
     // The paint index answers a point query too — the wide level of a flat
     // document is the root's child list, and a hit test that walked all of
     // it would run per pointer move once hover is in the picture.
@@ -1375,41 +2042,17 @@ function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
       : node.children;
     for (const child of candidates) {
       if (child.kind === 'text' || child.kind === 'break') continue;
-      if (
-        x >= child.x &&
-        x < child.x + child.width &&
-        y >= child.y &&
-        y < child.y + child.height
-      ) {
-        if (child.el) found = child.el;
-        visit(child);
-      }
+      enter(child, context, clipped);
     }
     if (node.paintIndex && node.positionedPaint) {
       for (const child of node.positionedPaint) {
-        if (
-          x >= child.x &&
-          x < child.x + child.width &&
-          y >= child.y &&
-          y < child.y + child.height
-        ) {
-          if (child.el) found = child.el;
-          visit(child);
-        }
+        enter(child, context, clipped);
       }
     }
     if (node.lines) {
       for (const line of node.lines) {
         for (const placed of line.atomics) {
-          if (
-            x >= placed.box.x &&
-            x < placed.box.x + placed.box.width &&
-            y >= placed.box.y &&
-            y < placed.box.y + placed.box.height
-          ) {
-            if (placed.box.el) found = placed.box.el;
-            visit(placed.box);
-          }
+          enter(placed.box, [...context, HIT_INLINE], clipped);
         }
         // An inline box has no box of its own — its extent is the runs on
         // this line — so the element under a point inside a paragraph is
@@ -1418,7 +2061,7 @@ function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
         // Not from the run itself, whose layout may be one an earlier parse
         // made (`TextLayoutCache`), and which an engine may hand back with
         // nothing on it but its extent.
-        if (y >= line.y && y < line.y + line.height) {
+        if (clipped.length === 0 && y >= line.y && y < line.y + line.height) {
           for (const text of line.texts) {
             const natural = text.layout.lines[text.layoutLine];
             if (!natural) continue;
@@ -1429,7 +2072,7 @@ function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
                   tree.textBoxes,
                   text.spans.documentAt(run.start),
                 );
-                if (owner) found = owner;
+                if (owner) take(owner, [...context, HIT_INLINE], true);
               }
             }
           }
@@ -1437,8 +2080,212 @@ function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
       }
     }
   };
-  visit(box);
+  visit(box, [], []);
+  if (hit) hit.text = viaText;
   return found;
+}
+
+/** Paint order between two hits' layers, outermost first: negative where
+ *  `a` was painted under `b`. */
+function compareKeys(a: readonly number[], b: readonly number[]): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
+  return a.length - b.length;
+}
+
+// --- a pointer move restyled where it happened (`_hoverInPlace`) -----------
+
+/** How many elements a pointer move restyles in place before the document
+ *  is built again instead: a link's subtree is a handful, and a compound
+ *  that matches a container reaches everything in it. */
+const HOVER_RESTYLE_LIMIT = 300;
+
+/**
+ * The computed properties a pointer move may change in place: ink, which
+ * moves nothing. A background colour is drawn inside the box it colours
+ * and a border's colour on the border it has; `box-shadow`, `text-shadow`
+ * and an outline's width reach past it, where the paint index has already
+ * looked, and a background image has to be fetched.
+ */
+const PAINT_ONLY = new Set([
+  'color',
+  'textFillColor',
+  'cursor',
+  'backgroundColor',
+  'borderTopColor',
+  'borderRightColor',
+  'borderBottomColor',
+  'borderLeftColor',
+  'outlineColor',
+  'textDecorationLine',
+  'textDecorationColor',
+  'textDecorationStyle',
+  'textDecorationThickness',
+  'textUnderlineOffset',
+  'underline',
+  'underlineStyle',
+  'underlineThickness',
+  'underlineOffset',
+  'lineThrough',
+]);
+
+/** The fields of a run its ink is: what `runFor` takes from `PAINT_ONLY`. */
+const INK_FIELDS = [
+  'color',
+  'underline',
+  'underlineStyle',
+  'underlineOffset',
+  'underlineThickness',
+  'strike',
+] as const;
+
+/** The fields of a run its shape is, which ink never changes. */
+const FACE_FIELDS = [
+  'family',
+  'size',
+  'weight',
+  'style',
+  'letterSpacing',
+  'features',
+] as const;
+
+/** Whether two styles differ in ink alone: true where they do, null where
+ *  they do not differ, false where something else does. Custom properties
+ *  are read through the properties that use them. */
+function inkOnly(was: ComputedStyle, now: ComputedStyle): boolean | null {
+  const a = was as unknown as Record<string, unknown>;
+  const b = now as unknown as Record<string, unknown>;
+  let ink = false;
+  for (const key in b) {
+    if (key === 'custom' || sameValue(a[key], b[key])) continue;
+    if (!PAINT_ONLY.has(key)) return false;
+    ink = true;
+  }
+  return ink ? true : null;
+}
+
+/** Structural equality for a computed value: a number, a string, or the
+ *  plain objects and arrays a length or a shadow list is. */
+function sameValue(x: unknown, y: unknown): boolean {
+  if (x === y) return true;
+  if (typeof x === 'number' && typeof y === 'number') {
+    return Number.isNaN(x) && Number.isNaN(y);
+  }
+  if (!x || !y || typeof x !== 'object' || typeof y !== 'object') return false;
+  if (Array.isArray(x) !== Array.isArray(y)) return false;
+  const a = x as Record<string, unknown>;
+  const b = y as Record<string, unknown>;
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) if (!sameValue(a[key], b[key])) return false;
+  return true;
+}
+
+/** The element an anonymous box takes its style from: its nearest
+ *  ancestor's that has one. */
+function nearestElement(box: Box): Element | null {
+  for (let at = box.parent; at; at = at.parent) if (at.el) return at.el;
+  return null;
+}
+
+/**
+ * `text`'s layout made again with the ink of the elements a pointer move
+ * restyled: from the runs it was made from, each of a changed element's
+ * given the ink its new style makes (`runFor`) and nothing else. Null where
+ * none of its runs is theirs; false where that cannot be told — a run this
+ * cannot place in the document, one some other pass inked (a first line's),
+ * or a layout that comes out another shape.
+ */
+function reinked(
+  text: LineText,
+  layouts: TextLayoutCache,
+  changed: ReadonlyMap<Element, ComputedStyle>,
+  styles: BoxTree['styles'],
+): TextLayoutLike | null | false {
+  const spans = text.spans;
+  const ownerAt = (offset: number): Element | null =>
+    spans.boxAt ? (spans.boxAt(offset)?.el ?? null) : null;
+  const inputs = layouts.inputsOf(text.layout);
+  if (!inputs || !spans.boxAt) {
+    // not one this could make again: none of its text may be theirs
+    for (const line of text.layout.lines) {
+      for (const run of line.runs) {
+        const owner = spans.boxAt ? ownerAt(run.start) : null;
+        if (!spans.boxAt || (owner && changed.has(owner))) return false;
+      }
+    }
+    return null;
+  }
+  let runs: TextRun[] | null = null;
+  let offset = 0;
+  const content = inputs.content;
+  for (let i = 0; i < content.length; i += 1) {
+    const run = content[i];
+    const length = run.text.length;
+    const owner = length ? ownerAt(offset) : null;
+    const style = owner ? changed.get(owner) : undefined;
+    if (owner && style) {
+      if (ownerAt(offset + length - 1) !== owner) return false;
+      const was = runFor(run.text, styles.get(owner)!.style);
+      const now = runFor(run.text, style);
+      for (const f of FACE_FIELDS) if (!sameValue(was[f], now[f])) return false;
+      let next: Record<string, unknown> | null = null;
+      for (const f of INK_FIELDS) {
+        // a run that is not what its style made — a first line's colour
+        if (!sameValue(run[f], was[f])) return false;
+        if (sameValue(was[f], now[f])) continue;
+        next ??= { ...run };
+        if (now[f] === undefined) delete next[f];
+        else next[f] = now[f];
+      }
+      if (next) {
+        runs ??= content.slice();
+        runs[i] = next as unknown as TextRun;
+      }
+    }
+    offset += length;
+  }
+  if (!runs) return null;
+  const layout = layouts.fonts.layout(runs, inputs.style, inputs.options);
+  return sameShape(text.layout, layout) ? layout : false;
+}
+
+/** Whether two layouts put the same text in the same places: ink aside,
+ *  the same layout. */
+function sameShape(a: TextLayoutLike, b: TextLayoutLike): boolean {
+  if (a.width !== b.width || a.height !== b.height) return false;
+  if (a.lines.length !== b.lines.length) return false;
+  for (let i = 0; i < a.lines.length; i += 1) {
+    const x = a.lines[i];
+    const y = b.lines[i];
+    if (
+      x.x !== y.x ||
+      x.y !== y.y ||
+      x.width !== y.width ||
+      x.height !== y.height ||
+      x.baseline !== y.baseline ||
+      x.ascent !== y.ascent ||
+      x.descent !== y.descent ||
+      x.start !== y.start ||
+      x.end !== y.end ||
+      x.runs.length !== y.runs.length
+    ) {
+      return false;
+    }
+    for (let j = 0; j < x.runs.length; j += 1) {
+      const r = x.runs[j];
+      const t = y.runs[j];
+      if (
+        r.x !== t.x ||
+        r.width !== t.width ||
+        r.start !== t.start ||
+        r.end !== t.end
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /** The element whose text holds a document index: the text box around it,

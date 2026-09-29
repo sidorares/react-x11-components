@@ -40,9 +40,13 @@ each test, its reference and their difference side by side.
 
 What the run adapts, and why each is fair to a static renderer:
 
-- **The Ahem font is handed over**, not fetched through `@font-face`, which
-  `<Html>` ignores along with everything else that would load. An
-  application brings its fonts the same way.
+- **The Ahem font is handed over.** A test that links `/fonts/ahem.css`
+  loads it through its `@font-face`, which `<Html>` asks the host for as
+  `kind: 'font'` and the runner answers from the checkout, as WPT's server
+  would; Ahem is also registered under its family name for a test that
+  names it without the sheet, the way an application brings its fonts.
+  (Answered as an image before the runner knew the kind, the face was
+  refused, and 569 tests that link the sheet fell back to the default serif.)
 - **XHTML is read as HTML.** Most of the suite is `.xht`, which a browser
   parses as XML. Two XML constructs in a style sheet read differently to an
   HTML parser: the CDATA markers round one, which are removed, and the

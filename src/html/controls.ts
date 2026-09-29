@@ -99,15 +99,18 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
 
 /**
  * Whether a text field's box is the author's to draw: one given a border or
- * a background of its own, which the UA sheet gives no control. A browser
- * drops a field's native look for the author's then (CSS UI 4 7.1,
- * `appearance`), and so does this: the widget's frame and fill would hide
- * the author's, and what they would draw is the theme's rather than the
- * page's.
+ * a background of its own, which the UA sheet gives no control, or set to
+ * `appearance: none`, which says so outright. A browser drops a field's
+ * native look for the author's then (CSS UI 4 7.1, `appearance`), and so
+ * does this: the widget's frame and fill would hide the author's, and what
+ * they would draw is the theme's rather than the page's. `appearance: none`
+ * is how a design system writes every field it has — meetup.com's search
+ * pill holds two with no background, only one of them with a border.
  */
 export function styledField(kind: ReplacedKind, style: ComputedStyle): boolean {
   if (kind !== 'input' && kind !== 'textarea') return false;
   return (
+    style.appearance === 'none' ||
     !isTransparent(style.backgroundColor) ||
     !!style.backgroundImage ||
     !!style.backgroundGradient ||

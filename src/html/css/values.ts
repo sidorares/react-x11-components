@@ -113,6 +113,10 @@ export interface UnitContext {
   /** The advance of that font's "0", asked only for a length in `ch`; half
    *  an em where it is missing. */
   ch?: () => number;
+  /** A computed `font-family` list with the families the document loads
+   *  itself, with `@font-face`, put as the text engine knows them — see
+   *  `fonts.ts`. Absent, the list is the one the author wrote. */
+  families?: (list: string) => string;
   /** The element's line height and the root's, for `lh` and `rlh`, asked
    *  only for a length in them; 1.2em where they are missing. */
   lh?: () => number;

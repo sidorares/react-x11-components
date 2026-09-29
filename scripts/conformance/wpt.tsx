@@ -9,10 +9,12 @@
 // `run.ts` writes it and shards it. One JSON line per test on <out.jsonl>.
 //
 // What the run adapts, and why each is fair to a static HTML renderer:
-// - **Fonts are handed over, not fetched.** <Html> ignores `@font-face`, as
-//   it ignores everything that would load; the Ahem font the CSS tests are
-//   built on is registered under its family name, the way an application
-//   brings its fonts.
+// - **Fonts are handed over as the suite's server would.** <Html> asks the
+//   host for a face its `@font-face` names (`kind: 'font'`), and a test that
+//   links `/fonts/ahem.css` gets Ahem's file from the checkout, as WPT's
+//   server would send it; Ahem is also registered under its family name,
+//   with the system faces the palette names, for a test that names it
+//   without the sheet — the way an application brings its fonts.
 // - **XHTML is read as HTML.** Most of the CSS 2.1 suite is `.xht`, which a
 //   browser parses as XML. Two XML constructs change what an HTML parser
 //   sees in a style sheet: the CDATA markers round one, which are removed,
@@ -197,9 +199,20 @@ function resourcesFor(docPath: string) {
           }
         : null;
     }
-    if (data instanceof Uint8Array) return { kind: 'image', bytes: data };
-    const file = fileFor(request.url, docPath);
-    return file ? { kind: 'image', bytes: readFileSync(file) } : null;
+    // `@font-face` loads its face through the host, as a page's does: the
+    // suite's `/fonts/ahem.css` names Ahem's file, and handed back as an
+    // image it was refused, and every test that links it fell back to the
+    // default serif where the harness would have given it Ahem
+    let bytes: Uint8Array | null = null;
+    if (data instanceof Uint8Array) bytes = data;
+    else {
+      const file = fileFor(request.url, docPath);
+      if (file) bytes = readFileSync(file);
+    }
+    if (!bytes) return null;
+    return request.kind === 'font'
+      ? { kind: 'font', bytes }
+      : { kind: 'image', bytes };
   };
 }
 

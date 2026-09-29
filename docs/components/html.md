@@ -32,11 +32,12 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `selectable`      | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                     |
 | `stylesheet`      | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                   |
 | `charset`         | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.        |
-| `onResource`      | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>` or an `@import` wants loading. May return a promise. **Absent, nothing loads.**                                                        |
+| `baseUrl`         | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.        |
+| `onResource`      | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading. May return a promise. **Absent, nothing loads.**                                  |
 | `onScript`        | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                |
 | `onLink`          | `(href, ev) => void`                             | A link was activated. Absent, clicks do nothing — this never navigates by itself.                                                                                            |
 | `onDocument`      | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                   |
-| `onControlChange` | `(element, value) => void`                       | A form control changed. The element is the one in the DOM.                                                                                                                   |
+| `onControlChange` | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                    |
 | `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14.                                                                                                                            |
 | `fontFamily`      | `string`                                         | Default `'sans-serif'`.                                                                                                                                                      |
 | `monoFamily`      | `string`                                         | Code font. Default `'monospace'` — there is no theme token for it.                                                                                                           |
@@ -59,12 +60,15 @@ links[0].attribs.href = '#changed';
 handle.refresh();
 ```
 
-| Member            | What it is                                                                                               |
-| ----------------- | -------------------------------------------------------------------------------------------------------- |
-| `document`        | The live DOM — [domhandler]'s tree, which [domutils] speaks natively.                                    |
-| `refresh()`       | The DOM changed: restyle, re-lay-out, repaint.                                                           |
-| `elementAt(x, y)` | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry. |
-| `title`           | The document's `<title>`, if it had one.                                                                 |
+| Member                 | What it is                                                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `document`             | The live DOM — [domhandler]'s tree, which [domutils] speaks natively.                                                                            |
+| `refresh()`            | The DOM changed: restyle, re-lay-out, repaint.                                                                                                   |
+| `elementAt(x, y)`      | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry.                                         |
+| `hrefAt(x, y)`         | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                              |
+| `elementRect(element)` | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. Null for an element with no box. |
+| `title`                | The document's `<title>`, if it had one.                                                                                                         |
+| `base`                 | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                   |
 
 `refresh()` is explicit rather than observed, and that is a decision — see
 [Manipulating the DOM](#manipulating-the-dom).
@@ -72,9 +76,8 @@ handle.refresh();
 ## The seams
 
 **`onResource` is the only way anything loads.** This component has no
-network client and no filesystem access; it does not resolve URLs against a
-base, because it has no base and the host does. The request names the URL as
-the document wrote it, what kind of thing it is, and the element that asked:
+network client and no filesystem access. The request names the URL, what
+kind of thing it is, and the element that asked:
 
 ```jsx
 onResource={async (request) => {
@@ -82,16 +85,26 @@ onResource={async (request) => {
   if (request.kind === 'stylesheet') {
     return { kind: 'stylesheet', text: await readText(request.url) };
   }
+  if (request.kind === 'font') {
+    return { kind: 'font', bytes: await readBytes(request.url) };
+  }
   return { kind: 'image', bytes: await readBytes(request.url) };
 }}
 ```
 
-Image bytes may be PNG, JPEG or SVG; nothing names the type, so an SVG is
-told apart by its markup. Return `{ kind: 'image', image, width, height }`
-instead to hand over an image the host decoded itself. A declined or absent
-resource is an ordinary state: images draw as a frame at their attribute
-size, an `<object>` shows its fallback content, and linked stylesheets are
-skipped.
+Image bytes may be PNG, JPEG, GIF — its first frame — or SVG; nothing names
+the type, so each is told apart by its bytes. Return
+`{ kind: 'image', image, width, height }` instead to hand over an image the
+host decoded itself. A declined or absent resource is an ordinary state:
+images draw as a frame at their attribute size, an `<object>` shows its
+fallback content, linked stylesheets are skipped and text is set in the
+fonts the system has. A resource may arrive whenever it arrives: a
+stylesheet that comes after the first paint restyles the document, and an
+image rebuilds its boxes.
+
+`@import` is asked for through the same seam, an import inside an import
+too, each sheet's rules standing where its `@import` does; a sheet that
+imports itself, or one of the sheets importing it, is read once.
 
 A stylesheet may be handed over as bytes instead, with the charset the
 protocol named if it named one: `{ kind: 'stylesheet', bytes, charset }`.
@@ -111,6 +124,77 @@ handle.
 
 Inline event attributes (`onclick="…"`) are likewise left in the DOM as
 attributes and never invoked.
+
+### Base URLs
+
+The component has no idea where a document came from — it is handed a
+string — so by default the URL in a request is the one the document wrote,
+and resolving it is the host's. Give it `baseUrl` and it resolves them
+itself, as a browser does, and hands every URL over absolute:
+
+- a URL in the markup — `<img src>`, `<link href>`, a `style` attribute's
+  `url()` — against the document's first `<base href>`, itself resolved
+  against `baseUrl`, or against `baseUrl` where it has none;
+- a `url()`, an `@import` or an `@font-face` source in a **linked or
+  imported stylesheet** against _that stylesheet's_ URL, as CSS says, which
+  is the one thing the host could not have done: by the time a background
+  is asked for, nothing says which sheet it was written in. A stylesheet
+  result may carry `url`, where the host was redirected — `{ kind:
+'stylesheet', text, url }` — and the sheet's URLs resolve against where
+  it came from in the end;
+- the `href` handed to `onLink`, and the one `handle.hrefAt` answers.
+
+An absolute `<base href>` in the document is a base without the prop. With
+neither, nothing is resolved, and a host rendering mail or a help page sees
+exactly what it saw before. Nothing is fetched because of a base: it says
+where a URL points, and `onResource` still decides whether anything goes
+there.
+
+### Fonts
+
+An `@font-face` is read, and its family is the document's to use:
+
+```css
+@font-face {
+  font-family: Inter;
+  src:
+    url(inter.woff2) format('woff2'),
+    url(inter.woff) format('woff');
+  font-weight: 100 900;
+  unicode-range: U+0000-00FF;
+}
+```
+
+A source is asked for as `{ kind: 'font', url }`, and handed back as the
+file's bytes, `{ kind: 'font', bytes }` — TrueType, OpenType, WOFF or WOFF2.
+What decides whether one is asked for at all is the page, as it is in a
+browser: a face loads when a computed style wants its family at its weight
+and slant, the nearest face to them as CSS Fonts 4 matches one, and when a
+character of the document falls in its `unicode-range`. A Google Fonts sheet
+declares a family once per script and a self-hosted family often declares
+every weight it has; a page that uses two weights of the Latin half asks for
+two files. The sources are tried in order: one whose `format()` is not a
+font a text engine reads (`embedded-opentype`, `svg`) is passed over, and so
+is one the host declines or whose bytes do not register — a WOFF2 on macOS,
+whose CoreText reads no such container, falls through to the WOFF beside
+it. `local()` is not looked up.
+
+Until a face has loaded its family is left out of the list, and the text is
+set in the next family the author named, as `font-display: swap` has it;
+when it arrives the document is set again.
+
+**A family is registered under a name nothing else has.** Fonts go to
+react-x11's font manager, which is the application's, so the component
+registers each family's faces under a private name (`loadFont`'s `family`)
+and rewrites the document's `font-family` lists to it. A page's `Inter`
+changes nothing that `Inter` means to the window around it, to another
+document, or to a page that ships another file under that name — an icon
+font called `Icons` on two sites is two sets of glyphs. Two documents that
+declare a family the same way, the same files at the same weights, share one
+registration, so the second is not asked for it at all. What is still the
+application's is the font manager's fallback chain: a registered face can
+supply a glyph that no other face has to text anywhere in the app, and
+nothing is ever unregistered, which react-x11's `loadFont` documents.
 
 ## What renders
 
@@ -274,8 +358,14 @@ is centred with its images, not text first and the image after it.
 on an inline box takes its room back from the line), `padding`,
 `border` (width, style, colour, radius; a width is whole device pixels,
 rounded down, and a hairline one), `box-sizing`, `overflow`, `clip`,
-`opacity`, `visibility` — a hidden element keeps its room and draws
-nothing, its text included, and a visible element inside it is drawn; a
+`opacity` — an element under 1 is a stacking context painted whole in its
+place, the positioned boxes in it with it, at 0 not at all and between
+faded, each thing drawn in it multiplied rather than the
+group, so where two of its boxes overlap the lower shows through; a block
+inside an inline element is faded with it, and the inline element's own
+text is not — `visibility` — a
+hidden element keeps its room and draws nothing, its text included, and a
+visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
 `z-index`: a positioned box with a negative
 `z-index` is painted under the flow of its stacking context, the root
@@ -504,7 +594,8 @@ button, a one-cell `<table align="center">`, stands in the middle.
 
 **Text:** `font` and its longhands (the generic `monospace`, as the whole
 of a family list, at 13/16 of the size the others take, as in a
-browser), the `font-variant` longhands,
+browser), the families a document brings with `@font-face`
+([Fonts](#fonts)), the `font-variant` longhands,
 `font-kerning` and `font-feature-settings` (the font's own OpenType
 features: small capitals where the font has them, none synthesized),
 `text-shadow` (any number, blurred or hard), `line-height`, `text-align` (with
@@ -674,11 +765,17 @@ linear ones, `position: sticky` (treated as `relative`), and the font
 properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
 drawn only where the table's collapse. A percentage `height` resolves where
 the containing block's height is set, and on an absolutely positioned box.
-The initial containing block is the viewport — the window's height, since
-the element sizes to its content — so `html, body { height: 100% }` is a
-window tall and `bottom: 0` with nothing positioned around it is the
-window's bottom, as in a browser; the document is as tall as what overflows
-its root, so nothing longer than the window is cut off. A fragment has no
+The initial containing block is the viewport: the box that scrolls the
+element, where one does — a browser's page area, under its tabs and its
+toolbar — and the window where nothing does, since the element sizes to its
+content. So `html, body { height: 100% }` is a viewport tall and `bottom: 0`
+with nothing positioned around it is the viewport's bottom, as in a browser;
+the document is as tall as what overflows its root, so nothing longer than
+the viewport is cut off. A document that reads the viewport's height — a
+`vh`, a percentage height on the root, a box placed against the initial
+containing block — follows it when the window is resized, a frame behind
+the scroll box it is measured by; one that reads none is not laid out again
+when only the height moved. A fragment has no
 root element, and its blocks have the body's `auto` height to resolve
 against. Explicit bidi embeddings and overrides (U+202A–U+202E) that open on
 one side of an inline element with padding, border or margin and close on
@@ -710,21 +807,31 @@ engine, so those are painted and `hrefAtPoint` answers there too.
 
 **Form controls are real widgets, not pictures of them.** A `<select>` in a
 document drops the same menu as a `<Select>` in the window around it, because
-it _is_ one; the same goes for `<button>`, checkboxes, radios and text
-fields. They mount as absolutely positioned siblings of the element, at the
-rectangles layout reserved for them — the escape hatch [`<Flow>`](flow.md)
-opened for a node whose body is a form. A drawn control would take no focus,
-say nothing to a screen reader, and have to reimplement every keyboard
-convention the platform already has.
+it _is_ one; the same goes for checkboxes, radios, text fields and
+`<input type=submit>`. They mount as absolutely positioned siblings of the
+element, at the rectangles layout reserved for them — the escape hatch
+[`<Flow>`](flow.md) opened for a node whose body is a form. A drawn control
+would take no focus, say nothing to a screen reader, and have to reimplement
+every keyboard convention the platform already has.
+
+A `<button>` is the exception, because its content is the document's: an
+icon, a label in spans, a pill of the page's own design — most of the
+buttons on the web — which a widget's text label drew as "Button". It is
+laid out and drawn like any box, in the palette's control look where the
+page leaves it alone, and a press on it is reported through
+`onControlChange`, with its `value`, as a widget's is; it takes no focus of
+its own.
 
 **A text field the page styled is the page's to draw.** Give an `<input>` or
-a `<textarea>` a border or a background of its own and the document paints
-that box, as a browser drops a field's native look for the author's; the
-widget is mounted bare inside its content box, with no frame or fill, and
-writes in the element's own colour and font, which the author chose to go on
-that background. Its size is then its text's, and the border and padding
-around it are the author's. A field with neither keeps the theme's frame,
-and so does every button: core's `<Button>` draws its own label.
+a `<textarea>` a border or a background of its own, or `appearance: none`,
+and the document paints that box, as a browser drops a field's native look
+for the author's; the widget is mounted bare inside its content box, with no
+frame or fill, and writes in the element's own colour and font, which the
+author chose to go on that background. Its size is then its text's, and the
+border and padding around it are the author's. `appearance: none` is how a
+design system writes every field it has, often with neither a border nor a
+background. A field with none of the three keeps the theme's frame, and so
+does every `<input type=submit>`: core's `<Button>` draws its own label.
 
 **The application scrolls it, and height does not frighten it.** The element
 sizes to its content; put it in a `<box overflow="scroll">`, the same shape
@@ -756,9 +863,44 @@ rule and border in it come from the react-x11 palette, so an unstyled
 document dropped into a dark application arrives dark rather than as a white
 rectangle. An author stylesheet still overrides all of it.
 
-**`:hover` costs nothing unless the document uses it.** A pointer move only
-restyles when some selector in the document actually tests `:hover`, which is
-why the user-agent sheet deliberately has no `a:hover` rule.
+**`:hover` costs nothing unless the document uses it, and ink where it
+changes ink.** A pointer move only restyles when some selector in the
+document actually tests `:hover`, which is why the user-agent sheet
+deliberately has no `a:hover` rule. And it restyles where it happened: only
+an element whose hover state flipped, and that a compound testing `:hover`
+could match, is styled again — with its subtree, and its later siblings
+where `+` or `~` follows — so a move between two paragraphs under `a:hover`
+does nothing at all. Where all a move changed is ink — a colour, an
+underline, a background or a border's colour, as 77 of a Wikipedia
+article's 79 such rules change — the boxes take their new style and each
+paragraph's text is laid out again from the same runs with the new ink, at
+the same shape, and nothing else is built or laid out: a hover over that
+article went from 270 ms to under 15 ms on X11, and from about 800 ms to
+17 ms on macOS. Anything else builds the document again, as every hover
+used to — text set bold on hover, a pseudo-element or a list marker the
+element colours, a `:hover` inside `:not()` or `:has()`. `:active` is never
+set here, so a selector testing it changes nothing as the pointer moves.
+
+**The cursor is the document's.** Over a link it is the `pointer` the
+user-agent sheet gives `a[href]`, wherever a page writes `cursor` it is
+what the page wrote, and where nothing says, it is the text I-beam over
+text and the arrow elsewhere, as a browser shows them. Core asks the
+element for the point as the pointer moves (`cursorAt`, react-x11#757): a
+document is one node with a cursor for each part of it. A `url()` cursor
+is not loaded, and falls back as its list would.
+
+**What is under the pointer is what was painted there last.** The cursor,
+the hover, `elementAt` and `hrefAt` share one hit test. It reaches every
+place a box draws, including what overflows it, as long as the box does
+not clip. So a page that sets `html, body { height: 100% }` and runs longer
+than that still has links below the first screen. A clip hides only what
+it holds, not a positioned box whose containing block is outside it, and
+paint draws such a box past the edge. The hit test finds it there too:
+the Zen Garden's archive links are absolute items in an `overflow: hidden`
+list that has no height of its own. Where two boxes overlap, the answer
+follows CSS paint order, `z-index` included. An infobox floated out of
+one section and hanging over the next keeps its links, and the next
+section's box does not take them.
 
 **Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
 Everything from the cascade to paint recurses on tree depth, so a
@@ -781,6 +923,19 @@ document finds — does so from a paint, where a throw is the application's
 end, for a document it did not write. It is caught, the document is left
 blank, and the error is reported once through `console.error` outside
 production; a change to the source, or the width, tries again.
+
+**A character the text engine cannot shape is drawn as U+FFFD.** The engine
+picks the face a character is drawn in, and it can pick one its shaper has
+no glyphs in: a bitmap-only colour emoji font (`CBDT`) — what fontconfig on
+most Linux desktops answers first for an emoji — has no outlines fontkit
+can make a glyph from, and the shaper throws. That used to be the whole
+document left blank, for an emoji in a heading. A layout that throws is now
+tried again with each character that cannot be shaped in its run's face
+drawn as U+FFFD (a character past the BMP as U+FFFD and U+FE0F, the same
+length in UTF-16), found by laying each out alone and remembered per face.
+The document's text is untouched — selection, copy and the accessors see
+the page's own characters — and the first stand-in is reported once through
+`console.warn` outside production.
 
 ## Streaming
 
@@ -874,7 +1029,10 @@ itself out there, then at the new width again for the pass after: three
 passes over all of its text a frame. The size a width came to is kept
 instead, a few widths deep, and answers until anything a layout reads
 changes: the source, a stylesheet, a resource, the hover, the viewport
-height. Only a size comes from it; paint and the selection read the boxes,
+height where the document reads it. A `vw` or a `vh` is a number once
+computed, so a document whose styles use one is restyled when that side of
+the viewport moves, and one that uses neither skips the cascade on a resize
+as before. Only a size comes from it; paint and the selection read the boxes,
 and those are only ever laid out for real. A frame of a window resize at
 600 KB went from 573 to 196 ms on macOS and from 256 to 86 ms on XQuartz.
 
@@ -939,6 +1097,23 @@ loader that reads from a whitelist directory, and a script hook that reports
 what it was handed without running it. Its stylesheet is light on its own and
 re-tints under `@media (prefers-color-scheme: dark)`, so the same document
 follows a dark desktop.
+
+```bash
+npm run examples:browser -- [url]
+```
+
+The other end of the seams: a tabbed web browser, and a network. `<Tabs>`
+is its strip, and each tab a toolbar over a page that runs in a process of
+its own — core's `<Frame>`, with `page.tsx` as the pane — so a page that
+throws, wedges or grows without bound costs its own tab and nothing else.
+In the pane an `<Html>` is given the page's URL as `baseUrl`, and
+[`examples/browser/`](../../examples/browser/) is the host a document's
+requests go to — the page streamed in as it arrives, then every stylesheet,
+image and `@font-face` font through `onResource`, a few requests a host at a
+time. A tab shows the page's `<title>` and its icon; Ctrl+T (⌘T on macOS)
+opens one. It is where the component's policy — nothing fetched, nothing
+run — meets an application's: the browser fetches what a page asks for and
+runs none of its scripts.
 
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils

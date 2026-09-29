@@ -53,6 +53,7 @@ import {
   CLAMPED,
   CLIPPED_CELLS,
   COLLAPSED_CELLS,
+  FADED_BLOCKS,
   PAINT_ORDER,
   INLINE_OFFSETS,
   SHADOWED_TEXT,
@@ -116,6 +117,8 @@ export interface PaintContext extends FillContext {
   /** ntk's X11 context has patterns; the Cocoa one does not, and tiles. */
   createPattern?(image: unknown, repetition: string): unknown;
   translate?(x: number, y: number): void;
+  /** What every drawing is multiplied by: an element's `opacity`. */
+  globalAlpha?: number;
 }
 
 export interface PaintOptions {
@@ -285,6 +288,12 @@ export function computePaintBounds(box: Box, moved = false): number {
     box.boundsHeight = y2 - y1;
   }
   buildChildIndexes(box);
+  // A box with no rectangle reaches as far as what it holds, and no
+  // further: its `y` and `height` were never laid out, but moving a laid
+  // out subtree (`translate`) moves them with the rest, so they add up
+  // across passes. A flex item laid out at one width and then another had a
+  // link in it reach a document's height below its end.
+  if (!own) return bottom;
   // whether the box clips only matters where its content reaches past it,
   // and its style is one more object a walk of every box would read
   const end = box.y + box.height;
@@ -305,7 +314,7 @@ export function computePaintBounds(box: Box, moved = false): number {
  * document — and a paint low in a long document went through every block
  * above the viewport, as did a hit test during a selection drag.
  */
-function hasRect(box: Box): boolean {
+export function hasRect(box: Box): boolean {
   if (box.kind === 'inline') return false;
   if (box.kind !== 'block') return true;
   const display = box.style.display;
@@ -687,18 +696,29 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   ) {
     return;
   }
+  // An element under full opacity is painted whole in its place, as the
+  // group it is (it is a stacking context, CSS Color 4 3.2; `inFlow`): at
+  // 0 not at all — the control a page keeps invisible until its row is
+  // hovered — and between through the context's alpha. That multiplies
+  // each thing drawn rather than the group they make, so where two of its
+  // own boxes overlap the lower shows through the upper, as a browser's
+  // group does not let it.
+  const opacity = opacityOf(box);
+  if (opacity <= 0) return;
+  const fade = opacity < 1 && typeof ctx.globalAlpha === 'number';
+  if (fade) {
+    ctx.save();
+    ctx.globalAlpha = ctx.globalAlpha! * opacity;
+  }
   // `clip` shows the part of an absolutely positioned box it names, its own
   // background and borders among it (CSS 2.1 11.1.2)
   const clip = box.outOfFlow && box.style.clip ? clipOf(box, options) : null;
-  if (clip) {
-    if (clip.w <= 0 || clip.h <= 0) return;
-    if (!pushClip(ctx, clip, null)) {
-      paintContent(ctx, box, options);
-      return;
-    }
+  if (!clip || (clip.w > 0 && clip.h > 0)) {
+    const clipped = !!clip && pushClip(ctx, clip, null);
+    paintContent(ctx, box, options);
+    if (clipped) ctx.restore();
   }
-  paintContent(ctx, box, options);
-  if (clip) ctx.restore();
+  if (fade) ctx.restore();
 }
 
 function paintContent(
@@ -1359,9 +1379,9 @@ function paintedChildren(box: Box, options: PaintOptions): readonly Box[] {
 
 /** Whether a child is a plain block of its parent's flow, whose background
  *  goes with the flow's and whose lines with its lines: an in-flow block
- *  that clips nothing and is no stacking context holding a negative
- *  `z-index`, in a parent that is no flex box, where an item is painted
- *  whole (CSS Flexbox 5.4). */
+ *  that clips nothing, is fully opaque and is no stacking context holding
+ *  a negative `z-index`, in a parent that is no flex box, where an item is
+ *  painted whole (CSS Flexbox 5.4). */
 function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
   if (child.kind !== 'block' || parent.kind === 'flex') return false;
   if (options.negative && NEGATIVE.has(child)) return false;
@@ -1369,9 +1389,17 @@ function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
   return (
     style.overflowX === 'visible' &&
     style.overflowY === 'visible' &&
+    opacityOf(child) >= 1 &&
     // containment makes it a stacking context, painted whole
     !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
   );
+}
+
+/** How opaque a box is drawn: its own `opacity`, and the one it takes from
+ *  an inline box it broke in pieces (`FADED_BLOCKS`). */
+function opacityOf(box: Box): number {
+  const taken = FADED_BLOCKS.get(box);
+  return taken === undefined ? box.style.opacity : box.style.opacity * taken;
 }
 
 /** Whether a child is a flex box of its parent's flow — or a grid — that
@@ -1647,16 +1675,8 @@ function paintPositioned(
   const clips = options.clips;
   if (clips?.length && box.outOfFlow) {
     let escaped = clips.length;
-    if (box.style.position !== 'fixed') {
-      let containing = box.parent;
-      while (
-        containing?.parent &&
-        containing.style.position === 'static' &&
-        !containing.style.translate &&
-        !containing.style.transformTranslate
-      ) {
-        containing = containing.parent;
-      }
+    const containing = containingBlockOf(box);
+    if (containing) {
       escaped = 0;
       for (let i = clips.length - 1; i >= 0; i -= 1) {
         if (holds(clips[i].box, containing)) break;
@@ -1671,9 +1691,29 @@ function paintPositioned(
   paintBox(ctx, box, options);
 }
 
+/**
+ * The box an out-of-flow box is positioned in, whose clips are the ones it
+ * is under (`paintPositioned`, and the hit test's `deepestAt`): its nearest
+ * positioned or translated ancestor, or the root. Null for a fixed box,
+ * which is under none.
+ */
+export function containingBlockOf(box: Box): Box | null {
+  if (box.style.position === 'fixed') return null;
+  let containing = box.parent;
+  while (
+    containing?.parent &&
+    containing.style.position === 'static' &&
+    !containing.style.translate &&
+    !containing.style.transformTranslate
+  ) {
+    containing = containing.parent;
+  }
+  return containing;
+}
+
 /** Whether anything in a box is positioned out of the flow, which may be
  *  outside the box's clip; kept for the tree's life. */
-function holdsAbsolute(box: Box): boolean {
+export function holdsAbsolute(box: Box): boolean {
   let holds = HOLDS_ABSOLUTE.get(box);
   if (holds === undefined) {
     holds = false;
@@ -1691,7 +1731,7 @@ function holdsAbsolute(box: Box): boolean {
 const HOLDS_ABSOLUTE = new WeakMap<Box, boolean>();
 
 /** Whether `inner` is `outer` or inside it. */
-function holds(outer: Box, inner: Box | null): boolean {
+export function holds(outer: Box, inner: Box | null): boolean {
   for (let at = inner; at; at = at.parent) if (at === outer) return true;
   return false;
 }
@@ -1703,7 +1743,7 @@ function holds(outer: Box, inner: Box | null): boolean {
  * `<body>`'s where the root's is `visible`, an `<html>` the markup left out
  * among them; the viewport here is the element, which clips anyway.
  */
-function clipsOverflow(box: Box): boolean {
+export function clipsOverflow(box: Box): boolean {
   if (CLIPPED_CELLS.has(box)) return true;
   const style = box.style;
   if (
@@ -2101,13 +2141,21 @@ function settleLayers(box: Box, list: Box[]): void {
   STACKED.set(box, list);
 }
 
-/** Whether a box is a stacking context, which paints the positioned boxes
- *  in it itself: positioned with a `z-index`, or fixed or sticky with none
- *  (CSS Positioned Layout 3, as browsers paint them) — a fixed header's
- *  box set behind its content with `z-index: -1` went behind the page. */
+/**
+ * Whether a box is a stacking context, which paints the positioned boxes in
+ * it itself, and the ones below its flow: positioned with a `z-index`, or a
+ * flex item with one; fixed or sticky with none (CSS Positioned Layout 3, as
+ * browsers paint them — a fixed header's box set behind its content with
+ * `z-index: -1` went behind the page); or under full opacity (CSS Color 4
+ * 3.2), its own or the opacity it takes from an inline box it broke
+ * (`FADED_BLOCKS`), which is painted as one group — faded with it, or at
+ * `opacity: 0` not at all, where its root context drew a hover menu's
+ * absolute children.
+ */
 function stacksLayers(box: Box): boolean {
   const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
+  if (style.opacity < 1 || FADED_BLOCKS.has(box)) return true;
   // layout and paint containment make one (CSS Containment 2, 3.3, 3.5)
   if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
   if (typeof style.zIndex !== 'number') return false;

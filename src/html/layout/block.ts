@@ -81,6 +81,9 @@ export interface LayoutContext {
   clipText?: boolean;
   viewportWidth: number;
   viewportHeight: number;
+  /** Set once a box is placed against the initial containing block, whose
+   *  height is the viewport's (`LayoutResult.readsViewportHeight`). */
+  readViewportHeight?: boolean;
   /** Out-of-flow boxes, collected in flow order and laid out afterwards —
    *  an absolutely positioned box may be positioned against an ancestor
    *  whose size is not known until its in-flow content has been laid out. */
@@ -132,6 +135,13 @@ interface Clamp {
 export interface LayoutResult {
   width: number;
   height: number;
+  /**
+   * Whether the layout read the viewport's height: a percentage height on
+   * the root element, or a box positioned against the initial containing
+   * block. A document that did lays out differently in a viewport of
+   * another height, and one that did not — most — lays out the same.
+   */
+  readsViewportHeight: boolean;
 }
 
 /** Lay the whole document out at a width. */
@@ -180,8 +190,18 @@ export function layoutDocument(
   // height on the root element resolves against (CSS 2.1 10.1, 10.5); a
   // fragment has no root element, and the box standing in for its body has
   // the body's `auto` height to give
+  let readsViewportHeight = false;
   for (const child of root.children) {
-    if (child.el?.name === 'html') child.percentHeightBase = viewportHeight;
+    if (child.el?.name !== 'html') continue;
+    child.percentHeightBase = viewportHeight;
+    const { height, minHeight, maxHeight } = child.style;
+    if (
+      isPct(height) ||
+      isPct(minHeight) ||
+      (maxHeight !== 'none' && isPct(maxHeight))
+    ) {
+      readsViewportHeight = true;
+    }
   }
   const flow = layoutChildren(
     root,
@@ -219,7 +239,11 @@ export function layoutDocument(
     if (box.style.position !== 'fixed')
       bottom = Math.max(bottom, box.y + box.height);
   }
-  return { width: viewportWidth, height: bottom };
+  return {
+    width: viewportWidth,
+    height: bottom,
+    readsViewportHeight: readsViewportHeight || ctx.readViewportHeight === true,
+  };
 }
 
 /** No margin at all, shared: most joins leave a strut as it was. */
@@ -2200,6 +2224,16 @@ function placeBlock(
   // `<center>` and `align`)
   const aligned = leftAuto || rightAuto ? null : box.parent?.style.alignBlocks;
   let left = contentLeft + box.marginLeft;
+  // In the unbounded room a shrink-to-fit probe lays a box out in, there is
+  // no slack to share: half of an infinite one put an auto-margined box at
+  // x = Infinity, and the pass after moved it from there by a finite amount
+  // — NaN, which went up every ink bound above it and left a whole article
+  // unpainted.
+  if (!Number.isFinite(slack)) {
+    box.x = left;
+    box.y = y;
+    return;
+  }
   if (slack > 0) {
     if (leftAuto && rightAuto) left = contentLeft + slack / 2 + box.marginLeft;
     else if (aligned) {
@@ -3422,6 +3456,9 @@ interface CbRect {
  * box's is too.
  */
 function containingRect(containing: Box, ctx: LayoutContext): CbRect {
+  // a layout that reads the viewport's height lays out differently in
+  // another (`LayoutResult.readsViewportHeight`)
+  if (!containing.parent) ctx.readViewportHeight = true;
   return {
     x: containing.x + containing.borderLeft,
     y: containing.y + containing.captionTop + containing.borderTop,
@@ -3744,6 +3781,11 @@ export function contained(box: Box, bits: number): boolean {
 
 /** Move a box and everything under it, keeping the subtree's shape. */
 export function moveTo(box: Box, x: number, y: number): void {
+  // A position only a probe of an unbounded width comes to — a column after
+  // an infinitely wide one — is no place to move a box to: it stays where
+  // it is, since the probe only wants its size, and the pass after moves it
+  // from somewhere finite (see `placeBlock`).
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
   translate(box, x - box.x, y - box.y);
 }
 
