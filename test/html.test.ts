@@ -599,6 +599,52 @@ test('the document reports its stylesheets, scripts and resources in one pass', 
   assert.strictEqual(facts.resources.length, 2);
 });
 
+/** A parsed document's elements, and its text that is not white space. */
+function shapeOf(markup: string): string {
+  const source = new HtmlSource();
+  source.setSource(markup, true);
+  type N = { name?: string; children?: N[]; data?: string };
+  const walk = (nodes: N[]): string =>
+    nodes
+      .map((n) =>
+        n.name !== undefined
+          ? `${n.name}(${walk(n.children ?? [])})`
+          : (n.data ?? '').trim(),
+      )
+      .filter(Boolean)
+      .join(' ');
+  return walk(source.document.children as unknown as N[]);
+}
+
+test("a written <html> holds its content in a body, as HTML's parser has it", () => {
+  // htmlparser2 puts content where it stands. The root box stood in for a
+  // body around the `<html>`, so a first paragraph's margin stood below
+  // the body's, 8px lower than the same page with its `<body>` written.
+  assert.strictEqual(
+    shapeOf('<html><title>t</title><p>a</p></html>'),
+    'html(title(t) body(p(a)))',
+    'the first thing that is not head content opens it',
+  );
+  assert.strictEqual(shapeOf('<html>hi</html>'), 'html(body(hi))', 'text too');
+  assert.strictEqual(
+    shapeOf('<html><body><p>a</p></body><p>b</p></html><div>c</div>'),
+    'html(body(p(a) p(b) div(c)))',
+    'what comes after the body ends goes back into it',
+  );
+  assert.strictEqual(
+    shapeOf('<html><p>a</p><body class="x"><p>b</p></body></html>'),
+    'html(body(p(a) p(b)))',
+    'and a second body is its attributes, on the first',
+  );
+  // with no `<html>`, a body written after content takes that content in
+  assert.strictEqual(
+    shapeOf('<title>t</title><p>a</p><body><div>b</div></body>'),
+    'title(t) body(p(a) div(b))',
+  );
+  // and a fragment is left as it was written
+  assert.strictEqual(shapeOf('<p>a</p>b'), 'p(a) b');
+});
+
 test('a print-only stylesheet is not applied', () => {
   const source = new HtmlSource();
   source.setSource('<style media="print">p{color:red}</style>', true);
@@ -9653,11 +9699,12 @@ metric(
   async () => {
     // An image was measured as nothing wide — its content's width, of which
     // it has none — and then laid out at its natural size whatever the
-    // flex layout said: it did not grow, stretch or shrink. It grows and
-    // stretches now; it shrinks no further than its natural width; a line
-    // of a definite height that stretches it gives it the width its ratio
-    // makes of that height; and `flex-basis: content` is its content's
-    // width whatever width it has
+    // flex layout said: it did not grow, stretch or shrink. It grows, as
+    // tall as its ratio makes the width it grew to (CSS Flexbox 9.4, step
+    // 7), and stretches; it shrinks no further than its natural width; a
+    // line of a definite height that stretches it gives it the width its
+    // ratio makes of that height; and `flex-basis: content` is its
+    // content's width whatever width it has
     const { node } = await render(
       '<style>body{margin:0} .r{display:flex;width:200px}</style>' +
         '<div class="r"><canvas id="a" width="20" height="10" ' +
@@ -9674,7 +9721,7 @@ metric(
       const box = boxOf(el, id);
       return [box.width, box.height];
     };
-    assert.deepStrictEqual(size('a'), [200, 10], 'grown along its row');
+    assert.deepStrictEqual(size('a'), [200, 100], 'grown along its row');
     assert.deepStrictEqual(size('b'), [60, 60], 'not shrunk under its width');
     const [width, height] = size('c');
     assert.strictEqual(height, 50, 'stretched across its line');
@@ -12406,6 +12453,136 @@ metric("a video's poster and an embedded image are drawn", async () => {
   await expectPixel(ctx, 20, 10, '#ff0000', { message: "the poster's middle" });
   await expectPixel(ctx, 5, 10, '#ffffff', { message: 'contained: not here' });
   await expectPixel(ctx, 10, 30, '#ff0000', { message: 'the embed' });
+});
+
+test("aspect-ratio makes a box's width of its height, and crosses its limits over", async () => {
+  // A height and a ratio gave a block the width of its container, and
+  // `width: min-content` the width of what was in it
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="a" style="height:50px;aspect-ratio:2"></div>' +
+      '<div id="b" style="height:50px;width:min-content;aspect-ratio:2"></div>' +
+      // a greatest height is a greatest width through the ratio
+      '<div id="c" style="aspect-ratio:1;max-height:40px"></div>' +
+      // and a least height of 0 lets the ratio hold its content in
+      '<div style="position:relative;height:200px">' +
+      '<div id="d" style="position:absolute;aspect-ratio:1;width:100px;' +
+      'min-height:0"><div style="height:200px"></div></div>' +
+      // both offsets stretch a width that a greatest height then holds
+      '<div id="e" style="position:absolute;inset:0;max-height:100px;' +
+      'aspect-ratio:1"></div></div>' +
+      // a height its ratio gives it parts its two margins, which went on
+      // through it as through an empty block's
+      '<div id="f"></div><div id="w">' +
+      '<div style="width:100px;aspect-ratio:4;margin:10px 0 30px"></div></div>' +
+      '<div id="g"></div>',
+  );
+  const el = view(node);
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('a'), [100, 50]);
+  assert.deepStrictEqual(size('b'), [100, 50]);
+  assert.deepStrictEqual(size('c'), [40, 40]);
+  assert.deepStrictEqual(size('d'), [100, 100]);
+  assert.deepStrictEqual(size('e'), [100, 100]);
+  assert.strictEqual(boxOf(el, 'w').y - boxOf(el, 'f').y, 10);
+  assert.strictEqual(boxOf(el, 'g').y - boxOf(el, 'f').y, 10 + 25 + 30);
+});
+
+test('a flex item with a ratio sizes across its line from its size along it', async () => {
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      // down a column, as wide as the height it was flexed to
+      '<div style="display:inline-flex;flex-direction:column;' +
+      'flex-wrap:wrap;height:100px">' +
+      '<div id="a" style="aspect-ratio:1;min-height:0;height:50px;flex:1">' +
+      '</div></div>' +
+      // along a row, as wide as the height it is stretched to, and no
+      // narrower than that however little room there is
+      '<div style="display:flex;width:0;height:100px">' +
+      '<div id="b" style="aspect-ratio:1"></div></div>' +
+      '<div style="display:flex;width:0;height:100px">' +
+      '<div id="c" style="aspect-ratio:1/2"><div style="width:100px">' +
+      '</div></div></div>' +
+      // a column's content basis is its width through its ratio
+      '<div style="display:flex;flex-direction:column">' +
+      '<div id="d" style="flex-basis:content;width:100px;aspect-ratio:1;' +
+      'height:20px;min-height:0"></div></div>' +
+      // and an image grown along a row is as tall as that makes it
+      '<div style="display:flex;width:100px">' +
+      '<img id="e" src="r.png" style="width:50px;aspect-ratio:1;flex:1;' +
+      'min-height:0"></div>',
+    { 'r.png': RED_PNG },
+  );
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  await waitFor(() => assert.deepStrictEqual(size('e'), [100, 100]));
+  assert.deepStrictEqual(size('a'), [100, 100]);
+  assert.deepStrictEqual(size('b'), [100, 100]);
+  assert.deepStrictEqual(size('c'), [100, 100], 'its content is wider');
+  assert.deepStrictEqual(size('d'), [100, 100]);
+});
+
+test("a column with no height keeps its items' flex-basis", async () => {
+  // Yoga takes a basis only where the flex box's main size is definite, and
+  // read `flex: 0 0 50px` down such a column as the item's own height, or
+  // as its content's
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;flex-direction:column">' +
+      '<div id="a" style="flex:0 0 50px">x</div>' +
+      '<div id="b" style="flex-basis:30px;height:80px;padding:5px"></div>' +
+      '</div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 50);
+  assert.strictEqual(boxOf(el, 'b').height, 40, 'its content box, padded');
+});
+
+test('overflow: clip cuts what overflows, and is no scroll container', async () => {
+  // It was read as `hidden`: a formatting context of its own, and no
+  // automatic minimum for a flex item (CSS Overflow 3, 3.1)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;flex-direction:column;height:10px">' +
+      '<div id="a" style="overflow:clip"><div style="height:50px"></div>' +
+      '</div></div>' +
+      '<div id="b" style="overflow:clip"><p id="c" style="margin:20px 0">x' +
+      '</p></div>' +
+      '<div id="d" style="overflow-x:hidden"></div>' +
+      '<div id="e" style="overflow-x:clip"></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 50, 'its content is its least');
+  assert.strictEqual(
+    boxOf(el, 'c').y,
+    boxOf(el, 'b').y,
+    'a margin in it collapses through its top',
+  );
+  const overflow = (id: string) => {
+    const style = (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+    return [style.overflowX, style.overflowY];
+  };
+  // beside a value that scrolls, `visible` is `auto`; beside `clip`, it
+  // stays
+  assert.deepStrictEqual(overflow('d'), ['hidden', 'auto']);
+  assert.deepStrictEqual(overflow('e'), ['clip', 'visible']);
+});
+
+metric("an SVG image's root background covers the image", async () => {
+  // A browser paints it over the canvas, which is the whole image, wherever
+  // the viewBox puts the drawing; it was not painted at all
+  const { result } = await renderWithBytes(
+    '<style>body{margin:0}img{display:block}</style>' +
+      '<img src="g.svg" style="width:100px;height:40px">',
+    {
+      'g.svg': svgBytes(
+        `<svg ${SVG_NS} viewBox="0 0 1 1" style="background-color:#00ff00">` +
+          '</svg>',
+      ),
+    },
+  );
+  const ctx = result.ctx;
+  await expectPixel(ctx, 50, 20, '#00ff00', { message: 'the middle' });
+  await expectPixel(ctx, 5, 20, '#00ff00', { message: 'beside the viewBox' });
 });
 
 // --- a restyle's cost --------------------------------------------------------------

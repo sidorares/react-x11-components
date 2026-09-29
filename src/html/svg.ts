@@ -17,6 +17,7 @@ import { Element, Text } from 'domhandler';
 import type { ChildNode } from 'domhandler';
 import * as ntk from 'react-x11/ntk';
 import { isSvgRoot } from './dom.js';
+import { inkColor, isTransparent, parseColor } from './css/values.js';
 
 export { isSvgRoot };
 
@@ -151,6 +152,8 @@ interface ClipContext {
   rect?(x: number, y: number, w: number, h: number): void;
   clip?(): void;
   fill?: unknown;
+  fillStyle?: unknown;
+  fillRect?(x: number, y: number, w: number, h: number): void;
 }
 
 const ALIGN = /^x(Min|Mid|Max)Y(Min|Mid|Max)$/;
@@ -178,6 +181,9 @@ export class SvgDrawing {
   private _failed = false;
   /** An SVG image's own document, rather than an element of this one. */
   private readonly _standalone: boolean;
+  /** The background an image's root gives its canvas; undefined until it
+   *  is first read. */
+  private _canvas: string | null | undefined = undefined;
 
   constructor(root: Element, intrinsics: IntrinsicSize, standalone = false) {
     this._root = root;
@@ -205,6 +211,17 @@ export class SvgDrawing {
     if (!ctx.beginPath || !ctx.rect || !ctx.clip || !ctx.fill) return;
     const root = this._root;
     if (this._standalone) {
+      // the root's background is the canvas's, and an image's canvas is
+      // all of the rectangle, wherever its viewport and `viewBox` put the
+      // drawing (CSS 2.1 14.2): an inline one's is its box's, painted by
+      // the document
+      this._canvas ??= canvasBackground(root);
+      if (this._canvas && ctx.fillRect) {
+        ctx.save();
+        ctx.fillStyle = inkColor(this._canvas, color ?? '#000000');
+        ctx.fillRect(x, y, w, h);
+        ctx.restore();
+      }
       // an image's root is sized in the rectangle it is drawn into, which
       // is its viewport: `width="40%"` is two fifths of it. An inline one's
       // percentages are its box's, already (`svgSizeHint`).
@@ -298,6 +315,27 @@ export class SvgDrawing {
       return null;
     }
   }
+}
+
+/**
+ * The colour an SVG image's root element sets as its background, in its
+ * `style` attribute — the one place an image can say it, since
+ * `background-color` is no presentation attribute — or null for none.
+ */
+function canvasBackground(root: Element): string | null {
+  const style = root.attribs.style;
+  if (!style) return null;
+  let found: string | null = null;
+  for (const declaration of style.split(';')) {
+    const colon = declaration.indexOf(':');
+    if (colon < 0) continue;
+    const name = declaration.slice(0, colon).trim().toLowerCase();
+    if (name !== 'background-color' && name !== 'background') continue;
+    // a `background` shorthand that is a colour alone, as an image's is
+    const color = parseColor(declaration.slice(colon + 1));
+    found = color && !isTransparent(color) ? color : null;
+  }
+  return found;
 }
 
 /** Drawings of inline `<svg>` elements, per element: the element is the

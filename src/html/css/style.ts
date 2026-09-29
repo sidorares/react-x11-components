@@ -344,8 +344,8 @@ export interface ComputedStyle {
   objectFit: 'fill' | 'contain' | 'cover' | 'none' | 'scale-down';
   objectPositionX: Len;
   objectPositionY: Len;
-  overflowX: 'visible' | 'hidden' | 'scroll' | 'auto';
-  overflowY: 'visible' | 'hidden' | 'scroll' | 'auto';
+  overflowX: 'visible' | 'hidden' | 'scroll' | 'auto' | 'clip';
+  overflowY: 'visible' | 'hidden' | 'scroll' | 'auto' | 'clip';
   /** `clip: rect(…)`: the part of an absolutely positioned box that shows,
    *  its edges measured from the border box's top left, a null edge the
    *  border box's own (CSS 2.1 11.1.2). Null for `auto`. */
@@ -2550,10 +2550,44 @@ function overflowKeyword(
   v: string | undefined,
 ): ComputedStyle['overflowX'] | null {
   const s = (v ?? '').toLowerCase();
-  if (s === 'visible' || s === 'hidden' || s === 'scroll' || s === 'auto')
+  if (
+    s === 'visible' ||
+    s === 'hidden' ||
+    s === 'scroll' ||
+    s === 'auto' ||
+    s === 'clip'
+  ) {
     return s;
-  if (s === 'clip') return 'hidden';
+  }
   return null;
+}
+
+/**
+ * The two axes' `overflow` as they compute together (CSS Overflow 3, 3.1):
+ * `visible` and `clip` hold beside each other, and beside a value that
+ * makes the box a scroll container, `visible` is `auto` and `clip` is
+ * `hidden`.
+ */
+export function settleOverflow(style: ComputedStyle): void {
+  const x = style.overflowX;
+  const y = style.overflowY;
+  const scrollsX = x !== 'visible' && x !== 'clip';
+  const scrollsY = y !== 'visible' && y !== 'clip';
+  if (scrollsX === scrollsY) return;
+  if (scrollsX) style.overflowY = y === 'visible' ? 'auto' : 'hidden';
+  else style.overflowX = x === 'visible' ? 'auto' : 'hidden';
+}
+
+/**
+ * Whether a box is a scroll container: its `overflow` is neither `visible`
+ * nor `clip`. `clip` cuts what overflows as `hidden` does, but makes no
+ * formatting context and keeps a flex or grid item's automatic minimum
+ * (CSS Overflow 3, 3.1) — so only this asks it apart from `hidden`.
+ */
+export function scrolls(style: ComputedStyle): boolean {
+  const x = style.overflowX;
+  const y = style.overflowY;
+  return (x !== 'visible' && x !== 'clip') || (y !== 'visible' && y !== 'clip');
 }
 
 /** A `justify-content`: the writing mode's `start` and `end`, and `left`
