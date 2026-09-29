@@ -948,3 +948,67 @@ test('a fence’s long line scrolls inside the fence, and draws nothing past it'
   await act(() => viewport.scrollTo({ x: 200, y: 0 }));
   assert.strictEqual(viewport.scrollX, 200);
 });
+
+/** A GFM table of `count` body rows. */
+function tableSource(count: number, wide = ''): string {
+  const rows = Array.from(
+    { length: count },
+    (_, i) => `| ${i} | item-${i % 7} |`,
+  );
+  if (wide) rows.push(`| x | ${wide} |`);
+  return `| # | name |\n|---|---|\n${rows.join('\n')}\n`;
+}
+
+function textNodes(): RichTextNode[] {
+  return screen
+    .all((n) => n instanceof RichTextNode)
+    .map((n) => n as unknown as RichTextNode);
+}
+
+function runsIn(node: RichTextNode): unknown {
+  return (node.props as unknown as { runs: unknown }).runs;
+}
+
+test('a table that streams keeps the rows it had', async () => {
+  // A table is one block, whose source changes with every row a stream
+  // adds: it was measured cell by cell and rebuilt row by row for each,
+  // laying every row out again. The rows it had keep their elements.
+  const r = await renderX11(
+    h(Markdown, { source: tableSource(30), partial: true }),
+    {
+      backend: 'mock',
+    },
+  );
+  const before = textNodes().map(runsIn);
+  await act(() =>
+    r.rerender(
+      h(Markdown, {
+        source: `${tableSource(30)}| 30 | item-2 |\n`,
+        partial: true,
+      }),
+    ),
+  );
+  const after = textNodes().map(runsIn);
+  assert.equal(after.length, before.length + 2, 'one row of two cells more');
+  for (let i = 0; i < before.length; i++) {
+    assert.strictEqual(after[i], before[i], `cell ${i} was not rebuilt`);
+  }
+});
+
+test('a row that widens a column lays every row out at the new width', async () => {
+  const r = await renderX11(h(Markdown, { source: tableSource(3) }), {
+    backend: 'mock',
+  });
+  const width = () =>
+    (textNodes()[3]!.props as unknown as { style: { width: number } }).style
+      .width;
+  const narrow = width();
+  await act(() =>
+    r.rerender(
+      h(Markdown, {
+        source: tableSource(3, 'a much wider cell than the rest'),
+      }),
+    ),
+  );
+  assert.ok(width() > narrow, `${narrow} → ${width()}`);
+});

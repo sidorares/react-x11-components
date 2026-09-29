@@ -617,35 +617,100 @@ function renderTable(
   ctx: RenderCtx,
   key: number,
 ): ReactNode {
-  const look = ctx.look;
+  return h(MarkdownTable, { key, table, look: ctx.look, fonts: ctx.fonts });
+}
+
+interface MarkdownTableProps {
+  table: TableBlock;
+  look: Look;
+  fonts: FontsMeasureLike | null;
+}
+
+/** What a table keeps between renders. */
+interface TableKept {
+  look: Look;
+  fonts: FontsMeasureLike | null;
+  /** Each cell's measured width, by what the cell holds. */
+  widthOf: Map<string, number>;
+  /** The column widths the rows were built at. */
+  widths: string;
+  /** Each row's element, by where it is and what it holds. */
+  rows: Map<string, ReactElement>;
+}
+
+/**
+ * A table. A component rather than a render function so that it keeps its
+ * rows between renders: a table that streams is a block whose source
+ * changes with every row, and it was measured cell by cell and rebuilt row
+ * by row for each — 115 ms a row at 800 rows, laying every row out again.
+ * Now a cell is measured once for what it holds, and a row keeps its
+ * element while it holds the same cells at the same column widths.
+ */
+function MarkdownTable(props: MarkdownTableProps): ReactElement {
+  const { table, look, fonts } = props;
   const size = look.inline.size;
   const padX = Math.round(size * 0.6);
   const padY = Math.round(size * 0.35);
   const cols = table.align.length;
 
+  const keptRef = React.useRef<TableKept | null>(null);
+  if (
+    !keptRef.current ||
+    keptRef.current.look !== look ||
+    keptRef.current.fonts !== fonts
+  ) {
+    keptRef.current = {
+      look,
+      fonts,
+      widthOf: new Map(),
+      widths: '',
+      rows: new Map(),
+    };
+  }
+  const kept = keptRef.current;
+
   // Column widths: max-content per column, measured through the app's font
   // manager, capped so one long cell cannot starve the rest. Without a
   // font manager (the mock backend) an even fallback keeps the shape.
   const widths: number[] = new Array<number>(cols).fill(0);
-  const headStyles = inlineStyles(ctx, { weight: 700 });
-  const measure = (cells: InlineNode[][], s: InlineStyles): void => {
+  const headStyles: InlineStyles = { ...look.inline, weight: 700 };
+  const widthOf = new Map<string, number>();
+  const measure = (
+    cells: InlineNode[][],
+    s: InlineStyles,
+    head: boolean,
+  ): string[] => {
+    const keys: string[] = [];
     for (let c = 0; c < cols; c += 1) {
-      let w: number;
-      if (ctx.fonts) {
-        w = ctx.fonts.layout(runsOf(cells[c], s), {
-          family: s.family,
-          size: s.size,
-        }).width;
-      } else {
-        w = plainTextOf(cells[c]).length * size * 0.55;
+      const cellKey = `${head ? 'h' : 'b'}${JSON.stringify(cells[c])}`;
+      keys.push(cellKey);
+      let w = widthOf.get(cellKey) ?? kept.widthOf.get(cellKey);
+      if (w === undefined) {
+        if (fonts) {
+          w = fonts.layout(runsOf(cells[c], s), {
+            family: s.family,
+            size: s.size,
+          }).width;
+        } else {
+          w = plainTextOf(cells[c]).length * size * 0.55;
+        }
       }
+      widthOf.set(cellKey, w);
       widths[c] = Math.max(widths[c], Math.min(Math.ceil(w), size * 26));
     }
+    return keys;
   };
-  measure(table.header, headStyles);
-  for (const row of table.rows) measure(row, look.inline);
+  const headKeys = measure(table.header, headStyles, true);
+  const rowKeys = table.rows.map((row) => measure(row, look.inline, false));
+  kept.widthOf = widthOf;
   for (let c = 0; c < cols; c += 1)
     widths[c] = Math.max(widths[c] + padX * 2 + 2, size * 2.5);
+  // a column that grew is every row laid out again
+  const widthsKey = `${widths.join(',')}|${table.align.join(',')}`;
+  if (widthsKey !== kept.widths) {
+    kept.widths = widthsKey;
+    kept.rows = new Map();
+  }
 
   // Nothing here says "these are cells and those are rows": a copy reads the
   // boxes below, where two cells share a band of pixels and the next row
@@ -656,7 +721,7 @@ function renderTable(
     rowKey: string | number,
     bg?: string,
     divided?: boolean,
-  ): ReactNode =>
+  ): ReactElement =>
     hx(
       'box',
       {
@@ -684,17 +749,37 @@ function renderTable(
       ),
     );
 
-  const children: ReactNode[] = [];
-  children.push(renderRow(table.header, headStyles, 'h', look.headerBg));
-  table.rows.forEach((row, r) => {
-    children.push(renderRow(row, look.inline, r, undefined, true));
+  const rows = new Map<string, ReactElement>();
+  const row = (
+    id: string,
+    cellKeys: string[],
+    make: () => ReactElement,
+  ): ReactElement => {
+    const rowKey = `${id}|${cellKeys.join('|')}`;
+    const element = kept.rows.get(rowKey) ?? make();
+    rows.set(rowKey, element);
+    return element;
+  };
+  const children: ReactElement[] = [];
+  children.push(
+    row('h', headKeys, () =>
+      renderRow(table.header, headStyles, 'h', look.headerBg),
+    ),
+  );
+  table.rows.forEach((cells, r) => {
+    children.push(
+      row(String(r), rowKeys[r]!, () =>
+        renderRow(cells, look.inline, r, undefined, true),
+      ),
+    );
   });
+  kept.rows = rows;
 
   // A wide table scrolls inside its own viewport instead of forcing the
   // document wider (the root stays vertical-only).
   return hx(
     'box',
-    { key, style: { overflow: 'scroll', flexDirection: 'column' } },
+    { style: { overflow: 'scroll', flexDirection: 'column' } },
     hx(
       'box',
       {
