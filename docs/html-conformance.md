@@ -206,6 +206,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 117    | containment and `content-visibility`               | 5,652 (95%) | 5,103 (86%) |
 | 118    | `overflow-clip-margin`, `background-clip`, borders | 5,652 (95%) | 5,103 (86%) |
 | 119    | `background-repeat: space` and `round`             | 5,652 (95%) | 5,103 (86%) |
+| 120    | `border-image`                                     | 5,652 (95%) | 5,103 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3544,6 +3545,38 @@ passes, and each of these fails on both trees — the load, not the change.
 
 css-backgrounds went from 311 to 338 of 711 on X11 and from 300 to 327 on
 Cocoa; the CSS 2.1 suite is unchanged.
+
+### Round 120
+
+313. **`border-image` was not read**, neither the shorthand nor its five
+     longhands (CSS Backgrounds 3, 6). The source may be an image, an SVG
+     drawing or a `linear-gradient()`. The border is drawn in place of its
+     style as the image cut into nine by its slices, over the border image
+     area — the border box grown by the outset — in the nine parts its
+     widths make: the corners scaled into theirs, the edges scaled to their
+     sides' widths and repeated along them as `border-image-repeat` says,
+     `repeat` centred, and the middle only for `fill`. Where the image is
+     not there to draw, the style is drawn.
+314. **Slices may overlap.** A corner is still all of its own slice, and
+     the edges and the middle between two slices that meet or cross are
+     empty.
+315. **A piece drawn at another size is copied out first.** Filtering reads
+     past a piece's edge into its neighbours in the image, so the middle's
+     colour bled into every edge; on a surface of its own, a piece is
+     padded at its own edge, as browsers draw it. A drawing or a gradient
+     is drawn once at its size and cut as a raster is: a drawing with no
+     size of its own, and a gradient, take the area's, by CSS Images'
+     default sizing.
+
+Left: two tests draw with `conic-gradient()`, which `<Html>` does not draw
+at all; three have references that are fixed-layout tables whose height is
+more than their rows', which is given out unlike a browser; and two are a
+pixel off at the edges of stripes an image is scaled across.
+
+css-backgrounds went from 338 to 393 of 711 on X11 and from 327 to 370 on
+Cocoa; the CSS 2.1 suite is unchanged. The Cocoa sweep also reported 16
+tests lost, fifteen of them `background-size` ones with no border image
+in them; run alone, three times on each tree, every one passes on both.
 
 ## What `<Html>` supports
 

@@ -33,6 +33,7 @@ import type {
   BackgroundRepeat,
   BoxShadow,
   ComputedStyle,
+  ImageRepeat,
   LinearGradient,
   RepeatMode,
   VisualBox,
@@ -834,7 +835,9 @@ function paintOwnBackground(
     });
   }
   if (style.boxShadow) paintShadows(ctx, box, options, true);
-  if (!box.bordersCollapsed) paintBorders(ctx, box, options);
+  if (!box.bordersCollapsed && !paintBorderImage(ctx, box, options)) {
+    paintBorders(ctx, box, options);
+  }
   if (box.kind === 'table') paintPartBackgrounds(ctx, box, options);
 }
 
@@ -3194,6 +3197,259 @@ function paintBorders(
       false,
     );
   }
+}
+
+/**
+ * A box's border image in place of its border's style (CSS Backgrounds 3,
+ * 6.2): the image cut into nine by its slices, drawn over the border image
+ * area — the border box grown by the outset — in the nine parts the widths
+ * make. The corners are scaled into theirs, the edges scaled to their
+ * sides' widths and repeated along them as `border-image-repeat` says, and
+ * the middle drawn only where `fill` asks for it. False where there is no
+ * image to draw, or none here yet, and the border is drawn as its style
+ * says.
+ */
+function paintBorderImage(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): boolean {
+  const spec = box.style.borderImage;
+  const source = spec.source;
+  if (!source || !ctx.drawImage) return false;
+  const loaded =
+    typeof source === 'string' ? options.backgroundImageFor?.(source) : null;
+  if (typeof source === 'string' && !loaded) return false;
+  const scale = options.scale ?? 1;
+  const borders = [
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+  ];
+  const outset = spec.outset.map((o, i) =>
+    typeof o === 'number' ? o : o.times * borders[i],
+  );
+  const left = box.x + options.originX - outset[3];
+  const top = frameY(box) + options.originY - outset[0];
+  const aw = box.width + outset[1] + outset[3];
+  const ah = frameHeight(box) + outset[0] + outset[2];
+  // the image's size, CSS Images' default sizing in the area: a drawing
+  // with no size of its own is as large as it fits there, and a gradient,
+  // which has none, is the area's
+  const [cw, ch] = loaded
+    ? tileSize(loaded, { x: 0, y: 0, width: aw, height: ah }, scale)
+    : [aw, ah];
+  const iw = cw / scale;
+  const ih = ch / scale;
+  if (!(iw > 0 && ih > 0)) return false;
+  const key =
+    typeof source === 'string' ? source : gradientKey(source, box.style.color);
+  // A drawing or a gradient is drawn once at that size and cut as a raster
+  // is, so that each piece stretches its part of the one picture
+  let image = loaded?.image;
+  let unitX = 1;
+  let unitY = 1;
+  if (!loaded || image instanceof SvgDrawing) {
+    const svg = image instanceof SvgDrawing ? image : null;
+    const w = Math.max(1, Math.round(cw));
+    const h = Math.max(1, Math.round(ch));
+    const drawn = options.cached?.(
+      `border-image|${key}|${w}x${h}`,
+      w,
+      h,
+      (sctx) => {
+        if (svg) svg.draw(sctx, 0, 0, w, h, scale);
+        else if (typeof source !== 'string' && sctx.createLinearGradient) {
+          sctx.fillStyle = linearGradient(
+            sctx,
+            source,
+            0,
+            0,
+            w,
+            h,
+            box.style.color,
+          );
+          sctx.fillRect(0, 0, w, h);
+        }
+      },
+    );
+    if (!drawn) return false;
+    image = drawn;
+    unitX = w / iw;
+    unitY = h / ih;
+  }
+  // the slices, image pixels in from each edge, and none past the image
+  const slices = spec.slice.map((s, i) =>
+    Math.min(i % 2 ? iw : ih, Math.max(0, resolve(s, i % 2 ? iw : ih))),
+  );
+  const widths = spec.width.map((w, i) => {
+    if (w === 'auto') return slices[i] * scale;
+    if (typeof w === 'number') return w;
+    if ('times' in w) return w.times * borders[i];
+    return resolve(w, i % 2 ? aw : ah);
+  });
+  // widths that overlap across the area are scaled down together
+  const f = Math.min(
+    aw / (widths[1] + widths[3]),
+    ah / (widths[0] + widths[2]),
+  );
+  if (f < 1) for (let i = 0; i < 4; i += 1) widths[i] *= f;
+  const [st, sr, sb, sl] = slices;
+  const [wt, wr, wb, wl] = widths;
+  // Each column and row of the image, as from and to: the slices may
+  // overlap, and each corner is still all of its own; the edges and the
+  // middle between two that meet or cross are empty (6.2)
+  const sx = [
+    [0, sl],
+    [sl, Math.max(sl, iw - sr)],
+    [iw - sr, iw],
+  ];
+  const sy = [
+    [0, st],
+    [st, Math.max(st, ih - sb)],
+    [ih - sb, ih],
+  ];
+  const dx = [
+    Math.round(left),
+    Math.round(left + wl),
+    Math.round(left + aw - wr),
+    Math.round(left + aw),
+  ];
+  const dy = [
+    Math.round(top),
+    Math.round(top + wt),
+    Math.round(top + ah - wb),
+    Math.round(top + ah),
+  ];
+  const sized = `${Math.round(cw)}x${Math.round(ch)}`;
+  const part = (col: number, row: number, across: number, down: number) => {
+    // the piece, whole pixels of the image
+    const px = Math.round(sx[col][0] * unitX);
+    const py = Math.round(sy[row][0] * unitY);
+    const pw = Math.round(sx[col][1] * unitX) - px;
+    const ph = Math.round(sy[row][1] * unitY) - py;
+    const w = dx[col + 1] - dx[col];
+    const h = dy[row + 1] - dy[row];
+    if (!(pw > 0 && ph > 0 && w > 0 && h > 0)) return;
+    const [modeX, modeY] = spec.repeat;
+    const runX = edgeRun(col === 1 ? modeX : 'stretch', dx[col], w, across);
+    const runY = edgeRun(row === 1 ? modeY : 'stretch', dy[row], h, down);
+    // A piece drawn at another size is filtered, and the filter reads past
+    // the piece's edge into its neighbours in the image: the middle's
+    // colour bled into every edge. Copied out to a surface of its own, a
+    // piece is padded at its own edge, as a browser draws it.
+    let source = image;
+    let ox = px;
+    let oy = py;
+    const scaled =
+      runX.some(([a, b, c0, c1]) => b - a !== (c1 - c0) * pw) ||
+      runY.some(([a, b, c0, c1]) => b - a !== (c1 - c0) * ph);
+    const piece =
+      scaled &&
+      options.cached?.(
+        `border-image|${key}|${sized}|${px},${py},${pw},${ph}`,
+        pw,
+        ph,
+        (sctx) => sctx.drawImage!(image, px, py, pw, ph, 0, 0, pw, ph),
+      );
+    if (piece) {
+      source = piece;
+      ox = 0;
+      oy = 0;
+    }
+    for (const [x0, x1, cx0, cx1] of runX) {
+      for (const [y0, y1, cy0, cy1] of runY) {
+        ctx.drawImage!(
+          source,
+          ox + cx0 * pw,
+          oy + cy0 * ph,
+          (cx1 - cx0) * pw,
+          (cy1 - cy0) * ph,
+          x0,
+          y0,
+          x1 - x0,
+          y1 - y0,
+        );
+      }
+    }
+  };
+  // Along an edge, a tile is the slice scaled to the side's width; the
+  // middle's is scaled as the top edge is across and the left edge is
+  // down, or the bottom and the right, or not at all
+  const factor = (d: number, s: number) => (s > 0 && d > 0 ? d / s : 0);
+  const top0 = factor(dy[1] - dy[0], st) || factor(dy[3] - dy[2], sb) || scale;
+  const left0 = factor(dx[1] - dx[0], sl) || factor(dx[3] - dx[2], sr) || scale;
+  const middleW = (sx[1][1] - sx[1][0]) * top0;
+  const middleH = (sy[1][1] - sy[1][0]) * left0;
+  part(0, 0, 0, 0);
+  part(2, 0, 0, 0);
+  part(0, 2, 0, 0);
+  part(2, 2, 0, 0);
+  part(1, 0, (sx[1][1] - sx[1][0]) * factor(dy[1] - dy[0], st), 0);
+  part(1, 2, (sx[1][1] - sx[1][0]) * factor(dy[3] - dy[2], sb), 0);
+  part(0, 1, 0, (sy[1][1] - sy[1][0]) * factor(dx[1] - dx[0], sl));
+  part(2, 1, 0, (sy[1][1] - sy[1][0]) * factor(dx[3] - dx[2], sr));
+  if (spec.fill) part(1, 1, middleW, middleH);
+  return true;
+}
+
+const GRADIENT_KEYS = new WeakMap<LinearGradient, string>();
+
+/** A gradient as a key for what is drawn of it: its angle and stops, and
+ *  the colour `currentColor` among them is. */
+function gradientKey(gradient: LinearGradient, color: string): string {
+  let key = GRADIENT_KEYS.get(gradient);
+  if (key === undefined) {
+    key = JSON.stringify(gradient);
+    GRADIENT_KEYS.set(gradient, key);
+  }
+  return `${key}|${color}`;
+}
+
+/**
+ * The tiles of a border image part along one axis, each as where it is
+ * drawn — its start and end, whole pixels — and the fraction of the slice
+ * it shows, which is all of it but where the part cuts a tile. `stretch`
+ * is one tile over the part; `repeat` tiles of `tile`'s size centred on it;
+ * `round` as many as fit, the nearest whole number, sized to fill it; and
+ * `space` as many whole ones as fit, the room left spread around them
+ * (CSS Backgrounds 3, 6.5). A tile of no size is the part's.
+ */
+function edgeRun(
+  mode: ImageRepeat,
+  start: number,
+  length: number,
+  tile: number,
+): [number, number, number, number][] {
+  if (mode === 'stretch' || !(tile > 0)) return [[start, start + length, 0, 1]];
+  const end = start + length;
+  const tiles: [number, number, number, number][] = [];
+  let step = tile;
+  let from: number;
+  if (mode === 'round') {
+    step = tile = length / Math.max(1, Math.round(length / tile));
+    from = start;
+  } else if (mode === 'space') {
+    const fits = Math.floor(length / tile + 1e-6);
+    if (!fits) return tiles;
+    const gap = (length - fits * tile) / (fits + 1);
+    step = tile + gap;
+    from = start + gap;
+  } else {
+    // centred: the first tile at or before the start
+    from = start + (length - tile) / 2;
+    from -= Math.ceil((from - start) / tile) * tile;
+  }
+  for (let at = from; at < end - 1e-6 && tiles.length < MAX_TILES; at += step) {
+    const a = Math.max(at, start);
+    const b = Math.min(at + tile, end);
+    const x0 = Math.round(a);
+    const x1 = Math.round(b);
+    if (x1 <= x0) continue;
+    tiles.push([x0, x1, (a - at) / tile, (b - at) / tile]);
+  }
+  return tiles;
 }
 
 /**

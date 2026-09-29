@@ -469,6 +469,15 @@ after, so thirty cards with one shadow blur it once; it is ntk's canvas
 shadow on X11, which is a blur on every fill of a path otherwise, and
 CoreGraphics' on macOS.
 
+**Border images:** `border-image` and its longhands, over an image, an
+SVG drawing or a `linear-gradient()`: the image cut into nine by its
+slices and drawn over the border, and past it by the outset, in place of
+the border's style — the corners scaled into theirs, the edges along their
+sides stretched, repeated from the middle, rounded to whole tiles or
+spaced, and the middle for `fill`. Where the image is not there yet, the
+border is drawn as its style says. A piece is scaled from a copy of its
+own, so no colour of the image next to it bleeds into its edge.
+
 **Outlines:** `outline` and its longhands, and `outline-offset`: a border
 of the outline's width, style and colour round the border box grown by
 the offset, taking no room and drawn over the box's content, with the

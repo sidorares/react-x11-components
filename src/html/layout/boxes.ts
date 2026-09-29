@@ -611,9 +611,9 @@ export interface BoxTree {
   controls: Box[];
   /** Every box carrying an `href`, for click and hover. */
   links: Box[];
-  /** Every element's box with a `background-image`, for the host to be
-   *  asked for: a document has a handful, and finding them was a walk over
-   *  every box after every build. */
+  /** Every element's box with a `background-image` or a border image,
+   *  for the host to be asked for: a document has a handful, and finding
+   *  them was a walk over every box after every build. */
   backgrounds: Box[];
   /** Every image generated content names, the element whose
    *  pseudo-element names it, for the host to be asked for, and whether its
@@ -943,7 +943,11 @@ class Builder {
         this._firstLine = true;
       }
     }
-    if (style.backgroundImage || style.backgroundImages) {
+    if (
+      style.backgroundImage ||
+      style.backgroundImages ||
+      typeof style.borderImage.source === 'string'
+    ) {
       this._backgrounds.push(box);
     }
     if (style.position === 'absolute' || style.position === 'fixed')
@@ -1072,7 +1076,11 @@ class Builder {
     const box = new Box('replaced', el, style);
     box.replaced = replaced;
     into.append(box);
-    if (style.backgroundImage || style.backgroundImages) {
+    if (
+      style.backgroundImage ||
+      style.backgroundImages ||
+      typeof style.borderImage.source === 'string'
+    ) {
       this._backgrounds.push(box);
     }
     if (style.position === 'absolute' || style.position === 'fixed')

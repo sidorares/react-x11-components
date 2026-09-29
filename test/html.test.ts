@@ -66,8 +66,13 @@ import {
   parseQuotes,
 } from '../src/html/css/content.js';
 import { decodeStylesheet } from '../src/html/css/decode.js';
-import { INHERITED, inherit, initialStyle } from '../src/html/css/style.js';
-import type { ComputedStyle } from '../src/html/css/style.js';
+import {
+  INHERITED,
+  NO_BORDER_IMAGE,
+  inherit,
+  initialStyle,
+} from '../src/html/css/style.js';
+import type { BorderImage, ComputedStyle } from '../src/html/css/style.js';
 import { SurfaceCache } from '../src/html/surfaces.js';
 
 const h = React.createElement;
@@ -2303,7 +2308,15 @@ type PaintOp =
     }
   | { op: 'save' }
   | { op: 'restore' }
-  | { op: 'image'; x: number; y: number; w: number; h: number }
+  | {
+      op: 'image';
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      /** The piece of the image drawn, where not all of it is. */
+      src?: number[];
+    }
   | { op: 'text'; x: number; y: number; shadow?: Fill['shadow'] };
 
 /** What painting the document fills, in order. The glyphs are left out:
@@ -2483,7 +2496,13 @@ async function fillsOf(
       }
       path = null;
     },
-    drawImage(_image: unknown, x: number, y: number, w: number, h: number) {
+    drawImage(_image: unknown, ...args: number[]) {
+      if (args.length >= 8) {
+        const [x, y, w, h] = args.slice(4);
+        ops?.push({ op: 'image', x, y, w, h, src: args.slice(0, 4) });
+        return;
+      }
+      const [x, y, w, h] = args;
       ops?.push({ op: 'image', x, y, w, h });
     },
     createLinearGradient(x0: number, y0: number, x1: number, y1: number) {
@@ -12970,6 +12989,131 @@ test('background-clip and background-origin name the boxes a layer takes', async
       [15, 15],
       [0, 80],
       [5, 165],
+    ],
+  );
+});
+
+test("border-image's shorthand and longhands are read", async () => {
+  // none of them was (CSS Backgrounds 3, 6)
+  const { node } = await render(
+    '<div id="a" style="border-image:url(a.png) 27 fill / 10px 2 / 5 round space">' +
+      '</div>' +
+      '<div id="b" style="border-image:linear-gradient(red,blue) fill 10% 20 / / 3px">' +
+      '</div>' +
+      '<div id="c" style="border-image-source:url(c.png);border-image-slice:1 2;' +
+      'border-image-width:auto 50%;border-image-repeat:repeat;' +
+      'border-image-slice:-1"></div>' +
+      '<div id="d" style="border-image:url(a.png) 27 / -1px"></div>',
+  );
+  const el = view(node);
+  const image = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { borderImage: BorderImage } }).style
+      .borderImage;
+  assert.deepStrictEqual(image('a'), {
+    source: 'a.png',
+    slice: [27, 27, 27, 27],
+    fill: true,
+    width: [10, { times: 2 }, 10, { times: 2 }],
+    outset: [{ times: 5 }, { times: 5 }, { times: 5 }, { times: 5 }],
+    repeat: ['round', 'space'],
+  });
+  const b = image('b');
+  assert.ok(b.source && typeof b.source === 'object', 'a gradient');
+  assert.deepStrictEqual(
+    [b.slice, b.fill, b.width, b.outset],
+    [
+      [{ pct: 10 }, 20, { pct: 10 }, 20],
+      true,
+      NO_BORDER_IMAGE.width,
+      [3, 3, 3, 3],
+    ],
+  );
+  const c = image('c');
+  // a negative slice is none, and the one before it stands
+  assert.deepStrictEqual(
+    [c.source, c.slice, c.width, c.repeat],
+    [
+      'c.png',
+      [1, 2, 1, 2],
+      ['auto', { pct: 50 }, 'auto', { pct: 50 }],
+      ['repeat', 'repeat'],
+    ],
+  );
+  assert.strictEqual(image('d'), NO_BORDER_IMAGE, 'a negative width is none');
+});
+
+test('a border image is cut into nine and drawn over the border', async () => {
+  // It was not read: the border was drawn as its style said. The corners
+  // are scaled into theirs, the edges along their sides, the middle drawn
+  // for `fill`, and the border's own style not at all (CSS Backgrounds 3,
+  // 6.2)
+  const draw = async (style: string) => {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        `<div style="border:10px solid #fe0000;${style}"></div>`,
+    );
+    const ops: PaintOp[] = [];
+    const fills = await fillsOf(view(node), ops, {
+      backgroundImageFor: () => ({
+        image: {},
+        width: 15,
+        height: 15,
+        ratio: 1,
+      }),
+    });
+    assert.ok(!fills.some((f) => f.style === parseColor('#fe0000')));
+    return ops.flatMap((op) =>
+      op.op === 'image' ? [[...(op.src ?? []), op.x, op.y, op.w, op.h]] : [],
+    );
+  };
+  assert.deepStrictEqual(
+    await draw('width:40px;height:20px;border-image:url(a.png) 5 fill'),
+    [
+      [0, 0, 5, 5, 0, 0, 10, 10],
+      [10, 0, 5, 5, 50, 0, 10, 10],
+      [0, 10, 5, 5, 0, 30, 10, 10],
+      [10, 10, 5, 5, 50, 30, 10, 10],
+      [5, 0, 5, 5, 10, 0, 40, 10],
+      [5, 10, 5, 5, 10, 30, 40, 10],
+      [0, 5, 5, 5, 0, 10, 10, 20],
+      [10, 5, 5, 5, 50, 10, 10, 20],
+      [5, 5, 5, 5, 10, 10, 40, 20],
+    ],
+  );
+  // slices that overlap leave each corner all of its own, and no edges
+  assert.deepStrictEqual(
+    await draw('width:40px;height:20px;border-image:url(a.png) 10'),
+    [
+      [0, 0, 10, 10, 0, 0, 10, 10],
+      [5, 0, 10, 10, 50, 0, 10, 10],
+      [0, 5, 10, 10, 0, 30, 10, 10],
+      [5, 5, 10, 10, 50, 30, 10, 10],
+    ],
+  );
+  // `round` fits whole tiles along the top, and `space` sets them apart
+  // down the sides, the tile the slice scaled to the side's width
+  const tiles = await draw(
+    'width:45px;height:26px;border-image:url(a.png) 5 / 10px round space',
+  );
+  assert.deepStrictEqual(
+    tiles
+      .filter((t) => t[5] === 0 && t[4] > 0 && t[4] < 55)
+      .map((t) => [t[4], t[6]]),
+    [
+      [10, 9],
+      [19, 9],
+      [28, 9],
+      [37, 9],
+      [46, 9],
+    ],
+  );
+  assert.deepStrictEqual(
+    tiles
+      .filter((t) => t[4] === 0 && t[5] > 0 && t[5] < 36)
+      .map((t) => [t[5], t[7]]),
+    [
+      [12, 10],
+      [24, 10],
     ],
   );
 });

@@ -498,6 +498,10 @@ export interface ComputedStyle {
   backgroundOrigin: VisualBox;
   backgroundClips: VisualBox[] | null;
   backgroundOrigins: VisualBox[] | null;
+  /** `border-image` and its longhands (CSS Backgrounds 3, 6): one object,
+   *  replaced whole when any of them changes, and `NO_BORDER_IMAGE` where
+   *  nothing sets them. */
+  borderImage: BorderImage;
   /** `-webkit-text-fill-color`: what the glyphs are filled with where it
    *  is not the text's `color` — Tailwind's `text-transparent` over a
    *  `bg-clip-text` gradient; null for `color`, as `currentColor` is. */
@@ -837,6 +841,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backgroundOrigin: 'padding-box',
     backgroundClips: null,
     backgroundOrigins: null,
+    borderImage: NO_BORDER_IMAGE,
     textFillColor: null,
 
     textDecorationLine: 'none',
@@ -1740,6 +1745,37 @@ export function applyDeclaration(
       const boxes = clips.map((c) => (c === 'text' ? 'border-box' : c));
       style.backgroundClip = boxes[0];
       style.backgroundClips = boxes.length > 1 ? boxes : null;
+      return;
+    }
+    case 'border-image': {
+      const image = readBorderImage(value, ctx);
+      if (image) style.borderImage = image;
+      return;
+    }
+    case 'border-image-source': {
+      const source = backgroundImageOf(value, ctx);
+      if (source === undefined) return;
+      style.borderImage = { ...style.borderImage, source };
+      return;
+    }
+    case 'border-image-slice': {
+      const slice = borderImageSlice(splitValue(value));
+      if (slice) style.borderImage = { ...style.borderImage, ...slice };
+      return;
+    }
+    case 'border-image-width': {
+      const width = sidesOf(splitValue(value), (p) => imageWidthOf(p, ctx));
+      if (width) style.borderImage = { ...style.borderImage, width };
+      return;
+    }
+    case 'border-image-outset': {
+      const outset = sidesOf(splitValue(value), (p) => imageOutsetOf(p, ctx));
+      if (outset) style.borderImage = { ...style.borderImage, outset };
+      return;
+    }
+    case 'border-image-repeat': {
+      const repeat = imageRepeatOf(splitValue(value.toLowerCase()));
+      if (repeat) style.borderImage = { ...style.borderImage, repeat };
       return;
     }
     case 'background-origin': {
@@ -2975,6 +3011,206 @@ function fromEdge(at: number, offset: Len | null): Len | null {
 
 /** `background-repeat`: one keyword, or one for each axis (CSS3). `space`
  *  and `round` tile as `repeat` does. */
+/**
+ * A border's image (CSS Backgrounds 3, 6): the image, where it is cut —
+ * each side's slice in image pixels or a percentage of the image, top
+ * first — and whether its middle is drawn; how wide it is drawn over each
+ * side and how far past the border box it reaches, each a multiple of the
+ * border's width or a length; and how its edges repeat, across and down.
+ */
+export interface BorderImage {
+  source: BackgroundImage;
+  slice: readonly [Slice, Slice, Slice, Slice];
+  fill: boolean;
+  width: readonly [ImageWidth, ImageWidth, ImageWidth, ImageWidth];
+  outset: readonly [ImageOutset, ImageOutset, ImageOutset, ImageOutset];
+  repeat: readonly [ImageRepeat, ImageRepeat];
+}
+
+/** A slice's depth: image pixels, or a percentage of the image. */
+export type Slice = number | Pct;
+
+/** A multiple of the border's width, which a bare number is. */
+export interface Times {
+  times: number;
+}
+
+/** A border image's width over a side: `auto` is its slice's own. */
+export type ImageWidth = Times | Len;
+
+/** How far a border image reaches past the border box on a side. */
+export type ImageOutset = Times | number;
+
+/** How a border image's edges and middle fill their parts. */
+export type ImageRepeat = 'stretch' | 'repeat' | 'round' | 'space';
+
+const ONCE: Times = { times: 1 };
+const ALL: Pct = { pct: 100 };
+
+export const NO_BORDER_IMAGE: BorderImage = {
+  source: null,
+  slice: [ALL, ALL, ALL, ALL],
+  fill: false,
+  width: [ONCE, ONCE, ONCE, ONCE],
+  outset: [0, 0, 0, 0],
+  repeat: ['stretch', 'stretch'],
+};
+
+/** One to four values, one a side as `margin` takes them; null where one
+ *  is not a value. */
+function sidesOf<T>(
+  parts: string[],
+  read: (part: string) => T | null,
+): readonly [T, T, T, T] | null {
+  if (!parts.length || parts.length > 4) return null;
+  const values: T[] = [];
+  for (const part of parts) {
+    const v = read(part);
+    if (v === null) return null;
+    values.push(v);
+  }
+  return fourSides(values) as [T, T, T, T];
+}
+
+/** A slice's depth: a number, image pixels, or a percentage; neither may
+ *  be negative. */
+function sliceOf(part: string): Slice | null {
+  if (part.endsWith('%')) {
+    const n = parseNumber(part.slice(0, -1));
+    return n !== null && n >= 0 ? { pct: n } : null;
+  }
+  const n = parseNumber(part);
+  return n !== null && n >= 0 ? n : null;
+}
+
+/** `border-image-slice`: one to four depths and `fill`, before them or
+ *  after them. */
+function borderImageSlice(
+  parts: string[],
+): Pick<BorderImage, 'slice' | 'fill'> | null {
+  const words = parts.map((p) => p.toLowerCase());
+  const at = words.indexOf('fill');
+  let fill = false;
+  if (at >= 0) {
+    if (at !== 0 && at !== words.length - 1) return null;
+    fill = true;
+    words.splice(at, 1);
+  }
+  const slice = sidesOf(words, sliceOf);
+  return slice ? { slice, fill } : null;
+}
+
+/** A border image's width over a side: a multiple, a length or a
+ *  percentage of the image area, or `auto`; none negative. */
+function imageWidthOf(part: string, ctx: UnitContext): ImageWidth | null {
+  const n = parseNumber(part);
+  if (n !== null) return n >= 0 ? { times: n } : null;
+  const len = parseLength(part, ctx);
+  if (len === null) return null;
+  if (typeof len === 'number') return len >= 0 ? len : null;
+  return len === 'auto' || (len.pct >= 0 && !len.px) ? len : null;
+}
+
+/** How far a border image reaches out on a side: a multiple, or a
+ *  length; neither negative. */
+function imageOutsetOf(part: string, ctx: UnitContext): ImageOutset | null {
+  const n = parseNumber(part);
+  if (n !== null) return n >= 0 ? { times: n } : null;
+  const len = parseLength(part, ctx);
+  return typeof len === 'number' && len >= 0 ? len : null;
+}
+
+const IMAGE_REPEATS = new Set(['stretch', 'repeat', 'round', 'space']);
+
+/** `border-image-repeat`: one keyword for both ways, or two. */
+function imageRepeatOf(
+  words: string[],
+): readonly [ImageRepeat, ImageRepeat] | null {
+  if (!words.length || words.length > 2) return null;
+  if (!words.every((w) => IMAGE_REPEATS.has(w))) return null;
+  const [x, y = x] = words as ImageRepeat[];
+  return [x, y];
+}
+
+/**
+ * The `border-image` shorthand: the image, the slices — with a width after
+ * a slash and an outset after a second — and the repeat, in any order; each
+ * at most once, and what it does not name reset (CSS Backgrounds 3, 6.8).
+ */
+function readBorderImage(value: string, ctx: UnitContext): BorderImage | null {
+  const parts = splitValue(value).flatMap(splitSlash);
+  const image: {
+    -readonly [K in keyof BorderImage]: BorderImage[K];
+  } = { ...NO_BORDER_IMAGE };
+  let seen = 0;
+  const once = (bit: number): boolean => {
+    if (seen & bit) return false;
+    seen |= bit;
+    return true;
+  };
+  const isSlice = (p: string) =>
+    p.toLowerCase() === 'fill' || sliceOf(p) !== null;
+  for (let i = 0; i < parts.length;) {
+    const part = parts[i];
+    const v = part.toLowerCase();
+    if (v === 'none' || v.startsWith('url(') || IMAGE_FUNCTION.test(v)) {
+      const source = backgroundImageOf(part, ctx);
+      if (source === undefined || !once(1)) return null;
+      image.source = source;
+      i += 1;
+    } else if (IMAGE_REPEATS.has(v)) {
+      let end = i + 1;
+      if (end < parts.length && IMAGE_REPEATS.has(parts[end].toLowerCase())) {
+        end += 1;
+      }
+      const repeat = imageRepeatOf(
+        parts.slice(i, end).map((p) => p.toLowerCase()),
+      );
+      if (!repeat || !once(2)) return null;
+      image.repeat = repeat;
+      i = end;
+    } else if (isSlice(part)) {
+      let end = i;
+      while (end < parts.length && isSlice(parts[end])) end += 1;
+      const slice = borderImageSlice(parts.slice(i, end));
+      if (!slice || !once(4)) return null;
+      image.slice = slice.slice;
+      image.fill = slice.fill;
+      i = end;
+      if (parts[i] !== '/') continue;
+      // `/ width`, `/ width / outset` or `/ / outset`
+      i += 1;
+      end = i;
+      while (end < parts.length && imageWidthOf(parts[end], ctx) !== null) {
+        end += 1;
+      }
+      if (end > i) {
+        const width = sidesOf(parts.slice(i, end), (p) => imageWidthOf(p, ctx));
+        if (!width) return null;
+        image.width = width;
+      }
+      const widened = end > i;
+      i = end;
+      if (parts[i] !== '/') {
+        if (!widened) return null;
+        continue;
+      }
+      i += 1;
+      end = i;
+      while (end < parts.length && imageOutsetOf(parts[end], ctx) !== null) {
+        end += 1;
+      }
+      const outset = sidesOf(parts.slice(i, end), (p) => imageOutsetOf(p, ctx));
+      if (!outset) return null;
+      image.outset = outset;
+      i = end;
+    } else {
+      return null;
+    }
+  }
+  return image;
+}
+
 function readRepeat(words: string[]): BackgroundRepeat | null {
   if (words.length === 1) {
     const [w] = words;
@@ -4513,6 +4749,12 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'backgroundClips',
   ],
   'background-origin': ['backgroundOrigin', 'backgroundOrigins'],
+  'border-image': ['borderImage'],
+  'border-image-source': ['borderImage'],
+  'border-image-slice': ['borderImage'],
+  'border-image-width': ['borderImage'],
+  'border-image-outset': ['borderImage'],
+  'border-image-repeat': ['borderImage'],
   'font-family': ['fontFamily'],
   'font-size': ['fontSize'],
   'font-weight': ['fontWeight'],
