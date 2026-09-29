@@ -178,7 +178,8 @@ through the ratio as content. An item stretched across its row, or flexed
 along a column of a height of its own, has the height it was given for what
 it holds to take a percentage of, so an `h-full` list in a sidebar fills
 the sidebar. Items go in `order`, and in the document's where two have the
-same. Items aligned by their `baseline` line up their first lines, their
+same, and are painted so; one with a `z-index` is a stacking context
+whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines, their
 line as tall as that makes it, and a flex box sits on the baseline of its
 first line's item aligned so, or of its first item. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
