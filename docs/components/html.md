@@ -424,8 +424,9 @@ the whole image, as a browser paints it over the canvas. XHTML's
 element.
 
 **Backgrounds:** `background-color`, and `background-image` — through
-`onResource`, like an `<img>` — with `background-repeat` and
-`background-position`, placed in the box `background-origin` names — the
+`onResource`, like an `<img>` — with `background-repeat`, `space` and
+`round` among it and each axis its own, and `background-position`, placed
+in the box `background-origin` names — the
 padding box unless it says otherwise — and painted, and repeated, across
 the box `background-clip` names, the border box unless it says otherwise,
 with that box's rounded corners; or placed against the viewport with

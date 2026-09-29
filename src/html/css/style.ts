@@ -468,7 +468,9 @@ export interface ComputedStyle {
   /** A background drawn rather than fetched: the first layer's linear
    *  gradient, where it is one. */
   backgroundGradient: LinearGradient | null;
-  backgroundRepeat: 'repeat' | 'repeat-x' | 'repeat-y' | 'no-repeat';
+  /** How the first layer repeats across and down (CSS Backgrounds 3, 3.4):
+   *  one of a few pairs made once, so a style copies no array. */
+  backgroundRepeat: BackgroundRepeat;
   /** `auto`, `cover`, `contain`, or a width and a height, either of which
    *  may be `auto` (CSS Backgrounds 3, 3.9). */
   backgroundSize: 'auto' | 'cover' | 'contain' | [Len | 'auto', Len | 'auto'];
@@ -820,7 +822,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backgroundColor: null,
     backgroundImage: null,
     backgroundGradient: null,
-    backgroundRepeat: 'repeat',
+    backgroundRepeat: REPEAT,
     backgroundSize: 'auto',
     backgroundAttachment: 'scroll',
     backgroundPositionX: 0,
@@ -2973,21 +2975,44 @@ function fromEdge(at: number, offset: Len | null): Len | null {
 
 /** `background-repeat`: one keyword, or one for each axis (CSS3). `space`
  *  and `round` tile as `repeat` does. */
-function readRepeat(words: string[]): ComputedStyle['backgroundRepeat'] | null {
+function readRepeat(words: string[]): BackgroundRepeat | null {
   if (words.length === 1) {
     const [w] = words;
-    if (w === 'repeat-x' || w === 'repeat-y') return w;
-    if (!REPEATS.has(w)) return null;
-    return w === 'no-repeat' ? 'no-repeat' : 'repeat';
+    if (w === 'repeat-x') return repeatPair('repeat', 'no-repeat');
+    if (w === 'repeat-y') return repeatPair('no-repeat', 'repeat');
+    return isRepeatMode(w) ? repeatPair(w, w) : null;
   }
-  if (words.length !== 2 || !REPEATS.has(words[0]) || !REPEATS.has(words[1]))
-    return null;
-  const x = words[0] !== 'no-repeat';
-  const y = words[1] !== 'no-repeat';
-  return x && y ? 'repeat' : x ? 'repeat-x' : y ? 'repeat-y' : 'no-repeat';
+  if (words.length !== 2) return null;
+  const [x, y] = words;
+  return isRepeatMode(x) && isRepeatMode(y) ? repeatPair(x, y) : null;
 }
 
+/** How a background repeats along one axis. */
+export type RepeatMode = 'repeat' | 'space' | 'round' | 'no-repeat';
+
+/** How a background repeats across, and down. */
+export type BackgroundRepeat = readonly [RepeatMode, RepeatMode];
+
 const REPEATS = new Set(['repeat', 'space', 'round', 'no-repeat']);
+
+function isRepeatMode(word: string): word is RepeatMode {
+  return REPEATS.has(word);
+}
+
+const REPEAT_PAIRS = new Map<string, BackgroundRepeat>();
+
+/** The one pair for each way of repeating. */
+function repeatPair(x: RepeatMode, y: RepeatMode): BackgroundRepeat {
+  const key = `${x} ${y}`;
+  let pair = REPEAT_PAIRS.get(key);
+  if (!pair) {
+    pair = Object.freeze([x, y] as const);
+    REPEAT_PAIRS.set(key, pair);
+  }
+  return pair;
+}
+
+const REPEAT = repeatPair('repeat', 'repeat');
 
 function applyBorderShorthand(
   style: ComputedStyle,
@@ -3182,7 +3207,7 @@ function readBackgroundLayer(
     color: null,
     image: null,
     gradient: null,
-    repeat: 'repeat',
+    repeat: REPEAT,
     size: 'auto',
     attachment: 'scroll',
     origin: 'padding-box',

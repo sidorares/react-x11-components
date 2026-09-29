@@ -7468,7 +7468,7 @@ metric(
     const e = style('e');
     assert.strictEqual(e.backgroundColor, '#fff');
     assert.strictEqual(e.backgroundImage, 'a.png');
-    assert.strictEqual(e.backgroundRepeat, 'no-repeat');
+    assert.deepStrictEqual(e.backgroundRepeat, ['no-repeat', 'no-repeat']);
     assert.strictEqual(e.backgroundSize, 'cover');
     assert.deepStrictEqual(e.backgroundPositionX, { pct: 100, px: -10 });
     assert.deepStrictEqual(e.backgroundPositionY, { pct: 50 });
@@ -11906,10 +11906,10 @@ test('background layers are read, top first, from the shorthand and the longhand
     backgroundImage: string | null;
     backgroundGradient: object | null;
     backgroundSize: unknown;
-    backgroundRepeat: string;
+    backgroundRepeat: readonly string[];
     backgroundPositionX: unknown;
     backgroundImages: unknown[] | null;
-    backgroundRepeats: string[] | null;
+    backgroundRepeats: (readonly string[])[] | null;
     backgroundSizes: unknown[] | null;
     backgroundPositions: unknown[] | null;
   };
@@ -11921,7 +11921,10 @@ test('background layers are read, top first, from the shorthand and the longhand
   assert.strictEqual(a.backgroundImage, null, 'the first layer is the top');
   assert.strictEqual(a.backgroundImages![1], 'a.png');
   assert.deepStrictEqual(a.backgroundSizes, ['auto', 'cover']);
-  assert.deepStrictEqual(a.backgroundRepeats, ['repeat', 'no-repeat']);
+  assert.deepStrictEqual(a.backgroundRepeats, [
+    ['repeat', 'repeat'],
+    ['no-repeat', 'no-repeat'],
+  ]);
   assert.deepStrictEqual(a.backgroundPositions, [
     [0, 0],
     [{ pct: 50 }, { pct: 50 }],
@@ -11938,7 +11941,7 @@ test('background layers are read, top first, from the shorthand and the longhand
     [{ pct: 100 }, { pct: 100 }],
   ]);
   assert.strictEqual(b.backgroundRepeats, null, 'one value, for every layer');
-  assert.strictEqual(b.backgroundRepeat, 'no-repeat');
+  assert.deepStrictEqual(b.backgroundRepeat, ['no-repeat', 'no-repeat']);
   const c = style('c');
   assert.strictEqual(
     c.backgroundColor,
@@ -12967,6 +12970,34 @@ test('background-clip and background-origin name the boxes a layer takes', async
       [15, 15],
       [0, 80],
       [5, 165],
+    ],
+  );
+});
+
+test("background-repeat's space and round fit whole tiles", async () => {
+  // Both were read as `repeat` (CSS Backgrounds 3, 3.4): `space` sets as
+  // many whole tiles as fit, the first and last against the edges and the
+  // rest spread between, or one where two do not fit; `round` sizes the
+  // tile so that a whole number of them fit
+  const { node } = await render(
+    '<style>body{margin:0}div{width:96px;height:30px;' +
+      'background:linear-gradient(#0000fe,#0000fe);background-size:30px 30px}' +
+      '</style>' +
+      '<div style="background-repeat:space no-repeat"></div>' +
+      '<div style="background-repeat:round no-repeat"></div>' +
+      '<div style="background-repeat:space no-repeat;background-size:60px 30px;' +
+      'background-position:right"></div>',
+  );
+  assert.deepStrictEqual(
+    gradientFills(await fillsOf(view(node))).map((t) => [t.x, t.y, t.w]),
+    [
+      [0, 0, 30],
+      [33, 0, 30],
+      [66, 0, 30],
+      [0, 30, 32],
+      [32, 30, 32],
+      [64, 30, 32],
+      [36, 60, 60],
     ],
   );
 });
