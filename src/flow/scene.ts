@@ -30,6 +30,7 @@
 // which needs the app's font cache and cannot be a constant.
 import { tint } from 'react-x11/style';
 
+import { snapToGrid } from './draw.js';
 import {
   DEFAULT_MARKER_SIZE,
   EDGE_SLOP,
@@ -402,6 +403,33 @@ function sameCull(
   );
 }
 
+/**
+ * A box an edge's route stays in, grown to hold its label's plate too. The
+ * plate is centred on the route's middle and as wide as its text, which can
+ * be far wider than the route: a long name on a short edge put a plate on
+ * the pane whose edge was culled for being off it, and a node that moved
+ * such an edge claimed its route and left the plate's ends behind. Every
+ * cull and every claim asks this of every labelled edge, so the plate is
+ * bounded rather than measured — an em and a quarter a code unit, wider
+ * than any label is set — and grows nothing where no labels are drawn.
+ */
+export function withLabelPlate(
+  box: FlowRect,
+  edge: AnyEdge,
+  zoom: number,
+): FlowRect {
+  if (!edge.label || zoom < LABEL_ZOOM) return box;
+  const size = Math.max(8, 11 * zoom);
+  const dx = (edge.label.length * size * 1.25) / 2 + 5 * zoom + 1;
+  const dy = size + 2 * zoom + 1;
+  return {
+    x: box.x - dx,
+    y: box.y - dy,
+    width: box.width + dx * 2,
+    height: box.height + dy * 2,
+  };
+}
+
 function cullEdges(
   v: Viewport,
   kept: FlowRect,
@@ -415,7 +443,11 @@ function cullEdges(
     const from = byId.get(edge.source);
     const to = byId.get(edge.target);
     if (!from || !to || from.node.hidden || to.node.hidden) continue;
-    const coarse = edgeCoarseBox(v, from, to, scale);
+    const coarse = withLabelPlate(
+      edgeCoarseBox(v, from, to, scale),
+      edge,
+      v.zoom,
+    );
     if (rectsOverlap(coarse, kept)) list.push({ edge, from, to, coarse });
   }
   return list;
@@ -431,7 +463,13 @@ function cullNodes(
   for (const source of nodes) {
     if (source.node.hidden) continue;
     const rect = screenRect(v, source.rect, scale);
-    if (rectsOverlap(rect, kept)) list.push({ source, rect });
+    // By what the node inks, not by its card: a handle sits on the card's
+    // edge and reaches past it, and a node whose card had just left the
+    // pane lost the half ring still inside it. The margin every claim and
+    // the damage test below grow a node by.
+    if (rectsOverlap(inflateRect(rect, CULL_MARGIN), kept)) {
+      list.push({ source, rect });
+    }
   }
   return list;
 }
@@ -942,13 +980,13 @@ export function screenRect(
   // the few on screen, and the two allocations a call were most of it.
   const px = rect.x * v.zoom + v.x;
   const py = rect.y * v.zoom + v.y;
-  const x = Math.round(px * scale) / scale;
-  const y = Math.round(py * scale) / scale;
+  const x = snapToGrid(px * scale) / scale;
+  const y = snapToGrid(py * scale) / scale;
   return {
     x,
     y,
-    width: Math.round((px + rect.width * v.zoom) * scale) / scale - x,
-    height: Math.round((py + rect.height * v.zoom) * scale) / scale - y,
+    width: snapToGrid((px + rect.width * v.zoom) * scale) / scale - x,
+    height: snapToGrid((py + rect.height * v.zoom) * scale) / scale - y,
   };
 }
 
@@ -1188,7 +1226,7 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
       : uncachedRoute(v, edge, from, to, markerEnd, markerStart);
     if (!routed) continue;
     const bounds = routed.bounds;
-    if (!rectsOverlap(bounds, kept)) continue;
+    if (!rectsOverlap(withLabelPlate(bounds, edge, v.zoom), kept)) continue;
     if (edge.animated) {
       // The coarse box carries the bezier's slack, and a tick that repaints
       // slack repaints a card-sized halo of neighbours sixteen times a
@@ -1260,8 +1298,8 @@ function buildEdges(input: SceneInput, scene: FlowScene): SceneEdge[] {
       const padY = 2 * v.zoom;
       item.chip = {
         rect: {
-          x: Math.round(at.x - metrics.width / 2 - padX),
-          y: Math.round(at.y - metrics.height / 2 - padY),
+          x: snapToGrid(at.x - metrics.width / 2 - padX),
+          y: snapToGrid(at.y - metrics.height / 2 - padY),
           width: Math.round(metrics.width + padX * 2),
           height: Math.round(metrics.height + padY * 2),
         },
