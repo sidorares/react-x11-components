@@ -3713,6 +3713,138 @@ second would need the scale, the container queries and the unknown-token
 report to be unchanged as well, and the detached pass drops an unknown
 token without saying so. So it is left as it is.
 
+## Round 39: what a fling measures that a list does not need
+
+The Linux machine again, after the releases that carried round 38 out:
+react-x11 2.23.0, ntk 8.14.3 and x11 4.2.3 (locked here in #332, and in
+core in #759). Round 38's colour fix waited on ntk 8.14.3 for CSS Color 4
+on Wayland, and landed with core's ntk floor moved to it (react-x11 #749).
+This round went back to the production `<Tree>` fling that round 38 left
+at three times its own layout in floor work, profiled in process, and took
+four things out of it one at a time.
+
+### Four things a row cost that it did not need
+
+The 100,000-row stress tree, flung ten notches an event for four seconds,
+production build, over node-x11's in-process server. Every step is median
+of four alternating pairs, the file under test swapped into the installed
+core and put back by checksum.
+
+| change                                                         | frame p50 (ms) | frame p95 (ms) |
+| -------------------------------------------------------------- | -------------- | -------------- |
+| a measure that hits: a numeric key, the trim per layout (#758) | 7.30 → 6.96    | 11.02 → 10.19  |
+| an inset row is a spine root (#761)                            | 7.20 → 5.34    | 10.17 → 7.84   |
+| a column's offered widths, once a column (#764)                | 5.31 → 3.74    | 8.07 → 6.08    |
+| a label painted at a width it was not shaped for (#765)        | 3.76 → 3.48    | 5.83 → 5.73    |
+
+- **The measure.** The fling measured labels 41,683 times, about twelve a
+  row scrolled, and nearly every one was a cache hit. A hit spelled the
+  width into a string key with the two truncation options, and a trimmed
+  label looked its face up and read its cap height again. Keyed on the
+  number, with the trim kept per layout, a hit is 66–115 ns where it was
+  about 600.
+- **The inset.** The tree's rows are inset four pixels from the pane, so
+  that a selected row's wash reads as a mark on a row. A margin across a
+  block kept it out of the column spine (`rootWidths`), so each frame
+  measured the floors of the whole window: 2.99 layout passes a frame,
+  3.8 ms of a 7.2 ms frame, and nothing written, since the rows never
+  shrink. A spine root is laid out alone at the width on offer, and yoga
+  takes a root's margins off that width exactly as stretching it across the
+  column does. So a margin that is a length measures the same either way,
+  and only one that is not a length still ends a spine.
+- **The widths.** With every row a root, `rootWidths` was the next cost.
+  Every root in a column is offered the same two widths, and working out
+  the width pass's walked up to the window through yoga's getters, four
+  calls a box for its padding and border. Yoga's time from `insetAcross`
+  alone was 170 ms of the four seconds. They are worked out once a column
+  now, for the one call that asks, which lays nothing out.
+- **The paint.** A label is laid out in a box the width it measured, a
+  pixel or less narrower than the width it was measured at, and the paint
+  asked for a layout at that width, and got it shaped again: 37% of the
+  layouts the fling built. ntk fills lines greedily, so when every line of
+  a wider layout fits a narrower width, that is the layout the narrower
+  width would build, as long as nothing places a line by the width
+  (centred, right-aligned, right to left) or elides one. Checked on 2,112
+  such layouts against shaping afresh, and on ntk's layouts only: CoreText
+  and DirectWrite break lines their own way.
+
+The fling's median frame went from 7.30 ms to 3.48 over the four. The rest
+of the frame is the layout pass itself, the paint, and the shift that
+moves every row on a scroll (react-x11 #744).
+
+### What the spine and the whole tree disagree about
+
+Scoping the floors rests on one claim, held by `content-floors.test.js`:
+every scoped measurement is the one the whole tree gives. To check #761
+against it, a random differential ran the same frames in two windows, one
+of them forced to measure the whole tree, with blocks the tests' document
+generator never makes: cells of set widths that clip and sometimes
+overflow, fixed-size leaves, `height`, `maxHeight`, `flexBasis`,
+`flexGrow`, wrapping, alignment, absolute children and percentages.
+
+It found master disagreeing with itself, before any change (react-x11
+#762). Three shapes, taken apart:
+
+- a block whose `height` is below its `minHeight`: yoga lays it out at
+  its minimum and sizes the column around it from its height, so the whole
+  tree's column is 30 px shorter than what it holds, where the spine's
+  contains it;
+- a clip with a set height and `flexGrow`, in a column its pane squeezes:
+  the spine takes its extent as its laid-out height, the whole tree as the
+  minimum it can be squeezed to;
+- a box that grows and names its own size: the whole tree's collapse pass
+  hands it a share of free space and records a minimum taller than the box.
+
+In each, the blocks land in the same places, and the spine column's own
+box differs. Which answer is canonical is a decision, and the issue lays
+out four. What settled #761 was running the same generator with no margins
+at all: master then gives the same differing frames, frame for frame, that
+#761 gives with them. A margin changes nothing about how a block is
+measured; it only decides whether the spine reaches it.
+
+### The skip that an oracle turned down
+
+A `<Table>` fling is still about 14 ms a frame, half of it measuring each
+row that scrolls in for its floor, on a copy of its boxes, in two passes.
+The second pass is the collapse, and it differs from the first in two
+things: every width is pinned where the first pass put it, and flex items
+borrow a shrink. Pinned, the first pass lays out again as it was, so only
+the shrink can move anything, and a shrink moves nothing where there is no
+overflow to take up. Skipped outright, the fling's frame went from 15–16.5
+ms to 9–12.
+
+The rule that would allow it — every changed shrink sits in a row whose
+items fit, or in a column whose height is its content's all the way up —
+was sound by that argument, and wrong in yoga. An oracle that ran the
+collapse anyway and compared every box found the counterexample in its
+third seed: a column whose child has `height: 30` and `minHeight: 60` is
+sized from the 30 and laid out holding the 60, so the first pass left it
+overflowing and the collapse shrank a sibling the rule had cleared. It is
+the same yoga behaviour as #762's first shape, and it is not visible in
+any box's style. The skip was dropped.
+
+### ntk and node-x11, since round 38
+
+- **ntk #448**: Latin text and the punctuation around it is cut into
+  clusters without `Intl.Segmenter`, whose first construction costs about
+  10 ms. A first layout of Latin text went from 11.4–12.7 ms to 1.3–1.6.
+- **ntk #449** hands the last run's glyph page back without looking it up
+  (244 → 6 ns a run), and **#450** answers the last font match again
+  without spelling its key (318 → 33 ns).
+- **node-x11 #304**: the JavaScript X server's `listen()` binds the
+  loopback unless a host is named. A test server listened on every
+  interface.
+
+### A test suite that drives the display
+
+node-x11's full `test-runner.js` was run on this machine to check #304,
+and it ran against the live display. Its XTEST, DPMS and MIT-SCREEN-SAVER
+cases injected input and forced the screen state, which dismissed an
+active screen saver on a machine left to run unattended. They restore
+their settings afterwards, and nothing else was touched, but the suite is
+not one to run here: its X-server tests and the targeted client tests
+cover what a change there needs.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -3962,6 +4094,28 @@ token without saying so. So it is left as it is.
     straight from the style, past it. The same was true of the colours,
     which the paint, the blit planners and the window's background each
     read on their own.
+54. **A rule that skips work needs an oracle that does the work anyway.**
+    Round 39's collapse skip was sound by argument: pinned widths replay
+    the first pass, and a shrink moves nothing without overflow. Yoga's
+    content sizing broke the premise in a way no style shows, and a check
+    that ran the skipped pass and compared every box found it in the third
+    seed. The argument would have shipped.
+55. **The generator decides what a differential can find.** The floors'
+    own differential had run for months on paragraphs, labels and padded
+    boxes, and every frame agreed. A generator with clips, set heights and
+    growth found the spine and the whole tree disagreeing on master in
+    every seed. Then the same generator with the change's trigger taken
+    out — no margins at all — is what separated what the change did from
+    what was already there.
+56. **An allocation removed through a callback can cost more than it
+    saved.** A glyph-placing loop rewritten to hand each glyph to a
+    callback, to avoid building an array of positions, measured slower:
+    short-lived allocation is nearly free in V8, and a call per glyph that
+    does not inline is not.
+57. **A test suite that drives the display is not one to run unattended.**
+    Input injection and forced screen states dismiss a screen saver as
+    surely as a user would. Run the suites that need no display, and the
+    targeted tests a change needs.
 
 ## Still open
 
@@ -3986,11 +4140,12 @@ round 15.
   in yoga; parked in round 12, with no workaround here or in core short of
   that.
 - **A row's floor in a fling**: every row that scrolls into a `<Table>` is
-  measured for its floor on a copy of its boxes, in two or three passes of
-  its own. In a production fling that is about three times the frame's
-  real layout (round 38). The rule is deliberate, since an auto basis can
-  come out short of its content, and react-x11 #737's decision is about the
-  same machinery.
+  measured for its floor on a copy of its boxes, in two passes of its own,
+  about half of a 14 ms production frame. The rule is deliberate, since an
+  auto basis can come out short of its content. Skipping the second pass
+  would take the frame to 9–12 ms, and no cheap rule for when it is safe
+  survived an oracle (round 39). react-x11 #737 and #762 are decisions
+  about the same machinery.
 - **`<Markdown>` first paint** (0.77–0.78 s on XQuartz with #143 and ntk
   #387; 1.04–1.08 s on Cocoa with #143, measured on a core without the
   kept typesetters): the height floors, React's development render and the
