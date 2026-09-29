@@ -83,24 +83,32 @@ export function svgSizeHint(value: string): string | null {
   return m[2] ? v : `${parseFloat(m[1])}px`;
 }
 
-/** A percentage length as a fraction, or 1 for anything else. */
-function percentOf(value: string | undefined): number {
-  const v = value?.trim();
-  if (!v?.endsWith('%')) return 1;
-  const n = parseFloat(v);
-  return Number.isFinite(n) && n >= 0 ? n / 100 : 1;
-}
-
-function viewBoxOf(el: Element): [number, number, number, number] | null {
+function viewBoxParts(el: Element): [number, number, number, number] | null {
   const parts = (svgAttr(el, 'viewBox') ?? '')
     .trim()
     .split(/[\s,]+/)
     .map(Number);
   if (parts.length !== 4 || !parts.every(Number.isFinite)) return null;
-  // a zero or negative extent is an error: as though there were none
-  return parts[2] > 0 && parts[3] > 0
-    ? [parts[0], parts[1], parts[2], parts[3]]
-    : null;
+  return [parts[0], parts[1], parts[2], parts[3]];
+}
+
+function viewBoxOf(el: Element): [number, number, number, number] | null {
+  const parts = viewBoxParts(el);
+  // a zero or negative extent: as though there were none (see `drawsNothing`)
+  return parts && parts[2] > 0 && parts[3] > 0 ? parts : null;
+}
+
+/** Whether a `viewBox` with a zero width or height disables the drawing,
+ *  as SVG has it: a negative one is an error and as though there were no
+ *  `viewBox`, but a zero one is a drawing of nothing. */
+function drawsNothing(el: Element): boolean {
+  const parts = viewBoxParts(el);
+  return (
+    parts !== null &&
+    parts[2] >= 0 &&
+    parts[3] >= 0 &&
+    (parts[2] === 0 || parts[3] === 0)
+  );
 }
 
 /**
@@ -210,6 +218,7 @@ export class SvgDrawing {
     // the mock backend has no path API, and SvgView draws paths
     if (!ctx.beginPath || !ctx.rect || !ctx.clip || !ctx.fill) return;
     const root = this._root;
+    if (drawsNothing(root)) return;
     if (this._standalone) {
       // the root's background is the canvas's, and an image's canvas is
       // all of the rectangle, wherever its viewport and `viewBox` put the
@@ -222,12 +231,14 @@ export class SvgDrawing {
         ctx.fillRect(x, y, w, h);
         ctx.restore();
       }
-      // an image's root is sized in the rectangle it is drawn into, which
-      // is its viewport: `width="40%"` is two fifths of it. An inline one's
-      // percentages are its box's, already (`svgSizeHint`).
-      w *= percentOf(svgAttr(root, 'width'));
-      h *= percentOf(svgAttr(root, 'height'));
-      if (!(w > 0 && h > 0)) return;
+      // An image's root fills the rectangle it is drawn into, whatever its
+      // own `width` and `height` say: they are what its intrinsic size was
+      // read from (`svgIntrinsics`), and the rectangle is the concrete size
+      // the image was then given — a background's tile, an `<img>`'s box.
+      // Blink sizes an SVG embedded as an image to its container the same
+      // way. Drawn as two fifths of it, `width="40%"` left the rest of a
+      // `background-size: contain` empty. An inline root's percentages are
+      // its box's, already (`svgSizeHint`).
     }
     const box = viewBoxOf(root);
     // the viewport in user units, which a percentage is of
