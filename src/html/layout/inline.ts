@@ -535,8 +535,11 @@ function linesOf(
   // box between edges is moved afterwards, which needs its text apart.
   const spaced =
     hasEdges && !hasAtomics && !hasOffset && spacersHold(style, items);
-  // a first line in fonts of its own is found a piece at a time, in them
-  const restyled = options.firstLineStyle !== undefined;
+  // a first line in fonts of its own is found a piece at a time, in them;
+  // and a paragraph with text whose line alone would be shorter than the
+  // strut is made a line at a time, where every line holds the strut
+  const strutted = shortOfStrut(items, fonts, style, lineHeightMul);
+  const restyled = options.firstLineStyle !== undefined || strutted;
 
   // Inline boxes' edges as spacers in one layout, where the engine left
   // every edge on the line of the content it belongs to (`layoutSpaced`);
@@ -970,6 +973,7 @@ function linesOf(
     const tailIsPlain =
       !alignedApart &&
       !onFirst &&
+      !strutted &&
       segment.nextIndex >= items.length &&
       open.x === 0 &&
       !open.atomics.length &&
@@ -3306,6 +3310,60 @@ function heldText(box: Box): string {
 }
 
 const HELD = new WeakMap<Box, string>();
+
+/**
+ * Whether some text of a paragraph would make a line shorter about its
+ * baseline than the block's strut, if the line held that text alone. Every
+ * line box starts with the strut, the block's font at its line height (CSS
+ * 2.1 10.8.1), and a paragraph laid out as one text has none: its lines
+ * are as tall as the text on them, which a layout sets at the block's line
+ * height as a multiple of each face's natural one. So a line of `<small>`
+ * text alone came out as short as the small text, and overlapped the next
+ * paragraph. Text in the block's own face and size never is.
+ */
+function shortOfStrut(
+  items: Item[],
+  fonts: FontsLike,
+  style: ComputedStyle,
+  lineHeightMul: number,
+): boolean {
+  let strut: InlineDecoration | null = null;
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (item.kind !== 'text' || item.control) continue;
+    const run = item.run;
+    if (run.family === style.fontFamily && run.size === style.fontSize) {
+      continue;
+    }
+    const key = `${run.family}|${run.size}|${run.weight}|${run.style}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const size = run.size ?? style.fontSize;
+    let m: { ascent: number; descent: number; lineHeight: number };
+    try {
+      m = fonts
+        .match(run.family ?? style.fontFamily, {
+          size,
+          weight: run.weight,
+          style: run.style,
+        })
+        .metrics(size);
+    } catch {
+      continue;
+    }
+    // where a layout puts the text's own line: its natural height at the
+    // block's multiple, the leading split about its glyphs
+    const lead = (m.lineHeight * lineHeightMul - m.ascent - m.descent) / 2;
+    strut ??= strutOf(fonts, style);
+    if (
+      lead + m.ascent < strut.ascent - 0.5 ||
+      lead + m.descent < strut.descent - 0.5
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * The OpenType features a style's text is shaped with: the `font-variant`
