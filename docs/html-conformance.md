@@ -199,6 +199,11 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 106    | a flex box's background with the flow's            | 5,651 (95%) | 5,102 (86%) |
 | 107    | `justify-content`'s start, end, left and right     | 5,651 (95%) | 5,102 (86%) |
 | 108    | a replaced flex item's size, `flex-basis: content` | 5,651 (95%) | 5,102 (86%) |
+| 109    | absolute boxes in grids, `grid-template`, `grid`   | 5,651 (95%) | 5,102 (86%) |
+| 110    | the grid track sizing algorithm, content alignment | 5,651 (95%) | 5,102 (86%) |
+| 111    | grid areas and line names, `grid-auto-flow`        | 5,651 (95%) | 5,102 (86%) |
+| 112    | `object-fit`, `object-position`, posters, embeds   | 5,651 (95%) | 5,102 (86%) |
+| 113    | counter styles and `@counter-style`                | 5,651 (95%) | 5,102 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3106,6 +3111,195 @@ CSS 2.1 together 19 more on Cocoa.
 267. **`flex-basis: content` took a row item's width** for its basis, as
      `auto` does; it is its max-content width, or a replaced element's
      natural one, whatever width it has (7.2.3).
+
+### Round 109
+
+268. **An absolutely positioned child of a flex box or a grid was placed
+     at the box's corner**, and against the box whatever its containing
+     block was: one in a flex box that is not positioned took the flex
+     box's padding box for its own. It is where it would be as the box's
+     one item (CSS Flexbox 4.1, CSS Grid 1, 9.2): in a flex box's content
+     box, set along the main axis by `justify-content` and across by
+     `align-self`, and in a grid's padding box by `justify-self` and
+     `align-self` — against its own containing block.
+269. **A grid gave an absolutely positioned box no grid area.** The
+     containing block of a box a grid positions is the area between the
+     lines its placement names (9.1), and a line that is `auto`, is no line
+     of the grid, or is only a `span` is the grid's padding edge — so
+     `grid-column: 2`, whose end is `auto`, runs to the edge. A child of
+     the grid is aligned in the area where its offsets are `auto`; a box
+     deeper in the grid takes its percentages and offsets from the area and
+     stays where its flow put it. css-grid's `abspos` tests went from 27
+     to 73 of 150, and css-flexbox's from 21 to 26 of 32.
+270. **`grid-template`, `grid` and `grid-auto-columns` were not read**, so
+     a grid written with a shorthand had no tracks and stacked its items
+     in one column. `grid-template` is rows, a slash and columns, the rows
+     written as area strings each sized by what follows it or `auto`;
+     `grid` the same, or one axis's tracks and the other's `auto-flow`
+     size. The area names are not placed by, nor is `auto-flow` down the
+     columns. The rows a template names are the grid's whether or not an
+     item is in them, and `auto` rows share a height the grid has of its
+     own, as `align-content: normal` stretches them (11.8).
+271. **A grid item that does not stretch was cut to its area.** It is
+     `fit-content`: as wide as its content fits, no wider than its area
+     unless its longest word is (6.2).
+
+css-grid went from 366 to 418 of 1,651 on X11, css-flexbox from 639 to
+646, css-sizing from 246 to 252. Eighteen tests passed by the accidents
+this ends. Nine `subgrid` and `grid-lanes` tests and
+`grid-intrinsic-maximums` matched references written with the `grid` and
+`grid-template` shorthands only while neither was read; three `safe`
+alignments of an absolutely positioned box matched references that had
+their boxes at the corner too; and five of css-break's grids in
+multi-column boxes, which `<Html>` does not fragment, matched their green
+squares only while the shorthands, the rows a template names and no item
+fills, and the stretch of an `auto` row were not there to push their items
+past the column.
+
+### Round 110
+
+272. **A grid's tracks were sized by rules of its own.** An item spanning
+     several tracks grew the last of them by what it needed past them,
+     whether that track was a length or not; the free space grew the
+     tracks in proportion to what each wanted; an `fr` row was as tall as
+     what was in it; and `fit-content()` was a max-content track with no
+     limit. They are sized by the track sizing algorithm now (CSS Grid 1,
+     11.3 to 11.8), the same for the columns and the rows
+     (`layout/tracks.ts`). The items in one track set its base size and its
+     growth limit, where its least is `auto` from what each item can be at
+     least: its content's narrowest only where it shows what overflows it
+     and spans no `fr` track beside another. An item spanning several
+     shares out what it needs past them, equally as far as each track's
+     limit and past the limits only to the tracks its content sizes, the
+     fewest spans first. The free space then grows every track equally
+     towards its limit, the `fr` tracks share what is left — a track whose
+     content is more than its share frozen at it, and in a grid with no
+     height of its own the `fr` that holds every track and every item,
+     which fills its `min-height` — and the `auto` tracks stretch into what
+     remains. A grid item's own length for a width is its size at any
+     constraint: measured at no limit, it was its content's.
+273. **`justify-content` and `align-content` did not place a grid's
+     tracks**, nor `auto` margins its items. The space the tracks leave is
+     before them, after them, between them or around each (CSS Box
+     Alignment 3, 5.1), `center` and `end` running past the start where the
+     tracks are larger than a height the grid has of its own; and an item's
+     `auto` margins take the free space in its area before its alignment
+     does (10.2). `justify-content: normal` is a value of its own, since a
+     grid stretches its `auto` columns for it and not for `start`.
+274. **Placement did not move its cursor past an item with a column**, so
+     the next such item went in beside it rather than on the next row, and
+     an item that named only its row was placed among the others in
+     document order rather than before them (8.5).
+275. **A stretched grid item was never shorter than what it held.** It is
+     its area's height (10.3), so a main area that scrolls in an `fr` row
+     is the row's height. An image, a control or a box with an
+     `aspect-ratio` keeps its own height, as `normal` has one, unless the
+     item's own `align-self` is `stretch`; and a `width` or `height` of
+     `min-content`, `max-content` or `fit-content` is not stretched at all.
+
+css-grid went from 418 to 450 of 1,651 on X11 and from 382 to 409 on
+Cocoa, css-sizing from 252 to 256; the CSS 2.1 suite is unchanged. Eleven
+tests passed by the accidents this ends: six of baseline alignment in a
+grid, which `<Html>` does not do, matched their references only while an
+item spanning two rows grew the last of them, and five `grid-lanes`
+masonry tests matched theirs only while the same rules sized both.
+
+### Round 111
+
+276. **A grid's areas and the names of its lines were not read.**
+     `grid-template-areas` names the areas its strings make — every name a
+     rectangle, every row as wide as the first, or the declaration goes —
+     and with it the lines at their edges, `<name>-start` and
+     `<name>-end`; a track list names the lines between its tracks, a
+     `repeat()`'s names repeated with it and those where two repetitions
+     meet carrying both (CSS Grid 1, 7.2 and 7.3). A placement takes a
+     name wherever it takes a number (8.3): alone it is an area's edge, and
+     else the first line of that name; with a number, the lines of that
+     name counted, the implicit lines past the grid counting as having it;
+     and after `span`, the lines to the next of that name. A grid's
+     explicit grid is as large as its areas as well as its templates. The
+     shorthands copy a name to the lines they leave out (8.4). A bracket of
+     two names, `[a b]`, was two words to the tokenizer, and the second was
+     no size, so a template with one was dropped whole.
+277. **`grid-auto-flow` was not read.** `column` fills the columns, and
+     `dense` goes back to the start for each item, into a hole a wider
+     item left (8.5).
+278. **A percentage row in a grid with no height was `auto`.** It is
+     `auto` to find the grid's height, and then a percentage of it, the
+     rows sized again (7.2.1); and an `auto-fill` of rows counts its
+     repetitions against the grid's height, as the columns' count against
+     its width. `grid-gap`, `grid-row-gap` and `grid-column-gap`, the gaps'
+     first names, are read.
+
+css-grid went from 450 to 473 of 1,651 on X11 and from 409 to 432 on
+Cocoa; the CSS 2.1 suite is unchanged. Six tests passed by the accidents
+this ends: five `grid-lanes` masonry tests whose references are grids
+with the names, the flow and the percentage rows this reads, and a
+`subgrid` whose items flowed down one column only while `grid-auto-flow`
+was not read.
+
+### Round 112
+
+279. **`object-position` did not move a stretched image**, the `fill` that
+     is the default: with the box's size the image has no room to move in
+     by a percentage, but it does by a length, and `right 2px bottom 1px`
+     puts it two pixels in from the right and one up, cut to the box.
+280. **An image with a ratio and no size of its own was stretched to its
+     box** whatever its `object-fit` said: an SVG with only a `viewBox` is
+     sized by the concrete object size rules (CSS Images 3, 5.2 and 5.5) —
+     within the box or over it at its ratio, and for `none` its own size, a
+     side it lacks from the other through its ratio, and with neither,
+     within the box.
+281. **An image was drawn at a fraction of a pixel** where its position
+     came to one, and a background's tile at the pixel: a position of
+     `13%` blurred it, and a pixelated image shifted a row. It is placed on
+     the pixel grid as the tile is.
+282. **A `<video>`'s poster and an `<embed>`'s image were not drawn**: both
+     were frames with nothing in them. An `<embed>` whose `src` is an image
+     shows it, as an `<object>` does, and a `<video>` shows its `poster`,
+     which HTML's style sheet contains in its box (`object-fit: contain`,
+     15.4.1). Where there is no image, both are frames as before.
+
+css-images went from 132 to 262 of 470 on X11 and from 126 to 257 on
+Cocoa, css-sizing from 256 to 258; the CSS 2.1 suite is unchanged on both.
+
+### Round 113
+
+283. **Past a dozen of them, every counter style was decimal**, and an
+     `@counter-style` rule was skipped whole. The styles are written by the
+     counter algorithms of CSS Counter Styles 3 (3.1) — cyclic, fixed,
+     symbolic, alphabetic, numeric and additive, and `extends` — with their
+     negative signs, prefixes, suffixes, ranges, padding and fallbacks, and
+     every style the specification predefines is one of them (6, 7): the
+     numeric ones of twenty-odd scripts, the kana, the CJK decimal and
+     cyclic ones, Armenian, Georgian and Hebrew, `ethiopic-numeric`, and the
+     Chinese, Japanese and Korean longhands. The Chinese longhands count
+     past 9999 by the extended algorithm (7.1.2), as browsers do; the
+     Japanese and Korean ones stop at it, as browsers do, and a Korean one
+     falls back to decimal past it where its rule says `cjk-decimal`, as
+     they all do. `@counter-style` defines a style, over a predefined one
+     but the six that may not be, and `symbols()` an anonymous one; a
+     name the specification defines is lower-cased and any other keeps its
+     case. A `calc()` in a descriptor is the integer it rounds to, clamped
+     to 0 where the descriptor takes no negative. `pad` counts grapheme
+     clusters and the negative sign, so `decimal-leading-zero` writes -3 as
+     `-3` where it wrote `-03`.
+284. **A marker was its number, a full stop and a gap of 0.4em**, whatever
+     its style. It is the style's prefix, number and suffix: a suffix that
+     ends in a space is set off from the text by that space's width in the
+     marker's face, and one that does not, `、`, is set against it; an
+     inside marker's direction is its own (the HTML style sheet's
+     `::marker { unicode-bidi: isolate }`) unless a `::marker` rule says
+     otherwise.
+
+css-counter-styles went from 46 to 209 of 248 on X11 and from 45 to 209
+on Cocoa, css-lists from 120 to 124, css-pseudo from 55 to 58; the CSS
+2.1 suite is unchanged on both. One test passed by the accident this
+ends: `descriptor-calc` writes its descriptors with `sign()` of lengths,
+which `<Html>` does not evaluate, and matched its reference only while
+neither's `@counter-style` rules were read. The `-extended` tests of the
+Japanese and Korean longhands fail in every browser too, and the Chinese
+ones reach 9,999,999,999,999,999, which a JavaScript number cannot hold.
 
 ## What `<Html>` supports
 

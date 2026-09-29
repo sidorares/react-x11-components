@@ -3189,7 +3189,11 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const h = Math.round(top + box.contentHeight) - y;
   if (w <= 0 || h <= 0) return;
   if (image instanceof SvgDrawing || (image && ctx.drawImage)) {
+    // on the pixel grid, as a background's tile is: a fraction of a pixel
+    // is a blur, or a row of the image the next pixel's
     const at = fitted(box, x, y, w, h);
+    at.x = Math.round(at.x);
+    at.y = Math.round(at.y);
     // trimmed to the curve of its content edge (CSS Backgrounds 3, 5.3):
     // an avatar is a round photograph. A rounded clip is a mask the size
     // of the window on X11, so only a box that has corners pays for one;
@@ -3235,25 +3239,51 @@ function fitted(
 ): { x: number; y: number; w: number; h: number } {
   const fit = box.style.objectFit;
   const own = box.intrinsic;
-  if (
-    fit === 'fill' ||
-    !own ||
-    own.missing ||
-    !(own.width > 0 && own.height > 0)
-  ) {
-    return { x, y, w, h };
+  if (!own) return { x, y, w, h };
+  // what of its size it has of its own: an SVG may have a ratio from its
+  // `viewBox` and neither side, or one side
+  const hasWidth = !(own.missing & 1) && own.width > 0;
+  const hasHeight = !(own.missing & 2) && own.height > 0;
+  const ratio =
+    own.ratio > 0
+      ? own.ratio
+      : hasWidth && hasHeight
+        ? own.width / own.height
+        : 0;
+  // at its ratio within the box, and over the whole of it; the box where
+  // it has none
+  const within: [number, number] = !ratio
+    ? [w, h]
+    : w / h > ratio
+      ? [h * ratio, h]
+      : [w, w / ratio];
+  const over: [number, number] = !ratio
+    ? [w, h]
+    : w / h > ratio
+      ? [w, w / ratio]
+      : [h * ratio, h];
+  // its own size: a side it lacks from the other through its ratio, and
+  // with neither side, within the box (CSS Images 3, 5.2)
+  const natural = (): [number, number] =>
+    hasWidth && hasHeight
+      ? [own.width, own.height]
+      : hasWidth
+        ? [own.width, ratio ? own.width / ratio : h]
+        : hasHeight
+          ? [ratio ? own.height * ratio : w, own.height]
+          : within;
+  let dw = w;
+  let dh = h;
+  if (fit === 'contain') [dw, dh] = within;
+  else if (fit === 'cover') [dw, dh] = over;
+  else if (fit === 'none') [dw, dh] = natural();
+  else if (fit === 'scale-down') {
+    const n = natural();
+    [dw, dh] = n[0] * n[1] <= within[0] * within[1] ? n : within;
   }
-  const contain = Math.min(w / own.width, h / own.height);
-  const scale =
-    fit === 'contain'
-      ? contain
-      : fit === 'cover'
-        ? Math.max(w / own.width, h / own.height)
-        : fit === 'none'
-          ? 1
-          : Math.min(1, contain);
-  const dw = own.width * scale;
-  const dh = own.height * scale;
+  // `fill` is the box's size; placed, it has no room to move in by a
+  // percentage, but it does by a length — `right 2px` puts it two pixels
+  // in from the right, and cut there
   return {
     x: x + resolve(box.style.objectPositionX, w - dw),
     y: y + resolve(box.style.objectPositionY, h - dh),

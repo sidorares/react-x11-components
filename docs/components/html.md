@@ -237,9 +237,15 @@ over the line above, where a browser makes the line taller); a `::marker` rule s
 `content` sets it as that, counters and all. A list item counts with the
 `list-item` counter, which `<ol>`, `<ul>` and `<menu>` reset, and which
 `start`, `value`, `reversed` and `type` set as HTML has them: an
-`<ol reversed>` counts down to 1. A string `list-style-type` is the marker
-as it is written, and an outside marker of a right-to-left item stands at
-its right, reading right to left. A `<details>` shows its first `<summary>` and nothing
+`<ol reversed>` counts down to 1. A `list-style-type` is any counter style
+of CSS Counter Styles 3 — the numeric ones of twenty-odd scripts, the kana,
+the Chinese, Japanese and Korean longhands, `ethiopic-numeric` — one an
+`@counter-style` rule defines, over them or extending them, or
+`symbols()`; the marker is the style's prefix, number and suffix, set off
+by the suffix's space in its own face, or against the text where the
+suffix has none, as `、` does, and its direction is its own. A string
+`list-style-type` is the marker as it is written, and an outside marker of
+a right-to-left item stands at its right, reading right to left. A `<details>` shows its first `<summary>` and nothing
 more until it is `open`, the summary with the ▸ or ▾ HTML gives it — a
 system font's, where the document's has none.
 A flex container is laid out by Yoga, the engine react-x11 lays itself out
@@ -267,14 +273,24 @@ whether or not it is positioned, a grid's item too. Items aligned by their `base
 line as tall as that makes it, and a flex box sits on the baseline of its
 first line's item aligned so, or of its first item. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
-A grid (CSS Grid 1) takes its column tracks from `grid-template-columns` —
-lengths, percentages, `fr`s, `auto`, `minmax()`, and `repeat()` by a count
-or by what fits, `auto-fill` and `auto-fit` alike — and places its items by
-line or span, or in order into the first cells free; a row is as tall as
-what is in it, or as the row the template names, and an item is stretched
-to its area or aligned in it by `justify-self` and `align-self`. Named
-lines and areas, `dense` and column-first placement, and subgrids are not
-read.
+A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
+`grid-template-rows`, or the `grid-template` and `grid` shorthands —
+lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
+`repeat()` by a count or by what fits, `auto-fill` and `auto-fit` alike —
+and those past the template from `grid-auto-columns` and `grid-auto-rows`.
+It places its items by line, span, line name or the area
+`grid-template-areas` names, or in order into the first cells free, along
+the rows or down the columns by `grid-auto-flow`, `dense` or not, and
+sizes its columns and its rows by the track sizing algorithm:
+an item spanning several tracks grows the ones its content sizes, and the
+`fr` rows of a grid with a height or a `min-height` fill it, which puts a
+page's footer at the bottom. `justify-content` and `align-content` place
+the tracks. An item is stretched to its area or aligned in it by
+`justify-self`, `align-self` and its `auto` margins, and one that is not
+stretched is as wide as its content fits. An absolutely positioned box
+takes the grid area its lines name for its containing block, and a grid's
+or a flex box's child is where it would be as the box's one item.
+Baseline alignment and subgrids are not read.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —
@@ -389,13 +405,17 @@ an intrinsic width, height and ratio (CSS 2.1 10.3.2, 10.6.2), and a
 `<img width="600" style="max-width: 100%">` in a narrow column is scaled,
 not squashed (10.4). `object-fit` fits the image to its box — stretched,
 the default, or at its own ratio, within it, over the whole of it
-(`object-cover`, an avatar's), at its own size, or the smaller of those —
-and `object-position` places it, in the middle unless it says otherwise;
-what falls past the box is cut. An `<object>` whose `data` is an image shows it, and
-its fallback content until then or when it is not one. `<iframe>`,
-`<video>` and `<embed>` are boxes of their `width` and `height` — 300×150
-without them, as HTML sizes them — with nothing in them, because nothing is
-loaded.
+(`object-cover`, an avatar's), at its own size, or the smaller of those,
+an SVG with only a `viewBox` sized from its ratio — and `object-position`
+places it on the pixel grid, in the middle unless it says otherwise, and
+by its lengths even when it is stretched; what falls past the box is cut.
+An `<object>` whose `data` is an image shows it, and its fallback content
+until then or when it is not one; an `<embed>` whose `src` is an image
+shows it, and a `<video>` its `poster`, contained in its box as HTML's
+style sheet has it. `<iframe>`, and a `<video>` or an `<embed>` with no
+image, are boxes of their `width` and `height` — 300×150 without them, as
+HTML sizes them — with nothing in them, because nothing is loaded or
+played.
 
 **Intrinsic sizes:** `width`, `min-width` and `max-width` take
 `fit-content`, `max-content` and `min-content` — Tailwind's `w-fit`, `w-max`
@@ -570,7 +590,7 @@ room, which is how a row of inline-blocks is set without gaps.
 **Generated content:** `::before` and `::after`, and CSS 2's `:before` and
 `:after`, as boxes of their own `display` holding what `content` comes to:
 strings with their escapes, images, `attr()`, `counter()` and `counters()` in
-every CSS 2.1 list style, and `open-quote`/`close-quote` over `quotes`. An
+any counter style, and `open-quote`/`close-quote` over `quotes`. An
 image is asked for through `onResource`, as a background image is, and is
 an inline image in the pseudo-element's line, of its own size once it
 arrives and of none before.

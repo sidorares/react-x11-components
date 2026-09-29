@@ -129,9 +129,16 @@ export function attr(el: Element, name: string): string | undefined {
 
 /** Where an image element's image is: an `<img>`'s `src`, an `<object>`'s
  *  `data` — which is shown as an image when it is one (HTML's "the object
- *  element"), and as the element's fallback content otherwise. */
+ *  element"), and as the element's fallback content otherwise — an
+ *  `<embed>`'s `src` the same, and a `<video>`'s `poster`, the frame it
+ *  shows until it plays, which here it does not. */
 export function imageUrlOf(el: Element): string | undefined {
-  return tagOf(el) === 'object' ? attr(el, 'data') : attr(el, 'src');
+  const tag = tagOf(el);
+  return tag === 'object'
+    ? attr(el, 'data')
+    : tag === 'video'
+      ? attr(el, 'poster')
+      : attr(el, 'src');
 }
 
 /** The text under a node, uncollapsed — what `<style>` hands the CSS parser
@@ -326,7 +333,13 @@ export class HtmlSource {
         }
       } else if (tag === 'script') {
         facts.scripts.push(el);
-      } else if (tag === 'img' || tag === 'image' || tag === 'object') {
+      } else if (
+        tag === 'img' ||
+        tag === 'image' ||
+        tag === 'object' ||
+        tag === 'embed' ||
+        tag === 'video'
+      ) {
         if (imageUrlOf(el)) facts.resources.push(el);
       } else if (tag === 'title' && facts.title === null) {
         facts.title = rawTextOf(el).trim();

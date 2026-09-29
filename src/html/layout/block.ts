@@ -18,12 +18,20 @@ import {
   resolveOrNull,
 } from '../css/values.js';
 import type { Len } from '../css/values.js';
-import type { BorderStyle, ComputedStyle, ContentSize } from '../css/style.js';
+import type {
+  BorderStyle,
+  ComputedStyle,
+  ContentSize,
+  GridLine,
+} from '../css/style.js';
+import { lineOf, spanToName } from './grid-lines.js';
+import type { GridLines } from './grid-lines.js';
 import {
   BOX_RAISES,
   Box,
   CLAMPED,
   CUT_BLOCKS,
+  GRID_TRACKS,
   FIRST_LINE,
   INLINE_OFFSETS,
   LINE_BOX_RAISES,
@@ -1742,12 +1750,14 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
     direction: style.direction,
   });
   marker.layout = layout;
-  // a space between it and the content, which the text of one of its own
-  // brings where it ends in one — measured as a line does, without it
+  // a space between it and the content — the one its style's suffix ends
+  // in, or its own text's — in its own face: a line measures without it
   const gap =
     marker.flush && !/\s$/.test(marker.text)
       ? 0
-      : Math.round(style.fontSize * 0.4);
+      : fonts.layout([{ text: '\u00a0', ...face }], face, {
+          lineHeight: lineHeightMultiplier(fonts, style),
+        }).width;
   // The marker sits on the first line of the item's *content*, which is not
   // always the item's own: an `<li>` holding a paragraph, or one holding text
   // and a nested list, has its inline content in an anonymous block. Looking
@@ -2665,6 +2675,10 @@ function placeFloat(
  * have been in flow (`placeStatic`, and `staticPositions` in a line).
  */
 function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
+  // a grid's is the box's grid area (CSS Grid 1, 9.1), whether the box is
+  // the grid's child or deeper in it
+  const area =
+    containing.kind === 'inline' ? null : gridArea(box, containing, ctx);
   const {
     x: cbX,
     y: cbY,
@@ -2672,7 +2686,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     height: cbHeight,
   } = containing.kind === 'inline'
     ? inlineContainingBlock(containing, box, ctx)
-    : containingRect(containing, ctx);
+    : (area ?? containingRect(containing, ctx));
   resolveEdges(box, cbWidth);
   box.percentHeightBase = cbHeight;
 
@@ -2684,9 +2698,28 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
 
   // with neither offset on an axis, the box is where the flow would have
   // put it (CSS 2.1 10.3.7, 10.6.4): against its start edge, which is the
-  // right one in a right-to-left flow
-  const at = box.staticPosition;
+  // right one in a right-to-left flow. A grid's own child is aligned in its
+  // grid area instead, where that is its containing block; a box deeper in
+  // the grid is where its own flow put it.
+  const inArea =
+    area !== null &&
+    box.staticPosition?.inside !== undefined &&
+    box.staticPosition.from === containing;
+  const at = inArea ? null : box.staticPosition;
   const rtl = (at?.from ?? containing).style.direction === 'rtl';
+  // where the box is as a flex box's or a grid's one item, aligned in it —
+  // or in its grid area
+  const room = inArea
+    ? {
+        x: cbX,
+        y: cbY,
+        width: cbWidth,
+        height: cbHeight,
+        ...staticAlignment(box, containing, false),
+      }
+    : at?.inside
+      ? { ...insideRect(at.from, at.inside.box), ...at.inside }
+      : null;
   // and a shrink-to-fit box's room starts at the offset on the side it has
   // one, or at its static position: `left: 50%` leaves it half the width
   const offset =
@@ -2762,11 +2795,19 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
         ? cbX + left + box.marginLeft
         : right !== null
           ? cbX + cbWidth - right - box.width - box.marginRight
-          : rtl
-            ? (at ? at.from.x + at.right : cbX + cbWidth) -
-              box.width -
-              box.marginRight
-            : (at ? at.from.x + at.x : cbX) + box.marginLeft;
+          : room
+            ? alignedIn(
+                room.x,
+                room.width,
+                room.across,
+                box.width + box.marginLeft + box.marginRight,
+                rtl,
+              ) + box.marginLeft
+            : rtl
+              ? (at ? at.from.x + at.right : cbX + cbWidth) -
+                box.width -
+                box.marginRight
+              : (at ? at.from.x + at.x : cbX) + box.marginLeft;
   }
   let y: number;
   if (top !== null && bottom !== null) {
@@ -2802,9 +2843,140 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
         ? cbY + top + box.marginTop
         : bottom !== null
           ? cbY + cbHeight - bottom - box.height - box.marginBottom
-          : (at ? at.from.y + at.y : cbY) + box.marginTop;
+          : room
+            ? alignedIn(
+                room.y,
+                room.height,
+                room.down,
+                box.height + box.marginTop + box.marginBottom,
+                false,
+              ) + box.marginTop
+            : (at ? at.from.y + at.y : cbY) + box.marginTop;
   }
   moveTo(box, x, y);
+}
+
+/** A box's content box or its padding box, as its layout left them. */
+function insideRect(
+  box: Box,
+  which: 'content' | 'padding',
+): { x: number; y: number; width: number; height: number } {
+  if (which === 'content') {
+    return {
+      x: box.contentX,
+      y: box.contentY,
+      width: box.contentWidth,
+      height: Math.max(0, box.height - box.verticalExtra),
+    };
+  }
+  return {
+    x: box.x + box.borderLeft,
+    y: box.y + box.borderTop,
+    width: Math.max(0, box.width - box.borderLeft - box.borderRight),
+    height: Math.max(0, box.height - box.borderTop - box.borderBottom),
+  };
+}
+
+/** Where a margin box of a size starts in a room, `along` of the free room
+ *  before it from the room's start — its right end where `rtl`. */
+function alignedIn(
+  start: number,
+  size: number,
+  along: number,
+  outer: number,
+  rtl: boolean,
+): number {
+  const free = size - outer;
+  return rtl ? start + size - outer - along * free : start + along * free;
+}
+
+/**
+ * The grid area a box positioned in a grid takes for its containing block
+ * (CSS Grid 1, 9.1): between the lines its placement names, where the grid
+ * has them, and the grid's padding edge where a line is `auto`, is no line
+ * of the grid, or is only a `span`. Null for a box whose containing block
+ * is no grid.
+ */
+function gridArea(
+  box: Box,
+  containing: Box,
+  ctx: LayoutContext,
+): CbRect | null {
+  const tracks = GRID_TRACKS.get(containing);
+  if (!tracks) return null;
+  const style = box.style;
+  const pad = containingRect(containing, ctx);
+  const [x, width] = areaSpan(
+    style.gridColumnStart,
+    style.gridColumnEnd,
+    tracks.cols,
+    tracks.colLines,
+    containing.contentX,
+    pad.x,
+    pad.width,
+  );
+  const [y, height] = areaSpan(
+    style.gridRowStart,
+    style.gridRowEnd,
+    tracks.rows,
+    tracks.rowLines,
+    containing.contentY,
+    pad.y,
+    pad.height,
+  );
+  return { x, y, width, height };
+}
+
+/** One axis of a grid area: its start and its size in document
+ *  coordinates. A line is a track's start where it starts one and a
+ *  track's end where it ends one, so a gap is in neither; a line by name
+ *  is the one the placement would take. */
+function areaSpan(
+  start: GridLine,
+  end: GridLine,
+  tracks: readonly [number, number][],
+  lines: GridLines,
+  origin: number,
+  edge: number,
+  size: number,
+): [number, number] {
+  const count = tracks.length;
+  // a line the grid has, or null for auto, a span and one it has not
+  const at = (line: GridLine, side: 'start' | 'end'): number | null => {
+    const index = lineOf(lines, line, side);
+    return index !== null && count > 0 && index >= 0 && index <= count
+      ? index
+      : null;
+  };
+  const spanOf = (line: GridLine) => (line && 'span' in line ? line : null);
+  let from = at(start, 'start');
+  let to = at(end, 'end');
+  const startSpan = spanOf(start);
+  const endSpan = spanOf(end);
+  if (from === null && to !== null && startSpan) {
+    const f =
+      startSpan.name !== undefined
+        ? spanToName(lines, startSpan.name, startSpan.span, to, false)
+        : to - startSpan.span;
+    from = f >= 0 ? f : null;
+  }
+  if (to === null && from !== null && endSpan) {
+    const t =
+      endSpan.name !== undefined
+        ? spanToName(lines, endSpan.name, endSpan.span, from, true)
+        : from + endSpan.span;
+    to = t <= count ? t : null;
+  }
+  if (from !== null && to !== null && to < from) [from, to] = [to, from];
+  const a =
+    from === null
+      ? edge
+      : origin + (from < count ? tracks[from][0] : tracks[from - 1][1]);
+  const b =
+    to === null || to === from
+      ? edge + size
+      : origin + (to >= 1 ? tracks[to - 1][1] : tracks[0][0]);
+  return [a, Math.max(0, b - a)];
 }
 
 /** A containing block's rectangle, in document coordinates. */
@@ -3016,6 +3188,85 @@ function placeStatic(
     right: x + width - parent.x,
     y: y - parent.y,
   };
+}
+
+/**
+ * An absolutely positioned child of a flex box or a grid, laid out once the
+ * flow is: against its own containing block, which the box is only where
+ * it is positioned, from where it is as the box's one item — at the start
+ * of a flex box's content box (CSS Flexbox 4.1), of a grid's padding box
+ * (CSS Grid 1, 9.1). Pushed against the box whatever it was, one in a
+ * static flex box was placed from the box's corner, and `fixed` one from
+ * a grid.
+ */
+export function positionOutOfFlow(
+  child: Box,
+  container: Box,
+  ctx: LayoutContext,
+  flex: boolean,
+): void {
+  if (flex) {
+    placeStatic(
+      child,
+      container,
+      container.contentX,
+      container.contentWidth,
+      container.contentY,
+    );
+  } else {
+    placeStatic(
+      child,
+      container,
+      container.x + container.borderLeft,
+      container.width - container.borderLeft - container.borderRight,
+      container.y + container.borderTop,
+    );
+  }
+  child.staticPosition!.inside = {
+    box: flex ? 'content' : 'padding',
+    ...staticAlignment(child, container, flex),
+  };
+  ctx.positioned.push({
+    box: child,
+    containing: containingBlockFor(child) ?? container,
+  });
+}
+
+/** How far along its free room a flex box's or a grid's one item is set:
+ *  0 at the start, ½ in the middle, 1 at the end, across (from the inline
+ *  start) and down. A flex box's main axis by `justify-content`, and the
+ *  cross by `align-self`; a grid's by `justify-self` and `align-self`,
+ *  each falling back to the container's `-items`. */
+function staticAlignment(
+  child: Box,
+  container: Box,
+  flex: boolean,
+): { across: number; down: number } {
+  const own = child.style;
+  const style = container.style;
+  const factor = (align: string): number =>
+    align === 'flex-end' ? 1 : align === 'center' ? 0.5 : 0;
+  const cross = factor(
+    own.alignSelf === AUTO ? style.alignItems : own.alignSelf,
+  );
+  if (!flex) {
+    const justify =
+      own.justifySelf === 'auto' ? style.justifyItems : own.justifySelf;
+    return { across: factor(justify), down: cross };
+  }
+  const justify = style.justifyContent;
+  let main =
+    justify === 'flex-end' || justify === 'end' || justify === 'right'
+      ? 1
+      : justify === 'center' ||
+          justify === 'space-around' ||
+          justify === 'space-evenly'
+        ? 0.5
+        : 0;
+  if (style.flexDirection.endsWith('-reverse')) main = 1 - main;
+  return style.flexDirection.startsWith('row')
+    ? { across: main, down: cross }
+    : { across: cross, down: main };
 }
 
 /** The nearest positioned ancestor, or null for the initial containing

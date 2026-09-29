@@ -66,14 +66,32 @@ export type Display =
  *  items' min-content and a maximum of their max-content. */
 export interface GridTrack {
   min: Len | 'min-content' | 'max-content';
-  max: Len | 'min-content' | 'max-content' | { fr: number };
+  /** `fit-content()`'s argument is `fit`. */
+  max: Len | 'min-content' | 'max-content' | { fr: number } | { fit: Len };
 }
 
-/** `grid-template-columns` or `-rows`: its tracks, and a `repeat()` whose
- *  count the width decides (`auto-fill`, `auto-fit`), and where it goes. */
+/** `grid-template-columns` or `-rows`: its tracks and the names of the
+ *  lines between them — `names[i]` the line's before track `i`, and the
+ *  last the line's after the last track — and a `repeat()` whose count the
+ *  width decides (`auto-fill`, `auto-fit`): where it goes, its tracks and
+ *  its own lines' names, and the names of the line after it. */
 export interface GridTemplate {
   tracks: GridTrack[];
-  repeat: { at: number; tracks: GridTrack[] } | null;
+  names: string[][];
+  repeat: {
+    at: number;
+    tracks: GridTrack[];
+    names: string[][];
+    after: string[];
+  } | null;
+}
+
+/** `grid-template-areas` (CSS Grid 1, 7.3): how many rows and columns its
+ *  strings make, and each named area's lines, from zero, start and end. */
+export interface GridAreas {
+  rows: number;
+  columns: number;
+  areas: Map<string, { rows: [number, number]; columns: [number, number] }>;
 }
 
 /** One of a `box-shadow`'s shadows, in device pixels. */
@@ -96,8 +114,14 @@ export interface LinearGradient {
   stops: { color: string; at: Len | null }[];
 }
 
-/** Where a grid item starts or ends: a line, a span, or auto. */
-export type GridLine = { line: number } | { span: number } | null;
+/** Where a grid item starts or ends (CSS Grid 1, 8.3): a line, counted
+ *  among the lines of a name where it has one; a span, to a line of a name
+ *  where it has one; a name alone, an area's edge or a line's; or auto. */
+export type GridLine =
+  | { line: number; name?: string }
+  | { span: number; name?: string }
+  | { name: string }
+  | null;
 
 export interface ClipRect {
   top: number | null;
@@ -371,6 +395,10 @@ export interface ComputedStyle {
   /** `min-height` as one: the content's height, which a flex item in a
    *  column is no shorter than whatever its `overflow` (`flex.ts`). */
   minHeightKeyword: ContentSize | null;
+  /** `height` as one, which is its content's as `auto` is — but it is not
+   *  `auto`, and what stretches an item of `auto` height does not stretch
+   *  it (CSS Grid 1, 10.3). */
+  heightKeyword: ContentSize | null;
 
   marginTop: Len;
   marginRight: Len;
@@ -472,6 +500,8 @@ export interface ComputedStyle {
    *  the page's sides, which a flex box resolves against its direction
    *  (`flex.ts`); `flex-start` and `flex-end` are its main axis's. */
   justifyContent:
+    | 'normal'
+    | 'stretch'
     | 'flex-start'
     | 'flex-end'
     | 'start'
@@ -505,6 +535,13 @@ export interface ComputedStyle {
   gridColumns: GridTemplate | null;
   gridRows: GridTemplate | null;
   gridAutoRows: GridTrack;
+  /** `grid-auto-columns`: a column the placement makes past the template. */
+  gridAutoColumns: GridTrack;
+  /** `grid-template-areas`, which also names the lines at their edges. */
+  gridAreas: GridAreas | null;
+  /** `grid-auto-flow`: which way the placement fills the grid, and whether
+   *  it goes back for the holes it left. */
+  gridAutoFlow: 'row' | 'column' | 'row dense' | 'column dense';
   gridColumnStart: GridLine;
   gridColumnEnd: GridLine;
   gridRowStart: GridLine;
@@ -700,6 +737,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     minWidthKeyword: null,
     minHeightKeyword: null,
     maxWidthKeyword: null,
+    heightKeyword: null,
 
     marginTop: 0,
     marginRight: 0,
@@ -769,7 +807,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
 
     flexDirection: 'row',
     flexWrap: 'nowrap',
-    justifyContent: 'flex-start',
+    justifyContent: 'normal',
     alignItems: 'stretch',
     alignSelf: 'auto',
     alignContent: 'stretch',
@@ -783,6 +821,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     gridColumns: null,
     gridRows: null,
     gridAutoRows: AUTO_TRACK,
+    gridAutoColumns: AUTO_TRACK,
+    gridAreas: null,
+    gridAutoFlow: 'row',
     gridColumnStart: null,
     gridColumnEnd: null,
     gridRowStart: null,
@@ -1340,6 +1381,7 @@ export function applyDeclaration(
         if (name === 'width') style.widthKeyword = keyword;
         else if (name === 'min-width') style.minWidthKeyword = keyword;
         else if (name === 'min-height') style.minHeightKeyword = keyword;
+        else style.heightKeyword = keyword;
         return;
       }
       // a negative size is no value, and the declaration goes (CSS 2.1
@@ -1350,6 +1392,7 @@ export function applyDeclaration(
         if (name === 'width') style.widthKeyword = null;
         else if (name === 'min-width') style.minWidthKeyword = null;
         else if (name === 'min-height') style.minHeightKeyword = null;
+        else style.heightKeyword = null;
       }
       return;
     }
@@ -2223,13 +2266,18 @@ export function applyDeclaration(
     }
     case 'gap':
     case 'row-gap':
-    case 'column-gap': {
+    case 'column-gap':
+    // the names CSS Grid 1 first gave them, which browsers still read
+    case 'grid-gap':
+    case 'grid-row-gap':
+    case 'grid-column-gap': {
+      const which = name.replace(/^grid-/, '');
       const parts = splitValue(value).map((p) => parseLength(p, ctx));
       const row = typeof parts[0] === 'number' ? parts[0] : null;
       const col = typeof parts[1] === 'number' ? parts[1] : row;
       if (row === null) return;
-      if (name !== 'column-gap') style.rowGap = row;
-      if (name !== 'row-gap') style.columnGap = col ?? row;
+      if (which !== 'column-gap') style.rowGap = row;
+      if (which !== 'row-gap') style.columnGap = col ?? row;
       return;
     }
     case 'grid-template-columns':
@@ -2241,16 +2289,119 @@ export function applyDeclaration(
       else style.gridRows = template;
       return;
     }
-    case 'grid-auto-rows': {
+    case 'grid-template-areas': {
+      if (value.trim().toLowerCase() === 'none') {
+        style.gridAreas = null;
+        return;
+      }
+      const parts = trackParts(value);
+      if (!parts?.length || !parts.every((p) => /^["']/.test(p))) return;
+      const areas = parseAreas(parts);
+      if (areas) style.gridAreas = areas;
+      return;
+    }
+    case 'grid-auto-flow': {
+      const words = value.trim().toLowerCase().split(/\s+/);
+      const dense = words.includes('dense');
+      const axis = words.filter((w) => w !== 'dense');
+      if (
+        axis.length > 1 ||
+        words.length > 2 ||
+        (axis.length && axis[0] !== 'row' && axis[0] !== 'column') ||
+        (!dense && !axis.length)
+      ) {
+        return;
+      }
+      const flow = axis[0] ?? 'row';
+      style.gridAutoFlow = dense
+        ? flow === 'row'
+          ? 'row dense'
+          : 'column dense'
+        : (flow as 'row' | 'column');
+      return;
+    }
+    case 'grid-auto-rows':
+    case 'grid-auto-columns': {
       const track = parseGridTrack(splitValue(value)[0] ?? '', ctx);
-      if (track) style.gridAutoRows = track;
+      if (!track) return;
+      if (name === 'grid-auto-rows') style.gridAutoRows = track;
+      else style.gridAutoColumns = track;
+      return;
+    }
+    case 'grid-template': {
+      // rows, a slash and columns, or `none` (CSS Grid 1, 7.4)
+      if (value.trim().toLowerCase() === 'none') {
+        style.gridRows = null;
+        style.gridColumns = null;
+        style.gridAreas = null;
+        return;
+      }
+      const template = parseTemplateShorthand(value, ctx);
+      if (!template) return;
+      style.gridRows = template.rows;
+      style.gridColumns = template.columns;
+      style.gridAreas = template.areas;
+      return;
+    }
+    case 'grid': {
+      // a template, or one axis's template and the other's `auto-flow`
+      // tracks (7.8); every longhand it does not name back to its initial
+      const parts = splitTopLevelSlash(value);
+      const flows = (part: string | undefined) =>
+        part !== undefined && /(^|\s)auto-flow(\s|$)/i.test(part);
+      const autoTrack = (part: string): GridTrack | null => {
+        const words = splitValue(part).filter(
+          (w) => !/^(auto-flow|dense)$/i.test(w),
+        );
+        return words.length ? parseGridTrack(words[0], ctx) : AUTO_TRACK;
+      };
+      const dense = (part: string) => /(^|\s)dense(\s|$)/i.test(part);
+      const axis = (part: string): GridTemplate | null | undefined =>
+        part.trim().toLowerCase() === 'none'
+          ? null
+          : parseGridTemplate(part, ctx);
+      if (parts.length === 2 && flows(parts[0])) {
+        const rows = autoTrack(parts[0]);
+        const columns = axis(parts[1]);
+        if (!rows || columns === undefined) return;
+        style.gridRows = null;
+        style.gridColumns = columns;
+        style.gridAreas = null;
+        style.gridAutoRows = rows;
+        style.gridAutoColumns = AUTO_TRACK;
+        style.gridAutoFlow = dense(parts[0]) ? 'row dense' : 'row';
+        return;
+      }
+      if (parts.length === 2 && flows(parts[1])) {
+        const rows = axis(parts[0]);
+        const columns = autoTrack(parts[1]);
+        if (rows === undefined || !columns) return;
+        style.gridRows = rows;
+        style.gridColumns = null;
+        style.gridAreas = null;
+        style.gridAutoRows = AUTO_TRACK;
+        style.gridAutoColumns = columns;
+        style.gridAutoFlow = dense(parts[1]) ? 'column dense' : 'column';
+        return;
+      }
+      const none = value.trim().toLowerCase() === 'none';
+      const template = none ? null : parseTemplateShorthand(value, ctx);
+      if (!none && !template) return;
+      style.gridRows = template?.rows ?? null;
+      style.gridColumns = template?.columns ?? null;
+      style.gridAreas = template?.areas ?? null;
+      style.gridAutoRows = AUTO_TRACK;
+      style.gridAutoColumns = AUTO_TRACK;
+      style.gridAutoFlow = 'row';
       return;
     }
     case 'grid-column':
     case 'grid-row': {
+      // an end left out is the start where the start is a name, and auto
+      // where it is not (8.4)
       const parts = splitTopLevelSlash(value);
       const start = parseGridLine(parts[0]);
-      const end = parts.length > 1 ? parseGridLine(parts[1]) : null;
+      const end = parts.length > 1 ? parseGridLine(parts[1]) : named(start);
       if (start === undefined || end === undefined || parts.length > 2) return;
       if (name === 'grid-column') {
         style.gridColumnStart = start;
@@ -2262,12 +2413,16 @@ export function applyDeclaration(
       return;
     }
     case 'grid-area': {
+      // the lines left out copy a name: the column start the row start's,
+      // and each end its start's (8.4)
       const parts = splitTopLevelSlash(value).map(parseGridLine);
       if (parts.length > 4 || parts.some((p) => p === undefined)) return;
-      style.gridRowStart = parts[0] ?? null;
-      style.gridColumnStart = parts[1] ?? null;
-      style.gridRowEnd = parts[2] ?? null;
-      style.gridColumnEnd = parts[3] ?? null;
+      const rowStart = parts[0] ?? null;
+      const columnStart = parts.length > 1 ? parts[1]! : named(rowStart);
+      style.gridRowStart = rowStart;
+      style.gridColumnStart = columnStart;
+      style.gridRowEnd = parts.length > 2 ? parts[2]! : named(rowStart);
+      style.gridColumnEnd = parts.length > 3 ? parts[3]! : named(columnStart);
       return;
     }
     case 'grid-column-start':
@@ -2435,7 +2590,7 @@ function justifyKeyword(value: string): ComputedStyle['justifyContent'] | null {
       return v;
     case 'normal':
     case 'stretch':
-      return 'flex-start';
+      return v;
     default:
       return null;
   }
@@ -3344,7 +3499,12 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
   if (fr) return { min: 'auto', max: { fr: Number(fr[1]) } };
   const fn = /^(minmax|fit-content)\((.*)\)$/s.exec(t);
   if (fn) {
-    if (fn[1] === 'fit-content') return { min: 'auto', max: 'max-content' };
+    if (fn[1] === 'fit-content') {
+      const fit = parseLength(fn[2].trim(), ctx);
+      if (fit === null || fit === AUTO) return null;
+      if (typeof fit === 'number' && fit < 0) return null;
+      return { min: AUTO, max: { fit } };
+    }
     const [a, b] = splitCommas(fn[2]).map((p) => p.trim());
     if (a === undefined || b === undefined) return null;
     const min = parseGridTrack(a, ctx);
@@ -3364,62 +3524,308 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
 }
 
 /**
+ * A track list's parts: a bracketed group of line names as one part, a
+ * quoted string as one, and a size or a function as one — a group of two
+ * names was two parts, and the second was no size. Undefined where a
+ * bracket or a quote is not closed.
+ */
+function trackParts(value: string): string[] | undefined {
+  const out: string[] = [];
+  const text = value.trim();
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (/\s/.test(ch)) {
+      i += 1;
+      continue;
+    }
+    const close = ch === '[' ? ']' : ch === '"' || ch === "'" ? ch : null;
+    if (close) {
+      const end = text.indexOf(close, i + 1);
+      if (end < 0) return undefined;
+      out.push(text.slice(i, end + 1));
+      i = end + 1;
+      continue;
+    }
+    let depth = 0;
+    let j = i;
+    for (; j < text.length; j += 1) {
+      const c = text[j];
+      if (c === '(') depth += 1;
+      else if (c === ')') depth -= 1;
+      else if (depth === 0 && /[\s["']/.test(c)) break;
+    }
+    out.push(text.slice(i, j));
+    i = j;
+  }
+  return out;
+}
+
+/** The names in a bracketed group of line names, or undefined for a part
+ *  that is not one or names what no line may be called. */
+function lineNames(part: string): string[] | undefined {
+  if (!part.startsWith('[') || !part.endsWith(']')) return undefined;
+  const names = part.slice(1, -1).trim().split(/\s+/).filter(Boolean);
+  return names.every(isLineName) ? names : undefined;
+}
+
+/** A `<custom-ident>` a grid line may take: not `span` nor `auto`. */
+function isLineName(word: string): boolean {
+  return (
+    /^-?[a-zA-Z_\u0080-\uffff][\w\u0080-\uffff-]*$/.test(word) &&
+    !/^(span|auto|inherit|initial|unset|default)$/i.test(word)
+  );
+}
+
+/**
  * A track list (CSS Grid 1, 7.2): lengths, `fr`s, `auto`, `minmax()`,
- * `repeat()` with a count or with `auto-fill`/`auto-fit`, whose count the
- * width decides; line names are passed over. Undefined for a list that is
- * none.
+ * `fit-content()`, `repeat()` with a count or with `auto-fill`/`auto-fit`,
+ * whose count the width decides, and the names of the lines between them.
+ * Undefined for a list that is none.
  */
 function parseGridTemplate(
   value: string,
   ctx: UnitContext,
 ): GridTemplate | undefined {
-  const out: GridTemplate = { tracks: [], repeat: null };
-  const read = (parts: string[], into: GridTrack[]): boolean => {
+  const out: GridTemplate = { tracks: [], names: [[]], repeat: null };
+  // where a group of names goes: the line after the last track, or the
+  // line after an auto repeat until a track follows it
+  let pending: string[] | null = null;
+  const read = (
+    parts: string[],
+    into: GridTrack[],
+    names: string[][],
+    top: boolean,
+  ): boolean => {
     for (const part of parts) {
-      if (part.startsWith('[')) continue;
+      if (part.startsWith('[')) {
+        const group = lineNames(part);
+        if (!group) return false;
+        (top && pending ? pending : names[names.length - 1]).push(...group);
+        continue;
+      }
       const repeat = /^repeat\((.*)\)$/is.exec(part);
       if (repeat) {
         const [count, ...rest] = splitCommas(repeat[1]);
         const inner: GridTrack[] = [];
-        if (!read(splitValue(rest.join(',')), inner) || !inner.length) {
+        const innerNames: string[][] = [[]];
+        const innerParts = trackParts(rest.join(','));
+        if (
+          !innerParts ||
+          !read(innerParts, inner, innerNames, false) ||
+          !inner.length
+        ) {
           return false;
         }
         const n = count.trim().toLowerCase();
         if (n === 'auto-fill' || n === 'auto-fit') {
-          if (out.repeat || into !== out.tracks) return false;
-          out.repeat = { at: into.length, tracks: inner };
+          if (out.repeat || !top) return false;
+          out.repeat = {
+            at: into.length,
+            tracks: inner,
+            names: innerNames,
+            after: [],
+          };
+          pending = out.repeat.after;
           continue;
         }
         const times = Number(n);
         if (!Number.isInteger(times) || times < 1 || times > 1000) return false;
-        for (let i = 0; i < times; i += 1) into.push(...inner);
+        for (let i = 0; i < times; i += 1) {
+          names[names.length - 1].push(...innerNames[0]);
+          for (let t = 0; t < inner.length; t += 1) {
+            into.push(inner[t]);
+            names.push([...innerNames[t + 1]]);
+          }
+        }
+        if (top) pending = null;
         continue;
       }
       const track = parseGridTrack(part, ctx);
       if (!track) return false;
       into.push(track);
+      names.push([]);
+      if (top) pending = null;
     }
     return true;
   };
-  if (!read(splitValue(value), out.tracks)) return undefined;
+  const parts = trackParts(value);
+  if (!parts || !read(parts, out.tracks, out.names, true)) return undefined;
   if (!out.tracks.length && !out.repeat) return undefined;
   return out;
 }
 
-/** A grid line (CSS Grid 1, 8.3): a number, `span` and a number, or
- *  `auto`; a name is not read, and is auto. Undefined for no value. */
+/**
+ * `grid-template-areas`' strings (CSS Grid 1, 7.3): a row each, a cell to a
+ * word or a run of dots, every row as wide as the first and every name a
+ * rectangle. Undefined where they are not.
+ */
+function parseAreas(strings: string[]): GridAreas | undefined {
+  const grid: (string | null)[][] = [];
+  for (const quoted of strings) {
+    const cells: (string | null)[] = [];
+    const text = quoted.slice(1, -1);
+    const re = /\s*(?:(\.+)|([\w\u0080-\uffff-]+)|(\S))/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) && m[0].trim()) {
+      if (m[3]) return undefined;
+      cells.push(m[1] ? null : m[2]);
+    }
+    if (!cells.length) return undefined;
+    if (grid.length && cells.length !== grid[0].length) return undefined;
+    grid.push(cells);
+  }
+  const areas: GridAreas['areas'] = new Map();
+  grid.forEach((cells, r) =>
+    cells.forEach((name, c) => {
+      if (name === null) return;
+      const area = areas.get(name);
+      if (!area) areas.set(name, { rows: [r, r + 1], columns: [c, c + 1] });
+      else {
+        area.rows[1] = Math.max(area.rows[1], r + 1);
+        area.columns[1] = Math.max(area.columns[1], c + 1);
+      }
+    }),
+  );
+  // each name fills the rectangle its first and last cells make, and
+  // nothing else
+  let cellsNamed = 0;
+  for (const cells of grid) for (const name of cells) if (name) cellsNamed += 1;
+  let rectangles = 0;
+  for (const [name, { rows, columns }] of areas) {
+    for (let r = rows[0]; r < rows[1]; r += 1) {
+      for (let c = columns[0]; c < columns[1]; c += 1) {
+        if (grid[r][c] !== name) return undefined;
+      }
+    }
+    rectangles += (rows[1] - rows[0]) * (columns[1] - columns[0]);
+  }
+  if (rectangles !== cellsNamed) return undefined;
+  return { rows: grid.length, columns: grid[0].length, areas };
+}
+
+/**
+ * `grid-template`'s rows and columns either side of a slash (7.4): the
+ * rows as track list, or as the strings of `grid-template-areas`, each
+ * string's row the size after it or `auto`, with the names of the lines
+ * before and after it. Undefined for no value.
+ */
+function parseTemplateShorthand(
+  value: string,
+  ctx: UnitContext,
+):
+  | {
+      rows: GridTemplate | null;
+      columns: GridTemplate | null;
+      areas: GridAreas | null;
+    }
+  | undefined {
+  const parts = splitTopLevelSlash(value);
+  if (parts.length !== 2) return undefined;
+  const columnsNone = parts[1].trim().toLowerCase() === 'none';
+  const columns = columnsNone ? null : parseGridTemplate(parts[1], ctx);
+  if (columns === undefined) return undefined;
+  if (!/["']/.test(parts[0])) {
+    const rows =
+      parts[0].trim().toLowerCase() === 'none'
+        ? null
+        : parseGridTemplate(parts[0], ctx);
+    return rows === undefined ? undefined : { rows, columns, areas: null };
+  }
+  // the strings' form takes no `repeat()` for its columns
+  if (columns?.repeat) return undefined;
+  const pieces = trackParts(parts[0]);
+  if (!pieces) return undefined;
+  const tracks: GridTrack[] = [];
+  const names: string[][] = [[]];
+  const strings: string[] = [];
+  // after a string, and before its size, if it has one
+  let open = false;
+  for (const piece of pieces) {
+    if (piece.startsWith('[')) {
+      const group = lineNames(piece);
+      if (!group) return undefined;
+      if (open) {
+        tracks.push(AUTO_TRACK);
+        names.push([]);
+        open = false;
+      }
+      names[names.length - 1].push(...group);
+      continue;
+    }
+    if (/^["']/.test(piece)) {
+      if (open) {
+        tracks.push(AUTO_TRACK);
+        names.push([]);
+      }
+      strings.push(piece);
+      open = true;
+      continue;
+    }
+    if (!open) return undefined;
+    const track = parseGridTrack(piece, ctx);
+    if (!track) return undefined;
+    tracks.push(track);
+    names.push([]);
+    open = false;
+  }
+  if (open) {
+    tracks.push(AUTO_TRACK);
+    names.push([]);
+  }
+  const areas = parseAreas(strings);
+  if (!areas) return undefined;
+  if (columns && columns.tracks.length !== areas.columns) return undefined;
+  return { rows: { tracks, names, repeat: null }, columns, areas };
+}
+
+/**
+ * A grid line (CSS Grid 1, 8.3): `auto`; a number; a name; a number and a
+ * name, in either order; or `span` with a number, a name or both.
+ * Undefined for a value that is none of them.
+ */
 function parseGridLine(value: string | undefined): GridLine | undefined {
   if (value === undefined) return null;
-  const words = value.trim().toLowerCase().split(/\s+/);
-  if (words.length === 1 && words[0] === 'auto') return null;
-  if (words[0] === 'span') {
-    const n = Number(words[1] ?? '1');
-    return Number.isInteger(n) && n > 0 ? { span: n } : null;
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 1 && words[0].toLowerCase() === 'auto') return null;
+  let span = false;
+  let count: number | null = null;
+  let name: string | null = null;
+  for (const word of words) {
+    if (word.toLowerCase() === 'span') {
+      if (span) return undefined;
+      span = true;
+    } else if (/^[+-]?\d+$/.test(word)) {
+      if (count !== null) return undefined;
+      count = Number(word);
+    } else if (isLineName(word)) {
+      if (name !== null) return undefined;
+      name = word;
+    } else return undefined;
   }
-  const n = Number(words[0]);
-  if (words.length === 1 && Number.isInteger(n) && n !== 0) return { line: n };
-  // a named line, which this does not place by
-  return words.length <= 2 && /^[a-z_-]/.test(words[0]) ? null : undefined;
+  // `span` goes first or last, never between a number and a name
+  if (span && words.length === 3 && words[1].toLowerCase() === 'span') {
+    return undefined;
+  }
+  if (span) {
+    if (count !== null && count < 1) return undefined;
+    const out: { span: number; name?: string } = { span: count ?? 1 };
+    if (name !== null) out.name = name;
+    return out;
+  }
+  if (count !== null) {
+    if (count === 0) return undefined;
+    return name === null ? { line: count } : { line: count, name };
+  }
+  return name === null ? undefined : { name };
+}
+
+/** A grid line that is a name alone, which a shorthand copies to the
+ *  line it leaves out; auto for any other. */
+function named(line: GridLine | undefined): GridLine {
+  return line && 'name' in line && !('line' in line) && !('span' in line)
+    ? line
+    : null;
 }
 
 /** A value's parts either side of a top-level `/`. */
@@ -3894,7 +4300,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'border-spacing': ['borderSpacing', 'borderSpacingY'],
   display: ['display', 'flowRoot', 'webkitBox', 'grid'],
   width: ['width', 'widthKeyword'],
-  height: ['height'],
+  height: ['height', 'heightKeyword'],
   'min-width': ['minWidth', 'minWidthKeyword'],
   'max-width': ['maxWidth', 'maxWidthKeyword'],
   'min-height': ['minHeight', 'minHeightKeyword'],
@@ -3969,9 +4375,24 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   gap: ['rowGap', 'columnGap'],
   'row-gap': ['rowGap'],
   'column-gap': ['columnGap'],
+  'grid-gap': ['rowGap', 'columnGap'],
+  'grid-row-gap': ['rowGap'],
+  'grid-column-gap': ['columnGap'],
   'grid-template-columns': ['gridColumns'],
   'grid-template-rows': ['gridRows'],
   'grid-auto-rows': ['gridAutoRows'],
+  'grid-auto-columns': ['gridAutoColumns'],
+  'grid-template-areas': ['gridAreas'],
+  'grid-auto-flow': ['gridAutoFlow'],
+  'grid-template': ['gridRows', 'gridColumns', 'gridAreas'],
+  grid: [
+    'gridRows',
+    'gridColumns',
+    'gridAreas',
+    'gridAutoRows',
+    'gridAutoColumns',
+    'gridAutoFlow',
+  ],
   'grid-area': [
     'gridRowStart',
     'gridColumnStart',

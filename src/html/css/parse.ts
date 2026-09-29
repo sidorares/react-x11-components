@@ -62,6 +62,9 @@ export interface Stylesheet {
   breakpoints: number[];
   /** The `@font-face` rules, in order (see `fonts.ts`). */
   fontFaces: FontFaceRule[];
+  /** `@counter-style` rules, in order: a name and its descriptors, which
+   *  the cascade reads into counter styles (CSS Counter Styles 3, 3). */
+  counterStyles?: { prelude: string; declarations: Declaration[] }[];
 }
 
 /**
@@ -263,6 +266,11 @@ export function parseStylesheet(
         } else if (name === 'font-face' && at.block !== null) {
           const face = parseFontFace(at.block, base, media);
           if (face) sheet.fontFaces.push(face);
+        } else if (name === 'counter-style' && at.block !== null) {
+          (sheet.counterStyles ??= []).push({
+            prelude: at.prelude,
+            declarations: parseDeclarations(at.block),
+          });
         }
         // @keyframes, @page: nothing to do, and the block was already
         // consumed.

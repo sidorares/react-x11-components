@@ -28,6 +28,12 @@ import { Html } from '../src/index.js';
 import { HtmlViewNode } from '../src/html/index.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
 import { featuresOf, hungSpaces } from '../src/html/layout/inline.js';
+import {
+  CounterStyles,
+  counterStyleRule,
+} from '../src/html/css/counter-styles.js';
+import type { CounterStyleRule } from '../src/html/css/counter-styles.js';
+import { sizeTracks } from '../src/html/layout/tracks.js';
 import { cocoaShapedLayout } from './cocoa-shaped.js';
 import type { ShapedLayout } from './cocoa-shaped.js';
 import {
@@ -1295,9 +1301,11 @@ test('counter styles, and decimal past where a style has a form', () => {
     [at(1, 'armenian'), at(1999, 'armenian'), at(10001, 'georgian')],
     ['Ա', 'ՌՋՂԹ', 'ჵა'],
   );
+  // `pad` counts the negative sign among the two (CSS Counter Styles 3,
+  // 3.6)
   assert.deepStrictEqual(
     [at(7, 'decimal-leading-zero'), at(-3, 'decimal-leading-zero')],
-    ['07', '-03'],
+    ['07', '-3'],
   );
   assert.deepStrictEqual([at(5, 'none'), at(5, 'square')], ['', '▪']);
 });
@@ -1307,6 +1315,95 @@ async function documentText(source: string): Promise<string> {
   const { node } = await render(source, 300);
   return (view(node) as unknown as { _tree: { text: string } })._tree.text;
 }
+
+test('the predefined counter styles write what CSS Counter Styles 3 has them write', () => {
+  // Past a dozen of them every style name was decimal: the numeric ones of
+  // twenty-odd scripts, the kana, the CJK longhands and ethiopic-numeric
+  const styles = new CounterStyles();
+  const cases: [number, string, string][] = [
+    [42, 'arabic-indic', '٤٢'],
+    [0, 'cjk-decimal', '〇'],
+    [15, 'hebrew', 'טו'],
+    [3, 'katakana-iroha', 'ハ'],
+    [13, 'cjk-earthly-branch', '一三'],
+    [1111, 'japanese-informal', '千百十一'],
+    [6001, 'japanese-formal', '六阡壱'],
+    [-5, 'korean-hangul-formal', '마이너스 오'],
+    [10000, 'korean-hanja-informal', '10000'],
+    [101, 'trad-chinese-formal', '壹佰零壹'],
+    [11, 'simp-chinese-informal', '十一'],
+    [10010, 'simp-chinese-informal', '一万零十'],
+    [1001001001001, 'simp-chinese-formal', '壹万亿零壹拾亿零壹佰万壹仟零壹'],
+    [78010092, 'ethiopic-numeric', '፸፰፻፩፼፺፪'],
+    [4000, 'upper-roman', '4000'],
+  ];
+  for (const [n, style, text] of cases) {
+    assert.strictEqual(styles.text(n, style), text, `${n} in ${style}`);
+  }
+  assert.deepStrictEqual(styles.marker(3, 'cjk-decimal'), {
+    prefix: '',
+    text: '三',
+    suffix: '、',
+  });
+});
+
+test('@counter-style defines a style, extends one, and falls back', () => {
+  const styles = (css: string) => {
+    const sheet = parseStylesheet(css);
+    const rules = new Map<string, CounterStyleRule>();
+    for (const { prelude, declarations } of sheet.counterStyles ?? []) {
+      const style = counterStyleRule(prelude, declarations);
+      if (style) rules.set(style.name, style.rule);
+    }
+    return new CounterStyles(rules);
+  };
+  const s = styles(
+    '@counter-style chapter { system: extends upper-roman; ' +
+      'prefix: "Ch. "; range: 1 3; fallback: lower-alpha }' +
+      "@counter-style box { system: fixed; symbols: ◰ ◳; suffix: ': ' }" +
+      '@counter-style w { system: additive; additive-symbols: 5 V, 1 I, ' +
+      'calc(-1) Z; negative: "(" ")"; pad: 3 "*"; range: infinite infinite }' +
+      '@counter-style bad { system: alphabetic; symbols: a inherit }' +
+      '@counter-style decimal { system: cyclic; symbols: x }',
+  );
+  assert.deepStrictEqual(
+    [1, 3, 4].map((n) => s.text(n, 'chapter')),
+    ['I', 'III', 'd'],
+    'its range, and its fallback past it',
+  );
+  assert.deepStrictEqual(s.marker(4, 'chapter').prefix, 'Ch. ', 'its prefix');
+  assert.deepStrictEqual(
+    [1, 2, 3].map((n) => s.text(n, 'box')),
+    ['◰', '◳', '3'],
+    'fixed: its symbols, then decimal',
+  );
+  assert.deepStrictEqual(
+    [6, 0, -2].map((n) => s.text(n, 'w')),
+    ['*VI', '**Z', '(II)'],
+    'additive, a calc() of -1 clamped to 0, pad and a negative sign',
+  );
+  assert.strictEqual(s.text(2, 'bad'), '2', 'inherit is no symbol');
+  assert.strictEqual(s.text(2, 'decimal'), '2', 'decimal is not redefined');
+});
+
+metric("a list's marker is written in its counter style", async () => {
+  // A `@counter-style` was skipped whole and every style past a dozen was
+  // decimal. A marker is its style's prefix, its number and its suffix:
+  // `、` sets it against the text, where a suffix that ends in a space is
+  // set off by that space's width in the marker's face
+  const text = await documentText(
+    '<style>@counter-style star { system: cyclic; symbols: "*"; ' +
+      'suffix: " " } ol { list-style-position: inside }</style>' +
+      '<ol style="list-style-type: star"><li>a</li></ol>' +
+      '<ol style="list-style-type: cjk-decimal"><li>b</li></ol>' +
+      '<ol style="list-style-type: symbols(alphabetic \'x\' \'y\')" start="3">' +
+      '<li>c</li></ol><p style="counter-reset: n 12">' +
+      '<span style="content: none"></span></p>',
+  );
+  assert.ok(text.includes('* a'), JSON.stringify(text));
+  assert.ok(text.includes('一、b'), JSON.stringify(text));
+  assert.ok(text.includes('xx c'), JSON.stringify(text));
+});
 
 test('a <q> is in quotation marks, and a nested one in the next pair', async () => {
   // HTML's rendering: `q::before { content: open-quote }` and its close,
@@ -10306,6 +10403,531 @@ metric('a grid places its items in its column tracks', async () => {
   assert.ok(c.width < 20 && c.x > 40, `${c.x} ${c.width}`);
 });
 
+metric('grid-template and grid set the tracks they name', async () => {
+  // Neither shorthand was read, so a grid written with one had no tracks
+  // and stacked its items in a column; nor was grid-auto-columns
+  const cells = async (css: string, items: string) => {
+    const { node } = await render(
+      '<style>body{margin:0;font:14px/20px sans-serif}</style>' +
+        `<div id="g" style="display:grid;${css}">${items}</div>`,
+      700,
+    );
+    const g = boxOf(view(node), 'g');
+    const out = g.children
+      .filter((c) => (c as unknown as { kind: string }).kind !== 'text')
+      .map((c) => [c.x, c.y, c.width, c.height].map((v) => Math.round(v)));
+    cleanup();
+    return out;
+  };
+  const four = '<div>a</div><div>b</div><div>c</div><div>d</div>';
+  assert.deepStrictEqual(
+    await cells('grid-template:30px 40px / 100px 50px', four),
+    [
+      [0, 0, 100, 30],
+      [100, 0, 50, 30],
+      [0, 30, 100, 40],
+      [100, 30, 50, 40],
+    ],
+    'rows, a slash and columns',
+  );
+  assert.deepStrictEqual(
+    await cells("grid-template:'a b' 30px 'c d' / 60px 70px", four),
+    [
+      [0, 0, 60, 30],
+      [60, 0, 70, 30],
+      [0, 30, 60, 20],
+      [60, 30, 70, 20],
+    ],
+    "each area string's row the size after it, and auto with none",
+  );
+  assert.deepStrictEqual(
+    await cells('grid:auto-flow 25px / 60px 60px', four),
+    [
+      [0, 0, 60, 25],
+      [60, 0, 60, 25],
+      [0, 25, 60, 25],
+      [60, 25, 60, 25],
+    ],
+    "auto-flow's rows, and the columns",
+  );
+  assert.deepStrictEqual(
+    await cells(
+      'grid-template-columns:50px;grid-auto-columns:30px',
+      '<div>a</div><div style="grid-column:2">b</div>',
+    ),
+    [
+      [0, 0, 50, 20],
+      [50, 0, 30, 20],
+    ],
+    'a column past the template is grid-auto-columns wide',
+  );
+});
+
+metric(
+  'an absolute box in a grid takes its grid area for its containing block',
+  async () => {
+    // CSS Grid 1, 9.1: the area between the lines it names, the grid's
+    // padding edge where a line is auto — which `grid-column: 2` leaves its
+    // end line. Its offsets, its percentages and
+    // its alignment were the grid's padding box's; a box deeper in the grid
+    // is where its own flow put it
+    const { node } = await render(
+      '<style>body{margin:0;font:14px/20px sans-serif}' +
+        '.a{position:absolute}</style>' +
+        '<div style="display:grid;position:relative;padding:10px;' +
+        'grid-template-columns:50px 100px;grid-template-rows:30px 40px">' +
+        '<div>a</div><div>b</div><div>c</div>' +
+        '<div><div id="d" class="a" style="width:50%;height:5px"></div></div>' +
+        '<div id="p" class="a" style="grid-column:2 / 3;grid-row:2 / 3;' +
+        'width:100%;height:100%"></div>' +
+        '<div id="r" class="a" style="grid-column:2;grid-row:2;' +
+        'width:100%;height:100%"></div>' +
+        '<div id="q" class="a" style="grid-column:2 / 3;inset:5px"></div>' +
+        '<div id="s" class="a" style="width:20px;height:20px;' +
+        'justify-self:center;align-self:end"></div></div>',
+      700,
+    );
+    const el = view(node);
+    const rect = (id: string) => {
+      const b = boxOf(el, id);
+      return [b.x, b.y, b.width, b.height];
+    };
+    // the grid's padding box is 700 by 90
+    assert.deepStrictEqual(rect('p'), [60, 40, 100, 40], 'its area');
+    assert.deepStrictEqual(rect('r'), [60, 40, 640, 50], 'auto: the edge');
+    assert.deepStrictEqual(rect('q'), [65, 5, 90, 80], 'a column, all rows');
+    assert.deepStrictEqual(rect('s'), [340, 70, 20, 20], 'aligned in it');
+    assert.deepStrictEqual(rect('d'), [60, 40, 350, 5], 'in the flow, deeper');
+  },
+);
+
+metric(
+  'an absolute box in a flex box is where it would be as its one item',
+  async () => {
+    // CSS Flexbox 4.1: its static position is in the flex box's content box,
+    // aligned by justify-content and align-self; it was at the box's corner.
+    // And its containing block is its own: one in a flex box that is not
+    // positioned was placed against the flex box
+    const place = async (css: string, child = 'width:20px;height:10px') => {
+      const { node } = await render(
+        '<style>body{margin:0}</style>' +
+          '<div style="position:relative;padding:7px">' +
+          `<div style="display:flex;width:100px;height:60px;padding:5px;${css}">` +
+          `<div id="a" style="position:absolute;${child}"></div></div></div>`,
+      );
+      const b = boxOf(view(node), 'a');
+      cleanup();
+      return [b.x, b.y];
+    };
+    assert.deepStrictEqual(
+      await place('justify-content:center;align-items:flex-end'),
+      [52, 62],
+      'centred along the row, at the end across it',
+    );
+    assert.deepStrictEqual(
+      await place(
+        'flex-direction:column;justify-content:flex-end;align-items:center',
+      ),
+      [52, 62],
+      'and the same down a column',
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:row-reverse'),
+      [92, 12],
+      'a reversed row starts at its end',
+    );
+    assert.deepStrictEqual(
+      await place('', 'top:0;left:0;width:20px;height:10px'),
+      [0, 0],
+      "its offsets are from its containing block's padding edge",
+    );
+  },
+);
+
+metric(
+  'auto rows share a grid height, and an item that does not stretch fits its content',
+  async () => {
+    // CSS Grid 1, 11.8: with align-content normal, the auto rows stretch to
+    // fill a grid of a definite height; and an item that is not stretched is
+    // as wide as its content fits, which is its longest word where that is
+    // wider than its area — it was cut to the area
+    const { node } = await render(
+      '<style>body{margin:0;font:14px/20px sans-serif}</style>' +
+        '<div style="display:grid;height:100px;grid-template-rows:20px auto auto">' +
+        '<div>a</div><div id="b">b</div><div id="c">c</div></div>' +
+        '<div style="display:grid;height:100px;align-content:start;' +
+        'grid-template-rows:20px auto"><div>a</div><div id="e">e</div></div>' +
+        '<div style="display:grid;grid-template-columns:10px;justify-items:start">' +
+        '<div id="w">Supercalifragilistic</div></div>',
+      700,
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'b').height, 40, 'half of what is left');
+    assert.strictEqual(boxOf(el, 'c').y, 60);
+    assert.strictEqual(boxOf(el, 'e').height, 20, 'align-content: start');
+    const w = boxOf(el, 'w');
+    assert.ok(w.width > 50, `as wide as its word: ${w.width}`);
+  },
+);
+
+test('grid tracks are sized as CSS Grid 11.5 to 11.8 has it', () => {
+  const item = (
+    start: number,
+    span: number,
+    min: number,
+    max: number,
+    minimum = min,
+  ) => ({
+    start,
+    span,
+    minContent: () => min,
+    maxContent: () => max,
+    minimum: () => minimum,
+  });
+  const space = (available: number, least = 0) => ({
+    available,
+    least,
+    gap: 0,
+    stretch: true,
+  });
+  const auto = { min: 'auto', max: 'auto' } as const;
+  const fr = (n: number) => ({ min: 'auto' as const, max: { fr: n } });
+  // An item spanning a length and a content-sized track grows the second
+  // alone — the last spanned track grew, a length or not — and two
+  // content-sized ones by what each maximum lets it take: the tracks of
+  // `grid-intrinsic-maximums`, with an item 40 at its narrowest and 90 at
+  // its widest
+  assert.deepStrictEqual(
+    sizeTracks(
+      [
+        { min: 0, max: 'min-content' },
+        { min: 5, max: 5 },
+      ],
+      [item(0, 2, 40, 90, 15)],
+      space(100),
+    ),
+    [35, 5],
+  );
+  assert.deepStrictEqual(
+    sizeTracks(
+      [
+        { min: 0, max: 'min-content' },
+        { min: 5, max: 5 },
+        { min: 0, max: 'max-content' },
+      ],
+      [item(0, 3, 40, 90, 15)],
+      space(100),
+    ),
+    [17.5, 5, 67.5],
+  );
+  // the free space grows the tracks equally, each as far as its limit —
+  // it grew them in proportion to what each wanted
+  assert.deepStrictEqual(
+    sizeTracks(
+      [auto, auto],
+      [item(0, 1, 10, 30), item(1, 1, 50, 300)],
+      space(200),
+    ),
+    [30, 170],
+  );
+  // an `fr` track whose content is more than its share keeps its content's
+  assert.deepStrictEqual(
+    sizeTracks([fr(1), fr(1)], [item(0, 1, 250, 250)], space(300)),
+    [250, 50],
+  );
+  // with no size of its own, an axis's `fr` rows fill its least size
+  assert.deepStrictEqual(
+    sizeTracks(
+      [auto, fr(1), auto],
+      [item(0, 1, 50, 50), item(1, 1, 100, 100), item(2, 1, 50, 50)],
+      space(Infinity, 600),
+    ),
+    [50, 500, 50],
+  );
+});
+
+metric(
+  "a grid's fr rows fill its height, and an item stretched into a row is its height",
+  async () => {
+    // `auto 1fr auto`, the page with a footer at the bottom: the `fr` row was
+    // as tall as what was in it. And a main area that scrolls, in a grid of
+    // a height, is the row's height — it was as tall as what it held
+    const { node } = await render(
+      '<style>body{margin:0} .g{display:grid;grid-template-rows:auto 1fr auto}' +
+        '</style>' +
+        '<div class="g" style="min-height:300px"><div style="height:40px"></div>' +
+        '<div id="m"><div style="height:50px"></div></div>' +
+        '<div id="f" style="height:30px"></div></div>' +
+        '<div class="g" style="height:200px"><div style="height:40px"></div>' +
+        '<div id="s" style="overflow:auto"><div style="height:1000px"></div>' +
+        '</div><div style="height:30px"></div></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'm').height, 230, 'what min-height leaves');
+    assert.strictEqual(boxOf(el, 'f').y, 270, 'the footer at the bottom');
+    assert.strictEqual(boxOf(el, 's').height, 130, 'the row, not its content');
+  },
+);
+
+metric(
+  'a grid places its tracks by justify-content and align-content, and an item by its auto margins',
+  async () => {
+    // CSS Box Alignment 3, 5.1, and CSS Grid 1, 10.2: the space the tracks
+    // leave was all after them, and an auto margin was none
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="display:grid;width:300px;height:100px;' +
+        'grid-template:20px / 50px 50px;justify-content:space-between;' +
+        'align-content:center"><div></div><div id="b"></div></div>' +
+        '<div style="display:grid;grid-template:100px / 100px">' +
+        '<div id="c" style="margin:auto;width:20px;height:20px"></div></div>' +
+        '<div style="display:grid;grid-template:100px / 100px">' +
+        '<div id="d" style="margin-left:auto;height:20px">' +
+        '<span style="display:inline-block;width:20px"></span></div></div>',
+    );
+    const el = view(node);
+    const at = (id: string) => {
+      const b = boxOf(el, id);
+      return [b.x, b.y, b.width, b.height];
+    };
+    assert.deepStrictEqual(at('b'), [250, 40, 50, 20], 'spread, and centred');
+    assert.deepStrictEqual(at('c'), [40, 140, 20, 20], 'centred in its area');
+    assert.deepStrictEqual(
+      at('d'),
+      [80, 200, 20, 20],
+      'at the end, unstretched',
+    );
+  },
+);
+
+metric(
+  'grid placement moves its cursor past an item with a column, and places an item locked to a row first',
+  async () => {
+    // CSS Grid 1, 8.5: an item whose column is before the cursor goes to the
+    // next row — it went in beside the last one — and an item that names
+    // its row is placed before the ones that name neither
+    const place = async (items: string) => {
+      const { node } = await render(
+        '<style>body{margin:0} div div{height:10px}</style>' +
+          `<div id="g" style="display:grid;grid-template-columns:repeat(3,50px)">${items}</div>`,
+      );
+      const g = boxOf(view(node), 'g');
+      const out = g.children
+        .filter((c) => (c as unknown as { kind: string }).kind !== 'text')
+        .map((c) => [c.x, c.y]);
+      cleanup();
+      return out;
+    };
+    assert.deepStrictEqual(
+      await place(
+        '<div></div><div style="grid-column:3"></div>' +
+          '<div style="grid-column:2"></div>',
+      ),
+      [
+        [0, 0],
+        [100, 0],
+        [50, 10],
+      ],
+    );
+    assert.deepStrictEqual(
+      await place('<div></div><div style="grid-row:1"></div>'),
+      [
+        [50, 0],
+        [0, 0],
+      ],
+    );
+  },
+);
+
+metric(
+  'a grid item of a content width is that width, and fit-content() stops at its argument',
+  async () => {
+    // A grid item's `width: min-content` was stretched across its area, and
+    // `height: max-content` down it; and `fit-content(100px)` was a
+    // max-content track with no limit
+    const { node } = await render(
+      '<style>body{margin:0;font:14px/20px sans-serif}</style>' +
+        '<div style="display:grid;grid-template:100px / 300px">' +
+        '<div id="a" style="width:min-content;height:max-content">aa bb</div>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:fit-content(100px) 1fr">' +
+        '<div id="b">words enough to be wider than the argument</div><div></div>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:fit-content(100px) 1fr">' +
+        '<div id="c">ab</div><div></div></div>',
+      400,
+    );
+    const el = view(node);
+    const a = boxOf(el, 'a');
+    assert.ok(a.width < 30, `its narrowest: ${a.width}`);
+    assert.strictEqual(a.height, 40, 'its two lines, not its row');
+    assert.strictEqual(boxOf(el, 'b').width, 100, 'no wider than the argument');
+    const c = boxOf(el, 'c');
+    assert.ok(c.width < 30, `no wider than its content: ${c.width}`);
+  },
+);
+
+metric(
+  'a grid places its items by the names of its areas and its lines',
+  async () => {
+    // CSS Grid 1, 7.3 and 8.3: `grid-template-areas`, the names in a track
+    // list and the `-start` and `-end` lines an area's name makes were not
+    // read, so every named item was placed in order — and a list with two
+    // names in one bracket was no list at all
+    const cells = async (css: string, items: string) => {
+      const { node } = await render(
+        '<style>body{margin:0} #g>div{height:10px}</style>' +
+          `<div id="g" style="display:grid;${css}">${items}</div>`,
+      );
+      const g = boxOf(view(node), 'g');
+      const out = g.children
+        .filter((c) => (c as unknown as { kind: string }).kind !== 'text')
+        .map((c) => [c.x, c.y, c.width, c.height]);
+      cleanup();
+      return out;
+    };
+    assert.deepStrictEqual(
+      await cells(
+        "grid-template-areas:'head head' 'nav main' 'foot foot';" +
+          'grid-template-columns:100px 200px;grid-template-rows:30px 60px 20px',
+        '<div style="grid-area:foot"></div><div style="grid-area:main"></div>' +
+          '<div style="grid-area:head"></div><div style="grid-area:nav"></div>',
+      ),
+      [
+        [0, 90, 300, 10],
+        [100, 30, 200, 10],
+        [0, 0, 300, 10],
+        [0, 30, 100, 10],
+      ],
+      'each in its area, in any order',
+    );
+    assert.deepStrictEqual(
+      (
+        await cells(
+          'grid-template-columns:[full-start] 50px [content-start a b] 100px ' +
+            '[content-end] 50px [full-end]',
+          '<div style="grid-column:content"></div>' +
+            '<div style="grid-column:full"></div>' +
+            '<div style="grid-column:b / span full-end"></div>',
+        )
+      ).map(([x, , w]) => [x, w]),
+      [
+        [50, 100],
+        [0, 200],
+        [50, 150],
+      ],
+      "an area's lines, two names in a bracket, and a span to a name",
+    );
+    assert.deepStrictEqual(
+      (
+        await cells(
+          "grid-template:[top] 'a b' 30px [mid] / [l] 40px [m] 60px;" +
+            'grid-template-columns:repeat(2, [col] 50px)',
+          '<div style="grid-area:b"></div><div style="grid-column:col 2;' +
+            'grid-row:mid"></div>',
+        )
+      ).map(([x, y, w]) => [x, y, w]),
+      [
+        [50, 0, 50],
+        [50, 30, 50],
+      ],
+      "the shorthand's areas, and a repeated name counted",
+    );
+  },
+);
+
+metric(
+  'grid-auto-flow fills the columns, or goes back for the holes',
+  async () => {
+    // `grid-auto-flow: column` and `dense` were not read: the items went
+    // along the rows, and a hole a wide item left stayed a hole. And the
+    // gaps' old names, `grid-gap` and its longhands, were not read either
+    const place = async (css: string, items: string) => {
+      const { node } = await render(
+        '<style>body{margin:0} #g>div{height:10px}</style>' +
+          `<div id="g" style="display:grid;${css}">${items}</div>`,
+      );
+      const g = boxOf(view(node), 'g');
+      const out = g.children
+        .filter((c) => (c as unknown as { kind: string }).kind !== 'text')
+        .map((c) => [c.x, c.y]);
+      cleanup();
+      return out;
+    };
+    assert.deepStrictEqual(
+      await place(
+        'grid-auto-flow:column;grid-template-rows:10px 10px;' +
+          'grid-auto-columns:50px',
+        '<div></div><div></div><div></div>',
+      ),
+      [
+        [0, 0],
+        [0, 10],
+        [50, 0],
+      ],
+      'down the columns',
+    );
+    const holes =
+      '<div style="grid-column:span 2"></div>'.repeat(2) + '<div></div>';
+    assert.deepStrictEqual(
+      await place('grid-template-columns:repeat(3,50px)', holes),
+      [
+        [0, 0],
+        [0, 10],
+        [100, 10],
+      ],
+      'sparse: on from the last',
+    );
+    assert.deepStrictEqual(
+      await place(
+        'grid-template-columns:repeat(3,50px);grid-auto-flow:dense',
+        holes,
+      ),
+      [
+        [0, 0],
+        [0, 10],
+        [100, 0],
+      ],
+      'dense: back into the hole',
+    );
+    assert.deepStrictEqual(
+      await place(
+        'grid-template-columns:repeat(2,50px);grid-gap:5px 10px',
+        '<div></div><div></div><div></div>',
+      ),
+      [
+        [0, 0],
+        [60, 0],
+        [0, 15],
+      ],
+      'grid-gap',
+    );
+  },
+);
+
+metric(
+  'a percentage row of a grid with no height is of the height its rows come to',
+  async () => {
+    // CSS Grid 1, 7.2.1: sized as `auto` to find the grid's height, and then
+    // a percentage of it — a grid with no height kept it `auto`; and an
+    // `auto-fill` of rows counted against the grid's height, which only the
+    // columns' width did
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="display:grid;grid-template-rows:auto 20% auto">' +
+        '<div style="height:40px"></div><div id="p" style="height:60px"></div>' +
+        '<div id="q" style="height:40px"></div></div>' +
+        '<div style="display:grid;height:100px;' +
+        'grid-template-rows:repeat(auto-fill,30px);grid-auto-rows:5px">' +
+        '<div id="r" style="grid-row:-2"></div></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'p').y, 56, 'after an auto row stretched');
+    assert.strictEqual(boxOf(el, 'q').y, 84, '20% of 140 before it');
+    assert.strictEqual(boxOf(el, 'r').y, 140 + 60, 'the last of three rows');
+  },
+);
+
 // --- rounded borders -------------------------------------------------------------
 
 test("a rounded box's border is a ring that follows its corners", async () => {
@@ -12195,9 +12817,9 @@ test('object-fit places an image in its box, and object-position in it', async (
   };
   assert.deepStrictEqual(at(0), [0, 0, 90, 90], 'fill: stretched');
   assert.deepStrictEqual(at(1), [-45, 0, 180, 90], 'cover: the middle');
-  assert.deepStrictEqual(at(2), [0, 22.5, 90, 45], 'contain: all of it');
+  assert.deepStrictEqual(at(2), [0, 23, 90, 45], 'contain: all of it');
   assert.deepStrictEqual(at(3), [-75, -15, 240, 120], 'none: its own size');
-  assert.deepStrictEqual(at(4), [0, 22.5, 90, 45], 'scale-down, when smaller');
+  assert.deepStrictEqual(at(4), [0, 23, 90, 45], 'scale-down, when smaller');
   assert.deepStrictEqual(at(5), [0, 0, 180, 90], 'cover, from the left');
   // scale-down in a box larger than the image: its own size, in the middle
   const big = drawn[6];
@@ -12206,6 +12828,60 @@ test('object-fit places an image in its box, and object-position in it', async (
   // what falls past its box is clipped to it, and nothing else is
   const clips = ops.filter((op) => op.op === 'clip').length;
   assert.strictEqual(clips, 3, 'cover twice and none');
+});
+
+test('object-position places a filled image, and one with a ratio and no size', async () => {
+  // CSS Images 3, 5.5: `fill` was drawn at the box whatever object-position
+  // said — its lengths still move it — and an image with a ratio and no
+  // size of its own, an SVG with only a viewBox, was stretched to the box
+  // whatever the fit. And it is placed on the pixel grid, as a
+  // background's tile is: 13% of 15 pixels is 1.95
+  const { node } = await render(
+    '<style>body{margin:0} img{display:block;width:90px;height:60px}</style>' +
+      '<img id="a" src="a.png" style="object-position:right 2px bottom 1px">' +
+      '<img id="b" src="b.svg" style="object-fit:contain">' +
+      '<img id="c" src="c.svg" style="object-fit:none">' +
+      '<img id="d" src="d.png" style="object-fit:contain;' +
+      'object-position:50% 13%">',
+  );
+  const el = view(node);
+  const own = (id: string, missing: number) => {
+    (boxOf(el, id) as unknown as { intrinsic: unknown }).intrinsic = {
+      width: missing ? 300 : 240,
+      height: missing ? 150 : 120,
+      missing,
+      ratio: 2,
+    };
+  };
+  own('a', 0);
+  own('b', 3);
+  own('c', 3);
+  own('d', 0);
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, { imageFor: () => ({}) });
+  const drawn = ops.filter((op) => op.op === 'image');
+  const at = (i: number) => {
+    const op = drawn[i];
+    return op.op === 'image' ? [op.x, op.y - i * 60, op.w, op.h] : [];
+  };
+  assert.deepStrictEqual(at(0), [-2, -1, 90, 60], 'fill, moved by lengths');
+  assert.deepStrictEqual(at(1), [0, 8, 90, 45], 'contain: at its ratio');
+  assert.deepStrictEqual(at(2), [0, 8, 90, 45], 'none, with no size: within');
+  assert.deepStrictEqual(at(3), [0, 2, 90, 45], 'on the pixel grid');
+});
+
+metric("a video's poster and an embedded image are drawn", async () => {
+  // A `<video>` and an `<embed>` were frames whatever they pointed at: a
+  // video shows its poster, which it fits into its box by the HTML style
+  // sheet's `object-fit: contain`, and an embed its image
+  const ctx = await renderWithImages(
+    '<style>body{margin:0} *{display:block}</style>' +
+      '<video poster="p.png" style="width:40px;height:20px"></video>' +
+      '<embed src="e.png" style="width:20px;height:20px">',
+  );
+  await expectPixel(ctx, 20, 10, '#ff0000', { message: "the poster's middle" });
+  await expectPixel(ctx, 5, 10, '#ffffff', { message: 'contained: not here' });
+  await expectPixel(ctx, 10, 30, '#ff0000', { message: 'the embed' });
 });
 
 // --- a restyle's cost --------------------------------------------------------------
