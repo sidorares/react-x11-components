@@ -824,6 +824,10 @@ export interface SceneMiniMapSource {
   scale: number;
   nodeColor?: string | ((node: FlowNode<never>) => string);
   maskColor?: string;
+  /** The rect this pass repaints of it, where the scene is built with no
+   *  clip of its own — the furniture's, which is drawn over the rest. Only
+   *  the nodes that reach it are built (`buildMiniMap`). */
+  reach?: FlowRect | null;
 }
 
 /** One control button's box and what it does. */
@@ -1038,9 +1042,46 @@ export interface SceneConnection {
 /** The minimap panel. */
 export interface SceneMiniMap {
   panel: SceneRect;
-  nodes: readonly SceneRect[];
+  nodes: readonly SceneMiniMapNode[];
   view: SceneRect;
 }
+
+/**
+ * A node in the minimap, with the run it is filled in: a run of plain
+ * squares of one colour, next to each other in the graph's order, is one
+ * path and one fill (`paintPanels`). The run is worked out over every node,
+ * so a pass that culls some away fills what it keeps as a whole repaint
+ * does — nodes that overlap are one path's coverage or one over another,
+ * and which one is the run's to say, not the pass's. `batched` says whether
+ * the whole run was more than one node, for the same reason: a lone square
+ * is filled as a rectangle, and that is not the pixels a path gives.
+ */
+export interface SceneMiniMapNode extends SceneRect {
+  run: number;
+  batched: boolean;
+}
+
+/** Where a box of the graph sits in the minimap, as it is drawn there — the
+ *  one formula the pass that draws the minimap and a claim on it share. */
+export function miniMapPlace(
+  map: Pick<SceneMiniMapSource, 'panel' | 'bounds' | 'scale'>,
+  rect: FlowRect,
+): FlowRect {
+  const ox = map.panel.x + (map.panel.width - map.bounds.width * map.scale) / 2;
+  const oy =
+    map.panel.y + (map.panel.height - map.bounds.height * map.scale) / 2;
+  return {
+    x: ox + (rect.x - map.bounds.x) * map.scale,
+    y: oy + (rect.y - map.bounds.y) * map.scale,
+    width: Math.max(1, rect.width * map.scale),
+    height: Math.max(1, rect.height * map.scale),
+  };
+}
+
+/** How far a minimap node's fill reaches past its box: its antialiased
+ *  edge, which a pass has to take in to draw the node's part of a pixel it
+ *  shares. */
+export const MINIMAP_BLEED = 2;
 
 /** One button's mark: its runs go in one path, which is what the 2D painter
  *  did per button before any of this moved. */
@@ -1270,7 +1311,11 @@ export function buildScene(input: SceneInput): FlowScene {
   // skips the walk that builds them — which for the minimap is every node in
   // the graph, not just the ones in view.
   if (input.miniMap && (!clip || rectsOverlap(input.miniMap.panel, clip))) {
-    scene.miniMap = buildMiniMap(input, input.miniMap);
+    scene.miniMap = buildMiniMap(
+      input,
+      input.miniMap,
+      clip ?? input.miniMap.reach,
+    );
   }
   if (
     input.controls.length > 0 &&
@@ -1981,6 +2026,7 @@ function buildConnection(input: SceneInput): SceneConnection | null {
 function buildMiniMap(
   input: SceneInput,
   map: SceneMiniMapSource,
+  clip: FlowRect | null | undefined,
 ): SceneMiniMap {
   const { viewport: v, pane, palette } = input;
   const ox = map.panel.x + (map.panel.width - map.bounds.width * map.scale) / 2;
@@ -1990,26 +2036,61 @@ function buildMiniMap(
     x: ox + (p.x - map.bounds.x) * map.scale,
     y: oy + (p.y - map.bounds.y) * map.scale,
   });
-  const nodes: SceneRect[] = [];
+  // A pass over a corner of the minimap — a node a drag moves claims its
+  // places there and no more — builds the nodes that reach its clip. Every
+  // node is still walked, for its run; only the ones kept are made.
+  const reach = clip ? inflateRect(clip, MINIMAP_BLEED) : null;
+  const colour = map.nodeColor;
+  const nodes: SceneMiniMapNode[] = [];
+  let run = 0;
+  let runFill: string | null = null;
+  let runStart = 0;
+  let runLength = 0;
+  const closeRun = (): void => {
+    if (runLength <= 1) return;
+    for (let k = runStart; k < nodes.length; k++) nodes[k].batched = true;
+  };
   for (const source of input.all) {
     if (source.node.hidden) continue;
-    const at = place(source.rect);
-    const colour = map.nodeColor;
+    const fill =
+      typeof colour === 'function'
+        ? colour(source.node as FlowNode<never>)
+        : (colour ??
+          (source.node.selected ? palette.accent : palette.nodeBorder));
+    // a plain square of the run's colour joins it, as `paintPanels` groups
+    if (runLength === 0 || fill == null || fill !== runFill) {
+      closeRun();
+      run++;
+      runFill = fill ?? null;
+      runStart = nodes.length;
+      runLength = 0;
+    }
+    runLength++;
+    // `miniMapPlace`, written out so that a node the pass does not reach
+    // makes nothing
+    const r = source.rect;
+    const x = ox + (r.x - map.bounds.x) * map.scale;
+    const y = oy + (r.y - map.bounds.y) * map.scale;
+    const width = Math.max(1, r.width * map.scale);
+    const height = Math.max(1, r.height * map.scale);
+    if (
+      reach &&
+      (x >= reach.x + reach.width ||
+        reach.x >= x + width ||
+        y >= reach.y + reach.height ||
+        reach.y >= y + height)
+    ) {
+      continue;
+    }
     nodes.push({
-      rect: {
-        x: at.x,
-        y: at.y,
-        width: Math.max(1, source.rect.width * map.scale),
-        height: Math.max(1, source.rect.height * map.scale),
-      },
+      rect: { x, y, width, height },
       radius: 0,
-      fill:
-        typeof colour === 'function'
-          ? colour(source.node as FlowNode<never>)
-          : (colour ??
-            (source.node.selected ? palette.accent : palette.nodeBorder)),
+      fill,
+      run,
+      batched: false,
     });
   }
+  closeRun();
   const view = place({ x: -v.x / v.zoom, y: -v.y / v.zoom });
   return {
     panel: {
