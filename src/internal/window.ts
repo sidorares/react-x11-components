@@ -99,6 +99,34 @@ const VEL_GAP_MS = 250;
  *  settle. */
 const FAST_V = 1.5;
 
+/**
+ * The window's time and its timer: what a scroll's speed is measured with,
+ * and what decides it has stopped (`IDLE_MS`) and paces the band's growth
+ * after it (`GROW_MS`). A test holds both (`holdClock` in
+ * test/held-clock.ts). On the real clock a runner that spends longer than
+ * `IDLE_MS` over one step of a flick ends the flick there, and the settle
+ * that follows measures the rows and moves the scroll by what they
+ * measured — outside the `act` the step ran in, so a look at the rows finds
+ * the new offset against the layout before it, every row a few pixels off.
+ * A test of a flick cannot tell that from rows that moved.
+ *
+ * Not the catch-up's clock: `catchupSince` is epoch milliseconds, which a
+ * scroll hint is handed as `since`. The shape of the map's `glideClock`,
+ * and exported from this module only, which has no subpath: this is for
+ * the tests.
+ */
+export const windowClock = {
+  now(): number {
+    return Date.now();
+  },
+  arm(step: () => void, ms: number): DelayTick {
+    return later(step, ms);
+  },
+  disarm(handle: DelayTick): void {
+    cancelLater(handle);
+  },
+};
+
 /** More rows than this entering the window in one render is a flood — a
  *  teleport or a hard flick — and floods build skeletons first. An ordinary
  *  notch brings in a handful and never trips this. */
@@ -302,7 +330,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
     // estimate adaptation) runs on.
     bump((n) => n + 1);
     if (wantsGrowth.current) {
-      idleTimer.current = later(tick, GROW_MS);
+      idleTimer.current = windowClock.arm(tick, GROW_MS);
     }
   }, []);
 
@@ -312,7 +340,7 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
       // one has no slice to rebuild, and re-rendering it on a scroll it
       // already drew would be work for nothing.
       if (!inp.current.virtualizing) return;
-      const now = Date.now();
+      const now = windowClock.now();
       const s = vel.current;
       const dt = now - s.t;
       if (dt > 0 && dt < VEL_GAP_MS) {
@@ -325,8 +353,8 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
       s.t = now;
       s.top = top;
       active.current = true;
-      cancelLater(idleTimer.current);
-      idleTimer.current = later(tick, IDLE_MS);
+      windowClock.disarm(idleTimer.current);
+      idleTimer.current = windowClock.arm(tick, IDLE_MS);
       setView((prev) => (prev.top === top ? prev : { ...prev, top }));
     },
     [tick],
@@ -365,13 +393,13 @@ export function useVirtualWindow(inputs: VirtualWindowInputs): VirtualWindow {
   // idle delay to fill them in would be a visible pause.
   useEffect(() => {
     if (hasSkeletons.current) {
-      cancelLater(idleTimer.current);
-      idleTimer.current = later(tick, GROW_MS);
+      windowClock.disarm(idleTimer.current);
+      idleTimer.current = windowClock.arm(tick, GROW_MS);
     } else if (wantsGrowth.current && idleTimer.current === null) {
-      idleTimer.current = later(tick, IDLE_MS);
+      idleTimer.current = windowClock.arm(tick, IDLE_MS);
     }
   });
-  useEffect(() => () => cancelLater(idleTimer.current), []);
+  useEffect(() => () => windowClock.disarm(idleTimer.current), []);
 
   const {
     heights,
