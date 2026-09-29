@@ -9941,6 +9941,27 @@ test('a flex and a grid property is inherited, and set back to its initial value
   assert.strictEqual(b.flexDirection, 'row');
 });
 
+metric(
+  'flex items are painted in `order`, and by a `z-index` of their own',
+  async () => {
+    // CSS Flexbox 5.4: an item paints as an inline block does, in `order`,
+    // and a `z-index` makes it a stacking context unpositioned
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex} .r>div{width:40px;' +
+        'height:20px;margin-right:-20px}</style>' +
+        '<div class="r"><div style="order:2;background:#ff0000"></div>' +
+        '<div style="order:1;background:#00ff00"></div></div>' +
+        '<div class="r"><div style="z-index:2;background:#0000ff"></div>' +
+        '<div style="z-index:1;background:#ffff00"></div></div>',
+    );
+    const fills = await fillsOf(view(node));
+    const at = (color: string) =>
+      fills.findIndex((f) => f.style === parseColor(color));
+    assert.ok(at('#00ff00') < at('#ff0000'), 'the second in `order` over');
+    assert.ok(at('#ffff00') < at('#0000ff'), 'the higher `z-index` over');
+  },
+);
+
 metric('flex items are laid out in `order`', async () => {
   // CSS Flexbox 5.4: `order` first, the document's where it is the same;
   // an `order` that is no integer is no value

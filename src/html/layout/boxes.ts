@@ -560,6 +560,11 @@ export const CLIPPED_CELLS = new WeakSet<Box>();
  *  paint and the paint bounds. */
 export const CLAMPED = new WeakSet<Box>();
 
+/** A flex box's children in the order it lays them out and paints them,
+ *  `order` first and the document's after it (CSS Flexbox 5.4), where
+ *  `order` moves any: an absolutely positioned child's is 0. */
+export const PAINT_ORDER = new WeakMap<Box, Box[]>();
+
 /** The blocks that broke a relatively positioned inline box in pieces,
  *  under its first piece: its offset moves them too (CSS 2.1 9.2.1.1),
  *  though they stand outside it (`breakAround`). */
@@ -2587,12 +2592,11 @@ export function isOffset(style: ComputedStyle): boolean {
   );
 }
 
+/** Whether a style may put its box under its stacking context's flow: a
+ *  negative `z-index` on a positioned box, or on a flex item, which that
+ *  makes a stacking context as it is (`stacksLayers`). */
 function isNegative(style: ComputedStyle): boolean {
-  return (
-    style.position !== 'static' &&
-    typeof style.zIndex === 'number' &&
-    style.zIndex < 0
-  );
+  return typeof style.zIndex === 'number' && style.zIndex < 0;
 }
 
 /** A box that belongs inside a table: a row group, a row, a cell, a

@@ -39,6 +39,7 @@ import {
   CLIPPED_CELLS,
   COLLAPSED_CELLS,
   FADED_BLOCKS,
+  PAINT_ORDER,
   INLINE_OFFSETS,
   SHADOWED_TEXT,
   SHIFTED_LINES,
@@ -1247,6 +1248,9 @@ function fillRing(
  *  box keeps a viewport index, those whose ink meets the damage — which
  *  leaves its positioned children out, for `positionedPaint` to give. */
 function paintedChildren(box: Box, options: PaintOptions): readonly Box[] {
+  // a flex box's in the order it laid them out
+  const ordered = PAINT_ORDER.get(box);
+  if (ordered) return ordered;
   const damage = options.damage;
   if (!box.paintIndex || !damage) return box.children;
   return queryChildIndex(
@@ -1736,6 +1740,9 @@ function pushClip(
 function layered(parent: Box, child: Box): boolean {
   if (child.outOfFlow) return true;
   const style = child.style;
+  // a flex item with a `z-index` is a stacking context, positioned or not
+  // (CSS Flexbox 5.4), and a grid's
+  if (parent.kind === 'flex' && typeof style.zIndex === 'number') return true;
   if (
     style.position !== 'relative' &&
     style.position !== 'sticky' &&
@@ -1790,7 +1797,7 @@ export function stackLayers(root: Box): void {
 }
 
 function gatherLayers(box: Box, context: Box, into: Box[]): void {
-  for (const child of box.children) {
+  for (const child of PAINT_ORDER.get(box) ?? box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     // a positioned box past a clamp point, or in a box that is
     if (CLAMPED.has(child)) continue;
@@ -1823,29 +1830,29 @@ function settleLayers(box: Box, list: Box[]): void {
   STACKED.set(box, list);
 }
 
-/** Whether a box is a stacking context, which paints the positioned boxes
- *  in it itself (`stacksContext`) — and a block that takes its opacity
- *  from an inline box around it is one too. */
-function stacksLayers(box: Box): boolean {
-  return stacksContext(box.style) || FADED_BLOCKS.has(box);
-}
-
 /**
- * Whether a box is a stacking context of its own: positioned with a
- * `z-index` (CSS 2.1 9.9.1), fixed or sticky with none (CSS Positioned
- * Layout 3, as browsers paint them — a fixed header's box set behind its
- * content with `z-index: -1` went behind the page), or under full opacity
- * (CSS Color 4 3.2), which is painted as one group — so the positioned
- * boxes in it, and the ones below its flow, are its to paint, faded with it
- * or not at all: at `opacity: 0` its root context drew a hover menu's
+ * Whether a box is a stacking context, which paints the positioned boxes in
+ * it itself, and the ones below its flow: positioned with a `z-index`, or a
+ * flex item with one; fixed or sticky with none (CSS Positioned Layout 3, as
+ * browsers paint them — a fixed header's box set behind its content with
+ * `z-index: -1` went behind the page); or under full opacity (CSS Color 4
+ * 3.2), its own or the opacity it takes from an inline box it broke
+ * (`FADED_BLOCKS`), which is painted as one group — faded with it, or at
+ * `opacity: 0` not at all, where its root context drew a hover menu's
  * absolute children.
  */
-function stacksContext(style: ComputedStyle): boolean {
+function stacksLayers(box: Box): boolean {
+  const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
-  return (
-    (style.position !== 'static' && typeof style.zIndex === 'number') ||
-    style.opacity < 1
-  );
+  if (style.opacity < 1 || FADED_BLOCKS.has(box)) return true;
+  if (typeof style.zIndex !== 'number') return false;
+  return style.position !== 'static' || flexItem(box);
+}
+
+/** Whether a box is an item of a flex box — or a grid, to the box tree the
+ *  same — which a `z-index` makes a stacking context unpositioned. */
+function flexItem(box: Box): boolean {
+  return !box.outOfFlow && box.parent?.kind === 'flex';
 }
 
 /**
@@ -1936,7 +1943,11 @@ function hoistFrom(box: Box, root: boolean): Box[] | null {
     const up = hoistFrom(child, root && child.el?.name === 'html');
     if (up) (pending ??= []).push(...up);
     const z = child.style.zIndex;
-    if (child.style.position !== 'static' && typeof z === 'number' && z < 0) {
+    if (
+      typeof z === 'number' &&
+      z < 0 &&
+      (child.style.position !== 'static' || flexItem(child))
+    ) {
       (pending ??= []).push(child);
     }
   }
