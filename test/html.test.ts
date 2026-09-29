@@ -14898,6 +14898,33 @@ metric(
 );
 
 metric(
+  "an inline element's rect leaves out a positioned box inside it",
+  async () => {
+    // A positioned box or a float inside an inline box is laid out on lines
+    // of its own, none of them the inline box's fragments (CSSOM View
+    // 6.1). Design 025 makes its archive list items inline around links
+    // placed absolutely, and each item measured as its link
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;position:relative}' +
+        'span{padding-right:6px}a{position:absolute;display:block;' +
+        'left:200px;top:40px;width:30px;height:18px}</style>' +
+        '<p><span id="s"><a id="a" href="#">next</a></span></p>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const s = rect('s');
+    assert.ok(
+      Math.abs(s.width - 6) < 0.5,
+      `its padding alone across: ${s.width}`,
+    );
+    assert.ok(s.x < 10 && s.y < 30, `and where it is: ${s.x},${s.y}`);
+    assert.ok(Math.abs(rect('a').x - 200) < 0.5, 'the link where it is put');
+  },
+);
+
+metric(
   "an inline element's rect is its border box down, not its line's height",
   async () => {
     // CSSOM View 6.1: a fragment's border box is its font's content area
