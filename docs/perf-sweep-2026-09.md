@@ -4019,6 +4019,83 @@ Counter scopes also allocated a list for every element a counter might be
 made at, which is every element; a level makes one now only when a counter
 is made there.
 
+## Round 41: what the minimap cost a drag
+
+Round 40's sweep flagged `<Flow>`'s 2D drag on X11 at 2,000 nodes, 114
+frames a second before the round against 79 after. Run alone against
+master it was 81 to 88, and 117 with the minimap off. The drawing took
+2.5 ms a frame where it took 1.2, and building the scene 0.9 where it
+took 0.35.
+
+Round 40's own fix did it. #342 made a moved node claim the minimap's
+corner, since the minimap had gone on showing it where it had been. A
+pass over the corner built and filled every node of the graph, 2,000
+squares in one path, on every step of a drag. Three changes made the pass
+cost what it reaches:
+
+- **The claim is the node's places, while the fit holds.** A node that
+  moves or grows changes where it is drawn in the minimap and nothing
+  else, as long as the panel's fit, the graph's bounds with the
+  viewport's, is the one on screen. Then the claim is the node's places
+  there, before and after. When the fit moves, every node moves with it,
+  and the claim is the corner. A selection, or a `nodeColor` function,
+  still claims the corner, because each changes how the nodes there are
+  filled together. The fit on screen is the one the last pass over the
+  minimap resolved, so a step works the fit out once, where comparing it
+  with the fit before the step worked it out twice, and twice more when
+  the app stored the step. An app's commit of a drag's own step moves
+  nothing on screen and claims nothing there.
+- **The pass builds the nodes it reaches, in the runs of the whole.** A
+  run of one colour is one path. Nodes that overlap inside a run are one
+  path's coverage, and across two runs they are one fill over another.
+  Which run a node is in is worked out over every node, so a pass that
+  kept a few fills them as a whole repaint does. A run cut down to one
+  node is still filled as a path, since a lone square is filled as a
+  rectangle, which is not the pixels a path gives.
+- **The furniture's scene had no clip.** The minimap is built in the
+  overlay's scene, which is built unclipped, so the cull above was
+  written and never ran. It runs now that the minimap's source carries
+  the pass's rect itself (`reach`).
+
+Meanwhile #364 had the pass over the corner stroke the edges under it
+as the pane does, one path a pen rather than one path an edge. The
+20 ms it had waited on the server's fence went to 3, and master's drag
+was back at 116 frames a second at the same cost to draw. The bench moves the pointer every 8 ms from a timer that
+the Mac runs late while the process is idle, so near that rate frames a
+second measure the timer: the drag with no minimap does least and
+counts fewest. What the pass costs is the drawing and the processor.
+
+| `lattice2000` · drag, X11 2D | master (#365) |   this round |   no minimap |
+| ---------------------------- | ------------: | -----------: | -----------: |
+| draw, p50                    |  2.34–2.44 ms | 1.26–1.28 ms | 1.02–1.14 ms |
+| processor                    |       75–79 % |      55–58 % |      43–45 % |
+| frames a second              |       115–117 |      113–114 |      109–111 |
+
+The drawing is close to what it costs with no minimap. What is left is
+the scene: the minimap still walks every node once a pass for its runs
+and its fit, about half a millisecond at 2,000 nodes. The fit's walk
+makes no box per node now.
+
+Smaller graphs gain too. On the 200-node lattice the drawing went from
+1.57 to 1.41 ms, and on the 300-node fan-out from 1.70 to 1.42. The
+widget board, whose minimap sits on a canvas of its own over the mounted
+bodies, is unchanged at 0.65.
+
+### What else the sweep flagged
+
+- **`<Tree>`'s thumb drag** ran at 0.66 frames a second and built every
+  row. That was core: the list's own box, restyled in the same frame as
+  its rows, was measured alone with no height on offer, and the pane in
+  it took no basis and came out as tall as its 100,000 rows
+  (react-x11#787).
+- **`<RichTextEditor>`'s long typing and paste, and `<Map>`'s retained
+  pan, wheel and fly on Cocoa** match the baseline when rerun alone on
+  master. Typing ran at 55.9 fps with an 11.9 ms latency, against 54.7
+  and 12.2. A paste took 82 to 99 ms, against 105. The map ran 108, 49
+  and 78 fps, against 108, 51 and 78. The sweep's numbers were load from
+  other work on the machine: one run of the map was slow in every cell
+  at once.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -4323,6 +4400,15 @@ is made there.
     chip's pad. A generous bound (an em and a quarter a character, the
     chip's inset always) costs a few pixels of claim, where an exact
     measurement would have cost a text layout per edge per frame.
+65. **A claim that is right can still be the wrong size.** #342's claim
+    was correct, and it made every step of a drag repaint 2,000 squares.
+    Size a claim by what the change can reach, here two places while the
+    fit holds, and keep the whole region for the changes that move
+    everything.
+66. **A cull that is written is not a cull that runs.** The minimap's
+    clip arrived as null, because the scene it is built in is built
+    unclipped, and the change measured no gain until a probe counted
+    what each pass built. When adding a cull, count what it keeps.
 
 ## Still open
 

@@ -97,6 +97,8 @@ import {
   batchesEdges,
   endpoint,
   HANDLE_ZOOM,
+  MINIMAP_BLEED,
+  miniMapPlace,
   screenRect,
   screenViewport,
 } from './scene.js';
@@ -492,6 +494,30 @@ function unionMaybe(a: FlowRect | null, b: FlowRect | null): FlowRect | null {
   return unionRects(a, b);
 }
 
+/** The minimap's fit: where its panel is, and the part of the graph it
+ *  shows at what scale — all that puts a node where it is in it. */
+type MiniMapFit = { panel: FlowRect; bounds: FlowRect; scale: number };
+
+/** A node a change moved or resized, and its box in the graph before. */
+interface MiniMapMove {
+  entry: NodeEntry;
+  before: FlowRect;
+}
+
+function sameRect(p: FlowRect, q: FlowRect): boolean {
+  return (
+    p.x === q.x && p.y === q.y && p.width === q.width && p.height === q.height
+  );
+}
+
+function sameFit(a: MiniMapFit, b: MiniMapFit): boolean {
+  return (
+    sameRect(a.panel, b.panel) &&
+    sameRect(a.bounds, b.bounds) &&
+    a.scale === b.scale
+  );
+}
+
 export class FlowGraphNode extends Node implements FlowInstance {
   // --- viewport, owned here unless the `viewport` prop takes it over ------
   private _vp: Viewport = { x: 0, y: 0, zoom: 1 };
@@ -547,6 +573,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** The canvases `<Flow>` paints the minimap and controls on, over the
    *  bodies — while there are any, the graph leaves the panels out. */
   private _panelCanvases: readonly PanelCanvas[] = [];
+  /** The fit the minimap on screen was painted with: every pass over it
+   *  since its corner was last claimed whole resolved the same one. Set by
+   *  the pass that paints it (`_sceneInput`), read by what a move claims
+   *  there (`_miniMapMoves`). */
+  private _miniMapShown: MiniMapFit | null = null;
   private _panelsKey = '';
   /** The budget's model (`_holdBodies`, `_frameTick`): what a body adds to a
    *  zoom step, what a step costs with none re-scaled, the last frame's
@@ -940,6 +971,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // is selected — and, to a `nodeColor` function, as anything at all.
     const colour = this._miniMapOptions()?.nodeColor;
     let mapped = false;
+    // …and where the pane draws it, a node that only moved or changed size
+    // changed its own places in it, while the fit holds (`_miniMapMoves`)
+    const drawsMap = this._drawsMiniMap();
+    const moves: MiniMapMove[] = [];
     // round the box: its handles, and the resize grips a selected node
     // grows at its corners, which at a deep zoom reach past the cull margin
     const margin = Math.max(
@@ -977,6 +1012,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
       const widthBefore = entry.width;
       const heightBefore = entry.height;
+      const placeBefore =
+        drawsMap && (moved || reshaped) ? this.rectOf(entry) : null;
       let box = moved ? this._nodeDamage(entry) : this._screenRect(entry);
       entry.node = next;
       if (reshaped) {
@@ -987,6 +1024,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
       }
       const grew = entry.width !== widthBefore || entry.height !== heightBefore;
       if (grew) mapped = true;
+      // A drag's own step, stored by the app, moves nothing on screen:
+      // the node was already where the drag had it
+      if (placeBefore && !sameRect(placeBefore, this.rectOf(entry))) {
+        moves.push({ entry, before: placeBefore });
+      }
       // Nothing the pane draws changed, while the node holds its place and
       // its size, when its card is the bodies' layer's on the 2D renderer —
       // the layer repaints it, if anything it shows changed — or when what
@@ -1016,8 +1058,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
       // A node that moved, grew or was picked out is a change in the
       // minimap's corner too. Only a selection used to claim it, so a node
       // the app moved repainted its own box and edges and the minimap went
-      // on showing it where it had been.
-      const map = this._miniMapCorner();
+      // on showing it where it had been. A selection, or a colour worked
+      // out per node, is the whole corner's: it changes how the nodes there
+      // are filled together (`SceneMiniMapNode`).
+      const whole = !drawsMap || reordered || typeof colour === 'function';
+      const map = whole ? this._miniMapCorner() : this._miniMapMoves(moves);
       if (map) damage.push(map);
     }
     this._liftOnly = onlyLifted;
@@ -1185,13 +1230,45 @@ export class FlowGraphNode extends Node implements FlowInstance {
     this.invalidate(false, this._device(rect), reason);
   }
 
-  /** The minimap's corner, where the pane draws the minimap itself: it
-   *  shows every node where it is and at its size, so a gesture that moves
-   *  or resizes one changes it on every step. On a canvas of its own —
+  /** Whether the pane draws the minimap itself. On a canvas of its own —
    *  under mounted bodies — it is `invalidate`'s to repaint. */
-  private _claimMiniMap(reason: string): void {
-    if (this._panelCanvases.length > 0) return;
-    const map = this._miniMapCorner();
+  private _drawsMiniMap(): boolean {
+    return this._panelCanvases.length === 0 && this._miniMapOptions() != null;
+  }
+
+  /**
+   * What moving or resizing `moves` changed in the minimap's corner, where
+   * the pane draws it: each node's place there before and after, while the
+   * fit is the one on screen — the graph's bounds with the viewport's,
+   * which put every node where it is there — and the whole corner when it
+   * is not, since every node moves in it then. A drag of one node among
+   * 2,000 claimed the corner on every step, and every such pass built and
+   * filled all 2,000 again, where it builds what it reaches now
+   * (`buildMiniMap`). Asked against the fit on screen rather than the one
+   * before the change, a step works the fit out once, and not at all when
+   * nothing moved on screen.
+   */
+  private _miniMapMoves(moves: readonly MiniMapMove[]): FlowRect | null {
+    const corner = this._miniMapCorner();
+    if (!corner || moves.length === 0) return null;
+    const fit = this._miniMap();
+    const shown = this._miniMapShown;
+    if (!fit && !shown) return null;
+    if (!fit || !shown || !sameFit(fit, shown)) return corner;
+    let out: FlowRect | null = null;
+    for (const { entry, before } of moves) {
+      out = unionMaybe(out, miniMapPlace(shown, before));
+      out = unionMaybe(out, miniMapPlace(fit, this.rectOf(entry)));
+    }
+    return out && inflateRect(out, MINIMAP_BLEED);
+  }
+
+  /** A gesture's step, claimed in the minimap: `_miniMapMoves`. */
+  private _claimMiniMapMoves(
+    moves: readonly MiniMapMove[],
+    reason: string,
+  ): void {
+    const map = this._miniMapMoves(moves);
     if (map) this._claim(map, reason);
   }
 
@@ -2025,21 +2102,43 @@ export class FlowGraphNode extends Node implements FlowInstance {
       // A minimap that covers the pane it summarises is worse than none.
       return null;
     }
-    const rects: FlowRect[] = [];
-    for (const entry of this._entries) {
-      if (!entry.node.hidden) rects.push(this.rectOf(entry));
-    }
     // The viewport joins the bounds, so panning off the graph still shows
-    // where you are rather than pinning the box to an edge.
+    // where you are rather than pinning the box to an edge. Worked out with
+    // no box made per node: a drag asks this twice a step and again for
+    // the pass (`_miniMapMoves`), over every node of the graph.
     const v = this._viewport();
-    rects.push({
-      x: -v.x / v.zoom,
-      y: -v.y / v.zoom,
-      width: pane.width / v.zoom,
-      height: pane.height / v.zoom,
-    });
-    const bounds = boundsOf(rects);
-    if (!bounds) return null;
+    let minX = -v.x / v.zoom;
+    let minY = -v.y / v.zoom;
+    let maxX = minX + pane.width / v.zoom;
+    let maxY = minY + pane.height / v.zoom;
+    const resizing = this._resizeTo;
+    for (const entry of this._entries) {
+      const node = entry.node;
+      if (node.hidden) continue;
+      let x: number;
+      let y: number;
+      let w: number;
+      let h: number;
+      if (resizing && resizing.id === node.id) {
+        ({ x, y, width: w, height: h } = resizing.rect);
+      } else {
+        const p = this._positionOf(node);
+        x = p.x;
+        y = p.y;
+        w = entry.width;
+        h = entry.height;
+      }
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x + w > maxX) maxX = x + w;
+      if (y + h > maxY) maxY = y + h;
+    }
+    const bounds = {
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+    };
     const pad = Math.max(bounds.width, bounds.height) * 0.05 + 10;
     const padded = {
       x: bounds.x - pad,
@@ -2500,10 +2599,15 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // of a millisecond a step.
     const sized = !this._gl;
     let damage: FlowRect | null = null;
+    // …and in the minimap, the boxes the step moves them from
+    const maps = sized && this._drawsMiniMap();
+    const moves: MiniMapMove[] = [];
     if (sized) {
       for (const id of gesture.ids) {
         const entry = this._byId.get(id);
-        if (entry) damage = unionMaybe(damage, this._nodeDamage(entry));
+        if (!entry) continue;
+        damage = unionMaybe(damage, this._nodeDamage(entry));
+        if (maps) moves.push({ entry, before: this.rectOf(entry) });
       }
     }
     this._dragTo = to;
@@ -2517,7 +2621,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     const reason = this._lifted() ? 'lift' : 'content';
     if (damage) {
       this._claim(inflateRect(damage, CULL_MARGIN), reason);
-      this._claimMiniMap(reason);
+      if (maps) this._claimMiniMapMoves(moves, reason);
     } else {
       // under GL: a frame, and — while the nodes are lifted — of them alone
       this._repaint(reason);
@@ -2557,6 +2661,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
       },
       snap,
     );
+    const maps = this._drawsMiniMap();
+    const before = this.rectOf(entry);
     let damage = this._nodeDamage(entry);
     this._resizeTo = { id: gesture.id, rect };
     damage = unionRects(damage, this._nodeDamage(entry));
@@ -2578,7 +2684,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
     this._emitNodes(changes);
     this._claim(inflateRect(damage, CULL_MARGIN), 'content');
-    this._claimMiniMap('content');
+    if (maps) this._claimMiniMapMoves([{ entry, before }], 'content');
     this._emitBodies();
   }
 
@@ -4231,6 +4337,10 @@ export class FlowGraphNode extends Node implements FlowInstance {
     // has none of its own
     const map =
       !world && !lift && this._miniMapReached() ? this._miniMap() : null;
+    // the fit the minimap on screen is painted with, from this pass on
+    if (map && !panels && this._painting && this._panelCanvases.length === 0) {
+      this._miniMapShown = map;
+    }
     const viewport = this._viewport();
     const pane = this._pane();
     // An edge is the lifted layer's when either end is lifted.
@@ -4301,6 +4411,8 @@ export class FlowGraphNode extends Node implements FlowInstance {
               scale: map.scale,
               nodeColor: map.options.nodeColor,
               maskColor: map.options.maskColor,
+              // the pane's own pass: the part of the minimap it repaints
+              reach: panels ? null : this._frameClip,
             }
           : null,
       controls:

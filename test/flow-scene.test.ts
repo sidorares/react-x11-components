@@ -636,10 +636,12 @@ test('a minimap’s run of one colour is one fill, in the order it was drawn', (
     text: noop,
     measureText: () => ({ width: 0, height: 0 }),
   };
-  const node = (x: number, fill: string) => ({
+  const node = (x: number, fill: string, run: number, batched: boolean) => ({
     rect: { x, y: 0, width: 4, height: 3 },
     radius: 0,
     fill,
+    run,
+    batched,
   });
   paintPanels(painter, {
     miniMap: {
@@ -649,11 +651,11 @@ test('a minimap’s run of one colour is one fill, in the order it was drawn', (
         fill: 'panel',
       },
       nodes: [
-        node(0, 'a'),
-        node(5, 'a'),
-        node(10, 'a'),
-        node(15, 'b'),
-        node(20, 'a'),
+        node(0, 'a', 1, true),
+        node(5, 'a', 1, true),
+        node(10, 'a', 1, true),
+        node(15, 'b', 2, false),
+        node(20, 'a', 3, false),
       ],
       view: {
         rect: { x: 0, y: 0, width: 10, height: 10 },
@@ -670,6 +672,89 @@ test('a minimap’s run of one colour is one fill, in the order it was drawn', (
     'rect a',
     'rect view',
   ]);
+});
+
+/** A minimap over `nodes`, as a pass over `reach` of it builds it. */
+function miniMapPass(
+  nodes: readonly SceneNodeSource[],
+  reach: { x: number; y: number; width: number; height: number } | null,
+): NonNullable<FlowScene['miniMap']> {
+  const scene = buildScene({
+    ...input(nodes, [], { x: 0, y: 0, zoom: 1 }),
+    miniMap: {
+      panel: { x: 1000, y: 650, width: 190, height: 130 },
+      bounds: { x: 0, y: 0, width: 1200, height: 800 },
+      scale: 0.15,
+      reach,
+    },
+  });
+  assert.ok(scene.miniMap, 'the minimap is built');
+  return scene.miniMap;
+}
+
+test('a pass over part of the minimap builds the nodes it reaches, in the runs of the whole', () => {
+  // A drag claims a node's places in the minimap and no more, and a pass
+  // over them walked, built and filled every node of the graph: two
+  // thousand of them, on every step. It builds what it reaches now — and
+  // fills those as a whole repaint would, which is a question of runs: a
+  // run of one colour is one path, and nodes that overlap inside one are
+  // one path's coverage, where two runs are one fill over another.
+  const nodes = [
+    source(node('a', 0, 0)),
+    source(node('b', 60, 0)),
+    source({ ...node('c', 120, 0), selected: true }),
+    source(node('d', 60, 20)),
+    source(node('e', 700, 500)),
+    source(node('f', 760, 500)),
+  ];
+  const whole = miniMapPass(nodes, null);
+  assert.strictEqual(whole.nodes.length, 6);
+  // a and b are one run, c is the selection's, then d, e and f are one
+  assert.deepStrictEqual(
+    whole.nodes.map((n) => [n.run, n.batched]),
+    [
+      [1, true],
+      [1, true],
+      [2, false],
+      [3, true],
+      [3, true],
+      [3, true],
+    ],
+  );
+
+  // the corner of the panel where e and f overlap
+  const far = whole.nodes[5].rect;
+  const part = miniMapPass(nodes, {
+    x: far.x - 1,
+    y: far.y,
+    width: 4,
+    height: 4,
+  });
+  assert.deepStrictEqual(
+    part.nodes.map((n) => [n.rect, n.run, n.batched]),
+    whole.nodes.slice(4).map((n) => [n.rect, n.run, n.batched]),
+    'what a pass reaches is built as the whole builds it',
+  );
+
+  // …and a pass over b and d, whose runs the selection splits: d is not
+  // filled with b, and still with e and f, whom it does not reach
+  const b = whole.nodes[1].rect;
+  const d = whole.nodes[3].rect;
+  const both = miniMapPass(nodes, {
+    x: b.x,
+    y: d.y,
+    width: 1,
+    height: 1,
+  });
+  assert.deepStrictEqual(
+    both.nodes.map((n) => [n.run, n.batched]),
+    [
+      [1, true],
+      [1, true],
+      [3, true],
+    ],
+    'a, b and d, each in its own run',
+  );
 });
 
 // --- a pass draws what it reaches ----------------------------------------
