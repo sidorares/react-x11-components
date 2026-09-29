@@ -212,6 +212,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 119    | `background-repeat: space` and `round`             | 5,652 (95%) | 5,103 (86%) |
 | 120    | `border-image`                                     | 5,652 (95%) | 5,103 (86%) |
 | 121    | a table's height given out to its rows             | 5,652 (95%) | 5,103 (86%) |
+| 122    | `ex`, `ch` and `lh` in the element's own face      | 5,654 (95%) | 5,104 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3601,6 +3602,43 @@ Four css-grid tests pass on both backends, their references such tables;
 the CSS 2.1 suite and css-tables are unchanged, and so is css-backgrounds,
 whose three tests still differ where their images are scaled across stripes
 they ask to be drawn `pixelated`.
+
+### Round 122
+
+317. **An `ex`, a `ch` or an `lh` was measured in the family's regular
+     face.** The cascade asked the fonts for a family at a size, and a
+     family's faces can be different fonts: a page's `@font-face` rules
+     may set its bold in another file, and `ex-unit-001` sets its normal
+     weight in Ahem and its 900 in Noto Sans. The units are measured in
+     the face the family, the size, the weight and the slant pick
+     together, and are remembered per face.
+318. **…and in the font the element had reached in the cascade, not the
+     one it ends on.** The first pass settles the family and the size so
+     that a length after them is measured in the element's font. The
+     second applies every declaration again in cascade order, the font's
+     among them, so a rule's `font-family` stood just ahead of its own
+     `width: 10ex` again, under an inline family that outranks it. The
+     weight and the slant are settled with the family now. The units read
+     the face as the first pass leaves it, and `lh` reads the line height
+     as its own pass leaves it, a `font` shorthand among the declarations
+     that set one.
+
+`ex-unit-001` passes on both backends. The CSS 2.1 suite and the other
+sets are unchanged, and so are the 119 tests with an `lh` in them.
+
+The CSS 2.1 count moved on master since round 121: #264's `@font-face`
+won three `visudet` tests and lost `line-height-205`. That test and 13
+others across css-text and css-values had passed only while no web font
+loaded, test and reference alike falling back to the same face.
+`ex-unit-001` was one of them. The rest ask things of a loaded face that
+are still to do: a first available font that passes over a face whose
+`unicode-range` leaves out the space, a tab measured by the space the text
+is set in, a `normal` line height over every font a line uses, and shaping
+across a web font's glyphs. Two more
+lose only after another test's face has joined the fallback chain in the
+same process, which #264 does on purpose, and pass on their own.
+
+## What `<Html>` supports
 
 ## What `<Html>` supports
 

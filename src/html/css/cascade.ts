@@ -515,6 +515,46 @@ export interface PointerState {
 const NO_POINTER: PointerState = { hovered: new Set(), active: new Set() };
 
 /**
+ * The face a style's font-relative units are measured in: its family list,
+ * size, weight and slant, the four that pick one. A family's faces can be
+ * different fonts altogether — a page's `@font-face` rules may set its
+ * bold in another file — so an `ex` in bold text is the bold face's.
+ */
+export interface MetricFace {
+  family: string;
+  size: number;
+  weight: number;
+  style: ComputedStyle['fontStyle'];
+}
+
+/** What a face measures, where the fonts can say. */
+export type FaceMetric = (face: MetricFace) => number | null;
+
+/** What a style's face is read from: a computed style, or the part of one
+ *  a declaration's font-relative units are measured against. */
+type FaceSource = Pick<
+  ComputedStyle,
+  'fontFamily' | 'fontSize' | 'fontWeight' | 'fontStyle'
+>;
+
+/** …and its line height, for `lh`. */
+type LineSource = FaceSource &
+  Pick<ComputedStyle, 'lineHeight' | 'lineHeightIsLength'>;
+
+function faceOf(style: FaceSource): MetricFace {
+  return {
+    family: style.fontFamily,
+    size: style.fontSize,
+    weight: style.fontWeight,
+    style: style.fontStyle,
+  };
+}
+
+function faceKey(style: FaceSource): string {
+  return `${style.fontFamily}\u0001${style.fontSize}\u0001${style.fontWeight}\u0001${style.fontStyle}`;
+}
+
+/**
  * A cascade over a fixed set of stylesheets. Rebuilt when the sheets change;
  * re-run when the DOM, the viewport band or the pointer state does.
  */
@@ -564,17 +604,15 @@ export class Cascade {
   /** The counter styles the sheets define, over the predefined ones. */
   readonly counterStyles: CounterStyles;
 
-  /** A font's x-height at a size, for `ex`, where the fonts can say. */
-  private _xHeightOf: ((family: string, size: number) => number | null) | null;
+  /** A face's x-height, for `ex`, where the fonts can say. */
+  private _xHeightOf: FaceMetric | null;
   private _xHeights = new Map<string, number>();
-  /** The advance of a font's "0" at a size, for `ch`, likewise. */
-  private _zeroWidthOf:
-    ((family: string, size: number) => number | null) | null;
+  /** The advance of a face's "0", for `ch`, likewise. */
+  private _zeroWidthOf: FaceMetric | null;
   private _zeroWidths = new Map<string, number>();
-  /** A font's own line height at a size, for `lh` where `line-height` is
-   *  `normal`, likewise. */
-  private _normalLineOf:
-    ((family: string, size: number) => number | null) | null;
+  /** A face's own line height, for `lh` where `line-height` is `normal`,
+   *  likewise. */
+  private _normalLineOf: FaceMetric | null;
   private _normalLines = new Map<string, number>();
   /** Whether any declaration sets a custom property or reads one: without
    *  one, no element's style asks about them. */
@@ -599,9 +637,9 @@ export class Cascade {
     viewportWidth: number,
     viewportHeight: number,
     scale = 1,
-    xHeight: ((family: string, size: number) => number | null) | null = null,
-    zeroWidth: ((family: string, size: number) => number | null) | null = null,
-    normalLine: ((family: string, size: number) => number | null) | null = null,
+    xHeight: FaceMetric | null = null,
+    zeroWidth: FaceMetric | null = null,
+    normalLine: FaceMetric | null = null,
     families: FontFamilies | null = null,
   ) {
     this._xHeightOf = xHeight;
@@ -1082,13 +1120,13 @@ export class Cascade {
     return style;
   }
 
-  /** The x-height of a style's font: the font's own, asked once per face
-   *  and size, or half an em. */
-  private _exOf(style: ComputedStyle): number {
-    const key = `${style.fontFamily}\u0001${style.fontSize}`;
+  /** The x-height of a style's font: the font's own, asked once per face,
+   *  or half an em. */
+  private _exOf(style: FaceSource): number {
+    const key = faceKey(style);
     let ex = this._xHeights.get(key);
     if (ex === undefined) {
-      ex = this._xHeightOf?.(style.fontFamily, style.fontSize) ?? NaN;
+      ex = this._xHeightOf?.(faceOf(style)) ?? NaN;
       if (!(ex > 0)) ex = style.fontSize * 0.5;
       this._xHeights.set(key, ex);
     }
@@ -1096,12 +1134,12 @@ export class Cascade {
   }
 
   /** The advance of a style's font's "0": the font's own, asked once per
-   *  face and size, or half an em. */
-  private _chOf(style: ComputedStyle): number {
-    const key = `${style.fontFamily}\u0001${style.fontSize}`;
+   *  face, or half an em. */
+  private _chOf(style: FaceSource): number {
+    const key = faceKey(style);
     let ch = this._zeroWidths.get(key);
     if (ch === undefined) {
-      ch = this._zeroWidthOf?.(style.fontFamily, style.fontSize) ?? NaN;
+      ch = this._zeroWidthOf?.(faceOf(style)) ?? NaN;
       if (!(ch > 0)) ch = style.fontSize * 0.5;
       this._zeroWidths.set(key, ch);
     }
@@ -1109,16 +1147,16 @@ export class Cascade {
   }
 
   /** A style's computed line height as a length, for `lh`: `normal` as
-   *  its font's own, asked once per face and size, or 1.2em. */
-  private _lineHeightOf(style: ComputedStyle): number {
+   *  its font's own, asked once per face, or 1.2em. */
+  private _lineHeightOf(style: LineSource): number {
     const set = style.lineHeight;
     if (set !== 'normal') {
       return style.lineHeightIsLength ? set : set * style.fontSize;
     }
-    const key = `${style.fontFamily}\u0001${style.fontSize}`;
+    const key = faceKey(style);
     let line = this._normalLines.get(key);
     if (line === undefined) {
-      line = this._normalLineOf?.(style.fontFamily, style.fontSize) ?? NaN;
+      line = this._normalLineOf?.(faceOf(style)) ?? NaN;
       if (!(line > 0)) line = style.fontSize * 1.2;
       this._normalLines.set(key, line);
     }
@@ -1154,12 +1192,20 @@ export class Cascade {
       lh: () => this._lineHeightOf(parentStyle),
       rlh: () => this._lineHeightOf(this.initial),
     };
-    // the family goes with the size, so an `ex` after it is its font's
+    // The family, the weight and the slant go with the size: together they
+    // pick the face an `ex`, a `ch` or an `lh` in any declaration is
+    // measured in, however the declarations are ordered. A `width: 10ex`
+    // in a sheet under an inline `font-weight: 900` was measured in the
+    // family's regular face.
     let sized = false;
     let keyword = false;
     for (const c of candidates) {
       for (const d of pick(c)) {
-        if (d.prop === 'font-family') {
+        if (
+          d.prop === 'font-family' ||
+          d.prop === 'font-weight' ||
+          d.prop === 'font-style'
+        ) {
           this._apply(style, parentStyle, d, ctxParent);
         } else if (d.prop === 'font-size' || d.prop === 'font') {
           // NaN until a size is set, so one the declaration did not take
@@ -1188,21 +1234,43 @@ export class Cascade {
     ) {
       style.fontSize *= mono ? FIXED_SIZE : 1 / FIXED_SIZE;
     }
+    // The face as the first pass settled it. The second applies every
+    // declaration again in cascade order, the font's among them, so the
+    // style passes through the fonts of every rule on the way: read from
+    // it, the `10ex` in `div { font-family: foo; width: 10ex }` was `foo`'s
+    // under an inline `font-family: Ahem` that came after it.
+    const face: FaceSource = {
+      fontFamily: style.fontFamily,
+      fontSize: style.fontSize,
+      fontWeight: style.fontWeight,
+      fontStyle: style.fontStyle,
+    };
+    let line: LineSource | null = null;
     const ctx: UnitContext = {
       ...ctxParent,
       em: style.fontSize,
-      ex: () => this._exOf(style),
-      ch: () => this._chOf(style),
-      lh: () => this._lineHeightOf(style),
+      ex: () => this._exOf(face),
+      ch: () => this._chOf(face),
+      lh: () => this._lineHeightOf(line ?? style),
     };
     // the line height, which an `lh` in any other declaration reads, ahead
-    // of them: set again with the rest, in its place among them
+    // of them — a `font` sets one too — and read as it is then, for the
+    // same reason as the face: set again with the rest, in its place among
+    // them. A `font` sets the size as well, which the first pass settled.
     if (this._lh) {
       for (const c of candidates) {
         for (const d of pick(c)) {
-          if (d.prop === 'line-height') this._apply(style, parentStyle, d, ctx);
+          if (d.prop === 'line-height' || d.prop === 'font') {
+            this._apply(style, parentStyle, d, ctx);
+          }
         }
       }
+      style.fontSize = face.fontSize;
+      line = {
+        ...face,
+        lineHeight: style.lineHeight,
+        lineHeightIsLength: style.lineHeightIsLength,
+      };
     }
     const settled = style.fontSize;
     for (const c of candidates) {

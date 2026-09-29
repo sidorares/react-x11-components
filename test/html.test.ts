@@ -14171,6 +14171,21 @@ metric('line-clamp: auto shows the lines its height holds', async () => {
   assert.strictEqual(ends[2], '\u2026');
 });
 
+test('an lh is the line height the cascade ends on, a font shorthand among them', async () => {
+  // `lh` is read against the element's line height as the cascade settles
+  // it, not as it stands when the rule holding the length is reached: a
+  // `font` that outranks a `line-height` sets it, and so does a later
+  // `line-height` that outranks the `font`.
+  const { node } = await render(
+    '<style>body{margin:0} p{margin:0;line-height:30px}' +
+      ' .f{font:20px/2 serif} .l{line-height:25px} .h{height:1lh}</style>' +
+      '<p id="a" class="f h">a</p><p id="b" class="h f l">b</p>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 40, "the font's line height");
+  assert.strictEqual(boxOf(el, 'b').height, 25, 'the later line-height');
+});
+
 metric(
   "truncate: a line that clips ends in an ellipsis at the box's width",
   async () => {
