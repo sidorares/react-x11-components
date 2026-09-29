@@ -154,6 +154,20 @@ export function toDevice(value: number, scale: number): number {
   return Math.abs(out - whole) < 1e-6 ? whole : out;
 }
 
+/**
+ * `Math.round` for a place on the device grid, deaf to floating-point noise
+ * at a half. A pan moves the graph by whole device pixels, and its blit
+ * takes a shift within a hair of whole as whole (`toDevice`: the viewport
+ * `-66.4` panned 27 down is `-39.400000000000006`). A place worked out from
+ * the new viewport can then sit a hair below the half the old one sat on,
+ * or above it, and round the other way — a node or a label a pixel from
+ * where the copy put it. Nudged past any such hair, a half rounds up on
+ * both sides of the blit.
+ */
+export function snapToGrid(value: number): number {
+  return Math.round(value + 1e-4);
+}
+
 function fontStyle(
   opts: PainterOptions,
   options: TextOptions | undefined,
@@ -330,6 +344,14 @@ class Painter implements FlowPainter {
     const { ctx } = this;
     ctx.strokeStyle = options.stroke ?? this.opts.color;
     ctx.lineWidth = this.d(options.lineWidth ?? 1);
+    // Every stroke says how it joins and ends; `polyline` and `strokeRuns`
+    // then round both. A context keeps whatever the last stroke set, so a
+    // pass that drew an edge before a handle stroked the handle with round
+    // joins and caps, and one that reached no edge — a node's own box,
+    // repainted by itself — stroked it mitred and butt-ended, and the same
+    // ring came out two ways depending on what else the pass drew.
+    ctx.lineJoin = 'miter';
+    ctx.lineCap = 'butt';
     if (typeof ctx.setLineDash === 'function') {
       ctx.setLineDash(options.dash ? options.dash.map((v) => this.d(v)) : []);
       if ('lineDashOffset' in ctx) {
@@ -421,6 +443,10 @@ class Painter implements FlowPainter {
     const { ctx } = this;
     ctx.beginPath();
     ctx.arc(this.d(x), this.d(y), this.d(r), 0, Math.PI * 2);
+    // Closed, so the ring is one loop with a join where it started: open,
+    // its two ends meet edge to edge, and a stroke with butt ends shows a
+    // hairline where they touch.
+    ctx.closePath();
     if (options.fill) {
       ctx.fillStyle = options.fill;
       ctx.fill();
@@ -557,8 +583,8 @@ class Painter implements FlowPainter {
       // Rounded on the device grid, where the glyphs land.
       entry.layout.draw(
         this.raw,
-        Math.round(this.d(x + dx)),
-        Math.round(this.d(y + dy)),
+        snapToGrid(this.d(x + dx)),
+        snapToGrid(this.d(y + dy)),
       );
       return;
     }

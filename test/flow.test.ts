@@ -4809,3 +4809,414 @@ test('a 2D pan blits the whole pane and pins the furniture, and draws what a rep
   }
   assert.strictEqual(differ, 0, `${differ} pixels differ from a repaint`);
 });
+
+test('an edge’s label plate is drawn and claimed wherever it reaches', async () => {
+  // A label's plate is centred on its route and as wide as its text, so a
+  // long name on a short edge reaches far past the route. Culled by its
+  // route's box, an edge just off the pane drew no plate where the plate's
+  // end was on the pane; and a node that moved such an edge claimed the
+  // route and the cards, and left the ends of the old plate behind.
+  const label = 'a label much wider than the edge it names reaches the pane';
+  const at = (x: number, y: number): FlowNode[] => [
+    { id: 'a', position: { x, y: 100 }, width: 120, height: 40, data: {} },
+    { id: 'b', position: { x, y }, width: 120, height: 40, data: {} },
+  ];
+  // one props object for every render: a fresh `style` is a restyle, and
+  // core repaints the whole pane for it
+  const props = {
+    edges: [{ id: 'a-b', source: 'a', target: 'b', label }],
+    background: { variant: 'lines' as const },
+    style: { flexGrow: 1 },
+  };
+  const { ctx, rerender } = await renderX11(
+    h(FLOW_ELEMENT, { ...props, nodes: at(540, 300) }),
+    { backend: 'xserver', width: 480, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+    contentBox(): { x: number; y: number; width: number; height: number };
+  };
+  const box = node.contentBox();
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        ctx as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(box.x, box.y, box.width, box.height)
+    ).data;
+  const repaint = async (): Promise<Uint8ClampedArray> => {
+    await act(() => node.invalidate(false, null, 'content'));
+    await motionLands();
+    return read();
+  };
+  // the route is off the pane's right edge, the plate's end is on it: text
+  // is the darkest thing in the strip
+  const whole = await repaint();
+  let ink = 0;
+  for (let y = 150; y < 300; y++) {
+    for (let x = 400; x < box.width; x++) {
+      if (whole[(y * box.width + x) * 4] < 120) ink++;
+    }
+  }
+  assert.ok(ink > 0, 'the plate’s end is drawn');
+
+  // on the pane, a node the plate hangs off moves, and the plate with it
+  await act(() => rerender(h(FLOW_ELEMENT, { ...props, nodes: at(360, 300) })));
+  await motionLands();
+  await repaint();
+  await act(() => rerender(h(FLOW_ELEMENT, { ...props, nodes: at(360, 240) })));
+  await motionLands();
+  const moved = await read();
+  assert.ok(
+    Buffer.from(moved).equals(Buffer.from(await repaint())),
+    'the plate the move left is the plate a repaint draws',
+  );
+});
+
+test('a pan that lands a node on a half pixel draws it where the copy put it', async () => {
+  // The blit takes a shift within a hair of whole as whole: the viewport
+  // -66.4 panned 27 down is -39.400000000000006. A node whose place came
+  // out at 234.49999999999997 before the pan came out at 261.5 after it,
+  // and `Math.round` put the one at 234 and the other at 262 — the card
+  // the copy moved and the card a repaint drew a pixel apart.
+  const before = -66.4;
+  const after = before + 27;
+  let gy = 0;
+  while (
+    Math.round(gy * 1.7 + before) + 27 === Math.round(gy * 1.7 + after) &&
+    gy < 1000
+  ) {
+    gy++;
+  }
+  assert.ok(gy < 1000, 'a place that rounds the two ways');
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: [
+        {
+          id: 'n',
+          position: { x: 20, y: gy },
+          width: 120,
+          height: 40,
+          data: { label: 'x' },
+        },
+      ],
+      edges: [],
+      defaultViewport: { x: 0, y: before - gy * 1.7 + 120, zoom: 1.7 },
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+    setViewport(v: object): void;
+    getViewport(): { x: number; y: number; zoom: number };
+    contentBox(): { x: number; y: number; width: number; height: number };
+  };
+  const box = node.contentBox();
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        ctx as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(box.x, box.y, box.width, box.height)
+    ).data;
+  await act(() => node.setViewport({ x: 0, y: before, zoom: 1.7 }));
+  await motionLands();
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  await act(() => node.setViewport({ x: 0, y: after, zoom: 1.7 }));
+  await motionLands();
+  const panned = await read();
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  const whole = await read();
+  assert.ok(
+    Buffer.from(panned).equals(Buffer.from(whole)),
+    'the card the copy moved is the card a repaint draws',
+  );
+});
+
+test('a node just outside the pane still draws the handle that reaches in', async () => {
+  // Nodes were culled against the pane by their card alone. A handle sits
+  // on the card's edge and reaches past it by its radius, so a node whose
+  // card had just left the top of the pane lost the half ring still inside
+  // it — which a pan's copy kept, and a repaint did not draw.
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, {
+      nodes: nodes(),
+      edges: [],
+      defaultViewport: { x: 0, y: -120, zoom: 1 },
+      style: { flexGrow: 1 },
+    }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+    setViewport(v: object): void;
+    contentBox(): { x: number; y: number; width: number; height: number };
+  };
+  const box = node.contentBox();
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        ctx as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(box.x, box.y, box.width, 12)
+    ).data;
+  // node a's card ends 2px above the pane; its source handle is centred
+  // on that edge
+  await act(() => node.setViewport({ x: 0, y: -142, zoom: 1 }));
+  await motionLands();
+  const panned = await read();
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  const whole = await read();
+  assert.ok(
+    Buffer.from(panned).equals(Buffer.from(whole)),
+    'the top rows a repaint draws are the ones the copy kept',
+  );
+  let inked = 0;
+  for (let y = 0; y < 4; y++) {
+    for (let x = 150; x < 170; x++) {
+      if (whole[(y * box.width + x) * 4] < 200) inked++;
+    }
+  }
+  assert.ok(inked > 0, 'the lower half of the ring is drawn');
+});
+
+test('a handle is one closed ring, stroked the same in any pass', async () => {
+  // A context keeps the join and the cap of the last stroke, and an edge is
+  // stroked round: a whole pass drew the edges first and every handle after
+  // them round-joined and round-capped, while a pass over a node's own box
+  // reaches no edge and stroked the same rings mitred and butt-ended. The
+  // ring was also an open path, whose butt ends meet at its right-hand
+  // point and left a hairline there.
+  const { ctx } = await renderX11(
+    h(FLOW_ELEMENT, { nodes: nodes(), edges: edges(), style: { flexGrow: 1 } }),
+    { backend: 'xserver', width: 420, height: 380 },
+  );
+  await act();
+  const node = pane() as unknown as {
+    invalidate(layout: boolean, rect: unknown, reason: string): void;
+  };
+  // node a's target handle, on its top edge — no edge reaches it
+  const ring = { x: 150, y: 90, width: 21, height: 21 };
+  const read = async (): Promise<Uint8ClampedArray> =>
+    (
+      await (
+        ctx as {
+          getImageData(
+            x: number,
+            y: number,
+            w: number,
+            h: number,
+          ): Promise<{ data: Uint8ClampedArray }>;
+        }
+      ).getImageData(ring.x, ring.y, ring.width, ring.height)
+    ).data;
+  await act(() => node.invalidate(false, null, 'content'));
+  await motionLands();
+  const whole = await read();
+  await act(() => node.invalidate(false, ring, 'content'));
+  await motionLands();
+  const alone = await read();
+  assert.ok(
+    Buffer.from(alone).equals(Buffer.from(whole)),
+    'the ring a pass of its own draws is the ring a whole pass draws',
+  );
+  // centred on (160, 100): its row mirrors about the centre
+  const row = 100 - ring.y;
+  for (let dx = 1; dx <= 9; dx++) {
+    const left = (row * ring.width + (160 - ring.x - dx)) * 4;
+    const right = (row * ring.width + (160 - ring.x + dx - 1)) * 4;
+    assert.ok(
+      Math.abs(whole[left] - whole[right]) <= 2,
+      `${dx}px either side of the centre: ${whole[left]} and ${whole[right]}`,
+    );
+  }
+});
+
+test('the grid keeps the shape of its marks as the view pans', async () => {
+  // The grid is one tile, re-drawn with its mark at the phase the viewport
+  // puts it at, and a mark's edges were half pixels: a 3px dot at
+  // `cx - 1.5`, a 1px line at `cx - 0.5`. X11 cut a fill's position and its
+  // size separately, so a mark that straddled the tile's edge lost a
+  // column — at phase 0 the dot came out as two pixels a column apart and
+  // the line not at all. The grid changed shape as the view panned, and a
+  // pan's blit kept the shape the last phase drew. Zoom 1.25 is what makes
+  // the dot three pixels.
+  for (const variant of ['dots', 'lines', 'cross'] as const) {
+    const { ctx } = await renderX11(
+      h(FLOW_ELEMENT, {
+        nodes: [],
+        edges: [],
+        background: { variant },
+        defaultViewport: { x: 0, y: 0, zoom: 1.25 },
+        style: { flexGrow: 1 },
+      }),
+      { backend: 'xserver', width: 160, height: 120 },
+    );
+    await act();
+    const node = pane() as unknown as {
+      invalidate(layout: boolean, rect: unknown, reason: string): void;
+      setViewport(v: object): void;
+      contentBox(): { x: number; y: number; width: number; height: number };
+    };
+    const box = node.contentBox();
+    const read = async (): Promise<Uint8ClampedArray> =>
+      (
+        await (
+          ctx as {
+            getImageData(
+              x: number,
+              y: number,
+              w: number,
+              h: number,
+            ): Promise<{ data: Uint8ClampedArray }>;
+          }
+        ).getImageData(box.x, box.y, box.width, box.height)
+      ).data;
+    // One period of the pattern holds one mark whatever the phase, so a
+    // tile's worth of pixels anywhere in the pane inks the same count.
+    const tile = (pane() as unknown as { _gridTile: { size: number } })
+      ._gridTile.size;
+    const inked = (data: Uint8ClampedArray): number => {
+      let n = 0;
+      for (let y = 30; y < 30 + tile; y++) {
+        for (let x = 40; x < 40 + tile; x++) {
+          if (data[(y * box.width + x) * 4] < 250) n++;
+        }
+      }
+      return n;
+    };
+    let first = -1;
+    for (let x = 1; x <= 26; x++) {
+      await act(() => node.setViewport({ x, y: x, zoom: 1.25 }));
+      await motionLands();
+      const panned = await read();
+      await act(() => node.invalidate(false, null, 'content'));
+      await motionLands();
+      const whole = await read();
+      assert.ok(
+        Buffer.from(panned).equals(Buffer.from(whole)),
+        `${variant} at ${x}: the copy and a repaint differ`,
+      );
+      if (first < 0) first = inked(whole);
+      assert.strictEqual(
+        inked(whole),
+        first,
+        `${variant} at ${x}: a period of the grid inks as much at every phase`,
+      );
+    }
+    await cleanup();
+  }
+});
+
+test('a node that moves takes its place in the minimap with it', async () => {
+  // The minimap draws every node where it is. Where the pane draws it
+  // itself — no node type mounts a body — only a change of selection
+  // claimed the minimap's corner: a node the app moved, or one a drag was
+  // moving, repainted its own box and its edges, and the minimap went on
+  // showing it where it had been.
+  const props = { edges: edges(), minimap: true, style: { flexGrow: 1 } };
+  const options = { backend: 'xserver', width: 420, height: 380 } as const;
+  const matchesRepaint = async (ctx: unknown, what: string): Promise<void> => {
+    await motionLands();
+    const node = pane() as unknown as {
+      invalidate(layout: boolean, rect: unknown, reason: string): void;
+      contentBox(): { x: number; y: number; width: number; height: number };
+    };
+    const box = node.contentBox();
+    const read = async (): Promise<Uint8ClampedArray> =>
+      (
+        await (
+          ctx as {
+            getImageData(
+              x: number,
+              y: number,
+              w: number,
+              h: number,
+            ): Promise<{ data: Uint8ClampedArray }>;
+          }
+        ).getImageData(box.x, box.y, box.width, box.height)
+      ).data;
+    const frame = await read();
+    await act(() => node.invalidate(false, null, 'content'));
+    await motionLands();
+    const whole = await read();
+    let differ = 0;
+    for (let i = 0; i < whole.length; i += 4) {
+      const d = Math.max(
+        Math.abs(whole[i] - frame[i]),
+        Math.abs(whole[i + 1] - frame[i + 1]),
+        Math.abs(whole[i + 2] - frame[i + 2]),
+      );
+      if (d > 4) differ++;
+    }
+    assert.strictEqual(differ, 0, `${what}: ${differ} pixels differ`);
+  };
+
+  const moved = nodes().map((n) =>
+    n.id === 'a' ? { ...n, position: { x: 20, y: 40 } } : n,
+  );
+  const { ctx, rerender } = await renderX11(
+    h(TypedFlow, { ...props, nodes: nodes() }),
+    options,
+  );
+  await act();
+  await act(() => rerender(h(TypedFlow, { ...props, nodes: moved })));
+  await matchesRepaint(ctx, 'a node the app moved');
+  await cleanup();
+
+  const dragged = await renderX11(
+    h(TypedFlow, { ...props, defaultNodes: nodes() }),
+    options,
+  );
+  await act();
+  const node = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(node, at(115, 110));
+    fireEvent.mouseMove(node, at(175, 190));
+  });
+  await matchesRepaint(dragged.ctx, 'a node in the middle of a drag');
+  await act(() => fireEvent.mouseUp(node, at(175, 190)));
+  await matchesRepaint(dragged.ctx, 'a node a drag has put down');
+  await cleanup();
+
+  // …and an app that keeps its nodes until the drag ends: the pane draws
+  // the node where the drag has it, and so does the minimap, so the step
+  // claims the corner itself
+  const held = await renderX11(
+    h(TypedFlow, { ...props, nodes: nodes(), onNodesChange: () => {} }),
+    options,
+  );
+  await act();
+  const pane2 = pane() as unknown as DrawnNode;
+  await act(() => {
+    fireEvent.mouseDown(pane2, at(115, 110));
+    fireEvent.mouseMove(pane2, at(175, 190));
+  });
+  await matchesRepaint(held.ctx, 'a drag the app does not store');
+  await act(() => fireEvent.mouseUp(pane2, at(175, 190)));
+});
