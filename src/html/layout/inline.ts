@@ -1025,13 +1025,14 @@ function linesOf(
         justify,
       ).layout;
       const tail: LineBox[] = [];
+      const lift = layoutLift(layout);
       for (let i = 0; i < layout.lines.length; i += 1) {
         const natural = layout.lines[i];
         const text: LineText = {
           layout,
           layoutLine: i,
           drawX: band.left,
-          drawY: y,
+          drawY: y - lift,
           textStart: segment.spans.documentAt(natural.start),
           textEnd: segment.spans.documentAt(natural.end),
           layoutStart: natural.start,
@@ -1043,7 +1044,7 @@ function linesOf(
           y: y + natural.y,
           width: natural.width,
           height: natural.height,
-          baseline: natural.baseline - natural.y,
+          baseline: natural.baseline - natural.y - lift,
           texts: [text],
           textStart: text.textStart,
           textEnd: text.textEnd,
@@ -1409,6 +1410,7 @@ function layoutSpaced(
     new Set(spacers.map((spacer) => spacer.at)),
   ).layout;
   const place = wraps(style) ? null : unwrappedPlacer(style, width);
+  const lift = layoutLift(layout);
   let offsets: number[] | null = null;
   const lines: LineBox[] = [];
   let widest = 0;
@@ -1439,7 +1441,7 @@ function layoutSpaced(
       layout,
       layoutLine: i,
       drawX: dx,
-      drawY: 0,
+      drawY: -lift,
       textStart: spans.documentAt(natural.start),
       textEnd: spans.documentAt(natural.end),
       layoutStart: natural.start,
@@ -1451,7 +1453,7 @@ function layoutSpaced(
       y: natural.y,
       width: natural.width,
       height: natural.height,
-      baseline: natural.baseline - natural.y,
+      baseline: natural.baseline - natural.y - lift,
       texts: [text],
       textStart: text.textStart,
       textEnd: text.textEnd,
@@ -1513,6 +1515,7 @@ function emitLayout(
   place: LinePlacer | null = null,
 ): number {
   let widest = 0;
+  const lift = layoutLift(layout);
   for (let i = 0; i < layout.lines.length; i += 1) {
     const natural = layout.lines[i];
     const dx = place ? place(natural) : 0;
@@ -1520,7 +1523,7 @@ function emitLayout(
       layout,
       layoutLine: i,
       drawX: xOff + dx,
-      drawY: yOff,
+      drawY: yOff - lift,
       textStart: spans.documentAt(natural.start),
       textEnd: spans.documentAt(natural.end),
       layoutStart: natural.start,
@@ -1532,7 +1535,7 @@ function emitLayout(
       y: yOff + natural.y,
       width: natural.width,
       height: natural.height,
-      baseline: natural.baseline - natural.y,
+      baseline: natural.baseline - natural.y - lift,
       texts: [text],
       textStart: text.textStart,
       textEnd: text.textEnd,
@@ -1856,7 +1859,9 @@ function finishLine(
       continue;
     }
     const natural = open.texts[i].layout.lines[open.texts[i].layoutLine];
-    const own = natural.baseline - natural.y;
+    // with its leading shared as the strut's is: it is drawn on the line's
+    // baseline, wherever its engine put its own
+    const own = lineAscent(natural);
     ascent = Math.max(ascent, own);
     descent = Math.max(descent, natural.height - own);
   }
@@ -3389,9 +3394,14 @@ function shortOfStrut(
     const line = lines[i];
     const holds = i === 0 && first ? first : strut;
     if (!holds) continue;
+    // its room as the strut's is worked out, whichever baseline the layout
+    // it is drawn with could keep (`layoutLift`)
+    const text = line.texts.length === 1 ? line.texts[0] : null;
+    const natural = text?.layout.lines[text.layoutLine];
+    const ascent = natural ? lineAscent(natural) : line.baseline;
     if (
-      line.baseline < holds.ascent - 0.5 ||
-      line.height - line.baseline < holds.descent - 0.5
+      ascent < holds.ascent - 0.5 ||
+      line.height - ascent < holds.descent - 0.5
     ) {
       return true;
     }
@@ -4502,8 +4512,8 @@ function naturalLineHeight(fonts: FontsLike, style: ComputedStyle): number {
 
 /**
  * A block's strut: the ascent and descent of a line of nothing in its face,
- * the half-leading its `line-height` adds shared above and below, as the
- * text engines set a line (CSS 2.1 10.8.1).
+ * the leading its `line-height` adds shared above and below as
+ * `ascentOnLine` shares it (CSS 2.1 10.8.1).
  */
 export function strutOf(
   fonts: FontsLike,
@@ -4519,8 +4529,62 @@ export function strutOf(
       : style.lineHeightIsLength
         ? (style.lineHeight as number)
         : (style.lineHeight as number) * style.fontSize;
-  const half = (target - face.ascent - face.descent) / 2;
-  return { ascent: face.ascent + half, descent: face.descent + half };
+  const ascent = ascentOnLine(face.ascent, face.descent, target);
+  return { ascent, descent: target - ascent };
+}
+
+/**
+ * How far above its baseline an inline box's room on a line reaches: its
+ * face's ascent and half its leading (CSS 2.1 10.8.1, CSS Inline 3 5.3),
+ * rounded down to a whole pixel, the rest of the leading going below.
+ *
+ * The spec's halves are exact, and where one is not a whole pixel which
+ * side of the grid the text lands on is the user agent's. Blink rounds the
+ * half above down (`CalculateLeadingSpace`, core/layout/inline/
+ * line_utils.cc): a 13px Arial on an 18px line has 1px of leading over its
+ * 15 and 2px under. Split evenly, that box reached half a pixel above the
+ * 12px strut beside it, whose 4px of leading divides, and every such line
+ * came out 18.5px tall.
+ */
+export function ascentOnLine(
+  ascent: number,
+  descent: number,
+  height: number,
+): number {
+  return ascent + Math.floor((height - ascent - descent) / 2 + 1e-6);
+}
+
+/**
+ * How far above its baseline a text engine's line reaches, its leading
+ * shared as `ascentOnLine` shares it. The engines split it evenly (the
+ * contract every text engine owes, a baseline `(height - ascent -
+ * descent) / 2 + ascent` down), so a line on its own sits up to a pixel
+ * lower than a browser's; one that did not say how tall its face is keeps
+ * the engine's.
+ */
+function lineAscent(natural: TextLayoutLike['lines'][number]): number {
+  const { ascent, descent } = natural;
+  if (!Number.isFinite(ascent) || !Number.isFinite(descent)) {
+    return natural.baseline - natural.y;
+  }
+  return ascentOnLine(ascent, descent, natural.height);
+}
+
+/**
+ * How far up a layout drawn whole moves for each of its lines' baselines
+ * to be where `lineAscent` puts it. A layout is drawn in one batch, from
+ * one origin, so it moves by one amount or not at all: where its lines
+ * would move by different amounts — a face of other metrics on one — it
+ * keeps the engine's baselines, which are less than a pixel out.
+ */
+function layoutLift(layout: TextLayoutLike): number {
+  let lift = NaN;
+  for (const natural of layout.lines) {
+    const own = natural.baseline - natural.y - lineAscent(natural);
+    if (Number.isNaN(lift)) lift = own;
+    else if (Math.abs(own - lift) > 1e-6) return 0;
+  }
+  return Number.isNaN(lift) ? 0 : lift;
 }
 
 /** Where a text `vertical-align` raised goes on its line. */
