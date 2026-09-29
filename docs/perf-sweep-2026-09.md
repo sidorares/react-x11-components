@@ -3845,6 +3845,120 @@ their settings afterwards, and nothing else was touched, but the suite is
 not one to run here: its X-server tests and the targeted client tests
 cover what a change there needs.
 
+## Round 40: what a repaint draws that a frame did not
+
+A correctness round. Every frame the renderer paints is a partial one:
+claims coalesce into rectangles, and a pass repaints them and nothing
+else, which is only right if every change claimed what it changed and
+every pass drew what it reaches. Round 40 checked that the direct way.
+A probe changes a tree at random, lets each change settle, reads the
+window back, then invalidates the whole window, repaints it from scratch
+and reads it again. Any pixel that differs is something the partial frame
+got wrong, or something the repaint did. It needs no model of what should
+have changed, which is why it sees every class at once.
+
+It ran first over core, on random trees of boxes, text, spans, scroll
+panes, clips, radii, outlines, shadows, opacity, right-to-left text and
+scale. Then over the components, each with the operations a user makes:
+edits, selections, scrolls, pans, zooms, relabels, moves, streamed
+appends. Everything runs in process against node-x11's X server, so it
+needs no display. Differences of seven levels or less in the corners of
+rounded boxes are a precision class and set aside (see "Still open").
+The probes sort a mismatch by step, and then the step is taken apart by
+hand.
+
+### What core's claims missed (react-x11 2.23.2, locked in #343)
+
+- **A text's characters or a span arriving or leaving** (#766). Neither
+  has a box of its own. Inside a scroll pane, a child-list change claimed
+  the leaving child's rect and let layout claim the arriving one's, and a
+  run of characters has neither, so a label emptied or filled there left
+  its old glyphs. A span claimed a pixel at the window's origin.
+- **A paragraph's ink past its box** (#768, #772, #774, #777): a word too
+  long for its line, a descender below a trimmed line box. It is claimed,
+  culled and sized into a fade's surface now. The first cut was a
+  regression, since the first paint did not know the ink yet, and an
+  opacity group cut the overflow off. The fix answers from both the ink
+  on screen and the ink about to be drawn.
+- **A pane thinner than its bar** drew the bar outside its box (#770).
+- **A resize that changed a box's clamped radius** kept edge bands that
+  no longer described its corners (#773).
+- **A box that starts clipping** had to claim what its children drew past
+  it before it clipped (#775).
+- **A box of no area with an outline or a shadow** claimed nothing when it
+  moved (#776).
+- **ntk #453**: a rounded rectangle of no height kept its corner radii, so
+  a clip built from it leaked.
+
+### What the components' own claims missed
+
+- **`<CodeEditor>` selection seams** (#339). A line is as tall as its face
+  says, 15.13 px here. The selection bands, the active line and the
+  bracket boxes were filled at the line's fractional top and height, and
+  X11 truncated the two separately, which left a row of background between
+  two selected lines every seventh or eighth line. The row moved with the
+  scroll, so a blit copied a seam that a repaint did not draw. The editor
+  rounds its row fills from shared edges now.
+- **The primitive behind it** (ntk #456). ntk's rectangle fast paths let
+  the wire truncate x, y, width and height separately. Each edge rounds on
+  its own now, so rectangles that share an edge meet, and a shift moves
+  every edge alike. That also fixed two cases nobody had reported: core's
+  `<textarea>` select-all (15 white rows in 400 px at 13 px type) and a
+  selected multi-line `<text>`.
+- **`<Flow>`**: six ways (#342).
+  - The grid tile's marks sat on half pixels, and a mark straddling the
+    tile's edge lost a column under truncation. At phase 0 a dot was two
+    pixels a column apart and a line was not drawn at all.
+  - Rects and circles inherited the join and cap of the previous stroke,
+    so a handle stroked after an edge came out round, and one stroked in a
+    pass that reached no edge came out mitred.
+  - Only a selection change claimed the minimap. A moved node kept its
+    old place there.
+  - Nodes were culled by their card, not their handles.
+  - A place worked out from a viewport the blit took as whole
+    (-39.400000000000006) rounded the other way from the half it had sat
+    on.
+  - A long label's plate was culled and claimed by its edge's route.
+- **A full circle's seam** (ntk #455). `arc(0, 2π)` leaves its subpath
+  open, and ntk capped each end square to its own chord, a chord's angle
+  apart. A stroked ring had a hairline where it began. An open subpath
+  that ends where it began, heading the way it began, is stroked closed.
+- **`<Tree>` rows scrolled out of the pane** (react-x11 #779). The paint
+  walk culled a child by its box, so a row just above the viewport
+  dropped the descender it still put into it. The copy a scroll made kept
+  the descender, and a repaint did not. Worse, a child overflowing such a
+  row was not drawn at all. Children are culled by their subtree's paint
+  bounds now, which a scroll translates rather than drops.
+- **Code chips past the box** (react-x11 #781, components #346 pending the
+  release). A chip is padded two pixels past its run, outside the box at a
+  line's start. An element had no way to tell core that, so an edit left
+  a one-pixel column of chip beside a `<Markdown>` or `<RichTextEditor>`
+  paragraph. `paintOverhang()` is that seam, and `<richtext>` answers the
+  chip's pad.
+- **A claim wholly off the window** repainted the whole window (react-x11
+  #778). `_takeDamage` answered null for a list that clamped to nothing,
+  and null means everything. A card dragged past the edge of a graph cost a
+  full frame. The same fallback hid one of the `<Flow>` label bugs above
+  from the test written for it.
+
+`<Table>`, `<Chart>`, the vt `<Terminal>`, `<Tabs>`, `<Calendar>` and
+`<ColorPicker>` came back clean, a few hundred frames each, with content
+on screen checked so that a blank pane could not pass.
+
+### What the fixes cost
+
+- **#779's cull** reads a cached rect per child where it read `abs`. On a
+  5,000-row pane the scroll frame's p50 was the same within noise (4.5 ms
+  against 4.3), and on 1,000 rows it was 1.36 ms against 1.45, inside
+  master's own spread.
+- **ntk #455** keeps the command a subpath begins and ends with, and
+  works out the tangent only when a stroke's ends meet. `flattenPath` took
+  0.796 ms before and 0.795 after on 1,600 mixed commands. The first cut
+  worked the tangents out eagerly and cost 10%.
+- **ntk #456** adds four integer checks per rectangle. A fractional fill
+  under a rectangular clip now reaches the bounded composite instead of a
+  mask.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -4117,6 +4231,39 @@ cover what a change there needs.
     surely as a user would. Run the suites that need no display, and the
     targeted tests a change needs.
 
+58. **Hold every frame to a repaint of the same state.** It is an oracle
+    that needs no model of the change: missed claims, over-eager culls,
+    drawing that depends on the pass, and rasterization that a shift
+    changes all show up as the same thing, a pixel the two disagree on.
+    Every component that had one showed it within its first few seeds.
+59. **A difference says the two disagree, not which is right.** A
+    `<Flow>` handle, a `<Tree>` descender and an off-pane label plate were
+    each right in the copied frame and missing from the repaint: the cull
+    was the bug, not the claim. Decide by what the page should show, not
+    by which side the probe calls the reference.
+60. **A drawing must set everything it depends on.** A context keeps its
+    join, cap and dash from the last stroke, and a partial pass reaches
+    fewer drawings than a whole one, so a handle came out differently
+    depending on what else the pass happened to draw. `strokeRuns` had
+    already been fixed for exactly this. The shapes beside it had not.
+61. **A fallback to "repaint everything" hides the bugs under it.** A
+    frame whose claims all lay off the window repainted the window, which
+    made a missing claim pass the very test written for it. Paint nothing
+    where nothing is owed, and a missing claim shows.
+62. **Round each edge; never truncate a position and a size
+    separately.** Whole-pixel rasterization of fractional rectangles tiles
+    and survives a shift only when both edges come from the same rounding.
+    Truncating x and width apart does neither, which is the seam.
+63. **After fixing the first instance, look for the primitive.** The
+    editor's seams were fixed in the editor, and the same truncation in
+    ntk was also striping core's `<textarea>` and `<text>` selections,
+    which no one had reported. One fix in the primitive covered both.
+64. **When a value is too dear to measure where it is asked, bound it.**
+    Every cull asks for an edge's label plate and every claim for a
+    chip's pad. A generous bound (an em and a quarter a character, the
+    chip's inset always) costs a few pixels of claim, where an exact
+    measurement would have cost a text layout per edge per frame.
+
 ## Still open
 
 Ordered by practical impact, after round 12, and `<Html>`'s edit after
@@ -4139,6 +4286,12 @@ round 15.
   them; a split-pane drag does not. The fix is content-based minimum sizes
   in yoga; parked in round 12, with no workaround here or in core short of
   that.
+- **Rounded corners under a partial repaint**: a pass that reaches a
+  rounded box's corner redraws it through `keepCorners` or a group
+  surface, and the antialiased corner comes out up to seven levels from
+  what a whole repaint draws (round 40). Invisible, and set aside by the
+  damage probe's threshold; exact agreement would need the corner's
+  coverage computed the same way on both paths.
 - **A row's floor in a fling**: every row that scrolls into a `<Table>` is
   measured for its floor on a copy of its boxes, in two passes of its own,
   about half of a 14 ms production frame. The rule is deliberate, since an
