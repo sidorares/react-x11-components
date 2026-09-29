@@ -58,6 +58,9 @@ export interface Stylesheet {
    *  keeps these so a resize can tell "the layout changed" from "the
    *  *cascade* changed", and restyle only when it crossed one. */
   breakpoints: number[];
+  /** `@counter-style` rules, in order: a name and its descriptors, which
+   *  the cascade reads into counter styles (CSS Counter Styles 3, 3). */
+  counterStyles?: { prelude: string; declarations: Declaration[] }[];
 }
 
 /** The tests this evaluates live: a width, a colour scheme, or both.
@@ -218,6 +221,11 @@ export function parseStylesheet(
             );
             walk(at.block, media, ranks, full);
           }
+        } else if (name === 'counter-style' && at.block !== null) {
+          (sheet.counterStyles ??= []).push({
+            prelude: at.prelude,
+            declarations: parseDeclarations(at.block),
+          });
         }
         // @font-face, @keyframes, @page: nothing to do, and the block was
         // already consumed.

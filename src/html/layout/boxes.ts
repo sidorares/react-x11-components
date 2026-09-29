@@ -30,7 +30,8 @@ import {
 } from '../dom.js';
 import type { Cascade, FirstLetterRules } from '../css/cascade.js';
 import type { CollapsedTable } from './collapse.js';
-import { counterText, quoteAt } from '../css/content.js';
+import { quoteAt } from '../css/content.js';
+import type { CounterStyles } from '../css/counter-styles.js';
 import type { ContentItem } from '../css/content.js';
 import { copyStyle, inherit } from '../css/style.js';
 import { AUTO } from '../css/values.js';
@@ -966,7 +967,13 @@ class Builder {
     }
     if (style.display === 'list-item') {
       // the item's number, the `list-item` counter it has just counted
-      let text = markerFor(style, this._scopes.value('list-item'));
+      const written = markerFor(
+        style,
+        this._scopes.value('list-item'),
+        this._options.cascade.counterStyles,
+      );
+      let text = written.text;
+      let flush = written.flush;
       markerStyle = this._options.cascade.markerStyle(el, style);
       // a `::marker` with a `content` is set as that, as it is written —
       // its strings and its counters, where one of `none` is no marker
@@ -977,7 +984,11 @@ class Builder {
           .filter((piece) => typeof piece === 'string')
           .join('');
         ownMarker = true;
-      } else if (style.listStyleType.startsWith('"')) ownMarker = true;
+        flush = true;
+      } else if (style.listStyleType.startsWith('"')) {
+        ownMarker = true;
+        flush = true;
+      }
       if (markerImage && !ownMarker) {
         if (style.listStylePosition === 'inside') insideImage = markerImage.url;
         else {
@@ -996,10 +1007,10 @@ class Builder {
           };
         }
       } else if (text && style.listStylePosition === 'inside') {
-        insideMarker = text;
+        insideMarker = flush ? text : `${text} `;
       } else if (text) {
         box.marker = { text, layout: null, x: 0, y: 0, style: markerStyle };
-        if (ownMarker) box.marker.flush = true;
+        if (flush) box.marker.flush = true;
       }
     }
     const childInFlex =
@@ -1032,12 +1043,7 @@ class Builder {
       this._contentImage(insideImage, box, style, el);
       this._textNode(' ', box, style, el);
     } else if (insideMarker) {
-      this._insideMarker(
-        ownMarker ? insideMarker : `${insideMarker} `,
-        markerStyle ?? style,
-        box,
-        el,
-      );
+      this._insideMarker(insideMarker, style, markerStyle, box, el);
     }
     this._pseudo(el, 'before', style, box);
     this._children(el, box, style, childInFlex, el, key);
@@ -1195,12 +1201,18 @@ class Builder {
     // a list item it generates has a marker as an element's has, of the
     // `list-item` counter it has just counted (CSS 2.1 12.5): outside it,
     // or at the start of its content
-    let marker =
+    const written =
       style.display === 'list-item'
-        ? markerFor(style, this._scopes.value('list-item'))
-        : '';
+        ? markerFor(
+            style,
+            this._scopes.value('list-item'),
+            this._options.cascade.counterStyles,
+          )
+        : null;
+    let marker = written?.text ?? '';
     if (marker && style.listStylePosition !== 'inside') {
       box.marker = { text: marker, layout: null, x: 0, y: 0, style: null };
+      if (written?.flush) box.marker.flush = true;
       marker = '';
     }
     if (style.position === 'absolute' || style.position === 'fixed')
@@ -1209,7 +1221,7 @@ class Builder {
     if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
       this._nestedOutOfLine = true;
     const pieces = this._generated(style.content as ContentItem[], style, el);
-    if (marker) pieces.unshift(`${marker} `);
+    if (marker) pieces.unshift(written?.flush ? marker : `${marker} `);
     this._scopes.close();
     const flow = flowOf(style, box);
     const around = this._ws;
@@ -1243,11 +1255,18 @@ class Builder {
   private _insideMarker(
     text: string,
     itemStyle: ComputedStyle,
+    markerStyle: ComputedStyle | null,
     into: Box,
     el: Element,
   ): void {
-    const style = inherit(itemStyle, this._options.cascade.initial);
+    const style = inherit(
+      markerStyle ?? itemStyle,
+      this._options.cascade.initial,
+    );
     style.display = 'inline';
+    // a marker's direction is its own, whatever the text after it, unless
+    // its rules say otherwise (the HTML style sheet's `::marker`)
+    style.unicodeBidi = markerStyle?.unicodeBidi ?? 'isolate';
     const box = new Box('inline', null, style);
     box.pseudo = 'before';
     into.append(box);
@@ -1419,6 +1438,17 @@ class Builder {
     return num + last;
   }
 
+  /** A counter's value in a style the document can name, as `counter()`
+   *  writes it; `none` writes nothing. */
+  private _counterText(n: number, name: string, style: ComputedStyle): string {
+    if (name === 'none') return '';
+    return this._options.cascade.counterStyles.text(
+      n,
+      name,
+      style.direction === 'rtl',
+    );
+  }
+
   /** What `content` comes to here, in document order: its text, broken
    *  where it names an image. The quotes it opens and closes count for
    *  everything after it. */
@@ -1443,12 +1473,16 @@ class Builder {
           text += attr(el, item.name) ?? '';
           break;
         case 'counter':
-          text += counterText(this._scopes.value(item.name), item.style);
+          text += this._counterText(
+            this._scopes.value(item.name),
+            item.style,
+            style,
+          );
           break;
         case 'counters':
           text += this._scopes
             .values(item.name)
-            .map((v) => counterText(v, item.style))
+            .map((v) => this._counterText(v, item.style, style))
             .join(item.separator);
           break;
         case 'open-quote':
@@ -2184,28 +2218,33 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
 
 /**
  * The marker a `list-item` draws: its `list-item` counter written in its
- * `list-style-type`, with the full stop a number takes, or the symbol a
- * bullet is, or the string the type is. The counter is the builder's
- * (`CounterScopes`), which is what lets `value` on an `<li>`, `start` and
- * `reversed` on an `<ol>`, a list in a list and an author's own
- * `counter-reset` and `counter-set` all count as a browser counts them.
+ * `list-style-type`, between the style's prefix and suffix, or the string
+ * the type is. The counter is the builder's (`CounterScopes`), which is
+ * what lets `value` on an `<li>`, `start` and `reversed` on an `<ol>`, a
+ * list in a list and an author's own `counter-reset` and `counter-set` all
+ * count as a browser counts them. A suffix that ends in a space — `. `, a
+ * bullet's — is written without it, and the layout sets the marker off by
+ * its own gap; one that does not, `、`, sets the marker against the text.
  */
-function markerFor(style: ComputedStyle, n: number): string {
+function markerFor(
+  style: ComputedStyle,
+  n: number,
+  styles: CounterStyles,
+): { text: string; flush: boolean } {
   const type = style.listStyleType;
-  if (type === 'none') return '';
-  if (type.startsWith('"')) return type.slice(1);
-  const text = counterText(n, type);
-  return SYMBOLS.has(type) ? text : `${text}.`;
+  if (type === 'none') return { text: '', flush: false };
+  if (type.startsWith('"')) return { text: type.slice(1), flush: true };
+  const { prefix, text, suffix } = styles.marker(
+    n,
+    type,
+    style.direction === 'rtl',
+  );
+  const spaced = /\s$/.test(suffix);
+  return {
+    text: prefix + text + (spaced ? suffix.trimEnd() : suffix),
+    flush: !spaced,
+  };
 }
-
-/** The types a marker is a symbol of rather than a number. */
-const SYMBOLS = new Set([
-  'disc',
-  'circle',
-  'square',
-  'disclosure-open',
-  'disclosure-closed',
-]);
 
 /**
  * Give every box the document range its subtree covers. Runs after `fixUp`,

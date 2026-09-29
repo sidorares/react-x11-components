@@ -43,6 +43,8 @@ import {
 } from './style.js';
 import type { ComputedStyle, RootLook } from './style.js';
 import { parseDeclarations } from './parse.js';
+import { CounterStyles, counterStyleRule } from './counter-styles.js';
+import type { CounterStyleRule } from './counter-styles.js';
 import type { UnitContext } from './values.js';
 import { customProperties, substituteIn } from './vars.js';
 import type { CustomProps } from './vars.js';
@@ -374,6 +376,8 @@ export class Cascade {
   /** Every width at which some `@media` rule changes its mind, in CSS
    *  pixels — the unit the author wrote them in. */
   readonly breakpoints: number[];
+  /** The counter styles the sheets define, over the predefined ones. */
+  readonly counterStyles: CounterStyles;
 
   /** A font's x-height at a size, for `ex`, where the fonts can say. */
   private _xHeightOf: ((family: string, size: number) => number | null) | null;
@@ -413,7 +417,13 @@ export class Cascade {
     this.viewportHeight = viewportHeight;
     this.scale = scale;
     const breakpoints = new Set<number>();
+    const counterStyles = new Map<string, CounterStyleRule>();
     for (const sheet of sheets) {
+      // a counter style's rule whole over any before it of its name
+      for (const { prelude, declarations } of sheet.counterStyles ?? []) {
+        const style = counterStyleRule(prelude, declarations);
+        if (style) counterStyles.set(style.name, style.rule);
+      }
       for (const rule of sheet.rules) {
         if (!this._vars && usesVars(rule.declarations)) this._vars = true;
         if (!this._lh && usesLh(rule.declarations)) this._lh = true;
@@ -424,6 +434,7 @@ export class Cascade {
       for (const bp of sheet.breakpoints) breakpoints.add(bp);
     }
     this.breakpoints = [...breakpoints].sort((a, b) => a - b);
+    this.counterStyles = new CounterStyles(counterStyles);
     // css-select's default adapter is domutils; `isHovered` and `isActive`
     // are its documented hooks for exactly this, so `:hover` costs an
     // adapter field rather than a fork of the matcher.
@@ -731,7 +742,14 @@ export class Cascade {
     this._matchInto(index, el, candidates);
     if (!candidates.length) return null;
     candidates.sort(byCascade);
-    return this._computeStyle(el, style, false, candidates);
+    const out = this._computeStyle(el, style, false, candidates);
+    // a marker's direction is its own unless a rule says otherwise (the
+    // HTML style sheet's `::marker { unicode-bidi: isolate }`)
+    const set = candidates.some((c) =>
+      c.declarations.some((d) => d.prop === 'unicode-bidi'),
+    );
+    if (!set) out.unicodeBidi = 'isolate';
+    return out;
   }
 
   /**
