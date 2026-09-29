@@ -15349,6 +15349,52 @@ metric(
 );
 
 metric(
+  "a relatively positioned inline element's rect is where its offset moves it",
+  async () => {
+    // CSS 2.1 9.4.3 moves a relatively positioned box and everything in it,
+    // and `getBoundingClientRect` reports where it went (CSSOM View 6.1).
+    // Design 068 moves its footer links 120px down and 40px right, and each
+    // measured on its own line, as wide as from where it was laid out to
+    // where it was drawn: its text moved across and not down, its edges
+    // not at all
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;font-size:16px;line-height:20px}' +
+        '.r{position:relative;top:120px;left:40px}' +
+        '.o{position:relative;top:10px;left:5px}</style>' +
+        '<p>Text <a id="still" href="#">link</a></p>' +
+        '<p>Text <a id="moved" class="r" href="#">link</a></p>' +
+        '<p>Text <span class="o" id="outer">outer ' +
+        '<a id="inner" class="r" href="#">inner</a></span></p>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const still = rect('still');
+    const moved = rect('moved');
+    assert.ok(
+      Math.abs(moved.x - (still.x + 40)) < 0.5 &&
+        Math.abs(moved.y - (still.y + 20 + 120)) < 0.5,
+      `40px right and 120px down of where it was laid out: ${JSON.stringify(moved)}, not ${JSON.stringify(still)}`,
+    );
+    assert.ok(
+      Math.abs(moved.width - still.width) < 0.5,
+      `as wide as its text: ${moved.width}`,
+    );
+    const outer = rect('outer');
+    const inner = rect('inner');
+    assert.ok(
+      Math.abs(outer.y - (still.y + 40 + 10)) < 0.5,
+      `a box moves by its own offset: ${outer.y}`,
+    );
+    assert.ok(
+      Math.abs(inner.y - (outer.y + 120)) < 0.5,
+      `and one inside it by its own and the one around it: ${inner.y}`,
+    );
+  },
+);
+
+metric(
   "an inline element's rect is its border box down, not its line's height",
   async () => {
     // CSSOM View 6.1: a fragment's border box is its font's content area
