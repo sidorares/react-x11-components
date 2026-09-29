@@ -51,6 +51,7 @@ import type {
   BoxTree,
   FirstLineStyler,
   Intrinsic,
+  InlineDecoration,
   LineBox,
   MarginStrut,
   Marker,
@@ -725,6 +726,8 @@ function layoutChildren(
   // this box's first formatted line is its first child's in flow (CSS 2.1
   // 5.12.1), which its `::first-line` is handed to
   let firstLine = ctx.firstLine ? firstLineOf(box) : null;
+  // and the room a list item's marker takes on it (`MARKER_ROOM`)
+  let marked = MARKER_ROOM.get(box) ?? null;
   const clamp = ctx.clamp ?? null;
 
   for (const child of box.children) {
@@ -742,6 +745,10 @@ function layoutChildren(
     if (firstLine && !child.outOfFlow && !child.isFloat) {
       if (!FIRST_LINE.has(child)) HANDED.set(child, firstLine);
       firstLine = null;
+    }
+    if (marked && !child.outOfFlow && !child.isFloat) {
+      MARKER_ROOM.set(child, marked);
+      marked = null;
     }
     if (child.outOfFlow) {
       placeStatic(
@@ -1066,6 +1073,7 @@ function layoutInlineContent(
     floats,
     originX: contentLeft,
     clipText: ctx.clipText,
+    firstStrut: MARKER_ROOM.get(box),
     floatBoxes: floated
       ? {
           size: (child: Box) => sizeFloat(child, ctx, contentWidth),
@@ -1688,13 +1696,26 @@ function layoutBox(
     : outerFloats;
   // the line a pass before gave a marker, which this one may not
   if (box.marker) box.lines = null;
+  if (box.marker && ctx.fonts) {
+    const room = markerRoom(box, box.marker, ctx.fonts);
+    if (room) MARKER_ROOM.set(box, room);
+    else MARKER_ROOM.delete(box);
+  }
   const flow = layoutChildren(box, ctx, floats, box.contentY, contentWidth);
   // A list item with a marker and no line holds one, the marker's, a line
   // of its own face tall: an empty `<li>` is a line tall in a browser, and
   // an inline-block around one sits on its marker's baseline.
   let height = flow.height;
   if (box.marker && ctx.fonts && !firstLineIn(box)) {
-    const strut = strutOf(ctx.fonts, box.style);
+    const own = strutOf(ctx.fonts, box.style);
+    // as tall as the marker on it, as a first line with text is
+    const room = MARKER_ROOM.get(box);
+    const strut = room
+      ? {
+          ascent: Math.max(own.ascent, room.ascent),
+          descent: Math.max(own.descent, room.descent),
+        }
+      : own;
     const line = strut.ascent + strut.descent;
     box.lines = [
       {
@@ -1736,6 +1757,33 @@ function layoutBox(
     box.marginBottom = marginOf(bottom);
   } else box.bottomStrut = null;
   if (box.marker) layoutMarker(box, box.marker, ctx);
+}
+
+/**
+ * The room a list item's marker takes about its first line's baseline,
+ * handed to the box that line is in: an image's height above it, its
+ * bottom on the baseline as an inline image's is, and a marker in a face
+ * of its own — a `::marker` rule's — its face at its line height. CSS 2.1
+ * (12.5.1) leaves where an outside marker goes to the user agent; Blink
+ * and Gecko both set it on the item's first line and make the line as tall
+ * as it, and design 032's bullets, images taller than its 10px text, set
+ * every item's first line lower than ours did.
+ */
+const MARKER_ROOM = new WeakMap<Box, InlineDecoration>();
+
+function markerRoom(
+  box: Box,
+  marker: Marker,
+  fonts: FontsLike,
+): InlineDecoration | null {
+  if (marker.image) {
+    return marker.image.height > 0
+      ? { ascent: marker.image.height, descent: 0 }
+      : null;
+  }
+  return marker.style && marker.style !== box.style
+    ? strutOf(fonts, marker.style)
+    : null;
 }
 
 /** The first line box anywhere under a box, in layout order. */

@@ -300,6 +300,9 @@ export interface InlineOptions {
    * — which the line is found in, a piece at a time (CSS 2.1 5.12.1).
    */
   firstLineStyle?: { style: ComputedStyle; styler: FirstLineStyler };
+  /** Room the first line has to hold about its baseline besides the
+   *  strut's: a list item's marker (`MARKER_ROOM`). */
+  firstStrut?: InlineDecoration;
   /** Whether any box in the document paints its background through its
    *  text (`BoxTree.clipText`). */
   clipText?: boolean;
@@ -543,6 +546,8 @@ function linesOf(
   // smaller than the block's, the lines are made a piece at a time too,
   // where every line holds it (`shortOfStrut`)
   const strut = fonts ? strutOf(fonts, style) : null;
+  // and the first line holds what it is handed besides: a marker's room
+  const firstStrut = withRoom(strut, options.firstStrut);
   let strutted = false;
 
   // Inline boxes' edges as spacers in one layout, where the engine left
@@ -558,7 +563,7 @@ function linesOf(
       align,
       fonts,
     );
-    if (laid && !shortOfStrut(laid.lines, strut)) return laid;
+    if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
     if (laid) strutted = true;
   }
 
@@ -614,7 +619,7 @@ function linesOf(
         align,
         fonts,
       );
-      if (!shortOfStrut(chunked.lines, strut)) return chunked;
+      if (!shortOfStrut(chunked.lines, strut, firstStrut)) return chunked;
       strutted = true;
       break fast;
     }
@@ -718,7 +723,7 @@ function linesOf(
           : null,
     );
     // a clamp and a cut are the one layout's to make
-    if (!clamp && !cut && shortOfStrut(lines, strut)) {
+    if (!clamp && !cut && shortOfStrut(lines, strut, firstStrut)) {
       strutted = true;
       break fast;
     }
@@ -815,7 +820,9 @@ function linesOf(
       (height) => bandAt(options, y, Math.max(height, guess)),
       last || !wraps(style) ? lastShift : restShift,
       rtl,
-      onFirst ? lineOne.strut : strut,
+      lines.length
+        ? strut
+        : withRoom(onFirst ? lineOne.strut : strut, options.firstStrut),
       onFirst ? lineOne.lifts : lifts,
       (last || !wraps(style) ? justify.last : justify.rest)
         ? onFirst
@@ -1042,7 +1049,7 @@ function linesOf(
         });
       }
       // or a line at a time, where one of them is shorter than the strut
-      if (!shortOfStrut(tail, strut)) {
+      if (!shortOfStrut(tail, strut, lines.length ? null : firstStrut)) {
         for (const line of tail) {
           lines.push(line);
           widest = Math.max(widest, line.width);
@@ -3346,17 +3353,35 @@ const HELD = new WeakMap<Box, string>();
 function shortOfStrut(
   lines: readonly LineBox[],
   strut: InlineDecoration | null,
+  /** The first line's, where it holds more: a marker's room. */
+  first: InlineDecoration | null = null,
 ): boolean {
-  if (!strut) return false;
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const holds = i === 0 && first ? first : strut;
+    if (!holds) continue;
     if (
-      line.baseline < strut.ascent - 0.5 ||
-      line.height - line.baseline < strut.descent - 0.5
+      line.baseline < holds.ascent - 0.5 ||
+      line.height - line.baseline < holds.descent - 0.5
     ) {
       return true;
     }
   }
   return false;
+}
+
+/** A strut with room besides it about the same baseline, or the strut
+ *  where there is none. */
+function withRoom(
+  strut: InlineDecoration | null,
+  room: InlineDecoration | undefined,
+): InlineDecoration | null {
+  if (!room) return strut;
+  if (!strut) return room;
+  return {
+    ascent: Math.max(strut.ascent, room.ascent),
+    descent: Math.max(strut.descent, room.descent),
+  };
 }
 
 /** The share of the size a synthesized small capital is set at, rounded to

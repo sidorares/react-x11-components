@@ -12130,6 +12130,43 @@ metric(
   },
 );
 
+metric(
+  "a list item's first line is as tall as its marker's image",
+  async () => {
+    // CSS 2.1 12.5.1 leaves where an outside marker goes to the user
+    // agent; Blink and Gecko set it on the item's first line, its image's
+    // bottom on the baseline, and make the line as tall as it. Design 032's
+    // bullets are taller than its 10px text, and every item came out
+    // shorter than Chrome's
+    const { el } = await renderWithBytes(
+      '<style>body{margin:0}ul{margin:0;padding:0 0 0 40px;font:10px/12px ' +
+        'sans-serif;list-style-image:url(tall.svg)}li{margin:0}</style>' +
+        '<ul><li id="a">item one</li><li id="b"></li>' +
+        '<li id="c"><div>in a block</div></li></ul>',
+      {
+        'tall.svg': svgBytes(
+          `<svg ${SVG_NS} width="10" height="30">` +
+            '<rect width="10" height="30" fill="#ff0000"/></svg>',
+        ),
+      },
+    );
+    await act();
+    const first = (id: string) => linesOf(el, id)[0];
+    for (const id of ['a', 'b']) {
+      const line = first(id);
+      assert.ok(line, `#${id} has a first line`);
+      assert.ok(
+        line.baseline >= 30 - 0.01,
+        `#${id}: the image's 30px above the baseline: ${line.baseline}`,
+      );
+    }
+    assert.ok(boxOf(el, 'b').height >= 30, 'an empty item holds it too');
+    // and one whose first line is in a block inside it (where Chrome moves
+    // the block down, and this sets its first line as tall)
+    assert.ok(boxOf(el, 'c').height >= 30, 'an item around a block');
+  },
+);
+
 test('outline and its longhands are read', async () => {
   const { node } = await render(
     '<div id="a" style="outline:2px dashed #ff0000;outline-offset:-1px"></div>' +
