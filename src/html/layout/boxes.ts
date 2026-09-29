@@ -556,6 +556,14 @@ export const INLINE_OFFSETS = new WeakMap<Box, { x: number; y: number }>();
 export const TEXT_SHIFTS = new WeakMap<LineText, { x: number; y: number }>();
 export const SHIFTED_LINES = new WeakSet<LineBox>();
 
+/** Of a block's lines, by the array they are, those `position: relative`
+ *  or a translation moved something off — a text in a moved inline box, or
+ *  an inline-block or an image on it — which is drawn where it went while
+ *  the line stays where it was: what the paint's cull of a block's lines
+ *  has to look at past the lines the damage meets (`paintLines`). By the
+ *  array, so that a layout that makes new lines leaves none of the old. */
+export const MOVED_OFF_LINES = new WeakMap<LineBox[], Set<LineBox>>();
+
 /** How far `vertical-align` raised a text above its line's baseline, and an
  *  inline box's own baseline, where it did: beside the lines and the boxes
  *  for the reason the offsets above are. A line holding a raised text is

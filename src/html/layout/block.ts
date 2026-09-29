@@ -42,6 +42,7 @@ import {
   GRID_TRACKS,
   FIRST_LINE,
   INLINE_OFFSETS,
+  MOVED_OFF_LINES,
   LINE_BOX_RAISES,
   SHIFTED_LINES,
   TEXT_SHIFTS,
@@ -4018,12 +4019,19 @@ export function applyRelativeOffsets(box: Box): void {
   if (transformed(style) && box.kind !== 'inline') {
     // a transform moves the box it is on, and an inline box is none
     const [dx, dy] = translationOf(box);
-    if (dx || dy) translate(box, dx, dy);
+    if (dx || dy) {
+      translate(box, dx, dy);
+      movedOffLine(box);
+    }
   }
   if (style.position !== 'relative' && style.position !== 'sticky') return;
   const [dx, dy] = relativeOffset(box);
+  if (!(dx || dy)) return;
   translate(box, dx, dy);
-  if (box.kind !== 'inline' || !(dx || dy)) return;
+  if (box.kind !== 'inline') {
+    movedOffLine(box);
+    return;
+  }
   offsetInline(box, dx, dy);
   // the blocks it was broken around move with it (9.2.1.1)
   const blocks = box.cut ? CUT_BLOCKS.get(box) : undefined;
@@ -4092,8 +4100,32 @@ function offsetInline(box: Box, dx: number, dy: number): void {
         y: (was?.y ?? 0) + dy,
       });
       SHIFTED_LINES.add(line);
+      markMovedOff(lines, line);
     }
   }
+}
+
+/** Mark the line an inline-block or an image a box moved off was placed
+ *  on, where it was on one: the line stays, and the box is drawn where it
+ *  went (`MOVED_OFF_LINES`). */
+function movedOffLine(box: Box): void {
+  let block = box.parent;
+  while (block && block.kind === 'inline') block = block.parent;
+  const lines = block?.lines;
+  if (!lines) return;
+  for (const line of lines) {
+    for (const placed of line.atomics) {
+      if (placed.box !== box) continue;
+      markMovedOff(lines, line);
+      return;
+    }
+  }
+}
+
+function markMovedOff(lines: LineBox[], line: LineBox): void {
+  const moved = MOVED_OFF_LINES.get(lines);
+  if (moved) moved.add(line);
+  else MOVED_OFF_LINES.set(lines, new Set([line]));
 }
 
 /** Whether `inner` is `outer` or inside it. */

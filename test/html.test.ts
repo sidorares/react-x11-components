@@ -8826,6 +8826,65 @@ metric(
   },
 );
 
+metric(
+  'what position: relative moves off a line past the window is drawn where it goes',
+  async () => {
+    // A block's lines are drawn where the damage meets them, and the window
+    // bounds every paint: an inline-block, or a relative span's text, moved
+    // up off a line below the window went undrawn with its line, wherever
+    // it landed. A reftest's reference builds its picture that way.
+    const inkIn = async (
+      result: { ctx: unknown },
+      rgb: (r: number, g: number, b: number) => boolean,
+    ) => {
+      const data: Uint8ClampedArray = await new Promise((ok, fail) =>
+        (
+          result.ctx as {
+            getImageData(
+              x: number,
+              y: number,
+              w: number,
+              h: number,
+              cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+            ): void;
+          }
+        ).getImageData(0, 0, 400, 400, (e, d) => (e ? fail(e) : ok(d.data))),
+      );
+      let n = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (rgb(data[i], data[i + 1], data[i + 2])) n += 1;
+      }
+      return n;
+    };
+    const tall =
+      '<style>body{margin:0}.tall{display:inline-block;width:10px;' +
+      'height:600px}</style><div><span class="tall"></span><br>';
+    const block = await renderWithBytes(
+      tall +
+        '<span style="display:inline-block;position:relative;top:-590px;' +
+        'width:100px;height:30px;background:#0000ff"></span></div>',
+      {},
+    );
+    assert.strictEqual(
+      await inkIn(block.result, (r, g, b) => b > 200 && r < 60 && g < 60),
+      3000,
+      'the inline-block',
+    );
+    cleanup();
+    const text = await renderWithBytes(
+      tall +
+        '<span style="position:relative;top:-590px;color:#00ff00;' +
+        'font:bold 40px/1 sans-serif">MMMM</span></div>',
+      {},
+    );
+    assert.ok(
+      (await inkIn(text.result, (r, g, b) => g > 200 && r < 60 && b < 60)) >
+        500,
+      'the text',
+    );
+  },
+);
+
 // --- visibility on inline content ------------------------------------------------
 
 /** How many pixels of each of three colours a laid-out element covers. */
