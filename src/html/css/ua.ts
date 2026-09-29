@@ -44,8 +44,11 @@ export function uaStylesheet(look: RootLook): Stylesheet {
 }
 
 /**
- * Margins are in `em` throughout, so a document that sets `font-size` on
- * `body` scales its whitespace with its text the way a browser's does.
+ * Margins above and below are in `em`, so a document that sets `font-size`
+ * on `body` scales its whitespace with its text the way a browser's does.
+ * The indents of lists, definitions and figures are the HTML standard's
+ * 40px (15.3.3, 15.3.8), whatever the size: a list in a 10px sidebar is
+ * indented as far as one in the body.
  */
 function uaText(look: RootLook): string {
   const mono = look.monoFamily;
@@ -81,7 +84,7 @@ h4 { font-size: 1em;    font-weight: bold; margin: 1.33em 0; }
 h5 { font-size: 0.83em; font-weight: bold; margin: 1.67em 0; }
 h6 { font-size: 0.67em; font-weight: bold; margin: 2.33em 0; }
 
-ul, ol { margin: 1em 0; padding-left: 2.5em; }
+ul, ol { margin: 1em 0; padding-left: 40px; }
 ul { list-style-type: disc; }
 ol { list-style-type: decimal; }
 ol, ul, menu, dir { counter-reset: list-item; }
@@ -92,7 +95,7 @@ ul ul ul, ol ol ul, ul ol ul, ol ul ul { list-style-type: square; }
 ul ul, ul ol, ol ul, ol ol { margin: 0; }
 
 dl { margin: 1em 0; }
-dd { margin-left: 2.5em; }
+dd { margin-left: 40px; }
 dt { font-weight: bold; }
 
 blockquote {
@@ -150,7 +153,7 @@ img { display: inline-block; }
 iframe { border: 2px inset; }
 /* a poster is drawn within the video's box at its own ratio (HTML 15.4.1) */
 video { object-fit: contain; }
-figure { margin: 1em 2.5em; }
+figure { margin: 1em 40px; }
 
 table { display: table; border-collapse: separate; border-spacing: 2px; box-sizing: border-box; }
 caption { display: table-caption; text-align: center; }
