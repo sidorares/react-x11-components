@@ -29,6 +29,8 @@ export class TextLayoutCache {
   readonly fonts: FontsLike;
   private _now = new Map<number, Kept[]>();
   private _before = new Map<number, Kept[]>();
+  /** Each layout handed out, and what it was made from (`inputsOf`). */
+  private _inputs = new WeakMap<TextLayoutLike, Kept>();
 
   constructor(readonly engine: FontsLike) {
     this.fonts = {
@@ -77,7 +79,25 @@ export class TextLayoutCache {
     };
     if (now) now.push(kept);
     else this._now.set(key, [kept]);
+    this._inputs.set(kept.layout, kept);
     return kept.layout;
+  }
+
+  /**
+   * What a layout this cache handed out was made from — its runs, the
+   * block's style and the options, copies all — or undefined for one it
+   * did not. A pointer move that changes only a paragraph's ink lays the
+   * same text out again with the new ink from these, where the pass would
+   * have laid out the document (`HtmlViewNode._hoverInPlace`).
+   */
+  inputsOf(layout: TextLayoutLike):
+    | {
+        readonly content: readonly TextRun[];
+        readonly style: Record<string, unknown>;
+        readonly options: Options;
+      }
+    | undefined {
+    return this._inputs.get(layout);
   }
 }
 

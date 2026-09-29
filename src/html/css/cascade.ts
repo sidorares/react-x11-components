@@ -226,6 +226,96 @@ function splitPseudoElement(
   };
 }
 
+/**
+ * The compounds of a selector that test `:hover`, each without it (and
+ * without an `:active` beside it), and whether one is followed by a sibling
+ * combinator, which reaches the element's later siblings. `nested` where a
+ * `:hover` sits inside a functional pseudo-class — `:not(:hover)`,
+ * `:has(:hover)` — and reaches elements no compound names.
+ *
+ * `:active` is not the pointer's here: nothing sets it (`setPointer` is
+ * handed none), so a selector that tests only it never changes as the
+ * pointer moves — Wikipedia's buttons' `:focus:not(:active)` among them.
+ * A press that sets it would have to be counted here too.
+ */
+export function pointerCompounds(selector: string): {
+  compounds: string[];
+  siblings: boolean;
+  nested: boolean;
+} {
+  const out = { compounds: [] as string[], siblings: false, nested: false };
+  // the compounds at the top level, each with the combinator after it
+  const parts: { text: string; next: string }[] = [];
+  let start = 0;
+  let depth = 0;
+  let quote = '';
+  const split = (end: number, next: string): void => {
+    const text = selector.slice(start, end).trim();
+    if (text) parts.push({ text, next });
+    else if (parts.length && next !== ' ') parts[parts.length - 1].next = next;
+  };
+  for (let i = 0; i < selector.length; i += 1) {
+    const c = selector[i];
+    if (quote) {
+      if (c === quote && selector[i - 1] !== '\\') quote = '';
+      continue;
+    }
+    if (c === '\\') i = escapeEnd(selector, i) - 1;
+    else if (c === '"' || c === "'") quote = c;
+    else if (c === '(' || c === '[') depth += 1;
+    else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
+    else if (depth === 0 && /[\s>+~]/.test(c)) {
+      split(i, c === '+' || c === '~' || c === '>' ? c : ' ');
+      start = i + 1;
+    }
+  }
+  split(selector.length, '');
+  for (const { text, next } of parts) {
+    let bare = '';
+    let pointer = false;
+    depth = 0;
+    quote = '';
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text[i];
+      if (quote) {
+        if (c === quote && text[i - 1] !== '\\') quote = '';
+        bare += c;
+        continue;
+      }
+      if (c === '\\') {
+        const end = escapeEnd(text, i);
+        bare += text.slice(i, end);
+        i = end - 1;
+        continue;
+      }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[') depth += 1;
+      else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
+      else if (c === ':' && text[i + 1] !== ':') {
+        const m = POINTER_PSEUDO_AT.exec(text.slice(i));
+        if (m) {
+          const hover = m[0].length === 6;
+          if (depth > 0) {
+            if (hover) out.nested = true;
+          } else {
+            if (hover) pointer = true;
+            i += m[0].length - 1;
+            continue;
+          }
+        }
+      }
+      bare += c;
+    }
+    if (!pointer) continue;
+    out.compounds.push(bare.trim() || '*');
+    if (next === '+' || next === '~') out.siblings = true;
+  }
+  return out;
+}
+
+/** `:hover` or `:active` at the start of a string, and nothing longer. */
+const POINTER_PSEUDO_AT = /^:(?:hover|active)(?![\w-])/i;
+
 function mapBucket(
   map: Map<string, IndexedRule[]>,
   key: string,
@@ -362,6 +452,19 @@ export class Cascade {
     marker: new RuleIndex(),
   };
   private _adapter: CssSelectAdapter;
+  /** The compounds of the selectors that test the pointer, each without
+   *  its `:hover` or `:active` (`pointerCompounds`), and their matchers,
+   *  compiled when a pointer move first asks (`hoverTouches`). */
+  private _hoverCompounds = new Set<string>();
+  private _hoverMatchers: ((el: Element) => boolean)[] | null = null;
+  /** Whether a pointer move can be restyled where it happened
+   *  (`HtmlViewNode._hoverInPlace`): false where a selector tests the
+   *  pointer inside a functional pseudo-class, which reaches elements no
+   *  compound names. */
+  hoverLocal = true;
+  /** Whether a compound that tests the pointer is followed by a sibling
+   *  combinator, so an element's later siblings restyle with it. */
+  hoverSiblings = false;
   private _pointer: PointerState = NO_POINTER;
   readonly initial: ComputedStyle;
   readonly look: RootLook;
@@ -437,6 +540,7 @@ export class Cascade {
         const pseudo = splitPseudoElement(rule);
         if (pseudo) this._pseudo[pseudo.which].add(pseudo.rule);
         else this._index.add(rule);
+        this._noteHover((pseudo?.rule ?? rule).selector);
       }
       for (const bp of sheet.breakpoints) breakpoints.add(bp);
     }
@@ -490,6 +594,45 @@ export class Cascade {
 
   setPointer(pointer: PointerState): void {
     this._pointer = pointer;
+  }
+
+  /**
+   * Whether the pointer entering or leaving `el` can change a style: one of
+   * the compounds a selector tests the pointer in matches it, the pointer
+   * aside. A move between two paragraphs of a page whose only such rule is
+   * `a:hover` touches nothing, and restyles nothing.
+   */
+  hoverTouches(el: Element): boolean {
+    this._hoverMatchers ??= [...this._hoverCompounds].flatMap((c) => {
+      const match = this._compile(c);
+      return match ? [match] : [];
+    });
+    for (const match of this._hoverMatchers) if (match(el)) return true;
+    return false;
+  }
+
+  private _noteHover(selector: string): void {
+    if (!/:(?:hover|active)/i.test(selector)) return;
+    const found = pointerCompounds(selector);
+    if (found.nested) this.hoverLocal = false;
+    if (found.siblings) this.hoverSiblings = true;
+    for (const c of found.compounds) this._hoverCompounds.add(c);
+  }
+
+  /** A selector compiled as a rule's is, or null where css-select refuses
+   *  it, as a rule it refuses drops out of the cascade. */
+  private _compile(selector: string): ((el: Element) => boolean) | null {
+    try {
+      return compile(noEmptyWords(selector), {
+        adapter: this._adapter,
+        xmlMode: false,
+        pseudos: PSEUDOS,
+      } as unknown as Parameters<typeof compile>[1]) as unknown as (
+        node: Element,
+      ) => boolean;
+    } catch {
+      return null;
+    }
   }
 
   /** Which media band a device-pixel width falls in. Two widths in the same

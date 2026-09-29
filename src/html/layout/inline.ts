@@ -2716,14 +2716,28 @@ function inlineEdges(
       box.marginRight = box.borderRight = box.padRight = 0;
     }
   }
+  box.decoration = inlineDecoration(fonts, box, s);
+  const left = box.marginLeft + box.borderLeft + box.padLeft;
+  const right = box.padRight + box.borderRight + box.marginRight;
+  return s.direction === 'rtl' ? [right, left] : [left, right];
+}
+
+/**
+ * What an inline box draws around its text, in `s`: the extent of its face
+ * where it has a background, a border or an outline, and null where it
+ * draws none. Its borders are the ones `inlineEdges` just used. Shared with
+ * a pointer move that gives a link a background (`HtmlViewNode`).
+ */
+export function inlineDecoration(
+  fonts: FontsLike | null,
+  box: Box,
+  s: ComputedStyle,
+): InlineDecoration | null {
   const decorated =
     !isTransparent(s.backgroundColor) ||
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0 ||
     s.outlineStyle !== 'none';
-  box.decoration = !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
-  const left = box.marginLeft + box.borderLeft + box.padLeft;
-  const right = box.padRight + box.borderRight + box.marginRight;
-  return s.direction === 'rtl' ? [right, left] : [left, right];
+  return !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
 }
 
 /** A border's width, or none where its style draws none. */
@@ -3098,7 +3112,11 @@ export function featuresOf(
 
 const FEATURES = new Map<string, Readonly<Record<string, number>>>();
 
-function runFor(text: string, style: ComputedStyle): TextRun {
+/** A run of `text` in `style`: its face, its ink and its rules. Every
+ *  paint field of a run of the document's text is this function's, which
+ *  is what lets a pointer move re-ink a paragraph without laying it out
+ *  again (`HtmlViewNode._hoverInPlace`). */
+export function runFor(text: string, style: ComputedStyle): TextRun {
   const run: TextRun = {
     text,
     family: style.fontFamily,

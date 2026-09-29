@@ -589,6 +589,10 @@ export interface BoxTree {
    *  laying the text out, found here rather than by walking `textBoxes`
    *  again after every build. */
   textStyles: Set<ComputedStyle>;
+  /** Each element the build gave a style, with it and whether its parent
+   *  was a flex container: what a pointer move restyles an element from
+   *  where it did not change the rest (`HtmlViewNode._hoverInPlace`). */
+  styles: Map<Element, { style: ComputedStyle; inFlex: boolean }>;
   /** Every replaced box that needs a real widget, in document order. */
   controls: Box[];
   /** Every box carrying an `href`, for click and hover. */
@@ -680,6 +684,10 @@ class Builder {
   private _length = 0;
   private _textBoxes: Box[] = [];
   private _textStyles = new Set<ComputedStyle>();
+  private _styles = new Map<
+    Element,
+    { style: ComputedStyle; inFlex: boolean }
+  >();
   /** The last text box's style: runs of text share their parent's, so
    *  most text boxes repeat it and add nothing to `_textStyles`. */
   private _lastTextStyle: ComputedStyle | null = null;
@@ -743,6 +751,7 @@ class Builder {
       text: this._chunks.join(''),
       textBoxes: this._textBoxes,
       textStyles: this._textStyles,
+      styles: this._styles,
       controls: this._controls,
       links: this._links,
       backgrounds: this._backgrounds,
@@ -811,6 +820,7 @@ class Builder {
       parentKey,
       inFlex,
     );
+    this._styles.set(el, { style, inFlex });
     if (style.display === 'none') return;
     if (onlyColumns && style.display !== 'table-column') return;
     // what an element counts is in scope for it and what it holds, and for

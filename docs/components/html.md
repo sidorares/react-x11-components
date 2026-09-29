@@ -768,9 +768,23 @@ rule and border in it come from the react-x11 palette, so an unstyled
 document dropped into a dark application arrives dark rather than as a white
 rectangle. An author stylesheet still overrides all of it.
 
-**`:hover` costs nothing unless the document uses it.** A pointer move only
-restyles when some selector in the document actually tests `:hover`, which is
-why the user-agent sheet deliberately has no `a:hover` rule.
+**`:hover` costs nothing unless the document uses it, and ink where it
+changes ink.** A pointer move only restyles when some selector in the
+document actually tests `:hover`, which is why the user-agent sheet
+deliberately has no `a:hover` rule. And it restyles where it happened: only
+an element whose hover state flipped, and that a compound testing `:hover`
+could match, is styled again — with its subtree, and its later siblings
+where `+` or `~` follows — so a move between two paragraphs under `a:hover`
+does nothing at all. Where all a move changed is ink — a colour, an
+underline, a background or a border's colour, as 77 of a Wikipedia
+article's 79 such rules change — the boxes take their new style and each
+paragraph's text is laid out again from the same runs with the new ink, at
+the same shape, and nothing else is built or laid out: a hover over that
+article went from 270 ms to under 15 ms on X11, and from about 800 ms to
+17 ms on macOS. Anything else builds the document again, as every hover
+used to — text set bold on hover, a pseudo-element or a list marker the
+element colours, a `:hover` inside `:not()` or `:has()`. `:active` is never
+set here, so a selector testing it changes nothing as the pointer moves.
 
 **Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
 Everything from the cascade to paint recurses on tree depth, so a

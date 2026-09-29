@@ -12661,3 +12661,179 @@ metric(
     assert.strictEqual(asked.filter((a) => a === 'warm 600 normal').length, 1);
   },
 );
+
+// --- a pointer move restyled where it happened (`_hoverInPlace`) ------------
+
+/** The element's pixels, as the server has them. */
+async function snapshot(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+): Promise<Uint8ClampedArray> {
+  const { abs } = el as unknown as DrawnNode;
+  await act();
+  return new Promise((ok, fail) =>
+    (
+      result.ctx as unknown as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+          cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+        ): void;
+      }
+    ).getImageData(abs.x, abs.y, abs.width, abs.height, (e, d) =>
+      e ? fail(e) : ok(d.data),
+    ),
+  );
+}
+
+/** A logical window point inside an element of the document. */
+function pointIn(el: HtmlViewNode, id: string): [number, number] {
+  const target = findById(el.document, id)!;
+  const rect = el.elementRect(target)!;
+  const { abs } = el as unknown as DrawnNode;
+  return [abs.x + rect.x + rect.width / 2, abs.y + rect.y + rect.height / 2];
+}
+
+type DocElement = Parameters<HtmlViewNode['elementRect']>[0];
+
+function findById(node: unknown, id: string): DocElement | null {
+  const n = node as { attribs?: Record<string, string>; children?: unknown[] };
+  if (n.attribs?.id === id) return n as unknown as DocElement;
+  for (const child of n.children ?? []) {
+    const found = findById(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** The box tree, to tell a restyle in place from a document built again. */
+const treeOf = (el: HtmlViewNode) =>
+  (el as unknown as { _tree: unknown })._tree;
+
+/** What a document built again from its sheets makes of the same hover. */
+async function rebuilt(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+): Promise<Uint8ClampedArray> {
+  (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
+  return snapshot(result, el);
+}
+
+const HOVER_PAGE =
+  '<style>body{margin:0} a{color:#0000ee;text-decoration:none}' +
+  ' a:hover{color:#ff0000;text-decoration:underline}' +
+  ' .b{display:inline-block;padding:2px;border:2px solid #888888}' +
+  ' .b:hover{background:#ffff00;border-color:#00aa00}' +
+  ' li:hover{color:#008800}</style>' +
+  '<p id="p">Some text with <a id="a" href="#x">a <span id="s">link</span>' +
+  ' in it</a> and more text after it, long enough to wrap onto a second' +
+  ' line in a paragraph this narrow.</p>' +
+  '<p id="q">Another paragraph, with no link.</p>' +
+  '<p><span class="b" id="b">button</span></p>' +
+  '<ul><li id="li">an item</li></ul>';
+
+metric(
+  'a hovered link is restyled where it is, to the pixels a rebuild draws',
+  async () => {
+    const { result, node } = await render(HOVER_PAGE, 300);
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+
+    el.setHover(...pointIn(el, 's'));
+    const hovered = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), tree, 'the document was built again');
+    assert.notDeepStrictEqual(hovered, quiet, 'the hover drew nothing');
+    assert.deepStrictEqual(hovered, await rebuilt(result, el));
+
+    // …and back off it, in place again
+    const again = treeOf(el);
+    el.setHover(...pointIn(el, 'q'));
+    const left = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), again);
+    assert.deepStrictEqual(left, quiet);
+    assert.deepStrictEqual(left, await rebuilt(result, el));
+  },
+);
+
+metric(
+  'a hovered box takes its background and border colour in place',
+  async () => {
+    const { result, node } = await render(HOVER_PAGE, 300);
+    const el = view(node);
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'b'));
+    const hovered = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), tree);
+    assert.deepStrictEqual(hovered, await rebuilt(result, el));
+  },
+);
+
+metric(
+  'a move that touches no rule restyles nothing, and one that changes more than ink builds the document again',
+  async () => {
+    const { result, node } = await render(
+      HOVER_PAGE.replace('</style>', ' #q:hover{font-weight:bold}</style>'),
+      300,
+    );
+    const el = view(node);
+    const tree = treeOf(el);
+    // from nothing to the plain paragraph: no compound testing the pointer
+    // matches a `<p>` but `#q`'s
+    el.setHover(...pointIn(el, 'p'));
+    await snapshot(result, el);
+    assert.strictEqual(treeOf(el), tree, 'a move over nothing hovered');
+    // bold text is another shape
+    el.setHover(...pointIn(el, 'q'));
+    const bold = await snapshot(result, el);
+    assert.notStrictEqual(treeOf(el), tree, 'bold was restyled in place');
+    assert.deepStrictEqual(bold, await rebuilt(result, el));
+  },
+);
+
+metric(
+  'a list item, whose marker takes its colour, is built again',
+  async () => {
+    const { result, node } = await render(HOVER_PAGE, 300);
+    const el = view(node);
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'li'));
+    const hovered = await snapshot(result, el);
+    assert.notStrictEqual(treeOf(el), tree);
+    assert.deepStrictEqual(hovered, await rebuilt(result, el));
+  },
+);
+
+metric('a hover in a long document builds and lays out nothing', async () => {
+  // what took a Wikipedia article 270 ms a link on X11: every hover built
+  // the boxes of the whole document again and laid it out
+  const paragraphs = Array.from(
+    { length: 400 },
+    (_, i) =>
+      `<p id="p${i}">Paragraph ${i} with <a id="a${i}" href="#${i}">a link</a> in the middle of enough text to wrap.</p>`,
+  ).join('');
+  const { result, node } = await render(
+    `<style>body{margin:0} a{color:#0000ee} a:hover{color:#ff0000;text-decoration:underline}</style>${paragraphs}`,
+    300,
+  );
+  const el = view(node);
+  const updates = { n: 0 };
+  const proto = el as unknown as { _update(width: number): void };
+  const update = proto._update.bind(el);
+  proto._update = (width: number) => {
+    updates.n += 1;
+    const tree = treeOf(el);
+    update(width);
+    if (treeOf(el) !== tree) updates.n += 1000;
+  };
+  await snapshot(result, el);
+  const tree = treeOf(el);
+  for (const id of ['a0', 'p1', 'a2', 'a3', 'p3']) {
+    el.setHover(...pointIn(el, id));
+    await snapshot(result, el);
+  }
+  assert.strictEqual(treeOf(el), tree);
+  assert.ok(updates.n < 1000, 'a hover built the document again');
+});

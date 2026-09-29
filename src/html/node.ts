@@ -54,14 +54,22 @@ import { Cascade } from './css/cascade.js';
 import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
 import { uaStylesheet } from './css/ua.js';
-import type { RootLook } from './css/style.js';
+import type { ComputedStyle, RootLook } from './css/style.js';
 import { buildBoxes, CONTENT_IMAGES } from './layout/boxes.js';
-import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
+import type {
+  Box,
+  BoxTree,
+  LineText,
+  ReplacedKind,
+  TextLayoutLike,
+} from './layout/boxes.js';
 import { layoutDocument } from './layout/block.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { shapingSafe } from './layout/shaping.js';
 import { SurfaceCache } from './surfaces.js';
+import { inlineDecoration, runFor } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
+import type { TextRun } from '../richtext/index.js';
 // Through the inline module rather than a second cache: the offsets table for
 // a layout is built once, on the first selection that needs it.
 import {
@@ -1213,18 +1221,194 @@ export class HtmlViewNode extends Node {
       node = isElement(node.parent) ? node.parent : null;
     }
     if (sameChain(chain, this._hovered)) return false;
+    const was = this._hovered;
     this._hovered = chain;
     cascade.setPointer({ hovered: new Set(chain), active: EMPTY_SET });
-    this._invalidate(Stale.Boxes);
+    this._restyleHover(was, chain);
     return true;
   }
 
   clearHover(): boolean {
     if (!this._hovered.length) return false;
+    const was = this._hovered;
     this._hovered = [];
     this._cascade?.setPointer({ hovered: new Set(), active: EMPTY_SET });
-    this._invalidate(Stale.Boxes);
+    this._restyleHover(was, []);
     return true;
+  }
+
+  /** The hovered chain moved: restyle where it did, or the document. */
+  private _restyleHover(was: readonly Element[], now: readonly Element[]) {
+    const done = this._hoverInPlace(was, now);
+    if (done === 'painted') this.invalidate(false, this, 'props');
+    else if (done === false) this._invalidate(Stale.Boxes);
+  }
+
+  /**
+   * A pointer move restyled where it happened, when all it changed is ink.
+   *
+   * A move to another element is a change to the cascade, and the pipeline
+   * answers one by building every box again and laying the document out:
+   * 270 ms on X11 and twice that on Cocoa for a Wikipedia article, on every
+   * link the pointer crossed. But the rules a page writes for `:hover`
+   * nearly all change a colour, an underline, a background or a border's
+   * colour — 77 of that article's 79 — and those move nothing. So:
+   *
+   *  - Only an element whose hover state flipped and that a compound testing
+   *    the pointer could match can change (`Cascade.hoverTouches`), with its
+   *    subtree, and its later siblings where a sibling combinator follows.
+   *    A move between two paragraphs under `a:hover` touches nothing.
+   *  - Those are styled again from their parents. Where anything but ink
+   *    differs (`PAINT_ONLY`), or a box is not the element's own — an
+   *    anonymous or a pseudo-element box, a marker, a control — this is
+   *    not the move to take.
+   *  - The boxes take their new styles, and each layout of their text is
+   *    made again from the runs it was made from (`TextLayoutCache.inputsOf`)
+   *    with the new ink (`runFor`), where its geometry comes out the same.
+   *
+   * Everything is checked before anything is changed. 'none' where nothing
+   * could change, 'painted' where it was restyled here, false where the
+   * document has to be built again.
+   */
+  private _hoverInPlace(
+    was: readonly Element[],
+    now: readonly Element[],
+  ): 'none' | 'painted' | false {
+    const cascade = this._cascade;
+    const tree = this._tree;
+    const layouts = this._layouts;
+    if (!cascade || !tree || !layouts || !cascade.hoverLocal) return false;
+    if (this._stale !== Stale.Nothing || this._laidOutWidth < 0) return false;
+
+    const before = new Set(was);
+    const after = new Set(now);
+    const roots: Element[] = [];
+    for (const el of was) {
+      if (!after.has(el) && cascade.hoverTouches(el)) roots.push(el);
+    }
+    for (const el of now) {
+      if (!before.has(el) && cascade.hoverTouches(el)) roots.push(el);
+    }
+    if (!roots.length) return 'none';
+
+    // what may restyle: the roots' subtrees, which inherit from them and a
+    // descendant combinator reaches, and their later siblings' too where a
+    // sibling combinator follows a compound that tests the pointer
+    const reach = new Set<Element>();
+    const collect = (el: Element): boolean => {
+      const stack: Element[] = [el];
+      while (stack.length) {
+        const at = stack.pop()!;
+        if (reach.has(at)) continue;
+        reach.add(at);
+        if (reach.size > HOVER_RESTYLE_LIMIT) return false;
+        for (const child of at.children)
+          if (isElement(child)) stack.push(child);
+      }
+      return true;
+    };
+    for (const root of roots) {
+      if (!collect(root)) return false;
+      if (!cascade.hoverSiblings) continue;
+      for (let s = root.nextSibling; s; s = s.nextSibling) {
+        if (isElement(s) && !collect(s)) return false;
+      }
+    }
+
+    // styled again from their parents, a parent first
+    const fresh = new Map<Element, ComputedStyle>();
+    const changed = new Map<Element, ComputedStyle>();
+    let refused = false;
+    const styleOf = (el: Element): ComputedStyle | null => {
+      const kept = tree.styles.get(el);
+      if (!kept) return null;
+      if (!reach.has(el)) return kept.style;
+      const done = fresh.get(el);
+      if (done) return done;
+      const parent = isElement(el.parent) ? el.parent : null;
+      const parentStyle = parent ? styleOf(parent) : null;
+      if (!parentStyle) {
+        refused = true;
+        return null;
+      }
+      const style = cascade.styleFor(el, parentStyle, kept.inFlex);
+      fresh.set(el, style);
+      const diff = inkOnly(kept.style, style);
+      if (diff === false) refused = true;
+      else if (diff) changed.set(el, style);
+      return style;
+    };
+    for (const el of reach) {
+      styleOf(el);
+      if (refused) return false;
+    }
+    if (!changed.size) return 'none';
+    for (const el of changed.keys()) {
+      const tag = tagOf(el);
+      // their backgrounds are the canvas's
+      if (tag === 'html' || tag === 'body') return false;
+    }
+
+    // the boxes: each changed element's own, and nothing that takes its
+    // style from one without being it
+    const fonts = layouts.fonts;
+    const restyled: [Box, ComputedStyle][] = [];
+    const redecorated: [Box, Box['decoration']][] = [];
+    const walk: Box[] = [tree.root];
+    while (walk.length) {
+      const box = walk.pop()!;
+      for (const child of box.children) walk.push(child);
+      const owner = box.el ?? nearestElement(box);
+      if (!owner) continue;
+      const style = changed.get(owner);
+      if (!style) continue;
+      const kept = tree.styles.get(owner)!;
+      // an anonymous box, a pseudo-element, a marker, a control: a style
+      // derived from the element's, or drawn from it somewhere else
+      if (!box.el || box.style !== kept.style) return false;
+      if (box.marker || box.replaced !== 'none') return false;
+      restyled.push([box, style]);
+      if (box.kind === 'inline') {
+        const decoration = inlineDecoration(fonts, box, style);
+        if ((decoration === null) !== (box.decoration === null)) {
+          // a rounded box with a background is laid out with its edges
+          if (style.borderRadius.some((r) => r !== 0)) return false;
+        }
+        if (decoration !== box.decoration) redecorated.push([box, decoration]);
+      }
+    }
+
+    // the text: each layout holding a run of a changed element's, made
+    // again with its new ink, where it comes out the same shape
+    const relaid = new Map<TextLayoutLike, TextLayoutLike | null>();
+    const texts: LineText[] = [];
+    walk.push(tree.root);
+    while (walk.length) {
+      const box = walk.pop()!;
+      for (const child of box.children) walk.push(child);
+      if (!box.lines) continue;
+      for (const line of box.lines) {
+        for (const text of line.texts) {
+          texts.push(text);
+          if (relaid.has(text.layout)) continue;
+          const next = reinked(text, layouts, changed, tree.styles);
+          if (next === false) return false;
+          relaid.set(text.layout, next);
+        }
+      }
+    }
+
+    // and only now, all of it
+    for (const [box, style] of restyled) box.style = style;
+    for (const [box, decoration] of redecorated) box.decoration = decoration;
+    for (const text of texts) {
+      const next = relaid.get(text.layout);
+      if (next) text.layout = next;
+    }
+    for (const [el, style] of changed) {
+      tree.styles.set(el, { style, inFlex: tree.styles.get(el)!.inFlex });
+    }
+    return 'painted';
   }
 
   /** The document, for an application that wants to read or change it. */
@@ -1778,6 +1962,201 @@ function deepestAt(tree: BoxTree, x: number, y: number): Element | null {
   };
   visit(box);
   return found;
+}
+
+// --- a pointer move restyled where it happened (`_hoverInPlace`) -----------
+
+/** How many elements a pointer move restyles in place before the document
+ *  is built again instead: a link's subtree is a handful, and a compound
+ *  that matches a container reaches everything in it. */
+const HOVER_RESTYLE_LIMIT = 300;
+
+/**
+ * The computed properties a pointer move may change in place: ink, which
+ * moves nothing. A background colour is drawn inside the box it colours
+ * and a border's colour on the border it has; `box-shadow`, `text-shadow`
+ * and an outline's width reach past it, where the paint index has already
+ * looked, and a background image has to be fetched.
+ */
+const PAINT_ONLY = new Set([
+  'color',
+  'textFillColor',
+  'cursor',
+  'backgroundColor',
+  'borderTopColor',
+  'borderRightColor',
+  'borderBottomColor',
+  'borderLeftColor',
+  'outlineColor',
+  'textDecorationLine',
+  'textDecorationColor',
+  'textDecorationStyle',
+  'textDecorationThickness',
+  'textUnderlineOffset',
+  'underline',
+  'underlineStyle',
+  'underlineThickness',
+  'underlineOffset',
+  'lineThrough',
+]);
+
+/** The fields of a run its ink is: what `runFor` takes from `PAINT_ONLY`. */
+const INK_FIELDS = [
+  'color',
+  'underline',
+  'underlineStyle',
+  'underlineOffset',
+  'underlineThickness',
+  'strike',
+] as const;
+
+/** The fields of a run its shape is, which ink never changes. */
+const FACE_FIELDS = [
+  'family',
+  'size',
+  'weight',
+  'style',
+  'letterSpacing',
+  'features',
+] as const;
+
+/** Whether two styles differ in ink alone: true where they do, null where
+ *  they do not differ, false where something else does. Custom properties
+ *  are read through the properties that use them. */
+function inkOnly(was: ComputedStyle, now: ComputedStyle): boolean | null {
+  const a = was as unknown as Record<string, unknown>;
+  const b = now as unknown as Record<string, unknown>;
+  let ink = false;
+  for (const key in b) {
+    if (key === 'custom' || sameValue(a[key], b[key])) continue;
+    if (!PAINT_ONLY.has(key)) return false;
+    ink = true;
+  }
+  return ink ? true : null;
+}
+
+/** Structural equality for a computed value: a number, a string, or the
+ *  plain objects and arrays a length or a shadow list is. */
+function sameValue(x: unknown, y: unknown): boolean {
+  if (x === y) return true;
+  if (typeof x === 'number' && typeof y === 'number') {
+    return Number.isNaN(x) && Number.isNaN(y);
+  }
+  if (!x || !y || typeof x !== 'object' || typeof y !== 'object') return false;
+  if (Array.isArray(x) !== Array.isArray(y)) return false;
+  const a = x as Record<string, unknown>;
+  const b = y as Record<string, unknown>;
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) if (!sameValue(a[key], b[key])) return false;
+  return true;
+}
+
+/** The element an anonymous box takes its style from: its nearest
+ *  ancestor's that has one. */
+function nearestElement(box: Box): Element | null {
+  for (let at = box.parent; at; at = at.parent) if (at.el) return at.el;
+  return null;
+}
+
+/**
+ * `text`'s layout made again with the ink of the elements a pointer move
+ * restyled: from the runs it was made from, each of a changed element's
+ * given the ink its new style makes (`runFor`) and nothing else. Null where
+ * none of its runs is theirs; false where that cannot be told — a run this
+ * cannot place in the document, one some other pass inked (a first line's),
+ * or a layout that comes out another shape.
+ */
+function reinked(
+  text: LineText,
+  layouts: TextLayoutCache,
+  changed: ReadonlyMap<Element, ComputedStyle>,
+  styles: BoxTree['styles'],
+): TextLayoutLike | null | false {
+  const spans = text.spans;
+  const ownerAt = (offset: number): Element | null =>
+    spans.boxAt ? (spans.boxAt(offset)?.el ?? null) : null;
+  const inputs = layouts.inputsOf(text.layout);
+  if (!inputs || !spans.boxAt) {
+    // not one this could make again: none of its text may be theirs
+    for (const line of text.layout.lines) {
+      for (const run of line.runs) {
+        const owner = spans.boxAt ? ownerAt(run.start) : null;
+        if (!spans.boxAt || (owner && changed.has(owner))) return false;
+      }
+    }
+    return null;
+  }
+  let runs: TextRun[] | null = null;
+  let offset = 0;
+  const content = inputs.content;
+  for (let i = 0; i < content.length; i += 1) {
+    const run = content[i];
+    const length = run.text.length;
+    const owner = length ? ownerAt(offset) : null;
+    const style = owner ? changed.get(owner) : undefined;
+    if (owner && style) {
+      if (ownerAt(offset + length - 1) !== owner) return false;
+      const was = runFor(run.text, styles.get(owner)!.style);
+      const now = runFor(run.text, style);
+      for (const f of FACE_FIELDS) if (!sameValue(was[f], now[f])) return false;
+      let next: Record<string, unknown> | null = null;
+      for (const f of INK_FIELDS) {
+        // a run that is not what its style made — a first line's colour
+        if (!sameValue(run[f], was[f])) return false;
+        if (sameValue(was[f], now[f])) continue;
+        next ??= { ...run };
+        if (now[f] === undefined) delete next[f];
+        else next[f] = now[f];
+      }
+      if (next) {
+        runs ??= content.slice();
+        runs[i] = next as unknown as TextRun;
+      }
+    }
+    offset += length;
+  }
+  if (!runs) return null;
+  const layout = layouts.fonts.layout(runs, inputs.style, inputs.options);
+  return sameShape(text.layout, layout) ? layout : false;
+}
+
+/** Whether two layouts put the same text in the same places: ink aside,
+ *  the same layout. */
+function sameShape(a: TextLayoutLike, b: TextLayoutLike): boolean {
+  if (a.width !== b.width || a.height !== b.height) return false;
+  if (a.lines.length !== b.lines.length) return false;
+  for (let i = 0; i < a.lines.length; i += 1) {
+    const x = a.lines[i];
+    const y = b.lines[i];
+    if (
+      x.x !== y.x ||
+      x.y !== y.y ||
+      x.width !== y.width ||
+      x.height !== y.height ||
+      x.baseline !== y.baseline ||
+      x.ascent !== y.ascent ||
+      x.descent !== y.descent ||
+      x.start !== y.start ||
+      x.end !== y.end ||
+      x.runs.length !== y.runs.length
+    ) {
+      return false;
+    }
+    for (let j = 0; j < x.runs.length; j += 1) {
+      const r = x.runs[j];
+      const t = y.runs[j];
+      if (
+        r.x !== t.x ||
+        r.width !== t.width ||
+        r.start !== t.start ||
+        r.end !== t.end
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /** The element whose text holds a document index: the text box around it,
