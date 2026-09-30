@@ -9908,6 +9908,157 @@ test('HTML isolates what has a dir of its own, and a <bdo> overrides', async () 
   ]);
 });
 
+/** Where each of a document's letters is drawn, left to right: its
+ *  centre, from the band a range of it alone makes. */
+function visualOrder(el: HtmlViewNode, letters: string): string {
+  const text = el.textContent();
+  const centre = (ch: string): number => {
+    const at = text.indexOf(ch);
+    const [band] = el.textRangeRects(at, at + 1);
+    assert.ok(band, `${ch} is drawn`);
+    return band.x + band.width / 2;
+  };
+  return [...letters].sort((a, b) => centre(a) - centre(b)).join('');
+}
+
+metric(
+  "an override opened outside an element's edges and closed inside them reorders across them",
+  async () => {
+    // A paragraph with an inline box's edges in it is laid out a piece at
+    // a time, and a piece was ordered by the engine alone: `de` and `f`
+    // were read as though no override had opened before them, left to
+    // right. They are ordered by the paragraph's levels now (#149).
+    const { node } = await render(
+      '<p style="margin:0;font:20px monospace">a\u202ebc<span ' +
+        'style="padding:0 4px">de</span>f\u202cg</p>',
+    );
+    assert.strictEqual(visualOrder(view(node), 'abcdefg'), 'afedcbg');
+  },
+);
+
+metric(
+  'a neutral at the edge of a piece takes the direction around it',
+  async () => {
+    // an image between two English words in a right-to-left paragraph is
+    // among them, and so are the spaces either side of it (UAX #9, N1):
+    // laid out apart, the space before `world` read as the paragraph
+    // does, and went to its right
+    const { node } = await render(
+      '<p dir="rtl" style="margin:0;font:20px monospace">Hello <img id="i" ' +
+        'style="width:10px;height:10px"> world</p>',
+    );
+    const el = view(node);
+    const text = el.textContent();
+    const band = (i: number) => el.textRangeRects(i, i + 1)[0];
+    const image = boxOf(el, 'i');
+    const w = band(text.indexOf('w'));
+    const o = band(text.indexOf('o'));
+    assert.ok(
+      o.x + o.width < image.x && w.x > image.x + image.width,
+      'Hello, the image, world',
+    );
+    const gap = w.x - (image.x + image.width);
+    assert.ok(Math.abs(gap - w.width) < 1, `a space before world: ${gap}`);
+  },
+);
+
+metric(
+  'an element bidi splits apart on a line is drawn as a fragment a part',
+  async () => {
+    // `c` and `d` are the span's and `e` is not, and reordered, `e` goes
+    // between them: the span is two boxes, not one across `e` (CSS 2.1
+    // 9.10), whose background showed behind a letter not its own
+    const { result, node } = await render(
+      '<p style="margin:0;font:20px monospace">a\u202eb<span ' +
+        'style="background:#0000ff">c\u202dd</span>e\u202c\u202cf</p>',
+    );
+    const el = view(node);
+    assert.strictEqual(visualOrder(el, 'abcdef'), 'adecbf');
+    const text = el.textContent();
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    // across the letter's middle, some of which its glyph leaves bare
+    const blue = async (ch: string) => {
+      const i = text.indexOf(ch);
+      const band = el.textRangeRects(i, i + 1)[0];
+      const y = Math.round(at.y + band.y + band.height / 2);
+      for (let x = band.x + 1; x < band.x + band.width - 1; x += 1) {
+        const [r, g, b] = await pixelAt(result.ctx, Math.round(at.x + x), y);
+        if (b > 200 && r < 60 && g < 60) return true;
+      }
+      return false;
+    };
+    await waitFor(async () => {
+      assert.ok(await blue('c'), 'behind c');
+      assert.ok(await blue('d'), 'behind d');
+      assert.ok(!(await blue('e')), 'not behind e');
+    });
+  },
+);
+
+metric(
+  'a space before a bidi control that a piece ends on takes its room',
+  async () => {
+    // the engine strips the spaces a piece ends on, before a control as
+    // well, and they are measured back where the line goes on after them:
+    // through the override `ab ` ends on, which hid them
+    const { node } = await render(
+      '<p style="margin:0;font:20px monospace">ab \u202e<span id="s" ' +
+        'style="padding:0 4px">cd</span>\u202c ef</p>',
+    );
+    const el = view(node);
+    const b = el.textRangeRects(1, 2)[0];
+    const s = el.elementRect(findById(el.document, 's')!)!;
+    const gap = s.x - (b.x + b.width);
+    assert.ok(Math.abs(gap - b.width) < 1, `a space after b: ${gap}`);
+    assert.strictEqual(visualOrder(el, 'abcdef'), 'abdcef');
+  },
+);
+
+metric(
+  'a word split into pieces by its levels is still one word to a float',
+  async () => {
+    // the pieces of `abcde` a level at a time run on from one another, as
+    // the fragment ran on from the text before it (#420's joins): a float
+    // too narrow for the word is as wide as all of it, padding and all
+    const { node } = await render(
+      '<div style="width:30px;font:20px monospace"><div id="f" ' +
+        'style="float:left">a\u202eb<span style="padding:0 2px">c' +
+        '</span>d\u202ce</div></div>',
+    );
+    const el = view(node);
+    const a = el.textRangeRects(0, 1)[0];
+    const width = boxOf(el, 'f').width;
+    assert.ok(
+      Math.abs(width - (5 * a.width + 4)) < 1,
+      `five letters and the padding: ${width} for ${a.width}`,
+    );
+  },
+);
+
+metric(
+  'a piece split by its levels keeps the spaces pre-wrap hangs at its end',
+  async () => {
+    // `d` is under the override and `e` is not, so their fragment is laid
+    // out again a level at a time, and the spaces `e` ends the block on
+    // are the last piece's: its box covers them and they take room
+    const { node } = await render(
+      '<p style="margin:0;font:20px monospace;white-space:pre-wrap">' +
+        'a\u202eb<span style="padding:0 2px">c</span>d\u202c<span ' +
+        'id="s" style="background:#0000ff">e  </span></p>',
+    );
+    const el = view(node);
+    const text = el.textContent();
+    const a = el.textRangeRects(0, 1)[0];
+    const s = el.elementRect(findById(el.document, 's')!)!;
+    assert.ok(
+      Math.abs(s.width - 3 * a.width) < 1,
+      `e and its two spaces: ${s.width} for ${a.width}`,
+    );
+    const e = el.textRangeRects(text.indexOf('e'), text.indexOf('e') + 1)[0];
+    assert.ok(Math.abs(s.x - e.x) < 1, `from e on: ${s.x}, ${e.x}`);
+  },
+);
+
 // --- white-space on an element, where its block wraps ----------------------------
 
 /** The document text of each line a paragraph was laid out in. */

@@ -30,6 +30,9 @@
 // (`TextLayoutCache`), so the element under a run is found from its text's
 // place in the document (`LineText.spans`) instead.
 
+import bidiModule from 'bidi-js';
+import type { Bidi } from 'bidi-js';
+
 import { codePointAtOffset, codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import type { ComputedStyle } from '../css/style.js';
@@ -800,6 +803,10 @@ function linesOf(
   }
 
   // --- the general case: line at a time -------------------------------------
+  // the paragraph's bidi levels, where anything in it can be reordered: a
+  // line is laid out a piece at a time here, and its pieces are ordered by
+  // them (`levelPieces`)
+  const paraBidi = fonts ? paragraphBidi(block, items, rtl) : null;
   const lines: LineBox[] = [];
   let widest = 0;
   let y = 0;
@@ -880,6 +887,14 @@ function linesOf(
    *  which `text-align-last` aligns. */
   const close = (last = false): void => {
     const onFirst = lineOne !== null && !lines.length;
+    const levels: LineLevels | null = paraBidi
+      ? {
+          bidi: paraBidi,
+          fonts: fonts!,
+          base: onFirst ? lineOne.base : base,
+          lineHeight: onFirst ? lineOne.lineHeight : lineHeightMul,
+        }
+      : null;
     const line = finishLine(
       open,
       y,
@@ -897,6 +912,7 @@ function linesOf(
           ? lineOne.justify
           : lineJustify
         : null,
+      levels,
     );
     if (!line) {
       open = openLine(0);
@@ -1024,7 +1040,12 @@ function linesOf(
       const raise = atomicRaise(fonts, box, (box.parent ?? block).style);
       if (raise) placed.raise = raise;
       open.atomics.push(placed);
-      open.order.push({ kind: 'atomic', at: open.x, item: placed });
+      open.order.push({
+        kind: 'atomic',
+        at: open.x,
+        item: placed,
+        ...(paraBidi ? { para: paraBidi.starts[index] } : null),
+      });
       open.x += outer;
       open.hang = 0;
       open.left = room.left;
@@ -1068,7 +1089,10 @@ function linesOf(
       !open.edges.length &&
       !pending.length &&
       !deferred.length &&
-      !(options.floats?.intersects(options.startY + y, Infinity) ?? false);
+      !(options.floats?.intersects(options.startY + y, Infinity) ?? false) &&
+      // and ordered alone as the paragraph orders it
+      (!paraBidi ||
+        orderedAlone(paraBidi, segment, paraBidi.starts[index] + offset, rtl));
     if (tailIsPlain) {
       const tailOptions = {
         maxWidth: wraps(style) ? Math.max(1, available) : undefined,
@@ -1344,6 +1368,15 @@ function linesOf(
       at: open.x,
       item: placed,
       reads: readingOf(segment.runs, first.start, first.end),
+      ...(paraBidi
+        ? {
+            from: {
+              para: paraBidi.starts[index] + offset,
+              runs: segment.runs,
+              spans: segment.spans,
+            },
+          }
+        : null),
     });
     open.x += first.width;
     open.left = band.left;
@@ -1370,7 +1403,10 @@ function linesOf(
         const hung = hungSpaces(fonts, segment.runs[segment.runs.length - 1]);
         let trailing = '';
         for (let i = segment.runs.length - 1; i >= 0; i -= 1) {
-          const text = segment.runs[i].text;
+          // through the bidi controls after them, which take no room: the
+          // engine strips the spaces before one as well
+          const text = segment.runs[i].text.replace(ENDING_CONTROLS, '');
+          if (!text) continue;
           const m = hung.exec(text);
           if (!m) break;
           trailing = m[0] + trailing;
@@ -1960,8 +1996,26 @@ interface OpenLine {
 }
 
 type Placed =
-  | { kind: 'text'; at: number; item: LineText; reads: Reading }
-  | { kind: 'atomic'; at: number; item: AtomicPlacement }
+  | {
+      kind: 'text';
+      at: number;
+      item: LineText;
+      reads: Reading;
+      /** Where the text was laid out from, in a paragraph with bidi levels
+       *  (`ParagraphBidi`): its segment's place in the paragraph's text,
+       *  runs and spans, which `levelPieces` splits it by. */
+      from?: { para: number; runs: TextRun[]; spans: SpanMap };
+      /** Its UAX #9 level, once `levelPieces` has found it one. */
+      level?: number;
+    }
+  | {
+      kind: 'atomic';
+      at: number;
+      item: AtomicPlacement;
+      /** Its object replacement character's place in the paragraph. */
+      para?: number;
+      level?: number;
+    }
   | { kind: 'edge'; at: number; item: EdgePlacement };
 
 /** Which way a fragment's letters read: all one way, both, or neither —
@@ -2313,11 +2367,16 @@ function finishLine(
   strut: InlineDecoration | null,
   lifts: Lifts | null = null,
   justify: LineJustify | null = null,
+  /** The paragraph's bidi levels, where it has them (`ParagraphBidi`). */
+  levels: LineLevels | null = null,
 ): LineBox | null {
   if (!open.texts.length && !open.atomics.length && !open.edges.length) {
     return null;
   }
-  const reordered = open.order.some((p) => needsOrdering(p, rtl));
+  const reordered = levels
+    ? levelPieces(open, levels) ||
+      open.order.some((p) => p.kind === 'edge' && needsOrdering(p, rtl))
+    : open.order.some((p) => needsOrdering(p, rtl));
   if (reordered) reorderLine(open, rtl);
   // Every line box starts with the block's strut, its face at its line
   // height, so a line of images alone is still as tall as `line-height`
@@ -2525,10 +2584,8 @@ function finishLine(
  * UAX #9's L2 over pieces rather than characters: a fragment is in order
  * inside itself already — the engine laid it out bidirectionally — so what
  * is left to order is the fragments and the atomics between them, each at
- * a level — a fragment the direction its letters read in, or the
- * paragraph's where they read both ways, and a neutral (an atomic, a
- * fragment of spaces and digits) its neighbours' where they agree and the
- * paragraph's where they do not (N1, N2).
+ * a level: the paragraph's own, where it has them (`levelPieces`), and
+ * otherwise the one it reads at (`readingLevels`).
  *
  * Then each element's edges, innermost first, around what of it is on the
  * line: CSS 2.1 8.6 puts an ltr element's left margin, border and padding
@@ -2544,25 +2601,16 @@ function reorderLine(open: OpenLine, rtl: boolean): void {
   if (!n) return;
   const content: number[] = [];
   for (let i = 0; i < n; i += 1) if (order[i].kind !== 'edge') content.push(i);
-  const strong = content.map((i): boolean | null => {
+  // UAX #9's levels where the paragraph's are known (`levelPieces`), each
+  // piece at one of them; its reading otherwise
+  const given = content.map((i) => {
     const p = order[i];
-    if (p.kind !== 'text' || p.reads === null) return null;
-    return p.reads === 'mixed' ? rtl : p.reads === 'rtl';
+    return p.kind === 'edge' ? undefined : p.level;
   });
-  const strongAt = (from: number, step: number): boolean => {
-    for (let k = from + step; k >= 0 && k < content.length; k += step) {
-      if (strong[k] !== null) return strong[k]!;
-    }
-    return rtl;
-  };
-  const isRtl = strong.map((r, k) => {
-    if (r !== null) return r;
-    const before = strongAt(k, -1);
-    return before === strongAt(k, 1) ? before : rtl;
-  });
-  // R is level 1 in either paragraph; L is 0 in a left-to-right one and 2
-  // in a right-to-left one
-  const levels = isRtl.map((r) => (r ? 1 : rtl ? 2 : 0));
+  const levels = given.every((level) => level !== undefined)
+    ? (given as number[])
+    : readingLevels(order, content, rtl);
+  const isRtl = levels.map((level) => (level & 1) === 1);
   const visual = content.map((_, k) => k);
   for (let level = Math.max(0, ...levels); level >= 1; level -= 1) {
     for (let a = 0; a < visual.length;) {
@@ -2640,6 +2688,473 @@ function reorderLine(open: OpenLine, rtl: boolean): void {
     }
     x += room;
   }
+}
+
+/**
+ * The levels of a line's pieces from which way each reads, where the
+ * paragraph's are not known: a fragment the direction its letters read in,
+ * or the paragraph's where they read both ways, and a neutral — an atomic, a
+ * fragment of spaces and digits — its neighbours' where they agree and the
+ * paragraph's where they do not (N1, N2). R is level 1 in either paragraph;
+ * L is 0 in a left-to-right one and 2 in a right-to-left one.
+ */
+function readingLevels(
+  order: Placed[],
+  content: number[],
+  rtl: boolean,
+): number[] {
+  const strong = content.map((i): boolean | null => {
+    const p = order[i];
+    if (p.kind !== 'text' || p.reads === null) return null;
+    return p.reads === 'mixed' ? rtl : p.reads === 'rtl';
+  });
+  const strongAt = (from: number, step: number): boolean => {
+    for (let k = from + step; k >= 0 && k < content.length; k += step) {
+      if (strong[k] !== null) return strong[k]!;
+    }
+    return rtl;
+  };
+  return strong.map((r, k) => {
+    const reads =
+      r ?? (strongAt(k, -1) === strongAt(k, 1) ? strongAt(k, -1) : rtl);
+    return reads ? 1 : rtl ? 2 : 0;
+  });
+}
+
+/**
+ * A paragraph's UAX #9 levels, for its lines made a piece at a time. The
+ * engine resolves bidi over what it is handed, which on such a line is a
+ * piece: an embedding or an override opened on one side of an inline box's
+ * edge or an atomic and closed on the other was resolved on each side
+ * apart, and a neutral at a piece's edge took the paragraph's direction
+ * wherever it sat (#149). So they are resolved here, once, over the
+ * paragraph's text as its layouts see it — the controls `unicode-bidi`
+ * stands for among it, and an object replacement character for each
+ * atomic, as CSS Writing Modes 3 has one taken (2.4.2) — by bidi-js, which
+ * is what ntk's own layout resolves them with.
+ */
+interface ParagraphBidi {
+  text: string;
+  levels: Uint8Array;
+  /** Whether it holds an explicit embedding, override or isolate, which
+   *  a piece laid out alone may be outside of. */
+  explicit: boolean;
+  /** The paragraph's own level: 1 where it reads right to left. */
+  base: number;
+  /** Where each item's text starts in `text`, by the item's index. */
+  starts: number[];
+}
+
+/** What a line's pieces are ordered by (`levelPieces`): the paragraph's
+ *  levels, and the fonts, font and line height a piece is laid out again
+ *  in where it is split. */
+interface LineLevels {
+  bidi: ParagraphBidi;
+  fonts: FontsLike;
+  base: Record<string, unknown>;
+  lineHeight: number;
+}
+
+type TextPlaced = Extract<Placed, { kind: 'text' }>;
+
+let BIDI: Bidi | null = null;
+
+/** bidi-js, made the first time a paragraph needs it. Its declarations
+ *  give a CommonJS module a default export, which NodeNext reads as the
+ *  module object; Node and a bundler both hand over its factory. */
+function bidiJs(): Bidi {
+  if (!BIDI) {
+    const factory = bidiModule as unknown as
+      (() => Bidi) | { default: () => Bidi };
+    BIDI = (typeof factory === 'function' ? factory : factory.default)();
+  }
+  return BIDI;
+}
+
+/** A paragraph's levels, or null where nothing in it can be reordered:
+ *  it reads left to right, and holds no right-to-left letter and no bidi
+ *  control. Kept on its block, and resolved again only where its text is
+ *  not what it was: a pass at another width has the same. */
+function paragraphBidi(
+  block: Box,
+  items: Item[],
+  rtl: boolean,
+): ParagraphBidi | null {
+  let reorders = rtl;
+  for (let i = 0; !reorders && i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind === 'text' && REORDERS.test(item.run.text)) reorders = true;
+  }
+  if (!reorders) return null;
+  const starts: number[] = [];
+  let text = '';
+  for (const item of items) {
+    starts.push(text.length);
+    if (item.kind === 'text') text += item.run.text;
+    else if (item.kind === 'atomic') text += '\ufffc';
+  }
+  const base = rtl ? 1 : 0;
+  const kept = PARAGRAPH_BIDI.get(block);
+  if (kept && kept.text === text && kept.base === base) {
+    return { ...kept, starts };
+  }
+  const { levels } = bidiJs().getEmbeddingLevels(text, rtl ? 'rtl' : 'ltr');
+  const explicit = EXPLICIT.test(text);
+  const bidi = { text, levels, explicit, base, starts };
+  PARAGRAPH_BIDI.set(block, bidi);
+  return bidi;
+}
+
+const PARAGRAPH_BIDI = new WeakMap<Box, ParagraphBidi>();
+
+/** The explicit embeddings, overrides and isolates. */
+const EXPLICIT = /[\u202a-\u202e\u2066-\u2069]/;
+
+/** The explicit embeddings, overrides and isolates a text ends on. */
+const ENDING_CONTROLS = /[\u202a-\u202e\u2066-\u2069]+$/;
+
+/** Whether a character is one X9 removes, or an isolate: a bidi control,
+ *  or a boundary neutral such as a zero-width space or a soft hyphen. */
+function isControl(c: number): boolean {
+  return (
+    (c >= 0x202a && c <= 0x202e) ||
+    (c >= 0x2066 && c <= 0x2069) ||
+    (c >= 0x200b && c <= 0x200d) ||
+    (c >= 0x2060 && c <= 0x2064) ||
+    c === 0xad ||
+    c === 0xfeff ||
+    c === 0x180e
+  );
+}
+
+/** The paired brackets UAX #9 resolves together (N0), which may pair
+ *  across a piece's end. */
+const BRACKETS =
+  /[()[\]{}\u0f3a-\u0f3d\u169b\u169c\u2045\u2046\u207d\u207e\u208d\u208e\u2308-\u230b\u2329\u232a\u2768-\u2775\u27c5\u27c6\u27e6-\u27ef\u2983-\u2998\u29d8-\u29db\u29fc\u29fd\u2e22-\u2e29\u3008-\u3011\u3014-\u301b\ufe59-\ufe5e\uff08\uff09\uff3b\uff3d\uff5b\uff5d\uff5f\uff60\uff62\uff63]/;
+
+/** The strong types, which nothing around them resolves again. */
+const STRONG = new Set(['L', 'R', 'AL']);
+
+/** What UAX #9 L1 puts back at the paragraph's level where a line ends on
+ *  it: white space, the isolates, and what X9 removed. */
+const TRAILING = new Set([
+  'WS',
+  'S',
+  'B',
+  'LRI',
+  'RLI',
+  'FSI',
+  'PDI',
+  'BN',
+  'LRE',
+  'RLE',
+  'LRO',
+  'RLO',
+  'PDF',
+]);
+
+/** A segment's text, and its levels as the engine resolves them, laid out
+ *  alone in the paragraph's direction. */
+const ALONE = new WeakMap<TextRun[], { text: string; levels: Uint8Array }>();
+
+function aloneLevels(
+  runs: TextRun[],
+  rtl: boolean,
+): { text: string; levels: Uint8Array } {
+  let alone = ALONE.get(runs);
+  if (!alone) {
+    const text = runs.map((run) => run.text).join('');
+    const { levels } = bidiJs().getEmbeddingLevels(text, rtl ? 'rtl' : 'ltr');
+    alone = { text, levels };
+    ALONE.set(runs, alone);
+  }
+  return alone;
+}
+
+/** Whether the text from a segment on, laid out alone, is ordered as the
+ *  paragraph orders it: every letter at the level it has there. */
+function orderedAlone(
+  bidi: ParagraphBidi,
+  segment: Segment,
+  para: number,
+  rtl: boolean,
+): boolean {
+  const { text, levels } = aloneLevels(segment.runs, rtl);
+  for (let at = 0; at < levels.length; at += 1) {
+    if (segment.spans.isGap(at)) continue;
+    if (levels[at] === bidi.levels[para + at]) continue;
+    if (!isControl(text.charCodeAt(at))) return false;
+  }
+  return true;
+}
+
+/**
+ * Give each piece on a line its level, and answer whether the line is to be
+ * put in visual order at all. A piece's letters have the paragraph's levels,
+ * with the white space the line ends on back at the paragraph's (L1). A
+ * fragment was laid out alone and ordered inside itself by the engine: it
+ * is kept whole where the engine's levels for it are the paragraph's and it
+ * begins and ends at its lowest one, so that nothing of another piece comes
+ * between its letters (L2), and it is the line's at that level. It is split
+ * otherwise, a layout to each run of its letters at one level, held in that
+ * level's direction by an override; the controls in it, which take no
+ * room, are left out. An atomic is at its replacement character's level.
+ */
+function levelPieces(open: OpenLine, line: LineLevels): boolean {
+  const { bidi } = line;
+  let start = Infinity;
+  let end = -Infinity;
+  for (const p of open.order) {
+    if (p.kind === 'text' && p.from) {
+      const natural = p.item.layout.lines[p.item.layoutLine];
+      if (!natural) continue;
+      start = Math.min(start, p.from.para + natural.start);
+      end = Math.max(end, p.from.para + natural.end);
+    } else if (p.kind === 'atomic' && p.para !== undefined) {
+      start = Math.min(start, p.para);
+      end = Math.max(end, p.para + 1);
+    }
+  }
+  // an element's edges alone are ordered as the paragraph reads
+  if (!(end > start)) return bidi.base > 0;
+  const levels = bidi.levels.slice(start, end);
+  const js = bidiJs();
+  for (let i = end - 1; i >= start; i -= 1) {
+    if (!TRAILING.has(js.getBidiCharTypeName(bidi.text[i]))) break;
+    levels[i - start] = bidi.base;
+  }
+  const levelAt = (at: number): number => levels[at - start];
+  let off = false;
+  const order: Placed[] = [];
+  const texts: LineText[] = [];
+  for (const p of open.order) {
+    if (p.kind === 'edge') {
+      order.push(p);
+      continue;
+    }
+    if (p.kind === 'atomic') {
+      p.level = p.para === undefined ? bidi.base : levelAt(p.para);
+      off ||= p.level > 0;
+      order.push(p);
+      continue;
+    }
+    for (const piece of levelled(p, levelAt, line)) {
+      off ||= piece.level! > 0;
+      order.push(piece);
+      texts.push(piece.item);
+    }
+  }
+  open.order = order;
+  open.texts = texts;
+  return off;
+}
+
+/** A fragment of a line as the pieces it is ordered in (`levelPieces`). */
+function levelled(
+  p: TextPlaced,
+  levelAt: (at: number) => number,
+  line: LineLevels,
+): TextPlaced[] {
+  const text = p.item;
+  const natural = text.layout.lines[text.layoutLine];
+  const base = line.bidi.base;
+  if (!p.from || !natural) return [{ ...p, level: base }];
+  const { para, runs, spans } = p.from;
+  const paragraph = line.bidi.text;
+  // A bidi control takes no room and has no level of its own, whether
+  // `unicode-bidi` stands for it or the document holds it: X9 removes it,
+  // and bidi-js gives it the level of what is before it, which may be
+  // another piece's. It is no end of a piece, nor of a run of one level.
+  const quiet = (at: number): boolean =>
+    spans.isGap(at) || isControl(paragraph.charCodeAt(para + at));
+  let lowest = Infinity;
+  let first = -1;
+  let last = -1;
+  for (let at = natural.start; at < natural.end; at += 1) {
+    if (quiet(at)) continue;
+    if (first < 0) first = at;
+    last = at;
+    lowest = Math.min(lowest, levelAt(para + at));
+  }
+  if (first < 0) return [{ ...p, level: base }];
+  if (
+    levelAt(para + first) === lowest &&
+    levelAt(para + last) === lowest &&
+    (plainlyLevelled(line.bidi, p.from, first, last, levelAt) ||
+      laidAsLevelled(p.from, natural, levelAt, base))
+  ) {
+    return [{ ...p, level: lowest }];
+  }
+  const starts = runStarts(runs);
+  const out: TextPlaced[] = [];
+  let at = p.at;
+  let lastRuns: TextRun[] = [];
+  /** Where each piece is in the fragment's segment. */
+  const ranges: [number, number][] = [];
+  const piece = (from: number, to: number, level: number): void => {
+    // its letters, each run's with where it is in the document and whose
+    // text it is
+    const letters: { run: TextRun; doc: number; box: Box | null }[] = [];
+    let points = 0;
+    for (let k = runIndexAt(starts, from); k < runs.length; k += 1) {
+      const runStart = starts[k];
+      if (runStart >= to) break;
+      const a = Math.max(from, runStart);
+      const b = Math.min(to, runStart + runs[k].text.length);
+      if (b <= a || spans.isGap(a)) continue;
+      const slice = runs[k].text.slice(a - runStart, b - runStart);
+      letters.push({
+        run: slice === runs[k].text ? runs[k] : { ...runs[k], text: slice },
+        doc: spans.documentAt(a),
+        box: spans.boxAt(a),
+      });
+      points += codeUnitOffsets(slice).length - 1;
+    }
+    if (!letters.length) return;
+    const head = letters[0];
+    const tail = letters[letters.length - 1];
+    const docStart = head.doc;
+    const docEnd = tail.doc + tail.run.text.length;
+    const face = (run: TextRun, control: string): TextRun => ({
+      text: control,
+      family: run.family,
+      size: run.size,
+      weight: run.weight,
+      style: run.style,
+    });
+    const rtl = (level & 1) === 1;
+    const laidRuns: TextRun[] = [face(head.run, rtl ? '\u202e' : '\u202d')];
+    const laidSpans = new SpanMap();
+    laidSpans.add(docStart, 1, head.box, true);
+    for (const { run, doc, box } of letters) {
+      laidSpans.add(doc, run.text.length, box);
+      laidRuns.push(run);
+    }
+    laidRuns.push(face(tail.run, '\u202c'));
+    laidSpans.add(docEnd, 1, tail.box, true);
+    const layout = line.fonts.layout(laidRuns, line.base, {
+      lineHeight: line.lineHeight,
+      align: 'left',
+      direction: rtl ? 'rtl' : 'ltr',
+      fit: PARAGRAPH_FIT,
+    });
+    LAYOUT_RUNS.set(layout, laidRuns);
+    lastRuns = laidRuns;
+    const laid = layout.lines[0];
+    const item: LineText = {
+      layout,
+      layoutLine: 0,
+      drawX: text.drawX + (at - p.at),
+      drawY: 0,
+      textStart: docStart,
+      textEnd: docEnd,
+      layoutStart: laid ? laid.start : 0,
+      spans: laidSpans,
+    };
+    laidSpans.giveGaps(item, 0, laidSpans.laidOut);
+    out.push({ kind: 'text', at, item, reads: null, level });
+    ranges.push([from, to]);
+    // the room it takes, its white space at its end with it, which the
+    // engine hangs past the layout's width: from caret to caret
+    const extent = Math.abs(
+      layout.caretPosition(1 + points).x - layout.caretPosition(1).x,
+    );
+    at += Math.max(laid?.width ?? 0, extent);
+  };
+  let from = first;
+  let level = levelAt(para + first);
+  let prev = first;
+  for (let o = first + 1; o <= last; o += 1) {
+    if (quiet(o)) continue;
+    const l = levelAt(para + o);
+    if (l !== level) {
+      piece(from, prev + 1, level);
+      from = o;
+      level = l;
+    }
+    prev = o;
+  }
+  piece(from, last + 1, level);
+  if (!out.length) return [{ ...p, level: base }];
+  // a word across two of the pieces runs on from one to the next, with no
+  // edge between, as the fragment ran on from the text before it (`JOINS`)
+  const joins = JOINS.get(text);
+  if (joins !== undefined) JOINS.set(out[0].item, joins);
+  for (let k = 1; k < out.length; k += 1) {
+    const before = paragraph[para + ranges[k - 1][1] - 1];
+    const after = paragraph[para + ranges[k][0]];
+    if (!SPACE.test(before) && !SPACE.test(after)) JOINS.set(out[k].item, 0);
+  }
+  // the spaces `pre-wrap` keeps that the fragment ended on are its last
+  // piece's, which the engine hangs as it hung them (`hangPreserved`)
+  const tail = out[out.length - 1];
+  if (text.hung) {
+    const rtl = (tail.level! & 1) === 1;
+    hangPreserved(tail.item, lastRuns, runStarts(lastRuns), line.fonts, rtl);
+  }
+  return out;
+}
+
+/**
+ * Whether the engine, laying a fragment out alone, must have given its
+ * letters the paragraph's levels, without resolving them to see: in a
+ * paragraph of no explicit embedding, a stretch that begins and ends with a
+ * strong letter and pairs no bracket is resolved inside itself, whatever is
+ * around it (W1 to W7, N1 and N2 look no further than the strong letters
+ * either side). The white space it ends on is the paragraph's level to the
+ * engine, whose line ends there (L1), and has to be to the line.
+ */
+function plainlyLevelled(
+  bidi: ParagraphBidi,
+  from: NonNullable<TextPlaced['from']>,
+  first: number,
+  last: number,
+  levelAt: (at: number) => number,
+): boolean {
+  if (bidi.explicit) return false;
+  const text = bidi.text;
+  const js = bidiJs();
+  let end = last;
+  while (
+    end > first &&
+    TRAILING.has(js.getBidiCharTypeName(text[from.para + end]))
+  ) {
+    if (levelAt(from.para + end) !== bidi.base) return false;
+    end -= 1;
+  }
+  return (
+    STRONG.has(js.getBidiCharTypeName(text[from.para + first])) &&
+    STRONG.has(js.getBidiCharTypeName(text[from.para + end])) &&
+    !BRACKETS.test(text.slice(from.para + first, from.para + end + 1))
+  );
+}
+
+/** Whether the engine, laying a fragment out alone, gave its letters the
+ *  levels the paragraph gives them: with its line's end white space back
+ *  at the paragraph's level (L1), as the engine's own line ends there. */
+function laidAsLevelled(
+  from: NonNullable<TextPlaced['from']>,
+  natural: TextLayoutLike['lines'][number],
+  levelAt: (at: number) => number,
+  base: number,
+): boolean {
+  const { text, levels } = aloneLevels(from.runs, base === 1);
+  const js = bidiJs();
+  const quiet = (at: number): boolean =>
+    from.spans.isGap(at) || isControl(text.charCodeAt(at));
+  let hung = natural.end;
+  while (
+    hung > natural.start &&
+    TRAILING.has(js.getBidiCharTypeName(text[hung - 1]))
+  ) {
+    hung -= 1;
+  }
+  for (let at = natural.start; at < natural.end; at += 1) {
+    if (quiet(at)) continue;
+    const alone = at >= hung ? base : levels[at];
+    if (alone !== levelAt(from.para + at)) return false;
+  }
+  return true;
 }
 
 /** Whether a piece can be out of place in logical order: anything on a
@@ -4209,11 +4724,19 @@ class SpanMap {
   private _gaps: number[] | null = null;
   laidOut = 0;
 
-  add(documentStart: number, length: number, box: Box | null = null): void {
+  add(
+    documentStart: number,
+    length: number,
+    box: Box | null = null,
+    /** No text of the document's, though a box's: a bidi control a
+     *  level's layout is wrapped in (`levelPieces`), which answers for
+     *  the element around it. */
+    gap = box === null,
+  ): void {
     this._laid.push(this.laidOut);
     this._doc.push(documentStart);
     this._boxes.push(box);
-    if (!box) {
+    if (gap) {
       this._gaps ??= [];
       for (let i = 0; i < length; i += 1) this._gaps.push(this.laidOut + i);
     }
@@ -4227,6 +4750,21 @@ class SpanMap {
     if (!this._gaps) return;
     const gaps = this._gaps.filter((at) => at >= start && at < end);
     if (gaps.length) text.gaps = gaps;
+  }
+
+  /** Whether an offset in the laid-out text is no text of the
+   *  document's: a spacer, a bidi control. */
+  isGap(offset: number): boolean {
+    const gaps = this._gaps;
+    if (!gaps) return false;
+    let lo = 0;
+    let hi = gaps.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (gaps[mid] < offset) lo = mid + 1;
+      else hi = mid;
+    }
+    return gaps[lo] === offset;
   }
 
   /** The text box whose text an offset in the laid-out text is. */
@@ -4397,11 +4935,6 @@ function runIndexAt(starts: number[], offset: number): number {
   return lo;
 }
 
-/** The bidi controls `unicode-bidi` stands for, which take no room. */
-function isBidiControl(c: number): boolean {
-  return (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
-}
-
 /**
  * The spaces `pre-wrap` keeps that a line ends on (CSS Text 3, 4.1.3), in
  * logical order and each with its advance, and whether a forced break
@@ -4431,7 +4964,7 @@ function keptAtEnd(
   let kept = false;
   for (let at = end - 1; at >= natural.start; at -= 1) {
     const c = charAt(at);
-    if (isBidiControl(c)) continue;
+    if (isControl(c)) continue;
     if (c !== 0x20) break;
     // a collapsible space after the last kept one is removed (4.1.3), and
     // one before a kept one hangs with it

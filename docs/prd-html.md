@@ -143,6 +143,11 @@ can use this package already has all four installed. Declaring them adds no
 packages to an install; it only makes the resolution correct under pnpm's
 strict layout instead of relying on hoisting.
 
+A fifth came later on the same fact: **ntk depends on `bidi-js`** for its
+own text layout, and `<Html>` resolves a paragraph's UAX #9 levels with it
+where a line is laid out a piece at a time, so the levels it orders pieces
+by are the ones ntk's layout orders letters by.
+
 They also happen to be the right tools:
 
 - **htmlparser2** is streaming by construction. `parser.write(chunk)` appends
