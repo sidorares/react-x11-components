@@ -818,6 +818,78 @@ test('a flex line every item of which its own minimum stops is laid out at those
   near(box('g2').width, B + spare, 'grown into');
 });
 
+test('a flex line every item of which its own maximum stops is laid out at those maximums', async () => {
+  // CSS Flexbox 9.7: a line with room left over with every item that may
+  // grow at its maximum leaves each of them at that. Yoga takes each item
+  // a maximum stops out of the sum of the grow factors and divides the
+  // room still left by what is left: `(a + b + c) - a - b - c` in
+  // float32s, which is 0 for some factors and a rounding either side of
+  // it for others. A negative one made every item of the line as small as
+  // it goes — nothing wide, for these three, and nothing tall down a
+  // column. Whole numbers of factors add up exactly
+  const [A, B, C] = [3.361, 2.417, 1.988];
+  const item = (id: string, grow: number, style = 'max-width:10px') =>
+    `<div id="${id}" class="i" style="flex-grow:${grow};${style}"></div>`;
+  const row = (width: number, ...items: string[]) =>
+    `<div style="display:flex;width:${width}px">${items.join('')}</div>`;
+  const column = (box: string, n: number) =>
+    `<div style="display:flex;flex-direction:column;${box}">` +
+    item(`c${n}a`, A, 'max-height:10px') +
+    item(`c${n}b`, B, 'max-height:10px') +
+    item(`c${n}c`, C, 'max-height:10px') +
+    '</div>';
+  const { node } = await render(
+    '<style>body{margin:0} .i{height:6px} [style*=column] .i{height:auto}' +
+      '</style>' +
+      row(100, item('a1', A), item('b1', B), item('c1', C)) +
+      // down a column, of a height of its own and of a least one
+      column('height:100px', 1) +
+      column('min-height:100px', 2) +
+      // and a line of a box that wraps, between two with no room left
+      '<div style="display:flex;flex-wrap:wrap;width:100px">' +
+      '<div id="w0" class="i" style="flex:none;width:100px"></div>' +
+      item('a3', A, 'max-width:10px;flex-basis:1px') +
+      item('b3', B, 'max-width:10px;flex-basis:1px') +
+      item('c3', C, 'max-width:10px;flex-basis:1px') +
+      '<div id="w4" class="i" style="flex:none;width:98px"></div></div>' +
+      // lines that are not stopped at their maximums are shared out as
+      // they were: one with no room for them, one with an item that has
+      // none, and one of whole numbers of factors
+      row(25, item('a5', A, 'max-width:20px'), item('b5', B), item('c5', C)) +
+      row(100, item('a6', A), item('b6', B), item('c6', C, '')) +
+      row(100, item('a7', 3), item('b7', 2.5), item('c7', 2)),
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  const near = (actual: number, expected: number, message: string) =>
+    assert.ok(
+      Math.abs(actual - expected) < 0.01,
+      `${message}: ${actual}, not ${expected}`,
+    );
+  for (const n of [1, 3, 7]) {
+    near(box(`a${n}`).width, 10, `a row item at its maximum, line ${n}`);
+    near(box(`b${n}`).width, 10, `and the one after it, line ${n}`);
+    near(box(`c${n}`).width, 10, `and the last, line ${n}`);
+    near(box(`c${n}`).x, 20, `which starts where they end, line ${n}`);
+  }
+  for (const n of [1, 2]) {
+    near(box(`c${n}a`).height, 10, 'a column item, as tall as its maximum');
+    near(box(`c${n}b`).height, 10, 'and the one after it');
+    near(box(`c${n}c`).y, box(`c${n}a`).y + 20, 'and the last, after them');
+  }
+  const lines = ['w0', 'a3', 'w4'].map((id) => box(id).y);
+  assert.deepStrictEqual(
+    [box('b3').y, box('c3').y, lines[1] - lines[0], lines[2] - lines[1]],
+    [lines[1], lines[1], 6, 6],
+    'the wrapped line keeps its items, and the lines around it theirs',
+  );
+  const factors = A + B + C;
+  near(box('a5').width, (25 * A) / factors, 'a line with no room for them');
+  near(box('b5').width, (25 * B) / factors, 'all is shared out by their');
+  near(box('c5').width, (25 * C) / factors, 'factors');
+  near(box('c6').width, 80, 'and one with an item of no maximum grows it');
+});
+
 test("a flex box is no narrower than its items' widths make it", async () => {
   // What an item with a width of its own gives the size of its flex box is
   // that width (CSS Flexbox 9.9.3), and a percentage `max-width` on a box
