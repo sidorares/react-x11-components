@@ -80,13 +80,14 @@ export interface ControlRect {
   opacity?: number;
   /**
    * The part of the document the element shows through, where that is not
-   * all of its box: what its own `clip` leaves of it, and what the boxes
-   * that clip their overflow around it do (`clipAround`). The widget is cut
-   * to it, as the element's own drawing is. With no area, none of the
-   * element shows — a control a page hides for a screen reader alone, 1px
-   * square under `clip: rect(0, 0, 0, 0)`, beside the one it draws itself
-   * — and the widget is not seen and takes no press, and still takes the
-   * keyboard's focus, as the element does in a browser.
+   * all of its box: what its own `clip` and `clip-path` leave of it, and
+   * what the boxes that clip their overflow around it, and every
+   * `clip-path` above it, do (`clipAround`). The widget is cut to it, as
+   * the element's own drawing is. With no area, none of the element shows
+   * — a control a page hides for a screen reader alone, 1px square under
+   * `clip: rect(0, 0, 0, 0)` or `clip-path: inset(50%)`, beside the one it
+   * draws itself — and the widget is not seen and takes no press, and
+   * still takes the keyboard's focus, as the element does in a browser.
    */
   clip?: { x: number; y: number; width: number; height: number };
 }
