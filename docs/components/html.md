@@ -716,7 +716,13 @@ CSS lengths, a percentage one too; its intrinsic size is what of them is
 absolute, and its ratio comes from them or from its `viewBox`, which is
 fitted to its box as `preserveAspectRatio` says. A percentage in its
 geometry is of its viewport, and `currentColor` is the `color` the element
-inherits. An SVG image's root `background-color`, in its `style`, covers
+inherits. An inline drawing's `<use>` refers to an element anywhere in the
+document, so an icon drawn from a sprite — a `<symbol>` in a hidden `<svg>`
+at the top of the page — is drawn, in the colour of where it is used; a
+symbol's `viewBox` is fitted to the viewport the `<use>` gives it, its
+`width` and `height`, or all of the drawing. What the element itself refers
+to from outside its symbol, a gradient by `url()`, is not followed, and
+nothing is fetched for a `<use>` of another document's. An SVG image's root `background-color`, in its `style`, covers
 the whole image, as a browser paints it over the canvas. XHTML's
 `<svg:svg>`, under a prefix declared for the SVG namespace, is the same
 element.
