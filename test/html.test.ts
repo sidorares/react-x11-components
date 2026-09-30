@@ -2387,7 +2387,14 @@ async function fillsOf(
   el: HtmlViewNode,
   ops?: PaintOp[],
   options?: {
+    originX?: number;
+    originY?: number;
     canvas?: { x: number; y: number; width: number; height: number };
+    viewport?: { x: number; y: number; width: number; height: number };
+    surface?: (
+      width: number,
+      height: number,
+    ) => { getContext(kind: '2d'): unknown; destroy?(): void } | null;
     imageFor?: () => unknown;
     cached?: (
       key: string,
@@ -3454,6 +3461,148 @@ metric(
       el.abs.height,
       900,
       'as tall as the last block, not the empty ones after its margin',
+    );
+  },
+);
+
+metric(
+  'a fixed box is drawn where the viewport is, however far the pane has scrolled the document',
+  async () => {
+    // CSS 2.1 9.6.1: a fixed box is positioned against the viewport and does
+    // not move when the document scrolls. Laid out against the viewport at
+    // the document's top, it was drawn there, and scrolled away with the
+    // text: the Zen Garden's 069 frames its page in fixed edges, and 090
+    // pins its intro to the window's corner
+    const { node } = await render(
+      '<style>body{margin:0}.tall{height:2000px}.bar{position:fixed;' +
+        'left:0;bottom:0;width:100px;height:20px;background:#ff0000}' +
+        '</style><div class="tall"></div><div class="bar"></div>',
+    );
+    const el = view(node);
+    await act();
+    // the window, which is what the fixed box was laid out against, with
+    // the document scrolled 300px up it
+    const viewport = { x: 0, y: 0, width: 440, height: 600 };
+    const bar = (fills: Fill[]) =>
+      fills.find((f) => f.style === parseColor('#ff0000'));
+    const scrolled = bar(
+      await fillsOf(el, undefined, { originY: -300, viewport }),
+    );
+    assert.deepStrictEqual(
+      scrolled && [scrolled.x, scrolled.y, scrolled.w, scrolled.h],
+      [0, 580, 100, 20],
+      `at the viewport's bottom: ${JSON.stringify(scrolled)}`,
+    );
+    const unscrolled = bar(await fillsOf(el, undefined, { viewport }));
+    assert.strictEqual(unscrolled?.y, 580, 'and there before the scroll');
+  },
+);
+
+metric(
+  'a fixed background is placed against the viewport the document is seen through',
+  async () => {
+    // CSS 2.1 14.2.1: fixed with regard to the viewport, which is the pane
+    // that scrolls the element, not the element: placed against the element,
+    // a body's picture scrolled away with the page — 041, 051 and 095
+    const { node } = await render(
+      '<style>body{margin:0;height:2000px;background:url(p.png) no-repeat ' +
+        'fixed right bottom}</style>',
+    );
+    const el = view(node);
+    await act();
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops, {
+      originY: -300,
+      canvas: { x: 0, y: -300, width: 400, height: 2000 },
+      viewport: { x: 0, y: 0, width: 400, height: 200 },
+      backgroundImageFor: () => ({
+        image: {},
+        width: 50,
+        height: 40,
+        ratio: 50 / 40,
+      }),
+    });
+    const image = ops.find((op) => op.op === 'image') as
+      { x: number; y: number; w: number; h: number } | undefined;
+    assert.deepStrictEqual(
+      image && [image.x, image.y, image.w, image.h],
+      [350, 160, 50, 40],
+      `in the viewport's bottom right: ${JSON.stringify(image)}`,
+    );
+  },
+);
+
+type FixedRect = { x: number; y: number; width: number; height: number };
+
+metric(
+  'what the document draws fixed to the viewport, it tells the scroll pane',
+  async () => {
+    // react-x11's `viewportFixedRects`: a pane's scroll that blits repaints
+    // these where they are and where the copy dragged them, and one that
+    // covers the viewport makes the scroll a repaint. Without it the copy
+    // dragged a fixed header along with the text
+    const renderIn = async (source: string) => {
+      const pane = React.createRef<DrawnNode & { scrollTo(y: number): void }>();
+      const result = await renderX11(
+        h(
+          'box',
+          {
+            ref: pane,
+            style: { width: 400, height: 200, overflow: 'scroll' },
+          },
+          h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        ),
+        { width: 440, height: 240, fonts: FONTS! },
+      );
+      await act();
+      return {
+        result,
+        pane,
+        el: view(screen.getByTestName('doc') as DrawnNode),
+      };
+    };
+    const header = await renderIn(
+      '<style>body{margin:0}.tall{height:2000px}.bar{position:fixed;' +
+        'top:0;left:0;width:100px;height:20px;background:red}</style>' +
+        '<div class="tall"></div><div class="bar"></div>',
+    );
+    await act(async () => header.pane.current!.scrollTo(300));
+    const rects = (
+      header.el as unknown as { viewportFixedRects(): FixedRect[] | null }
+    ).viewportFixedRects();
+    assert.deepStrictEqual(
+      rects,
+      [{ x: 0, y: 0, width: 100, height: 20 }],
+      'the header, where the viewport is',
+    );
+    // and a point there is the header's, as it was drawn there
+    const under = header.el.elementAtPoint(50, 10);
+    assert.strictEqual(
+      under?.attribs?.class,
+      'bar',
+      'the pointer finds the header where it is drawn',
+    );
+    await header.result.unmount();
+    const background = await renderIn(
+      '<style>body{margin:0;height:2000px;background:url(p.png) fixed}' +
+        '</style><body><p>text</p></body>',
+    );
+    const whole = (
+      background.el as unknown as { viewportFixedRects(): FixedRect[] | null }
+    ).viewportFixedRects();
+    assert.deepStrictEqual(
+      whole,
+      [{ x: 0, y: 0, width: 400, height: 200 }],
+      `a fixed background: the whole viewport: ${JSON.stringify(whole)}`,
+    );
+    await background.result.unmount();
+    const plain = await renderIn('<p>nothing fixed</p>');
+    assert.strictEqual(
+      (
+        plain.el as unknown as { viewportFixedRects(): FixedRect[] | null }
+      ).viewportFixedRects(),
+      null,
+      'and nothing where nothing is fixed',
     );
   },
 );
@@ -15073,6 +15222,115 @@ metric(
   },
 );
 
+/** A card over which a hover casts a wide shadow, raises it over the box
+ *  that overlaps it, and lifts it — the three things a card grid's hover
+ *  does (Zen Garden's list of designs), none of which moves anything else. */
+const CARD_PAGE =
+  '<style>body{margin:0}' +
+  ' .c{position:relative;z-index:1;width:120px;height:60px;margin:30px;' +
+  'background:#ffffff;border:1px solid #888888;box-shadow:0 1px 2px #00000044}' +
+  ' .c:hover{z-index:2;border-color:#ff0000;' +
+  'box-shadow:0 0 24px 6px #0000ff;transform:translateY(-6px)}' +
+  ' .o{position:relative;z-index:1;width:120px;height:40px;' +
+  'margin:-60px 0 0 90px;background:#00aa00}' +
+  ' .s{width:100px;height:20px;background:#cccccc}' +
+  ' .s:hover{transform:translateY(-4px)}</style>' +
+  '<div class="c" id="c"><span id="t">a card</span></div>' +
+  '<div class="o" id="o"></div>' +
+  '<div class="s" id="s"><span id="u">plain</span></div>' +
+  '<p id="away">away from all of them</p>';
+
+/** How many bytes two snapshots differ in. An assertion on the arrays
+ *  themselves diffs them when it fails, and a page of pixels diffed runs
+ *  the test process out of memory before it says anything. */
+function bytesApart(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+  let n = Math.abs(a.length - b.length);
+  const end = Math.min(a.length, b.length);
+  for (let i = 0; i < end; i += 1) if (a[i] !== b[i]) n += 1;
+  return n;
+}
+
+metric(
+  'a hovered card takes its shadow, its z-index and its lift in place, to the pixels a rebuild draws',
+  async () => {
+    const { result, node } = await render(CARD_PAGE, 300);
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+
+    const [, below] = pointIn(el, 't');
+    el.setHover(...pointIn(el, 't'));
+    const hovered = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'the document was built again');
+    assert.ok(bytesApart(hovered, quiet) > 0, 'the hover drew nothing');
+    // the text went up with its card
+    const [, lifted] = pointIn(el, 't');
+    assert.ok(lifted < below, 'the text did not move with its card');
+    const whole = await rebuilt(result, el);
+    assert.strictEqual(
+      bytesApart(hovered, whole),
+      0,
+      'not as a rebuild draws it',
+    );
+
+    // …and off it again, in place, to where it was
+    const again = treeOf(el);
+    el.setHover(...pointIn(el, 'away'));
+    const left = await snapshot(result, el);
+    assert.ok(treeOf(el) === again, 'built again to leave the card');
+    assert.strictEqual(bytesApart(left, quiet), 0, 'not as it was');
+  },
+);
+
+metric(
+  'a box that a transform would make a containing block is built again',
+  async () => {
+    const { result, node } = await render(CARD_PAGE, 300);
+    const el = view(node);
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'u'));
+    const hovered = await snapshot(result, el);
+    assert.ok(treeOf(el) !== tree, 'restyled in place');
+    const whole = await rebuilt(result, el);
+    assert.strictEqual(
+      bytesApart(hovered, whole),
+      0,
+      'not as a rebuild draws it',
+    );
+  },
+);
+
+metric(
+  'a hover in place repaints what it restyled, not the document',
+  async () => {
+    const { node } = await render(HOVER_PAGE, 300);
+    const el = view(node);
+    await act();
+    const damage: unknown[] = [];
+    const invalidate = el.invalidate.bind(el);
+    el.invalidate = ((layout?: boolean, rect?: unknown, reason?: string) => {
+      damage.push(rect);
+      return invalidate(layout, rect as never, reason);
+    }) as typeof el.invalidate;
+    el.setHover(...pointIn(el, 's'));
+    assert.ok(damage.length > 0, 'something is repainted');
+    assert.ok(!damage.includes(el), 'not the whole element');
+    // the link's paragraph, where its text is drawn, and no further
+    const p = el.elementRect(findById(el.document, 'p')!)!;
+    const { abs } = el as unknown as DrawnNode;
+    for (const r of damage as { y: number; height: number }[]) {
+      assert.ok(
+        r.y >= abs.y + p.y - 2,
+        `a repaint above the paragraph, ${r.y}`,
+      );
+      assert.ok(
+        r.y + r.height <= abs.y + p.y + p.height + 2,
+        'a repaint below the paragraph',
+      );
+    }
+  },
+);
+
 metric(
   'a list item, whose marker takes its colour, is built again',
   async () => {
@@ -16246,3 +16504,58 @@ test('a @supports test of the mask is answered, and every other is entered', () 
     ['.b', '.c'],
   );
 });
+
+metric(
+  'a fixed box in a masked element is drawn where the viewport is, on its surface',
+  async () => {
+    // A masked element is drawn on a surface of its own, its origin moved
+    // to the surface's corner. A fixed box in it is placed by where the
+    // viewport is from that origin, so the viewport moves with it: left in
+    // window coordinates, the box was drawn the scroll away from where it
+    // belongs
+    const { node } = await render(
+      '<style>body{margin:0}.m{height:2000px;' +
+        'mask-image:linear-gradient(#000000,#000000)}.bar{position:fixed;' +
+        'left:0;bottom:0;width:100px;height:20px;background:#ff0000}' +
+        '</style><div class="m"><div class="bar"></div></div>',
+    );
+    const el = view(node);
+    await act();
+    // surfaces that keep what is filled on them
+    const filled: { style: unknown; y: number }[] = [];
+    const surface = () => {
+      let fillStyle: unknown = null;
+      const ctx = {
+        globalCompositeOperation: 'source-over',
+        get fillStyle() {
+          return fillStyle;
+        },
+        set fillStyle(v: unknown) {
+          fillStyle = v;
+        },
+        save() {},
+        restore() {},
+        fillRect(_x: number, y: number) {
+          filled.push({ style: fillStyle, y });
+        },
+        drawImage() {},
+      };
+      return { getContext: () => ctx, destroy() {} };
+    };
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops, {
+      originY: -300,
+      viewport: { x: 0, y: 0, width: 440, height: 600 },
+      surface,
+    });
+    const composite = ops.find((op) => op.op === 'image') as
+      { y: number } | undefined;
+    const bar = filled.find((f) => f.style === parseColor('#ff0000'));
+    assert.ok(composite && bar, 'the mask drew its element on a surface');
+    assert.strictEqual(
+      composite.y + bar.y,
+      580,
+      "at the viewport's bottom in the window",
+    );
+  },
+);

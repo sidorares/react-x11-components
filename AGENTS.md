@@ -411,8 +411,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.23.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.23.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.25.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.25.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -523,6 +523,13 @@ it up. **The floor is a running one and moves often** — every move since
   to its top, which turned every selection in a scrolled page into one from
   its start (#756); with 2.22.13's `<Frame>` pane that stays on its main
   thread on macOS (#747), all four were found in the browser example.
+- `^2.25.0` — `viewportFixedRects()` (react-x11#795): an element says what
+  it draws fixed to its scroll pane's viewport, and the pane's scroll blit
+  repaints it rather than copying it with the content. `<Html>` places a
+  `position: fixed` box and a fixed background against the pane that
+  scrolls it and answers with them; without the hook a small scroll's blit
+  smeared a fixed header up the pane. Found by the Zen Garden bench (041,
+  051, 069, 090, 095).
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

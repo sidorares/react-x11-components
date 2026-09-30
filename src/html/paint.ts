@@ -152,6 +152,14 @@ export interface PaintOptions {
   /** The whole element in window coordinates: the canvas the root's
    *  background covers (CSS 2.1 14.2). Absent, the root box is it. */
   canvas?: Rect;
+  /** The viewport the document is seen through, in window coordinates:
+   *  the scroll pane's, where one scrolls the element. What a fixed
+   *  background is placed against (CSS 2.1 14.2.1) and where a fixed box
+   *  is drawn (9.6.1), both laid out against the viewport at the
+   *  document's top. Absent, the element is it. */
+  viewport?: Rect;
+  /** @internal Painting a fixed box already moved to the viewport. */
+  atViewport?: boolean;
   /** A transparent surface `width` by `height` to draw on and composite
    *  with `drawImage`, the caller's to `destroy` once it has: a masked
    *  element is drawn on one. Null where there is no surface to be had. */
@@ -534,7 +542,7 @@ function paintCanvas(
       // body shows — or by the viewport, where it is fixed
       const box =
         style.backgroundAttachment === 'fixed' && options.canvas
-          ? options.canvas
+          ? (options.viewport ?? options.canvas)
           : originBox(anchor, options, style);
       paintGradient(
         ctx,
@@ -917,6 +925,11 @@ function paintMasked(
         ...options.canvas,
         x: options.canvas.x - x0,
         y: options.canvas.y - y0,
+      },
+      viewport: options.viewport && {
+        ...options.viewport,
+        x: options.viewport.x - x0,
+        y: options.viewport.y - y0,
       },
       clips: [],
     };
@@ -1919,7 +1932,55 @@ function paintPositioned(
       return;
     }
   }
-  paintBox(ctx, box, options);
+  paintBox(ctx, box, atViewport(box, options));
+}
+
+/**
+ * The options a box is painted with where it is fixed to the viewport
+ * (CSS 2.1 9.6.1): laid out against the viewport at the document's top,
+ * and drawn where the viewport is now, however far the pane that scrolls
+ * the element has moved it — a fixed header scrolled away with the text.
+ * Once for a box and all it holds.
+ */
+function atViewport(box: Box, options: PaintOptions): PaintOptions {
+  const viewport = options.viewport;
+  if (!viewport || options.atViewport || !fixedToViewport(box)) {
+    return options;
+  }
+  // where the document's top left is from the viewport's, less where the
+  // viewport is in the document: the scroll
+  const root = rootOf(box);
+  const dx = viewport.x - options.originX - root.x;
+  const dy = viewport.y - options.originY - root.y;
+  return {
+    ...options,
+    originX: options.originX + dx,
+    originY: options.originY + dy,
+    atViewport: true,
+  };
+}
+
+/** Per tree, its boxes fixed to the viewport (`fixedToViewport`), found
+ *  as the layout positions them: what the element answers a scroll pane's
+ *  blit with (`HtmlViewNode.viewportFixedRects`). */
+export const FIXED_BOXES = new WeakMap<object, Box[]>();
+
+/** Whether a box is fixed to the viewport: `position: fixed` with no
+ *  transformed or contained box around it, which would be its containing
+ *  block instead (CSS Transforms 1, CSS Containment 2, 3.3). */
+export function fixedToViewport(box: Box): boolean {
+  if (box.style.position !== 'fixed') return false;
+  for (let at = box.parent; at?.parent; at = at.parent) {
+    if (at.style.translate || at.style.transformTranslate) return false;
+    if (contained(at, CONTAIN_LAYOUT | CONTAIN_PAINT)) return false;
+  }
+  return true;
+}
+
+function rootOf(box: Box): Box {
+  let root = box;
+  while (root.parent) root = root.parent;
+  return root;
 }
 
 /**
@@ -2438,6 +2499,7 @@ function paintStacked(
   box: Box,
   options: PaintOptions,
 ): void {
+  options = atViewport(box, options);
   if (!intersects(box, options)) return;
   const between = CLIPS_BETWEEN.get(box);
   if (!between) {
@@ -2616,7 +2678,9 @@ function paintBackground(
     // box, which is where it starts, and repeated under the borders — or
     // the viewport's, where it is fixed; its line runs across the whole of
     // it, not the part this paint reaches
-    const fixed = style.backgroundAttachment === 'fixed' && options.canvas;
+    const fixed =
+      style.backgroundAttachment === 'fixed' &&
+      (options.viewport ?? options.canvas);
     const origin = fixed || originBox(box, options, style);
     const at = snapped(origin.x, origin.y, origin.width, origin.height);
     if (rounded && style.backgroundSize !== 'auto' && ctx.clip) {
@@ -3106,7 +3170,7 @@ function paintBackgroundImage(
   corners: Corners | null = null,
 ): void {
   if (style.backgroundAttachment === 'fixed' && options.canvas) {
-    at = options.canvas;
+    at = options.viewport ?? options.canvas;
   }
   const url = style.backgroundImage;
   const loaded = url ? options.backgroundImageFor?.(url) : null;
