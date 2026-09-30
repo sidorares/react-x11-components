@@ -56,6 +56,10 @@ export interface Stylesheet {
    *  resource seam and splices the result in ahead of this sheet. Absolute
    *  when the sheet was parsed with a base. */
   imports: string[];
+  /** Each import's media query list, where it has one: the condition the
+   *  sheet it brings in is under, as though an `@media` block were around
+   *  all of it (CSS Cascade 4, 2). Null for an import with none. */
+  importConditions: (MediaCondition[] | null)[];
   /** Every width a `@media` rule in this sheet switches on. The renderer
    *  keeps these so a resize can tell "the layout changed" from "the
    *  *cascade* changed", and restyle only when it crossed one. */
@@ -177,16 +181,38 @@ export function parseStylesheet(
    *  the document's for a `<style>` — or null to leave them as written.
    *  Every `url()`, `@import` and `@font-face` source comes out absolute. */
   base: string | null = null,
+  /** The media queries the whole sheet is under, outermost first: the ones
+   *  of the `@import` that brought it in, and of the imports that brought
+   *  that sheet in. Every rule and face in it is under them, as one inside
+   *  an `@media` block is under the block's. */
+  under: MediaCondition[][] | null = null,
 ): Stylesheet {
   text = withoutComments(text);
   const sheet: Stylesheet = {
     rules: [],
     imports: [],
+    importConditions: [],
     breakpoints: [],
     fontFaces: [],
   };
   let order = startOrder;
   const breakpoints = new Set<number>();
+  /** What a media query list tests that a resize has to restyle for: the
+   *  widths it changes its mind at, and whether it reads the height. */
+  const note = (conditions: MediaCondition[]): void => {
+    for (const c of conditions) {
+      if (c.min !== undefined) breakpoints.add(c.min);
+      if (c.max !== undefined) breakpoints.add(c.max + MAX_EDGE);
+      if (c.minHeight !== undefined || c.maxHeight !== undefined) {
+        sheet.readsHeight = true;
+      }
+      if (c.minAspect !== undefined || c.maxAspect !== undefined) {
+        sheet.readsHeight = true;
+        sheet.readsWidth = true;
+      }
+    }
+  };
+  for (const conditions of under ?? []) note(conditions);
   // `@import` counts only ahead of every other rule, `@charset` aside
   let importsAllowed = true;
 
@@ -234,10 +260,12 @@ export function parseStylesheet(
         const name = at.name.toLowerCase();
         if (name === 'charset') continue;
         if (name === 'import') {
-          if (importsAllowed && media === null) {
+          if (importsAllowed && media === under) {
             const url = importUrl(at.prelude);
-            if (url && importApplies(at.prelude)) {
+            const conditions = importConditions(at.prelude);
+            if (url && conditions !== false) {
               sheet.imports.push(resolveUrl(url, base));
+              sheet.importConditions.push(conditions);
             }
           }
           continue;
@@ -249,17 +277,7 @@ export function parseStylesheet(
         }
         if (name === 'media' && at.block !== null) {
           const conditions = parseMediaQuery(at.prelude);
-          for (const c of conditions) {
-            if (c.min !== undefined) breakpoints.add(c.min);
-            if (c.max !== undefined) breakpoints.add(c.max + MAX_EDGE);
-            if (c.minHeight !== undefined || c.maxHeight !== undefined) {
-              sheet.readsHeight = true;
-            }
-            if (c.minAspect !== undefined || c.maxAspect !== undefined) {
-              sheet.readsHeight = true;
-              sheet.readsWidth = true;
-            }
-          }
+          note(conditions);
           // A nested `@media` intersects with the one above it; pushing a
           // level rather than merging keeps "all of these blocks hold" exact
           // when two of them overlap.
@@ -415,7 +433,7 @@ export function parseStylesheet(
     }
   };
 
-  walk(text, null);
+  walk(text, under);
   sheet.breakpoints = [...breakpoints].sort((a, b) => a - b);
   return sheet;
 }
@@ -1592,18 +1610,28 @@ function importUrl(prelude: string): string | null {
   return m ? m[1] : null;
 }
 
-/** Whether an `@import`'s media list, the rest of its prelude after the
- *  URL, lets it apply here: a list that only names other media, `print` or
- *  `braille`, leaves the sheet out (CSS 2.1 6.3). A list that depends on the
- *  width is taken to apply; an import is fetched once, not per width. */
-function importApplies(prelude: string): boolean {
+/**
+ * An `@import`'s media query list, the rest of its prelude after the URL:
+ * null where it has none, and false where no query in it can ever hold
+ * here — a list that only names other media, `print` or `braille` — which
+ * leaves the sheet out, unasked for (CSS 2.1 6.3). Any other list is the
+ * condition the sheet it imports is under (CSS Cascade 4, 2): the sheet is
+ * fetched once, and its rules hold at the widths the list does. Taken to
+ * hold at every width, as it was, a design that imports a sheet a
+ * breakpoint — the Zen Garden's 219, `@import url("219-1367.css") all and
+ * (min-width: 1367px)` — had all of them at once.
+ */
+function importConditions(prelude: string): MediaCondition[] | null | false {
   const m =
     /^\s*(?:url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)|"[^"]*"|'[^']*')(.*)$/s.exec(
       prelude,
     );
   const list = m?.[1].trim();
-  if (!list) return true;
-  return parseMediaQuery(list).some((c) => c.staticPass !== false);
+  if (!list) return null;
+  const conditions = parseMediaQuery(list);
+  if (!conditions.some((c) => c.staticPass !== false)) return false;
+  // one that always holds is no condition
+  return conditions.some((c) => c.staticPass === true) ? null : conditions;
 }
 
 /**

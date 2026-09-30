@@ -84,6 +84,122 @@ test('a medium other than the screen matches nothing, an @import included', () =
   );
 });
 
+test("an @import's media queries are the conditions the sheet it imports is under", async () => {
+  // CSS Cascade 4, 2: an import's media query list is its import
+  // conditions, and the sheet it imports applies as though an `@media`
+  // block of them were around all of it. The list was taken to hold at
+  // every width, so a design that imports a sheet a breakpoint had all of
+  // them at once: the Zen Garden's 219, `@import url("219-1367.css") all
+  // and (min-width: 1367px)`, laid out for a screen wider than it had
+  const sheet = parseStylesheet(
+    '@import "wide.css" all and (min-width: 800px) and (max-width: 1366px);' +
+      '@import url(tall.css) (min-height: 900px), (min-width: 2000px);' +
+      '@import "always.css" screen; @import "never.css" print;',
+  );
+  assert.deepStrictEqual(
+    sheet.imports,
+    ['wide.css', 'tall.css', 'always.css'],
+    'a list that holds nowhere leaves its sheet out',
+  );
+  assert.deepStrictEqual(
+    sheet.importConditions,
+    [[{ min: 800, max: 1366 }], [{ minHeight: 900 }, { min: 2000 }], null],
+    'and one that always holds is no condition',
+  );
+  // the sheet an import brings in, parsed under its conditions: every rule
+  // in it, a face and the blocks inside it, and its breakpoints
+  const under = [sheet.importConditions[0]!];
+  const wide = parseStylesheet(
+    '@import "inner.css" (min-width: 1200px);' +
+      'p { color: red } @media (min-width: 1000px) { p { color: blue } }' +
+      '@font-face { font-family: F; src: url(f.woff) }',
+    0,
+    undefined,
+    null,
+    under,
+  );
+  assert.deepStrictEqual(
+    wide.rules.map((r) => r.media),
+    [[[{ min: 800, max: 1366 }]], [[{ min: 800, max: 1366 }], [{ min: 1000 }]]],
+    'each rule under the import, and under its own block inside that',
+  );
+  assert.deepStrictEqual(wide.fontFaces[0].media, [[{ min: 800, max: 1366 }]]);
+  assert.deepStrictEqual(
+    [...wide.breakpoints].sort((a, b) => a - b).map(Math.floor),
+    [800, 1000, 1366],
+    'the widths a resize restyles at',
+  );
+  assert.deepStrictEqual(
+    [wide.imports, wide.importConditions],
+    [['inner.css'], [[{ min: 1200 }]]],
+    'a sheet imported under a condition may import',
+  );
+  assert.ok(
+    mediaMatches(wide.rules[0].media, 1280) &&
+      !mediaMatches(wide.rules[0].media, 1400) &&
+      !mediaMatches(wide.rules[0].media, 700),
+    'which hold where the import does',
+  );
+});
+
+test('a sheet imported under a width is applied at that width, and dropped past it', async () => {
+  const sheets: Record<string, string> = {
+    'narrow.css': 'p { color: #ff0000 }',
+    'wide.css': '@import "inner.css" (min-width: 450px); p { color: #0000ff }',
+    'inner.css': 'p { margin-left: 30px }',
+  };
+  const asked: string[] = [];
+  const doc = (width: number) =>
+    h(
+      'box',
+      { style: { width, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>@import "narrow.css" (max-width: 399px);' +
+          '@import "wide.css" (min-width: 400px);</style>' +
+          '<p id="p">x</p>',
+        partial: false,
+        onResource: (r: { kind: string; url: string }) => {
+          asked.push(r.url);
+          return r.kind === 'stylesheet'
+            ? { kind: 'stylesheet' as const, text: sheets[r.url] }
+            : null;
+        },
+        'data-testname': 'doc',
+      }),
+    );
+  const result = await renderX11(doc(300), { backend: 'mock' });
+  const p = () =>
+    boxOf(view(screen.getByTestName('doc') as DrawnNode), 'p') as unknown as {
+      style: { color: string };
+      marginLeft: number;
+    };
+  assert.deepStrictEqual(
+    [p().style.color, p().marginLeft],
+    ['#ff0000', 0],
+    'the narrow sheet at 300',
+  );
+  assert.deepStrictEqual(
+    [...new Set(asked)].sort(),
+    ['inner.css', 'narrow.css', 'wide.css'],
+    'each asked for once, whatever the width',
+  );
+  await result.rerender(doc(420));
+  await act();
+  assert.deepStrictEqual(
+    [p().style.color, p().marginLeft],
+    ['#0000ff', 0],
+    'the wide one at 420, and not yet what it imports',
+  );
+  await result.rerender(doc(500));
+  await act();
+  assert.deepStrictEqual(
+    [p().style.color, p().marginLeft],
+    ['#0000ff', 30],
+    'and at 500 the sheet it imports under its own width',
+  );
+});
+
 test('the palette in force answers prefers-color-scheme, and a switch re-cascades', async () => {
   const source =
     '<style>p{margin:0;color:#ff0000}' +

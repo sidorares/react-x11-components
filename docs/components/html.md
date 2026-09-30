@@ -105,7 +105,13 @@ image rebuilds its boxes.
 
 `@import` is asked for through the same seam, an import inside an import
 too, each sheet's rules standing where its `@import` does; a sheet that
-imports itself, or one of the sheets importing it, is read once.
+imports itself, or one of the sheets importing it, is read once. An
+import's media queries — `@import url(wide.css) (min-width: 800px)` — are
+conditions on the sheet it brings in, as though an `@media` block were
+around all of it (CSS Cascade 4, 2): the sheet is asked for once, whatever
+the width, and its rules hold where the queries do, a resize across one of
+their breakpoints restyling as it does for `@media`. One that can hold
+nowhere here, `print`, is not asked for.
 
 A stylesheet may be handed over as bytes instead, with the charset the
 protocol named if it named one: `{ kind: 'stylesheet', bytes, charset }`.
@@ -1057,7 +1063,8 @@ screen's with a mouse — `hover` and a `fine` pointer, eight bits of colour,
 no contrast or colour preference forced, and no scripting, since nothing
 here runs one. A feature nothing knows is false, as Media Queries 4 has
 it, and so is a query on a size that is no length.
-`@import` goes through the resource seam. Cascade layers are read (CSS
+`@import` goes through the resource seam, its media queries kept as the
+conditions of what it imports. Cascade layers are read (CSS
 Cascade 5): `@layer a, b;` fixes their order, the document's across all of
 its sheets, and a rule in a later layer wins over one in an earlier layer
 whatever their specificity, a rule in no layer over both, and the other way
