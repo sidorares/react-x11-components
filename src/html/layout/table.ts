@@ -216,15 +216,21 @@ export function layoutTable(
   // A cell aligned on the baseline — every value but `top`, `middle` and
   // `bottom` — hangs its first line on its first row's baseline, the lowest
   // of theirs from the row's top (CSS 2.1 17.5.3), and the row is as tall as
-  // the cells hung from it need.
-  const lift = baselineLifts(cells, rows.length);
+  // the cells hung from it need. What moves down is the content, so a cell
+  // needs the lift and its content, and a height it sets is a least one
+  // beside that rather than more room under the lift: two cells set
+  // `height: 80px` with text of two sizes in them are a row 80px tall, where
+  // the lift on top of the height made it 104px. A cell spanning rows needs
+  // the same of them, which is where Chrome differs: it sizes a spanning
+  // cell by its content and height alone and lets the lifted content hang
+  // out of it, and the rows here "encompass the cell" (17.5.3).
+  const lift = baselineLifts(cells, rows.length, natural);
+  const needs = (i: number): number =>
+    Math.max(cells[i].box.height, lift[i] + natural[i]);
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i];
     if (cell.rowSpan > 1) continue;
-    rowHeight[cell.row] = Math.max(
-      rowHeight[cell.row],
-      lift[i] + cell.box.height,
-    );
+    rowHeight[cell.row] = Math.max(rowHeight[cell.row], needs(i));
   }
   for (let r = 0; r < rows.length; r += 1) {
     const specified = resolveOrNull(rows[r].style.height, NaN);
@@ -240,7 +246,7 @@ export function layoutTable(
     let covered = 0;
     for (let r = cell.row; r <= last; r += 1) covered += rowHeight[r];
     covered += rowSpacing * (last - cell.row);
-    const missing = lift[i] + cell.box.height - covered;
+    const missing = needs(i) - covered;
     if (missing > 0) rowHeight[last] += missing;
   }
 
@@ -820,12 +826,18 @@ function lengthAgainst(len: Len, base: number): number | null {
  * row's: 0 for a cell aligned `top`, `middle` or `bottom`, which is placed
  * once the row's height is known. A cell's baseline is its first line box's,
  * at any depth, or the bottom of its content where it has none (CSS 2.1
- * 17.5.3); it is taken as laid out, from the cell's top. An empty cell has
- * nothing to align and says nothing about the row's, as in a browser: its
- * content's bottom is its height, which would hang every other cell in the
- * row from the bottom of a cell given a height and nothing in it.
+ * 17.5.3); it is taken as laid out, from the cell's top. That bottom is of
+ * the content (`natural`) and not of a height the cell sets, which "does not
+ * increase the height of the cell box": taken from the set height, a cell
+ * holding one block of 30px in 80px hung the text beside it from 80px. An
+ * empty cell has nothing to align and says nothing about the row's, as in a
+ * browser.
  */
-function baselineLifts(cells: Cell[], rowCount: number): number[] {
+function baselineLifts(
+  cells: Cell[],
+  rowCount: number,
+  natural: number[],
+): number[] {
   const lift = new Array<number>(cells.length).fill(0);
   let any = false;
   for (const cell of cells) {
@@ -844,7 +856,7 @@ function baselineLifts(cells: Cell[], rowCount: number): number[] {
     own[i] =
       first !== null
         ? first - box.y
-        : box.height - box.padBottom - box.borderBottom;
+        : natural[i] - box.padBottom - box.borderBottom;
     row[cells[i].row] = Math.max(row[cells[i].row], own[i]);
   }
   for (let i = 0; i < cells.length; i += 1) {
