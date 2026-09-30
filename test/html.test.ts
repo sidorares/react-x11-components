@@ -17689,3 +17689,30 @@ test("a media query on the viewport's height is answered from it, and again as i
   await resize(200);
   assert.strictEqual(height(), 5, 'and max-height: 250px at 200');
 });
+
+test("a media query on the device's size is answered from the viewport's", async () => {
+  // Media Queries 4's deprecated `device-width` and `device-height`, which
+  // designs write to catch a phone, are the output device's surface: for a
+  // document in an application's window, its viewport. Unread, a query on
+  // them held everywhere, and the Zen Garden's 216 set its desktop header
+  // at its phone size
+  const source =
+    '<style>body{margin:0}#t{height:10px}' +
+    '@media screen and (max-device-width:480px){#t{height:5px}}' +
+    '@media (min-device-height:10000px){#t{height:99px}}</style>' +
+    '<div id="t"></div>';
+  const wide = await render(source, 700);
+  assert.strictEqual(
+    boxOf(view(wide.node), 't').height,
+    10,
+    'a 700px viewport is no phone, and no device is 10000px tall',
+  );
+  await wide.result.unmount();
+  const narrow = await render(source, 300);
+  assert.strictEqual(
+    boxOf(view(narrow.node), 't').height,
+    5,
+    'a 300px one takes the phone rule',
+  );
+  await narrow.result.unmount();
+});

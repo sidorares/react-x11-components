@@ -1823,6 +1823,32 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
         } else if (key === 'max-width' && px !== null) {
           condition.max = Math.min(condition.max ?? Infinity, px);
           sawWidth = true;
+        } else if (
+          (key === 'min-device-width' ||
+            key === 'max-device-width' ||
+            key === 'min-device-height' ||
+            key === 'max-device-height') &&
+          px !== null
+        ) {
+          // Media Queries 4's deprecated device sizes, which designs still
+          // write to catch a phone: the output device's rendering surface,
+          // which for a document in an application's window is its
+          // viewport. Unread, `(max-device-width: 480px)` held on every
+          // screen, and a desktop page took its phone layout's rules
+          const max = key.startsWith('max');
+          if (key.endsWith('width')) {
+            if (max) condition.max = Math.min(condition.max ?? Infinity, px);
+            else condition.min = Math.max(condition.min ?? 0, px);
+            sawWidth = true;
+          } else {
+            if (max) {
+              condition.maxHeight = Math.min(
+                condition.maxHeight ?? Infinity,
+                px,
+              );
+            } else condition.minHeight = Math.max(condition.minHeight ?? 0, px);
+            sawHeight = true;
+          }
         } else if (key === 'min-height' && px !== null) {
           // the viewport's height, answered live as its width is: a
           // design that sets its heading's size by the window's height
