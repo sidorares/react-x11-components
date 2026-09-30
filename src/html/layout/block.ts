@@ -74,6 +74,8 @@ import { collapseEdges } from './collapse.js';
 import {
   clipsFor,
   computePaintBounds,
+  FIXED_BOXES,
+  fixedToViewport,
   hoistNegative,
   OUT_OF_FLOW_REACH,
   stackLayers,
@@ -258,8 +260,12 @@ export function layoutDocument(
   // an `overflow: hidden` card made a page a browser shows 400px tall run
   // on to 980, blank
   let bottom = Math.max(root.height, reach);
+  let fixed: Box[] | null = null;
   for (const { box } of ctx.positioned) {
-    if (box.style.position === 'fixed') continue;
+    if (box.style.position === 'fixed') {
+      if (fixedToViewport(box)) (fixed ??= []).push(box);
+      continue;
+    }
     if (clipsFor(box, root).length) continue;
     // and what it holds, where it does not clip it: a page set in an
     // absolute wrapper 497px tall runs on below it, and the document with
@@ -267,6 +273,8 @@ export function layoutDocument(
     // end of the scroll
     bottom = Math.max(bottom, OUT_OF_FLOW_REACH.get(box) ?? box.y + box.height);
   }
+  if (fixed) FIXED_BOXES.set(tree, fixed);
+  else FIXED_BOXES.delete(tree);
   return {
     width: viewportWidth,
     height: bottom,
@@ -4153,15 +4161,30 @@ export function transformed(style: ComputedStyle): boolean {
 
 /** How far `translate` and a `transform` move a box: a percentage is of
  *  its own border box (CSS Transforms 1, 7). */
-function translationOf(box: Box): [number, number] {
+function translationOf(box: Box, style = box.style): [number, number] {
   let dx = 0;
   let dy = 0;
-  for (const moved of [box.style.translate, box.style.transformTranslate]) {
+  for (const moved of [style.translate, style.transformTranslate]) {
     if (!moved) continue;
     dx += resolve(moved[0], box.width, 0);
     dy += resolve(moved[1], box.height, 0);
   }
   return [dx, dy];
+}
+
+/**
+ * Move a laid-out box, and everything in it, by how far its translation
+ * changed when its style went from `was` to the one it has — what
+ * `applyRelativeOffsets` moves it by now, less what it moved it by then.
+ * For a style changed in place, where nothing else moves (a `transform` is
+ * what makes that true). Not for an inline box, whose text is what moves.
+ */
+export function retranslate(box: Box, was: ComputedStyle): void {
+  const [x0, y0] = translationOf(box, was);
+  const [x1, y1] = translationOf(box);
+  if (x1 === x0 && y1 === y0) return;
+  translate(box, x1 - x0, y1 - y0);
+  movedOffLine(box);
 }
 
 /** How far `position: relative` moves a box. */

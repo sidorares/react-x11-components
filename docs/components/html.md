@@ -800,7 +800,14 @@ the viewport is cut off. A document that reads the viewport's height — a
 `vh`, a percentage height on the root, a box placed against the initial
 containing block — follows it when the window is resized, a frame behind
 the scroll box it is measured by; one that reads none is not laid out again
-when only the height moved. A fragment has no
+when only the height moved. A `position: fixed` box and a
+`background-attachment: fixed` background stay where that viewport is as
+the box scrolls the element: laid out against it at the document's top,
+drawn where it is now, and found there by the pointer. The element tells
+the scroll box what it draws that way (react-x11's `viewportFixedRects`),
+so a scroll that copies the pixels it can repaints those where they are
+rather than dragging a fixed header along with the text; a fixed
+background, behind the whole viewport, makes every scroll a repaint. A fragment has no
 root element, and its blocks have the body's `auto` height to resolve
 against. Explicit bidi embeddings and overrides (U+202A–U+202E) that open on
 one side of an inline element with padding, border or margin and close on
@@ -905,9 +912,20 @@ article's 79 such rules change — the boxes take their new style and each
 paragraph's text is laid out again from the same runs with the new ink, at
 the same shape, and nothing else is built or laid out: a hover over that
 article went from 270 ms to under 15 ms on X11, and from about 800 ms to
-17 ms on macOS. Anything else builds the document again, as every hover
-used to — text set bold on hover, a pseudo-element or a list marker the
-element colours, a `:hover` inside `:not()` or `:has()`. `:active` is never
+17 ms on macOS. A card's hover goes the same way where what else it changes
+moves nothing around the card: a `box-shadow` or an outline's size, which
+reach further and take no room; a `z-index` that stays a stacking
+context's, which reorders the card's layer; and a `transform`'s
+translation, which moves the card and what is in it where it is — so the
+card lifts, its shadow widens and it rises over its neighbour without the
+document being built or laid out again. The repaint is the ink that
+changed, what the boxes drew before and what they draw after, not the
+document: on Zen Garden's list of designs, whose cards do all three, a
+scroll under a still pointer went from 32 to 46 frames a second at 2x on
+macOS. Anything else builds the document again, as every hover used to —
+text set bold on hover, a pseudo-element or a list marker the element
+colours, a translation that would make a box the containing block of
+what is in it, a `:hover` inside `:not()` or `:has()`. `:active` is never
 set here, so a selector testing it changes nothing as the pointer moves.
 
 **The cursor is the document's.** Over a link it is the `pointer` the

@@ -523,16 +523,23 @@ it up. **The floor is a running one and moves often** — every move since
   to its top, which turned every selection in a scrolled page into one from
   its start (#756); with 2.22.13's `<Frame>` pane that stays on its main
   thread on macOS (#747), all four were found in the browser example.
-- `^2.25.0` — shadow tiles (react-x11#794, over ntk 8.16.1's
-  `ntk/shadow-tiles`, sidorares/ntk#471): the 2d context draws the blurred
-  shadow of a `rect`, a `roundRect` or a `rect` less one filled `evenodd`
-  from a tile made once for its corners and blur, where CoreGraphics
-  blurred it on every fill and Direct2D drew none. `<Html>` draws its box
-  shadows that way and keeps no bake of its own, which it had keyed on the
-  part a paint reached — so each strip a scroll exposed across one baked it
-  again, and Zen Garden's header scrolled at 14 frames a second at 2x. The
-  same release has hover follow content that scrolls under a still pointer
-  (#793), and `roundRect` take elliptical `{ x, y }` radii.
+- `^2.25.0` — `viewportFixedRects()` (react-x11#795): an element says what
+  it draws fixed to its scroll pane's viewport, and the pane's scroll blit
+  repaints it rather than copying it with the content. `<Html>` places a
+  `position: fixed` box and a fixed background against the pane that
+  scrolls it and answers with them; without the hook a small scroll's blit
+  smeared a fixed header up the pane. Found by the Zen Garden bench (041,
+  051, 069, 090, 095). The same release draws shadows from tiles
+  (react-x11#794, over ntk 8.16.1's `ntk/shadow-tiles`, sidorares/ntk#471):
+  the 2d context draws the blurred shadow of a `rect`, a `roundRect` or a
+  `rect` less one filled `evenodd` from a tile made once for its corners
+  and blur, where CoreGraphics blurred it on every fill and Direct2D drew
+  none. `<Html>` draws its box shadows that way and keeps no bake of its
+  own, which it had keyed on the part a paint reached — so each strip a
+  scroll exposed across one baked it again, and Zen Garden's header
+  scrolled at 14 frames a second at 2x. It also has hover follow content
+  that scrolls under a still pointer (#793), and `roundRect` take
+  elliptical `{ x, y }` radii.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
