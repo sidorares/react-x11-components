@@ -1156,13 +1156,55 @@ translation, which moves the card and what is in it where it is — so the
 card lifts, its shadow widens and it rises over its neighbour without the
 document being built or laid out again. The repaint is the ink that
 changed, what the boxes drew before and what they draw after, not the
-document: on Zen Garden's list of designs, whose cards do all three, a
-scroll under a still pointer went from 32 to 46 frames a second at 2x on
-macOS. Anything else builds the document again, as every hover used to —
-text set bold on hover, a pseudo-element or a list marker the element
-colours, a translation that would make a box the containing block of
-what is in it, a `:hover` inside `:not()` or `:has()`. `:active` is never
-set here, so a selector testing it changes nothing as the pointer moves.
+document. The boxes that go with an element go with it: the text in it,
+the anonymous boxes made around what is in it — the text of a link laid out
+as a flex row is in one — and its `::before` and `::after`, styled again by
+their own rules, which may test the hover themselves.
+
+**A `:hover` is found wherever a selector tests it.** Inside `:is()`,
+`:where()` or `:not()` it names an element as it would outside: the one the
+function is written on, where the entry is one compound, and an ancestor or
+an earlier sibling of it where the entry has combinators. Tailwind 4 writes
+every `group-hover:` as `:is(:where(.group):hover *)`, every `peer-hover:`
+with a `~` in the same place, and its typography's links as `.prose
+:where(a:hover):not(…)`; read as selectors no compound could be named in,
+any one of them made every move of the pointer build the document again —
+half a second a move on nextjs.org's blog at 2x on macOS, six moves
+answered a second, where the frame that repaints a move is now a
+millisecond. A `:has()` that tests the hover is
+an anchor above it, in a function or out of one. A sibling combinator
+reaches the later siblings of the compound it follows and of no other, so
+one `.peer:hover ~ *` in a sheet does not make a hovered table row restyle
+every row after it. Of the elements a move reaches, only those the rules
+testing `:hover` answer differently for than before, or whose parent's
+style changed, are styled again; the rest of a hovered card or row keep
+the styles they have. Only a function that takes no plain selector list —
+`:nth-child(… of :hover)` — is left as one that could reach anything.
+
+**What a hover cannot restyle in place, it builds again with the other
+styles kept.** Text set bold on hover, an `opacity`, a `display`, content a
+hover gives a `::before`, a list marker the element colours, a translation
+that would make a box the containing block of what is in it: the boxes are
+built and laid out again, as every hover's used to be. But the move reached
+the same few elements, and every other element's style is what it was, so
+the build takes those from the tree it replaces and matches selectors for
+the ones it reached alone. Matching was most of such a build: on that blog
+a frame of 550 ms came to 150, most of which is the layout. `:active` is never set
+here, so a selector testing it changes nothing as the pointer moves.
+
+**A hover waits for a scroll to stop.** Core asks again what is under a
+pointer that has not moved after every frame that moved the content
+(`hover follows content`, react-x11#793), and while a document scrolls that
+is every frame. The document holds the question until the content has been
+still for a tenth of a second — the interval WebKit waits before the mouse
+move it sends itself after a scroll — and answers it once. What was hovered
+stays hovered as it scrolls away, as it does in a browser, and a move of the
+pointer itself is answered at once, scrolling or not. The cost this avoids
+is every frame's: that blog scrolled at 3 to 5 frames a second under a
+parked pointer and 52 with the pointer off the page, and scrolls at 52
+under it now. It is a hold and not a throttle because the expensive case is the one
+that matters: a hover that builds the boxes again once a rest is a pause
+nobody sees, and once every tenth of a second of a scroll is the scroll.
 
 **The cursor is the document's.** Over a link it is the `pointer` the
 user-agent sheet gives `a[href]`, wherever a page writes `cursor` it is

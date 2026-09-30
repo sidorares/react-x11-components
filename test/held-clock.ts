@@ -1,10 +1,12 @@
 // An animation's clock, held: its time moves only when the test says so.
 //
-// Four things here run on the wall clock on purpose — the maps wheel's glide
+// Five things here run on the wall clock on purpose — the maps wheel's glide
 // (`glideClock` in ../src/maps/controller.ts), a reorder drop's flight home
 // (`flightClock` in ../src/reorder/clock.ts), the march of `<Flow>`'s dashed
-// edges (`flowClock` in ../src/flow/node.ts) and the virtual window's idea
-// of a scroll in flight (`windowClock` in ../src/internal/window.ts). Each
+// edges (`flowClock` in ../src/flow/node.ts), the virtual window's idea
+// of a scroll in flight (`windowClock` in ../src/internal/window.ts) and the
+// rest `<Html>` holds a hover for while its content moves under the pointer
+// (`hoverClock` in ../src/html/node.ts). Each
 // reads the time as it goes, and a timer takes its next step. A runner slow
 // enough to spend a step's wait inside one `await` finds the step already
 // taken, and each has failed that way. Held, a step is taken when a `frame()`
@@ -46,7 +48,8 @@ export function holdClock(t: TestContext, clock: AnimationClock): HeldClock {
   let time = 0;
   // By handle, as real timers are: a step disarmed is gone, and two armed
   // at once both run. Each waits what it asked for — a frame for the glide
-  // and the flight, longer for the dashes' tick and the window's idle one.
+  // and the flight, longer for the dashes' tick, the window's idle one and
+  // a held hover's rest.
   const waiting = new Map<unknown, { step: () => void; at: number }>();
   t.mock.method(clock, 'now', () => time);
   t.mock.method(clock, 'arm', (step: () => void, ms: number) => {

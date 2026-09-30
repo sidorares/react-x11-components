@@ -1289,6 +1289,31 @@ with the rest — they add up across passes — so nothing may read an inline
 box's rect: `computePaintBounds` read it as the box's reach and measured a
 card grid three times its height.
 
+**A pointer move costs what it changed, and a scroll costs no hover at
+all.** Three things, and each is a rule for whatever is added to the
+cascade or the box tree next. A hover is restyled where it happened
+(`HtmlViewNode._hoverInPlace`): the boxes keep their identity and take new
+styles, so **a cache keyed on a `Box` that holds something a style decides
+goes stale under it** — `DECORATED` in `paint.ts` did — and **a box whose
+style is derived from an element's has to be derivable again**, which is
+why the tree keeps its anonymous-style function and a pseudo-element's box
+its `pseudo`. Where a hover has to build the boxes again, the build is
+handed the elements the move reached and keeps every other element's style
+(`Cascade.beginSharing(kept)`), since matching is most of a build:
+**anything new that makes a computed style depend on more than the cascade,
+the DOM and the pointer has to clear `_restyleOnly`**, as the viewport
+units and a face's arrival do. And core's hover-follows-content
+(react-x11#793) arrives as a move to the point the pointer is already at,
+every frame of a scroll: the document holds it until the content has been
+still a tenth of a second (`hoverClock`), because a page whose hover
+rebuilt scrolled at 4 frames a second under a parked pointer. That is a
+hold and not a throttle on purpose, and it is the document's and not
+core's: a `:hover` on a node is a flag, and only a drawn element knows what
+answering costs it. `pointerCompounds` is where a selector is read for what
+a hover in it can reach; Tailwind 4 writes `:hover` inside `:is()` and
+`:where()` as a matter of course, so "nested" there means a function it
+cannot read a selector list in, and nothing more.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

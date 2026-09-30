@@ -94,6 +94,41 @@ export interface SharedStyle {
   key: number;
 }
 
+/**
+ * The styles of the build before, for a build that only some elements'
+ * styles can differ in (`Cascade.beginSharing`): what each element's came
+ * to, and the elements to style again — `restyle`, each with everything in
+ * it, since a style is its parent's and the rules', and a rule reads an
+ * element's ancestors.
+ */
+export interface KeptStyles {
+  styles: ReadonlyMap<Element, { style: ComputedStyle; inFlex: boolean }>;
+  restyle: ReadonlySet<Element>;
+}
+
+/** What the pointer entering or leaving an element can change
+ *  (`Cascade.hoverTouches`): nothing, the element and what is in it, or
+ *  those and the siblings after it. */
+export type HoverTouch = 0 | 1 | 2;
+export const HOVER_UNTOUCHED = 0;
+export const HOVER_TOUCHED = 1;
+export const HOVER_FOLLOWED = 2;
+
+/** Which pseudo-elements' rules test the pointer (`Cascade.hoverPseudo`). */
+export const HOVER_PSEUDO_NONE = 0;
+export const HOVER_PSEUDO_GENERATED = 1;
+export const HOVER_PSEUDO_OTHER = 2;
+
+/** The pseudo-elements a pointer move can restyle: `::selection`'s style
+ *  is worked out as a selection is painted. */
+const POINTER_PSEUDO_ELEMENTS = [
+  'before',
+  'after',
+  'first-letter',
+  'first-line',
+  'marker',
+] as const;
+
 /** A compiled matcher, kept beside the rule it came from. */
 interface IndexedRule {
   rule: StyleRule;
@@ -133,6 +168,11 @@ class RuleIndex {
   /** Whether any rule in here is pointer-sensitive, so the renderer knows
    *  whether a pointer move can change the cascade at all. */
   hoverSensitive = false;
+  /** The rules that test `:hover`, in buckets of their own: the ones whose
+   *  answers a pointer move can change, which is all that is asked to know
+   *  whether an element's did (`Cascade.pointerChanged`). Null until there
+   *  is one. */
+  pointer: RuleIndex | null = null;
   /** The buckets holding a rule an element cannot share its style under
    *  (`UNSHAREABLE`): the ids, classes and tags whose elements compute
    *  their own, and whether the universal bucket makes every element do so. */
@@ -186,15 +226,22 @@ class RuleIndex {
       else if (key.kind === 'tag') this.ownStyleTags.add(key.name);
       else this.ownStyleEverywhere = true;
     }
-    const bucket =
-      key.kind === 'id'
-        ? mapBucket(this.byId, key.name)
-        : key.kind === 'class'
-          ? mapBucket(this.byClass, key.name)
-          : key.kind === 'tag'
-            ? mapBucket(this.byTag, key.name)
-            : this.universal;
-    bucket.push(indexed);
+    this._bucket(key).push(indexed);
+    if (HOVER.test(rule.selector)) {
+      this.pointer ??= new RuleIndex();
+      this.pointer.size += 1;
+      this.pointer._bucket(key).push(indexed);
+    }
+  }
+
+  private _bucket(key: ReturnType<typeof rightmostKey>): IndexedRule[] {
+    return key.kind === 'id'
+      ? mapBucket(this.byId, key.name)
+      : key.kind === 'class'
+        ? mapBucket(this.byClass, key.name)
+        : key.kind === 'tag'
+          ? mapBucket(this.byTag, key.name)
+          : this.universal;
   }
 }
 
@@ -246,34 +293,63 @@ function splitPseudoElement(
 /**
  * The compounds of a selector that test `:hover`, each without it (and
  * without an `:active` beside it), and whether one is followed by a sibling
- * combinator, which reaches the element's later siblings. `nested` where a
- * `:hover` sits inside a functional pseudo-class — `:not(:hover)`,
- * `:is(:hover)` — and reaches elements no compound names.
+ * combinator, which reaches the element's later siblings.
  *
- * A `:hover` in a compound's `:has()` is the one exception, since what it
- * reaches is known: the compound, without its `:has()`, is an ancestor of
+ * A `:hover` inside `:is()`, `:where()` or `:not()` is found where it is:
+ * each takes a selector list and matches the element it is written on, so
+ * a list entry of one compound tests that element — `a:not(:hover)` is a
+ * compound of `a`'s that tests the pointer — and an entry with combinators
+ * in it names an ancestor or an earlier sibling, as it would outside.
+ * Tailwind 4 writes every `group-hover:` that way, `:is(:where(.group):hover
+ * *)`, and a page of them built its document again on every move. Whatever
+ * the nesting, the element whose hover changed is one a compound found here
+ * matches, and what changes with it is itself, what is in it, and what
+ * follows it where a sibling combinator is in play: a selector reads an
+ * element, its ancestors and the siblings before each of them, and nothing
+ * else. `nested` is left for a function this cannot read a selector list
+ * in — `:nth-child(… of :hover)`, `:host()` — which reaches elements no
+ * compound names.
+ *
+ * A `:hover` in a compound's `:has()` is the other way about, since what
+ * it tests is below: the compound, without its `:has()`, is an ancestor of
  * the element the pointer is over — or an earlier sibling of it or of an
  * ancestor, where the argument starts at a sibling (Selectors 4, 4.5). So
- * it is given as an anchor (`has`) rather than making the rule `nested`.
+ * it is given as an anchor (`has`).
  *
  * `:active` is not the pointer's here: nothing sets it (`setPointer` is
  * handed none), so a selector that tests only it never changes as the
  * pointer moves — Wikipedia's buttons' `:focus:not(:active)` among them.
  * A press that sets it would have to be counted here too.
  */
-export function pointerCompounds(selector: string): {
+export function pointerCompounds(selector: string): PointerCompounds {
+  const out: PointerCompounds = {
+    compounds: [],
+    siblings: false,
+    nested: false,
+    has: [],
+    followed: [],
+  };
+  scanComplex(selector, out);
+  return out;
+}
+
+export interface PointerCompounds {
   compounds: string[];
   siblings: boolean;
   nested: boolean;
   has: { anchor: string; siblings: boolean }[];
-} {
-  const out = {
-    compounds: [] as string[],
-    siblings: false,
-    nested: false,
-    has: [] as { anchor: string; siblings: boolean }[],
-  };
-  // the compounds at the top level, each with the combinator after it
+  /** The compounds and anchors a sibling combinator follows: the ones
+   *  whose elements' later siblings change with them. */
+  followed: string[];
+}
+
+/** The functions that take a selector list and match the element they are
+ *  written on (Selectors 4, 4.2 to 4.4), under the names css-select and
+ *  older sheets know them by. */
+const MATCHES_ANY = /^(?:is|where|not|matches|any|-webkit-any|-moz-any)$/i;
+
+/** The compounds of a complex selector, each with the combinator after it. */
+function compoundsOf(selector: string): { text: string; next: string }[] {
   const parts: { text: string; next: string }[] = [];
   let start = 0;
   let depth = 0;
@@ -299,84 +375,187 @@ export function pointerCompounds(selector: string): {
     }
   }
   split(selector.length, '');
-  for (const { text, next } of parts) {
-    let bare = '';
-    let pointer = false;
-    depth = 0;
-    quote = '';
-    /** Where a top-level `:has(` starts in `bare`, and its argument in
-     *  `text`, while one is open. */
-    let hasAt = -1;
-    let argAt = -1;
-    let hasPointer = false;
-    let anchored = false;
-    const args: string[] = [];
-    for (let i = 0; i < text.length; i += 1) {
-      const c = text[i];
-      if (quote) {
-        if (c === quote && text[i - 1] !== '\\') quote = '';
-        bare += c;
-        continue;
-      }
-      if (c === '\\') {
-        const end = escapeEnd(text, i);
-        bare += text.slice(i, end);
-        i = end - 1;
-        continue;
-      }
-      if (c === '"' || c === "'") quote = c;
-      else if (c === '(' || c === '[') {
-        if (depth === 0 && c === '(' && /:has$/i.test(bare)) {
-          hasAt = bare.length - 4;
-          argAt = i + 1;
-          hasPointer = false;
-        }
-        depth += 1;
-      } else if (c === ')' || c === ']') {
-        depth = Math.max(0, depth - 1);
-        if (depth === 0 && hasAt >= 0 && c === ')') {
-          // the compound is kept without it: its argument is what the
-          // pointer changes
-          if (hasPointer) {
-            anchored = true;
-            args.push(text.slice(argAt, i));
-            bare = bare.slice(0, hasAt);
-          } else bare += c;
-          hasAt = -1;
-          continue;
-        }
-      } else if (c === ':' && text[i + 1] !== ':') {
-        const m = POINTER_PSEUDO_AT.exec(text.slice(i));
-        if (m) {
-          const hover = m[0].length === 6;
-          if (depth > 0) {
-            // whatever holds it in the argument, the element it tests is
-            // in the anchor's subtree or a later sibling's
-            if (hover && hasAt >= 0) hasPointer = true;
-            else if (hover) out.nested = true;
-          } else {
-            if (hover) pointer = true;
-            i += m[0].length - 1;
-            continue;
-          }
-        }
-      }
-      bare += c;
+  return parts;
+}
+
+/** A selector list's entries: split at its top-level commas. */
+function selectorsOf(list: string): string[] {
+  const entries: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let quote = '';
+  for (let i = 0; i < list.length; i += 1) {
+    const c = list[i];
+    if (quote) {
+      if (c === quote && list[i - 1] !== '\\') quote = '';
+    } else if (c === '\\') i = escapeEnd(list, i) - 1;
+    else if (c === '"' || c === "'") quote = c;
+    else if (c === '(' || c === '[') depth += 1;
+    else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
+    else if (c === ',' && depth === 0) {
+      entries.push(list.slice(start, i));
+      start = i + 1;
     }
-    if (anchored) {
+  }
+  entries.push(list.slice(start));
+  return entries;
+}
+
+/** Where the parenthesis opened at `open` closes, or the text's end. */
+function closeOf(text: string, open: number): number {
+  let depth = 0;
+  let quote = '';
+  for (let i = open; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote && text[i - 1] !== '\\') quote = '';
+    } else if (c === '\\') i = escapeEnd(text, i) - 1;
+    else if (c === '"' || c === "'") quote = c;
+    else if (c === '(' || c === '[') depth += 1;
+    else if (c === ')' || c === ']') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return text.length;
+}
+
+/** `pointerCompounds` for one complex selector, into `out`. */
+function scanComplex(selector: string, out: PointerCompounds): void {
+  for (const { text, next } of compoundsOf(selector)) {
+    const compoundsFrom = out.compounds.length;
+    const hasFrom = out.has.length;
+    const found = scanCompound(text, out);
+    const sibling = next === '+' || next === '~';
+    if (found.args.length) {
       out.has.push({
-        anchor: bare.trim() || '*',
-        siblings: args.some((arg) =>
-          arg.split(',').some((one) => /^\s*[+~]/.test(one)),
+        anchor: found.bare.trim() || '*',
+        siblings: found.args.some((arg) =>
+          selectorsOf(arg).some((one) => /^\s*[+~]/.test(one)),
         ),
       });
     }
-    if (!pointer) continue;
-    out.compounds.push(bare.trim() || '*');
-    if (next === '+' || next === '~') out.siblings = true;
+    if (found.pointer) out.compounds.push(found.bare.trim() || '*');
+    // what follows the element this compound matches follows one whose
+    // hover, or whose answer to a `:has()`, changed
+    // — the one this compound matches, or one a selector nested in it
+    // named, which is more than it reaches and never less
+    if (sibling && (found.pointer || found.below || found.args.length)) {
+      out.siblings = true;
+      for (let i = compoundsFrom; i < out.compounds.length; i += 1) {
+        out.followed.push(out.compounds[i]);
+      }
+      for (let i = hasFrom; i < out.has.length; i += 1) {
+        out.followed.push(out.has[i].anchor);
+      }
+    }
   }
-  return out;
 }
+
+/**
+ * What one compound says of the pointer: the compound without what tests
+ * it (`bare`), whether it tests the element's own hover (`pointer`), the
+ * arguments of each `:has()` of the element's that tests it below (`args`),
+ * and whether a selector nested in it named another element's (`below`),
+ * whose compounds went into `out`.
+ */
+function scanCompound(
+  text: string,
+  out: PointerCompounds,
+): { bare: string; pointer: boolean; below: boolean; args: string[] } {
+  let bare = '';
+  let pointer = false;
+  let below = false;
+  const args: string[] = [];
+  let bracket = 0;
+  let quote = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote && text[i - 1] !== '\\') quote = '';
+      bare += c;
+      continue;
+    }
+    if (c === '\\') {
+      const end = escapeEnd(text, i);
+      bare += text.slice(i, end);
+      i = end - 1;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === '[') bracket += 1;
+    else if (c === ']') bracket = Math.max(0, bracket - 1);
+    else if (c === ':' && bracket === 0 && text[i + 1] !== ':') {
+      const m = POINTER_PSEUDO_AT.exec(text.slice(i));
+      if (m) {
+        if (m[0].length === 6) pointer = true;
+        i += m[0].length - 1;
+        continue;
+      }
+      const fn = FUNCTION_AT.exec(text.slice(i));
+      if (fn) {
+        const open = i + fn[0].length - 1;
+        const close = closeOf(text, open);
+        const arg = text.slice(open + 1, close);
+        const whole = text.slice(i, close + 1);
+        i = close;
+        if (!HOVER.test(arg)) {
+          bare += whole;
+          continue;
+        }
+        const name = fn[1].toLowerCase();
+        if (name === 'has') {
+          // the compound is kept without it: its argument is what the
+          // pointer changes, and whatever holds the `:hover` in there, the
+          // element it tests is in the anchor's subtree or a later
+          // sibling's
+          args.push(arg);
+        } else if (MATCHES_ANY.test(name)) {
+          // Kept as what the entries that test this element's hover ask
+          // of it besides — `:where(a:hover)` is a compound of `a`'s, and
+          // so is `:not(a:hover)`, which only an `a` can change its answer
+          // to. Tailwind's typography writes its links `.prose
+          // :where(a:hover):not(:where(.not-prose, .not-prose *))`, and
+          // without the `a` that was a compound every element matched.
+          const own: string[] = [];
+          let any = false;
+          for (const entry of selectorsOf(arg)) {
+            if (!HOVER.test(entry)) continue;
+            const parts = compoundsOf(entry);
+            if (parts.length !== 1) {
+              scanComplex(entry, out);
+              below = true;
+              continue;
+            }
+            // of this element itself
+            const one = scanCompound(parts[0].text, out);
+            if (one.below) below = true;
+            if (!one.pointer && !one.args.length) continue;
+            if (one.pointer) pointer = true;
+            args.push(...one.args);
+            const rest = one.bare.trim();
+            if (rest && rest !== '*') own.push(rest);
+            else any = true;
+          }
+          if (own.length && !any) bare += `:is(${own.join(',')})`;
+        } else {
+          out.nested = true;
+          bare += whole;
+        }
+        continue;
+      }
+    }
+    bare += c;
+  }
+  return { bare, pointer, below, args };
+}
+
+/** A functional pseudo-class's name and its opening parenthesis, at the
+ *  start of a string. */
+const FUNCTION_AT = /^:([\w-]+)\(/;
+
+/** `:hover` anywhere in a selector. */
+const HOVER = /:hover(?![\w-])/i;
 
 /** `:hover` or `:active` at the start of a string, and nothing longer. */
 const POINTER_PSEUDO_AT = /^:(?:hover|active)(?![\w-])/i;
@@ -587,21 +766,28 @@ export class Cascade {
   /** The compounds of the selectors that test the pointer, each without
    *  its `:hover` or `:active` (`pointerCompounds`), and their matchers,
    *  compiled when a pointer move first asks (`hoverTouches`). */
-  private _hoverCompounds = new Set<string>();
-  private _hoverMatchers: ((el: Element) => boolean)[] | null = null;
+  private _hoverCompounds = new Map<string, boolean>();
+  private _hoverMatchers:
+    { match: (el: Element) => boolean; followed: boolean }[] | null = null;
   /** Whether a pointer move can be restyled where it happened
    *  (`HtmlViewNode._hoverInPlace`): false where a selector tests the
    *  pointer inside a functional pseudo-class, which reaches elements no
    *  compound names. */
   hoverLocal = true;
-  /** Whether a compound that tests the pointer is followed by a sibling
-   *  combinator, so an element's later siblings restyle with it. */
-  hoverSiblings = false;
-  /** The compounds whose `:has()` tests the pointer, each without it, and
-   *  whether its argument starts at a sibling (`hoverAnchors`). */
-  private _hoverAnchors = new Map<string, boolean>();
+  /** The compounds whose `:has()` tests the pointer, each without it,
+   *  whether its argument starts at a sibling, and whether a sibling
+   *  combinator follows it (`hoverAnchors`). */
+  private _hoverAnchors = new Map<
+    string,
+    { siblings: boolean; followed: boolean }
+  >();
   private _anchorMatchers:
-    { match: (el: Element) => boolean; siblings: boolean }[] | null = null;
+    | {
+        match: (el: Element) => boolean;
+        siblings: boolean;
+        followed: boolean;
+      }[]
+    | null = null;
   private _pointer: PointerState = NO_POINTER;
   readonly initial: ComputedStyle;
   readonly look: RootLook;
@@ -750,18 +936,49 @@ export class Cascade {
   }
 
   /**
+   * Which pseudo-elements' rules test the pointer: none's
+   * (`HOVER_PSEUDO_NONE`); a `::before`'s or an `::after`'s only
+   * (`HOVER_PSEUDO_GENERATED`), whose boxes a move restyles where they are
+   * as it does an element's; or a `::first-line`'s, a `::first-letter`'s
+   * or a `::marker`'s (`HOVER_PSEUDO_OTHER`), which layout styles and a
+   * move cannot.
+   */
+  get hoverPseudo(): 0 | 1 | 2 {
+    if (
+      this._pseudo['first-letter'].hoverSensitive ||
+      this._pseudo['first-line'].hoverSensitive ||
+      this._pseudo.marker.hoverSensitive
+    ) {
+      return HOVER_PSEUDO_OTHER;
+    }
+    return this._pseudo.before.hoverSensitive ||
+      this._pseudo.after.hoverSensitive
+      ? HOVER_PSEUDO_GENERATED
+      : HOVER_PSEUDO_NONE;
+  }
+
+  /**
    * Whether the pointer entering or leaving `el` can change a style: one of
    * the compounds a selector tests the pointer in matches it, the pointer
    * aside. A move between two paragraphs of a page whose only such rule is
-   * `a:hover` touches nothing, and restyles nothing.
+   * `a:hover` touches nothing, and restyles nothing. `HOVER_FOLLOWED`
+   * where a sibling combinator follows one that matches, so the element's
+   * later siblings can change with it — those rules' elements alone: a
+   * sheet with one `.peer:hover ~ *` in it does not make every row of a
+   * table restyle the rows after it.
    */
-  hoverTouches(el: Element): boolean {
-    this._hoverMatchers ??= [...this._hoverCompounds].flatMap((c) => {
-      const match = this._compile(c);
-      return match ? [match] : [];
-    });
-    for (const match of this._hoverMatchers) if (match(el)) return true;
-    return false;
+  hoverTouches(el: Element): HoverTouch {
+    // the followed ones first, so the first that matches is the answer
+    this._hoverMatchers ??= [...this._hoverCompounds]
+      .sort(([, a], [, b]) => Number(b) - Number(a))
+      .flatMap(([compound, followed]) => {
+        const match = this._compile(compound);
+        return match ? [{ match, followed }] : [];
+      });
+    for (const { match, followed } of this._hoverMatchers) {
+      if (match(el)) return followed ? HOVER_FOLLOWED : HOVER_TOUCHED;
+    }
+    return HOVER_UNTOUCHED;
   }
 
   /**
@@ -769,22 +986,27 @@ export class Cascade {
    * hovered or left: the ancestors of it a compound whose `:has()` tests
    * the pointer names, and their earlier siblings and its own where the
    * argument starts at a sibling — a superset, which is restyled and found
-   * the same where it did not. Into `into`.
+   * the same where it did not. Into `into`, each with whether its later
+   * siblings can change with it (`hoverTouches`).
    */
-  hoverAnchors(el: Element, into: Element[]): void {
+  hoverAnchors(el: Element, into: Map<Element, HoverTouch>): void {
     if (!this._hoverAnchors.size) return;
-    this._anchorMatchers ??= [...this._hoverAnchors].flatMap(
-      ([anchor, siblings]) => {
+    this._anchorMatchers ??= [...this._hoverAnchors]
+      .sort(([, a], [, b]) => Number(b.followed) - Number(a.followed))
+      .flatMap(([anchor, { siblings, followed }]) => {
         const match = this._compile(anchor);
-        return match ? [{ match, siblings }] : [];
-      },
-    );
+        return match ? [{ match, siblings, followed }] : [];
+      });
+    const note = (at: Element, followed: boolean): void => {
+      if (followed) into.set(at, HOVER_FOLLOWED);
+      else if (!into.has(at)) into.set(at, HOVER_TOUCHED);
+    };
     const siblings = this._anchorMatchers.some((m) => m.siblings);
     for (let at: Element | null = el; at;) {
       if (at !== el) {
-        for (const { match } of this._anchorMatchers) {
+        for (const { match, followed } of this._anchorMatchers) {
           if (match(at)) {
-            into.push(at);
+            note(at, followed);
             break;
           }
         }
@@ -792,9 +1014,9 @@ export class Cascade {
       if (siblings) {
         for (let s = at.prev; s; s = s.prev) {
           if (!isTag(s as Element)) continue;
-          for (const { match, siblings: apart } of this._anchorMatchers) {
-            if (apart && match(s as Element)) {
-              into.push(s as Element);
+          for (const m of this._anchorMatchers) {
+            if (m.siblings && m.match(s as Element)) {
+              note(s as Element, m.followed);
               break;
             }
           }
@@ -809,13 +1031,19 @@ export class Cascade {
     if (!/:(?:hover|active)/i.test(selector)) return;
     const found = pointerCompounds(selector);
     if (found.nested) this.hoverLocal = false;
-    if (found.siblings) this.hoverSiblings = true;
-    for (const c of found.compounds) this._hoverCompounds.add(c);
-    for (const { anchor, siblings } of found.has) {
-      this._hoverAnchors.set(
-        anchor,
-        siblings || (this._hoverAnchors.get(anchor) ?? false),
+    const followed = new Set(found.followed);
+    for (const c of found.compounds) {
+      this._hoverCompounds.set(
+        c,
+        followed.has(c) || (this._hoverCompounds.get(c) ?? false),
       );
+    }
+    for (const { anchor, siblings } of found.has) {
+      const was = this._hoverAnchors.get(anchor);
+      this._hoverAnchors.set(anchor, {
+        siblings: siblings || (was?.siblings ?? false),
+        followed: followed.has(anchor) || (was?.followed ?? false),
+      });
     }
   }
 
@@ -853,12 +1081,35 @@ export class Cascade {
   private _ids = new WeakMap<object, number>();
   private _nextId = 1;
 
-  /** A box tree is about to be built: the styles shared in the last build
-   *  were computed against a pointer and a viewport that may have moved. */
-  beginSharing(): void {
+  /** The styles kept from the build before, while a build that keeps them
+   *  runs, and what each kept element shares under in this one. */
+  private _kept: KeptStyles | null = null;
+  private _keptShared = new Map<Element, SharedStyle>();
+
+  /**
+   * A box tree is about to be built: the styles shared in the last build
+   * were computed against a pointer and a viewport that may have moved.
+   *
+   * With `kept`, only its `restyle` elements are matched: a build the
+   * pointer asked for — a hover that moved something — changes the styles
+   * of the elements the move reached, and every other element's is what it
+   * was. Matching them all again was most of such a build: a frame of 550 ms
+   * on a page with a Tailwind sheet, and 150 without it.
+   */
+  beginSharing(kept: KeptStyles | null = null): void {
     this._shared.clear();
     this._sharedByMatch.clear();
-    this._customs.clear();
+    // the kept styles' custom properties are the sets in here, which the
+    // elements styled under them find again
+    if (!kept) this._customs.clear();
+    this._kept = kept;
+    this._keptShared.clear();
+  }
+
+  /** The build is over: nothing later is answered from what it kept. */
+  endSharing(): void {
+    this._kept = null;
+    this._keptShared.clear();
   }
 
   /**
@@ -946,6 +1197,22 @@ export class Cascade {
     parentKey: number,
     inFlexContainer: boolean,
   ): SharedStyle {
+    const kept = this._kept;
+    if (kept !== null && !kept.restyle.has(el)) {
+      // An element the change did not reach keeps its style, under a key
+      // of its own: a key stands for an element's ancestors, which the
+      // elements styled again under it have in common, and two kept
+      // elements with one style need not — a hover restyled in place
+      // leaves a hovered card's children the styles its neighbours' have.
+      let shared = this._keptShared.get(el);
+      if (shared !== undefined) return shared;
+      const was = kept.styles.get(el);
+      if (was !== undefined && was.inFlex === inFlexContainer) {
+        shared = { style: was.style, key: this._nextShareKey++ };
+        this._keptShared.set(el, shared);
+        return shared;
+      }
+    }
     let key = `${parentKey}\u0001${inFlexContainer ? 1 : 0}`;
     const tag = tagOf(el);
     key += `\u0001${tag.length}:${tag}`;
@@ -1459,12 +1726,47 @@ export class Cascade {
     return { style: asRoot(this.styleFor(synthetic, parent, false)), html };
   }
 
+  /**
+   * Whether the pointer's move from `was` to where it is changed which
+   * rules match `el`, or its `::before`, `::after` or another of its
+   * pseudo-elements: the rules that test `:hover` asked under both, and
+   * nothing else, since no other rule's answer is the pointer's. An element
+   * they answer the same for, under a parent whose style is what it was, has
+   * the style it had — which is most of what a move reaches: the rows of a
+   * hovered table body, what is in a hovered card.
+   */
+  pointerChanged(el: Element, was: PointerState): boolean {
+    const now = this._pointer;
+    const after = this._pointerAnswers(el);
+    this._pointer = was;
+    const before = this._pointerAnswers(el);
+    this._pointer = now;
+    return before !== after;
+  }
+
+  /** The ids of the rules testing the pointer that match `el` as things
+   *  stand, the element's and each pseudo-element's. */
+  private _pointerAnswers(el: Element): string {
+    let answers = '';
+    const ask = (index: RuleIndex, name: string): void => {
+      const pointer = index.pointer;
+      if (!pointer || !pointer.reaches(el)) return;
+      const matched: number[] = [];
+      this._matchInto(pointer, el, null, matched);
+      if (matched.length) answers += `${name}${matched.join(',')};`;
+    };
+    ask(this._index, '');
+    for (const which of POINTER_PSEUDO_ELEMENTS)
+      ask(this._pseudo[which], which);
+    return answers;
+  }
+
   /** The rules of `index` that match `el`, pushed onto `out` as candidates,
    *  and their ids onto `matched` in the order they were tried. */
   private _matchInto(
     index: RuleIndex,
     el: Element,
-    out: Candidate[],
+    out: Candidate[] | null,
     matched?: number[],
   ): void {
     // A media query's width is CSS pixels; the viewport is kept in device.
@@ -1499,6 +1801,7 @@ export class Cascade {
         }
         if (!indexed.match || !indexed.match(el)) continue;
         matched?.push(indexed.id);
+        if (out === null) continue;
         const origin = rule.order < 0 ? Origin.UserAgent : Origin.Author;
         pushRule(out, rule, origin);
       }

@@ -2,6 +2,7 @@
 // place.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
+import React from 'react';
 import {
   act,
   cleanup,
@@ -16,6 +17,8 @@ import {
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
+import { hoverClock } from '../../src/html/node.js';
+import { holdClock } from '../held-clock.js';
 import {
   FONTS,
   boxOf,
@@ -530,6 +533,7 @@ test("a :hover in a :has() names the element that holds it, and is no rule's nes
       siblings: false,
       nested: false,
       has: [{ anchor: '#rir-map', siblings: false }],
+      followed: [],
     },
   );
   // an argument that starts at a sibling reaches the siblings before
@@ -540,10 +544,366 @@ test("a :hover in a :has() names the element that holds it, and is no rule's nes
   const both = pointerCompounds('li.x:hover:has(> a:hover)');
   assert.deepStrictEqual(both.compounds, ['li.x']);
   assert.deepStrictEqual(both.has, [{ anchor: 'li.x', siblings: false }]);
-  // a :has() inside another function is not the compound's own
-  assert.strictEqual(pointerCompounds(':not(:has(a:hover))').nested, true);
-  assert.strictEqual(pointerCompounds('a:not(:hover)').nested, true);
+  // and one a sibling combinator follows reaches the siblings after
+  const followed = pointerCompounds('.a:has(:hover) ~ .b');
+  assert.deepStrictEqual(followed.followed, ['.a']);
+  assert.strictEqual(followed.siblings, true);
+  // a :has() inside another function is the compound's all the same
+  assert.deepStrictEqual(pointerCompounds(':not(:has(a:hover))').has, [
+    { anchor: '*', siblings: false },
+  ]);
 });
+
+test('a :hover inside :is(), :where() or :not() names the element it tests', async () => {
+  const { pointerCompounds } = await import('../../src/html/css/cascade.js');
+  const found = (selector: string) => {
+    const { compounds, nested, followed } = pointerCompounds(selector);
+    return { compounds, nested, followed };
+  };
+  // Tailwind 4's `group-hover:` and `peer-hover:`, which every hover on a
+  // page written with them built the document again for
+  assert.deepStrictEqual(
+    found('.group-hover\\:underline:is(:where(.group):hover *)'),
+    { compounds: [':where(.group)'], nested: false, followed: [] },
+  );
+  assert.deepStrictEqual(found('.n:is(:where(.peer):hover ~ *)'), {
+    compounds: [':where(.peer)'],
+    nested: false,
+    followed: [':where(.peer)'],
+  });
+  // an entry of one compound tests the element it is written on, and is
+  // kept as what it asks of it besides: its typography's links, which
+  // without the `a` were a compound every element matched
+  assert.deepStrictEqual(
+    found(
+      '.prose :where(a:not([data-card]):hover):not(:where(.not-prose,.not-prose *))',
+    ).compounds,
+    [':is(a:not([data-card])):not(:where(.not-prose,.not-prose *))'],
+  );
+  assert.deepStrictEqual(found('a:not(:hover)').compounds, ['a']);
+  assert.deepStrictEqual(found('a:is(:hover, :focus) > b').compounds, ['a']);
+  // what follows the element a nested selector names follows it
+  assert.deepStrictEqual(found(':is(.x .a:hover) ~ .b'), {
+    compounds: ['.a'],
+    nested: false,
+    followed: ['.a'],
+  });
+  // a `:has()` in one is an anchor, as it is outside
+  assert.deepStrictEqual(
+    pointerCompounds('.t:is(:where(.peer):has(:hover) ~ *)').has,
+    [{ anchor: ':where(.peer)', siblings: false }],
+  );
+  // an escaped `:hover` in a class name is no pointer's
+  assert.deepStrictEqual(
+    found('.\\[\\&_a\\:hover\\]\\:underline a:hover').compounds,
+    ['a'],
+  );
+  // and a function this reads no selector list in is left nested
+  assert.strictEqual(found('li:nth-child(2 of :hover)').nested, true);
+});
+
+/** The colour an element's box has. */
+const colourOf = (el: HtmlViewNode, id: string) =>
+  (boxOf(el, id) as unknown as { style: { color: string } }).style.color;
+
+/**
+ * A hover over `id`, which has to be restyled where it is — the tree it had
+ * kept — and come out to the pixels the document built again draws. The
+ * rebuild leaves a tree of its own, which the next move is held to.
+ */
+async function hoverInPlace(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+  id: string,
+): Promise<Uint8ClampedArray> {
+  const tree = treeOf(el);
+  el.setHover(...pointIn(el, id));
+  const drawn = await snapshot(result, el);
+  assert.ok(treeOf(el) === tree, `the document was built again over #${id}`);
+  assert.strictEqual(
+    bytesApart(drawn, await rebuilt(result, el)),
+    0,
+    `#${id} hovered is not as a rebuild draws it`,
+  );
+  return drawn;
+}
+
+metric(
+  'a :hover in :is() restyles where it is: a group, a peer and a link among prose',
+  async () => {
+    // Tailwind 4 writes `group-hover:`, `peer-hover:` and its typography's
+    // links this way, and a page of them built its document again on every
+    // move of the pointer: nextjs.org's blog, half a second a move
+    const { result, node } = await render(
+      '<style>body{margin:0} .t,.n{color:#000000} a{color:#0000ee}' +
+        ' .t:is(:where(.group):hover *){color:#ff0000}' +
+        ' .n:is(:where(.peer):hover ~ *){color:#00aa00}' +
+        ' .prose :where(a:hover):not(:where(.not-prose,.not-prose *))' +
+        '{color:#aa00aa}</style>' +
+        '<div class="group" id="g"><p>in the group, <span class="t" id="t">' +
+        'marked</span></p></div>' +
+        '<p class="peer" id="peer">the peer</p><p class="n" id="n">after</p>' +
+        '<div class="prose"><p>prose with <a id="a" href="#x">a link</a></p>' +
+        '<p class="not-prose">and <a id="na" href="#y">one that is not</a>' +
+        '</p></div><p id="away">away from all of them</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+
+    let drawn = await hoverInPlace(result, el, 't');
+    assert.ok(bytesApart(drawn, quiet) > 0, 'the group drew nothing');
+    assert.strictEqual(colourOf(el, 't'), '#ff0000');
+
+    drawn = await hoverInPlace(result, el, 'peer');
+    assert.strictEqual(colourOf(el, 't'), '#000000', 'the group kept it');
+    assert.strictEqual(colourOf(el, 'n'), '#00aa00');
+
+    drawn = await hoverInPlace(result, el, 'a');
+    assert.strictEqual(colourOf(el, 'n'), '#000000', 'the peer kept it');
+    assert.strictEqual(colourOf(el, 'a'), '#aa00aa');
+
+    drawn = await hoverInPlace(result, el, 'na');
+    assert.strictEqual(colourOf(el, 'na'), '#0000ee', 'not prose');
+
+    drawn = await hoverInPlace(result, el, 'away');
+    assert.strictEqual(bytesApart(drawn, quiet), 0, 'not as it was');
+  },
+);
+
+metric(
+  'a sibling combinator after one compound does not make every hover reach the siblings after it',
+  async () => {
+    // one `.peer:hover ~ *` in a sheet, and a hover over a row of a long
+    // list restyled every row after it — past what is restyled in place
+    const rows = Array.from(
+      { length: 400 },
+      (_, i) => `<li id="r${i}">row ${i}</li>`,
+    ).join('');
+    const { result, node } = await render(
+      '<style>body{margin:0} ul{margin:0;list-style:none}' +
+        ' li:hover{background:#ffff00} .peer:hover ~ *{color:#00aa00}</style>' +
+        `<ul>${rows}</ul>`,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'r3'));
+    await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'a row built the document again');
+    const reach = (
+      el as unknown as {
+        _hoverReach(was: unknown[], now: unknown[]): Set<unknown>;
+      }
+    )._hoverReach([], [findById(el.document, 'r5')]);
+    assert.strictEqual(reach.size, 1, 'a row reaches itself');
+  },
+);
+
+metric(
+  'a link made a flex row, its text in an anonymous box, takes its colour in place',
+  async () => {
+    // nextjs.org's "read more": the text of a flex container is in a box
+    // the fix-up made, which takes what the link's style passes on
+    const { result, node } = await render(
+      '<style>body{margin:0} a{display:flex;justify-content:center;' +
+        'color:#666666;background:#eeeeee} a:hover{color:#000000;' +
+        'background:#dddddd}</style>' +
+        '<a id="a" href="#x">Read more</a><p id="away">away</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const drawn = await hoverInPlace(result, el, 'a');
+    assert.ok(bytesApart(drawn, quiet) > 0, 'the hover drew nothing');
+    assert.strictEqual(
+      bytesApart(await hoverInPlace(result, el, 'away'), quiet),
+      0,
+      'not as it was',
+    );
+  },
+);
+
+metric(
+  "a ::before and an ::after take their element's hover in place, and their own",
+  async () => {
+    const { result, node } = await render(
+      '<style>body{margin:0} a{color:#0000ee} a:hover{color:#ff0000}' +
+        ' a::after{content:" \\2192"}' +
+        ' b::before{content:"* ";color:#888888} b:hover::before{color:#00aa00}' +
+        ' i:hover::after{content:" !"}</style>' +
+        '<p><a id="a" href="#x">a link</a></p>' +
+        '<p><b id="b">bold</b></p><p><i id="i">italic</i></p>' +
+        '<p id="away">away</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    // the arrow is the link's colour, which it inherits
+    const link = await hoverInPlace(result, el, 'a');
+    assert.ok(bytesApart(link, quiet) > 0, 'the link drew nothing');
+    // the star is its own rule's, which tests its element's hover: the
+    // element's style is what it was, and its `::before`'s is not
+    const star = await hoverInPlace(result, el, 'b');
+    assert.ok(bytesApart(star, quiet) > 0, 'the star drew nothing');
+    assert.ok(bytesApart(star, link) > 0, 'the link kept its hover');
+    // content a hover gives an element is a box to build
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'i'));
+    const mark = await snapshot(result, el);
+    assert.ok(treeOf(el) !== tree, 'a new box was restyled in place');
+    assert.strictEqual(bytesApart(mark, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'a custom property a hover sets is what the elements under it are styled with afterwards',
+  async () => {
+    // the card's hover changes nothing the card draws, only what `var()`
+    // reads under it; a later move inside the card styles a link from its
+    // parent's style, which has to be the one with the hovered value in it
+    const { result, node } = await render(
+      '<style>body{margin:0} .card{--c:#000000} .card:hover{--c:#ff0000}' +
+        ' .x{color:var(--c)} a{color:var(--c);text-decoration:none}' +
+        ' a:hover{text-decoration:underline}</style>' +
+        '<div class="card" id="card"><p class="x" id="x">text, and ' +
+        '<span id="s">a span with <a id="a" href="#x">a link</a></span></p>' +
+        '</div><p id="away">away</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    await hoverInPlace(result, el, 'x');
+    assert.strictEqual(colourOf(el, 'a'), '#ff0000');
+    // without the rebuild between: the styles the first move left
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'away'));
+    el.setHover(...pointIn(el, 'x'));
+    el.setHover(...pointIn(el, 'a'));
+    const drawn = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'the document was built again');
+    assert.strictEqual(colourOf(el, 'a'), '#ff0000', 'the link lost it');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+    assert.strictEqual(
+      bytesApart(await hoverInPlace(result, el, 'away'), quiet),
+      0,
+      'not as it was',
+    );
+  },
+);
+
+/** How many styles the cascade computes while `run` runs. */
+async function stylesComputed(
+  el: HtmlViewNode,
+  run: () => Promise<unknown>,
+): Promise<number> {
+  const cascade = (el as unknown as { _cascade: Record<string, unknown> })
+    ._cascade;
+  const compute = cascade._computeStyle as (...args: unknown[]) => unknown;
+  let n = 0;
+  cascade._computeStyle = function (this: unknown, ...args: unknown[]) {
+    n += 1;
+    return compute.apply(this, args);
+  };
+  try {
+    await run();
+  } finally {
+    delete cascade._computeStyle;
+  }
+  return n;
+}
+
+metric(
+  'a hover that moves something builds the boxes again with the styles it did not reach kept',
+  async () => {
+    // bold text is another shape, so the document is built and laid out
+    // again — but only the hovered paragraph's style is one to work out:
+    // matching every element again was most of such a build
+    const paragraphs = Array.from(
+      { length: 200 },
+      (_, i) =>
+        `<div class="c"><p id="p${i}">Paragraph ${i} with <b id="b${i}">` +
+        `bold</b> and <a id="a${i}" href="#${i}">a link</a>.</p></div>`,
+    ).join('');
+    const { result, node } = await render(
+      '<style>body{margin:0} p{margin:0} a{color:#0000ee}' +
+        ' .c:hover a{color:#ff0000} b{font-weight:normal}' +
+        ' b:hover{font-weight:bold}</style>' +
+        paragraphs,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+
+    // onto a paragraph's link, in place: the card's link takes its colour
+    await hoverInPlace(result, el, 'a3');
+    // then onto the bold in the same card, which is built again, under a
+    // card whose hover the styles kept around it still carry
+    const tree = treeOf(el);
+    let drawn: Uint8ClampedArray = new Uint8ClampedArray();
+    const computed = await stylesComputed(el, async () => {
+      el.setHover(...pointIn(el, 'b3'));
+      drawn = await snapshot(result, el);
+    });
+    assert.ok(treeOf(el) !== tree, 'bold was restyled in place');
+    assert.ok(
+      computed > 0 && computed < 10,
+      `${computed} styles were worked out for one hovered element`,
+    );
+    assert.strictEqual(colourOf(el, 'a3'), '#ff0000', 'the card lost it');
+    assert.strictEqual(colourOf(el, 'a4'), '#0000ee');
+    assert.strictEqual(
+      bytesApart(drawn, await rebuilt(result, el)),
+      0,
+      'not as a build of every style draws it',
+    );
+
+    // and to another card's bold: both are styled again, and nothing else
+    const again = treeOf(el);
+    const next = await stylesComputed(el, async () => {
+      el.setHover(...pointIn(el, 'b7'));
+      drawn = await snapshot(result, el);
+    });
+    assert.ok(treeOf(el) !== again, 'bold was restyled in place');
+    assert.ok(next < 20, `${next} styles were worked out for two cards`);
+    assert.strictEqual(colourOf(el, 'a3'), '#0000ee');
+    assert.strictEqual(colourOf(el, 'a7'), '#ff0000');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'a build that keeps styles does not keep them past a new cascade or a viewport they read',
+  async () => {
+    const { result, node } = await render(
+      '<style>body{margin:0} p{margin:0;width:50vw;background:#cccccc}' +
+        ' b{font-weight:normal} b:hover{font-weight:bold}</style>' +
+        '<p id="p">Some <b id="b">bold</b> text</p><p id="q">more</p>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const width = () => (boxOf(el, 'q') as unknown as LaidBox).width;
+    assert.strictEqual(width(), 150);
+    // a hover asks for a build that keeps styles, and before it runs the
+    // viewport narrows: `50vw` is a number in the style that was kept
+    el.setHover(...pointIn(el, 'b'));
+    await result.rerender(
+      h(
+        'box',
+        { style: { width: 200, flexDirection: 'column' } },
+        h(Html, {
+          source: (el as unknown as { props: { source: string } }).props.source,
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      ),
+    );
+    await snapshot(result, el);
+    assert.strictEqual(width(), 100, 'a style kept from another viewport');
+  },
+);
 
 metric(
   'a :hover in a :has() restyles where it is: the element that holds it, and its siblings',
@@ -578,6 +938,90 @@ metric(
     assert.strictEqual(colour('m'), '#000000');
     assert.strictEqual(colour('t'), '#aa0000');
     assert.deepStrictEqual(after, await rebuilt(result, el));
+  },
+);
+
+metric(
+  'a hover waits for a scroll to stop, and follows a move of the pointer at once',
+  async (t) => {
+    // Core asks what is under a still pointer after every frame that moved
+    // the content (react-x11#793), which while a document scrolls is every
+    // frame: a restyle a frame, and on a page whose hover moves something,
+    // the boxes built again a frame — 4 frames a second where 52 were drawn
+    // with the pointer off the page. The hover is held until the content
+    // has been still a tenth of a second, as a browser holds its own.
+    const clock = holdClock(t, hoverClock);
+    const rows = Array.from(
+      { length: 40 },
+      (_, i) => `<p id="r${i}">row ${i}</p>`,
+    ).join('');
+    const pane = React.createRef<
+      DrawnNode & { scrollTo(to: { y: number }): void }
+    >();
+    await renderX11(
+      h(
+        'box',
+        { ref: pane, style: { width: 400, height: 200, overflow: 'scroll' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0} p{margin:0;height:40px}' +
+            ` p:hover{background:#ffff00}</style>${rows}`,
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 240, fonts: FONTS! },
+    );
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const hovered = () =>
+      (el as unknown as { _hovered: { attribs: { id?: string } }[] })
+        ._hovered[0]?.attribs.id;
+    const under = () => {
+      const { abs } = pane.current!;
+      return el.elementAtPoint(abs.x + abs.width / 2, abs.y + abs.height / 2)
+        ?.attribs.id;
+    };
+    const frames = async (n: number) => {
+      for (let i = 0; i < n; i += 1) await clock.frame();
+    };
+
+    // the pointer to the middle of the pane, over the third row
+    fireEvent.mouseMove(pane.current!, { dx: 0, dy: 0 });
+    await waitFor(() => assert.strictEqual(hovered(), 'r2'));
+    assert.ok(!clock.pending, 'a move of the pointer waited');
+
+    // two rows scroll by under it: it is over the fifth, which is not
+    // hovered until the scroll has stopped
+    await act(async () => pane.current!.scrollTo({ y: 80 }));
+    assert.strictEqual(under(), 'r4');
+    assert.strictEqual(hovered(), 'r2', 'the hover followed the scroll');
+    assert.ok(clock.pending, 'nothing waits to ask again');
+
+    // and two more before the tenth of a second is up, which puts it off
+    await frames(3);
+    await act(async () => pane.current!.scrollTo({ y: 160 }));
+    await frames(4);
+    assert.strictEqual(hovered(), 'r2', 'asked while the content moved');
+    await frames(3);
+    assert.strictEqual(hovered(), 'r6', 'not asked once it had stopped');
+    assert.ok(!clock.pending, 'a timer left running');
+
+    // held again by another scroll, a move of the pointer is answered
+    await act(async () => pane.current!.scrollTo({ y: 240 }));
+    assert.strictEqual(hovered(), 'r6');
+    fireEvent.mouseMove(pane.current!, { dx: 0, dy: 40 });
+    await waitFor(() => assert.strictEqual(hovered(), 'r9'));
+    assert.ok(!clock.pending, 'the held hover outlived the move');
+
+    // and one that leaves takes what it held with it
+    await act(async () => pane.current!.scrollTo({ y: 320 }));
+    assert.ok(clock.pending);
+    (
+      el as unknown as { defaultMouseLeave(ev: unknown): void }
+    ).defaultMouseLeave({});
+    assert.strictEqual(hovered(), undefined);
+    assert.ok(!clock.pending, 'a hover held for a pointer that left');
   },
 );
 
