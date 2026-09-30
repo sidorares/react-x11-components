@@ -174,6 +174,7 @@ export function layoutFlex(
       tall: NaN,
       set: NaN,
       stretch: NaN,
+      held: NaN,
     };
     applyItem(node, child, ctx, contentWidth, laid, height !== null, own);
     root.insertChild(node, items.length);
@@ -192,12 +193,19 @@ export function layoutFlex(
   ctx.flexDepth = depth + 1;
   try {
     calculate();
+    // frozen at its least size on the one line of a box that does not
+    // wrap, by a basis where Yoga takes one along the main axis
+    // (`applyItem`'s `setBasis`)
+    const hold: Hold = {
+      frozen: box.style.flexWrap === 'nowrap',
+      basis: row ? bounded : height !== null,
+    };
     // an item Yoga shrank under what its content comes to is kept to it,
     // and the row is laid out again (`autoMinimums`) — which may shrink
     // another under its own, a few times over at most
     for (
       let pass = 0;
-      pass < 4 && autoMinimums(items, row, ctx, contentWidth);
+      pass < 4 && autoMinimums(items, row, ctx, contentWidth, hold);
       pass += 1
     ) {
       calculate();
@@ -294,11 +302,11 @@ export function layoutFlex(
  *  base size the ratio makes of the stretched size; whether any changed. */
 function keepRatios(
   container: Box,
-  items: readonly { box: Box; node: YogaNode }[],
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
   row: boolean,
 ): boolean {
   let changed = false;
-  for (const { box, node } of items) {
+  for (const { box, node, laid } of items) {
     if (box.kind !== 'replaced' || !stretches(box, container.style, row)) {
       continue;
     }
@@ -314,6 +322,13 @@ function keepRatios(
     const main = row ? node.getComputedWidth() : node.getComputedHeight();
     if (Math.abs(basis - main) < 0.5) continue;
     node.setFlexBasis(basis);
+    // one held at its least size (`holdAt`) flexes from the new basis, no
+    // further down than that
+    if (!Number.isNaN(laid.held)) {
+      laid.held = NaN;
+      node.setFlexGrow(style.flexGrow);
+      node.setFlexShrink(style.flexShrink);
+    }
     changed = true;
   }
   return changed;
@@ -467,6 +482,7 @@ function placeItems(
       laid.set,
       laid.stretch,
       laid.width,
+      row ? laid.held : NaN,
     );
     const itemHeight = node.getComputedHeight();
     // The item is laid out again at the width the flex pass settled on: the
@@ -807,7 +823,13 @@ function applyItem(
     const width = meant(w, laid.set - extra, laid.stretch - extra);
     const given = hm === Y.MEASURE_MODE_EXACTLY && Number.isFinite(h);
     const exact = wm === Y.MEASURE_MODE_EXACTLY && Number.isFinite(width);
-    const through = widthThrough && given && !exact ? widthThrough(h) : null;
+    // the height it was flexed to, that is: one its automatic minimum
+    // holds it at (`holdAt`) is its content's, which a replaced element's
+    // width follows through its ratio and no other's does (CSS Sizing 4,
+    // 5.1)
+    const flexed = box.kind === 'replaced' || Number.isNaN(laid.held);
+    const through =
+      widthThrough && given && !exact && flexed ? widthThrough(h) : null;
     // along a row, a replaced element is its own width wherever there is
     // room for less — its flex base size is not fitted to the room (9.2)
     // — and across a column it is fitted, as any item is
@@ -854,6 +876,9 @@ interface Laid {
   /** Its border-box width stretched across its container: the container's
    *  content width, less its margins. */
   stretch: number;
+  /** The size along the main axis its automatic minimum holds it at
+   *  (`holdAt`), or NaN. */
+  held: number;
 }
 
 /**
@@ -1196,6 +1221,7 @@ function autoMinimums(
   row: boolean,
   ctx: LayoutContext,
   containingWidth: number,
+  hold: Hold,
 ): boolean {
   let changed = false;
   for (const { box, node, laid } of items) {
@@ -1212,13 +1238,14 @@ function autoMinimums(
       laid.set,
       laid.stretch,
       laid.width,
+      row ? laid.held : NaN,
     );
     // a replaced item's content along a row is its natural width
     if (row && box.kind === 'replaced') {
       if (style.minWidth !== AUTO || style.minWidthKeyword) continue;
       const least = replacedMinimum(box, containingWidth);
       if (least === null || width >= least - 0.01) continue;
-      node.setMinWidth(least);
+      holdAt(node, laid, row, least, hold);
       changed = true;
       continue;
     }
@@ -1245,7 +1272,7 @@ function autoMinimums(
           if (most !== null) least = Math.min(least, most + extra);
         }
         if (width >= least - 0.01) continue;
-        node.setMinWidth(least);
+        holdAt(node, laid, row, least, hold);
         changed = true;
         continue;
       }
@@ -1274,7 +1301,7 @@ function autoMinimums(
       if (width >= least - 0.01) continue;
       least = Math.min(least, minContentOf(box, ctx, laid));
       if (node.getComputedWidth() >= least - 0.01) continue;
-      node.setMinWidth(least);
+      holdAt(node, laid, row, least, hold);
       changed = true;
       continue;
     }
@@ -1301,13 +1328,25 @@ function autoMinimums(
     const height = Number.isNaN(read) ? laid.height : kept!.height;
     let least: number;
     if (row) {
-      // or than what it drew at the width it has: nothing overflows it
+      // or than what it drew at the width it has: nothing overflows it —
+      // unless a line in it fits for being cut short by `text-overflow`,
+      // which is how the line is drawn and no part of how wide it is: a
+      // button whose label is a `truncate` span is no narrower than the
+      // label, where it was shrunk and the label cut. No width, then, that
+      // it drew at, which is what is kept of it
       let drawn = read;
       if (Number.isNaN(drawn)) {
-        drawn = intrinsicWidth(box) + box.horizontalExtra;
+        const seen = { cut: false };
+        drawn = intrinsicWidth(box, seen) + box.horizontalExtra;
+        if (seen.cut) drawn = Infinity;
         remember(box, ctx, width, containingWidth, 'drawn', drawn);
       }
-      if (transferredWidth(box, drawn) <= width + 0.5) continue;
+      if (
+        Number.isFinite(drawn) &&
+        transferredWidth(box, drawn) <= width + 0.5
+      ) {
+        continue;
+      }
       // within what a ratio makes of its least and greatest heights (4.5's
       // content size suggestion)
       least = transferredWidth(box, minContentOf(box, ctx, laid));
@@ -1317,7 +1356,7 @@ function autoMinimums(
         if (most !== null) least = Math.min(least, most + extra);
       }
       if (node.getComputedWidth() >= least - 0.01) continue;
-      node.setMinWidth(least);
+      holdAt(node, laid, row, least, hold);
     } else {
       // its height, or where it has one of its own and its content comes to
       // less, its content's: the lesser of the two (4.5)
@@ -1352,7 +1391,7 @@ function autoMinimums(
         if (most !== null) least = Math.min(least, most + extra);
       }
       if (node.getComputedHeight() >= least - 0.01) continue;
-      node.setMinHeight(least);
+      holdAt(node, laid, row, least, hold);
     }
     changed = true;
   }
@@ -1370,6 +1409,60 @@ function ratioContent(box: Box, content: number): number {
       ? box.width / aspect.ratio
       : box.contentWidth / aspect.ratio + box.verticalExtra,
   );
+}
+
+/** How a flex box holds its items to their least sizes (`holdAt`). */
+interface Hold {
+  /** Whether an item is frozen at its least size: on the one line of a
+   *  box that does not wrap. */
+  frozen: boolean;
+  /** Whether Yoga takes a length for a basis along the main axis
+   *  (`applyItem`'s `setBasis`), and else the item's own size. */
+  basis: boolean;
+}
+
+/**
+ * Hold an item to its least size along the main axis, the size Yoga gave
+ * it being under that. It is frozen there, as CSS Flexbox freezes an item
+ * its minimum stops (9.7, step 4): inflexible, at that size, the rest of
+ * the line sharing what is left. Handed the minimum as a `min-width`
+ * alone, Yoga makes it the item's flex base size, which is two things the
+ * specification does not do:
+ *
+ * - where the line has room to share out, the item takes its share on top
+ *   of the minimum: of three `flex: 1` items in 300 pixels, the one with a
+ *   word 200 wide was 233, where it is 200 and the others 50 each;
+ * - where every item of a line is held, Yoga divides what the line is
+ *   short of by what is left of the shrink factors once it has taken each
+ *   item's away — nothing, or a float's rounding of it. Two items 110.992
+ *   and 62.706 pixels wide in a row too narrow for them came out billions
+ *   of pixels wide, and 31.3 and 17.7 came out as they are: by the digits
+ *   of their sizes, which are a text's widths in whatever font it is set.
+ *
+ * On the one line of a box that does not wrap, an item Yoga had under its
+ * minimum has no more room when another is held too, so frozen is where it
+ * ends. In a box that wraps it may have: the minimums move the line breaks
+ * (9.3), and an item held on a crowded line may be on one with room to
+ * grow in once they have. There the minimum is left to Yoga, as a minimum;
+ * only a line of one item is short of room there, and what Yoga takes away
+ * from its shrink factors is exactly what it added.
+ */
+function holdAt(
+  node: YogaNode,
+  laid: Laid,
+  row: boolean,
+  least: number,
+  hold: Hold,
+): void {
+  if (row) node.setMinWidth(least);
+  else node.setMinHeight(least);
+  if (!hold.frozen) return;
+  laid.held = least;
+  node.setFlexGrow(0);
+  node.setFlexShrink(0);
+  if (hold.basis) node.setFlexBasis(least);
+  else if (row) node.setWidth(least);
+  else node.setHeight(least);
 }
 
 /** An item's min-content width, its border box's, taken the once: its

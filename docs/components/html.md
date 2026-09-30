@@ -432,7 +432,13 @@ padding and border counted once, and a width, height or basis of its own is
 its content box's unless `box-sizing` says otherwise. An `auto` margin takes
 the free space on its side, so `margin-left: auto` puts an item at the end
 of its row. A row of flex items inside another item is as wide as its items
-side by side and the gaps between them; a gap is a length, or a percentage
+side by side and the gaps between them — an item with a `width` of its own
+counting as that width, whatever the row would shrink it to (CSS Flexbox
+9.9) — and a percentage `max-width` on a box with a width takes nothing
+from what the box gives the size of whatever holds it, being a percentage
+of the size that is being worked out (CSS Sizing 3, 5.2.1): a row of
+buttons `width: 98px; max-width: 100%` is as wide as its buttons. A gap is
+a length, or a percentage
 of the container's size along it. A percentage in an item's padding, its
 margins or its `min-width` and `max-width` is of the container's content
 width, the item's containing block's, whatever width the item was flexed
@@ -447,7 +453,13 @@ column — unless its own minimum or an `overflow` that scrolls lets it go,
 as Tailwind's `min-w-0` does; in a column that is the lesser of a height of
 its own and its content's, and an item with an `aspect-ratio` counts its
 width through the ratio as content, and along a row a definite height
-through it. An item with a ratio is as wide, down a column, as the height
+through it. An item its minimum stops is frozen at it, and the others on
+its line share what is left (CSS Flexbox 9.7): of three `flex: 1` items, one
+holding a long word is as wide as the word and the other two halve the
+rest, and a line too short for any of its items has each at its least size,
+running out of the box. On the lines of a box that wraps, a held item still
+takes its share of the line's room on top of its minimum — Yoga's reading,
+not the specification's. An item with a ratio is as wide, down a column, as the height
 it was flexed to makes it, and an image grown along a row is as tall. A
 `flex-basis` holds down a column with no height of its own, where Yoga
 would read the item's height in its place. An item stretched across its
@@ -930,7 +942,10 @@ box's `height` or `max-height` holds, and `max-lines`, `continue` and
 image or a float, is cut with no ellipsis),
 `text-overflow: ellipsis` on a `nowrap` block that clips (`truncate`: each
 line cut where the box ends, inside a word if need be, with an ellipsis, as
-a browser cuts it), `overflow-wrap` (a word too long for
+a browser cuts it — which is how the line is drawn, and no part of how wide
+it is: a table cell or a flex item holding the block is sized by the whole
+line, so a button whose label is a `truncate` span is cut only where
+something lets it shrink, as `min-w-0` does), `overflow-wrap` (a word too long for
 its line runs past the line's end, as in a browser, unless the paragraph
 says it may be cut: `overflow-wrap: break-word` or `anywhere`,
 `word-break: break-all` or `break-word`, or `line-break: anywhere`, all of

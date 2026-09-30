@@ -3001,8 +3001,12 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
  * was `Infinity`), so its own width says nothing and only what it drew does.
  * Skipping the non-finite ones is what stops the probe from answering
  * `Infinity` for every box that contains a paragraph.
+ *
+ * `seen.cut` is set where a line it measured was cut short by
+ * `text-overflow`, in a box with a width to cut it at: the line is wider
+ * than it was drawn, and the answer is of what was drawn.
  */
-export function intrinsicWidth(box: Box): number {
+export function intrinsicWidth(box: Box, seen?: { cut: boolean }): number {
   // under size containment, as though it held nothing: the size
   // `contain-intrinsic-size` gives it, or none (CSS Containment 2, 3.2)
   if (contained(box, CONTAIN_WIDTH)) {
@@ -3041,6 +3045,12 @@ export function intrinsicWidth(box: Box): number {
       widest = Math.max(widest, line.width + (line.floats ?? 0));
     }
     widest = Math.max(widest, box.floatRow);
+    // a line `text-overflow` cut short is wider than this finds it
+    if (seen && !seen.cut && box.style.textOverflow === 'ellipsis') {
+      seen.cut = lines.some((line) =>
+        line.texts.some((text) => text.layout.truncated),
+      );
+    }
   }
   // Floats among blocks stand side by side too, as many as come together,
   // where each block in flow is a line of its own; one with a formatting
@@ -3072,8 +3082,24 @@ export function intrinsicWidth(box: Box): number {
     // counts as `auto`, so its content decides.
     if (typeof style.width === 'number') {
       contribution = Math.max(own, min + margins);
+      // And it is that width where the box was laid out at less. In a row
+      // of flex items it was shrunk to fit the width this is measured at,
+      // and what an item gives its flex box's own size is its width (CSS
+      // Flexbox 9.9.3); under a percentage `max-width` it was cut short,
+      // by a percentage of the size being worked out, which is none to
+      // what a box contributes (5.2.1). But a replaced box's is of nothing
+      // at its least and none at its most: as it was laid out.
+      const cyclic = typeof style.maxWidth === 'object';
+      if (cyclic ? child.kind !== 'replaced' : row) {
+        let stated = style.width + contentExtra(child);
+        if (typeof style.maxWidth === 'number') {
+          stated = Math.min(stated, style.maxWidth + contentExtra(child));
+        }
+        stated = Math.max(stated, child.horizontalExtra, min);
+        contribution = Math.max(contribution, stated + margins);
+      }
     } else {
-      let inner = intrinsicWidth(child) + child.horizontalExtra;
+      let inner = intrinsicWidth(child, seen) + child.horizontalExtra;
       if (typeof style.maxWidth === 'number') {
         inner = Math.min(inner, style.maxWidth + contentExtra(child));
       }

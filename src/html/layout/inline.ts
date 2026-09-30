@@ -416,13 +416,21 @@ interface Cut {
 function cutOf(
   style: ComputedStyle,
   clamp: InlineOptions['clamp'],
+  width: number,
 ): Cut | null {
   // the ellipsis a clamp ends in is placed apart (`ellipsized`)
   if (clamp) return { maxLines: clamp.lines, overflow: 'clip' };
+  // `text-overflow` is how the line is drawn where it runs out of its
+  // box, and no part of how wide it is (CSS Overflow 3, 5.1): in a box of
+  // no width, which shows none of it and is what the box's content is
+  // measured in at its least (`MIN_CONTENT_PROBE`), the line is left
+  // whole. Cut there, ntk left the ellipsis alone, and a button whose
+  // label is a `truncate` span was measured as wide as one
   if (
     style.textOverflow === 'ellipsis' &&
     !wraps(style) &&
-    style.overflowX !== 'visible'
+    style.overflowX !== 'visible' &&
+    width > 0
   ) {
     return { maxLines: 1, overflow: 'ellipsis', wrap: false };
   }
@@ -645,7 +653,7 @@ function linesOf(
     // line at a time, or the lines after the first were lost. A clamp is
     // the paragraph's, and stays one layout.
     const clamp = options.clamp;
-    let cut = cutOf(style, clamp);
+    let cut = cutOf(style, clamp, options.width);
     const perLine = cut !== null && !clamp && hasNewline;
     // an embedding cannot be cut into chunks
     if (perLine && !hasControls(items)) {
