@@ -405,6 +405,9 @@ export interface ComputedStyle {
    *  in place of its `list-style-type`'s; null for `none`. */
   listStyleImage: string | null;
   cursor: string | null;
+  /** `pointer-events`: `none` for an element the pointer passes through,
+   *  to what is under it (CSS UI 4, 5.2). Its SVG values are `auto`. */
+  pointerEvents: 'auto' | 'none';
   /** `fill` and `stroke`, what an `<svg>` in the document is painted with
    *  (SVG 2, 13.2): a colour, `currentColor`, `none`, or a `url()` of a
    *  paint server in the drawing — and null where nothing has set one,
@@ -791,6 +794,7 @@ export const INHERITED = [
   'listStylePosition',
   'listStyleImage',
   'cursor',
+  'pointerEvents',
   'fill',
   'stroke',
   'borderCollapse',
@@ -887,6 +891,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     listStylePosition: 'outside',
     listStyleImage: null,
     cursor: null,
+    pointerEvents: 'auto',
     fill: null,
     stroke: null,
     borderCollapse: 'separate',
@@ -1146,6 +1151,7 @@ export function inherit(
   out.listStylePosition = parent.listStylePosition;
   out.listStyleImage = parent.listStyleImage;
   out.cursor = parent.cursor;
+  out.pointerEvents = parent.pointerEvents;
   out.fill = parent.fill;
   out.stroke = parent.stroke;
   out.borderCollapse = parent.borderCollapse;
@@ -2606,6 +2612,14 @@ export function applyDeclaration(
     }
     case 'cursor': {
       style.cursor = splitCommas(value)[0]?.trim().toLowerCase() || null;
+      return;
+    }
+    case 'pointer-events': {
+      // `none`, or one of the values SVG gives it, which are `auto` on
+      // anything that is not SVG's to draw
+      const v = value.trim().toLowerCase();
+      if (v === 'none') style.pointerEvents = 'none';
+      else if (POINTER_EVENTS.has(v)) style.pointerEvents = 'auto';
       return;
     }
     case 'fill':
@@ -4904,6 +4918,19 @@ function splitTopLevelSlash(value: string): string[] {
 
 // --- logical properties ----------------------------------------------------
 
+/** `pointer-events`' values besides `none` (CSS UI 4, SVG 2 15.6). */
+const POINTER_EVENTS = new Set([
+  'auto',
+  'bounding-box',
+  'visiblepainted',
+  'visiblefill',
+  'visiblestroke',
+  'visible',
+  'painted',
+  'fill',
+  'stroke',
+  'all',
+]);
 /**
  * A `fill` or a `stroke` (SVG 2, 13.2): `none`, a colour, or a `url()`
  * naming a gradient in the drawing, with what follows it, its fallback,
@@ -5274,6 +5301,7 @@ const INHERITED_NAMES = new Set<string>([
   'list-style-position',
   'list-style-image',
   'cursor',
+  'pointer-events',
   'fill',
   'stroke',
   'border-collapse',
@@ -5434,6 +5462,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'list-style-position': ['listStylePosition'],
   'list-style-image': ['listStyleImage'],
   cursor: ['cursor'],
+  'pointer-events': ['pointerEvents'],
   fill: ['fill'],
   stroke: ['stroke'],
   'border-collapse': ['borderCollapse'],
