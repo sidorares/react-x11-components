@@ -1176,13 +1176,15 @@ escape hatch, and the same reason: a drawn control takes no focus, says
 nothing to an assistive technology, blinks no caret and opens no menu. The
 cost is that the box in the flow has to be the size the widget will be
 _before the widget exists_, which is why `controls.ts` measures against the
-same font metrics and the same palette tokens (`fontSize`, `paddingY`,
-`borderWidth`, `radius`) core's own widgets read — the UA sheet sets a
-control's text at the palette's size, not its parent's, as Chrome sets it in
-a system font. `<textinput>` and `<textarea>` are
-elements rather than components and draw no frame of their own, so the
-component supplies one from those tokens — a form in a document and a form in
-the window around it have to be the same height. Two things are not widgets
+same font metrics and the same palette tokens (`fontFamily`, `fontSize`,
+`paddingY`, `borderWidth`, `radius`) core's own widgets read — the UA sheet
+sets a control's text in the palette's face and size, not its parent's, as
+Chrome sets it in a system font, and the widget is handed the element's
+computed face and size, the page's where it set its own (`font: inherit`).
+`<textinput>` and `<textarea>` are elements rather than components and draw
+no frame of their own, so the component supplies one from those tokens — a
+form in a document and a form in the window around it have to be the same
+height. Two things are not widgets
 of the palette's: a `<button>`, whose content is the document's and which is
 drawn like any box (its press reported through `onControlChange`), and a
 field the page styled — a border, a background, or `appearance: none`

@@ -6757,10 +6757,11 @@ test("a button the page styled takes the web's UA edges, not the palette's", asy
   await renderX11(
     h(
       ThemeProvider,
-      { value: { paddingY: 7, borderWidth: 3, radius: 5 } } as Record<
-        string,
-        unknown
-      >,
+      // the palette's side padding is 0.75em, and a control's text is at
+      // the theme's size, not the document's
+      {
+        value: { paddingY: 7, borderWidth: 3, radius: 5, fontSize: 16 },
+      } as Record<string, unknown>,
       h(
         'box',
         { style: { width: 600, flexDirection: 'column' } },
@@ -6774,8 +6775,6 @@ test("a button the page styled takes the web's UA edges, not the palette's", asy
             '<button id="round" style="border-radius:0">Go</button>' +
             '<button id="bare" style="appearance:none">Go</button>',
           partial: false,
-          // the palette's side padding is 0.75em
-          fontSize: 16,
           'data-testname': 'doc',
         }),
       ),
@@ -17863,11 +17862,9 @@ test("a control's text is the palette's size, not its parent's", async () => {
       borderTop: number;
     };
     const field = (await screen.findByPlaceholder('field')) as unknown as {
-      props: { style: Record<string, unknown> | Record<string, unknown>[] };
+      resolvedTextStyle(): { size: number };
     };
-    const written = [field.props.style]
-      .flat()
-      .reduce((all, one) => ({ ...all, ...one }), {}).fontSize as number;
+    const written = field.resolvedTextStyle().size / scale;
     await result.unmount();
     return [out, [button.padTop / scale, button.borderTop / scale, written]];
   };
@@ -17888,4 +17885,217 @@ test("a control's text is the palette's size, not its parent's", async () => {
     [text, chrome],
     'the same in CSS px at 2x',
   );
+});
+
+test("a control's text is the palette's face, not the page's", async () => {
+  // Chrome's `-webkit-small-control` is Arial whatever the page is set in
+  // (`LayoutThemeFontProvider::DefaultGUIFont`), and a textarea is then
+  // `monospace` (Blink's html.css). The system here is the palette, whose
+  // face core's widgets draw in: in the document's, the Zen Garden's serif
+  // page set its fields in Times where Chrome's are Arial, and a `<Select>`
+  // the box was measured for in Times drew its caption in another. A
+  // textarea is the code face, as `monospace` is everywhere in the sheet.
+  // And a widget draws in the face and at the size its box was measured
+  // for, though the provider that names them is inside the window, where
+  // the text cascade does not see it
+  const faces = FONTS
+    ? {
+        ...FONTS,
+        'Page Face': FONTS.monospace,
+        'Palette Face': FONTS['sans-serif'],
+        'Code Face': FONTS.monospace,
+      }
+    : null;
+  const source =
+    '<body><span id="t">x</span>' +
+    '<input id="i" placeholder="field"><select id="s"><option>Opt</option></select>' +
+    '<button id="b">Go</button><input id="u" type="submit" value="Send">' +
+    '<textarea id="a"></textarea><meter id="m"></meter>' +
+    '<select id="own" style="font-family:inherit"></select></body>';
+  const families = async (scale: 1 | 2): Promise<string[][]> => {
+    const result = await renderX11(
+      h(
+        'window',
+        { width: 500, height: 200 } as Record<string, unknown>,
+        h(
+          ThemeProvider,
+          { value: { fontFamily: 'Palette Face', fontSize: 12 } } as Record<
+            string,
+            unknown
+          >,
+          h(
+            'box',
+            { style: { width: 460, flexDirection: 'column' } },
+            h(Html, {
+              source,
+              partial: false,
+              fontFamily: 'Page Face',
+              monoFamily: 'Code Face',
+              'data-testname': 'doc',
+            }),
+          ),
+        ),
+      ),
+      {
+        ...(faces ? { fonts: faces } : { backend: 'mock' as const }),
+        wrap: false,
+        ...(scale === 2 && { scale: 2 }),
+      },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const boxes = ['t', 'i', 's', 'b', 'u', 'a', 'm', 'own'].map(
+      (id) =>
+        (boxOf(el, id) as unknown as { style: { fontFamily: string } }).style
+          .fontFamily,
+    );
+    // what the mounted widgets draw in: the field and the area their own
+    // style, the button and the select caption what they inherit
+    const drawn = (node: DrawnNode) => {
+      const text = (
+        node as unknown as {
+          resolvedTextStyle(): { family: string; size: number };
+        }
+      ).resolvedTextStyle();
+      return `${text.family} ${text.size / scale}`;
+    };
+    const widgets = [
+      await screen.findByPlaceholder('field'),
+      screen.all((n) => n.kind === 'textarea')[0],
+      screen.getByText('Send', { selector: 'text', exact: true }),
+      screen.getByText('Opt', { selector: 'text', exact: true }),
+    ].map(drawn);
+    await result.unmount();
+    return [boxes, widgets];
+  };
+  const [boxes, widgets] = await families(1);
+  assert.deepStrictEqual(
+    boxes,
+    [
+      'Page Face',
+      'Palette Face',
+      'Palette Face',
+      'Palette Face',
+      'Palette Face',
+      'Code Face',
+      'Page Face',
+      'Page Face',
+    ],
+    "text, four controls in the palette's face, a textarea in the code " +
+      'face, a meter and a select told to inherit in the page face',
+  );
+  assert.deepStrictEqual(
+    widgets,
+    ['Palette Face 12', 'Code Face 12', 'Palette Face 12', 'Palette Face 12'],
+    'each widget draws in the face and at the size its box was measured for',
+  );
+  assert.deepStrictEqual(await families(2), [boxes, widgets], 'the same at 2x');
+});
+
+test('a control the page set in its own font draws in it', async () => {
+  // `font` applies to every element (CSS Fonts 4), and the UA sheet only
+  // sets a control's default: a reset's `input, select, button, textarea {
+  // font: inherit }` puts them in the page's face and size, in Chrome as
+  // here. The box was measured in that font, and the widget in it drew in
+  // the palette's, which the frame named whatever the element's was: a
+  // field's text, a submit button's label and a select's caption at 12px
+  // in a hole cut for 20
+  const faces = FONTS
+    ? {
+        ...FONTS,
+        'Page Face': FONTS.monospace,
+        'Palette Face': FONTS['sans-serif'],
+      }
+    : null;
+  const source =
+    '<style>input, select, button, textarea { font: inherit }</style>' +
+    '<body style="font-size:20px">' +
+    '<input id="i" placeholder="field"><textarea id="a"></textarea>' +
+    '<input id="u" type="submit" value="Send">' +
+    '<select id="s"><option>Opt</option></select></body>';
+  const fonts = async (scale: 1 | 2): Promise<string[][]> => {
+    const result = await renderX11(
+      h(
+        'window',
+        { width: 600, height: 200 } as Record<string, unknown>,
+        h(
+          ThemeProvider,
+          { value: { fontFamily: 'Palette Face', fontSize: 12 } } as Record<
+            string,
+            unknown
+          >,
+          h(
+            'box',
+            { style: { width: 560, flexDirection: 'column' } },
+            h(Html, {
+              source,
+              partial: false,
+              fontFamily: 'Page Face',
+              'data-testname': 'doc',
+            }),
+          ),
+        ),
+      ),
+      {
+        ...(faces ? { fonts: faces } : { backend: 'mock' as const }),
+        wrap: false,
+        ...(scale === 2 && { scale: 2 }),
+      },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const boxes = ['i', 'a', 'u', 's'].map((id) => {
+      const { style } = boxOf(el, id) as unknown as {
+        style: { fontFamily: string; fontSize: number };
+      };
+      return `${style.fontFamily} ${style.fontSize / scale}`;
+    });
+    // what the widgets draw in: a field's and an area's own text, and the
+    // text of a button's label and a select's caption
+    const drawn = (node: DrawnNode) => {
+      const text = (
+        node as unknown as {
+          resolvedTextStyle(): { family: string; size: number };
+        }
+      ).resolvedTextStyle();
+      return `${text.family} ${text.size / scale}`;
+    };
+    const widgets = [
+      await screen.findByPlaceholder('field'),
+      screen.all((n) => n.kind === 'textarea')[0],
+      screen.getByText('Send', { selector: 'text', exact: true }),
+      screen.getByText('Opt', { selector: 'text', exact: true }),
+    ].map(drawn);
+    await result.unmount();
+    return [boxes, widgets];
+  };
+  const [boxes, widgets] = await fonts(1);
+  assert.deepStrictEqual(
+    boxes,
+    ['Page Face 20', 'Page Face 20', 'Page Face 20', 'Page Face 20'],
+    "each control's box in the page's face and size",
+  );
+  assert.deepStrictEqual(
+    widgets,
+    boxes,
+    'each widget draws in the face and at the size its box was measured in',
+  );
+  assert.deepStrictEqual(await fonts(2), [boxes, widgets], 'the same at 2x');
+});
+
+test('a media query whose size is no length does not parse, and holds nowhere', async () => {
+  // Media Queries 4 (3.2): a query that does not parse is `not all`. The
+  // hack `@media screen and (min-width:0\0)` kept a block of rules for
+  // Internet Explorer 9 and 10, which no other browser reads; here the
+  // query asked nothing and its rules applied, and the Zen Garden's 220 set
+  // its banner heading at the width meant for Internet Explorer
+  const { node, result } = await render(
+    '<style>body{margin:0}#t{height:10px}' +
+      '@media screen and (min-width:0\\0){#t{height:50px}}' +
+      '@media (max-height:tall){#t{height:60px}}' +
+      '@media (min-width:0){#u{height:20px}}</style>' +
+      '<div id="t"></div><div id="u"></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 't').height, 10, 'neither hack applies');
+  assert.strictEqual(boxOf(el, 'u').height, 20, 'a query that parses does');
+  await result.unmount();
 });
