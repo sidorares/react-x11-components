@@ -439,11 +439,24 @@ function renderControl(
     top: Math.round(at.y),
     width: Math.round(at.width),
     height: Math.round(at.height),
+    // The face and the size the box was measured in, the element's: the
+    // palette's from the UA sheet, or the page's where it set its own. A
+    // field inherits them, and so does a `<Button>`'s or a `<Select>`'s
+    // caption — named here because the text cascade takes the palette's
+    // from the window, and a provider inside it that names a face or a size
+    // reaches `useTheme` and not the cascade.
+    fontFamily: rect.fontFamily,
+    fontSize: rect.fontSize,
     // core's `opacity` is CSS's: the widget faded as a group, and at 0 not
     // drawn and still hit
     ...(rect.opacity !== undefined && { opacity: rect.opacity }),
   };
   const field = rect.bare ? bareField(rect.bare) : fieldChrome(look);
+  // A button or a select whose font the page set is the drawn control: a
+  // native bezel sets its title at AppKit's size, whatever it is handed,
+  // in a bezel only as tall as that title, where the box was measured for
+  // the page's.
+  const ownFont = !paletteFont(rect, look);
   // A text edit does NOT restyle: the value lives in the widget and in
   // `forms`, and neither changes any box — while a restyle would re-run
   // the cascade and relayout the whole document *per keystroke*. This also
@@ -483,6 +496,7 @@ function renderControl(
       widget = h(Button, {
         label: buttonLabel(el),
         disabled,
+        ...(ownFont && { native: false }),
         style: { width: '100%', height: '100%' },
         onPress: () => ctx.press(el),
       });
@@ -501,13 +515,22 @@ function renderControl(
         ...(rect.bare && {
           labelStyle: {
             color: rect.bare.color,
-            fontFamily: rect.bare.fontFamily,
-            fontSize: rect.bare.fontSize,
+            fontFamily: rect.fontFamily,
+            fontSize: rect.fontSize,
           },
           chevronStyle: rect.bare.chevron
             ? { color: rect.bare.color }
             : { display: 'none' },
         }),
+        // and so does a caption in the page's font, whose size the chevron
+        // is read back from: it is as tall as the capitals beside it
+        ...(!rect.bare &&
+          ownFont && {
+            labelStyle: {
+              fontFamily: rect.fontFamily,
+              fontSize: rect.fontSize,
+            },
+          }),
         onChange: (ev) => {
           const next = String(ev.value ?? '');
           forms.remember(el);
@@ -634,6 +657,8 @@ function renderMessage(
  * why core's own `<Button>` and `<Select>` are components and these are not.
  * The values are the palette's, so a field in a document and a `<Select>`
  * beside it are the same height with the same corner and the same edge.
+ * Its text is in the face and at the size of the frame around it, which
+ * are the element's (`renderControl`).
  */
 function fieldChrome(look: RootLook): Style {
   return {
@@ -644,17 +669,14 @@ function fieldChrome(look: RootLook): Style {
     paddingLeft: 6,
     paddingRight: 6,
     color: look.color,
-    fontFamily: look.fontFamily,
-    // the size the UA sheet sets the field at, and so measured it at
-    fontSize: look.controlFontSize ?? look.fontSize,
   };
 }
 
 /**
  * A text field whose box the author styled: the document draws the border
  * and the background, so the widget draws neither, and its text is the
- * element's colour and font, which the author chose to go on that
- * background, rather than the theme's.
+ * element's colour, which the author chose to go on that background, rather
+ * than the theme's. Its face and size are the frame's, as every field's are.
  */
 function bareField(bare: BareField): Style {
   return {
@@ -664,9 +686,20 @@ function bareField(bare: BareField): Style {
     paddingLeft: 0,
     paddingRight: 0,
     color: bare.color,
-    fontFamily: bare.fontFamily,
-    fontSize: bare.fontSize,
   };
+}
+
+/**
+ * Whether a control is set in the face and at the size the UA sheet gives
+ * a button or a select, the palette's: the page left its font alone. The
+ * size is compared loosely, since the rect's is a device size divided back
+ * by the scale.
+ */
+function paletteFont(rect: ControlRect, look: RootLook): boolean {
+  return (
+    rect.fontFamily === (look.controlFontFamily ?? look.fontFamily) &&
+    Math.abs(rect.fontSize - (look.controlFontSize ?? look.fontSize)) < 0.01
+  );
 }
 
 /**

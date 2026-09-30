@@ -640,6 +640,12 @@ export class Cascade {
   /** The families the document loads itself (`fonts.ts`), or null for a
    *  document with no `@font-face`. */
   private _families: FontFamilies | null;
+  /** The root element's computed style: its `font-size` is what a `rem`
+   *  is and its line height what an `rlh` is (CSS Values 4, 6.1.1), in
+   *  every element but the root, whose own declarations measure them from
+   *  the initial values. Set as the root's style is computed, which a build
+   *  does ahead of every element under it. */
+  private _root: ComputedStyle | null = null;
   private _mapFamilies: ((list: string) => string) | undefined;
   /** Whether any declaration has a length in `lh` or `rlh`: only then is
    *  the line height settled ahead of the declarations that read it. */
@@ -1245,9 +1251,11 @@ export class Cascade {
     // size, so a `font-size: 1.2em` in the cascade resolves against the
     // right em, and again after the font size is settled so every *other*
     // em-relative length in the same rule resolves against this element's.
+    const root = isRootElement(el);
+    const rootStyle = root ? this.initial : (this._root ?? this.initial);
     const ctxParent: UnitContext = {
       em: parentStyle.fontSize,
-      rem: this.initial.fontSize,
+      rem: rootStyle.fontSize,
       initial: this.initial,
       vw: this.viewportWidth,
       vh: this.viewportHeight,
@@ -1256,7 +1264,7 @@ export class Cascade {
       ch: () => this._chOf(parentStyle),
       families: this._mapFamilies,
       lh: () => this._lineHeightOf(parentStyle),
-      rlh: () => this._lineHeightOf(this.initial),
+      rlh: () => this._lineHeightOf(rootStyle),
     };
     // The family, the weight and the slant go with the size: together they
     // pick the face an `ex`, a `ch` or an `lh` in any declaration is
@@ -1314,9 +1322,12 @@ export class Cascade {
       fontStyle: style.fontStyle,
     };
     let line: LineSource | null = null;
+    // the root's other declarations measure a `rem` from its own size
+    if (root) this._root = style;
     const ctx: UnitContext = {
       ...ctxParent,
       em: style.fontSize,
+      rem: root ? style.fontSize : ctxParent.rem,
       ex: () => this._exOf(face),
       ch: () => this._chOf(face),
       lh: () => this._lineHeightOf(line ?? style),
@@ -2169,3 +2180,9 @@ const ABSOLUTE_SIZES = new Set([
   'xxx-large',
   'initial',
 ]);
+
+/** Whether an element is the document's root: its parent the document, or
+ *  none, as the `<html>` the cascade supplies where the markup has none. */
+function isRootElement(el: Element): boolean {
+  return !el.parent || el.parent.type === 'root';
+}

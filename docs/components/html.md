@@ -40,8 +40,8 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `onControlChange` | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                    |
 | `onSubmit`        | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                            |
 | `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                         |
-| `fontFamily`      | `string`                                         | Default `'sans-serif'`.                                                                                                                                                      |
-| `monoFamily`      | `string`                                         | Code font. Default `'monospace'` — there is no theme token for it.                                                                                                           |
+| `fontFamily`      | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                   |
+| `monoFamily`      | `string`                                         | Code font, and a `<textarea>`'s. Default `'monospace'` — there is no theme token for it.                                                                                     |
 | `selectionColor`  | `string`                                         | Selection band fill where no `::selection` rule reaches the text. Default: theme accent at 35% opacity.                                                                      |
 | `style`           | `Style \| Style[]`                               | The root `<box>`'s style.                                                                                                                                                    |
 
@@ -871,7 +871,9 @@ viewport — and the absolute units, and `calc()`, `min()`, `max()` and
 `clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
 `ch` the advance of its "0", as the text engine reports them, or half an em
 where it cannot say; an `lh` is the element's line height, `normal` as its
-font's own, and an `rlh` the root's. A math function comes down to pixels and a percentage, which
+font's own, and an `rlh` the root's. A `rem` is the root element's font
+size, so `html { font-size: 62.5% }` makes it ten pixels, and in the root's
+own `font-size` the initial size, as CSS has both. A math function comes down to pixels and a percentage, which
 layout resolves as it does any percentage; `min(100%, 600px)`, a
 comparison with a percentage in it, is resolved against each width it
 meets. A percentage that cannot resolve makes the whole value `auto` where
@@ -1019,17 +1021,28 @@ its element rather than by where it is, so a field that layout moves — a
 stylesheet or an image arriving above it while someone types — is the same
 widget, and keeps its focus, its caret and its undo.
 
-**A control's text is the theme's size, whatever the page's is.** Chrome
+**A control's text is the theme's font, whatever the page's is.** Chrome
 sets `<input>`, `<select>`, `<textarea>` and `<button>` in a system font,
-`-webkit-small-control`: the default size less 2pt, 13.33px under any body.
-Gecko does the same. The system here is the palette, so a control is set at
-the theme's `fontSize`, the size core's widgets draw their text at, and not
-at its parent's size. A document's form is then the size of the window's
-around it, and the box a control is measured into is the size of the widget
-mounted in it. The `fontSize` prop does not move it, since a host sets that
-to the web's 16px `medium` for its pages. A page that wants its own size sets
-it, `font: inherit` for one, as it would in a browser. A `<meter>` and a
-`<progress>` keep their parent's size, as they do in Chrome.
+`-webkit-small-control`: Arial on every platform, at the default size less
+2pt, 13.33px, whatever the text around it is set in. Gecko's `-moz-field`
+is a system font too. The system here is the palette, so a control is set in the theme's
+`fontFamily` and at its `fontSize`, the face and the size core's widgets
+draw their text in, and not in its parent's. A document's form is then the
+window's around it, and the box a control is measured into is the size of
+the widget mounted in it: the widget is handed that face and size, so a
+`<ThemeProvider>` inside the window that names them reaches its caption as
+well as the measurement. The `fontFamily` and `fontSize` props do not move
+it, since a host sets those to the face it reads pages in and to the web's
+16px `medium`. A `<textarea>` is `monospace` in Chrome, the generic a
+`<pre>` is set in, and so is set in `monoFamily` here, at the theme's size.
+A page that sets a control's font itself — `font: inherit`, which a CSS
+reset gives every control, for one — has it, as it does in a browser, which
+draws a control it leaves native in the page's font too: the box is
+measured in that face and size, and the widget in it draws in them, framed
+by the palette or bare in a box the page drew. A button or a select in the
+page's font is core's drawn control on every backend, since a native bezel
+sets its title at AppKit's size whatever it is handed. A `<meter>` and a
+`<progress>` keep their parent's font, as they do in Chrome.
 
 A widget is drawn at the opacity its element and every ancestor come to,
 and at 0 not at all while it still takes a press, as the element does in a
