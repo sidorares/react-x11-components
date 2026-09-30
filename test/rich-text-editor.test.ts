@@ -455,12 +455,20 @@ test(
 test(
   'a double click selects a word, a triple click the whole block',
   { skip: !FONTS },
-  async () => {
+  async (t) => {
     const { editor } = await mount({ defaultValue: 'alpha beta gamma' });
     const [block] = blocks();
+    // Core counts a press into a double or a triple click by `Date.now()`,
+    // 400 ms from the one before. Each press goes through the X server and
+    // paints what it selected, and a runner slow enough to spend that
+    // between the second press and the third counted the third as a first,
+    // which put the caret down. So the time is held for the three.
+    const now = Date.now();
+    const held = t.mock.method(Date, 'now', () => now);
     await userEvent.doubleClick(drawn(block), at(block, 8));
     assert.strictEqual(selectedText(editor), 'beta');
     await act(() => fireEvent.click(drawn(block), at(block, 8)));
+    held.mock.restore();
     assert.strictEqual(selectedText(editor), 'alpha beta gamma');
   },
 );
