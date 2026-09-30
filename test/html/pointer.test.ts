@@ -1116,7 +1116,10 @@ metric(
         `<a id="a" href="#x">${icon('i')}</a>` +
         `<a id="o" href="#y">${icon('j')}</a>` +
         `<div class="t" id="t">${icon('k')}</div>` +
-        '<p id="q">A paragraph with <b id="b">bold</b> in it.</p>',
+        // the pointer leaves for `#w`: the paragraph's middle is `<b>` in
+        // some faces, and a bold `<b>` builds the document again
+        '<p id="q"><span id="w">A paragraph with</span> <b id="b">bold</b>' +
+        ' in it.</p>',
       300,
     );
     const el = view(node);
@@ -1143,7 +1146,7 @@ metric(
     await hoverInPlace(result, el, 'k');
     await pixel(5, 30, '#000000', 'the second link, left');
     await pixel(5, 50, '#00aa00', 'currentColor, hovered');
-    const left = await hoverInPlace(result, el, 'q');
+    const left = await hoverInPlace(result, el, 'w');
     assert.strictEqual(bytesApart(left, quiet), 0, 'not as it was before');
 
     // A hover that moves something builds the boxes again, and each
