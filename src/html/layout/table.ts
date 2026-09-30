@@ -326,7 +326,9 @@ export function layoutTable(
     // `vertical-align` inside a cell moves the *content*, not the box: the
     // box fills the row, background and all, and the content sits top,
     // middle, bottom or on the row's baseline in it — in the box a height
-    // of its own makes too, which is no content to be moved
+    // of its own makes too, which is no content to be moved. The cell was
+    // laid out above, in this pass over the cells, so this is the one move
+    // its content and its static positions get (`moveContent`)
     let offset = lift[i];
     const va = cell.box.style.verticalAlign;
     const content = natural[i];

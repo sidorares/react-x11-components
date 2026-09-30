@@ -1205,7 +1205,12 @@ button, and `centreButton` (`layout/block.ts`) moves it there when the
 button is laid out. A flex box, a grid and a pair of offsets give a box its
 height _after_ its layout, so each asks again where it does: **a new path
 that sets a box's height once it is laid out calls it too**, or a button
-stretched that way keeps its label at the top.
+stretched that way keeps its label at the top. It moves the content and not
+the box, as a cell's `vertical-align` does, and both go through
+`moveContent`, which takes the static positions kept from the box's corner
+down with the content. Anything else that moves what a box holds inside it
+goes through it too, or an absolute box with no offsets is left where the
+flow used to be.
 
 **Nothing is fetched and nothing is executed, by construction.**
 `onResource` is the only way anything loads and `onScript` never runs

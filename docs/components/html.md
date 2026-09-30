@@ -613,7 +613,10 @@ outside the table's border, above it or below it by `caption-side`, and an
 auto table is at least as wide as its caption's longest word. A header
 group's rows are drawn first and a footer group's last, wherever they stand
 in the markup, and a cell's background fills its row whatever
-`vertical-align` does with its content. A fixed table takes its columns'
+`vertical-align` does with its content. An absolute box with no offsets in
+the cell goes where that content went, since its static position is where
+the flow would have put it and the flow is what moved: a badge over an icon
+in a `middle` cell stays on the icon. A fixed table takes its columns'
 widths from its `<col>`s, then from its first row's cells, border box and
 all, and shares what is left among the rest (CSS 2.1 17.5.2.1); with
 `width: auto` it is laid out by its content, as the section says, where a

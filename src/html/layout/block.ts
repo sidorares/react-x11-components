@@ -4313,11 +4313,30 @@ export function moveTo(box: Box, x: number, y: number): void {
   translate(box, x - box.x, y - box.y);
 }
 
-/** Move what a box holds down, and not the box: a table cell's content
- *  sits where its `vertical-align` puts it, in a box that fills the row. */
+/**
+ * Move what a box holds down, and not the box: a table cell's content
+ * sits where its `vertical-align` puts it, in a box that fills the row, and
+ * a button's in the middle of its own (`centreButton`).
+ *
+ * The static positions the box gave the absolutely positioned boxes in its
+ * flow go down with the content: each is where its box "would have been in
+ * the normal flow" (CSS 2.1 10.6.4), and the flow is what moved. They are
+ * kept from the box's own corner, which stays, so that moving the boxes
+ * alone left them behind: a badge with no offsets in a `vertical-align:
+ * middle` cell stood at the cell's top, over an icon 22px further down.
+ *
+ * It adds to where the content stands, so it is asked for once for each
+ * layout of the box, which puts the content and the static positions back
+ * at the top. A table lays a cell out and moves its content in one pass
+ * over its cells, however many times a pass lays the table out, and one
+ * whose layout is kept (`kept`) is moved whole, the cell with it; a button
+ * counts how far down its content stands (`centreButton`).
+ */
 export function moveContent(box: Box, dy: number): void {
+  if (!dy) return;
   translate(box, 0, dy);
   box.y -= dy;
+  moveStatics(box, box, dy);
 }
 
 /** Whether a box is a `<button>`'s own, laid out as a block container: the
@@ -4357,14 +4376,15 @@ export function centreButton(box: Box): void {
   const by = down - content.down;
   if (by === 0 || !Number.isFinite(by)) return;
   content.down = down;
+  // and the static positions kept from its corner with it: a menu under a
+  // button's label opens under the label, where the label went
   moveContent(box, by);
-  moveStatics(box, box, by);
 }
 
 /** Move the static positions a block gave the absolutely positioned boxes
- *  in its flow, which are kept from its own corner and not from its
- *  content's: a menu under a button's label opens under the label, where
- *  the label went. */
+ *  in its flow, at any depth of inline box, which are kept from its own
+ *  corner and not from its content's (`moveContent`). One from a box
+ *  inside it is kept from that box's corner, which moved with the rest. */
 function moveStatics(parent: Box, block: Box, dy: number): void {
   for (const child of parent.children) {
     if (child.outOfFlow) {
