@@ -862,7 +862,8 @@ toolbar — and the window where nothing does, since the element sizes to its
 content. So `html, body { height: 100% }` is a viewport tall and `bottom: 0`
 with nothing positioned around it is the viewport's bottom, as in a browser;
 the document is as tall as what overflows its root, so nothing longer than
-the viewport is cut off. A document that reads the viewport's height — a
+the viewport is cut off — an inline element's padding and border below its
+line among it, as a browser counts them, where nothing clips them. A document that reads the viewport's height — a
 `vh`, a percentage height on the root, a box placed against the initial
 containing block — follows it when the window is resized, a frame behind
 the scroll box it is measured by; one that reads none is not laid out again
@@ -1232,7 +1233,9 @@ In the pane an `<Html>` is given the page's URL as `baseUrl`, and
 [`examples/browser/`](../../examples/browser/) is the host a document's
 requests go to — the page streamed in as it arrives, then every stylesheet,
 image and `@font-face` font through `onResource`, a few requests a host at a
-time. A tab shows the page's `<title>` and its icon; Ctrl+T (⌘T on macOS)
+time, and none of a secure page's stylesheets or fonts over an insecure
+connection, which a browser blocks as mixed content (its images are asked
+for over a secure one instead). A tab shows the page's `<title>` and its icon; Ctrl+T (⌘T on macOS)
 opens one. It is where the component's policy — nothing fetched, nothing
 run — meets an application's: the browser fetches what a page asks for and
 runs none of its scripts.

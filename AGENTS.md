@@ -1210,7 +1210,9 @@ parsed (`absoluteUrls`, `css/parse.ts`) — and `onResource` and `onLink` see
 absolute URLs. Without a base nothing is resolved, which is what every host
 before it saw. `examples/browser/` is the host that does fetch, and the
 place a fetching policy belongs: a cache per page process, per-host pacing,
-`file:` only for `file:` pages, no cookies.
+`file:` only for `file:` pages, no mixed content (a secure page's
+stylesheets and fonts over an insecure connection are blocked and its images
+upgraded, as a browser has it), no cookies.
 
 **The browser runs each tab's page in a `<Frame>`, and two things about a
 pane are worth knowing before the next example makes one.** A pane is a
