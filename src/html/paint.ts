@@ -4365,13 +4365,20 @@ function fitted(
 }
 
 /** An inline `<svg>`, drawn in its content box. Its `currentColor` is the
- *  box's `color`, as an icon's is the text's around it. */
+ *  box's `color`, as an icon's is the text's around it, and what it is
+ *  painted with the box's `fill` and `stroke`, where the document's style
+ *  sheets set them: an icon set's `.icon { fill: currentColor }`. */
 function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (!box.el) return;
   const x = Math.round(box.contentX + options.originX);
   const y = Math.round(box.contentY + options.originY);
   const w = Math.round(box.contentX + options.originX + box.contentWidth) - x;
   const h = Math.round(box.contentY + options.originY + box.contentHeight) - y;
+  const style = box.style;
+  const paint = (value: string | null): string | null =>
+    value === null || value === 'currentColor' || value === 'none'
+      ? value
+      : inkColor(value, style.color);
   inlineDrawing(box.el).draw(
     ctx,
     x,
@@ -4379,7 +4386,9 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
     w,
     h,
     options.scale ?? 1,
-    box.style.color,
+    style.color,
+    paint(style.fill),
+    paint(style.stroke),
   );
 }
 

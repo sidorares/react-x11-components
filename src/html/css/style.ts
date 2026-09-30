@@ -290,6 +290,12 @@ export interface ComputedStyle {
    *  in place of its `list-style-type`'s; null for `none`. */
   listStyleImage: string | null;
   cursor: string | null;
+  /** `fill` and `stroke`, what an `<svg>` in the document is painted with
+   *  (SVG 2, 13.2): a colour, `currentColor`, `none`, or a `url()` of a
+   *  paint server in the drawing — and null where nothing has set one,
+   *  which leaves the drawing its own. */
+  fill: string | null;
+  stroke: string | null;
   borderCollapse: 'separate' | 'collapse';
   /** `border-spacing`: between columns, and between rows. */
   borderSpacing: number;
@@ -666,6 +672,8 @@ export const INHERITED = [
   'listStylePosition',
   'listStyleImage',
   'cursor',
+  'fill',
+  'stroke',
   'borderCollapse',
   'borderSpacing',
   'borderSpacingY',
@@ -760,6 +768,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     listStylePosition: 'outside',
     listStyleImage: null,
     cursor: null,
+    fill: null,
+    stroke: null,
     borderCollapse: 'separate',
     // CSS's initial value; a `<table>` gets its 2px from the UA sheet, and
     // an anonymous table, which no sheet names, has none
@@ -1016,6 +1026,8 @@ export function inherit(
   out.listStylePosition = parent.listStylePosition;
   out.listStyleImage = parent.listStyleImage;
   out.cursor = parent.cursor;
+  out.fill = parent.fill;
+  out.stroke = parent.stroke;
   out.borderCollapse = parent.borderCollapse;
   out.borderSpacing = parent.borderSpacing;
   out.borderSpacingY = parent.borderSpacingY;
@@ -2479,6 +2491,12 @@ export function applyDeclaration(
     }
     case 'cursor': {
       style.cursor = splitCommas(value)[0]?.trim().toLowerCase() || null;
+      return;
+    }
+    case 'fill':
+    case 'stroke': {
+      const paint = svgPaint(value);
+      if (paint !== null) style[name] = paint;
       return;
     }
 
@@ -4771,6 +4789,20 @@ function splitTopLevelSlash(value: string): string[] {
 
 // --- logical properties ----------------------------------------------------
 
+/**
+ * A `fill` or a `stroke` (SVG 2, 13.2): `none`, a colour, or a `url()`
+ * naming a gradient in the drawing, with what follows it, its fallback,
+ * left off. Null for anything else, `context-fill` and `context-stroke`
+ * among it, which only a marker or a `<use>` has a context for.
+ */
+function svgPaint(value: string): string | null {
+  const v = value.trim();
+  if (v.toLowerCase() === 'none') return 'none';
+  const url = /^url\(\s*(['"]?)(#[^'")\s]+)\1\s*\)/i.exec(v);
+  if (url) return `url(${url[2]})`;
+  return parseColor(v);
+}
+
 const OBJECT_FITS = new Set(['fill', 'contain', 'cover', 'none', 'scale-down']);
 
 /**
@@ -5104,6 +5136,8 @@ const INHERITED_NAMES = new Set<string>([
   'list-style-position',
   'list-style-image',
   'cursor',
+  'fill',
+  'stroke',
   'border-collapse',
   'border-spacing',
   'empty-cells',
@@ -5262,6 +5296,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'list-style-position': ['listStylePosition'],
   'list-style-image': ['listStyleImage'],
   cursor: ['cursor'],
+  fill: ['fill'],
+  stroke: ['stroke'],
   'border-collapse': ['borderCollapse'],
   'caption-side': ['captionSide'],
   'empty-cells': ['emptyCells'],

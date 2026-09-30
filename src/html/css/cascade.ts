@@ -2275,6 +2275,12 @@ function presentationHints(el: Element): Declaration[] {
     const height = attr(el, 'height');
     const h = height ? svgSizeHint(height) : null;
     if (h) push('height', h);
+    // and its paint is its `fill` and `stroke` properties' (13.2), which a
+    // rule of the document's then sets over the attribute
+    const fill = attr(el, 'fill');
+    if (fill) push('fill', fill);
+    const stroke = attr(el, 'stroke');
+    if (stroke) push('stroke', stroke);
   }
 
   if (tag === 'table') {
