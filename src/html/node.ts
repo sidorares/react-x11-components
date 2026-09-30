@@ -50,8 +50,14 @@ import type { Element } from 'domhandler';
 import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
 import { attr, HtmlSource, imageUrlOf, isElement, tagOf } from './dom.js';
 import type { Document } from './dom.js';
-import { Cascade } from './css/cascade.js';
-import type { MetricFace } from './css/cascade.js';
+import {
+  Cascade,
+  HOVER_FOLLOWED,
+  HOVER_PSEUDO_NONE,
+  HOVER_PSEUDO_OTHER,
+  HOVER_UNTOUCHED,
+} from './css/cascade.js';
+import type { HoverTouch, KeptStyles, MetricFace } from './css/cascade.js';
 import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
 import { uaStylesheet } from './css/ua.js';
@@ -251,6 +257,8 @@ export class HtmlViewNode extends Node {
    *  that read it (`vw`, `vh`). */
   private _styledWidth = -1;
   private _styledHeight = -1;
+  /** The cascade the box tree's styles were computed by. */
+  private _styledWith: Cascade | null = null;
   private _documentHeight = 0;
   private _documentWidth = 0;
   /** The viewport height the document was last laid out under, and whether
@@ -268,6 +276,20 @@ export class HtmlViewNode extends Node {
    *  the text carries surrogate pairs. null until checked. */
   private _pointsAreUnits: boolean | null = null;
   private _hovered: Element[] = [];
+  /** Where the pointer last moved to, in logical window pixels, while it
+   *  is over the element (`defaultMouseMove`). */
+  private _pointerAt: { x: number; y: number } | null = null;
+  /** A hover held until the content under a still pointer stops moving:
+   *  the timer, and when the content last moved (`_holdHover`). */
+  private _heldHover: unknown = null;
+  private _heldSince = 0;
+  /**
+   * The elements the build of the boxes that is due has to style again,
+   * where every change asking for it said which (`_invalidate`), and null
+   * where any element's style may have changed — a new cascade, a viewport
+   * a `vw` reads, a face that arrived.
+   */
+  private _restyleOnly: Set<Element> | null = null;
   private _scriptsSeen = new WeakSet<Element>();
   private _controls: ControlRect[] = [];
   private _reportedDomRevision = -1;
@@ -375,7 +397,26 @@ export class HtmlViewNode extends Node {
 
   // --- the pipeline ---------------------------------------------------------
 
-  private _invalidate(stale: Stale): void {
+  /**
+   * `restyle` with `Stale.Boxes`: the elements whose styles the change
+   * could have touched, where that is all of it — a pointer move's reach
+   * (`_hoverReach`). The build it asks for keeps every other element's
+   * (`_restyleOnly`).
+   */
+  private _invalidate(
+    stale: Stale,
+    restyle: ReadonlySet<Element> | null = null,
+  ): void {
+    if (stale >= Stale.Boxes) {
+      const only = stale === Stale.Boxes ? restyle : null;
+      if (this._stale < Stale.Boxes) {
+        this._restyleOnly = only ? new Set(only) : null;
+      } else if (this._restyleOnly && only) {
+        for (const el of only) this._restyleOnly.add(el);
+      } else {
+        this._restyleOnly = null;
+      }
+    }
     if (stale > this._stale) this._stale = stale;
     if (stale >= Stale.Layout) this.invalidateMeasure('content');
     this.invalidate(stale >= Stale.Layout, this, 'props');
@@ -906,15 +947,21 @@ export class HtmlViewNode extends Node {
     const wasWidth = this._documentWidth;
     const wasHeight = this._documentHeight;
 
+    // the styles a build may keep (`_restyleOnly`), unless something
+    // found below changes them all
+    let restyleOnly = this._stale === Stale.Boxes ? this._restyleOnly : null;
+    this._restyleOnly = null;
     if (this._stale >= Stale.Style || !this._cascade) {
       this._restyle(target);
       this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
+      restyleOnly = null;
     } else if (this._cascade.mediaBand(target) !== this._mediaBand) {
       // A resize that crossed a `@media` breakpoint is the one resize that
       // does have to restyle. Knowing which resizes those are is why the
       // breakpoints are collected at parse time.
       this._restyle(target);
       this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
+      restyleOnly = null;
     }
 
     const cascade = this._cascade;
@@ -926,18 +973,27 @@ export class HtmlViewNode extends Node {
     // again, where some style reads the side that moved. A document that
     // reads neither — most — goes on skipping the cascade on a resize.
     if (
-      this._stale < Stale.Boxes &&
-      ((cascade.readsViewportWidth && this._styledWidth !== target) ||
-        (cascade.readsViewportHeight && this._styledHeight !== viewport))
+      (cascade.readsViewportWidth && this._styledWidth !== target) ||
+      (cascade.readsViewportHeight && this._styledHeight !== viewport)
     ) {
-      this._stale = Stale.Boxes;
+      if (this._stale < Stale.Boxes) this._stale = Stale.Boxes;
+      restyleOnly = null;
     }
 
     if (this._stale >= Stale.Boxes || !this._tree) {
       const look = this._deviceLook();
+      // A build a pointer move asked for styles the elements the move
+      // reached, and takes every other element's from the tree it replaces
+      // (`Cascade.beginSharing`): the first build only, since a second is
+      // one the first found a reason for — a face, an image's size.
+      let kept: KeptStyles | null =
+        restyleOnly && this._tree && this._styledWith === cascade
+          ? { styles: this._tree.styles, restyle: restyleOnly }
+          : null;
       const build = () =>
         buildBoxes(this._source.document, {
           cascade,
+          kept,
           scale: this._scale,
           imageSize: (el) => this._resources.imageSize(imageUrlOf(el) ?? ''),
           urlSize: (url) => this._resources.imageSize(url),
@@ -945,6 +1001,8 @@ export class HtmlViewNode extends Node {
             measureControl(el, kind, style, this._fonts(), look),
         });
       this._tree = build();
+      kept = null;
+      this._styledWith = cascade;
       this._styledWidth = target;
       this._styledHeight = viewport;
       this._requestBackgrounds(this._tree);
@@ -1126,6 +1184,7 @@ export class HtmlViewNode extends Node {
   }
 
   override destroySubtree(): void {
+    this._dropHeldHover();
     this._resources.destroy();
     this._webFonts.destroy();
     this._source.destroy();
@@ -1401,6 +1460,7 @@ export class HtmlViewNode extends Node {
    * contains a `:hover` rule.
    */
   setHover(x: number, y: number): boolean {
+    this._dropHeldHover();
     const cascade = this._cascade;
     if (!cascade || !cascade.hoverSensitive) return false;
     const chain: Element[] = [];
@@ -1418,6 +1478,7 @@ export class HtmlViewNode extends Node {
   }
 
   clearHover(): boolean {
+    this._dropHeldHover();
     if (!this._hovered.length) return false;
     const was = this._hovered;
     this._hovered = [];
@@ -1426,10 +1487,79 @@ export class HtmlViewNode extends Node {
     return true;
   }
 
-  /** The hovered chain moved: restyle where it did, or the document. */
+  /**
+   * The hovered chain moved: nothing, where no rule that tests the pointer
+   * names an element it moved over; a restyle where they are, where all it
+   * changed is ink (`_hoverInPlace`); and otherwise the boxes built again,
+   * with the styles of every element the move did not reach kept.
+   */
   private _restyleHover(was: readonly Element[], now: readonly Element[]) {
-    // a restyle in place names what it repainted (`_hoverInPlace`)
-    if (this._hoverInPlace(was, now) === false) this._invalidate(Stale.Boxes);
+    const reach = this._hoverReach(was, now);
+    if (reach !== null) {
+      if (!reach.size) return;
+      if (this._hoverInPlace(reach, was)) return;
+    }
+    this._invalidate(Stale.Boxes, reach);
+  }
+
+  /**
+   * The elements whose styles a move of the hovered chain can change, or
+   * null where that cannot be said (`Cascade.hoverLocal`).
+   *
+   * Only an element whose hover state flipped and that a compound testing
+   * the pointer could match can change (`Cascade.hoverTouches`), with its
+   * subtree, and its later siblings' where a sibling combinator is in play;
+   * and the elements a `:has()` testing the pointer may flip, which are
+   * around the ones that changed. A move between two paragraphs under
+   * `a:hover` reaches nothing.
+   */
+  private _hoverReach(
+    was: readonly Element[],
+    now: readonly Element[],
+  ): Set<Element> | null {
+    const cascade = this._cascade;
+    if (!cascade || !cascade.hoverLocal) return null;
+    const before = new Set(was);
+    const after = new Set(now);
+    const roots = new Map<Element, HoverTouch>();
+    const flipped = (el: Element, other: Set<Element>): void => {
+      if (other.has(el)) return;
+      const touch = cascade.hoverTouches(el);
+      if (touch > (roots.get(el) ?? HOVER_UNTOUCHED)) roots.set(el, touch);
+    };
+    for (const el of was) flipped(el, after);
+    for (const el of now) flipped(el, before);
+    // the chains are ancestor chains, so the deepest that changed on each
+    // side is where a `:has()` is looked for from
+    const deepest = (chain: readonly Element[], other: Set<Element>) => {
+      const el = chain[0];
+      if (el && !other.has(el)) cascade.hoverAnchors(el, roots);
+    };
+    deepest(was, after);
+    deepest(now, before);
+
+    // the roots' subtrees, which inherit from them and a descendant
+    // combinator reaches, and their later siblings' too where a sibling
+    // combinator follows the compound that tests the pointer
+    const reach = new Set<Element>();
+    const collect = (el: Element): void => {
+      const stack: Element[] = [el];
+      while (stack.length) {
+        const at = stack.pop()!;
+        if (reach.has(at)) continue;
+        reach.add(at);
+        for (const child of at.children)
+          if (isElement(child)) stack.push(child);
+      }
+    };
+    for (const [root, touch] of roots) {
+      collect(root);
+      if (touch !== HOVER_FOLLOWED) continue;
+      for (let s = root.nextSibling; s; s = s.nextSibling) {
+        if (isElement(s)) collect(s);
+      }
+    }
+    return reach;
   }
 
   /**
@@ -1442,79 +1572,60 @@ export class HtmlViewNode extends Node {
    * nearly all change a colour, an underline, a background or a border's
    * colour — 77 of that article's 79 — and those move nothing. So:
    *
-   *  - Only an element whose hover state flipped and that a compound testing
-   *    the pointer could match can change (`Cascade.hoverTouches`), with its
-   *    subtree, and its later siblings where a sibling combinator follows.
-   *    A move between two paragraphs under `a:hover` touches nothing.
-   *  - Those are styled again from their parents. Where anything but ink
-   *    differs (`PAINT_ONLY`), or a box is not the element's own — an
-   *    anonymous or a pseudo-element box, a marker, a control — this is
-   *    not the move to take.
-   *  - The boxes take their new styles, and each layout of their text is
-   *    made again from the runs it was made from (`TextLayoutCache.inputsOf`)
-   *    with the new ink (`runFor`), where its geometry comes out the same.
+   *  - The elements the move reached (`_hoverReach`) are styled again from
+   *    their parents — the ones a rule testing the pointer answers
+   *    differently for, or whose parent's style changed; the rest, most of
+   *    a hovered card or table row, have the styles they had
+   *    (`Cascade.pointerChanged`). Where anything but ink differs
+   *    (`PAINT_ONLY`), this is not the move to take.
+   *  - The boxes take their new styles: an element's own, the text in it,
+   *    the anonymous boxes the fix-up made around what is in it, and its
+   *    `::before` and `::after`, styled again by their own rules. A box
+   *    whose style is derived some other way — a marker, a first letter, a
+   *    control — is not one to restyle here.
+   *  - Each layout of their text is made again from the runs it was made
+   *    from (`TextLayoutCache.inputsOf`) with the new ink (`runFor`), where
+   *    its geometry comes out the same.
    *
-   * Everything is checked before anything is changed. 'none' where nothing
-   * could change, 'painted' where it was restyled here, false where the
-   * document has to be built again.
+   * Everything is checked before anything is changed, and nothing is looked
+   * at but the blocks the restyled elements are in (`_blocksOf`): a move
+   * costs what it changed, in a document of any length. True where it was
+   * restyled here, or had nothing to restyle; false where the boxes have to
+   * be built again.
    */
   private _hoverInPlace(
+    reach: ReadonlySet<Element>,
     was: readonly Element[],
-    now: readonly Element[],
-  ): 'none' | 'painted' | false {
+  ): boolean {
     const cascade = this._cascade;
     const tree = this._tree;
     const layouts = this._layouts;
-    if (!cascade || !tree || !layouts || !cascade.hoverLocal) return false;
+    if (!cascade || !tree || !layouts) return false;
     if (this._stale !== Stale.Nothing || this._laidOutWidth < 0) return false;
+    if (reach.size > HOVER_RESTYLE_LIMIT) return false;
+    // a first line's, a first letter's and a marker's styles are layout's
+    const pseudoRules = cascade.hoverPseudo;
+    if (pseudoRules === HOVER_PSEUDO_OTHER) return false;
 
-    const before = new Set(was);
-    const after = new Set(now);
-    const roots: Element[] = [];
-    // and the elements a `:has()` testing the pointer may flip, which
-    // are around the ones that changed; the chains are ancestor chains,
-    // so the deepest that changed on each side is where to look from
-    const flipped = (el: Element, other: Set<Element>): void => {
-      if (other.has(el)) return;
-      if (cascade.hoverTouches(el)) roots.push(el);
-    };
-    for (const el of was) flipped(el, after);
-    for (const el of now) flipped(el, before);
-    const deepest = (chain: readonly Element[], other: Set<Element>) => {
-      const el = chain[0];
-      if (el && !other.has(el)) cascade.hoverAnchors(el, roots);
-    };
-    deepest(was, after);
-    deepest(now, before);
-    if (!roots.length) return 'none';
-
-    // what may restyle: the roots' subtrees, which inherit from them and a
-    // descendant combinator reaches, and their later siblings' too where a
-    // sibling combinator follows a compound that tests the pointer
-    const reach = new Set<Element>();
-    const collect = (el: Element): boolean => {
-      const stack: Element[] = [el];
-      while (stack.length) {
-        const at = stack.pop()!;
-        if (reach.has(at)) continue;
-        reach.add(at);
-        if (reach.size > HOVER_RESTYLE_LIMIT) return false;
-        for (const child of at.children)
-          if (isElement(child)) stack.push(child);
+    // whether the rules that test the pointer answer differently for an
+    // element than they did before the move
+    const before = { hovered: new Set(was), active: EMPTY_SET };
+    const flips = new Map<Element, boolean>();
+    const flipped = (el: Element): boolean => {
+      let flip = flips.get(el);
+      if (flip === undefined) {
+        flip = cascade.pointerChanged(el, before);
+        flips.set(el, flip);
       }
-      return true;
+      return flip;
     };
-    for (const root of roots) {
-      if (!collect(root)) return false;
-      if (!cascade.hoverSiblings) continue;
-      for (let s = root.nextSibling; s; s = s.nextSibling) {
-        if (isElement(s) && !collect(s)) return false;
-      }
-    }
 
     // styled again from their parents, a parent first
     const fresh = new Map<Element, ComputedStyle>();
     const changed = new Map<Element, ComputedStyle>();
+    // the ones whose ink is what it was: only their custom properties
+    // changed, which the elements under them read
+    const quiet = new Set<Element>();
     let refused = false;
     // what changed beyond ink (`hoverChange`): how far some box's ink
     // reaches, the order its layer paints in, where one is
@@ -1535,51 +1646,123 @@ export class HtmlViewNode extends Node {
         refused = true;
         return null;
       }
-      const style = cascade.styleFor(el, parentStyle, kept.inFlex);
-      fresh.set(el, style);
-      const diff = hoverChange(kept.style, style);
-      if (diff === false) refused = true;
-      else if (diff) {
-        changed.set(el, style);
-        if (diff.reach) reaches = true;
-        if (diff.order) reorders = true;
-        if (diff.move) moving.add(el);
+      const parentWas = parent ? tree.styles.get(parent)!.style : parentStyle;
+      let style = kept.style;
+      if (parentStyle !== parentWas || flipped(el)) {
+        const made = cascade.styleFor(el, parentStyle, kept.inFlex);
+        const diff = hoverChange(kept.style, made);
+        if (diff === false) refused = true;
+        else if (diff) {
+          style = made;
+          changed.set(el, made);
+          if (!diff.ink) quiet.add(el);
+          if (diff.reach) reaches = true;
+          if (diff.order) reorders = true;
+          if (diff.move) moving.add(el);
+        }
       }
+      fresh.set(el, style);
       return style;
     };
     for (const el of reach) {
       styleOf(el);
       if (refused) return false;
     }
-    if (!changed.size) return 'none';
+    if (!changed.size && pseudoRules === HOVER_PSEUDO_NONE) return true;
     for (const el of changed.keys()) {
       const tag = tagOf(el);
       // their backgrounds are the canvas's
       if (tag === 'html' || tag === 'body') return false;
     }
 
-    // the boxes: each changed element's own, and nothing that takes its
-    // style from one without being it
+    // The boxes, each under its parent: what a box takes depends on what
+    // the box it is in took.
     const fonts = layouts.fonts;
+    const blocks = this._blocksOf(
+      tree,
+      pseudoRules === HOVER_PSEUDO_NONE ? changed.keys() : reach,
+    );
     const restyled: [Box, ComputedStyle][] = [];
+    const next = new Map<Box, ComputedStyle>();
+    /** The restyled boxes whose ink changed, to repaint. */
+    const inked = new Set<Box>();
+    /** The `::before` and `::after` boxes found, by element: 1 and 2. */
+    const generated = new Map<Element, number>();
     const redecorated: [Box, Box['decoration']][] = [];
-    const walk: Box[] = [tree.root];
+    const walk: Box[] = blocks.slice();
     while (walk.length) {
       const box = walk.pop()!;
       for (const child of box.children) walk.push(child);
-      const owner = box.el ?? nearestElement(box);
-      if (!owner) continue;
-      const style = changed.get(owner);
+      const parent = box.parent;
+      const above = parent ? next.get(parent) : undefined;
+      let style: ComputedStyle | undefined;
+      let ink = !!parent && inked.has(parent);
+      if (box.kind === 'text' || box.kind === 'break') {
+        // Text is set in the style of the box it is in — an element's, a
+        // pseudo-element's — or of its element, where the fix-up put an
+        // anonymous box around it.
+        const el = box.el;
+        if (parent && box.style === parent.style) style = above;
+        else if (el && box.style === tree.styles.get(el)?.style) {
+          style = changed.get(el);
+          ink = !quiet.has(el);
+        } else if (above || (el && changed.has(el))) return false;
+      } else if (box.pseudo === 'before' || box.pseudo === 'after') {
+        const from = GENERATED_FROM.get(box);
+        if (!from) {
+          // an inside marker, made of its item's style and its own rules
+          if (above) return false;
+          continue;
+        }
+        if (!reach.has(from)) continue;
+        generated.set(
+          from,
+          (generated.get(from) ?? 0) | (box.pseudo === 'before' ? 1 : 2),
+        );
+        const inherits = fresh.get(from);
+        const kept = tree.styles.get(from)?.style;
+        if (!inherits || !kept) return false;
+        if (inherits === kept && !flipped(from)) continue;
+        // styled by its own rules over its element's style, as the builder
+        // styled it, in its element's box
+        if (!parent || parent.style !== kept || box.marker) return false;
+        const made = cascade.pseudoStyleFor(from, box.pseudo, inherits);
+        if (!made || made.display === 'none') return false;
+        const diff = hoverChange(box.style, made);
+        if (diff === false) return false;
+        if (!diff) continue;
+        if (diff.reach || diff.order || diff.move) return false;
+        style = made;
+        ink = diff.ink;
+      } else if (box.pseudo) {
+        // a first letter, styled from the box its letter is in
+        if (above) return false;
+      } else if (box.el) {
+        const el = box.el;
+        style = changed.get(el);
+        if (!style) continue;
+        const kept = tree.styles.get(el)!.style;
+        // a style derived from the element's, or drawn from it somewhere
+        // else — a widget mounted beside the document takes its look from
+        // it. An image, a drawing or a rule is drawn here, from its box,
+        // like any.
+        if (box.style !== kept) return false;
+        if (box.marker || WIDGETS.has(box.replaced)) return false;
+        if (moving.has(el) && !movable(box, kept, style)) return false;
+        ink = !quiet.has(el);
+      } else if (above) {
+        // An anonymous box takes what its parent's style passes on
+        // (`anonymousStyles`), so it takes that of the new one: the text of
+        // a link made a flex row is in one, and takes the link's colour.
+        if (GENERATED_FROM.has(box)) return false;
+        const display = box.style.display;
+        if (tree.anonymous(parent!.style, display) !== box.style) return false;
+        style = tree.anonymous(above, display);
+      }
       if (!style) continue;
-      const kept = tree.styles.get(owner)!;
-      // an anonymous box, a pseudo-element, a marker, a control: a style
-      // derived from the element's, or drawn from it somewhere else — a
-      // widget mounted beside the document takes its look from it. An
-      // image, a drawing or a rule is drawn here, from its box, like any.
-      if (!box.el || box.style !== kept.style) return false;
-      if (box.marker || WIDGETS.has(box.replaced)) return false;
-      if (moving.has(owner) && !movable(box, kept.style, style)) return false;
+      next.set(box, style);
       restyled.push([box, style]);
+      if (ink) inked.add(box);
       if (box.kind === 'inline') {
         const decoration = inlineDecoration(fonts, box, style);
         if ((decoration === null) !== (box.decoration === null)) {
@@ -1589,12 +1772,28 @@ export class HtmlViewNode extends Node {
         if (decoration !== box.decoration) redecorated.push([box, decoration]);
       }
     }
+    // a `::before` or an `::after` a rule that tests the pointer now gives
+    // an element is a box to build
+    if (pseudoRules !== HOVER_PSEUDO_NONE) {
+      for (const el of reach) {
+        if (!flipped(el)) continue;
+        const style = fresh.get(el);
+        if (!style) continue;
+        const has = generated.get(el) ?? 0;
+        for (const [which, bit] of GENERATED_BITS) {
+          if (has & bit) continue;
+          const made = cascade.pseudoStyleFor(el, which, style);
+          if (made && made.display !== 'none') return false;
+        }
+      }
+    }
+    if (!restyled.length) return true;
 
-    // the text: each layout holding a run of a changed element's, made
-    // again with its new ink, where it comes out the same shape
+    // the text: each layout holding a run of a restyled box's, made again
+    // with its new ink, where it comes out the same shape
     const relaid = new Map<TextLayoutLike, TextLayoutLike | null>();
     const texts: LineText[] = [];
-    walk.push(tree.root);
+    if (inked.size) for (const block of blocks) walk.push(block);
     while (walk.length) {
       const box = walk.pop()!;
       for (const child of box.children) walk.push(child);
@@ -1603,16 +1802,16 @@ export class HtmlViewNode extends Node {
         for (const text of line.texts) {
           texts.push(text);
           if (relaid.has(text.layout)) continue;
-          const next = reinked(text, layouts, changed, tree.styles);
-          if (next === false) return false;
-          relaid.set(text.layout, next);
+          const again = reinked(text, layouts, next);
+          if (again === false) return false;
+          relaid.set(text.layout, again);
         }
       }
     }
 
     // what each box drew before, to be repainted with what it draws after
     const inks: Rect[] = [];
-    for (const [box] of restyled) {
+    for (const box of inked) {
       const ink = inkOf(box);
       if (ink) inks.push(ink);
     }
@@ -1622,7 +1821,9 @@ export class HtmlViewNode extends Node {
     for (const [box, style] of restyled) {
       const was = box.style;
       box.style = style;
-      if (moving.has(box.el!)) moved.push([box, was]);
+      if (box.el && moving.has(box.el) && box.kind !== 'text') {
+        moved.push([box, was]);
+      }
     }
     for (const [box, decoration] of redecorated) {
       // what is inside it keeps which boxes around it paint, and this is
@@ -1633,8 +1834,8 @@ export class HtmlViewNode extends Node {
       box.decoration = decoration;
     }
     for (const text of texts) {
-      const next = relaid.get(text.layout);
-      if (next) text.layout = next;
+      const again = relaid.get(text.layout);
+      if (again) text.layout = again;
     }
     for (const [el, style] of changed) {
       tree.styles.set(el, { style, inFlex: tree.styles.get(el)!.inFlex });
@@ -1665,14 +1866,61 @@ export class HtmlViewNode extends Node {
     if (moved.length) this._reportControls();
     if (relayout) {
       this._invalidate(Stale.Layout);
-      return 'painted';
+      return true;
     }
-    for (const [box] of restyled) {
+    for (const box of inked) {
       const ink = inkOf(box);
       if (ink) inks.push(ink);
     }
     this._repaintInk(inks);
-    return 'painted';
+    return true;
+  }
+
+  /** An element's first box in document order, for the tree it was asked
+   *  of: made on the first move over a tree, which is one walk of it. */
+  private _firstBoxes: { tree: BoxTree; of: Map<Element, Box> } | null = null;
+
+  /**
+   * The blocks a restyle of `changed` has to look in: for each element, the
+   * box its text is set in the lines of — the nearest box around its first
+   * that is not an inline one — which holds every box that takes its style
+   * from it, the pieces a block in it broke it into among them
+   * (`breakAround`). One that is inside another is left to it.
+   */
+  private _blocksOf(tree: BoxTree, changed: Iterable<Element>): Box[] {
+    let index = this._firstBoxes;
+    if (index?.tree !== tree) {
+      const of = new Map<Element, Box>();
+      const stack: Box[] = [tree.root];
+      while (stack.length) {
+        const box = stack.pop()!;
+        if (box.el && !of.has(box.el)) of.set(box.el, box);
+        for (let i = box.children.length - 1; i >= 0; i -= 1) {
+          stack.push(box.children[i]);
+        }
+      }
+      index = this._firstBoxes = { tree, of };
+    }
+    const blocks = new Set<Box>();
+    for (const el of changed) {
+      let box: Box | null = index.of.get(el) ?? null;
+      while (
+        box?.parent &&
+        (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break')
+      ) {
+        box = box.parent;
+      }
+      if (box) blocks.add(box);
+    }
+    const out: Box[] = [];
+    for (const block of blocks) {
+      let inside = false;
+      for (let at = block.parent; at && !inside; at = at.parent) {
+        inside = blocks.has(at);
+      }
+      if (!inside) out.push(block);
+    }
+    return out;
   }
 
   /**
@@ -1735,18 +1983,63 @@ export class HtmlViewNode extends Node {
   // `:hover` is wired at the element rather than through React: the cascade
   // already knows whether any rule in the document tests it, `setHover`
   // returns without work when none does, and a document that does use it
-  // re-styles only when the hovered chain actually changed. The restyle is
-  // still document-wide — narrowing it to the affected subtree is the
-  // phase-2 item the PRD records.
+  // re-styles only when the hovered chain actually changed, and then only
+  // the elements the change reached (`_restyleHover`).
+  //
+  // **A hover waits for a scroll to stop.** Core asks again what is under a
+  // pointer that stayed where it was after every frame that laid out —
+  // hover follows content, react-x11#793 — and says so with a move to the
+  // point the pointer is already at. While a document scrolls that is every
+  // frame, each with something else under the pointer: a restyle a frame
+  // at best, and where a hover moves something, the boxes built again a
+  // frame, which took a page scrolled under a parked pointer from 52 frames
+  // a second to 4. A browser holds its hover until the scroll is over, for
+  // the same reason; so does this, for `HOVER_REST_MS` after the content
+  // last moved. What was hovered stays hovered as it scrolls away, as it
+  // does there. A move of the pointer itself is answered at once.
 
   override defaultMouseMove(ev: X11MouseEvent): void {
     super.defaultMouseMove?.(ev);
+    const at = this._pointerAt;
+    if (at !== null && at.x === ev.x && at.y === ev.y) {
+      this._holdHover();
+      return;
+    }
+    this._pointerAt = { x: ev.x, y: ev.y };
     this.setHover(ev.x, ev.y);
   }
 
   override defaultMouseLeave(ev: X11MouseEvent): void {
     super.defaultMouseLeave?.(ev);
+    this._pointerAt = null;
     this.clearHover();
+  }
+
+  /** The content moved under the pointer: the hover is asked for once it
+   *  has been still for `HOVER_REST_MS`. One timer a wait, put off by
+   *  being armed again when it finds the content moved since. */
+  private _holdHover(): void {
+    if (!this._cascade?.hoverSensitive) return;
+    this._heldSince = hoverClock.now();
+    if (this._heldHover !== null) return;
+    const rest = (): void => {
+      this._heldHover = null;
+      const at = this._pointerAt;
+      if (!at || this.destroyed) return;
+      const left = this._heldSince + HOVER_REST_MS - hoverClock.now();
+      if (left > 0) {
+        this._heldHover = hoverClock.arm(rest, left);
+        return;
+      }
+      this.setHover(at.x, at.y);
+    };
+    this._heldHover = hoverClock.arm(rest, HOVER_REST_MS);
+  }
+
+  private _dropHeldHover(): void {
+    if (this._heldHover === null) return;
+    hoverClock.disarm(this._heldHover);
+    this._heldHover = null;
   }
 
   // --- paint ----------------------------------------------------------------
@@ -2650,6 +2943,38 @@ function compareKeys(a: readonly number[], b: readonly number[]): number {
  *  that matches a container reaches everything in it. */
 const HOVER_RESTYLE_LIMIT = 300;
 
+/** How long the content under a still pointer has to have stopped moving
+ *  before the hover is asked for again (`HtmlViewNode._holdHover`): a
+ *  tenth of a second, which is what WebKit waits after a scroll before it
+ *  sends the mouse move that updates its own. */
+const HOVER_REST_MS = 100;
+
+const timers = globalThis as {
+  setTimeout?(fn: () => void, ms: number): unknown;
+  clearTimeout?(id: unknown): void;
+};
+
+/**
+ * The clock a held hover waits on. Through `globalThis` because `src/`
+ * compiles with `types: []`, and unref'd where the runtime allows it: a
+ * timer of a document's must not keep a process alive that is otherwise
+ * done. One object, exported from this module though not from the package,
+ * so a test can hold it and say when the rest is over (`test/held-clock.ts`).
+ */
+export const hoverClock = {
+  now(): number {
+    return Date.now();
+  },
+  arm(step: () => void, ms: number): unknown {
+    const handle = timers.setTimeout?.(step, ms) ?? null;
+    (handle as { unref?(): void } | null)?.unref?.();
+    return handle;
+  },
+  disarm(handle: unknown): void {
+    timers.clearTimeout?.(handle);
+  },
+};
+
 /**
  * The computed properties a pointer move may change in place: ink, which
  * moves nothing. A background colour is drawn inside the box it colours
@@ -2705,10 +3030,20 @@ const FACE_FIELDS = [
 /** What a restyle in place changed beyond ink: how far a box's ink
  *  reaches, the order its layer paints in, or where it is. */
 interface HoverChange {
+  /** Whether anything that is drawn changed: false where only the custom
+   *  properties did, which the elements under this one read. */
+  ink: boolean;
   reach: boolean;
   order: boolean;
   move: boolean;
 }
+
+/** An element's `::before` and `::after`, each with its bit in the set
+ *  of the ones a restyle found boxes of (`_hoverInPlace`). */
+const GENERATED_BITS = [
+  ['before', 1],
+  ['after', 2],
+] as const;
 
 /** The replaced boxes that are controls (`BoxTree.controls`, `controls.ts`):
  *  a widget mounted beside the document, or a button whose press it reports. */
@@ -2746,8 +3081,17 @@ function hoverChange(
   const b = now as unknown as Record<string, unknown>;
   let change: HoverChange | null = null;
   for (const key in b) {
-    if (key === 'custom' || sameValue(a[key], b[key])) continue;
-    change ??= { reach: false, order: false, move: false };
+    // the sets are shared by what made them (`Cascade._customFor`): one
+    // object where they are the same
+    if (key === 'custom') {
+      if (a[key] !== b[key]) {
+        change ??= { ink: false, reach: false, order: false, move: false };
+      }
+      continue;
+    }
+    if (sameValue(a[key], b[key])) continue;
+    change ??= { ink: true, reach: false, order: false, move: false };
+    change.ink = true;
     if (PAINT_ONLY.has(key)) continue;
     if (INK_REACH.has(key)) {
       change.reach = true;
@@ -2831,16 +3175,9 @@ function sameValue(x: unknown, y: unknown): boolean {
   return true;
 }
 
-/** The element an anonymous box takes its style from: its nearest
- *  ancestor's that has one. */
-function nearestElement(box: Box): Element | null {
-  for (let at = box.parent; at; at = at.parent) if (at.el) return at.el;
-  return null;
-}
-
 /**
- * `text`'s layout made again with the ink of the elements a pointer move
- * restyled: from the runs it was made from, each of a changed element's
+ * `text`'s layout made again with the ink of the boxes a pointer move
+ * restyled: from the runs it was made from, each of a restyled text box's
  * given the ink its new style makes (`runFor`) and nothing else. Null where
  * none of its runs is theirs; false where that cannot be told — a run this
  * cannot place in the document, one some other pass inked (a first line's),
@@ -2849,19 +3186,16 @@ function nearestElement(box: Box): Element | null {
 function reinked(
   text: LineText,
   layouts: TextLayoutCache,
-  changed: ReadonlyMap<Element, ComputedStyle>,
-  styles: BoxTree['styles'],
+  next: ReadonlyMap<Box, ComputedStyle>,
 ): TextLayoutLike | null | false {
   const spans = text.spans;
-  const ownerAt = (offset: number): Element | null =>
-    spans.boxAt ? (spans.boxAt(offset)?.el ?? null) : null;
   const inputs = layouts.inputsOf(text.layout);
   if (!inputs || !spans.boxAt) {
     // not one this could make again: none of its text may be theirs
     for (const line of text.layout.lines) {
       for (const run of line.runs) {
-        const owner = spans.boxAt ? ownerAt(run.start) : null;
-        if (!spans.boxAt || (owner && changed.has(owner))) return false;
+        const box = spans.boxAt?.(run.start);
+        if (!spans.boxAt || (box && next.has(box))) return false;
       }
     }
     return null;
@@ -2872,25 +3206,25 @@ function reinked(
   for (let i = 0; i < content.length; i += 1) {
     const run = content[i];
     const length = run.text.length;
-    const owner = length ? ownerAt(offset) : null;
-    const style = owner ? changed.get(owner) : undefined;
-    if (owner && style) {
-      if (ownerAt(offset + length - 1) !== owner) return false;
-      const was = runFor(run.text, styles.get(owner)!.style);
+    const box = length ? spans.boxAt(offset) : null;
+    const style = box ? next.get(box) : undefined;
+    if (box && style) {
+      if (spans.boxAt(offset + length - 1) !== box) return false;
+      const was = runFor(run.text, box.style);
       const now = runFor(run.text, style);
       for (const f of FACE_FIELDS) if (!sameValue(was[f], now[f])) return false;
-      let next: Record<string, unknown> | null = null;
+      let inked: Record<string, unknown> | null = null;
       for (const f of INK_FIELDS) {
         // a run that is not what its style made — a first line's colour
         if (!sameValue(run[f], was[f])) return false;
         if (sameValue(was[f], now[f])) continue;
-        next ??= { ...run };
-        if (now[f] === undefined) delete next[f];
-        else next[f] = now[f];
+        inked ??= { ...run };
+        if (now[f] === undefined) delete inked[f];
+        else inked[f] = now[f];
       }
-      if (next) {
+      if (inked) {
         runs ??= content.slice();
-        runs[i] = next as unknown as TextRun;
+        runs[i] = inked as unknown as TextRun;
       }
     }
     offset += length;

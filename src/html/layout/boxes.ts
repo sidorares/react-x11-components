@@ -31,6 +31,7 @@ import {
 import type {
   Cascade,
   FirstLetterRules,
+  KeptStyles,
   SelectionStyle,
 } from '../css/cascade.js';
 import type { CollapsedTable } from './collapse.js';
@@ -687,6 +688,10 @@ export interface BoxTree {
   controls: Box[];
   /** Every box carrying an `href`, for click and hover. */
   links: Box[];
+  /** The style of an anonymous box under a parent's (`anonymousStyles`):
+   *  the one the fix-up gave each it made, and what such a box takes when
+   *  its parent's style changes where it is (`HtmlViewNode._hoverInPlace`). */
+  anonymous: AnonymousStyle;
   /** Every box with a `background-image`, a border image or a mask image,
    *  an element's or a pseudo-element's, for the host to be asked for: a
    *  document has a handful, and finding them was a walk over every box
@@ -732,6 +737,9 @@ export interface BoxTree {
 
 export interface BuildOptions {
   cascade: Cascade;
+  /** The styles of the tree this one replaces, where only some elements'
+   *  can have changed since (`Cascade.beginSharing`). */
+  kept?: KeptStyles | null;
   /** Device pixels per CSS pixel. An image's pixels and a `width="600"`
    *  attribute are CSS pixels; every box is device, so both are multiplied
    *  on the way in. Default 1. */
@@ -831,7 +839,7 @@ class Builder {
 
   run(root: Element): BoxTree {
     const cascade = this._options.cascade;
-    cascade.beginSharing();
+    cascade.beginSharing(this._options.kept ?? null);
     const { style: rootStyle, html: impliedHtml } = cascade.rootStyle(
       hasBody(root),
       hasHtml(root),
@@ -850,10 +858,13 @@ class Builder {
     // it carries no margins of its own and cannot collapse with anything.
     this._children(root, rootBox, rootStyle, false, null, ROOT_SHARE_KEY);
     this._endLine();
-    fixUp(rootBox, anonymousStyles(cascade.initial));
+    cascade.endSharing();
+    const anonymous = anonymousStyles(cascade.initial);
+    fixUp(rootBox, anonymous);
     assignSubtreeRanges(rootBox);
     return {
       root: rootBox,
+      anonymous,
       text: this._chunks.join(''),
       textBoxes: this._textBoxes,
       textStyles: this._textStyles,
@@ -2718,24 +2729,24 @@ function namesImages(style: ComputedStyle): boolean {
  * paragraph after it the height of the div further down. One per parent
  * style, which the cascade already shares between elements.
  */
-type AnonymousStyle = (
-  parent: Box,
+export type AnonymousStyle = (
+  parent: ComputedStyle,
   display: ComputedStyle['display'],
 ) => ComputedStyle;
 
 function anonymousStyles(initial: ComputedStyle): AnonymousStyle {
   const made = new WeakMap<ComputedStyle, Map<string, ComputedStyle>>();
   return (parent, display) => {
-    let byDisplay = made.get(parent.style);
+    let byDisplay = made.get(parent);
     if (!byDisplay) {
       byDisplay = new Map();
-      made.set(parent.style, byDisplay);
+      made.set(parent, byDisplay);
     }
     let style = byDisplay.get(display);
     if (!style) {
       // `display` is the one property it does not start from: it is the
       // box the fix-up made, and layout asks the style what a box is
-      style = inherit(parent.style, initial);
+      style = inherit(parent, initial);
       style.display = display;
       byDisplay.set(display, style);
     }
@@ -2843,7 +2854,7 @@ function anonymousOf(
   anonymous: AnonymousStyle,
   display: ComputedStyle['display'] = kind as ComputedStyle['display'],
 ): Box {
-  const box = new Box(kind, null, anonymous(parent, display));
+  const box = new Box(kind, null, anonymous(parent.style, display));
   box.parent = parent;
   for (const child of run) {
     child.parent = box;
