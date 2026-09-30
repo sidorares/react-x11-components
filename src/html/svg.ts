@@ -16,8 +16,12 @@ import { parseDocument } from 'htmlparser2';
 import { Element, Text } from 'domhandler';
 import type { ChildNode, ParentNode } from 'domhandler';
 import * as ntk from 'react-x11/ntk';
-import { isSvgRoot } from './dom.js';
+import { isSvgRoot, rawTextOf } from './dom.js';
+import { Cascade } from './css/cascade.js';
+import { parseMediaQuery, parseStylesheet } from './css/parse.js';
+import type { Stylesheet } from './css/parse.js';
 import type { ShapeStyle, ShapeStyles } from './css/shapes.js';
+import type { RootLook } from './css/style.js';
 import { inkColor, isTransparent, parseColor } from './css/values.js';
 
 export { isSvgRoot };
@@ -68,20 +72,6 @@ function absoluteLength(
   else if (unit === 'ex') px = (n * fontSize) / 2;
   else return null;
   return px >= 0 ? px : null;
-}
-
-/**
- * The `width`/`height` of an inline `<svg>` as CSS: they are presentation
- * attributes for the properties of the same names (SVG 2, 5.1.1), so
- * `height="50%"` is a percentage of the containing block like a style's.
- * A bare number is pixels; null for what CSS would not parse.
- */
-export function svgSizeHint(value: string): string | null {
-  const v = value.trim();
-  if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%$/i.test(v)) return v;
-  const m = LENGTH.exec(v);
-  if (!m) return null;
-  return m[2] ? v : `${parseFloat(m[1])}px`;
 }
 
 function viewBoxParts(el: Element): [number, number, number, number] | null {
@@ -203,6 +193,16 @@ export class SvgDrawing {
   /** The background an image's root gives its canvas; undefined until it
    *  is first read. */
   private _canvas: string | null | undefined = undefined;
+  /** An SVG image's own style sheets, its `<style>` elements': read at its
+   *  first draw, and none for most images. */
+  private _sheets: Stylesheet[] | null = null;
+  /** A cascade over them for each colour scheme and scale the image is
+   *  drawn at, and what each gave it: by the viewport it was asked at where
+   *  a sheet reads the viewport, and under one key where none does. */
+  private _cascades = new Map<
+    string,
+    { cascade: Cascade; own: Map<string, ImagePaint | null> }
+  >();
 
   constructor(root: Element, intrinsics: IntrinsicSize, standalone = false) {
     this._root = root;
@@ -316,6 +316,105 @@ export class SvgDrawing {
     }
   }
 
+  /**
+   * Draw an SVG image — an `<img>`'s, a background's, a list marker's — as
+   * `draw` does, painted as its own style sheets say. An image is a
+   * document of its own: no rule of the page's reaches into it, and its
+   * `color` is not the page's. What its `<style>` elements say is given
+   * its elements as the page's rules are given a drawing inline, and its
+   * root its `color`, `fill` and `stroke`, which an inline root has from
+   * its box. `scheme` is the colour scheme of the element that embeds it:
+   * what `prefers-color-scheme` answers inside it, as Chrome has it.
+   */
+  drawImage(
+    ctx: ClipContext,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    scale: number,
+    scheme: 'light' | 'dark' = 'light',
+  ): void {
+    if (this._failed || !(w > 0 && h > 0)) return;
+    const own = this._ownPaint(w, h, scale, scheme);
+    this.draw(
+      ctx,
+      x,
+      y,
+      w,
+      h,
+      scale,
+      own?.color,
+      own?.fill ?? null,
+      own?.stroke ?? null,
+      own?.shapes ?? null,
+    );
+  }
+
+  /** What an image's own style sheets give it, drawn `w` by `h` device
+   *  pixels, or null where it has none. */
+  private _ownPaint(
+    w: number,
+    h: number,
+    scale: number,
+    scheme: 'light' | 'dark',
+  ): ImagePaint | null {
+    const sheets = (this._sheets ??= ownSheets(this._root));
+    if (!sheets.length) return null;
+    const made = `${scheme}|${scale}`;
+    let entry = this._cascades.get(made);
+    if (!entry) {
+      const cascade = new Cascade(
+        sheets,
+        imageLook(scheme, scale),
+        w,
+        h,
+        scale,
+        null,
+        null,
+        null,
+        null,
+        this._root,
+      );
+      entry = { cascade, own: new Map() };
+      this._cascades.set(made, entry);
+    }
+    const { cascade, own } = entry;
+    // An image's viewport is the rectangle it is drawn in, which is what a
+    // `@media (min-width)` in it, or a `vw`, is of: the answer is kept by
+    // that size only where a sheet asks.
+    const sized =
+      cascade.breakpoints.length > 0 ||
+      cascade.readsViewportWidth ||
+      cascade.readsViewportHeight;
+    const key = sized ? `${w}x${h}` : '';
+    const kept = own.get(key);
+    if (kept !== undefined) return kept;
+    cascade.viewportWidth = w;
+    cascade.viewportHeight = h;
+    let paint: ImagePaint | null = null;
+    try {
+      const root = this._root;
+      const style = cascade.styleFor(root, cascade.initial, false);
+      const ink = (value: string | null): string | null =>
+        value === null || value === 'currentColor' || value === 'none'
+          ? value
+          : inkColor(value, style.color);
+      paint = {
+        color: style.color,
+        fill: ink(style.fill),
+        stroke: ink(style.stroke),
+        shapes: cascade.shapeStyles(root, style),
+      };
+    } catch {
+      // a sheet this cannot read leaves the image as its attributes draw it
+    }
+    // a background drawn at many sizes keeps a few of them
+    if (own.size >= 8) own.clear();
+    own.set(key, paint);
+    return paint;
+  }
+
   private _viewFor(
     width: number,
     height: number,
@@ -407,6 +506,75 @@ function canvasBackground(root: Element): string | null {
     found = color && !isTransparent(color) ? color : null;
   }
   return found;
+}
+
+/** What an SVG image's own style sheets give it (`SvgDrawing.drawImage`):
+ *  its root's `color`, `fill` and `stroke`, and what they give the
+ *  elements in it. */
+interface ImagePaint {
+  color: string;
+  fill: string | null;
+  stroke: string | null;
+  shapes: ShapeStyles | null;
+}
+
+/**
+ * The style sheets an SVG image's `<style>` elements hold, in order. One
+ * that names a type other than CSS's holds none (SVG 2, 6.3), and one with
+ * a `media` query holds its rules under it. Its text is its text and CDATA
+ * sections, as an XML parse leaves them, and not its comments.
+ */
+function ownSheets(root: Element): Stylesheet[] {
+  const sheets: Stylesheet[] = [];
+  const layers = new Map<string, number>();
+  let order = 0;
+  const stack: Element[] = [root];
+  for (let el = stack.pop(); el; el = stack.pop()) {
+    for (let i = el.children.length - 1; i >= 0; i -= 1) {
+      const child = el.children[i];
+      // an XML parse gives a `<style>` a type of its own, as HTML's does
+      if (child.type === 'tag' || child.type === 'style') {
+        stack.push(child as Element);
+      }
+    }
+    if (el === root || localName(el.name) !== 'style') continue;
+    const type = (el.attribs.type ?? '').trim().toLowerCase();
+    if (type && type !== 'text/css') continue;
+    const media = el.attribs.media?.trim();
+    const sheet = parseStylesheet(
+      rawTextOf(el),
+      order,
+      layers,
+      null,
+      media ? [parseMediaQuery(media)] : null,
+    );
+    order += sheet.rules.length + 1;
+    sheets.push(sheet);
+  }
+  return sheets;
+}
+
+/**
+ * The look an SVG image's own document starts from: CSS's initial values,
+ * black at `medium`, since nothing of the page's is inherited into an
+ * image — only the colour scheme, which its `prefers-color-scheme` answers.
+ */
+function imageLook(scheme: 'light' | 'dark', scale: number): RootLook {
+  return {
+    color: '#000000',
+    fontFamily: 'sans-serif',
+    fontSize: 16 * scale,
+    monoFamily: 'monospace',
+    linkColor: '#0000ee',
+    borderColor: '#000000',
+    mutedColor: '#808080',
+    background: 'transparent',
+    colorScheme: scheme,
+    surface: '#ffffff',
+    controlPadY: 0,
+    controlBorder: 0,
+    controlRadius: 0,
+  };
 }
 
 /** Drawings of inline `<svg>` elements, per element: the element is the

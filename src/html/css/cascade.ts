@@ -21,7 +21,6 @@ import { Element as DomElement, isTag } from 'domhandler';
 import type { Element } from 'domhandler';
 
 import { attr, tagOf } from '../dom.js';
-import { svgSizeHint } from '../svg.js';
 import {
   asciiLower,
   escapeEnd,
@@ -597,11 +596,12 @@ const POINTER_PSEUDO = /:(?:hover|active)(?![\w-])/i;
 function compileSelector(
   selector: string,
   adapter: CssSelectAdapter,
+  pseudos: typeof PSEUDOS = PSEUDOS,
 ): (el: Element) => boolean {
   return compile(noEmptyWords(selector), {
     adapter,
     xmlMode: false,
-    pseudos: PSEUDOS,
+    pseudos,
     cacheResults: !POINTER_PSEUDO.test(selector),
   } as unknown as Parameters<typeof compile>[1]) as unknown as (
     node: Element,
@@ -905,6 +905,8 @@ export class Cascade {
   /** Whether any declaration has a length in `lh` or `rlh`: only then is
    *  the line height settled ahead of the declarations that read it. */
   private _lh = false;
+  /** The pseudo-classes css-select is handed, `:root` this cascade's. */
+  private _pseudos: typeof PSEUDOS;
 
   constructor(
     sheets: Stylesheet[],
@@ -916,7 +918,13 @@ export class Cascade {
     zeroWidth: FaceMetric | null = null,
     normalLine: FaceMetric | null = null,
     families: FontFamilies | null = null,
+    /** The document's element where it is not an `<html>`: an SVG image's
+     *  `<svg>`, which is `:root` there (Selectors 4, 14.1). */
+    documentElement: Element | null = null,
   ) {
+    this._pseudos = documentElement
+      ? { ...PSEUDOS, root: (el: Element) => el === documentElement }
+      : PSEUDOS;
     this._xHeightOf = xHeight;
     this._zeroWidthOf = zeroWidth;
     this._normalLineOf = normalLine;
@@ -1130,7 +1138,7 @@ export class Cascade {
    *  it, as a rule it refuses drops out of the cascade. */
   private _compile(selector: string): ((el: Element) => boolean) | null {
     try {
-      return compileSelector(selector, this._adapter);
+      return compileSelector(selector, this._adapter, this._pseudos);
     } catch {
       return null;
     }
@@ -2068,7 +2076,11 @@ export class Cascade {
         if (!indexed.compiled) {
           indexed.compiled = true;
           try {
-            indexed.match = compileSelector(rule.selector, this._adapter);
+            indexed.match = compileSelector(
+              rule.selector,
+              this._adapter,
+              this._pseudos,
+            );
           } catch {
             // A selector this matcher does not know (`::-moz-…`, a CSS4 form
             // it has not learnt) drops out of the cascade rather than out of
@@ -2776,6 +2788,24 @@ function lengthAttr(value: string): string {
   if (v.endsWith('%')) return v;
   const n = parseFloat(v);
   return Number.isFinite(n) ? `${n}px` : v;
+}
+
+/** A number and a unit, as an SVG's `width` and `height` are written. */
+const SVG_LENGTH =
+  /^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*([a-z]*)\s*$/i;
+
+/**
+ * The `width`/`height` of an inline `<svg>` as CSS: they are presentation
+ * attributes for the properties of the same names (SVG 2, 5.1.1), so
+ * `height="50%"` is a percentage of the containing block like a style's.
+ * A bare number is pixels; null for what CSS would not parse.
+ */
+function svgSizeHint(value: string): string | null {
+  const v = value.trim();
+  if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%$/i.test(v)) return v;
+  const m = SVG_LENGTH.exec(v);
+  if (!m) return null;
+  return m[2] ? v : `${parseFloat(m[1])}px`;
 }
 
 function closestTable(el: Element): Element | null {

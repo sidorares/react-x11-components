@@ -449,6 +449,100 @@ metric(
 );
 
 metric(
+  'an SVG image is painted as its own style sheets say, and the page’s rules stay out of it',
+  async () => {
+    // An SVG image is a document of its own, and its `<style>` elements are
+    // its style sheets: a drawing exported from Illustrator has its colours
+    // in `.st0 { fill: … }`, and was drawn all black, since only the
+    // attributes were read. No rule of the page's reaches into an image,
+    // and `prefers-color-scheme` in one answers the colour scheme of the
+    // element that embeds it, as Chrome has them.
+    const svg = (sheet: string, shapes: string) =>
+      svgBytes(
+        `<svg ${SVG_NS} width="30" height="20" viewBox="0 0 30 20">` +
+          `${sheet}${shapes}</svg>`,
+      );
+    const rect = (x: number, attrs = '') =>
+      `<rect x="${x}" width="10" height="20" ${attrs}/>`;
+    const images = {
+      'st.svg': svgBytes(
+        '<?xml version="1.0" encoding="utf-8"?>\n' +
+          '<!-- Generator: Adobe Illustrator 27.0.0 -->\n' +
+          `<svg version="1.1" ${SVG_NS} viewBox="0 0 30 20" ` +
+          'xml:space="preserve">\n<style type="text/css">\n' +
+          '\t.st0{fill:#00AA00;}\n\t.st1{fill:#0000FF;}\n</style>\n' +
+          `${rect(0, 'class="st0"')}${rect(10, 'class="st1"')}` +
+          `${rect(20, 'class="st0"')}</svg>`,
+      ),
+      'cdata.svg': svg(
+        '<defs><style><![CDATA[ g > .a { fill: #00aa00 } ' +
+          '/* a < in the text */ .b { fill: #0000ff } ]]></style></defs>',
+        `<g>${rect(0, 'class="a"')}${rect(10, 'class="b"')}</g>`,
+      ),
+      'root.svg': svg(
+        '<style>:root { --c: #ff00ff; color: #0000ff } svg { fill: #00aa00 }' +
+          ' .v { fill: var(--c) } .c { fill: currentColor }</style>',
+        rect(0) + rect(10, 'class="v"') + rect(20, 'class="c"'),
+      ),
+      'scheme.svg': svg(
+        '<style>rect { fill: #0000ff } @media (prefers-color-scheme: dark) ' +
+          '{ rect { fill: #ff00ff } }</style>',
+        rect(0) + rect(10) + rect(20),
+      ),
+      'media.svg': svg(
+        '<style>.a { fill: #0000ff } @media (max-width: 20px) ' +
+          '{ .a { fill: #00aa00 } }</style>' +
+          '<style type="text/plain">.a { fill: #ff0000 }</style>' +
+          '<style media="(prefers-color-scheme: dark)">.a { fill: #ff0000 }' +
+          '</style>',
+        rect(0, 'class="a"') + rect(10, 'class="a"') + rect(20, 'class="a"'),
+      ),
+      'bare.svg': svg(
+        '',
+        rect(0, 'class="st0" fill="#00aa00"') + rect(10, 'fill="#0000ff"'),
+      ),
+    };
+    const rows: [string, string[], string][] = [
+      ['<img src="st.svg">', ['#00aa00', '#0000ff'], 'its own style sheet'],
+      [
+        '<div class="bg"></div>',
+        ['#00aa00', '#0000ff', '#00aa00'],
+        'and a background',
+      ],
+      ['<img src="cdata.svg">', ['#00aa00', '#0000ff'], 'a CDATA section'],
+      [
+        '<img src="root.svg">',
+        ['#00aa00', '#ff00ff', '#0000ff'],
+        "its root's fill, a variable and colour",
+      ],
+      ['<img src="scheme.svg">', ['#0000ff'], 'a light scheme'],
+      ['<img class="dark" src="scheme.svg">', ['#ff00ff'], 'a dark one'],
+      ['<img src="media.svg">', ['#0000ff', '#0000ff'], 'its viewport, wide'],
+      ['<img class="n" src="media.svg">', ['#00aa00'], 'and narrow'],
+      ['<img src="bare.svg">', ['#00aa00', '#0000ff'], 'no sheet of its own'],
+    ];
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0} img,div{display:block;width:30px;height:20px}' +
+        '.bg{background:url(st.svg)} .dark{color-scheme:dark} .n{width:20px}' +
+        // what would reach into an image, if anything did
+        ' svg,rect,.st0,.st1,.a,.b,g>rect{fill:#ff0000 !important;' +
+        'stroke:none !important;color:#ff0000}' +
+        ':root{--c:#ff0000}</style>' +
+        rows.map(([markup]) => markup).join(''),
+      images,
+    );
+    const ctx = result.ctx;
+    for (const [i, [, colours, message]] of rows.entries()) {
+      for (const [j, colour] of colours.entries()) {
+        await expectPixel(ctx, j * 10 + 5, i * 20 + 10, colour, {
+          message: `${message}, ${j}`,
+        });
+      }
+    }
+  },
+);
+
+metric(
   'an SVG image fills the size it is drawn at, whatever its root says',
   async () => {
     // A root's width and height are what an image's intrinsic size is read
