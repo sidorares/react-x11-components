@@ -482,6 +482,36 @@ last block is a flex box or a grid sits on that baseline too, the one the
 box has on a line of its own, and a table in one gives it none, as Blink
 and Gecko both have it. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
+A multicol container (CSS Multi-column 1) sets its content in columns:
+`column-count`, `column-width`, the `columns` shorthand and `column-gap`,
+whose `normal` is an em there, and the `-webkit-` names Chrome still reads
+for them. There are as many columns as `column-count` says or as
+`column-width` fits, the fewer of the two, each as wide as leaves the gaps
+between them, and the container is a formatting context of its own. Its
+content is laid out once, a column wide, and broken where CSS Fragmentation
+3 has it break: between the lines of a block and between boxes, never
+inside a line, an image, a table, a flex box or a grid, a box that clips or
+one that says `break-inside: avoid` (`page-break-inside` too), with
+`orphans` and `widows` lines of a block kept at either side of a break, two
+of each unless they say otherwise, and a margin at a break dropped. A box
+with a height and nothing in it, a float among them, is cut wherever a
+column ends and goes on at the head of the next. The
+columns balance, and CSS leaves how to the user agent; this does as Blink
+does — the content's height shared out between the columns, no less than
+the tallest thing that cannot break, then as much
+taller as lets the next line or box into a column, until they hold it all —
+so a page breaks where Chrome breaks it. A container with a `height` or a
+`max-height` has columns no taller than it, and what they do not hold goes
+on in columns past its edge; under `column-fill: auto` its columns are that
+tall, each filled before the next is started, and with no height to fill
+to the first holds everything. A float that cannot be cut, an image, stays
+with the lines beside it, where a browser takes it to the next column and
+sets those lines again without it. A box a break falls inside has a piece in each
+column: its background and its borders are drawn a piece at a time, with no
+edge at the break, `elementRect` answers the rectangle that takes in all of
+them, as a browser's bounding rect does, and a point between two of them is
+not over it. Right to left, the first column is the one at the right. A
+container as wide as its content is as wide as its columns side by side.
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
@@ -1168,7 +1198,10 @@ whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms but their
-translation, animations and transitions, multi-column, conic and repeating
+translation, animations and transitions, a multicol container's
+`column-rule`, `column-span` and forced breaks, and a table in one broken
+between its rows — it goes to the next column whole, and a box a break
+falls inside casts no shadow — conic and repeating
 gradients, a sticky box that follows the viewport as it scrolls, and the font
 properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
 drawn only where the table's collapse. A percentage `height` resolves where
