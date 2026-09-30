@@ -28,7 +28,11 @@ import {
   NON_RENDERED,
   tagOf,
 } from '../dom.js';
-import type { Cascade, FirstLetterRules } from '../css/cascade.js';
+import type {
+  Cascade,
+  FirstLetterRules,
+  SelectionStyle,
+} from '../css/cascade.js';
 import type { CollapsedTable } from './collapse.js';
 import { quoteAt } from '../css/content.js';
 import type { CounterStyles } from '../css/counter-styles.js';
@@ -556,6 +560,10 @@ export type FirstLineStyler = (
   parent: ComputedStyle,
 ) => ComputedStyle;
 
+/** The `::selection` of the element a box's text is in, or null for the
+ *  palette's highlight (`Cascade.selectionStyle`). */
+export type SelectionStyler = (box: Box | null) => SelectionStyle | null;
+
 /** The url of an image generated content put in a pseudo-element: it has
  *  no element of its own to name it (`imageUrlOf`). */
 export const CONTENT_IMAGES = new WeakMap<Box, string>();
@@ -694,6 +702,10 @@ export interface BoxTree {
   /** Each box's style on a first line (`FirstLineStyler`), where any
    *  block has a `::first-line`. */
   firstLineStyler: FirstLineStyler | null;
+  /** Each box's `::selection` (`SelectionStyler`), where any rule styles
+   *  one: worked out as a selection is first painted over it, not as the
+   *  tree is built, since most builds are never selected in. */
+  selectionStyler: SelectionStyler | null;
   /** Whether a float or an out-of-flow box sits in an inline box: where
    *  none does, layout looks for them among a block's own children and
    *  goes through no inline box to find them. */
@@ -848,10 +860,35 @@ class Builder {
       negative: this._negative,
       firstLine: this._firstLine,
       firstLineStyler: this._firstLine ? this._firstLineStyler() : null,
+      selectionStyler: cascade.hasSelection ? this._selectionStyler() : null,
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,
       clipText: this._clipText,
       impliedHtml,
+    };
+  }
+
+  /** `BoxTree.selectionStyler`, over this build's cascade: an element's
+   *  over its parent's, each once. A box with no element of its own — text,
+   *  an anonymous box — is its nearest element's. */
+  private _selectionStyler(): SelectionStyler {
+    const cascade = this._options.cascade;
+    const styles = this._styles;
+    const known = new Map<Element, SelectionStyle | null>();
+    const of = (el: Element): SelectionStyle | null => {
+      let found = known.get(el);
+      if (found !== undefined) return found;
+      // the parser keeps a document to 256 elements deep (`dom.ts`)
+      const parent = isElement(el.parent) ? of(el.parent) : null;
+      const own = styles.get(el)?.style;
+      found = own ? cascade.selectionStyle(el, own, parent) : parent;
+      known.set(el, found);
+      return found;
+    };
+    return (box) => {
+      let at = box;
+      while (at && !at.el) at = at.parent;
+      return at?.el ? of(at.el) : null;
     };
   }
 
