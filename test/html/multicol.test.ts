@@ -611,13 +611,25 @@ metric(
     // and its shadow is cast in each column the paragraph is in
     ops.length = 0;
     await fillsOf(el, ops);
-    const shadows = ops
-      .filter((op) => op.op === 'text' && op.shadow)
-      .map((op) => Math.round((op as { y: number }).y));
-    assert.deepStrictEqual(
-      [...new Set(shadows)].sort((a, b) => a - b),
-      [-40, 80],
-      'a shadow in each column',
+    // the layout's origin in each: the two lines of the first column are
+    // 80px down it, and the third is at the head of the second, 40px down
+    // the layout — 120px apart, wherever a face's leading puts the origin
+    const shadows = [
+      ...new Set(
+        ops
+          .filter((op) => op.op === 'text' && op.shadow)
+          .map((op) => Math.round((op as { y: number }).y)),
+      ),
+    ].sort((a, b) => a - b);
+    assert.strictEqual(
+      shadows.length,
+      2,
+      `a shadow in each column: ${shadows}`,
+    );
+    assert.strictEqual(
+      shadows[1] - shadows[0],
+      120,
+      'each where its lines are',
     );
   },
 );
