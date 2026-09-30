@@ -773,6 +773,24 @@ export function lightDark(
   value: string,
   scheme: 'light' | 'dark',
 ): string | null {
+  // kept by the value: the UA sheet's link colour is one, so every link of
+  // every document asks, and a theme's are a few asked by every element
+  const kept = PICKED[scheme];
+  let picked = kept.get(value);
+  if (picked === undefined) {
+    picked = pickScheme(value, scheme);
+    if (kept.size >= 512) kept.clear();
+    kept.set(value, picked);
+  }
+  return picked;
+}
+
+const PICKED = {
+  light: new Map<string, string | null>(),
+  dark: new Map<string, string | null>(),
+};
+
+function pickScheme(value: string, scheme: 'light' | 'dark'): string | null {
   let out = value;
   // a branch can hold another, which the next round replaces
   for (let round = 0; round < 32; round += 1) {
