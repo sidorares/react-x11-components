@@ -47,27 +47,36 @@ export function shapingSafe(engine: FontsLike): FontsLike {
         return engine.layout(stood.content, style, options);
       }
     };
-    // Everything else the engine answers is its own, called on it: `match`,
-    // and what a caller feature-detects — ntk's `prewarm`, which
-    // `_warmFaces` asks for — where a wrapper that forwarded only the two
-    // it knew of hid the rest, and warming stopped without a word.
-    const bound = new Map<PropertyKey, { from: unknown; to: unknown }>();
-    safe = new Proxy(engine, {
-      get(target, key) {
-        if (key === 'layout') return layout;
-        const value: unknown = Reflect.get(target, key, target);
-        if (typeof value !== 'function') return value;
-        let hit = bound.get(key);
-        if (hit?.from !== value) {
-          hit = { from: value, to: value.bind(target) };
-          bound.set(key, hit);
-        }
-        return hit.to;
-      },
-    });
+    safe = withLayout(engine, layout);
     SAFE.set(engine, safe);
   }
   return safe;
+}
+
+/**
+ * `engine` with another `layout`. Everything else the engine answers is its
+ * own, called on it: `match`, and what a caller feature-detects — ntk's
+ * `prewarm`, which `_warmFaces` asks for — where a wrapper that forwarded
+ * only the two it knew of hid the rest, and warming stopped without a word.
+ */
+export function withLayout(
+  engine: FontsLike,
+  layout: FontsLike['layout'],
+): FontsLike {
+  const bound = new Map<PropertyKey, { from: unknown; to: unknown }>();
+  return new Proxy(engine, {
+    get(target, key) {
+      if (key === 'layout') return layout;
+      const value: unknown = Reflect.get(target, key, target);
+      if (typeof value !== 'function') return value;
+      let hit = bound.get(key);
+      if (hit?.from !== value) {
+        hit = { from: value, to: value.bind(target) };
+        bound.set(key, hit);
+      }
+      return hit.to;
+    },
+  });
 }
 
 /** `content` with each character its face cannot shape replaced, or null
