@@ -838,10 +838,12 @@ starts with a digit — is dropped whole, as CSS 2.1 drops it. Rules nest
 (CSS Nesting 1): a rule inside a rule's block is relative to it, `&`
 standing for it and a selector without one a descendant, and an `@media`,
 `@supports` or `@layer` inside one holds for the same element, which is how
-Tailwind 4 writes its `hover:` and `md:` variants. `@media` width and
-`prefers-color-scheme` queries are evaluated, widths in Media Queries 4's
-ranges, `(width >= 48rem)`, as well as `min-width`, a `calc()` in a value
-too — the scheme is the react-x11
+Tailwind 4 writes its `hover:` and `md:` variants. `@media` width, height
+and `prefers-color-scheme` queries are evaluated, widths and heights in
+Media Queries 4's ranges, `(width >= 48rem)`, as well as `min-width` and
+`min-height`, a `calc()` in a value too — the height is the viewport's, and
+a document that asks it is styled again when it moves, as one with a `vh`
+is — the scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
 `@import` goes through the resource seam. Cascade layers are read (CSS

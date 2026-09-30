@@ -633,10 +633,11 @@ export class HtmlViewNode extends Node {
     // The faces this width and scheme declare: a `@font-face` may sit in a
     // `@media` block like any rule.
     const cssWidth = width / this._scale;
+    const cssHeight = this._viewportHeight() / this._scale;
     this._webFonts.setFallback(look.fontFamily);
     this._webFonts.setFaces(
       faces.filter((f) =>
-        mediaMatches(f.rule.media, cssWidth, look.colorScheme),
+        mediaMatches(f.rule.media, cssWidth, look.colorScheme, cssHeight),
       ),
     );
     this._cascade.setPointer({
