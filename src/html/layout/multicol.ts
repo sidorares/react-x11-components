@@ -101,6 +101,10 @@ interface Unit {
   /** Whether it is a box with nothing in it, which a break may fall
    *  anywhere in: there is no line or box there for it to fall inside. */
   sliced: boolean;
+  /** Its own height, before the edges of the boxes it starts and ends were
+   *  added to it, and where it ends without those it ends. */
+  size: number;
+  end: number;
   group: Group;
 }
 
@@ -113,6 +117,10 @@ interface Group {
   block: Box | null;
   /** Whether it is one box a break may fall anywhere in. */
   sliced: boolean;
+  /** Whether nothing in it has a height: the edges of boxes, at most. */
+  empty: boolean;
+  /** Where it ends, without the bottom edges of the boxes it ends. */
+  end: number;
   /** The column it starts in, and the one it ends in: the same, unless it
    *  is sliced. */
   column: number;
@@ -137,6 +145,8 @@ const NO_GROUP: Group = {
   bottom: 0,
   block: null,
   sliced: false,
+  empty: true,
+  end: 0,
   column: 0,
   last: 0,
 };
@@ -227,9 +237,11 @@ function floatUnit(float: Box, from: Box, into: Gathered): void {
     bottom: float.y + float.height + Math.max(0, float.marginBottom),
     block: null,
     sliced: false,
+    size: 0,
+    end: 0,
     group: NO_GROUP,
   };
-  into.units.push(unit);
+  into.units.push(made(unit));
   into.boxes.set(float, unit);
 }
 
@@ -251,9 +263,11 @@ function space(
     bottom,
     block,
     sliced: true,
+    size: 0,
+    end: 0,
     group: NO_GROUP,
   };
-  into.units.push(unit);
+  into.units.push(made(unit));
   return unit;
 }
 
@@ -283,9 +297,11 @@ function gather(box: Box, into: Gathered): [Unit, Unit] | null {
         bottom: line.y + line.height,
         block: box,
         sliced: false,
+        size: 0,
+        end: 0,
         group: NO_GROUP,
       };
-      into.units.push(unit);
+      into.units.push(made(unit));
       into.lines.set(line, unit);
       first ??= unit;
       last = unit;
@@ -314,9 +330,11 @@ function gather(box: Box, into: Gathered): [Unit, Unit] | null {
         bottom: reachOf(child),
         block: null,
         sliced: sliceable(child),
+        size: 0,
+        end: 0,
         group: NO_GROUP,
       };
-      into.units.push(unit);
+      into.units.push(made(unit));
       into.boxes.set(child, unit);
       first ??= unit;
       last = unit;
@@ -331,9 +349,11 @@ function gather(box: Box, into: Gathered): [Unit, Unit] | null {
         bottom: child.y + child.height,
         block: null,
         sliced: sliceable(child),
+        size: 0,
+        end: 0,
         group: NO_GROUP,
       };
-      into.units.push(unit);
+      into.units.push(made(unit));
       into.boxes.set(child, unit);
       first ??= unit;
       last = unit;
@@ -350,6 +370,13 @@ function gather(box: Box, into: Gathered): [Unit, Unit] | null {
 
 /** The units in groups, down the strip: each group what a break may come
  *  before. Units that overlap are one group, which no break divides. */
+/** Note a unit's own extent, as it is made. */
+function made(unit: Unit): Unit {
+  unit.size = unit.bottom - unit.top;
+  unit.end = unit.bottom;
+  return unit;
+}
+
 function groupsOf(units: Unit[]): Group[] {
   // in the order of their tops, which is the document's but for a float
   const sorted = units.slice().sort((a, b) => a.top - b.top);
@@ -360,12 +387,16 @@ function groupsOf(units: Unit[]): Group[] {
       group.bottom = Math.max(group.bottom, unit.bottom);
       group.block = null;
       group.sliced = false;
+      group.empty &&= unit.size <= EPS;
+      group.end = Math.max(group.end, unit.end);
     } else {
       group = {
         top: unit.top,
         bottom: unit.bottom,
         block: unit.block,
         sliced: unit.sliced,
+        empty: unit.size <= EPS,
+        end: unit.end,
         column: 0,
         last: 0,
       };
@@ -422,6 +453,18 @@ function fill(groups: Group[], top: number, height: number): Filled {
     const by = groups[index].bottom - columnTop - height;
     if (by > EPS && by < shortage) shortage = by;
   };
+  /** Whether nothing with a height has been set in the column before a
+   *  group: the top edges of the boxes it starts, at most — or, `blank`,
+   *  not even those. */
+  const bare = (index: number, blank: boolean): boolean => {
+    for (let k = head; k < index; k += 1) {
+      const before = groups[k];
+      if (blank ? before.bottom - before.top > EPS : !before.empty) {
+        return false;
+      }
+    }
+    return !goesOn;
+  };
   const next = (at: number, from: number, inside: boolean): void => {
     starts.push(at);
     tops.push(from);
@@ -435,6 +478,8 @@ function fill(groups: Group[], top: number, height: number): Filled {
     const group = groups[i];
     if (
       group.bottom - columnTop <= height + EPS ||
+      // nothing at all, which takes no room wherever it is
+      group.bottom - group.top <= EPS ||
       starts.length >= MOST_COLUMNS
     ) {
       i += 1;
@@ -451,7 +496,16 @@ function fill(groups: Group[], top: number, height: number): Filled {
       else next(i, group.top, false);
       continue;
     }
-    if (i === head) {
+    if (
+      i === head ||
+      bare(i, true) ||
+      (group.end - columnTop <= height + EPS && bare(i, false))
+    ) {
+      // first in its column, or after nothing that takes any room, where
+      // it stays however tall; or all of it fits but the bottom edge of a
+      // box it ends, and nothing with a height has been set in the column
+      // to break before it: the edge hangs out (where Blink breaks before
+      // the edge, as a last resort)
       over = true;
       i += 1;
       goesOn = false;

@@ -926,3 +926,44 @@ metric(
     );
   },
 );
+
+test('a break comes before a box only where it would gain the box room', async () => {
+  const sheet =
+    '<style>body{margin:0}.m{columns:2;column-gap:0;column-fill:auto;' +
+    'width:200px;height:100px;margin-bottom:60px}' +
+    '.c{height:120px;overflow:hidden}</style>';
+  const { node } = await render(
+    sheet +
+      // after a border and an empty box: the next column is 10px more
+      '<div class="m" id="m1"><div style="border-top:10px solid">' +
+      '<div id="e1"></div><div class="c" id="c1"></div></div></div>' +
+      // after an empty box and nothing else: it is at the column's head
+      // already, and stays there, hanging out
+      '<div class="m" id="m2"><div><div></div>' +
+      '<div class="c" id="c2"></div></div></div>' +
+      // all of it fits but the padding under it, of the box it ends, and
+      // there is nothing in the column to break before: the padding hangs
+      // out, and the box is not taken from under its border for it
+      '<div class="m" id="m3" style="columns:1;width:100px">' +
+      '<div style="border-top:10px solid"><div></div>' +
+      '<div style="padding-bottom:50px"><div class="c" id="c3" ' +
+      'style="height:90px"></div></div></div></div>' +
+      // and nothing at all takes no room: the empty end of an inline box
+      // broken about a block, after the block has hung out of its column,
+      // is where the block ends and starts no column of its own
+      '<div class="m" id="m4"><div id="o4" style="border-top:10px solid">' +
+      '<span><div class="c" id="c4"></div></span></div></div>',
+    300,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(at(el, 'e1', 'm1'), [0, 10, 100, 0], 'the empty box');
+  assert.deepStrictEqual(at(el, 'c1', 'm1'), [100, 0, 100, 120], 'a column on');
+  assert.deepStrictEqual(at(el, 'c2', 'm2'), [0, 0, 100, 120], 'where it was');
+  assert.deepStrictEqual(
+    at(el, 'c3', 'm3'),
+    [0, 10, 100, 90],
+    'under its border',
+  );
+  assert.deepStrictEqual(at(el, 'c4', 'm4'), [100, 0, 100, 120], 'a column on');
+  assert.deepStrictEqual(at(el, 'o4', 'm4'), [0, 0, 200, 120], 'two columns');
+});
