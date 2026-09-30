@@ -214,6 +214,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 121    | a table's height given out to its rows             | 5,652 (95%) | 5,103 (86%) |
 | 122    | `ex`, `ch` and `lh` in the element's own face      | 5,654 (95%) | 5,104 (86%) |
 | 123    | an SVG image fills its size, a zero `viewBox`      | 5,653 (95%) | 5,103 (86%) |
+| 127    | a space `pre-wrap` keeps at a line's end           | 5,655 (95%) | 5,105 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3733,6 +3734,28 @@ along its bottom that a browser's scrollbars cover, and it was as tall as
 its border before. The implied `<html>` still has no box of its own, so
 its margins and its height do not place its background's image, which
 the three `background-margin-root` tests ask for.
+
+### Round 127
+
+326. **A space `pre-wrap` keeps was dropped at a line's end.** Both engines
+     strip the spaces a line ends on, as CSS removes collapsible ones
+     there, and `pre-wrap`'s are not removed: they hang (CSS Text 3,
+     4.1.3). A hung space is still its inline box's, so the box's
+     background and border cover it past the line's end, as a browser
+     draws it, and its rect takes it in. Before a forced break or the
+     block's end, the spaces that fit take room as well, since they hang
+     there only where they do not: an inline-block holding `ab  ` is four
+     letters wide, and a right-aligned line ends two spaces in from its
+     edge. A line made a piece at a time adds their room to itself. A
+     paragraph laid out whole is laid out again with those spaces handed
+     over as no-break spaces, as `pre`'s are (#186), which the engine
+     measures and aligns the line with: a layout's lines are drawn from
+     one place, so one of them cannot be moved over afterwards. Its lines
+     break where they did, since the spaces fit where they are.
+     `break-spaces`, read as `pre-wrap`, gets the same.
+
+The CSS 2.1 suite gained `white-space-processing-047` on both backends,
+and lost none.
 
 ## What `<Html>` supports
 

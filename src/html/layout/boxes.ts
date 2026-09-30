@@ -187,6 +187,15 @@ export interface LineText {
    *  spacer: a unit of the layout that is no text of the document's
    *  (`documentOffsetOf`, `layoutOffsetOf`). */
   gaps?: number[];
+  /**
+   * The spaces `pre-wrap` keeps that this fragment's line ends on, which an
+   * engine strips from a line's end as though CSS removed them there: each
+   * one's offset in the layout's text and where it is, from the layout's
+   * origin, beside the line's end in logical order (`hangPreserved`). They
+   * are their inline box's, whose background and border cover them, and
+   * the ones before a forced break that fit take room on the line.
+   */
+  hung?: { at: number; x: number; width: number }[];
   /** Any offset in the layout's own text as a document index — how a run
    *  under the pointer finds the element whose text it is. Per pass: the
    *  layout may be one an earlier pass made (`TextLayoutCache`), and the

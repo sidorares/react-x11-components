@@ -630,7 +630,9 @@ shapes it (on ntk's engine; CoreText drops a spaced glyph's pairs),
 `pre` and `pre-wrap`, on an element as well as on its block: a `nowrap`
 element's text stays together, at its hyphens as well as its spaces, and
 `pre`'s spaces take their room at a
-line's end, where other spaces hang, and its tabs go to their stops, every
+line's end, where other spaces hang; `pre-wrap`'s hang there, past the
+line and inside their element's background, and take room before a
+forced break where they fit; and tabs go to their stops, every
 `tab-size` spaces; a line break straight after `<pre>`'s
 start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
 of it, `white-space-collapse` and `text-wrap-mode`, `text-wrap` (Tailwind

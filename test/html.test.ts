@@ -10102,6 +10102,96 @@ metric("pre's trailing spaces take room, where a line's hang", async () => {
   assert.ok(spaced > bare * 1.8, `${spaced} against ${bare}`);
 });
 
+metric(
+  "pre-wrap's spaces before a forced break take room where they fit",
+  async () => {
+    // They hang there only where they do not fit (CSS Text 3, 4.1.3), and an
+    // engine strips every space a line ends on: an inline-block holding
+    // `ab  ` was as wide as `ab`, and a right-aligned line set `ab` flush
+    // against the edge the spaces should have kept it off
+    const { node } = await render(
+      '<style>body{margin:0;font:10px monospace}p{margin:0;width:200px;' +
+        'white-space:pre-wrap}.i{display:inline-block}</style>' +
+        '<div class="i" id="bare"><span style="white-space:pre-wrap">ab</span></div><br>' +
+        '<div class="i" id="end"><span style="white-space:pre-wrap">ab  </span></div><br>' +
+        '<div class="i" id="nl" style="white-space:pre-wrap">ab  \ncd</div>' +
+        '<p style="text-align:right"><span id="r">ab  </span></p>' +
+        '<p style="text-align:center"><span id="c">ab  </span></p>' +
+        '<p dir="rtl"><span id="rtl">ab  </span></p>' +
+        // a line a piece at a time, an image on it
+        '<p style="text-align:right"><img style="display:inline-block;' +
+        'width:10px;height:10px">x<span id="p">ab  </span></p>',
+    );
+    const el = view(node);
+    await act();
+    const char = boxOf(el, 'bare').width / 2;
+    const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
+    for (const id of ['end', 'nl']) {
+      const width = boxOf(el, id).width;
+      assert.ok(near(width, 4 * char), `#${id}: ${width} for ${char}`);
+    }
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    for (const [id, x] of [
+      ['r', 200 - 4 * char],
+      ['c', 100 - 2 * char],
+      ['rtl', 200 - 4 * char],
+      ['p', 200 - 4 * char],
+    ] as const) {
+      const { x: at, width } = rect(id);
+      assert.ok(
+        near(at, x) && near(width, 4 * char),
+        `#${id} across its spaces: ${at}, ${width} for ${x}, ${4 * char}`,
+      );
+    }
+  },
+);
+
+metric(
+  "pre-wrap's spaces at a soft wrap hang, and are their box's",
+  async () => {
+    // At a soft wrap they take no room, so the line aligns without them, and
+    // they are drawn past its end all the same, in their box: its rect and
+    // its background cover them, as a browser's do
+    const { result, node } = await render(
+      '<style>body{margin:0;font:20px monospace}p{margin:0;width:84px;' +
+        'white-space:pre-wrap}span{background:#0000ff}</style>' +
+        '<p id="l"><span id="s">abc    def</span></p>' +
+        '<p id="rp" style="text-align:right"><span id="rs">abc    def</span></p>' +
+        '<p dir="rtl"><span id="t">abc    def</span></p>' +
+        // a single space before the end, as WPT's white-space-processing-047
+        '<div style="white-space:normal"> <span id="one" ' +
+        'style="white-space:pre-wrap"> </span> </div>',
+    );
+    const el = view(node);
+    await act();
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const char = rect('s').width / 7;
+    const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
+    assert.ok(near(linesOf(el, 'l')[0].width, 3 * char), 'the line is `abc`');
+    const right = rect('rs');
+    assert.ok(
+      near(right.x, 84 - 3 * char) && near(right.width, 7 * char),
+      `aligned without its spaces, which run past: ${JSON.stringify(right)}`,
+    );
+    const rtl = rect('t');
+    assert.ok(
+      near(rtl.x, 84 - 7 * char) && near(rtl.width, 7 * char),
+      `past the left, where the line reads right to left: ${JSON.stringify(rtl)}`,
+    );
+    const one = rect('one');
+    assert.ok(near(one.width, char), `one space wide: ${JSON.stringify(one)}`);
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    await waitFor(async () => {
+      const [r, g, b] = await pixelAt(
+        result.ctx,
+        Math.round(at.x + one.x + one.width / 2),
+        Math.round(at.y + one.y + one.height / 2),
+      );
+      assert.ok(b > 200 && r < 60 && g < 60, `its background: ${r},${g},${b}`);
+    });
+  },
+);
+
 // --- clearance and the margins of an empty block -----------------------------------
 
 test('an empty cleared block ends its parent where its collapsed margin ends', async () => {
