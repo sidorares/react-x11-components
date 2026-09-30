@@ -17132,6 +17132,47 @@ test("a media feature's value may hold parentheses of its own", async () => {
   assert.ok(!text.includes('narrow'), `and the narrow one does not: ${text}`);
 });
 
+test("device-width is the viewport's width", async () => {
+  // The Web-exposed screen area may be the viewport's (CSSOM View 2.3),
+  // and an element has no screen of its own. DuckDuckGo Lite keeps its
+  // phone sheet under `(max-device-width: 700px)`; the feature went unread,
+  // the query held at every width, and a desktop window drew the phone's
+  // 12px dropdowns, measured too narrow for the caption the widget draws
+  assert.deepStrictEqual(
+    parseMediaQuery('only screen and (max-device-width: 700px)'),
+    [{ max: 700 }],
+  );
+  assert.deepStrictEqual(parseMediaQuery('(min-device-width: 30em)'), [
+    { min: 480 },
+  ]);
+  assert.deepStrictEqual(parseMediaQuery('(device-width < 700px)'), [
+    { max: 700 - 1 / 64 },
+  ]);
+  // and device-height is the viewport's height, as height is
+  assert.deepStrictEqual(parseMediaQuery('(max-device-height: 500px)'), [
+    { maxHeight: 500 },
+  ]);
+  assert.deepStrictEqual(parseMediaQuery('(device-height >= 30em)'), [
+    { minHeight: 480 },
+  ]);
+  // and its landscape one runs a term into the `and` after it
+  assert.deepStrictEqual(
+    parseMediaQuery(
+      'only screen and (max-device-width: 701px)and (orientation: landscape)',
+    ),
+    [{ max: 701 }],
+  );
+  const source =
+    '<style>#phone{display:none}' +
+    '@media only screen and (max-device-width: 700px){' +
+    '#phone{display:block}#desk{display:none}}</style>' +
+    '<p id="desk">desk</p><p id="phone">phone</p>';
+  const wide = view((await render(source, 800)).node).textContent();
+  assert.strictEqual(wide.trim(), 'desk', 'a desktop window');
+  const narrow = view((await render(source, 400)).node).textContent();
+  assert.strictEqual(narrow.trim(), 'phone', 'a narrow one');
+});
+
 metric(
   "an inline flex box that clips sits on its first item's baseline, as it does unclipped",
   async () => {

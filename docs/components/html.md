@@ -933,7 +933,11 @@ and `prefers-color-scheme` queries are evaluated, widths and heights in
 Media Queries 4's ranges, `(width >= 48rem)`, as well as `min-width` and
 `min-height`, a `calc()` in a value too — the height is the viewport's, and
 a document that asks it is styled again when it moves, as one with a `vh`
-is — the scheme is the react-x11
+is. `device-width` and `device-height` are the viewport's too: they are the
+size of the screen a page is shown on, which a browser may answer with its
+viewport's, and a document drawn into an element has no screen of its own,
+so a phone sheet under `(max-device-width: 700px)` applies where the
+element is that narrow and not otherwise. The scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
 `@import` goes through the resource seam. Cascade layers are read (CSS
