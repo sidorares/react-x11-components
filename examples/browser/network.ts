@@ -175,15 +175,21 @@ export class Network {
       this._cache.set(url, hit);
       return hit;
     }
-    const promise = this._paced(url, signal, () =>
-      scheme === 'file'
-        ? readLocal(url, MAX_RESOURCE)
-        : this._fetch(url, {
-            accept: ACCEPT[kind],
-            referrer: referrerFor(page, url),
-            limit: MAX_RESOURCE,
-          }),
-    ).then(
+    // a `data:` URL is its own body, read here rather than asked of a
+    // network it never goes to (`readDataUrl`)
+    const made =
+      scheme === 'data'
+        ? Promise.resolve(readDataUrl(url))
+        : this._paced(url, signal, () =>
+            scheme === 'file'
+              ? readLocal(url, MAX_RESOURCE)
+              : this._fetch(url, {
+                  accept: ACCEPT[kind],
+                  referrer: referrerFor(page, url),
+                  limit: MAX_RESOURCE,
+                }),
+          );
+    const promise = made.then(
       (fetched) => {
         if (!fetched || fetched.status < 200 || fetched.status >= 300) {
           log(kind, fetched ? fetched.status : 'not made', url);
@@ -237,7 +243,17 @@ export class Network {
   ): Promise<DocumentResponse> {
     const scheme = schemeOf(url);
     if (scheme === 'file') return localDocument(url);
-    if (scheme !== 'http' && scheme !== 'https' && scheme !== 'data') {
+    if (scheme === 'data') {
+      const read = readDataUrl(url);
+      if (!read) {
+        throw new NetworkError(
+          'That data: URL has nothing in it a browser can read.',
+          'ERR_INVALID_URL',
+        );
+      }
+      return { ...read, redirected: false, body: once(read.bytes) };
+    }
+    if (scheme !== 'http' && scheme !== 'https') {
       throw new NetworkError(
         `The ${scheme}: scheme is not something this browser opens.`,
         'ERR_UNKNOWN_URL_SCHEME',
@@ -512,6 +528,81 @@ function hostOf(url: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * A `data:` URL's body and type, as Fetch's data: URL processor reads them
+ * (Fetch, 4.6 "data: URLs"): the type before the comma, the body after it
+ * percent-decoded, and decoded again from base64 where the type ends in
+ * `;base64` — forgiving-base64, which drops ASCII white space first. Null
+ * for no data: URL, or a base64 body that is not base64.
+ *
+ * Read here rather than handed to `fetch`, which reads one too, because
+ * Bun's does not read it as a browser does: it refuses a base64 body with
+ * white space in it and names no type. Zen Garden 215 writes its robot and
+ * the starburst behind it as `data:image/svg+xml;base64, PD94…`, a space
+ * after the comma, and under Bun neither was drawn.
+ */
+export function readDataUrl(url: string): Fetched | null {
+  let input: string;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'data:') return null;
+    // the URL serialized without its fragment: a `#` ends the body
+    parsed.hash = '';
+    input = parsed.href.slice('data:'.length);
+  } catch {
+    return null;
+  }
+  const comma = input.indexOf(',');
+  if (comma < 0) return null;
+  let mime = input.slice(0, comma).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
+  let bytes = percentDecode(input.slice(comma + 1));
+  const base64 = /; *base64$/i.exec(mime);
+  if (base64) {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    }
+    try {
+      binary = atob(binary);
+    } catch {
+      return null;
+    }
+    bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    mime = mime.slice(0, base64.index);
+  }
+  if (mime.startsWith(';')) mime = `text/plain${mime}`;
+  const token = "[!#$%&'*+.^_`|~0-9A-Za-z-]+";
+  const essence = new RegExp(
+    `^[\\t\\n\\r ]*${token}/${token}[\\t\\n\\r ]*(;|$)`,
+  );
+  const { type, charset } = contentType(
+    essence.test(mime) ? mime : 'text/plain;charset=US-ASCII',
+  );
+  return { url, status: 200, type, charset, bytes };
+}
+
+/** A string's UTF-8 bytes with each `%` and two hex digits the byte they
+ *  name (URL, "percent-decode"). */
+function percentDecode(input: string): Uint8Array {
+  const bytes = new TextEncoder().encode(input);
+  const out = new Uint8Array(bytes.length);
+  const hex = (b: number) =>
+    (b >= 0x30 && b <= 0x39) ||
+    (b >= 0x41 && b <= 0x46) ||
+    (b >= 0x61 && b <= 0x66);
+  let n = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    if (bytes[i] === 0x25 && hex(bytes[i + 1]) && hex(bytes[i + 2])) {
+      out[n++] = parseInt(String.fromCharCode(bytes[i + 1], bytes[i + 2]), 16);
+      i += 2;
+    } else {
+      out[n++] = bytes[i];
+    }
+  }
+  return out.subarray(0, n);
 }
 
 /** `text/html; charset=UTF-8` → `text/html` and `utf-8`. */
