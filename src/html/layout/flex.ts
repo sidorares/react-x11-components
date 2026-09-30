@@ -205,6 +205,7 @@ export function layoutFlex(
     row,
     height,
     box.style.flexWrap === 'wrap' || baselines,
+    contentWidth,
   );
   // Items aligned by their baselines, which Yoga cannot see, are aligned
   // with their baselines known (`baselineLines`)
@@ -239,6 +240,7 @@ export function layoutFlex(
       row,
       height,
       box.style.flexWrap === 'wrap',
+      contentWidth,
       started,
     );
   }
@@ -266,6 +268,7 @@ export function layoutFlex(
       row,
       height,
       box.style.flexWrap === 'wrap' || baselines,
+      contentWidth,
     );
   }
 
@@ -434,6 +437,8 @@ function placeItems(
   height: number | null,
   /** Whether Yoga aligned the lines in its pass that drops a margin. */
   lined: boolean,
+  /** The flex box's content width: its items' containing block's. */
+  contentWidth: number,
   started?: ReadonlySet<Box>,
 ): number {
   let bottom = 0;
@@ -476,6 +481,7 @@ function placeItems(
       itemHeight,
       laid,
       definite,
+      contentWidth,
       !row,
     );
     // to the end of its margin box, as Yoga measured the box: a negative
@@ -496,6 +502,8 @@ function layoutItemAt(
   laid: Laid,
   /** Its border box's height where the flex layout made it definite. */
   definite: number | null,
+  /** The flex box's content width, the item's containing block's. */
+  containing: number,
   /** Whether its height is the one the flex layout gave it, in a column,
    *  whatever its own says: flexed, it is shrunk as well as grown. */
   column = false,
@@ -516,7 +524,7 @@ function layoutItemAt(
   if (inner !== null && !Object.is(inner, percentBaseInside(box))) {
     FLEXED_HEIGHT.set(box, inner);
     try {
-      ctx.layoutSubtree(box, width);
+      ctx.layoutSubtree(box, width, containing);
     } finally {
       FLEXED_HEIGHT.delete(box);
     }
@@ -526,7 +534,7 @@ function layoutItemAt(
   // one whose result is kept — or no pass, where the last measure was at
   // this width. An item Yoga never measured has none, NaN, and is laid out.
   else if (Math.abs(laid.width - width) <= 0.01) box.height = laid.height;
-  else ctx.layoutSubtree(box, width);
+  else ctx.layoutSubtree(box, width, containing);
   // A stretched item is taller than its content, and the box has to say so
   // or its background stops short of the row — and it is no taller than its
   // line where its content is, or than what its ratio makes of its width:
@@ -758,7 +766,7 @@ function applyItem(
     }
     let answer = answers.get(inner);
     if (answer === undefined) {
-      answer = measureBox(box, ctx, inner);
+      answer = measureBox(box, ctx, inner, containingWidth);
       answers.set(inner, answer);
       laid.width = box.width;
       laid.height = box.height;
@@ -855,8 +863,13 @@ function measureBox(
   box: Box,
   ctx: LayoutContext,
   inner: number,
+  /** The flex box's content width, the item's containing block's. */
+  containing: number,
 ): { width: number; height: number } {
-  ctx.layoutSubtree(box, inner + box.horizontalExtra);
+  // its padding as Yoga has it, a percentage of the flex box's width: a
+  // probe of its content's width leaves a percentage at none
+  resolveEdges(box, containing);
+  ctx.layoutSubtree(box, inner + box.horizontalExtra, containing);
   return {
     width: inner,
     height: Math.max(0, box.height - box.verticalExtra),
@@ -996,7 +1009,7 @@ function autoMinimums(
       continue;
     }
     if (!(Math.abs(laid.width - width) <= 0.01)) {
-      ctx.layoutSubtree(box, width);
+      ctx.layoutSubtree(box, width, containingWidth);
       laid.width = box.width;
       laid.height = box.height;
     }
@@ -1026,7 +1039,7 @@ function autoMinimums(
         // apart, and the final pass lays it out again
         FLEXED_HEIGHT.set(box, NaN);
         try {
-          ctx.layoutSubtree(box, width);
+          ctx.layoutSubtree(box, width, containingWidth);
         } finally {
           FLEXED_HEIGHT.delete(box);
         }

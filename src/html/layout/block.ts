@@ -114,8 +114,14 @@ export interface LayoutContext {
    * package's tree-shaking contract forbids exactly that (AGENTS.md, "no side
    * effects at import time anywhere else"), and a field is cheaper than the
    * exception would be.
+   *
+   * `containing` is the width of the box's containing block where `width`
+   * is the box's own, as a flex layout sized it: what the percentages in
+   * its padding, its margins and its width limits are of (CSS 2.1 8.3,
+   * 8.4, 10.4). Left out, `width` is both — a box probed at the room there
+   * is for it.
    */
-  layoutSubtree(box: Box, width: number): void;
+  layoutSubtree(box: Box, width: number, containing?: number): void;
   /** How many flex boxes' Yoga passes are running, one inside the last's
    *  measure (`layoutFlex`). */
   flexDepth?: number;
@@ -172,7 +178,8 @@ export function layoutDocument(
     viewportWidth,
     viewportHeight,
     positioned: [],
-    layoutSubtree: (box, width) => layoutSubtree(box, ctx, width),
+    layoutSubtree: (box, width, containing) =>
+      layoutSubtree(box, ctx, width, containing),
     firstLine: tree.firstLine,
     firstLineStyler: tree.firstLineStyler,
     nestedOutOfLine: tree.nestedOutOfLine,
@@ -1664,16 +1671,25 @@ export function measureIntrinsicWidth(
  * the shrink-to-fit probe uses. A replaced box is sized rather than laid out,
  * because there is nothing inside it to lay out.
  */
-function layoutSubtree(box: Box, ctx: LayoutContext, width: number): void {
-  resolveEdges(box, Number.isFinite(width) ? width : 0);
+function layoutSubtree(
+  box: Box,
+  ctx: LayoutContext,
+  width: number,
+  /** Its containing block's width, where `width` is the box's own. */
+  containing = width,
+): void {
+  resolveEdges(box, Number.isFinite(containing) ? containing : 0);
   if (box.kind === 'replaced') {
     sizeReplaced(box, width);
     box.x = 0;
     box.y = 0;
     return;
   }
+  // within its limits, a percentage among them of its containing block's
+  // width and not of its own: a flex item `max-width: 50%` that the flex
+  // layout made half its row was laid out at a quarter of it
   const borderBox = Number.isFinite(width)
-    ? clampWidth(box, width, width)
+    ? clampWidth(box, width, containing)
     : Infinity;
   layoutInternals(box, ctx, borderBox, 0, 0);
 }
