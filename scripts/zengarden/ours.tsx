@@ -40,7 +40,11 @@ import { act, cleanup, renderX11 } from 'react-x11/test';
 
 import { Html } from '../../src/html/index.js';
 import type { ResourceRequest, ResourceResult } from '../../src/html/index.js';
-import { Network, resourceResult } from '../../examples/browser/network.js';
+import {
+  mixedContent,
+  Network,
+  resourceResult,
+} from '../../examples/browser/network.js';
 import type { Fetched, ResourceKind } from '../../examples/browser/network.js';
 import type { Capture, Image, Rect } from './chrome.js';
 
@@ -189,6 +193,11 @@ export class CachedNetwork {
     kind: ResourceKind,
     page: string,
   ): Promise<Fetched | null> {
+    // the browser's policy on what a secure page may have, before the
+    // cache, which answers for any page
+    const allowed = mixedContent(url, kind, page);
+    if (allowed === null) return null;
+    if (allowed !== url) return this.resource(allowed, kind, page);
     const kept = this._read(url);
     if (kept !== undefined) return kept;
     const fetched = await this._network.resource(url, kind, page);
