@@ -4719,11 +4719,29 @@ export function runFor(text: string, style: ComputedStyle): TextRun {
         : style.underlineStyle === 'solid'
           ? 'single'
           : style.underlineStyle;
-    if (style.underlineOffset !== null) {
-      run.underlineOffset = style.underlineOffset;
-    }
-    if (style.underlineThickness !== null) {
-      run.underlineThickness = style.underlineThickness;
+    // The band the rule is drawn in: as thick as the box that set it made
+    // it (`usedThickness`), and as far under the baseline as that box said.
+    // `auto` leaves how far to the user agent, at or under the baseline
+    // (CSS Text Decoration 4, 2.7 and 2.8), and it is half the rule's
+    // thickness, a pixel at the least — Blink's gap, which keeps a thick
+    // rule as clear of its letters as a thin one. A length is from the
+    // baseline itself.
+    const band = style.underlineThickness ?? 1;
+    const top =
+      style.underlineOffset === null
+        ? Math.max(1, Math.ceil(band / 2))
+        : Math.round(style.underlineOffset);
+    if (run.underlineStyle === 'dotted' || run.underlineStyle === 'dashed') {
+      // dots and dashes are a stroke along the band's middle, its width the
+      // nearest whole pixel to the band's: 1.6 is two, where a solid rule's
+      // is the one pixel it fills
+      const width = Math.round(band);
+      run.underlineThickness = width;
+      run.underlineOffset =
+        top + Math.floor(Math.max(band / 2, 0.5)) - Math.floor(width / 2);
+    } else {
+      run.underlineThickness = Math.floor(band);
+      run.underlineOffset = top;
     }
   }
   if (style.lineThrough) run.strike = style.lineThrough;

@@ -360,8 +360,8 @@ metric(
     const plain = rule('#ff0000', 'a')!;
     assert.deepStrictEqual(
       [Math.round(plain.y - baseline('a')), plain.h],
-      [2, 1],
-      'two below, a pixel thick',
+      [1, 2],
+      'the 20px text its own: two thick, one below',
     );
     const offset = rule('#ff0000', 'b')!;
     assert.deepStrictEqual(
@@ -369,6 +369,107 @@ metric(
       [6, 3],
     );
     assert.strictEqual(rule('#00ff00', 'c')!.h, 4, 'the shorthand thickness');
+  },
+);
+
+metric(
+  "an underline is as thick as its box's font size makes it, and as clear of the baseline",
+  async () => {
+    // `text-decoration-thickness: auto` and `text-underline-offset: auto`
+    // are the user agent's to choose (CSS Text Decoration 4, 2.4 and 2.8),
+    // and every underline was a pixel thick two pixels down, a caption's
+    // and a title's alike: the dots under the `<abbr>` of Zen Garden 217's
+    // 140px title were a hairline of them. A tenth of the font size, half
+    // of that under the baseline — and the size is the box's that set the
+    // line, which draws one line through all that is in it (2.9).
+    const { node } = await render(
+      '<style>body{margin:0;font:16px sans-serif}p{margin:0}' +
+        'u{text-decoration-color:#ff0000}</style>' +
+        '<p id="a"><u>sixteen</u></p>' +
+        '<p id="b" style="font-size:40px"><u>forty ' +
+        '<small style="font-size:10px">ten</small></u></p>' +
+        '<p id="c" style="font-size:9px"><u>nine</u></p>',
+      600,
+    );
+    const el = view(node);
+    const fills = await fillsOf(el);
+    const rules = (id: string) => {
+      const [line] = linesOf(el, id);
+      const b = line.y + line.baseline;
+      return fills
+        .filter((f) => f.style === '#ff0000' && f.y > b - 1 && f.y < b + 8)
+        .map((f) => [Math.round(f.y - b), f.h]);
+    };
+    assert.deepStrictEqual(rules('a'), [[1, 1]], '1.6 is a pixel, one below');
+    // the small text's is the 40px box's line: as thick, and as far down
+    const forty = rules('b');
+    assert.ok(forty.length >= 1, 'the underline is drawn');
+    for (const rule of forty) assert.deepStrictEqual(rule, [2, 4]);
+    assert.deepStrictEqual(rules('c'), [[1, 1]], 'never under a pixel');
+  },
+);
+
+metric(
+  'a dotted underline is round dots from end to end once it is thick, and squares while it is thin',
+  async () => {
+    // HTML's `abbr[title]` in a title and in a paragraph. Blink draws a
+    // dotted line over three pixels thick as dots with round caps, the
+    // first at its start and the last at its end, and a thinner one as
+    // squares a thickness apart, the nearest whole pixel wide: 1.6 is two
+    const { node } = await render(
+      '<style>body{margin:0;font:16px sans-serif}p{margin:0}' +
+        'abbr{text-decoration-color:#00ff00}</style>' +
+        '<p id="a" style="font-size:140px"><abbr title="t">CSS</abbr></p>' +
+        '<p id="b"><abbr title="t">CSS</abbr> and more</p>',
+      600,
+    );
+    const el = view(node);
+    const fills = await fillsOf(el);
+    const dots = (id: string) => {
+      const [line] = linesOf(el, id);
+      const b = line.y + line.baseline;
+      return {
+        extent: extentOf(line.texts[0]),
+        dots: fills
+          .filter((f) => f.style === '#00ff00' && f.y > b - 2 && f.y < b + 30)
+          // `+ 0`: a rule on the baseline is at 0, not the -0 it rounds to
+          .map((f) => ({ ...f, y: Math.round(f.y - b) + 0 })),
+      };
+    };
+    const title = dots('a');
+    assert.ok(title.dots.length > 3, `dots: ${title.dots.length}`);
+    for (const dot of title.dots) {
+      assert.deepStrictEqual(
+        [dot.y, dot.w, dot.h, dot.radii],
+        [7, 14, 14, [7]],
+        'a 14px dot, 7 under the baseline',
+      );
+    }
+    const first = title.dots[0];
+    const last = title.dots[title.dots.length - 1];
+    const gap = title.dots[1].x - first.x - 14;
+    assert.ok(Math.abs(gap - 14) < 7, `a gap near a dot's width: ${gap}`);
+    title.dots.forEach((dot, i) => {
+      assert.ok(
+        Math.abs(dot.x - first.x - i * (14 + gap)) < 0.01,
+        'evenly spread',
+      );
+    });
+    // the text here is the `<abbr>`'s alone: its rule is as long
+    const [from, to] = title.extent;
+    assert.ok(Math.abs(first.x - from) <= 1, `from its start: ${first.x}`);
+    assert.ok(Math.abs(last.x + 14 - to) <= 1, `to its end: ${last.x + 14}`);
+
+    const body = dots('b');
+    assert.ok(body.dots.length > 3, `squares: ${body.dots.length}`);
+    for (const dot of body.dots.slice(0, -1)) {
+      assert.deepStrictEqual(
+        [dot.y, dot.w, dot.h, dot.radii],
+        [0, 2, 2, null],
+        'a 2px square on the baseline',
+      );
+    }
+    assert.strictEqual(body.dots[1].x - body.dots[0].x, 4, 'two apart');
   },
 );
 
