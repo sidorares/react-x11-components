@@ -979,3 +979,132 @@ test('a break comes before a box only where it would gain the box room', async (
   assert.deepStrictEqual(at(el, 'c4', 'm4'), [100, 0, 100, 120], 'a column on');
   assert.deepStrictEqual(at(el, 'o4', 'm4'), [0, 0, 200, 120], 'two columns');
 });
+
+test('a box that spans the columns is set across them, between rows of columns', async () => {
+  // `column-span: all` (CSS Multi-column 1, 6): what comes before it is
+  // balanced in columns of its own, it is set under them the container's
+  // width, and what follows in columns under it. Its margins are its own:
+  // they collapse with no margin of the columns' content.
+  const span = (id: string, style = '') =>
+    `<div id="${id}" style="column-span:all;height:30px;margin:10px 0;${style}"></div>`;
+  const u = (id: string, height: number) =>
+    `<div class="u" id="${id}" style="height:${height}px"></div>`;
+  const { node } = await render(
+    SHEET +
+      `<div class="m" id="m">${u('a', 60)}${u('b', 60)}${span('s')}` +
+      `${u('c', 40)}${u('d', 40)}${u('e', 40)}</div>` +
+      // first, and last: its margins stay inside the container
+      `<div class="m" id="n">${span('t')}${u('f', 60)}${u('g', 60)}</div>` +
+      `<div class="m" id="o">${u('h', 60)}${u('i', 60)}${span('v')}</div>` +
+      // two of them: the margins between them collapse
+      `<div class="m" id="p">${u('j', 40)}${u('k', 40)}` +
+      `${span('w', 'margin:20px 0 5px')}${span('x', 'margin:15px 0 25px')}` +
+      `${u('l', 40)}</div>`,
+    700,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'm').height, 215, 'two rows and the spanner');
+  assert.deepStrictEqual(at(el, 'a', 'm'), [0, 10, 280, 60], 'the first row');
+  assert.deepStrictEqual(
+    at(el, 'b', 'm'),
+    [320, 0, 280, 60],
+    'its second column',
+  );
+  assert.deepStrictEqual(
+    at(el, 's', 'm'),
+    [0, 85, 600, 30],
+    'across, under it',
+  );
+  assert.deepStrictEqual(at(el, 'c', 'm'), [0, 135, 280, 40], 'the second row');
+  assert.deepStrictEqual(
+    at(el, 'd', 'm'),
+    [320, 125, 280, 40],
+    'balanced again',
+  );
+  assert.deepStrictEqual(at(el, 'e', 'm'), [320, 175, 280, 40], 'under it');
+  assert.deepStrictEqual(
+    at(el, 't', 'n'),
+    [0, 10, 600, 30],
+    'first: its margin',
+  );
+  assert.deepStrictEqual(
+    at(el, 'f', 'n'),
+    [0, 60, 280, 60],
+    'and the row under',
+  );
+  assert.strictEqual(boxOf(el, 'n').height, 125, 'the container');
+  assert.deepStrictEqual(at(el, 'v', 'o'), [0, 85, 600, 30], 'last');
+  assert.strictEqual(boxOf(el, 'o').height, 125, 'its margin inside');
+  assert.deepStrictEqual(
+    at(el, 'w', 'p'),
+    [0, 75, 600, 30],
+    'the first of two',
+  );
+  assert.deepStrictEqual(
+    at(el, 'x', 'p'),
+    [0, 120, 600, 30],
+    '15px on, not 20',
+  );
+  assert.deepStrictEqual(
+    at(el, 'l', 'p'),
+    [0, 185, 280, 40],
+    'and what follows',
+  );
+});
+
+test('column-span does nothing on a box that is not block-level', async () => {
+  // an inline-block is on a line, which is in a column
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="m" style="width:400px;column-count:4;column-gap:0">' +
+      '<div id="s" style="column-span:all;display:inline-block;width:80px;' +
+      'height:50px"></div></div>',
+    500,
+  );
+  const s = boxOf(view(node), 's');
+  assert.deepStrictEqual([s.x, s.width], [0, 80], 'in the first column');
+});
+
+test('a container as wide as its content is no narrower than a box that spans its columns', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="m" style="float:left;column-count:2;column-gap:40px">' +
+      '<div id="a" style="width:50px;height:20px"></div>' +
+      '<div id="s" style="column-span:all;width:300px;height:10px"></div>' +
+      '<div style="width:70px;height:20px"></div></div>',
+    700,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'm').width, 300, 'as wide as the spanner');
+  assert.strictEqual(boxOf(el, 'a').x, 0, 'its columns from its edge');
+});
+
+metric(
+  'columns that can be no taller break a block where they must, orphans or not',
+  async () => {
+    // A container 150px tall with a spanner across its middle: the row under
+    // it has 30px, which is one line under the paragraph's margin and one
+    // line a column after it. `orphans: 2` cannot be had, and is not waited
+    // for in a column that overflows.
+    const { node } = await render(
+      SHEET +
+        `<div class="m" id="m" style="height:150px">${p('a', 6)}` +
+        '<div style="column-span:all;height:30px;margin:10px 0"></div>' +
+        `${p('b', 6)}</div>`,
+      700,
+    );
+    const el = view(node);
+    assert.deepStrictEqual(
+      placed(el, 'b', 'm'),
+      [
+        [0, 130],
+        [1, 120],
+        [2, 120],
+        [3, 120],
+        [4, 120],
+        [5, 120],
+      ],
+      'a line a column',
+    );
+  },
+);
