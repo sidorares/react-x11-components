@@ -104,6 +104,7 @@ import {
   holdsAbsolute,
   paintDocument,
   queryChildIndex,
+  selectionRows,
   stackLayers,
 } from './paint.js';
 import type { PaintContext } from './paint.js';
@@ -1210,7 +1211,8 @@ export class HtmlViewNode extends Node {
     const to = this._toUnits(end);
     if (to <= from) return [];
     const out: Rect[] = [];
-    collectBands(tree.root, from, to, this.abs.x, this.abs.y, out);
+    // the rows the highlight paints, over glyphs taller than their line
+    collectBands(tree.root, from, to, this.abs.x, this.abs.y, out, true);
     return out;
   }
 
@@ -2321,6 +2323,9 @@ function lineBands(
   /** Where the lines put the text, not where a relative offset moved it
    *  (`TEXT_SHIFTS`): what an inline box's own offset is added to. */
   laidOut = false,
+  /** The rows a highlight covers (`selectionRows`) rather than the line's:
+   *  past it where the glyphs are taller than the line. */
+  ink = false,
 ): void {
   // First line whose text can reach `from`, by binary search over the
   // sorted text starts; stop at the first line past `to`.
@@ -2349,6 +2354,9 @@ function lineBands(
         // a link that ends a line a space wider than Chrome's. So the text
         // a line ends with is measured no further than its content.
         const ends = endsLine(line, text, natural);
+        const rows = ink
+          ? selectionRows(line, text, natural)
+          : { y: line.y, height: line.height };
         for (const band of bandsFor(
           text.layout,
           natural,
@@ -2364,9 +2372,9 @@ function lineBands(
           }
           out.push({
             x: dx + left + text.drawX - moved,
-            y: dy + line.y,
+            y: dy + rows.y,
             width: right - left,
-            height: line.height,
+            height: rows.height,
           });
         }
         // the spaces `pre-wrap` keeps that the line ends on, which have no
@@ -2376,9 +2384,9 @@ function lineBands(
           if (at < a || at >= b) continue;
           out.push({
             x: dx + space.x + text.drawX - moved,
-            y: dy + line.y,
+            y: dy + rows.y,
             width: space.width,
-            height: line.height,
+            height: rows.height,
           });
         }
       }
@@ -2408,14 +2416,15 @@ function collectBands(
   dx: number,
   dy: number,
   out: Rect[],
+  ink = false,
 ): void {
   if (box.subtreeTextEnd <= box.subtreeTextStart) return;
   if (box.subtreeTextEnd <= from || box.subtreeTextStart >= to) return;
-  if (box.lines) lineBands(box.lines, from, to, dx, dy, out);
+  if (box.lines) lineBands(box.lines, from, to, dx, dy, out, false, ink);
   // Atomics are ordinary children, reached below.
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
-    collectBands(child, from, to, dx, dy, out);
+    collectBands(child, from, to, dx, dy, out, ink);
   }
 }
 
