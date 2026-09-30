@@ -32,6 +32,7 @@ import type { ComputedStyle } from './css/style.js';
 import { isTransparent } from './css/values.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import type { FontsLike } from './layout/inline.js';
+import { clipAround } from './paint.js';
 
 /** The palette numbers a control's box has to reserve room for. */
 export interface ControlChrome {
@@ -77,6 +78,17 @@ export interface ControlRect {
    * invisible, over its label.
    */
   opacity?: number;
+  /**
+   * The part of the document the element shows through, where that is not
+   * all of its box: what its own `clip` leaves of it, and what the boxes
+   * that clip their overflow around it do (`clipAround`). The widget is cut
+   * to it, as the element's own drawing is. With no area, none of the
+   * element shows — a control a page hides for a screen reader alone, 1px
+   * square under `clip: rect(0, 0, 0, 0)`, beside the one it draws itself
+   * — and the widget is not seen and takes no press, and still takes the
+   * keyboard's focus, as the element does in a browser.
+   */
+  clip?: { x: number; y: number; width: number; height: number };
 }
 
 /** Where a styled field's widget goes, and how its text looks. */
@@ -98,8 +110,9 @@ export interface BareField {
   chevron?: boolean;
 }
 
-/** The rectangles every control in a laid-out document landed on. */
-export function controlRectsOf(tree: BoxTree): ControlRect[] {
+/** The rectangles every control in a laid-out document landed on. `scale`
+ *  is the document's device pixels to a CSS one. */
+export function controlRectsOf(tree: BoxTree, scale = 1): ControlRect[] {
   const out: ControlRect[] = [];
   for (const box of tree.controls) {
     if (!box.el) continue;
@@ -121,6 +134,13 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
       opacity *= at.style.opacity;
     }
     if (opacity < 1) rect.opacity = Math.max(0, opacity);
+    // cut by the clips around it where they do not leave it whole, and by
+    // its own box where it clips itself
+    const shown = pixelsOf(box);
+    const around = clipAround(box, scale);
+    if (clipsItself(box)) {
+      rect.clip = around ? between(around, shown) : shown;
+    } else if (around && !covers(around, shown)) rect.clip = around;
     if (styledField(box.replaced, box.style)) {
       rect.bare = {
         x: box.contentX,
@@ -138,6 +158,57 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
     out.push(rect);
   }
   return out;
+}
+
+type Rect = { x: number; y: number; width: number; height: number };
+
+/**
+ * Whether a control is cut to its own box: one the page gave an `overflow`
+ * other than `visible`, as an inline block's content is cut (CSS 2.1
+ * 11.1.1). A browser paints no control past its border box whatever its
+ * `overflow` says, scaling a checkbox into a box a pixel square; a widget
+ * has a size of its own, and is cut where the page said its box cuts. At
+ * the border box, which the widget's own frame is drawn in. A text field is
+ * left out: it cuts its own text, and a sheet that gives every `<textarea>`
+ * `overflow: auto`, as normalize.css does, asks for nothing here.
+ */
+function clipsItself(box: Box): boolean {
+  if (box.replaced === 'input' || box.replaced === 'textarea') return false;
+  return box.style.overflowX !== 'visible' || box.style.overflowY !== 'visible';
+}
+
+/** A box's border box on the pixels it is drawn on. */
+function pixelsOf(box: Box): Rect {
+  const x = Math.round(box.x);
+  const y = Math.round(box.y);
+  return {
+    x,
+    y,
+    width: Math.round(box.x + box.width) - x,
+    height: Math.round(box.y + box.height) - y,
+  };
+}
+
+/** What two rectangles share, of no area where they share nothing. */
+export function between(a: Rect, b: Rect): Rect {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  return {
+    x,
+    y,
+    width: Math.max(0, Math.min(a.x + a.width, b.x + b.width) - x),
+    height: Math.max(0, Math.min(a.y + a.height, b.y + b.height) - y),
+  };
+}
+
+/** Whether a clip leaves a rectangle whole. */
+function covers(clip: Rect, rect: Rect): boolean {
+  return (
+    clip.x <= rect.x &&
+    clip.y <= rect.y &&
+    clip.x + clip.width >= rect.x + rect.width &&
+    clip.y + clip.height >= rect.y + rect.height
+  );
 }
 
 /**
