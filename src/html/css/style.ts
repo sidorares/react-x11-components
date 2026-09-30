@@ -174,6 +174,121 @@ function parseClip(
   return { top: edges[0], right: edges[1], bottom: edges[2], left: edges[3] };
 }
 
+/** The box a `clip-path`'s shape is measured in, a `<geometry-box>` (CSS
+ *  Masking 1, 5.1). */
+export type ClipBox =
+  'margin-box' | 'border-box' | 'padding-box' | 'content-box';
+
+/**
+ * `clip-path` (CSS Masking 1, 5.1): a rectangle in a box of the element's,
+ * its corners rounded or not — a `<basic-shape-rect>` (CSS Shapes 1, 3.1),
+ * kept as the function it was written as, since each measures its four
+ * lengths its own way and a percentage among them has no pixels before
+ * layout. The element shows through it, and everything in it does.
+ */
+export interface ClipPath {
+  box: ClipBox;
+  /** What the four lengths are: `inset()`'s, how far in from the box's
+   *  top, right, bottom and left; `rect()`'s, those four edges from its top
+   *  and its left, `auto` the box's own; `xywh()`'s, the rectangle's left
+   *  and top from the box's, and its width and height. Null for a box
+   *  named alone, which is the shape: the whole of it, rounded as the
+   *  element's corners are. */
+  shape: 'inset' | 'rect' | 'xywh' | null;
+  lengths: readonly [Len, Len, Len, Len];
+  /** `round`: the corners' radii across, and down where they differ, as
+   *  `border-radius` has them — a percentage is of the box, and not of the
+   *  rectangle in it. Null for square corners. */
+  radii: readonly [Len, Len, Len, Len] | null;
+  radiiY: readonly [Len, Len, Len, Len] | null;
+}
+
+/** The boxes `clip-path` names; an SVG one is the CSS box that stands for
+ *  it on an element with a CSS layout box (5.1). */
+const CLIP_BOXES: Record<string, ClipBox> = {
+  'margin-box': 'margin-box',
+  'border-box': 'border-box',
+  'padding-box': 'padding-box',
+  'content-box': 'content-box',
+  'fill-box': 'content-box',
+  'stroke-box': 'border-box',
+  'view-box': 'border-box',
+};
+
+/** The shapes that are no rectangle, and a reference to a `<clipPath>`
+ *  element: a value, which sets the property, and none this draws. */
+const UNDRAWN_CLIPS = /^(circle|ellipse|polygon|path|shape|url)\(/i;
+
+const NO_LENGTHS = [0, 0, 0, 0] as const;
+
+/**
+ * `none`; a rectangle's function, a box, or the two in either order; or a
+ * shape that is no rectangle, which is a value and clips nothing here.
+ * Undefined for anything else, which leaves the value as it was.
+ */
+function parseClipPath(
+  value: string,
+  ctx: UnitContext,
+): ClipPath | null | undefined {
+  const v = value.trim();
+  if (/^none$/i.test(v)) return null;
+  let box: ClipBox | null = null;
+  let shape: Omit<ClipPath, 'box'> | null | undefined;
+  for (const part of splitValue(v)) {
+    const named = CLIP_BOXES[part.toLowerCase()];
+    if (named) {
+      if (box) return undefined;
+      box = named;
+      continue;
+    }
+    if (shape !== undefined) return undefined;
+    if (UNDRAWN_CLIPS.test(part) && part.endsWith(')')) shape = null;
+    else shape = rectShape(part, ctx);
+    if (shape === undefined) return undefined;
+  }
+  if (shape === null) return null;
+  if (shape) return { box: box ?? 'border-box', ...shape };
+  if (!box) return undefined;
+  return { box, shape: null, lengths: NO_LENGTHS, radii: null, radiiY: null };
+}
+
+/** `inset()`, `rect()` or `xywh()`, with the corners it rounds; undefined
+ *  for anything else. */
+function rectShape(
+  text: string,
+  ctx: UnitContext,
+): Omit<ClipPath, 'box'> | undefined {
+  const m = /^(inset|rect|xywh)\((.*)\)$/is.exec(text);
+  if (!m) return undefined;
+  const shape = m[1].toLowerCase() as 'inset' | 'rect' | 'xywh';
+  const parts = splitValue(m[2].trim());
+  const round = parts.findIndex((p) => p.toLowerCase() === 'round');
+  const sides = round < 0 ? parts : parts.slice(0, round);
+  let radii: ClipPath['radii'] = null;
+  let radiiY: ClipPath['radiiY'] = null;
+  if (round >= 0) {
+    const corners = parseRadii(parts.slice(round + 1).join(' '), ctx);
+    if (!corners) return undefined;
+    [radii, radiiY] = corners;
+  }
+  // one to four insets, as a margin's sides are written; the other two
+  // take all four
+  if (
+    shape === 'inset' ? !sides.length || sides.length > 4 : sides.length !== 4
+  )
+    return undefined;
+  const lengths: Len[] = [];
+  for (let i = 0; i < sides.length; i += 1) {
+    const len = parseLength(sides[i], ctx);
+    if (len === null) return undefined;
+    // only `rect()` has an edge that is `auto`, and a width is not negative
+    if (len === AUTO && shape !== 'rect') return undefined;
+    if (shape === 'xywh' && i > 1 && !notNegative(len)) return undefined;
+    lengths.push(len);
+  }
+  return { shape, lengths: fourSides(lengths), radii, radiiY };
+}
+
 export type BorderStyle =
   | 'none'
   | 'hidden'
@@ -388,6 +503,10 @@ export interface ComputedStyle {
    *  its edges measured from the border box's top left, a null edge the
    *  border box's own (CSS 2.1 11.1.2). Null for `auto`. */
   clip: ClipRect | null;
+  /** `clip-path`: the rectangle the element and all it holds show through
+   *  (CSS Masking 1, 5.1); null for `none`, and for a shape this does not
+   *  draw. */
+  clipPath: ClipPath | null;
   opacity: number;
   /** Where `translate` moves the box after layout (CSS Transforms 2): a
    *  length or a percentage of its own border box across and down; null
@@ -804,6 +923,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     overflowX: 'visible',
     overflowY: 'visible',
     clip: null,
+    clipPath: null,
     opacity: 1,
     translate: null,
     transformTranslate: null,
@@ -1536,6 +1656,12 @@ export function applyDeclaration(
       if (clip !== undefined) style.clip = clip;
       return;
     }
+    case 'clip-path':
+    case '-webkit-clip-path': {
+      const path = parseClipPath(value, ctx);
+      if (path !== undefined) style.clipPath = path;
+      return;
+    }
     case 'opacity': {
       const a = parseAlpha(value);
       if (a !== null) style.opacity = a;
@@ -1820,19 +1946,8 @@ export function applyDeclaration(
       return;
     }
     case 'border-radius': {
-      // one to four radii, and after a `/` one to four more for the
-      // vertical radii where they differ: elliptical corners
-      const halves = value.split('/');
-      if (halves.length > 2) return;
-      const [horizontal, vertical] = halves.map((half) =>
-        splitValue(half).map((p) => radiusOf(p, ctx)),
-      );
-      for (const parts of vertical ? [horizontal, vertical] : [horizontal]) {
-        if (!parts.length || parts.length > 4 || parts.includes(null)) return;
-      }
-      style.borderRadius = fourSides(horizontal as Len[]);
-      const y = vertical ? fourSides(vertical as Len[]) : null;
-      style.borderRadiusY = y && !sameRadii(style.borderRadius, y) ? y : null;
+      const radii = parseRadii(value, ctx);
+      if (radii) [style.borderRadius, style.borderRadiusY] = radii;
       return;
     }
 
@@ -4862,6 +4977,29 @@ function radiusOf(text: string, ctx: UnitContext): Len | null {
   return len.pct < 0 && !len.px && !len.of ? null : len;
 }
 
+/**
+ * `border-radius`'s value: one to four radii, and after a `/` one to four
+ * more for the vertical radii where they differ, elliptical corners — the
+ * radii across, and the ones down, null where they are the same values.
+ * Null for anything else.
+ */
+function parseRadii(
+  value: string,
+  ctx: UnitContext,
+): [[Len, Len, Len, Len], [Len, Len, Len, Len] | null] | null {
+  const halves = value.split('/');
+  if (halves.length > 2) return null;
+  const [horizontal, vertical] = halves.map((half) =>
+    splitValue(half).map((p) => radiusOf(p, ctx)),
+  );
+  for (const parts of vertical ? [horizontal, vertical] : [horizontal]) {
+    if (!parts.length || parts.length > 4 || parts.includes(null)) return null;
+  }
+  const across = fourSides(horizontal as Len[]);
+  const down = vertical ? fourSides(vertical as Len[]) : null;
+  return [across, down && !sameRadii(across, down) ? down : null];
+}
+
 /** Whether two corners' radii are the same values. */
 function sameRadii(a: readonly Len[], b: readonly Len[]): boolean {
   for (let i = 0; i < 4; i += 1) {
@@ -5447,6 +5585,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   clear: ['clear'],
   overflow: ['overflowX', 'overflowY'],
   clip: ['clip'],
+  'clip-path': ['clipPath'],
+  '-webkit-clip-path': ['clipPath'],
   'overflow-x': ['overflowX'],
   'overflow-y': ['overflowY'],
   opacity: ['opacity'],
