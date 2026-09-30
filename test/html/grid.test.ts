@@ -707,6 +707,76 @@ test("a grid item's percentage height is of its area", async () => {
   assert.strictEqual(height('e'), 70);
 });
 
+test('a grid item that is a flex or grid container lays its items out in its stretched height', async () => {
+  // CSS Grid 1, 11.1: an item is laid out in its area, whose height is
+  // definite for it, and one stretched down it (6.2) is that tall — so a
+  // card that is a column flex box has a height to share out: its
+  // `margin-top: auto` takes what is free (CSS Flexbox 8.1), its `flex: 1`
+  // grows (9.7). nextjs.org/blog is a grid of such cards, each ending in a
+  // "Read more" that belongs at the card's bottom; the card was stretched
+  // and what was in it left where its content's own height put it, the
+  // button under the text and the rest of the card empty.
+  const card = 'display:flex;flex-direction:column';
+  const tall = '<div style="height:120px"></div>';
+  const grid = (items: string, rows = '') =>
+    `<div style="display:grid;grid-template-columns:repeat(3,100px);${rows}">` +
+    `${items}</div>`;
+  const { node } = await render(
+    '<style>body{margin:0}.s{height:20px}.m{height:30px}</style>' +
+      grid(
+        `<div id="a" style="${card}"><div class="s"></div>` +
+          '<div id="a2" class="m" style="margin-top:auto"></div></div>' +
+          // the one its row is as tall as is laid out as it was
+          `<div id="t" style="${card}"><div style="height:90px"></div>` +
+          '<div id="t2" class="m" style="margin-top:auto"></div></div>' +
+          tall,
+      ) +
+      grid(
+        `<div id="b" style="${card}"><div id="b1" style="flex:1"></div>` +
+          '<div id="b2" class="m"></div></div>' +
+          `<div id="c" style="${card};justify-content:space-between">` +
+          '<div class="s"></div><div id="c2" class="m"></div></div>' +
+          tall,
+      ) +
+      grid(
+        // a row's line is as tall as the item, and a grid's `fr` row fills it
+        '<div id="d" style="display:flex;align-items:center">' +
+          '<div id="d1" class="s" style="width:10px"></div>' +
+          '<div id="d2" style="width:10px;align-self:stretch"></div></div>' +
+          '<div id="e" style="display:grid;grid-template-rows:1fr auto">' +
+          '<div id="e1"></div><div id="e2" class="m"></div></div>' +
+          tall,
+      ) +
+      // and shorter than what it holds, where its row is, it shrinks them
+      grid(
+        `<div id="f" style="${card};overflow:hidden">` +
+          '<div class="s" style="flex:none"></div>' +
+          '<div id="f2" style="height:60px"></div></div>',
+        'grid-template-rows:40px',
+      ),
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  /** How far down its card an item is, and how tall. */
+  const at = (id: string) => {
+    const item = box(id);
+    const top = (item as LaidBox & { parent: LaidBox }).parent.y;
+    return [item.y - top, item.height];
+  };
+  assert.strictEqual(box('a').height, 120, 'stretched down its row');
+  assert.deepStrictEqual(at('a2'), [90, 30], 'margin-top: auto');
+  assert.deepStrictEqual(at('t2'), [90, 30], 'the tallest card');
+  assert.deepStrictEqual(at('b1'), [0, 90], 'flex: 1 takes the rest');
+  assert.deepStrictEqual(at('b2'), [90, 30]);
+  assert.deepStrictEqual(at('c2'), [90, 30], 'space-between');
+  assert.deepStrictEqual(at('d1'), [50, 20], 'centred in the line');
+  assert.deepStrictEqual(at('d2'), [0, 120], 'stretched across it');
+  assert.deepStrictEqual(at('e1'), [0, 90], 'the fr row');
+  assert.deepStrictEqual(at('e2'), [90, 30]);
+  assert.strictEqual(box('f').height, 40, 'as tall as its row');
+  assert.deepStrictEqual(at('f2'), [20, 20], 'shrunk into it');
+});
+
 test('auto-fit tracks no item is in collapse, gaps and all', async () => {
   // `repeat(auto-fit, …)` was `auto-fill`: every repetition stayed, empty,
   // and took its share of the space `justify-content` distributes
