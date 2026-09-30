@@ -17310,3 +17310,56 @@ test('a box that clips its overflow, too wide for a column no float narrows, sta
   );
   await result.unmount();
 });
+
+test("an inline box that a line breaks inside ends that line's fragment at its text, not after the space the line ends on", async () => {
+  // A space a line ends on is removed (CSS Text 3, 4.1.2) and takes no
+  // room on it, and a browser's fragment of the box ends at its last
+  // letter. The band that measured it went on past the line into the
+  // space, where a caret after it goes: design 209's link, broken after
+  // "CSS", was a space wider than Chrome's
+  const measured = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+      '<span id="m">word CSS</span>',
+  );
+  const wide = view(measured.node);
+  const room = Math.ceil(
+    wide.elementRect(findById(wide.document, 'm')!)!.width + 1,
+  );
+  await measured.result.unmount();
+  const { node, result } = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+      `<p style="margin:0;width:${room}px">word <a id="a">` +
+      // in a smaller face, as 209's <abbr> is, which lays the line out a
+      // piece at a time
+      '<span id="s" style="font-size:85%">CSS</span> Re</a></p>',
+  );
+  const el = view(node);
+  const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+  assert.ok(
+    rect('a').height > 30,
+    `the link is on two lines: ${rect('a').height}`,
+  );
+  assert.ok(
+    Math.abs(rect('a').x + rect('a').width - (rect('s').x + rect('s').width)) <
+      0.01,
+    `its first line's fragment ends where "CSS" does: ` +
+      `${rect('a').x + rect('a').width} ${rect('s').x + rect('s').width}`,
+  );
+  await result.unmount();
+  // and text a line ends with is measured where it is, off the line or
+  // not: a heading's words set 500px out by `text-indent`, as an image
+  // replacement sets them, are as wide as ever
+  const indented = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+      '<h2 style="margin:0;width:300px;text-indent:-500px;overflow:hidden">The ' +
+      '<abbr id="t">CSS</abbr> Garden</h2>',
+  );
+  const out = view(indented.node);
+  const word = out.elementRect(findById(out.document, 't')!)!;
+  assert.ok(
+    word.width > 10,
+    `the indented word keeps its width: ${word.width}`,
+  );
+  assert.ok(word.x < -400, `where the indent put it: ${word.x}`);
+  await indented.result.unmount();
+});
