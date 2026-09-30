@@ -11957,6 +11957,38 @@ test('a grid item with a ratio is sized by it, and justify-items: normal starts 
   assert.strictEqual(boxOf(el, 'g').width, 0);
 });
 
+test('place-content sets align-content then justify-content, the second the first again', async () => {
+  // melbcss.com centres its page with `body { display: grid; place-content:
+  // center }`: unread, the column stretched across the body and the page
+  // sat at its left edge. Each grid is 200 wide and 100 tall, around one
+  // 50 by 20 item.
+  const grid = (id: string, place: string) =>
+    `<div style="display:grid;width:200px;height:100px;place-content:${place}">` +
+    `<div id="${id}" style="width:50px;height:20px"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      grid('a', 'center') +
+      grid('b', 'end start') +
+      grid('c', 'unsafe center end') +
+      // a baseline is no justify-content: `start` stands in
+      grid('d', 'first baseline') +
+      // a half that is not one drops the declaration whole
+      grid('e', 'center bogus'),
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const box = boxOf(el, id);
+    const grid = boxOf(el, id) as unknown as { parent: LaidBox };
+    return [box.x - grid.parent.x, box.y - grid.parent.y];
+  };
+  assert.deepStrictEqual(at('a'), [75, 40]);
+  assert.deepStrictEqual(at('b'), [0, 80]);
+  assert.deepStrictEqual(at('c'), [150, 40]);
+  assert.deepStrictEqual(at('d'), [0, 0]);
+  assert.deepStrictEqual(at('e'), [0, 0]);
+});
+
 test("a grid item's percentage height is of its area", async () => {
   // It was of the grid's height, so `height: 100%` in one of two rows was
   // as tall as both; and what is in a stretched item takes its percentages
