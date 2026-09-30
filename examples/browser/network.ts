@@ -68,10 +68,22 @@ export interface Fetched {
  *  arrives. */
 export interface DocumentResponse {
   url: string;
+  /** Whether a redirect brought it — after a POST, the GET that the
+   *  redirect made of it. */
+  redirected: boolean;
   status: number;
   type: string;
   charset: string | null;
   body: AsyncIterable<Uint8Array>;
+}
+
+/** What a form sends with a POST: its body as `<Html>` encoded it, the type
+ *  that says how, and the page the form was on — which a server that
+ *  checks where a POST came from reads as its `Origin` and `Referer`. */
+export interface PostData {
+  body: string;
+  contentType: string;
+  from: string;
 }
 
 /** Why a navigation failed, in words a page can show. */
@@ -199,8 +211,18 @@ export class Network {
    * no response at all — no such host, a refused connection, a certificate
    * that does not verify; an HTTP error status is a response, and its page
    * is shown the way a browser shows it.
+   *
+   * With `post`, a form's POST: its body, its type, and the `Origin` and
+   * `Referer` of the page it was on, which is how a server tells a form's
+   * POST from one made up elsewhere. Only over HTTP — anything else has no
+   * method to send it by. A redirect after it is followed as a GET, as
+   * `fetch` does for a 303, and for a 301 or 302 after a POST.
    */
-  async document(url: string, signal: AbortSignal): Promise<DocumentResponse> {
+  async document(
+    url: string,
+    signal: AbortSignal,
+    post: PostData | null = null,
+  ): Promise<DocumentResponse> {
     const scheme = schemeOf(url);
     if (scheme === 'file') return localDocument(url);
     if (scheme !== 'http' && scheme !== 'https' && scheme !== 'data') {
@@ -210,15 +232,26 @@ export class Network {
       );
     }
     const timer = AbortSignal.timeout(TIMEOUT);
+    const headers: Record<string, string> = {
+      'user-agent': USER_AGENT,
+      accept: ACCEPT.document,
+      'accept-language': this._language,
+    };
+    const posting = post && (scheme === 'http' || scheme === 'https');
+    if (posting) {
+      headers['content-type'] = post.contentType;
+      headers.origin = originOf(post.from);
+      const referrer = referrerFor(post.from, url);
+      if (referrer) headers.referer = referrer;
+      log('POST', url, post.contentType, post.body.length);
+    }
     let response: Response;
     try {
       response = await fetch(url, {
+        method: posting ? 'POST' : 'GET',
+        body: posting ? post.body : undefined,
         signal: AbortSignal.any([signal, timer]),
-        headers: {
-          'user-agent': USER_AGENT,
-          accept: ACCEPT.document,
-          'accept-language': this._language,
-        },
+        headers,
         redirect: 'follow',
       });
     } catch (error) {
@@ -228,6 +261,7 @@ export class Network {
     const { type, charset } = contentType(response.headers.get('content-type'));
     return {
       url: response.url || url,
+      redirected: response.redirected,
       status: response.status,
       type,
       charset,
@@ -401,6 +435,17 @@ function referrerFor(page: string, target: string): string | null {
     return `${from.origin}/`;
   } catch {
     return null;
+  }
+}
+
+/** A page's origin as an `Origin` header says it: `null` for one that is
+ *  not on the web, a `file:` page's among them. */
+function originOf(page: string): string {
+  try {
+    const { protocol, origin } = new URL(page);
+    return protocol === 'http:' || protocol === 'https:' ? origin : 'null';
+  } catch {
+    return 'null';
   }
 }
 
@@ -588,6 +633,7 @@ async function localDocument(url: string): Promise<DocumentResponse> {
     const listing = await directoryPage(path);
     return {
       url: url.endsWith('/') ? url : `${url}/`,
+      redirected: false,
       status: 200,
       type: 'text/html',
       charset: 'utf-8',
@@ -598,7 +644,7 @@ async function localDocument(url: string): Promise<DocumentResponse> {
   if (!fetched) {
     throw new NetworkError(`${path} is too large to open.`, 'ERR_FILE_TOO_BIG');
   }
-  return { ...fetched, body: once(fetched.bytes) };
+  return { ...fetched, redirected: false, body: once(fetched.bytes) };
 }
 
 async function* once(bytes: Uint8Array): AsyncIterable<Uint8Array> {

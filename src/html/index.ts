@@ -36,13 +36,21 @@ import type { Document, Element } from './dom.js';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
 import type { HtmlViewProps, ScriptRequest } from './node.js';
 import type { RootLook } from './css/style.js';
-import {
-  buttonLabel,
-  optionsOf,
-  selectedOption,
-  textareaValue,
-} from './controls.js';
+import { buttonLabel, optionsOf, selectedOption } from './controls.js';
 import type { BareField, ControlRect } from './controls.js';
+import {
+  FormState,
+  buttonType,
+  formOwner,
+  formSubmission,
+  implicitSubmission,
+  inputType,
+  isDisabled,
+  optionElements,
+  optionValue,
+  radioGroup,
+} from './form.js';
+import type { FormSubmission } from './form.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
 export {
@@ -53,6 +61,13 @@ export {
 export type { HtmlViewProps, ScriptRequest } from './node.js';
 export type { ResourceRequest, ResourceResult } from './resources.js';
 export type { BareField, ControlRect } from './controls.js';
+export type {
+  FormEnctype,
+  FormMethod,
+  FormSubmission,
+  SubmitContext,
+} from './form.js';
+export { formSubmission } from './form.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
 export type {
   AnyNode,
@@ -154,6 +169,15 @@ export interface HtmlProps {
    * calls the handle's `refresh()`.
    */
   onControlChange?: (element: Element, value: string | boolean) => void;
+  /**
+   * A form was submitted — a submit button pressed, or Enter in one of its
+   * text fields. Handed over as the request it makes: the method, the URL
+   * (resolved as `onLink`'s `href` is, and for a GET with the form's entries
+   * as its query), a POST's encoded body and its content type, and the
+   * entries themselves. Absent means submitting does nothing: this
+   * component never sends anything by itself, any more than it navigates.
+   */
+  onSubmit?: (submission: FormSubmission) => void;
   /** Base text style. Defaults: theme `fontSize` (14), `sans-serif`. */
   fontSize?: number;
   fontFamily?: string;
@@ -285,13 +309,80 @@ export function Html(props: HtmlProps): ReactElement {
     onScript,
     onDocument,
     onControlChange,
+    onSubmit,
     style,
   } = props;
 
   const theme = useTheme() as unknown as Record<string, unknown>;
   const links = useLinkClicks(onLink);
-  const buttons = useButtonPresses(onControlChange);
   const menu = useSelectionMenu(selectable);
+
+  // The element, for the document's base when a form is submitted, as well
+  // as wherever the application's `ref` wants it.
+  const viewNode = React.useRef<HtmlViewNode | null>(null);
+  const outerRef = props.ref;
+  const viewRef = React.useCallback(
+    (node: HtmlViewNode | null) => {
+      viewNode.current = node;
+      if (typeof outerRef === 'function') outerRef(node);
+      else if (outerRef) (outerRef as React.RefObject<unknown>).current = node;
+    },
+    [outerRef],
+  );
+
+  // What the controls hold that the markup does not, for the widgets'
+  // next mount, a submission and a reset. A reset bumps `resets`, which is
+  // in every widget's key: an uncontrolled field shows its markup's value
+  // again only by mounting again.
+  const forms = React.useMemo(() => new FormState(), []);
+  const [resets, setResets] = React.useState(0);
+  // Each element's widget is keyed by the element, not by where it is: a
+  // field that layout moves — a stylesheet arriving, an image above it
+  // loading, a resize — is the same widget, and keeps its focus, its caret
+  // and its undo. Keyed by position, each move mounted a new one, and a
+  // page whose stylesheet landed while someone was typing lost the field
+  // from under them.
+  const widgetIds = React.useMemo(() => {
+    const ids = new WeakMap<Element, number>();
+    let next = 0;
+    return (el: Element): number => {
+      let id = ids.get(el);
+      if (id === undefined) ids.set(el, (id = ++next));
+      return id;
+    };
+  }, []);
+
+  const submit = (
+    form: Element,
+    submitter: Element | null,
+    point?: { x: number; y: number },
+  ): void => {
+    if (!onSubmit) return;
+    const submission = formSubmission(form, submitter, {
+      base: viewNode.current?.documentBase ?? baseUrl ?? null,
+      documentUrl: baseUrl ?? null,
+      live: (el) => forms.typed(el),
+      point,
+    });
+    if (submission) onSubmit(submission);
+  };
+  /** A button's activation behaviour (HTML 4.10.6): a submit button
+   *  submits its form, a reset button resets it, and any other does
+   *  nothing. A disabled one is never pressed at all. */
+  const activate = (button: Element, point?: { x: number; y: number }) => {
+    const kind = buttonType(button);
+    const form = kind && kind !== 'button' ? formOwner(button) : null;
+    if (!form) return;
+    if (kind === 'submit') submit(form, button, point);
+    else if (forms.reset(form)) {
+      setResets((n) => n + 1);
+      setDomRevision((n) => n + 1);
+    }
+  };
+  const buttons = useButtonPresses((button) => {
+    onControlChange?.(button, attr(button, 'value') ?? '');
+    activate(button);
+  });
 
   const look = React.useMemo(
     () => deriveLook(theme, props),
@@ -338,7 +429,7 @@ export function Html(props: HtmlProps): ReactElement {
     onDocument: handleDocument,
     onControls: handleControls,
     domRevision,
-    ref: props.ref as React.Ref<unknown>,
+    ref: viewRef as React.Ref<unknown>,
     // grown with the component, where an application grows it: the root's
     // background covers the whole of it, as a page's covers the window
     style: { alignSelf: 'stretch', flexGrow: 1 },
@@ -347,15 +438,21 @@ export function Html(props: HtmlProps): ReactElement {
   const children: ReactNode[] = [
     h(ELEMENT, { key: 'view', ...viewProps } as Record<string, unknown>),
   ];
+  const controlContext: ControlContext = {
+    look,
+    forms,
+    generation: resets,
+    idOf: widgetIds,
+    touch: () => setDomRevision((n) => n + 1),
+    onChange: onControlChange,
+    activate,
+    submitFrom: (field) => {
+      const plan = implicitSubmission(field);
+      if (plan) submit(plan.form, plan.submitter);
+    },
+  };
   for (const rect of controls) {
-    children.push(
-      renderControl(
-        rect,
-        look,
-        () => setDomRevision((n) => n + 1),
-        onControlChange,
-      ),
-    );
+    children.push(renderControl(rect, controlContext));
   }
 
   const rootStyle: Style = { flexDirection: 'column', position: 'relative' };
@@ -430,14 +527,16 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
 
 /**
  * A press and a release on the same `<button>` the document draws, reported
- * as a pressed widget reports one: `onControlChange` with the button and its
- * `value`. A `<button>` is laid out and drawn like any box (the UA sheet's
- * `button` rule) — its content is the page's, and most of the buttons on
- * the web are an icon or a pill of a page's own design — so it is the
- * element that finds out it was pressed, not a widget. A disabled one, or
- * a press that lands in a link inside one, is not a press of it.
+ * to `onPress`, which tells `onControlChange` with the button and its
+ * `value`, as a pressed widget does, and then does what the button does. A
+ * `<button>` is laid out and drawn like any box (the UA sheet's `button`
+ * rule) — its content is the page's, and most of the buttons on the web are
+ * an icon or a pill of a page's own design — so it is the element that finds
+ * out it was pressed, not a widget. A disabled one — by its own `disabled`
+ * or a fieldset's — or a press that lands in a link inside one, is not a
+ * press of it.
  */
-function useButtonPresses(onControlChange: HtmlProps['onControlChange']): {
+function useButtonPresses(onPress: (button: Element) => void): {
   onMouseDown: (ev: X11MouseEvent<DrawnNode>) => void;
   onMouseUp: (ev: X11MouseEvent<DrawnNode>) => void;
 } {
@@ -456,27 +555,44 @@ function useButtonPresses(onControlChange: HtmlProps['onControlChange']): {
       node = node.parent?.type === 'tag' ? (node.parent as Element) : null
     ) {
       if (tagOf(node) === 'a' && attr(node, 'href') !== undefined) return null;
-      if (tagOf(node) === 'button') {
-        return attr(node, 'disabled') === undefined ? node : null;
-      }
+      if (tagOf(node) === 'button') return isDisabled(node) ? null : node;
     }
     return null;
   };
   return {
     onMouseDown: (ev) => {
-      press.current = onControlChange && ev.button === 1 ? buttonAt(ev) : null;
+      press.current = ev.button === 1 ? buttonAt(ev) : null;
     },
     onMouseUp: (ev) => {
       const pressed = press.current;
       press.current = null;
-      if (!pressed || !onControlChange || ev.button !== 1) return;
+      if (!pressed || ev.button !== 1) return;
       if (buttonAt(ev) !== pressed) return;
-      onControlChange(pressed, attr(pressed, 'value') ?? '');
+      onPress(pressed);
     },
   };
 }
 
 // --- the widgets ------------------------------------------------------------
+
+/** What every mounted control shares: the look, the live state, and what
+ *  to do when one changes or is pressed. */
+interface ControlContext {
+  look: RootLook;
+  forms: FormState;
+  /** How many resets there have been — in every widget's key, so a reset
+   *  mounts each again with the value its markup has. */
+  generation: number;
+  /** The element's own number, for its widget's key. */
+  idOf: (el: Element) => number;
+  /** Restyle and lay out again: a change a selector can see. */
+  touch: () => void;
+  onChange: HtmlProps['onControlChange'];
+  /** A button was pressed: what it does to its form. */
+  activate: (button: Element) => void;
+  /** Enter in a text field: its form's implicit submission. */
+  submitFrom: (field: Element) => void;
+}
 
 /**
  * One form control, as a real widget at the rectangle layout reserved for it.
@@ -487,15 +603,11 @@ function useButtonPresses(onControlChange: HtmlProps['onControlChange']): {
  * same edit menu, and all of them join the window's focus order. The
  * alternative — drawing them in the paint pass — would be a picture of a form.
  */
-function renderControl(
-  rect: ControlRect,
-  look: RootLook,
-  touch: () => void,
-  onChange: HtmlProps['onControlChange'],
-): ReactNode {
+function renderControl(rect: ControlRect, ctx: ControlContext): ReactNode {
+  const { forms, touch } = ctx;
   const el = rect.element;
-  const key = `${rect.kind}:${rect.x},${rect.y}`;
-  const disabled = attr(el, 'disabled') !== undefined;
+  const key = `${rect.kind}:${ctx.idOf(el)}#${ctx.generation}`;
+  const disabled = isDisabled(el);
   const readOnly = attr(el, 'readonly') !== undefined;
   // a field whose box the document draws takes its content box
   const at = rect.bare ?? rect;
@@ -509,20 +621,19 @@ function renderControl(
     // drawn and still hit
     ...(rect.opacity !== undefined && { opacity: rect.opacity }),
   };
-  const field = rect.bare ? bareField(rect.bare) : fieldChrome(look);
+  const field = rect.bare ? bareField(rect.bare) : fieldChrome(ctx.look);
   const report = (value: string | boolean): void => {
-    onChange?.(el, value);
+    ctx.onChange?.(el, value);
     touch();
   };
-  // A text edit does NOT touch: the value lives in the widget and is echoed
-  // into the DOM attribute, and neither changes any box — while `touch()`
-  // would re-run the cascade and relayout the whole document *per
-  // keystroke*. This also matches HTML's own semantics: typing updates the
-  // value property, not the attribute selectors match against. The
-  // checkables keep the full touch, because `[checked]` is a selector
-  // documents really use.
+  // A text edit does NOT touch: the value lives in the widget and in
+  // `forms`, and neither changes any box — while `touch()` would re-run the
+  // cascade and relayout the whole document *per keystroke*. This also
+  // matches HTML's own semantics: typing updates the value, not the
+  // attribute selectors match against. The checkables keep the full touch,
+  // because `[checked]` and `:checked` are selectors documents really use.
   const reportText = (value: string): void => {
-    onChange?.(el, value);
+    ctx.onChange?.(el, value);
   };
 
   let widget: ReactNode;
@@ -536,6 +647,7 @@ function renderControl(
         style: { width: '100%', height: '100%' },
         onChange: (ev) => {
           const next = ev.value;
+          forms.remember(el);
           if (next) el.attribs.checked = '';
           else delete el.attribs.checked;
           report(next);
@@ -546,14 +658,20 @@ function renderControl(
       // Core's radio is a group member and HTML's is a free-standing input
       // that happens to share a `name`. Each one is therefore its own
       // one-member `RadioGroup`, and the exclusivity that makes it a group
-      // is done where HTML actually keeps it: in the DOM.
+      // is done where HTML actually keeps it: in the DOM, across the radios
+      // of its name in its form (`radioGroup`).
       const value = attr(el, 'value') ?? 'on';
       widget = h(
         RadioGroup,
         {
           value: attr(el, 'checked') !== undefined ? value : undefined,
           onChange: () => {
-            clearRadioGroup(el);
+            for (const other of radioGroup(el)) {
+              if (attr(other, 'checked') === undefined) continue;
+              forms.remember(other);
+              delete other.attribs.checked;
+            }
+            forms.remember(el);
             el.attribs.checked = '';
             report(value);
           },
@@ -567,7 +685,10 @@ function renderControl(
         label: buttonLabel(el),
         disabled,
         style: { width: '100%', height: '100%' },
-        onPress: () => report(attr(el, 'value') ?? ''),
+        onPress: () => {
+          report(attr(el, 'value') ?? '');
+          ctx.activate(el);
+        },
       });
       break;
     case 'select': {
@@ -579,6 +700,7 @@ function renderControl(
         style: { width: '100%', height: '100%' },
         onChange: (ev) => {
           const next = String(ev.value ?? '');
+          forms.remember(el);
           setSelectedOption(el, next);
           report(next);
         },
@@ -587,18 +709,23 @@ function renderControl(
     }
     case 'textarea':
       // Uncontrolled on purpose: the widget owns the live text the way a
-      // browser's does, and a re-render from any other cause remounts it
-      // with whatever was last echoed into the DOM.
+      // browser's does, and one mounted again — its element hidden and
+      // shown, a reset — starts from what `forms` kept of it.
       widget = hx('textarea', {
-        defaultValue: textareaValue(el),
+        defaultValue: forms.value(el),
         style: [field, { width: '100%', height: '100%' }],
-        onChange: readOnly ? undefined : (ev) => reportText(ev.value),
+        onChange: readOnly
+          ? undefined
+          : (ev) => {
+              forms.setTyped(el, ev.value);
+              reportText(ev.value);
+            },
       });
       break;
     case 'input': {
-      const type = (attr(el, 'type') ?? 'text').toLowerCase();
+      const type = inputType(el);
       widget = hx('textinput', {
-        defaultValue: attr(el, 'value') ?? '',
+        defaultValue: forms.value(el),
         placeholder: attr(el, 'placeholder'),
         // Core's word for a password field: nothing in it reaches a
         // selection, PRIMARY included.
@@ -607,9 +734,14 @@ function renderControl(
         onChange: readOnly
           ? undefined
           : (ev) => {
+              forms.setTyped(el, ev.value);
+              // echoed where it always was, for a handler that reads it
+              // back off the element
               el.attribs.value = ev.value;
               reportText(ev.value);
             },
+        // Enter submits the field's form, as it does in a browser
+        onSubmit: () => ctx.submitFrom(el),
       });
       break;
     }
@@ -661,47 +793,18 @@ function bareField(bare: BareField): Style {
   };
 }
 
-function clearRadioGroup(el: Element): void {
-  const name = attr(el, 'name');
-  if (!name) return;
-  let root: Element | null = el;
-  while (root?.parent && root.parent.type === 'tag')
-    root = root.parent as Element;
-  if (!root) return;
-  const walk = (node: Element): void => {
-    for (const child of node.children) {
-      if (child.type !== 'tag') continue;
-      const tag = child.name.toLowerCase();
-      if (
-        tag === 'input' &&
-        (child.attribs.type ?? '').toLowerCase() === 'radio' &&
-        child.attribs.name === name
-      ) {
-        delete child.attribs.checked;
-      }
-      walk(child);
-    }
-  };
-  walk(root);
-}
-
+/** Select the option of a drop-down `<select>` whose value is `value`, and
+ *  no other. */
 function setSelectedOption(el: Element, value: string): void {
-  const walk = (node: Element): void => {
-    for (const child of node.children) {
-      if (child.type !== 'tag') continue;
-      if (child.name.toLowerCase() === 'option') {
-        let label = '';
-        for (const kid of child.children) {
-          if (kid.type === 'text') label += kid.data;
-        }
-        const own = child.attribs.value ?? label.trim();
-        if (own === value) child.attribs.selected = '';
-        else delete child.attribs.selected;
-      }
-      walk(child);
+  let found = false;
+  for (const option of optionElements(el)) {
+    if (!found && optionValue(option) === value) {
+      option.attribs.selected = '';
+      found = true;
+    } else {
+      delete option.attribs.selected;
     }
-  };
-  walk(el);
+  }
 }
 
 declare module 'react-x11/jsx-runtime' {

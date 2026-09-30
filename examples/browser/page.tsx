@@ -45,6 +45,7 @@ import { Html, useHtmlHandle } from '../../src/html/index.js';
 import type {
   Document,
   Element,
+  FormSubmission,
   ResourceRequest,
   ResourceResult,
 } from '../../src/html/index.js';
@@ -53,7 +54,7 @@ import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
 import { Network, NetworkError, resourceResult, schemeOf } from './network.js';
-import type { DocumentResponse } from './network.js';
+import type { DocumentResponse, PostData } from './network.js';
 import {
   BLANK,
   HOME,
@@ -86,12 +87,22 @@ export interface PageProps {
   loadUrl: string;
   /** Past the cache: a reload with Shift. */
   loadFresh: boolean;
+  /** The form data to POST, where the navigation is a form's POST — or a
+   *  reload of the page one answered. */
+  loadPost: PostData | null;
   zoom: number;
   /** The documents the tab's history still holds, comma-separated. Any
    *  other is let go. */
   docs: string;
-  /** A navigation's document started to arrive: a history step for it. */
-  onCommit(seq: number, url: string, title: string | null): void;
+  /** A navigation's document started to arrive: a history step for it.
+   *  `posted` when it is the answer to a POST — not to the GET a redirect
+   *  after one turned it into — so a reload sends the POST again. */
+  onCommit(
+    seq: number,
+    url: string,
+    title: string | null,
+    posted: boolean,
+  ): void;
   /** …and all of it has. */
   onFinish(seq: number): void;
   /** A document's title or icon, as the page learns them; `undefined` is
@@ -101,7 +112,8 @@ export interface PageProps {
     title: string | null | undefined,
     icon: TabIcon | null | undefined,
   ): void;
-  onLink(url: string, target: LinkTarget): void;
+  /** A link followed, or a form submitted: with `post`, a POST of it. */
+  onLink(url: string, target: LinkTarget, post: PostData | null): void;
   /** The step shown has no document here — this process is newer than the
    *  step, after a crash — so it wants loading again. */
   onLost(entryId: number): void;
@@ -169,13 +181,18 @@ export default function Page(props: PageProps): ReactElement {
     const seq = loadSeq;
     const controller = new AbortController();
     void loadDocument(
-      { seq, url: props.loadUrl, fresh: props.loadFresh },
+      {
+        seq,
+        url: props.loadUrl,
+        fresh: props.loadFresh,
+        post: props.loadPost,
+      },
       cocoa,
       controller.signal,
       {
-        commit: (committed, first, title) => {
+        commit: (committed, first, title, posted) => {
           store(seq, first);
-          live.current.onCommit(seq, committed, title);
+          live.current.onCommit(seq, committed, title, posted);
         },
         progress: (next) => store(seq, next),
         finish: () => live.current.onFinish(seq),
@@ -309,7 +326,26 @@ export default function Page(props: PageProps): ReactElement {
         : target?.attribs.target === '_blank'
           ? 'tab'
           : 'here',
+      null,
     );
+  };
+
+  // A form is a link it writes itself: a GET is one to `submission.url`,
+  // which has the entries in its query, and a POST one with a body. Where
+  // it goes is decided as a link's is, `_blank` a new tab.
+  const onSubmit = (submission: FormSubmission) => {
+    const { url: action, method, body, contentType, target } = submission;
+    if (!/^(?:https?|file|data):/i.test(action)) {
+      setNotice(
+        `${schemeOf(action) || 'That'}: forms are not something this browser sends.`,
+      );
+      return;
+    }
+    const post: PostData | null =
+      method === 'post' && /^https?:/i.test(action)
+        ? { body: body ?? '', contentType: contentType ?? '', from: url }
+        : null;
+    live.current.onLink(action, target === '_blank' ? 'tab' : 'here', post);
   };
 
   useEffect(() => {
@@ -355,7 +391,7 @@ export default function Page(props: PageProps): ReactElement {
           // a middle click opens the link in a tab behind this one
           if (ev.button !== 2) return;
           const href = handle.hrefAt(ev.x, ev.y);
-          if (href) live.current.onLink(href, 'background');
+          if (href) live.current.onLink(href, 'background', null);
         }}
       >
         {page ? (
@@ -383,6 +419,7 @@ export default function Page(props: PageProps): ReactElement {
               onResource={onResource}
               onDocument={onDocument}
               onLink={onLink}
+              onSubmit={onSubmit}
               style={{ flexGrow: 1 }}
             />
           </box>
@@ -440,11 +477,13 @@ interface Navigation {
   seq: number;
   url: string;
   fresh: boolean;
+  post: PostData | null;
 }
 
 interface LoadCallbacks {
-  /** The document started to arrive, from `url` — where a redirect ended. */
-  commit(url: string, first: Doc, title: string | null): void;
+  /** The document started to arrive, from `url` — where a redirect ended —
+   *  and whether it answers a POST. */
+  commit(url: string, first: Doc, title: string | null, posted: boolean): void;
   progress(next: Doc): void;
   finish(): void;
 }
@@ -460,8 +499,13 @@ async function loadDocument(
   signal: AbortSignal,
   on: LoadCallbacks,
 ): Promise<void> {
-  const own = (source: string, title: string | null, url = nav.url) => {
-    on.commit(url, { source, partial: false, baseUrl: null }, title);
+  const own = (
+    source: string,
+    title: string | null,
+    url = nav.url,
+    posted = false,
+  ) => {
+    on.commit(url, { source, partial: false, baseUrl: null }, title, posted);
     on.finish();
   };
   if (nav.url === HOME) return own(homePage(cocoa), 'New Tab');
@@ -478,7 +522,7 @@ async function loadDocument(
 
   let response: DocumentResponse;
   try {
-    response = await network.document(target, signal);
+    response = await network.document(target, signal, nav.post);
   } catch (error) {
     if (signal.aborted) return;
     const { message, code } =
@@ -492,6 +536,7 @@ async function loadDocument(
   }
   if (signal.aborted) return;
 
+  const posted = !!nav.post && !response.redirected;
   const kind = viewSource ? 'text' : kindOf(response.type, response.url);
   if (kind !== 'html') {
     const bytes = await readAll(response.body, signal);
@@ -499,13 +544,18 @@ async function loadDocument(
     const url = viewSource ? `view-source:${response.url}` : response.url;
     if (kind === 'image') {
       network.seed({ ...response, bytes });
-      return own(imagePage(response.url), fileName(response.url), url);
+      return own(imagePage(response.url), fileName(response.url), url, posted);
     }
     if (kind === 'text') {
       const text = decode(bytes, response.charset ?? sniffCharset(bytes));
-      return own(textPage(url, text), viewSource ? url : fileName(url), url);
+      return own(
+        textPage(url, text),
+        viewSource ? url : fileName(url),
+        url,
+        posted,
+      );
     }
-    return own(unsupportedPage(response.url, response.type), null, url);
+    return own(unsupportedPage(response.url, response.type), null, url, posted);
   }
 
   // HTML: stream it. The encoding is the response's, or the one a `<meta>`
@@ -536,7 +586,7 @@ async function loadDocument(
     charset,
     baseUrl: response.url,
   };
-  on.commit(response.url, first, null);
+  on.commit(response.url, first, null, posted);
   let last = Date.now();
   let interval = STREAM_FIRST;
   while (!ended) {

@@ -22,6 +22,12 @@
 import type { Element } from 'domhandler';
 
 import { attr, tagOf } from './dom.js';
+import {
+  optionElements,
+  optionLabel,
+  optionValue,
+  selectedOptions,
+} from './form.js';
 import type { ComputedStyle } from './css/style.js';
 import { isTransparent } from './css/values.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
@@ -245,57 +251,17 @@ export function buttonLabel(el: Element): string {
 
 /** A `<select>`'s options, as the widget's item list. */
 export function optionsOf(el: Element): { value: string; label: string }[] {
-  const out: { value: string; label: string }[] = [];
-  const walk = (node: Element): void => {
-    for (const child of node.children) {
-      if (child.type !== 'tag') continue;
-      const tag = tagOf(child);
-      if (tag === 'option') {
-        let label = '';
-        for (const kid of child.children) {
-          if (kid.type === 'text') label += kid.data;
-        }
-        const trimmed = label.trim();
-        out.push({ value: attr(child, 'value') ?? trimmed, label: trimmed });
-      } else if (tag === 'optgroup') {
-        walk(child);
-      }
-    }
-  };
-  walk(el);
-  return out;
+  return optionElements(el).map((option) => ({
+    value: optionValue(option),
+    label: optionLabel(option),
+  }));
 }
 
-/** Which option a `<select>` starts on: `selected`, else the first. */
+/** Which option a `<select>` shows: the one it has selected, which is the
+ *  first where none is marked (`selectedOptions`). */
 export function selectedOption(el: Element): string | null {
-  const options = optionsOf(el);
-  const walk = (node: Element): string | null => {
-    for (const child of node.children) {
-      if (child.type !== 'tag') continue;
-      if (tagOf(child) === 'option' && attr(child, 'selected') !== undefined) {
-        let label = '';
-        for (const kid of child.children) {
-          if (kid.type === 'text') label += kid.data;
-        }
-        return attr(child, 'value') ?? label.trim();
-      }
-      const nested = walk(child);
-      if (nested !== null) return nested;
-    }
-    return null;
-  };
-  return walk(el) ?? options[0]?.value ?? null;
-}
-
-/** A `<textarea>`'s initial text — its content, not an attribute. */
-export function textareaValue(el: Element): string {
-  let text = '';
-  for (const child of el.children) {
-    if (child.type === 'text') text += child.data;
-  }
-  // HTML drops one leading newline after the open tag, which is why a
-  // pretty-printed `<textarea>` does not start with a blank line.
-  return text.replace(/^\r?\n/, '');
+  const [option] = selectedOptions(el);
+  return option ? optionValue(option) : null;
 }
 
 function numberAttr(el: Element, name: string): number | null {
