@@ -640,6 +640,214 @@ export function implicitSubmission(
   return fields > 1 ? null : { form, submitter: null };
 }
 
+// --- labels ------------------------------------------------------------------------
+
+/** Whether an element can be what a `<label>` labels (HTML 4.10.2). */
+function labelable(el: Element): boolean {
+  const tag = tagOf(el);
+  if (tag === 'input') return inputType(el) !== 'hidden';
+  return (
+    tag === 'button' ||
+    tag === 'select' ||
+    tag === 'textarea' ||
+    tag === 'meter' ||
+    tag === 'output' ||
+    tag === 'progress'
+  );
+}
+
+/**
+ * The control a `<label>` is for (HTML 4.10.4): the one its `for` names by
+ * id, where that is one a label can label, or else the first such control
+ * inside it. A press on the label is a press on that control.
+ */
+export function labeledControl(label: Element): Element | null {
+  const id = attr(label, 'for');
+  if (id !== undefined) {
+    const named = elementById(rootOf(label), id);
+    return named && labelable(named) ? named : null;
+  }
+  for (const el of elementsIn(label)) if (labelable(el)) return el;
+  return null;
+}
+
+// --- constraint validation ----------------------------------------------------------
+
+/** HTML's valid email address (4.10.5.1.5), as the spec writes it. */
+const EMAIL =
+  /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+
+/** The kinds of field `pattern`, `minlength` and `maxlength` apply to. */
+const TEXTUAL = new Set(['text', 'search', 'url', 'tel', 'email', 'password']);
+
+interface UrlCtor {
+  new (url: string): unknown;
+}
+
+function absoluteUrl(text: string): boolean {
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text)) return false;
+  const URLClass = (globalThis as { URL?: UrlCtor }).URL;
+  if (!URLClass) return true;
+  try {
+    new URLClass(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A `pattern` as HTML compiles it: the whole value, in `v` mode — or `u`
+ *  where the runtime has no `v` — and no constraint at all where it does
+ *  not compile. */
+function patternOf(source: string): RegExp | null {
+  for (const flags of ['v', 'u']) {
+    try {
+      return new RegExp(`^(?:${source})$`, flags);
+    } catch {
+      // try the next, then give up
+    }
+  }
+  return null;
+}
+
+/** Whether a control's value is checked at all (HTML 4.10.21.2, "barred
+ *  from constraint validation"). */
+function validated(el: Element): boolean {
+  if (isDisabled(el) || inert(el)) return false;
+  const tag = tagOf(el);
+  if (tag === 'input') {
+    const type = inputType(el);
+    if (type === 'hidden' || type === 'reset' || type === 'button') {
+      return false;
+    }
+    if (buttonType(el) === 'submit') return false;
+    return attr(el, 'readonly') === undefined;
+  }
+  if (tag === 'textarea') return attr(el, 'readonly') === undefined;
+  return tag === 'select';
+}
+
+/**
+ * What is wrong with a control's value, in the words a browser uses, or
+ * null where nothing is: the constraints a static document can state —
+ * `required`, `minlength` and `maxlength`, `pattern`, `min` and `max`, and
+ * an email, a URL or a number that is not one (HTML 4.10.20). A length is
+ * checked only once the value has been typed, as HTML checks it; a
+ * document's own value is the author's to get right.
+ */
+export function validationMessage(
+  el: Element,
+  live?: (el: Element) => string | undefined,
+): string | null {
+  if (!validated(el)) return null;
+  const tag = tagOf(el);
+  const required = attr(el, 'required') !== undefined;
+  if (tag === 'select') {
+    if (!required) return null;
+    const selected = selectedOptions(el);
+    const placeholder =
+      !isMultiple(el) &&
+      selected.length === 1 &&
+      selected[0] === optionElements(el)[0] &&
+      selected[0].parent === el &&
+      optionValue(selected[0]) === '';
+    return !selected.length || placeholder
+      ? 'Please select an item in the list.'
+      : null;
+  }
+  const type = tag === 'input' ? inputType(el) : 'textarea';
+  if (type === 'checkbox') {
+    return required && attr(el, 'checked') === undefined
+      ? 'Please check this box if you want to proceed.'
+      : null;
+  }
+  if (type === 'radio') {
+    const group = [el, ...radioGroup(el)];
+    if (!group.some((r) => attr(r, 'required') !== undefined)) return null;
+    return group.some((r) => attr(r, 'checked') !== undefined)
+      ? null
+      : 'Please select one of these options.';
+  }
+  if (type === 'file') return required ? 'Please select a file.' : null;
+  if (type === 'range' || type === 'color') return null;
+
+  const typed = live?.(el);
+  const value = controlValue(el, live);
+  if (type === 'number' && typed !== undefined && typed.trim() && !value) {
+    return 'Please enter a number.';
+  }
+  if (!value) return required ? 'Please fill out this field.' : null;
+
+  if (typed !== undefined && (type === 'textarea' || TEXTUAL.has(type))) {
+    const length = value.length;
+    const min = Number(attr(el, 'minlength'));
+    if (min > 0 && length < min) {
+      return `Please lengthen this text to ${min} characters or more (you are currently using ${length} characters).`;
+    }
+    const max = attr(el, 'maxlength');
+    if (max !== undefined && /^\d+$/.test(max.trim()) && length > Number(max)) {
+      return `Please shorten this text to ${Number(max)} characters or less (you are currently using ${length} characters).`;
+    }
+  }
+  if (type === 'email') {
+    const addresses =
+      attr(el, 'multiple') !== undefined
+        ? value.split(',').map((a) => a.trim())
+        : [value];
+    if (!addresses.every((a) => EMAIL.test(a))) {
+      return 'Please enter an email address.';
+    }
+  }
+  if (type === 'url' && !absoluteUrl(value)) return 'Please enter a URL.';
+  const pattern = attr(el, 'pattern');
+  if (pattern !== undefined && TEXTUAL.has(type)) {
+    const re = patternOf(pattern);
+    const values =
+      type === 'email' && attr(el, 'multiple') !== undefined
+        ? value.split(',').map((a) => a.trim())
+        : [value];
+    if (re && !values.every((v) => re.test(v))) {
+      const title = attr(el, 'title');
+      return title
+        ? `Please match the requested format:\n${title}`
+        : 'Please match the requested format.';
+    }
+  }
+  if (type === 'number') {
+    const n = Number(value);
+    const min = attr(el, 'min');
+    if (min !== undefined && FLOAT.test(min.trim()) && n < Number(min)) {
+      return `Value must be greater than or equal to ${min.trim()}.`;
+    }
+    const max = attr(el, 'max');
+    if (max !== undefined && FLOAT.test(max.trim()) && n > Number(max)) {
+      return `Value must be less than or equal to ${max.trim()}.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * The first control a submission would be refused over, and why — HTML's
+ * interactive validation (4.10.21.3), which a form's `novalidate` or its
+ * submitter's `formnovalidate` turns off. Null where the form may go.
+ */
+export function firstInvalid(
+  form: Element,
+  submitter: Element | null,
+  live?: (el: Element) => string | undefined,
+): { element: Element; message: string } | null {
+  if (attr(form, 'novalidate') !== undefined) return null;
+  if (submitter && attr(submitter, 'formnovalidate') !== undefined) {
+    return null;
+  }
+  for (const el of controlsOf(form)) {
+    const message = validationMessage(el, live);
+    if (message) return { element: el, message };
+  }
+  return null;
+}
+
 // --- the live state ----------------------------------------------------------------
 
 /** What a control's attributes were before anything was typed or chosen. */

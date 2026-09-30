@@ -241,9 +241,11 @@ export function buttonLabel(el: Element): string {
     const trimmed = text.trim();
     if (trimmed) return trimmed;
   }
+  const type = (attr(el, 'type') ?? '').trim().toLowerCase();
+  // an image button with no image yet says what the image would have
+  if (type === 'image') return attr(el, 'alt') || attr(el, 'value') || 'Submit';
   const value = attr(el, 'value');
   if (value) return value;
-  const type = (attr(el, 'type') ?? '').toLowerCase();
   if (type === 'submit') return 'Submit';
   if (type === 'reset') return 'Reset';
   return attr(el, 'alt') ?? 'Button';

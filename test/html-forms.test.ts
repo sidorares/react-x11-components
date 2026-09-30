@@ -23,9 +23,12 @@ import { HtmlSource } from '../src/html/dom.js';
 import type { Element } from '../src/html/dom.js';
 import {
   FormState,
+  firstInvalid,
   formSubmission,
   implicitSubmission,
+  labeledControl,
   radioGroup,
+  validationMessage,
 } from '../src/html/form.js';
 
 const h = React.createElement;
@@ -405,6 +408,93 @@ test("a radio's group is its name in its form, or in no form", () => {
   assert.deepStrictEqual(radioGroup(byId('d')), [byId('e')]);
 });
 
+// --- labels and validation --------------------------------------------------------
+
+test('a label is for the control its `for` names, or else the first inside it', () => {
+  const byId = parse(
+    '<label id="l1" for="t">Name</label><input id="t">' +
+      '<label id="l2">Agree <input id="c" type="checkbox"></label>' +
+      '<label id="l3" for="h">Hidden</label><input id="h" type="hidden">' +
+      '<label id="l4" for="p">Para</label><p id="p">x</p>' +
+      '<label id="l5">Nothing</label>' +
+      '<label id="l6" for="t"><input id="inner"></label>',
+  );
+  assert.strictEqual(labeledControl(byId('l1')), byId('t'));
+  assert.strictEqual(labeledControl(byId('l2')), byId('c'));
+  assert.strictEqual(labeledControl(byId('l3')), null, 'a hidden input');
+  assert.strictEqual(labeledControl(byId('l4')), null, 'not a control');
+  assert.strictEqual(labeledControl(byId('l5')), null);
+  assert.strictEqual(labeledControl(byId('l6')), byId('t'), '`for` wins');
+});
+
+test("the constraints a document states, in a browser's words", () => {
+  const byId = parse(
+    '<form id="f">' +
+      '<input id="req" required>' +
+      '<input id="ok" required value="x">' +
+      '<input id="ro" required readonly>' +
+      '<input id="off" required disabled>' +
+      '<input id="box" type="checkbox" required>' +
+      '<input id="r1" type="radio" name="g" required><input id="r2" type="radio" name="g">' +
+      '<select id="sel" required><option value="">Choose</option><option>A</option></select>' +
+      '<select id="sel2" required><option value="">Choose</option><option selected>A</option></select>' +
+      '<input id="mail" type="email" value="not an address">' +
+      '<input id="mails" type="email" multiple value="a@b.c, d@e.f">' +
+      '<input id="url" type="url" value="example.com">' +
+      '<input id="pat" pattern="[0-9]{3}" title="Three digits" value="12">' +
+      '<input id="num" type="number" min="1" max="10" value="11">' +
+      '<input id="short" minlength="4">' +
+      '<textarea id="area" required></textarea>' +
+      '</form>',
+  );
+  const typed = new Map<Element, string>([[byId('short'), 'abc']]);
+  const live = (el: Element) => typed.get(el);
+  const message = (id: string) => validationMessage(byId(id), live);
+  assert.strictEqual(message('req'), 'Please fill out this field.');
+  assert.strictEqual(message('ok'), null);
+  assert.strictEqual(message('ro'), null, 'readonly is not validated');
+  assert.strictEqual(message('off'), null, 'nor is disabled');
+  assert.strictEqual(
+    message('box'),
+    'Please check this box if you want to proceed.',
+  );
+  assert.strictEqual(message('r1'), 'Please select one of these options.');
+  assert.strictEqual(message('r2'), 'Please select one of these options.');
+  assert.strictEqual(message('sel'), 'Please select an item in the list.');
+  assert.strictEqual(message('sel2'), null);
+  assert.strictEqual(message('mail'), 'Please enter an email address.');
+  assert.strictEqual(message('mails'), null);
+  assert.strictEqual(message('url'), 'Please enter a URL.');
+  assert.strictEqual(
+    message('pat'),
+    'Please match the requested format:\nThree digits',
+  );
+  assert.strictEqual(message('num'), 'Value must be less than or equal to 10.');
+  assert.strictEqual(
+    message('short'),
+    'Please lengthen this text to 4 characters or more (you are currently using 3 characters).',
+  );
+  assert.strictEqual(message('area'), 'Please fill out this field.');
+
+  assert.strictEqual(firstInvalid(byId('f'), null, live)?.element, byId('req'));
+  typed.set(byId('req'), 'filled');
+  byId('box').attribs.checked = '';
+  byId('r2').attribs.checked = '';
+  assert.strictEqual(message('r1'), null, 'one of the group is checked');
+  assert.strictEqual(firstInvalid(byId('f'), null, live)?.element, byId('sel'));
+});
+
+test('novalidate and formnovalidate let an invalid form go', () => {
+  const byId = parse(
+    '<form id="f" novalidate><input required></form>' +
+      '<form id="g"><input required><button id="b" formnovalidate>x</button>' +
+      '<button id="c">y</button></form>',
+  );
+  assert.strictEqual(firstInvalid(byId('f'), null), null);
+  assert.strictEqual(firstInvalid(byId('g'), byId('b')), null);
+  assert.ok(firstInvalid(byId('g'), byId('c')));
+});
+
 // --- the widgets -----------------------------------------------------------------
 
 const FONT_CANDIDATES: Array<[string, string]> = [
@@ -626,3 +716,189 @@ metric('without onSubmit, submitting does nothing', async () => {
   await userEvent.key(XK_RETURN, { target: field });
   await userEvent.click(screen.getByRole('button') as DrawnNode);
 });
+
+/** A press, and its release, on an element the document draws. */
+async function pressOn(
+  doc: HtmlViewNode,
+  id: string,
+  at?: { x: number; y: number },
+) {
+  const target = doc as unknown as DrawnNode;
+  const el = (function find(nodes: unknown[]): Element | null {
+    for (const node of nodes as Element[]) {
+      if (node.type !== 'tag') continue;
+      if (node.attribs.id === id) return node;
+      const inner = find(node.children);
+      if (inner) return inner;
+    }
+    return null;
+  })(doc.document!.children)!;
+  const rect = doc.elementRect(el)!;
+  const x = rect.x + (at ? at.x : rect.width / 2);
+  const y = rect.y + (at ? at.y : rect.height / 2);
+  const dx = x - target.abs.width / 2;
+  const dy = y - target.abs.height / 2;
+  await act(async () => {
+    fireEvent.mouseDown(target, { dx, dy });
+    fireEvent.mouseUp(target, { dx, dy });
+  });
+}
+
+metric(
+  'a required field that is empty stops the submission, and says why',
+  async () => {
+    const { submitted } = await renderForm(
+      '<form method="post"><input name="q" required>' +
+        '<input type="submit" value="Go"></form>',
+    );
+    await userEvent.click(screen.getByRole('button') as DrawnNode);
+    assert.strictEqual(submitted.length, 0, 'nothing is sent');
+    const field = screen.getByRole('textbox') as DrawnNode;
+    assert.ok(field.focused, 'the field that stopped it has the focus');
+    assert.ok(
+      screen.queryByText('Please fill out this field.'),
+      'and the reason is shown',
+    );
+    await userEvent.type(field, 'x', { skipClick: true });
+    assert.ok(
+      !screen.queryByText('Please fill out this field.'),
+      'typing into it lets the message go',
+    );
+    await userEvent.key(XK_RETURN, { target: field });
+    assert.deepStrictEqual(
+      submitted.map((s) => s.body),
+      ['q=x'],
+    );
+  },
+);
+
+metric('a press on a label is one on its control', async () => {
+  const { submitted, doc } = await renderForm(
+    '<form method="post">' +
+      '<label id="agree"><input type="checkbox" name="agree"> I agree</label>' +
+      '<label id="for-name" for="name">Name</label> <input id="name" name="n">' +
+      '<label id="for-b">A</label>' +
+      '<input type="radio" name="r" value="a" id="ra">' +
+      '<label id="for-rb" for="rb">B</label>' +
+      '<input type="radio" name="r" value="b" id="rb" checked>' +
+      '<label id="send">Send <input type="submit" value="Go"></label>' +
+      '</form>',
+  );
+  await pressOn(doc, 'agree', { x: 40, y: 5 });
+  const box = screen.getByRole('checkbox') as unknown as { checked: boolean };
+  const field = screen.getByRole('textbox') as DrawnNode;
+  assert.ok(!field.focused);
+  await pressOn(doc, 'for-name');
+  assert.ok(field.focused, 'the field is focused');
+  await pressOn(doc, 'for-b');
+  await pressOn(doc, 'send', { x: 5, y: 8 });
+  assert.strictEqual(submitted.length, 1, 'the button in it was pressed');
+  assert.strictEqual(submitted[0].body, 'agree=on&n=&r=b');
+  void box;
+});
+
+const RED_PNG = new Uint8Array(
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAIUlEQVR4AX3BAQEAAAiDMKR/' +
+      '59uA7UaRJEmSJEmSJEmS9EEsAROhAw00AAAAAElFTkSuQmCC',
+    'base64',
+  ),
+);
+
+metric('an image button submits the point it was pressed at', async () => {
+  const { submitted, doc } = await renderForm(
+    '<form><input name="q" value="x">' +
+      '<input id="map" type="image" name="map" src="m.png" alt="Map" width="40" height="20">' +
+      '</form>',
+    {
+      onResource: (r: { kind: string }) =>
+        r.kind === 'image' ? { kind: 'image' as const, bytes: RED_PNG } : null,
+    },
+  );
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  assert.strictEqual(
+    screen.queryAllByRole('button').length,
+    0,
+    'no widget: it is drawn',
+  );
+  await pressOn(doc, 'map', { x: 12, y: 7 });
+  assert.strictEqual(submitted.length, 1);
+  const [q, x, y] = submitted[0].entries;
+  assert.deepStrictEqual(q, ['q', 'x']);
+  assert.deepStrictEqual([x[0], y[0]], ['map.x', 'map.y']);
+  // the harness puts the pointer at a node's centre plus an offset, which
+  // rounds to the pixel
+  assert.ok(Math.abs(Number(x[1]) - 12) <= 1, `x ${x[1]}`);
+  assert.ok(Math.abs(Number(y[1]) - 7) <= 1, `y ${y[1]}`);
+});
+
+metric(
+  'an image button with no image is a button saying what it is for',
+  async () => {
+    const { submitted } = await renderForm(
+      '<form><input type="image" name="go" src="m.png" alt="Search"></form>',
+    );
+    const button = screen.getByRole('button') as DrawnNode;
+    assert.ok(screen.queryByText('Search'), 'labelled with its alt');
+    await userEvent.click(button);
+    assert.deepStrictEqual(
+      submitted.map((s) => s.url),
+      ['https://lite.example.test/lite/?go.x=0&go.y=0'],
+    );
+  },
+);
+
+metric(
+  'autofocus takes the focus, where nothing else in the window has it',
+  async () => {
+    await renderForm(
+      DDG.replace('<input class="query"', '<input autofocus class="query"'),
+    );
+    await act();
+    assert.ok((screen.getByRole('textbox') as DrawnNode).focused, 'focused');
+    cleanup();
+    // a field of the application's own, focused first, keeps it
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 500, flexDirection: 'column' } },
+        // focused as it mounts, before the page's controls are laid out
+        h('textinput', {
+          'data-testname': 'own',
+          ref: (node: DrawnNode | null) => void node?.focus(),
+        } as never),
+        h(Html, {
+          source: DDG.replace(
+            '<input class="query"',
+            '<input autofocus class="query"',
+          ),
+          partial: false,
+        }),
+      ),
+      { width: 540, height: 300, fonts: FONTS! },
+    );
+    await act();
+    const own = screen.getByTestName('own') as DrawnNode;
+    const [, page] = screen.getAllByRole('textbox') as DrawnNode[];
+    assert.ok(own.focused, "the application's field keeps the focus");
+    assert.ok(!page.focused);
+  },
+);
+
+metric(
+  'maxlength holds a field to its length as it is typed into',
+  async () => {
+    const { submitted } = await renderForm(
+      '<form method="post"><input name="q" maxlength="3"></form>',
+    );
+    const field = screen.getByRole('textbox') as DrawnNode;
+    await userEvent.type(field, 'abcdef');
+    await userEvent.key(XK_RETURN, { target: field });
+    assert.deepStrictEqual(
+      submitted.map((s) => s.body),
+      ['q=abc'],
+    );
+  },
+);
