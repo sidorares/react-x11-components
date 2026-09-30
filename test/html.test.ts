@@ -5552,48 +5552,118 @@ metric('Ctrl+A selects the whole document, across every block', async () => {
   void result;
 });
 
-metric('a click on a link reports its href; a drag does not', async () => {
-  const clicks: string[] = [];
-  const result = await renderX11(
-    h(
-      'box',
-      { style: { width: 400, flexDirection: 'column' } },
-      h(Html, {
-        source: '<p><a href="https://example.test/x">a link here</a></p>',
-        partial: false,
-        onLink: (href: string) => clicks.push(href),
-        'data-testname': 'doc',
-      }),
-    ),
-    { width: 440, height: 200, fonts: FONTS! },
-  );
-  const node = screen.getByTestName('doc') as DrawnNode;
-  const el = view(node);
-  const caret = el.textCaretRect(2);
-  assert.ok(caret, 'the link text is laid out');
-  const x = caret.x + 1;
-  const y = caret.y + caret.height / 2;
-  assert.strictEqual(el.hrefAtPoint(x, y), 'https://example.test/x');
+metric('a click on a link reports its href; a drag does not', async (t) => {
+  // Twice: in a document that selects, where a drag leaves a selection behind
+  // as well as having travelled, and in one that selects nothing, where how
+  // far the pointer went is all that tells the two apart.
+  for (const selectable of [true, false]) {
+    const clicks: string[] = [];
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source: '<p><a href="https://example.test/x">a link here</a></p>',
+          partial: false,
+          selectable,
+          onLink: (href: string) => clicks.push(href),
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 200, fonts: FONTS! },
+    );
+    const node = screen.getByTestName('doc') as DrawnNode;
+    const el = view(node);
 
-  // The press lands on the element, which is what a real pointer hits and
-  // what `useLinkClicks` reads `hrefAtPoint` from. The harness places a
-  // pointer by offset from the node's centre.
-  const target = el as unknown as DrawnNode;
-  const dx = x - (target.abs.x + target.abs.width / 2);
-  const dy = y - (target.abs.y + target.abs.height / 2);
-  await act(async () => {
-    fireEvent.mouseDown(target, { dx, dy });
-    fireEvent.mouseUp(target, { dx, dy });
-  });
-  assert.deepStrictEqual(clicks, ['https://example.test/x']);
+    // The press lands on the element, which is what a real pointer hits and
+    // what `useLinkClicks` reads `hrefAtPoint` from. The harness places a
+    // pointer by offset from the node's centre.
+    const target = el as unknown as DrawnNode;
+    const at = (index: number) => {
+      const caret = el.textCaretRect(index);
+      assert.ok(caret, 'the link text is laid out');
+      const x = caret.x + 1;
+      const y = caret.y + caret.height / 2;
+      assert.strictEqual(el.hrefAtPoint(x, y), 'https://example.test/x');
+      return {
+        dx: x - (target.abs.x + target.abs.width / 2),
+        dy: y - (target.abs.y + target.abs.height / 2),
+      };
+    };
 
-  // A press that travelled is a selection gesture, not a click.
-  await act(async () => {
-    fireEvent.mouseDown(target, { dx, dy });
-    fireEvent.mouseUp(target, { dx: dx + 60, dy });
-  });
-  assert.strictEqual(clicks.length, 1, 'the drag did not follow the link');
-  void result;
+    const click = at(2);
+    await act(async () => {
+      fireEvent.mouseDown(target, click);
+      fireEvent.mouseUp(target, click);
+    });
+    assert.deepStrictEqual(clicks, ['https://example.test/x']);
+
+    // A press that travelled is a selection gesture, not a click — and two
+    // things about the harness decide whether this one travels. `mouseUp`
+    // takes no offset: it releases wherever the pointer is, so the pointer
+    // is moved first. And a second press within core's double-click
+    // distance of the first (4px, with no settings daemon on the harness's
+    // server) is a double click for 400ms of the wall clock, which selects
+    // a word on the press. Written as a press and a release at one spot,
+    // that word was all that kept this gesture from being a click, until a
+    // runner slow enough to spend 400ms between the two presses followed
+    // the link. So it presses farther away, and moves.
+    const drag = at(7);
+    assert.ok(
+      Math.abs(drag.dx - click.dx) > 4,
+      `the second press is not a double click: ${drag.dx - click.dx}px away`,
+    );
+    await act(async () => {
+      fireEvent.mouseDown(target, drag);
+    });
+    fireEvent.mouseMove(target, { dx: drag.dx + 60, dy: drag.dy });
+    await act();
+    if (selectable) {
+      await waitFor(() =>
+        assert.strictEqual(
+          node.selectedText(),
+          'here',
+          'the drag selected what it crossed',
+        ),
+      );
+    }
+    await act(async () => {
+      fireEvent.mouseUp(target);
+    });
+    if (!selectable) {
+      assert.strictEqual(
+        node.selectedText(),
+        '',
+        'nothing was selected: the travel alone tells it from a click',
+      );
+    }
+    assert.strictEqual(clicks.length, 1, 'the drag did not follow the link');
+
+    if (selectable) {
+      // A press that did not travel is not a click either when it selected
+      // something, which is the check the travel cannot stand in for: a
+      // double click's second press takes the word under it, so its first
+      // press follows the link and its second does not. Core counts the
+      // presses by `Date.now()`, so the time is held for the pair.
+      const now = Date.now();
+      const held = t.mock.method(Date, 'now', () => now);
+      await act(async () => {
+        fireEvent.doubleClick(target, click);
+      });
+      held.mock.restore();
+      assert.strictEqual(
+        node.selectedText(),
+        'link',
+        'the second press took the word',
+      );
+      assert.strictEqual(
+        clicks.length,
+        2,
+        'the first press followed the link and the second did not',
+      );
+    }
+    await result.unmount();
+  }
 });
 
 metric(
