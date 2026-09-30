@@ -569,11 +569,15 @@ out by less than itself where the radius is small beside it and the box
 is not already round, as browsers do, so a ring keeps a card's corners
 nearly square and a circle's round. An outer shadow is not
 drawn under its box, which a box's own opaque colour usually sees to and
-a cut sees to where it does not. A blurred shadow is drawn once for its
-size, corners, blur and colour on a surface of its own and composited
-after, so thirty cards with one shadow blur it once; it is ntk's canvas
-shadow on X11, which is a blur on every fill of a path otherwise, and
-CoreGraphics' on macOS.
+a cut sees to where it does not. A blurred shadow is the 2d context's
+own, cast by the box's rounded rect — an inset one by a rect less that
+shape, filled evenodd — and react-x11's contexts draw those from a tile
+they make once for the corners, the blur and the colour, and stretch along
+the straight edges, on X11, macOS and Windows alike. So thirty cards with
+one shadow blur it once, and a strip a scroll exposes across a shadow a
+hundred pixels wide draws a strip of it, where a surface kept for the part
+of the shadow a paint reached was made again for every strip, which at 2x
+was most of each frame on a page with one in view.
 
 **Border images:** `border-image` and its longhands, over an image, an
 SVG drawing or a `linear-gradient()`: the image cut into nine by its

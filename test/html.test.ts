@@ -2503,9 +2503,16 @@ async function fillsOf(
     rect(x: number, y: number, w: number, h: number) {
       path = { x, y, w, h, radii: null };
     },
-    roundRect(x: number, y: number, w: number, h: number, radii: number[]) {
-      if (path) inner = { x, y, w, h, radii };
-      else path = { x, y, w, h, radii };
+    roundRect(
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      radii: (number | { x: number; y: number })[],
+    ) {
+      const r = radii as number[];
+      if (path) inner = { x, y, w, h, radii: r };
+      else path = { x, y, w, h, radii: r };
     },
     fill(rule?: string) {
       if (curves) {
@@ -13468,9 +13475,13 @@ test("a shadow's reach is ink: a repaint beside the box reaches it", async () =>
   );
 });
 
-test('a blurred shadow is drawn once for its geometry and composited after', async () => {
-  // ntk blurs a path's shadow afresh on every fill, which put 500ms on a
-  // repaint of thirty cards: the same shadow on three cards is one key
+test('a blurred shadow is a shadowed fill of a shape the context draws from a tile', async () => {
+  // <Html> baked each shadow on a surface of its own, keyed on the part of
+  // it a paint reached: every strip a scroll exposed across a shadow baked
+  // a new one, which on a 2x display was most of each frame. The context
+  // now draws a rect's or a rounded rect's shadow from a tile it keeps
+  // (react-x11, ntk/shadow-tiles), and asks only that the shape be one it
+  // knows: a rect, a roundRect, or a rect less a roundRect filled evenodd.
   const card =
     '<div style="width:100px;height:40px;margin:10px;background:#fff;' +
     'border-radius:8px;box-shadow:0 4px 6px -1px rgb(0 0 0 / 0.1)"></div>';
@@ -13478,7 +13489,9 @@ test('a blurred shadow is drawn once for its geometry and composited after', asy
     '<style>body{margin:0}</style>' +
       card.repeat(3) +
       '<div style="width:100px;height:40px;margin:10px;' +
-      'box-shadow:0 4px 6px -1px rgb(0 0 0 / 0.1)"></div>',
+      'box-shadow:0 4px 6px -1px rgb(0 0 0 / 0.1)"></div>' +
+      '<div style="width:100px;height:40px;margin:10px;border-radius:6px;' +
+      'border-top-left-radius:20px 10px;box-shadow:inset 0 0 12px #f00"></div>',
   );
   const keys: string[] = [];
   const ops: PaintOp[] = [];
@@ -13488,20 +13501,36 @@ test('a blurred shadow is drawn once for its geometry and composited after', asy
       return {};
     },
   });
-  assert.strictEqual(keys.length, 4);
-  assert.strictEqual(new Set(keys.slice(0, 3)).size, 1, 'one for the cards');
-  // the box with no background has its own, the box cut out of it
-  assert.notStrictEqual(keys[3], keys[0]);
-  const images = ops.filter((op) => op.op === 'image');
-  assert.deepStrictEqual(
-    images.map((op) => (op.op === 'image' ? op.y : 0)),
-    // the cards 50px apart, their margins collapsed; each image 4px down
-    // and a pixel in with its shape, and the blur and one more around it
-    [10, 60, 110, 160].map((y) => y + 4 + 1 - 10),
-    'each at its card',
+  assert.deepStrictEqual(keys, [], 'nothing baked of its own');
+  const shadows = ops.filter(
+    (op): op is { op: 'fill' } & Fill => op.op === 'fill' && !!op.shadow,
   );
-  // and no blur was drawn in the window
-  assert.ok(!ops.some((op) => op.op === 'clip'));
+  assert.strictEqual(shadows.length, 5, 'one fill a shadow');
+  // each card's: its rounded rect less the spread, 4px down, thrown back
+  // from clear of the window by the shadow's offset
+  for (const [i, y] of [10, 60, 110].entries()) {
+    const s = shadows[i];
+    assert.deepStrictEqual(
+      [s.x + s.shadow!.x, s.y, s.w, s.h, s.radii],
+      [11, y + 5, 98, 38, [7, 7, 7, 7]],
+      `card ${i}`,
+    );
+    assert.ok(s.x + s.w < 0, 'the shape itself is off the window');
+  }
+  // the box that shows what is behind it is a plain rect, clipped out of it
+  assert.strictEqual(shadows[3].radii, null);
+  const at = ops.indexOf(shadows[3]);
+  assert.ok(
+    ops.slice(0, at).some((op) => op.op === 'clip'),
+    'a clip around the fourth',
+  );
+  // the inset one: a frame, a rect less a rounded rect filled evenodd, its
+  // hole the padding box with the box's corners — the elliptical one as a
+  // point, the circular ones as the numbers they always were
+  const inset = shadows[4];
+  assert.strictEqual(inset.rule, 'evenodd');
+  assert.deepStrictEqual(inset.inner!.radii, [{ x: 20, y: 10 }, 6, 6, 6]);
+  assert.strictEqual(inset.shadow!.blur, 12);
 });
 
 test('the shadow cache keeps a surface per key, the oldest given up first', async () => {

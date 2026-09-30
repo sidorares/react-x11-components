@@ -164,6 +164,7 @@
     "docs": "npm --prefix website start",
     "docs:build": "npm --prefix website run build",
     "bench:zengarden": "node --import tsx scripts/zengarden/run.ts",
+    "bench:zengarden:scroll": "node --import tsx scripts/zengarden/scroll.tsx",
     "examples:browser": "node --import tsx examples/browser/browser.tsx",
     "examples:calendar": "node --import tsx examples/calendar.tsx",
     "examples:charts": "node --import tsx examples/charts.tsx",

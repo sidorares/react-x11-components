@@ -529,7 +529,17 @@ it up. **The floor is a running one and moves often** — every move since
   `position: fixed` box and a fixed background against the pane that
   scrolls it and answers with them; without the hook a small scroll's blit
   smeared a fixed header up the pane. Found by the Zen Garden bench (041,
-  051, 069, 090, 095).
+  051, 069, 090, 095). The same release draws shadows from tiles
+  (react-x11#794, over ntk 8.16.1's `ntk/shadow-tiles`, sidorares/ntk#471):
+  the 2d context draws the blurred shadow of a `rect`, a `roundRect` or a
+  `rect` less one filled `evenodd` from a tile made once for its corners
+  and blur, where CoreGraphics blurred it on every fill and Direct2D drew
+  none. `<Html>` draws its box shadows that way and keeps no bake of its
+  own, which it had keyed on the part a paint reached — so each strip a
+  scroll exposed across one baked it again, and Zen Garden's header
+  scrolled at 14 frames a second at 2x. It also has hover follow content
+  that scrolls under a still pointer (#793), and `roundRect` take
+  elliptical `{ x, y }` radii.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1606,6 +1616,7 @@ npm run check:package # exports map + tree-shaking contract (needs a build)
 npm run docs          # sync docs/ into website/ and serve it
 npm run docs:build    # what the deploy workflow runs
 npm run bench:zengarden  # the CSS Zen Garden against Chrome — scripts/zengarden/
+npm run bench:zengarden:scroll  # a Zen Garden page scrolled, frame costs by region
 ```
 
 Every `examples:<name>` needs a display — a real `$DISPLAY`, or a Mac running
