@@ -40,6 +40,7 @@ import {
 } from './content.js';
 import type { ContentItem, CounterChange } from './content.js';
 import type { CustomProps } from './vars.js';
+import { LIGHT_DARK, lightDark, usedColorScheme } from './color.js';
 
 export type Display =
   | 'none'
@@ -202,6 +203,14 @@ export type ContentSize =
 export interface ComputedStyle {
   // --- inherited ------------------------------------------------------------
   color: string;
+  /**
+   * The colour scheme the element is drawn in (CSS Color Adjust 1, 2.2):
+   * its `color-scheme` resolved against the scheme the palette is, which
+   * stands for the reader's preference, as it does for `@media
+   * (prefers-color-scheme)`. What a `light-dark()` picks by. `normal` is
+   * the palette's own, since the palette is this renderer's default look.
+   */
+  colorScheme: 'light' | 'dark';
   fontFamily: string;
   fontSize: number;
   fontWeight: number;
@@ -617,6 +626,7 @@ export interface ComputedStyle {
  *  same list. */
 export const INHERITED = [
   'color',
+  'colorScheme',
   'textFillColor',
   'fontFamily',
   'fontSize',
@@ -698,6 +708,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
   // a copy of the literal, not the literal: see `copyStyle`
   return copyStyle({
     color: look.color,
+    colorScheme: look.colorScheme,
     fontFamily: look.fontFamily,
     fontSize: look.fontSize,
     fontWeight: 400,
@@ -952,6 +963,7 @@ export function inherit(
   // quarters of the cost of every element's style, a store through a
   // computed name costing thirty times one through a written one
   out.color = parent.color;
+  out.colorScheme = parent.colorScheme;
   out.textFillColor = parent.textFillColor;
   out.fontFamily = parent.fontFamily;
   out.fontSize = parent.fontSize;
@@ -1173,6 +1185,15 @@ export function applyDeclaration(
   if (/!\s*important$/i.test(value)) {
     value = value.replace(/!\s*important$/i, '').trim();
   }
+  // the branch of each `light-dark()` this element's scheme picks, before
+  // anything reads the value: it stands wherever a colour can, in a
+  // shorthand, a shadow, a gradient or a mix, and most often arrives
+  // through a `var()` from a theme on `:root`
+  if (LIGHT_DARK.test(value)) {
+    const picked = lightDark(value, style.colorScheme);
+    if (picked === null) return;
+    value = picked;
+  }
 
   const color = COLOR_PROPS[name];
   if (color) {
@@ -1189,6 +1210,12 @@ export function applyDeclaration(
   }
 
   switch (name) {
+    case 'color-scheme': {
+      const scheme = usedColorScheme(value, ctx.initial?.colorScheme);
+      if (scheme) style.colorScheme = scheme;
+      return;
+    }
+
     // --- box ----------------------------------------------------------------
     case 'display': {
       const v = value.toLowerCase();
@@ -4993,6 +5020,7 @@ function camel(name: string): string {
 
 const INHERITED_NAMES = new Set<string>([
   'color',
+  'color-scheme',
   '-webkit-text-fill-color',
   'font',
   'font-family',
@@ -5103,6 +5131,7 @@ const MASK_LISTS: Record<string, keyof MaskLayers> = {
 
 const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   color: ['color'],
+  'color-scheme': ['colorScheme'],
   '-webkit-text-fill-color': ['textFillColor'],
   'background-clip': [
     'backgroundClipText',

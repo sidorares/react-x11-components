@@ -356,7 +356,9 @@ holds its floats and sits beside
 another block's rather than under them, its margins its containing
 block's: a column with `overflow: hidden` and a 220px margin beside a
 200px sidebar starts 220px in, the margin overlapping the float, and one
-the floats leave too little room for goes below them.
+the floats leave too little room for goes below them. One too wide for its
+containing block where no float narrows its room stays where it is and
+overflows it, as it would with no floats; below them it would be as wide.
 A float in a paragraph goes on the line it is met on (CSS 2.1 9.5.1): at
 that line's top where it fits beside what the line holds already, which
 moves over for it, and at the next line's top where it does not — so an
@@ -366,11 +368,19 @@ at the float, as in `nowrap` text, what follows it up to where the line can
 has to fit beside it too. A word with too little room
 left on a line after an inline-block or a float goes to the next line
 whole.
-A line with an inline-block or a padded element on it is put in visual order
-a piece at a time — the text engine orders the text inside each piece, and
-the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with
-an image in it reads right to left, and it is aligned whole: a centred line
-is centred with its images, not text first and the image after it.
+A line with an inline-block or a padded element on it is laid out a piece
+at a time and put in visual order by the paragraph's own UAX #9 levels,
+resolved once over its text with an object replacement character for each
+image, as CSS Writing Modes has one taken. A piece the engine would order
+as the paragraph does is kept whole; one whose letters another piece's go
+between, or that an embedding or override opened outside it reorders, is
+laid out again a run of one level at a time. So an override that opens on
+one side of a padded element and closes on the other reads across it, the
+space beside an image in a right-to-left paragraph goes where the letters
+around it say, and the line is aligned whole: a centred line is centred
+with its images, not text first and the image after it. An element that
+reordering splits apart on a line is drawn as a box around each of its
+parts, as CSS 2.1 9.10 has it.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
 on an inline box takes its room back from the line), `padding`,
@@ -801,9 +811,18 @@ and one outside sRGB is clipped into it. `color-mix()` mixes in any of
 the spaces above but the wide-gamut RGB ones, premultiplied, so a colour
 mixed with `transparent` keeps its hue: Tailwind 4's `bg-blue-500/50` is
 written that way. A mix with `currentColor` in it is mixed where the
-colour is used. Relative colours, `light-dark()` and the system colours
-are not read, and a declaration using one is dropped, as a browser that
-did not know them would drop it.
+colour is used. `light-dark()` takes its first colour where the element's
+colour scheme is light and its second where it is dark (CSS Color 5), in
+any value a colour stands in, a custom property's included. The scheme is
+the element's `color-scheme` resolved against the react-x11 palette's in
+force, which stands for the reader's preference: `light dark` follows the
+palette, `light` or `only dark` holds whatever it is, and `normal` — the
+initial value — is the palette's own, since the palette is this renderer's
+default look. The scheme picks nothing else: where a browser also turns
+its canvas and its own colours dark, the canvas here is the palette's
+whatever the page says. Relative colours and the system colours are not read, and a
+declaration using one is dropped, as a browser that did not know them
+would drop it.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
@@ -854,10 +873,7 @@ so a scroll that copies the pixels it can repaints those where they are
 rather than dragging a fixed header along with the text; a fixed
 background, behind the whole viewport, makes every scroll a repaint. A fragment has no
 root element, and its blocks have the body's `auto` height to resolve
-against. Explicit bidi embeddings and overrides (U+202A–U+202E) that open on
-one side of an inline element with padding, border or margin and close on
-the other are resolved on each side of it separately: the text engine is
-handed the text a piece at a time there.
+against.
 
 ## The decisions
 
@@ -903,7 +919,10 @@ buttons on the web — which a widget's text label drew as "Button". It is
 laid out and drawn like any box, in the palette's control look where the
 page leaves it alone, and a press on it is reported through
 `onControlChange`, with its `value`, as a widget's is; it takes no focus of
-its own.
+its own. Its text, like every control's, keeps none of the letter and word
+spacing, the line height, the case, the indent or the shadow of the text
+around it, as HTML's rendering section has it: a button in a body of
+`line-height: 1.5` is its own font's line tall.
 
 **A text field the page styled is the page's to draw.** Give an `<input>` or
 a `<textarea>` a border or a background of its own, or `appearance: none`,

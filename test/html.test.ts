@@ -68,6 +68,7 @@ import {
   parseQuotes,
 } from '../src/html/css/content.js';
 import { decodeStylesheet } from '../src/html/css/decode.js';
+import { lightDark, usedColorScheme } from '../src/html/css/color.js';
 import {
   INHERITED,
   NO_BORDER_IMAGE,
@@ -6610,6 +6611,28 @@ test('a form control or a frame keeps its height when only its width is set', as
   assert.strictEqual(f.width, e.width, 'a frame 96px tall is as wide');
 });
 
+test("a control's text keeps none of the spacing, line height, case or indent around it", async () => {
+  // HTML's rendering section, 15.3.10. melbcss.com's buttons sit in a body
+  // of `line-height: 1.5`, and inherited it: each was half a line taller
+  // than Chrome's.
+  const { node } = await render(
+    '<button id="c">Go</button>' +
+      '<div style="line-height:3;letter-spacing:5px;word-spacing:9px;' +
+      'text-transform:uppercase;text-indent:40px">' +
+      '<button id="a">Go on</button>' +
+      '<button id="b" style="line-height:3">Go on</button></div>' +
+      '<button id="d">Go on</button>',
+  );
+  const el = view(node);
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('a'), size('d'), 'as it would be anywhere');
+  assert.ok(boxOf(el, 'c').width < boxOf(el, 'd').width, 'a wider label');
+  assert.ok(
+    boxOf(el, 'b').height > boxOf(el, 'a').height,
+    'a line height of its own is still its own',
+  );
+});
+
 test('a stylesheet handed over as bytes is decoded as CSS says', () => {
   // CSS 2.1 4.4 and CSS Syntax 3 3.2, in order: a byte order mark, the
   // protocol's charset, an `@charset` at the very start — UTF-16 named in
@@ -7645,6 +7668,120 @@ test('the palette in force answers prefers-color-scheme, and a switch re-cascade
   });
   await waitFor(() =>
     assert.strictEqual(colorOf(), '#00ff00', 'the dark branch under dark'),
+  );
+});
+
+test('light-dark() takes the branch the scheme picks, wherever a colour stands', () => {
+  assert.strictEqual(lightDark('light-dark(red, blue)', 'light'), 'red');
+  assert.strictEqual(lightDark('light-dark(red, blue)', 'dark'), 'blue');
+  // in a shorthand, with functions for branches, and the spelling's case
+  assert.strictEqual(
+    lightDark(
+      '1px solid LIGHT-DARK(oklab(89.755% 0 -0.0001), oklch(38% 0 271))',
+      'dark',
+    ),
+    '1px solid oklch(38% 0 271)',
+  );
+  // two in one value, and one inside another's branch
+  assert.strictEqual(
+    lightDark(
+      '0 0 1px light-dark(#111, #222), 0 0 2px light-dark(light-dark(#333, #444), #555)',
+      'light',
+    ),
+    '0 0 1px #111, 0 0 2px #333',
+  );
+  // a name that only ends in it is some other function
+  assert.strictEqual(
+    lightDark('--my-light-dark(red, blue)', 'dark'),
+    '--my-light-dark(red, blue)',
+  );
+  // one argument, or three, is no light-dark(): the declaration is invalid
+  assert.strictEqual(lightDark('light-dark(red)', 'light'), null);
+  assert.strictEqual(lightDark('light-dark(red, blue, green)', 'light'), null);
+  assert.strictEqual(lightDark('light-dark(, blue)', 'light'), null);
+});
+
+test("color-scheme resolves against the palette's scheme, which stands for the preference", () => {
+  // the preferred one where the element supports it
+  assert.strictEqual(usedColorScheme('light dark', 'dark'), 'dark');
+  assert.strictEqual(usedColorScheme('light dark', 'light'), 'light');
+  assert.strictEqual(usedColorScheme('dark light', 'light'), 'light');
+  // else the first it names that is a scheme
+  assert.strictEqual(usedColorScheme('dark', 'light'), 'dark');
+  assert.strictEqual(usedColorScheme('only light', 'dark'), 'light');
+  assert.strictEqual(usedColorScheme('sepia dark', 'light'), 'dark');
+  // `normal`, and a list of none the renderer has: the palette's own
+  assert.strictEqual(usedColorScheme('normal', 'dark'), 'dark');
+  assert.strictEqual(usedColorScheme('sepia', 'dark'), 'dark');
+  // not a color-scheme
+  for (const bad of [
+    'only',
+    'light only dark',
+    'normal dark',
+    '12px',
+    'light, dark',
+  ]) {
+    assert.strictEqual(usedColorScheme(bad, 'light'), null, bad);
+  }
+});
+
+test('a theme of light-dark() custom properties follows the palette, and color-scheme overrides it', async () => {
+  // melbcss.com's shape: every colour of the page a `light-dark()` on
+  // `:root`, reached through `var()`. Unread, every one of them was
+  // invalid at computed-value time: no backgrounds, no icons, no borders.
+  const source =
+    '<style>' +
+    ':root{color-scheme:light dark;--bg:light-dark(#ff0000,#00ff00)}' +
+    'p{margin:0;background-color:var(--bg);' +
+    'color:light-dark(#010101,#020202);' +
+    'border:1px solid light-dark(#030303,#040404)}' +
+    '.light{color-scheme:light}.dark{color-scheme:only dark}' +
+    '.normal{color-scheme:normal}' +
+    '</style>' +
+    '<p id="a">a</p><p id="l" class="light">l</p>' +
+    '<div class="dark"><p id="d">d</p><p id="n" class="normal">n</p></div>';
+  const doc = (scheme: 'light' | 'dark') =>
+    h(
+      'window',
+      { width: 340, height: 200 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { colorScheme: scheme },
+        h(
+          'box',
+          { style: { width: 300, flexDirection: 'column' } },
+          h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        ),
+      ),
+    );
+  const result = await renderX11(
+    doc('light'),
+    FONTS ? { fonts: FONTS, wrap: false } : { backend: 'mock', wrap: false },
+  );
+  const looks = () => {
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    return Object.fromEntries(
+      ['a', 'l', 'd', 'n'].map((id) => {
+        const style = (boxOf(el, id) as unknown as { style: ComputedStyle })
+          .style;
+        return [
+          id,
+          [style.backgroundColor, style.color, style.borderTopColor].join(' '),
+        ];
+      }),
+    );
+  };
+  const LIGHT = '#ff0000 #010101 #030303';
+  const DARK = '#00ff00 #020202 #040404';
+  assert.deepStrictEqual(looks(), { a: LIGHT, l: LIGHT, d: DARK, n: LIGHT });
+
+  await act(async () => {
+    result.root.render(doc('dark'));
+  });
+  // `light` alone stays light, and `normal` is the palette's again under
+  // a parent that is only dark
+  await waitFor(() =>
+    assert.deepStrictEqual(looks(), { a: DARK, l: LIGHT, d: DARK, n: DARK }),
   );
 });
 
@@ -9907,6 +10044,157 @@ test('HTML isolates what has a dir of its own, and a <bdo> overrides', async () 
     'isolate-override',
   ]);
 });
+
+/** Where each of a document's letters is drawn, left to right: its
+ *  centre, from the band a range of it alone makes. */
+function visualOrder(el: HtmlViewNode, letters: string): string {
+  const text = el.textContent();
+  const centre = (ch: string): number => {
+    const at = text.indexOf(ch);
+    const [band] = el.textRangeRects(at, at + 1);
+    assert.ok(band, `${ch} is drawn`);
+    return band.x + band.width / 2;
+  };
+  return [...letters].sort((a, b) => centre(a) - centre(b)).join('');
+}
+
+metric(
+  "an override opened outside an element's edges and closed inside them reorders across them",
+  async () => {
+    // A paragraph with an inline box's edges in it is laid out a piece at
+    // a time, and a piece was ordered by the engine alone: `de` and `f`
+    // were read as though no override had opened before them, left to
+    // right. They are ordered by the paragraph's levels now (#149).
+    const { node } = await render(
+      '<p style="margin:0;font:20px monospace">a\u202ebc<span ' +
+        'style="padding:0 4px">de</span>f\u202cg</p>',
+    );
+    assert.strictEqual(visualOrder(view(node), 'abcdefg'), 'afedcbg');
+  },
+);
+
+metric(
+  'a neutral at the edge of a piece takes the direction around it',
+  async () => {
+    // an image between two English words in a right-to-left paragraph is
+    // among them, and so are the spaces either side of it (UAX #9, N1):
+    // laid out apart, the space before `world` read as the paragraph
+    // does, and went to its right
+    const { node } = await render(
+      '<p dir="rtl" style="margin:0;font:20px monospace">Hello <img id="i" ' +
+        'style="width:10px;height:10px"> world</p>',
+    );
+    const el = view(node);
+    const text = el.textContent();
+    const band = (i: number) => el.textRangeRects(i, i + 1)[0];
+    const image = boxOf(el, 'i');
+    const w = band(text.indexOf('w'));
+    const o = band(text.indexOf('o'));
+    assert.ok(
+      o.x + o.width < image.x && w.x > image.x + image.width,
+      'Hello, the image, world',
+    );
+    const gap = w.x - (image.x + image.width);
+    assert.ok(Math.abs(gap - w.width) < 1, `a space before world: ${gap}`);
+  },
+);
+
+metric(
+  'an element bidi splits apart on a line is drawn as a fragment a part',
+  async () => {
+    // `c` and `d` are the span's and `e` is not, and reordered, `e` goes
+    // between them: the span is two boxes, not one across `e` (CSS 2.1
+    // 9.10), whose background showed behind a letter not its own
+    const { result, node } = await render(
+      '<p style="margin:0;font:20px monospace">a\u202eb<span ' +
+        'style="background:#0000ff">c\u202dd</span>e\u202c\u202cf</p>',
+    );
+    const el = view(node);
+    assert.strictEqual(visualOrder(el, 'abcdef'), 'adecbf');
+    const text = el.textContent();
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    // across the letter's middle, some of which its glyph leaves bare
+    const blue = async (ch: string) => {
+      const i = text.indexOf(ch);
+      const band = el.textRangeRects(i, i + 1)[0];
+      const y = Math.round(at.y + band.y + band.height / 2);
+      for (let x = band.x + 1; x < band.x + band.width - 1; x += 1) {
+        const [r, g, b] = await pixelAt(result.ctx, Math.round(at.x + x), y);
+        if (b > 200 && r < 60 && g < 60) return true;
+      }
+      return false;
+    };
+    await waitFor(async () => {
+      assert.ok(await blue('c'), 'behind c');
+      assert.ok(await blue('d'), 'behind d');
+      assert.ok(!(await blue('e')), 'not behind e');
+    });
+  },
+);
+
+metric(
+  'a space before a bidi control that a piece ends on takes its room',
+  async () => {
+    // the engine strips the spaces a piece ends on, before a control as
+    // well, and they are measured back where the line goes on after them:
+    // through the override `ab ` ends on, which hid them
+    const { node } = await render(
+      '<p style="margin:0;font:20px monospace">ab \u202e<span id="s" ' +
+        'style="padding:0 4px">cd</span>\u202c ef</p>',
+    );
+    const el = view(node);
+    const b = el.textRangeRects(1, 2)[0];
+    const s = el.elementRect(findById(el.document, 's')!)!;
+    const gap = s.x - (b.x + b.width);
+    assert.ok(Math.abs(gap - b.width) < 1, `a space after b: ${gap}`);
+    assert.strictEqual(visualOrder(el, 'abcdef'), 'abdcef');
+  },
+);
+
+metric(
+  'a word split into pieces by its levels is still one word to a float',
+  async () => {
+    // the pieces of `abcde` a level at a time run on from one another, as
+    // the fragment ran on from the text before it (#420's joins): a float
+    // too narrow for the word is as wide as all of it, padding and all
+    const { node } = await render(
+      '<div style="width:30px;font:20px monospace"><div id="f" ' +
+        'style="float:left">a\u202eb<span style="padding:0 2px">c' +
+        '</span>d\u202ce</div></div>',
+    );
+    const el = view(node);
+    const a = el.textRangeRects(0, 1)[0];
+    const width = boxOf(el, 'f').width;
+    assert.ok(
+      Math.abs(width - (5 * a.width + 4)) < 1,
+      `five letters and the padding: ${width} for ${a.width}`,
+    );
+  },
+);
+
+metric(
+  'a piece split by its levels keeps the spaces pre-wrap hangs at its end',
+  async () => {
+    // `d` is under the override and `e` is not, so their fragment is laid
+    // out again a level at a time, and the spaces `e` ends the block on
+    // are the last piece's: its box covers them and they take room
+    const { node } = await render(
+      '<p style="margin:0;font:20px monospace;white-space:pre-wrap">' +
+        'a\u202eb<span style="padding:0 2px">c</span>d\u202c<span ' +
+        'id="s" style="background:#0000ff">e  </span></p>',
+    );
+    const el = view(node);
+    const text = el.textContent();
+    const a = el.textRangeRects(0, 1)[0];
+    const s = el.elementRect(findById(el.document, 's')!)!;
+    assert.ok(
+      Math.abs(s.width - 3 * a.width) < 1,
+      `e and its two spaces: ${s.width} for ${a.width}`,
+    );
+    const e = el.textRangeRects(text.indexOf('e'), text.indexOf('e') + 1)[0];
+    assert.ok(Math.abs(s.x - e.x) < 1, `from e on: ${s.x}, ${e.x}`);
+  },
+);
 
 // --- white-space on an element, where its block wraps ----------------------------
 
@@ -16934,6 +17222,37 @@ metric(
     await result.unmount();
   },
 );
+
+test('a box that clips its overflow, too wide for a column no float narrows, stays at its top beside the float', async () => {
+  // Where no float narrows the room on either side, a box with a
+  // formatting context of its own is where it would be were there none, and
+  // one too wide for its containing block overflows it; below the floats it
+  // would be the same box in the same room. Blink tests the fit only against
+  // a side a float is on. Design 209's 247px heading in a 240px column,
+  // beside a float that ends left of the column, went under the float
+  const { node, result } = await render(
+    '<style>body{margin:0}.w{width:520px;display:flow-root}' +
+      '.f{float:left;width:250px;height:300px}.c{margin-left:265px;' +
+      'width:240px}.h{overflow:hidden;height:37px;width:247px}</style>' +
+      '<div class="w"><div class="f"></div><div class="c">' +
+      '<div class="h" id="free"></div></div></div>' +
+      // and one a float does narrow still goes under it
+      '<div class="w"><div class="f" style="width:280px"></div>' +
+      '<div class="c" id="col"><div class="h" id="narrowed"></div></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(
+    boxOf(el, 'free').y,
+    0,
+    'the heading stays at the column top, overflowing it',
+  );
+  assert.strictEqual(
+    boxOf(el, 'narrowed').y - boxOf(el, 'col').y,
+    300,
+    'where a float narrows the column, it waits below the float',
+  );
+  await result.unmount();
+});
 
 test("an inline box that a line breaks inside ends that line's fragment at its text, not after the space the line ends on", async () => {
   // A space a line ends on is removed (CSS Text 3, 4.1.2) and takes no

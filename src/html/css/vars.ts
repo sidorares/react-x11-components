@@ -245,7 +245,7 @@ function findVar(value: string, from: number): number {
 
 /** The `)` that closes a bracket opened just before `from`, strings and
  *  brackets inside it passed over; -1 where none does. */
-function closingParen(value: string, from: number): number {
+export function closingParen(value: string, from: number): number {
   let depth = 0;
   for (let i = from; i < value.length; i += 1) {
     const c = value[i];
@@ -326,7 +326,7 @@ function topLevel(value: string, ch: string): number {
 }
 
 /** The first comma not inside a bracket or a string, or -1. */
-function topLevelComma(value: string): number {
+export function topLevelComma(value: string): number {
   let depth = 0;
   for (let i = 0; i < value.length; i += 1) {
     const c = value[i];

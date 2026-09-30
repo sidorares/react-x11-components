@@ -215,6 +215,7 @@ npx tsx scripts/conformance/run.ts wpt fuzz1 --chunk 50 --timeout 60000
 | 122    | `ex`, `ch` and `lh` in the element's own face      | 5,654 (95%) | 5,104 (86%) |
 | 123    | an SVG image fills its size, a zero `viewBox`      | 5,653 (95%) | 5,103 (86%) |
 | 127    | a space `pre-wrap` keeps at a line's end           | 5,655 (95%) | 5,105 (86%) |
+| 129    | bidi levels across a line's pieces                 | 5,676 (96%) | 5,116 (86%) |
 
 Of 5,895 reftests run through round 2 and 5,894 since, where a test that
 depends on an `onload` handler is counted a script. As it shipped, `<Html>`
@@ -3819,6 +3820,49 @@ rest. On a document of such paragraphs with an edge every few words, the
 new work is about 2.5% of `<Html>`'s own time in a layout pass, and a float
 laid out at no width is faster, as a line no longer breaks at an edge and
 lays out the word again on the next.
+
+### Round 129
+
+330. **A line laid out a piece at a time was put in bidi order a piece at
+     a time.** Since #148 a line with an inline-block, an image or an
+     element's padding, border or margin on it is laid out a piece at a
+     time, and the engine resolved bidi over each piece alone. An
+     embedding or an override that opened on one side of an element's
+     edge and closed on the other was resolved on each side apart, and a
+     neutral at a piece's edge took the paragraph's direction wherever it
+     sat: in a right-to-left paragraph, `Hello <img> world` set the space
+     before `world` on its far side (#149). The paragraph's UAX #9 levels
+     are resolved once now, over its text as its layouts see it, with an
+     object replacement character for each atomic, by bidi-js, which is
+     what ntk's layout resolves with. A piece whose letters the engine gave
+     the paragraph's levels, and whose ends are at its lowest one, so that
+     nothing of another piece comes between its letters, is kept whole.
+     Any other is laid out again, a layout to each run of one level, held
+     in its direction by an override. The line's pieces are ordered by L2
+     over their levels, the white space it ends on back at the
+     paragraph's (L1), and a bidi control, which takes no room, is no end
+     of a piece.
+331. **An element reordering split apart was drawn as one box across the
+     letters between its parts.** CSS 2.1 9.10 splits it, a box around
+     each part, and its edges go on the parts 8.6 says. An element's parts
+     on a line are one fragment wherever nothing but its own content lies
+     between them, so a line that reads one way draws each box as it did.
+
+332. **A space before a bidi control that a piece ended on took no room.**
+     The engine strips the spaces a piece ends on, before a control as
+     well, and where the line went on after them it measured them back
+     only where they ended the text: `one &#x202E;<span>` drew `one`
+     against the span.
+
+21 tests on X11 and 11 on macOS, all bidi: `bidi-005` to `010`,
+`bidi-text/bidi-001`, `002`, `005a` to `010a` and `011`, five of the
+`bidi-box-model` tests and `text/bidi-span-003`, and none lost. `bidi-007`,
+`008` and `010` float their blocks, which take round 128's joins for their
+width: a fragment split by its levels hands them on, its first piece
+running on from what the fragment ran on from and the rest from one
+another where no white space is between them. The macOS count is of the
+123 bidi tests run alone on each tree, as a sweep of the whole suite on a
+loaded machine is not to be believed there.
 
 ## What `<Html>` supports
 

@@ -188,6 +188,20 @@ input, button, select, textarea, meter, progress {
 }
 /* Chrome's own UA margins for the checkables, near enough: they are the
    controls that sit hard against their label text otherwise. */
+/* HTML's rendering section (15.3.10): a control's text keeps none of the
+   spacing, the line height, the case or the indent of the text around it.
+   A button in a paragraph of 'line-height: 1.5' is its own font's line
+   tall, as it is in a browser. */
+input, button, textarea {
+  letter-spacing: initial;
+  word-spacing: initial;
+  line-height: initial;
+}
+input, select, button, textarea {
+  text-transform: initial;
+  text-indent: initial;
+  text-shadow: initial;
+}
 input[type=checkbox] { margin: 3px 4px 3px 4px; }
 input[type=radio] { margin: 3px 4px 3px 5px; }
 input[type=hidden] { display: none; }
