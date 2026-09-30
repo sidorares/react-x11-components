@@ -2987,6 +2987,33 @@ metric('a ch is the advance of the font\'s "0"', async () => {
   );
 });
 
+metric(
+  "a percentage line height is of the element's own font size, whichever rule sets it",
+  async () => {
+    // CSS 2.1 10.8.1: the percentage times the element's computed font
+    // size. It was read from the size as its declaration came up in the
+    // cascade, which a `font` earlier in the same rule had just set to its
+    // own: the Zen Garden's 099 sets `p { font: 12px …; line-height: 100% }`
+    // and its first paragraph at 16px, and Chrome's 16px lines were 12px.
+    // The `font` shorthand's own line height is the same
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;font:12px sans-serif;' +
+        'line-height:100%}p.big{font-size:16px}p.s{font:12px/150% sans-serif}' +
+        'p.s.big{font-size:16px}</style>' +
+        '<p id="a" class="big">one</p><p id="b">one</p>' +
+        '<p id="c" class="s big">one</p><p id="d" class="s">one</p>',
+    );
+    const el = view(node);
+    await act();
+    const height = (id: string) => boxOf(el, id).height;
+    assert.deepStrictEqual(
+      [height('a'), height('b'), height('c'), height('d')],
+      [16, 12, 24, 18],
+      "Chrome's line heights for each: 100% of 16 and of 12, 150% of 16 and of 12",
+    );
+  },
+);
+
 metric('letter-spacing and word-spacing reach the text', async () => {
   const widthOf = async (style: string): Promise<number> => {
     const probe = await render(
