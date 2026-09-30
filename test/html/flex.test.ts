@@ -712,6 +712,112 @@ test('a flex item its content holds is frozen at that size, and the rest share w
   );
 });
 
+test('a flex line every item of which its own minimum stops is laid out at those minimums', async () => {
+  // CSS Flexbox 9.7: a line short of room with every item at its minimum
+  // leaves each of them at that. Yoga takes each item a minimum stops out
+  // of the sum of the scaled shrink factors and divides what the line is
+  // still short of by what is left: `(a + b) - a - b` in float32s, which
+  // is 0 for some sizes and a rounding for others. A positive one made
+  // every item of the line billions of pixels wide — 3599091712 and
+  // 2033329408 for these two. An automatic minimum is held by freezing the
+  // item (the test above); a minimum of the item's own is Yoga's to hold
+  // it to, and so are an item's padding and its borders
+  const A = 110.992;
+  const B = 62.705625;
+  const row = (a: string, b: string, before = '') =>
+    `<div style="display:flex;width:50px">${before}` +
+    `<div ${a}></div><div ${b}></div></div>`;
+  const column = (box: string, a: string, b: string) =>
+    `<div style="display:flex;flex-direction:column;${box}">` +
+    `<div ${a}></div><div ${b}></div></div><div style="height:200px"></div>`;
+  const { node } = await render(
+    '<style>body{margin:0} .i{height:6px}</style>' +
+      row(
+        `id="a1" class="i" style="width:${A}px;min-width:${A}px"`,
+        `id="b1" class="i" style="width:${B}px;min-width:${B}px"`,
+      ) +
+      row(
+        `id="a2" class="i" style="flex-basis:${A}px;min-width:${A}px"`,
+        `id="b2" class="i" style="flex-basis:${B}px;min-width:${B}px"`,
+      ) +
+      // a minimum under the item's size, a percentage of the row's width
+      row(
+        `id="a3" class="i" style="width:150.5px;min-width:${A * 2}%"`,
+        `id="b3" class="i" style="width:99.9px;min-width:${B * 2}%"`,
+      ) +
+      // its content's width, asked for by keyword
+      '<div style="display:flex;width:50px">' +
+      '<div id="a4" style="min-width:max-content">' +
+      `<div class="i" style="width:${A}px"></div></div>` +
+      '<div id="b4" style="min-width:max-content">' +
+      `<div class="i" style="width:${B}px"></div></div></div>` +
+      // no minimum but its padding, which no item is narrower than
+      row(
+        `id="a5" class="i" style="padding:0 ${A / 2}px"`,
+        `id="b5" class="i" style="padding:0 ${B / 2}px"`,
+      ) +
+      // and none at all, beside an item that is wider than the row alone
+      row(
+        `id="a6" class="i" style="width:${A}px;min-width:0"`,
+        `id="b6" class="i" style="width:${B}px;min-width:0"`,
+        '<div id="n6" class="i" style="flex:none;width:80px"></div>',
+      ) +
+      // down a column, of a height of its own and of one it may not pass
+      column(
+        'height:50px',
+        `id="c1" style="height:${A}px;min-height:${A}px"`,
+        `id="d1" style="height:${B}px;min-height:${B}px"`,
+      ) +
+      column(
+        'max-height:50px',
+        `id="c2" style="flex-basis:${A}px;min-height:${A}px"`,
+        `id="d2" style="flex-basis:${B}px;min-height:${B}px"`,
+      ) +
+      // lines that are not short of room at their minimums are shared out
+      // as they were: one with room for them, and one with room to grow
+      '<div style="display:flex;width:150px">' +
+      '<div id="e1" class="i" style="width:100.5px;min-width:60.1px"></div>' +
+      '<div id="e2" class="i" style="width:100.5px;min-width:0"></div></div>' +
+      '<div style="display:flex;width:300px">' +
+      `<div id="g1" class="i" style="flex:1 1 ${A}px;min-width:${A}px">` +
+      `</div><div id="g2" class="i" style="flex:1 1 ${B}px;min-width:${B}px">` +
+      '</div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  const near = (actual: number, expected: number, message: string) =>
+    assert.ok(
+      Math.abs(actual - expected) < 0.01,
+      `${message}: ${actual}, not ${expected}`,
+    );
+  for (const [n, what] of [
+    [1, 'a width'],
+    [2, 'a flex-basis'],
+    [3, 'a percentage under its width'],
+    [4, 'max-content'],
+    [5, 'padding'],
+  ] as const) {
+    near(box(`a${n}`).width, A, `a row item held by ${what}`);
+    near(box(`b${n}`).width, B, `and the one after it, by ${what}`);
+    near(box(`b${n}`).x, A, `which starts where it ends, by ${what}`);
+  }
+  assert.deepStrictEqual(
+    [box('n6').width, box('a6').width, box('b6').width, box('b6').x],
+    [80, 0, 0, 80],
+    'items that may be nothing wide are, beside one wider than the row',
+  );
+  for (const n of [1, 2]) {
+    near(box(`c${n}`).height, A, 'a column item, as tall as its minimum');
+    near(box(`d${n}`).height, B, 'and the one after it');
+    near(box(`d${n}`).y, box(`c${n}`).y + A, 'which starts where it ends');
+  }
+  near(box('e1').width, 75, 'a line with room for its minimums is shared out');
+  near(box('e2').width, 75, 'to each item by its size');
+  const spare = (300 - A - B) / 2;
+  near(box('g1').width, A + spare, 'and one with room to grow in is');
+  near(box('g2').width, B + spare, 'grown into');
+});
+
 test("a flex box is no narrower than its items' widths make it", async () => {
   // What an item with a width of its own gives the size of its flex box is
   // that width (CSS Flexbox 9.9.3), and a percentage `max-width` on a box
