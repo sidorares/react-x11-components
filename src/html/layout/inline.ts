@@ -66,6 +66,14 @@ import { tableGrid } from './grid.js';
  *  browser fits them (`FontsLike`'s `fit`). */
 const PARAGRAPH_FIT = 'items' as const;
 
+/** How far past the room a line's content may reach and still fit it: a
+ *  64th of a pixel, the epsilon Blink's line breaker adds to the width it
+ *  fits to (`LineBreaker::AvailableWidthToFit`), and the one the engine
+ *  fits a paragraph's lines with. A line composed a piece at a time asks
+ *  the same question of each piece, and half a pixel let a word run a
+ *  third of one past the line a browser breaks before it. */
+const FIT_SLACK = 1 / 64;
+
 /** The slice of ntk's font manager this needs. Structural, as everywhere. */
 export interface FontsLike {
   layout(
@@ -1198,7 +1206,7 @@ function linesOf(
         : startsLine &&
           // run past the room — its white space is no part of the width —
           // or cut inside itself to fit it
-          (first.width > room + 0.5 ||
+          (first.width > room + FIT_SLACK ||
             tooNarrow(segment.runs, first.end, first.width, room)))
     ) {
       close();
@@ -5232,7 +5240,7 @@ function tooNarrow(
     at += text.length;
   }
   if (WORD_CHAR.test(before) && WORD_CHAR.test(after)) return true;
-  return width > room + 0.5 && before !== '';
+  return width > room + FIT_SLACK && before !== '';
 }
 
 const WORD_CHAR =
