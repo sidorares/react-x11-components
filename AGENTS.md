@@ -1275,7 +1275,15 @@ it, and two sites' `Icons` are two fonts. A face loads when a computed style
 wants it and the document has a character in its `unicode-range`, and its
 family is out of the list until then: the list changing is what tells every
 cache keyed by a family string — the text layouts', the metrics', ntk's —
-to set the text again.
+to set the text again. **No name a document declares reaches a text engine
+as written**, whether or not a face of it ever loads (CSS Fonts 4, 5.2): an
+engine answers a family nobody has with its nearest guess, and fontconfig's
+for next/font's `"GeistSans Fallback"` — `src: local("Arial")`, a rule that
+was dropped for having no `url()` — was Gill Sans Ultra Bold. A `local()`
+is a source like any other, and comes to an alias: the system's family goes
+into the list where the document's was, found by asking for a match and
+believing it only when the face that comes back carries the name
+(`localFamily`), since a font manager has no lookup to ask.
 
 **A face is asked for an instance before it is registered.** ntk sets a
 variable face at the weight and the size a style asks for by cutting an
