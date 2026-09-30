@@ -117,6 +117,10 @@ export interface UnitContext {
    *  itself, with `@font-face`, put as the text engine knows them — see
    *  `fonts.ts`. Absent, the list is the one the author wrote. */
   families?: (list: string) => string;
+  /** The family a `font-family` list with no generic family at its end
+   *  goes on to: the document's own, for a list an author wrote, and none
+   *  for the UA sheet's, which names the host's faces. */
+  fallbackFamily?: () => string | null;
   /** The element's line height and the root's, for `lh` and `rlh`, asked
    *  only for a length in them; 1.2em where they are missing. */
   lh?: () => number;

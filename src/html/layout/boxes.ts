@@ -202,6 +202,17 @@ export interface LineText {
    * the ones before a forced break that fit take room on the line.
    */
   hung?: { at: number; x: number; width: number }[];
+  /**
+   * How far the line goes on past this text for the collapsible spaces it
+   * ends on, which its engine, laying out a piece of a line as a line,
+   * stripped: the room they take where more follows them on the line, and
+   * none where the line ends on them, since CSS removes them there (CSS
+   * Text 3, 4.1.2). They are the text's, in the elements they are in, and
+   * `trailRun` is the run they are the end of: whose underline, line
+   * through and highlight go on under them.
+   */
+  trail?: number;
+  trailRun?: TextRun;
   /** Any offset in the layout's own text as a document index — how a run
    *  under the pointer finds the element whose text it is. Per pass: the
    *  layout may be one an earlier pass made (`TextLayoutCache`), and the
@@ -733,6 +744,10 @@ export interface BoxTree {
    *  (`Cascade.rootStyle`), whose background is the canvas's; null where
    *  the document has either. */
   impliedHtml: ComputedStyle | null;
+  /** The scheme the palette is, which the element the document is drawn
+   *  in is of: where the root element's is the other, the canvas is that
+   *  scheme's and opaque (`paintDocument`). */
+  paletteScheme: 'light' | 'dark';
 }
 
 export interface BuildOptions {
@@ -882,6 +897,7 @@ class Builder {
       movedInline: this._movedInline,
       clipText: this._clipText,
       impliedHtml,
+      paletteScheme: cascade.initial.colorScheme,
     };
   }
 

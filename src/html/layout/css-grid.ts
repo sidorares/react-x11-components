@@ -31,6 +31,7 @@ import { Box, GRID_TRACKS, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
+  USED_HEIGHT,
   clampHeight,
   clampWidth,
   exactMinContent,
@@ -245,9 +246,10 @@ export function layoutGrid(
   }
 
   // a height of the grid's own, or else the least it may be, which the
-  // `fr` rows and the `auto` ones fill
+  // `fr` rows and the `auto` ones fill: its `min-height`, or the height a
+  // column it is an item of flexed it to (`USED_HEIGHT`)
   const own = Number.isFinite(definite);
-  const least = own ? 0 : leastHeight(box);
+  const least = own ? 0 : Math.max(leastHeight(box), USED_HEIGHT.get(box) ?? 0);
   // the rows against a height: percentages of it, or `auto` without one
   const sizeRows = (base: number, available: number, atLeast: number) => {
     const rowTracks: SizingTrack[] = [];
@@ -371,10 +373,17 @@ export function layoutGrid(
       const width =
         wide === null ? child.width : clampWidth(child, wide, area, ctx);
       // what is in it takes its percentages of that height, which a
-      // stretch makes definite, as it does a flex item's
+      // stretch makes definite, as it does a flex item's — and an item that
+      // is a flex or grid container lays its own items out in it (11.1:
+      // "the grid area's width and height are considered definite for this
+      // purpose"): a card's `margin-top: auto` takes what its row is taller
+      // than the card by, its `flex: 1` grows into it (CSS Flexbox 8.1,
+      // 9.7). Its content's own height is the same layout, and kept.
       if (
         child.kind !== 'replaced' &&
-        (wide !== null || percentHeightsIn(child))
+        (wide !== null ||
+          percentHeightsIn(child) ||
+          (child.kind === 'flex' && height !== child.height))
       ) {
         FLEXED_HEIGHT.set(child, Math.max(0, height - child.verticalExtra));
         try {

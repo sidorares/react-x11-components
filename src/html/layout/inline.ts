@@ -1429,6 +1429,7 @@ function linesOf(
           if (!text) continue;
           const m = hung.exec(text);
           if (!m) break;
+          if (!trailing) placed.trailRun = segment.runs[i];
           trailing = m[0] + trailing;
           if (m[0].length < text.length) break;
         }
@@ -1445,6 +1446,7 @@ function linesOf(
               : spaceAdvance(fonts, segment.runs[segment.runs.length - 1]) *
                 trailing.length;
           open.x += open.hang;
+          placed.trail = open.hang;
         }
       } else if (hung.total) holdHung();
       index = segment.nextIndex;
@@ -2398,6 +2400,24 @@ function finishLine(
 ): LineBox | null {
   if (!open.texts.length && !open.atomics.length && !open.edges.length) {
     return null;
+  }
+  if (open.hang > 0) {
+    // The line ends on the spaces its last text ends on, and they are
+    // removed (CSS Text 3, 4.1.2): the text takes no room for them, and
+    // what was set after them, the end edges of the boxes they are in,
+    // stands where the text's content ends. Left a space past it, a list
+    // item that ended its line was a space wider than its link.
+    for (let i = open.order.length - 1; i >= 0; i -= 1) {
+      const placed = open.order[i];
+      if (placed.kind === 'text') {
+        placed.item.trail = 0;
+        placed.item.trailRun = undefined;
+        break;
+      }
+      if (placed.kind !== 'edge') break;
+      placed.at -= open.hang;
+      placed.item.x -= open.hang;
+    }
   }
   const reordered = levels
     ? levelPieces(open, levels) ||
@@ -4171,6 +4191,8 @@ const RUN_STYLE = [
   'underlineOffset',
   'underlineThickness',
   'strike',
+  'strikeStyle',
+  'strikeThickness',
 ] as const;
 
 /**
@@ -4738,15 +4760,7 @@ export function runFor(text: string, style: ComputedStyle): TextRun {
   // colours of the elements that set them (`decorate`)
   if (style.underline) {
     run.underline = style.underline;
-    // CSS's five rule styles and SGR 4's five are the same set under two
-    // names; richtext speaks SGR's, so `solid` is `single` and `wavy` is
-    // `curly`. The other three are spelled identically.
-    run.underlineStyle =
-      style.underlineStyle === 'wavy'
-        ? 'curly'
-        : style.underlineStyle === 'solid'
-          ? 'single'
-          : style.underlineStyle;
+    run.underlineStyle = ruleStyle(style.underlineStyle);
     // The band the rule is drawn in: as thick as the box that set it made
     // it (`usedThickness`), and as far under the baseline as that box said.
     // `auto` leaves how far to the user agent, at or under the baseline
@@ -4772,8 +4786,29 @@ export function runFor(text: string, style: ComputedStyle): TextRun {
       run.underlineOffset = top;
     }
   }
-  if (style.lineThrough) run.strike = style.lineThrough;
+  if (style.lineThrough) {
+    run.strike = style.lineThrough;
+    run.strikeStyle = ruleStyle(style.lineThroughStyle);
+    // as thick as the box that set it made it, on whole pixels as the
+    // underline's is: a solid rule fills the ones it covers, and dots and
+    // dashes are the nearest whole pixel wide. Where it is drawn is each
+    // run's own face's to say (`paintRunRules`).
+    const band = style.lineThroughThickness ?? 1;
+    run.strikeThickness =
+      run.strikeStyle === 'dotted' || run.strikeStyle === 'dashed'
+        ? Math.round(band)
+        : Math.floor(band);
+  }
   return run;
+}
+
+/** A CSS rule style as richtext names it. CSS's five and SGR 4's five are
+ *  the same set under two names; richtext speaks SGR's, so `solid` is
+ *  `single` and `wavy` is `curly`. The other three are spelled identically. */
+function ruleStyle(
+  style: ComputedStyle['underlineStyle'],
+): NonNullable<TextRun['underlineStyle']> {
+  return style === 'wavy' ? 'curly' : style === 'solid' ? 'single' : style;
 }
 
 /**

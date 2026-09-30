@@ -105,7 +105,13 @@ image rebuilds its boxes.
 
 `@import` is asked for through the same seam, an import inside an import
 too, each sheet's rules standing where its `@import` does; a sheet that
-imports itself, or one of the sheets importing it, is read once.
+imports itself, or one of the sheets importing it, is read once. An
+import's media queries — `@import url(wide.css) (min-width: 800px)` — are
+conditions on the sheet it brings in, as though an `@media` block were
+around all of it (CSS Cascade 4, 2): the sheet is asked for once, whatever
+the width, and its rules hold where the queries do, a resize across one of
+their breakpoints restyling as it does for `@media`. One that can hold
+nowhere here, `print`, is not asked for.
 
 A stylesheet may be handed over as bytes instead, with the charset the
 protocol named if it named one: `{ kind: 'stylesheet', bytes, charset }`.
@@ -237,6 +243,17 @@ own reason. CoreText and DirectWrite move an axis themselves and are not
 asked. Nothing here knows the container: a fontkit that cuts an instance out
 of a WOFF2 ([windowkit/fontkit#1](https://github.com/windowkit/fontkit/pull/1))
 answers, and the text is set in the face at every weight its axis has.
+
+**A list that no face matches ends in the document's font.** A
+`font-family` list an author wrote that does not end in a generic family
+(`serif`, `monospace`, `system-ui` and the rest) has the document's own
+family, the `fontFamily` prop, after it: where nothing the author named is
+installed, the text is set in the user agent's default font (CSS Fonts 4,
+5.1), as a browser sets it in its standard font — not in whatever the text
+engine picks for a name it has never heard of, which under fontconfig is
+its own default. A list that ends in a generic falls back through that, and
+the UA sheet's own families, the palette's face a control is set in and
+`monoFamily`, are the host's and stay as they are given.
 
 **A family is registered under a name nothing else has.** Fonts go to
 react-x11's font manager, which is the application's, so the component
@@ -445,10 +462,18 @@ it was flexed to makes it, and an image grown along a row is as tall. A
 would read the item's height in its place. An item stretched across its
 row, or flexed along a column of a height of its own, has the height it was
 given — no taller for what it holds — for what it holds to take a
-percentage of, so an `h-full` list in a sidebar fills the sidebar. Items go in `order`, and in the document's where two have the
+percentage of, so an `h-full` list in a sidebar fills the sidebar. An item
+that is a flex box or a grid itself lays its own items out in the height it
+was given, which is a second layout of it where that is not its content's:
+a card in a row of cards has its `margin-top: auto` button at its bottom,
+its `flex: 1` takes what the others leave, and what it centres is centred
+in the whole of it. That holds along a column with no height of its own
+too — `min-h-screen flex flex-col` around a `flex-1 flex items-center` —
+though nothing takes a percentage of such a height, as in a browser. Items go in `order`, and in the document's where two have the
 same, and are painted so; one with a `z-index` is a stacking context
 whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines, their
-line as tall as that makes it, and a flex box sits on the baseline of its
+line as tall as that makes it — `last baseline` is taken as the end of the
+line, which is what it falls back to — and a flex box sits on the baseline of its
 first line's item aligned so, or of its first item. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
@@ -473,7 +498,10 @@ image, which keeps its own size, and a box with an `aspect-ratio`, which is
 as wide as a height it has makes it, and as a block would be where it has
 none; an item stretched down its area is as wide as its ratio makes that
 height. An item's percentage height is of its area, and a stretched item's
-height is one what is in it takes percentages of. A grid is as wide as
+height is one what is in it takes percentages of — and one an item that is
+a flex box or a grid lays its own items out in, so a grid of cards, each a
+column ending in a `margin-top: auto` button, has every button at the
+bottom of its row. A grid is as wide as
 its tracks, whatever runs past them. An absolutely positioned box
 takes the grid area its lines name for its containing block, and a grid's
 or a flex box's child is where it would be as the box's one item.
@@ -911,9 +939,18 @@ and `text-underline-offset`. Left at `auto`, an underline is a tenth of the
 font size thick and half of that under the baseline, a pixel each at the
 least — the font size of the element that set it, so one line runs through
 whatever is inside (CSS Text Decoration 4, 2.4 and 2.9; neither text engine
-reports a face's own underline, so `from-font` is `auto`). A dotted one over
-three pixels thick is round dots spread from one end of it to the other,
-and squares under that. `unicode-bidi` is carried out as
+reports a face's own underline, so `from-font` is `auto`). A line through is
+as thick, by the same element's font size, and in the same five styles; its
+middle is a third of the ascent above the baseline — the ascent of the text
+it crosses, a font size at a time, so text of another size inside it is
+crossed out through its own middle, where an underline is one line (2.5 has
+a line through worked out again at each font size, from the metrics of the
+fonts that size is set in, and 2.9 asks one position only of underlines and
+overlines). A dotted rule over three pixels thick is round dots spread from
+one end of it to the other, and squares under that; a dashed one's dashes
+are three times its thickness long and two apart, twice and one from three
+pixels thick, the first at its start and the last at its end; and the two
+lines of a double one are a pixel apart. `unicode-bidi` is carried out as
 the bidi controls it stands for, laid out around the element's text and no
 part of the document's: a copy, a caret and a selection skip them. HTML's
 `dir` isolates its element, `dir="auto"` and `<bdi>` take their first
@@ -931,7 +968,12 @@ Helvetica — is a little more than CSS gives it. Underlines an element outside 
 the line's baseline. White space collapses across element boundaries as CSS
 2.1 16.6.1 has it — none at the start or the end of a line, one between two
 words whatever elements they are in — and text at `font-size: 0` takes no
-room, which is how a row of inline-blocks is set without gaps.
+room, which is how a row of inline-blocks is set without gaps. The space
+that is left is the first of them, in the element it was written in: a
+link whose text ends in a space, before more on its line, is that space
+wider (`elementRect`, a selection's band) and is underlined under it, and
+a space a line ends on is removed, from the link and from every box that
+ends there with it.
 
 **Generated content:** `::before` and `::after`, and CSS 2's `:before` and
 `:after`, as boxes of their own `display` holding what `content` comes to:
@@ -1030,9 +1072,18 @@ the element's `color-scheme` resolved against the react-x11 palette's in
 force, which stands for the reader's preference: `light dark` follows the
 palette, `light` or `only dark` holds whatever it is, and `normal` — the
 initial value — is the palette's own, since the palette is this renderer's
-default look. The scheme picks nothing else: where a browser also turns
-its canvas and its own colours dark, the canvas here is the palette's
-whatever the page says. Relative colours and the system colours are not read, and a
+default look. Where the root element's scheme is the palette's, the
+document is drawn on the window's own ground in the palette's colours, as
+an unstyled one always is. Where it is the other — a page that is
+`color-scheme: light` under a dark palette, as a Docusaurus site is until
+its script runs — its canvas is opaque, in that scheme's `Canvas` colour,
+which is what CSS Color Adjust gives an embedded document whose scheme is
+not its embedder's; and the text and the links the page does not colour are
+a browser's for that scheme, black on white with `#0000ee` links or white
+on `#121212` with `#9e9eff`. So a page that sets dark text on no background
+is read on white, whatever the window is. The rest of what the palette
+gives stays the palette's: the UA sheet's borders and rules, and the
+widgets a form control is. Relative colours and the system colours are not read, and a
 declaration using one is dropped, as a browser that did not know them
 would drop it.
 
@@ -1067,7 +1118,8 @@ screen's with a mouse — `hover` and a `fine` pointer, eight bits of colour,
 no contrast or colour preference forced, and no scripting, since nothing
 here runs one. A feature nothing knows is false, as Media Queries 4 has
 it, and so is a query on a size that is no length.
-`@import` goes through the resource seam. Cascade layers are read (CSS
+`@import` goes through the resource seam, its media queries kept as the
+conditions of what it imports. Cascade layers are read (CSS
 Cascade 5): `@layer a, b;` fixes their order, the document's across all of
 its sheets, and a rule in a later layer wins over one in an earlier layer
 whatever their specificity, a rule in no layer over both, and the other way

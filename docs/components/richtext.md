@@ -57,7 +57,9 @@ interface TextRun {
   underlineStyle?: 'single' | 'double' | 'curly' | 'dotted' | 'dashed';
   underlineOffset?: number; // its top below the baseline; default 2
   underlineThickness?: number; // default 1
-  strike?: string; // 1px rule through the x-height — ~~del~~
+  strike?: string; // rule through the x-height — ~~del~~
+  strikeStyle?: 'single' | 'double' | 'curly' | 'dotted' | 'dashed';
+  strikeThickness?: number; // default 1
   href?: string | null; // link target; null is a link still streaming in
 }
 ```
@@ -65,8 +67,8 @@ interface TextRun {
 `text`, `family`, `size`, `weight`, `style`, `color` and `letterSpacing`
 are the text engine's span vocabulary and pass straight through to
 `fonts.layout` — ntk and react-x11's Cocoa engine both take all of them. The
-rest — `bg`, `bgFill`, `underline` and its three fields, `strike`, `href` —
-are this element's, painted by it.
+rest — `bg`, `bgFill`, `underline` and its three fields, `strike` and its
+two, `href` — are this element's, painted by it.
 
 `href: null` is deliberate and is what makes a streamed `[text](partial-url`
 render as link-styled text that is not yet clickable.
@@ -79,15 +81,32 @@ captured terminal session needs, where a two-pixel overhang paints over the
 neighbouring cell and a fill that stops at the descender leaves a gap between
 rows. `<TerminalOutput>` is why the field exists.
 
-`underlineStyle` names SGR 4's sub-parameters. All five are drawn from 1px
-rectangles rather than a stroked path, because the mock backend has no path
-API and a hairline on a text baseline does not need one. The exception is a
-dotted rule a run made more than three pixels thick (`underlineThickness`):
-its dots are round where the context has a path, as many as fit with the
-first at the rule's start and the last at its end. And a rule is drawn a
-stretch at a time, not a run: runs that touch and ask for the same rule —
-the words of one link, which a layout hands back apart — share one, so a
-pattern has no seam at a space.
+`underlineStyle` names SGR 4's sub-parameters, and `strikeStyle` takes the
+same five. All five are drawn from 1px rectangles rather than a stroked path,
+because the mock backend has no path API and a hairline on a text baseline
+does not need one. The exception is a dotted rule a run made more than three
+pixels thick (`underlineThickness`, `strikeThickness`): its dots are round
+where the context has a path, as many as fit with the first at the rule's
+start and the last at its end. A dashed rule's dashes are three times its
+thickness long and two apart — twice and one from three pixels thick — and are
+spread the same way, a dash at each end of the rule; the two lines of a double
+rule are a pixel apart however thick they are. And a rule is drawn a stretch
+at a time, not a run: runs that touch and ask for the same rule — the words of
+one link, which a layout hands back apart — share one, so a pattern has no
+seam at a space.
+
+**A line through is placed by the text it crosses.** A run that names a
+`strikeThickness` is struck through the middle of its lowercase: the rule's
+middle is a third of its face's ascent above the baseline, so a thick one
+grows both ways from where a thin one is. Runs of one size that touch share
+a rule as an underline's do, at one height — where a word is set in a
+fallback face, whose ascent is another, the height is the two faces' by how
+much of the stretch each sets, and the rule does not step. Where a struck
+stretch changes size it does: to the new size's middle rather than running
+on at the old one, over the top of smaller text or through the feet of
+larger. A run that names no thickness is struck as it always was, by a pixel
+whose top is 38% of the ascent up — the same place at a text size, to the
+pixel or one off it.
 
 **The decorations are read off what the engine hands back.** ntk returns
 every laid-out run with the span it came from, markers and all, which is how

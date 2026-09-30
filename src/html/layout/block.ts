@@ -2182,12 +2182,24 @@ function stretchHeight(box: Box): number | null {
 }
 
 /**
- * The content height a flex layout made definite for an item — a stretched
- * item's, a flexed one's in a container of a definite height (CSS Flexbox
- * 9.8) — which what is in it takes its percentages of. Set by `flex.ts`
- * for the item's own layout alone.
+ * The content height a flex or grid layout made definite for an item — a
+ * stretched item's, a flexed one's in a container of a definite height (CSS
+ * Flexbox 9.8), a grid item's stretched down its area (CSS Grid 1, 11.1) —
+ * which what is in it takes its percentages of, and which an item that is
+ * a flex or grid container itself lays its own items out in. Set by
+ * `flex.ts` and `css-grid.ts` for the item's own layout alone.
  */
 export const FLEXED_HEIGHT = new WeakMap<Box, number>();
+
+/**
+ * The content height a flex layout gave an item without making it definite:
+ * flexed along a column that has no height of its own, which 9.8 leaves
+ * indefinite. An item that is a flex or grid container lays its own items
+ * out in it all the same — it is its used size (9.7) — and nothing in it
+ * takes a percentage of it. Set by `flex.ts` for the item's own layout
+ * alone.
+ */
+export const USED_HEIGHT = new WeakMap<Box, number>();
 
 /**
  * Hand a box's children the height their percentages resolve against —

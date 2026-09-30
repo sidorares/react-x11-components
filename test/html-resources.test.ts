@@ -820,11 +820,18 @@ withFonts(
       ['r.woff2'],
       'a local() asks the host nothing',
     );
-    assert.strictEqual(boxOf(node, 'p').style.fontFamily, LOCAL);
+    // and the list ends in the document's own family, having no generic
+    assert.strictEqual(
+      boxOf(node, 'p').style.fontFamily,
+      `${LOCAL}, sans-serif`,
+    );
     arrive({ kind: 'font', bytes: REGULAR! });
     await settle(node);
     const p = boxOf(node, 'p').style;
-    assert.match(p.fontFamily, new RegExp(`^html webfont [a-z]+, ${LOCAL}$`));
+    assert.match(
+      p.fontFamily,
+      new RegExp(`^html webfont [a-z]+, ${LOCAL}, sans-serif$`),
+    );
     assert.strictEqual(familyOf(result.app as never, p), 'KaTeX_Main');
   },
 );

@@ -310,6 +310,56 @@ test('an underline reaches the text of what is inside, in its own colour', async
   assert.ok(style('both').underline && style('both').lineThrough, 'both');
 });
 
+metric(
+  "a link's underline goes on under the space it ends on, and not where its line ends there",
+  async () => {
+    // the space white space collapses to is the first, in the element it
+    // was written in (CSS Text 3, 4.1.1), and a decoration is drawn under
+    // all of an element's text: a link written `text </a>` before another
+    // is underlined to the next one. The text engine lays a piece of a line
+    // out as a line and strips the space, and the underline stopped at the
+    // last letter — the Zen Garden's 066, its resource links a space apart
+    // and underlined to their letters. A space a line ends on is removed
+    // (4.1.2), and is nobody's to underline
+    const { node } = await render(
+      '<style>body{margin:0;font-size:16px}p{margin:0;width:300px}' +
+        'a{padding-left:10px}#a1{color:#ff0000}#a2{color:#0000ff}' +
+        '#a3{color:#00ff00}#a5{color:#ff00ff}</style>' +
+        '<p><a id="a1" href="#">one </a><a id="a2" href="#">two</a> ' +
+        '<a id="a3" href="#">three </a> ' +
+        '<a href="#">awordtoolongtofitwhatisleftofthefirstline</a> ' +
+        '<a id="a5" href="#">three</a></p>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const fills = await fillsOf(el);
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    /** Where the underline drawn in a colour ends. */
+    const ruled = (color: string): number => {
+      const ink = parseColor(color);
+      const rules = fills.filter((f) => f.style === ink && f.h <= 2);
+      assert.ok(rules.length > 0, `an underline in ${color}`);
+      return Math.max(...rules.map((f) => f.x + f.w));
+    };
+    const two = rect('a2');
+    assert.ok(
+      Math.abs(ruled('#ff0000') - two.x) < 1.5,
+      `under its space, to the next link: ${ruled('#ff0000')} of ${two.x}`,
+    );
+    const three = rect('a3');
+    assert.ok(rect('a5').y > three.y, 'the third link ends the first line');
+    assert.ok(
+      Math.abs(ruled('#00ff00') - (three.x + three.width)) < 1.5,
+      `to its letters where its line ends: ${ruled('#00ff00')} of ${three.x + three.width}`,
+    );
+    assert.ok(
+      Math.abs(three.width - rect('a5').width) < 0.01,
+      'which are as wide as the word alone',
+    );
+  },
+);
+
 test('text-decoration with a word it does not know is ignored, and draws every line it names', async () => {
   // CSS 2.1 4.2: the whole declaration goes, not the words after it
   const { node } = await render(
@@ -406,6 +456,155 @@ metric(
     assert.ok(forty.length >= 1, 'the underline is drawn');
     for (const rule of forty) assert.deepStrictEqual(rule, [2, 4]);
     assert.deepStrictEqual(rules('c'), [[1, 1]], 'never under a pixel');
+  },
+);
+
+metric(
+  "a line through is as thick as its box's font size makes it, in its style, across the middle of each size",
+  async () => {
+    // A line through was a pixel thick and solid through a caption and a
+    // title alike: it had a colour and nothing else. Its thickness and its
+    // style are the box's that set it, as an underline's are (CSS Text
+    // Decoration 4, 2.2 and 2.4), and `auto` is a tenth of that box's font
+    // size. Where it is drawn is each font's to say: through text of another
+    // size it is worked out again, so that the text stays crossed out
+    // (2.5) — a third of the ascent above the baseline, the rule's middle
+    // there.
+    const { node } = await render(
+      '<style>body{margin:0;font:16px sans-serif}p{margin:0}' +
+        's,del{text-decoration-color:#ff0000}</style>' +
+        '<p id="a"><s>sixteen</s></p>' +
+        '<p id="b" style="font-size:48px"><del>big' +
+        '<small style="font-size:16px">small</small></del></p>' +
+        '<p id="c" style="font-size:140px;line-height:1"><s>Title</s></p>' +
+        '<p id="d"><s style="text-decoration-thickness:6px">six</s>' +
+        '<s style="text-decoration-thickness:2.6px">nearest</s></p>' +
+        '<p id="e" style="font-size:48px">' +
+        '<s style="text-decoration-style:double">double</s></p>' +
+        '<p id="f" style="font-size:48px">' +
+        '<s style="text-decoration-style:dashed">dashed</s></p>' +
+        '<p id="g" style="font-size:48px">' +
+        '<s style="text-decoration-style:dotted">dotted</s></p>' +
+        '<p id="h" style="font-size:9px"><s>nine</s></p>' +
+        '<style>#i::first-line{font-size:20px;' +
+        'text-decoration:line-through #00aa00 3px}</style>' +
+        '<p id="i">first<br>second</p>',
+      800,
+    );
+    const el = view(node);
+    const fills = await fillsOf(el);
+    /** The rules through a paragraph's line, and its runs' ascents. */
+    const through = (id: string) => {
+      const [line] = linesOf(el, id);
+      const b = line.y + line.baseline;
+      const ascents = line.texts.flatMap((text) => {
+        const laid = text.layout.lines[text.layoutLine] as unknown as {
+          runs: {
+            run: { size: number; font: { metrics(s: number): Metrics } };
+          }[];
+        };
+        return laid.runs.map((r) => r.run.font.metrics(r.run.size).ascent);
+      });
+      return {
+        b,
+        extent: extentOf(line.texts[0]),
+        ascents: [...new Set(ascents)].sort((x, y) => y - x),
+        rules: fills.filter(
+          (f) => f.style === '#ff0000' && f.y < b && f.y > line.y,
+        ),
+      };
+    };
+    type Metrics = { ascent: number };
+    /** Where a rule `thick` pixels thick sits on a face of `ascent`. */
+    const top = (b: number, ascent: number, thick: number) =>
+      Math.round(b - ascent / 3 - thick / 2);
+
+    const a = through('a');
+    assert.deepStrictEqual(
+      a.rules.map((f) => [f.y, f.h]),
+      [[top(a.b, a.ascents[0], 1), 1]],
+      '1.6 is a pixel',
+    );
+    // the 16px text in the 48px box is struck as thickly as the box's own,
+    // through its own middle
+    const b = through('b');
+    assert.strictEqual(b.ascents.length, 2, 'two sizes on the line');
+    assert.deepStrictEqual(
+      b.rules.map((f) => [f.y, f.h]),
+      [
+        [top(b.b, b.ascents[0], 4), 4],
+        [top(b.b, b.ascents[1], 4), 4],
+      ],
+      '4.8 is four pixels, at each size a third of its ascent up',
+    );
+    assert.ok(
+      Math.abs(b.rules[0].x + b.rules[0].w - b.rules[1].x) <= 1,
+      'one where the other ends',
+    );
+    const c = through('c');
+    assert.deepStrictEqual(
+      c.rules.map((f) => [f.y, f.h]),
+      [[top(c.b, c.ascents[0], 14), 14]],
+      'fourteen through a title',
+    );
+    // a length is itself, on whole pixels
+    const d = through('d');
+    assert.deepStrictEqual(
+      d.rules.map((f) => [f.y, f.h]),
+      [
+        [top(d.b, d.ascents[0], 6), 6],
+        [top(d.b, d.ascents[0], 3), 3],
+      ],
+    );
+    assert.deepStrictEqual(
+      through('h').rules.map((f) => f.h),
+      [1],
+      'never under a pixel',
+    );
+
+    // a first line's is its runs' as well, in the fonts the line sets
+    const [i, second] = linesOf(el, 'i');
+    assert.deepStrictEqual(
+      fills
+        .filter((f) => f.style === '#00aa00')
+        .map((f) => [f.y > i.y && f.y < i.y + i.baseline, f.h]),
+      [[true, 3]],
+      `through the first line alone, above ${second.y}`,
+    );
+
+    // the styles: two lines a pixel apart, the first where one would be
+    const e = through('e');
+    const first = top(e.b, e.ascents[0], 4);
+    assert.deepStrictEqual(
+      e.rules.map((f) => [f.y, f.h]),
+      [
+        [first, 4],
+        [first + 5, 4],
+      ],
+    );
+    // dashes twice their thickness long, from the text's start to its end,
+    // a stroke the nearest whole pixel to 4.8 wide
+    const f = through('f');
+    assert.ok(f.rules.length > 3, `dashes: ${f.rules.length}`);
+    for (const dash of f.rules) {
+      assert.deepStrictEqual(
+        [dash.y, dash.w, dash.h],
+        [top(f.b, f.ascents[0], 5), 10, 5],
+      );
+    }
+    const [from, to] = f.extent;
+    const last = f.rules[f.rules.length - 1];
+    assert.ok(Math.abs(f.rules[0].x - from) <= 1, 'from its start');
+    assert.ok(Math.abs(last.x + last.w - to) <= 1, 'to its end');
+    // and round dots, as a thick dotted underline's are
+    const g = through('g');
+    assert.ok(g.rules.length > 3, `dots: ${g.rules.length}`);
+    for (const dot of g.rules) {
+      assert.deepStrictEqual(
+        [dot.y, dot.w, dot.h, dot.radii],
+        [top(g.b, g.ascents[0], 5), 5, 5, [2.5]],
+      );
+    }
   },
 );
 

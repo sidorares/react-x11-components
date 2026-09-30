@@ -110,8 +110,15 @@ export interface TextRun {
    *  `text-decoration-thickness`. Unset, two pixels below and one thick. */
   underlineOffset?: number;
   underlineThickness?: number;
-  /** 1px rule through the x-height, in this colour — `~~del~~`. */
+  /** Rule through the x-height, in this colour — `~~del~~`. Its middle is
+   *  a third of the run's own ascent above the baseline. */
   strike?: string;
+  /** The rule `strike` draws, as `underlineStyle` names them. Default
+   *  `'single'`; ignored without `strike`. */
+  strikeStyle?: 'single' | 'double' | 'curly' | 'dotted' | 'dashed';
+  /** How thick the rule through is, in the unit `size` is in — CSS's
+   *  `text-decoration-thickness` on a line through. Unset, one pixel. */
+  strikeThickness?: number;
   /** Link target. `null` is a link still streaming in (not clickable). */
   href?: string | null;
   /** OpenType features the run is shaped with, by tag — `{ tnum: 1 }`,
@@ -490,7 +497,8 @@ export class RichTextNode extends Node {
     return runs.map((r) =>
       typeof r.size === 'number' ||
       r.underlineOffset !== undefined ||
-      r.underlineThickness !== undefined
+      r.underlineThickness !== undefined ||
+      r.strikeThickness !== undefined
         ? {
             ...r,
             ...(typeof r.size === 'number' ? { size: r.size * scale } : null),
@@ -499,6 +507,9 @@ export class RichTextNode extends Node {
               : null),
             ...(r.underlineThickness !== undefined
               ? { underlineThickness: r.underlineThickness * scale }
+              : null),
+            ...(r.strikeThickness !== undefined
+              ? { strikeThickness: r.strikeThickness * scale }
               : null),
           }
         : r,

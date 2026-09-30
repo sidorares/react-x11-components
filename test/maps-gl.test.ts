@@ -60,6 +60,7 @@ import {
 import { attributionOf } from '../src/maps/sources.js';
 import type { MapSource } from '../src/maps/sources.js';
 import { holdGlide } from './glide-clock.js';
+import { holdClock } from './held-clock.js';
 import {
   attributionLayout,
   drawMarkers,
@@ -116,7 +117,7 @@ import {
 } from '../src/maps/gl/renderer.js';
 import { GlTileStore } from '../src/maps/gl/store.js';
 import { LabelAtlas, SurfaceTextEngine } from '../src/maps/gl/text.js';
-import { glideClock } from '../src/maps/controller.js';
+import { settleClock } from '../src/maps/controller.js';
 import { SDF_EDGE } from '../src/internal/sdf.js';
 import type { TextEngine } from '../src/maps/gl/text.js';
 
@@ -2933,11 +2934,26 @@ test('a glide sets the labels of the view it stops at while it is still gliding'
     dispose: () => {},
   };
   t.mock.method(SurfaceTextEngine, 'forApp', () => engine);
-  // The glide held: its first step is taken under the wheel, and no other.
-  let clockAt = 0;
-  t.mock.method(glideClock, 'now', () => clockAt);
-  t.mock.method(glideClock, 'arm', (tick: () => void) => tick);
-  t.mock.method(glideClock, 'disarm', () => {});
+  // What a frame does *while* a glide is under way is the question, and on
+  // the wall a runner decides how long that is. Three clocks say, and all
+  // three are held.
+  //
+  // The glide's: its first step is taken under the wheel, and no other.
+  holdGlide(t);
+  // The settle window's, which the wheel opens and nothing here closes. It
+  // is 140 ms, and a runner that spent them before the second frame drew a
+  // map that had settled: a frame is asked where a glide stops only while
+  // the map is moving, and that one set no name of the destination's.
+  const settle = holdClock(t, settleClock);
+  // And the frames' — `performance.now()`, which every budget inside one is
+  // read on — a step a frame, as `sweep` has it. A frame builds tiles for
+  // six milliseconds, and one at least: on a runner where a tile took the
+  // six, the frames this settled in built one each, and the two after the
+  // wheel two more of the view's own — none of the destination's, which
+  // wait behind them. Held, no budget runs out inside a frame, and a frame
+  // builds what it has in hand.
+  let frameAt = 0;
+  t.mock.method(globalThis.performance, 'now', () => frameAt);
 
   const loaded: number[] = [];
   // Every tile names a place at its centre. Centres are at most 1024
@@ -2995,28 +3011,37 @@ test('a glide sets the labels of the view it stops at while it is still gliding'
   const gl = recordingGl(true).gl;
   const info = { width: 1536, height: 1536, node: { scale: 1 } };
   const frame = async () => {
+    frameAt += 16;
     driver.draw(gl, info);
+    // The loads land in microtasks, and the atlas sets what a frame asked
+    // for on a timer armed inside it, ahead of these.
     for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
   };
-  // Settled at 12, labels and all. The settle window is wall-clock.
-  for (let i = 0; i < 12; i++) {
-    await frame();
-    await new Promise((r) => setTimeout(r, 20));
-  }
+  // At rest at 12, labels and all: a frame that asks for the view's tiles,
+  // and one that builds them and places their names.
+  await frame();
+  await frame();
   const settled = [...set];
   assert.ok(
     settled.some((k) => k.includes('Place 12')),
     `settled: ${settled.join(', ')}`,
   );
   assert.ok(!loaded.includes(14));
+  assert.ok(!controller.moving, 'nothing has moved yet');
 
   // Two levels in, and the glide held after its first step.
   controller.wheel({ x: 768, y: 768 }, -250);
   const zoom = controller.camera().zoom;
   assert.ok(zoom > 12 && zoom < 13, `under way: ${zoom}`);
+  // Two frames again: the destination's tiles asked for, then built and
+  // their names placed — by a frame that draws none of them.
   await frame();
   await frame();
   assert.strictEqual(controller.camera().zoom, zoom, 'and nowhere near 14');
+  assert.ok(
+    controller.moving && settle.pending,
+    'the window the wheel opened is still open',
+  );
   assert.ok(loaded.includes(14), `the tiles it stops on: ${loaded.join(',')}`);
   assert.ok(
     set.some((k) => k.includes('Place 14') && !settled.includes(k)),

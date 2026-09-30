@@ -33,7 +33,7 @@ import {
   isTransparent,
   resolve,
 } from './css/values.js';
-import { blend, borderShades } from './css/color.js';
+import { SCHEME_COLORS, blend, borderShades } from './css/color.js';
 import type { Len } from './css/values.js';
 import type {
   BackgroundClip,
@@ -157,9 +157,9 @@ export interface PaintOptions {
   /** Where the document's origin sits in the window. Scrolling is this. */
   originX: number;
   originY: number;
-  /** Device pixels per logical pixel, for the run rules — a line through
-   *  is a logical pixel thick, not a device one; an underline's thickness
-   *  is its style's, in device pixels already. Default 1. */
+  /** Device pixels per logical pixel, for the run rules — the two lines
+   *  of a double one are a logical pixel apart, not a device one; a rule's
+   *  thickness is its style's, in device pixels already. Default 1. */
   scale?: number;
   /** The rectangle being repainted, in window coordinates, or null for all. */
   damage: Rect | null;
@@ -593,6 +593,20 @@ export function paintDocument(
   if (!canFill(ctx)) return;
   ctx.save();
   const canvas = canvasBackground(tree);
+  const scheme = rootScheme(tree);
+  if (scheme !== tree.paletteScheme) {
+    // A document is drawn on the window's own ground, the palette's, as an
+    // embedded one is on a transparent canvas. Where its root's colour
+    // scheme is not the scheme of what it is embedded in, its canvas is
+    // opaque, in the `Canvas` colour of its own (CSS Color Adjust 1, 2.2):
+    // a page that says it is light, and sets its text dark on no
+    // background, is not read against a dark window.
+    const area = canvasArea(tree.root, options);
+    if (area) {
+      ctx.fillStyle = SCHEME_COLORS[scheme].canvas;
+      ctx.fillRect(area.x, area.y, area.w, area.h);
+    }
+  }
   if (canvas) paintCanvas(ctx, canvas, tree.root, options);
   paintBox(ctx, tree.root, {
     ...options,
@@ -650,6 +664,34 @@ function canvasBackground(tree: BoxTree): CanvasBackground | null {
     : null;
 }
 
+/** The used colour scheme of the document's root element: the `<html>`'s,
+ *  or that of whichever box stands in for it (`canvasBackground`). */
+function rootScheme(tree: BoxTree): 'light' | 'dark' {
+  if (tree.impliedHtml) return tree.impliedHtml.colorScheme;
+  return (childNamed(tree.root, 'html') ?? tree.root).style.colorScheme;
+}
+
+/** The canvas, cut to what is being painted: the whole element where the
+ *  host says what that is, and else the root box. */
+function canvasArea(
+  root: Box,
+  options: PaintOptions,
+): { x: number; y: number; w: number; h: number } | null {
+  const whole = options.canvas ?? {
+    x: root.x + options.originX,
+    y: root.y + options.originY,
+    width: root.width,
+    height: root.height,
+  };
+  return clampRect(
+    options,
+    Math.round(whole.x),
+    Math.round(whole.y),
+    Math.ceil(whole.width),
+    Math.ceil(whole.height),
+  );
+}
+
 /** A box's child element of that name, or one inside the anonymous boxes
  *  it is wrapped in: a `<body>` in an `<html>` set `display: table` is in
  *  an anonymous row and cell. */
@@ -670,19 +712,7 @@ function paintCanvas(
   root: Box,
   options: PaintOptions,
 ): void {
-  const whole = options.canvas ?? {
-    x: root.x + options.originX,
-    y: root.y + options.originY,
-    width: root.width,
-    height: root.height,
-  };
-  const area = clampRect(
-    options,
-    Math.round(whole.x),
-    Math.round(whole.y),
-    Math.ceil(whole.width),
-    Math.ceil(whole.height),
-  );
+  const area = canvasArea(root, options);
   if (!area) return;
   const layers = layersOf(source) ?? [source];
   const visible = source.visibility === 'visible';
@@ -4697,14 +4727,17 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     );
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
-      if (natural)
+      if (!natural) continue;
+      for (const laid of [natural, trailOf(text, natural)]) {
+        if (!laid) continue;
         paintRunBackgrounds(
           ctx,
-          natural,
+          laid,
           text.drawX + dx,
           text.drawY + dy,
           options.scale ?? 1,
         );
+      }
     }
     paintSelection(ctx, line, options);
   }
@@ -5147,10 +5180,12 @@ function paintRules(
     const shifted = SHIFTED_LINES.has(line);
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
-      if (natural) {
+      if (!natural) continue;
+      for (const laid of [natural, trailOf(text, natural)]) {
+        if (!laid) continue;
         paintRunRules(
           ctx,
-          natural,
+          laid,
           text.drawX + dx,
           text.drawY + dy + (shifted ? ruleDrop(text) : 0),
           scale,
@@ -5159,6 +5194,29 @@ function paintRules(
       }
     }
   }
+}
+
+/**
+ * The spaces a text ends on where its line goes on after them
+ * (`LineText.trail`), as a line of one run to draw the decorations of: the
+ * run they are the end of, as wide as they are, after the line's content.
+ * The engine stripped them from the piece it laid out as a line, and a
+ * link's underline stopped at its last letter, a space short of where a
+ * browser draws it. Null where the text has none, or reads right to left.
+ */
+function trailOf<L extends LineText['layout']['lines'][number]>(
+  text: LineText,
+  natural: L,
+): L | null {
+  if (!text.trail || !text.trailRun) return null;
+  const last = natural.runs[natural.runs.length - 1];
+  if (!last || last.run?.direction === 'rtl') return null;
+  return {
+    ...natural,
+    runs: [
+      { ...last, x: natural.width, width: text.trail, span: text.trailRun },
+    ],
+  };
 }
 
 /**

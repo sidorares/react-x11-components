@@ -1521,10 +1521,14 @@ export class Cascade {
     // em-relative length in the same rule resolves against this element's.
     const root = isRootElement(el);
     const rootStyle = root ? this.initial : (this._root ?? this.initial);
+    // whose declaration is being applied: the UA sheet's families are the
+    // host's own faces, and its lists end where they end
+    let authored = true;
     const ctxParent: UnitContext = {
       em: parentStyle.fontSize,
       rem: rootStyle.fontSize,
       initial: this.initial,
+      fallbackFamily: () => (authored ? this.initial.fontFamily : null),
       vw: this.viewportWidth,
       vh: this.viewportHeight,
       scale: this.scale,
@@ -1543,6 +1547,7 @@ export class Cascade {
     let sized = false;
     let keyword = false;
     for (const c of candidates) {
+      authored = c.origin !== Origin.UserAgent;
       for (const d of pick(c)) {
         if (
           d.prop === 'font-family' ||
@@ -1606,6 +1611,7 @@ export class Cascade {
     // them. A `font` sets the size as well, which the first pass settled.
     if (this._lh) {
       for (const c of candidates) {
+        authored = c.origin !== Origin.UserAgent;
         for (const d of pick(c)) {
           if (d.prop === 'line-height' || d.prop === 'font') {
             this._apply(style, parentStyle, d, ctx);
@@ -1621,6 +1627,7 @@ export class Cascade {
     }
     const settled = style.fontSize;
     for (const c of candidates) {
+      authored = c.origin !== Origin.UserAgent;
       for (const d of pick(c)) {
         if (d.prop === 'font-size' || d.custom) continue;
         this._apply(style, parentStyle, d, ctx);

@@ -677,6 +677,11 @@ export interface ComputedStyle {
   underlineThickness: number | null;
   underlineOffset: number | null;
   lineThrough: string | null;
+  /** And the line through's style and thickness, the box's that set it, as
+   *  the underline's are. It has no offset to set: it is drawn where each
+   *  font it crosses puts it (`paintRunRules`). */
+  lineThroughStyle: 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
+  lineThroughThickness: number | null;
 
   // flex — handed to yoga rather than interpreted here
   flexDirection: 'row' | 'row-reverse' | 'column' | 'column-reverse';
@@ -1031,6 +1036,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     underlineThickness: null,
     underlineOffset: null,
     lineThrough: null,
+    lineThroughStyle: 'solid',
+    lineThroughThickness: null,
 
     flexDirection: 'row',
     flexWrap: 'nowrap',
@@ -1173,6 +1180,8 @@ export function inherit(
   out.underlineThickness = parent.underlineThickness;
   out.underlineOffset = parent.underlineOffset;
   out.lineThrough = parent.lineThrough;
+  out.lineThroughStyle = parent.lineThroughStyle;
+  out.lineThroughThickness = parent.lineThroughThickness;
   return out;
 }
 
@@ -1207,6 +1216,8 @@ export const FIRST_LINE_INHERITED = [
   'underlineThickness',
   'underlineOffset',
   'lineThrough',
+  'lineThroughStyle',
+  'lineThroughThickness',
 ] as const satisfies readonly (keyof ComputedStyle)[];
 
 /**
@@ -2208,7 +2219,20 @@ export function applyDeclaration(
         )
         .filter(Boolean)
         .join(', ');
-      style.fontFamily = ctx.families ? ctx.families(list) : list;
+      // A list that ends in no generic family ends in the document's own
+      // font: where no face in the list matches, the text is set in the
+      // user agent's default (CSS Fonts 4, 5.1), which for a browser is its
+      // standard font and here is the one the document is set in. The text
+      // engine's own answer for a name nothing has is its platform's pick,
+      // Verdana under fontconfig: the Zen Garden's 216 sets its summary in
+      // Montserrat alone, which no machine here has, and Chrome sets it in
+      // Times where ours was Verdana, a fifth wider
+      const last = names[names.length - 1].trim();
+      const generic =
+        !/^['"]/.test(last) && GENERIC_FAMILY.has(last.toLowerCase());
+      const fallback = generic ? null : (ctx.fallbackFamily?.() ?? null);
+      const full = fallback ? `${list}, ${fallback}` : list;
+      style.fontFamily = ctx.families ? ctx.families(full) : full;
       return;
     }
     case 'font-size': {
@@ -3277,6 +3301,12 @@ function alignKeyword(value: string): string | null {
       return 'flex-end';
     case 'first baseline':
       return 'baseline';
+    // By last baselines, which nothing here aligns: set where that falls
+    // back to, the end (CSS Box Alignment 3, 4.2). Dropped, a row that asks
+    // for it stretched its items, and a flex box among them was as tall as
+    // the row, its lines spread down it.
+    case 'last baseline':
+      return 'flex-end';
     case 'center':
       return 'center';
     case 'stretch':
@@ -5727,6 +5757,8 @@ export function decorate(style: ComputedStyle): void {
       style.textDecorationColor ?? 'currentColor',
       style.color,
     );
+    style.lineThroughStyle = style.textDecorationStyle;
+    style.lineThroughThickness = usedThickness(style);
   }
 }
 
@@ -5864,3 +5896,23 @@ export function blockify(style: ComputedStyle, inFlexContainer: boolean): void {
       return;
   }
 }
+
+/** The generic font families, which a list ending in one falls back
+ *  through already, in the text engine (CSS Fonts 4, 4.2). */
+const GENERIC_FAMILY = new Set([
+  'serif',
+  'sans-serif',
+  'monospace',
+  'cursive',
+  'fantasy',
+  'system-ui',
+  'ui-serif',
+  'ui-sans-serif',
+  'ui-monospace',
+  'ui-rounded',
+  'math',
+  'emoji',
+  'fangsong',
+  '-apple-system',
+  'blinkmacsystemfont',
+]);

@@ -57,3 +57,53 @@ test('a new runs array that says the same thing is not a new layout', async () =
     fonts.layout = inner;
   }
 });
+
+test('a line through is as thick as its run says, on the device grid', async () => {
+  // `strikeThickness` is a length in the unit `size` is in, a logical one
+  // nothing in core multiplies: at 2x three pixels are six device ones, as
+  // a rule that says nothing is two.
+  const runs: TextRun[] = [
+    { text: 'gone ', size: 20, color: '#000000', strike: '#ff0000' },
+    {
+      text: 'gone',
+      size: 20,
+      color: '#000000',
+      strike: '#ff0000',
+      strikeThickness: 3,
+    },
+  ];
+  const view = await renderX11(
+    h(RICHTEXT_ELEMENT, { runs, style: { width: 200 } }),
+    { width: 240, height: 80, scale: 2 },
+  );
+  const node = screen.all((n) => n.kind === RICHTEXT_ELEMENT)[0] as DrawnNode;
+  await act();
+  const { abs } = node;
+  const { data } = await (
+    view.ctx as unknown as {
+      getImageData(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+      ): Promise<{ data: Uint8ClampedArray }>;
+    }
+  ).getImageData(abs.x, abs.y, abs.width, abs.height);
+  /** How many rows of each column are the rule's red. */
+  const red = (x: number): number => {
+    let rows = 0;
+    for (let y = 0; y < abs.height; y += 1) {
+      const at = (y * abs.width + x) * 4;
+      if (data[at] > 200 && data[at + 1] < 60 && data[at + 2] < 60) rows += 1;
+    }
+    return rows;
+  };
+  const thick = new Set<number>();
+  for (let x = 0; x < abs.width; x += 1) thick.add(red(x));
+  thick.delete(0);
+  assert.deepStrictEqual(
+    [...thick].sort((a, b) => a - b),
+    [2, 6],
+    'a logical pixel, and three of them',
+  );
+});

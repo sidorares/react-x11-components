@@ -277,6 +277,26 @@ export const glideClock = {
   },
 };
 
+/**
+ * The clock the settle window is measured on, and the timer that closes it.
+ *
+ * The shape of {@link glideClock}, and exported as it is — from this module
+ * and not from the package — so that a test can hold the window open. It is
+ * {@link SETTLE_MS} of wall-clock time, and a test that asks what the map
+ * does *while it is moving* is asking inside it: a runner slow enough to
+ * spend the window between the wheel and the frame that looks finds a map
+ * that has settled, and a frame that is no longer asked where a glide stops.
+ */
+export const settleClock = {
+  now(): number {
+    return Date.now();
+  },
+  arm,
+  disarm(handle: unknown): void {
+    timers.clearTimeout?.(handle);
+  },
+};
+
 function clamp(value: number, low: number, high: number): number {
   return value < low ? low : value > high ? high : value;
 }
@@ -374,7 +394,7 @@ export class MapController {
    * camera move arms the settle timer again, and the next notch a glide.
    */
   dispose(): void {
-    if (this._settleTimer !== null) timers.clearTimeout?.(this._settleTimer);
+    if (this._settleTimer !== null) settleClock.disarm(this._settleTimer);
     this._settleTimer = null;
     if (this._glideTimer !== null) glideClock.disarm(this._glideTimer);
     this._glideTimer = null;
@@ -811,7 +831,7 @@ export class MapController {
 
   /** Whether the camera moved within the settle window. */
   get moving(): boolean {
-    return Date.now() < this._settleAt;
+    return settleClock.now() < this._settleAt;
   }
 
   /** …or a press is still down: what the retained renderer holds
@@ -832,22 +852,23 @@ export class MapController {
    *
    * Wall-clock time rather than a frame clock: this is a window a hundred
    * and forty milliseconds long compared inside a timer callback, and a
-   * timer is the one thing that runs when no frame does.
+   * timer is the one thing that runs when no frame does. Read and armed
+   * through {@link settleClock}, which a test holds.
    */
   touch(): void {
-    this._settleAt = Date.now() + SETTLE_MS;
+    this._settleAt = settleClock.now() + SETTLE_MS;
     if (this._settleTimer !== null) return;
     const tick = (): void => {
       this._settleTimer = null;
-      const left = this._settleAt - Date.now();
+      const left = this._settleAt - settleClock.now();
       if (left > 0) {
-        this._settleTimer = arm(tick, left);
+        this._settleTimer = settleClock.arm(tick, left);
         return;
       }
       this._props.onMoveEnd?.(this.camera());
       this._view?.settled();
     };
-    this._settleTimer = arm(tick, SETTLE_MS);
+    this._settleTimer = settleClock.arm(tick, SETTLE_MS);
   }
 
   // --- input ---------------------------------------------------------------

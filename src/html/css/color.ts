@@ -773,6 +773,24 @@ export function lightDark(
   value: string,
   scheme: 'light' | 'dark',
 ): string | null {
+  // kept by the value: the UA sheet's link colour is one, so every link of
+  // every document asks, and a theme's are a few asked by every element
+  const kept = PICKED[scheme];
+  let picked = kept.get(value);
+  if (picked === undefined) {
+    picked = pickScheme(value, scheme);
+    if (kept.size >= 512) kept.clear();
+    kept.set(value, picked);
+  }
+  return picked;
+}
+
+const PICKED = {
+  light: new Map<string, string | null>(),
+  dark: new Map<string, string | null>(),
+};
+
+function pickScheme(value: string, scheme: 'light' | 'dark'): string | null {
   let out = value;
   // a branch can hold another, which the next round replaces
   for (let round = 0; round < 32; round += 1) {
@@ -826,6 +844,17 @@ export function usedColorScheme(
   }
   return first ?? preferred;
 }
+
+/**
+ * A browser's own colours in each scheme — the system colours `Canvas`,
+ * `CanvasText` and `LinkText` (CSS Color 4, 6.2), as Chrome has them: what
+ * a document is drawn in where its root's scheme is not the palette's,
+ * which has the colours of its own scheme and of no other.
+ */
+export const SCHEME_COLORS = {
+  light: { canvas: '#ffffff', text: '#000000', link: '#0000ee' },
+  dark: { canvas: '#121212', text: '#ffffff', link: '#9e9eff' },
+} as const;
 
 const SCHEME_IDENT = /^-?(?:[a-z_]|--)[\w-]*$/;
 /** What a scheme's name cannot be: the keywords the grammar has, and the

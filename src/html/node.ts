@@ -59,7 +59,7 @@ import {
 } from './css/cascade.js';
 import type { HoverTouch, KeptStyles, MetricFace } from './css/cascade.js';
 import { mediaMatches, parseStylesheet } from './css/parse.js';
-import type { Stylesheet } from './css/parse.js';
+import type { MediaCondition, Stylesheet } from './css/parse.js';
 import { uaStylesheet } from './css/ua.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
 import {
@@ -718,15 +718,23 @@ export class HtmlViewNode extends Node {
     place: (sheet: Stylesheet, element: Element) => void,
     depth = 0,
     chain: Set<string> = new Set(),
+    /** The media queries `sheet` is itself under, where it was imported
+     *  under some. */
+    under: MediaCondition[][] | null = null,
   ): void {
-    for (const url of sheet.imports) {
+    for (let i = 0; i < sheet.imports.length; i += 1) {
+      const url = sheet.imports[i];
+      // what it imports is under its import's media queries, and under
+      // the ones the sheet importing it is under
+      const conditions = sheet.importConditions[i];
+      const media = conditions ? [...(under ?? []), conditions] : under;
       this._resources.request({ url, kind: 'stylesheet', element });
       const fetched = this._resources.stylesheet(url, [encoding]);
       const base = this._resources.sheetBase(url);
       seen.push({ url, text: fetched?.text ?? null, base });
       const key = base ?? url;
       if (!fetched || depth >= MAX_IMPORT_DEPTH || chain.has(key)) continue;
-      const imported = parseStylesheet(fetched.text, 0, layers, base);
+      const imported = parseStylesheet(fetched.text, 0, layers, base, media);
       chain.add(key);
       this._placeImports(
         imported,
@@ -737,6 +745,7 @@ export class HtmlViewNode extends Node {
         place,
         depth + 1,
         chain,
+        media,
       );
       chain.delete(key);
       place(imported, element);
@@ -2707,6 +2716,19 @@ function lineBands(
             height: rows.height,
           });
         }
+        // The spaces a piece of a line ends on, where the line goes on
+        // after them: the engine stripped them from the piece it laid out
+        // as a line, and they are the text's all the same, in the elements
+        // that hold its end — a link whose text ends in a space, before
+        // the next link, is that space wider than its letters
+        if (text.trail && b >= text.textEnd && !rtlLine(natural)) {
+          out.push({
+            x: dx + natural.x + natural.width + text.drawX - moved,
+            y: dy + rows.y,
+            width: text.trail,
+            height: rows.height,
+          });
+        }
         // the spaces `pre-wrap` keeps that the line ends on, which have no
         // run: the engine hung them past the line (`LineText.hung`)
         for (const space of text.hung ?? []) {
@@ -2722,6 +2744,14 @@ function lineBands(
       }
     }
   }
+}
+
+/** Whether a laid-out line's last run reads right to left, its end at its
+ *  left. */
+function rtlLine(natural: {
+  runs: { run?: { direction?: string } }[];
+}): boolean {
+  return natural.runs[natural.runs.length - 1]?.run?.direction === 'rtl';
 }
 
 /** Whether a line's text is where the line ends: its last, with nothing
@@ -3045,6 +3075,8 @@ const PAINT_ONLY = new Set([
   'underlineThickness',
   'underlineOffset',
   'lineThrough',
+  'lineThroughStyle',
+  'lineThroughThickness',
 ]);
 
 /** The fields of a run its ink is: what `runFor` takes from `PAINT_ONLY`. */
@@ -3055,6 +3087,8 @@ const INK_FIELDS = [
   'underlineOffset',
   'underlineThickness',
   'strike',
+  'strikeStyle',
+  'strikeThickness',
 ] as const;
 
 /** The fields of a run its shape is, which ink never changes. */
