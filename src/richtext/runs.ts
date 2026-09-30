@@ -185,12 +185,14 @@ export function paintRunBackgrounds(
  *  is one logical pixel thick — `scale` device pixels, so a link on a 2x
  *  panel is underlined as heavily as on a 1x one, not with a hairline —
  *  and an underline two below the baseline, where the run sets neither
- *  (`underlineThickness`, `underlineOffset`, in device pixels by now).
+ *  (`underlineThickness`, `underlineOffset`, in device pixels by now). A
+ *  line through is a logical pixel as well where the run names no
+ *  `strikeThickness`, and is drawn where its face puts it (`strikeTop`).
  *  `rules` picks a pass: CSS draws an underline under the glyphs and a
  *  line through over them (CSS 2.1 Appendix E), which is two passes around
  *  the glyphs'; drawn in one, both go over.
  *
- *  An underline is drawn a stretch at a time and not a run: a layout hands
+ *  A rule is drawn a stretch at a time and not a run: a layout hands
  *  back a run a word, and a pattern begun again under each — dots spread
  *  from one end of their rule to the other, above all — is a pattern with
  *  a seam at every space. Runs that touch and draw the same rule share
@@ -231,17 +233,56 @@ export function paintRunRules(
     if (ruled) stretchRule(ctx, ruled, line, dx + from, dx + to, dy, t);
   }
   if (rules === 'under') return;
+  // A line through, gathered the same way, and ended as well where the
+  // font size changes: it is drawn across each size where that size has
+  // it (`strikeTop`). The faces of one size are one stretch, at the height
+  // they have it between them — a word the face has no glyphs for is set
+  // in another, and the rule does not step for it.
+  let struck: TextRun | null = null;
+  let size: number | undefined;
+  let from = 0;
+  let to = 0;
+  // the stretch's ascent: its first run's, and its runs' by how much of
+  // the stretch each sets, which is read only where they are not all the
+  // first's
+  let ascent = 0;
+  let summed = 0;
+  let widths = 0;
+  let mixed = false;
   for (const r of line.runs) {
-    const strike = r.span?.strike;
-    if (!strike) continue;
-    const m = inkExtent(r, line);
-    ctx.fillStyle = strike;
-    ctx.fillRect(
-      Math.round(dx + line.x + r.x),
-      Math.round(dy + line.baseline - m.ascent * 0.38),
-      Math.ceil(r.width),
-      t,
-    );
+    const span = r.span;
+    if (!span?.strike) continue;
+    const own = inkExtent(r, line).ascent;
+    const end = r.x + r.width;
+    if (
+      struck &&
+      r.run?.size === size &&
+      (Math.abs(r.x - to) <= 0.5 || Math.abs(end - from) <= 0.5) &&
+      sameStrike(struck, span)
+    ) {
+      from = Math.min(from, r.x);
+      to = Math.max(to, end);
+      summed += own * r.width;
+      widths += r.width;
+      if (own !== ascent) mixed = true;
+      continue;
+    }
+    if (struck) {
+      const mean = mixed && widths > 0 ? summed / widths : ascent;
+      strikeRule(ctx, struck, line, dx + from, dx + to, dy, mean, t);
+    }
+    struck = span;
+    size = r.run?.size;
+    from = r.x;
+    to = end;
+    ascent = own;
+    summed = own * r.width;
+    widths = r.width;
+    mixed = false;
+  }
+  if (struck) {
+    const mean = mixed && widths > 0 ? summed / widths : ascent;
+    strikeRule(ctx, struck, line, dx + from, dx + to, dy, mean, t);
   }
 }
 
@@ -267,6 +308,90 @@ function stretchRule(
     span.underlineThickness === undefined
       ? t
       : Math.max(1, Math.round(span.underlineThickness)),
+    t,
+  );
+}
+
+/** How thick a run's line through is: what it says, on whole pixels, or
+ *  `t`, a rule's own thickness. */
+function strikeThickness(span: TextRun, t: number): number {
+  return span.strikeThickness === undefined
+    ? t
+    : Math.max(1, Math.round(span.strikeThickness));
+}
+
+/**
+ * Where the top of a line through is, across text whose faces' ascent is
+ * `ascent`. Through the middle of the letters with no ascender, which a
+ * face does not say the height of in a way both text engines report: a
+ * third of its ascent above the baseline, where Blink has it, and the
+ * rule's middle there, so that a thick one grows both ways from where a
+ * thin one is. The ascent is the text's own, and not that of the font the
+ * rule was set in: a line through is worked out again across text of
+ * another font size, from the metrics of the fonts that size is set in,
+ * so that the text is still crossed out (CSS Text Decoration 4, 2.5), and
+ * is not held to the one position an underline is (2.9). Blink measures
+ * the ascent of the font the rule was set in from the top of the text it
+ * crosses, which puts it near the top of larger text and under smaller.
+ * The curl is two levels and straddles the middle; a double rule's first
+ * line is the single one's, and its second under it, as Blink draws it.
+ *
+ * A run that names no thickness keeps the pixel it always had: the rule's
+ * top 38% of the ascent up, which at a text size is the same place, and a
+ * pixel off it at some.
+ */
+function strikeTop(
+  line: LaidLine,
+  dy: number,
+  span: TextRun,
+  ascent: number,
+  t: number,
+): number {
+  if (span.strikeThickness === undefined) {
+    return Math.round(dy + line.baseline - ascent * 0.38);
+  }
+  const thick = strikeThickness(span, t);
+  return Math.round(
+    dy +
+      line.baseline -
+      ascent / 3 -
+      (span.strikeStyle === 'curly' ? thick : thick / 2),
+  );
+}
+
+/** The line through a stretch of a line, from `from` to `to` of it, as
+ *  `span` has it, over faces whose ascent is `ascent`. */
+function strikeRule(
+  ctx: FillContext,
+  span: TextRun,
+  line: LaidLine,
+  from: number,
+  to: number,
+  dy: number,
+  ascent: number,
+  t: number,
+): void {
+  const left = Math.round(line.x + from);
+  ctx.fillStyle = span.strike;
+  underlineRule(
+    ctx,
+    left,
+    strikeTop(line, dy, span, ascent, t),
+    Math.ceil(line.x + to - left),
+    span.strikeStyle ?? 'single',
+    strikeThickness(span, t),
+    t,
+  );
+}
+
+/** Whether two spans are struck through with one rule: the same ink, style
+ *  and thickness. Where it is drawn is their faces' to say (`strikeTop`). */
+function sameStrike(a: TextRun, b: TextRun): boolean {
+  return (
+    a === b ||
+    (a.strike === b.strike &&
+      a.strikeStyle === b.strikeStyle &&
+      a.strikeThickness === b.strikeThickness)
   );
 }
 
@@ -288,16 +413,21 @@ function ruleThickness(scale: number): number {
 }
 
 /**
- * The rule under a run, in one of SGR 4's five styles.
+ * The rule under a run, or through it, in one of SGR 4's five styles.
  *
  * All five are built from rectangles `t` pixels thick — one logical pixel —
  * rather than a stroked path: the mock backend has no path API, and a
  * hairline stroke on a text baseline is not worth an antialiased path even
  * where there is one. The curl is a two-level square wave — at a text size
  * it reads as a squiggle, which is the entire job. The dot pitch and the
- * dash length scale with the thickness, so the pattern is the pattern at
- * any display scale. The one path is a thick dotted rule's (`dottedRule`):
- * a square is a dot only while it is too small to be seen as a square.
+ * dash length scale with the thickness (`dashedRule`), so the pattern is
+ * the pattern at any display scale. The one path is a thick dotted rule's
+ * (`dottedRule`): a square is a dot only while it is too small to be seen
+ * as a square.
+ *
+ * `gap` is what parts the two lines of a double rule: a logical pixel
+ * however thick they are, as Blink parts them, which for a rule of that
+ * thickness is the thickness between them it always was.
  */
 export function underlineRule(
   ctx: FillContext,
@@ -306,18 +436,18 @@ export function underlineRule(
   width: number,
   style: NonNullable<TextRun['underlineStyle']>,
   t = 1,
+  gap = t,
 ): void {
   switch (style) {
     case 'double':
       ctx.fillRect(x, y, width, t);
-      ctx.fillRect(x, y + 2 * t, width, t);
+      ctx.fillRect(x, y + t + gap, width, t);
       return;
     case 'dotted':
       dottedRule(ctx, x, y, width, t);
       return;
     case 'dashed':
-      for (let i = 0; i < width; i += 6 * t)
-        ctx.fillRect(x + i, y, Math.min(3 * t, width - i), t);
+      dashedRule(ctx, x, y, width, t);
       return;
     case 'curly':
       for (let i = 0; i < width; i += 2 * t) {
@@ -332,6 +462,55 @@ export function underlineRule(
     default:
       ctx.fillRect(x, y, width, t);
       return;
+  }
+}
+
+/** The thickness a dashed rule's dashes stop being the long ones of a thin
+ *  rule at. */
+const THIN_DASHES = 3;
+
+/**
+ * A dashed rule, its dashes the lengths Blink's are: three times the rule's
+ * thickness and two apart while it is thin, where a shorter dash reads as
+ * a dot and a nearer one as no gap, and twice and one from three pixels up.
+ * The first dash starts the rule and the last ends it, with as many between
+ * as leave the gaps nearest that: a rule that stopped where its length ran
+ * out ended on a sliver of a dash, or on nothing. One with room for two
+ * dashes and less than their gap is two, scaled to fit, and one too short
+ * for two is a line.
+ */
+function dashedRule(
+  ctx: FillContext,
+  x: number,
+  y: number,
+  width: number,
+  t: number,
+): void {
+  const thin = t < THIN_DASHES;
+  const dash = t * (thin ? 3 : 2);
+  const gap = t * (thin ? 2 : 1);
+  if (width <= 2 * dash) {
+    ctx.fillRect(x, y, width, t);
+    return;
+  }
+  if (width <= 2 * dash + gap) {
+    const each = Math.round((dash * width) / (2 * dash + gap));
+    ctx.fillRect(x, y, each, t);
+    ctx.fillRect(x + width - each, y, each, t);
+    return;
+  }
+  // the fewest dashes that gap fits between, and one more: whichever
+  // count's gap is nearer it
+  const few = Math.floor((width + gap) / (dash + gap));
+  const wide = (width - few * dash) / (few - 1);
+  const narrow = (width - (few + 1) * dash) / few;
+  const count =
+    narrow <= 0 || Math.abs(wide - gap) < Math.abs(narrow - gap)
+      ? few
+      : few + 1;
+  const pitch = (width - dash) / (count - 1);
+  for (let i = 0; i < count; i += 1) {
+    ctx.fillRect(x + Math.round(i * pitch), y, dash, t);
   }
 }
 

@@ -549,6 +549,11 @@ export interface ComputedStyle {
   underlineThickness: number | null;
   underlineOffset: number | null;
   lineThrough: string | null;
+  /** And the line through's style and thickness, the box's that set it, as
+   *  the underline's are. It has no offset to set: it is drawn where each
+   *  font it crosses puts it (`paintRunRules`). */
+  lineThroughStyle: 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
+  lineThroughThickness: number | null;
 
   // flex — handed to yoga rather than interpreted here
   flexDirection: 'row' | 'row-reverse' | 'column' | 'column-reverse';
@@ -896,6 +901,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     underlineThickness: null,
     underlineOffset: null,
     lineThrough: null,
+    lineThroughStyle: 'solid',
+    lineThroughThickness: null,
 
     flexDirection: 'row',
     flexWrap: 'nowrap',
@@ -1035,6 +1042,8 @@ export function inherit(
   out.underlineThickness = parent.underlineThickness;
   out.underlineOffset = parent.underlineOffset;
   out.lineThrough = parent.lineThrough;
+  out.lineThroughStyle = parent.lineThroughStyle;
+  out.lineThroughThickness = parent.lineThroughThickness;
   return out;
 }
 
@@ -1069,6 +1078,8 @@ export const FIRST_LINE_INHERITED = [
   'underlineThickness',
   'underlineOffset',
   'lineThrough',
+  'lineThroughStyle',
+  'lineThroughThickness',
 ] as const satisfies readonly (keyof ComputedStyle)[];
 
 /**
@@ -5522,6 +5533,8 @@ export function decorate(style: ComputedStyle): void {
       style.textDecorationColor ?? 'currentColor',
       style.color,
     );
+    style.lineThroughStyle = style.textDecorationStyle;
+    style.lineThroughThickness = usedThickness(style);
   }
 }
 

@@ -303,6 +303,39 @@ metric(
 );
 
 metric(
+  'a hovered line through takes its thickness and its style in place',
+  async () => {
+    // a line through's thickness and style are ink, as an underline's are:
+    // nothing moves for them, and the paragraph is not laid out again
+    const { result, node } = await render(
+      '<style>body{margin:0} del{text-decoration-color:#ff0000}' +
+        ' del:hover{text-decoration-thickness:4px;' +
+        'text-decoration-style:double}</style>' +
+        '<p id="p">Some text with <del id="d">a few words</del> struck.</p>' +
+        '<p id="q">Another paragraph.</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+
+    el.setHover(...pointIn(el, 'd'));
+    const hovered = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), tree, 'the document was built again');
+    assert.ok(bytesApart(hovered, quiet) > 0, 'the hover drew nothing');
+    assert.strictEqual(
+      bytesApart(hovered, await rebuilt(result, el)),
+      0,
+      'not the pixels a rebuild draws',
+    );
+
+    el.setHover(...pointIn(el, 'q'));
+    const left = await snapshot(result, el);
+    assert.strictEqual(bytesApart(left, quiet), 0, 'not as it was');
+  },
+);
+
+metric(
   'a hovered box takes its background and border colour in place',
   async () => {
     const { result, node } = await render(HOVER_PAGE, 300);

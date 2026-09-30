@@ -251,6 +251,237 @@ test('a thick dotted rule is round dots spread over it, where the context has a 
   ]);
 });
 
+test('a line through is as thick as its run says, about a third of the ascent up', () => {
+  // A line through was a pixel thick and solid whatever was asked of it.
+  // `strikeThickness` makes it thicker, its middle a third of the run's
+  // own ascent above the baseline so that it grows both ways from where
+  // a thin one is, and `strikeStyle` draws it in the underline's styles.
+  const face = { metrics: () => ({ ascent: 9, descent: 3 }) };
+  const struck = (span: Record<string, unknown>, scale = 1) => {
+    const { ctx, fills } = recorder();
+    paintRunRules(
+      ctx,
+      line([
+        {
+          x: 4,
+          width: 40,
+          start: 0,
+          end: 4,
+          span: { text: 'gone', strike: '#f00', ...span },
+          run: { font: face, size: 12 },
+        },
+      ]),
+      0,
+      0,
+      scale,
+    );
+    return fills.map((f) => f.slice(1));
+  };
+  // the baseline is 12 down, and a third of the ascent is 3: the middle at 9
+  assert.deepStrictEqual(struck({ strikeThickness: 4 }), [[4, 7, 40, 4]]);
+  assert.deepStrictEqual(struck({ strikeThickness: 2 }), [[4, 8, 40, 2]]);
+  assert.deepStrictEqual(
+    struck({ strikeThickness: 0.2 }),
+    [[4, 9, 40, 1]],
+    'never under a pixel',
+  );
+  // a run that says nothing is struck as it always was: a logical pixel
+  // thick, its top 38% of the ascent up
+  assert.deepStrictEqual(struck({}), [[4, 9, 40, 1]]);
+  assert.deepStrictEqual(struck({}, 2), [[4, 9, 40, 2]]);
+
+  // two lines, the first where the single one is and the second a pixel
+  // clear of it underneath
+  assert.deepStrictEqual(
+    struck({ strikeStyle: 'double', strikeThickness: 4 }),
+    [
+      [4, 7, 40, 4],
+      [4, 12, 40, 4],
+    ],
+  );
+  // the curl's two levels either side of the middle
+  assert.deepStrictEqual(
+    struck({ strikeStyle: 'curly', strikeThickness: 2 }).slice(0, 2),
+    [
+      [4, 7, 4, 2],
+      [8, 9, 4, 2],
+    ],
+  );
+  // squares a thickness apart, and dashes from one end to the other
+  assert.deepStrictEqual(
+    struck({ strikeStyle: 'dotted', strikeThickness: 2 }).slice(0, 2),
+    [
+      [4, 8, 2, 2],
+      [8, 8, 2, 2],
+    ],
+  );
+  const dashes = struck({ strikeStyle: 'dashed', strikeThickness: 4 });
+  assert.deepStrictEqual(dashes[0], [4, 7, 8, 4]);
+  assert.deepStrictEqual(dashes[dashes.length - 1], [36, 7, 8, 4]);
+});
+
+test('runs that touch are struck through in one stretch, a font size at a time', () => {
+  // A line through is drawn over each font size where that size has it,
+  // so that text of another size is still crossed out (CSS Text Decoration
+  // 4, 2.5); the runs of one size, which a layout hands back a word at a
+  // time, share a rule as an underline's do.
+  const small = { metrics: () => ({ ascent: 9, descent: 3 }) };
+  const large = { metrics: () => ({ ascent: 27, descent: 9 }) };
+  const del = { text: 'two words', strike: '#f00', strikeThickness: 2 };
+  const big = { text: 'BIG', strike: '#f00', strikeThickness: 2, size: 36 };
+  const other = { text: 'red', strike: '#00f', strikeThickness: 2 };
+  const at = (font: typeof small, size: number) => ({ font, size });
+  const words = line(
+    [
+      { x: 0, width: 20.4, start: 0, end: 4, span: del, run: at(small, 12) },
+      { x: 20.4, width: 30, start: 4, end: 9, span: del, run: at(small, 12) },
+      // a larger size: the same rule, a third of its own ascent up
+      { x: 50.4, width: 60, start: 9, end: 12, span: big, run: at(large, 36) },
+      // and another colour at the first height
+      {
+        x: 110.4,
+        width: 10,
+        start: 12,
+        end: 15,
+        span: other,
+        run: at(small, 12),
+      },
+    ],
+    { y: 0, height: 40, baseline: 30 },
+  );
+  const { ctx, fills } = recorder();
+  paintRunRules(ctx, words, 3, 0);
+  assert.deepStrictEqual(fills, [
+    ['#f00', 3, 26, 51, 2],
+    ['#f00', 53, 20, 61, 2],
+    ['#00f', 113, 26, 11, 2],
+  ]);
+
+  // A word the face has no glyphs for is set in another at the same size,
+  // whose ascent is its own: the rule does not step for it. One position
+  // for the size, averaged from its fonts' metrics by how much each sets.
+  const fallback = { metrics: () => ({ ascent: 15, descent: 3 }) };
+  const mixed = line(
+    [
+      { x: 0, width: 30, start: 0, end: 4, span: del, run: at(small, 12) },
+      { x: 30, width: 10, start: 4, end: 6, span: del, run: at(fallback, 12) },
+      { x: 40, width: 20, start: 6, end: 9, span: del, run: at(small, 12) },
+    ],
+    { y: 0, height: 40, baseline: 30 },
+  );
+  const straight = recorder();
+  paintRunRules(straight.ctx, mixed, 0, 0);
+  // five sixths at 9 and a sixth at 15 is 10: the middle 3.33 up
+  assert.deepStrictEqual(straight.fills, [['#f00', 0, 26, 60, 2]]);
+  // …and a rule that names no thickness, the same way
+  const plain = { text: 'two words', strike: '#f00' };
+  const legacy = recorder();
+  paintRunRules(
+    legacy.ctx,
+    { ...mixed, runs: mixed.runs.map((r) => ({ ...r, span: plain })) },
+    0,
+    0,
+  );
+  assert.deepStrictEqual(legacy.fills, [['#f00', 0, 26, 60, 1]]);
+});
+
+test("a dashed rule's dashes run from its start to its end, their lengths by its thickness", () => {
+  // Blink's dashes: three of the thickness long and two apart while the
+  // rule is thin, twice and one from three pixels thick, the gap then the
+  // nearest to that which sets the first dash at the rule's start and the
+  // last at its end. Three on and three off whatever the length ended a
+  // rule on a sliver of a dash, or on a gap.
+  const dashed = (thickness: number | undefined, width: number) => {
+    const { ctx, fills } = recorder();
+    paintRunRules(
+      ctx,
+      line([
+        {
+          x: 0,
+          width,
+          start: 0,
+          end: 4,
+          span: {
+            text: 'dash',
+            underline: '#00f',
+            underlineStyle: 'dashed' as const,
+            ...(thickness === undefined
+              ? null
+              : { underlineThickness: thickness }),
+          },
+        },
+      ]),
+      0,
+      0,
+    );
+    return fills.map((f) => [f[1], f[3], f[4]]);
+  };
+  // a hairline over fifty: ten dashes of three leave gaps of 2.2, and
+  // eleven of 1.7
+  assert.deepStrictEqual(
+    dashed(undefined, 50),
+    [0, 5, 10, 16, 21, 26, 31, 37, 42, 47].map((x) => [x, 3, 1]),
+  );
+  // four thick over a hundred: eight dashes of eight leave gaps of 5.1,
+  // and nine of 3.5, the nearer to four
+  assert.deepStrictEqual(
+    dashed(4, 100),
+    [0, 12, 23, 35, 46, 58, 69, 81, 92].map((x) => [x, 8, 4]),
+  );
+  // room for two dashes and not their gap: two, scaled to fit
+  assert.deepStrictEqual(dashed(4, 18), [
+    [0, 7, 4],
+    [11, 7, 4],
+  ]);
+  // and no room for two: a line
+  assert.deepStrictEqual(dashed(4, 16), [[0, 16, 4]]);
+});
+
+test('the two lines of a double rule are a logical pixel apart, however thick', () => {
+  const double = (thickness: number | undefined, scale = 1) => {
+    const { ctx, fills } = recorder();
+    paintRunRules(
+      ctx,
+      line([
+        {
+          x: 0,
+          width: 30,
+          start: 0,
+          end: 4,
+          span: {
+            text: 'both',
+            underline: '#00f',
+            underlineStyle: 'double' as const,
+            underlineOffset: 2 * scale,
+            ...(thickness === undefined
+              ? null
+              : { underlineThickness: thickness }),
+          },
+        },
+      ]),
+      0,
+      0,
+      scale,
+    );
+    return fills.map((f) => [f[2], f[4]]);
+  };
+  // a rule of the default thickness, as it always was
+  assert.deepStrictEqual(double(undefined), [
+    [14, 1],
+    [16, 1],
+  ]);
+  assert.deepStrictEqual(double(undefined, 2), [
+    [16, 2],
+    [20, 2],
+  ]);
+  // a thick one's second line was its thickness clear of the first, where
+  // Blink draws it a pixel clear
+  assert.deepStrictEqual(double(4), [
+    [14, 4],
+    [19, 4],
+  ]);
+});
+
 test("a selection band needs only a run's geometry", () => {
   const cocoa = line([
     { x: 0, width: 30, start: 0, end: 5 },

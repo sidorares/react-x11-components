@@ -329,6 +329,8 @@ test('a style takes from its parent the fields INHERITED names, and no others', 
     'underlineThickness',
     'underlineOffset',
     'lineThrough',
+    'lineThroughStyle',
+    'lineThroughThickness',
   ].sort();
   assert.deepStrictEqual(taken, expected);
 });

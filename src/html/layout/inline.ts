@@ -4143,6 +4143,8 @@ const RUN_STYLE = [
   'underlineOffset',
   'underlineThickness',
   'strike',
+  'strikeStyle',
+  'strikeThickness',
 ] as const;
 
 /**
@@ -4710,15 +4712,7 @@ export function runFor(text: string, style: ComputedStyle): TextRun {
   // colours of the elements that set them (`decorate`)
   if (style.underline) {
     run.underline = style.underline;
-    // CSS's five rule styles and SGR 4's five are the same set under two
-    // names; richtext speaks SGR's, so `solid` is `single` and `wavy` is
-    // `curly`. The other three are spelled identically.
-    run.underlineStyle =
-      style.underlineStyle === 'wavy'
-        ? 'curly'
-        : style.underlineStyle === 'solid'
-          ? 'single'
-          : style.underlineStyle;
+    run.underlineStyle = ruleStyle(style.underlineStyle);
     // The band the rule is drawn in: as thick as the box that set it made
     // it (`usedThickness`), and as far under the baseline as that box said.
     // `auto` leaves how far to the user agent, at or under the baseline
@@ -4744,8 +4738,29 @@ export function runFor(text: string, style: ComputedStyle): TextRun {
       run.underlineOffset = top;
     }
   }
-  if (style.lineThrough) run.strike = style.lineThrough;
+  if (style.lineThrough) {
+    run.strike = style.lineThrough;
+    run.strikeStyle = ruleStyle(style.lineThroughStyle);
+    // as thick as the box that set it made it, on whole pixels as the
+    // underline's is: a solid rule fills the ones it covers, and dots and
+    // dashes are the nearest whole pixel wide. Where it is drawn is each
+    // run's own face's to say (`paintRunRules`).
+    const band = style.lineThroughThickness ?? 1;
+    run.strikeThickness =
+      run.strikeStyle === 'dotted' || run.strikeStyle === 'dashed'
+        ? Math.round(band)
+        : Math.floor(band);
+  }
   return run;
+}
+
+/** A CSS rule style as richtext names it. CSS's five and SGR 4's five are
+ *  the same set under two names; richtext speaks SGR's, so `solid` is
+ *  `single` and `wavy` is `curly`. The other three are spelled identically. */
+function ruleStyle(
+  style: ComputedStyle['underlineStyle'],
+): NonNullable<TextRun['underlineStyle']> {
+  return style === 'wavy' ? 'curly' : style === 'solid' ? 'single' : style;
 }
 
 /**

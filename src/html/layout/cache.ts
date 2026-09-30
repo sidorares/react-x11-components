@@ -186,6 +186,8 @@ export const RUN_FIELDS = [
   'underlineOffset',
   'underlineThickness',
   'strike',
+  'strikeStyle',
+  'strikeThickness',
   'href',
   'features',
   'nowrap',
@@ -221,6 +223,8 @@ function sameRun(a: TextRun, b: TextRun): boolean {
     a.underlineOffset === b.underlineOffset &&
     a.underlineThickness === b.underlineThickness &&
     a.strike === b.strike &&
+    a.strikeStyle === b.strikeStyle &&
+    a.strikeThickness === b.strikeThickness &&
     a.href === b.href &&
     a.features === b.features &&
     a.nowrap === b.nowrap &&
@@ -249,6 +253,8 @@ function sameStyle(
     a.underlineOffset === b.underlineOffset &&
     a.underlineThickness === b.underlineThickness &&
     a.strike === b.strike &&
+    a.strikeStyle === b.strikeStyle &&
+    a.strikeThickness === b.strikeThickness &&
     a.href === b.href &&
     a.features === b.features &&
     a.nowrap === b.nowrap &&
