@@ -1351,7 +1351,11 @@ the Zen Garden's archive links are absolute items in an `overflow: hidden`
 list that has no height of its own. Where two boxes overlap, the answer
 follows CSS paint order, `z-index` included. An infobox floated out of
 one section and hanging over the next keeps its links, and the next
-section's box does not take them.
+section's box does not take them. A box that is not visible is not under
+the pointer, and nor is one with `pointer-events: none`: the pointer
+passes through it to what is, and a box inside it that sets either back
+is still found. A closed menu laid over a page, hidden until it opens,
+takes nothing from the page under it.
 
 **Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
 Everything from the cascade to paint recurses on tree depth, so a

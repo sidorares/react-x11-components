@@ -405,6 +405,9 @@ export interface ComputedStyle {
    *  in place of its `list-style-type`'s; null for `none`. */
   listStyleImage: string | null;
   cursor: string | null;
+  /** `pointer-events`: `none` for an element the pointer passes through,
+   *  to what is under it (CSS UI 4, 5.2). Its SVG values are `auto`. */
+  pointerEvents: 'auto' | 'none';
   borderCollapse: 'separate' | 'collapse';
   /** `border-spacing`: between columns, and between rows. */
   borderSpacing: number;
@@ -785,6 +788,7 @@ export const INHERITED = [
   'listStylePosition',
   'listStyleImage',
   'cursor',
+  'pointerEvents',
   'borderCollapse',
   'borderSpacing',
   'borderSpacingY',
@@ -879,6 +883,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     listStylePosition: 'outside',
     listStyleImage: null,
     cursor: null,
+    pointerEvents: 'auto',
     borderCollapse: 'separate',
     // CSS's initial value; a `<table>` gets its 2px from the UA sheet, and
     // an anonymous table, which no sheet names, has none
@@ -1136,6 +1141,7 @@ export function inherit(
   out.listStylePosition = parent.listStylePosition;
   out.listStyleImage = parent.listStyleImage;
   out.cursor = parent.cursor;
+  out.pointerEvents = parent.pointerEvents;
   out.borderCollapse = parent.borderCollapse;
   out.borderSpacing = parent.borderSpacing;
   out.borderSpacingY = parent.borderSpacingY;
@@ -2594,6 +2600,14 @@ export function applyDeclaration(
     }
     case 'cursor': {
       style.cursor = splitCommas(value)[0]?.trim().toLowerCase() || null;
+      return;
+    }
+    case 'pointer-events': {
+      // `none`, or one of the values SVG gives it, which are `auto` on
+      // anything that is not SVG's to draw
+      const v = value.trim().toLowerCase();
+      if (v === 'none') style.pointerEvents = 'none';
+      else if (POINTER_EVENTS.has(v)) style.pointerEvents = 'auto';
       return;
     }
 
@@ -4886,6 +4900,20 @@ function splitTopLevelSlash(value: string): string[] {
 
 // --- logical properties ----------------------------------------------------
 
+/** `pointer-events`' values besides `none` (CSS UI 4, SVG 2 15.6). */
+const POINTER_EVENTS = new Set([
+  'auto',
+  'bounding-box',
+  'visiblepainted',
+  'visiblefill',
+  'visiblestroke',
+  'visible',
+  'painted',
+  'fill',
+  'stroke',
+  'all',
+]);
+
 const OBJECT_FITS = new Set(['fill', 'contain', 'cover', 'none', 'scale-down']);
 
 /**
@@ -5242,6 +5270,7 @@ const INHERITED_NAMES = new Set<string>([
   'list-style-position',
   'list-style-image',
   'cursor',
+  'pointer-events',
   'border-collapse',
   'border-spacing',
   'empty-cells',
@@ -5400,6 +5429,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'list-style-position': ['listStylePosition'],
   'list-style-image': ['listStyleImage'],
   cursor: ['cursor'],
+  'pointer-events': ['pointerEvents'],
   'border-collapse': ['borderCollapse'],
   'caption-side': ['captionSide'],
   'empty-cells': ['emptyCells'],

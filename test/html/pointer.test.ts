@@ -256,6 +256,48 @@ function pointIn(el: HtmlViewNode, id: string): [number, number] {
 const treeOf = (el: HtmlViewNode) =>
   (el as unknown as { _tree: unknown })._tree;
 
+metric(
+  'the pointer passes through a box that is hidden, or takes no pointer events',
+  async () => {
+    // A box that is not visible is no target for the pointer, and neither
+    // is one with `pointer-events: none` (CSS UI 4, 5.2): what is under it
+    // is. Both are inherited, and what is in such a box may set them back.
+    // The hit test named every box that was laid out: a site's closed menu
+    // lies over its page, hidden until it is opened, and GitHub's covered
+    // its repository's tabs — the pointer over a tab was over the menu, and
+    // the tab neither lit up nor took the press.
+    const { node } = await render(
+      '<style>body{margin:0} .u{height:40px}' +
+        '.o{position:absolute;left:0;width:200px;height:40px}</style>' +
+        '<div class="u" id="a">under a menu that is closed</div>' +
+        '<div class="o" id="h" style="top:0;visibility:hidden">' +
+        '<span id="hs">hidden</span></div>' +
+        '<div class="u" id="b">under a layer that takes no events</div>' +
+        '<div class="o" id="n" style="top:40px;pointer-events:none">' +
+        '<span id="ns">none</span><div id="na" style="pointer-events:auto;' +
+        'margin-left:150px;width:50px;height:20px"></div></div>' +
+        '<div class="u" id="c">under one with something to see in it</div>' +
+        '<div class="o" id="v" style="top:80px;visibility:hidden">' +
+        '<div id="vv" style="visibility:visible;width:50px;height:40px">' +
+        '</div></div>' +
+        '<div class="u" id="d">under a transparent one</div>' +
+        '<div class="o" id="op" style="top:120px;opacity:0"></div>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as DrawnNode;
+    const at = (x: number, y: number) =>
+      el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id;
+    assert.strictEqual(at(100, 20), 'a', 'through a hidden box');
+    assert.strictEqual(at(10, 12), 'a', 'and its text');
+    assert.strictEqual(at(100, 60), 'b', 'through one with no events');
+    assert.strictEqual(at(10, 52), 'b', 'and its text');
+    assert.strictEqual(at(170, 70), 'na', 'a box in it that takes them');
+    assert.strictEqual(at(100, 100), 'c');
+    assert.strictEqual(at(20, 100), 'vv', 'a visible box in a hidden one');
+    assert.strictEqual(at(100, 140), 'op', 'a transparent box is a target');
+  },
+);
+
 /** What a document built again from its sheets makes of the same hover. */
 async function rebuilt(
   result: Awaited<ReturnType<typeof render>>['result'],
