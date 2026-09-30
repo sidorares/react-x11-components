@@ -3368,7 +3368,7 @@ function atomicBaseline(box: Box): number {
 
 /** Whether a box is a `<button>` element's: one drawn as the document's,
  *  which a replaced control is not. */
-function isButton(box: Box): boolean {
+export function isButton(box: Box): boolean {
   return (
     box.el !== null && box.kind !== 'replaced' && tagOf(box.el) === 'button'
   );

@@ -6040,6 +6040,38 @@ export function blockify(style: ComputedStyle, inFlexContainer: boolean): void {
   }
 }
 
+/**
+ * The `display` a `<button>` is laid out with, which is not always the one
+ * it was given (HTML's rendering section, button layout, 15.5.3): a flex
+ * box or a grid is that, and of the rest, "a value such that the outer
+ * display type is 'inline'" behaves as `inline-block` and anything else as
+ * `flow-root`. Blink computes them so — `inline-block` for `inline` and
+ * `inline-table`, `block` for `table` and `list-item` — and makes the one
+ * block flow of each; the formatting context is the layout's to give every
+ * button that is a block (`establishesBFC`).
+ *
+ * Left an inline box, a button around a block was broken in two around it,
+ * as any inline box is: as wide as the line, its `height` applied to
+ * nothing, and its border and padding drawn above and below the line it
+ * opened. A table's part is left what it is, where the two disagree: a
+ * block to the text, an inline-block in Blink. After `blockify`, since a
+ * float, an absolute box and a flex item are blocks first.
+ */
+export function settleButton(style: ComputedStyle): void {
+  switch (style.display) {
+    case 'inline':
+    case 'inline-table':
+      style.display = 'inline-block';
+      return;
+    case 'list-item':
+    case 'table':
+      style.display = 'block';
+      return;
+    default:
+      return;
+  }
+}
+
 /** The generic font families, which a list ending in one falls back
  *  through already, in the text engine (CSS Fonts 4, 4.2). */
 const GENERIC_FAMILY = new Set([

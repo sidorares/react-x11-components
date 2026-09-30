@@ -431,6 +431,219 @@ test("a control's text keeps none of the spacing, line height, case or indent ar
   );
 });
 
+test('a block-level button is as wide as its content, not as its containing block', async () => {
+  // HTML's rendering section, button layout (15.5.3): "If the computed
+  // value of 'inline-size' is 'auto', then the used value is the
+  // fit-content inline size" — a button set `display: block`, to stand on
+  // a line of its own, is no wider for it, where a block fills its
+  // containing block. Blink leaves `<button>` out of the boxes whose
+  // `auto` stretches (`ShouldBlockContainerChildStretchAutoInlineSize`),
+  // whatever it is inside: a flex box and a grid too.
+  const button = (id: string, style: string, width = 36) =>
+    `<button id="${id}" style="${style}">` +
+    `<div style="width:${width}px;height:36px"></div></button>`;
+  const { node } = await render(
+    '<style>body{margin:0}' +
+      'button{box-sizing:border-box;margin:0;padding:8px;border:1px solid}' +
+      '.cb{width:300px;position:relative}</style>' +
+      '<div class="cb">' +
+      button('block', 'display:block') +
+      button('root', 'display:flow-root') +
+      button('flex', 'display:flex') +
+      button('grid', 'display:grid') +
+      button('item', 'display:list-item') +
+      // within its limits, and a width of its own is its own
+      button('least', 'display:block;min-width:120px') +
+      button('half', 'display:block;min-width:50%') +
+      button('most', 'display:block;max-width:40px') +
+      button('set', 'display:block;width:100%') +
+      button('content', 'display:block;box-sizing:content-box') +
+      // no wider than the room its margins leave, where its content can
+      // be narrower: a label that wraps
+      '<button id="long" style="display:block;margin:0 20px">' +
+      '<span style="display:inline-block;width:100px;height:9px"></span> '.repeat(
+        4,
+      ) +
+      '</button>' +
+      // and `auto` margins have the room its content leaves to share
+      button('middle', 'display:block;margin:0 auto') +
+      button('end', 'display:block;margin-left:auto') +
+      '</div>' +
+      '<div class="cb" dir="rtl">' +
+      button('rtl', 'display:block') +
+      '</div>' +
+      // HTML's `align` sets the blocks in it, as it sets a table
+      '<div class="cb" align="center">' +
+      button('aligned', 'display:block') +
+      '</div>' +
+      // nor beside a float, where it stands as a formatting context does
+      '<div class="cb" style="overflow:hidden">' +
+      '<div style="float:left;width:100px;height:60px"></div>' +
+      button('beside', 'display:block') +
+      '</div>' +
+      // in a shrink-to-fit box it is no wider than its own content either
+      '<div class="cb"><div id="float" style="float:left">' +
+      button('floated', 'display:block') +
+      '<div style="width:200px;height:9px"></div></div></div>' +
+      // A flex box and a grid size their items, and stretch them; two
+      // offsets stretch an absolute one between them, as Blink has it.
+      '<div class="cb" style="display:flex;flex-direction:column">' +
+      button('column', '') +
+      '</div>' +
+      '<div class="cb" style="display:grid">' +
+      button('cell', '') +
+      '</div>' +
+      '<div class="cb" style="height:60px">' +
+      button('between', 'position:absolute;left:10px;right:10px') +
+      '</div>',
+    300,
+  );
+  const el = view(node);
+  const width = (id: string) => boxOf(el, id).width;
+  // 36px of content, 8px of padding and 1px of border either side
+  for (const id of ['block', 'root', 'flex', 'grid', 'item']) {
+    assert.strictEqual(width(id), 54, `display of #${id}`);
+    assert.strictEqual(boxOf(el, id).x, 0, `#${id} at the start`);
+  }
+  assert.strictEqual(width('least'), 120, 'a least width');
+  assert.strictEqual(width('half'), 150, 'a least width of a percentage');
+  assert.strictEqual(width('most'), 40, 'a greatest width');
+  assert.strictEqual(width('set'), 300, 'a width of its own');
+  assert.strictEqual(width('content'), 54, 'a content box');
+  assert.strictEqual(width('long'), 260, 'the room its margins leave');
+  assert.strictEqual(boxOf(el, 'long').x, 20, 'inside its margins');
+  assert.strictEqual(boxOf(el, 'middle').x, 123, 'auto margins centre it');
+  assert.strictEqual(boxOf(el, 'end').x, 246, 'and one puts it at the end');
+  assert.strictEqual(boxOf(el, 'rtl').x, 246, 'the start of a line of rtl');
+  assert.strictEqual(boxOf(el, 'aligned').x, 123, 'align="center"');
+  assert.deepStrictEqual(
+    [boxOf(el, 'beside').x, width('beside')],
+    [100, 54],
+    'beside a float',
+  );
+  assert.strictEqual(width('float'), 200, 'a float around it');
+  assert.strictEqual(width('floated'), 54, 'and the button in it');
+  assert.strictEqual(width('column'), 300, 'a flex item is stretched');
+  assert.strictEqual(width('cell'), 300, 'a grid item is stretched');
+  assert.strictEqual(width('between'), 280, 'and a box between two offsets');
+});
+
+metric(
+  'a block-level button with a label is as wide as the label',
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0}button{margin:0}</style>' +
+        '<div style="width:300px">' +
+        '<button id="line">Save changes</button>' +
+        '<button id="block" style="display:block">Save changes</button>' +
+        '<button id="table" style="display:table">Save changes</button>' +
+        '<button id="bare" style="display:block;appearance:none">' +
+        'Save changes</button>' +
+        '<button id="empty" style="display:block"></button>' +
+        '</div>',
+      300,
+    );
+    const el = view(node);
+    const line = boxOf(el, 'line');
+    assert.ok(line.width > 40 && line.width < 200, `a label: ${line.width}`);
+    assert.strictEqual(boxOf(el, 'block').width, line.width, 'a block');
+    assert.strictEqual(boxOf(el, 'table').width, line.width, 'a table');
+    // taking the palette's look off does not make it a block like any other
+    const bare = boxOf(el, 'bare');
+    assert.ok(bare.width > 40 && bare.width < 200, `bare: ${bare.width}`);
+    const empty = boxOf(el, 'empty');
+    const edges = edgesOf(empty);
+    assert.strictEqual(
+      empty.width,
+      edges.padLeft + edges.padRight + 2 * edges.borderLeft,
+      'its edges alone',
+    );
+  },
+);
+
+metric(
+  'a button set display: inline is an inline-block, and a table or a list item a block',
+  async () => {
+    // Button layout again: a `display` "such that the outer display type is
+    // 'inline'" behaves as `inline-block`, and anything else but a flex box
+    // or a grid as `flow-root`. Chrome computes `inline-block` for `inline`
+    // and `inline-table`, and `block` for `table` and `list-item`. Left an
+    // inline box, a button around a block was broken in two around it: as
+    // wide as the line, its height and its padding on nothing, and its
+    // borders drawn above and below the line. A block, its content is
+    // centred in it as any button's is.
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/1 sans-serif}' +
+        'button{box-sizing:border-box;margin:0;padding:8px;border:1px solid;' +
+        'font:16px/1 sans-serif}' +
+        'i{display:inline-block;width:10px;height:10px}</style>' +
+        '<div id="a" style="width:300px">' +
+        '<button id="g" style="display:inline;height:60px">' +
+        '<div id="c" style="width:36px;height:36px"></div></button>' +
+        '<i id="i"></i></div>' +
+        // one of text is the box an inline-block of it is, its sizes its own
+        '<div id="b">x <button id="t" style="display:inline">Go</button> ' +
+        '<button id="u" style="display:inline-block">Go</button> ' +
+        '<button id="v" style="display:inline-table">Go</button> ' +
+        '<button id="w" style="display:inline;width:120px;height:40px">Go' +
+        '</button></div>' +
+        // and an underline of the text around it is not the button's
+        '<div><u>x <button id="d" style="display:inline">Go</button></u>' +
+        '</div>' +
+        // a list item has no marker, and a table no cell
+        '<button id="l" style="display:list-item">' +
+        '<div style="width:36px;height:36px"></div></button>' +
+        '<button id="m" style="display:table;height:60px">' +
+        '<div id="n" style="width:36px;height:36px"></div></button>',
+      300,
+    );
+    const el = view(node);
+    const a = boxOf(el, 'a');
+    const g = boxOf(el, 'g');
+    assert.deepStrictEqual(
+      [g.x, g.y - a.y, g.width, g.height],
+      [0, 0, 54, 60],
+      'its height and its edges are a box of its own',
+    );
+    assert.strictEqual(a.height, 60, 'and the line is as tall');
+    // 42px of content box around 36
+    const c = boxOf(el, 'c');
+    assert.deepStrictEqual(
+      [c.x - g.x, c.y - g.y],
+      [9, 9 + 3],
+      'its content inside its edges, centred',
+    );
+    // beside it on its line, on the bottom of the button's content box
+    const i = boxOf(el, 'i');
+    assert.deepStrictEqual([i.x, i.y - a.y], [54, 60 - 9 - 10], 'on its line');
+    const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+    assert.deepStrictEqual(size('t'), size('u'), 'a label');
+    assert.deepStrictEqual(size('v'), size('u'), 'an inline table');
+    assert.deepStrictEqual(size('w'), [120, 40], 'a width and a height');
+    assert.strictEqual(boxOf(el, 't').y, boxOf(el, 'u').y, 'on one baseline');
+    const made = (id: string) =>
+      boxOf(el, id) as unknown as {
+        kind: string;
+        marker?: object;
+        style: { display: string; underline: string | null };
+      };
+    assert.strictEqual(made('t').style.display, 'inline-block');
+    assert.strictEqual(made('d').style.underline, null, 'no line from above');
+    const l = made('l');
+    assert.deepStrictEqual(
+      [l.kind, l.marker ?? null, l.style.display],
+      ['block', null, 'block'],
+      'a list item is a block',
+    );
+    const m = made('m');
+    assert.deepStrictEqual(
+      [m.kind, m.style.display, boxOf(el, 'n').y - boxOf(el, 'm').y],
+      ['block', 'block', 9 + 3],
+      'and so is a table, its content centred',
+    );
+  },
+);
+
 metric(
   'at a display scale of 2 a form control is mounted on the box the document reserved',
   async () => {
