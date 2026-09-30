@@ -3167,6 +3167,16 @@ export function intrinsicWidth(box: Box, seen?: { cut: boolean }): number {
   if (contained(box, CONTAIN_WIDTH)) {
     return box.style.containIntrinsicWidth ?? 0;
   }
+  // a table is as wide as its layout made it: its columns, the spacing
+  // either side of them and between, and its captions' least (`layoutTable`)
+  // — at no width limit its widest, and at none its narrowest. What it
+  // holds says less: its rows run from the first column to the last, the
+  // spacing either side outside them, and measured by them a table in a
+  // flex row, a grid, a float or an `inline-table` came to that much too
+  // narrow, and its columns gave it up
+  if (box.kind === 'table' && Number.isFinite(box.width)) {
+    return Math.max(0, box.width - box.horizontalExtra);
+  }
   // a grid laid out at no width limit has its columns at their widest, and
   // is as wide as they are — an item that runs past its column makes it no
   // wider — or, where it has none, as where its items end

@@ -960,6 +960,37 @@ test("an auto table is as wide as its caption's own width", async () => {
   assert.strictEqual(boxOf(view(node), 't').width, 100);
 });
 
+test('an auto table sized to its content is as wide as its columns and the spacing either side of them', async () => {
+  // Chrome's: a flex item, a grid item, a float, an `inline-table` and an
+  // absolute box are each 56 wide — two columns of 40 and 10, and three
+  // gaps of 2. Measured by its rows, which run from its first column to
+  // its last, each was 52, and its first column gave up the 4 pixels: its
+  // two floats went one under the other
+  const float = '<div style="float:left;width:20px;height:10px"></div>';
+  const table = (id: string, style = '') =>
+    `<table id="${id}" style="border-spacing:2px;${style}"><tr>` +
+    `<td id="${id}-a">${float}${float}</td>` +
+    '<td><div style="width:10px;height:10px"></div></td></tr></table>';
+  const { node } = await render(
+    '<style>td{padding:0}section{align-items:start}</style>' +
+      `<section style="display:flex">${table('flex')}</section>` +
+      '<section style="display:grid;grid-template-columns:auto 1fr">' +
+      `${table('grid')}<div></div></section>` +
+      `<section style="display:flow-root">${table('float', 'float:left')}` +
+      `</section><section>${table('inline', 'display:inline-table')}` +
+      '</section><section style="position:relative">' +
+      `${table('absolute', 'position:absolute')}</section>`,
+  );
+  const el = view(node);
+  for (const id of ['flex', 'grid', 'float', 'inline', 'absolute']) {
+    assert.deepStrictEqual(
+      [boxOf(el, id).width, boxOf(el, `${id}-a`).width, boxOf(el, id).height],
+      [56, 40, 14],
+      id,
+    );
+  }
+});
+
 metric(
   'white space beside what a table wraps in a cell stays in it',
   async () => {
