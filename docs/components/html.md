@@ -377,7 +377,11 @@ its content box's unless `box-sizing` says otherwise. An `auto` margin takes
 the free space on its side, so `margin-left: auto` puts an item at the end
 of its row. A row of flex items inside another item is as wide as its items
 side by side and the gaps between them; a gap is a length, or a percentage
-of the container's size along it. The items are laid out in the
+of the container's size along it. A percentage in an item's padding, its
+margins or its `min-width` and `max-width` is of the container's content
+width, the item's containing block's, whatever width the item was flexed
+to: a column set `flex: 1 0 50%; max-width: 50%`, as a Bootstrap or an
+Infima grid has it, is half its row. The items are laid out in the
 container's content box, its height less the padding and borders a
 `border-box` height holds, and a container with no height of its own gives
 its `flex: 1` items what its `min-height` leaves them, so a page

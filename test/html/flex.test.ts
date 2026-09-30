@@ -607,6 +607,47 @@ test('a flex item with a width is held to the lesser of it and its content', asy
   );
 });
 
+test("a flex item's percentages are of the flex box's width, not of its own", async () => {
+  // CSS 2.1 8.3, 8.4 and 10.4: a percentage in a margin, a padding or a
+  // width limit is of the containing block's width, and a flex item's
+  // containing block is its flex box's content box (CSS Flexbox 4). The
+  // flex layout resolved them so; the item was then laid out with its own
+  // width standing for its containing block's, and resolved them again.
+  // Infima's columns are `flex: 1 0 50%; max-width: 50%`: each was given
+  // half its row and drawn in a quarter of it.
+  const { node } = await render(
+    '<style>body{margin:0} *{box-sizing:border-box}' +
+      '.row{display:flex;flex-wrap:wrap;width:600px}' +
+      '.col{flex:1 0 50%;max-width:50%;width:100%;padding:0 16px}</style>' +
+      '<div class="row"><div class="col" id="a"><div id="a1"></div></div>' +
+      '<div class="col" id="b"><div id="b1"></div></div></div>' +
+      // a padding, as wide as a tenth of the row
+      '<div style="display:flex;width:600px">' +
+      '<div id="c" style="flex:1;padding:0 10%"><div id="c1"></div></div>' +
+      '<div style="flex:1"></div></div>' +
+      // down a column, and a limit on a content box
+      '<div style="display:flex;flex-direction:column;width:600px">' +
+      '<div id="d" style="max-width:50%;padding-left:10%">' +
+      '<div id="d1"></div></div>' +
+      '<div id="e" style="box-sizing:content-box;width:80%;max-width:50%;' +
+      'padding:0 5%"><div id="e1"></div></div></div>',
+    700,
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  const across = (id: string) => [box(id).x, box(id).width];
+  assert.deepStrictEqual(across('a'), [0, 300], 'half the row');
+  assert.deepStrictEqual(across('a1'), [16, 268], 'and what is in it');
+  assert.deepStrictEqual(across('b'), [300, 300], 'the other half');
+  assert.deepStrictEqual(across('b1'), [316, 268]);
+  assert.deepStrictEqual(across('c'), [0, 360], 'its share and its padding');
+  assert.deepStrictEqual(across('c1'), [60, 240], 'a tenth of the row in');
+  assert.deepStrictEqual(across('d'), [0, 300], 'half the column');
+  assert.deepStrictEqual(across('d1'), [60, 240]);
+  assert.deepStrictEqual(across('e'), [0, 360], 'half, and its padding');
+  assert.deepStrictEqual(across('e1'), [30, 300]);
+});
+
 test('what is in a stretched or flexed item takes its percentages of its height', async () => {
   // CSS Flexbox 9.8: an item stretched across its line, or flexed in a
   // column of a height of its own, has a definite height, and `h-full` in
