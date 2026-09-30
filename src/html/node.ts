@@ -2793,7 +2793,22 @@ function deepestAt(
   // are painted in `z-index` order and then the document's (`byZIndex`),
   // the negative ones under the flow: the Zen Garden's `›` has
   // `z-index: 3` over the bar the "View All Designs" link fills after it.
-  const take = (el: Element, key: readonly number[], text: boolean) => {
+  // Nor is a box the pointer passes through under it: one that is not
+  // visible, which is no target for the pointer in any browser (CSS 2.1
+  // 11.2 has it invisible, and a hit test finds what is seen), or one with
+  // `pointer-events: none` (CSS UI 4, 5.2). Both are inherited, and what is
+  // in such a box may say otherwise, so the walk goes on through it. A
+  // site's closed menu is laid out over its page, hidden: GitHub's covered
+  // its repository's tabs, and the pointer over a tab was over the menu.
+  const take = (
+    el: Element,
+    style: ComputedStyle,
+    key: readonly number[],
+    text: boolean,
+  ) => {
+    if (style.visibility !== 'visible' || style.pointerEvents === 'none') {
+      return;
+    }
     if (compareKeys(key, foundKey) < 0) return;
     found = el;
     foundKey = key;
@@ -2884,7 +2899,7 @@ function deepestAt(
       }
     }
     if (own && child.el && clipped.length === 0) {
-      take(child.el, [...context, HIT_BLOCK], false);
+      take(child.el, style, [...context, HIT_BLOCK], false);
     }
     visit(child, context, clipped);
   };
@@ -2931,7 +2946,8 @@ function deepestAt(
                   tree.textBoxes,
                   text.spans.documentAt(run.start),
                 );
-                if (owner) take(owner, [...context, HIT_INLINE], true);
+                const style = owner && tree.styles.get(owner)?.style;
+                if (style) take(owner, style, [...context, HIT_INLINE], true);
               }
             }
           }
@@ -3002,6 +3018,7 @@ const PAINT_ONLY = new Set([
   'color',
   'textFillColor',
   'cursor',
+  'pointerEvents',
   'backgroundColor',
   'borderTopColor',
   'borderRightColor',
