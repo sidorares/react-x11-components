@@ -18268,7 +18268,9 @@ metric(
     const rects = el.textRangeRects(0, 4);
     const abs = (el as unknown as { abs: { y: number } }).abs;
     assert.strictEqual(rects.length, 1);
-    assert.strictEqual(rects[0].y - abs.y, p.y);
-    assert.strictEqual(rects[0].height, 60);
+    // to a hundredth: a line at a fractional top comes back from its own
+    // bottom a rounding off its height
+    assert.ok(Math.abs(rects[0].y - abs.y - p.y) < 0.01, `at ${rects[0].y}`);
+    assert.ok(Math.abs(rects[0].height - 60) < 0.01, `${rects[0].height}`);
   },
 );
