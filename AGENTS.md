@@ -1388,6 +1388,28 @@ a hover in it can reach; Tailwind 4 writes `:hover` inside `:is()` and
 `:where()` as a matter of course, so "nested" there means a function it
 cannot read a selector list in, and nothing more.
 
+**What is inside an inline `<svg>` has no boxes, and a cascade of its
+own.** An `<svg>` is one replaced box, so the builder never reaches a
+`<path>` and no `ComputedStyle` is made for one — a style for each would
+be a few hundred properties for the dozen a shape has, on a page of
+hundreds of icons. What the rules give a drawing's elements is `Cascade.shapeStyles`
+(`css/shapes.ts`): the rules that declare one of a shape's properties, in
+an index of their own, down to the strings `SvgView` reads from a `style`
+attribute, which the drawing's copy of its tree carries (`svg.ts`). It is
+asked as a drawing is first painted (`BoxTree.shapeStyler`, as
+`::selection`'s style is) and kept by the box — the cache keyed on a `Box`
+the paragraph above warns of, so `_hoverInPlace` asks again for each
+drawing a move reached: `a:hover svg path` changes no box's style. Two
+things keep a page of icons from paying for it, and both are easy to
+undo. A rule asked of every `<path>`, or of every element, names the
+ancestor it is for by a class or an id, which is looked for once around
+the drawing rather than matched from each of its elements
+(`ancestorKeys`); and the root's paint is its box's already, so an icon
+set's `.icon { fill }` is not matched a second time. GitHub's repository
+page, a hundred drawings and no rule for any shape in them, went from a
+tenth of a millisecond a drawing to a few microseconds. A property added to
+`shapes.ts` has to be one `SvgView` reads.
+
 **A transform is two halves, and inside one every number is the box's
 own.** Its translation is layout's — `applyRelativeOffsets` moves the box
 and what it holds, so everything that reads a box finds it moved — and what

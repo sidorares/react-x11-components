@@ -340,6 +340,115 @@ metric(
 );
 
 metric(
+  "a shape in an inline SVG is painted as the document's rules say",
+  async () => {
+    // A rule's subject may be an element inside a drawing: `fill`, `stroke`
+    // and their kin are properties (SVG 2, 6.2), which a rule sets on a
+    // `<path>` over its presentation attributes, under its `style`. An
+    // `<svg>` is a replaced box, so the cascade never reached what is in
+    // it, and only the attributes were read: a logo coloured by
+    // `.logo path { fill: … }` was black, and a drawing exported with a
+    // style sheet of its own, `.st0 { fill: #fff }`, was all black too.
+    const rect = (attrs = '') => `<rect width="10" height="10" ${attrs}/>`;
+    const svg = (inside: string, attrs = '') =>
+      `<svg width="10" height="10" ${attrs}>${inside}</svg>`;
+    const rows: [string, string, string, number?][] = [
+      [svg(rect('class="g"')), '#00aa00', 'a rule that names the shape'],
+      [
+        svg(rect('class="f"'), 'fill="none" stroke="currentColor"'),
+        '#00aa00',
+        "over what it inherits from its root's attribute",
+      ],
+      [svg(rect('class="g" fill="#ff0000"')), '#00aa00', 'over its own'],
+      [
+        svg(rect('class="g" style="fill:#0000ff"')),
+        '#0000ff',
+        'and under its style attribute',
+      ],
+      [
+        svg(rect('class="m" style="fill:#ff0000"')),
+        '#00aa00',
+        'but for an important one',
+      ],
+      [svg(rect('class="c"'), 'fill="#ff0000"'), '#0000ff', 'currentColor'],
+      [svg(rect('class="v"')), '#ff00ff', 'a variable'],
+      [svg(`<g class="g">${rect()}</g>`), '#00aa00', 'inherited from a group'],
+      [
+        svg(`<g fill="#00aa00">${rect('class="u" fill="#ff0000"')}</g>`),
+        '#00aa00',
+        'put back to what it inherits',
+      ],
+      [svg(rect('class="g x"')), '#00aa00', 'a value that is none is no rule'],
+      [svg(rect('class="s" fill="none"')), '#ff0000', 'a stroke', 1],
+      [svg(rect('class="s" fill="none"')), '#ffffff', 'and no fill'],
+      [
+        svg(rect(), 'class="k" fill="none" stroke="#ff0000"'),
+        '#ff0000',
+        "the root's own stroke width",
+        1,
+      ],
+      [svg(rect('class="h" fill="#ff0000"')), '#ffffff', 'display: none'],
+      [
+        svg(`<g class="i">${rect('fill="#ff0000"')}</g>`),
+        '#ffffff',
+        'hidden with its group',
+      ],
+      [
+        svg(`<g class="i">${rect('class="w" fill="#00aa00"')}</g>`),
+        '#00aa00',
+        'and shown again in it',
+      ],
+      [svg(rect('class="o" fill="#ff0000"')), '#ffffff', 'opacity'],
+      [
+        svg(`<defs>${rect('id="r" class="g"')}</defs><use href="#r"/>`),
+        '#00aa00',
+        'a shape a <use> draws',
+      ],
+      // a rule for every shape of a type, under some ancestor: around the
+      // drawing, in it, or a sibling of one, and no rule's where it has none
+      [`<div class="on">${svg(rect())}</div>`, '#00aa00', 'under a class'],
+      [svg(`<g class="on">${rect()}</g>`), '#00aa00', 'one in the drawing'],
+      [
+        `<div id="w">${svg('<circle cx="5" cy="5" r="5"/>')}</div>`,
+        '#00aa00',
+        'under an id',
+      ],
+      [
+        svg(`<g class="sib"></g><g>${rect()}</g>`),
+        '#00aa00',
+        'after a sibling',
+      ],
+      [svg(rect()), '#000000', 'and under none of them'],
+      // a drawing's own style sheet is one of the document's
+      [
+        svg(
+          '<defs><style type="text/css"><![CDATA[\n.st0{fill:#00aa00;}\n]]>' +
+            `</style></defs>${rect('class="st0"')}`,
+        ),
+        '#00aa00',
+        'a style sheet in the drawing',
+      ],
+    ];
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0;color:#0000ff} svg{display:block}' +
+        ':root{--brand:#ff00ff} .g{fill:#00aa00} svg rect.f{fill:#00aa00}' +
+        '.m{fill:#00aa00 !important} .c{fill:currentColor}' +
+        '.v{fill:var(--brand)} .u{fill:inherit} .x{fill:no-colour}' +
+        '.s{stroke:#ff0000;stroke-width:4px} .k{stroke-width:4px}' +
+        '.h{display:none} .i{visibility:hidden} .w{visibility:visible}' +
+        '.o{opacity:0} .on rect{fill:#00aa00} #w circle{fill:#00aa00}' +
+        '.sib + g rect{fill:#00aa00} .off rect{fill:#ff0000}</style>' +
+        rows.map(([markup]) => markup).join(''),
+      {},
+    );
+    const ctx = result.ctx;
+    for (const [i, [, colour, message, x = 5]] of rows.entries()) {
+      await expectPixel(ctx, x, i * 10 + 5, colour, { message });
+    }
+  },
+);
+
+metric(
   'an SVG image fills the size it is drawn at, whatever its root says',
   async () => {
     // A root's width and height are what an image's intrinsic size is read

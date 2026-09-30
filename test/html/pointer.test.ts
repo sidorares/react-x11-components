@@ -1098,6 +1098,68 @@ metric(
 );
 
 metric(
+  'a hover that repaints a shape in a drawing restyles it where it is',
+  async () => {
+    // `a:hover svg path { fill }`: the rule's subject is in an inline
+    // `<svg>`, which has one box for all of it, so no style of the link's or
+    // of the drawing's changes with the pointer — what the rules give its
+    // shapes does (`Cascade.shapeStyles`), and the drawing is painted again.
+    const icon = (id: string) =>
+      `<svg id="${id}" width="20" height="20"><rect width="10" height="20"/>` +
+      '<rect class="d" x="10" width="10" height="20" fill="#0000ff"/></svg>';
+    const { result, node } = await render(
+      '<style>body{margin:0} svg{display:block} a{display:block;width:60px}' +
+        ' a:hover svg rect{fill:#ff0000} a:hover .d{fill:#00aa00}' +
+        ' .t{color:#ff00ff} .t:hover{color:#00aa00}' +
+        ' .t rect{fill:color-mix(in srgb, currentColor, currentColor)}' +
+        ' b{font-weight:normal} b:hover{font-weight:bold}</style>' +
+        `<a id="a" href="#x">${icon('i')}</a>` +
+        `<a id="o" href="#y">${icon('j')}</a>` +
+        `<div class="t" id="t">${icon('k')}</div>` +
+        '<p id="q">A paragraph with <b id="b">bold</b> in it.</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const { abs } = el as unknown as DrawnNode;
+    const pixel = (x: number, y: number, colour: string, message: string) =>
+      expectPixel(result.ctx, abs.x + x, abs.y + y, colour, { message });
+    await pixel(5, 10, '#000000', 'no rule yet');
+    await pixel(15, 10, '#0000ff', 'its own attribute');
+    await pixel(5, 50, '#ff00ff', "the drawing's colour");
+
+    const hovered = await hoverInPlace(result, el, 'i');
+    assert.ok(bytesApart(hovered, quiet) > 0, 'the hover drew nothing');
+    await pixel(5, 10, '#ff0000', 'the hovered link, any shape');
+    await pixel(15, 10, '#00aa00', 'and the one a closer rule names');
+    await pixel(5, 30, '#000000', 'the other link is as it was');
+
+    // to the other link, and off both
+    await hoverInPlace(result, el, 'j');
+    await pixel(5, 10, '#000000', 'the link the pointer left');
+    await pixel(15, 10, '#0000ff', 'and its other shape');
+    await pixel(5, 30, '#ff0000', 'the one it went to');
+    // a drawing whose own colour the hover changes, which its shapes read
+    await hoverInPlace(result, el, 'k');
+    await pixel(5, 30, '#000000', 'the second link, left');
+    await pixel(5, 50, '#00aa00', 'currentColor, hovered');
+    const left = await hoverInPlace(result, el, 'q');
+    assert.strictEqual(bytesApart(left, quiet), 0, 'not as it was before');
+
+    // A hover that moves something builds the boxes again, and each
+    // drawing's shapes are asked for again as its new box is painted.
+    await hoverInPlace(result, el, 'i');
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'b'));
+    const bold = await snapshot(result, el);
+    assert.ok(treeOf(el) !== tree, 'bold was restyled in place');
+    await pixel(5, 10, '#000000', 'the link the pointer left, built again');
+    await pixel(5, 50, '#ff00ff', 'a drawing the move did not reach');
+    assert.strictEqual(bytesApart(bold, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
   'a hover waits for a scroll to stop, and follows a move of the pointer at once',
   async (t) => {
     // Core asks what is under a still pointer after every frame that moved

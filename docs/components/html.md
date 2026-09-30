@@ -917,10 +917,26 @@ with presentation attributes and `style` attributes — not filters, masks
 or clip paths. An inline `<svg>`'s `fill` and `stroke` are the document's:
 properties a style sheet's rule sets on the element over its attributes,
 which inherit into it, and from it to the shapes it draws. That is how an
-icon set paints its icons, `.icon { fill: currentColor }`. A rule that
-names a shape inside the drawing is not read. An SVG root's `width` and
-`height` are CSS lengths, a percentage one too; its intrinsic size is what
-of them is absolute, and its ratio comes from them or from its `viewBox`,
+icon set paints its icons, `.icon { fill: currentColor }`. A rule may name
+an element inside the drawing as well — `.logo path { fill: #fff }`,
+`a:hover svg path { fill: red }` — and sets its `fill`, `stroke`,
+`stroke-width`, `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`,
+`fill-rule`, `fill-opacity`, `stroke-opacity`, `opacity`, `color`,
+`display` and `visibility`, and a gradient stop's `stop-color` and
+`stop-opacity`: over the element's presentation attributes and under its
+`style` attribute, as the cascade orders them, `!important` and `var()`
+included. A `<style>` inside the `<svg>` is one of the document's style
+sheets, which is where a drawing exported from an editor keeps its colours
+— `.st0 { fill: #fff }` for `<path class="st0">`. Those properties are the
+ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
+no others: a rule's `transform`, font or dash pattern is not, nor is what a
+rule gives an element a `<use>` brings from outside the drawing, and an SVG
+_image_ is drawn from its attributes, its own `<style>` unread. What is in
+a drawing has no box, so the pointer is over the drawing and never over a
+shape: `a:hover svg path` follows it, and `path:hover` matches nothing.
+
+An SVG root's `width` and `height` are CSS lengths, a percentage one too;
+its intrinsic size is what of them is absolute, and its ratio comes from them or from its `viewBox`,
 which is fitted to its box as `preserveAspectRatio` says. A percentage in
 its geometry is of its viewport, and `currentColor` is the `color` the
 element inherits. An inline drawing's `<use>` refers to an element anywhere

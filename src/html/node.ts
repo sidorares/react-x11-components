@@ -60,6 +60,7 @@ import {
 import type { HoverTouch, KeptStyles, MetricFace } from './css/cascade.js';
 import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { MediaCondition, Stylesheet } from './css/parse.js';
+import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
 import {
@@ -74,6 +75,7 @@ import {
   GENERATED_FROM,
   INLINE_OFFSETS,
   LINE_BOX_RAISES,
+  SHAPE_STYLES,
   SHIFTED_LINES,
   TEXT_SHIFTS,
   columned,
@@ -1711,7 +1713,39 @@ export class HtmlViewNode extends Node {
       styleOf(el);
       if (refused) return false;
     }
-    if (!changed.size && pseudoRules === HOVER_PSEUDO_NONE) return true;
+    // The drawings the move reached. What the rules give the shapes in one
+    // is no box's style (`BoxTree.shapeStyler`), so it is asked for again:
+    // of a drawing whose own style changed — its colour, a custom property
+    // — and of each where a rule that reaches into a drawing tests the
+    // pointer, `a:hover svg path`. One with another answer is painted
+    // again; one never painted has none yet, and asks when it is.
+    const redrawn: [Box, ShapeStyles | null][] = [];
+    if (tree.shapeStyler) {
+      for (const el of reach) {
+        if (tagOf(el) !== 'svg') continue;
+        const style = fresh.get(el);
+        if (!style) continue;
+        if (!changed.has(el) && !cascade.shapesFollowPointer) continue;
+        const box = this._firstBoxesOf(tree).get(el);
+        const was = box && SHAPE_STYLES.get(box);
+        if (!box || was === undefined) continue;
+        const shapes = cascade.shapeStyles(el, style);
+        if (shapes?.key !== was?.key) redrawn.push([box, shapes]);
+      }
+    }
+    const redraw = (): Rect[] => {
+      const inks: Rect[] = [];
+      for (const [box, shapes] of redrawn) {
+        SHAPE_STYLES.set(box, shapes);
+        const ink = inkOf(box);
+        if (ink) inks.push(ink);
+      }
+      return inks;
+    };
+    if (!changed.size && pseudoRules === HOVER_PSEUDO_NONE) {
+      this._repaintInk(redraw());
+      return true;
+    }
     for (const el of changed.keys()) {
       const tag = tagOf(el);
       // their backgrounds are the canvas's
@@ -1830,7 +1864,10 @@ export class HtmlViewNode extends Node {
         }
       }
     }
-    if (!restyled.length) return true;
+    if (!restyled.length) {
+      this._repaintInk(redraw());
+      return true;
+    }
 
     // the text: each layout holding a run of a restyled box's, made again
     // with its new ink, where it comes out the same shape
@@ -1883,6 +1920,7 @@ export class HtmlViewNode extends Node {
     for (const [el, style] of changed) {
       tree.styles.set(el, { style, inFlex: tree.styles.get(el)!.inFlex });
     }
+    for (const ink of redraw()) inks.push(ink);
     // A box that moved moves what is in it, as layout moved it the first
     // time (`applyRelativeOffsets`), and a later layout moves it the same
     // way; where it reached the document's end, before or after, the
@@ -1923,14 +1961,7 @@ export class HtmlViewNode extends Node {
    *  of: made on the first move over a tree, which is one walk of it. */
   private _firstBoxes: { tree: BoxTree; of: Map<Element, Box> } | null = null;
 
-  /**
-   * The blocks a restyle of `changed` has to look in: for each element, the
-   * box its text is set in the lines of — the nearest box around its first
-   * that is not an inline one — which holds every box that takes its style
-   * from it, the pieces a block in it broke it into among them
-   * (`breakAround`). One that is inside another is left to it.
-   */
-  private _blocksOf(tree: BoxTree, changed: Iterable<Element>): Box[] {
+  private _firstBoxesOf(tree: BoxTree): Map<Element, Box> {
     let index = this._firstBoxes;
     if (index?.tree !== tree) {
       const of = new Map<Element, Box>();
@@ -1944,9 +1975,21 @@ export class HtmlViewNode extends Node {
       }
       index = this._firstBoxes = { tree, of };
     }
+    return index.of;
+  }
+
+  /**
+   * The blocks a restyle of `changed` has to look in: for each element, the
+   * box its text is set in the lines of — the nearest box around its first
+   * that is not an inline one — which holds every box that takes its style
+   * from it, the pieces a block in it broke it into among them
+   * (`breakAround`). One that is inside another is left to it.
+   */
+  private _blocksOf(tree: BoxTree, changed: Iterable<Element>): Box[] {
+    const first = this._firstBoxesOf(tree);
     const blocks = new Set<Box>();
     for (const el of changed) {
-      let box: Box | null = index.of.get(el) ?? null;
+      let box: Box | null = first.get(el) ?? null;
       while (
         box?.parent &&
         (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break')
