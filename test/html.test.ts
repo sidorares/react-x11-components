@@ -17676,10 +17676,11 @@ test("a control's text is the palette's size, not its parent's", async () => {
   // the page's 16px where Chrome's is 13.33, and a select under a 20px
   // body was measured for text the widget in it did not draw. The sheet's
   // pixels are CSS pixels, so a button's palette chrome is too: written from
-  // the device look and scaled again by the cascade, it came out doubled
+  // the device look and scaled again by the cascade, it came out doubled.
+  // And a text field's widget writes at the size its box was measured for
   const source =
     '<body style="font-size:20px"><span id="t">x</span>' +
-    '<input id="i"><select id="s"><option>a</option></select>' +
+    '<input id="i" placeholder="field"><select id="s"><option>a</option></select>' +
     '<button id="b">Go</button><textarea id="a"></textarea>' +
     '<meter id="m"></meter>' +
     '<select id="own" style="font-size:inherit"></select></body>';
@@ -17719,8 +17720,14 @@ test("a control's text is the palette's size, not its parent's", async () => {
       padTop: number;
       borderTop: number;
     };
+    const field = (await screen.findByPlaceholder('field')) as unknown as {
+      props: { style: Record<string, unknown> | Record<string, unknown>[] };
+    };
+    const written = [field.props.style]
+      .flat()
+      .reduce((all, one) => ({ ...all, ...one }), {}).fontSize as number;
     await result.unmount();
-    return [out, [button.padTop / scale, button.borderTop / scale]];
+    return [out, [button.padTop / scale, button.borderTop / scale, written]];
   };
   const [text, chrome] = await sizes(1);
   assert.deepStrictEqual(
@@ -17729,7 +17736,11 @@ test("a control's text is the palette's size, not its parent's", async () => {
     'text, the four controls at the palette size, a meter and a select ' +
       'told to inherit at their parent size',
   );
-  assert.deepStrictEqual(chrome, [12, 1], "a button in the palette's chrome");
+  assert.deepStrictEqual(
+    chrome,
+    [12, 1, 12],
+    "a button in the palette's chrome, and a field's text at the palette size",
+  );
   assert.deepStrictEqual(
     await sizes(2),
     [text, chrome],
