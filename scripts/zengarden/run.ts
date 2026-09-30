@@ -94,7 +94,14 @@ try {
     try {
       reference = await chrome.capture(url, size);
       ours = await capture(network, url, size);
+      // a page drawn without a file its server never answered for is not
+      // the page
+      const dropped = network.takeDropped();
+      if (dropped.length) {
+        throw new Error(`no answer from the server for ${dropped.join(', ')}`);
+      }
     } catch (error) {
+      network.takeDropped();
       console.log(`${id}  error: ${(error as Error).stack ?? error}`);
       failed += 1;
       if (!keepGoing) break;
