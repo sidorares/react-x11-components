@@ -15038,6 +15038,115 @@ metric(
   },
 );
 
+/** A card over which a hover casts a wide shadow, raises it over the box
+ *  that overlaps it, and lifts it — the three things a card grid's hover
+ *  does (Zen Garden's list of designs), none of which moves anything else. */
+const CARD_PAGE =
+  '<style>body{margin:0}' +
+  ' .c{position:relative;z-index:1;width:120px;height:60px;margin:30px;' +
+  'background:#ffffff;border:1px solid #888888;box-shadow:0 1px 2px #00000044}' +
+  ' .c:hover{z-index:2;border-color:#ff0000;' +
+  'box-shadow:0 0 24px 6px #0000ff;transform:translateY(-6px)}' +
+  ' .o{position:relative;z-index:1;width:120px;height:40px;' +
+  'margin:-60px 0 0 90px;background:#00aa00}' +
+  ' .s{width:100px;height:20px;background:#cccccc}' +
+  ' .s:hover{transform:translateY(-4px)}</style>' +
+  '<div class="c" id="c"><span id="t">a card</span></div>' +
+  '<div class="o" id="o"></div>' +
+  '<div class="s" id="s"><span id="u">plain</span></div>' +
+  '<p id="away">away from all of them</p>';
+
+/** How many bytes two snapshots differ in. An assertion on the arrays
+ *  themselves diffs them when it fails, and a page of pixels diffed runs
+ *  the test process out of memory before it says anything. */
+function bytesApart(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+  let n = Math.abs(a.length - b.length);
+  const end = Math.min(a.length, b.length);
+  for (let i = 0; i < end; i += 1) if (a[i] !== b[i]) n += 1;
+  return n;
+}
+
+metric(
+  'a hovered card takes its shadow, its z-index and its lift in place, to the pixels a rebuild draws',
+  async () => {
+    const { result, node } = await render(CARD_PAGE, 300);
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+
+    const [, below] = pointIn(el, 't');
+    el.setHover(...pointIn(el, 't'));
+    const hovered = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'the document was built again');
+    assert.ok(bytesApart(hovered, quiet) > 0, 'the hover drew nothing');
+    // the text went up with its card
+    const [, lifted] = pointIn(el, 't');
+    assert.ok(lifted < below, 'the text did not move with its card');
+    const whole = await rebuilt(result, el);
+    assert.strictEqual(
+      bytesApart(hovered, whole),
+      0,
+      'not as a rebuild draws it',
+    );
+
+    // …and off it again, in place, to where it was
+    const again = treeOf(el);
+    el.setHover(...pointIn(el, 'away'));
+    const left = await snapshot(result, el);
+    assert.ok(treeOf(el) === again, 'built again to leave the card');
+    assert.strictEqual(bytesApart(left, quiet), 0, 'not as it was');
+  },
+);
+
+metric(
+  'a box that a transform would make a containing block is built again',
+  async () => {
+    const { result, node } = await render(CARD_PAGE, 300);
+    const el = view(node);
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'u'));
+    const hovered = await snapshot(result, el);
+    assert.ok(treeOf(el) !== tree, 'restyled in place');
+    const whole = await rebuilt(result, el);
+    assert.strictEqual(
+      bytesApart(hovered, whole),
+      0,
+      'not as a rebuild draws it',
+    );
+  },
+);
+
+metric(
+  'a hover in place repaints what it restyled, not the document',
+  async () => {
+    const { node } = await render(HOVER_PAGE, 300);
+    const el = view(node);
+    await act();
+    const damage: unknown[] = [];
+    const invalidate = el.invalidate.bind(el);
+    el.invalidate = ((layout?: boolean, rect?: unknown, reason?: string) => {
+      damage.push(rect);
+      return invalidate(layout, rect as never, reason);
+    }) as typeof el.invalidate;
+    el.setHover(...pointIn(el, 's'));
+    assert.ok(damage.length > 0, 'something is repainted');
+    assert.ok(!damage.includes(el), 'not the whole element');
+    // the link's paragraph, where its text is drawn, and no further
+    const p = el.elementRect(findById(el.document, 'p')!)!;
+    const { abs } = el as unknown as DrawnNode;
+    for (const r of damage as { y: number; height: number }[]) {
+      assert.ok(
+        r.y >= abs.y + p.y - 2,
+        `a repaint above the paragraph, ${r.y}`,
+      );
+      assert.ok(
+        r.y + r.height <= abs.y + p.y + p.height + 2,
+        'a repaint below the paragraph',
+      );
+    }
+  },
+);
+
 metric(
   'a list item, whose marker takes its colour, is built again',
   async () => {
