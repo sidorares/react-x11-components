@@ -508,6 +508,147 @@ export function clipsAround(ops: PaintOp[], color: string): PaintOp[][] {
   return out;
 }
 
+/** One closed outline in a path: a rectangle as its four corners, a curve
+ *  as the line it bends along. */
+export type Outline = [number, number][];
+
+/** What a paint of the part of the document `damage` names fills and clips
+ *  to, in order, each path as the outlines it is made of — so that where a
+ *  shape reaches can be asked of any point (`windingAt`), whatever mix of
+ *  rectangles, rounded rectangles and curves drew it. */
+export async function pathsOf(
+  el: HtmlViewNode,
+  damage: { x: number; y: number; width: number; height: number },
+): Promise<{
+  fills: { style: unknown; rule: string; outlines: Outline[] }[];
+  clips: Outline[][];
+}> {
+  const { paintDocument } = await import('../../src/html/paint.js');
+  const fills: { style: unknown; rule: string; outlines: Outline[] }[] = [];
+  const clips: Outline[][] = [];
+  let outlines: Outline[] = [];
+  let at: [number, number] = [0, 0];
+  const last = (): Outline => outlines[outlines.length - 1];
+  /** A quarter ellipse about its centre, from `from` a quarter turn on. */
+  const quarter = (
+    out: Outline,
+    cx: number,
+    cy: number,
+    rx: number,
+    ry: number,
+    from: number,
+  ): void => {
+    for (let i = 0; i <= 16; i += 1) {
+      const a = ((from + i / 16) * Math.PI) / 2;
+      out.push([cx + rx * Math.sin(a), cy - ry * Math.cos(a)]);
+    }
+  };
+  const ctx = {
+    fillStyle: null as unknown,
+    save() {},
+    restore() {},
+    fillRect(x: number, y: number, w: number, h: number) {
+      const rect: Outline = [
+        [x, y],
+        [x + w, y],
+        [x + w, y + h],
+        [x, y + h],
+      ];
+      fills.push({ style: ctx.fillStyle, rule: 'nonzero', outlines: [rect] });
+    },
+    beginPath() {
+      outlines = [];
+    },
+    rect(x: number, y: number, w: number, h: number) {
+      outlines.push([
+        [x, y],
+        [x + w, y],
+        [x + w, y + h],
+        [x, y + h],
+      ]);
+    },
+    roundRect(
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      radii: (number | { x: number; y: number })[],
+    ) {
+      const [a, b, c, d] = radii.map((r) =>
+        typeof r === 'number' ? { x: r, y: r } : r,
+      );
+      const out: Outline = [];
+      quarter(out, x + w - b.x, y + b.y, b.x, b.y, 0);
+      quarter(out, x + w - c.x, y + h - c.y, c.x, c.y, 1);
+      quarter(out, x + d.x, y + h - d.y, d.x, d.y, 2);
+      quarter(out, x + a.x, y + a.y, a.x, a.y, 3);
+      outlines.push(out);
+    },
+    moveTo(x: number, y: number) {
+      outlines.push([[x, y]]);
+      at = [x, y];
+    },
+    lineTo(x: number, y: number) {
+      last().push([x, y]);
+      at = [x, y];
+    },
+    bezierCurveTo(...p: number[]) {
+      const [x0, y0] = at;
+      const [x1, y1, x2, y2, x3, y3] = p;
+      for (let i = 1; i <= 64; i += 1) {
+        const t = i / 64;
+        const u = 1 - t;
+        const [k0, k1, k2, k3] = [
+          u * u * u,
+          3 * u * u * t,
+          3 * u * t * t,
+          t ** 3,
+        ];
+        last().push([
+          k0 * x0 + k1 * x1 + k2 * x2 + k3 * x3,
+          k0 * y0 + k1 * y1 + k2 * y2 + k3 * y3,
+        ]);
+      }
+      at = [x3, y3];
+    },
+    closePath() {},
+    fill(rule?: string) {
+      fills.push({ style: ctx.fillStyle, rule: rule ?? 'nonzero', outlines });
+      outlines = [];
+    },
+    clip() {
+      clips.push(outlines);
+      outlines = [];
+    },
+  };
+  paintDocument(ctx as never, (el as unknown as { _tree: never })._tree, {
+    originX: 0,
+    originY: 0,
+    damage,
+    selection: null,
+    selectionColor: null,
+    imageFor: () => null,
+  });
+  return { fills, clips };
+}
+
+/** How many times outlines wind round a point: inside them by the non-zero
+ *  rule where not 0, and by the even-odd rule where odd. */
+export function windingAt(outlines: Outline[], x: number, y: number): number {
+  let winding = 0;
+  for (const outline of outlines) {
+    for (let i = 0; i < outline.length; i += 1) {
+      const [x0, y0] = outline[i];
+      const [x1, y1] = outline[(i + 1) % outline.length];
+      if (y0 <= y === y1 <= y) continue;
+      // where the edge crosses the line through the point, right of it
+      if (x0 + ((y - y0) / (y1 - y0)) * (x1 - x0) <= x) continue;
+      winding += y1 > y0 ? 1 : -1;
+    }
+  }
+  return winding;
+}
+
 // a 10x10 PNG, solid #ff0000
 export const RED_PNG = new Uint8Array(
   Buffer.from(

@@ -6,7 +6,17 @@ import { parseColor } from '../../src/html/css/values.js';
 import { NO_BORDER_IMAGE } from '../../src/html/css/style.js';
 import type { BorderImage, ComputedStyle } from '../../src/html/css/style.js';
 import { SurfaceCache } from '../../src/html/surfaces.js';
-import { boxOf, fillsIn, fillsOf, h, metric, render, view } from './harness.js';
+import {
+  boxOf,
+  fillsIn,
+  fillsOf,
+  h,
+  metric,
+  pathsOf,
+  render,
+  view,
+  windingAt,
+} from './harness.js';
 import type { Fill, LaidBox, PaintOp } from './harness.js';
 
 afterEach(cleanup);
@@ -586,6 +596,57 @@ test('a 3D side cut to what the paint reaches keeps its slope', async () => {
       found.sort(),
       pair.sort(),
       `the two sides it reaches`,
+    );
+  }
+});
+
+test('a rounded border cut to what the paint reaches keeps its hole', async () => {
+  // A rounded solid border is one ring, and it was filled between the
+  // painted area — the box cut to 64 pixels round the damage — and that
+  // area inset by the borders. So the hole was a border's width in from
+  // wherever the paint was cut, and a border wider than the margin had
+  // none: a strip repainted in the middle of the content was filled with
+  // the border's colour, and a corner the cut went through was drawn as a
+  // curve 300 across on a rectangle 148 across.
+  const ink = parseColor('#0000ff');
+  // the border area of a box 2000 across, less the content's 1000
+  const border = (x: number, y: number) =>
+    !(x > 500 && x < 1500 && y > 500 && y < 1500);
+  const cases = [
+    [20, { x: 1000, y: 1000, width: 20, height: 20 }, border],
+    [20, { x: 490, y: 990, width: 20, height: 20 }, border],
+    [
+      300,
+      { x: 80, y: 80, width: 20, height: 20 },
+      (x: number, y: number) => Math.hypot(x - 300, y - 300) < 300,
+    ],
+  ] as const;
+  for (const [radius, damage, inside] of cases) {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="width:1000px;height:1000px;border:500px solid #0000ff;' +
+        `border-radius:${radius}px"></div>`,
+    );
+    const { fills } = await pathsOf(view(node), damage);
+    const rings = fills.filter((f) => f.style === ink);
+    const at = `a radius of ${radius}, repainted at ${damage.x},${damage.y}`;
+    const wrong: string[] = [];
+    for (let y = damage.y; y < damage.y + damage.height; y += 1) {
+      for (let x = damage.x; x < damage.x + damage.width; x += 1) {
+        const [px, py] = [x + 0.5, y + 0.5];
+        // clear of the curve, which the recorder bends in straight lines
+        if (Math.abs(Math.hypot(px - 300, py - 300) - 300) < 1) continue;
+        const filled = rings.some(({ rule, outlines }) => {
+          const winding = windingAt(outlines, px, py);
+          return rule === 'evenodd' ? winding % 2 !== 0 : winding !== 0;
+        });
+        if (filled !== inside(px, py)) wrong.push(`${x},${y}`);
+      }
+    }
+    assert.deepStrictEqual(
+      wrong.slice(0, 4),
+      [],
+      `the border and nothing else, ${at}: ${wrong.length} wrong`,
     );
   }
 });

@@ -4943,26 +4943,162 @@ function roundedRing(
   }
   if (color === null) return true;
   if (isTransparent(color)) return true;
-  const rect = clampRect(options, x, y, w, h);
-  if (!rect) return true;
-  const top = box.borderTop;
-  const right = box.borderRight;
-  const bottom = box.borderBottom;
-  const left = box.borderLeft;
+  const ring = cutRing(
+    options,
+    x,
+    y,
+    w,
+    h,
+    corners,
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+  );
+  if (!ring) return true;
+  const { outer, inner } = ring;
   ctx.fillStyle = inkColor(color, s.color);
   fillRing(
     ctx,
-    { x: rect.x, y: rect.y, width: rect.w, height: rect.h },
-    corners,
-    {
-      x: rect.x + left,
-      y: rect.y + top,
-      width: Math.max(0, rect.w - left - right),
-      height: Math.max(0, rect.h - top - bottom),
-    },
-    insetCorners(corners, top, right, bottom, left),
+    outer.rect,
+    outer.corners,
+    inner ? inner.rect : { x: 0, y: 0, width: 0, height: 0 },
+    inner ? inner.corners : outer.corners,
   );
   return true;
+}
+
+/** A rectangle and the radii of its corners. */
+interface Rounded {
+  rect: Rect;
+  corners: Corners;
+}
+
+/**
+ * A rounded box's ring — its border edge and its padding edge, the box
+ * inside its borders — cut to the neighbourhood of what is being painted,
+ * as `clampRect` cuts a rectangle. Both edges are the box's own, cut to
+ * one window, so what is left is the part of the true ring in it. Cutting
+ * the box first and insetting the cut by the borders put the hole a
+ * border's width in from the cut rather than from the box's edge, and left
+ * none where a border was wider than `CLAMP_PAD`: the ring filled whatever
+ * of the box a paint reached. A cut is straight, so a side of the window
+ * is moved out past any corner's curve it would cross, and a corner on a
+ * side the window cut is square, its curve being outside. Null where the
+ * ring has nothing in the window.
+ */
+function cutRing(
+  options: PaintOptions,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  corners: Corners,
+  top: number,
+  right: number,
+  bottom: number,
+  left: number,
+): { outer: Rounded; inner: Rounded | null } | null {
+  const { x: cx, y: cy } = corners;
+  // where each corner's curve runs, across and down — the padding edge's
+  // run inside the border edge's
+  const across: [number, number][] = [
+    [x, x + cx[0]],
+    [x + w - cx[1], x + w],
+    [x + w - cx[2], x + w],
+    [x, x + cx[3]],
+  ];
+  const down: [number, number][] = [
+    [y, y + cy[0]],
+    [y, y + cy[1]],
+    [y + h - cy[2], y + h],
+    [y + h - cy[3], y + h],
+  ];
+  const d = options.damage;
+  const side = (at: number, spans: [number, number][], towards: number) =>
+    Math.max(
+      -COORD_LIMIT,
+      Math.min(COORD_LIMIT, outOfSpans(at, spans, towards)),
+    );
+  const x0 = side(d ? d.x - CLAMP_PAD : -COORD_LIMIT, across, -1);
+  const y0 = side(d ? d.y - CLAMP_PAD : -COORD_LIMIT, down, -1);
+  const x1 = side(d ? d.x + d.width + CLAMP_PAD : COORD_LIMIT, across, 1);
+  const y1 = side(d ? d.y + d.height + CLAMP_PAD : COORD_LIMIT, down, 1);
+  const cut = (
+    rx: number,
+    ry: number,
+    rw: number,
+    rh: number,
+    c: Corners,
+  ): Rounded | null => {
+    const l = Math.max(rx, x0);
+    const t = Math.max(ry, y0);
+    const r = Math.min(rx + rw, x1);
+    const b = Math.min(ry + rh, y1);
+    if (r <= l || b <= t) return null;
+    // the corners of the sides the window left where they were
+    const kept = [
+      t === ry && l === rx,
+      t === ry && r === rx + rw,
+      b === ry + rh && r === rx + rw,
+      b === ry + rh && l === rx,
+    ];
+    return {
+      rect: { x: l, y: t, width: r - l, height: b - t },
+      corners: {
+        x: c.x.map((v, i) => (kept[i] ? v : 0)) as Corners['x'],
+        y: c.y.map((v, i) => (kept[i] ? v : 0)) as Corners['y'],
+      },
+    };
+  };
+  const outer = cut(x, y, w, h, corners);
+  if (!outer) return null;
+  const iw = w - left - right;
+  const ih = h - top - bottom;
+  const inner =
+    iw > 0 && ih > 0
+      ? cut(
+          x + left,
+          y + top,
+          iw,
+          ih,
+          insetCorners(corners, top, right, bottom, left),
+        )
+      : null;
+  // a window inside the padding edge, where the ring has nothing
+  if (inner && sameRounded(outer, inner)) return null;
+  return { outer, inner };
+}
+
+/** A position moved out of any of `spans` it is inside, towards their
+ *  starts where `towards` is negative and their ends where it is not. */
+function outOfSpans(
+  at: number,
+  spans: readonly [number, number][],
+  towards: number,
+): number {
+  for (let moved = true; moved;) {
+    moved = false;
+    for (const [from, to] of spans) {
+      if (at > from && at < to) {
+        at = towards < 0 ? from : to;
+        moved = true;
+      }
+    }
+  }
+  return at;
+}
+
+/** Whether two rounded rectangles are one shape. */
+function sameRounded(a: Rounded, b: Rounded): boolean {
+  return (
+    a.rect.x === b.rect.x &&
+    a.rect.y === b.rect.y &&
+    a.rect.width === b.rect.width &&
+    a.rect.height === b.rect.height &&
+    a.corners.x.every((v, i) => v === b.corners.x[i]) &&
+    a.corners.y.every((v, i) => v === b.corners.y[i])
+  );
 }
 
 /**
@@ -4976,9 +5112,13 @@ function roundedRing(
  * time — the dots, the dashes, the two lines of a double border joined as
  * they are painted, by the sides' colours though neither is drawn. All of
  * them run clockwise and a ring's inside the other way, so the clip is the
- * union by the non-zero rule, the one every context's `clip` takes. False
- * where the border paints nothing or the context cannot clip, and nothing
- * is pushed.
+ * union by the non-zero rule, the one every context's `clip` takes. Each
+ * is placed from the box's edges and then cut to the painted area: placed
+ * from the cut, a border wider than `CLAMP_PAD` put its bands and its
+ * ring's hole a border's width in from wherever the paint was cut, and
+ * the background was painted over the content of a box repainted in part.
+ * False where the border paints nothing in the painted area or the context
+ * cannot clip, and nothing is pushed.
  */
 function pushBorderArea(
   ctx: PaintContext,
@@ -5000,40 +5140,60 @@ function pushBorderArea(
   const w = Math.round(left + box.width) - x;
   const h = Math.round(top + frameHeight(box)) - y;
   if (w <= 0 || h <= 0) return false;
-  const area = clampRect(options, x, y, w, h);
-  if (!area) return false;
+  if (!clampRect(options, x, y, w, h)) return false;
   const corners = cornersOf(s, w, h);
   ctx.save();
   ctx.beginPath();
+  // how many shapes the path has: none, and the border paints nothing here
+  let shapes = 0;
   if (corners && canCurve(ctx) && solidBorder(box)) {
-    roundedRect(ctx, area.x, area.y, area.w, area.h, corners, true);
-    const iw = area.w - l - r;
-    const ih = area.h - t - b;
-    if (iw > 0 && ih > 0) {
-      const inner = insetCorners(corners, t, r, b, l);
-      roundedRect(ctx, area.x + l, area.y + t, iw, ih, inner, true, true);
+    const ring = cutRing(options, x, y, w, h, corners, t, r, b, l);
+    if (ring) {
+      const add = ({ rect, corners: c }: Rounded, hole: boolean): void =>
+        roundedRect(
+          ctx,
+          rect.x,
+          rect.y,
+          rect.width,
+          rect.height,
+          c,
+          true,
+          hole,
+        );
+      add(ring.outer, false);
+      // the padding edge run the other way, which cuts it out
+      if (ring.inner) add(ring.inner, true);
+      shapes = 1;
     }
-  } else if (sculpted(s)) {
-    // a band a side, which the trapezoids cover between them
-    ctx.rect(area.x, area.y, area.w, t);
-    ctx.rect(area.x, area.y + area.h - b, area.w, b);
-    ctx.rect(area.x, area.y + t, l, area.h - t - b);
-    ctx.rect(area.x + area.w - r, area.y + t, r, area.h - t - b);
   } else {
-    const path = { fillRect: ctx.rect.bind(ctx) };
+    // A side at a time, from the box's edges and cut to the painted area
+    // after: a 3D side as a band, which the trapezoids cover between them,
+    // and any other as `fillSide` fills it.
+    const path = {
+      fillRect(ex: number, ey: number, ew: number, eh: number) {
+        ctx.rect!(ex, ey, ew, eh);
+        shapes += 1;
+      },
+    };
     const widths = [t, r, b, l];
     const joins = doubleJoins(box);
-    const styles = [
-      s.borderTopStyle,
-      s.borderRightStyle,
-      s.borderBottomStyle,
-      s.borderLeftStyle,
-    ];
+    const styles: ComputedStyle['borderTopStyle'][] = sculpted(s)
+      ? ['solid', 'solid', 'solid', 'solid']
+      : [
+          s.borderTopStyle,
+          s.borderRightStyle,
+          s.borderBottomStyle,
+          s.borderLeftStyle,
+        ];
     for (let at = 0; at < 4; at += 1) {
       if (widths[at] > 0) {
         fillSide(path, options, at, x, y, w, h, widths, styles[at], joins);
       }
     }
+  }
+  if (!shapes) {
+    ctx.restore();
+    return false;
   }
   ctx.clip();
   return true;

@@ -20,12 +20,14 @@ import {
   fillsIn,
   fillsOf,
   metric,
+  pathsOf,
   render,
   render2x,
   renderWithBytes,
   renderWithImages,
   svgBytes,
   view,
+  windingAt,
 } from './harness.js';
 import type { Fill, PaintOp } from './harness.js';
 
@@ -1320,6 +1322,62 @@ metric(
     });
   },
 );
+
+test('a border-area clip is the border wherever the paint is cut', async () => {
+  // A paint that reaches part of a box is cut to 64 pixels round what it
+  // repaints, and the clip was built from that cut as though it were the
+  // box. A 3D border's bands were placed a border's width in from each cut
+  // edge, so 500px sides on a cut 148 across ran backwards, wound the other
+  // way and cancelled the rest: a strip repainted across the border's
+  // inner edge had no background in the border at all. A rounded border's
+  // ring was the cut and the cut inset by the borders, which leaves no
+  // hole once the border is wider than the margin: the background was
+  // painted over the content, and a corner the cut went through was a
+  // curve 300 across on a rectangle 148 across.
+  const solid = 'border:500px solid #888888';
+  // the border area of a box 2000 across, less the content's 1000
+  const border = (x: number, y: number) =>
+    !(x > 500 && x < 1500 && y > 500 && y < 1500);
+  const inContent = { x: 1000, y: 1000, width: 20, height: 20 };
+  const acrossEdge = { x: 490, y: 990, width: 20, height: 20 };
+  const cases = [
+    ['a 3D border', 'border:500px inset #888888', inContent, border],
+    ['a 3D border', 'border:500px inset #888888', acrossEdge, border],
+    ['a rounded one', `${solid};border-radius:20px`, inContent, border],
+    ['a rounded one', `${solid};border-radius:20px`, acrossEdge, border],
+    [
+      'a rounded one, across its curve',
+      `${solid};border-radius:300px`,
+      { x: 80, y: 80, width: 20, height: 20 },
+      (x: number, y: number) => Math.hypot(x - 300, y - 300) < 300,
+    ],
+  ] as const;
+  for (const [name, style, damage, inside] of cases) {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        `<div style="width:1000px;height:1000px;${style};` +
+        'background:#ff0000;background-clip:border-area"></div>',
+    );
+    const { clips } = await pathsOf(view(node), damage);
+    const at = `${name}, repainted at ${damage.x},${damage.y}`;
+    assert.ok(clips.length <= 1, `one clip, or none: ${at}`);
+    const wrong: string[] = [];
+    for (let y = damage.y; y < damage.y + damage.height; y += 1) {
+      for (let x = damage.x; x < damage.x + damage.width; x += 1) {
+        const [px, py] = [x + 0.5, y + 0.5];
+        // clear of the curve, which the recorder bends in straight lines
+        if (Math.abs(Math.hypot(px - 300, py - 300) - 300) < 1) continue;
+        const clipped = clips.length === 1 && windingAt(clips[0], px, py) !== 0;
+        if (clipped !== inside(px, py)) wrong.push(`${x},${y}`);
+      }
+    }
+    assert.deepStrictEqual(
+      wrong.slice(0, 4),
+      [],
+      `the border area and nothing else, ${at}: ${wrong.length} wrong`,
+    );
+  }
+});
 
 metric(
   'an inline box whose background is an image or a gradient alone is painted',
