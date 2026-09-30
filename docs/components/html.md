@@ -710,22 +710,26 @@ least or greatest width through it.
 **SVG:** an inline `<svg>`, an SVG image and an SVG background are drawn by
 ntk's `SvgView`, which core's own `<svg>` element draws with, so they draw
 its subset: shapes and paths, groups, `<use>`, gradients and plain text,
-with presentation attributes and `style` attributes — not a stylesheet's
-rules, filters, masks or clip paths. An SVG root's `width` and `height` are
-CSS lengths, a percentage one too; its intrinsic size is what of them is
-absolute, and its ratio comes from them or from its `viewBox`, which is
-fitted to its box as `preserveAspectRatio` says. A percentage in its
-geometry is of its viewport, and `currentColor` is the `color` the element
-inherits. An inline drawing's `<use>` refers to an element anywhere in the
-document, so an icon drawn from a sprite — a `<symbol>` in a hidden `<svg>`
-at the top of the page — is drawn, in the colour of where it is used; a
-symbol's `viewBox` is fitted to the viewport the `<use>` gives it, its
-`width` and `height`, or all of the drawing. What the element itself refers
-to from outside its symbol, a gradient by `url()`, is not followed, and
-nothing is fetched for a `<use>` of another document's. An SVG image's root `background-color`, in its `style`, covers
-the whole image, as a browser paints it over the canvas. XHTML's
-`<svg:svg>`, under a prefix declared for the SVG namespace, is the same
-element.
+with presentation attributes and `style` attributes — not filters, masks
+or clip paths. An inline `<svg>`'s `fill` and `stroke` are the document's:
+properties a style sheet's rule sets on the element over its attributes,
+which inherit into it, and from it to the shapes it draws. That is how an
+icon set paints its icons, `.icon { fill: currentColor }`. A rule that
+names a shape inside the drawing is not read. An SVG root's `width` and
+`height` are CSS lengths, a percentage one too; its intrinsic size is what
+of them is absolute, and its ratio comes from them or from its `viewBox`,
+which is fitted to its box as `preserveAspectRatio` says. A percentage in
+its geometry is of its viewport, and `currentColor` is the `color` the
+element inherits. An inline drawing's `<use>` refers to an element anywhere
+in the document, so an icon drawn from a sprite — a `<symbol>` in a hidden
+`<svg>` at the top of the page — is drawn, in the colour of where it is
+used; a symbol's `viewBox` is fitted to the viewport the `<use>` gives it,
+its `width` and `height`, or all of the drawing. What the element itself
+refers to from outside its symbol, a gradient by `url()`, is not followed,
+and nothing is fetched for a `<use>` of another document's. An SVG image's
+root `background-color`, in its `style`, covers the whole image, as a
+browser paints it over the canvas. XHTML's `<svg:svg>`, under a prefix
+declared for the SVG namespace, is the same element.
 
 **Backgrounds:** `background-color`, and `background-image` — through
 `onResource`, like an `<img>` — with `background-repeat`, `space` and

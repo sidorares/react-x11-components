@@ -292,6 +292,54 @@ metric(
 );
 
 metric(
+  "an inline SVG is painted with the fill and stroke the document's styles give it",
+  async () => {
+    // `fill` and `stroke` are properties (SVG 2, 13.2): a rule of the
+    // document's sets them on an `<svg>` over its presentation attributes,
+    // they inherit into it, and what is in the drawing inherits them from
+    // its root. Only the attributes were read, so an icon set that paints
+    // its icons from a style sheet — `.octicon { fill: currentColor }`, and
+    // a muted tab's `fill: var(--fgColor-muted)` — drew them all black.
+    const rect = '<rect width="10" height="10"/>';
+    const svg = (attrs: string, inside = rect) =>
+      `<svg width="10" height="10" ${attrs}>${inside}</svg>`;
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0;color:#0000ff} svg{display:block}' +
+        ':root{--muted:#ff0000} .i{fill:currentColor}' +
+        '.m{color:var(--muted);fill:var(--muted)} .g{fill:#00aa00}' +
+        '.s{stroke:#ff00ff} .n{fill:none}</style>' +
+        svg('class="i"') +
+        svg('class="i m"') +
+        svg('class="g"') +
+        // nothing set: the drawing's own, black
+        svg('') +
+        // a rule over the attribute, and the attribute over what is inherited
+        svg('class="i" fill="#00aa00"') +
+        `<div style="fill:#ff0000">${svg('fill="#00aa00"')}</div>` +
+        `<div style="fill:#ff00ff">${svg('')}</div>` +
+        // and what is in the drawing says for itself
+        svg('class="g"', '<rect width="10" height="10" fill="#0000ff"/>') +
+        svg('class="s" fill="none" stroke-width="4"') +
+        svg('class="n"'),
+      {},
+    );
+    const ctx = result.ctx;
+    const row = (n: number) => n * 10 + 5;
+    await expectPixel(ctx, 5, row(0), '#0000ff', { message: 'currentColor' });
+    await expectPixel(ctx, 5, row(1), '#ff0000', { message: 'a variable' });
+    await expectPixel(ctx, 5, row(2), '#00aa00', { message: 'a colour' });
+    await expectPixel(ctx, 5, row(3), '#000000', { message: 'none set' });
+    await expectPixel(ctx, 5, row(4), '#0000ff', { message: 'over its own' });
+    await expectPixel(ctx, 5, row(5), '#00aa00', { message: 'its attribute' });
+    await expectPixel(ctx, 5, row(6), '#ff00ff', { message: 'inherited' });
+    await expectPixel(ctx, 5, row(7), '#0000ff', { message: "a shape's own" });
+    await expectPixel(ctx, 1, row(8), '#ff00ff', { message: 'a stroke' });
+    await expectPixel(ctx, 5, row(8), '#ffffff', { message: 'and no fill' });
+    await expectPixel(ctx, 5, row(9), '#ffffff', { message: 'fill: none' });
+  },
+);
+
+metric(
   'an SVG image fills the size it is drawn at, whatever its root says',
   async () => {
     // A root's width and height are what an image's intrinsic size is read

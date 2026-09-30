@@ -183,6 +183,8 @@ export class SvgDrawing {
   private _seen = -1;
   private _seenLast: ChildNode | null = null;
   private _seenViewport = '';
+  /** The `fill` and `stroke` the view's tree was last given its root's. */
+  private _seenPaint = '';
   /** Whether a length in the tree is a percentage of the viewport; null
    *  until the tree is first read. */
   private _percent: boolean | null = null;
@@ -210,7 +212,11 @@ export class SvgDrawing {
    * Draw into a rectangle — the box's content box, in device pixels —
    * clipped to it. The `viewBox`, where there is one, is fitted to it as
    * `preserveAspectRatio` says; without one a user unit is a CSS pixel,
-   * which is `scale` device pixels. `color` is `currentColor`.
+   * which is `scale` device pixels. `color` is `currentColor`, and `fill`
+   * and `stroke` the root's own where the document's styles set them (SVG
+   * 2, 13.2): they are properties, which a style sheet's rule sets over
+   * the presentation attribute, and what is in the drawing inherits them
+   * from its root.
    */
   draw(
     ctx: ClipContext,
@@ -220,6 +226,8 @@ export class SvgDrawing {
     h: number,
     scale: number,
     color?: string,
+    fill: string | null = null,
+    stroke: string | null = null,
   ): void {
     if (this._failed || !(w > 0 && h > 0)) return;
     // the mock backend has no path API, and SvgView draws paths
@@ -249,9 +257,12 @@ export class SvgDrawing {
     }
     const box = viewBoxOf(root);
     // the viewport in user units, which a percentage is of
+    const paint =
+      (fill === null ? '' : `fill:${fill};`) +
+      (stroke === null ? '' : `stroke:${stroke};`);
     const view = box
-      ? this._viewFor(box[2], box[3])
-      : this._viewFor(w / scale, h / scale);
+      ? this._viewFor(box[2], box[3], paint)
+      : this._viewFor(w / scale, h / scale, paint);
     if (!view) return;
     ctx.save();
     try {
@@ -301,7 +312,12 @@ export class SvgDrawing {
     }
   }
 
-  private _viewFor(width: number, height: number): SvgViewLike | null {
+  private _viewFor(
+    width: number,
+    height: number,
+    /** The root's `fill` and `stroke` as declarations, or none. */
+    paint = '',
+  ): SvgViewLike | null {
     const root = this._root;
     const count = root.children.length;
     const last = root.lastChild;
@@ -316,7 +332,12 @@ export class SvgDrawing {
     }
     const sized = this._percent || this._uses;
     const viewport = sized ? `${width}x${height}` : '';
-    if (this._view && !grown && viewport === this._seenViewport) {
+    if (
+      this._view &&
+      !grown &&
+      viewport === this._seenViewport &&
+      paint === this._seenPaint
+    ) {
       return this._view;
     }
     const View = svgViewClass();
@@ -327,22 +348,38 @@ export class SvgDrawing {
     try {
       const view = this._view ?? new View(null);
       const missing = { any: false };
-      view.setSvgDom(
+      const tree =
         sized || root.name.includes(':')
           ? copyTree(root, sized ? [width, height] : null, missing)
-          : root,
-      );
+          : root;
+      view.setSvgDom(paint ? painted(tree, paint) : tree);
       this._missingAt = missing.any ? lastNode(documentOf(root)) : undefined;
       this._view = view;
       this._seen = count;
       this._seenLast = last;
       this._seenViewport = viewport;
+      this._seenPaint = paint;
       return view;
     } catch {
       this._failed = true;
       return null;
     }
   }
+}
+
+/**
+ * A drawing's root with its `fill` and `stroke` the document's: a copy of
+ * the root, its children the same ones, with the declarations at the end of
+ * its `style` — where `SvgView` reads a root's paint, over its presentation
+ * attributes, for what is under it to inherit.
+ */
+function painted(root: Element, paint: string): Element {
+  const style = root.attribs.style;
+  return new Element(
+    root.name,
+    { ...root.attribs, style: style ? `${style};${paint}` : paint },
+    root.children,
+  );
 }
 
 /**

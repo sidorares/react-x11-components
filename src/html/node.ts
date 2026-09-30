@@ -3027,6 +3027,8 @@ const PAINT_ONLY = new Set([
   'textFillColor',
   'cursor',
   'pointerEvents',
+  'fill',
+  'stroke',
   'backgroundColor',
   'borderTopColor',
   'borderRightColor',
