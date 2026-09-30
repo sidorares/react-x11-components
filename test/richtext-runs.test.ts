@@ -135,6 +135,122 @@ test('an underline and a line through can be drawn in two passes', () => {
   assert.deepStrictEqual(colours(), ['#00f', '#f00']);
 });
 
+test('runs that touch and draw one rule are underlined in one stretch', () => {
+  // A layout hands back a run a word, and a rule begun again under each
+  // has a seam at every space — a dotted one above all, whose dots are
+  // spread from one end of it to the other.
+  const link = { text: 'two words', underline: '#00f' };
+  const same = { text: ' more', underline: '#00f' };
+  const other = { text: 'red', underline: '#f00' };
+  const thick = { text: 'thick', underline: '#f00', underlineThickness: 3 };
+  const words = line([
+    { x: 0, width: 20.4, start: 0, end: 4, span: link },
+    { x: 20.4, width: 30, start: 4, end: 9, span: link },
+    // another span, the same rule
+    { x: 50.4, width: 25, start: 9, end: 14, span: same },
+    // another colour, then another thickness: each its own
+    { x: 75.4, width: 10, start: 14, end: 17, span: other },
+    { x: 85.4, width: 10, start: 17, end: 22, span: thick },
+    // and the same rule again, but not touching the first stretch
+    { x: 120, width: 10, start: 22, end: 23, span: link },
+  ]);
+  const { ctx, fills } = recorder();
+  paintRunRules(ctx, words, 3, 0);
+  assert.deepStrictEqual(fills, [
+    ['#00f', 3, 14, 76, 1],
+    ['#f00', 78, 14, 11, 1],
+    ['#f00', 88, 14, 11, 3],
+    ['#00f', 123, 14, 10, 1],
+  ]);
+  // a right-to-left stretch's runs come last first
+  const rtl = line([
+    { x: 30, width: 20, start: 0, end: 4, span: link },
+    { x: 0, width: 30, start: 4, end: 9, span: link },
+  ]);
+  const back = recorder();
+  paintRunRules(back.ctx, rtl, 0, 0);
+  assert.deepStrictEqual(back.fills, [['#00f', 0, 14, 50, 1]]);
+});
+
+test('a thick dotted rule is round dots spread over it, where the context has a path', () => {
+  const dotted = (thickness: number, width: number) =>
+    line([
+      {
+        x: 0,
+        width,
+        start: 0,
+        end: 4,
+        span: {
+          text: 'abbr',
+          underline: '#00f',
+          underlineStyle: 'dotted' as const,
+          underlineThickness: thickness,
+          underlineOffset: 5,
+        },
+      },
+    ]);
+  /** A recorder with a path: a `roundRect` filled is `[x, y, w, radius]`. */
+  const pathRecorder = () => {
+    const flat = recorder();
+    const dots: number[][] = [];
+    let pending: number[] | null = null;
+    // added to the recorder's own context, whose fills read its `fillStyle`
+    const ctx = Object.assign(flat.ctx, {
+      beginPath() {
+        pending = null;
+      },
+      roundRect(x: number, y: number, w: number, h: number, r: number[]) {
+        assert.strictEqual(w, h, 'a circle');
+        pending = [x, y, w, r[0]];
+      },
+      fill() {
+        if (pending) dots.push(pending);
+      },
+    });
+    return { ctx, dots, fills: flat.fills };
+  };
+
+  // ten thick over a hundred: five dots leave gaps of 12.5 and six of 8,
+  // and 8 is the nearer to a dot's own ten
+  const round = pathRecorder();
+  paintRunRules(round.ctx, dotted(10, 100), 0, 0);
+  assert.deepStrictEqual(
+    round.dots,
+    [0, 18, 36, 54, 72, 90].map((x) => [x, 17, 10, 5]),
+  );
+  assert.deepStrictEqual(round.fills, [], 'and no squares');
+
+  // no room for two with a gap between them: one, at the start
+  const one = pathRecorder();
+  paintRunRules(one.ctx, dotted(10, 20), 0, 0);
+  assert.deepStrictEqual(one.dots, [[0, 17, 10, 5]]);
+  const two = pathRecorder();
+  paintRunRules(two.ctx, dotted(10, 25), 0, 0);
+  assert.deepStrictEqual(two.dots, [
+    [0, 17, 10, 5],
+    [15, 17, 10, 5],
+  ]);
+
+  // three pixels and under, a square is a dot: squares a thickness apart
+  const thin = pathRecorder();
+  paintRunRules(thin.ctx, dotted(3, 15), 0, 0);
+  assert.deepStrictEqual(thin.dots, []);
+  assert.deepStrictEqual(thin.fills, [
+    ['#00f', 0, 17, 3, 3],
+    ['#00f', 6, 17, 3, 3],
+    ['#00f', 12, 17, 3, 3],
+  ]);
+
+  // and a context with no path draws a thick one's as squares too
+  const flat = recorder();
+  paintRunRules(flat.ctx, dotted(10, 50), 0, 0);
+  assert.deepStrictEqual(flat.fills, [
+    ['#00f', 0, 17, 10, 10],
+    ['#00f', 20, 17, 10, 10],
+    ['#00f', 40, 17, 10, 10],
+  ]);
+});
+
 test("a selection band needs only a run's geometry", () => {
   const cocoa = line([
     { x: 0, width: 30, start: 0, end: 5 },

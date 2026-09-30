@@ -827,7 +827,13 @@ no words in it — CoreText, on macOS, cuts a word too long whatever the
 style says), `direction`,
 `unicode-bidi`, `vertical-align`,
 `text-decoration` in all five rule styles, with `text-decoration-thickness`
-and `text-underline-offset`. `unicode-bidi` is carried out as
+and `text-underline-offset`. Left at `auto`, an underline is a tenth of the
+font size thick and half of that under the baseline, a pixel each at the
+least — the font size of the element that set it, so one line runs through
+whatever is inside (CSS Text Decoration 4, 2.4 and 2.9; neither text engine
+reports a face's own underline, so `from-font` is `auto`). A dotted one over
+three pixels thick is round dots spread from one end of it to the other,
+and squares under that. `unicode-bidi` is carried out as
 the bidi controls it stands for, laid out around the element's text and no
 part of the document's: a copy, a caret and a selection skip them. HTML's
 `dir` isolates its element, `dir="auto"` and `<bdi>` take their first

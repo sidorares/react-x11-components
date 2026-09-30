@@ -55,6 +55,8 @@ interface TextRun {
   bgFill?: 'chip' | 'line'; // how `bg` is painted; default 'chip'
   underline?: string; // rule under the baseline, in this colour — links
   underlineStyle?: 'single' | 'double' | 'curly' | 'dotted' | 'dashed';
+  underlineOffset?: number; // its top below the baseline; default 2
+  underlineThickness?: number; // default 1
   strike?: string; // 1px rule through the x-height — ~~del~~
   href?: string | null; // link target; null is a link still streaming in
 }
@@ -63,8 +65,8 @@ interface TextRun {
 `text`, `family`, `size`, `weight`, `style`, `color` and `letterSpacing`
 are the text engine's span vocabulary and pass straight through to
 `fonts.layout` — ntk and react-x11's Cocoa engine both take all of them. The
-rest — `bg`, `bgFill`, `underline`, `underlineStyle`, `strike`, `href` — are
-this element's, painted by it.
+rest — `bg`, `bgFill`, `underline` and its three fields, `strike`, `href` —
+are this element's, painted by it.
 
 `href: null` is deliberate and is what makes a streamed `[text](partial-url`
 render as link-styled text that is not yet clickable.
@@ -79,7 +81,13 @@ rows. `<TerminalOutput>` is why the field exists.
 
 `underlineStyle` names SGR 4's sub-parameters. All five are drawn from 1px
 rectangles rather than a stroked path, because the mock backend has no path
-API and a hairline on a text baseline does not need one.
+API and a hairline on a text baseline does not need one. The exception is a
+dotted rule a run made more than three pixels thick (`underlineThickness`):
+its dots are round where the context has a path, as many as fit with the
+first at the rule's start and the last at its end. And a rule is drawn a
+stretch at a time, not a run: runs that touch and ask for the same rule —
+the words of one link, which a layout hands back apart — share one, so a
+pattern has no seam at a space.
 
 **The decorations are read off what the engine hands back.** ntk returns
 every laid-out run with the span it came from, markers and all, which is how

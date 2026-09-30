@@ -23,6 +23,11 @@ export interface FillContext {
   save(): void;
   restore(): void;
   fillRect(x: number, y: number, w: number, h: number): void;
+  /** A path, where the backend has one: a thick dotted rule's dots are
+   *  round through these, and square without them. */
+  beginPath?(): void;
+  roundRect?(x: number, y: number, w: number, h: number, radii: number[]): void;
+  fill?(): void;
 }
 
 export function canFill(ctx: unknown): ctx is FillContext {
@@ -183,7 +188,13 @@ export function paintRunBackgrounds(
  *  (`underlineThickness`, `underlineOffset`, in device pixels by now).
  *  `rules` picks a pass: CSS draws an underline under the glyphs and a
  *  line through over them (CSS 2.1 Appendix E), which is two passes around
- *  the glyphs'; drawn in one, both go over. */
+ *  the glyphs'; drawn in one, both go over.
+ *
+ *  An underline is drawn a stretch at a time and not a run: a layout hands
+ *  back a run a word, and a pattern begun again under each — dots spread
+ *  from one end of their rule to the other, above all — is a pattern with
+ *  a seam at every space. Runs that touch and draw the same rule share
+ *  one. */
 export function paintRunRules(
   ctx: FillContext,
   line: LaidLine,
@@ -193,35 +204,82 @@ export function paintRunRules(
   rules: 'under' | 'over' | 'all' = 'all',
 ): void {
   const t = ruleThickness(scale);
-  for (const r of line.runs) {
-    const span = r.span;
-    if (!span) continue;
-    const underline = rules !== 'over' ? span.underline : undefined;
-    const strike = rules !== 'under' ? span.strike : undefined;
-    if (underline) {
-      ctx.fillStyle = underline;
-      underlineRule(
-        ctx,
-        Math.round(dx + line.x + r.x),
-        Math.round(dy + line.baseline + (span.underlineOffset ?? 2 * t)),
-        Math.ceil(r.width),
-        span.underlineStyle ?? 'single',
-        span.underlineThickness === undefined
-          ? t
-          : Math.max(1, Math.round(span.underlineThickness)),
-      );
+  if (rules !== 'over') {
+    // the stretch being gathered: the span whose rule it is, and its ends
+    let ruled: TextRun | null = null;
+    let from = 0;
+    let to = 0;
+    for (const r of line.runs) {
+      const span = r.span;
+      if (!span?.underline) continue;
+      const end = r.x + r.width;
+      if (
+        ruled &&
+        // on either side: a right-to-left stretch's runs come last first
+        (Math.abs(r.x - to) <= 0.5 || Math.abs(end - from) <= 0.5) &&
+        sameRule(ruled, span)
+      ) {
+        from = Math.min(from, r.x);
+        to = Math.max(to, end);
+        continue;
+      }
+      if (ruled) stretchRule(ctx, ruled, line, dx + from, dx + to, dy, t);
+      ruled = span;
+      from = r.x;
+      to = end;
     }
-    if (strike) {
-      const m = inkExtent(r, line);
-      ctx.fillStyle = strike;
-      ctx.fillRect(
-        Math.round(dx + line.x + r.x),
-        Math.round(dy + line.baseline - m.ascent * 0.38),
-        Math.ceil(r.width),
-        t,
-      );
-    }
+    if (ruled) stretchRule(ctx, ruled, line, dx + from, dx + to, dy, t);
   }
+  if (rules === 'under') return;
+  for (const r of line.runs) {
+    const strike = r.span?.strike;
+    if (!strike) continue;
+    const m = inkExtent(r, line);
+    ctx.fillStyle = strike;
+    ctx.fillRect(
+      Math.round(dx + line.x + r.x),
+      Math.round(dy + line.baseline - m.ascent * 0.38),
+      Math.ceil(r.width),
+      t,
+    );
+  }
+}
+
+/** The underline of a stretch of a line, from `from` to `to` of it, as
+ *  `span` has it; `t` is the thickness of a rule that names none. */
+function stretchRule(
+  ctx: FillContext,
+  span: TextRun,
+  line: LaidLine,
+  from: number,
+  to: number,
+  dy: number,
+  t: number,
+): void {
+  const left = Math.round(line.x + from);
+  ctx.fillStyle = span.underline;
+  underlineRule(
+    ctx,
+    left,
+    Math.round(dy + line.baseline + (span.underlineOffset ?? 2 * t)),
+    Math.ceil(line.x + to - left),
+    span.underlineStyle ?? 'single',
+    span.underlineThickness === undefined
+      ? t
+      : Math.max(1, Math.round(span.underlineThickness)),
+  );
+}
+
+/** Whether two spans are underlined with one rule: the same ink, style,
+ *  place and thickness. */
+function sameRule(a: TextRun, b: TextRun): boolean {
+  return (
+    a === b ||
+    (a.underline === b.underline &&
+      a.underlineStyle === b.underlineStyle &&
+      a.underlineOffset === b.underlineOffset &&
+      a.underlineThickness === b.underlineThickness)
+  );
 }
 
 /** One logical pixel on the device grid, never less than one device pixel. */
@@ -238,7 +296,8 @@ function ruleThickness(scale: number): number {
  * where there is one. The curl is a two-level square wave — at a text size
  * it reads as a squiggle, which is the entire job. The dot pitch and the
  * dash length scale with the thickness, so the pattern is the pattern at
- * any display scale.
+ * any display scale. The one path is a thick dotted rule's (`dottedRule`):
+ * a square is a dot only while it is too small to be seen as a square.
  */
 export function underlineRule(
   ctx: FillContext,
@@ -254,9 +313,7 @@ export function underlineRule(
       ctx.fillRect(x, y + 2 * t, width, t);
       return;
     case 'dotted':
-      for (let i = 0; i < width; i += 2 * t) {
-        ctx.fillRect(x + i, y, Math.min(t, width - i), t);
-      }
+      dottedRule(ctx, x, y, width, t);
       return;
     case 'dashed':
       for (let i = 0; i < width; i += 6 * t)
@@ -275,6 +332,48 @@ export function underlineRule(
     default:
       ctx.fillRect(x, y, width, t);
       return;
+  }
+}
+
+/** The thickest a dotted rule's dots are squares at: past it a square
+ *  reads as one. Where Blink's dotted stroke turns its caps round. */
+const SQUARE_DOTS = 3;
+
+/**
+ * A dotted rule: squares a thickness apart while it is thin, and round dots
+ * once it is thick enough for the shape to show — under a title, where the
+ * thickness follows the font size. The round ones are spread over the
+ * width, the first at its start and the last at its end, as many as leave
+ * the gap between two nearest to a dot's own width; a rule with room for
+ * fewer than two is one dot. A context with no path draws the squares.
+ */
+function dottedRule(
+  ctx: FillContext,
+  x: number,
+  y: number,
+  width: number,
+  t: number,
+): void {
+  if (t <= SQUARE_DOTS || !ctx.beginPath || !ctx.roundRect || !ctx.fill) {
+    for (let i = 0; i < width; i += 2 * t) {
+      ctx.fillRect(x + i, y, Math.min(t, width - i), t);
+    }
+    return;
+  }
+  // the fewest dots a gap of their own width fits, and one more: whichever
+  // count's gap is nearer that width
+  const few = Math.max(1, Math.floor((width + t) / (2 * t)));
+  const wide = few > 1 ? (width - few * t) / (few - 1) : Infinity;
+  const narrow = (width - (few + 1) * t) / few;
+  const count =
+    narrow <= 0 || Math.abs(wide - t) < Math.abs(narrow - t) ? few : few + 1;
+  const pitch = count > 1 ? (width - t) / (count - 1) : 0;
+  for (let i = 0; i < count; i += 1) {
+    // a path a dot: ntk knows a path that is one `roundRect` and fills it
+    // from its corners, where a path of them all is rasterized whole
+    ctx.beginPath();
+    ctx.roundRect(x + i * pitch, y, t, t, [t / 2]);
+    ctx.fill();
   }
 }
 

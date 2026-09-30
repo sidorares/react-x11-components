@@ -543,7 +543,9 @@ export interface ComputedStyle {
    *  set it (`decorate`). No property: the cascade works them out. */
   underline: string | null;
   underlineStyle: 'solid' | 'double' | 'dotted' | 'dashed' | 'wavy';
-  /** And the underline's thickness and offset, the box's that set it. */
+  /** And the underline's thickness and offset, the box's that set it: the
+   *  thickness the one used, which `auto` takes from that box's font size
+   *  (`usedThickness`), and the offset null where it is `auto`. */
   underlineThickness: number | null;
   underlineOffset: number | null;
   lineThrough: string | null;
@@ -5512,7 +5514,7 @@ export function decorate(style: ComputedStyle): void {
       style.color,
     );
     style.underlineStyle = style.textDecorationStyle;
-    style.underlineThickness = style.textDecorationThickness;
+    style.underlineThickness = usedThickness(style);
     style.underlineOffset = style.textUnderlineOffset;
   }
   if (lines.includes('line-through')) {
@@ -5521,6 +5523,25 @@ export function decorate(style: ComputedStyle): void {
       style.color,
     );
   }
+}
+
+/**
+ * How thick the lines a box decorates its text with are. `auto` leaves it
+ * to the user agent, which is to take it from the font where the font says
+ * (CSS Text Decoration 4, 2.4.1); neither text engine here reports a face's
+ * underline, so it is a part of the font size, Blink's tenth — of the size
+ * of the box that set the decoration, which draws one line of one thickness
+ * through everything inside it (2.9). A pixel for every size drew the dots
+ * under the `<abbr>` of a 140px title as a hairline. `from-font` is `auto`
+ * for the same want of a metric, a length is itself on whole pixels, and
+ * no line is thinner than one.
+ */
+function usedThickness(style: ComputedStyle): number {
+  const length = style.textDecorationThickness;
+  return Math.max(
+    1,
+    length === null ? style.fontSize / 10 : Math.round(length),
+  );
 }
 
 /**
