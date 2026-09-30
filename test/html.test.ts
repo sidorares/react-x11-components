@@ -16970,4 +16970,20 @@ test("an inline box that a line breaks inside ends that line's fragment at its t
       `${rect('a').x + rect('a').width} ${rect('s').x + rect('s').width}`,
   );
   await result.unmount();
+  // and text a line ends with is measured where it is, off the line or
+  // not: a heading's words set 500px out by `text-indent`, as an image
+  // replacement sets them, are as wide as ever
+  const indented = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+      '<h2 style="margin:0;width:300px;text-indent:-500px;overflow:hidden">The ' +
+      '<abbr id="t">CSS</abbr> Garden</h2>',
+  );
+  const out = view(indented.node);
+  const word = out.elementRect(findById(out.document, 't')!)!;
+  assert.ok(
+    word.width > 10,
+    `the indented word keeps its width: ${word.width}`,
+  );
+  assert.ok(word.x < -400, `where the indent put it: ${word.x}`);
+  await indented.result.unmount();
 });
