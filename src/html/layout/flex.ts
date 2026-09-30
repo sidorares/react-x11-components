@@ -35,6 +35,7 @@ import {
   FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
   USED_HEIGHT,
+  centreButton,
   clampHeight,
   clampWidth,
   contentSizedWidth,
@@ -588,6 +589,8 @@ function layoutItemAt(
   // line where its content is, or than what its ratio makes of its width:
   // its height is the line's (CSS Flexbox 9.4, step 11).
   if (height > box.height || column || definite !== null) box.height = height;
+  // and a button's content is centred in the height it came to
+  centreButton(box);
   moveTo(box, x, y);
 }
 

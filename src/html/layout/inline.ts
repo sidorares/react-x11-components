@@ -3319,8 +3319,19 @@ function atomicRaise(
  * be after.
  */
 function atomicBaseline(box: Box): number {
-  const bottom = box.height + box.marginTop + box.marginBottom;
+  const margin = box.height + box.marginTop + box.marginBottom;
   const button = isButton(box);
+  // A `<button>` with no line in it sits on the bottom of its content box,
+  // not of its margin box: where its label would have sat. No specification
+  // says so and every browser does — Blink gives the element the content
+  // box as the edge its baseline is synthesized from
+  // (`HTMLButtonElement::AdjustStyle`). An icon button drawn of blocks, the
+  // three bars of a menu toggle, stood its padding under the baseline, and
+  // the line it was on was as much taller: GitHub's header, by four pixels.
+  // And so one whose layout containment keeps its label's baseline in.
+  const bottom = button
+    ? margin - box.marginBottom - box.borderBottom - box.padBottom
+    : margin;
   if (
     box.kind === 'replaced' ||
     // a box that clips sits on its bottom margin edge, for legacy reasons
@@ -3344,17 +3355,7 @@ function atomicBaseline(box: Box): number {
         box.kind === 'flex'
         ? firstBaselineIn(box)
         : lastBaselineIn(box);
-  if (baseline !== null) return box.marginTop + (baseline - box.y);
-  // A `<button>` with no line in it sits on the bottom of its content box,
-  // not of its margin box: where its label would have sat. No specification
-  // says so and every browser does — Blink gives the element the content
-  // box as the edge its baseline is synthesized from
-  // (`HTMLButtonElement::AdjustStyle`). An icon button drawn of blocks, the
-  // three bars of a menu toggle, stood its padding under the baseline, and
-  // the line it was on was as much taller: GitHub's header, by four pixels.
-  return button
-    ? bottom - box.marginBottom - box.borderBottom - box.padBottom
-    : bottom;
+  return baseline === null ? bottom : box.marginTop + (baseline - box.y);
 }
 
 /** Whether a box is a `<button>` element's: one drawn as the document's,
@@ -3484,11 +3485,14 @@ function childBaseline(
     return null;
   }
   // the legacy rule is a block container's last baseline alone (CSS Box
-  // Alignment 3, 9.2): its first is its first line's, clipped or not
+  // Alignment 3, 9.2): its first is its first line's, clipped or not —
+  // and a button that clips keeps its label's, here as on a line of its
+  // own (`atomicBaseline`)
   if (
     inside === lastBaselineIn &&
     child.kind !== 'flex' &&
-    scrolls(child.style)
+    scrolls(child.style) &&
+    !isButton(child)
   ) {
     return child.y + child.height + child.marginBottom;
   }

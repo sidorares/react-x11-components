@@ -1872,6 +1872,10 @@ function layoutBox(
     box.marginBottom = marginOf(bottom);
   } else box.bottomStrut = null;
   if (box.marker) layoutMarker(box, box.marker, ctx);
+  if (isButtonBlock(box)) {
+    BUTTON_CONTENT.set(box, { height: withFloats, down: 0 });
+    centreButton(box);
+  }
 }
 
 /**
@@ -3596,7 +3600,10 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     // `auto` margins nothing (10.6.4, rule 5) — unless `min-height` or
     // `max-height` moves that, which makes it a height like one set, and
     // the rules run again with it (10.7)
-    if (stretches) box.height = clampHeight(box, fill);
+    if (stretches) {
+      box.height = clampHeight(box, fill);
+      centreButton(box);
+    }
     if (!stretches || box.height !== fill) {
       // and a height: the `auto` margins share the rest, and where none
       // is `auto`, `bottom` gives way (10.6.4, 10.6.5)
@@ -4111,6 +4118,59 @@ export function moveContent(box: Box, dy: number): void {
   box.y -= dy;
 }
 
+/** Whether a box is a `<button>`'s own, laid out as a block container: the
+ *  one HTML's button layout sets an anonymous button content box in. Not
+ *  the text in it, whose element is the button too; not a button that is a
+ *  flex box or a grid, which has no such box; nor an `<input type=button>`,
+ *  which is a widget of its label's size. */
+function isButtonBlock(box: Box): boolean {
+  return box.kind === 'block' && box.el !== null && box.el.name === 'button';
+}
+
+/** How tall a `<button>`'s content came to, and how far down its content
+ *  box it stands for being centred in it (`centreButton`). */
+const BUTTON_CONTENT = new WeakMap<Box, { height: number; down: number }>();
+
+/**
+ * Centre a `<button>`'s content down its content box, where the box is the
+ * taller: a button's content is in an anonymous box of its own that is
+ * "centered vertically" where it "does not overflow in the vertical axis"
+ * (HTML 15.5.5, button layout), and is at the top where it does. Blink
+ * moves a button's children down by half the room left, clamped at none
+ * (`AlignBlockContent`); set at the top as any block's is, the two lines of
+ * a 60px sidebar picker on nextjs.org sat 4px high in it.
+ *
+ * Asked for when the button is laid out, and again wherever its height is
+ * given to it afterwards — a flex or a grid item stretched to its line, or
+ * put back to the height it was measured at, and an absolute box between
+ * two offsets: the content moves by the difference from where it was last
+ * put. A button that is a flex box or a grid has no such box, and its
+ * content is where its own alignment puts it.
+ */
+export function centreButton(box: Box): void {
+  if (!isButtonBlock(box)) return;
+  const content = BUTTON_CONTENT.get(box);
+  if (content === undefined) return;
+  const down = Math.max(0, (box.contentHeight - content.height) / 2);
+  const by = down - content.down;
+  if (by === 0 || !Number.isFinite(by)) return;
+  content.down = down;
+  moveContent(box, by);
+  moveStatics(box, box, by);
+}
+
+/** Move the static positions a block gave the absolutely positioned boxes
+ *  in its flow, which are kept from its own corner and not from its
+ *  content's: a menu under a button's label opens under the label, where
+ *  the label went. */
+function moveStatics(parent: Box, block: Box, dy: number): void {
+  for (const child of parent.children) {
+    if (child.outOfFlow) {
+      if (child.staticPosition?.from === block) child.staticPosition.y += dy;
+    } else if (child.kind === 'inline') moveStatics(child, block, dy);
+  }
+}
+
 function translate(box: Box, dx: number, dy: number): void {
   if (!dx && !dy) return;
   box.x += dx;
@@ -4262,6 +4322,9 @@ export function establishesBFC(box: Box): boolean {
   // is a box below the synthetic initial containing block, so it is named:
   // without it, <html>'s own margin collapsed with <body>'s first block's.
   if (box.el?.name === 'html') return true;
+  // a button's content is in a formatting context of its own, the
+  // anonymous button content box's (HTML 15.5.5), whatever its `display`
+  if (isButtonBlock(box)) return true;
   return box.parent === null;
 }
 

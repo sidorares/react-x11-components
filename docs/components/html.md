@@ -384,7 +384,10 @@ inline-block sits on its last line's baseline and an inline-table on its
 first row's, each on its bottom margin edge where it clips what overflows
 it; an inline flex box sits on its first item's, clipping or not, and a
 block that clips has its first line's baseline all the same — only its
-last is its margin edge (CSS Box Alignment 3, 9.2). A sticky box is placed
+last is its margin edge (CSS Box Alignment 3, 9.2). A `<button>` sits on
+its content's baseline whether it clips or not, and on the bottom edge of
+its content box where its content has none, as it does in Blink: a button
+of an icon is no taller on its line than it is. A sticky box is placed
 at rest: moved only as far as keeps it inside its scroll container's
 scrollport, scrolled to its start, less its insets, and its margin box
 inside its containing block. Nothing here scrolls a box the document
@@ -1268,7 +1271,14 @@ button's native look off in Blink, and what is left are Chrome's UA edges:
 square corners and a border box. That is what a page that styles its
 buttons builds on — Codex sets the side padding of Wikipedia's search
 button and a 32px minimum, and leaves the rest to the browser — where the
-palette's padding stood the button taller than the field beside it. A
+palette's padding stood the button taller than the field beside it. Its
+content is laid out as HTML's rendering section has a button's (15.5.5): in
+a formatting context of its own, whatever the button's `display`, and
+centred down the button's content box where that is the taller — a height
+or a least height of its own, or one a flex box, a grid or a pair of
+offsets stretched it to — and at the top where the content is the taller.
+A button set `display: flex` or `grid` is that instead, its content where
+its own alignment puts it. A
 press on it is reported through
 `onControlChange`, with its `value`, as a widget's is, and then does what
 the button does — submits its form, resets it, or nothing for

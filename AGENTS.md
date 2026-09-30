@@ -1199,6 +1199,14 @@ field the page styled — a border, a background, or `appearance: none`
 its content box. A design system restyles every control it has, and a
 palette frame inside the page's drew two boxes where it designed one.
 
+**A button's content is centred in whatever height the button comes to.**
+HTML's button layout (15.5.5) puts it in a box of its own, centred down the
+button, and `centreButton` (`layout/block.ts`) moves it there when the
+button is laid out. A flex box, a grid and a pair of offsets give a box its
+height _after_ its layout, so each asks again where it does: **a new path
+that sets a box's height once it is laid out calls it too**, or a button
+stretched that way keeps its label at the top.
+
 **Nothing is fetched and nothing is executed, by construction.**
 `onResource` is the only way anything loads and `onScript` never runs
 anything. Both are the same call the desktop calendar makes about
