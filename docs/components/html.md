@@ -427,7 +427,13 @@ column — unless its own minimum or an `overflow` that scrolls lets it go,
 as Tailwind's `min-w-0` does; in a column that is the lesser of a height of
 its own and its content's, and an item with an `aspect-ratio` counts its
 width through the ratio as content, and along a row a definite height
-through it. An item with a ratio is as wide, down a column, as the height
+through it. An item its minimum stops is frozen at it, and the others on
+its line share what is left (CSS Flexbox 9.7): of three `flex: 1` items, one
+holding a long word is as wide as the word and the other two halve the
+rest, and a line too short for any of its items has each at its least size,
+running out of the box. On the lines of a box that wraps, a held item still
+takes its share of the line's room on top of its minimum — Yoga's reading,
+not the specification's. An item with a ratio is as wide, down a column, as the height
 it was flexed to makes it, and an image grown along a row is as tall. A
 `flex-basis` holds down a column with no height of its own, where Yoga
 would read the item's height in its place. An item stretched across its

@@ -648,6 +648,70 @@ test("a flex item's percentages are of the flex box's width, not of its own", as
   assert.deepStrictEqual(across('e1'), [30, 300]);
 });
 
+test('a flex item its content holds is frozen at that size, and the rest share what is left', async () => {
+  // CSS Flexbox 9.7, step 4: an item its minimum stops is frozen at it, and
+  // the line's free space is shared out again among the others. Handed the
+  // minimum as a `min-width`, Yoga made it the item's base size: where
+  // every item of a line was held it divided what the line was short of by
+  // the rounding of their shrink factors' sum less each of them, and two
+  // items of these widths in a row too narrow for them were billions of
+  // pixels wide — nextjs.org's search button, in the font the page loads,
+  // which put the rest of its header's row under its words
+  const { node } = await render(
+    '<style>body{margin:0} .b{height:10px}</style>' +
+      '<div style="display:flex;width:50px">' +
+      '<div id="a"><div class="b" style="width:110.992px"></div></div>' +
+      '<div id="b"><div class="b" style="width:62.705625px"></div></div>' +
+      '</div>' +
+      // down a column, of a height of its own and of one it may not pass
+      '<div style="display:flex;flex-direction:column;height:20px">' +
+      '<div id="c"><div style="height:110.992px"></div></div>' +
+      '<div id="d"><div style="height:62.705625px"></div></div></div>' +
+      '<div style="height:160px"></div>' +
+      '<div style="display:flex;flex-direction:column;max-height:20px">' +
+      '<div id="e"><div style="height:110.992px"></div></div>' +
+      '<div id="f"><div style="height:62.705625px"></div></div></div>' +
+      '<div style="height:160px"></div>' +
+      // and where the line has room to share out, the item held takes none
+      // of it on top of its minimum: it was 233 wide, and the others 33
+      '<div style="display:flex;width:300px">' +
+      '<div id="g" style="flex:1"><div class="b" style="width:200px"></div>' +
+      '</div><div id="h" style="flex:1"></div>' +
+      '<div id="i" style="flex:1"></div></div>' +
+      '<div style="display:flex;flex-direction:column;height:300px">' +
+      '<div id="j" style="flex:1"><div style="height:220px"></div></div>' +
+      '<div id="k" style="flex:1"></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  const near = (actual: number, expected: number, message: string) =>
+    assert.ok(
+      Math.abs(actual - expected) < 0.01,
+      `${message}: ${actual}, not ${expected}`,
+    );
+  near(box('a').width, 110.992, 'a row item, as wide as what it holds');
+  near(box('b').width, 62.705625, 'and the one after it');
+  near(box('b').x, 110.992, 'which starts where it ends');
+  for (const [first, second] of [
+    ['c', 'd'],
+    ['e', 'f'],
+  ]) {
+    near(box(first).height, 110.992, 'a column item, as tall');
+    near(box(second).height, 62.705625, 'and the one after it');
+    near(box(second).y, box(first).y + 110.992, 'which starts where it ends');
+  }
+  assert.deepStrictEqual(
+    [box('g').width, box('h').width, box('i').width],
+    [200, 50, 50],
+    'a row with room: the held item its minimum, the others the rest',
+  );
+  assert.deepStrictEqual(
+    [box('j').height, box('k').height],
+    [220, 80],
+    'and a column',
+  );
+});
+
 test('what is in a stretched or flexed item takes its percentages of its height', async () => {
   // CSS Flexbox 9.8: an item stretched across its line, or flexed in a
   // column of a height of its own, has a definite height, and `h-full` in
