@@ -32,6 +32,7 @@ import {
   FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
   USED_HEIGHT,
+  centreButton,
   clampHeight,
   clampWidth,
   exactMinContent,
@@ -394,6 +395,7 @@ export function layoutGrid(
       }
       child.width = width;
       child.height = height;
+      centreButton(child);
     }
     moveTo(
       child,

@@ -20,6 +20,7 @@ import {
   boxOf,
   edgesOf,
   h,
+  linesOf,
   metric,
   render,
   render2x,
@@ -322,6 +323,90 @@ test("a button the page styled takes the web's UA edges, not the palette's", asy
   assert.deepStrictEqual(edges('filled'), [1, 6, 2, 0], "Chrome's all round");
   assert.deepStrictEqual(edges('round'), [1, 6, 2, 0], 'a radius is a border');
   assert.deepStrictEqual(edges('bare'), [1, 6, 2, 0], 'and so is appearance');
+});
+
+metric("a button's content is centred down a box taller than it", async () => {
+  // HTML 15.5.5: a button's content is in an anonymous box of its own, a
+  // formatting context, which is "centered vertically" where it "does not
+  // overflow in the vertical axis". Blink moves the children down by half
+  // the room left, and by none where there is less than none
+  // (`AlignBlockContent`). nextjs.org's sidebar pickers are 60px buttons
+  // around 36px of content, which sat at the top of the padding, 4px
+  // higher than in a browser.
+  const { node } = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}' +
+      'button{box-sizing:border-box;margin:0;padding:8px;border:1px solid;' +
+      'font:16px/20px sans-serif} .c{width:36px;height:36px}</style>' +
+      '<div><button id="tall" style="height:60px">' +
+      '<span><div id="tall-c" class="c"></div></span></button></div>' +
+      '<div><button id="least" style="min-height:60px">' +
+      '<div id="least-c" class="c"></div></button></div>' +
+      // safe: what overflows the box starts at its top, as in any box
+      '<div><button id="short" style="height:30px">' +
+      '<div id="short-c" class="c"></div></button></div>' +
+      // margins are the content's, in the formatting context it is: they
+      // are centred with it, and none collapses through the button
+      '<div><button id="block" style="display:block;height:100px;padding:0;' +
+      'border:0"><div id="block-c" class="c" style="margin:10px 0"></div>' +
+      '</button></div>' +
+      // a float is content too
+      '<div><button id="float" style="width:100px;height:60px">' +
+      '<div id="float-c" style="float:left;width:20px;height:20px"></div>' +
+      '</button></div>' +
+      // a line of text, as a label is
+      '<div><button id="text" style="height:60px">Go</button></div>' +
+      // an absolute box with no offsets is where the flow would have put
+      // it: in a button with nothing else, at the middle
+      '<div><button id="static" style="width:100px;height:60px;' +
+      'position:relative"><div id="static-c" style="position:absolute;' +
+      'width:10px;height:10px"></div></button></div>' +
+      // a button that is a flex box has no such box: its content is
+      // where its own alignment puts it
+      '<div><button id="flex" style="display:flex;align-items:flex-start;' +
+      'height:60px"><div id="flex-c" class="c"></div></button></div>',
+    300,
+  );
+  const el = view(node);
+  const down = (id: string) => boxOf(el, `${id}-c`).y - boxOf(el, id).y;
+  // the content box is 42px of the 60: 3 above the 36 and 3 below
+  assert.strictEqual(down('tall'), 9 + 3, 'in a height');
+  assert.strictEqual(down('least'), 9 + 3, 'in a least height');
+  assert.strictEqual(down('short'), 9, 'at the top of a box too short');
+  assert.strictEqual(down('block'), 22 + 10, 'its margins with it');
+  assert.strictEqual(down('float'), 9 + 11, 'a float');
+  assert.strictEqual(down('static'), 9 + 21, 'a static position');
+  assert.strictEqual(down('flex'), 9, 'not in a flex box');
+  const [line] = linesOf(el, 'text');
+  assert.strictEqual(line.height, 20, 'a line of its own line height');
+  assert.strictEqual(line.y - boxOf(el, 'text').y, 9 + 11, 'a label');
+});
+
+test('a button stretched to a height centres its content in it', async () => {
+  // The height a flex box or a grid stretches its item to, and the one
+  // two offsets leave an absolute box, are given to the box after its
+  // layout: the content is centred in the height the box came to, as in
+  // one it set. A toolbar's button as tall as the field beside it kept
+  // its icon at the top.
+  const { node } = await render(
+    '<style>body{margin:0}' +
+      'button{box-sizing:border-box;margin:0;padding:8px;border:1px solid}' +
+      '.c{width:36px;height:36px}</style>' +
+      '<div style="display:flex;height:80px"><button id="flex">' +
+      '<div id="flex-c" class="c"></div></button></div>' +
+      '<div style="display:grid;height:80px"><button id="grid">' +
+      '<div id="grid-c" class="c"></div></button></div>' +
+      '<div style="position:relative;height:80px">' +
+      '<button id="abs" style="position:absolute;top:0;bottom:0">' +
+      '<div id="abs-c" class="c"></div></button></div>',
+    300,
+  );
+  const el = view(node);
+  for (const id of ['flex', 'grid', 'abs']) {
+    const button = boxOf(el, id);
+    assert.strictEqual(button.height, 80, `${id}: stretched`);
+    // 62px of content box around 36
+    assert.strictEqual(boxOf(el, `${id}-c`).y - button.y, 9 + 13, id);
+  }
 });
 
 test("a control's text keeps none of the spacing, line height, case or indent around it", async () => {

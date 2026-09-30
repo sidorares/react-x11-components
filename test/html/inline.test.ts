@@ -691,6 +691,49 @@ metric(
   },
 );
 
+metric(
+  'a button that clips keeps its label under an inline-block, and one under layout containment its content box',
+  async () => {
+    // Blink has a button ignore `overflow` for its baseline wherever the
+    // baseline is asked for (`ShouldIgnoreOverflowPropertyForInlineBlock
+    // Baseline`): as the last block of an inline-block too, which sat on
+    // the button's bottom margin edge, its label a descent and a padding
+    // above the text beside it. And the bottom of the content box is where
+    // a button sits whenever it has no baseline to give, one that layout
+    // containment keeps in among them.
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}' +
+        'button{box-sizing:border-box;margin:0;padding:8px;border:1px solid;' +
+        'font:16px/20px sans-serif}</style>' +
+        '<div id="a">x<span style="display:inline-block">' +
+        '<button id="b" style="display:block;overflow:hidden">Label</button>' +
+        '</span></div>' +
+        '<div id="c">x<button id="d" style="height:60px;contain:layout">' +
+        'Label</button></div>' +
+        // two 60px buttons as wide as their block are two lines of 60px,
+        // what is in them centred or not: nextjs.org's sidebar pickers
+        '<div id="e"><button id="f" style="width:100%;height:60px">' +
+        '<span><div style="height:36px"></div></span></button>' +
+        '<button id="g" style="width:100%;height:60px">' +
+        '<span><div style="height:36px"></div></span></button></div>',
+      300,
+    );
+    const el = view(node);
+    const baselineOf = (id: string) => {
+      const [line] = linesOf(el, id);
+      return line.y + line.baseline;
+    };
+    const near = (a: number, b: number, what: string) =>
+      assert.ok(Math.abs(a - b) < 0.01, `${what}: ${a} and ${b}`);
+    const [label] = linesOf(el, 'b');
+    near(label.y + label.baseline, baselineOf('a'), 'a label that clips');
+    const d = boxOf(el, 'd');
+    near(d.y + d.height - 9, baselineOf('c'), 'over its padding and border');
+    assert.strictEqual(boxOf(el, 'g').y, boxOf(el, 'f').y + 60, 'a line each');
+    assert.strictEqual(boxOf(el, 'e').height, 120, 'and no taller');
+  },
+);
+
 metric('a no-break space beside a block is a line of its own', async () => {
   // CSS's white space is the space, the tab and the line breaks (CSS Text
   // 3, 4.1); `trim` and `\s` take the no-break space in too, so the
