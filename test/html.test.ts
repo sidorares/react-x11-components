@@ -18028,3 +18028,115 @@ metric(
     assert.strictEqual(rects[0].height, 60);
   },
 );
+
+// --- ::selection -------------------------------------------------------------
+
+/** A document painted with its text selected from `start` to `end`, into a
+ *  context that records each fill's colour and, for each layout drawn, the
+ *  shadow it was cast in — how `drawRecolored` sets selected text in a
+ *  `::selection`'s colour. */
+async function paintSelected(source: string, start: number, end?: number) {
+  const { node } = await render(source);
+  const el = view(node);
+  const tree = (el as unknown as { _tree: never })._tree as {
+    root: LaidBox & {
+      lines: { texts: { layout: { draw(): void } }[] }[] | null;
+    };
+  };
+  const state = { fillStyle: null as unknown, shadowColor: '' };
+  const fills: string[] = [];
+  const casts: string[] = [];
+  const patch = (box: typeof tree.root): void => {
+    for (const line of box.lines ?? []) {
+      for (const text of line.texts) {
+        text.layout.draw = () => casts.push(state.shadowColor);
+      }
+    }
+    for (const child of box.children) patch(child as typeof box);
+  };
+  patch(tree.root);
+  const saved: string[] = [];
+  const ctx = {
+    set fillStyle(v: unknown) {
+      state.fillStyle = v;
+    },
+    get fillStyle() {
+      return state.fillStyle;
+    },
+    set shadowColor(v: string) {
+      state.shadowColor = v;
+    },
+    get shadowColor() {
+      return state.shadowColor;
+    },
+    shadowBlur: 0,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    save() {
+      saved.push(state.shadowColor);
+    },
+    restore() {
+      state.shadowColor = saved.pop() ?? '';
+    },
+    beginPath() {},
+    rect() {},
+    clip() {},
+    fillRect() {
+      fills.push(String(state.fillStyle));
+    },
+  };
+  const { paintDocument } = await import('../src/html/paint.js');
+  const length = (el as unknown as { _tree: { text: string } })._tree.text
+    .length;
+  paintDocument(ctx as never, tree as never, {
+    originX: 0,
+    originY: 0,
+    damage: null,
+    selection: { start, end: end ?? length },
+    selectionColor: '#abcdef',
+    imageFor: () => null,
+  });
+  return { fills, casts };
+}
+
+metric('a ::selection colours the band under the text it covers', async () => {
+  // CSS Pseudo 4, 3.2: its background under the selected text and its
+  // colour for the text, where the palette's highlight was all there was.
+  // Along the chain of highlights (3.5), as Chrome draws it: the span has
+  // no rule and is its div's, and the paragraph's own rule sets a colour
+  // and keeps its div's background. A rule that sets only a colour sets no
+  // band (3.6, paired defaults), and text no rule reaches is the palette's
+  const { fills, casts } = await paintSelected(
+    '<style>body{margin:0}div::selection{background:#ff0000;color:#ffffff}' +
+      'p::selection{color:#00aa00}section::selection{color:#0000ff}' +
+      'p,section,article{margin:0}</style>' +
+      '<div>a <span>b</span><p>c</p></div><section>d</section>' +
+      '<article>e</article>',
+    0,
+  );
+  const red = fills.filter((f) => /^(#ff0000|rgb\(255, 0, 0\))$/i.test(f));
+  assert.strictEqual(red.length, 2, `the div's line and the p's: ${fills}`);
+  assert.strictEqual(
+    fills.filter((f) => f === '#abcdef').length,
+    1,
+    `the article's is the palette's: ${fills}`,
+  );
+  assert.strictEqual(fills.length, 3, `and the section has none: ${fills}`);
+  const cast = (re: RegExp) => casts.some((c) => re.test(c));
+  assert.ok(cast(/^(#ffffff|#fff|rgb\(255, 255, 255\))$/i), `white: ${casts}`);
+  assert.ok(cast(/^(#00aa00|rgb\(0, 170, 0\))$/i), `green: ${casts}`);
+  assert.ok(cast(/^(#0000ff|rgb\(0, 0, 255\))$/i), `blue: ${casts}`);
+});
+
+metric(
+  'text no ::selection reaches is drawn once, in its own colours',
+  async () => {
+    // a document with no rule for one asks nothing: no clip, no cast
+    const { fills, casts } = await paintSelected(
+      '<style>body{margin:0}</style><p>plain text</p>',
+      0,
+    );
+    assert.deepStrictEqual(fills, ['#abcdef'], 'the palette band');
+    assert.deepStrictEqual(casts, [''], 'one draw, cast in nothing');
+  },
+);

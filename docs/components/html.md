@@ -42,7 +42,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                         |
 | `fontFamily`      | `string`                                         | Default `'sans-serif'`.                                                                                                                                                      |
 | `monoFamily`      | `string`                                         | Code font. Default `'monospace'` — there is no theme token for it.                                                                                                           |
-| `selectionColor`  | `string`                                         | Selection band fill. Default: theme accent at 35% opacity.                                                                                                                   |
+| `selectionColor`  | `string`                                         | Selection band fill where no `::selection` rule reaches the text. Default: theme accent at 35% opacity.                                                                      |
 | `style`           | `Style \| Style[]`                               | The root `<box>`'s style.                                                                                                                                                    |
 
 ## The handle
@@ -853,6 +853,16 @@ line is a child's, as a `<div>`'s is its first paragraph's, hands the style
 down to it. An element on the line with a colour of its own, a link, keeps
 it. The line's font properties, spacing and `vertical-align` are not
 applied: each would change where the line ends.
+
+**Selection:** `::selection` sets the band under selected text and the
+colour the text is drawn in (CSS Pseudo 4). Both pass down the chain of
+highlights, not the elements, as Chrome has them: a `<span>` in a
+`div::selection { background: red }` is selected in red, and a `<p>` whose
+own rule sets only a colour keeps the red under it. A rule that sets one of
+the two leaves the other at none, so `::selection { color: blue }` draws no
+band, and text no rule reaches is drawn in `selectionColor`. Selected text
+keeps its own decorations and shadows. A selection over glyphs taller than
+their line covers them, and one over a tall line fills it.
 
 **Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `lh`, `rlh`, `vw`, `vh`,
 `vi`, `vb`, `vmin`, `vmax` — and the small, large and dynamic viewports'

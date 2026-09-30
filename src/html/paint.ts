@@ -70,7 +70,9 @@ import type {
   LineBox,
   LineText,
   Marker,
+  SelectionStyler,
 } from './layout/boxes.js';
+import type { SelectionStyle } from './css/cascade.js';
 import {
   CLIPPED_TEXT,
   clipBoxOf,
@@ -192,6 +194,9 @@ export interface PaintOptions {
   clips?: ClipLevel[];
   /** @internal Whether the tree has a layer below the flow (`hoistNegative`). */
   negative?: boolean;
+  /** @internal Each box's `::selection`, where a rule styles one
+   *  (`BoxTree.selectionStyler`). */
+  selectionStyler?: SelectionStyler | null;
 }
 
 /**
@@ -574,6 +579,7 @@ export function paintDocument(
     ...options,
     canvasSource: canvas?.source,
     negative: tree.negative,
+    selectionStyler: options.selection ? tree.selectionStyler : null,
   });
   ctx.restore();
 }
@@ -4433,6 +4439,10 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // drawing it once per line would be one X request per line for the same
   // batch.
   const drawn = new Set<unknown>();
+  // text a `::selection` colours is drawn in that colour where selected
+  const recolored = options.selectionStyler
+    ? recoloredBands(visible, options)
+    : null;
   for (const line of visible) {
     for (const text of line.texts) {
       if (drawn.has(text.layout)) continue;
@@ -4446,7 +4456,9 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
         // thrown from the protocol encoder.
         continue;
       }
-      text.layout.draw(ctx, text.drawX + dx, top);
+      const bands = recolored?.get(text.layout);
+      if (bands) drawRecolored(ctx, text.layout, text.drawX + dx, top, bands);
+      else text.layout.draw(ctx, text.drawX + dx, top);
     }
   }
 
@@ -5379,10 +5391,38 @@ function paintSelection(
   line: LineBox,
   options: PaintOptions,
 ): void {
+  for (const band of selectedBands(line, options)) {
+    const fill = band.style ? band.style.background : options.selectionColor;
+    if (!fill || isTransparent(fill)) continue;
+    ctx.fillStyle = fill;
+    ctx.fillRect(band.x, band.y, band.width, band.height);
+  }
+}
+
+/** A stretch of selected text on one line, in window pixels, and the
+ *  `::selection` of the element it is in: null for the palette's. */
+interface SelectedBand extends Rect {
+  style: SelectionStyle | null;
+  /** The layout whose text it is. */
+  layout: unknown;
+}
+
+const NO_BANDS: SelectedBand[] = [];
+
+/**
+ * Where the document selection covers a line's text, a band for each
+ * stretch of it one `::selection` styles, in window pixels as the band is
+ * filled — rounded, so a band's text is drawn to its edges and no further
+ * (`drawRecolored`).
+ */
+function selectedBands(line: LineBox, options: PaintOptions): SelectedBand[] {
   const range = options.selection;
-  if (!range || range.end <= range.start || !options.selectionColor) return;
-  if (line.textEnd <= range.start || line.textStart >= range.end) return;
-  ctx.fillStyle = options.selectionColor;
+  if (!range || range.end <= range.start) return NO_BANDS;
+  if (line.textEnd <= range.start || line.textStart >= range.end) {
+    return NO_BANDS;
+  }
+  const styler = options.selectionStyler;
+  const out: SelectedBand[] = [];
   for (const text of line.texts) {
     const natural = text.layout.lines[text.layoutLine];
     if (!natural) continue;
@@ -5393,21 +5433,191 @@ function paintSelection(
     const layoutFrom = layoutOffsetOf(text, from);
     const layoutTo = layoutOffsetOf(text, to, true);
     const rows = selectionRows(line, text, natural);
-    for (const band of lineBands(
-      text.layout,
-      natural,
-      offsets,
-      layoutFrom,
-      layoutTo,
-    )) {
-      ctx.fillRect(
-        Math.round(band.x + text.drawX + options.originX),
-        Math.round(rows.y + options.originY),
-        Math.ceil(band.width),
-        Math.ceil(rows.height),
-      );
+    const y = Math.round(rows.y + options.originY);
+    const height = Math.ceil(rows.height);
+    const pieces = styler
+      ? stylePieces(text, natural, layoutFrom, layoutTo, styler)
+      : [{ from: layoutFrom, to: layoutTo, style: null }];
+    for (const piece of pieces) {
+      for (const band of lineBands(
+        text.layout,
+        natural,
+        offsets,
+        piece.from,
+        piece.to,
+      )) {
+        out.push({
+          x: Math.round(band.x + text.drawX + options.originX),
+          y,
+          width: Math.ceil(band.width),
+          height,
+          style: piece.style,
+          layout: text.layout,
+        });
+      }
     }
   }
+  return out;
+}
+
+/**
+ * A line's selected text, `from` to `to` in the layout's offsets, cut where
+ * the `::selection` over it changes: a run's is its element's, and a run of
+ * no element's — an inline box's edge, laid out as a spacer — the one
+ * beside it, so a styled band has no palette-coloured gap at a `<span>`.
+ */
+function stylePieces(
+  text: LineText,
+  natural: LineText['layout']['lines'][number],
+  from: number,
+  to: number,
+  styler: SelectionStyler,
+): { from: number; to: number; style: SelectionStyle | null }[] {
+  const runs = natural.runs
+    .filter((run) => run.end > from && run.start < to)
+    .sort((a, b) => a.start - b.start);
+  const boxAt = text.spans.boxAt;
+  const styles: (SelectionStyle | null | undefined)[] = runs.map((run) => {
+    const box = boxAt?.call(text.spans, run.start) ?? null;
+    return box ? styler(box) : undefined;
+  });
+  for (let i = 1; i < styles.length; i += 1) {
+    if (styles[i] === undefined) styles[i] = styles[i - 1];
+  }
+  for (let i = styles.length - 2; i >= 0; i -= 1) {
+    if (styles[i] === undefined) styles[i] = styles[i + 1];
+  }
+  const out: { from: number; to: number; style: SelectionStyle | null }[] = [];
+  runs.forEach((run, i) => {
+    const style = styles[i] ?? null;
+    const last = out[out.length - 1];
+    if (last && last.style === style) last.to = Math.min(to, run.end);
+    else {
+      out.push({
+        from: Math.max(from, run.start),
+        to: Math.min(to, run.end),
+        style,
+      });
+    }
+  });
+  return out;
+}
+
+/**
+ * The layouts whose selected text a `::selection` gives a colour of its
+ * own, each with the bands it is drawn in that colour (`drawRecolored`).
+ * Null where none does, which is every document with no such rule.
+ */
+function recoloredBands(
+  lines: LineBox[],
+  options: PaintOptions,
+): Map<unknown, SelectedBand[]> | null {
+  let out: Map<unknown, SelectedBand[]> | null = null;
+  for (const line of lines) {
+    for (const band of selectedBands(line, options)) {
+      if (!band.style?.color || !(band.width > 0)) continue;
+      out ??= new Map();
+      const list = out.get(band.layout);
+      if (list) list.push(band);
+      else out.set(band.layout, [band]);
+    }
+  }
+  return out;
+}
+
+/**
+ * A layout with some of its text selected in a `::selection`'s colour
+ * (CSS Pseudo 4, 3.2): its own colours everywhere but those bands, and in
+ * each band the glyphs in that band's colour — cast there as a hard shadow
+ * from the layout drawn clear of the window, the way `castShadows` draws a
+ * text shadow, since a layout draws in its runs' own colours. Drawn over
+ * rather than in place of the text, the old glyphs' edges showed round the
+ * new ones. Where the context cannot clip or cast, the text keeps its own
+ * colours.
+ */
+function drawRecolored(
+  ctx: PaintContext,
+  layout: LineText['layout'],
+  left: number,
+  top: number,
+  bands: SelectedBand[],
+): void {
+  if (
+    !ctx.save ||
+    !ctx.restore ||
+    !ctx.beginPath ||
+    !ctx.rect ||
+    !ctx.clip ||
+    !('shadowBlur' in ctx)
+  ) {
+    layout.draw(ctx, left, top);
+    return;
+  }
+  ctx.save();
+  ctx.beginPath();
+  for (const r of outsideOf(bands)) ctx.rect(r.x, r.y, r.width, r.height);
+  ctx.clip();
+  layout.draw(ctx, left, top);
+  ctx.restore();
+  let right = layout.width;
+  for (const natural of layout.lines) {
+    right = Math.max(right, natural.x + natural.width);
+  }
+  const shift = Math.ceil(left + right) + 1;
+  const colors = new Map<string, SelectedBand[]>();
+  for (const band of bands) {
+    const color = band.style!.color!;
+    const group = colors.get(color);
+    if (group) group.push(band);
+    else colors.set(color, [band]);
+  }
+  for (const [color, group] of colors) {
+    ctx.save();
+    ctx.beginPath();
+    for (const r of group) ctx.rect(r.x, r.y, r.width, r.height);
+    ctx.clip();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 0.01;
+    ctx.shadowOffsetX = shift;
+    ctx.shadowOffsetY = 0;
+    layout.draw(ctx, left - shift, top);
+    ctx.restore();
+  }
+}
+
+/** Everything but some rectangles, as rectangles: a strip between each two
+ *  of their edges, less what of it they cover. */
+function outsideOf(rects: readonly Rect[]): Rect[] {
+  const far = COORD_LIMIT;
+  const edges = new Set<number>();
+  for (const r of rects) {
+    edges.add(r.y);
+    edges.add(r.y + r.height);
+  }
+  const ys = [...edges].sort((a, b) => a - b);
+  const out: Rect[] = [
+    { x: -far, y: -far, width: 2 * far, height: ys[0] + far },
+    {
+      x: -far,
+      y: ys[ys.length - 1],
+      width: 2 * far,
+      height: far - ys[ys.length - 1],
+    },
+  ];
+  for (let i = 0; i + 1 < ys.length; i += 1) {
+    const y0 = ys[i];
+    const y1 = ys[i + 1];
+    const spans = rects
+      .filter((r) => r.y <= y0 && r.y + r.height >= y1)
+      .sort((a, b) => a.x - b.x);
+    let x = -far;
+    for (const r of spans) {
+      if (r.x > x) out.push({ x, y: y0, width: r.x - x, height: y1 - y0 });
+      x = Math.max(x, r.x + r.width);
+    }
+    if (x < far) out.push({ x, y: y0, width: far - x, height: y1 - y0 });
+  }
+  return out;
 }
 
 /**
