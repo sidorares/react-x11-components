@@ -688,6 +688,75 @@ metric(
   },
 );
 
+test("a cell's percentage padding is of its row's width, and a percentage limit is its column's to weigh", async () => {
+  // CSS 2.1 8.4 takes a percentage in a padding of the containing block's
+  // width; for a cell that is its row's, the columns and the spacing
+  // between them. The cell was laid out with its own width standing for
+  // it, as a flex item was, so a padding of 10% in a column a third of the
+  // table wide was a thirtieth of the table. And while the columns are
+  // sized the percentage is of nothing (CSS Sizing 3, 5.2.1): a column is
+  // as wide as its cell's content asks.
+  //
+  // CSS Tables 3, 3.8.2: a percentage `min-width` on a cell is ignored,
+  // and a percentage `max-width` holds a percentage `width` only. Each
+  // was taken of the table's width where the column was sized, and again
+  // of the cell's own where the cell was laid out. Each number here is
+  // Chrome's.
+  const { node } = await render(
+    '<style>body{margin:0} table{border-spacing:0;width:600px}' +
+      'td{padding:0} .w{width:100px;height:10px}</style>' +
+      // columns 200 and 400 wide, as their content is 100 and 200
+      '<table><tr><td id="a" style="padding:0 10%">' +
+      '<div class="w" id="a1"></div></td>' +
+      '<td id="b"><div class="w" style="width:200px"></div></td></tr></table>' +
+      // the row is the table less its border, its padding and the spacing
+      // either side: 530
+      '<table style="border-spacing:10px;padding:20px;border:5px solid">' +
+      '<tr><td id="c" style="padding:0 10%"><div id="c1"></div></td>' +
+      '<td></td></tr></table>' +
+      // down the cell too
+      '<table><tr><td id="d" style="padding:10% 0 5%"><div class="w"></div>' +
+      '</td><td><div class="w" style="width:200px"></div></td></tr></table>' +
+      // a table as wide as its columns: they are sized first
+      '<table id="et" style="width:auto"><tr><td style="padding:0 10%">' +
+      '<div class="w" id="e1"></div></td><td><div class="w"></div></td>' +
+      '</tr></table>' +
+      // a percentage limit beside a length
+      '<table><tr><td id="f" style="width:100px;max-width:10%">' +
+      '<div id="f1"></div></td><td></td></tr></table>' +
+      // a percentage least width
+      '<table><tr><td id="g" style="min-width:50%"><div class="w"></div></td>' +
+      '<td id="g2"><div class="w" style="width:300px"></div></td></tr></table>' +
+      // and the one a percentage limit holds
+      '<table><tr><td id="h" style="width:50%;max-width:25%"></td><td></td>' +
+      '</tr></table>' +
+      // a fixed table's columns, from its first row's cells
+      '<table style="table-layout:fixed"><tr><td id="k" style="' +
+      'box-sizing:content-box;width:100px;padding:0 5%"><div id="k1"></div>' +
+      '</td><td id="k2" style="width:30%;max-width:10%"></td><td></td></tr>' +
+      '</table>',
+    700,
+  );
+  const el = view(node);
+  const across = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  assert.deepStrictEqual(across('a'), [0, 200], 'as its content asks');
+  assert.strictEqual(boxOf(el, 'a1').x, 60, 'a tenth of the row in');
+  assert.deepStrictEqual(across('b'), [200, 400]);
+  assert.deepStrictEqual(across('c'), [35, 260]);
+  assert.deepStrictEqual(across('c1'), [88, 154], 'a tenth of 530 each side');
+  assert.strictEqual(boxOf(el, 'd').height, 100, '60 over and 30 under');
+  assert.strictEqual(boxOf(el, 'et').width, 200, 'its cells, unpadded');
+  assert.strictEqual(boxOf(el, 'e1').x, 20, 'and the padding of that');
+  assert.deepStrictEqual(across('f'), [0, 100], 'the limit ignored');
+  assert.strictEqual(boxOf(el, 'f1').width, 100, 'where it is laid out too');
+  assert.deepStrictEqual(across('g'), [0, 150], 'its share by its content');
+  assert.deepStrictEqual(across('g2'), [150, 450]);
+  assert.strictEqual(boxOf(el, 'h').width, 150, 'the lesser percentage');
+  assert.deepStrictEqual(across('k'), [0, 100], 'its width, unpadded');
+  assert.deepStrictEqual(across('k1'), [30, 40], 'then padded in it');
+  assert.deepStrictEqual(across('k2'), [100, 60]);
+});
+
 test("cells aligned on the baseline hang their first lines from the row's", async () => {
   // CSS 2.1 17.5.3: a cell's baseline is its first line's, at any depth,
   // and the row's is the lowest of its cells'. An empty cell has none to
@@ -945,7 +1014,17 @@ test('a column, or a column group, sets its columns in an auto table (CSS 2.1 17
       // a group wider than its columns spreads the rest over them
       '<table id="s"><colgroup style="width:100px"><col style="width:20px">' +
       '<col style="width:20px"></colgroup>' +
-      '<tr><td id="s1"></td><td id="s2"></td></tr></table>',
+      '<tr><td id="s1"></td><td id="s2"></td></tr></table>' +
+      // A percentage limit is no length: one for a least width is ignored,
+      // and one for a greatest holds a percentage width only (CSS Tables
+      // 3, 3.8.2), as on a cell. The columns here are Chrome's.
+      '<table style="width:300px"><col style="min-width:50%"><col>' +
+      '<tr><td id="p1"><div style="width:20px"></div></td>' +
+      '<td><div style="width:60px"></div></td></tr></table>' +
+      '<table style="width:300px"><col style="width:100px;max-width:10%">' +
+      '<col><tr><td id="p2"></td><td></td></tr></table>' +
+      '<table style="width:300px"><col style="width:50%;max-width:25%">' +
+      '<col><tr><td id="p3"></td><td></td></tr></table>',
     400,
   );
   const el = view(node);
@@ -955,6 +1034,9 @@ test('a column, or a column group, sets its columns in an auto table (CSS 2.1 17
   assert.strictEqual(boxOf(el, 's').width, 100);
   assert.strictEqual(boxOf(el, 's1').width, 50);
   assert.strictEqual(boxOf(el, 's2').width, 50);
+  assert.strictEqual(boxOf(el, 'p1').width, 75, 'a quarter, by its content');
+  assert.strictEqual(boxOf(el, 'p2').width, 100, 'its width, not a tenth');
+  assert.strictEqual(boxOf(el, 'p3').width, 75, 'the lesser percentage');
 });
 
 metric(

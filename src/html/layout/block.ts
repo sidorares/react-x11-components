@@ -119,7 +119,8 @@ export interface LayoutContext {
    * is the box's own, as a flex layout sized it: what the percentages in
    * its padding, its margins and its width limits are of (CSS 2.1 8.3,
    * 8.4, 10.4). Left out, `width` is both — a box probed at the room there
-   * is for it.
+   * is for it. For a table cell it is the width of its row, which its
+   * padding's percentages are of.
    */
   layoutSubtree(box: Box, width: number, containing?: number): void;
   /** How many flex boxes' Yoga passes are running, one inside the last's
@@ -1687,9 +1688,12 @@ function layoutSubtree(
   }
   // within its limits, a percentage among them of its containing block's
   // width and not of its own: a flex item `max-width: 50%` that the flex
-  // layout made half its row was laid out at a quarter of it
+  // layout made half its row was laid out at a quarter of it. A table
+  // cell's is of nothing, and ignored: what a percentage limit does to a
+  // cell it does where its column is sized (CSS Tables 3, 3.8.2), and a
+  // cell is laid out in the width its columns came to.
   const borderBox = Number.isFinite(width)
-    ? clampWidth(box, width, containing)
+    ? clampWidth(box, width, box.kind === 'table-cell' ? NaN : containing)
     : Infinity;
   layoutInternals(box, ctx, borderBox, 0, 0);
 }
