@@ -1075,6 +1075,28 @@ browser: a CSS-only dropdown lays an invisible checkbox over its label, and
 a press anywhere on the label opens it, since a checkbox's widget takes its
 element's whole box. A `visibility: hidden` control is not mounted.
 
+A widget is cut where the document cuts its element. The document does not
+paint it, so what clips the element is handed over with its rectangle: its
+own `clip`, and the boxes around it that clip their overflow or are cut to
+a `clip` of their own, from its containing block up — an absolute control
+is outside a box that clips where its containing block is, as its element
+is (CSS 2.1 11.1.1 and 11.1.2). So the field of a panel folded to
+`height: 0; overflow: hidden` is not drawn over the page, and a control a
+page hides for a screen reader alone — a pixel square under
+`clip: rect(0, 0, 0, 0)`, as Radix lays a native `<select>` beside the
+picker it draws — shows nothing and takes no press. It is still mounted:
+it is hidden from the eye, and not from the keyboard or an assistive
+technology. A checkbox, a radio, a select or a submit button the page gave
+an `overflow` other than `visible` is cut at its own border box as well: a
+browser paints no control past it, and a widget has a size of its own. A
+text field cuts its own text and is left alone, and a widget nothing cuts
+is not clipped at all, so its focus ring shows around it. `clip-path` is
+not read.
+
+A `<select>` shows the option it has selected, its first where none is
+marked, and nothing where it has no options — not the "Select…" core's
+`<Select>` prompts an application's user with.
+
 A `<button>` is the exception, because its content is the document's: an
 icon, a label in spans, a pill of the page's own design — most of the
 buttons on the web — which a widget's text label drew as "Button". It is

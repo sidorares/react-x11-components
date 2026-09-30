@@ -1072,7 +1072,7 @@ export class HtmlViewNode extends Node {
     // The boxes are device pixels; each rect becomes the style of a widget
     // mounted beside this element, and a style is logical.
     const s = this._scale;
-    const rects = controlRectsOf(tree).map((r) =>
+    const rects = controlRectsOf(tree, s).map((r) =>
       s === 1
         ? r
         : {
@@ -1082,6 +1082,14 @@ export class HtmlViewNode extends Node {
             width: r.width / s,
             height: r.height / s,
             fontSize: r.fontSize / s,
+            ...(r.clip && {
+              clip: {
+                x: r.clip.x / s,
+                y: r.clip.y / s,
+                width: r.clip.width / s,
+                height: r.clip.height / s,
+              },
+            }),
             ...(r.bare && {
               bare: {
                 ...r.bare,
@@ -2342,12 +2350,20 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.fontFamily !== q.fontFamily ||
       p.fontSize !== q.fontSize ||
       p.opacity !== q.opacity ||
+      !sameClip(p.clip, q.clip) ||
       !sameBare(p.bare, q.bare)
     ) {
       return false;
     }
   }
   return true;
+}
+
+function sameClip(a?: ControlRect['clip'], b?: ControlRect['clip']): boolean {
+  if (!a || !b) return a === b;
+  return (
+    a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
+  );
 }
 
 function sameBare(a?: BareField, b?: BareField): boolean {

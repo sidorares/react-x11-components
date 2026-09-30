@@ -1750,7 +1750,7 @@ function paintFlowLines(
  *  beyond its background's edge. */
 function overflowClip(
   box: Box,
-  options: PaintOptions,
+  options: ClipSpace,
 ): { x: number; y: number; w: number; h: number } {
   const left = box.x + options.originX;
   const top = frameY(box) + options.originY;
@@ -1776,7 +1776,7 @@ function overflowClip(
  */
 function clipEdge(
   box: Box,
-  options: PaintOptions,
+  options: ClipSpace,
 ): {
   rect: { x: number; y: number; w: number; h: number };
   radii: Corners | null;
@@ -2080,7 +2080,7 @@ export function clipsOverflow(box: Box): boolean {
 /** A box's `clip` region, in window coordinates. */
 function clipOf(
   box: Box,
-  options: PaintOptions,
+  options: ClipSpace,
 ): { x: number; y: number; w: number; h: number } {
   const clip = box.style.clip!;
   const left = clip.left ?? 0;
@@ -2094,6 +2094,53 @@ function clipOf(
     y,
     w: Math.round(box.x + options.originX + right) - x,
     h: Math.round(box.y + options.originY + bottom) - y,
+  };
+}
+
+/** What placing a clip reads of a paint's options: where the document's
+ *  origin is, its scale, and how far an axis left open has to reach. */
+type ClipSpace = Pick<PaintOptions, 'originX' | 'originY' | 'scale' | 'damage'>;
+
+/**
+ * The part of the document a box shows through, in the document's own
+ * pixels, or null where nothing cuts it: the `clip` it is cut to (CSS 2.1
+ * 11.1.2), and the clips of the boxes it is under — each that clips its
+ * overflow or is cut to a `clip` of its own, from its containing block up
+ * (11.1.1), so an absolute box is outside a box that clips where its
+ * containing block is, and a fixed one outside them all. A rectangle of no
+ * area where none of it shows. Painting cuts what it draws as it walks
+ * down; this is for what is not painted here and has to be cut all the
+ * same, a control's widget (`controlRectsOf`).
+ */
+export function clipAround(box: Box, scale = 1): Rect | null {
+  const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
+  let x0 = -Infinity;
+  let y0 = -Infinity;
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let cut = false;
+  const under = (rect: { x: number; y: number; w: number; h: number }) => {
+    cut = true;
+    x0 = Math.max(x0, rect.x);
+    y0 = Math.max(y0, rect.y);
+    x1 = Math.min(x1, rect.x + rect.w);
+    y1 = Math.min(y1, rect.y + rect.h);
+  };
+  if (box.outOfFlow && box.style.clip) under(clipOf(box, space));
+  // what holds a box, as clips go: its parent, or out of the flow its
+  // containing block, and the boxes between them do not clip it
+  const holder = (inner: Box): Box | null =>
+    inner.outOfFlow ? containingBlockOf(inner) : inner.parent;
+  for (let outer = holder(box); outer; outer = holder(outer)) {
+    if (outer.outOfFlow && outer.style.clip) under(clipOf(outer, space));
+    if (clipsOverflow(outer)) under(clipEdge(outer, space).rect);
+  }
+  if (!cut) return null;
+  return {
+    x: x0,
+    y: y0,
+    width: Math.max(0, x1 - x0),
+    height: Math.max(0, y1 - y0),
   };
 }
 

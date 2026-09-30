@@ -435,6 +435,181 @@ metric(
   },
 );
 
+/** The clip each control of a document was reported with, by its id. */
+function clipsOf(node: DrawnNode): Record<string, unknown> {
+  const rects = (
+    view(node) as unknown as {
+      _controls: {
+        element: { attribs: Record<string, string> };
+        clip?: { x: number; y: number; width: number; height: number };
+      }[];
+    }
+  )._controls;
+  return Object.fromEntries(
+    rects.map((r) => [r.element.attribs.id, r.clip ?? null]),
+  );
+}
+
+/** The box a control's widget shows through: around the element's. */
+function portOf(
+  widget: DrawnNode,
+): DrawnNode & { style: { overflow?: string } } {
+  return widget.parent!.parent as DrawnNode & { style: { overflow?: string } };
+}
+
+metric(
+  'a control a page hides under clip: rect(0, 0, 0, 0) draws nothing and takes no press',
+  async () => {
+    // Radix lays a native `<select>` beside each picker it draws, for a
+    // form and a screen reader: a pixel square, `overflow: hidden`, `clip:
+    // rect(0, 0, 0, 0)`. `clip` leaves none of an absolute box to see (CSS
+    // 2.1 11.1.2), and the document drew none of it — but the widget is
+    // not the document's to draw, and nothing cut it: nextjs.org's docs
+    // had a dropdown reading "Select…" beside each of their two pickers.
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0;background:#fff}</style>' +
+            '<div style="height:120px"></div>' +
+            '<select id="sr" aria-hidden="true" tabindex="-1" style="' +
+            'position:absolute;top:61px;left:21px;border:0;width:1px;' +
+            'height:1px;padding:0;margin:-1px;overflow:hidden;' +
+            'clip:rect(0, 0, 0, 0);white-space:nowrap"></select>',
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 200, fonts: FONTS! },
+    );
+    await act();
+    const node = screen.getByTestName('doc') as DrawnNode;
+    const el = view(node) as unknown as DrawnNode;
+    assert.deepStrictEqual(
+      clipsOf(node).sr,
+      { x: 20, y: 60, width: 0, height: 0 },
+      'none of it shows',
+    );
+    // mounted all the same: a control hidden this way is still the
+    // keyboard's and a screen reader's, which is what it is hidden for
+    const [trigger] = screen.getAllByRole('combobox') as DrawnNode[];
+    assert.ok(trigger, 'the widget is mounted');
+    const port = portOf(trigger);
+    assert.deepStrictEqual(
+      [port.abs.width, port.abs.height, port.style.overflow],
+      [0, 0, 'hidden'],
+      'in a box of no area that cuts it',
+    );
+    const { countPixels } = await import('react-x11/test');
+    const around = { x: el.abs.x, y: el.abs.y + 40, width: 200, height: 60 };
+    await waitFor(async () => {
+      assert.strictEqual(
+        await countPixels(result.ctx, around, '#ffffff', 2),
+        around.width * around.height,
+        'nothing is drawn where the dropdown was',
+      );
+    });
+    const hit = (
+      result.windowNode as unknown as {
+        hitTest(x: number, y: number): DrawnNode | null;
+      }
+    ).hitTest(el.abs.x + 30, el.abs.y + 66);
+    assert.ok(hit === el, 'and a press there is the document’s');
+  },
+);
+
+test('a control is cut by its own clip and by the boxes that clip it, from its containing block up', async () => {
+  // A widget is mounted beside the document, so nothing the document
+  // clips with reached it (CSS 2.1 11.1.1): the field of a panel folded
+  // to `height: 0; overflow: hidden` — the feedback form at the foot of
+  // nextjs.org's docs — was drawn over the page all the same.
+  const { node } = await render(
+    '<style>body{margin:0}input{margin:0}</style>' +
+      '<div style="height:0;overflow:hidden"><input id="folded"></div>' +
+      '<div style="width:60px;height:30px;overflow:hidden">' +
+      '<input id="half" style="width:150px"></div>' +
+      '<div style="width:200px;overflow:hidden">' +
+      '<input id="whole" style="width:150px"></div>' +
+      // an absolute box is outside a box that clips where its containing
+      // block is
+      '<div style="position:relative;height:30px">' +
+      '<div style="height:0;overflow:hidden">' +
+      '<input id="out" style="position:absolute;top:0;left:0"></div></div>' +
+      '<div style="position:absolute;top:200px;left:0;' +
+      'clip:rect(0,40px,10px,0)"><input id="under"></div>' +
+      // a control's own `overflow` cuts a widget that has a size of its
+      // own, and not a field, which cuts its own text
+      '<input type="checkbox" id="own" style="position:absolute;top:300px;' +
+      'left:10px;width:1px;height:1px;overflow:hidden">' +
+      '<textarea id="area" style="overflow:auto"></textarea>',
+  );
+  assert.deepStrictEqual(clipsOf(node), {
+    folded: { x: 0, y: 0, width: 400, height: 0 },
+    half: { x: 0, y: 0, width: 60, height: 30 },
+    whole: null,
+    out: null,
+    under: { x: 0, y: 200, width: 40, height: 10 },
+    own: { x: 10, y: 300, width: 1, height: 1 },
+    area: null,
+  });
+});
+
+metric(
+  'a widget the document cuts is cut on the pixels it is cut at, at a display scale of 2',
+  async () => {
+    const { node } = await render2x(
+      '<style>body{margin:0}input{margin:0}</style>' +
+        '<div style="height:12px"></div>' +
+        '<div id="cut" style="width:60px;height:20px;overflow:hidden">' +
+        '<input id="half" style="width:150px" value="a long value"></div>' +
+        '<div style="width:200px;overflow:hidden">' +
+        '<input id="whole" style="width:150px"></div>',
+    );
+    await act();
+    const el = view(node);
+    const { abs } = el as unknown as DrawnNode;
+    const [half, whole] = screen.getAllByRole('textbox') as DrawnNode[];
+    const cut = boxOf(el, 'cut');
+    const port = portOf(half);
+    // The clip is reported in logical pixels, as the rect is: it becomes
+    // a style. In device pixels the box sat twice as far from the origin.
+    assert.deepStrictEqual(
+      [port.abs.x, port.abs.y, port.abs.width, port.abs.height],
+      [abs.x + cut.x, abs.y + cut.y, cut.width, cut.height],
+      'the box it shows through is the one that clips it',
+    );
+    assert.strictEqual(port.style.overflow, 'hidden');
+    assert.deepStrictEqual(
+      [half.abs.x, half.abs.y, half.abs.width],
+      [abs.x + cut.x, abs.y + cut.y, 300],
+      'and the field in it is where it was, as wide as it was',
+    );
+    // a widget nothing cuts shows through its own rectangle, uncut: its
+    // focus ring is drawn outside it
+    const open = portOf(whole);
+    assert.deepStrictEqual(
+      [open.abs.x, open.abs.y, open.abs.width, open.abs.height],
+      [whole.abs.x, whole.abs.y, whole.abs.width, whole.abs.height],
+    );
+    assert.notStrictEqual(open.style.overflow, 'hidden');
+  },
+);
+
+metric('a <select> with no options shows nothing', async () => {
+  // HTML's `<select>` shows the option it has selected, its first where
+  // none is marked, and nothing where it has none. Core's `<Select>` says
+  // "Select…" with no value: an application's prompt, not a page's.
+  await render(
+    '<select id="none"></select><select><option>One</option></select>',
+  );
+  await act();
+  assert.strictEqual(screen.getAllByRole('combobox').length, 2);
+  assert.ok(screen.queryByText('One') !== null, 'an option is shown');
+  assert.ok(screen.queryByText('Select…') === null, 'and no prompt');
+});
+
 test("a control's text is the palette's size, not its parent's", async () => {
   // Chrome gives input, select, button and textarea `font:
   // -webkit-small-control`: the default size less 2pt, 13.33px under any

@@ -29,7 +29,7 @@ import { attr, tagOf } from './dom.js';
 import type { Document, Element } from './dom.js';
 import type { HtmlViewNode } from './node.js';
 import type { RootLook } from './css/style.js';
-import { buttonLabel, optionsOf, selectedOption } from './controls.js';
+import { between, buttonLabel, optionsOf, selectedOption } from './controls.js';
 import type { BareField, ControlRect } from './controls.js';
 import {
   FormState,
@@ -433,12 +433,28 @@ function renderControl(
   const readOnly = attr(el, 'readonly') !== undefined;
   // a field whose box the document draws takes its content box
   const at = rect.bare ?? rect;
+  const left = Math.round(at.x);
+  const top = Math.round(at.y);
+  const width = Math.round(at.width);
+  const height = Math.round(at.height);
+  // What the widget shows through: its own rectangle, or where the
+  // document cuts the element, what the cut leaves of it — out to where a
+  // focus ring reaches, which a clip around the element cuts as it cuts
+  // the element, and one that leaves the box whole does not.
+  const port = rect.clip
+    ? between(rect.clip, {
+        x: left - RING_REACH,
+        y: top - RING_REACH,
+        width: width + 2 * RING_REACH,
+        height: height + 2 * RING_REACH,
+      })
+    : { x: left, y: top, width, height };
   const frame: Style = {
     position: 'absolute',
-    left: Math.round(at.x),
-    top: Math.round(at.y),
-    width: Math.round(at.width),
-    height: Math.round(at.height),
+    left: left - port.x,
+    top: top - port.y,
+    width,
+    height,
     // The face and the size the box was measured in, the element's: the
     // palette's from the UA sheet, or the page's where it set its own. A
     // field inherits them, and so does a `<Button>`'s or a `<Select>`'s
@@ -506,6 +522,9 @@ function renderControl(
       widget = h(Select, {
         options: options.map((o) => ({ value: o.value, label: o.label })),
         value: selectedOption(el) ?? undefined,
+        // a `<select>` with nothing selected has no options, and shows
+        // none: core's "Select…" is an application's prompt, not a page's
+        placeholder: '',
         disabled,
         style: rect.bare
           ? [BARE_TRIGGER, { width: '100%', height: '100%' }]
@@ -578,17 +597,36 @@ function renderControl(
     default:
       return null;
   }
+  // Two boxes, always: the one the widget shows through, and in it the
+  // element's. A widget the document comes to cut, or stops cutting, is
+  // the same widget in the same place in the tree, and keeps its focus
+  // and its caret.
   return hx(
     'box',
     {
       key,
-      ref: ctx.widgets.refOf(el),
-      style: frame,
       selectable: false,
+      style: {
+        position: 'absolute',
+        left: port.x,
+        top: port.y,
+        width: port.width,
+        height: port.height,
+        // cut to it, and nothing itself: a press beside the widget is the
+        // document's
+        ...(rect.clip && { overflow: 'hidden', pointerEvents: 'box-none' }),
+      },
     },
-    widget,
+    hx(
+      'box',
+      { ref: ctx.widgets.refOf(el), style: frame, selectable: false },
+      widget,
+    ),
   );
 }
+
+/** How far past its box a widget's focus ring is drawn, and then some. */
+const RING_REACH = 8;
 
 /** A field's `maxlength`, which the widget enforces as it is typed into. */
 function maxLength(el: Element): number | undefined {
