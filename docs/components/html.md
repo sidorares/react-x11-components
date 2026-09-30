@@ -502,7 +502,9 @@ through it. An item its minimum stops is frozen at it, and the others on
 its line share what is left (CSS Flexbox 9.7): of three `flex: 1` items, one
 holding a long word is as wide as the word and the other two halve the
 rest, and a line too short for any of its items has each at its least size,
-running out of the box. On the lines of a box that wraps, a held item still
+running out of the box — its content's, a `min-width` of its own such as
+Tailwind's `min-w-max`, or no more than its padding and borders. On the
+lines of a box that wraps, a held item still
 takes its share of the line's room on top of its minimum — Yoga's reading,
 not the specification's. An item with a ratio is as wide, down a column, as the height
 it was flexed to makes it, and an image grown along a row is as tall. A
