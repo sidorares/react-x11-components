@@ -920,6 +920,16 @@ function linesOf(
       placeDeferred();
       return;
     }
+    // A line with no text on it — a control, an image or an inline-block
+    // that wrapped on its own — stands where the text around it does: an
+    // empty range at the end of the line before, not at 0. What finds a
+    // line by its text binary-searches these ranges as sorted
+    // (`lineBands`, `caretAt`), and a textless line at 0 after a line of
+    // text sent the search past every line: a `<label>` on the line
+    // before a submit button that wrapped measured as no box at all.
+    if (!line.texts.length && lines.length) {
+      line.textStart = line.textEnd = lines[lines.length - 1].textEnd;
+    }
     lines.push(line);
     widest = Math.max(widest, line.width);
     y += line.height;
@@ -6036,13 +6046,19 @@ function ownsLeading(
   block: ComputedStyle,
   style: ComputedStyle,
 ): boolean {
-  // a bold or an italic face keeps its family's line metrics, and a
-  // paragraph is thick with <strong>, <em> and <a>
+  // the block's own face is past at once. A bold or an italic one is not:
+  // a paragraph is thick with <strong>, <em> and <a>, and most families'
+  // faces share their line metrics, but not every one's — Helvetica Neue
+  // Bold reaches 0.975em above its baseline to the regular's 0.952, and
+  // Blink, which rounds each to a whole pixel, sets a 12px bold word on a
+  // 19.2px line a pixel taller. It is measured once for its style, below.
   if (
     style.lineHeight === block.lineHeight &&
     style.lineHeightIsLength === block.lineHeightIsLength &&
     style.fontSize === block.fontSize &&
-    style.fontFamily === block.fontFamily
+    style.fontFamily === block.fontFamily &&
+    style.fontWeight === block.fontWeight &&
+    style.fontStyle === block.fontStyle
   ) {
     return false;
   }

@@ -2045,7 +2045,8 @@ function sameBare(a?: BareField, b?: BareField): boolean {
     a.height === b.height &&
     a.color === b.color &&
     a.fontFamily === b.fontFamily &&
-    a.fontSize === b.fontSize
+    a.fontSize === b.fontSize &&
+    a.chevron === b.chevron
   );
 }
 

@@ -342,7 +342,9 @@ export class HtmlSource {
         tag === 'image' ||
         tag === 'object' ||
         tag === 'embed' ||
-        tag === 'video'
+        tag === 'video' ||
+        (tag === 'input' &&
+          (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
       ) {
         if (imageUrlOf(el)) facts.resources.push(el);
       } else if (tag === 'title' && facts.title === null) {

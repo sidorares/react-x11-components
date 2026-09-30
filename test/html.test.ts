@@ -5678,6 +5678,83 @@ test("a field set to appearance: none is the page's to draw", async () => {
   assert.ok(!plain.bare, "a field left alone keeps the theme's frame");
 });
 
+metric("a select the page styled is the page's to draw", async () => {
+  // A `<select>` was the palette's framed dropdown whatever the page did to
+  // it, inside the page's padding: melbcss.com's, a background and 8px of
+  // padding, came out 64px tall and white-framed where Chrome draws a 34px
+  // box in the page's card colour. It is a field like the others now: the
+  // document draws its box, and core's `<Select>` goes bare in the content
+  // box, restyled through its slots so its value and its arrow are in the
+  // element's colour — the arrow left out at `appearance: none`, where the
+  // page draws its own.
+  const { countPixels } = await import('react-x11/test');
+  const { result, node } = await render(
+    '<style>body{margin:0}select{display:block;margin:0;width:200px}' +
+      '.own{padding:5px;border:10px solid #00ff00;background:#0000ff;' +
+      'color:#ff0000;font-size:20px}</style>' +
+      '<select id="own" class="own"><option>Wide option</option></select>' +
+      '<select id="none" class="own" style="appearance:none">' +
+      '<option>x</option></select>' +
+      '<select id="plain"><option>y</option></select>',
+  );
+  const el = view(node);
+  const rects = (
+    el as unknown as {
+      _controls: {
+        element: { attribs: Record<string, string> };
+        bare?: { chevron?: boolean } | null;
+      }[];
+    }
+  )._controls;
+  const rectOf = (id: string) =>
+    rects.find((r) => r.element.attribs.id === id)!;
+  assert.strictEqual(rectOf('own').bare?.chevron, true, 'bare, with an arrow');
+  assert.strictEqual(rectOf('none').bare?.chevron, false, 'bare, no arrow');
+  assert.ok(!rectOf('plain').bare, 'a select left alone keeps the frame');
+
+  const own = boxOf(el, 'own');
+  assert.strictEqual(
+    own.height,
+    Math.round(20 * 1.35) + 2 * 5 + 2 * 10,
+    'its line of text, and the padding and border around it: no chrome',
+  );
+  const at = (el as unknown as { abs: { x: number; y: number } }).abs;
+  const [trigger] = screen.getAllByRole('combobox') as unknown as {
+    abs: Record<string, number>;
+  }[];
+  assert.deepStrictEqual(
+    [trigger.abs.x - at.x, trigger.abs.y - at.y, trigger.abs.width],
+    [15, 15, 200],
+    'bare in the content box',
+  );
+
+  const content = (id: string, from: number, width: number) => {
+    const box = boxOf(el, id);
+    return {
+      x: at.x + box.x + 15 + from,
+      y: at.y + box.y + 15,
+      width,
+      height: box.height - 30,
+    };
+  };
+  const red = (id: string, from: number, width: number) =>
+    countPixels(result.ctx, content(id, from, width), '#ff0000', 60);
+  await waitFor(async () => {
+    assert.ok((await red('own', 0, 100)) > 20, "the value, in the page's ink");
+    assert.ok((await red('own', 176, 24)) > 4, 'the arrow, in it too');
+    const [r, g, b] = await pixelAt(
+      result.ctx,
+      at.x + own.x + 15 + 140,
+      at.y + own.y + own.height / 2,
+    );
+    assert.ok(
+      b > 200 && r < 60 && g < 60,
+      `the page's fill, not the palette's, under the trigger: ${r},${g},${b}`,
+    );
+  });
+  assert.strictEqual(await red('none', 176, 24), 0, 'no arrow');
+});
+
 test('a replaced flex item is as wide as the flex layout made it', async () => {
   // Laid out alone a replaced box takes its own `width` or its intrinsic
   // one: two fields `width: 0; flex: 1` were no width at all, and so never
@@ -12302,6 +12379,38 @@ test('a grid item with a ratio is sized by it, and justify-items: normal starts 
   assert.strictEqual(boxOf(el, 'g').width, 0);
 });
 
+test('place-content sets align-content then justify-content, the second the first again', async () => {
+  // melbcss.com centres its page with `body { display: grid; place-content:
+  // center }`: unread, the column stretched across the body and the page
+  // sat at its left edge. Each grid is 200 wide and 100 tall, around one
+  // 50 by 20 item.
+  const grid = (id: string, place: string) =>
+    `<div style="display:grid;width:200px;height:100px;place-content:${place}">` +
+    `<div id="${id}" style="width:50px;height:20px"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      grid('a', 'center') +
+      grid('b', 'end start') +
+      grid('c', 'unsafe center end') +
+      // a baseline is no justify-content: `start` stands in
+      grid('d', 'first baseline') +
+      // a half that is not one drops the declaration whole
+      grid('e', 'center bogus'),
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const box = boxOf(el, id);
+    const grid = boxOf(el, id) as unknown as { parent: LaidBox };
+    return [box.x - grid.parent.x, box.y - grid.parent.y];
+  };
+  assert.deepStrictEqual(at('a'), [75, 40]);
+  assert.deepStrictEqual(at('b'), [0, 80]);
+  assert.deepStrictEqual(at('c'), [150, 40]);
+  assert.deepStrictEqual(at('d'), [0, 0]);
+  assert.deepStrictEqual(at('e'), [0, 0]);
+});
+
 test("a grid item's percentage height is of its area", async () => {
   // It was of the grid's height, so `height: 100%` in one of two rows was
   // as tall as both; and what is in a stretched item takes its percentages
@@ -17437,6 +17546,34 @@ metric(
 );
 
 metric(
+  'a line with no text on it keeps the lines in text order, so the text before it is found',
+  async () => {
+    // A line holding only an atomic that wrapped — here an inline-block,
+    // in #435 a submit button — recorded its text as [0, 0), after a line
+    // that ended at 4. Lines are found by their text with a binary search
+    // over those ranges as sorted, which that one broke: the span on the
+    // first line measured as no box, and the caret into it had nowhere
+    // to go.
+    const { node } = await render(
+      '<div style="width:200px"><span id="s">text</span>' +
+        '<span style="display:inline-block;width:190px;height:10px"></span>' +
+        '</div>',
+    );
+    const el = view(node);
+    const lines = (
+      el as unknown as {
+        _tree: { root: { children: { lines?: { y: number }[] }[] } };
+      }
+    )._tree.root.children[0].lines!;
+    assert.strictEqual(lines.length, 2, 'the inline-block wrapped alone');
+    const s = el.elementRect(findById(el.document, 's')!);
+    assert.ok(s && s.width > 0, `the span has its box: ${JSON.stringify(s)}`);
+    assert.strictEqual(s.y, lines[0].y, 'on the first line');
+    assert.ok(el.textCaretRect(2), 'and a caret inside it');
+  },
+);
+
+metric(
   "an inline box's padding below its line makes the document taller, where nothing clips it",
   async () => {
     // An inline box's fragments count in the scrollable overflow of the
@@ -17465,6 +17602,68 @@ metric(
     await act();
     assert.strictEqual(inside.abs.height, 920, 'clipped, the page ends at 920');
     await clipped.result.unmount();
+  },
+);
+
+metric(
+  "a bold word whose face reaches higher than its family's regular makes its line taller, as CSS stacks the boxes",
+  async () => {
+    // Each inline box has the paragraph's line height with its own
+    // half-leading, and the line box holds them all (CSS 2.1 10.8.1): a
+    // bold face that reaches higher than the regular one makes the line
+    // taller than its line height. A bold box was let past as keeping its
+    // family's line metrics, and its paragraph laid out in one call, whose
+    // lines are the line height times the tallest face. Helvetica Neue Bold
+    // is such a face, and the Zen Garden's 166 ran 3.2px long. A spy engine
+    // says the bold face reaches 3px higher than the engine's does
+    const { node } = await render(
+      '<p id="p" style="margin:0;font:16px/20px sans-serif">plain ' +
+        '<b>bold</b> plain</p>',
+    );
+    const el = view(node) as unknown as {
+      app: { fonts: FontsLike };
+      _source: { document: unknown };
+      _cascade: unknown;
+    };
+    const engine = el.app.fonts;
+    const higher: FontsLike = {
+      layout: (content, style, options) =>
+        engine.layout(content, style, options),
+      match: (family, style) => {
+        const face = engine.match(family, style);
+        const weight = (style as { weight?: unknown }).weight;
+        if (weight !== 700 && weight !== 'bold') return face;
+        const tall = Object.create(face) as typeof face;
+        tall.metrics = (size: number) => {
+          const m = face.metrics(size);
+          return { ...m, ascent: m.ascent + 3, lineHeight: m.lineHeight + 3 };
+        };
+        return tall;
+      },
+    };
+    const { buildBoxes } = await import('../src/html/layout/boxes.js');
+    const { layoutDocument } = await import('../src/html/layout/block.js');
+    const tree = buildBoxes(el._source.document as never, {
+      cascade: el._cascade as never,
+      scale: 1,
+      imageSize: () => null,
+      urlSize: () => null,
+      controlSize: () => ({ width: 0, height: 0 }) as never,
+    });
+    layoutDocument(tree, higher, 400, 600);
+    const find = (box: LaidBox): LaidBox | null => {
+      if (box.el?.attribs.id === 'p') return box;
+      for (const child of box.children) {
+        const hit = find(child);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    const p = find(tree.root as unknown as LaidBox)!;
+    assert.ok(
+      p.height > 20.5,
+      `the bold box's leading stacks over the strut's: ${p.height}`,
+    );
   },
 );
 

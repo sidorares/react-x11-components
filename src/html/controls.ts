@@ -22,6 +22,12 @@
 import type { Element } from 'domhandler';
 
 import { attr, tagOf } from './dom.js';
+import {
+  optionElements,
+  optionLabel,
+  optionValue,
+  selectedOptions,
+} from './form.js';
 import type { ComputedStyle } from './css/style.js';
 import { isTransparent } from './css/values.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
@@ -48,10 +54,11 @@ export interface ControlRect {
   width: number;
   height: number;
   /**
-   * Set on a text field whose own box the author styled — gave it a border
-   * or a background (`styledField`). The document draws that box, and the
-   * widget goes bare inside its content box, here, with no frame or fill
-   * of its own and its text in the element's colour and font.
+   * Set on a text field or a `<select>` whose own box the author styled —
+   * gave it a border or a background (`styledField`). The document draws
+   * that box, and the widget goes bare inside its content box, here, with
+   * no frame or fill of its own and its text in the element's colour and
+   * font.
    */
   bare?: BareField;
   /**
@@ -64,7 +71,7 @@ export interface ControlRect {
   opacity?: number;
 }
 
-/** Where a styled text field's widget goes, and how its text looks. */
+/** Where a styled field's widget goes, and how its text looks. */
 export interface BareField {
   x: number;
   y: number;
@@ -73,6 +80,12 @@ export interface BareField {
   color: string;
   fontFamily: string;
   fontSize: number;
+  /**
+   * A `<select>`'s: whether it draws its arrow. It does unless the page set
+   * `appearance: none`, which is how a page that draws its own arrow — as a
+   * background image, most often — says so.
+   */
+  chevron?: boolean;
 }
 
 /** The rectangles every control in a laid-out document landed on. */
@@ -105,6 +118,9 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
         color: box.style.color,
         fontFamily: box.style.fontFamily,
         fontSize: box.style.fontSize,
+        ...(box.replaced === 'select' && {
+          chevron: box.style.appearance !== 'none',
+        }),
       };
     }
     out.push(rect);
@@ -113,17 +129,23 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
 }
 
 /**
- * Whether a text field's box is the author's to draw: one given a border or
- * a background of its own, which the UA sheet gives no control, or set to
+ * Whether a field's box is the author's to draw: one given a border or a
+ * background of its own, which the UA sheet gives no control, or set to
  * `appearance: none`, which says so outright. A browser drops a field's
  * native look for the author's then (CSS UI 4 7.1, `appearance`), and so
  * does this: the widget's frame and fill would hide the author's, and what
  * they would draw is the theme's rather than the page's. `appearance: none`
  * is how a design system writes every field it has — meetup.com's search
  * pill holds two with no background, only one of them with a border.
+ *
+ * A `<select>` is one too. A browser keeps its arrow when the page gave it a
+ * border or a background (Blink's `menulist-button`), and leaves that out
+ * as well at `appearance: none` — `BareField.chevron`.
  */
 export function styledField(kind: ReplacedKind, style: ComputedStyle): boolean {
-  if (kind !== 'input' && kind !== 'textarea') return false;
+  if (kind !== 'input' && kind !== 'textarea' && kind !== 'select') {
+    return false;
+  }
   return (
     style.appearance === 'none' ||
     !isTransparent(style.backgroundColor) ||
@@ -183,6 +205,16 @@ export function measureControl(
     }
     case 'select': {
       const widest = optionWidths(el);
+      // a select the page styled is its widest option and its arrow, and
+      // the room around them is the page's
+      if (styledField(kind, style)) {
+        return {
+          width: Math.round(
+            ch * widest + (style.appearance === 'none' ? 0 : em),
+          ),
+          height: lineHeight,
+        };
+      }
       // The room for the chevron is the widget's, not the document's, but
       // the document has to reserve it or the last letter of the widest
       // option sits under it.
@@ -235,9 +267,11 @@ export function buttonLabel(el: Element): string {
     const trimmed = text.trim();
     if (trimmed) return trimmed;
   }
+  const type = (attr(el, 'type') ?? '').trim().toLowerCase();
+  // an image button with no image yet says what the image would have
+  if (type === 'image') return attr(el, 'alt') || attr(el, 'value') || 'Submit';
   const value = attr(el, 'value');
   if (value) return value;
-  const type = (attr(el, 'type') ?? '').toLowerCase();
   if (type === 'submit') return 'Submit';
   if (type === 'reset') return 'Reset';
   return attr(el, 'alt') ?? 'Button';
@@ -245,57 +279,17 @@ export function buttonLabel(el: Element): string {
 
 /** A `<select>`'s options, as the widget's item list. */
 export function optionsOf(el: Element): { value: string; label: string }[] {
-  const out: { value: string; label: string }[] = [];
-  const walk = (node: Element): void => {
-    for (const child of node.children) {
-      if (child.type !== 'tag') continue;
-      const tag = tagOf(child);
-      if (tag === 'option') {
-        let label = '';
-        for (const kid of child.children) {
-          if (kid.type === 'text') label += kid.data;
-        }
-        const trimmed = label.trim();
-        out.push({ value: attr(child, 'value') ?? trimmed, label: trimmed });
-      } else if (tag === 'optgroup') {
-        walk(child);
-      }
-    }
-  };
-  walk(el);
-  return out;
+  return optionElements(el).map((option) => ({
+    value: optionValue(option),
+    label: optionLabel(option),
+  }));
 }
 
-/** Which option a `<select>` starts on: `selected`, else the first. */
+/** Which option a `<select>` shows: the one it has selected, which is the
+ *  first where none is marked (`selectedOptions`). */
 export function selectedOption(el: Element): string | null {
-  const options = optionsOf(el);
-  const walk = (node: Element): string | null => {
-    for (const child of node.children) {
-      if (child.type !== 'tag') continue;
-      if (tagOf(child) === 'option' && attr(child, 'selected') !== undefined) {
-        let label = '';
-        for (const kid of child.children) {
-          if (kid.type === 'text') label += kid.data;
-        }
-        return attr(child, 'value') ?? label.trim();
-      }
-      const nested = walk(child);
-      if (nested !== null) return nested;
-    }
-    return null;
-  };
-  return walk(el) ?? options[0]?.value ?? null;
-}
-
-/** A `<textarea>`'s initial text — its content, not an attribute. */
-export function textareaValue(el: Element): string {
-  let text = '';
-  for (const child of el.children) {
-    if (child.type === 'text') text += child.data;
-  }
-  // HTML drops one leading newline after the open tag, which is why a
-  // pretty-printed `<textarea>` does not start with a blank line.
-  return text.replace(/^\r?\n/, '');
+  const [option] = selectedOptions(el);
+  return option ? optionValue(option) : null;
 }
 
 function numberAttr(el: Element, name: string): number | null {

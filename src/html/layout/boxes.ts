@@ -1024,7 +1024,9 @@ class Builder {
     }
 
     // an `<object>` is its image once it has one, and its content until;
-    // an `<embed>` its image, and a `<video>` its poster, or a frame
+    // an `<embed>` its image, and a `<video>` its poster, or a frame; an
+    // image button its image, and a button saying what it is for until it
+    // has one, so it can be pressed either way
     const replaced =
       tag === 'object'
         ? this._options.imageSize(el)
@@ -1032,7 +1034,11 @@ class Builder {
           : 'none'
         : (tag === 'embed' || tag === 'video') && this._options.imageSize(el)
           ? 'image'
-          : replacedKind(el, tag);
+          : isImageButton(el, tag)
+            ? this._options.imageSize(el)
+              ? 'image'
+              : 'button'
+            : replacedKind(el, tag);
     if (replaced !== 'none') {
       this._replaced(el, tag, replaced, style, into);
       return;
@@ -2357,6 +2363,13 @@ function setIntrinsics(box: Box, size: IntrinsicSize, scale: number): void {
     missing: (size.width === null ? 1 : 0) | (size.height === null ? 2 : 0),
     ratio: size.ratio,
   };
+}
+
+/** An `<input type=image>`: a picture that submits its form. */
+function isImageButton(el: Element, tag: string): boolean {
+  return (
+    tag === 'input' && (attr(el, 'type') ?? '').trim().toLowerCase() === 'image'
+  );
 }
 
 function replacedKind(el: Element, tag: string): ReplacedKind {

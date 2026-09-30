@@ -1812,7 +1812,12 @@ function presentationHints(el: Element): Declaration[] {
   // `width`/`height` are lengths on the replaced and table elements and mean
   // nothing anywhere else, which is what stops a `<input width>` from
   // becoming a CSS width the widget then disagrees with.
-  if (SIZED.has(tag)) {
+  if (
+    SIZED.has(tag) ||
+    // an image button's are its image's, as an `<img>`'s are (HTML 15.4.3)
+    (tag === 'input' &&
+      (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
+  ) {
     const width = attr(el, 'width');
     if (width) push('width', lengthAttr(width));
     const height = attr(el, 'height');

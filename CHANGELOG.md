@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.12.0](https://github.com/sidorares/react-x11-components/compare/v0.11.0...v0.12.0) (2026-09-30)
+
+
+### Features
+
+* **html:** light-dark() and color-scheme, resolved against the palette's scheme ([#427](https://github.com/sidorares/react-x11-components/issues/427)) ([21c871e](https://github.com/sidorares/react-x11-components/commit/21c871ec3ac713a7638be32d6fa6d86ba15975a2))
+* **html:** the small, large and dynamic viewport units, and vi and vb ([#429](https://github.com/sidorares/react-x11-components/issues/429)) ([bf45d0a](https://github.com/sidorares/react-x11-components/commit/bf45d0a9943fc622bd7036ff229c36d5fe2eb5a9))
+* **html:** Wikipedia's header drawn as Chrome draws it ([#415](https://github.com/sidorares/react-x11-components/issues/415)) ([ba37425](https://github.com/sidorares/react-x11-components/commit/ba3742582aec487c664fb5e2c746464038bae815))
+
+
+### Bug Fixes
+
+* **examples:** the browser asks a secure page's insecure stylesheets and fonts for nothing, and its images over https, as a browser does ([#437](https://github.com/sidorares/react-x11-components/issues/437)) ([418b75d](https://github.com/sidorares/react-x11-components/commit/418b75da4619f462f2d111f248649e91204ef8a7))
+* **html:** a /&gt; closes only a void element and one in SVG or MathML ([#430](https://github.com/sidorares/react-x11-components/issues/430)) ([9c4c664](https://github.com/sidorares/react-x11-components/commit/9c4c664d456abfdad1250c14159b0ba807d2afef))
+* **html:** a bold or italic word's line height is measured, not taken for its family's ([#436](https://github.com/sidorares/react-x11-components/issues/436)) ([545bc0d](https://github.com/sidorares/react-x11-components/commit/545bc0d9defbcf7a9e7cbd02eec146bd7d578fa4))
+* **html:** a box with a formatting context of its own, too wide for a column no float narrows, stays beside the float ([#424](https://github.com/sidorares/react-x11-components/issues/424)) ([d174dca](https://github.com/sidorares/react-x11-components/commit/d174dca1c97345ff5c140bc5936e4a1d5f739238))
+* **html:** a box's leading is split with the half above rounded down to a whole pixel, as Blink splits it ([#402](https://github.com/sidorares/react-x11-components/issues/402)) ([14228b9](https://github.com/sidorares/react-x11-components/commit/14228b9a2540115525b6fe4f13a008b6a38c425f))
+* **html:** a control's text keeps none of the line height or spacing around it ([#431](https://github.com/sidorares/react-x11-components/issues/431)) ([e7a3571](https://github.com/sidorares/react-x11-components/commit/e7a3571f37d0acabae9babd16f8c96cadcb2099b))
+* **html:** a fixed box and a fixed background stay where the scroll pane's viewport is ([#416](https://github.com/sidorares/react-x11-components/issues/416)) ([35064ed](https://github.com/sidorares/react-x11-components/commit/35064ed5a00069fe0409b588a6ab1b54f92a10ba))
+* **html:** a hover that gives an inline box a background paints it in place ([#398](https://github.com/sidorares/react-x11-components/issues/398)) ([f8fb71b](https://github.com/sidorares/react-x11-components/commit/f8fb71bf3cc12e1ec20ad07ac2765b029337b970))
+* **html:** a line composed a piece at a time fits each piece as a browser does, with a 64th of a pixel to spare ([#419](https://github.com/sidorares/react-x11-components/issues/419)) ([a526ebb](https://github.com/sidorares/react-x11-components/commit/a526ebb69d9f054a0b9f2a4a8165c14a56b92dc4))
+* **html:** a line laid out a piece at a time is put in bidi order by its paragraph's levels ([#423](https://github.com/sidorares/react-x11-components/issues/423)) ([62cd69c](https://github.com/sidorares/react-x11-components/commit/62cd69c4cd61146bc07e93a762a7cf08a8ff98d6)), closes [#149](https://github.com/sidorares/react-x11-components/issues/149)
+* **html:** a paragraph's lines are fitted as a browser fits them, each element's text rounded up to a 64th ([#412](https://github.com/sidorares/react-x11-components/issues/412)) ([c6f675e](https://github.com/sidorares/react-x11-components/commit/c6f675e2f8cd882a3b390a17b3dba08078fb44bf))
+* **html:** a percentage line height is of the element's own font size, whichever rule sets it ([#418](https://github.com/sidorares/react-x11-components/issues/418)) ([a062311](https://github.com/sidorares/react-x11-components/commit/a062311dd9ea87ba4ff09a0d619f09aa219e981e))
+* **html:** a piece of a line goes on after its trailing space by what the engine says the space takes ([#433](https://github.com/sidorares/react-x11-components/issues/433)) ([c1184e0](https://github.com/sidorares/react-x11-components/commit/c1184e0a1e184fb20435775b2a121b358adca103))
+* **html:** a positioned box a clipping box holds makes the document no taller ([#403](https://github.com/sidorares/react-x11-components/issues/403)) ([d0c20c6](https://github.com/sidorares/react-x11-components/commit/d0c20c6b16263983bcd96d64191e92607f253adf))
+* **html:** a pseudo-element's background image is asked for, as its element's ([#409](https://github.com/sidorares/react-x11-components/issues/409)) ([828ebca](https://github.com/sidorares/react-x11-components/commit/828ebcaff5c23494b9a39af3e45c69b825f8e5a3))
+* **html:** a relatively positioned inline element's rect is where its offset moves it ([#404](https://github.com/sidorares/react-x11-components/issues/404)) ([a9a6537](https://github.com/sidorares/react-x11-components/commit/a9a653763307581204cc9b9fbbb3eb3e9ed8eec7))
+* **html:** a select the page styled is the page's to draw, as a text field is ([#438](https://github.com/sidorares/react-x11-components/issues/438)) ([2b19a7c](https://github.com/sidorares/react-x11-components/commit/2b19a7c5bcea79b18d257639b50efd4d14881703))
+* **html:** a space justification widens keeps its kerning, as a browser's does ([#393](https://github.com/sidorares/react-x11-components/issues/393)) ([cdb5cb7](https://github.com/sidorares/react-x11-components/commit/cdb5cb72318fff4888ee273054d52c8eb8f8d5ad))
+* **html:** a wrapped inline box's images and gradients span its fragments ([#397](https://github.com/sidorares/react-x11-components/issues/397)) ([aeadc2e](https://github.com/sidorares/react-x11-components/commit/aeadc2e23fd3bda03b94f6d2c0c235ee50a3291c))
+* **html:** an empty block past the end of the content makes the document no taller ([#413](https://github.com/sidorares/react-x11-components/issues/413)) ([b817847](https://github.com/sidorares/react-x11-components/commit/b8178472786978e45ae6a87aa8fc18d1ca3dbb8d))
+* **html:** an inline box's edge is no place to break a line ([#420](https://github.com/sidorares/react-x11-components/issues/420)) ([f51e387](https://github.com/sidorares/react-x11-components/commit/f51e3870a55991259a99ffeac78c3b1bcd685177))
+* **html:** an inline box's fragment ends at its text on a line it breaks after, not past the space the line ends on ([#425](https://github.com/sidorares/react-x11-components/issues/425)) ([a333262](https://github.com/sidorares/react-x11-components/commit/a3332629f616f830d1c8aced07d35e0e3576ab48))
+* **html:** an inline box's padding and border below its line count in the document's height ([#434](https://github.com/sidorares/react-x11-components/issues/434)) ([5a224a9](https://github.com/sidorares/react-x11-components/commit/5a224a90238d03d303336bb08acc58de1a03658f))
+* **html:** an inline element broken around a block takes the block's line into its rect ([#401](https://github.com/sidorares/react-x11-components/issues/401)) ([f93965b](https://github.com/sidorares/react-x11-components/commit/f93965be2b14a1aecdece7daed1ce3055bea62c9))
+* **html:** an inline element whose text is set at no size is where its block's content starts ([#417](https://github.com/sidorares/react-x11-components/issues/417)) ([64c7f10](https://github.com/sidorares/react-x11-components/commit/64c7f10a4214f59f36e48b5a829d4e9f2b720673))
+* **html:** an outside marker taller than a block's first line moves the block down, as Blink does ([#422](https://github.com/sidorares/react-x11-components/issues/422)) ([fddab69](https://github.com/sidorares/react-x11-components/commit/fddab696fc99d0e78005334c778c4b68af37a1f0))
+* **html:** place-content sets align-content and justify-content ([#428](https://github.com/sidorares/react-x11-components/issues/428)) ([ed20a82](https://github.com/sidorares/react-x11-components/commit/ed20a82fce656c0d3ec7503e931f2362ee96dca0))
+* **html:** pre-wrap's spaces at a line's end hang inside their box, and take room before a break ([#414](https://github.com/sidorares/react-x11-components/issues/414)) ([a228971](https://github.com/sidorares/react-x11-components/commit/a22897184a3daf778b5e92ce2c01ba0aa7d4fdcf)), closes [#406](https://github.com/sidorares/react-x11-components/issues/406)
+* **html:** what a positioned box holds past its end makes the document taller ([#405](https://github.com/sidorares/react-x11-components/issues/405)) ([aac0691](https://github.com/sidorares/react-x11-components/commit/aac069103625b10fbe941d790f72ee03151c233c))
+
+
+### Performance Improvements
+
+* **html:** a box shadow is the context's, cast by a shape it draws from a tile ([#407](https://github.com/sidorares/react-x11-components/issues/407)) ([30e0ca2](https://github.com/sidorares/react-x11-components/commit/30e0ca223bd30d814b9382f13cf0ec1c4bafccc5))
+* **html:** a hover that widens a shadow, raises a layer or lifts a box is restyled in place ([#411](https://github.com/sidorares/react-x11-components/issues/411)) ([3fad505](https://github.com/sidorares/react-x11-components/commit/3fad5050a21a55cd61352bc4d5c9ef0067b46903))
+
 ## [0.11.0](https://github.com/sidorares/react-x11-components/compare/v0.10.0...v0.11.0) (2026-09-29)
 
 

@@ -411,8 +411,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.25.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.25.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.26.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.26.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -540,6 +540,16 @@ it up. **The floor is a running one and moves often** — every move since
   scrolled at 14 frames a second at 2x. It also has hover follow content
   that scrolls under a still pointer (#793), and `roundRect` take
   elliptical `{ x, y }` radii.
+- `^2.26.0` — `<Select>`'s `labelStyle` and `chevronStyle` (react-x11#796),
+  style slots over its caption and its chevron in the shape `<Slider>`'s
+  took. A `<select>` the page gave a border, a background or
+  `appearance: none` is mounted bare in its content box, as a text field
+  is, its caption in the element's colour and font and its arrow in that
+  colour, or left out at `appearance: none`. The caption had named the
+  palette's `text` itself, so nothing reached it, and melbcss.com's select
+  was the palette's white framed dropdown inside the page's padding. Either
+  slot also makes it the drawn trigger, where a native popup bezel would
+  draw AppKit's frame over the page's box.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1186,6 +1196,21 @@ component that silently made requests would turn "render this HTML" into
 "make these requests". A declined resource is an ordinary state, not an
 error. **Do not add a convenience default that fetches**; the absence is the
 feature.
+
+**A form is a link it writes itself, and it sends nothing either.**
+`onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
+entry list, encodes it and resolves the action, and the host decides
+whether the request goes anywhere — `examples/browser/` sends it. The pure
+half (which controls a form owns, what Enter submits, what a reset puts
+back, why a form is invalid) is `form.ts` and is tested with no display;
+the widgets, the presses on a `<button>`, a `<label>` or an image button,
+the validation message and `autofocus` are `widgets.ts`. Two things there
+are load-bearing: typed text lives in `FormState` beside the DOM — the
+`value` attribute is the field's default, and a `<textarea>` has none — and
+**a widget is keyed by its element, not by where it is.** Keyed by
+position, every relayout that moved a field (a stylesheet landing while
+someone typed) mounted a new widget, and the focus and the caret went with
+the old one.
 
 Two things it changed elsewhere, both extractions rather than copies:
 
