@@ -1850,6 +1850,15 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
           condition.max = Math.min(condition.max ?? Infinity, px);
           sawWidth = true;
         } else if (
+          px === null &&
+          /^(?:min-|max-)?(?:device-)?(?:width|height)$/.test(key)
+        ) {
+          // a size that is no length is a query that does not parse, which
+          // Media Queries 4 (3.2) makes `not all`: `(min-width:0\0)`, the
+          // hack that kept a block for Internet Explorer 9 and 10, held
+          // here as a query that asked nothing, and its rules applied
+          pass = false;
+        } else if (
           (key === 'min-height' || key === 'min-device-height') &&
           px !== null
         ) {

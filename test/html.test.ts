@@ -18081,6 +18081,25 @@ test('a control the page set in its own font draws in it', async () => {
   assert.deepStrictEqual(await fonts(2), [boxes, widgets], 'the same at 2x');
 });
 
+test('a media query whose size is no length does not parse, and holds nowhere', async () => {
+  // Media Queries 4 (3.2): a query that does not parse is `not all`. The
+  // hack `@media screen and (min-width:0\0)` kept a block of rules for
+  // Internet Explorer 9 and 10, which no other browser reads; here the
+  // query asked nothing and its rules applied, and the Zen Garden's 220 set
+  // its banner heading at the width meant for Internet Explorer
+  const { node, result } = await render(
+    '<style>body{margin:0}#t{height:10px}' +
+      '@media screen and (min-width:0\\0){#t{height:50px}}' +
+      '@media (max-height:tall){#t{height:60px}}' +
+      '@media (min-width:0){#u{height:20px}}</style>' +
+      '<div id="t"></div><div id="u"></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 't').height, 10, 'neither hack applies');
+  assert.strictEqual(boxOf(el, 'u').height, 20, 'a query that parses does');
+  await result.unmount();
+});
+
 test("a rem is the root element's font size, and the initial one in the root's own font size", async () => {
   // CSS Values 4, 6.1.1: a `rem` is the root element's computed font size,
   // and where it is on the root's own `font-size`, the property's initial
