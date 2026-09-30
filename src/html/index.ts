@@ -230,6 +230,8 @@ function deriveLook(
     controlPadY: Number(theme.paddingY ?? 6),
     controlBorder: Number(theme.borderWidth ?? 1),
     controlRadius: Number(theme.radius ?? 4),
+    // not `fontSize`, which a host sets to the web's `medium` for pages
+    controlFontSize: Number(theme.fontSize ?? 14),
   };
 }
 
@@ -652,7 +654,8 @@ function fieldChrome(look: RootLook): Style {
     paddingRight: 6,
     color: look.color,
     fontFamily: look.fontFamily,
-    fontSize: look.fontSize,
+    // the size the UA sheet sets the field at, and so measured it at
+    fontSize: look.controlFontSize ?? look.fontSize,
   };
 }
 
