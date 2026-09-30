@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.13.0](https://github.com/sidorares/react-x11-components/compare/v0.12.0...v0.13.0) (2026-09-30)
+
+
+### Features
+
+* **html:** ::selection colours a selection's band and its text ([#453](https://github.com/sidorares/react-x11-components/issues/453)) ([b2cdc0a](https://github.com/sidorares/react-x11-components/commit/b2cdc0a065beda216b705cab4843f5f7f91daea8))
+* **html:** submit forms — an onSubmit seam, labels, image buttons and validation, and the example browser sends them ([#435](https://github.com/sidorares/react-x11-components/issues/435)) ([19b1774](https://github.com/sidorares/react-x11-components/commit/19b1774260078ecc48f66d8b00b343add7c1c886))
+
+
+### Bug Fixes
+
+* **examples:** the browser reads a data: URL itself, as Fetch's data: URL processor does ([#449](https://github.com/sidorares/react-x11-components/issues/449)) ([ab67168](https://github.com/sidorares/react-x11-components/commit/ab67168f098cb1b785f462aea9a536a7408fc0d6))
+* **html:** a control the page set in its own font draws in it ([#451](https://github.com/sidorares/react-x11-components/issues/451)) ([49556bf](https://github.com/sidorares/react-x11-components/commit/49556bf9e10cb488e905dab3797986f88d72f00e))
+* **html:** a device-width query is the viewport's width, so a phone sheet stays off a desktop ([#443](https://github.com/sidorares/react-x11-components/issues/443)) ([b48ed14](https://github.com/sidorares/react-x11-components/commit/b48ed14c6e0cf5ba678ee9f7b784eff556cda5cb))
+* **html:** a form control's text is the palette's face, not the page's ([#446](https://github.com/sidorares/react-x11-components/issues/446)) ([ad0f658](https://github.com/sidorares/react-x11-components/commit/ad0f65843f7cb32d30e76355db8f2c6f612a1790))
+* **html:** a form control's text is the palette's size, not its parent's ([#442](https://github.com/sidorares/react-x11-components/issues/442)) ([72d4d58](https://github.com/sidorares/react-x11-components/commit/72d4d580d1db6eaae3937a2b07a9a53e6ea13a4d))
+* **html:** a media query on a size that is no length does not parse, and holds nowhere ([#450](https://github.com/sidorares/react-x11-components/issues/450)) ([326c313](https://github.com/sidorares/react-x11-components/commit/326c3139dc1f2a08a2d20f0116e403ce845b5df0))
+* **html:** a media query on the viewport's height is answered from it, and again when it moves ([#439](https://github.com/sidorares/react-x11-components/issues/439)) ([c3efceb](https://github.com/sidorares/react-x11-components/commit/c3efceb338dc4212b6994890fd7cb0f4b03cdcc8))
+* **html:** a rem is the root element's font size, and the initial one in the root's own ([#440](https://github.com/sidorares/react-x11-components/issues/440)) ([ab8aa89](https://github.com/sidorares/react-x11-components/commit/ab8aa899e2bd8b853a299b4a8f0e8f0a5e9f27d7))
+* **html:** a variable web font the text engine cannot cut an instance from is passed over, where it left the document blank ([#459](https://github.com/sidorares/react-x11-components/issues/459)) ([91ed442](https://github.com/sidorares/react-x11-components/commit/91ed442e2839c7ba560526116824ec349de7bf82))
+* **html:** an inline box around a block that clears floats measures from where clearance moved the block from ([#454](https://github.com/sidorares/react-x11-components/issues/454)) ([40851a4](https://github.com/sidorares/react-x11-components/commit/40851a42b7e72bef02d42f301b82973d2002731b))
+* **html:** glyphs taller than their line are selected over and repainted where they reach ([#448](https://github.com/sidorares/react-x11-components/issues/448)) ([f58e5ac](https://github.com/sidorares/react-x11-components/commit/f58e5ac99666c109c30e9f6240ac589e28009d48))
+* **html:** media queries on the resolution, the orientation, the pointer and the rest are answered, and one on a feature nothing knows is false ([#455](https://github.com/sidorares/react-x11-components/issues/455)) ([0f06def](https://github.com/sidorares/react-x11-components/commit/0f06def26d9c9834467aaeddd5ecfd57f1da0662))
+* **html:** Wikipedia's search bar is Chrome's height — a styled button's UA edges, a flex item's negative margin ([#445](https://github.com/sidorares/react-x11-components/issues/445)) ([c69e976](https://github.com/sidorares/react-x11-components/commit/c69e9763dfc08800f3732964fe22e92b699b2c98))
+
+
+### Performance Improvements
+
+* **html:** a hover waits for a scroll to stop, and a :hover inside :is() restyles where it is ([#458](https://github.com/sidorares/react-x11-components/issues/458)) ([978832a](https://github.com/sidorares/react-x11-components/commit/978832ac7c6d8c874925574a210d3d8afa2e1836))
+
 ## [0.12.0](https://github.com/sidorares/react-x11-components/compare/v0.11.0...v0.12.0) (2026-09-30)
 
 
