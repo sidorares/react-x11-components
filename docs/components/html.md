@@ -1048,9 +1048,18 @@ the element's `color-scheme` resolved against the react-x11 palette's in
 force, which stands for the reader's preference: `light dark` follows the
 palette, `light` or `only dark` holds whatever it is, and `normal` — the
 initial value — is the palette's own, since the palette is this renderer's
-default look. The scheme picks nothing else: where a browser also turns
-its canvas and its own colours dark, the canvas here is the palette's
-whatever the page says. Relative colours and the system colours are not read, and a
+default look. Where the root element's scheme is the palette's, the
+document is drawn on the window's own ground in the palette's colours, as
+an unstyled one always is. Where it is the other — a page that is
+`color-scheme: light` under a dark palette, as a Docusaurus site is until
+its script runs — its canvas is opaque, in that scheme's `Canvas` colour,
+which is what CSS Color Adjust gives an embedded document whose scheme is
+not its embedder's; and the text and the links the page does not colour are
+a browser's for that scheme, black on white with `#0000ee` links or white
+on `#121212` with `#9e9eff`. So a page that sets dark text on no background
+is read on white, whatever the window is. The rest of what the palette
+gives stays the palette's: the UA sheet's borders and rules, and the
+widgets a form control is. Relative colours and the system colours are not read, and a
 declaration using one is dropped, as a browser that did not know them
 would drop it.
 
