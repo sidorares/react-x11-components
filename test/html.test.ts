@@ -18203,3 +18203,144 @@ test("a rem is the root element's font size, and the initial one in the root's o
     `and 3rem three times it, however deep: ${boxOf(el, 's').width}`,
   );
 });
+
+// --- glyphs taller than their line -------------------------------------------
+
+/** A document of one heading whose glyphs are far taller than its lines —
+ *  a 90px face on 20px lines, Zen Garden 215's title — painted straight
+ *  into a context that records what it is asked to draw. */
+async function tallGlyphs(extra = '') {
+  const { node } = await render(
+    '<style>body{margin:0}h1{font:bold 90px/20px sans-serif;margin:0}' +
+      `${extra}</style><div style="padding-top:100px"><h1 id="t">MMM</h1></div>`,
+  );
+  const el = view(node);
+  const tree = (el as unknown as { _tree: never })._tree as {
+    root: LaidBox & {
+      lines: { texts: { layout: { draw(): void } }[] }[] | null;
+    };
+  };
+  const inked: number[] = [];
+  const patch = (box: typeof tree.root): void => {
+    for (const line of box.lines ?? []) {
+      for (const text of line.texts) text.layout.draw = () => inked.push(1);
+    }
+    for (const child of box.children) patch(child as typeof box);
+  };
+  patch(tree.root);
+  const fills: { color: unknown; x: number; y: number; h: number }[] = [];
+  let fillStyle: unknown = null;
+  const ctx = {
+    set fillStyle(v: unknown) {
+      fillStyle = v;
+    },
+    get fillStyle() {
+      return fillStyle;
+    },
+    save() {},
+    restore() {},
+    fillRect(x: number, y: number, _w: number, h: number) {
+      fills.push({ color: fillStyle, x, y, h });
+    },
+  };
+  const { paintDocument } = await import('../src/html/paint.js');
+  const paint = (
+    damage: { x: number; y: number; width: number; height: number } | null,
+    selection: { start: number; end: number } | null = null,
+  ) => {
+    inked.length = 0;
+    fills.length = 0;
+    paintDocument(ctx as never, tree as never, {
+      originX: 0,
+      originY: 0,
+      damage,
+      selection,
+      selectionColor: selection ? '#ff0000' : null,
+      imageFor: () => null,
+    });
+    return { inked: inked.length, fills: [...fills] };
+  };
+  return { el, h1: boxOf(el, 't'), paint };
+}
+
+metric(
+  'glyphs taller than their line are drawn where a repaint meets them',
+  async () => {
+    // A line box is its line-height, whatever its glyphs are (CSS 2.1
+    // 10.8.1), so a 90px face on 20px lines hangs past them by 40px each
+    // way. A repaint of the rows over the line — the strip a scroll of a few
+    // pixels exposes — met no line and no box, and the tops of Zen Garden
+    // 215's title stayed unpainted.
+    const { h1, paint } = await tallGlyphs();
+    assert.strictEqual(h1.height, 20, 'the line is its line-height');
+    assert.ok(paint(null).inked > 0, 'a full paint draws the text');
+    const strip = (y: number) => ({ x: 0, y, width: 400, height: 8 });
+    assert.ok(paint(strip(h1.y - 30)).inked > 0, 'above the line');
+    assert.ok(paint(strip(h1.y + 40)).inked > 0, 'below the line');
+    assert.strictEqual(
+      paint(strip(h1.y - 90)).inked,
+      0,
+      'but not past the ascent',
+    );
+  },
+);
+
+metric(
+  'glyphs taller than their line are drawn from an inline-block too',
+  async () => {
+    // the title is an inline-block on its header's line in 215: the header's
+    // line holds the block's margin box, and the block its own lines
+    const { h1, paint } = await tallGlyphs('h1{display:inline-block}');
+    assert.ok(
+      paint({ x: 0, y: h1.y - 30, width: 400, height: 8 }).inked > 0,
+      'above the line',
+    );
+  },
+);
+
+metric(
+  'a selection over glyphs taller than their line covers the glyphs',
+  async () => {
+    // Blink unites a text's content area with its line box in the block
+    // direction (`ExpandSelectionRectToLineHeight`): a band over tall glyphs
+    // on a short line covers them, as Chrome's does, where ours was the 20px
+    // line through the middle of 90px letters
+    const { el, h1, paint } = await tallGlyphs();
+    const bands = paint(null, { start: 0, end: 2 }).fills.filter(
+      (f) => f.color === '#ff0000',
+    );
+    assert.strictEqual(bands.length, 1, 'one band');
+    assert.ok(
+      bands[0].y < h1.y - 30,
+      `it starts above the line: ${bands[0].y}`,
+    );
+    assert.ok(
+      bands[0].y + bands[0].h > h1.y + h1.height + 15,
+      `and ends below it: ${bands[0].y + bands[0].h}`,
+    );
+    // and the rects the selection seam reports are the ones painted
+    const rects = el.textRangeRects(0, 2);
+    const abs = (el as unknown as { abs: { y: number } }).abs;
+    assert.strictEqual(rects.length, 1);
+    assert.strictEqual(Math.round(rects[0].y - abs.y), bands[0].y);
+  },
+);
+
+metric(
+  'a selection over a line taller than its glyphs fills the line',
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0}p{font:16px/60px sans-serif;margin:0}</style>' +
+        '<p id="p">tall line</p>',
+    );
+    const el = view(node);
+    const p = boxOf(el, 'p');
+    const rects = el.textRangeRects(0, 4);
+    const abs = (el as unknown as { abs: { y: number } }).abs;
+    assert.strictEqual(rects.length, 1);
+    // to a hundredth: a line at a fractional top comes back from its own
+    // bottom a rounding off its height
+    assert.ok(Math.abs(rects[0].y - abs.y - p.y) < 0.01, `at ${rects[0].y}`);
+    assert.ok(Math.abs(rects[0].height - 60) < 0.01, `${rects[0].height}`);
+  },
+);

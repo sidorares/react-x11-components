@@ -210,6 +210,19 @@ export interface PaintOptions {
  */
 export const OUT_OF_FLOW_REACH = new WeakMap<Box, number>();
 
+/**
+ * How far above and below a block's lines its inline content draws, at
+ * most, by the array its lines are: glyphs taller than a `line-height` under
+ * their face's height, and an atomic's ink past the line it is on. The
+ * slack a paint's cull of the lines takes on top of their own rows
+ * (`paintLines`); none for the lines of almost every block, whose content
+ * is inside them.
+ */
+const LINE_INK = new WeakMap<
+  readonly LineBox[],
+  { above: number; below: number }
+>();
+
 export function computePaintBounds(box: Box, moved = false): number {
   // A box with no rectangle of its own gives only what it holds: nothing,
   // until a child with bounds is met.
@@ -333,8 +346,21 @@ export function computePaintBounds(box: Box, moved = false): number {
   // above has its bounds already: walked from its line as well, an
   // inline-block in an inline-block was walked twice a level, and twenty of
   // them took seventy milliseconds a layout.
+  //
+  // And a line's text is drawn from its face's ascent above the baseline to
+  // its descent below, its content area (CSS 2.1 10.6.1), which is past the
+  // line box wherever `line-height` is under the face's height: a line box
+  // is its line-height, whatever its glyphs are. Zen Garden 215's 91px title
+  // sits on the 20px lines its body's `line-height: 1.25em` gave it, as a
+  // length, and hangs 40px above them and 40px below — ink that a repaint
+  // of those rows has to reach, where the lines alone do not.
+  let above = 0;
+  let below = 0;
   if (lines) {
+    const movedOff = MOVED_OFF_LINES.get(lines);
     for (const line of lines) {
+      let top = line.y;
+      let bottom = line.y + line.height;
       for (const placed of line.atomics) {
         const atomic = placed.box;
         if (atomic.boundsY === Infinity) continue;
@@ -342,9 +368,31 @@ export function computePaintBounds(box: Box, moved = false): number {
         y1 = Math.min(y1, atomic.boundsY);
         x2 = Math.max(x2, atomic.boundsX + atomic.boundsWidth);
         y2 = Math.max(y2, atomic.boundsY + atomic.boundsHeight);
+        top = Math.min(top, atomic.boundsY);
+        bottom = Math.max(bottom, atomic.boundsY + atomic.boundsHeight);
+      }
+      // what `position: relative` moved off a line the cull finds on its
+      // own (`reachedOff`), wherever it went
+      if (movedOff?.has(line)) continue;
+      for (const text of line.texts) {
+        const natural = text.layout.lines[text.layoutLine];
+        if (!natural) continue;
+        const baseline = text.drawY + natural.baseline;
+        top = Math.min(top, baseline - (natural.ascent ?? 0));
+        bottom = Math.max(bottom, baseline + (natural.descent ?? 0));
+      }
+      if (top < line.y) {
+        y1 = Math.min(y1, top);
+        above = Math.max(above, line.y - top);
+      }
+      if (bottom > line.y + line.height) {
+        y2 = Math.max(y2, bottom);
+        below = Math.max(below, bottom - line.y - line.height);
       }
     }
   }
+  if (lines && (above > 0 || below > 0)) LINE_INK.set(lines, { above, below });
+  else if (lines) LINE_INK.delete(lines);
   if (x1 === Infinity) {
     // nothing to draw: no damage meets it, and no parent takes it in
     box.boundsX = Infinity;
@@ -4314,7 +4362,12 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     const bottom = top + damage.height;
     let lo = 0;
     let hi = lines.length;
-    const slack = top - box.maxLineHeight;
+    // and a line whose glyphs, or an atomic on it, reach past it
+    // (`LINE_INK`) is drawn where they reach
+    const ink = LINE_INK.get(lines);
+    const above = ink?.above ?? 0;
+    const below = ink?.below ?? 0;
+    const slack = top - box.maxLineHeight - below;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
       if (lines[mid].y > slack) hi = mid;
@@ -4322,8 +4375,11 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     }
     for (let i = lo; i < lines.length; i += 1) {
       const line = lines[i];
-      if (line.y >= bottom) break;
-      if (line.y + line.height > top) visible.push(line);
+      if (line.y - above >= bottom) break;
+      if (line.y < bottom && line.y + line.height > top) visible.push(line);
+      else if (ink && inkInto(line, top, bottom)) {
+        visible.push(line);
+      }
     }
     // and a line the damage misses whose text or inline-block `position:
     // relative` moved into it: drawn by its line, it went undrawn with it
@@ -4331,7 +4387,7 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     if (moved && reachedOff(visible, moved, top, bottom)) {
       const drawn = new Set(visible);
       for (const line of moved) {
-        if (movedInto(line, top, bottom)) drawn.add(line);
+        if (inkInto(line, top, bottom)) drawn.add(line);
       }
       visible.length = 0;
       for (const line of lines) if (drawn.has(line)) visible.push(line);
@@ -4417,15 +4473,16 @@ function reachedOff(
   bottom: number,
 ): boolean {
   for (const line of moved) {
-    if (!visible.includes(line) && movedInto(line, top, bottom)) return true;
+    if (!visible.includes(line) && inkInto(line, top, bottom)) return true;
   }
   return false;
 }
 
-/** Whether what was moved off a line — its inline-blocks and images, where
- *  their ink is, and its texts, where they are drawn — reaches the rows
- *  between `top` and `bottom`. */
-function movedInto(line: LineBox, top: number, bottom: number): boolean {
+/** Whether what a line draws — its inline-blocks and images, where their
+ *  ink is, and its texts, where they are drawn, their glyphs from ascent to
+ *  descent — reaches the rows between `top` and `bottom`: what was moved off
+ *  it, and what hangs past it. */
+function inkInto(line: LineBox, top: number, bottom: number): boolean {
   for (const placed of line.atomics) {
     const box = placed.box;
     if (box.boundsY < bottom && box.boundsY + box.boundsHeight > top) {
@@ -4435,8 +4492,16 @@ function movedInto(line: LineBox, top: number, bottom: number): boolean {
   for (const text of line.texts) {
     const natural = text.layout.lines[text.layoutLine];
     if (!natural) continue;
-    const y = text.drawY + natural.y;
-    if (y < bottom && y + natural.height > top) return true;
+    const baseline = text.drawY + natural.baseline;
+    const y1 = Math.min(
+      text.drawY + natural.y,
+      baseline - (natural.ascent ?? 0),
+    );
+    const y2 = Math.max(
+      text.drawY + natural.y + natural.height,
+      baseline + (natural.descent ?? 0),
+    );
+    if (y1 < bottom && y2 > top) return true;
   }
   return false;
 }
@@ -5306,7 +5371,8 @@ export function forgetDecoratedAncestors(box: Box): void {
  *
  * Translucent under the glyphs rather than inverted over them, so the ink
  * keeps its contrast on either palette — the same call `<textarea>` and
- * `<richtext>` both make.
+ * `<richtext>` both make. From the top of the line to its bottom, and past
+ * them over the glyphs where they are taller than the line (`selectionRows`).
  */
 function paintSelection(
   ctx: PaintContext,
@@ -5326,6 +5392,7 @@ function paintSelection(
     const offsets = layoutOffsets(text.layout);
     const layoutFrom = layoutOffsetOf(text, from);
     const layoutTo = layoutOffsetOf(text, to, true);
+    const rows = selectionRows(line, text, natural);
     for (const band of lineBands(
       text.layout,
       natural,
@@ -5335,10 +5402,34 @@ function paintSelection(
     )) {
       ctx.fillRect(
         Math.round(band.x + text.drawX + options.originX),
-        Math.round(line.y + options.originY),
+        Math.round(rows.y + options.originY),
         Math.ceil(band.width),
-        Math.ceil(line.height),
+        Math.ceil(rows.height),
       );
     }
   }
+}
+
+/**
+ * The rows a highlight over a line's text covers: the line box's, united
+ * with the text's content area — its face's ascent above the baseline to
+ * its descent below (CSS 2.1 10.6.1) — which is taller wherever
+ * `line-height` is under the face's height. Blink unites the two in the
+ * block direction (`ExpandSelectionRectToLineHeight`), so a selection over
+ * a tall line fills it and one over tall glyphs on a short line covers
+ * them: Zen Garden 215's 91px title on 20px lines had a band a fifth of
+ * its letters' height through their middle.
+ */
+export function selectionRows(
+  line: LineBox,
+  text: LineText,
+  natural: { baseline: number; ascent?: number; descent?: number },
+): { y: number; height: number } {
+  const baseline = text.drawY + natural.baseline;
+  const top = Math.min(line.y, baseline - (natural.ascent ?? 0));
+  const bottom = Math.max(
+    line.y + line.height,
+    baseline + (natural.descent ?? 0),
+  );
+  return { y: top, height: bottom - top };
 }
