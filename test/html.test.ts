@@ -2386,7 +2386,10 @@ async function fillsOf(
   el: HtmlViewNode,
   ops?: PaintOp[],
   options?: {
+    originX?: number;
+    originY?: number;
     canvas?: { x: number; y: number; width: number; height: number };
+    viewport?: { x: number; y: number; width: number; height: number };
     imageFor?: () => unknown;
     cached?: (
       key: string,
@@ -3453,6 +3456,148 @@ metric(
       el.abs.height,
       900,
       'as tall as the last block, not the empty ones after its margin',
+    );
+  },
+);
+
+metric(
+  'a fixed box is drawn where the viewport is, however far the pane has scrolled the document',
+  async () => {
+    // CSS 2.1 9.6.1: a fixed box is positioned against the viewport and does
+    // not move when the document scrolls. Laid out against the viewport at
+    // the document's top, it was drawn there, and scrolled away with the
+    // text: the Zen Garden's 069 frames its page in fixed edges, and 090
+    // pins its intro to the window's corner
+    const { node } = await render(
+      '<style>body{margin:0}.tall{height:2000px}.bar{position:fixed;' +
+        'left:0;bottom:0;width:100px;height:20px;background:#ff0000}' +
+        '</style><div class="tall"></div><div class="bar"></div>',
+    );
+    const el = view(node);
+    await act();
+    // the window, which is what the fixed box was laid out against, with
+    // the document scrolled 300px up it
+    const viewport = { x: 0, y: 0, width: 440, height: 600 };
+    const bar = (fills: Fill[]) =>
+      fills.find((f) => f.style === parseColor('#ff0000'));
+    const scrolled = bar(
+      await fillsOf(el, undefined, { originY: -300, viewport }),
+    );
+    assert.deepStrictEqual(
+      scrolled && [scrolled.x, scrolled.y, scrolled.w, scrolled.h],
+      [0, 580, 100, 20],
+      `at the viewport's bottom: ${JSON.stringify(scrolled)}`,
+    );
+    const unscrolled = bar(await fillsOf(el, undefined, { viewport }));
+    assert.strictEqual(unscrolled?.y, 580, 'and there before the scroll');
+  },
+);
+
+metric(
+  'a fixed background is placed against the viewport the document is seen through',
+  async () => {
+    // CSS 2.1 14.2.1: fixed with regard to the viewport, which is the pane
+    // that scrolls the element, not the element: placed against the element,
+    // a body's picture scrolled away with the page — 041, 051 and 095
+    const { node } = await render(
+      '<style>body{margin:0;height:2000px;background:url(p.png) no-repeat ' +
+        'fixed right bottom}</style>',
+    );
+    const el = view(node);
+    await act();
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops, {
+      originY: -300,
+      canvas: { x: 0, y: -300, width: 400, height: 2000 },
+      viewport: { x: 0, y: 0, width: 400, height: 200 },
+      backgroundImageFor: () => ({
+        image: {},
+        width: 50,
+        height: 40,
+        ratio: 50 / 40,
+      }),
+    });
+    const image = ops.find((op) => op.op === 'image') as
+      { x: number; y: number; w: number; h: number } | undefined;
+    assert.deepStrictEqual(
+      image && [image.x, image.y, image.w, image.h],
+      [350, 160, 50, 40],
+      `in the viewport's bottom right: ${JSON.stringify(image)}`,
+    );
+  },
+);
+
+type FixedRect = { x: number; y: number; width: number; height: number };
+
+metric(
+  'what the document draws fixed to the viewport, it tells the scroll pane',
+  async () => {
+    // react-x11's `viewportFixedRects`: a pane's scroll that blits repaints
+    // these where they are and where the copy dragged them, and one that
+    // covers the viewport makes the scroll a repaint. Without it the copy
+    // dragged a fixed header along with the text
+    const renderIn = async (source: string) => {
+      const pane = React.createRef<DrawnNode & { scrollTo(y: number): void }>();
+      const result = await renderX11(
+        h(
+          'box',
+          {
+            ref: pane,
+            style: { width: 400, height: 200, overflow: 'scroll' },
+          },
+          h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        ),
+        { width: 440, height: 240, fonts: FONTS! },
+      );
+      await act();
+      return {
+        result,
+        pane,
+        el: view(screen.getByTestName('doc') as DrawnNode),
+      };
+    };
+    const header = await renderIn(
+      '<style>body{margin:0}.tall{height:2000px}.bar{position:fixed;' +
+        'top:0;left:0;width:100px;height:20px;background:red}</style>' +
+        '<div class="tall"></div><div class="bar"></div>',
+    );
+    await act(async () => header.pane.current!.scrollTo(300));
+    const rects = (
+      header.el as unknown as { viewportFixedRects(): FixedRect[] | null }
+    ).viewportFixedRects();
+    assert.deepStrictEqual(
+      rects,
+      [{ x: 0, y: 0, width: 100, height: 20 }],
+      'the header, where the viewport is',
+    );
+    // and a point there is the header's, as it was drawn there
+    const under = header.el.elementAtPoint(50, 10);
+    assert.strictEqual(
+      under?.attribs?.class,
+      'bar',
+      'the pointer finds the header where it is drawn',
+    );
+    await header.result.unmount();
+    const background = await renderIn(
+      '<style>body{margin:0;height:2000px;background:url(p.png) fixed}' +
+        '</style><body><p>text</p></body>',
+    );
+    const whole = (
+      background.el as unknown as { viewportFixedRects(): FixedRect[] | null }
+    ).viewportFixedRects();
+    assert.deepStrictEqual(
+      whole,
+      [{ x: 0, y: 0, width: 400, height: 200 }],
+      `a fixed background: the whole viewport: ${JSON.stringify(whole)}`,
+    );
+    await background.result.unmount();
+    const plain = await renderIn('<p>nothing fixed</p>');
+    assert.strictEqual(
+      (
+        plain.el as unknown as { viewportFixedRects(): FixedRect[] | null }
+      ).viewportFixedRects(),
+      null,
+      'and nothing where nothing is fixed',
     );
   },
 );
