@@ -893,7 +893,10 @@ box's `height` or `max-height` holds, and `max-lines`, `continue` and
 image or a float, is cut with no ellipsis),
 `text-overflow: ellipsis` on a `nowrap` block that clips (`truncate`: each
 line cut where the box ends, inside a word if need be, with an ellipsis, as
-a browser cuts it), `overflow-wrap` (a word too long for
+a browser cuts it — which is how the line is drawn, and no part of how wide
+it is: a table cell or a flex item holding the block is sized by the whole
+line, so a button whose label is a `truncate` span is cut only where
+something lets it shrink, as `min-w-0` does), `overflow-wrap` (a word too long for
 its line runs past the line's end, as in a browser, unless the paragraph
 says it may be cut: `overflow-wrap: break-word` or `anywhere`,
 `word-break: break-all` or `break-word`, or `line-break: anywhere`, all of

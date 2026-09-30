@@ -1228,6 +1228,51 @@ metric('a truncated block cuts each of its lines, and loses none', async () => {
 });
 
 metric(
+  'a truncated line is as wide as it is whole to what holds its box',
+  async () => {
+    // `text-overflow` is how a line is drawn where it runs out of its box,
+    // and no part of how wide the line is (CSS Overflow 3, 5.1): what the
+    // box gives the size of whatever holds it is the whole line's. Its
+    // content at its least is measured in a box of no width, and cut there
+    // ntk left the ellipsis: a table cell was as wide as one, and
+    // nextjs.org's buttons, whose labels are `truncate` spans, were measured
+    // as wide as their padding and an ellipsis, shrunk to it and cut
+    const { node } = await render(
+      '<style>body{margin:0} .t{overflow:hidden;text-overflow:ellipsis;' +
+        'white-space:nowrap} .w{float:left;white-space:nowrap}</style>' +
+        '<table style="width:30px;border-collapse:collapse"><tr>' +
+        '<td id="c" style="padding:0"><div class="t">Learn more</div></td>' +
+        '</tr></table>' +
+        // a row of buttons beside an item that takes the rest of their row
+        '<div style="display:flex;width:400px"><div style="width:100%"></div>' +
+        '<div id="a" style="display:flex">' +
+        '<div id="s" style="white-space:nowrap">Search</div>' +
+        '<div id="b" style="display:flex"><span id="l" class="t">Learn more' +
+        '</span></div></div></div>' +
+        // and the line is cut where its box has a width to show it in
+        '<div id="n" class="t" style="width:40px">Learn more</div>' +
+        '<div id="whole" class="w">Learn more</div>' +
+        '<div id="search" class="w">Search</div>',
+    );
+    const el = view(node);
+    const box = (id: string) => boxOf(el, id);
+    const whole = box('whole').width;
+    const near = (actual: number, expected: number, message: string) =>
+      assert.ok(
+        Math.abs(actual - expected) < 0.01,
+        `${message}: ${actual}, not ${expected}`,
+      );
+    near(box('c').width, whole, 'a cell is as wide as the line');
+    near(box('b').width, whole, 'a button is as wide as its label');
+    near(box('a').width, whole + box('search').width, 'and the row as both');
+    const [shown] = linesOf(el, 'l');
+    near(shown.width, whole, 'which is drawn whole');
+    const [cut] = linesOf(el, 'n');
+    assert.ok(cut.width <= 40, `a line in a narrower box is cut: ${cut.width}`);
+  },
+);
+
+metric(
   'a clamped block laid out a line at a time is cut to its lines',
   async () => {
     // an image on a line lays the block out a line at a time, which the

@@ -1047,9 +1047,14 @@ function autoMinimums(
     }
     let least: number;
     if (row) {
-      // or than what it drew at the width it has: nothing overflows it
-      const drawn = intrinsicWidth(box) + box.horizontalExtra;
-      if (transferredWidth(box, drawn) <= width + 0.5) continue;
+      // or than what it drew at the width it has: nothing overflows it —
+      // unless a line in it fits for being cut short by `text-overflow`,
+      // which is how the line is drawn and no part of how wide it is: a
+      // button whose label is a `truncate` span is no narrower than the
+      // label, where it was shrunk and the label cut
+      const seen = { cut: false };
+      const drawn = intrinsicWidth(box, seen) + box.horizontalExtra;
+      if (!seen.cut && transferredWidth(box, drawn) <= width + 0.5) continue;
       // within what a ratio makes of its least and greatest heights (4.5's
       // content size suggestion)
       least = transferredWidth(box, minContentOf(box, ctx, laid));
