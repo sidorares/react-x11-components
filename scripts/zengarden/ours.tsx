@@ -57,9 +57,11 @@ const PALETTE = {
   surface: '#ffffff',
   border: '#808080',
   textMuted: '#000000',
-  // the size a form control's text is set at: Chrome's
-  // `-webkit-small-control`, the 16px default less 2pt
-  // (`LayoutThemeFontProvider::SystemFontSize`)
+  // the font a form control's text is set in: Chrome's
+  // `-webkit-small-control`, Arial on every platform
+  // (`LayoutThemeFontProvider::DefaultGUIFont`) at the 16px default less
+  // 2pt (`SystemFontSize`)
+  fontFamily: 'Arial',
   fontSize: 16 - (2 / 72) * 96,
 };
 
