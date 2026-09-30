@@ -109,12 +109,14 @@ import {
   hoistNegative,
   holds,
   holdsAbsolute,
+  inClip,
   inClipPath,
   paintDocument,
   pathClips,
   queryChildIndex,
   selectionRows,
   stackLayers,
+  stacksLayers,
 } from './paint.js';
 import type { PaintContext } from './paint.js';
 import { controlRectsOf, measureControl } from './controls.js';
@@ -2896,6 +2898,21 @@ function deepestAt(
     // screen reader alone under `clip-path: inset(50%)` took the hover and
     // the press of what was drawn where it lay.
     if (pathClips(child) && !inClipPath(child, x, y)) return;
+    // `clip` is not that rule as paint has it. It shows the part of an
+    // absolute box it names (CSS 2.1 11.1.2), and past that part nothing is
+    // drawn of the box, nor of what is painted with it. A stacking context
+    // paints all it holds, inside its clip. A box that is none leaves its
+    // positioned boxes to the context around it, which cuts each to the
+    // clips its containing block is under (`clipsFor`): this one for all
+    // but a fixed box, which is under none and is drawn past it. So past
+    // its clip the first is left, and the second is walked as a box that
+    // clips its overflow is past its edge — whether or not the point is in
+    // its own rectangle, which a clip may show only a part of. Both were
+    // walked as if they showed whole: a label hidden for a screen reader
+    // alone under `clip: rect(0, 0, 0, 0)` took the hover and the press of
+    // the link drawn where it lay.
+    let cut = !inClip(child, x, y);
+    if (cut && stacksLayers(child)) return;
     if (
       style.position !== 'static' ||
       (child.parent?.kind === 'flex' && typeof style.zIndex === 'number')
@@ -2931,10 +2948,11 @@ function deepestAt(
       ) {
         return;
       }
-      if (clipsOverflow(child)) {
-        if (!holdsAbsolute(child)) return;
-        clipped = [...clipped, child];
-      }
+      if (clipsOverflow(child)) cut = true;
+    }
+    if (cut) {
+      if (!holdsAbsolute(child)) return;
+      clipped = [...clipped, child];
     }
     if (own && child.el && clipped.length === 0) {
       take(child.el, style, [...context, HIT_BLOCK], false);

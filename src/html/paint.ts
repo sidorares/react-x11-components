@@ -2354,6 +2354,23 @@ export function inClipPath(box: Box, x: number, y: number): boolean {
 }
 
 /**
+ * Whether a point of the document is in the part of a box its `clip` shows
+ * (CSS 2.1 11.1.2) — anywhere, for a box that is cut to none: what a hit
+ * test asks, since what the clip cuts away is not drawn (`deepestAt`). What
+ * it cuts away is the box and what is painted with it: all the box holds
+ * where it is a stacking context (`stacksLayers`), and elsewhere all but a
+ * fixed box, which the context around it paints under no clip
+ * (`clipsFor`). Chrome cuts that one too.
+ */
+export function inClip(box: Box, x: number, y: number): boolean {
+  if (!box.outOfFlow || !box.style.clip) return true;
+  const rect = clipOf(box, DOCUMENT);
+  return (
+    x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
+  );
+}
+
+/**
  * The part of the document a box shows through, in the document's own
  * pixels, or null where nothing cuts it: the `clip` it is cut to (CSS 2.1
  * 11.1.2), and the clips of the boxes it is under — each that clips its
@@ -2767,7 +2784,7 @@ function settleLayers(box: Box, list: Box[]): void {
  * `opacity: 0` not at all, where its root context drew a hover menu's
  * absolute children.
  */
-function stacksLayers(box: Box): boolean {
+export function stacksLayers(box: Box): boolean {
   const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
   if (style.opacity < 1 || FADED_BLOCKS.has(box)) return true;
