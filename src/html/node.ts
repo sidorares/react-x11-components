@@ -84,6 +84,7 @@ import type {
 } from './layout/boxes.js';
 import { layoutDocument, retranslate, transformed } from './layout/block.js';
 import { TextLayoutCache } from './layout/cache.js';
+import { weightAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
 import { SurfaceCache, newSurface } from './surfaces.js';
 import type { SurfaceLike } from './surfaces.js';
@@ -862,11 +863,22 @@ export class HtmlViewNode extends Node {
     return height && height > 0 ? height : 600;
   }
 
+  /** The engine this document lays text out with, and the one it is over:
+   *  one object while the engine is, since caches are kept by it. */
+  private _engine: { over: FontsLike; fonts: FontsLike } | null = null;
+
   private _fonts(): FontsLike | null {
     const fonts = (this.app as { fonts?: FontsLike } | null)?.fonts;
+    if (!fonts) return null;
     // a face the engine cannot shape from costs its characters, not the
     // document (`shaping.ts`)
-    return fonts ? shapingSafe(fonts) : null;
+    const safe = shapingSafe(fonts);
+    if (this._engine?.over !== safe) {
+      // and a variable face of the document's is set at the weight its
+      // rule has for a style's (`axes.ts`)
+      this._engine = { over: safe, fonts: weightAxes(safe, this._webFonts) };
+    }
+    return this._engine.fonts;
   }
 
   /** The text layouts the last pass made, for this one to reuse. */

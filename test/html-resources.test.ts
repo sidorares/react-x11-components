@@ -8,7 +8,8 @@
 // a font has to be registered with a real font manager.
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { brotliDecompressSync } from 'node:zlib';
 import React from 'react';
 
 import { renderX11, cleanup, screen, act } from 'react-x11/test';
@@ -25,6 +26,9 @@ import { absoluteUrls, parseStylesheet } from '../src/html/css/parse.js';
 import type { FontFaceRule } from '../src/html/css/parse.js';
 import { bestFace, refusal } from '../src/html/fonts.js';
 import { decodeGif } from '../src/html/gif.js';
+import { weightAxes } from '../src/html/layout/axes.js';
+import type { FontsLike } from '../src/html/layout/inline.js';
+import { isWoff2, woff2ToSfnt } from '../src/html/woff2.js';
 import { resolveUrl } from '../src/html/url.js';
 
 const h = React.createElement;
@@ -76,6 +80,117 @@ const WEDGE =
   '4cw2eY9AcDTxeX382pTzEzzcVMrcJC7TMbIEggsuxItKFZcCAJC3d38RkyqBrAiQAADQYI6BUEOA' +
   'pFFNQNCgTRalWWjRo5p0GCiDNuPz/+VkVkY2NYyNgtBC8l3HS6gKqbmSOWIZAA==';
 const wedge = (): Uint8Array => new Uint8Array(Buffer.from(WEDGE, 'base64'));
+
+// A font with each thing a WOFF2 stores another way, and the TrueType it
+// was made from: a box whose contour overlaps itself, an instructed glyph
+// of two contours with curves and a move of every width a triplet has, a
+// composite of the two with a scale, and side bearings that equal `xMin`
+// throughout, so `hmtx` is transformed too. fontTools' FontBuilder, saved
+// with `WOFF2FlavorData(transformedTables={'glyf', 'loca', 'hmtx'})`.
+const PIECES_WOFF2 =
+  'd09GMgABAAAAAAGEAAoAAAAAAugAAAE6AAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAAPAp4fwE2' +
+  'AiRDFAsLDAAEIAVdBywbKAIArgpscE1Piie7zag3Lxx+zFIaPaqI8fC5Rr6fZPcAaNXNabQsLJTA' +
+  '6FY6IFlf2fHIkiCD5xZNM0zdfyuwKirx2flkzxAI+Ma4GeNVFSvNQnmLTyfHd7tB80sUWQuY8gAT' +
+  'DJBzGwOX4BGFTuO4UW53I6EKcsCOFTpXPaYDCRmTssCkYg2tIiSdq7Wic7nW+rJ+IIDQgH5kjGAR' +
+  'oxhEC0KqtYg80AyVo553asK162cfj+unB8qHv96OyvCtyfvqq9txJ+e0KhEjcjpVv3R6Yf23HnyT' +
+  'vh1uI51A8OgG5eJI+CZy/gDvXnVuW/9aIP1DlkCQu2qYemH92w0BAGhyOiUdCYNANAYkI7IEAJJA' +
+  'sS1AaBEg6dHKovQJg4Z6JcPmBrl8h+oGldWoN7o0RrPHoXVCLJrf8lCUAQAAAA==';
+const PIECES_TTF =
+  'AAEAAAAKAIAAAwAgT1MvMkEXRecAAAEoAAAAYGNtYXAAtgA8AAABnAAAADxnbHlmPhi9ZgAAAeQA' +
+  'AAB2aGVhZEImqBUAAACsAAAANmhoZWEYbQqSAAAA5AAAACRobXR4H0AAtAAAAYgAAAAUbG9jYQAr' +
+  'AEgAAAHYAAAADG1heHAADQAdAAABCAAAACBuYW1l1ZcRlgAAAlwAAABdcG9zdABPAIoAAAK8AAAA' +
+  'LAABAAAAAQAABekIbF8PPPUAAwPoAAAAAObit/gAAAAA5uK3+AAy9EgVGAL9AAAAAwACAAAAAAAA' +
+  'AAEAAAMg/zgAABXgADL1dBUYAAEAAAAAAAAAAAAAAAAAAAAFAAEAAAAFAAsAAgAPAAMAAgAAAAAA' +
+  'AAAAAAAAAAACAAEAAwZAAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB' +
+  'AAAAAAAAAAAAAAAAPz8/PwAAACAAYwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAACWAAAAlgA' +
+  'AAJYADIV4ABQAlgAMgAAAAIAAAADAAAAFAADAAEAAAAUAAQAKAAAAAYABAABAAIAIABj//8AAAAg' +
+  'AGH////h/6EAAQAAAAAAAAAAAAAAAAANACsAOwABADIAAAHCArwAAwAAcxEhETIBkAK8/UQAAAIA' +
+  'UPRIFRgC/QAHAAoAA7ABIRcRNhchFQEBExIBUAoKBLAQBOtMZGQBOMgDwAUFAfFRCvABLAFA/sAA' +
+  '//8AMvoQDOQCvAImAAIAAAEPAAMCWP/sIAAAA7ACIQAAAAAAAAQANgABAAAAAAABAAYAAAABAAAA' +
+  'AAACAAcABgADAAEECQABAAwADQADAAEECQACAA4AGVBpZWNlc1JlZ3VsYXIAUABpAGUAYwBlAHMA' +
+  'UgBlAGcAdQBsAGEAcgAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAUAAAADAEQA' +
+  'RQBG';
+const brotli = (data: Uint8Array): Uint8Array =>
+  new Uint8Array(brotliDecompressSync(data));
+
+/** An sfnt's tables, by tag. */
+function tablesOf(sfnt: Uint8Array): Map<string, Uint8Array> {
+  const view = new DataView(sfnt.buffer, sfnt.byteOffset, sfnt.byteLength);
+  const tables = new Map<string, Uint8Array>();
+  for (let i = 0; i < view.getUint16(4); i += 1) {
+    const at = 12 + 16 * i;
+    const from = view.getUint32(at + 8);
+    tables.set(
+      String.fromCharCode(...sfnt.subarray(at, at + 4)),
+      sfnt.subarray(from, from + view.getUint32(at + 12)),
+    );
+  }
+  return tables;
+}
+
+/**
+ * Each glyph of an sfnt as what it draws, whichever way its record packs
+ * it: a simple glyph's box, where its contours end, its instructions and
+ * its points — where each is, on the curve or off it, and the first one's
+ * overlap flag — and a composite's record less its padding.
+ */
+function outlinesOf(tables: Map<string, Uint8Array>): string[] {
+  const dv = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset, b.length);
+  const hex = (b: Uint8Array) => Buffer.from(b).toString('hex');
+  const long = dv(tables.get('head')!).getInt16(50) === 1;
+  const loca = dv(tables.get('loca')!);
+  const glyf = tables.get('glyf')!;
+  const count = dv(tables.get('maxp')!).getUint16(4);
+  const at = (i: number) =>
+    long ? loca.getUint32(i * 4) : loca.getUint16(i * 2) * 2;
+  const out: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const bytes = glyf.subarray(at(i), at(i + 1));
+    if (!bytes.length) {
+      out.push('');
+      continue;
+    }
+    const g = dv(bytes);
+    const contours = g.getInt16(0);
+    if (contours < 0) {
+      let end = bytes.length;
+      while (end > 0 && bytes[end - 1] === 0) end -= 1;
+      out.push(`composite ${hex(bytes.subarray(0, end))}`);
+      continue;
+    }
+    const box = [2, 4, 6, 8].map((o) => g.getInt16(o));
+    let p = 10;
+    const ends: number[] = [];
+    for (let c = 0; c < contours; c += 1, p += 2) ends.push(g.getUint16(p));
+    const length = g.getUint16(p);
+    const program = hex(bytes.subarray(p + 2, p + 2 + length));
+    p += 2 + length;
+    const flags: number[] = [];
+    while (flags.length <= ends[contours - 1]) {
+      const flag = bytes[p++];
+      flags.push(flag);
+      if (flag & 8) for (let r = bytes[p++]; r > 0; r -= 1) flags.push(flag);
+    }
+    const axis = (short: number, same: number): number[] => {
+      let v = 0;
+      return flags.map((flag) => {
+        if (flag & short) v += flag & same ? bytes[p++] : -bytes[p++];
+        else if (!(flag & same)) {
+          v += g.getInt16(p);
+          p += 2;
+        }
+        return v;
+      });
+    };
+    const xs = axis(2, 16);
+    const ys = axis(4, 32);
+    const points = flags.map(
+      (flag, n) => `${xs[n]},${ys[n]},${flag & (n ? 1 : 65)}`,
+    );
+    out.push(JSON.stringify([box, ends, program, points]));
+  }
+  return out;
+}
 
 /** `console.warn` and `console.error` held for a test, as the lines said. */
 function quiet(t: { after(fn: () => void): void }): {
@@ -936,13 +1051,14 @@ withFonts(
 );
 
 withFonts(
-  'a variable WOFF2 does not cost the document, whether or not the engine sets it',
+  'a variable WOFF2 is set in its face, whether or not the engine cuts an instance out of the container',
   async (t) => {
     // ntk sets a variable face at the weight a style asks for by cutting an
     // instance out of it, inside `match`, and fontkit cut none out of a
     // WOFF2: the first bold word of nextjs.org's blog, in Geist, threw out
     // of its layout and the page was left blank. An engine that can cut one
-    // draws the text in it; one that cannot sets it in the next family.
+    // takes the file as served; one that cannot is handed the font inside
+    // it, which it can. Either way the text is set in the face.
     const said = quiet(t);
     const { node, result } = await mount(
       '<style>@font-face { font-family: Doc; font-weight: 100 900;' +
@@ -953,42 +1069,32 @@ withFonts(
       {},
       true,
     );
-    await settle(node);
+    await settle(node, 8);
     assert.ok(node['_tree' as keyof typeof node], 'laid out, not left blank');
     assert.deepStrictEqual(said.errors, [], 'and nothing failed');
-    let cuts = true;
-    try {
-      openFont(result.app as never, wedge()).variation({ wght: 900 });
-    } catch {
-      cuts = false;
-    }
     const family = boxOf(node, 'b').style.fontFamily;
-    if (cuts) {
-      assert.match(family, /^html webfont [a-z]+, monospace$/);
-      assert.strictEqual(
-        familyOf(result.app as never, { fontFamily: family }, 700),
-        'Wedge',
-      );
-    } else {
-      assert.strictEqual(family, 'monospace, monospace');
-      assert.strictEqual(said.warned.length, 1, 'said once');
-      assert.match(said.warned[0], /v\.woff2/);
-    }
+    assert.match(family, /^html webfont [a-z]+, monospace$/);
+    assert.strictEqual(
+      familyOf(result.app as never, { fontFamily: family }, 700),
+      'Wedge',
+    );
+    assert.deepStrictEqual(said.warned, [], 'and nothing was refused');
   },
 );
 
 withFonts(
   'a face the engine cannot cut an instance from is passed over for the next source',
   async (t) => {
-    // whatever the engine can do with a WOFF2: the face a document opens is
-    // the one opened here, the same bytes, and it refuses every instance
+    // the face a document opens is the one opened here, the same bytes, and
+    // it refuses every instance. Served as the TrueType it is: there is no
+    // other font inside it to hand the engine instead.
     const said = quiet(t);
-    const variable = wedge();
+    const variable = woff2ToSfnt(wedge(), brotli)!;
     const asked: string[] = [];
     const host: Answer = (r) => {
       asked.push(r.url);
       if (r.kind !== 'font') return null;
-      return { kind: 'font', bytes: r.url === 'v.woff2' ? variable : BOLD! };
+      return { kind: 'font', bytes: r.url === 'v.ttf' ? variable : BOLD! };
     };
     const { result } = await mount('<p>x</p>', host, {}, true);
     const opened = openFont(result.app as never, variable) as unknown as {
@@ -1007,7 +1113,7 @@ withFonts(
           h(Html, {
             source:
               '<style>@font-face { font-family: Doc; font-weight: 100 900;' +
-              '  src: url(v.woff2) format("woff2"), url(b.ttf) }' +
+              '  src: url(v.ttf), url(b.woff2) format("woff2") }' +
               'p { font-family: Doc, monospace; font-weight: 700 }</style>' +
               '<p id="p">x</p>',
             partial: false,
@@ -1019,7 +1125,7 @@ withFonts(
     );
     const node = view(screen.getByTestName('doc') as DrawnNode);
     await settle(node);
-    assert.deepStrictEqual(asked, ['v.woff2', 'b.ttf']);
+    assert.deepStrictEqual(asked, ['v.ttf', 'b.woff2']);
     assert.deepStrictEqual(cut, [{ wght: 900 }], 'asked once, off its default');
     const p = boxOf(node, 'p');
     assert.match(p.style.fontFamily, /^html webfont [a-z]+, monospace$/);
@@ -1029,7 +1135,7 @@ withFonts(
     );
     assert.deepStrictEqual(said.errors, []);
     assert.strictEqual(said.warned.length, 1, 'said once');
-    assert.match(said.warned[0], /v\.woff2[^]*cannot instantiate a variation/);
+    assert.match(said.warned[0], /v\.ttf[^]*cannot instantiate a variation/);
   },
 );
 
@@ -1092,6 +1198,335 @@ test('a face is asked for the instance a layout will ask it for', () => {
     'an engine that cannot say is taken to draw through it',
   );
 });
+
+// --- WOFF2 ------------------------------------------------------------------
+
+test('the font inside a WOFF2 is the font it was made from', () => {
+  // every WOFF2 KaTeX ships has the TrueType it was made from beside it,
+  // and the one above has the two transforms theirs do not use
+  const pairs: Array<[string, Uint8Array, Uint8Array]> = [
+    ['Pieces', bytesOf(PIECES_WOFF2), bytesOf(PIECES_TTF)],
+  ];
+  if (existsSync(KATEX)) {
+    for (const file of readdirSync(KATEX)) {
+      if (!file.endsWith('.woff2')) continue;
+      const ttf = new URL(file.replace(/woff2$/, 'ttf'), KATEX);
+      if (!existsSync(ttf)) continue;
+      pairs.push([
+        file,
+        new Uint8Array(readFileSync(new URL(file, KATEX))),
+        new Uint8Array(readFileSync(ttf)),
+      ]);
+    }
+  }
+  for (const [name, woff2, ttf] of pairs) {
+    assert.ok(
+      isWoff2(woff2) && !isWoff2(ttf),
+      `${name}: told by its signature`,
+    );
+    const sfnt = woff2ToSfnt(woff2, brotli);
+    assert.ok(sfnt, `${name}: read`);
+    const made = tablesOf(sfnt);
+    const from = tablesOf(ttf);
+    assert.deepStrictEqual(
+      [...made.keys()],
+      [...from.keys()].sort(),
+      `${name}: every table, in a directory in tag order`,
+    );
+    for (const [tag, table] of from) {
+      // the outlines are packed again and found at other offsets, and
+      // `head` carries the checksum of the file it is in
+      if (tag === 'glyf' || tag === 'loca') continue;
+      const same = Buffer.from(made.get(tag)!);
+      if (tag === 'head') {
+        same.fill(0, 8, 12);
+        table.fill(0, 8, 12);
+        // an encoder says that it transformed the font, in a flag (bit 11),
+        // and KaTeX's two files were each stamped when they were built
+        same[16] &= ~0x08;
+        table[16] &= ~0x08;
+        same.fill(0, 20, 36);
+        table.fill(0, 20, 36);
+      }
+      assert.ok(same.equals(table), `${name}: ${tag} is the table it was`);
+    }
+    const drawn = outlinesOf(made);
+    const original = outlinesOf(from);
+    assert.strictEqual(drawn.length, original.length, `${name}: every glyph`);
+    const differs = drawn.findIndex((glyph, i) => glyph !== original[i]);
+    assert.ok(
+      differs < 0,
+      `${name}: glyph ${differs} is ${drawn[differs]}, was ${original[differs]}`,
+    );
+    // the whole file sums to the constant an sfnt's `head` brings it to
+    const view = new DataView(sfnt.buffer, sfnt.byteOffset, sfnt.length);
+    let sum = 0;
+    for (let at = 0; at < sfnt.length; at += 4) {
+      sum = (sum + view.getUint32(at)) >>> 0;
+    }
+    assert.strictEqual(sum, 0xb1b0afba, `${name}: the checksum of an sfnt`);
+  }
+  assert.ok(pairs.length > 1 || !REGULAR, 'and the fonts a page is served');
+});
+
+test('bytes that are not a WOFF2 this reads are no font', () => {
+  const woff2 = bytesOf(PIECES_WOFF2);
+  assert.strictEqual(woff2ToSfnt(bytesOf(PIECES_TTF), brotli), null);
+  assert.strictEqual(woff2ToSfnt(new Uint8Array(0), brotli), null);
+  assert.strictEqual(
+    woff2ToSfnt(woff2.subarray(0, woff2.length - 40), brotli),
+    null,
+    'a file that ends early',
+  );
+  assert.strictEqual(
+    woff2ToSfnt(woff2, (data) => brotli(data).subarray(0, 200)),
+    null,
+    'a stream shorter than its tables',
+  );
+  assert.strictEqual(
+    woff2ToSfnt(woff2, () => {
+      throw new Error('not Brotli');
+    }),
+    null,
+  );
+  const collection = woff2.slice();
+  collection.set([0x74, 0x74, 0x63, 0x66], 4); // 'ttcf'
+  assert.strictEqual(woff2ToSfnt(collection, brotli), null, 'a collection');
+  // every byte of the stream wrong in turn: never a throw, and never a
+  // loop that does not end
+  for (let i = 0; i < 300; i += 1) {
+    const out = woff2ToSfnt(woff2, (data) => {
+      const bytes = brotli(data);
+      bytes[i % bytes.length] ^= 0xff;
+      return bytes;
+    });
+    assert.ok(out === null || out.length > 0, `byte ${i}`);
+  }
+});
+
+withFonts(
+  'a WOFF2 the font manager does not read is registered as the font inside it',
+  async (t) => {
+    // CoreText reads no WOFF2, so react-x11's font manager on macOS throws
+    // for one, and a page's web font was never set there: nextjs.org's blog
+    // was set in its fallback, Arial, for Geist. The same refusal, from the
+    // font manager here.
+    const said = quiet(t);
+    const { result } = await mount('<p>x</p>', () => null, {}, true);
+    const fonts = (
+      result.app as unknown as {
+        fonts: { load(source: unknown, opts?: object): unknown };
+      }
+    ).fonts;
+    const load = fonts.load.bind(fonts);
+    const loaded: string[] = [];
+    fonts.load = (source, opts) => {
+      const bytes = source as Uint8Array;
+      const woff2 = isWoff2(bytes);
+      loaded.push(woff2 ? 'woff2' : `sfnt ${bytes[0]},${bytes[1]}`);
+      if (woff2) throw new Error('CoreText does not read that container');
+      return load(source, opts);
+    };
+    t.after(() => {
+      fonts.load = load;
+    });
+    const asked: string[] = [];
+    const host: Answer = (r) => {
+      asked.push(r.url);
+      return r.kind === 'font' ? { kind: 'font', bytes: REGULAR! } : null;
+    };
+    await act(() =>
+      result.rerender(
+        h(
+          'box',
+          { style: { width: 400, flexDirection: 'column' } },
+          h(Html, {
+            source:
+              '<style>@font-face { font-family: Doc;' +
+              '  src: url(r.woff2) format("woff2"), url(b.woff2) }' +
+              'p { font-family: Doc, monospace }</style><p id="p">x</p>',
+            partial: false,
+            onResource: host,
+            'data-testname': 'doc',
+          }),
+        ),
+      ),
+    );
+    const node = view(screen.getByTestName('doc') as DrawnNode);
+    await settle(node, 8);
+    const p = boxOf(node, 'p');
+    assert.match(p.style.fontFamily, /^html webfont [a-z]+, monospace$/);
+    assert.strictEqual(familyOf(result.app as never, p.style), 'KaTeX_Main');
+    assert.deepStrictEqual(
+      loaded,
+      ['woff2', 'sfnt 0,1'],
+      'offered as served, then as the TrueType inside it',
+    );
+    assert.deepStrictEqual(asked, ['r.woff2'], 'and no other source asked for');
+    assert.deepStrictEqual(said.warned, []);
+    assert.deepStrictEqual(said.errors, []);
+  },
+);
+
+// --- the weight axis ----------------------------------------------------------
+
+test('a run is handed on with the axis value its family has for it', () => {
+  const seen: Array<{ content: unknown; style: unknown }> = [];
+  const engine = {
+    layout(content: unknown, style: unknown) {
+      seen.push({ content, style });
+      return 'laid out';
+    },
+    match: () => ({}),
+    prewarm() {
+      return this === engine;
+    },
+  } as unknown as FontsLike & { prewarm(): boolean };
+  const asked: string[] = [];
+  const axes = {
+    variable: true,
+    wght(list: string, weight: number, italic: boolean) {
+      asked.push(`${list}|${weight}|${italic}`);
+      return list.startsWith('web') ? { wght: Math.min(weight, 500) } : null;
+    },
+  };
+  const fonts = weightAxes(engine, axes) as typeof engine;
+  const base = { family: 'web, serif', weight: 400, style: 'normal' };
+  const runs = [
+    { text: 'a' },
+    { text: 'b', weight: 700 },
+    { text: 'c', family: 'serif', weight: 700 },
+    { text: 'd', weight: 'bold' as const, style: 'italic' as const },
+  ];
+  assert.strictEqual(fonts.layout(runs, base, {}), 'laid out');
+  assert.deepStrictEqual(asked, [
+    'web, serif|400|false',
+    'web, serif|700|false',
+    'serif|700|false',
+    'web, serif|700|true',
+  ]);
+  const handed = seen[0].content as Array<Record<string, unknown>>;
+  assert.deepStrictEqual(handed, [
+    { text: 'a', variations: { wght: 400 } },
+    { text: 'b', weight: 700, variations: { wght: 500 } },
+    { text: 'c', family: 'serif', weight: 700 },
+    { text: 'd', weight: 'bold', style: 'italic', variations: { wght: 500 } },
+  ]);
+  assert.ok(handed[2] === runs[2], 'a run in another family is the run given');
+  assert.ok(seen[0].style === base, 'and the paragraph carries no axis');
+  assert.deepStrictEqual(
+    runs[0],
+    { text: 'a' },
+    'the caller’s runs are its own',
+  );
+
+  // a document with no variable face: the engine as it is
+  axes.variable = false;
+  asked.length = 0;
+  fonts.layout(runs, base, {});
+  assert.ok(seen[1].content === runs, 'the runs given');
+  assert.deepStrictEqual(asked, []);
+  assert.strictEqual(
+    fonts.prewarm(),
+    true,
+    'and the rest of the engine is its own',
+  );
+});
+
+withFonts(
+  'a variable face is set at the weight its rule has for a style’s',
+  async (t) => {
+    // CSS Fonts 4 (7.2): the weight a style asks for, clamped to the range
+    // the face's `@font-face` declares, is where on its `wght` axis the
+    // text is set. `Doc` declares all of the file's axis and `Part` a
+    // fifth of it; the wedge's `x` is a box that widens with the weight.
+    const source =
+      '<style>@font-face { font-family: Doc; font-weight: 100 900;' +
+      '  src: url(doc.woff2) format("woff2") }' +
+      '@font-face { font-family: Part; font-weight: 400 500;' +
+      '  src: url(part.woff2) format("woff2") }' +
+      '@font-face { font-family: One; src: url(one.woff2) }' +
+      'p { font-family: Doc, monospace; margin: 0; font-size: 40px }' +
+      '.part { font-family: Part, monospace }' +
+      '.one { font-family: One, monospace }' +
+      '.mono { font-family: monospace }</style>' +
+      '<p><span id="d4">x</span><span id="d7" style="font-weight: 700">x</span>' +
+      '<span id="d9" style="font-weight: 900">x</span></p>' +
+      '<p class="part"><span id="p1" style="font-weight: 100">x</span>' +
+      '<span id="p4">x</span><span id="p5" style="font-weight: 500">x</span>' +
+      '<span id="p9" style="font-weight: 900">x</span></p>' +
+      '<p class="one"><b id="o7">x</b></p><p class="mono"><b id="m7">x</b></p>';
+    const host: Answer = (r) =>
+      r.kind === 'font' ? { kind: 'font', bytes: wedge() } : null;
+    // what the engine is handed, run by run, from the first layout on
+    const { result } = await mount('<p>x</p>', host, {}, true);
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const layout = fonts.layout.bind(fonts);
+    const handed = new Map<string, unknown>();
+    fonts.layout = (content, style, options) => {
+      for (const run of content as Array<{
+        family?: string;
+        weight?: unknown;
+        variations?: unknown;
+      }>) {
+        const weight = run.weight ?? style.weight;
+        handed.set(`${run.family ?? style.family} ${weight}`, run.variations);
+      }
+      return layout(content, style, options);
+    };
+    t.after(() => {
+      fonts.layout = layout;
+    });
+    await act(() =>
+      result.rerender(
+        h(
+          'box',
+          { style: { width: 400, flexDirection: 'column' } },
+          h(Html, {
+            source,
+            partial: false,
+            onResource: host,
+            'data-testname': 'doc',
+          }),
+        ),
+      ),
+    );
+    const node = view(screen.getByTestName('doc') as DrawnNode);
+    await settle(node, 8);
+    const axis = (id: string, weight: number) =>
+      handed.get(`${boxOf(node, id).style.fontFamily} ${weight}`);
+    assert.match(
+      boxOf(node, 'd4').style.fontFamily,
+      /^html webfont/,
+      'the faces loaded',
+    );
+    assert.deepStrictEqual(
+      [axis('d4', 400), axis('d7', 700), axis('d9', 900)],
+      [{ wght: 400 }, { wght: 700 }, { wght: 900 }],
+      'inside the range a rule declares, the weight asked for',
+    );
+    assert.deepStrictEqual(
+      [axis('p1', 100), axis('p4', 400), axis('p5', 500), axis('p9', 900)],
+      [{ wght: 400 }, { wght: 400 }, { wght: 500 }, { wght: 500 }],
+      'outside it, its nearest end',
+    );
+    const width = (id: string) =>
+      node.elementRect(boxOf(node, id).el as never)!.width;
+    assert.ok(width('d4') < width('d7'), 'and drawn wider');
+    assert.ok(width('d7') < width('d9'), 'the heavier it is');
+    assert.strictEqual(width('p1'), width('p4'), '100 of 400–500 is 400');
+    assert.strictEqual(width('p4'), width('d4'));
+    assert.ok(width('p4') < width('p5'), '500 is 500');
+    assert.strictEqual(width('p9'), width('p5'), 'and 900 is 500');
+    assert.ok(width('p9') < width('d9'), 'not the file’s 900');
+    // a face declared at one weight is the engine's to set, and so is a
+    // family that is not the document's
+    assert.match(boxOf(node, 'o7').style.fontFamily, /^html webfont/);
+    assert.strictEqual(axis('o7', 700), undefined, 'a rule with no range');
+    assert.strictEqual(axis('m7', 700), undefined, 'a family of the system’s');
+    assert.ok(handed.has('monospace 700'), 'which the engine was handed');
+  },
+);
 
 withFonts(
   'documents that declare a family alike share it; one that differs does not',

@@ -1308,6 +1308,44 @@ on Cocoa is fontkit's and CoreText draws the axis itself. The fix proper is
 fontkit's (windowkit/fontkit#1), and the check asks rather than knows, so
 it passes the day the engine can.
 
+**A WOFF2 the engine turns down is offered again as the font inside it.**
+The web serves a font as WOFF2 and as little else, and CoreText reads no
+such container: core's `loadFont` throws for one on macOS, so a page's
+fonts were never set there. `src/html/woff2.ts` rebuilds the sfnt — the
+tables out of their Brotli stream, through node's `zlib` reached the way
+`src/embed/host.ts` reaches `child_process`, and `glyf`, `loca` and `hmtx`
+put back from the form the format stores them in — and `_register` offers
+it only after the file as served was refused. Nothing asks which engine it
+is, which is why the same path hands an ntk whose fontkit cuts no instance
+out of a WOFF2 the TrueType it can cut, and Geist is set on X11 too. The
+decoder is held to the TrueType each of KaTeX's WOFF2s ships beside, glyph
+by glyph, and to a fixture with the two transforms theirs do not use.
+
+How it was found is the part to keep. The report was a regression: "set in
+Geist before #465, in Arial after". It had never been Geist. The list
+before was `"GeistSans Fallback"`, a name nobody has, and CoreText's guess
+at one is San Francisco — close enough to Geist that a glance, and a link
+2px narrower than Chrome's, passed for it. **When a report says what the
+text was set in before, ask the engine which face it matched**
+(`app.fonts.match(list).postscriptName`), at both commits, before reading
+either diff.
+
+**The weight axis is the document's to set.** A style's weight is a place
+on a variable face's `wght` axis, clamped to the range its `@font-face`
+declares (CSS Fonts 4, 7.2), and an engine knows the file, not the rule:
+ntk moves the axis to the style's weight whatever was declared, and
+CoreText, for a face core registered, does not move it — every heading set
+in Geist was its regular on macOS. `WebFonts.wght` says the value and
+`layout/axes.ts` hands it on as the run's `variations`, under the layout
+cache, so nothing a layout is found by changes. Three things there are
+load-bearing: only a run whose list **leads** with a ranged variable face
+is touched, because an axis value set on a run in another family lands on
+the system's own variable font (San Francisco takes `wght` and would be
+set at this document's rule); the run is handed on as a copy, since it is
+the caller's; and a value is one shared object, since ntk tells two runs'
+`variations` apart by identity and would split a paragraph at one weight
+into a run a word.
+
 **A probe of an unbounded width places nothing at infinity.** A
 shrink-to-fit probe lays a subtree out in infinite room, where sharing room
 out — auto margins, a table's columns — comes to `Infinity`; the pass after

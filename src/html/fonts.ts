@@ -47,6 +47,26 @@
 // none left the family stays out of the list and the text is set in the
 // next one, as a browser sets it when it cannot use a font.
 //
+// **A WOFF2 an engine does not take is handed over as the font inside it.**
+// The web serves a font as WOFF2 and as little else, and not every engine
+// reads one: CoreText reads an sfnt and nothing more, so react-x11's
+// `loadFont` throws for a WOFF2 on macOS, and the fontkit ntk cuts a
+// variable face with cut nothing out of one. Either way the page was set in
+// its fallback — nextjs.org in Arial, the family its `local()` names, where
+// a browser sets it in Geist. So a file is offered as it was served, and
+// where that is refused the sfnt it wraps is rebuilt (`woff2.ts`) and
+// offered in its place (`_register`); only a font refused both ways is a
+// source that did not load. Nothing asks which engine it is.
+//
+// **A variable face is set at the weight its rule has for a style's.** The
+// weight a style asks for is a place on the face's `wght` axis, clamped to
+// the range its `@font-face` declares (CSS Fonts 4, 7.2), and the rule is
+// the document's: the value is said here (`wght`) and handed to the engine
+// with the run (`layout/axes.ts`). Left alone, ntk moves the axis to the
+// style's weight whatever the rule declared, and CoreText, for a face
+// react-x11 registered, does not move it — every weight of Geist was its
+// regular on macOS.
+//
 // A family split by `unicode-range` is registered a name per range, since the
 // font manager picks among one name's faces by weight and slant alone, and
 // the range that holds the most of the document's characters goes first: the
@@ -82,6 +102,7 @@ import type { Element } from 'domhandler';
 import type { FontFaceRule } from './css/parse.js';
 import type { ComputedStyle } from './css/style.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
+import { isWoff2, sfntFromWoff2 } from './woff2.js';
 
 /** What the cascade asks of the document's families (`Cascade`). */
 export interface FontFamilies {
@@ -130,6 +151,9 @@ interface Face {
    *  the list names in place of the group's; null for a face registered
    *  from a file. */
   local: string | null;
+  /** The range of the `wght` axis a `ready` face's file has, or null for a
+   *  file with none: a static face, or the system's. */
+  wght: [number, number] | null;
 }
 
 /** A family's faces for one unicode range: one registered name, among whose
@@ -160,6 +184,9 @@ interface Registry {
   /** The ones among them that are the system's (`local()`), and registered
    *  under no name: the family each came to. */
   locals: Map<string, string>;
+  /** The ones whose file is a variable font with a `wght` axis, and the
+   *  axis's range. */
+  axes: Map<string, [number, number]>;
   /** Faces being loaded, by `faceKey`, so a second document waits for the
    *  first document's request rather than making its own. */
   pending: Map<string, Promise<boolean>>;
@@ -177,6 +204,7 @@ function registryOf(app: object): Registry {
       names: new Map(),
       ready: new Set(),
       locals: new Map(),
+      axes: new Map(),
       pending: new Map(),
       warned: false,
     };
@@ -213,6 +241,14 @@ export class WebFonts implements FontFamilies {
    *  lists that come to one string share an entry, which can ask for a face
    *  a little early; never for one nothing wants. */
   private _sources = new Map<string, Family[]>();
+  /** The groups by the names they are registered under, which is how a
+   *  list the engine is handed names one (`wght`). */
+  private _groups = new Map<string, Group>();
+  /** Lists → weight and slant → the axis value text in them is set at. */
+  private _axes = new Map<string, Map<number, WeightAxis | null>>();
+  /** Whether any loaded face has a weight axis to set; null for not yet
+   *  asked since the faces changed. */
+  private _variable: boolean | null = null;
   /** The document's characters, as the last `request` saw them. */
   private _text: string | null = null;
   private _seen = new Set<number>();
@@ -295,16 +331,17 @@ export class WebFonts implements FontFamilies {
           order: order++,
         };
         for (const m of members) {
-          const key = faceKey(name, m.rule);
-          const ready = registry?.ready.has(key) ?? false;
           const face: Face = {
             rule: m.rule,
             element: m.element,
             group,
             family,
-            state: ready ? 'ready' : 'idle',
-            local: registry?.locals.get(key) ?? null,
+            state: 'idle',
+            local: null,
+            wght: null,
           };
+          if (registry?.ready.has(faceKey(name, m.rule)))
+            arrive(face, registry);
           group.faces.push(face);
           made.set(m, face);
         }
@@ -313,6 +350,10 @@ export class WebFonts implements FontFamilies {
       families.set(key, family);
     }
     this._families = families;
+    this._groups.clear();
+    for (const family of families.values()) {
+      for (const group of family.groups) this._groups.set(group.name, group);
+    }
     this._faces = declared.map((d) => made.get(d)!);
     // the ranges are new, and so is what they cover
     if (this._text !== null) this._measure(this._text, true);
@@ -373,6 +414,64 @@ export class WebFonts implements FontFamilies {
     for (const family of families) family.wants.add(want);
   }
 
+  /** Whether any face the document has loaded is a variable font whose rule
+   *  declares a range of weights: whether `wght` has anything to say. */
+  get variable(): boolean {
+    if (this._variable === null) {
+      this._variable = false;
+      for (const group of this._groups.values()) {
+        if (group.faces.some((f) => ranged(f) !== null)) this._variable = true;
+      }
+    }
+    return this._variable;
+  }
+
+  /**
+   * Where on its weight axis text in a family list — one `map` made — is
+   * set at a weight and slant, or null where no axis is this document's to
+   * set.
+   *
+   * CSS has the weight a style asks for applied to a variable face's `wght`
+   * axis, clamped to the range its `@font-face` rule declares (CSS Fonts 4,
+   * 7.2): `font-weight: 100 900` is every weight the file has, and
+   * under `font-weight: 400 700` text at 900 is set at 700. The rule is the
+   * document's, so the value is said here and handed to the engine with the
+   * run (`layout/axes.ts`). An engine left to itself either moves the axis
+   * to the style's weight, past what the rule declared — ntk — or not at
+   * all: a face react-x11 registers with CoreText is drawn at its file's
+   * default, and every weight of Geist on macOS was the regular.
+   *
+   * Only the list's first family is asked, the one text is set in, and only
+   * a face whose rule declares a range: one declared at a single weight is
+   * left as the engine sets it.
+   */
+  wght(list: string, weight: number, italic: boolean): WeightAxis | null {
+    if (!this.variable) return null;
+    let byFace = this._axes.get(list);
+    if (!byFace) this._axes.set(list, (byFace = new Map()));
+    const key = italic ? -weight : weight;
+    let axis = byFace.get(key);
+    if (axis === undefined) {
+      axis = null;
+      const comma = list.indexOf(',');
+      const first = (comma < 0 ? list : list.slice(0, comma)).trim();
+      const face = bestFace(
+        // the faces registered under the name, which the engine picks among
+        this._groups
+          .get(first)
+          ?.faces.filter((f) => f.state === 'ready' && f.local === null) ?? [],
+        weight,
+        italic,
+      );
+      const range = face && ranged(face);
+      if (range) {
+        axis = weightAxis(Math.max(range[0], Math.min(weight, range[1])));
+      }
+      byFace.set(key, axis);
+    }
+    return axis;
+  }
+
   /**
    * Ask for the faces the styles noted since the last call want, for the
    * characters `text` holds — the document's own. True when the lists the
@@ -402,6 +501,7 @@ export class WebFonts implements FontFamilies {
   destroy(): void {
     this._destroyed = true;
     this._families.clear();
+    this._groups.clear();
     this._forget();
   }
 
@@ -410,6 +510,8 @@ export class WebFonts implements FontFamilies {
   private _forget(): void {
     this._memo.clear();
     this._sources.clear();
+    this._axes.clear();
+    this._variable = null;
   }
 
   /**
@@ -502,8 +604,7 @@ export class WebFonts implements FontFamilies {
     const registry = registryOf(app);
     const key = faceKey(face.group.name, face.rule);
     if (registry.ready.has(key)) {
-      face.state = 'ready';
-      face.local = registry.locals.get(key) ?? null;
+      arrive(face, registry);
       return 'ready';
     }
     face.state = 'loading';
@@ -541,10 +642,8 @@ export class WebFonts implements FontFamilies {
           if (family === null) continue;
           registry.locals.set(key, family);
           finish(true);
-          if (sync) {
-            face.state = 'ready';
-            face.local = family;
-          } else this._settled(face, true);
+          if (sync) arrive(face, registry);
+          else this._settled(face, true);
           return 'ready';
         }
         let answer: ReturnType<Ask>;
@@ -558,15 +657,20 @@ export class WebFonts implements FontFamilies {
           continue;
         }
         if (isPromise(answer)) {
-          answer.then(
-            (result) => after(this._register(face, result, source.url)),
-            () => after(false),
-          );
+          answer
+            .then((result) => this._register(face, result, source.url))
+            .then(after, () => after(false));
           return 'waiting';
         }
-        if (this._register(face, answer, source.url)) {
+        const registered = this._register(face, answer, source.url);
+        if (isPromise(registered)) {
+          // a WOFF2 being handed over as the font inside it
+          registered.then(after, () => after(false));
+          return 'waiting';
+        }
+        if (registered) {
           finish(true);
-          if (sync) face.state = 'ready';
+          if (sync) arrive(face, registry);
           else this._settled(face, true);
           return 'ready';
         }
@@ -592,27 +696,47 @@ export class WebFonts implements FontFamilies {
     return outcome === 'ready' ? 'ready' : 'loading';
   }
 
-  /** Register a face's bytes under its group's name. False when the host
-   *  declined, or the font manager could not read them — a `.woff2` on
-   *  macOS, whose CoreText reads no such container, or a file that is not a
-   *  font — or read them and cannot set text in them (`refusal`), and the
-   *  next source is tried. */
+  /**
+   * Register a face's bytes under its group's name. False when the host
+   * declined, or the font manager could not read them — a file that is not
+   * a font — or read them and cannot set text in them (`refusal`), and the
+   * next source is tried.
+   *
+   * A WOFF2 the engine does not take as served is handed over again as the
+   * font inside it (`woff2.ts`), and the answer is then a promise: CoreText
+   * reads no such container, so react-x11's `loadFont` refuses every one on
+   * macOS, and an ntk whose fontkit cuts no instance out of one cuts it out
+   * of the sfnt. Nothing here asks which engine it is: the file is offered
+   * as the web served it, and rebuilt only for an engine that said no.
+   */
   private _register(
     face: Face,
     result: ResourceResult | null,
     url: string,
-  ): boolean {
+  ): boolean | Promise<boolean> {
     if (this._destroyed || !this._app || result?.kind !== 'font') return false;
+    const refused = this._set(face, result.bytes);
+    if (refused === null) return true;
+    if (!isWoff2(result.bytes)) return this._declined(url, refused);
+    return sfntFromWoff2(result.bytes).then((sfnt) => {
+      if (this._destroyed || !this._app) return false;
+      const still = sfnt ? this._set(face, sfnt) : refused;
+      return still === null || this._declined(url, still);
+    });
+  }
+
+  /** Hand a font file to the font manager, under a face's group's name.
+   *  Null when it registered; otherwise why the engine cannot set text in
+   *  it (`refusal`), or `''` for bytes it could not read at all. */
+  private _set(face: Face, bytes: Uint8Array): string | null {
     const { weight, style } = face.rule;
     const app = this._app as Parameters<typeof loadFont>[0];
     try {
       // `loadFont` opens the file first too, and finds this one opened
-      const refused = refusal(app, openFont(app, result.bytes), this._fallback);
-      if (refused !== null) {
-        warnRefused(registryOf(this._app), url, refused);
-        return false;
-      }
-      loadFont(app, result.bytes, {
+      const opened: OpenedFace = openFont(app, bytes);
+      const refused = refusal(app, opened, this._fallback);
+      if (refused !== null) return refused;
+      loadFont(app, bytes, {
         family: face.group.name,
         // a range is registered at the weight nearest regular in it: the
         // font manager picks among a group's faces by distance from one
@@ -620,10 +744,21 @@ export class WebFonts implements FontFamilies {
         weight: Math.max(weight[0], Math.min(400, weight[1])),
         style,
       });
-      return true;
+      const axis = opened.variationAxes?.wght;
+      if (axis && axis.min < axis.max) {
+        const key = faceKey(face.group.name, face.rule);
+        registryOf(this._app!).axes.set(key, [axis.min, axis.max]);
+      }
+      return null;
     } catch {
-      return false;
+      return '';
     }
+  }
+
+  /** A source did not register, and the one the engine refused is said. */
+  private _declined(url: string, why: string): false {
+    if (why && this._app) warnRefused(registryOf(this._app), url, why);
+    return false;
   }
 
   /** A face arrived, or will not. Either way the boxes are built again: an
@@ -631,15 +766,50 @@ export class WebFonts implements FontFamilies {
    *  by a family that has to be asked again to ask it. */
   private _settled(face: Face, ok: boolean): void {
     if (this._destroyed) return;
-    face.state = ok ? 'ready' : 'failed';
-    if (ok && this._app) {
-      const key = faceKey(face.group.name, face.rule);
-      face.local = registryOf(this._app).locals.get(key) ?? null;
-    }
+    if (ok && this._app) arrive(face, registryOf(this._app));
+    else face.state = ok ? 'ready' : 'failed';
     if (!ok) face.family.asked.clear();
     this._forget();
     this._changed();
   }
+}
+
+/** A registered face is the document's to use: what the connection knows
+ *  of it — the family a `local()` came to, the axis its file has — is the
+ *  face's. */
+function arrive(face: Face, registry: Registry): void {
+  const key = faceKey(face.group.name, face.rule);
+  face.state = 'ready';
+  face.local = registry.locals.get(key) ?? null;
+  face.wght = registry.axes.get(key) ?? null;
+}
+
+/** A point on the weight axis, as an engine takes one with a run: its
+ *  `variations`. */
+export interface WeightAxis {
+  wght: number;
+}
+
+/** One object a value: ntk tells two runs' variations apart by identity,
+ *  and would set two runs at one weight as two. */
+const WEIGHTS = new Map<number, WeightAxis>();
+
+function weightAxis(wght: number): WeightAxis {
+  let axis = WEIGHTS.get(wght);
+  if (!axis) WEIGHTS.set(wght, (axis = { wght }));
+  return axis;
+}
+
+/** The weights a loaded face's axis is set within: the range its rule
+ *  declares, inside the one its file has. Null for a face with no axis, or
+ *  declared at a single weight. */
+function ranged(face: Face): [number, number] | null {
+  if (face.state !== 'ready' || !face.wght) return null;
+  const lo = Math.max(face.rule.weight[0], face.wght[0]);
+  const hi = Math.min(face.rule.weight[1], face.wght[1]);
+  return face.rule.weight[0] < face.rule.weight[1] && lo <= hi
+    ? [lo, hi]
+    : null;
 }
 
 /** The slice of an opened face `refusal` reads: react-x11's `Font`. */

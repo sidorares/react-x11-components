@@ -182,9 +182,23 @@ declares a family once per script and a self-hosted family often declares
 every weight it has; a page that uses two weights of the Latin half asks for
 two files. The sources are tried in order: one whose `format()` is not a
 font a text engine reads (`embedded-opentype`, `svg`) is passed over, and so
-is one the host declines, one whose bytes do not register — a WOFF2 on
-macOS, whose CoreText reads no such container, falls through to the WOFF
-beside it — and one the engine reads and cannot set text in, below.
+is one the host declines, one whose bytes are not a font, and one the engine
+reads and cannot set text in, below.
+
+**A WOFF2 is a font on every backend.** It is what the web serves — most
+pages name no other format — and not every text engine reads the container:
+ntk does, and CoreText reads an sfnt and nothing else, so react-x11's
+`loadFont` refuses a WOFF2 on macOS. A page's fonts were never
+set there: nextjs.org was set in Arial, the family its fallback's `local()`
+names, where a browser sets it in Geist. So a file is offered to the engine
+as it was served, and a WOFF2 the engine turns down is offered again as the
+font inside it — its tables out of their Brotli stream, and `glyf`, `loca`
+and `hmtx` put back from the form the format stores them in (WOFF 2.0, 5) —
+which every engine reads. Nothing asks which engine it is. What is rebuilt
+is the font and not the file it was made from: the outlines are the same
+points, packed again. A collection (`ttcf`) is not rebuilt, and neither is
+anything on a runtime with no Brotli — node and Bun both have one — and
+such a source is one that did not load.
 
 Until a face has loaded its family is left out of the list, and the text is
 set in the next family the author named, as `font-display: swap` has it;
@@ -227,6 +241,35 @@ The descriptors that adjust a face's metrics — `size-adjust`,
 so a fallback tuned to take the room of the font it stands in for takes its
 own.
 
+**A variable face is set at the weight its rule has for a style's.** The
+weight a style asks for is a place on a variable font's `wght` axis, clamped
+to the range the face's `@font-face` declares (CSS Fonts 4, 7.2):
+
+```css
+@font-face {
+  font-family: Geist;
+  src: url(geist.woff2);
+  font-weight: 100 900; /* every weight the file has */
+}
+@font-face {
+  font-family: Part;
+  src: url(geist.woff2);
+  font-weight: 400 500; /* text at 900 is set at 500, at 100 at 400 */
+}
+```
+
+The rule is the document's, so the value is the component's to say, and it
+hands it to the engine with each run whose list leads with such a face — a
+run's `variations`, which both engines take. Left to itself an engine either
+moves the axis to the style's weight, past a rule that declared less of it
+(ntk), or does not move it at all: a face registered with CoreText is drawn
+at its file's default, and every heading of a page set in a variable font
+was the regular on macOS. A rule that declares one weight, or none, says
+nothing about an axis, and its face is set as the engine sets it. A browser
+also emboldens a face asked for a weight past its range — the 900 above —
+and that is not done: the text is the 500. A form control's text is its
+widget's, which is handed the family and the weight and no axis.
+
 **A face the text engine cannot set costs its family, not the document.**
 A variable font is drawn by cutting an instance out of it, and ntk, the
 engine on X11 and Wayland, cuts one for the weight and the size a style asks
@@ -235,14 +278,13 @@ the containers a variable web font is served in. The throw came out of the
 first text layout in the family at any weight but the file's default, and
 the document was left blank: nextjs.org's blog, for the first bold word set
 in Geist. So a face is asked for an instance once, before it is registered,
-and one that refuses is a source that did not load: the next is tried — a
-`.ttf` or an `.otf` of the same face is cut without trouble — and with none
-left the family stays out of the list, as a browser leaves out a font it
-cannot use. It is said once a connection, in development, with the engine's
-own reason. CoreText and DirectWrite move an axis themselves and are not
-asked. Nothing here knows the container: a fontkit that cuts an instance out
-of a WOFF2 ([windowkit/fontkit#1](https://github.com/windowkit/fontkit/pull/1))
-answers, and the text is set in the face at every weight its axis has.
+and one that refuses is turned down as one the engine cannot read is: a
+WOFF2 is offered again as the font inside it, which is cut without trouble,
+and anything else is a source that did not load — the next is tried, and
+with none left the family stays out of the list, as a browser leaves out a
+font it cannot use. That is said once a connection, in development, with the
+engine's own reason. CoreText and DirectWrite move an axis themselves and
+are not asked.
 
 **A list that no face matches ends in the document's font.** A
 `font-family` list an author wrote that does not end in a generic family
