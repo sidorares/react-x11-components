@@ -572,13 +572,49 @@ function createParser(): { parser: Parser; handler: DomHandler } {
     withStartIndices: false,
     withEndIndices: false,
   });
-  const parser = new Parser(handler, {
+  const parser = new DocumentParser(handler, {
     lowerCaseTags: true,
     lowerCaseAttributeNames: true,
-    recognizeSelfClosing: true,
+    // HTML closes an element written `<x/>` only where it is void, and so
+    // closed anyway, or in SVG or MathML (HTML 13.2.6.5, "acknowledge the
+    // self-closing flag"). A `<div/>` or an `<a href="" /*target="_blank"*/>`
+    // — melbcss.com's, a comment that is no comment in a tag — opens an
+    // element like any other, and closing it left the link's text outside
+    // the link.
+    recognizeSelfClosing: false,
     decodeEntities: true,
   });
   return { parser, handler };
+}
+
+/**
+ * htmlparser2's parser, deciding a `/>` from the context its tag was read
+ * in, as HTML's does. htmlparser2 decides from the context the tag opens,
+ * and an integration point — SVG's `<title>`, `<desc>` and
+ * `<foreignObject>`, MathML's `<mi>` and its kin — opens an HTML one, so
+ * an `<svg><title/><path/>` took its path into the title.
+ */
+class DocumentParser extends Parser {
+  private _foreignTag = false;
+  private _acknowledging = false;
+
+  override isInForeignContext(): boolean {
+    return this._acknowledging || super.isInForeignContext();
+  }
+
+  override onopentagname(start: number, endIndex: number): void {
+    this._foreignTag = this.isInForeignContext();
+    super.onopentagname(start, endIndex);
+  }
+
+  override onselfclosingtag(endIndex: number): void {
+    this._acknowledging = this._foreignTag;
+    try {
+      super.onselfclosingtag(endIndex);
+    } finally {
+      this._acknowledging = false;
+    }
+  }
 }
 
 /**

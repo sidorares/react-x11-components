@@ -26,6 +26,7 @@ import { ThemeProvider } from 'react-x11';
 
 import { Html } from '../src/index.js';
 import { HtmlViewNode } from '../src/html/index.js';
+import type { ChildNode, Element } from 'domhandler';
 import type { FontsLike } from '../src/html/layout/inline.js';
 import type { TextRun } from '../src/richtext/index.js';
 import { featuresOf, hungSpaces } from '../src/html/layout/inline.js';
@@ -666,6 +667,36 @@ test('a fragment can be parsed and spliced in', () => {
   appendChild(holder, nodes[0]);
   assert.strictEqual(holder.children[0], nodes[0]);
   assert.strictEqual(nodes[0].parent, holder);
+});
+
+test('a /> closes a void element and one in SVG, and opens any other', () => {
+  // melbcss.com comments an attribute out as `/*target="_blank"*/`, which
+  // is no comment inside a tag: the `/` before `>` read as a self-closing
+  // flag, and the link was empty, its text beside it
+  const serialize = (nodes: ChildNode[]): string =>
+    nodes
+      .map((node) =>
+        node.type === 'text'
+          ? (node as unknown as { data: string }).data
+          : `<${(node as Element).name}>${serialize((node as Element).children)}</${(node as Element).name}>`,
+      )
+      .join('');
+  assert.strictEqual(
+    serialize(
+      parseFragment(
+        '<a href="" /*target="_blank"*/><address>TBD</address></a>' +
+          '<div/>in<br/>div</div>' +
+          '<svg><rect/><circle/></svg><math><mi/><mo>+</mo></math>' +
+          // an integration point is closed too: it is read in SVG
+          '<svg><title/><desc/><foreignObject/><path/></svg>',
+      ),
+    ),
+    '<a><address>TBD</address></a>' +
+      '<div>in<br></br>div</div>' +
+      '<svg><rect></rect><circle></circle></svg>' +
+      '<math><mi></mi><mo>+</mo></math>' +
+      '<svg><title></title><desc></desc><foreignObject></foreignObject><path></path></svg>',
+  );
 });
 
 // --- the element ------------------------------------------------------------

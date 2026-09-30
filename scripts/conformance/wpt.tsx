@@ -20,7 +20,9 @@
 //   sees in a style sheet: the CDATA markers round one, which are removed,
 //   and the entities outside them, which XML decodes and HTML reads raw —
 //   a selector written `div &gt; span` is a `>` to a browser — so they are
-//   decoded first.
+//   decoded first. A third is in the markup: XML closes a `<div/>`, which
+//   HTML's parser opens, so each element but a void one written that way
+//   is written out closed.
 // - **The palette is a browser's**: black text on white, links #0000ee, a
 //   16px serif. The rest of the user-agent sheet is <Html>'s own — themed
 //   rules for `blockquote` and `pre` included — and costs what it costs.
@@ -287,7 +289,8 @@ function pageOf(path: string): { text: string; charset: string } {
 }
 
 /** The source <Html> is handed: XHTML's style sheets as XML reads them,
- *  entities decoded outside CDATA, and the CDATA markers dropped. */
+ *  entities decoded outside CDATA, the CDATA markers dropped, and an
+ *  element XML closes with `/>` closed. */
 function sourceOf(path: string, text = pageOf(path).text): string {
   if (!/\.xht(ml)?$/i.test(path)) return text;
   return text
@@ -302,8 +305,33 @@ function sourceOf(path: string, text = pageOf(path).text): string {
         close,
     )
     .replace(/<!\[CDATA\[/g, '')
-    .replace(/\]\]>/g, '');
+    .replace(/\]\]>/g, '')
+    .replace(SELF_CLOSING, (all, name: string, attributes: string) =>
+      VOID.has(name.toLowerCase()) ? all : `<${name}${attributes}></${name}>`,
+    );
 }
+
+/** A start tag closed as XML closes one, `<td class="a"/>`. */
+const SELF_CLOSING =
+  /<([A-Za-z][\w:.-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))?)*)\s*\/>/g;
+
+/** HTML's void elements, which a `/>` closes in either syntax. */
+const VOID = new Set([
+  'area',
+  'base',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'param',
+  'source',
+  'track',
+  'wbr',
+]);
 
 /** XML's five entities, and character references. */
 function decodeXml(text: string): string {
