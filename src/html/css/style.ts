@@ -3290,6 +3290,12 @@ function alignKeyword(value: string): string | null {
       return 'flex-end';
     case 'first baseline':
       return 'baseline';
+    // By last baselines, which nothing here aligns: set where that falls
+    // back to, the end (CSS Box Alignment 3, 4.2). Dropped, a row that asks
+    // for it stretched its items, and a flex box among them was as tall as
+    // the row, its lines spread down it.
+    case 'last baseline':
+      return 'flex-end';
     case 'center':
       return 'center';
     case 'stretch':

@@ -450,10 +450,18 @@ it was flexed to makes it, and an image grown along a row is as tall. A
 would read the item's height in its place. An item stretched across its
 row, or flexed along a column of a height of its own, has the height it was
 given — no taller for what it holds — for what it holds to take a
-percentage of, so an `h-full` list in a sidebar fills the sidebar. Items go in `order`, and in the document's where two have the
+percentage of, so an `h-full` list in a sidebar fills the sidebar. An item
+that is a flex box or a grid itself lays its own items out in the height it
+was given, which is a second layout of it where that is not its content's:
+a card in a row of cards has its `margin-top: auto` button at its bottom,
+its `flex: 1` takes what the others leave, and what it centres is centred
+in the whole of it. That holds along a column with no height of its own
+too — `min-h-screen flex flex-col` around a `flex-1 flex items-center` —
+though nothing takes a percentage of such a height, as in a browser. Items go in `order`, and in the document's where two have the
 same, and are painted so; one with a `z-index` is a stacking context
 whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines, their
-line as tall as that makes it, and a flex box sits on the baseline of its
+line as tall as that makes it — `last baseline` is taken as the end of the
+line, which is what it falls back to — and a flex box sits on the baseline of its
 first line's item aligned so, or of its first item. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
@@ -478,7 +486,10 @@ image, which keeps its own size, and a box with an `aspect-ratio`, which is
 as wide as a height it has makes it, and as a block would be where it has
 none; an item stretched down its area is as wide as its ratio makes that
 height. An item's percentage height is of its area, and a stretched item's
-height is one what is in it takes percentages of. A grid is as wide as
+height is one what is in it takes percentages of — and one an item that is
+a flex box or a grid lays its own items out in, so a grid of cards, each a
+column ending in a `margin-top: auto` button, has every button at the
+bottom of its row. A grid is as wide as
 its tracks, whatever runs past them. An absolutely positioned box
 takes the grid area its lines name for its containing block, and a grid's
 or a flex box's child is where it would be as the box's one item.

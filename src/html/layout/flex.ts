@@ -20,8 +20,10 @@
 // independent Yoga pass inside the measure call. Not a nested Yoga node:
 // that would need the whole child subtree mirrored into Yoga's tree, and the
 // measure seam already answers the only question the outer pass asks. What
-// the leaf shape costs is stretch — a stretched item's box grows but its
-// contents are not re-laid at the stretched height.
+// the leaf shape costs is a layout: an item the flex pass made taller or
+// shorter than its content, which lays what is in it out by its height — a
+// flex or grid container, or a box holding a percentage of a height — is
+// laid out again at that height (`layoutItemAt`).
 import { Yoga, layoutLoaded } from 'react-x11/yoga';
 import type { Config as YogaConfig, Node as YogaNode } from 'react-x11/yoga';
 
@@ -32,6 +34,7 @@ import { Box, PAINT_ORDER, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
+  USED_HEIGHT,
   clampHeight,
   clampWidth,
   contentSizedWidth,
@@ -122,9 +125,12 @@ export function layoutFlex(
   // percentage that resolves, or what `aspect-ratio` makes of the width —
   // less the padding and borders a `border-box` height holds, which put
   // `h-16 py-2 items-center` eight pixels low. Where it is not, the limits
-  // on it, so a column `min-h-screen` gives its `flex-1` the rest.
+  // on it, so a column `min-h-screen` gives its `flex-1` the rest — or the
+  // height the column it is an item of flexed it to (`USED_HEIGHT`), which
+  // its items are laid out in and take no percentage of.
   const definite = percentBaseInside(box);
-  const height = Number.isFinite(definite) ? definite : null;
+  const own = Number.isFinite(definite);
+  const height = USED_HEIGHT.get(box) ?? (own ? definite : null);
   if (height !== null) root.setHeight(height);
   else {
     root.setHeightAuto();
@@ -161,8 +167,14 @@ export function layoutFlex(
   for (const child of flowing) {
     const node = Y.Node.create(flexConfig());
     resolveEdges(child, contentWidth);
-    const laid: Laid = { width: NaN, height: NaN, set: NaN, stretch: NaN };
-    applyItem(node, child, ctx, contentWidth, laid, height !== null);
+    const laid: Laid = {
+      width: NaN,
+      height: NaN,
+      tall: NaN,
+      set: NaN,
+      stretch: NaN,
+    };
+    applyItem(node, child, ctx, contentWidth, laid, height !== null, own);
     root.insertChild(node, items.length);
     items.push({ box: child, node, laid });
   }
@@ -203,7 +215,7 @@ export function layoutFlex(
     ctx,
     items,
     row,
-    height,
+    own,
     box.style.flexWrap === 'wrap' || baselines,
     contentWidth,
   );
@@ -238,7 +250,7 @@ export function layoutFlex(
       ctx,
       items,
       row,
-      height,
+      own,
       box.style.flexWrap === 'wrap',
       contentWidth,
       started,
@@ -266,7 +278,7 @@ export function layoutFlex(
       ctx,
       items,
       row,
-      height,
+      own,
       box.style.flexWrap === 'wrap' || baselines,
       contentWidth,
     );
@@ -434,7 +446,8 @@ function placeItems(
   ctx: LayoutContext,
   items: readonly { box: Box; node: YogaNode; laid: Laid }[],
   row: boolean,
-  height: number | null,
+  /** Whether the flex box has a definite height. */
+  own: boolean,
   /** Whether Yoga aligned the lines in its pass that drops a margin. */
   lined: boolean,
   /** The flex box's content width: its items' containing block's. */
@@ -464,12 +477,15 @@ function placeItems(
     // 9.8): stretched across a row's line, or flexed in a column of a
     // height of its own. What is in it takes its percentages of that —
     // the `h-full` in a stretched sidebar — where they had nothing to be
-    // of, and the item is laid out again for them.
+    // of, and the item is laid out again for them; and so is one that is a
+    // flex or grid container itself, whose own items are laid out in that
+    // height (9.4, step 11: "redo layout for its contents, treating this
+    // used size as its definite cross size").
     const definite = row
       ? stretches(child, box.style)
         ? itemHeight
         : null
-      : height !== null
+      : own
         ? itemHeight
         : null;
     layoutItemAt(
@@ -517,24 +533,56 @@ function layoutItemAt(
     box.height = height;
     return;
   }
-  const inner =
-    definite === null || !percentHeightsIn(box)
-      ? null
-      : Math.max(0, definite - box.verticalExtra);
-  if (inner !== null && !Object.is(inner, percentBaseInside(box))) {
-    FLEXED_HEIGHT.set(box, inner);
-    try {
-      ctx.layoutSubtree(box, width, containing);
-    } finally {
-      FLEXED_HEIGHT.delete(box);
+  const sameWidth = Math.abs(laid.width - width) <= 0.01;
+  // The content height the item is laid out at, where the flex layout gave
+  // it one that is not its own already: NaN where its content says how
+  // tall it is.
+  let tall = NaN;
+  // A flex or grid container shares its height out among its items: an
+  // `auto` margin takes what is free of it (8.1), a `flex: 1` grows into it
+  // (9.7), its lines are as tall as it (9.4), its `fr` rows fill it. So it
+  // is laid out in the height the flex layout gave it, definite or not —
+  // the one a column with no height of its own flexed it to is its used
+  // size all the same (9.7), and `min-h-screen flex flex-col` around a
+  // `flex-1 flex items-center` centres what is in that. At its content's
+  // own height there is nothing to share, and the layout it has is that
+  // one: the tallest card of a row is laid out the once.
+  const given = definite ?? (column ? height : null);
+  const shares =
+    box.kind === 'flex' &&
+    given !== null &&
+    !(
+      Math.abs(naturalHeight(box, ctx, width, containing, laid) - given) <= 0.01
+    );
+  if (given !== null) {
+    const inner = Math.max(0, given - box.verticalExtra);
+    if (Object.is(inner, percentBaseInside(box))) {
+      // the height it has of its own
+    } else if (shares || (definite !== null && percentHeightsIn(box))) {
+      tall = inner;
     }
   }
   // `measureBox` lays the box out at (0, 0); re-running it at the final width
   // and then moving it is one pass, not two, because the second call is the
-  // one whose result is kept — or no pass, where the last measure was at
-  // this width. An item Yoga never measured has none, NaN, and is laid out.
-  else if (Math.abs(laid.width - width) <= 0.01) box.height = laid.height;
-  else ctx.layoutSubtree(box, width, containing);
+  // one whose result is kept — or no pass, where the last layout was at
+  // this width and this height. An item Yoga never measured has none, NaN,
+  // and is laid out.
+  if (sameWidth && Object.is(laid.tall, tall)) box.height = laid.height;
+  else if (Number.isNaN(tall)) {
+    layoutNaturally(box, ctx, width, containing, laid);
+  } else {
+    // what is in it takes its percentages of a definite height alone (9.8)
+    const heights = definite !== null ? FLEXED_HEIGHT : USED_HEIGHT;
+    heights.set(box, tall);
+    try {
+      ctx.layoutSubtree(box, width, containing);
+    } finally {
+      heights.delete(box);
+    }
+    laid.width = box.width;
+    laid.height = box.height;
+    laid.tall = tall;
+  }
   // A stretched item is taller than its content, and the box has to say so
   // or its background stops short of the row — and it is no taller than its
   // line where its content is, or than what its ratio makes of its width:
@@ -569,8 +617,11 @@ function applyItem(
   ctx: LayoutContext,
   containingWidth: number,
   laid: Laid,
-  /** Whether the flex box has a height of its own. */
+  /** Whether the flex box has a height its items are laid out in. */
   tall: boolean,
+  /** Whether that height is definite, and a percentage may be of it: one a
+   *  column flexed the box to is not (`USED_HEIGHT`). */
+  own: boolean,
 ): void {
   const style = box.style;
   laid.stretch = containingWidth - box.marginLeft - box.marginRight;
@@ -598,7 +649,11 @@ function applyItem(
   if (style.width !== AUTO) {
     laid.set = setLength(node, true, style.width, containingWidth, across);
   }
-  if (style.height !== AUTO) setLength(node, false, style.height, NaN, down);
+  // a percentage of a height that is not definite is `auto` (CSS 2.1 10.5),
+  // which Yoga makes of one where the flex box has no height at all
+  if (style.height !== AUTO && (own || !tall || !isPct(style.height))) {
+    setLength(node, false, style.height, NaN, down);
+  }
   const minWidth = resolveOrNull(style.minWidth, containingWidth);
   if (minWidth !== null) node.setMinWidth(minWidth + across);
   if (style.maxWidth !== 'none') {
@@ -661,6 +716,9 @@ function applyItem(
     setBasis(columnBasis);
   } else if (style.flexBasis === 'content' || style.flexBasis === AUTO) {
     // Yoga's own
+  } else if (isPct(style.flexBasis) && !row && tall && !own) {
+    // a percentage of a main size that is not definite is `content` (CSS
+    // Flexbox 7.2.3): Yoga's own, down a column
   } else if (isPct(style.flexBasis)) {
     // a percentage of the main size, which is known across a row
     const basis = style.flexBasis;
@@ -766,10 +824,8 @@ function applyItem(
     }
     let answer = answers.get(inner);
     if (answer === undefined) {
-      answer = measureBox(box, ctx, inner, containingWidth);
+      answer = measureBox(box, ctx, inner, containingWidth, laid);
       answers.set(inner, answer);
-      laid.width = box.width;
-      laid.height = box.height;
     }
     return answer;
   });
@@ -785,6 +841,10 @@ const MAX_CONTENT = new WeakMap<Box, number>();
 interface Laid {
   width: number;
   height: number;
+  /** The content height that layout was made at, where the flex layout gave
+   *  the item one (`FLEXED_HEIGHT`, `USED_HEIGHT`), and NaN where its
+   *  content's own. */
+  tall: number;
   /** The border-box width this engine set on the item's node — a length,
    *  or the content's for `fit-content` and its kin — or NaN. */
   set: number;
@@ -865,15 +925,232 @@ function measureBox(
   inner: number,
   /** The flex box's content width, the item's containing block's. */
   containing: number,
+  laid: Laid,
 ): { width: number; height: number } {
   // its padding as Yoga has it, a percentage of the flex box's width: a
   // probe of its content's width leaves a percentage at none
   resolveEdges(box, containing);
-  ctx.layoutSubtree(box, inner + box.horizontalExtra, containing);
+  const width = inner + box.horizontalExtra;
+  // its height at this width is known, where a layout since has left it
+  // another: the answer is the height, and the layout `layoutItemAt`'s
+  const kept = keptNatural(box, ctx, width, containing);
+  if (kept !== null && kept.serial !== box.layoutSerial) {
+    return {
+      width: inner,
+      height: Math.max(0, kept.height - box.verticalExtra),
+    };
+  }
+  layoutNaturally(box, ctx, width, containing, laid);
   return {
     width: inner,
     height: Math.max(0, box.height - box.verticalExtra),
   };
+}
+
+/** An item's height as its content's own makes it at a border-box width,
+ *  where this pass has laid it out so (`layoutNaturally`), and else NaN. */
+function naturalHeight(
+  box: Box,
+  ctx: LayoutContext,
+  width: number,
+  containing: number,
+  laid: Laid,
+): number {
+  if (Math.abs(laid.width - width) <= 0.01 && Number.isNaN(laid.tall)) {
+    return laid.height;
+  }
+  return keptNatural(box, ctx, width, containing)?.height ?? NaN;
+}
+
+/**
+ * Give an item the layout its content's own height makes of it at a
+ * border-box width, and note it (`Laid`): the one this pass has made of it
+ * there already, where it still has it.
+ *
+ * A flex box laid out a second time — at the height a stretch gave it, its
+ * own flex layout made anew (`layoutItemAt`) — asks of each item what it
+ * asked the first time, and the item's layout at a width is what it was.
+ * Kept for the pass, a card laid out again for its height lays nothing in
+ * it out that is where it was; made again at every layout of the box
+ * around it, a card in a card in a card laid its innermost out twice a
+ * level.
+ */
+function layoutNaturally(
+  box: Box,
+  ctx: LayoutContext,
+  width: number,
+  /** The flex box's content width, the item's containing block's. */
+  containing: number,
+  laid: Laid,
+): void {
+  const kept = keptNatural(box, ctx, width, containing);
+  if (kept !== null && kept.serial === box.layoutSerial) {
+    // put back, where the flex layout stretched it
+    box.height = kept.height;
+  } else {
+    const at = ctx.positioned.length;
+    ctx.layoutSubtree(box, width, containing);
+    // a replaced box is sized, not laid out, and has no layout to count
+    if (box.kind !== 'replaced') {
+      NATURAL.set(box, {
+        ctx,
+        serial: box.layoutSerial,
+        width,
+        containing: readsContaining(box) ? containing : NaN,
+        base: box.percentHeightBase,
+        edges: edgesOf(box),
+        height: box.height,
+        queued:
+          ctx.positioned.length > at ? { at, first: ctx.positioned[at] } : null,
+        drawn: NaN,
+        content: NaN,
+      });
+    }
+  }
+  laid.width = box.width;
+  laid.height = box.height;
+  laid.tall = NaN;
+}
+
+/**
+ * The layout this pass made of an item at its content's own height
+ * (`layoutNaturally`), where one at `width` now would be the same: the same
+ * width, the same edges — a percentage among them resolved, as the layout
+ * leaves them — the same containing block's width where a limit on its own
+ * is a percentage of it, and the same height for its percentages, where its
+ * own style reads that at all, which the flex box around it coming to a
+ * definite height changes for every item in it. Its `height` is the item's
+ * there whatever has laid it out since, and the layout is the one the box
+ * has where nothing has (`Box.layoutSerial`).
+ */
+function keptNatural(
+  box: Box,
+  ctx: LayoutContext,
+  width: number,
+  containing: number,
+): Natural | null {
+  const kept = NATURAL.get(box);
+  if (kept === undefined || kept.ctx !== ctx || kept.width !== width) {
+    return null;
+  }
+  if (!Number.isNaN(kept.containing) && kept.containing !== containing) {
+    return null;
+  }
+  if (!Object.is(kept.base, box.percentHeightBase) && readsPercentBase(box)) {
+    return null;
+  }
+  // the boxes in it that are positioned last are still waiting to be: a
+  // `line-clamp: auto` box laid out a second time forgets the ones its
+  // first layout found
+  if (kept.queued && ctx.positioned[kept.queued.at] !== kept.queued.first) {
+    return null;
+  }
+  const edges = kept.edges;
+  return edges[0] === box.marginTop &&
+    edges[1] === box.marginRight &&
+    edges[2] === box.marginBottom &&
+    edges[3] === box.marginLeft &&
+    edges[4] === box.borderTop &&
+    edges[5] === box.borderRight &&
+    edges[6] === box.borderBottom &&
+    edges[7] === box.borderLeft &&
+    edges[8] === box.padTop &&
+    edges[9] === box.padRight &&
+    edges[10] === box.padBottom &&
+    edges[11] === box.padLeft
+    ? kept
+    : null;
+}
+
+/** A layout of an item at its content's own height (`layoutNaturally`): in
+ *  which pass, which of the box's layouts it was, and what it was made
+ *  from. */
+interface Natural {
+  ctx: LayoutContext;
+  serial: number;
+  /** The border-box width it was asked for at. */
+  width: number;
+  /** Its containing block's width, where a limit on its own width is a
+   *  percentage of that (`readsContaining`), and else NaN: a nest of flex
+   *  boxes is laid out in rooms of many widths, and an item with no such
+   *  limit is laid out the same in each. */
+  containing: number;
+  /** The height its percentages were of. */
+  base: number;
+  /** Its margins, borders and padding once laid out (`edgesOf`). */
+  edges: number[];
+  height: number;
+  /** The first of the out-of-flow boxes that layout queued to be
+   *  positioned (`LayoutContext.positioned`) and where; null for none. */
+  queued: { at: number; first: LayoutContext['positioned'][number] } | null;
+  /** What `autoMinimums` read from that layout, NaN until it has: how wide
+   *  it drew, and how far down its content came, each its border box's. */
+  drawn: number;
+  content: number;
+}
+
+const NATURAL = new WeakMap<Box, Natural>();
+
+/** Note what was read from the layout an item has, where that is the one
+ *  its content's own height makes of it at `width`. */
+function remember(
+  box: Box,
+  ctx: LayoutContext,
+  width: number,
+  containing: number,
+  field: 'drawn' | 'content',
+  value: number,
+): void {
+  const made = keptNatural(box, ctx, width, containing);
+  if (made !== null && made.serial === box.layoutSerial) made[field] = value;
+}
+
+/** A box's edges, which a layout resolves again against the width it is
+ *  given: margins, borders, padding, each from the top round. */
+function edgesOf(box: Box): number[] {
+  return [
+    box.marginTop,
+    box.marginRight,
+    box.marginBottom,
+    box.marginLeft,
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+    box.padTop,
+    box.padRight,
+    box.padBottom,
+    box.padLeft,
+  ];
+}
+
+/** Whether the width a box is laid out at is held to a percentage of its
+ *  containing block's: a least or greatest width that is one. */
+function readsContaining(box: Box): boolean {
+  const style = box.style;
+  return (
+    isPct(style.minWidth) ||
+    (style.maxWidth !== 'none' && isPct(style.maxWidth))
+  );
+}
+
+/** Whether a box's own layout reads the height its percentages are of: a
+ *  height, a least or greatest one, or an offset that is a percentage, a
+ *  height that is a keyword — `stretch` fills it — or an anonymous box,
+ *  which hands it on to what is in it (`percentBaseInside`). */
+function readsPercentBase(box: Box): boolean {
+  if (!box.el && !box.pseudo) return true;
+  const style = box.style;
+  return (
+    isPct(style.height) ||
+    isPct(style.minHeight) ||
+    (style.maxHeight !== 'none' && isPct(style.maxHeight)) ||
+    isPct(style.top) ||
+    isPct(style.bottom) ||
+    style.heightKeyword !== null ||
+    style.minHeightKeyword !== null ||
+    style.maxHeightKeyword !== null
+  );
 }
 
 /** The width an item's content is measured at: the width Yoga gives it
@@ -1008,15 +1285,25 @@ function autoMinimums(
     ) {
       continue;
     }
-    if (!(Math.abs(laid.width - width) <= 0.01)) {
-      ctx.layoutSubtree(box, width, containingWidth);
-      laid.width = box.width;
-      laid.height = box.height;
+    // What its content's own height makes of it at this width — how wide
+    // that drew, along a row, and how far down, along a column — is read
+    // from that layout, which the item is given where it has another: or
+    // is what this pass read from it before, where the flex box is laid
+    // out a second time (`layoutNaturally`)
+    const kept = keptNatural(box, ctx, width, containingWidth);
+    const read = kept === null ? NaN : row ? kept.drawn : kept.content;
+    if (Number.isNaN(read) && !(Math.abs(laid.width - width) <= 0.01)) {
+      layoutNaturally(box, ctx, width, containingWidth, laid);
     }
+    const height = Number.isNaN(read) ? laid.height : kept!.height;
     let least: number;
     if (row) {
       // or than what it drew at the width it has: nothing overflows it
-      const drawn = intrinsicWidth(box) + box.horizontalExtra;
+      let drawn = read;
+      if (Number.isNaN(drawn)) {
+        drawn = intrinsicWidth(box) + box.horizontalExtra;
+        remember(box, ctx, width, containingWidth, 'drawn', drawn);
+      }
       if (transferredWidth(box, drawn) <= width + 0.5) continue;
       // within what a ratio makes of its least and greatest heights (4.5's
       // content size suggestion)
@@ -1031,8 +1318,10 @@ function autoMinimums(
     } else {
       // its height, or where it has one of its own and its content comes to
       // less, its content's: the lesser of the two (4.5)
-      let content: number;
-      if (box.kind === 'replaced') content = laid.height;
+      let content = read;
+      if (!Number.isNaN(content)) {
+        // read before
+      } else if (box.kind === 'replaced') content = laid.height;
       else if (style.height !== AUTO && percentHeightsIn(box)) {
         // what its content comes to where it has no height to take
         // percentages of, as an intrinsic size is measured: laid out so
@@ -1043,25 +1332,17 @@ function autoMinimums(
         } finally {
           FLEXED_HEIGHT.delete(box);
         }
-        content = contentBottom(box) + box.verticalExtra;
+        content = ratioContent(box, contentBottom(box) + box.verticalExtra);
         laid.width = NaN;
-      } else content = contentBottom(box) + box.verticalExtra;
-      // and a ratio's content is at least its width through the ratio,
-      // height of its own or not (CSS Sizing 4, 5.1)
-      const aspect = style.aspectRatio;
-      if (aspect && box.kind !== 'replaced') {
-        content = Math.max(
-          content,
-          style.boxSizing === 'border-box'
-            ? box.width / aspect.ratio
-            : box.contentWidth / aspect.ratio + box.verticalExtra,
-        );
+      } else {
+        content = ratioContent(box, contentBottom(box) + box.verticalExtra);
+        remember(box, ctx, width, containingWidth, 'content', content);
       }
       // within what the ratio makes of its least and greatest widths
       if (box.kind !== 'replaced') {
         content = transferredHeight(box, content, containingWidth);
       }
-      least = Math.min(laid.height, content);
+      least = Math.min(height, content);
       const extra = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
       if (style.maxHeight !== 'none') {
         const most = resolveOrNull(style.maxHeight, NaN);
@@ -1073,6 +1354,19 @@ function autoMinimums(
     changed = true;
   }
   return changed;
+}
+
+/** A laid-out item's content height, its border box's: no less than its
+ *  width through its ratio, height of its own or not (CSS Sizing 4, 5.1). */
+function ratioContent(box: Box, content: number): number {
+  const aspect = box.style.aspectRatio;
+  if (!aspect || box.kind === 'replaced') return content;
+  return Math.max(
+    content,
+    box.style.boxSizing === 'border-box'
+      ? box.width / aspect.ratio
+      : box.contentWidth / aspect.ratio + box.verticalExtra,
+  );
 }
 
 /** An item's min-content width, its border box's, taken the once: its

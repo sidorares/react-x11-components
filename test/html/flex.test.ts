@@ -13,7 +13,7 @@ import {
   renderWithBytes,
   view,
 } from './harness.js';
-import type { PlacedLine } from './harness.js';
+import type { LaidBox, PlacedLine } from './harness.js';
 
 afterEach(cleanup);
 
@@ -680,6 +680,140 @@ test('what is in a stretched or flexed item takes its percentages of its height'
   assert.strictEqual(box('d').height, 0, 'min-height: 0 lets it go');
   assert.strictEqual(box('e').height, 100, 'a square stays square');
   assert.strictEqual(box('f').height, 50, 'shrunk to its ratio');
+});
+
+test('a flex item that is a flex or grid container lays its items out in the height it was given', async () => {
+  // CSS Flexbox 9.4, step 11: a stretched item's contents are laid out
+  // again with its used cross size for a definite one, and 9.8 has an
+  // item's flexed size along a column of a definite height definite too.
+  // A row of cards, each a column ending in a `margin-top: auto` button —
+  // Bootstrap's `.card` with `.mt-auto`, Tailwind's `flex flex-col` — had
+  // its cards stretched and what was in them left at the top, laid out at
+  // their content's own height: a `flex: 1` in one was no height at all.
+  const card = 'display:flex;flex-direction:column;width:100px';
+  const tall = '<div style="height:120px;width:100px"></div>';
+  const { node } = await render(
+    '<style>body{margin:0}.s{height:20px}.m{height:30px}</style>' +
+      '<div style="display:flex">' +
+      `<div id="a" style="${card}"><div id="a1" style="flex:1"></div>` +
+      '<div id="a2" class="m"></div></div>' +
+      `<div style="${card}"><div class="s"></div>` +
+      '<div id="b2" class="m" style="margin-top:auto"></div></div>' +
+      // a row in a row: its line is as tall as the item
+      '<div style="display:flex;align-items:center;width:100px">' +
+      '<div id="c1" class="s" style="width:10px"></div></div>' +
+      // and a grid, whose `fr` row fills it
+      '<div style="display:grid;grid-template-rows:1fr auto;width:100px">' +
+      '<div id="d1"></div><div class="m"></div></div>' +
+      // the one the line is as tall as is laid out as it was
+      `<div style="${card}"><div style="height:90px"></div>` +
+      `<div id="t2" class="m" style="margin-top:auto"></div></div>${tall}` +
+      '</div>' +
+      // each line of a row that wraps is as tall as its own tallest
+      '<div style="display:flex;flex-wrap:wrap;width:200px">' +
+      `<div style="${card}"><div class="s"></div>` +
+      `<div id="e2" class="m" style="margin-top:auto"></div></div>${tall}` +
+      `<div style="${card}"><div class="s"></div>` +
+      '<div id="f2" class="m" style="margin-top:auto"></div></div>' +
+      '<div style="height:80px;width:100px"></div></div>' +
+      // and down a column of a height of its own, the item that flexes
+      '<div style="display:flex;flex-direction:column;height:120px">' +
+      '<div class="s"></div>' +
+      `<div id="g" style="${card};flex:1"><div class="s"></div>` +
+      '<div id="g2" class="m" style="margin-top:auto"></div></div></div>',
+  );
+  const el = view(node);
+  /** How far down its card an item is, and how tall. */
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.y - item.parent.y, item.height];
+  };
+  assert.strictEqual(boxOf(el, 'a').height, 120, 'stretched across the row');
+  assert.deepStrictEqual(at('a1'), [0, 90], 'flex: 1 takes the rest');
+  assert.deepStrictEqual(at('a2'), [90, 30]);
+  assert.deepStrictEqual(at('b2'), [90, 30], 'margin-top: auto');
+  assert.deepStrictEqual(at('c1'), [50, 20], 'centred in the line');
+  assert.deepStrictEqual(at('d1'), [0, 90], 'the fr row');
+  assert.deepStrictEqual(at('t2'), [90, 30], 'the tallest card');
+  assert.deepStrictEqual(at('e2'), [90, 30], 'the first line');
+  assert.deepStrictEqual(at('f2'), [50, 30], 'the second, 80 tall');
+  assert.strictEqual(boxOf(el, 'g').height, 100, 'what the column leaves');
+  assert.deepStrictEqual(at('g2'), [70, 30]);
+});
+
+test('last baseline is its fallback alignment, the end', async () => {
+  // CSS Box Alignment 3, 4.2: where a box cannot be aligned by its last
+  // baseline it is aligned to the end, and nothing here aligns by one. The
+  // declaration was dropped, which left the row's items stretched: a flex
+  // box that wraps, stretched so, has its lines spread down the row.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;align-items:last baseline;height:100px">' +
+      '<div id="a" style="display:flex;flex-wrap:wrap;width:60px">' +
+      '<div style="width:60px;height:20px"></div>' +
+      '<div id="a2" style="width:60px;height:30px"></div></div>' +
+      '<div id="b" style="height:40px;align-self:last baseline"></div></div>',
+  );
+  const el = view(node);
+  const ends = (id: string) => boxOf(el, id).y + boxOf(el, id).height;
+  assert.strictEqual(boxOf(el, 'a').height, 50, 'as tall as its two lines');
+  assert.deepStrictEqual([ends('a'), ends('a2'), ends('b')], [100, 100, 100]);
+});
+
+test('a flex box flexed along a column of no definite height lays its items out in the height it came to', async () => {
+  // `min-h-screen flex flex-col` around a `flex-1 flex items-center
+  // justify-center`: the column's height is its least one, which is no
+  // definite height (CSS Flexbox 9.8), and the item that takes the rest of
+  // it is that tall all the same — its used size (9.7) — and centres what
+  // is in it there. It centred it in its content's own height, at the top.
+  // Nothing takes a percentage of such a height, in a browser either.
+  const column = 'display:flex;flex-direction:column';
+  const { node } = await render(
+    '<style>body{margin:0}.s{height:20px}.m{height:30px}</style>' +
+      `<div style="${column};min-height:200px"><div class="s"></div>` +
+      '<div id="a" style="flex:1;display:flex;align-items:center;' +
+      'justify-content:center"><div id="a1" class="m" style="width:80px">' +
+      '</div></div><div class="s"></div></div>' +
+      // a column in it, and a column in that
+      `<div style="${column};min-height:120px"><div class="s"></div>` +
+      `<div style="${column};flex:1"><div id="b" style="${column};flex:1">` +
+      '<div id="b1" class="m" style="margin-top:auto"></div></div></div>' +
+      '</div>' +
+      // a row's items are stretched across it, a grid's `fr` row fills it
+      `<div style="${column};min-height:120px"><div class="s"></div>` +
+      '<div style="flex:1;display:flex"><div id="c1" style="width:50px">' +
+      '<div id="c2" style="height:100%"></div></div></div></div>' +
+      `<div style="${column};min-height:120px"><div class="s"></div>` +
+      '<div style="flex:1;display:grid;grid-template-rows:1fr auto">' +
+      '<div id="d1"></div><div class="m"></div></div></div>' +
+      // but no percentage is of it: `auto`, as in a column with no height
+      `<div style="${column};min-height:120px"><div class="s"></div>` +
+      `<div style="${column};flex:1"><div id="e1" style="height:50%">` +
+      '</div></div></div>' +
+      // and shrunk, where the column's greatest height is under its content
+      `<div style="${column};max-height:60px">` +
+      '<div class="s" style="flex:none"></div>' +
+      `<div id="f" style="${column};min-height:0">` +
+      '<div class="s" style="flex:none"></div>' +
+      '<div id="f2" style="height:60px"></div></div></div>',
+    300,
+  );
+  const el = view(node);
+  /** How far down and along its flex box an item is, and how tall. */
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.x - item.parent.x, item.y - item.parent.y, item.height];
+  };
+  assert.strictEqual(boxOf(el, 'a').height, 160, 'what the column leaves');
+  assert.deepStrictEqual(at('a1'), [110, 65, 30], 'centred in it');
+  assert.strictEqual(boxOf(el, 'b').height, 100);
+  assert.deepStrictEqual(at('b1'), [0, 70, 30], 'margin-top: auto, twice in');
+  assert.deepStrictEqual(at('c1'), [0, 0, 100], 'stretched across the row');
+  assert.strictEqual(boxOf(el, 'c2').height, 100, 'which is definite');
+  assert.deepStrictEqual(at('d1'), [0, 0, 70], 'the fr row');
+  assert.strictEqual(boxOf(el, 'e1').height, 0, 'a percentage of nothing');
+  assert.strictEqual(boxOf(el, 'f').height, 40);
+  assert.deepStrictEqual(at('f2'), [0, 20, 20], 'shrunk into it');
 });
 
 metric(

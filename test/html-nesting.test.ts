@@ -67,6 +67,7 @@ interface Laid {
   kind: string;
   x: number;
   width: number;
+  height: number;
   children: Laid[];
   el: Element | null;
   layoutSerial: number;
@@ -277,6 +278,65 @@ for (const [kind, open, close, most] of [
     }
     assert.ok(depth >= 40, `${depth} levels`);
     assert.ok(box.width > 0, 'the text has room');
+  });
+}
+
+// A flex item that is a flex box itself is laid out again in the height
+// the flex layout gave it — its line's, stretched across a row (CSS Flexbox
+// 9.4, step 11), or what a column flexed it to (9.7) — and so is what it
+// stretches or flexes in turn. Each is laid out for its content's height,
+// the once, and then at every height the ones around it come to. With what
+// is in a box laid out for its content's height again at each of those,
+// the one k deep was laid out 2^k times.
+for (const [kind, build, most] of [
+  [
+    // a row of a card and a taller box beside it, the card a column of one
+    // such row that takes its height, and so on down
+    'cards stretched',
+    (inner: string, k: number) =>
+      '<div style="display:flex;flex:1">' +
+      `<div style="width:10px;height:${600 - 20 * k}px"></div>` +
+      '<div class="card" style="display:flex;flex-direction:column;flex:1">' +
+      `${inner}</div></div>`,
+    // each row comes to its height as the ones around it are laid out: one
+    // more a level
+    (k: number) => k + 2,
+  ],
+  [
+    // a column that takes the height of the column it is in, down from
+    // one whose own is its least, and no definite height
+    'columns flexed',
+    (inner: string, k: number) =>
+      (k
+        ? ''
+        : '<div style="display:flex;flex-direction:column;' +
+          'min-height:600px">') +
+      '<div class="card" style="display:flex;flex-direction:column;flex:1">' +
+      `${inner}</div>${k ? '' : '</div>'}`,
+    // the height comes down from the top, the once
+    () => 2,
+  ],
+] as const) {
+  test(`twelve ${kind} one inside another are laid out a number of times linear in their depth`, async () => {
+    const depth = 12;
+    let html = '<p>Some text in the middle</p>';
+    for (let k = depth - 1; k >= 0; k -= 1) html = build(html, k);
+    const node = await render(html, true);
+    const cards = coldLayouts(
+      node,
+      (box) => box.el?.attribs.class === 'card',
+      most,
+    );
+    assert.strictEqual(cards.length, depth, 'every card counted');
+    within(cards, 'layouts', most);
+    // and it is a layout: every card as tall as the outermost box
+    const heights: number[] = [];
+    const walk = (box: Laid): void => {
+      if (box.el?.attribs.class === 'card') heights.push(box.height);
+      box.children.forEach(walk);
+    };
+    walk(node._tree!.root);
+    assert.deepStrictEqual(heights, new Array(depth).fill(600));
   });
 }
 
