@@ -18099,3 +18099,37 @@ test('a media query whose size is no length does not parse, and holds nowhere', 
   assert.strictEqual(boxOf(el, 'u').height, 20, 'a query that parses does');
   await result.unmount();
 });
+
+test("a rem is the root element's font size, and the initial one in the root's own font size", async () => {
+  // CSS Values 4, 6.1.1: a `rem` is the root element's computed font size,
+  // and where it is on the root's own `font-size`, the property's initial
+  // value. It was the initial size everywhere, so `html { font-size:
+  // 62.5% }`, which a page sets to write its sizes in tenths of a rem, did
+  // nothing for them: the Zen Garden's 220 set its text 1.6 times Chrome's
+  // size. A keyword's size is the initial size's, as it was
+  const { node } = await render(
+    '<html style="font-size:1.5rem;padding-top:1rem"><body style="margin:0">' +
+      '<p id="r" style="margin:0;line-height:1;font-size:2rem">rem</p>' +
+      '<p id="k" style="margin:0;line-height:1;font-size:small">small</p>' +
+      '<p style="margin:0;font-size:10px"><span id="s" style="display:' +
+      'inline-block;width:3rem;height:1em"></span></p></body></html>',
+  );
+  const el = view(node);
+  // the initial size, from the keyword's paragraph: small is 13/16 of it
+  const initial = boxOf(el, 'k').height / 0.8125;
+  const root = 1.5 * initial;
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.01;
+  assert.ok(
+    near(boxOf(el, 'r').y, root),
+    "the root's padding of 1rem is its own size, 1.5rem of the initial " +
+      `${initial}px: ${boxOf(el, 'r').y}`,
+  );
+  assert.ok(
+    near(boxOf(el, 'r').height, 2 * root),
+    `2rem in the body is twice the root's size: ${boxOf(el, 'r').height}`,
+  );
+  assert.ok(
+    near(boxOf(el, 's').width, 3 * root),
+    `and 3rem three times it, however deep: ${boxOf(el, 's').width}`,
+  );
+});
