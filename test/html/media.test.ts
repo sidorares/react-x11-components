@@ -16,6 +16,7 @@ import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
   FONTS,
   boxOf,
+  fillsOf,
   h,
   render,
   render2x,
@@ -241,6 +242,89 @@ test('a theme of light-dark() custom properties follows the palette, and color-s
   // a parent that is only dark
   await waitFor(() =>
     assert.deepStrictEqual(looks(), { a: DARK, l: LIGHT, d: DARK, n: DARK }),
+  );
+});
+
+test('a document of the scheme the palette is not is drawn on that scheme’s canvas, in its colours', async () => {
+  // CSS Color Adjust 1, 2.2: the canvas, the initial `color` and the
+  // system colours follow the root's used scheme, and a document embedded
+  // on a transparent canvas whose scheme is not its embedder's gets an
+  // opaque one. A Docusaurus page is `color-scheme: light` with its text
+  // dark and no background at all — a script picks the dark theme — and
+  // was dark text on the dark palette's ground.
+  const page = (scheme: string, more = '') =>
+    `<style>:root{color-scheme:${scheme}}body{margin:0}${more}</style>` +
+    '<p id="p">x <a id="a" href="#">y</a></p>';
+  const doc = (source: string, palette: 'light' | 'dark') =>
+    h(
+      'window',
+      { width: 340, height: 200 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { colorScheme: palette },
+        h(
+          'box',
+          { style: { width: 300, flexDirection: 'column' } },
+          h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        ),
+      ),
+    );
+  const result = await renderX11(
+    doc(page('light'), 'dark'),
+    FONTS ? { fonts: FONTS, wrap: false } : { backend: 'mock', wrap: false },
+  );
+  const look = async () => {
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const color = (id: string) =>
+      (boxOf(el, id) as unknown as { style: ComputedStyle }).style.color;
+    const fills = await fillsOf(el);
+    return {
+      // what is filled across the element: a link's underline is a fill too
+      canvas: fills.filter((f) => f.w === 300).map((f) => f.style),
+      text: color('p'),
+      link: color('a'),
+    };
+  };
+  const show = async (source: string, palette: 'light' | 'dark') => {
+    await act(async () => {
+      result.root.render(doc(source, palette));
+    });
+    for (let i = 0; i < 4; i += 1) await act();
+    return look();
+  };
+  assert.deepStrictEqual(
+    await look(),
+    { canvas: ['#ffffff'], text: '#000000', link: '#0000ee' },
+    'a light page under a dark palette',
+  );
+  // a page of both schemes, or of none it names, is the palette's: no
+  // canvas of its own, and the palette's text and links
+  const both = await show(page('light dark'), 'dark');
+  assert.deepStrictEqual(both.canvas, [], 'the palette’s ground shows');
+  assert.notStrictEqual(both.text, '#000000');
+  assert.deepStrictEqual(await show(page('normal'), 'dark'), both);
+  // the palette turned light: the light page is of its scheme now
+  const light = await show(page('light'), 'light');
+  assert.deepStrictEqual(light.canvas, []);
+  assert.notStrictEqual(light.text, both.text, 'the light palette’s text');
+  // and a dark page under it is a browser's dark
+  assert.deepStrictEqual(await show(page('dark'), 'light'), {
+    canvas: ['#121212'],
+    text: '#ffffff',
+    link: '#9e9eff',
+  });
+  // the page's own colours are over the scheme's: its background over
+  // the canvas, its text where it sets one
+  assert.deepStrictEqual(
+    await show(
+      page('light', 'html{background:#ff0000}p{color:#010101}'),
+      'dark',
+    ),
+    {
+      canvas: ['#ffffff', '#ff0000'],
+      text: '#010101',
+      link: '#0000ee',
+    },
   );
 });
 

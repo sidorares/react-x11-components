@@ -8,6 +8,12 @@
 // already using, so an unstyled document reads as part of the window. An
 // author stylesheet still overrides all of it — that is what makes it a UA
 // sheet and not a skin.
+//
+// The theme has the colours of one scheme. A document whose root is of the
+// other — `color-scheme: light` under a dark palette — is a browser's in
+// that one: the text and the links a `light-dark()` of the theme's and
+// Chrome's (`inScheme`), over a canvas of that scheme (`paintDocument`).
+import { SCHEME_COLORS } from './color.js';
 import { parseStylesheet } from './parse.js';
 import type { Declaration, Stylesheet } from './parse.js';
 import type { RootLook } from './style.js';
@@ -29,6 +35,7 @@ const CACHE = new Map<string, Stylesheet>();
 
 export function lookKey(look: RootLook): string {
   return [
+    look.colorScheme,
     look.color,
     look.fontFamily,
     look.fontSize,
@@ -72,6 +79,12 @@ export function uaStylesheet(look: RootLook): Stylesheet {
  */
 function uaText(look: RootLook): string {
   const mono = look.monoFamily;
+  // the theme's colour where the element's scheme is the theme's, and a
+  // browser's own for the other scheme where it is not
+  const inScheme = (own: string, which: 'text' | 'link'): string =>
+    look.colorScheme === 'dark'
+      ? `light-dark(${SCHEME_COLORS.light[which]}, ${own})`
+      : `light-dark(${own}, ${SCHEME_COLORS.dark[which]})`;
   return `
 html, body, div, p, h1, h2, h3, h4, h5, h6, ol, ul, li, dl, dt, dd,
 blockquote, pre, hr, table, form, fieldset, figure, figcaption, address,
@@ -94,7 +107,7 @@ bdo { unicode-bidi: isolate-override; }
 /* the theme's colour and font are the root's (\`initialStyle\`), and the
    body inherits them, from an author's \`html\` rule too */
 body { margin: 8px; }
-html { color: ${look.color}; }
+html { color: ${inScheme(look.color, 'text')}; }
 
 p { margin: 1em 0; }
 h1 { font-size: 2em;    font-weight: bold; margin: 0.67em 0; }
@@ -159,7 +172,7 @@ q::after { content: close-quote; }
    pointer moves, and a rule that changes nothing (the link is already
    underlined) would make every plain document pay that. An 'a' with no
    'href' is an anchor, not a link, and is drawn as the text around it. */
-a[href] { color: ${look.linkColor}; text-decoration: underline; cursor: pointer; }
+a[href] { color: ${inScheme(look.linkColor, 'link')}; text-decoration: underline; cursor: pointer; }
 
 hr {
   margin: 0.5em auto;

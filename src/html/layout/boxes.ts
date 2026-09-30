@@ -733,6 +733,10 @@ export interface BoxTree {
    *  (`Cascade.rootStyle`), whose background is the canvas's; null where
    *  the document has either. */
   impliedHtml: ComputedStyle | null;
+  /** The scheme the palette is, which the element the document is drawn
+   *  in is of: where the root element's is the other, the canvas is that
+   *  scheme's and opaque (`paintDocument`). */
+  paletteScheme: 'light' | 'dark';
 }
 
 export interface BuildOptions {
@@ -882,6 +886,7 @@ class Builder {
       movedInline: this._movedInline,
       clipText: this._clipText,
       impliedHtml,
+      paletteScheme: cascade.initial.colorScheme,
     };
   }
 

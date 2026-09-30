@@ -27,7 +27,7 @@ import {
 } from '../richtext/runs.js';
 import type { FillContext } from '../richtext/runs.js';
 import { alphaOf, inkColor, isTransparent, resolve } from './css/values.js';
-import { blend, borderShades } from './css/color.js';
+import { SCHEME_COLORS, blend, borderShades } from './css/color.js';
 import type { Len } from './css/values.js';
 import type {
   BackgroundClip,
@@ -575,6 +575,20 @@ export function paintDocument(
   if (!canFill(ctx)) return;
   ctx.save();
   const canvas = canvasBackground(tree);
+  const scheme = rootScheme(tree);
+  if (scheme !== tree.paletteScheme) {
+    // A document is drawn on the window's own ground, the palette's, as an
+    // embedded one is on a transparent canvas. Where its root's colour
+    // scheme is not the scheme of what it is embedded in, its canvas is
+    // opaque, in the `Canvas` colour of its own (CSS Color Adjust 1, 2.2):
+    // a page that says it is light, and sets its text dark on no
+    // background, is not read against a dark window.
+    const area = canvasArea(tree.root, options);
+    if (area) {
+      ctx.fillStyle = SCHEME_COLORS[scheme].canvas;
+      ctx.fillRect(area.x, area.y, area.w, area.h);
+    }
+  }
   if (canvas) paintCanvas(ctx, canvas, tree.root, options);
   paintBox(ctx, tree.root, {
     ...options,
@@ -632,6 +646,34 @@ function canvasBackground(tree: BoxTree): CanvasBackground | null {
     : null;
 }
 
+/** The used colour scheme of the document's root element: the `<html>`'s,
+ *  or that of whichever box stands in for it (`canvasBackground`). */
+function rootScheme(tree: BoxTree): 'light' | 'dark' {
+  if (tree.impliedHtml) return tree.impliedHtml.colorScheme;
+  return (childNamed(tree.root, 'html') ?? tree.root).style.colorScheme;
+}
+
+/** The canvas, cut to what is being painted: the whole element where the
+ *  host says what that is, and else the root box. */
+function canvasArea(
+  root: Box,
+  options: PaintOptions,
+): { x: number; y: number; w: number; h: number } | null {
+  const whole = options.canvas ?? {
+    x: root.x + options.originX,
+    y: root.y + options.originY,
+    width: root.width,
+    height: root.height,
+  };
+  return clampRect(
+    options,
+    Math.round(whole.x),
+    Math.round(whole.y),
+    Math.ceil(whole.width),
+    Math.ceil(whole.height),
+  );
+}
+
 /** A box's child element of that name, or one inside the anonymous boxes
  *  it is wrapped in: a `<body>` in an `<html>` set `display: table` is in
  *  an anonymous row and cell. */
@@ -652,19 +694,7 @@ function paintCanvas(
   root: Box,
   options: PaintOptions,
 ): void {
-  const whole = options.canvas ?? {
-    x: root.x + options.originX,
-    y: root.y + options.originY,
-    width: root.width,
-    height: root.height,
-  };
-  const area = clampRect(
-    options,
-    Math.round(whole.x),
-    Math.round(whole.y),
-    Math.ceil(whole.width),
-    Math.ceil(whole.height),
-  );
+  const area = canvasArea(root, options);
   if (!area) return;
   const layers = layersOf(source) ?? [source];
   const visible = source.visibility === 'visible';
