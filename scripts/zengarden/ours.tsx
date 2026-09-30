@@ -154,10 +154,15 @@ export function blinkMetrics(face: unknown): unknown {
   return face;
 }
 
-/** How often a request a server did not answer is made again, a second
- *  and then two apart. */
+/** How often a request a server did not answer is made, a second and then
+ *  two apart. */
 const ATTEMPTS = 3;
-const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The wait between two of them: a test holds it, and spends no seconds. */
+export const backoff = {
+  wait: (ms: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, ms)),
+};
 
 /** A status that says what is at a URL, and will say it again tomorrow: a
  *  2xx, or a 4xx but the two that ask to be tried again. A 5xx, a 429 and
@@ -166,17 +171,27 @@ function answers(status: number): boolean {
   return status >= 200 && status < 500 && status !== 408 && status !== 429;
 }
 
+/** Why a URL is kept as having nothing there: the status its server
+ *  answered with, or the browser's network not asking for it. */
+type Missing = { status: number } | { refused: true };
+
 /**
  * The browser's network, over a cache on disk.
  *
  * What is kept is what a server said: a file, or that it has none there.
- * A request that got no answer — a reset, a timeout, a busy server — is
- * made again, and if there is still none is not kept and is `dropped`,
- * which fails the page it was for. Kept as missing, as it was, one dropped
- * request for a design's page made it "no such design" in every run after,
- * and the run stepped over it as though it had passed: nineteen designs
- * were never compared. An image or a stylesheet dropped the same way would
- * have left its page compared without it.
+ * A request that got no answer — a reset, a timeout, a body cut short, a
+ * busy server — is made again, and if there is still none is not kept and
+ * is `dropped`, which fails the page it was for. Kept as missing, as it
+ * was, one dropped request for a design's page made it "no such design" in
+ * every run after, and the run stepped over it as though it had passed:
+ * nineteen designs were never compared.
+ *
+ * A 200 is not an answer until its body is here, and the network says
+ * which of these it was (`Network.load`). Told only that nothing came, the
+ * cache asked the server for a status, had a 200, fetched again and was
+ * given nothing again: nextjs.org's main stylesheet, 580 KB under a load
+ * average above 100, was kept as missing, and the blog was laid out
+ * without it in every run after.
  */
 export class CachedNetwork {
   private _network = new Network();
@@ -191,20 +206,6 @@ export class CachedNetwork {
     const dropped = this._dropped;
     this._dropped = [];
     return dropped;
-  }
-
-  /** What a server answers for a URL: its status, or null for none. */
-  private async _status(url: string): Promise<number | null> {
-    try {
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(30_000),
-        redirect: 'follow',
-      });
-      await response.body?.cancel();
-      return response.status;
-    } catch {
-      return null;
-    }
   }
 
   private _paths(url: string): { meta: string; body: string } {
@@ -223,24 +224,24 @@ export class CachedNetwork {
     const head = JSON.parse(readFileSync(meta, 'utf8')) as Omit<
       Fetched,
       'bytes'
-    > & { missing?: boolean; answered?: boolean };
-    // one kept as missing before a server's answer was told from none is
-    // asked for again
-    if (head.missing) return head.answered ? null : undefined;
+    > & { missing?: boolean; refused?: boolean };
+    if (head.missing) {
+      // one kept as missing says why; one that does not was kept before a
+      // fetch that failed was told from a server's answer — a 200 whose
+      // body never came among them — and is asked for again
+      return typeof head.status === 'number' || head.refused ? null : undefined;
+    }
     return { ...head, bytes: new Uint8Array(readFileSync(body)) };
   }
 
-  private _write(url: string, fetched: Fetched | null): void {
+  private _write(url: string, kept: Fetched | Missing): void {
     if (/^(document:)?file:/.test(url)) return;
     const { meta, body } = this._paths(url);
-    if (!fetched) {
-      writeFileSync(
-        meta,
-        JSON.stringify({ url, missing: true, answered: true }),
-      );
+    if (!('bytes' in kept)) {
+      writeFileSync(meta, JSON.stringify({ url, missing: true, ...kept }));
       return;
     }
-    const { bytes, ...head } = fetched;
+    const { bytes, ...head } = kept;
     writeFileSync(body, bytes);
     writeFileSync(meta, JSON.stringify(head));
   }
@@ -257,28 +258,30 @@ export class CachedNetwork {
     if (allowed !== url) return this.resource(allowed, kind, page);
     const kept = this._read(url);
     if (kept !== undefined) return kept;
-    let fetched = await this._network.resource(url, kind, page);
-    if (!fetched && /^https?:/i.test(url)) {
-      // nothing came back: the server has nothing there, or did not answer
-      let answered = false;
-      for (let attempt = 0; attempt < ATTEMPTS && !answered; attempt += 1) {
-        if (attempt) await pause(1000 * attempt);
-        const status = await this._status(url);
-        if (status === null || !answers(status)) continue;
-        answered = true;
-        // there after all: what the browser's network makes of it now is
-        // what there is, a file of a kind it does not take included
-        if (status < 300) {
-          fetched = await this._network.resource(url, kind, page);
-        }
+    for (let attempt = 1; ; attempt += 1) {
+      const loaded = await this._network.load(url, kind, page);
+      if ('fetched' in loaded) {
+        this._write(url, loaded.fetched);
+        return loaded.fetched;
       }
-      if (!answered) {
+      // what the browser does not ask for, and what a server says it has
+      // none of, is what there is
+      if (
+        'refused' in loaded ||
+        ('status' in loaded && answers(loaded.status))
+      ) {
+        this._write(url, loaded);
+        return null;
+      }
+      // a local file that could not be read is read again next run anyway
+      if (!/^https?:/i.test(url)) return null;
+      // no answer, or a busy server
+      if (attempt === ATTEMPTS) {
         this._dropped.push(url);
         return null;
       }
+      await backoff.wait(1000 * attempt);
     }
-    this._write(url, fetched);
-    return fetched;
   }
 
   /** A document, whole, as the example reads one: its bytes decoded in the
@@ -291,7 +294,7 @@ export class CachedNetwork {
       if (attempt === ATTEMPTS) {
         throw new Error(`no answer from the server for ${url}`);
       }
-      if (attempt) await pause(1000 * attempt);
+      if (attempt) await backoff.wait(1000 * attempt);
       try {
         const response = await this._network.document(
           url,
@@ -299,18 +302,19 @@ export class CachedNetwork {
         );
         const chunks: Uint8Array[] = [];
         for await (const chunk of response.body) chunks.push(chunk);
-        if (!answers(response.status)) continue;
+        const { status } = response;
+        if (!answers(status)) continue;
         kept =
-          response.status < 300
+          status < 300
             ? {
                 url: response.url,
-                status: response.status,
+                status,
                 type: response.type,
                 charset: response.charset,
                 bytes: new Uint8Array(Buffer.concat(chunks)),
               }
             : null;
-        this._write(`document:${url}`, kept);
+        this._write(`document:${url}`, kept ?? { status });
       } catch {
         // no response at all: asked again
       }

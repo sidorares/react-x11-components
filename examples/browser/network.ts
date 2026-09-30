@@ -73,6 +73,28 @@ export interface Fetched {
   bytes: Uint8Array;
 }
 
+/**
+ * What came of asking for a resource: its body, or why there is none. A
+ * page needs only the body (`resource`); something that keeps what it is
+ * given — the Zen Garden bench's cache on disk — has to tell a server that
+ * has nothing there from a request that never got an answer, a 200 whose
+ * body timed out among them.
+ */
+export type Loaded =
+  /** A 2xx, and its body. */
+  | { fetched: Fetched }
+  /** Nothing asked for, and nothing to ask again: a URL the page may not
+   *  have — a secure page's insecure stylesheet or font, a `file:` URL
+   *  from the web, a scheme this does not fetch — or one with nothing in
+   *  it to read, a `data:` URL that is not one or a local path that is not
+   *  a file. */
+  | { refused: true }
+  /** The server answered, with a status that is not a 2xx. */
+  | { status: number }
+  /** No answer: the connection failed, the server took too long, the body
+   *  was cut short, or the page went away before the request was made. */
+  | { failed: unknown };
+
 /** A document on its way: the head of the response, and the body as it
  *  arrives. */
 export interface DocumentResponse {
@@ -121,7 +143,7 @@ interface Queued {
 }
 
 export class Network {
-  private _cache = new Map<string, Promise<Fetched | null>>();
+  private _cache = new Map<string, Promise<Loaded>>();
   private _sizes = new Map<string, number>();
   private _bytes = 0;
   private _limit: number;
@@ -158,16 +180,25 @@ export class Network {
     page: string,
     signal?: AbortSignal,
   ): Promise<Fetched | null> {
+    return this.load(url, kind, page, signal).then((loaded) =>
+      'fetched' in loaded ? loaded.fetched : null,
+    );
+  }
+
+  /** A resource as `resource` has it, and when there is none, why. */
+  load(
+    url: string,
+    kind: ResourceKind,
+    page: string,
+    signal?: AbortSignal,
+  ): Promise<Loaded> {
+    const refused = Promise.resolve<Loaded>({ refused: true });
     const allowed = mixedContent(url, kind, page);
-    if (allowed === null) return Promise.resolve(null);
-    if (allowed !== url) return this.resource(allowed, kind, page, signal);
+    if (allowed === null) return refused;
+    if (allowed !== url) return this.load(allowed, kind, page, signal);
     const scheme = schemeOf(url);
-    if (scheme === 'file' && schemeOf(page) !== 'file') {
-      return Promise.resolve(null);
-    }
-    if (!['http', 'https', 'data', 'file'].includes(scheme)) {
-      return Promise.resolve(null);
-    }
+    if (scheme === 'file' && schemeOf(page) !== 'file') return refused;
+    if (!['http', 'https', 'data', 'file'].includes(scheme)) return refused;
     const hit = this._cache.get(url);
     if (hit) {
       // most recently used goes to the end, oldest is evicted first
@@ -190,17 +221,17 @@ export class Network {
                 }),
           );
     const promise = made.then(
-      (fetched) => {
+      (fetched): Loaded => {
         if (!fetched || fetched.status < 200 || fetched.status >= 300) {
-          log(kind, fetched ? fetched.status : 'not made', url);
+          log(kind, fetched ? fetched.status : 'nothing to read', url);
           this._cache.delete(url);
-          return null;
+          return fetched ? { status: fetched.status } : { refused: true };
         }
         log(kind, fetched.status, fetched.type, fetched.bytes.length, url);
         this._remember(url, fetched.bytes.length);
-        return fetched;
+        return { fetched };
       },
-      (error) => {
+      (error): Loaded => {
         log(
           kind,
           'failed',
@@ -209,7 +240,7 @@ export class Network {
           (error as { cause?: unknown })?.cause,
         );
         this._cache.delete(url);
-        return null;
+        return { failed: error };
       },
     );
     this._cache.set(url, promise);
@@ -219,7 +250,7 @@ export class Network {
   /** Put a body in the cache that arrived some other way — a document that
    *  turned out to be an image, which its page then asks for. */
   seed(fetched: Fetched): void {
-    this._cache.set(fetched.url, Promise.resolve(fetched));
+    this._cache.set(fetched.url, Promise.resolve({ fetched }));
     this._remember(fetched.url, fetched.bytes.length);
   }
 
@@ -313,17 +344,17 @@ export class Network {
 
   /** Run a request when its host has a slot: six at a time a host, twenty
    *  four in all. A request whose page went away before it started is not
-   *  made. */
+   *  made, and fails with the page's reason. */
   private _paced<T>(
     url: string,
     signal: AbortSignal | undefined,
     run: () => Promise<T>,
-  ): Promise<T | null> {
+  ): Promise<T> {
     const host = hostOf(url);
-    return new Promise<T | null>((resolve, reject) => {
+    return new Promise<T>((resolve, reject) => {
       const start = (): void => {
         if (signal?.aborted) {
-          resolve(null);
+          reject(signal.reason);
           this._next();
           return;
         }
@@ -359,7 +390,7 @@ export class Network {
   private async _fetch(
     url: string,
     options: { accept: string; referrer: string | null; limit: number },
-  ): Promise<Fetched | null> {
+  ): Promise<Fetched> {
     try {
       return await this._fetchOnce(url, options);
     } catch (error) {
@@ -373,7 +404,7 @@ export class Network {
   private async _fetchOnce(
     url: string,
     options: { accept: string; referrer: string | null; limit: number },
-  ): Promise<Fetched | null> {
+  ): Promise<Fetched> {
     const headers: Record<string, string> = {
       'user-agent': USER_AGENT,
       accept: options.accept,
