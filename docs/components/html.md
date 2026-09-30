@@ -908,7 +908,10 @@ buttons on the web — which a widget's text label drew as "Button". It is
 laid out and drawn like any box, in the palette's control look where the
 page leaves it alone, and a press on it is reported through
 `onControlChange`, with its `value`, as a widget's is; it takes no focus of
-its own.
+its own. Its text, like every control's, keeps none of the letter and word
+spacing, the line height, the case, the indent or the shadow of the text
+around it, as HTML's rendering section has it: a button in a body of
+`line-height: 1.5` is its own font's line tall.
 
 **A text field the page styled is the page's to draw.** Give an `<input>` or
 a `<textarea>` a border or a background of its own, or `appearance: none`,
