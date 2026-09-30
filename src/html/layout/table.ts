@@ -13,6 +13,7 @@
 // algorithm is too slow — which, on a table with a thousand rows, it is.
 import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
+import type { ComputedStyle } from '../css/style.js';
 import { Box, CLIPPED_CELLS, COLLAPSED_CELLS, isBlank } from './boxes.js';
 import {
   CELL_CONTENT,
@@ -77,7 +78,14 @@ export function layoutTable(
   const gaps = spacing * (columnCount + 1);
   const available = Math.max(0, contentWidth - gaps);
 
-  for (const cell of cells) resolveEdges(cell.box, contentWidth);
+  // While the columns are sized, a percentage in a cell's padding is of
+  // nothing: the width it is of is the one the columns are being sized to
+  // come to (CSS Sizing 3, 5.2.1), and a cell asks of its column what its
+  // content does. It is a share of the row once the columns have their
+  // widths, below. Taken of the table's width here, and of the cell's own
+  // where the cell was laid out, a padded cell's column was wider than
+  // its share and its padding narrower.
+  for (const cell of cells) resolveEdges(cell.box, 0);
 
   // a fixed layout needs a width to be fixed to; with `auto` a table is laid
   // out by its contents after all (CSS 2.1 17.5.2.1)
@@ -169,11 +177,21 @@ export function layoutTable(
   // tallest cell in it rather than the first one that was measured. What
   // its content came to is kept apart from a height the cell sets: it is
   // that content `vertical-align` moves in the cell.
+  //
+  // A percentage in a cell's padding is of the width of its row: the
+  // columns and the spacing between them, without the spacing either side
+  // and the table's own padding. CSS 2.1 8.4 has it of the containing
+  // block's width and names none for a cell; the row's is what browsers
+  // take, and what the table's content box is wherever there is no
+  // spacing. Every column counts, one `visibility: collapse` takes out
+  // too, so that taking it out changes no row's height.
+  let rowWidth = spacing * Math.max(0, columnCount - 1);
+  for (const columnWidth of widths) rowWidth += columnWidth;
   const natural: number[] = new Array<number>(cells.length);
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i];
     const width = spannedWidth(widths, cell, spacing);
-    ctx.layoutSubtree(cell.box, width);
+    ctx.layoutSubtree(cell.box, width, rowWidth);
     natural[i] = CELL_CONTENT.get(cell.box) ?? cell.box.height;
     // A height a cell sets is a least one: its content is laid out as a
     // block's, which keeps a height it sets and lets the content run out of
@@ -467,7 +485,7 @@ function fixedColumns(
   }
   for (const cell of cells) {
     if (cell.row > 0) break;
-    const px = tableWidth(cell.box.style.width, available);
+    const px = ownWidth(cell.box.style, available);
     if (px === null) continue;
     const box = cell.box;
     const outer =
@@ -711,14 +729,14 @@ function columnWidths(
 }
 
 /** A column's or a column group's width, within its limits, or null where
- *  it sets none. */
+ *  it sets none. The limits are lengths: a percentage in them does what it
+ *  does in a cell's (`cellWidth`). */
 function partWidth(box: Box, base: number): number | null {
   const style = box.style;
-  const width = tableWidth(style.width, base);
-  const min = lengthAgainst(style.minWidth, base) ?? 0;
+  const width = ownWidth(style, base);
+  const min = typeof style.minWidth === 'number' ? style.minWidth : 0;
   if (width === null && !(min > 0)) return null;
-  const max =
-    style.maxWidth === 'none' ? null : lengthAgainst(style.maxWidth, base);
+  const max = typeof style.maxWidth === 'number' ? style.maxWidth : null;
   let out = width ?? 0;
   if (max !== null) out = Math.min(out, max);
   return Math.max(0, out, min);
@@ -731,15 +749,20 @@ function partWidth(box: Box, base: number): number | null {
  *  `min-width` and `max-width` as a column's is (`partWidth`), which CSS
  *  2.1 leaves undefined and every browser does: a cell set `width: 3in;
  *  max-width: 1in` is an inch wide, and one with `min-width` alone is as
- *  wide as that. */
+ *  wide as that.
+ *
+ *  Where they are lengths. A percentage `min-width` is ignored, and a
+ *  percentage `max-width` holds a percentage `width` and nothing else
+ *  (CSS Tables 3, 3.8.2, and `ownWidth`): a cell `width: 100px;
+ *  max-width: 10%` in a table of 600 is 100 wide, where it was 60, and
+ *  one set `min-width: 150%` takes no more than its content asks. */
 function cellWidth(cell: Cell, base: number): number | null {
   const style = cell.box.style;
   const len = style.width;
-  const width = len === AUTO ? null : tableWidth(len, base);
-  const min = lengthAgainst(style.minWidth, base) ?? 0;
+  const width = ownWidth(style, base);
+  const min = typeof style.minWidth === 'number' ? style.minWidth : 0;
   if (width === null && !(min > 0)) return null;
-  const max =
-    style.maxWidth === 'none' ? null : lengthAgainst(style.maxWidth, base);
+  const max = typeof style.maxWidth === 'number' ? style.maxWidth : null;
   let own = width ?? 0;
   if (max !== null) own = Math.min(own, max);
   own = Math.max(0, own, min);
@@ -747,6 +770,19 @@ function cellWidth(cell: Cell, base: number): number | null {
     return Math.max(width, cell.box.horizontalExtra);
   }
   return own + cell.box.horizontalExtra;
+}
+
+/** A cell's, a column's or a column group's `width` as the columns read
+ *  it, or null: a percentage no more than a percentage its `max-width` is
+ *  — the percentage each contributes is `min(percentage width, percentage
+ *  max-width)`, a `max-width` that is no percentage counting as an
+ *  infinite one (CSS Tables 3, 3.8.2). */
+function ownWidth(style: ComputedStyle, base: number): number | null {
+  const width = tableWidth(style.width, base);
+  const limit = style.maxWidth;
+  if (width === null || !isPct(style.width)) return width;
+  if (limit === 'none' || !isPct(limit) || limit.px || limit.of) return width;
+  return Math.min(width, lengthAgainst(limit, base) ?? width);
 }
 
 /** A cell's or a column's width. One that adds a percentage to a length,
