@@ -440,6 +440,94 @@ test('a side cut to what the paint reaches keeps its slope', async () => {
   );
 });
 
+test('a 3D side cut to what the paint reaches keeps its slope', async () => {
+  // A thick 3D border's sides are four triangles that meet at the middle of
+  // the box. Cut by clamping their corners to the painted area, the joins
+  // crossed the damage at 45° wherever they really were: the top's triangle
+  // repainted 240,100 as (175,35) (325,35) (325,185), whose slope runs
+  // through the damage, where its true one is nowhere near it — and a
+  // scrolled strip smeared the corners.
+  const { borderShades } = await import('../../src/html/css/color.js');
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:0;height:0;border:500px inset #888888"></div>',
+  );
+  const { lit, shadowed } = borderShades(parseColor('#888888')!)!;
+  // each side's triangle, as how far a point is inside both its diagonals
+  const sides = {
+    top: {
+      shade: shadowed,
+      in: (x: number, y: number) => [x - y, 1000 - x - y],
+    },
+    right: { shade: lit, in: (x: number, y: number) => [x - y, x + y - 1000] },
+    bottom: { shade: lit, in: (x: number, y: number) => [y - x, x + y - 1000] },
+    left: {
+      shade: shadowed,
+      in: (x: number, y: number) => [y - x, 1000 - x - y],
+    },
+  };
+  const whole = await polygonsOf(node);
+  assert.deepStrictEqual(
+    whole.polygons.map((p) => p.points),
+    [
+      [0, 0, 1000, 0, 500, 500, 500, 500],
+      [1000, 0, 1000, 1000, 500, 500, 500, 500],
+      [1000, 1000, 0, 1000, 500, 500, 500, 500],
+      [0, 1000, 0, 0, 500, 500, 500, 500],
+    ],
+  );
+  // the damage beside the top's join with the left, where the two are one
+  // shade, and beside the left's with the bottom, where they are not
+  for (const { damage, join, pair } of [
+    {
+      damage: { x: 240, y: 100, width: 20, height: 20 },
+      join: (x: number, y: number) => y - x,
+      pair: ['top', 'left'],
+    },
+    {
+      damage: { x: 240, y: 680, width: 20, height: 20 },
+      join: (x: number, y: number) => x + y - 1000,
+      pair: ['bottom', 'left'],
+    },
+  ]) {
+    const { polygons } = await polygonsOf(node, damage);
+    const found: string[] = [];
+    for (const { style, points } of polygons) {
+      const corners: [number, number][] = [];
+      for (let i = 0; i < points.length; i += 2) {
+        corners.push([points[i], points[i + 1]]);
+      }
+      const at = `${damage.x},${damage.y}: ${corners.join(' ')}`;
+      assert.ok(
+        corners.every(
+          ([x, y]) =>
+            x >= damage.x - 65 &&
+            x <= damage.x + damage.width + 65 &&
+            y >= damage.y - 65 &&
+            y <= damage.y + damage.height + 65,
+        ),
+        `cut to the neighbourhood of the paint, ${at}`,
+      );
+      const name = (Object.keys(sides) as (keyof typeof sides)[]).find((side) =>
+        corners.every(([x, y]) => sides[side].in(x, y).every((d) => d > -1e-6)),
+      );
+      assert.ok(name, `inside one side's diagonals, ${at}`);
+      assert.strictEqual(style, sides[name].shade, `in its shade, ${at}`);
+      assert.strictEqual(
+        corners.filter(([x, y]) => Math.abs(join(x, y)) < 1e-6).length,
+        2,
+        `and two corners on the join, where it is cut, ${at}`,
+      );
+      found.push(name);
+    }
+    assert.deepStrictEqual(
+      found.sort(),
+      pair.sort(),
+      `the two sides it reaches`,
+    );
+  }
+});
+
 test("a percentage radius is of the box's width across and its height down", async () => {
   // `50%` was read as no radius, so an avatar was a square: a circle on a
   // square box, and an ellipse on any other, drawn as four curves

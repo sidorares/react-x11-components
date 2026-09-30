@@ -5071,10 +5071,12 @@ function sculpted(s: ComputedStyle): boolean {
  * colour's shadow and `outset` its bottom and right; `groove` is `inset`
  * outside `outset`, a band each, and `ridge` the other way round
  * (`borderShades`). A side of any other style takes its trapezoid in its
- * colour. The trapezoids are clamped to the painted area, which leaves a
- * cut end square and out of sight and keeps a long box's far corners out
- * of X's coordinates. False where the context cannot draw a path, and the
- * sides are drawn straight.
+ * colour. The trapezoids are cut to the painted area (`fillPolygon`), which
+ * keeps a long box's far corners out of X's coordinates and a join on its
+ * diagonal: its corners clamped in, a border wider than `CLAMP_PAD` turned
+ * the join to cross the damage at 45° wherever it was, and a scrolled
+ * strip smeared the corners of a thick one. False where the context cannot
+ * draw a path, and the sides are drawn straight.
  */
 function paintSculpted(
   ctx: PaintContext,
@@ -5093,10 +5095,6 @@ function paintSculpted(
   const r = box.borderRight;
   const b = box.borderBottom;
   const l = box.borderLeft;
-  const cx = (v: number) =>
-    Math.max(area.x - 1, Math.min(v, area.x + area.w + 1));
-  const cy = (v: number) =>
-    Math.max(area.y - 1, Math.min(v, area.y + area.h + 1));
   /** The band between the edge `outer` of the way in and `inner`, for one
    *  side: 0 is the border box, 1 the padding box. */
   const band = (side: number, outer: number, inner: number, color: string) => {
@@ -5117,12 +5115,7 @@ function paintSculpted(
             ? [o.x1, o.y1, o.x0, o.y1, i.x0, i.y1, i.x1, i.y1]
             : [o.x0, o.y1, o.x0, o.y0, i.x0, i.y0, i.x0, i.y1];
     ctx.fillStyle = color;
-    ctx.beginPath!();
-    ctx.moveTo!(cx(points[0]), cy(points[1]));
-    for (let k = 2; k < 8; k += 2)
-      ctx.lineTo!(cx(points[k]), cy(points[k + 1]));
-    ctx.closePath?.();
-    ctx.fill!();
+    fillPolygon(ctx, points, area);
   };
   const sides: [number, string, string][] = [
     [t, s.borderTopStyle, s.borderTopColor],
