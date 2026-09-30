@@ -68,6 +68,7 @@ import {
   parseQuotes,
 } from '../src/html/css/content.js';
 import { decodeStylesheet } from '../src/html/css/decode.js';
+import { lightDark, usedColorScheme } from '../src/html/css/color.js';
 import {
   INHERITED,
   NO_BORDER_IMAGE,
@@ -7645,6 +7646,120 @@ test('the palette in force answers prefers-color-scheme, and a switch re-cascade
   });
   await waitFor(() =>
     assert.strictEqual(colorOf(), '#00ff00', 'the dark branch under dark'),
+  );
+});
+
+test('light-dark() takes the branch the scheme picks, wherever a colour stands', () => {
+  assert.strictEqual(lightDark('light-dark(red, blue)', 'light'), 'red');
+  assert.strictEqual(lightDark('light-dark(red, blue)', 'dark'), 'blue');
+  // in a shorthand, with functions for branches, and the spelling's case
+  assert.strictEqual(
+    lightDark(
+      '1px solid LIGHT-DARK(oklab(89.755% 0 -0.0001), oklch(38% 0 271))',
+      'dark',
+    ),
+    '1px solid oklch(38% 0 271)',
+  );
+  // two in one value, and one inside another's branch
+  assert.strictEqual(
+    lightDark(
+      '0 0 1px light-dark(#111, #222), 0 0 2px light-dark(light-dark(#333, #444), #555)',
+      'light',
+    ),
+    '0 0 1px #111, 0 0 2px #333',
+  );
+  // a name that only ends in it is some other function
+  assert.strictEqual(
+    lightDark('--my-light-dark(red, blue)', 'dark'),
+    '--my-light-dark(red, blue)',
+  );
+  // one argument, or three, is no light-dark(): the declaration is invalid
+  assert.strictEqual(lightDark('light-dark(red)', 'light'), null);
+  assert.strictEqual(lightDark('light-dark(red, blue, green)', 'light'), null);
+  assert.strictEqual(lightDark('light-dark(, blue)', 'light'), null);
+});
+
+test("color-scheme resolves against the palette's scheme, which stands for the preference", () => {
+  // the preferred one where the element supports it
+  assert.strictEqual(usedColorScheme('light dark', 'dark'), 'dark');
+  assert.strictEqual(usedColorScheme('light dark', 'light'), 'light');
+  assert.strictEqual(usedColorScheme('dark light', 'light'), 'light');
+  // else the first it names that is a scheme
+  assert.strictEqual(usedColorScheme('dark', 'light'), 'dark');
+  assert.strictEqual(usedColorScheme('only light', 'dark'), 'light');
+  assert.strictEqual(usedColorScheme('sepia dark', 'light'), 'dark');
+  // `normal`, and a list of none the renderer has: the palette's own
+  assert.strictEqual(usedColorScheme('normal', 'dark'), 'dark');
+  assert.strictEqual(usedColorScheme('sepia', 'dark'), 'dark');
+  // not a color-scheme
+  for (const bad of [
+    'only',
+    'light only dark',
+    'normal dark',
+    '12px',
+    'light, dark',
+  ]) {
+    assert.strictEqual(usedColorScheme(bad, 'light'), null, bad);
+  }
+});
+
+test('a theme of light-dark() custom properties follows the palette, and color-scheme overrides it', async () => {
+  // melbcss.com's shape: every colour of the page a `light-dark()` on
+  // `:root`, reached through `var()`. Unread, every one of them was
+  // invalid at computed-value time: no backgrounds, no icons, no borders.
+  const source =
+    '<style>' +
+    ':root{color-scheme:light dark;--bg:light-dark(#ff0000,#00ff00)}' +
+    'p{margin:0;background-color:var(--bg);' +
+    'color:light-dark(#010101,#020202);' +
+    'border:1px solid light-dark(#030303,#040404)}' +
+    '.light{color-scheme:light}.dark{color-scheme:only dark}' +
+    '.normal{color-scheme:normal}' +
+    '</style>' +
+    '<p id="a">a</p><p id="l" class="light">l</p>' +
+    '<div class="dark"><p id="d">d</p><p id="n" class="normal">n</p></div>';
+  const doc = (scheme: 'light' | 'dark') =>
+    h(
+      'window',
+      { width: 340, height: 200 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { colorScheme: scheme },
+        h(
+          'box',
+          { style: { width: 300, flexDirection: 'column' } },
+          h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        ),
+      ),
+    );
+  const result = await renderX11(
+    doc('light'),
+    FONTS ? { fonts: FONTS, wrap: false } : { backend: 'mock', wrap: false },
+  );
+  const looks = () => {
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    return Object.fromEntries(
+      ['a', 'l', 'd', 'n'].map((id) => {
+        const style = (boxOf(el, id) as unknown as { style: ComputedStyle })
+          .style;
+        return [
+          id,
+          [style.backgroundColor, style.color, style.borderTopColor].join(' '),
+        ];
+      }),
+    );
+  };
+  const LIGHT = '#ff0000 #010101 #030303';
+  const DARK = '#00ff00 #020202 #040404';
+  assert.deepStrictEqual(looks(), { a: LIGHT, l: LIGHT, d: DARK, n: LIGHT });
+
+  await act(async () => {
+    result.root.render(doc('dark'));
+  });
+  // `light` alone stays light, and `normal` is the palette's again under
+  // a parent that is only dark
+  await waitFor(() =>
+    assert.deepStrictEqual(looks(), { a: DARK, l: LIGHT, d: DARK, n: DARK }),
   );
 });
 

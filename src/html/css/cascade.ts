@@ -1196,7 +1196,8 @@ export class Cascade {
     // pick the face an `ex`, a `ch` or an `lh` in any declaration is
     // measured in, however the declarations are ordered. A `width: 10ex`
     // in a sheet under an inline `font-weight: 900` was measured in the
-    // family's regular face.
+    // family's regular face. The colour scheme goes ahead of the rest for
+    // the same reason: every `light-dark()` among them is read by it.
     let sized = false;
     let keyword = false;
     for (const c of candidates) {
@@ -1204,7 +1205,8 @@ export class Cascade {
         if (
           d.prop === 'font-family' ||
           d.prop === 'font-weight' ||
-          d.prop === 'font-style'
+          d.prop === 'font-style' ||
+          d.prop === 'color-scheme'
         ) {
           this._apply(style, parentStyle, d, ctxParent);
         } else if (d.prop === 'font-size' || d.prop === 'font') {

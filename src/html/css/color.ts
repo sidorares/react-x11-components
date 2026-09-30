@@ -1,4 +1,5 @@
 import * as ntk from 'react-x11/ntk';
+import { closingParen, topLevelComma } from './vars.js';
 
 // CSS Color 4's functional colours: read here, and written back in the one
 // form every drawing context reads — `#rrggbb`, or `rgba(r, g, b, a)` with
@@ -753,3 +754,89 @@ const REC2020_TO_XYZ: readonly Triple[] = [
   [26158966 / 99577255, 472592308 / 697040785, 8267143 / 139408157],
   [0, 19567812 / 697040785, 295819943 / 278816314],
 ];
+
+// --- colour schemes ---------------------------------------------------------
+
+/** Whether a value has a `light-dark()` in it. */
+export const LIGHT_DARK = /(?:^|[^\w-])light-dark\(/i;
+const LIGHT_DARK_AT = /(?:^|[^\w-])(light-dark\()/gi;
+
+/**
+ * A value with each `light-dark()` in it replaced by the branch `scheme`
+ * picks (CSS Color 5, 7): the first where the element's used colour
+ * scheme is light, the second where it is dark. Replaced in the text, as a
+ * `var()` is, so a branch can be any colour — or another `light-dark()` —
+ * in any value a colour stands in. Null where one is not two arguments,
+ * which makes the declaration invalid.
+ */
+export function lightDark(
+  value: string,
+  scheme: 'light' | 'dark',
+): string | null {
+  let out = value;
+  // a branch can hold another, which the next round replaces
+  for (let round = 0; round < 32; round += 1) {
+    LIGHT_DARK_AT.lastIndex = 0;
+    const m = LIGHT_DARK_AT.exec(out);
+    if (!m) return out;
+    const open = m.index + m[0].length;
+    const start = open - m[1].length;
+    const close = closingParen(out, open);
+    if (close < 0) return null;
+    const inner = out.slice(open, close);
+    const comma = topLevelComma(inner);
+    if (comma < 0) return null;
+    const light = inner.slice(0, comma).trim();
+    const dark = inner.slice(comma + 1).trim();
+    if (!light || !dark || topLevelComma(dark) >= 0) return null;
+    out =
+      out.slice(0, start) +
+      (scheme === 'dark' ? dark : light) +
+      out.slice(close + 1);
+  }
+  return null;
+}
+
+/**
+ * The scheme an element with this `color-scheme` is drawn in (CSS Color
+ * Adjust 1, 2.2), given the one `preferred` — the palette's, which stands
+ * for the reader's preference: that one where the element supports it,
+ * else the first it names that is one, else the one `normal` gives, which
+ * is the palette's own too. Null for a value that is not a `color-scheme`.
+ */
+export function usedColorScheme(
+  value: string,
+  preferred: 'light' | 'dark' = 'light',
+): 'light' | 'dark' | null {
+  const words = value.trim().toLowerCase().split(/\s+/);
+  if (words.length === 1 && words[0] === 'normal') return preferred;
+  // `[ light | dark | <custom-ident> ]+ && only?`: `only` once, first or
+  // last, and never on its own
+  const only = words.indexOf('only');
+  if (only >= 0) {
+    if (only !== 0 && only !== words.length - 1) return null;
+    words.splice(only, 1);
+    if (!words.length) return null;
+  }
+  let first: 'light' | 'dark' | null = null;
+  for (const word of words) {
+    if (!SCHEME_IDENT.test(word) || NOT_SCHEMES.has(word)) return null;
+    if (word === preferred) return preferred;
+    if (!first && (word === 'light' || word === 'dark')) first = word;
+  }
+  return first ?? preferred;
+}
+
+const SCHEME_IDENT = /^-?(?:[a-z_]|--)[\w-]*$/;
+/** What a scheme's name cannot be: the keywords the grammar has, and the
+ *  CSS-wide ones, which reach here only in a list. */
+const NOT_SCHEMES = new Set([
+  'normal',
+  'only',
+  'inherit',
+  'initial',
+  'unset',
+  'revert',
+  'revert-layer',
+  'default',
+]);
