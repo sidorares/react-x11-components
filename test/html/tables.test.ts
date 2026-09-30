@@ -893,6 +893,56 @@ test("cells aligned on the baseline hang their first lines from the row's", asyn
   assert.strictEqual(b.y, a.y, 'and the other hangs from it');
 });
 
+test('a height a cell on the baseline sets is a least one, not room under its lift', async () => {
+  // CSS 2.1 17.5.3: a cell's height "does not increase the height of the
+  // cell box", and the row is the greatest of the heights its cells set and
+  // what the cells hung from its baseline need, the lift and their content,
+  // as in Chrome. The lift on top of the height made the row 40px taller
+  // than the cell set, and a cell spanning it was centred that much lower.
+  const { node } = await render(
+    '<style>body{margin:0} table{border-spacing:0}' +
+      ' td{padding:0;vertical-align:baseline}</style>' +
+      '<table id="t"><tr id="r">' +
+      '<td style="padding-top:40px"><div id="a">a</div></td>' +
+      '<td style="height:80px"><div id="b">b</div></td>' +
+      '<td rowspan="2" style="vertical-align:middle"><div id="m">m</div></td>' +
+      '</tr><tr id="r2"><td>x</td><td>y</td></tr></table>' +
+      // with no line in it, a cell's baseline is the bottom of what it
+      // holds, not of the height it sets
+      '<table id="u"><tr><td style="height:80px"><div style="height:30px">' +
+      '</div></td><td><div id="c">c</div></td></tr></table>' +
+      '<table id="v"><tr><td><div style="height:30px"></div></td>' +
+      '<td><div id="d">d</div></td></tr></table>',
+  );
+  const el = view(node);
+  const [t, r, a, b, r2, m, u, c, v, d] = [
+    't',
+    'r',
+    'a',
+    'b',
+    'r2',
+    'm',
+    'u',
+    'c',
+    'v',
+    'd',
+  ].map((id) => boxOf(el, id));
+  assert.strictEqual(r.height, 80, `the height the cell sets: ${r.height}`);
+  assert.strictEqual(a.y, t.y + 40, 'the padded cell sets the baseline');
+  assert.strictEqual(b.y, a.y, 'and the one with a height hangs from it');
+  assert.strictEqual(
+    m.y - t.y,
+    (r.height + r2.height - m.height) / 2,
+    'the spanning cell is centred in the rows',
+  );
+  assert.strictEqual(u.height, 80, `a height and a block: ${u.height}`);
+  assert.strictEqual(
+    c.y - u.y,
+    d.y - v.y,
+    'hung from the bottom of the block, as with no height',
+  );
+});
+
 test("a table cell takes its row's vertical-align", async () => {
   // HTML's rendering rules make the rows middle and the cells inherit, so
   // `<tr valign="top">`, all over mail, sets its cells at the top
