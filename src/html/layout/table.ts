@@ -17,7 +17,10 @@ import type { ComputedStyle } from '../css/style.js';
 import { Box, CLIPPED_CELLS, COLLAPSED_CELLS, isBlank } from './boxes.js';
 import {
   CELL_CONTENT,
+  FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
+  STRETCHED_ACROSS,
+  USED_HEIGHT,
   clampHeight,
   cyclicWidth,
   exactMinContent,
@@ -44,8 +47,11 @@ export function layoutTable(
   table.captionBottom = 0;
   // a percentage of a width that is not known is `auto`: the table is as
   // wide as its columns where its content is measured (`cyclicWidth`)
-  const auto =
+  const own =
     table.style.width === AUTO || cyclicWidth(table.style, contentWidth);
+  // — and one a grid stretches across its area is as wide as that, as a
+  // table with a width of its own is (`STRETCHED_ACROSS`)
+  const auto = own && !STRETCHED_ACROSS.has(table);
   if (!columnCount) {
     // With no columns, an auto table is as wide as its widest caption can
     // be and its `min-width` asks, as one with columns is at the least
@@ -88,8 +94,8 @@ export function layoutTable(
   for (const cell of cells) resolveEdges(cell.box, 0);
 
   // a fixed layout needs a width to be fixed to; with `auto` a table is laid
-  // out by its contents after all (CSS 2.1 17.5.2.1)
-  const fixed = style.tableLayout === 'fixed' && !auto;
+  // out by its contents after all (CSS 2.1 17.5.2.1), stretched or not
+  const fixed = style.tableLayout === 'fixed' && !own;
   // a percentage of the table's width less its spacing (CSS 2.1 17.5.2.1)
   const set = columnWidths(columnBoxes, columnGroups, available);
   const widths = fixed
@@ -240,8 +246,14 @@ export function layoutTable(
 
   // A table's own height, within its least and greatest, is a least
   // height: what its rows come short of it goes to them (CSS 2.1 17.5.3,
-  // which leaves how to its user agents: `growRows`)
+  // which leaves how to its user agents: `growRows`). So is the height a
+  // flex or grid layout gave it, stretched or flexed (`FLEXED_HEIGHT`,
+  // `USED_HEIGHT`), which is its wrapper box's, captions and all (CSS
+  // Flexbox 1, 4): taken as the table's box alone, a table stretched down
+  // its line kept its rows at their content's height, and a cell had
+  // nothing for `vertical-align` to centre its content in.
   const wanted = resolveOrNull(style.height, table.percentHeightBase);
+  const given = FLEXED_HEIGHT.get(table) ?? USED_HEIGHT.get(table) ?? NaN;
   if (rows.length) {
     const extraBox = table.verticalExtra;
     const set =
@@ -250,7 +262,10 @@ export function layoutTable(
         : style.boxSizing === 'border-box'
           ? wanted
           : wanted + extraBox;
-    const inner = clampHeight(table, set) - extraBox;
+    let inner = clampHeight(table, set) - extraBox;
+    if (Number.isFinite(given)) {
+      inner = Math.max(inner, given - table.captionTop - table.captionBottom);
+    }
     let total = 0;
     for (const h of rowHeight) total += h;
     const extra = inner - total - rowSpacing * (rows.length + 1);

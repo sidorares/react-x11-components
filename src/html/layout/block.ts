@@ -2324,8 +2324,9 @@ function stretchHeight(box: Box): number | null {
  * stretched item's, a flexed one's in a container of a definite height (CSS
  * Flexbox 9.8), a grid item's stretched down its area (CSS Grid 1, 11.1) —
  * which what is in it takes its percentages of, and which an item that is
- * a flex or grid container itself lays its own items out in. Set by
- * `flex.ts` and `css-grid.ts` for the item's own layout alone.
+ * a flex or grid container itself lays its own items out in, and a table
+ * shares out among its rows. Set by `flex.ts` and `css-grid.ts` for the
+ * item's own layout alone.
  */
 export const FLEXED_HEIGHT = new WeakMap<Box, number>();
 
@@ -2333,11 +2334,22 @@ export const FLEXED_HEIGHT = new WeakMap<Box, number>();
  * The content height a flex layout gave an item without making it definite:
  * flexed along a column that has no height of its own, which 9.8 leaves
  * indefinite. An item that is a flex or grid container lays its own items
- * out in it all the same — it is its used size (9.7) — and nothing in it
- * takes a percentage of it. Set by `flex.ts` for the item's own layout
- * alone.
+ * out in it all the same — it is its used size (9.7) — as a table shares
+ * it among its rows, and nothing in it takes a percentage of it. Set by
+ * `flex.ts` for the item's own layout alone.
  */
 export const USED_HEIGHT = new WeakMap<Box, number>();
+
+/**
+ * A table a grid stretches across its area, whose `auto` width is then the
+ * one it is laid out at. `normal` stretches any grid item but a replaced
+ * one (CSS Grid 1, 6.2), a table among them, where in a block's flow a
+ * table's `auto` width is its columns' (CSS 2.1 17.5.2; Blink leaves tables
+ * out of the boxes a block stretches, `space_utils.cc`, and stretches them
+ * in a grid, `grid_item.cc`). Set by `css-grid.ts` for the item's own
+ * layout alone, and never while its widths are measured.
+ */
+export const STRETCHED_ACROSS = new WeakSet<Box>();
 
 /**
  * Hand a box's children the height their percentages resolve against —

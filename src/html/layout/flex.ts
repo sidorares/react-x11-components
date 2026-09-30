@@ -590,14 +590,19 @@ function layoutItemAt(
   // size all the same (9.7), and `min-h-screen flex flex-col` around a
   // `flex-1 flex items-center` centres what is in that. At its content's
   // own height there is nothing to share, and the layout it has is that
-  // one: the tallest card of a row is laid out the once.
+  // one: the tallest card of a row is laid out the once. A table shares
+  // what it is given past its rows among them (`layoutTable`), and a
+  // height short of them is none it can have: it is laid out again where
+  // it was given more.
   const given = definite ?? (column ? height : null);
-  const shares =
-    box.kind === 'flex' &&
-    given !== null &&
-    !(
-      Math.abs(naturalHeight(box, ctx, width, containing, laid) - given) <= 0.01
-    );
+  let shares = false;
+  if (given !== null && (box.kind === 'flex' || box.kind === 'table')) {
+    const natural = naturalHeight(box, ctx, width, containing, laid);
+    shares =
+      box.kind === 'flex'
+        ? !(Math.abs(natural - given) <= 0.01)
+        : !(natural >= given - 0.01);
+  }
   if (given !== null) {
     const inner = Math.max(0, given - box.verticalExtra);
     if (Object.is(inner, percentBaseInside(box))) {
@@ -630,8 +635,16 @@ function layoutItemAt(
   // A stretched item is taller than its content, and the box has to say so
   // or its background stops short of the row — and it is no taller than its
   // line where its content is, or than what its ratio makes of its width:
-  // its height is the line's (CSS Flexbox 9.4, step 11).
-  if (height > box.height || column || definite !== null) box.height = height;
+  // its height is the line's (CSS Flexbox 9.4, step 11). But for a table,
+  // whose rows are the least it can be, however short its line (CSS 2.1
+  // 17.5.3, as a height of its own is; Blink: "Tables can't shrink below
+  // their min-intrinsic size").
+  if (
+    height > box.height ||
+    ((column || definite !== null) && box.kind !== 'table')
+  ) {
+    box.height = height;
+  }
   // and a button's content is centred in the height it came to
   centreButton(box);
   moveTo(box, x, y);
