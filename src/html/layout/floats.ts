@@ -153,6 +153,30 @@ export class FloatContext {
     return lowest;
   }
 
+  /** Move the floats placed since `mark` down by `dy`, with the block they
+   *  were placed in: a list item's first block goes lower to make room
+   *  for its marker once it is laid out (`layoutChildren`). */
+  moveSince(mark: number, dy: number): void {
+    if (!dy || mark >= this._boxes.length) return;
+    for (let i = mark; i < this._boxes.length; i += 1) {
+      const float = this._boxes[i];
+      this._boxes[i] = {
+        ...float,
+        top: float.top + dy,
+        bottom: float.bottom + dy,
+      };
+    }
+    this._lowestLeft = -Infinity;
+    this._lowestRight = -Infinity;
+    this._lastTop = -Infinity;
+    for (const float of this._boxes) {
+      if (float.top > this._lastTop) this._lastTop = float.top;
+      if (float.side === 'left')
+        this._lowestLeft = Math.max(this._lowestLeft, float.bottom);
+      else this._lowestRight = Math.max(this._lowestRight, float.bottom);
+    }
+  }
+
   /** How far down the floats reach — what a container that establishes a
    *  BFC has to grow to, so it does not end above its own floats. */
   get bottom(): number {

@@ -12772,8 +12772,7 @@ metric(
       );
     }
     assert.ok(boxOf(el, 'b').height >= 30, 'an empty item holds it too');
-    // and one whose first line is in a block inside it (where Chrome moves
-    // the block down, and this sets its first line as tall)
+    // and one whose first line is in a block inside it, which goes lower
     assert.ok(boxOf(el, 'c').height >= 30, 'an item around a block');
   },
 );
@@ -16862,5 +16861,76 @@ metric(
       580,
       "at the viewport's bottom in the window",
     );
+  },
+);
+
+metric(
+  "an outside marker that reaches above a block's first baseline moves the block down, and its line keeps its height",
+  async () => {
+    // CSS 2.1 12.5.1 leaves it to the user agent. Blink aligns the
+    // marker's baseline with the first baseline of the item's first block
+    // and pushes the block down by what the marker reaches above it
+    // (`UnpositionedListMarker::AddToBox`); the block's first line grew
+    // instead. Design 196's `display: block` links, under 18px bullets,
+    // were 21px tall where Chrome sets them 14px tall and 7px lower
+    const { el } = await renderWithBytes(
+      '<style>body{margin:0}ul{margin:0;padding:0 0 0 40px;font:10px/12px ' +
+        'sans-serif;list-style-image:url(tall.svg)}li,p{margin:0}' +
+        'a{display:block}</style><ul><li id="a"><a id="l">in a block</a>' +
+        '</li><li id="b"><div><p id="p">two blocks down</p></div></li>' +
+        // a float in the block goes down with it, and the next paragraph's
+        // line, which only the moved float reaches, is set beside it
+        '<li><p><span style="float:left;width:30px;height:25px"></span>x' +
+        '</p><p id="after">after</p></li></ul>',
+      {
+        'tall.svg': svgBytes(
+          `<svg ${SVG_NS} width="10" height="30">` +
+            '<rect width="10" height="30" fill="#ff0000"/></svg>',
+        ),
+      },
+    );
+    await act();
+    for (const [item, id] of [
+      ['a', 'l'],
+      ['b', 'p'],
+    ]) {
+      const block = boxOf(el, id);
+      const [line] = linesOf(el, id);
+      assert.ok(line, `#${id} has a line`);
+      assert.ok(
+        Math.abs(block.height - 12) < 0.01,
+        `#${id}'s line keeps its 12px: ${block.height}`,
+      );
+      const baseline = line.y + line.baseline - block.y;
+      assert.ok(
+        Math.abs(block.y - boxOf(el, item).y - (30 - baseline)) < 0.01,
+        `#${id} is 30px less its baseline, ${baseline}, into #${item}: ` +
+          `${block.y - boxOf(el, item).y}`,
+      );
+    }
+    const after = linesOf(el, 'after')[0];
+    assert.ok(
+      Math.abs(after.x - boxOf(el, 'after').x - 30) < 0.01,
+      `the line after the float is beside it: ${after.x}`,
+    );
+
+    // a bullet reaches its item's ascent, on a line of the item's height
+    const { node, result } = await render(
+      '<style>body{margin:0}ul{margin:0;padding:0 0 0 40px;font:20px/30px ' +
+        'sans-serif}li,p{margin:0}p{font:10px/12px sans-serif}</style>' +
+        '<ul><li id="own">own line</li><li id="i"><p id="q">small</p></li>' +
+        '</ul>',
+    );
+    const text = view(node);
+    const ascent = linesOf(text, 'own')[0].baseline;
+    const q = boxOf(text, 'q');
+    const [line] = linesOf(text, 'q');
+    const push = ascent - (line.y + line.baseline - q.y);
+    assert.ok(push > 5, `a 20px bullet reaches above 10px text: ${push}`);
+    assert.ok(
+      Math.abs(q.y - boxOf(text, 'i').y - push) < 0.01,
+      `the paragraph goes ${push}px lower: ${q.y - boxOf(text, 'i').y}`,
+    );
+    await result.unmount();
   },
 );

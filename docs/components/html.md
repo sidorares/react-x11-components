@@ -243,8 +243,11 @@ inline-block is. A list's marker hangs outside its item, or with
 `list-style-position: inside` is the first thing on its first line and
 takes its room there; a `list-style-image` is the marker where it loads —
 asked for through `onResource`, its bottom on the first line's baseline —
-and the `list-style-type`'s is until then (one taller than its line hangs
-over the line above, where a browser makes the line taller); a `::marker` rule sets its colour and its font, and a
+and the `list-style-type`'s is until then. An outside marker that reaches
+higher above its baseline than the item's first line does makes room as
+Blink does: the line grows where it is the item's own, and where it is in a
+block inside the item — a paragraph, a link set `display: block` — the
+block goes lower by the difference and keeps its height. A `::marker` rule sets its colour and its font, and a
 `content` sets it as that, counters and all. A list item counts with the
 `list-item` counter, which `<ol>`, `<ul>` and `<menu>` reset, and which
 `start`, `value`, `reversed` and `type` set as HTML has them: an
