@@ -60,6 +60,10 @@ export interface Stylesheet {
    *  keeps these so a resize can tell "the layout changed" from "the
    *  *cascade* changed", and restyle only when it crossed one. */
   breakpoints: number[];
+  /** Whether a `@media` rule in this sheet tests the viewport's height,
+   *  which makes a document restyle when the height moves, as a `vh`
+   *  does. */
+  readsHeight?: boolean;
   /** The `@font-face` rules, in order (see `fonts.ts`). */
   fontFaces: FontFaceRule[];
   /** `@counter-style` rules, in order: a name and its descriptors, which
@@ -94,12 +98,16 @@ export interface FontFaceSource {
   format: string | null;
 }
 
-/** The tests this evaluates live: a width, a colour scheme, or both.
+/** The tests this evaluates live: a width, a height, a colour scheme.
  *  Anything else — `orientation`, `print`, `prefers-reduced-motion` — is
  *  decided once, at parse time, by `staticPass`. */
 export interface MediaCondition {
   min?: number;
   max?: number;
+  /** The viewport's height, as `min`/`max` its width: `min-height`,
+   *  `max-height` and a range on `height` (Media Queries 4, 4.2). */
+  minHeight?: number;
+  maxHeight?: number;
   /** `prefers-color-scheme`, answered from the palette in force. */
   scheme?: 'light' | 'dark';
   /** Set when the query could not be evaluated as a width or scheme test:
@@ -229,6 +237,9 @@ export function parseStylesheet(
           for (const c of conditions) {
             if (c.min !== undefined) breakpoints.add(c.min);
             if (c.max !== undefined) breakpoints.add(c.max + MAX_EDGE);
+            if (c.minHeight !== undefined || c.maxHeight !== undefined) {
+              sheet.readsHeight = true;
+            }
           }
           // A nested `@media` intersects with the one above it; pushing a
           // level rather than merging keeps "all of these blocks hold" exact
@@ -335,6 +346,9 @@ export function parseStylesheet(
         for (const c of conditions) {
           if (c.min !== undefined) breakpoints.add(c.min);
           if (c.max !== undefined) breakpoints.add(c.max + MAX_EDGE);
+          if (c.minHeight !== undefined || c.maxHeight !== undefined) {
+            sheet.readsHeight = true;
+          }
         }
         styleRule(
           selectors,
@@ -1361,11 +1375,14 @@ const MAX_EDGE = 1 / 64;
  * null for a term that is not one. A strict bound is a sixty-fourth of a
  * pixel inside the value, where a viewport's width never lands.
  */
-function widthRange(term: string): { min?: number; max?: number } | null {
+function widthRange(
+  term: string,
+  feature: 'width' | 'height' = 'width',
+): { min?: number; max?: number } | null {
   const inner = /^\(\s*(.*?)\s*\)$/.exec(term)?.[1];
   if (!inner || !/[<>=]/.test(inner)) return null;
   const parts = inner.split(/\s*(<=|>=|<|>|=)\s*/);
-  const isWidth = (part: string) => part.toLowerCase() === 'width';
+  const isWidth = (part: string) => part.toLowerCase() === feature;
   const out: { min?: number; max?: number } = {};
   // `width OP value`, with the operator read from the width's side
   const bound = (op: string, value: string): boolean => {
@@ -1760,6 +1777,7 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
     const condition: MediaCondition = {};
     let pass = true;
     let sawWidth = false;
+    let sawHeight = false;
     const negated = /^\s*not\b/i.test(group);
     for (const part of group.split(/\s+and\s+/i)) {
       const term = part
@@ -1780,6 +1798,20 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
         sawWidth = true;
         continue;
       }
+      const heights = widthRange(term, 'height');
+      if (heights) {
+        if (heights.min !== undefined) {
+          condition.minHeight = Math.max(condition.minHeight ?? 0, heights.min);
+        }
+        if (heights.max !== undefined) {
+          condition.maxHeight = Math.min(
+            condition.maxHeight ?? Infinity,
+            heights.max,
+          );
+        }
+        sawHeight = true;
+        continue;
+      }
       const feature = mediaFeature(term);
       if (feature) {
         const key = feature[1].toLowerCase();
@@ -1791,6 +1823,15 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
         } else if (key === 'max-width' && px !== null) {
           condition.max = Math.min(condition.max ?? Infinity, px);
           sawWidth = true;
+        } else if (key === 'min-height' && px !== null) {
+          // the viewport's height, answered live as its width is: a
+          // design that sets its heading's size by the window's height
+          // took the tallest step's at every height
+          condition.minHeight = Math.max(condition.minHeight ?? 0, px);
+          sawHeight = true;
+        } else if (key === 'max-height' && px !== null) {
+          condition.maxHeight = Math.min(condition.maxHeight ?? Infinity, px);
+          sawHeight = true;
         } else if (key === 'prefers-color-scheme') {
           // Answered live, from the palette in force: a document dropped
           // into a dark application takes its dark branch, and follows the
@@ -1825,11 +1866,13 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
       // `not` over a scheme is the other scheme. `not` over a width range
       // is not expressible as one range; the honest reduction is to decide
       // it statically rather than invert it wrongly.
-      if (!sawWidth && pass && condition.scheme) {
+      if (!sawWidth && !sawHeight && pass && condition.scheme) {
         out.push({ scheme: condition.scheme === 'dark' ? 'light' : 'dark' });
         continue;
       }
-      out.push({ staticPass: !sawWidth && pass ? false : !pass });
+      out.push({
+        staticPass: !sawWidth && !sawHeight && pass ? false : !pass,
+      });
       continue;
     }
     if (!pass) {
@@ -1838,6 +1881,7 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
     }
     if (
       !sawWidth &&
+      !sawHeight &&
       condition.scheme === undefined &&
       condition.min === undefined &&
       condition.max === undefined
@@ -1959,6 +2003,9 @@ export function mediaMatches(
   media: MediaCondition[][] | null,
   width: number,
   scheme: 'light' | 'dark' = 'light',
+  /** The viewport's height in CSS pixels; a test of it holds at no height
+   *  where none is given. */
+  height = NaN,
 ): boolean {
   if (!media) return true;
   for (const block of media) {
@@ -1971,6 +2018,8 @@ export function mediaMatches(
       if (
         (c.min === undefined || width >= c.min) &&
         (c.max === undefined || width <= c.max) &&
+        (c.minHeight === undefined || height >= c.minHeight) &&
+        (c.maxHeight === undefined || height <= c.maxHeight) &&
         (c.scheme === undefined || c.scheme === scheme)
       ) {
         any = true;

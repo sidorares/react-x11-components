@@ -17666,3 +17666,26 @@ metric(
     );
   },
 );
+
+test("a media query on the viewport's height is answered from it, and again as it moves", async () => {
+  // Media Queries 4's `height` is the viewport's, as `width` is: a query
+  // on it was a feature nothing read, so it held at every height, and the
+  // Zen Garden's 216, which sets its heading's size in steps of the
+  // window's height, took the tallest step's
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}#t{height:10px}' +
+      '@media (min-height:400px){#t{height:40px}}' +
+      '@media (height >= 600px){#t{height:60px}}' +
+      '@media screen and (max-height:250px){#t{height:5px}}</style>' +
+      '<div id="t"></div>',
+    300,
+  );
+  const height = () => boxOf(el, 't').height;
+  assert.strictEqual(height(), 10, 'at 300px, none of the queries hold');
+  await resize(450);
+  assert.strictEqual(height(), 40, 'min-height: 400px holds at 450');
+  await resize(650);
+  assert.strictEqual(height(), 60, 'and the range at 650');
+  await resize(200);
+  assert.strictEqual(height(), 5, 'and max-height: 250px at 200');
+});
