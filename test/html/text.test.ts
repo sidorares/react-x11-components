@@ -310,6 +310,56 @@ test('an underline reaches the text of what is inside, in its own colour', async
   assert.ok(style('both').underline && style('both').lineThrough, 'both');
 });
 
+metric(
+  "a link's underline goes on under the space it ends on, and not where its line ends there",
+  async () => {
+    // the space white space collapses to is the first, in the element it
+    // was written in (CSS Text 3, 4.1.1), and a decoration is drawn under
+    // all of an element's text: a link written `text </a>` before another
+    // is underlined to the next one. The text engine lays a piece of a line
+    // out as a line and strips the space, and the underline stopped at the
+    // last letter — the Zen Garden's 066, its resource links a space apart
+    // and underlined to their letters. A space a line ends on is removed
+    // (4.1.2), and is nobody's to underline
+    const { node } = await render(
+      '<style>body{margin:0;font-size:16px}p{margin:0;width:300px}' +
+        'a{padding-left:10px}#a1{color:#ff0000}#a2{color:#0000ff}' +
+        '#a3{color:#00ff00}#a5{color:#ff00ff}</style>' +
+        '<p><a id="a1" href="#">one </a><a id="a2" href="#">two</a> ' +
+        '<a id="a3" href="#">three </a> ' +
+        '<a href="#">awordtoolongtofitwhatisleftofthefirstline</a> ' +
+        '<a id="a5" href="#">three</a></p>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const fills = await fillsOf(el);
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    /** Where the underline drawn in a colour ends. */
+    const ruled = (color: string): number => {
+      const ink = parseColor(color);
+      const rules = fills.filter((f) => f.style === ink && f.h <= 2);
+      assert.ok(rules.length > 0, `an underline in ${color}`);
+      return Math.max(...rules.map((f) => f.x + f.w));
+    };
+    const two = rect('a2');
+    assert.ok(
+      Math.abs(ruled('#ff0000') - two.x) < 1.5,
+      `under its space, to the next link: ${ruled('#ff0000')} of ${two.x}`,
+    );
+    const three = rect('a3');
+    assert.ok(rect('a5').y > three.y, 'the third link ends the first line');
+    assert.ok(
+      Math.abs(ruled('#00ff00') - (three.x + three.width)) < 1.5,
+      `to its letters where its line ends: ${ruled('#00ff00')} of ${three.x + three.width}`,
+    );
+    assert.ok(
+      Math.abs(three.width - rect('a5').width) < 0.01,
+      'which are as wide as the word alone',
+    );
+  },
+);
+
 test('text-decoration with a word it does not know is ignored, and draws every line it names', async () => {
   // CSS 2.1 4.2: the whole declaration goes, not the words after it
   const { node } = await render(

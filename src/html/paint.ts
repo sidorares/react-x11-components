@@ -4697,14 +4697,17 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     );
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
-      if (natural)
+      if (!natural) continue;
+      for (const laid of [natural, trailOf(text, natural)]) {
+        if (!laid) continue;
         paintRunBackgrounds(
           ctx,
-          natural,
+          laid,
           text.drawX + dx,
           text.drawY + dy,
           options.scale ?? 1,
         );
+      }
     }
     paintSelection(ctx, line, options);
   }
@@ -5147,10 +5150,12 @@ function paintRules(
     const shifted = SHIFTED_LINES.has(line);
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
-      if (natural) {
+      if (!natural) continue;
+      for (const laid of [natural, trailOf(text, natural)]) {
+        if (!laid) continue;
         paintRunRules(
           ctx,
-          natural,
+          laid,
           text.drawX + dx,
           text.drawY + dy + (shifted ? ruleDrop(text) : 0),
           scale,
@@ -5159,6 +5164,29 @@ function paintRules(
       }
     }
   }
+}
+
+/**
+ * The spaces a text ends on where its line goes on after them
+ * (`LineText.trail`), as a line of one run to draw the decorations of: the
+ * run they are the end of, as wide as they are, after the line's content.
+ * The engine stripped them from the piece it laid out as a line, and a
+ * link's underline stopped at its last letter, a space short of where a
+ * browser draws it. Null where the text has none, or reads right to left.
+ */
+function trailOf<L extends LineText['layout']['lines'][number]>(
+  text: LineText,
+  natural: L,
+): L | null {
+  if (!text.trail || !text.trailRun) return null;
+  const last = natural.runs[natural.runs.length - 1];
+  if (!last || last.run?.direction === 'rtl') return null;
+  return {
+    ...natural,
+    runs: [
+      { ...last, x: natural.width, width: text.trail, span: text.trailRun },
+    ],
+  };
 }
 
 /**
