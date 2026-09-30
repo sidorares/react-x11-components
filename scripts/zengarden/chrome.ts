@@ -18,6 +18,11 @@
 //   `background-attachment: fixed` image only where the first viewport
 //   was, and left the rest of a design's page white. Scrolled with the
 //   DevTools' own evaluation, which runs with the page's scripts off.
+// - **The light scheme** (`Emulation.setEmulatedMedia`): `ours.tsx` renders
+//   under a light palette, and headless Chrome otherwise follows the
+//   machine's appearance — so on a Mac in dark mode a page's
+//   `prefers-color-scheme` and `light-dark()` answered dark in one engine
+//   and light in the other.
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import {
@@ -204,6 +209,9 @@ export class Chrome {
       await send('Page.enable');
       await send('Network.enable');
       await send('Emulation.setScriptExecutionDisabled', { value: true });
+      await send('Emulation.setEmulatedMedia', {
+        features: [{ name: 'prefers-color-scheme', value: 'light' }],
+      });
       await send('Emulation.setDeviceMetricsOverride', {
         width,
         height,
