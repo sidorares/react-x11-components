@@ -6745,6 +6745,63 @@ test('a form control or a frame keeps its height when only its width is set', as
   assert.strictEqual(f.width, e.width, 'a frame 96px tall is as wide');
 });
 
+test("a button the page styled takes the web's UA edges, not the palette's", async () => {
+  // Codex gives Wikipedia's search button its side padding and a 32px
+  // min-height, and leaves the padding above and below the label to the
+  // browser: Chrome's 1px fits under the minimum, and the palette's did
+  // not, so the button stood taller than the field beside it and the flex
+  // row stretched the field's wrapper to match. The palette's chrome is for
+  // a button the page left alone; a background or a border of the page's,
+  // a radius among them, or `appearance: none`, drops it, as each drops a
+  // control's native look in Blink.
+  await renderX11(
+    h(
+      ThemeProvider,
+      { value: { paddingY: 7, borderWidth: 3, radius: 5 } } as Record<
+        string,
+        unknown
+      >,
+      h(
+        'box',
+        { style: { width: 600, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<button id="plain">Go</button>' +
+            '<button id="colored" style="color:red;cursor:default">Go</button>' +
+            '<button id="codex" style="border-width:1px;border-style:solid;' +
+            'padding-left:11px;padding-right:11px;min-height:32px">Go</button>' +
+            '<button id="filled" style="background:#eee">Go</button>' +
+            '<button id="round" style="border-radius:0">Go</button>' +
+            '<button id="bare" style="appearance:none">Go</button>',
+          partial: false,
+          // the palette's side padding is 0.75em
+          fontSize: 16,
+          'data-testname': 'doc',
+        }),
+      ),
+    ),
+    FONTS
+      ? { width: 640, height: 200, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const edges = (id: string) => {
+    const box = edgesOf(boxOf(el, id));
+    return [box.padTop, box.padLeft, box.borderLeft, box.style.borderRadius[0]];
+  };
+  assert.deepStrictEqual(edges('plain'), [7, 12, 3, 5], "the palette's");
+  assert.deepStrictEqual(
+    edges('colored'),
+    [7, 12, 3, 5],
+    'its colour and cursor are not its chrome',
+  );
+  assert.deepStrictEqual(edges('codex'), [1, 11, 1, 0], "Chrome's above");
+  assert.strictEqual(boxOf(el, 'codex').height, 32, 'its minimum holds it');
+  assert.deepStrictEqual(edges('filled'), [1, 6, 2, 0], "Chrome's all round");
+  assert.deepStrictEqual(edges('round'), [1, 6, 2, 0], 'a radius is a border');
+  assert.deepStrictEqual(edges('bare'), [1, 6, 2, 0], 'and so is appearance');
+});
+
 test("a control's text keeps none of the spacing, line height, case or indent around it", async () => {
   // HTML's rendering section, 15.3.10. melbcss.com's buttons sit in a body
   // of `line-height: 1.5`, and inherited it: each was half a line taller
@@ -14306,6 +14363,27 @@ test('a flex container lays its items out in its content box', async () => {
   assert.deepStrictEqual([d.x, d.y - 364], [140, 70]);
 });
 
+test("a flex item's negative margin takes its container's end back in", async () => {
+  // A flex box with no height is as tall as its items' margin boxes (CSS
+  // Flexbox 9.4, 9.8). Codex hangs Wikipedia's search field a pixel over
+  // its form's border with `margin: -1px`, and the form came out a pixel
+  // taller than Chrome's: a rule under the field. The bottom of each item
+  // was taken at its border box, which a negative margin ends inside of.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="a" style="display:flex;border:1px solid">' +
+      '<div style="flex:1;margin:-1px;height:32px"></div></div>' +
+      '<div id="b" style="display:flex">' +
+      '<div style="flex:1;margin-bottom:-5px;height:32px"></div></div>' +
+      '<div id="c" style="display:flex;flex-direction:column">' +
+      '<div style="margin-bottom:-5px;height:32px"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 32, 'its border and the field');
+  assert.strictEqual(boxOf(el, 'b').height, 27, 'across a row');
+  assert.strictEqual(boxOf(el, 'c').height, 27, 'down a column');
+});
+
 test('a flex item is no smaller than its content, unless its minimum says', async () => {
   // `min-width: auto` in a row and `min-height: auto` in a column are the
   // least an item's content comes to (CSS Flexbox 4.5). Yoga has no such
@@ -17054,6 +17132,47 @@ test("a media feature's value may hold parentheses of its own", async () => {
   assert.ok(!text.includes('narrow'), `and the narrow one does not: ${text}`);
 });
 
+test("device-width is the viewport's width", async () => {
+  // The Web-exposed screen area may be the viewport's (CSSOM View 2.3),
+  // and an element has no screen of its own. DuckDuckGo Lite keeps its
+  // phone sheet under `(max-device-width: 700px)`; the feature went unread,
+  // the query held at every width, and a desktop window drew the phone's
+  // 12px dropdowns, measured too narrow for the caption the widget draws
+  assert.deepStrictEqual(
+    parseMediaQuery('only screen and (max-device-width: 700px)'),
+    [{ max: 700 }],
+  );
+  assert.deepStrictEqual(parseMediaQuery('(min-device-width: 30em)'), [
+    { min: 480 },
+  ]);
+  assert.deepStrictEqual(parseMediaQuery('(device-width < 700px)'), [
+    { max: 700 - 1 / 64 },
+  ]);
+  // and device-height is the viewport's height, as height is
+  assert.deepStrictEqual(parseMediaQuery('(max-device-height: 500px)'), [
+    { maxHeight: 500 },
+  ]);
+  assert.deepStrictEqual(parseMediaQuery('(device-height >= 30em)'), [
+    { minHeight: 480 },
+  ]);
+  // and its landscape one runs a term into the `and` after it
+  assert.deepStrictEqual(
+    parseMediaQuery(
+      'only screen and (max-device-width: 701px)and (orientation: landscape)',
+    ),
+    [{ max: 701 }],
+  );
+  const source =
+    '<style>#phone{display:none}' +
+    '@media only screen and (max-device-width: 700px){' +
+    '#phone{display:block}#desk{display:none}}</style>' +
+    '<p id="desk">desk</p><p id="phone">phone</p>';
+  const wide = view((await render(source, 800)).node).textContent();
+  assert.strictEqual(wide.trim(), 'desk', 'a desktop window');
+  const narrow = view((await render(source, 400)).node).textContent();
+  assert.strictEqual(narrow.trim(), 'phone', 'a narrow one');
+});
+
 metric(
   "an inline flex box that clips sits on its first item's baseline, as it does unclipped",
   async () => {
@@ -17546,6 +17665,34 @@ metric(
 );
 
 metric(
+  'a line with no text on it keeps the lines in text order, so the text before it is found',
+  async () => {
+    // A line holding only an atomic that wrapped — here an inline-block,
+    // in #435 a submit button — recorded its text as [0, 0), after a line
+    // that ended at 4. Lines are found by their text with a binary search
+    // over those ranges as sorted, which that one broke: the span on the
+    // first line measured as no box, and the caret into it had nowhere
+    // to go.
+    const { node } = await render(
+      '<div style="width:200px"><span id="s">text</span>' +
+        '<span style="display:inline-block;width:190px;height:10px"></span>' +
+        '</div>',
+    );
+    const el = view(node);
+    const lines = (
+      el as unknown as {
+        _tree: { root: { children: { lines?: { y: number }[] }[] } };
+      }
+    )._tree.root.children[0].lines!;
+    assert.strictEqual(lines.length, 2, 'the inline-block wrapped alone');
+    const s = el.elementRect(findById(el.document, 's')!);
+    assert.ok(s && s.width > 0, `the span has its box: ${JSON.stringify(s)}`);
+    assert.strictEqual(s.y, lines[0].y, 'on the first line');
+    assert.ok(el.textCaretRect(2), 'and a caret inside it');
+  },
+);
+
+metric(
   "an inline box's padding below its line makes the document taller, where nothing clips it",
   async () => {
     // An inline box's fragments count in the scrollable overflow of the
@@ -17638,6 +17785,219 @@ metric(
     );
   },
 );
+
+test("a media query on the viewport's height is answered from it, and again as it moves", async () => {
+  // Media Queries 4's `height` is the viewport's, as `width` is: a query
+  // on it was a feature nothing read, so it held at every height, and the
+  // Zen Garden's 216, which sets its heading's size in steps of the
+  // window's height, took the tallest step's
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}#t{height:10px}' +
+      '@media (min-height:400px){#t{height:40px}}' +
+      '@media (height >= 600px){#t{height:60px}}' +
+      '@media screen and (max-height:250px){#t{height:5px}}</style>' +
+      '<div id="t"></div>',
+    300,
+  );
+  const height = () => boxOf(el, 't').height;
+  assert.strictEqual(height(), 10, 'at 300px, none of the queries hold');
+  await resize(450);
+  assert.strictEqual(height(), 40, 'min-height: 400px holds at 450');
+  await resize(650);
+  assert.strictEqual(height(), 60, 'and the range at 650');
+  await resize(200);
+  assert.strictEqual(height(), 5, 'and max-height: 250px at 200');
+});
+
+test("a control's text is the palette's size, not its parent's", async () => {
+  // Chrome gives input, select, button and textarea `font:
+  // -webkit-small-control`: the default size less 2pt, 13.33px under any
+  // body (Blink's html.css, `LayoutThemeFontProvider::SystemFontSize`). The
+  // system here is the palette, whose size core's widgets draw at; at
+  // `1em` a control took its parent's, so melbcss.com's select was set at
+  // the page's 16px where Chrome's is 13.33, and a select under a 20px
+  // body was measured for text the widget in it did not draw. The sheet's
+  // pixels are CSS pixels, so a button's palette chrome is too: written from
+  // the device look and scaled again by the cascade, it came out doubled.
+  // And a text field's widget writes at the size its box was measured for
+  const source =
+    '<body style="font-size:20px"><span id="t">x</span>' +
+    '<input id="i" placeholder="field"><select id="s"><option>a</option></select>' +
+    '<button id="b">Go</button><textarea id="a"></textarea>' +
+    '<meter id="m"></meter>' +
+    '<select id="own" style="font-size:inherit"></select></body>';
+  const sizes = async (scale: 1 | 2): Promise<number[][]> => {
+    const result = await renderX11(
+      h(
+        'window',
+        { width: 400, height: 200 } as Record<string, unknown>,
+        h(
+          ThemeProvider,
+          { value: { fontSize: 12 } } as Record<string, unknown>,
+          h(
+            'box',
+            { style: { width: 360, flexDirection: 'column' } },
+            h(Html, {
+              source,
+              partial: false,
+              fontSize: 16,
+              'data-testname': 'doc',
+            }),
+          ),
+        ),
+      ),
+      {
+        ...(FONTS ? { fonts: FONTS } : { backend: 'mock' as const }),
+        wrap: false,
+        ...(scale === 2 && { scale: 2 }),
+      },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const out = ['t', 'i', 's', 'b', 'a', 'm', 'own'].map(
+      (id) =>
+        (boxOf(el, id) as unknown as { style: { fontSize: number } }).style
+          .fontSize / scale,
+    );
+    const button = boxOf(el, 'b') as unknown as {
+      padTop: number;
+      borderTop: number;
+    };
+    const field = (await screen.findByPlaceholder('field')) as unknown as {
+      props: { style: Record<string, unknown> | Record<string, unknown>[] };
+    };
+    const written = [field.props.style]
+      .flat()
+      .reduce((all, one) => ({ ...all, ...one }), {}).fontSize as number;
+    await result.unmount();
+    return [out, [button.padTop / scale, button.borderTop / scale, written]];
+  };
+  const [text, chrome] = await sizes(1);
+  assert.deepStrictEqual(
+    text,
+    [20, 12, 12, 12, 12, 20, 20],
+    'text, the four controls at the palette size, a meter and a select ' +
+      'told to inherit at their parent size',
+  );
+  assert.deepStrictEqual(
+    chrome,
+    [12, 1, 12],
+    "a button in the palette's chrome, and a field's text at the palette size",
+  );
+  assert.deepStrictEqual(
+    await sizes(2),
+    [text, chrome],
+    'the same in CSS px at 2x',
+  );
+});
+metric("a select the page styled is the page's to draw", async () => {
+  // A `<select>` was the palette's framed dropdown whatever the page did to
+  // it, inside the page's padding: melbcss.com's, a background and 8px of
+  // padding, came out 64px tall and white-framed where Chrome draws a 34px
+  // box in the page's card colour. It is a field like the others now: the
+  // document draws its box, and core's `<Select>` goes bare in the content
+  // box, restyled through its slots so its value and its arrow are in the
+  // element's colour — the arrow left out at `appearance: none`, where the
+  // page draws its own.
+  const { countPixels } = await import('react-x11/test');
+  const { result, node } = await render(
+    '<style>body{margin:0}select{display:block;margin:0;width:200px}' +
+      '.own{padding:5px;border:10px solid #00ff00;background:#0000ff;' +
+      'color:#ff0000;font-size:20px}</style>' +
+      '<select id="own" class="own"><option>Wide option</option></select>' +
+      '<select id="none" class="own" style="appearance:none">' +
+      '<option>x</option></select>' +
+      '<select id="plain"><option>y</option></select>',
+  );
+  const el = view(node);
+  const rects = (
+    el as unknown as {
+      _controls: {
+        element: { attribs: Record<string, string> };
+        bare?: { chevron?: boolean } | null;
+      }[];
+    }
+  )._controls;
+  const rectOf = (id: string) =>
+    rects.find((r) => r.element.attribs.id === id)!;
+  assert.strictEqual(rectOf('own').bare?.chevron, true, 'bare, with an arrow');
+  assert.strictEqual(rectOf('none').bare?.chevron, false, 'bare, no arrow');
+  assert.ok(!rectOf('plain').bare, 'a select left alone keeps the frame');
+
+  const own = boxOf(el, 'own');
+  assert.strictEqual(
+    own.height,
+    Math.round(20 * 1.35) + 2 * 5 + 2 * 10,
+    'its line of text, and the padding and border around it: no chrome',
+  );
+  const at = (el as unknown as { abs: { x: number; y: number } }).abs;
+  const [trigger] = screen.getAllByRole('combobox') as unknown as {
+    abs: Record<string, number>;
+  }[];
+  assert.deepStrictEqual(
+    [trigger.abs.x - at.x, trigger.abs.y - at.y, trigger.abs.width],
+    [15, 15, 200],
+    'bare in the content box',
+  );
+
+  const content = (id: string, from: number, width: number) => {
+    const box = boxOf(el, id);
+    return {
+      x: at.x + box.x + 15 + from,
+      y: at.y + box.y + 15,
+      width,
+      height: box.height - 30,
+    };
+  };
+  const red = (id: string, from: number, width: number) =>
+    countPixels(result.ctx, content(id, from, width), '#ff0000', 60);
+  await waitFor(async () => {
+    assert.ok((await red('own', 0, 100)) > 20, "the value, in the page's ink");
+    assert.ok((await red('own', 176, 24)) > 4, 'the arrow, in it too');
+    const [r, g, b] = await pixelAt(
+      result.ctx,
+      at.x + own.x + 15 + 140,
+      at.y + own.y + own.height / 2,
+    );
+    assert.ok(
+      b > 200 && r < 60 && g < 60,
+      `the page's fill, not the palette's, under the trigger: ${r},${g},${b}`,
+    );
+  });
+  assert.strictEqual(await red('none', 176, 24), 0, 'no arrow');
+});
+
+test('place-content sets align-content then justify-content, the second the first again', async () => {
+  // melbcss.com centres its page with `body { display: grid; place-content:
+  // center }`: unread, the column stretched across the body and the page
+  // sat at its left edge. Each grid is 200 wide and 100 tall, around one
+  // 50 by 20 item.
+  const grid = (id: string, place: string) =>
+    `<div style="display:grid;width:200px;height:100px;place-content:${place}">` +
+    `<div id="${id}" style="width:50px;height:20px"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      grid('a', 'center') +
+      grid('b', 'end start') +
+      grid('c', 'unsafe center end') +
+      // a baseline is no justify-content: `start` stands in
+      grid('d', 'first baseline') +
+      // a half that is not one drops the declaration whole
+      grid('e', 'center bogus'),
+    400,
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const box = boxOf(el, id);
+    const grid = boxOf(el, id) as unknown as { parent: LaidBox };
+    return [box.x - grid.parent.x, box.y - grid.parent.y];
+  };
+  assert.deepStrictEqual(at('a'), [75, 40]);
+  assert.deepStrictEqual(at('b'), [0, 80]);
+  assert.deepStrictEqual(at('c'), [150, 40]);
+  assert.deepStrictEqual(at('d'), [0, 0]);
+  assert.deepStrictEqual(at('e'), [0, 0]);
+});
+
 
 test("a rem is the root element's font size, and the initial one in the root's own font size", async () => {
   // CSS Values 4, 6.1.1: a `rem` is the root element's computed font size,

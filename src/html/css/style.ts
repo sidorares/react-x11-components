@@ -700,6 +700,13 @@ export interface RootLook {
   controlPadY: number;
   controlBorder: number;
   controlRadius: number;
+  /**
+   * The size the palette's widgets set their text at, `theme.fontSize` — and
+   * so the size of a control's text, whatever the text around it is: a
+   * browser's controls take a system font rather than their parent's, and
+   * this is the system's. Without it, `fontSize`.
+   */
+  controlFontSize?: number;
 }
 
 export function initialStyle(look: RootLook, scale = 1): ComputedStyle {

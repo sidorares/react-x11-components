@@ -1176,8 +1176,10 @@ escape hatch, and the same reason: a drawn control takes no focus, says
 nothing to an assistive technology, blinks no caret and opens no menu. The
 cost is that the box in the flow has to be the size the widget will be
 _before the widget exists_, which is why `controls.ts` measures against the
-same font metrics and the same palette tokens (`paddingY`, `borderWidth`,
-`radius`) core's own widgets read. `<textinput>` and `<textarea>` are
+same font metrics and the same palette tokens (`fontSize`, `paddingY`,
+`borderWidth`, `radius`) core's own widgets read — the UA sheet sets a
+control's text at the palette's size, not its parent's, as Chrome sets it in
+a system font. `<textinput>` and `<textarea>` are
 elements rather than components and draw no frame of their own, so the
 component supplies one from those tokens — a form in a document and a form in
 the window around it have to be the same height. Two things are not widgets
@@ -1196,6 +1198,21 @@ component that silently made requests would turn "render this HTML" into
 "make these requests". A declined resource is an ordinary state, not an
 error. **Do not add a convenience default that fetches**; the absence is the
 feature.
+
+**A form is a link it writes itself, and it sends nothing either.**
+`onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
+entry list, encodes it and resolves the action, and the host decides
+whether the request goes anywhere — `examples/browser/` sends it. The pure
+half (which controls a form owns, what Enter submits, what a reset puts
+back, why a form is invalid) is `form.ts` and is tested with no display;
+the widgets, the presses on a `<button>`, a `<label>` or an image button,
+the validation message and `autofocus` are `widgets.ts`. Two things there
+are load-bearing: typed text lives in `FormState` beside the DOM — the
+`value` attribute is the field's default, and a `<textarea>` has none — and
+**a widget is keyed by its element, not by where it is.** Keyed by
+position, every relayout that moved a field (a stylesheet landing while
+someone typed) mounted a new widget, and the focus and the caret went with
+the old one.
 
 Two things it changed elsewhere, both extractions rather than copies:
 

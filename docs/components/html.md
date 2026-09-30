@@ -38,7 +38,8 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `onLink`          | `(href, ev) => void`                             | A link was activated. Absent, clicks do nothing — this never navigates by itself.                                                                                            |
 | `onDocument`      | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                   |
 | `onControlChange` | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                    |
-| `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14.                                                                                                                            |
+| `onSubmit`        | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                            |
+| `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                         |
 | `fontFamily`      | `string`                                         | Default `'sans-serif'`.                                                                                                                                                      |
 | `monoFamily`      | `string`                                         | Code font. Default `'monospace'` — there is no theme token for it.                                                                                                           |
 | `selectionColor`  | `string`                                         | Selection band fill. Default: theme accent at 35% opacity.                                                                                                                   |
@@ -195,6 +196,94 @@ registration, so the second is not asked for it at all. What is still the
 application's is the font manager's fallback chain: a registered face can
 supply a glyph that no other face has to text anywhere in the app, and
 nothing is ever unregistered, which react-x11's `loadFont` documents.
+
+## Forms
+
+```jsx
+<Html
+  source={page}
+  baseUrl={url}
+  onSubmit={(s) =>
+    s.method === 'get'
+      ? navigate(s.url)
+      : post(s.url, s.body, { 'content-type': s.contentType })
+  }
+/>
+```
+
+**A form is a link it writes itself, and `onSubmit` is `onLink` for it.**
+Pressing a submit button — an `<input type=submit>`, a `<button>`, an
+`<input type=image>` — or pressing Enter in a text field works out what a
+browser would send and hands it over, sending nothing: whether a POST goes
+anywhere is the host's to decide, as whether an image loads is. Without
+`onSubmit` a form submits nothing, and is not checked either.
+
+| Member        | What it is                                                                                                                                                                                          |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `form`        | The `<form>` element.                                                                                                                                                                               |
+| `submitter`   | The button that submitted it, or null for Enter in a form that has none.                                                                                                                            |
+| `method`      | `'get'` or `'post'`.                                                                                                                                                                                |
+| `url`         | The `action`, resolved as `onLink`'s `href` is — against the document's base, and an empty one is the document's own URL. A GET's has the entries as its query, so a GET is a link to exactly this. |
+| `enctype`     | `application/x-www-form-urlencoded`, `multipart/form-data` or `text/plain`.                                                                                                                         |
+| `entries`     | The `[name, value]` pairs, in tree order, unencoded.                                                                                                                                                |
+| `body`        | A POST's body, encoded as `enctype` says; null for a GET.                                                                                                                                           |
+| `contentType` | The `Content-Type` for the body — `multipart/form-data`'s names its boundary; null for a GET.                                                                                                       |
+| `target`      | `formtarget`, `target` or `<base target>`: `'_blank'` asks for a new browsing context, empty for this one.                                                                                          |
+
+What goes in `entries` is HTML's entry list (HTML 4.10.21.4): every control
+the form owns — inside it, or anywhere with a `form` attribute naming it —
+that is enabled (not `disabled`, and not in a disabled `<fieldset>` outside
+its first `<legend>`) and has a `name`; checkboxes and radios only when
+checked, with `on` where they have no `value`; a `<select>`'s selected
+options, the first one where none is marked; the button that submitted it
+and no other, and an image button as `name.x` and `name.y`, the point it
+was pressed at; `_charset_` and `dirname` as HTML fills them in. What was
+typed into a field is in them, sanitized as its type says — no line breaks
+in a single-line field, no white space around an email, nothing in a number
+field that is not a number. The button's `formaction`, `formmethod`,
+`formenctype` and `formtarget` win over the form's own; `method="dialog"`
+submits nothing.
+
+Enter submits as a browser's does (HTML 4.10.21.2): by the form's first
+submit button, and with none only when the form has at most one text field,
+since Enter in one of several would be a guess. A reset button puts every
+control the form owns back as its markup had it, typed text included. A
+press on a `<label>` is one on its control: a box is toggled, a radio
+checked, a button pressed and a field focused. The first control with
+`autofocus` is focused once the document is up — where nothing else in the
+window holds the focus, since a page never takes the keyboard from the
+application around it.
+
+**A form that breaks its own constraints does not submit, and says why.**
+`required`, `minlength`, `maxlength`, `pattern`, `min`, `max`, and an email
+or a URL that is not one stop the submission at the first control that is
+wrong: it takes the focus, and the reason — in a browser's words, "Please
+fill out this field." — is shown under it for a few seconds, or until the
+control changes. `novalidate` on the form, or `formnovalidate` on the
+button, turns it off. A length is checked only once something has been
+typed, as HTML checks it, and `maxlength` is also the most a field takes as
+it is typed into.
+
+**Encoded in UTF-8, always.** A browser encodes a form in the document's
+own encoding, or its `accept-charset`, so a Shift_JIS page's form sends
+Shift_JIS; this has no encoder but UTF-8, and says so in `_charset_`. A
+page in a legacy encoding that takes non-ASCII input needs the host to
+re-encode `entries` itself.
+
+**A file field sends no file.** `<input type=file>` is a text field here,
+and a submission carries it as a file with no name and no content, as a
+browser does when none was chosen. Reading a file is a host's business,
+through a dialog of its own; nothing here reaches the disk.
+
+**What was typed lives beside the DOM, not in it.** HTML's `value`
+attribute is a field's _default_ — what a reset puts back — and a
+`<textarea>`'s is its content, which is not an attribute at all, so the
+typed text is kept by the component, per element, and a widget mounted
+again (its element hidden and shown) comes back with it. An `<input>`'s is
+also written to its `value` attribute, as it always was, for a handler that
+reads it off the element. A checkbox, a radio and a `<select>` do keep what
+they hold in the DOM — `checked` and `selected` — because `:checked` is a
+selector documents really use.
 
 ## What renders
 
@@ -841,10 +930,16 @@ starts with a digit — is dropped whole, as CSS 2.1 drops it. Rules nest
 (CSS Nesting 1): a rule inside a rule's block is relative to it, `&`
 standing for it and a selector without one a descendant, and an `@media`,
 `@supports` or `@layer` inside one holds for the same element, which is how
-Tailwind 4 writes its `hover:` and `md:` variants. `@media` width and
-`prefers-color-scheme` queries are evaluated, widths in Media Queries 4's
-ranges, `(width >= 48rem)`, as well as `min-width`, a `calc()` in a value
-too — the scheme is the react-x11
+Tailwind 4 writes its `hover:` and `md:` variants. `@media` width, height
+and `prefers-color-scheme` queries are evaluated, widths and heights in
+Media Queries 4's ranges, `(width >= 48rem)`, as well as `min-width` and
+`min-height`, a `calc()` in a value too — the height is the viewport's, and
+a document that asks it is styled again when it moves, as one with a `vh`
+is. `device-width` and `device-height` are the viewport's too: they are the
+size of the screen a page is shown on, which a browser may answer with its
+viewport's, and a document drawn into an element has no screen of its own,
+so a phone sheet under `(max-device-width: 700px)` applies where the
+element is that narrow and not otherwise. The scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
 `@import` goes through the resource seam. Cascade layers are read (CSS
@@ -911,7 +1006,22 @@ it _is_ one; the same goes for checkboxes, radios, text fields and
 element, at the rectangles layout reserved for them — the escape hatch
 [`<Flow>`](flow.md) opened for a node whose body is a form. A drawn control
 would take no focus, say nothing to a screen reader, and have to reimplement
-every keyboard convention the platform already has.
+every keyboard convention the platform already has. A widget is keyed by
+its element rather than by where it is, so a field that layout moves — a
+stylesheet or an image arriving above it while someone types — is the same
+widget, and keeps its focus, its caret and its undo.
+
+**A control's text is the theme's size, whatever the page's is.** Chrome
+sets `<input>`, `<select>`, `<textarea>` and `<button>` in a system font,
+`-webkit-small-control`: the default size less 2pt, 13.33px under any body.
+Gecko does the same. The system here is the palette, so a control is set at
+the theme's `fontSize`, the size core's widgets draw their text at, and not
+at its parent's size. A document's form is then the size of the window's
+around it, and the box a control is measured into is the size of the widget
+mounted in it. The `fontSize` prop does not move it, since a host sets that
+to the web's 16px `medium` for its pages. A page that wants its own size sets
+it, `font: inherit` for one, as it would in a browser. A `<meter>` and a
+`<progress>` keep their parent's size, as they do in Chrome.
 
 A widget is drawn at the opacity its element and every ancestor come to,
 and at 0 not at all while it still takes a press, as the element does in a
@@ -923,12 +1033,24 @@ A `<button>` is the exception, because its content is the document's: an
 icon, a label in spans, a pill of the page's own design — most of the
 buttons on the web — which a widget's text label drew as "Button". It is
 laid out and drawn like any box, in the palette's control look where the
-page leaves it alone, and a press on it is reported through
-`onControlChange`, with its `value`, as a widget's is; it takes no focus of
-its own. Its text, like every control's, keeps none of the letter and word
-spacing, the line height, the case, the indent or the shadow of the text
-around it, as HTML's rendering section has it: a button in a body of
-`line-height: 1.5` is its own font's line tall.
+page leaves it alone. A background or a border of the page's, a radius
+among them, or `appearance: none`, takes that look off, as each takes a
+button's native look off in Blink, and what is left are Chrome's UA edges:
+1px above and below the label and 6px beside it, a 2px outset border,
+square corners and a border box. That is what a page that styles its
+buttons builds on — Codex sets the side padding of Wikipedia's search
+button and a 32px minimum, and leaves the rest to the browser — where the
+palette's padding stood the button taller than the field beside it. A
+press on it is reported through
+`onControlChange`, with its `value`, as a widget's is, and then does what
+the button does — submits its form, resets it, or nothing for
+`type=button`; it takes no focus of its own. Its text, like every control's,
+keeps none of the letter and word spacing, the line height, the case, the
+indent or the shadow of the text around it, as HTML's rendering section has
+it: a button in a body of `line-height: 1.5` is its own font's line tall.
+An `<input type=image>` is drawn the same way, as its image, and submits
+the point it was pressed at; until its image arrives, or where it is
+declined, it is a button saying its `alt`, so it can be pressed either way.
 
 **A text field the page styled is the page's to draw.** Give an `<input>`, a
 `<textarea>` or a `<select>` a border or a background of its own, or
@@ -1245,8 +1367,12 @@ requests go to — the page streamed in as it arrives, then every stylesheet,
 image and `@font-face` font through `onResource`, a few requests a host at a
 time, and none of a secure page's stylesheets or fonts over an insecure
 connection, which a browser blocks as mixed content (its images are asked
-for over a secure one instead). A tab shows the page's `<title>` and its icon; Ctrl+T (⌘T on macOS)
-opens one. It is where the component's policy — nothing fetched, nothing
+for over a secure one instead). A form's submission through `onSubmit` is a
+navigation like a link's: a GET goes to the URL it wrote, and a POST sends
+its body, with the `Origin` and `Referer` of the page it was on, and becomes
+a step of the history that Reload sends again. A tab shows the page's
+`<title>` and its icon; Ctrl+T (⌘T on macOS) opens one. It is where the
+component's policy — nothing fetched, nothing
 run — meets an application's: the browser fetches what a page asks for and
 runs none of its scripts.
 

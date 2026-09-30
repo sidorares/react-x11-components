@@ -393,6 +393,7 @@ export type {
   ControlRect as HtmlControlRect,
   Document as HtmlDocument,
   Element as HtmlElement,
+  FormSubmission as HtmlFormSubmission,
   HtmlHandle,
   HtmlProps,
   ResourceRequest as HtmlResourceRequest,

@@ -63,6 +63,7 @@ import { displayUrl, urlFromInput } from './address.js';
 import type { TabIcon } from './favicon.js';
 import Page from './page.js';
 import type { LinkTarget, PageProps } from './page.js';
+import type { PostData } from './network.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import { HOME, fileName } from './pages.js';
@@ -81,6 +82,9 @@ interface Entry {
    *  loaded, the page is not built again, and it only scrolls. */
   doc: number;
   url: string;
+  /** The form data its document answered, where a POST loaded it: a
+   *  reload sends it again. */
+  post: PostData | null;
   title: string | null;
   icon: TabIcon | null;
 }
@@ -92,6 +96,8 @@ interface Navigation {
   replace: boolean;
   /** Past the cache: a reload with Shift. */
   fresh: boolean;
+  /** A form's POST, or null for a GET. */
+  post: PostData | null;
 }
 
 interface Tab {
@@ -121,6 +127,7 @@ type Action =
       seq: number;
       url: string;
       title: string | null;
+      posted: boolean;
     }
   | { type: 'finish'; id: string; seq: number }
   | { type: 'stop'; id: string }
@@ -139,8 +146,13 @@ type Action =
 let counter = 0;
 const nextId = (): number => ++counter;
 
-function navigation(url: string, replace = false, fresh = false): Navigation {
-  return { seq: nextId(), url, replace, fresh };
+function navigation(
+  url: string,
+  replace = false,
+  fresh = false,
+  post: PostData | null = null,
+): Navigation {
+  return { seq: nextId(), url, replace, fresh, post };
 }
 
 function newTab(url: string, focusAddress = false): Tab {
@@ -207,6 +219,7 @@ function reducer(state: State, action: Action): State {
           id: nav.seq,
           doc: nav.seq,
           url: action.url,
+          post: action.posted ? nav.post : null,
           title: action.title,
           icon: null,
         };
@@ -271,15 +284,18 @@ function zoomStep(zoom: number, direction: 1 | -1): number {
 const withoutHash = (url: string): string => url.split('#')[0];
 
 /** Go to `url` in `tab`: a new step, and a `#fragment` of the document the
- *  tab shows is one that loads nothing — the page only scrolls. */
+ *  tab shows is one that loads nothing — the page only scrolls. A POST
+ *  always loads. */
 function navigateIn(
   tab: Tab,
   url: string,
   dispatch: (action: Action) => void,
+  post: PostData | null = null,
 ): void {
   const entry = tab.entries[tab.index];
   if (
     entry &&
+    !post &&
     url.includes('#') &&
     withoutHash(url) === withoutHash(entry.url)
   ) {
@@ -290,7 +306,11 @@ function navigateIn(
     });
     return;
   }
-  dispatch({ type: 'navigate', id: tab.id, nav: navigation(url) });
+  dispatch({
+    type: 'navigate',
+    id: tab.id,
+    nav: navigation(url, false, false, post),
+  });
 }
 
 /**
@@ -581,7 +601,7 @@ function Toolbar({
               dispatch({
                 type: 'navigate',
                 id: tab.id,
-                nav: navigation(entry.url, true),
+                nav: navigation(entry.url, true, false, entry.post),
               })
         }
       >
@@ -636,7 +656,7 @@ interface TabPageProps {
   inline: boolean;
   transport?: PaneTransport;
   dispatch: (action: Action) => void;
-  open: (url: string, background: boolean) => void;
+  open: (url: string, background: boolean, post?: PostData | null) => void;
   onCommand: (command: Command) => void;
 }
 
@@ -661,8 +681,8 @@ function TabPage({
   latest.current = tab;
 
   const onCommit = useCallback(
-    (seq: number, url: string, title: string | null) =>
-      dispatch({ type: 'commit', id, seq, url, title }),
+    (seq: number, url: string, title: string | null, posted: boolean) =>
+      dispatch({ type: 'commit', id, seq, url, title, posted }),
     [id, dispatch],
   );
   const onFinish = useCallback(
@@ -678,9 +698,9 @@ function TabPage({
     [id, dispatch],
   );
   const onLink = useCallback(
-    (url: string, target: LinkTarget) => {
-      if (target === 'here') navigateIn(latest.current, url, dispatch);
-      else open(url, target === 'background');
+    (url: string, target: LinkTarget, post: PostData | null) => {
+      if (target === 'here') navigateIn(latest.current, url, dispatch, post);
+      else open(url, target === 'background', post);
     },
     [dispatch, open],
   );
@@ -690,7 +710,11 @@ function TabPage({
       const now = latest.current;
       const shown = now.entries[now.index];
       if (shown?.id !== entryId || now.loading) return;
-      dispatch({ type: 'navigate', id, nav: navigation(shown.url, true) });
+      dispatch({
+        type: 'navigate',
+        id,
+        nav: navigation(shown.url, true, false, shown.post),
+      });
     },
     [id, dispatch],
   );
@@ -702,6 +726,7 @@ function TabPage({
     loadSeq: tab.loading?.seq ?? 0,
     loadUrl: tab.loading?.url ?? '',
     loadFresh: tab.loading?.fresh ?? false,
+    loadPost: tab.loading?.post ?? null,
     zoom: tab.zoom,
     docs: [...new Set(tab.entries.map((e) => e.doc))].join(','),
     onCommit,
@@ -824,22 +849,29 @@ export function Browser({
   const active = state.tabs.find((t) => t.id === state.active) ?? state.tabs[0];
   const entry = active.entries[active.index];
 
-  const open = useCallback((url: string, background: boolean) => {
-    dispatch({
-      type: 'open',
-      id: `tab-${nextId()}`,
-      nav: navigation(url),
-      background,
-    });
-  }, []);
+  const open = useCallback(
+    (url: string, background: boolean, post: PostData | null = null) => {
+      dispatch({
+        type: 'open',
+        id: `tab-${nextId()}`,
+        nav: navigation(url, false, false, post),
+        background,
+      });
+    },
+    [],
+  );
   const close = (id: string) =>
     dispatch({ type: 'close', id, fallback: newTab(HOME, true) });
+  // A page a form's POST loaded is loaded by sending the POST again — the
+  // browser would otherwise show what a GET of its URL gets, which is
+  // usually a different page. Browsers ask before they do; this one sends
+  // what the person sent a moment ago, to the site they sent it to.
   const reload = (fresh: boolean) => {
     if (entry) {
       dispatch({
         type: 'navigate',
         id: active.id,
-        nav: navigation(entry.url, true, fresh),
+        nav: navigation(entry.url, true, fresh, entry.post),
       });
     }
   };

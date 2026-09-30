@@ -920,6 +920,16 @@ function linesOf(
       placeDeferred();
       return;
     }
+    // A line with no text on it — a control, an image or an inline-block
+    // that wrapped on its own — stands where the text around it does: an
+    // empty range at the end of the line before, not at 0. What finds a
+    // line by its text binary-searches these ranges as sorted
+    // (`lineBands`, `caretAt`), and a textless line at 0 after a line of
+    // text sent the search past every line: a `<label>` on the line
+    // before a submit button that wrapped measured as no box at all.
+    if (!line.texts.length && lines.length) {
+      line.textStart = line.textEnd = lines[lines.length - 1].textEnd;
+    }
     lines.push(line);
     widest = Math.max(widest, line.width);
     y += line.height;

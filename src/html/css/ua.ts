@@ -9,8 +9,19 @@
 // author stylesheet still overrides all of it — that is what makes it a UA
 // sheet and not a skin.
 import { parseStylesheet } from './parse.js';
-import type { Stylesheet } from './parse.js';
+import type { Declaration, Stylesheet } from './parse.js';
 import type { RootLook } from './style.js';
+
+/**
+ * The declaration blocks that draw a control as the palette's widget rather
+ * than as the web's UA sheet has it. The cascade drops them from an element
+ * whose page styles its background or border (`Cascade`'s
+ * `dropPaletteChrome`), as Blink drops a control's native appearance
+ * (`LayoutTheme::IsControlStyled`), since a page that styles a control
+ * builds on the UA values a browser gives it. Keyed by the array, which is
+ * what a cascade candidate carries.
+ */
+export const PALETTE_CHROME = new WeakSet<Declaration[]>();
 
 /** Cache key → parsed sheet. The text depends only on the look, so two
  *  documents in one themed window parse this once between them. */
@@ -30,6 +41,7 @@ export function lookKey(look: RootLook): string {
     look.controlPadY,
     look.controlBorder,
     look.controlRadius,
+    look.controlFontSize,
   ].join('|');
 }
 
@@ -38,6 +50,13 @@ export function uaStylesheet(look: RootLook): Stylesheet {
   const hit = CACHE.get(key);
   if (hit) return hit;
   const sheet = parseStylesheet(uaText(look), -1_000_000);
+  // after the rest, so its values win over theirs while it applies
+  const last = sheet.rules[sheet.rules.length - 1];
+  const chrome = parseStylesheet(chromeText(look), last.order + 1);
+  for (const rule of chrome.rules) {
+    PALETTE_CHROME.add(rule.declarations);
+    sheet.rules.push(rule);
+  }
   if (CACHE.size > 8) CACHE.clear();
   CACHE.set(key, sheet);
   return sheet;
@@ -181,10 +200,19 @@ col { display: table-column; }
    makes a label and its input share a line. */
 input, button, select, textarea, meter, progress {
   display: inline-block;
-  font-family: ${look.fontFamily};
-  font-size: 1em;
   vertical-align: middle;
   margin: 3px 2px;
+}
+/* A control's text is a system font's, not its parent's: Chrome gives these
+   four \`font: -webkit-small-control\`, the default size less 2pt (13.33px)
+   at any size around it, and Gecko \`-moz-field\` the same. The system here
+   is the palette, and its size is the one core's widgets are set at — so a
+   document's form is its window's, and the box a control is measured into
+   is the size the widget mounted in it draws. A <meter> and a <progress>
+   keep their parent's, as they do in Chrome. */
+input, button, select, textarea {
+  font-family: ${look.fontFamily};
+  font-size: ${look.controlFontSize ?? look.fontSize}px;
 }
 /* Chrome's own UA margins for the checkables, near enough: they are the
    controls that sit hard against their label text otherwise. */
@@ -208,13 +236,16 @@ input[type=hidden] { display: none; }
 /* A <button> is drawn rather than mounted: its content is the document's —
    an icon, a label in spans, a pill of the page's own design, which is what
    most buttons on the web are — and the page restyles it as it restyles
-   anything. What the sheet gives one the page left alone is the palette's
-   control, the chrome a mounted widget around it has. */
+   anything. The edges here are Chrome's, which a page that styles its
+   buttons builds on: Codex gives Wikipedia's search button its side padding
+   and a 32px min-height, and leaves the 1px above and below the label, and
+   the border box the minimum holds, to the browser. One the page left alone
+   is the palette's control instead, below the rest of this sheet. */
 button {
   vertical-align: baseline;
-  padding: ${look.controlPadY}px 0.75em;
-  border: ${look.controlBorder}px solid ${look.borderColor};
-  border-radius: ${look.controlRadius}px;
+  box-sizing: border-box;
+  padding: 1px 6px;
+  border: 2px outset ${look.borderColor};
   background-color: ${look.surface};
   color: ${look.color};
   text-align: center;
@@ -233,5 +264,24 @@ details[open] > summary:first-of-type { list-style-type: disclosure-open; }
 /* 'hidden' is an attribute, not a style, and a document that uses it expects
    it to win over the display above. */
 [hidden] { display: none; }
+`;
+}
+
+/**
+ * The palette's control, for a `<button>` whose page left its background and
+ * border alone: the chrome a mounted widget has, so a form in a document is
+ * the size of the window's own. The rules land in `PALETTE_CHROME`, and a
+ * page that styles either loses all of them — Blink counts every background
+ * and border longhand, radius included — along with the native look it
+ * would lose in a browser. Nothing stays half the palette's and half the
+ * page's.
+ */
+function chromeText(look: RootLook): string {
+  return `
+button {
+  padding: ${look.controlPadY}px 0.75em;
+  border: ${look.controlBorder}px solid ${look.borderColor};
+  border-radius: ${look.controlRadius}px;
+}
 `;
 }

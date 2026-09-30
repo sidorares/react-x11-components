@@ -48,6 +48,7 @@ import type { FontFamilies } from '../fonts.js';
 import { parseDeclarations } from './parse.js';
 import { CounterStyles, counterStyleRule } from './counter-styles.js';
 import type { CounterStyleRule } from './counter-styles.js';
+import { PALETTE_CHROME } from './ua.js';
 import type { UnitContext } from './values.js';
 import { viewportUnit } from './values.js';
 import { customProperties, substituteIn } from './vars.js';
@@ -679,6 +680,8 @@ export class Cascade {
         this._noteHover((pseudo?.rule ?? rule).selector);
       }
       for (const bp of sheet.breakpoints) breakpoints.add(bp);
+      // a query on the viewport's height reads it as a `vh` does
+      if (sheet.readsHeight) this.readsViewportHeight = true;
     }
     this.breakpoints = [...breakpoints].sort((a, b) => a - b);
     this.counterStyles = new CounterStyles(counterStyles);
@@ -1403,12 +1406,15 @@ export class Cascade {
   ): void {
     // A media query's width is CSS pixels; the viewport is kept in device.
     const width = this.viewportWidth / this.scale;
+    const height = this.viewportHeight / this.scale;
 
     const consider = (bucket: IndexedRule[] | undefined): void => {
       if (!bucket) return;
       for (const indexed of bucket) {
         const rule = indexed.rule;
-        if (!mediaMatches(rule.media, width, this.look.colorScheme)) continue;
+        if (!mediaMatches(rule.media, width, this.look.colorScheme, height)) {
+          continue;
+        }
         if (!indexed.compiled) {
           indexed.compiled = true;
           try {
@@ -1489,8 +1495,57 @@ export class Cascade {
     }
 
     out.sort(byCascade);
+    dropPaletteChrome(out);
     return out;
   }
+}
+
+/**
+ * Takes the palette's control chrome (`PALETTE_CHROME`) out of an element's
+ * candidates where the page styles its background or border, so what shows
+ * through is the web's UA values the page was written against. The rule is
+ * Blink's (`LayoutTheme::IsControlStyled`): a background or border longhand
+ * set by the page, radius included, drops the control's native appearance;
+ * so does `appearance: none`. `out` is in cascade order, so the UA's
+ * candidates are the ones before the first of any other origin.
+ */
+function dropPaletteChrome(out: Candidate[]): void {
+  let chrome = false;
+  let i = 0;
+  for (; i < out.length && out[i].origin === Origin.UserAgent; i += 1) {
+    if (PALETTE_CHROME.has(out[i].declarations)) chrome = true;
+  }
+  if (!chrome) return;
+  let styled = false;
+  for (let j = i; j < out.length && !styled; j += 1) {
+    styled = pick(out[j]).some(stylesChrome);
+  }
+  if (!styled) return;
+  let kept = 0;
+  for (const c of out) {
+    if (c.origin === Origin.UserAgent && PALETTE_CHROME.has(c.declarations)) {
+      continue;
+    }
+    out[kept++] = c;
+  }
+  out.length = kept;
+}
+
+/** Whether a declaration styles what a control's native look draws: Blink's
+ *  `is_background` and `is_border` properties and their shorthands, and an
+ *  `appearance` of `none`. */
+function stylesChrome(d: Declaration): boolean {
+  const prop = d.prop;
+  if (prop.startsWith('background')) {
+    return prop !== 'background-repeat' && prop !== 'background-blend-mode';
+  }
+  if (prop.startsWith('border')) {
+    return prop !== 'border-collapse' && prop !== 'border-spacing';
+  }
+  return (
+    (prop === 'appearance' || prop === '-webkit-appearance') &&
+    d.value.trim().toLowerCase() === 'none'
+  );
 }
 
 /** An implied element's style as the root box's: its look, not its role —
@@ -1818,7 +1873,12 @@ function presentationHints(el: Element): Declaration[] {
   // `width`/`height` are lengths on the replaced and table elements and mean
   // nothing anywhere else, which is what stops a `<input width>` from
   // becoming a CSS width the widget then disagrees with.
-  if (SIZED.has(tag)) {
+  if (
+    SIZED.has(tag) ||
+    // an image button's are its image's, as an `<img>`'s are (HTML 15.4.3)
+    (tag === 'input' &&
+      (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
+  ) {
     const width = attr(el, 'width');
     if (width) push('width', lengthAttr(width));
     const height = attr(el, 'height');
