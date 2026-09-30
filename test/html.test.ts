@@ -17435,3 +17435,65 @@ metric(
     );
   },
 );
+
+metric(
+  "a bold word whose face reaches higher than its family's regular makes its line taller, as CSS stacks the boxes",
+  async () => {
+    // Each inline box has the paragraph's line height with its own
+    // half-leading, and the line box holds them all (CSS 2.1 10.8.1): a
+    // bold face that reaches higher than the regular one makes the line
+    // taller than its line height. A bold box was let past as keeping its
+    // family's line metrics, and its paragraph laid out in one call, whose
+    // lines are the line height times the tallest face. Helvetica Neue Bold
+    // is such a face, and the Zen Garden's 166 ran 3.2px long. A spy engine
+    // says the bold face reaches 3px higher than the engine's does
+    const { node } = await render(
+      '<p id="p" style="margin:0;font:16px/20px sans-serif">plain ' +
+        '<b>bold</b> plain</p>',
+    );
+    const el = view(node) as unknown as {
+      app: { fonts: FontsLike };
+      _source: { document: unknown };
+      _cascade: unknown;
+    };
+    const engine = el.app.fonts;
+    const higher: FontsLike = {
+      layout: (content, style, options) =>
+        engine.layout(content, style, options),
+      match: (family, style) => {
+        const face = engine.match(family, style);
+        const weight = (style as { weight?: unknown }).weight;
+        if (weight !== 700 && weight !== 'bold') return face;
+        const tall = Object.create(face) as typeof face;
+        tall.metrics = (size: number) => {
+          const m = face.metrics(size);
+          return { ...m, ascent: m.ascent + 3, lineHeight: m.lineHeight + 3 };
+        };
+        return tall;
+      },
+    };
+    const { buildBoxes } = await import('../src/html/layout/boxes.js');
+    const { layoutDocument } = await import('../src/html/layout/block.js');
+    const tree = buildBoxes(el._source.document as never, {
+      cascade: el._cascade as never,
+      scale: 1,
+      imageSize: () => null,
+      urlSize: () => null,
+      controlSize: () => ({ width: 0, height: 0 }) as never,
+    });
+    layoutDocument(tree, higher, 400, 600);
+    const find = (box: LaidBox): LaidBox | null => {
+      if (box.el?.attribs.id === 'p') return box;
+      for (const child of box.children) {
+        const hit = find(child);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    const p = find(tree.root as unknown as LaidBox)!;
+    assert.ok(
+      p.height > 20.5,
+      `the bold box's leading stacks over the strut's: ${p.height}`,
+    );
+  },
+);
