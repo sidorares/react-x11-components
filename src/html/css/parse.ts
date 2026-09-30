@@ -1356,6 +1356,18 @@ function readAtRule(text: string, at: number): AtRule {
 const MAX_EDGE = 1 / 64;
 
 /**
+ * The media features that are the viewport's width here. `device-width` is
+ * the width of the Web-exposed screen area (Media Queries 4, appendix A),
+ * which a user agent may answer with the viewport's (CSSOM View 2.3), and
+ * a document drawn into an element has no screen of its own to answer
+ * with. Deprecated, and still what a page from before `width` asks with:
+ * DuckDuckGo Lite's phone sheet is `(max-device-width: 700px)`, and a
+ * query that went unread held, so a desktop window got the phone's 12px
+ * dropdowns.
+ */
+const WIDTHS = new Set(['width', 'device-width']);
+
+/**
  * A width range in Media Queries 4's syntax — `(width >= 48rem)`, `(60rem >
  * width)`, `(40rem <= width < 60rem)` — as the widths it holds between, or
  * null for a term that is not one. A strict bound is a sixty-fourth of a
@@ -1365,7 +1377,7 @@ function widthRange(term: string): { min?: number; max?: number } | null {
   const inner = /^\(\s*(.*?)\s*\)$/.exec(term)?.[1];
   if (!inner || !/[<>=]/.test(inner)) return null;
   const parts = inner.split(/\s*(<=|>=|<|>|=)\s*/);
-  const isWidth = (part: string) => part.toLowerCase() === 'width';
+  const isWidth = (part: string) => WIDTHS.has(part.toLowerCase());
   const out: { min?: number; max?: number } = {};
   // `width OP value`, with the operator read from the width's side
   const bound = (op: string, value: string): boolean => {
@@ -1761,7 +1773,11 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
     let pass = true;
     let sawWidth = false;
     const negated = /^\s*not\b/i.test(group);
-    for (const part of group.split(/\s+and\s+/i)) {
+    // `and` needs white space after it, where a `(` would make it a
+    // function, and none after the `)` it follows: DuckDuckGo writes
+    // `(max-device-width: 701px)and (orientation: landscape)`, which read
+    // as one term that was no feature, and held
+    for (const part of group.split(/(?:\s+|(?<=\)))and\s+/i)) {
       const term = part
         .trim()
         .replace(/^not\s+/i, '')
@@ -1785,10 +1801,16 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
         const key = feature[1].toLowerCase();
         const len = parseLength(feature[2], ZERO_UNITS);
         const px = typeof len === 'number' ? len : null;
-        if (key === 'min-width' && px !== null) {
+        if (
+          (key === 'min-width' || key === 'min-device-width') &&
+          px !== null
+        ) {
           condition.min = Math.max(condition.min ?? 0, px);
           sawWidth = true;
-        } else if (key === 'max-width' && px !== null) {
+        } else if (
+          (key === 'max-width' || key === 'max-device-width') &&
+          px !== null
+        ) {
           condition.max = Math.min(condition.max ?? Infinity, px);
           sawWidth = true;
         } else if (key === 'prefers-color-scheme') {
