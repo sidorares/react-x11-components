@@ -30,6 +30,7 @@ export function lookKey(look: RootLook): string {
     look.controlPadY,
     look.controlBorder,
     look.controlRadius,
+    look.controlFontSize,
   ].join('|');
 }
 
@@ -181,10 +182,19 @@ col { display: table-column; }
    makes a label and its input share a line. */
 input, button, select, textarea, meter, progress {
   display: inline-block;
-  font-family: ${look.fontFamily};
-  font-size: 1em;
   vertical-align: middle;
   margin: 3px 2px;
+}
+/* A control's text is a system font's, not its parent's: Chrome gives these
+   four \`font: -webkit-small-control\`, the default size less 2pt (13.33px)
+   at any size around it, and Gecko \`-moz-field\` the same. The system here
+   is the palette, and its size is the one core's widgets are set at — so a
+   document's form is its window's, and the box a control is measured into
+   is the size the widget mounted in it draws. A <meter> and a <progress>
+   keep their parent's, as they do in Chrome. */
+input, button, select, textarea {
+  font-family: ${look.fontFamily};
+  font-size: ${look.controlFontSize ?? look.fontSize}px;
 }
 /* Chrome's own UA margins for the checkables, near enough: they are the
    controls that sit hard against their label text otherwise. */

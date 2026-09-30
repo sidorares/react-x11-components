@@ -17689,3 +17689,84 @@ test("a media query on the viewport's height is answered from it, and again as i
   await resize(200);
   assert.strictEqual(height(), 5, 'and max-height: 250px at 200');
 });
+
+test("a control's text is the palette's size, not its parent's", async () => {
+  // Chrome gives input, select, button and textarea `font:
+  // -webkit-small-control`: the default size less 2pt, 13.33px under any
+  // body (Blink's html.css, `LayoutThemeFontProvider::SystemFontSize`). The
+  // system here is the palette, whose size core's widgets draw at; at
+  // `1em` a control took its parent's, so melbcss.com's select was set at
+  // the page's 16px where Chrome's is 13.33, and a select under a 20px
+  // body was measured for text the widget in it did not draw. The sheet's
+  // pixels are CSS pixels, so a button's palette chrome is too: written from
+  // the device look and scaled again by the cascade, it came out doubled.
+  // And a text field's widget writes at the size its box was measured for
+  const source =
+    '<body style="font-size:20px"><span id="t">x</span>' +
+    '<input id="i" placeholder="field"><select id="s"><option>a</option></select>' +
+    '<button id="b">Go</button><textarea id="a"></textarea>' +
+    '<meter id="m"></meter>' +
+    '<select id="own" style="font-size:inherit"></select></body>';
+  const sizes = async (scale: 1 | 2): Promise<number[][]> => {
+    const result = await renderX11(
+      h(
+        'window',
+        { width: 400, height: 200 } as Record<string, unknown>,
+        h(
+          ThemeProvider,
+          { value: { fontSize: 12 } } as Record<string, unknown>,
+          h(
+            'box',
+            { style: { width: 360, flexDirection: 'column' } },
+            h(Html, {
+              source,
+              partial: false,
+              fontSize: 16,
+              'data-testname': 'doc',
+            }),
+          ),
+        ),
+      ),
+      {
+        ...(FONTS ? { fonts: FONTS } : { backend: 'mock' as const }),
+        wrap: false,
+        ...(scale === 2 && { scale: 2 }),
+      },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const out = ['t', 'i', 's', 'b', 'a', 'm', 'own'].map(
+      (id) =>
+        (boxOf(el, id) as unknown as { style: { fontSize: number } }).style
+          .fontSize / scale,
+    );
+    const button = boxOf(el, 'b') as unknown as {
+      padTop: number;
+      borderTop: number;
+    };
+    const field = (await screen.findByPlaceholder('field')) as unknown as {
+      props: { style: Record<string, unknown> | Record<string, unknown>[] };
+    };
+    const written = [field.props.style]
+      .flat()
+      .reduce((all, one) => ({ ...all, ...one }), {}).fontSize as number;
+    await result.unmount();
+    return [out, [button.padTop / scale, button.borderTop / scale, written]];
+  };
+  const [text, chrome] = await sizes(1);
+  assert.deepStrictEqual(
+    text,
+    [20, 12, 12, 12, 12, 20, 20],
+    'text, the four controls at the palette size, a meter and a select ' +
+      'told to inherit at their parent size',
+  );
+  assert.deepStrictEqual(
+    chrome,
+    [12, 1, 12],
+    "a button in the palette's chrome, and a field's text at the palette size",
+  );
+  assert.deepStrictEqual(
+    await sizes(2),
+    [text, chrome],
+    'the same in CSS px at 2x',
+  );
+});

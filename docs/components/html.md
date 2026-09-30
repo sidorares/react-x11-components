@@ -39,7 +39,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `onDocument`      | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                   |
 | `onControlChange` | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                    |
 | `onSubmit`        | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                            |
-| `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14.                                                                                                                            |
+| `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                         |
 | `fontFamily`      | `string`                                         | Default `'sans-serif'`.                                                                                                                                                      |
 | `monoFamily`      | `string`                                         | Code font. Default `'monospace'` — there is no theme token for it.                                                                                                           |
 | `selectionColor`  | `string`                                         | Selection band fill. Default: theme accent at 35% opacity.                                                                                                                   |
@@ -1004,6 +1004,18 @@ every keyboard convention the platform already has. A widget is keyed by
 its element rather than by where it is, so a field that layout moves — a
 stylesheet or an image arriving above it while someone types — is the same
 widget, and keeps its focus, its caret and its undo.
+
+**A control's text is the theme's size, whatever the page's is.** Chrome
+sets `<input>`, `<select>`, `<textarea>` and `<button>` in a system font,
+`-webkit-small-control`: the default size less 2pt, 13.33px under any body.
+Gecko does the same. The system here is the palette, so a control is set at
+the theme's `fontSize`, the size core's widgets draw their text at, and not
+at its parent's size. A document's form is then the size of the window's
+around it, and the box a control is measured into is the size of the widget
+mounted in it. The `fontSize` prop does not move it, since a host sets that
+to the web's 16px `medium` for its pages. A page that wants its own size sets
+it, `font: inherit` for one, as it would in a browser. A `<meter>` and a
+`<progress>` keep their parent's size, as they do in Chrome.
 
 A widget is drawn at the opacity its element and every ancestor come to,
 and at 0 not at all while it still takes a press, as the element does in a
