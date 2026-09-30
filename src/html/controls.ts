@@ -48,10 +48,11 @@ export interface ControlRect {
   width: number;
   height: number;
   /**
-   * Set on a text field whose own box the author styled — gave it a border
-   * or a background (`styledField`). The document draws that box, and the
-   * widget goes bare inside its content box, here, with no frame or fill
-   * of its own and its text in the element's colour and font.
+   * Set on a text field or a `<select>` whose own box the author styled —
+   * gave it a border or a background (`styledField`). The document draws
+   * that box, and the widget goes bare inside its content box, here, with
+   * no frame or fill of its own and its text in the element's colour and
+   * font.
    */
   bare?: BareField;
   /**
@@ -64,7 +65,7 @@ export interface ControlRect {
   opacity?: number;
 }
 
-/** Where a styled text field's widget goes, and how its text looks. */
+/** Where a styled field's widget goes, and how its text looks. */
 export interface BareField {
   x: number;
   y: number;
@@ -73,6 +74,12 @@ export interface BareField {
   color: string;
   fontFamily: string;
   fontSize: number;
+  /**
+   * A `<select>`'s: whether it draws its arrow. It does unless the page set
+   * `appearance: none`, which is how a page that draws its own arrow — as a
+   * background image, most often — says so.
+   */
+  chevron?: boolean;
 }
 
 /** The rectangles every control in a laid-out document landed on. */
@@ -105,6 +112,9 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
         color: box.style.color,
         fontFamily: box.style.fontFamily,
         fontSize: box.style.fontSize,
+        ...(box.replaced === 'select' && {
+          chevron: box.style.appearance !== 'none',
+        }),
       };
     }
     out.push(rect);
@@ -113,17 +123,23 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
 }
 
 /**
- * Whether a text field's box is the author's to draw: one given a border or
- * a background of its own, which the UA sheet gives no control, or set to
+ * Whether a field's box is the author's to draw: one given a border or a
+ * background of its own, which the UA sheet gives no control, or set to
  * `appearance: none`, which says so outright. A browser drops a field's
  * native look for the author's then (CSS UI 4 7.1, `appearance`), and so
  * does this: the widget's frame and fill would hide the author's, and what
  * they would draw is the theme's rather than the page's. `appearance: none`
  * is how a design system writes every field it has — meetup.com's search
  * pill holds two with no background, only one of them with a border.
+ *
+ * A `<select>` is one too. A browser keeps its arrow when the page gave it a
+ * border or a background (Blink's `menulist-button`), and leaves that out
+ * as well at `appearance: none` — `BareField.chevron`.
  */
 export function styledField(kind: ReplacedKind, style: ComputedStyle): boolean {
-  if (kind !== 'input' && kind !== 'textarea') return false;
+  if (kind !== 'input' && kind !== 'textarea' && kind !== 'select') {
+    return false;
+  }
   return (
     style.appearance === 'none' ||
     !isTransparent(style.backgroundColor) ||
@@ -183,6 +199,16 @@ export function measureControl(
     }
     case 'select': {
       const widest = optionWidths(el);
+      // a select the page styled is its widest option and its arrow, and
+      // the room around them is the page's
+      if (styledField(kind, style)) {
+        return {
+          width: Math.round(
+            ch * widest + (style.appearance === 'none' ? 0 : em),
+          ),
+          height: lineHeight,
+        };
+      }
       // The room for the chevron is the widget's, not the document's, but
       // the document has to reserve it or the last letter of the widest
       // option sits under it.

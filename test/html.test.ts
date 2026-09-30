@@ -5678,6 +5678,83 @@ test("a field set to appearance: none is the page's to draw", async () => {
   assert.ok(!plain.bare, "a field left alone keeps the theme's frame");
 });
 
+metric("a select the page styled is the page's to draw", async () => {
+  // A `<select>` was the palette's framed dropdown whatever the page did to
+  // it, inside the page's padding: melbcss.com's, a background and 8px of
+  // padding, came out 64px tall and white-framed where Chrome draws a 34px
+  // box in the page's card colour. It is a field like the others now: the
+  // document draws its box, and core's `<Select>` goes bare in the content
+  // box, restyled through its slots so its value and its arrow are in the
+  // element's colour — the arrow left out at `appearance: none`, where the
+  // page draws its own.
+  const { countPixels } = await import('react-x11/test');
+  const { result, node } = await render(
+    '<style>body{margin:0}select{display:block;margin:0;width:200px}' +
+      '.own{padding:5px;border:10px solid #00ff00;background:#0000ff;' +
+      'color:#ff0000;font-size:20px}</style>' +
+      '<select id="own" class="own"><option>Wide option</option></select>' +
+      '<select id="none" class="own" style="appearance:none">' +
+      '<option>x</option></select>' +
+      '<select id="plain"><option>y</option></select>',
+  );
+  const el = view(node);
+  const rects = (
+    el as unknown as {
+      _controls: {
+        element: { attribs: Record<string, string> };
+        bare?: { chevron?: boolean } | null;
+      }[];
+    }
+  )._controls;
+  const rectOf = (id: string) =>
+    rects.find((r) => r.element.attribs.id === id)!;
+  assert.strictEqual(rectOf('own').bare?.chevron, true, 'bare, with an arrow');
+  assert.strictEqual(rectOf('none').bare?.chevron, false, 'bare, no arrow');
+  assert.ok(!rectOf('plain').bare, 'a select left alone keeps the frame');
+
+  const own = boxOf(el, 'own');
+  assert.strictEqual(
+    own.height,
+    Math.round(20 * 1.35) + 2 * 5 + 2 * 10,
+    'its line of text, and the padding and border around it: no chrome',
+  );
+  const at = (el as unknown as { abs: { x: number; y: number } }).abs;
+  const [trigger] = screen.getAllByRole('combobox') as unknown as {
+    abs: Record<string, number>;
+  }[];
+  assert.deepStrictEqual(
+    [trigger.abs.x - at.x, trigger.abs.y - at.y, trigger.abs.width],
+    [15, 15, 200],
+    'bare in the content box',
+  );
+
+  const content = (id: string, from: number, width: number) => {
+    const box = boxOf(el, id);
+    return {
+      x: at.x + box.x + 15 + from,
+      y: at.y + box.y + 15,
+      width,
+      height: box.height - 30,
+    };
+  };
+  const red = (id: string, from: number, width: number) =>
+    countPixels(result.ctx, content(id, from, width), '#ff0000', 60);
+  await waitFor(async () => {
+    assert.ok((await red('own', 0, 100)) > 20, "the value, in the page's ink");
+    assert.ok((await red('own', 176, 24)) > 4, 'the arrow, in it too');
+    const [r, g, b] = await pixelAt(
+      result.ctx,
+      at.x + own.x + 15 + 140,
+      at.y + own.y + own.height / 2,
+    );
+    assert.ok(
+      b > 200 && r < 60 && g < 60,
+      `the page's fill, not the palette's, under the trigger: ${r},${g},${b}`,
+    );
+  });
+  assert.strictEqual(await red('none', 176, 24), 0, 'no arrow');
+});
+
 test('a replaced flex item is as wide as the flex layout made it', async () => {
   // Laid out alone a replaced box takes its own `width` or its intrinsic
   // one: two fields `width: 0; flex: 1` were no width at all, and so never
