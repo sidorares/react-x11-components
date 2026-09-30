@@ -364,6 +364,7 @@ export class HtmlViewNode extends Node {
             controlPadY: look.controlPadY * s,
             controlBorder: look.controlBorder * s,
             controlRadius: look.controlRadius * s,
+            controlFontSize: (look.controlFontSize ?? look.fontSize) * s,
           };
     this._deviceLookFor = look;
     this._deviceLookAt = s;
@@ -579,7 +580,10 @@ export class HtmlViewNode extends Node {
       kept.cascade.viewportHeight = this._viewportHeight();
       faces = kept.faces;
     } else {
-      const sheets: Stylesheet[] = [uaStylesheet(look)];
+      // the UA sheet's `px` are CSS pixels, which the cascade scales like an
+      // author's, so it is written from the look in CSS pixels: from the
+      // device one, a control's size and a button's chrome were doubled at 2x
+      const sheets: Stylesheet[] = [uaStylesheet(props.look)];
       const imports: ImportRead[][] = [];
       faces = [];
       let order = 0;

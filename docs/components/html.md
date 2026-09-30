@@ -39,7 +39,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `onDocument`      | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                   |
 | `onControlChange` | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                    |
 | `onSubmit`        | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                            |
-| `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14.                                                                                                                            |
+| `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                         |
 | `fontFamily`      | `string`                                         | Default `'sans-serif'`.                                                                                                                                                      |
 | `monoFamily`      | `string`                                         | Code font. Default `'monospace'` — there is no theme token for it.                                                                                                           |
 | `selectionColor`  | `string`                                         | Selection band fill. Default: theme accent at 35% opacity.                                                                                                                   |
@@ -933,7 +933,11 @@ and `prefers-color-scheme` queries are evaluated, widths and heights in
 Media Queries 4's ranges, `(width >= 48rem)`, as well as `min-width` and
 `min-height`, a `calc()` in a value too — the height is the viewport's, and
 a document that asks it is styled again when it moves, as one with a `vh`
-is — the scheme is the react-x11
+is. `device-width` and `device-height` are the viewport's too: they are the
+size of the screen a page is shown on, which a browser may answer with its
+viewport's, and a document drawn into an element has no screen of its own,
+so a phone sheet under `(max-device-width: 700px)` applies where the
+element is that narrow and not otherwise. The scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
 `@import` goes through the resource seam. Cascade layers are read (CSS
@@ -1005,6 +1009,18 @@ its element rather than by where it is, so a field that layout moves — a
 stylesheet or an image arriving above it while someone types — is the same
 widget, and keeps its focus, its caret and its undo.
 
+**A control's text is the theme's size, whatever the page's is.** Chrome
+sets `<input>`, `<select>`, `<textarea>` and `<button>` in a system font,
+`-webkit-small-control`: the default size less 2pt, 13.33px under any body.
+Gecko does the same. The system here is the palette, so a control is set at
+the theme's `fontSize`, the size core's widgets draw their text at, and not
+at its parent's size. A document's form is then the size of the window's
+around it, and the box a control is measured into is the size of the widget
+mounted in it. The `fontSize` prop does not move it, since a host sets that
+to the web's 16px `medium` for its pages. A page that wants its own size sets
+it, `font: inherit` for one, as it would in a browser. A `<meter>` and a
+`<progress>` keep their parent's size, as they do in Chrome.
+
 A widget is drawn at the opacity its element and every ancestor come to,
 and at 0 not at all while it still takes a press, as the element does in a
 browser: a CSS-only dropdown lays an invisible checkbox over its label, and
@@ -1015,7 +1031,15 @@ A `<button>` is the exception, because its content is the document's: an
 icon, a label in spans, a pill of the page's own design — most of the
 buttons on the web — which a widget's text label drew as "Button". It is
 laid out and drawn like any box, in the palette's control look where the
-page leaves it alone, and a press on it is reported through
+page leaves it alone. A background or a border of the page's, a radius
+among them, or `appearance: none`, takes that look off, as each takes a
+button's native look off in Blink, and what is left are Chrome's UA edges:
+1px above and below the label and 6px beside it, a 2px outset border,
+square corners and a border box. That is what a page that styles its
+buttons builds on — Codex sets the side padding of Wikipedia's search
+button and a 32px minimum, and leaves the rest to the browser — where the
+palette's padding stood the button taller than the field beside it. A
+press on it is reported through
 `onControlChange`, with its `value`, as a widget's is, and then does what
 the button does — submits its form, resets it, or nothing for
 `type=button`; it takes no focus of its own. Its text, like every control's,

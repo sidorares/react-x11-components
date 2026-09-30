@@ -57,6 +57,10 @@ const PALETTE = {
   surface: '#ffffff',
   border: '#808080',
   textMuted: '#000000',
+  // the size a form control's text is set at: Chrome's
+  // `-webkit-small-control`, the 16px default less 2pt
+  // (`LayoutThemeFontProvider::SystemFontSize`)
+  fontSize: 16 - (2 / 72) * 96,
 };
 
 /** Chrome's generic families on macOS. */

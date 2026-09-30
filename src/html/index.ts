@@ -234,6 +234,8 @@ function deriveLook(
     controlPadY: Number(theme.paddingY ?? 6),
     controlBorder: Number(theme.borderWidth ?? 1),
     controlRadius: Number(theme.radius ?? 4),
+    // not `fontSize`, which a host sets to the web's `medium` for pages
+    controlFontSize: Number(theme.fontSize ?? 14),
   };
 }
 
