@@ -1414,10 +1414,16 @@ function linesOf(
         }
         if (trailing) {
           // and noted: if what follows goes to the next line after all,
-          // these spaces end this one, where CSS removes them (16.6.1)
+          // these spaces end this one, where CSS removes them (16.6.1).
+          // As wide as the engine says they make its line where the line
+          // goes on, which a layout that fits as a browser does rounds with
+          // the text they end, once (`advance`): the text rounded up to a
+          // 64th and the spaces added after it came to more
           open.hang =
-            spaceAdvance(fonts, segment.runs[segment.runs.length - 1]) *
-            trailing.length;
+            first.advance !== undefined
+              ? first.advance - first.width
+              : spaceAdvance(fonts, segment.runs[segment.runs.length - 1]) *
+                trailing.length;
           open.x += open.hang;
         }
       } else if (hung.total) holdHung();
