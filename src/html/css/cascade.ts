@@ -200,12 +200,23 @@ class RuleIndex {
 
 /** The pseudo-elements a rule can style here. */
 type PseudoElement =
-  'before' | 'after' | 'first-letter' | 'first-line' | 'marker';
+  'before' | 'after' | 'first-letter' | 'first-line' | 'marker' | 'selection';
 
 /** A selector's trailing `::before`, `::after`, `::first-letter`,
- *  `::first-line` or `::marker`, or CSS 2's single-colon spelling of any of
- *  its four. */
-const PSEUDO_ELEMENT = /::?(before|after|first-letter|first-line)$|::marker$/i;
+ *  `::first-line`, `::marker` or `::selection`, or CSS 2's single-colon
+ *  spelling of any of its four. */
+const PSEUDO_ELEMENT =
+  /::?(before|after|first-letter|first-line)$|::(marker|selection)$/i;
+
+/**
+ * What a `::selection` makes of the text it covers (CSS Pseudo 4, 3.2): the
+ * colour the text is drawn in, null for its own, and the band under it,
+ * null for none.
+ */
+export interface SelectionStyle {
+  color: string | null;
+  background: string | null;
+}
 
 /**
  * A rule for a pseudo-element, as the pseudo-element it styles and a rule
@@ -227,7 +238,7 @@ function splitPseudoElement(
       ? `${trimmed} *`
       : trimmed;
   return {
-    which: (m[1] ?? 'marker').toLowerCase() as PseudoElement,
+    which: (m[1] ?? m[2]).toLowerCase() as PseudoElement,
     rule: { ...rule, selector },
   };
 }
@@ -570,6 +581,7 @@ export class Cascade {
     'first-letter': new RuleIndex(),
     'first-line': new RuleIndex(),
     marker: new RuleIndex(),
+    selection: new RuleIndex(),
   };
   private _adapter: CssSelectAdapter;
   /** The compounds of the selectors that test the pointer, each without
@@ -1094,6 +1106,56 @@ export class Cascade {
     );
     if (!set) out.unicodeBidi = 'isolate';
     return out;
+  }
+
+  /** Whether any rule styles a `::selection`: a document with none draws
+   *  a selection in the palette's colour, and asks nothing. */
+  get hasSelection(): boolean {
+    return this._pseudo.selection.size > 0;
+  }
+
+  /**
+   * An element's `::selection`, over its parent's (`parent`, null for the
+   * palette's own): the colour and the background the rules that reach it
+   * set, and its parent's for either they leave alone. Both inherit along
+   * the chain of highlights rather than the elements' (CSS Pseudo 4, 3.5,
+   * "highlight inheritance"), which is what Chrome draws: a `<span>` in a
+   * `div::selection { background: red }` is selected in red, and a `<p>`
+   * whose own rule sets only a colour keeps the red under it.
+   *
+   * The palette's highlight is taken only where no rule has set either
+   * (3.6, "paired defaults"): one that sets a colour and no background is
+   * selected over none, as Chrome has it. A rule that sets neither — a
+   * `text-shadow` only — leaves the element where its parent was.
+   */
+  selectionStyle(
+    el: Element,
+    style: ComputedStyle,
+    parent: SelectionStyle | null,
+  ): SelectionStyle | null {
+    const index = this._pseudo.selection;
+    if (!index.size || !index.reaches(el)) return parent;
+    const candidates: Candidate[] = [];
+    this._matchInto(index, el, candidates);
+    let color = false;
+    let background = false;
+    for (const candidate of candidates) {
+      for (const d of candidate.declarations) {
+        if (d.prop === 'color') color = true;
+        else if (d.prop === 'background' || d.prop === 'background-color') {
+          background = true;
+        }
+      }
+    }
+    if (!color && !background) return parent;
+    candidates.sort(byCascade);
+    const own = this._computeStyle(el, style, false, candidates);
+    return {
+      color: color ? own.color : (parent?.color ?? null),
+      background: background
+        ? own.backgroundColor
+        : (parent?.background ?? null),
+    };
   }
 
   /**
