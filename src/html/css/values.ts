@@ -102,7 +102,7 @@ export interface UnitContext {
   em: number;
   /** The root element's `font-size`. */
   rem: number;
-  /** Viewport, for `vw`/`vh`/`vmin`/`vmax`. */
+  /** Viewport, for `vw`/`vh`/`vmin`/`vmax` and their kin (`viewportUnit`). */
   vw: number;
   vh: number;
   /** Device pixels per CSS pixel — the display scale. */
@@ -131,8 +131,36 @@ export interface UnitContext {
 const NUMBER_SRC = '[+-]?(?:\\d*\\.\\d+|\\d+)(?:e[+-]?\\d+)?';
 
 const LENGTH_RE = new RegExp(
-  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|lh|rlh|vw|vh|vmin|vmax|q|%)?$`,
+  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|lh|rlh|[sld]?v(?:w|h|i|b|min|max)|q|%)?$`,
 );
+
+/**
+ * The viewport unit a viewport-percentage length is (CSS Values 4, 6.1.2),
+ * or null for another unit. The small, large and dynamic viewports —
+ * `svh`, `lvh`, `dvh` and their kin — are the one viewport here, as they
+ * are on a desktop, where no toolbar comes and goes over the page; and the
+ * inline and block axes, `vi` and `vb`, are the width and the height of
+ * the horizontal writing mode every document here is laid out in.
+ */
+export function viewportUnit(
+  unit: string,
+): 'vw' | 'vh' | 'vmin' | 'vmax' | null {
+  const u = unit.toLowerCase();
+  const bare = /^[sld]v/.test(u) ? u.slice(1) : u;
+  switch (bare) {
+    case 'vw':
+    case 'vi':
+      return 'vw';
+    case 'vh':
+    case 'vb':
+      return 'vh';
+    case 'vmin':
+    case 'vmax':
+      return bare;
+    default:
+      return null;
+  }
+}
 
 const NUMBER_RE = new RegExp(`^${NUMBER_SRC}$`, 'i');
 
@@ -166,7 +194,7 @@ export function parseLength(
     });
   }
   const n = Number(m[1]);
-  const unit = m[2];
+  const unit = m[2] && (viewportUnit(m[2]) ?? m[2]);
   // a zero needs no unit however it is written — `-0`, `+0`, `0.0`
   if (!unit) return n === 0 ? 0 : bareIsPx ? n * ctx.scale : null;
   if (unit === '%') return { pct: n };

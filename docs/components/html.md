@@ -765,7 +765,9 @@ it. The line's font properties, spacing and `vertical-align` are not
 applied: each would change where the line ends.
 
 **Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `lh`, `rlh`, `vw`, `vh`,
-`vmin`, `vmax` and the absolute units, and `calc()`, `min()`, `max()` and
+`vi`, `vb`, `vmin`, `vmax` — and the small, large and dynamic viewports'
+`svh`, `lvw`, `dvmin` and the rest, which on a desktop are the one
+viewport — and the absolute units, and `calc()`, `min()`, `max()` and
 `clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
 `ch` the advance of its "0", as the text engine reports them, or half an em
 where it cannot say; an `lh` is the element's line height, `normal` as its
@@ -962,7 +964,10 @@ it, which is how a lot of mail starts, is still the body: its background
 covers the whole canvas. A document that writes `<html>` gets the body
 element HTML's parser would have made — the first thing in it that is not
 head content opens one — and content before a written `<body>`, or after
-it ends, goes in the body, as a browser puts it there.
+it ends, goes in the body, as a browser puts it there. A `/>` closes an
+element only where HTML's parser says it does, on a void element and in
+SVG and MathML: a `<div/>` opens a div, as it does in a browser, and XHTML
+that means it closed has to be handed over as HTML, its `/>` written out.
 
 **The user-agent stylesheet is themed.** `color`, the link colour and every
 rule and border in it come from the react-x11 palette, so an unstyled

@@ -26,6 +26,7 @@ import { ThemeProvider } from 'react-x11';
 
 import { Html } from '../src/index.js';
 import { HtmlViewNode } from '../src/html/index.js';
+import type { ChildNode, Element } from 'domhandler';
 import type { FontsLike } from '../src/html/layout/inline.js';
 import type { TextRun } from '../src/richtext/index.js';
 import { featuresOf, hungSpaces } from '../src/html/layout/inline.js';
@@ -666,6 +667,36 @@ test('a fragment can be parsed and spliced in', () => {
   appendChild(holder, nodes[0]);
   assert.strictEqual(holder.children[0], nodes[0]);
   assert.strictEqual(nodes[0].parent, holder);
+});
+
+test('a /> closes a void element and one in SVG, and opens any other', () => {
+  // melbcss.com comments an attribute out as `/*target="_blank"*/`, which
+  // is no comment inside a tag: the `/` before `>` read as a self-closing
+  // flag, and the link was empty, its text beside it
+  const serialize = (nodes: ChildNode[]): string =>
+    nodes
+      .map((node) =>
+        node.type === 'text'
+          ? (node as unknown as { data: string }).data
+          : `<${(node as Element).name}>${serialize((node as Element).children)}</${(node as Element).name}>`,
+      )
+      .join('');
+  assert.strictEqual(
+    serialize(
+      parseFragment(
+        '<a href="" /*target="_blank"*/><address>TBD</address></a>' +
+          '<div/>in<br/>div</div>' +
+          '<svg><rect/><circle/></svg><math><mi/><mo>+</mo></math>' +
+          // an integration point is closed too: it is read in SVG
+          '<svg><title/><desc/><foreignObject/><path/></svg>',
+      ),
+    ),
+    '<a><address>TBD</address></a>' +
+      '<div>in<br></br>div</div>' +
+      '<svg><rect></rect><circle></circle></svg>' +
+      '<math><mi></mi><mo>+</mo></math>' +
+      '<svg><title></title><desc></desc><foreignObject></foreignObject><path></path></svg>',
+  );
 });
 
 // --- the element ------------------------------------------------------------
@@ -3779,6 +3810,32 @@ test('a vw length follows the width of the viewport', async () => {
   assert.strictEqual(boxOf(el, 'half').width, 200);
   await resize(300, 600);
   assert.strictEqual(boxOf(el, 'half').width, 300);
+});
+
+test('the small, large and dynamic viewports, and its inline and block axes, are the viewport', async () => {
+  // melbcss.com's body is `min-height: 100svh`: an unread unit dropped the
+  // declaration, and the page did not fill the window
+  const { el, resize } = await renderScrolled(
+    '<body style="margin:0">' +
+      '<div id="s" style="height:10svh;width:10svw"></div>' +
+      '<div id="l" style="height:10lvh;width:10LVW"></div>' +
+      '<div id="d" style="height:10dvh;width:calc(10dvw + 1px)"></div>' +
+      '<div id="ib" style="height:10vb;width:10vi"></div>' +
+      '<div id="m" style="width:10svmin;height:10dvmax"></div></body>',
+    300,
+    400,
+  );
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('s'), [40, 30]);
+  assert.deepStrictEqual(size('l'), [40, 30]);
+  assert.deepStrictEqual(size('d'), [41, 30]);
+  assert.deepStrictEqual(size('ib'), [40, 30]);
+  assert.deepStrictEqual(size('m'), [30, 40]);
+  // and like `vh` and `vw`, each follows the side of the viewport it reads
+  await resize(500, 600);
+  assert.deepStrictEqual(size('s'), [60, 50]);
+  assert.deepStrictEqual(size('ib'), [60, 50]);
+  assert.deepStrictEqual(size('m'), [50, 60]);
 });
 
 test('a document a hair past a whole pixel measures that pixel', async () => {
@@ -17252,6 +17309,59 @@ test('a box that clips its overflow, too wide for a column no float narrows, sta
     'where a float narrows the column, it waits below the float',
   );
   await result.unmount();
+});
+
+test("an inline box that a line breaks inside ends that line's fragment at its text, not after the space the line ends on", async () => {
+  // A space a line ends on is removed (CSS Text 3, 4.1.2) and takes no
+  // room on it, and a browser's fragment of the box ends at its last
+  // letter. The band that measured it went on past the line into the
+  // space, where a caret after it goes: design 209's link, broken after
+  // "CSS", was a space wider than Chrome's
+  const measured = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+      '<span id="m">word CSS</span>',
+  );
+  const wide = view(measured.node);
+  const room = Math.ceil(
+    wide.elementRect(findById(wide.document, 'm')!)!.width + 1,
+  );
+  await measured.result.unmount();
+  const { node, result } = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+      `<p style="margin:0;width:${room}px">word <a id="a">` +
+      // in a smaller face, as 209's <abbr> is, which lays the line out a
+      // piece at a time
+      '<span id="s" style="font-size:85%">CSS</span> Re</a></p>',
+  );
+  const el = view(node);
+  const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+  assert.ok(
+    rect('a').height > 30,
+    `the link is on two lines: ${rect('a').height}`,
+  );
+  assert.ok(
+    Math.abs(rect('a').x + rect('a').width - (rect('s').x + rect('s').width)) <
+      0.01,
+    `its first line's fragment ends where "CSS" does: ` +
+      `${rect('a').x + rect('a').width} ${rect('s').x + rect('s').width}`,
+  );
+  await result.unmount();
+  // and text a line ends with is measured where it is, off the line or
+  // not: a heading's words set 500px out by `text-indent`, as an image
+  // replacement sets them, are as wide as ever
+  const indented = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+      '<h2 style="margin:0;width:300px;text-indent:-500px;overflow:hidden">The ' +
+      '<abbr id="t">CSS</abbr> Garden</h2>',
+  );
+  const out = view(indented.node);
+  const word = out.elementRect(findById(out.document, 't')!)!;
+  assert.ok(
+    word.width > 10,
+    `the indented word keeps its width: ${word.width}`,
+  );
+  assert.ok(word.x < -400, `where the indent put it: ${word.x}`);
+  await indented.result.unmount();
 });
 
 metric(
