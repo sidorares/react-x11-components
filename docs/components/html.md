@@ -179,11 +179,47 @@ font a text engine reads (`embedded-opentype`, `svg`) is passed over, and so
 is one the host declines, one whose bytes do not register — a WOFF2 on
 macOS, whose CoreText reads no such container, falls through to the WOFF
 beside it — and one the engine reads and cannot set text in, below.
-`local()` is not looked up.
 
 Until a face has loaded its family is left out of the list, and the text is
 set in the next family the author named, as `font-display: swap` has it;
-when it arrives the document is set again.
+when it arrives the document is set again. That holds for a family none of
+whose faces ever loads: a family the document declares is never looked up on
+the system by the name the document gave it (CSS Fonts 4, 5.2), so
+`font-family: Mine` with a declined `@font-face` is the document's default
+and not whatever a text engine finds nearest to `Mine`.
+
+**A `local()` is the system's family of that name.** It is a source like a
+`url()`, tried in its place in `src`, and nothing is asked of the host for
+it:
+
+```css
+@font-face {
+  font-family: 'GeistSans Fallback'; /* next/font's stand-in for Geist */
+  src: local('Arial');
+  size-adjust: 106.28%;
+}
+h1 {
+  font-family: GeistSans, 'GeistSans Fallback';
+}
+```
+
+Until `GeistSans` arrives the list is `Arial`, and after it the private name
+of the loaded face, then `Arial`. CSS has `local()` name one face, by its
+full name or its PostScript name; a font manager finds fonts by family, so
+the name is matched as one, and counts as found only when the face that
+comes back carries it — a guess at a name nobody has is not a match. The
+usual spellings are a family's regular face, whose full name is the family's
+(`local(Arial)`, `local("Times New Roman")`), and those are found. A face
+named with its style (`local("Arial Bold")`, `local(Arial-BoldMT)`) mostly
+is not, and the face falls to its next source, or its family out of the
+list. What the list gets is the family, and the text engine picks the face
+in it by the weight and slant of the text: bold text in the family above is
+set in Arial Bold, where a browser emboldens the one face the rule named.
+
+The descriptors that adjust a face's metrics — `size-adjust`,
+`ascent-override`, `descent-override`, `line-gap-override` — are not read,
+so a fallback tuned to take the room of the font it stands in for takes its
+own.
 
 **A face the text engine cannot set costs its family, not the document.**
 A variable font is drawn by cutting an instance out of it, and ntk, the

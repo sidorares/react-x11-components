@@ -53,6 +53,24 @@
 // first family is the one a run is set in, and the others are reached through
 // the fallback for the characters it lacks.
 //
+// **A family the document declares is never the system's by that name.**
+// CSS Fonts 4 (5.2) has a family defined by `@font-face` with no face
+// present treated as missing, and forbids matching a platform font of the
+// same name. That holds for a family whose sources are all `local()`s too,
+// which is the one that used to get past: next/font declares
+// `"GeistSans Fallback"` as `src: local("Arial")`, the rule was dropped for
+// having no `url()`, and the name went to the text engine as written —
+// where fontconfig's nearest guess for a family nobody has was Hiragino Sans
+// at 400 and Gill Sans Ultra Bold at 450.
+//
+// A `local()` is a source like a `url()`, tried in the order `src` lists
+// them, and what it comes to is **an alias**: a face the system has goes
+// into the list as its family's name (`localFamily`), in the place of the
+// document's, and nothing is registered. A font manager has no lookup by a
+// face's name — it answers any family with its best guess — so the question
+// is put as a match, and the answer is believed only when the face that
+// comes back says it is the one named.
+//
 // What stays the application's: registering a face adds it to ntk's
 // fallback chain, where it can supply a glyph no other face has to text
 // anywhere in the app (react-x11's `loadFont` says so), and nothing is ever
@@ -108,6 +126,10 @@ interface Face {
   family: Family;
   /** Where loading got to. `idle` has not been asked for. */
   state: 'idle' | 'loading' | 'ready' | 'failed';
+  /** The system's family a `ready` face came to through a `local()`, which
+   *  the list names in place of the group's; null for a face registered
+   *  from a file. */
+  local: string | null;
 }
 
 /** A family's faces for one unicode range: one registered name, among whose
@@ -135,6 +157,9 @@ interface Registry {
   names: Map<string, string>;
   /** Faces registered, by `faceKey`. */
   ready: Set<string>;
+  /** The ones among them that are the system's (`local()`), and registered
+   *  under no name: the family each came to. */
+  locals: Map<string, string>;
   /** Faces being loaded, by `faceKey`, so a second document waits for the
    *  first document's request rather than making its own. */
   pending: Map<string, Promise<boolean>>;
@@ -151,6 +176,7 @@ function registryOf(app: object): Registry {
       next: 0,
       names: new Map(),
       ready: new Set(),
+      locals: new Map(),
       pending: new Map(),
       warned: false,
     };
@@ -269,13 +295,15 @@ export class WebFonts implements FontFamilies {
           order: order++,
         };
         for (const m of members) {
-          const ready = registry?.ready.has(faceKey(name, m.rule)) ?? false;
+          const key = faceKey(name, m.rule);
+          const ready = registry?.ready.has(key) ?? false;
           const face: Face = {
             rule: m.rule,
             element: m.element,
             group,
             family,
             state: ready ? 'ready' : 'idle',
+            local: registry?.locals.get(key) ?? null,
           };
           group.faces.push(face);
           made.set(m, face);
@@ -307,7 +335,15 @@ export class WebFonts implements FontFamilies {
       }
       used.push(family);
       for (const group of orderedGroups(family)) {
-        if (group.faces.some((f) => f.state === 'ready')) out.push(group.name);
+        // the name its files are registered under, then the families its
+        // `local()`s came to
+        const ready = group.faces.filter((f) => f.state === 'ready');
+        if (ready.some((f) => f.local === null)) out.push(group.name);
+        for (const face of ready) {
+          if (face.local !== null && !out.includes(face.local)) {
+            out.push(face.local);
+          }
+        }
       }
     }
     let mapped = out.length ? out.join(', ') : this._fallback;
@@ -467,6 +503,7 @@ export class WebFonts implements FontFamilies {
     const key = faceKey(face.group.name, face.rule);
     if (registry.ready.has(key)) {
       face.state = 'ready';
+      face.local = registry.locals.get(key) ?? null;
       return 'ready';
     }
     face.state = 'loading';
@@ -487,7 +524,7 @@ export class WebFonts implements FontFamilies {
     };
 
     const sources = face.rule.sources.filter(
-      (s) => s.format === null || READABLE.has(s.format),
+      (s) => 'local' in s || s.format === null || READABLE.has(s.format),
     );
     let i = 0;
     let sync = true;
@@ -496,6 +533,20 @@ export class WebFonts implements FontFamilies {
     const next = (): 'ready' | 'waiting' | 'none' => {
       while (i < sources.length) {
         const source = sources[i++];
+        if ('local' in source) {
+          // nothing to ask the host for, and nothing to wait on
+          const family = this._destroyed
+            ? null
+            : localFamily(app, source.local, face.rule);
+          if (family === null) continue;
+          registry.locals.set(key, family);
+          finish(true);
+          if (sync) {
+            face.state = 'ready';
+            face.local = family;
+          } else this._settled(face, true);
+          return 'ready';
+        }
         let answer: ReturnType<Ask>;
         try {
           answer = this._ask({
@@ -581,6 +632,10 @@ export class WebFonts implements FontFamilies {
   private _settled(face: Face, ok: boolean): void {
     if (this._destroyed) return;
     face.state = ok ? 'ready' : 'failed';
+    if (ok && this._app) {
+      const key = faceKey(face.group.name, face.rule);
+      face.local = registryOf(this._app).locals.get(key) ?? null;
+    }
     if (!ok) face.family.asked.clear();
     this._forget();
     this._changed();
@@ -677,9 +732,67 @@ function faceKey(name: string, rule: FontFaceRule): string {
 
 function faceSignature(rule: FontFaceRule): string {
   const range = rangeKey(rule.unicodeRange);
-  return `${rule.sources.map((s) => s.url).join(' ')}@${rule.weight.join(
-    '-',
-  )}${rule.style}#${range}`;
+  const sources = rule.sources.map((s) =>
+    'local' in s ? `local(${s.local})` : s.url,
+  );
+  return `${sources.join(' ')}@${rule.weight.join('-')}${rule.style}#${range}`;
+}
+
+/** What is asked of a font manager to find a `local()`: a match, and the
+ *  names of the face it answers with. Both engines' faces carry them. */
+interface FontLookup {
+  match?(
+    family: string,
+    opts: { weight: number; style: string },
+  ): { familyName?: string; postscriptName?: string } | null;
+}
+
+/**
+ * The family of the face a `local()` names, or null when the system has no
+ * such face and the next source is tried.
+ *
+ * CSS Fonts 4 (4.3.1) has the name be one face's — its full name or its
+ * PostScript name, never a family's, and never a platform's substitute for
+ * it. A font manager has no lookup by either: it takes a family and answers
+ * with its best guess, which for a name nobody has is some other font. So
+ * the name is matched as a family, at the weight and slant the rule declares
+ * its face to have, and the answer counts only when the face that comes back
+ * says it is the one asked for: by its family, which is the full name of a
+ * family's regular face and how `local()` is nearly always spelled
+ * (`local(Arial)`), or by its PostScript name, where an engine finds a face
+ * by one. A full name with a style in it (`local(Arial Bold)`) is no family,
+ * and is not found.
+ *
+ * What comes back is the family and not the face: the list names it, and
+ * the engine picks among its faces by the weight and slant of the text, as
+ * it does for any family. Bold text in a family declared as the one face
+ * `local(Arial)` is set in Arial's bold, where a browser emboldens the
+ * regular.
+ */
+function localFamily(
+  app: object,
+  name: string,
+  rule: FontFaceRule,
+): string | null {
+  const fonts = (app as { fonts?: FontLookup }).fonts;
+  if (typeof fonts?.match !== 'function') return null;
+  const [lo, hi] = rule.weight;
+  try {
+    const face = fonts.match(name, {
+      weight: Math.max(lo, Math.min(400, hi)),
+      style: rule.style,
+    });
+    const family = face?.familyName;
+    if (!family) return null;
+    const want = name.toLowerCase();
+    return family.toLowerCase() === want ||
+      face.postscriptName?.toLowerCase() === want
+      ? family
+      : null;
+  } catch {
+    // no fontconfig, or a name it could not read: not found
+    return null;
+  }
 }
 
 function rangeKey(ranges: [number, number][] | null): string {

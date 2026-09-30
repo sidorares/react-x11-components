@@ -48,6 +48,10 @@ const found = FONT_CANDIDATES.find(
 );
 const FONTS = found ? { 'sans-serif': found[0], monospace: found[1] } : null;
 
+/** The family the harness's sans-serif file is, which is what a `local()`
+ *  can name there: the font manager has that one family to find. */
+const LOCAL = found?.[0].includes('Arial') ? 'Arial' : 'DejaVu Sans';
+
 // Web fonts to load: KaTeX's, which `katex` (an optional dependency) ships
 // as WOFF2 — the format a web font nearly always is now.
 const KATEX = new URL('../node_modules/katex/dist/fonts/', import.meta.url);
@@ -256,7 +260,10 @@ test('@font-face rules are read, descriptor by descriptor', () => {
      @font-face { font-family: Icons Two; src: url(i.ttf); font-weight: bold;
                   font-family: not, a list; unicode-range: nonsense }
      @font-face { font-family: sans-serif; src: url(hijack.ttf) }
-     @font-face { font-family: "Only Local"; src: local(Arial) }
+     @font-face { font-family: "Only Local";
+                  src: local(Gentium Bold), local("Gentium-Bold") }
+     @font-face { font-family: Keyword; src: local(inherit), local(serif) }
+     @font-face { font-family: Nothing; src: format("woff2") }
      @media (max-width: 600px) {
        @font-face { font-family: Small; src: url(s.woff2) }
      }`,
@@ -264,11 +271,16 @@ test('@font-face rules are read, descriptor by descriptor', () => {
     new Map(),
     'https://example.test/css/fonts.css',
   );
-  const [open, icons, small] = sheet.fontFaces;
-  assert.strictEqual(sheet.fontFaces.length, 3, 'no generic name, no local');
+  const [open, icons, local, small] = sheet.fontFaces;
+  assert.deepStrictEqual(
+    sheet.fontFaces.map((f) => f.family),
+    ['Open Sans', 'Icons Two', 'Only Local', 'Small'],
+    'no generic name, and no rule without a source',
+  );
   assert.deepStrictEqual(open, {
     family: 'Open Sans',
     sources: [
+      { local: 'Open Sans' },
       { url: 'https://example.test/css/os.woff2', format: 'woff2' },
       { url: 'https://example.test/css/os.woff', format: 'woff' },
       {
@@ -288,6 +300,13 @@ test('@font-face rules are read, descriptor by descriptor', () => {
   assert.strictEqual(icons.family, 'Icons Two', 'a list is no family');
   assert.deepStrictEqual(icons.weight, [700, 700]);
   assert.strictEqual(icons.unicodeRange, null, 'nonsense is dropped');
+  // A family of `local()`s alone is a family the document declares, and its
+  // rule is kept: dropped, the name went to the system as any other would.
+  assert.deepStrictEqual(
+    local.sources,
+    [{ local: 'Gentium Bold' }, { local: 'Gentium-Bold' }],
+    'a name as identifiers or as a string, and never a keyword',
+  );
   assert.strictEqual(small.family, 'Small');
   assert.ok(small.media, 'a face in @media keeps its condition');
 });
@@ -769,6 +788,143 @@ withFonts(
       boxOf(node, 'p').style.fontFamily,
       'monospace, monospace',
     );
+  },
+);
+
+// --- local() ------------------------------------------------------------------
+
+withFonts(
+  'a family of local() faces is the family the system has, by that name',
+  async () => {
+    // next/font's fallback: `"GeistSans Fallback"` is Arial with its metrics
+    // adjusted, declared with no file at all. The rule was dropped for
+    // having no `url()`, so the name reached the font manager as written,
+    // and a name nobody has is answered with a guess.
+    const asked: string[] = [];
+    let arrive!: (result: ResourceResult) => void;
+    const { node, result } = await mount(
+      '<style>@font-face { font-family: Doc; src: url(r.woff2) }' +
+        `@font-face { font-family: "Doc Fallback"; src: local("${LOCAL}");` +
+        '  ascent-override: 92%; size-adjust: 104% }' +
+        'p { font-family: Doc, "Doc Fallback" }</style><p id="p">Plain</p>',
+      (r) => {
+        asked.push(r.url);
+        return new Promise((resolve) => (arrive = resolve));
+      },
+      {},
+      true,
+    );
+    await settle(node);
+    assert.deepStrictEqual(
+      asked,
+      ['r.woff2'],
+      'a local() asks the host nothing',
+    );
+    assert.strictEqual(boxOf(node, 'p').style.fontFamily, LOCAL);
+    arrive({ kind: 'font', bytes: REGULAR! });
+    await settle(node);
+    const p = boxOf(node, 'p').style;
+    assert.match(p.fontFamily, new RegExp(`^html webfont [a-z]+, ${LOCAL}$`));
+    assert.strictEqual(familyOf(result.app as never, p), 'KaTeX_Main');
+  },
+);
+
+test('a local() the system lacks leaves its family out of the list', async () => {
+  // CSS Fonts 4 (5.2): a family `@font-face` defines with no face present
+  // is missing, and a platform font is not matched by its name. On the
+  // mock backend, which has no font manager to ask, and so no face.
+  const { node } = await mount(
+    '<style>@font-face { font-family: Gone; src: local("No Such Face") }' +
+      'p { font-family: Gone, monospace } div { font-family: Gone }</style>' +
+      '<p id="p">x</p><div id="d">y</div>',
+    () => null,
+  );
+  await settle(node);
+  assert.strictEqual(boxOf(node, 'p').style.fontFamily, 'monospace, monospace');
+  assert.strictEqual(
+    boxOf(node, 'd').style.fontFamily,
+    'sans-serif',
+    "the document's default, where the list names nothing else",
+  );
+});
+
+withFonts('a face is not found by a name it does not have', async () => {
+  // The font manager answers any family with its best guess — here the one
+  // file it has. The guess is a face, and not the one that was named.
+  const { node } = await mount(
+    '<style>@font-face { font-family: Gone; src: local("No Such Face") }' +
+      'p { font-family: Gone, monospace }</style><p id="p">x</p>',
+    () => null,
+    {},
+    true,
+  );
+  await settle(node);
+  assert.strictEqual(boxOf(node, 'p').style.fontFamily, 'monospace, monospace');
+});
+
+withFonts(
+  'the sources of a face are tried in the order src has them',
+  async () => {
+    const asked: string[] = [];
+    const { node, result } = await mount(
+      '<style>' +
+        // the system has it: nothing is asked for
+        `@font-face { font-family: Here; src: local("${LOCAL}"), url(here.woff2) }` +
+        // it does not: the file is
+        '@font-face { font-family: Away;' +
+        '  src: local("No Such Face"), url(r.woff2) }' +
+        // and a file the host declines falls to the face the system has
+        `@font-face { font-family: Last; src: url(gone.woff2), local("${LOCAL}") }` +
+        '#a { font-family: Here, monospace } #b { font-family: Away, monospace }' +
+        '#c { font-family: Last, monospace }</style>' +
+        '<p id="a">x</p><p id="b">y</p><p id="c">z</p>',
+      (r) => {
+        asked.push(r.url);
+        return r.url === 'r.woff2' ? { kind: 'font', bytes: REGULAR! } : null;
+      },
+      {},
+      true,
+    );
+    await settle(node);
+    assert.deepStrictEqual(asked.sort(), ['gone.woff2', 'r.woff2']);
+    assert.strictEqual(
+      boxOf(node, 'a').style.fontFamily,
+      `${LOCAL}, monospace`,
+    );
+    const away = boxOf(node, 'b').style;
+    assert.match(away.fontFamily, /^html webfont [a-z]+, monospace$/);
+    assert.strictEqual(familyOf(result.app as never, away), 'KaTeX_Main');
+    assert.strictEqual(
+      boxOf(node, 'c').style.fontFamily,
+      `${LOCAL}, monospace`,
+    );
+  },
+);
+
+withFonts(
+  'a second document finds a local() face where the first left it',
+  async () => {
+    const source =
+      `<style>@font-face { font-family: Doc; src: local("${LOCAL}") }` +
+      'p { font-family: Doc, monospace }</style><p id="p">x</p>';
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, { source, partial: false, 'data-testname': 'one' }),
+        h(Html, { source, partial: false, 'data-testname': 'two' }),
+      ),
+      { width: 440, height: 300, fonts: FONTS! },
+    );
+    for (const name of ['one', 'two']) {
+      const node = view(screen.getByTestName(name) as DrawnNode);
+      await settle(node);
+      assert.strictEqual(
+        boxOf(node, 'p').style.fontFamily,
+        `${LOCAL}, monospace`,
+        `${name}: the family, and not a name nothing was registered under`,
+      );
+    }
   },
 );
 

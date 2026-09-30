@@ -84,8 +84,9 @@ export interface Stylesheet {
 export interface FontFaceRule {
   /** The family as the document names it, unquoted. */
   family: string;
-  /** The `url()`s of `src`, in order, each with its `format()` hint
-   *  lowercased; `local()` entries are left out. */
+  /** The entries of `src`, in order, which is the order they are tried in:
+   *  a `url()` with its `format()` hint lowercased, or the name a `local()`
+   *  asks the system for. */
   sources: FontFaceSource[];
   /** The weights the face covers: `[400, 400]` for a static regular, a
    *  range for a variable face. */
@@ -97,10 +98,10 @@ export interface FontFaceRule {
   media: MediaCondition[][] | null;
 }
 
-export interface FontFaceSource {
-  url: string;
-  format: string | null;
-}
+export type FontFaceSource =
+  | { url: string; format: string | null }
+  /** `local(Arial)`: a face the system has, by name and unquoted. */
+  | { local: string };
 
 /** The tests this evaluates live: a width, a height, a colour scheme.
  *  Anything else — `orientation`, `print`, `prefers-reduced-motion` — is
@@ -1684,10 +1685,13 @@ const GENERIC_FAMILIES = new Set([
 ]);
 
 /**
- * A `@font-face` block, or null when it names no family, or no source this
- * can ask for: `local()` names a face the system has, which this does not
- * look up, and a family that is only `local()`s is left to the system as it
- * would be anyway.
+ * A `@font-face` block, or null when it names no family or no source — a
+ * rule CSS Fonts 4 (4.3) drops whole. A rule whose sources are all
+ * `local()`s is a rule like any other: its family is the document's, and
+ * left out here, `"GeistSans Fallback"` — next/font's `src: local("Arial")`
+ * with the metrics adjusted — reached the text engine as a name to look up,
+ * where fontconfig's nearest guess for a family nobody has set a site's
+ * headings in Gill Sans Ultra Bold.
  */
 function parseFontFace(
   block: string,
@@ -1720,6 +1724,14 @@ function parseFontFace(
   const sources: FontFaceSource[] = [];
   for (const part of splitTopLevel(src, ',')) {
     const item = part.trim();
+    // `local(Gentium Bold)`, `local("Gentium Bold")`: a name as a family's
+    // is written, and like one never a keyword (`local(inherit)`)
+    const local = /^local\(([\s\S]*)\)$/i.exec(item);
+    if (local) {
+      const name = faceFamily(local[1]);
+      if (name) sources.push({ local: name });
+      continue;
+    }
     if (!/^url\(/i.test(item)) continue;
     const end = urlEnd(item, 3);
     const url = parseUrl(item.slice(0, end));
