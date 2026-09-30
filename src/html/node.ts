@@ -2355,6 +2355,19 @@ function lineBands(
             height: line.height,
           });
         }
+        // the spaces `pre-wrap` keeps that the line ends on, which have no
+        // run: the engine hung them past the line (`LineText.hung`)
+        for (const space of text.hung ?? []) {
+          const at = documentOffsetOf(text, space.at);
+          if (at < a || at >= b) continue;
+          const moved = laidOut ? (TEXT_SHIFTS.get(text)?.x ?? 0) : 0;
+          out.push({
+            x: dx + space.x + text.drawX - moved,
+            y: dy + line.y,
+            width: space.width,
+            height: line.height,
+          });
+        }
       }
     }
   }

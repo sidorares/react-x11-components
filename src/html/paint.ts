@@ -4841,6 +4841,16 @@ function fragmentsOn(line: LineBox): Map<Box, InlineFragment> | null {
       if (right <= left) continue;
       for (const box of decoratedAncestors(owner)) widen(box, left, right);
     }
+    // and the spaces `pre-wrap` keeps that the line ends on, which hang
+    // past it and are their box's all the same (`LineText.hung`)
+    for (const space of text.hung ?? []) {
+      const owner = boxAt.call(text.spans, space.at);
+      if (!owner) continue;
+      const left = text.drawX - (shift?.x ?? 0) + space.x;
+      for (const box of decoratedAncestors(owner)) {
+        widen(box, left, left + space.width);
+      }
+    }
   }
   for (const placed of line.atomics) {
     const atomic = placed.box;

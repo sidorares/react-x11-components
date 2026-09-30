@@ -457,10 +457,14 @@ function linesOf(
   // searched for one where it cannot be
   let tabbed = false;
   let shadowed = false;
+  // and text that keeps its spaces where its lines wrap, whose spaces a
+  // line may end on (`hangPreserved`)
+  let keepsSpaces = false;
   for (const item of items) {
     if (item.kind !== 'text' || item.control) continue;
     const style = item.box.style;
     if (style.textShadow) shadowed = true;
+    if (style.whiteSpace === 'pre-wrap') keepsSpaces = true;
     if (
       !tabbed &&
       (style.whiteSpace === 'pre' || style.whiteSpace === 'pre-wrap') &&
@@ -577,6 +581,7 @@ function linesOf(
       lineHeightMul,
       align,
       fonts,
+      keepsSpaces,
     );
     if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
     if (laid) strutted = true;
@@ -621,6 +626,7 @@ function linesOf(
         align,
         fonts,
         { chars: Infinity, hardLines: 1, cut },
+        keepsSpaces,
       );
     }
     if (perLine) cut = null;
@@ -633,6 +639,8 @@ function linesOf(
         lineHeightMul,
         align,
         fonts,
+        CHUNKS,
+        keepsSpaces,
       );
       if (!shortOfStrut(chunked.lines, strut, firstStrut)) return chunked;
       strutted = true;
@@ -664,6 +672,21 @@ function linesOf(
     };
     let layout = fonts.layout(runs, base, layoutOptions);
     LAYOUT_RUNS.set(layout, runs);
+    const held = keepsSpaces
+      ? holdAtBreaks(
+          layout,
+          runs,
+          spans,
+          fonts,
+          layoutOptions.maxWidth ?? options.width,
+          !cut,
+        )
+      : null;
+    if (held) {
+      runs = held;
+      layout = fonts.layout(runs, base, layoutOptions);
+      LAYOUT_RUNS.set(layout, runs);
+    }
     // A clamp that cut the text short says so, for the clamp point after
     // it, and its last line ends in an ellipsis — as it does where the
     // clamp point falls just after the lines, more of the container after
@@ -738,6 +761,7 @@ function linesOf(
           ? unwrappedPlacer(style, options.width, false)
           : null,
     );
+    if (keepsSpaces) hangLines(lines, 0, runs, fonts, rtl);
     // a clamp and a cut are the one layout's to make
     if (!clamp && !cut && shortOfStrut(lines, strut, firstStrut)) {
       strutted = true;
@@ -1027,13 +1051,29 @@ function linesOf(
         overflowWrap: wrapWords,
         fit: PARAGRAPH_FIT,
       };
-      let layout = fonts.layout(segment.runs, base, tailOptions);
-      LAYOUT_RUNS.set(layout, segment.runs);
+      let tailRuns = segment.runs;
+      let layout = fonts.layout(tailRuns, base, tailOptions);
+      LAYOUT_RUNS.set(layout, tailRuns);
+      const held = keepsSpaces
+        ? holdAtBreaks(
+            layout,
+            tailRuns,
+            segment.spans,
+            fonts,
+            tailOptions.maxWidth ?? options.width,
+            true,
+          )
+        : null;
+      if (held) {
+        tailRuns = held;
+        layout = fonts.layout(tailRuns, base, tailOptions);
+        LAYOUT_RUNS.set(layout, tailRuns);
+      }
       // the lines past the floats are justified as the lines beside them
       // were (`finishLine`), in the room they have
       layout = justifiedLayout(
         fonts,
-        segment.runs,
+        tailRuns,
         base,
         tailOptions,
         layout,
@@ -1067,6 +1107,7 @@ function linesOf(
           atomics: [],
         });
       }
+      if (keepsSpaces) hangLines(tail, 0, tailRuns, fonts, rtl);
       // or a line at a time, where one of them is shorter than the strut
       if (!shortOfStrut(tail, strut, lines.length ? null : firstStrut)) {
         for (const line of tail) {
@@ -1186,6 +1227,14 @@ function linesOf(
     open.x += first.width;
     open.left = band.left;
     open.hang = 0;
+    // the spaces `pre-wrap` keeps that it ends on, which the engine hung
+    const hung = keepsSpaces
+      ? hangPreserved(placed, segment.runs, runStarts(segment.runs), fonts, rtl)
+      : NOTHING_HUNG;
+    /** Before a forced break, the ones that fit take room (4.1.3). */
+    const holdHung = (): void => {
+      open.x += Math.min(hung.total, Math.max(0, available - open.x));
+    };
 
     // Did the segment wrap? ntk answers with `truncated`. A layout that does
     // not carry the flag — react-x11's Cocoa engine reports none — is asked
@@ -1225,12 +1274,14 @@ function linesOf(
             trailing.length;
           open.x += open.hang;
         }
-      }
+      } else if (hung.total) holdHung();
       index = segment.nextIndex;
       offset = 0;
       continue;
     }
-    close(breakBefore(segment.runs, first.end));
+    const forced = breakBefore(segment.runs, first.end);
+    if (forced && hung.total) holdHung();
+    close(forced);
     const advanced = advance(items, index, offset, first.end);
     index = advanced.index;
     offset = advanced.offset;
@@ -1379,9 +1430,10 @@ function layoutSpaced(
   lineHeightMul: number,
   align: string,
   fonts: FontsLike,
+  keepsSpaces: boolean,
 ): InlineResult | null {
   const wrapWords = overflowWrapOf(style, items);
-  const runs: TextRun[] = [];
+  let runs: TextRun[] = [];
   const spans = new SpanMap();
   const spacers: { at: number; edge: Extract<Item, { kind: 'edge' }> }[] = [];
   let doc = 0;
@@ -1416,6 +1468,14 @@ function layoutSpaced(
   };
   let layout = fonts.layout(runs, base, layoutOptions);
   LAYOUT_RUNS.set(layout, runs);
+  const held = keepsSpaces
+    ? holdAtBreaks(layout, runs, spans, fonts, width, true)
+    : null;
+  if (held) {
+    runs = held;
+    layout = fonts.layout(runs, base, layoutOptions);
+    LAYOUT_RUNS.set(layout, runs);
+  }
   // justified with its spacers in it, which are edges and not spaces
   layout = justifiedLayout(
     fonts,
@@ -1480,6 +1540,7 @@ function layoutSpaced(
     });
     widest = Math.max(widest, natural.width);
   }
+  if (keepsSpaces) hangLines(lines, 0, runs, fonts, style.direction === 'rtl');
   return { lines, height: layout.height, width: widest };
 }
 
@@ -1609,6 +1670,7 @@ function layoutChunked(
   align: string,
   fonts: FontsLike,
   chunking: Chunking = CHUNKS,
+  keepsSpaces = false,
 ): InlineResult {
   const wrapWords = overflowWrapOf(style, items);
   const lines: LineBox[] = [];
@@ -1622,7 +1684,7 @@ function layoutChunked(
 
   const { cut } = chunking;
   const place = wraps(style) || cut ? null : unwrappedPlacer(style, width);
-  const flush = (): void => {
+  const flush = (last = false): void => {
     if (!chunkRuns.length) return;
     const chunkOptions = {
       maxWidth: wraps(style) || cut ? width : undefined,
@@ -1635,6 +1697,21 @@ function layoutChunked(
     };
     let layout = fonts.layout(chunkRuns, base, chunkOptions);
     LAYOUT_RUNS.set(layout, chunkRuns);
+    const held = keepsSpaces
+      ? holdAtBreaks(
+          layout,
+          chunkRuns,
+          chunkSpans,
+          fonts,
+          chunkOptions.maxWidth ?? width,
+          last && !cut,
+        )
+      : null;
+    if (held) {
+      chunkRuns = held;
+      layout = fonts.layout(chunkRuns, base, chunkOptions);
+      LAYOUT_RUNS.set(layout, chunkRuns);
+    }
     // a chunk ends at a forced break or at the paragraph's end, which is
     // where `justifiedRuns` takes a chunk's last line to end
     layout = justifiedLayout(
@@ -1646,10 +1723,14 @@ function layoutChunked(
       width,
       justification(style),
     ).layout;
+    const from = lines.length;
     widest = Math.max(
       widest,
       emitLayout(layout, chunkSpans, 0, y, lines, place),
     );
+    if (keepsSpaces) {
+      hangLines(lines, from, chunkRuns, fonts, style.direction === 'rtl');
+    }
     y += layout.height;
     chunkRuns = [];
     chunkSpans = new SpanMap();
@@ -1714,7 +1795,7 @@ function layoutChunked(
       text = text.slice(cut);
     }
   }
-  flush();
+  flush(true);
   return { lines, height: y, width: widest };
 }
 
@@ -2147,6 +2228,8 @@ function reorderLine(open: OpenLine, rtl: boolean): void {
       const k = content.indexOf(i);
       if (isRtl[k] && natural) dx += Math.max(0, room - natural.width);
       piece.item.drawX += dx;
+      // and the spaces it hung are on the side of it its room is left on
+      if (piece.item.hung) placeHung(piece.item, isRtl[k]);
     } else {
       piece.item.x += dx;
     }
@@ -3884,6 +3967,188 @@ export function hungSpaces(fonts: FontsLike, run: TextRun): RegExp {
     HUNG.set(fonts, hung);
   }
   return hung;
+}
+
+/** Where each run starts in their joined text. */
+function runStarts(runs: TextRun[]): number[] {
+  const starts: number[] = [];
+  let at = 0;
+  for (const run of runs) {
+    starts.push(at);
+    at += run.text.length;
+  }
+  return starts;
+}
+
+/** The run a code-unit offset in the runs' joined text falls in. */
+function runIndexAt(starts: number[], offset: number): number {
+  let lo = 0;
+  let hi = starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (starts[mid] <= offset) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/** The bidi controls `unicode-bidi` stands for, which take no room. */
+function isBidiControl(c: number): boolean {
+  return (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
+}
+
+/**
+ * The spaces `pre-wrap` keeps that a line ends on (CSS Text 3, 4.1.3), in
+ * logical order and each with its advance, and whether a forced break
+ * follows them. An engine strips a line's trailing white space, which is
+ * right for the collapsible spaces CSS removes there, and wrong for these.
+ */
+function keptAtEnd(
+  natural: TextLayoutLike['lines'][number],
+  runs: TextRun[],
+  starts: number[],
+  spans: LineText['spans'],
+  fonts: FontsLike,
+): { found: HungSpace[] | null; forced: boolean } {
+  const boxAt = spans.boxAt;
+  if (!boxAt || !runs.length) return { found: null, forced: false };
+  const charAt = (offset: number): number => {
+    const k = runIndexAt(starts, offset);
+    return runs[k].text.charCodeAt(offset - starts[k]);
+  };
+  let end = natural.end;
+  let forced = false;
+  if (end > natural.start && charAt(end - 1) === 10) {
+    forced = true;
+    end -= 1;
+  }
+  let found: HungSpace[] | null = null;
+  let kept = false;
+  for (let at = end - 1; at >= natural.start; at -= 1) {
+    const c = charAt(at);
+    if (isBidiControl(c)) continue;
+    if (c !== 0x20) break;
+    // a collapsible space after the last kept one is removed (4.1.3), and
+    // one before a kept one hangs with it
+    const keeps = boxAt.call(spans, at)?.style.whiteSpace === 'pre-wrap';
+    if (!keeps && !kept) continue;
+    kept = true;
+    const run = runs[runIndexAt(starts, at)];
+    (found ??= []).push({ at, x: 0, width: spaceAdvance(fonts, run) });
+  }
+  found?.reverse();
+  return { found, forced };
+}
+
+type HungSpace = NonNullable<LineText['hung']>[number];
+
+/**
+ * The spaces `pre-wrap` keeps that a text's line ends on, which the engine
+ * hung (`keptAtEnd`): past the line's end, to its left where the layout
+ * reads right to left, and their inline box's, whose background and border
+ * cover them, as a browser draws them. Noted on the text (`LineText.hung`),
+ * and their advance answered, with whether a forced break follows them.
+ */
+function hangPreserved(
+  text: LineText,
+  runs: TextRun[],
+  starts: number[],
+  fonts: FontsLike,
+  rtl: boolean,
+): { total: number; forced: boolean } {
+  const natural = text.layout.lines[text.layoutLine];
+  if (!natural) return { total: 0, forced: false };
+  const { found, forced } = keptAtEnd(natural, runs, starts, text.spans, fonts);
+  if (!found) return { total: 0, forced };
+  text.hung = found;
+  placeHung(text, rtl);
+  let total = 0;
+  for (const space of found) total += space.width;
+  return { total, forced };
+}
+
+const NOTHING_HUNG = { total: 0, forced: false };
+
+/** Put a text's hung spaces beside its line's end, logical order outward:
+ *  to the right of its glyphs, or to their left. */
+function placeHung(text: LineText, left: boolean): void {
+  const natural = text.layout.lines[text.layoutLine];
+  if (!text.hung || !natural) return;
+  let x = left ? natural.x : natural.x + natural.width;
+  for (const space of text.hung) {
+    if (left) x -= space.width;
+    space.x = x;
+    if (!left) x += space.width;
+  }
+}
+
+/**
+ * The runs of a layout with the spaces `pre-wrap` keeps before a forced
+ * break held where they fit (`keptAtEnd`) — a kept newline, or the block's
+ * end after the last line where `ends` — or null where none are. They hang
+ * there only where they do not fit (CSS Text 3, 4.1.3), so they take room,
+ * which the engine gives them when they are handed over as no-break
+ * spaces, as `pre`'s are (`heldText`): it measures them, and aligns the
+ * line with them. Laid out again, the lines break where they did, since
+ * the spaces fit where they are. A line of a layout cannot be moved over
+ * for them afterwards: its lines are drawn in one draw, from one place.
+ */
+function holdAtBreaks(
+  layout: TextLayoutLike,
+  runs: TextRun[],
+  spans: SpanMap,
+  fonts: FontsLike,
+  width: number,
+  ends: boolean,
+): TextRun[] | null {
+  const starts = runStarts(runs);
+  let held: number[] | null = null;
+  const lines = layout.lines;
+  for (let i = 0; i < lines.length; i += 1) {
+    const natural = lines[i];
+    const { found, forced } = keptAtEnd(natural, runs, starts, spans, fonts);
+    if (!found || !(forced || (ends && i === lines.length - 1))) continue;
+    let free = width - natural.width;
+    for (const space of found) {
+      if (space.width > free + 0.01) break;
+      free -= space.width;
+      (held ??= []).push(space.at);
+    }
+  }
+  if (!held) return null;
+  held.sort((a, b) => a - b);
+  const out = runs.slice();
+  let next = 0;
+  for (let k = 0; k < runs.length && next < held.length; k += 1) {
+    const start = starts[k];
+    const end = start + runs[k].text.length;
+    if (held[next] >= end) continue;
+    const chars = runs[k].text.split('');
+    while (next < held.length && held[next] < end) {
+      chars[held[next] - start] = '\u00a0';
+      next += 1;
+    }
+    out[k] = { ...runs[k], text: chars.join('') };
+  }
+  return out;
+}
+
+/** The spaces `pre-wrap` keeps that the lines one layout made hung at
+ *  their ends (`hangPreserved`), noted on each line's text. */
+function hangLines(
+  lines: LineBox[],
+  from: number,
+  runs: TextRun[],
+  fonts: FontsLike,
+  rtl: boolean,
+): void {
+  let starts: number[] | null = null;
+  for (let i = from; i < lines.length; i += 1) {
+    const text = lines[i].texts[0];
+    if (!text) continue;
+    starts ??= runStarts(runs);
+    hangPreserved(text, runs, starts, fonts, rtl);
+  }
 }
 
 /**
