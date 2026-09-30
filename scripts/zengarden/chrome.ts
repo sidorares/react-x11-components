@@ -20,7 +20,13 @@
 //   DevTools' own evaluation, which runs with the page's scripts off.
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -108,6 +114,17 @@ export class Chrome {
       throw new Error('no Chrome found: set CHROME to its executable');
     }
     const profile = mkdtempSync(join(tmpdir(), 'zengarden-chrome-'));
+    // An animated image stays on its first frame, the one ours draws:
+    // animating, it showed whichever frame the capture came to. Chrome's
+    // accessibility setting for it is a profile preference, which the
+    // browser reads into Blink's `ImageAnimationPolicy`
+    // (chrome_content_browser_client.cc); there is no switch or DevTools
+    // call for it.
+    mkdirSync(join(profile, 'Default'));
+    writeFileSync(
+      join(profile, 'Default', 'Preferences'),
+      JSON.stringify({ settings: { a11y: { animation_policy: 'none' } } }),
+    );
     const child = spawn(
       binary,
       [
