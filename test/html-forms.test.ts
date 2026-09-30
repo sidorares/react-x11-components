@@ -777,7 +777,8 @@ metric('a press on a label is one on its control', async () => {
     '<form method="post">' +
       '<label id="agree"><input type="checkbox" name="agree"> I agree</label>' +
       '<label id="for-name" for="name">Name</label> <input id="name" name="n">' +
-      '<label id="for-b">A</label>' +
+      '<label id="bare">Labels nothing</label>' +
+      '<label id="for-ra" for="ra">A</label>' +
       '<input type="radio" name="r" value="a" id="ra">' +
       '<label id="for-rb" for="rb">B</label>' +
       '<input type="radio" name="r" value="b" id="rb" checked>' +
@@ -790,10 +791,20 @@ metric('a press on a label is one on its control', async () => {
   assert.ok(!field.focused);
   await pressOn(doc, 'for-name');
   assert.ok(field.focused, 'the field is focused');
-  await pressOn(doc, 'for-b');
+  await pressOn(doc, 'bare');
+  await pressOn(doc, 'for-ra');
+  assert.strictEqual(
+    submitted.length,
+    0,
+    'a label for a radio submits nothing',
+  );
   await pressOn(doc, 'send', { x: 5, y: 8 });
   assert.strictEqual(submitted.length, 1, 'the button in it was pressed');
-  assert.strictEqual(submitted[0].body, 'agree=on&n=&r=b');
+  assert.strictEqual(
+    submitted[0].body,
+    'agree=on&n=&r=a',
+    'the box is ticked, and the radio its label is for checked',
+  );
   void box;
 });
 
