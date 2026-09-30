@@ -59,7 +59,7 @@ import {
 } from './css/cascade.js';
 import type { HoverTouch, KeptStyles, MetricFace } from './css/cascade.js';
 import { mediaMatches, parseStylesheet } from './css/parse.js';
-import type { Stylesheet } from './css/parse.js';
+import type { MediaCondition, Stylesheet } from './css/parse.js';
 import { uaStylesheet } from './css/ua.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
 import {
@@ -718,15 +718,23 @@ export class HtmlViewNode extends Node {
     place: (sheet: Stylesheet, element: Element) => void,
     depth = 0,
     chain: Set<string> = new Set(),
+    /** The media queries `sheet` is itself under, where it was imported
+     *  under some. */
+    under: MediaCondition[][] | null = null,
   ): void {
-    for (const url of sheet.imports) {
+    for (let i = 0; i < sheet.imports.length; i += 1) {
+      const url = sheet.imports[i];
+      // what it imports is under its import's media queries, and under
+      // the ones the sheet importing it is under
+      const conditions = sheet.importConditions[i];
+      const media = conditions ? [...(under ?? []), conditions] : under;
       this._resources.request({ url, kind: 'stylesheet', element });
       const fetched = this._resources.stylesheet(url, [encoding]);
       const base = this._resources.sheetBase(url);
       seen.push({ url, text: fetched?.text ?? null, base });
       const key = base ?? url;
       if (!fetched || depth >= MAX_IMPORT_DEPTH || chain.has(key)) continue;
-      const imported = parseStylesheet(fetched.text, 0, layers, base);
+      const imported = parseStylesheet(fetched.text, 0, layers, base, media);
       chain.add(key);
       this._placeImports(
         imported,
@@ -737,6 +745,7 @@ export class HtmlViewNode extends Node {
         place,
         depth + 1,
         chain,
+        media,
       );
       chain.delete(key);
       place(imported, element);
