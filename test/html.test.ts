@@ -2710,6 +2710,99 @@ metric(
   },
 );
 
+// A box that `position: relative` moves has its text laid out apart, a line
+// a piece at a time, as bidi text is: the path that decides a break at an
+// inline box's edge itself, where one layout of the paragraph leaves it to
+// the text engine.
+const MOVED = 'position:relative;top:1px';
+
+metric(
+  "an inline element's opening edge is no place to break a word",
+  async () => {
+    // UAX #14 and CSS Text 3, 5.1: no break between two letters because an
+    // element's edge is between them, so a line too narrow for the word
+    // runs past its end — and breaks at the edge where the letters would
+    // break without it: after a hyphen, after a space
+    const pad = `padding:0 4px;${MOVED}`;
+    const { node } = await render(
+      '<div style="width:0">' +
+        `<p id="word" style="margin:0">ab<span style="${pad}">cd</span></p>` +
+        `<p id="hyphen" style="margin:0">ab-<span style="${pad}">cd</span></p>` +
+        `<p id="space" style="margin:0">ab <span style="${pad}">cd</span></p>` +
+        `<p id="inside" style="margin:0">ab<span style="${pad}">cd ef</span>gh</p>` +
+        '</div>',
+    );
+    const el = view(node);
+    assert.deepStrictEqual(lineTextsOf(el, 'word'), ['abcd'], 'one word');
+    assert.deepStrictEqual(lineTextsOf(el, 'hyphen'), ['ab-', 'cd']);
+    assert.deepStrictEqual(lineTextsOf(el, 'space'), ['ab ', 'cd']);
+    assert.deepStrictEqual(
+      lineTextsOf(el, 'inside'),
+      ['abcd ', 'efgh'],
+      'a word each side of the space in the element',
+    );
+  },
+);
+
+metric(
+  'a word goes to the next line with the inline element edges it holds on to',
+  async () => {
+    // Laid out a pixel narrower than the line it makes where it has room:
+    // the line breaks at the space, the last place it may, and the word
+    // goes on whole with the element's edges. Across an opening edge, `xx
+    // ab` was left on the first line and the element went to the next; a
+    // closing edge ran past the line's end, as a space hangs there, where
+    // a browser keeps it on the line with the word it closes.
+    const lines = async (inner: string): Promise<string[]> => {
+      const source = (width: string) =>
+        `<p id="p" style="margin:0;width:${width}">${inner}</p>`;
+      const probe = await render(source('auto'), 600);
+      const [whole] = linesOf(view(probe.node), 'p');
+      await probe.result.unmount();
+      const { node, result } = await render(
+        source(`${Math.floor(whole.width) - 1}px`),
+        600,
+      );
+      const texts = lineTextsOf(view(node), 'p');
+      await result.unmount();
+      return texts;
+    };
+    assert.deepStrictEqual(
+      await lines(`xx ab<span style="padding-left:4px;${MOVED}">cd</span>`),
+      ['xx ', 'abcd'],
+      'the word runs on into an element',
+    );
+    assert.deepStrictEqual(
+      await lines(`xx <span style="padding-right:20px;${MOVED}">abcd</span>`),
+      ['xx ', 'abcd'],
+      'an element closes after the word',
+    );
+  },
+);
+
+metric(
+  'a float is no narrower than a word across its inline elements',
+  async () => {
+    // A float's least width is its longest word (CSS 2.1 10.3.5), measured
+    // at no width, where every line breaks where it may: at every edge, it
+    // was a letter, and the float as wide as its room (WPT bidi-007)
+    const { node } = await render(
+      '<div style="width:10px"><p id="p" style="float:left;margin:0;' +
+        `letter-spacing:4px">a<span style="padding:0 2px;${MOVED}">b</span>c` +
+        '</p></div>',
+    );
+    const el = view(node);
+    const lines = linesOf(el, 'p');
+    assert.strictEqual(lines.length, 1, 'one line');
+    const p = boxOf(el, 'p');
+    assert.ok(p.width > 10, `wider than its room: ${p.width}`);
+    assert.ok(
+      Math.abs(p.width - lines[0].width) < 0.5,
+      `as wide as its line: ${p.width} ${lines[0].width}`,
+    );
+  },
+);
+
 metric(
   'an inline background covers its face and padding, not the line',
   async () => {

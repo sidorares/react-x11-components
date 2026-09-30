@@ -130,6 +130,22 @@ const LAYOUT_RUNS = new WeakMap<TextLayoutLike, TextRun[] | number[]>();
 const WIDEST_WORD = new WeakMap<TextLayoutLike, number>();
 
 /**
+ * A fragment of text that runs on from the text before it on its line, with
+ * no place to break between the two — only inline boxes' edges, or a float
+ * — and how wide those edges are: a word across a `<span>` with padding is
+ * in two fragments, and as wide as both and the padding between. What
+ * `joinsBefore` answers, for a min-content bound (`block.ts`'s `wordBound`)
+ * that would have the word no wider than either fragment's widest.
+ */
+const JOINS = new WeakMap<LineText, number>();
+
+/** The edges a fragment of text runs on across from the text before it on
+ *  its line, or undefined where it does not run on from it (`JOINS`). */
+export function joinsBefore(text: LineText): number | undefined {
+  return JOINS.get(text);
+}
+
+/**
  * The widest word between spaces in a layout's text: its runs laid out
  * again with every space a line break, at no width limit. Where a text's
  * only breaks are spaces that is its min-content width, and where it has
@@ -507,6 +523,9 @@ function linesOf(
 
   const style = block.style;
   const wrapWords = overflowWrapOf(style, items);
+  // a line may break between any two letters, an edge between them or not
+  const breaksAnywhere =
+    style.wordBreak === 'break-all' || style.lineBreakAnywhere;
   const base = {
     family: style.fontFamily,
     size: style.fontSize,
@@ -1148,28 +1167,104 @@ function linesOf(
       !BREAKS_AFTER.test(segment.runs[segment.runs.length - 1].text)
         ? unbreakableAfter(lineItems, segment.nextIndex, style, fonts, lineBase)
         : 0;
-    const fragment = fonts.layout(segment.runs, lineBase, {
-      maxWidth: wraps(style) ? Math.max(1, room - tied) : undefined,
-      lineHeight: onFirst ? lineOne.lineHeight : lineHeightMul,
-      // Never aligned by the text layout: the alignment belongs to the whole
-      // line — its text, its atomics and its inline boxes' edges together —
-      // which only this loop can see, and `finishLine` shifts it all. Laid
-      // out aligned, the first fragment of a centred line was centred alone
-      // and whatever followed it on the line was placed as though it had
-      // not been, over it.
-      align: 'left',
-      direction: style.direction,
-      overflowWrap: wrapWords,
-      fit: PARAGRAPH_FIT,
-      maxLines: 1,
-    });
-    LAYOUT_RUNS.set(fragment, segment.runs);
-    const first = fragment.lines[0];
+    const lineHeight = onFirst ? lineOne.lineHeight : lineHeightMul;
+    let fragment = fragmentLayout(
+      fonts,
+      segment.runs,
+      lineBase,
+      style,
+      lineHeight,
+      wrapWords,
+      room - tied,
+    );
+    let first = fragment.lines[0];
     if (!first) {
       index = segment.nextIndex;
       offset = 0;
       continue;
     }
+    // Did the segment wrap? ntk answers with `truncated`. A layout that does
+    // not carry the flag — react-x11's Cocoa engine reports none — is asked
+    // the same of its line ends instead: it wrapped if anything but
+    // whitespace follows the first line. Read as "fitted", a cut fragment
+    // advanced past the whole segment, and a paragraph beside a float lost
+    // every line after its first. And a line that ends at a `<br>` is over
+    // whether or not anything followed it in this segment: what comes next
+    // — an atomic, an element's edge — is the next line's.
+    let wrapped =
+      breakBefore(segment.runs, first.end) ||
+      (fragment.truncated ?? inkBeyond(segment.runs, first.end));
+    // An inline box's edge is no place to break a line (CSS Text 3, 5.1):
+    // where the segment runs to its end on this line, its last word runs on
+    // past it, through the edges after it, into the text they stand before
+    // — `ab<span style="padding: 0 4px">cd</span>` is one word, as it is
+    // without the padding. Where the line may break at that text after all,
+    // the edges that close boxes are still the word's, as a box's end goes
+    // with the content it closes, and it is the ones that open a box that
+    // go with what follows. The line holds the word and all of that or none
+    // of it, so where it does not fit, the line breaks at the last place in
+    // the segment it may break, and the word goes to the next line whole.
+    // Where the segment has no such place, the word is the line's first,
+    // and is measured with what it runs into (below). A word that ends in
+    // white space hangs it, and its edges after it with it.
+    let glued = 0;
+    if (
+      !wrapped &&
+      wraps(style) &&
+      lineItems[segment.nextIndex]?.kind === 'edge' &&
+      !BREAKS_AFTER.test(segment.runs[segment.runs.length - 1].text) &&
+      // none of it matters where the most it could come to fits: most
+      // edges are nowhere near a line's end
+      first.width + unbreakableBound(lineItems, segment.nextIndex) >
+        room + FIT_SLACK
+    ) {
+      const after = textAfterEdges(lineItems, segment.nextIndex);
+      glued =
+        after &&
+        !breaksBetween(
+          fonts,
+          lineBase,
+          segment.runs,
+          runsLength(segment.runs),
+          after,
+          breaksAnywhere,
+        )
+          ? unbreakableAfter(
+              lineItems,
+              segment.nextIndex,
+              style,
+              fonts,
+              lineBase,
+            )
+          : closingEdges(lineItems, segment.nextIndex);
+    }
+    if (glued > 0 && first.width + glued > room + FIT_SLACK) {
+      // the last place it may break: laid out a hair narrower than it is,
+      // which the rest of the segment fits, not in the room the word
+      // leaves, where it broke after its first word if the word and what
+      // it runs into are wider than the line
+      const earlier = fragmentLayout(
+        fonts,
+        segment.runs,
+        lineBase,
+        style,
+        lineHeight,
+        wrapWords,
+        first.width - 0.5,
+      );
+      const line = earlier.lines[0];
+      // and not inside a word that `overflow-wrap` cut to fit: that is for
+      // a word no line holds, and the word and what it runs into may fit
+      // the next line
+      if (line && line.end < first.end && !insideWord(segment.runs, line.end)) {
+        fragment = earlier;
+        first = line;
+        wrapped = true;
+        glued = 0;
+      }
+    }
+    // the first word, with what it runs into past the segment
+    const word = first.width + glued;
     // Nothing fits beside the floats — the first word is wider than the
     // room they leave, and was either run past it or cut inside itself to
     // fit — so the line moves down to where a float ends, and tries again
@@ -1179,7 +1274,7 @@ function linesOf(
     if (
       isEmpty(open) &&
       available < options.width &&
-      tooNarrow(segment.runs, first.end, first.width, room)
+      tooNarrow(segment.runs, first.end, word, room)
     ) {
       const below = belowFloats(options, y, guess);
       if (below !== null) {
@@ -1189,30 +1284,47 @@ function linesOf(
     }
     // An inline box's opening edge goes with the first word after it: where
     // the word does not fit the room the edge leaves, both go to the next
-    // line, rather than the edge being left at this one's end. And a word
-    // that may start a line — after a space the line ends on, or after an
-    // atomic, which has a break after it (CSS Text 3, 5.1) — goes to the
-    // next line whole where it does not fit what is left of this one,
-    // rather than being broken inside itself to fit it: the text after an
-    // inline-block, or after a float it was cut at, was its first letter
-    // at the line's end and the rest on the next.
+    // line, rather than the edge being left at this one's end — where the
+    // line may break there at all. The edge is no place to break (CSS Text
+    // 3, 5.1), so that is where the line may break between what it ends on
+    // and the word: after white space or an atomic, or where the text
+    // engine breaks the two run together (`breaksBetween`). `ab<span
+    // style="padding: 0 4px">cd</span>` is one word, and a line too narrow
+    // for it runs past its end, as it does for the word without the
+    // padding; broken before the span, a float's min-content width was a
+    // letter wide, and it came out as wide as its room.
+    // And a word that may start a line — after a space the line ends on,
+    // or after an atomic, which has a break after it (CSS Text 3, 5.1) —
+    // goes to the next line whole where it does not fit what is left of
+    // this one, rather than being broken inside itself to fit it: the text
+    // after an inline-block, or after a float it was cut at, was its first
+    // letter at the line's end and the rest on the next.
     const startsLine =
       wraps(style) &&
       (open.hang > 0 || open.order[open.order.length - 1]?.kind === 'atomic');
     if (
       !isEmpty(open) &&
       (pendingWidth > 0
-        ? tooNarrow(segment.runs, first.end, first.width, room)
+        ? tooNarrow(segment.runs, first.end, word, room) &&
+          breaksAfterLine(
+            open,
+            style,
+            fonts,
+            lineBase,
+            segment.runs,
+            breaksAnywhere,
+          )
         : startsLine &&
           // run past the room — its white space is no part of the width —
           // or cut inside itself to fit it
-          (first.width > room + FIT_SLACK ||
-            tooNarrow(segment.runs, first.end, first.width, room)))
+          (word > room + FIT_SLACK ||
+            tooNarrow(segment.runs, first.end, word, room)))
     ) {
       close();
       continue;
     }
     placePending(band.left);
+    const joins = joinsOnto(open, segment.runs, first.start);
     const placed: LineText = {
       layout: fragment,
       layoutLine: 0,
@@ -1225,6 +1337,7 @@ function linesOf(
       spans: segment.spans,
     };
     segment.spans.giveGaps(placed, first.start, first.end);
+    if (joins !== undefined) JOINS.set(placed, joins);
     open.texts.push(placed);
     open.order.push({
       kind: 'text',
@@ -1244,17 +1357,6 @@ function linesOf(
       open.x += Math.min(hung.total, Math.max(0, available - open.x));
     };
 
-    // Did the segment wrap? ntk answers with `truncated`. A layout that does
-    // not carry the flag — react-x11's Cocoa engine reports none — is asked
-    // the same of its line ends instead: it wrapped if anything but
-    // whitespace follows the first line. Read as "fitted", a cut fragment
-    // advanced past the whole segment, and a paragraph beside a float lost
-    // every line after its first. And a line that ends at a `<br>` is over
-    // whether or not anything followed it in this segment: what comes next
-    // — an atomic, an element's edge — is the next line's.
-    const wrapped =
-      breakBefore(segment.runs, first.end) ||
-      (fragment.truncated ?? inkBeyond(segment.runs, first.end));
     if (!wrapped) {
       // It fitted: the cursor stays on this line for whatever comes next.
       //
@@ -1311,6 +1413,36 @@ function linesOf(
 }
 
 const EMPTY: InlineResult = { lines: [], height: 0, width: 0 };
+
+/** The first line of a segment's text in a width, as the line at a time
+ *  lays one out (`linesOf`). */
+function fragmentLayout(
+  fonts: FontsLike,
+  runs: TextRun[],
+  base: Record<string, unknown>,
+  style: ComputedStyle,
+  lineHeight: number,
+  overflowWrap: 'normal' | 'break-word',
+  width: number,
+): TextLayoutLike {
+  const laid = fonts.layout(runs, base, {
+    maxWidth: wraps(style) ? Math.max(1, width) : undefined,
+    lineHeight,
+    // Never aligned by the text layout: the alignment belongs to the whole
+    // line — its text, its atomics and its inline boxes' edges together —
+    // which only this loop can see, and `finishLine` shifts it all. Laid
+    // out aligned, the first fragment of a centred line was centred alone
+    // and whatever followed it on the line was placed as though it had not
+    // been, over it.
+    align: 'left',
+    direction: style.direction,
+    overflowWrap,
+    fit: PARAGRAPH_FIT,
+    maxLines: 1,
+  });
+  LAYOUT_RUNS.set(laid, runs);
+  return laid;
+}
 
 /**
  * Which line each float a paragraph placed stands beside: the one whose top
@@ -1855,6 +1987,271 @@ function breaksAtEnd(open: OpenLine, style: ComputedStyle): boolean {
   return (
     wraps(style) &&
     (open.hang > 0 || open.order[open.order.length - 1]?.kind === 'atomic')
+  );
+}
+
+/**
+ * Whether a line may break before an inline box's opening edge, between
+ * what the line has got to and `next`, the text after the edge: after an
+ * atomic, or after the white space the line ends on, as `breaksAtEnd`
+ * says, or where the text engine breaks the line's last text and `next`
+ * run together (`breaksBetween`). An edge on the way is no place to break
+ * of its own (CSS Text 3, 5.1), and a line with no text or atomic on it
+ * yet has none to hold on to.
+ */
+function breaksAfterLine(
+  open: OpenLine,
+  style: ComputedStyle,
+  fonts: FontsLike,
+  base: Record<string, unknown>,
+  next: readonly TextRun[],
+  anywhere: boolean,
+): boolean {
+  if (!wraps(style)) return false;
+  if (open.hang > 0) return true;
+  for (let i = open.order.length - 1; i >= 0; i -= 1) {
+    const placed = open.order[i];
+    if (placed.kind === 'edge') continue;
+    if (placed.kind === 'atomic') return true;
+    const text = placed.item;
+    const runs = LAYOUT_RUNS.get(text.layout);
+    if (!runs || (runs.length > 0 && typeof runs[0] === 'number')) return true;
+    const end = text.layout.lines[text.layoutLine].end;
+    return breaksBetween(fonts, base, runs as TextRun[], end, next, anywhere);
+  }
+  return true;
+}
+
+/**
+ * How wide the edges are between the text the open line ends on and text
+ * starting at `start` in `runs`, where the one runs on into the other
+ * (`JOINS`): neither is white space at the join, and no atomic, which has a
+ * break before and after it, is between them. Undefined where they do not
+ * join, or the line has no text yet. Letters on either side are taken to
+ * join whatever they are, which may count an ideograph's join that the
+ * engine would break at: it makes the bound it is for a larger one, never a
+ * smaller.
+ */
+function joinsOnto(
+  open: OpenLine,
+  runs: readonly TextRun[],
+  start: number,
+): number | undefined {
+  if (open.hang > 0) return undefined;
+  const next = charAt(runs, start);
+  if (next === '' || SPACE.test(next)) return undefined;
+  let edges = 0;
+  for (let i = open.order.length - 1; i >= 0; i -= 1) {
+    const placed = open.order[i];
+    if (placed.kind === 'edge') {
+      edges += placed.item.width;
+      continue;
+    }
+    if (placed.kind === 'atomic') return undefined;
+    const text = placed.item;
+    const before = LAYOUT_RUNS.get(text.layout);
+    if (!before || (before.length > 0 && typeof before[0] === 'number')) {
+      return undefined;
+    }
+    const last = charAt(
+      before as TextRun[],
+      text.layout.lines[text.layoutLine].end - 1,
+    );
+    return last === '' || SPACE.test(last) ? undefined : edges;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a line may break between two texts an inline box's edge stands
+ * between — the text of `before` up to the code unit `end`, and `after` —
+ * which is where it may break them run together, the edge being no place
+ * to break (CSS Text 3, 5.1). After white space, and not before it, where
+ * the break is after that white space instead (UAX #14, LB7). Never between
+ * two letters or digits of the alphabets whose words break only at spaces,
+ * which is every edge in running text, and needs no asking. Anything else
+ * — a hyphen, a dash, an ideograph or kana, a bracket, a slash — is asked
+ * of the text engine: the two words, laid out at no width, break at every
+ * place a line may, which is UAX #14 as the `linebreak` package has it on
+ * both backends — ntk breaks every line with it, and react-x11's CoreText
+ * engine a text at no width. So an edge after a hyphen, or between two
+ * ideographs, is a place to break exactly where the same text with no edge
+ * in it is one; a list of classes here would be a third opinion.
+ *
+ * Counted, not located: the words run together break into as many pieces
+ * as the two apart where they break between them, and one fewer where the
+ * last piece of the one runs on into the first of the other. The line
+ * offsets are no answer, as they are not the text's on every backend: the
+ * CoreText engine lays out a copy with a line break put in at each place,
+ * and its offsets are that copy's.
+ */
+function breaksBetween(
+  fonts: FontsLike,
+  base: Record<string, unknown>,
+  before: readonly TextRun[],
+  end: number,
+  after: readonly TextRun[],
+  anywhere: boolean,
+): boolean {
+  const last = charAt(before, end - 1);
+  const next = charAt(after, 0);
+  // nothing to hold the two together
+  if (last === '' || next === '') return true;
+  if (SPACE.test(last)) return true;
+  if (SPACE.test(next)) return false;
+  if (anywhere) return true;
+  if (HOLDS.test(last) && HOLDS.test(next)) return false;
+  if (NO_BREAK_AFTER.test(last) || NO_BREAK_BEFORE.test(next)) return false;
+  const tail = sliceRuns(before, lastSpace(before, end) + 1, end);
+  const head = sliceRuns(after, 0, firstSpace(after));
+  const pieces = (runs: TextRun[]): number =>
+    fonts.layout(runs, base, {
+      maxWidth: MIN_CONTENT_WIDTH,
+      overflowWrap: 'normal',
+    }).lines.length;
+  return pieces([...tail, ...head]) === pieces(tail) + pieces(head);
+}
+
+/** The width a text is laid out at to break it at every place it may
+ *  break: none — at a pixel, CoreText breaks inside words (`block.ts`'s
+ *  `MIN_CONTENT_PROBE`). */
+const MIN_CONTENT_WIDTH = 0;
+
+/** White space a line breaks after. */
+const SPACE = /^[ \t\n]$/;
+
+/** Letters and digits of the Latin, Greek and Cyrillic alphabets, and the
+ *  marks on them: no line breaks between two of these (UAX #14, LB9, LB23,
+ *  LB25, LB28). */
+const HOLDS =
+  /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{Nd}\p{M}]$/u;
+
+/** What no line breaks after, whatever follows: an opening bracket, a
+ *  straight quote and a no-break space (UAX #14, LB12, LB14, LB19). */
+const NO_BREAK_AFTER = /^[([{"'\u00a0]$/;
+
+/** What no line breaks before, whatever precedes: a closing bracket, a
+ *  stop, a comma, a colon, `!`, `?`, `/` and a straight quote (UAX #14,
+ *  LB13, LB19) — the punctuation after a link or a `<code>`, which needs
+ *  no asking either. */
+const NO_BREAK_BEFORE = /^[)\]},.;:!?/"']$/;
+
+/** The code unit at an offset into runs' joined text, or '' outside it. */
+function charAt(runs: readonly TextRun[], at: number): string {
+  if (at < 0) return '';
+  let from = 0;
+  for (const run of runs) {
+    const next = from + run.text.length;
+    if (at < next) return run.text[at - from];
+    from = next;
+  }
+  return '';
+}
+
+/** Where the last white space before a code-unit offset is, or -1. */
+function lastSpace(runs: readonly TextRun[], end: number): number {
+  let found = -1;
+  let from = 0;
+  for (const run of runs) {
+    if (from >= end) break;
+    const text = run.text.slice(0, end - from);
+    const at = Math.max(
+      text.lastIndexOf(' '),
+      text.lastIndexOf('\t'),
+      text.lastIndexOf('\n'),
+    );
+    if (at >= 0) found = from + at;
+    from += run.text.length;
+  }
+  return found;
+}
+
+/** Where the first white space in runs' joined text is, or its length. */
+function firstSpace(runs: readonly TextRun[]): number {
+  let from = 0;
+  for (const run of runs) {
+    const at = run.text.search(/[ \t\n]/);
+    if (at >= 0) return from + at;
+    from += run.text.length;
+  }
+  return from;
+}
+
+function runsLength(runs: readonly TextRun[]): number {
+  let length = 0;
+  for (const run of runs) length += run.text.length;
+  return length;
+}
+
+/**
+ * The text inline boxes' edges from `from` on stand before, up to its first
+ * white space: what the text before the edges runs on into. Null where an
+ * atomic comes first, which has a break before it, or nothing does.
+ */
+function textAfterEdges(
+  items: readonly Item[],
+  from: number,
+): TextRun[] | null {
+  const runs: TextRun[] = [];
+  for (let i = from; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind === 'edge' || item.kind === 'float') continue;
+    if (item.kind === 'atomic') break;
+    const text = item.run.text;
+    const stop = text.search(/[ \t\n]/);
+    if (stop < 0) {
+      runs.push(item.run);
+      continue;
+    }
+    runs.push({ ...item.run, text: text.slice(0, stop + 1) });
+    break;
+  }
+  return runs.length ? runs : null;
+}
+
+/**
+ * The most `unbreakableAfter` could come to, with no layout: the edges on
+ * the way, and the text up to its first white space at half again its size
+ * a character, which no glyph a document sets words in is wider than, and
+ * its letter spacing (`longestWord`'s estimate).
+ */
+function unbreakableBound(items: readonly Item[], from: number): number {
+  let width = 0;
+  for (let i = from; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind === 'float') continue;
+    if (item.kind === 'edge') {
+      width += Math.max(0, item.width);
+      continue;
+    }
+    if (item.kind === 'atomic') break;
+    const run = item.run;
+    const stop = run.text.search(/[ \t\n]/);
+    const per = (run.size ?? 16) * 1.5 + Math.max(0, run.letterSpacing ?? 0);
+    width += (stop < 0 ? run.text.length : stop) * per;
+    if (stop >= 0) break;
+  }
+  return width;
+}
+
+/** How wide the edges from `from` on are that close inline boxes, up to
+ *  one that opens a box or anything but an edge or a float. */
+function closingEdges(items: readonly Item[], from: number): number {
+  let width = 0;
+  for (let i = from; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.kind === 'float') continue;
+    if (item.kind !== 'edge' || item.side !== 'end') break;
+    width += item.width;
+  }
+  return width;
+}
+
+/** Whether a code-unit offset into runs' joined text is between two
+ *  letters or digits: inside a word, where only `overflow-wrap` breaks. */
+function insideWord(runs: readonly TextRun[], at: number): boolean {
+  return (
+    WORD_CHAR.test(charAt(runs, at - 1)) && WORD_CHAR.test(charAt(runs, at))
   );
 }
 

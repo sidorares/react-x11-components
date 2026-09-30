@@ -60,6 +60,7 @@ import type {
 import { FloatContext } from './floats.js';
 import {
   faceExtentOf,
+  joinsBefore,
   layoutInline,
   lineHeightMultiplier,
   spaceBreaksOnly,
@@ -2851,10 +2852,19 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
     let last: object | null = null;
     for (const line of box.lines) {
       if (unbroken) widest = Math.max(widest, line.width);
+      // a word across inline boxes' edges is in two fragments of text, and
+      // as wide as its parts in both and the edges between: bound by the
+      // widest word of each, a float in a narrow room took a letter of a
+      // word of letters in bordered spans for its least width, and was cut
+      // to the room (`joinsBefore`)
+      let chain = 0;
       for (const text of line.texts) {
-        if (text.layout === last) continue;
+        const joins = joinsBefore(text);
+        if (joins === undefined && text.layout === last) continue;
         last = text.layout;
-        widest = Math.max(widest, widestWord(fonts, text.layout, measured));
+        const own = widestWord(fonts, text.layout, measured);
+        chain = joins === undefined ? own : chain + joins + own;
+        widest = Math.max(widest, chain);
       }
       for (const placed of line.atomics) {
         const b = placed.box;

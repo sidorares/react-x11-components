@@ -3757,6 +3757,69 @@ the three `background-margin-root` tests ask for.
 The CSS 2.1 suite gained `white-space-processing-047` on both backends,
 and lost none.
 
+### Round 128
+
+327. **A line broke at an inline box's edge where its text may not break.**
+     A paragraph with an image, an inline-block or a float in it, bidi
+     text, or a box that `position: relative` moves is laid out a line at
+     a time, a piece at a time, and the line decides a break at an
+     element's edge itself. Before an element's opening margin, border or
+     padding it broke wherever the next word did not fit, whatever was on
+     either side of the edge. An element's edge is no place to break (CSS
+     Text 3, 5.1), and UAX #14 knows no elements, so
+     `ab<span style="padding: 0 4px">cd</span>` is one word, and a line too
+     narrow for it runs past its end, as it does for the word with no
+     padding. The line breaks at an edge now only where it breaks the same
+     text without it: after white space or an atomic, or where the text
+     engine breaks the two words run together, after a hyphen or between
+     two ideographs. The engine is asked at no width, where both backends
+     break at every place UAX #14 has, with the `linebreak` package that
+     ntk breaks every line with. The answer is counted, not located: the
+     two words make as many pieces as they do apart where they break
+     between them, and one fewer where they do not. The CoreText engine
+     lays out a copy of the text with the breaks put in at no width, so
+     its offsets are the copy's, and read as the text's they moved a
+     hyphen to the next line. Between two letters of the alphabets that
+     break only at spaces, after an opening bracket and before a closing
+     one, a stop or a comma, nothing is asked.
+328. **…and the word before the edge stayed on the line when the rest of it
+     went to the next.** A word that runs on into an element goes to the
+     next line with the element now, the line breaking at the last place
+     before the word where it may, as a browser's does. So does a word an
+     element closes after: its closing padding ran past the line's end, as
+     a space hangs there, where a browser keeps it on the line with the
+     word it closes.
+329. **A float's least width was a letter of a word across its elements.**
+     Shrink-to-fit is `min(max(min-content, room), max-content)`, and the
+     min-content width is measured only where the widest word could be
+     wider than the room. The bound took each piece of text's widest word,
+     and a word across an element's edges is in two pieces. A piece a line
+     lays out records now that it runs on from the one before it, and how
+     wide the edges between them are, and the bound adds them up.
+     `bidi-007`'s test block was laid out at its room, 720px, where its
+     reference, the same letters in spans laid out in one piece, is the
+     one word it is, 724.83px wide.
+
+The CSS 2.1 suite, css-text and css-inline pass what they passed on X11.
+`bidi-007`, `bidi-008` and `bidi-010` still fail, by 5,197 pixels where
+they failed by 5,597: the test block is as wide as its reference now, and
+what is left is #149, the bidi controls resolved on each side of an
+element's edge apart. Four `initial-letter` tests over ruby, which fail
+for the initial letter and the ruby, moved nearer their references. Their
+`<rt>` is laid out inline, its tall `X` running on from `xyz` with no place
+to break between, and the two go to the next line together where they ran
+out of the box. Twenty-two paragraphs compared with headless Chrome break
+where it breaks them on X11, and seven of the same kinds break the same
+way on Cocoa.
+
+A paragraph laid out a piece at a time pays for the question at the edges
+near a line's end only: a bound with no layout in it, the edges and the
+text up to its first space at half again its size a letter, settles the
+rest. On a document of such paragraphs with an edge every few words, the
+new work is about 2.5% of `<Html>`'s own time in a layout pass, and a float
+laid out at no width is faster, as a line no longer breaks at an edge and
+lays out the word again on the next.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
