@@ -1277,6 +1277,21 @@ family is out of the list until then: the list changing is what tells every
 cache keyed by a family string — the text layouts', the metrics', ntk's —
 to set the text again.
 
+**A face is asked for an instance before it is registered.** ntk sets a
+variable face at the weight and the size a style asks for by cutting an
+instance out of it inside `match`, and fontkit cut none out of a WOFF or a
+WOFF2: the throw came out of the first layout in the family, and
+nextjs.org's blog, in Geist, was left blank. `refusal` (`fonts.ts`) asks the
+opened face for the instance a layout would, at the far end of `wght` and
+`opsz`, and a face that throws is a source that did not load — the next is
+tried, and the family stays out of the list. Before registering, not after:
+nothing is ever unregistered, and a refused face left under its group's
+name is matched by weight ahead of a sibling that loaded later. And only an
+engine whose own faces have `variation` is asked, since the face core opens
+on Cocoa is fontkit's and CoreText draws the axis itself. The fix proper is
+fontkit's (windowkit/fontkit#1), and the check asks rather than knows, so
+it passes the day the engine can.
+
 **A probe of an unbounded width places nothing at infinity.** A
 shrink-to-fit probe lays a subtree out in infinite room, where sharing room
 out — auto margins, a table's columns — comes to `Infinity`; the pass after

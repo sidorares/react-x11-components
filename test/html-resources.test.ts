@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import React from 'react';
 
 import { renderX11, cleanup, screen, act } from 'react-x11/test';
+import { openFont } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
 import { Html, useHtmlHandle } from '../src/html/index.js';
@@ -22,7 +23,7 @@ import type {
 } from '../src/html/index.js';
 import { absoluteUrls, parseStylesheet } from '../src/html/css/parse.js';
 import type { FontFaceRule } from '../src/html/css/parse.js';
-import { bestFace } from '../src/html/fonts.js';
+import { bestFace, refusal } from '../src/html/fonts.js';
 import { decodeGif } from '../src/html/gif.js';
 import { resolveUrl } from '../src/html/url.js';
 
@@ -57,6 +58,36 @@ const woff2 = (name: string): Uint8Array | null => {
 const REGULAR = woff2('Main-Regular');
 const BOLD = woff2('Main-Bold');
 const withFonts = FONTS && REGULAR && BOLD ? test : test.skip;
+
+// A variable font as the web serves one, WOFF2, small enough to sit here:
+// a rectangle for `x` and a `wght` axis, 100 to 900 from 400, that widens
+// it. Made with fontTools' FontBuilder (`setupFvar`, `setupGvar`) and saved
+// with `flavor = 'woff2'`, its `glyf` transformed as an encoder leaves one.
+const WEDGE =
+  'd09GMgABAAAAAAGEAAwAAAAAA0QAAAE4AAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAAPC8kCjRC' +
+  'MEYBNgIkAwwLCAAEIAWBBAcoG3kCAC4K7IZjh1jyDM0e0WMpJzQ1hGgtM7v7RXAoUZ2qA2FqAY1s' +
+  'JZB9I2tEWdVYQE+kbtsfiqmbosUsfOwHk9yE5AEpRd38VwtYd/xdDni7HAR/+c1iDyTKy4JECsP0' +
+  'hosS5RD5lHc/yrFm1BQuAZg+CiM2c/9T5BFXAIARkJDRJwv0KUbRoAjJiM1/9M//XyMAgS5J6EPT' +
+  'hrIREHXyHgSQQQMSmtACKCAQpbTW2ktrbk3Vcf1Y9XL1AgQCDMhArf6tpEvblhnWO2d7NlHfmsn2' +
+  '4cw2eY9AcDTxeX382pTzEzzcVMrcJC7TMbIEggsuxItKFZcCAJC3d38RkyqBrAiQAADQYI6BUEOA' +
+  'pFFNQNCgTRalWWjRo5p0GCiDNuPz/+VkVkY2NYyNgtBC8l3HS6gKqbmSOWIZAA==';
+const wedge = (): Uint8Array => new Uint8Array(Buffer.from(WEDGE, 'base64'));
+
+/** `console.warn` and `console.error` held for a test, as the lines said. */
+function quiet(t: { after(fn: () => void): void }): {
+  warned: string[];
+  errors: string[];
+} {
+  const { warn, error } = console;
+  const said = { warned: [] as string[], errors: [] as string[] };
+  console.warn = (message: unknown) => void said.warned.push(String(message));
+  console.error = (message: unknown) => void said.errors.push(String(message));
+  t.after(() => {
+    console.warn = warn;
+    console.error = error;
+  });
+  return said;
+}
 
 function view(node: DrawnNode): HtmlViewNode {
   return (node as unknown as { children: HtmlViewNode[] }).children[0];
@@ -740,6 +771,164 @@ withFonts(
     );
   },
 );
+
+withFonts(
+  'a variable WOFF2 does not cost the document, whether or not the engine sets it',
+  async (t) => {
+    // ntk sets a variable face at the weight a style asks for by cutting an
+    // instance out of it, inside `match`, and fontkit cut none out of a
+    // WOFF2: the first bold word of nextjs.org's blog, in Geist, threw out
+    // of its layout and the page was left blank. An engine that can cut one
+    // draws the text in it; one that cannot sets it in the next family.
+    const said = quiet(t);
+    const { node, result } = await mount(
+      '<style>@font-face { font-family: Doc; font-weight: 100 900;' +
+        '  src: url(v.woff2) format("woff2") }' +
+        'body { font-family: Doc, monospace }</style>' +
+        '<p id="p">x <b id="b">x</b></p><p id="q">after</p>',
+      (r) => (r.kind === 'font' ? { kind: 'font', bytes: wedge() } : null),
+      {},
+      true,
+    );
+    await settle(node);
+    assert.ok(node['_tree' as keyof typeof node], 'laid out, not left blank');
+    assert.deepStrictEqual(said.errors, [], 'and nothing failed');
+    let cuts = true;
+    try {
+      openFont(result.app as never, wedge()).variation({ wght: 900 });
+    } catch {
+      cuts = false;
+    }
+    const family = boxOf(node, 'b').style.fontFamily;
+    if (cuts) {
+      assert.match(family, /^html webfont [a-z]+, monospace$/);
+      assert.strictEqual(
+        familyOf(result.app as never, { fontFamily: family }, 700),
+        'Wedge',
+      );
+    } else {
+      assert.strictEqual(family, 'monospace, monospace');
+      assert.strictEqual(said.warned.length, 1, 'said once');
+      assert.match(said.warned[0], /v\.woff2/);
+    }
+  },
+);
+
+withFonts(
+  'a face the engine cannot cut an instance from is passed over for the next source',
+  async (t) => {
+    // whatever the engine can do with a WOFF2: the face a document opens is
+    // the one opened here, the same bytes, and it refuses every instance
+    const said = quiet(t);
+    const variable = wedge();
+    const asked: string[] = [];
+    const host: Answer = (r) => {
+      asked.push(r.url);
+      if (r.kind !== 'font') return null;
+      return { kind: 'font', bytes: r.url === 'v.woff2' ? variable : BOLD! };
+    };
+    const { result } = await mount('<p>x</p>', host, {}, true);
+    const opened = openFont(result.app as never, variable) as unknown as {
+      variation(settings: Record<string, number>): unknown;
+    };
+    const cut: Record<string, number>[] = [];
+    opened.variation = (settings) => {
+      cut.push(settings);
+      throw new Error('cannot instantiate a variation');
+    };
+    await act(() =>
+      result.rerender(
+        h(
+          'box',
+          { style: { width: 400, flexDirection: 'column' } },
+          h(Html, {
+            source:
+              '<style>@font-face { font-family: Doc; font-weight: 100 900;' +
+              '  src: url(v.woff2) format("woff2"), url(b.ttf) }' +
+              'p { font-family: Doc, monospace; font-weight: 700 }</style>' +
+              '<p id="p">x</p>',
+            partial: false,
+            onResource: host,
+            'data-testname': 'doc',
+          }),
+        ),
+      ),
+    );
+    const node = view(screen.getByTestName('doc') as DrawnNode);
+    await settle(node);
+    assert.deepStrictEqual(asked, ['v.woff2', 'b.ttf']);
+    assert.deepStrictEqual(cut, [{ wght: 900 }], 'asked once, off its default');
+    const p = boxOf(node, 'p');
+    assert.match(p.style.fontFamily, /^html webfont [a-z]+, monospace$/);
+    assert.strictEqual(
+      familyOf(result.app as never, p.style, 700),
+      'KaTeX_Main',
+    );
+    assert.deepStrictEqual(said.errors, []);
+    assert.strictEqual(said.warned.length, 1, 'said once');
+    assert.match(said.warned[0], /v\.woff2[^]*cannot instantiate a variation/);
+  },
+);
+
+test('a face is asked for the instance a layout will ask it for', () => {
+  const axis = (min: number, def: number, max: number) => ({
+    min,
+    default: def,
+    max,
+  });
+  const asked: Record<string, number>[] = [];
+  const face = (
+    axes: Record<string, ReturnType<typeof axis>>,
+    cuts = false,
+  ) => ({
+    variationAxes: axes,
+    variation(settings: Record<string, number>) {
+      asked.push(settings);
+      if (!cuts) throw new Error('no instance');
+      return this;
+    },
+  });
+  // an engine whose faces are cut into instances, as ntk's are, and one
+  // that moves an axis itself: CoreText, whose faces have no `variation`
+  const ntk = { fonts: { match: () => face({}) } };
+  const coreText = { fonts: { match: () => ({}) } };
+  const wght = { wght: axis(100, 400, 900) };
+
+  assert.strictEqual(refusal(ntk, face(wght), 'serif'), 'no instance');
+  assert.strictEqual(refusal(ntk, face(wght, true), 'serif'), null);
+  assert.strictEqual(
+    refusal(coreText, face(wght), 'serif'),
+    null,
+    'an engine that does not draw through the face is not asked',
+  );
+  assert.strictEqual(refusal(ntk, face({}), 'serif'), null, 'a static face');
+  assert.strictEqual(
+    refusal(ntk, face({ wdth: axis(75, 100, 125) }), 'serif'),
+    null,
+    'an axis no style moves is never cut',
+  );
+  assert.strictEqual(
+    refusal(ntk, face({ wght: axis(400, 400, 400) }), 'serif'),
+    null,
+    'nor one with nowhere to go',
+  );
+  asked.length = 0;
+  refusal(
+    ntk,
+    face({ wght: axis(100, 900, 900), opsz: axis(8, 14, 144) }, true),
+    'serif',
+  );
+  assert.deepStrictEqual(
+    asked,
+    [{ wght: 100, opsz: 144 }],
+    'the far end of each axis a style moves, in one instance',
+  );
+  assert.strictEqual(
+    refusal({ fonts: null }, face(wght), 'serif'),
+    'no instance',
+    'an engine that cannot say is taken to draw through it',
+  );
+});
 
 withFonts(
   'documents that declare a family alike share it; one that differs does not',
