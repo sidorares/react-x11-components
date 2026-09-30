@@ -186,8 +186,12 @@ export function computePaintBounds(box: Box, moved = false): number {
   // How far down the content reaches, for the document's height: the
   // border box, and every box and line under it, but not past a box that
   // clips what it holds — where the scrollable overflow ends. Out-of-flow
-  // boxes are the layout's to count.
-  let bottom = y2;
+  // boxes are the layout's to count. A border box of no area reaches
+  // nowhere, as a browser has it (Blink's `ScrollableOverflowCalculator`
+  // adds no empty rect): the empty blocks a design leaves at its end,
+  // below the last one's bottom margin, made the page that margin taller
+  const empty = own && !(box.width > 0 && box.height > 0);
+  let bottom = empty ? -Infinity : y2;
   // A shadow is ink past the box, and no overflow: a repaint of the strip
   // under a card has to reach the card, and the document is no taller.
   const shadows = own ? box.style.boxShadow : null;
@@ -306,7 +310,7 @@ export function computePaintBounds(box: Box, moved = false): number {
   if (!own) return bottom;
   // whether the box clips only matters where its content reaches past it,
   // and its style is one more object a walk of every box would read
-  const end = box.y + box.height;
+  const end = empty ? -Infinity : box.y + box.height;
   if (bottom <= end) return end;
   const style = box.style;
   return box.parent &&

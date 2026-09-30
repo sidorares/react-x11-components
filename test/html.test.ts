@@ -3427,6 +3427,30 @@ metric(
   },
 );
 
+metric(
+  'an empty block past the end of the content makes the document no taller',
+  async () => {
+    // A box of no area adds nothing to the scrollable overflow it is in, as
+    // a browser has it: Blink's ScrollableOverflowCalculator unites no
+    // empty rect. Design 068 sets html and body a window tall and ends on
+    // a block with a 30px bottom margin and five empty ones after it, set
+    // below the margin, and the page ran 30px past Chrome's
+    const { node } = await render(
+      '<style>html,body{height:100%;margin:0}.last{height:900px;' +
+        'margin-bottom:30px}</style>' +
+        '<div class="last"></div><div></div>' +
+        '<div style="width:0;height:5px"></div>',
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(
+      el.abs.height,
+      900,
+      'as tall as the last block, not the empty ones after its margin',
+    );
+  },
+);
+
 test('a box placed against the initial containing block follows the viewport', async () => {
   // nothing positioned around it: `bottom: 0` is the viewport's bottom
   const { el, resize } = await renderScrolled(
