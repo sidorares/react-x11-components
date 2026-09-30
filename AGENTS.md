@@ -1408,7 +1408,14 @@ the drawing rather than matched from each of its elements
 set's `.icon { fill }` is not matched a second time. GitHub's repository
 page, a hundred drawings and no rule for any shape in them, went from a
 tenth of a millisecond a drawing to a few microseconds. A property added to
-`shapes.ts` has to be one `SvgView` reads.
+`shapes.ts` has to be one `SvgView` reads. An SVG _image_ is the same
+cascade over a document of its own: `SvgDrawing.drawImage` builds a
+`Cascade` over the image's `<style>` sheets alone, one per colour scheme,
+tells it the image's `<svg>` is `:root` (the cascade's own `:root` is
+`<html>`), and gives the root its `fill`, `stroke` and `color` from
+`styleFor`, as an inline root has them from its box. So `svg.ts` imports
+the cascade, and the cascade must not import `svg.ts` back — which is why
+`svgSizeHint` lives in `cascade.ts`.
 
 **A transform is two halves, and inside one every number is the box's
 own.** Its translation is layout's — `applyRelativeOffsets` moves the box

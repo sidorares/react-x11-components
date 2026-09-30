@@ -1540,7 +1540,9 @@ function paintContent(
     for (const child of below) paintStacked(ctx, child, options);
   }
   if (visible) {
-    if (box.marker) paintMarker(ctx, box.marker, options);
+    if (box.marker) {
+      paintMarker(ctx, box.marker, options, box.style.colorScheme);
+    }
     if (box.replaced === 'image') paintImage(ctx, box, options);
     else if (box.replaced === 'svg') paintSvg(ctx, box, options);
   }
@@ -2255,7 +2257,7 @@ function paintFlowLines(
     }
     if (!intersects(child, options)) continue;
     if (child.marker && child.style.visibility === 'visible') {
-      paintMarker(ctx, child.marker, options);
+      paintMarker(ctx, child.marker, options, child.style.colorScheme);
     }
     if (child.lines) paintLines(ctx, child, options);
     paintFlowLines(ctx, child, options, outlines);
@@ -4235,11 +4237,20 @@ function paintBackgroundImage(
     // a drawing is drawn a tile at a time, at the size it was given
     if (tiles <= MAX_TILES) {
       for (let y = fromY; y < toY; y += stepY) {
-        for (let x = fromX; x < toX; x += stepX)
-          svg.draw(ctx, Math.round(x), Math.round(y), iw, ih, scale);
+        for (let x = fromX; x < toX; x += stepX) {
+          svg.drawImage(
+            ctx,
+            Math.round(x),
+            Math.round(y),
+            iw,
+            ih,
+            scale,
+            style.colorScheme,
+          );
+        }
       }
     } else {
-      svg.draw(ctx, x0, y0, iw, ih, scale);
+      svg.drawImage(ctx, x0, y0, iw, ih, scale, style.colorScheme);
     }
   } else if (
     tiles > 1 &&
@@ -4716,12 +4727,13 @@ function paintBorderImage(
     const svg = image instanceof SvgDrawing ? image : null;
     const w = Math.max(1, Math.round(cw));
     const h = Math.max(1, Math.round(ch));
+    const scheme = box.style.colorScheme;
     const drawn = options.cached?.(
-      `border-image|${key}|${w}x${h}`,
+      `border-image|${key}|${w}x${h}|${scheme}`,
       w,
       h,
       (sctx) => {
-        if (svg) svg.draw(sctx, 0, 0, w, h, scale);
+        if (svg) svg.drawImage(sctx, 0, 0, w, h, scale, scheme);
         else if (typeof source !== 'string') {
           const paint = gradientFill(sctx, source, 0, 0, w, h, box.style.color);
           if (paint) fillGradient(sctx, paint, { x: 0, y: 0, w, h });
@@ -5392,6 +5404,8 @@ function paintMarker(
   ctx: PaintContext,
   marker: Marker,
   options: PaintOptions,
+  /** The item's colour scheme, which an SVG image in it is drawn in. */
+  scheme: 'light' | 'dark',
 ): void {
   const x = marker.x + options.originX;
   const y = marker.y + options.originY;
@@ -5401,7 +5415,15 @@ function paintMarker(
     const loaded = options.backgroundImageFor?.(url);
     if (!loaded || !(width > 0 && height > 0)) return;
     if (loaded.image instanceof SvgDrawing) {
-      loaded.image.draw(ctx, x, y, width, height, options.scale ?? 1);
+      loaded.image.drawImage(
+        ctx,
+        x,
+        y,
+        width,
+        height,
+        options.scale ?? 1,
+        scheme,
+      );
     } else ctx.drawImage?.(loaded.image, x, y, width, height);
     return;
   }
@@ -5433,7 +5455,15 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
     const clipped =
       (!!corners || past) && pushClip(ctx, { x, y, w, h }, corners);
     if (image instanceof SvgDrawing) {
-      image.draw(ctx, at.x, at.y, at.w, at.h, options.scale ?? 1);
+      image.drawImage(
+        ctx,
+        at.x,
+        at.y,
+        at.w,
+        at.h,
+        options.scale ?? 1,
+        box.style.colorScheme,
+      );
     } else ctx.drawImage!(image, at.x, at.y, at.w, at.h);
     if (clipped) ctx.restore();
     return;

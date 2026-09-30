@@ -934,10 +934,23 @@ sheets, which is where a drawing exported from an editor keeps its colours
 — `.st0 { fill: #fff }` for `<path class="st0">`. Those properties are the
 ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
 no others: a rule's `transform`, font or dash pattern is not, nor is what a
-rule gives an element a `<use>` brings from outside the drawing, and an SVG
-_image_ is drawn from its attributes, its own `<style>` unread. What is in
+rule gives an element a `<use>` brings from outside the drawing. What is in
 a drawing has no box, so the pointer is over the drawing and never over a
 shape: `a:hover svg path` follows it, and `path:hover` matches nothing.
+
+An SVG _image_ — an `<img>`'s, a background's, a list marker's, a
+`content` image's — is a document of its own, and its `<style>` elements
+are its style sheets, and the only ones. They give its elements those
+properties as the document's give an inline drawing's, and its root its
+`fill`, `stroke` and `color` as well, since it has no box to have them
+from; `:root` there is its `<svg>`. No rule of the page's reaches into it,
+and neither does the page's `color`, so its `currentColor` is its own —
+black, unless its sheets say otherwise. A sheet in a CDATA section is read,
+one with a `media` query is under it, and one whose `type` is not
+`text/css` is none, as a browser has them. `prefers-color-scheme` inside
+an image answers the colour scheme of the element that embeds it — its
+`color-scheme`, or else the palette's — as Chrome answers it, and a width
+query or a `vw` in one is of the rectangle it is drawn in.
 
 An SVG root's `width` and `height` are CSS lengths, a percentage one too;
 its intrinsic size is what of them is absolute, and its ratio comes from them or from its `viewBox`,
