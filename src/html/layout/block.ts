@@ -792,8 +792,12 @@ function layoutChildren(
   // this box's first formatted line is its first child's in flow (CSS 2.1
   // 5.12.1), which its `::first-line` is handed to
   let firstLine = ctx.firstLine ? firstLineOf(box) : null;
-  // and the room a list item's marker takes on it (`MARKER_ROOM`)
-  let marked = MARKER_ROOM.get(box) ?? null;
+  // and the room a list item's marker takes on it (`MARKER_ROOM`): an
+  // inside marker's is handed down to the line it is on, and an outside
+  // one's is room above the baseline of the first child that has a line,
+  // which goes lower where the marker reaches higher (`MARKER_ASCENT`)
+  let pushed = MARKER_ASCENT.get(box) ?? null;
+  let marked = pushed === null ? (MARKER_ROOM.get(box) ?? null) : null;
   const clamp = ctx.clamp ?? null;
 
   for (const child of box.children) {
@@ -887,6 +891,7 @@ function layoutChildren(
     }
 
     const counted = clamp?.fit?.lines ?? 0;
+    const floatMark = floats.count;
     if (
       !floats.isEmpty &&
       (child.kind === 'replaced' || establishesBFC(child))
@@ -894,6 +899,17 @@ function layoutChildren(
       layoutBesideFloats(child, ctx, floats, contentLeft, childY, contentWidth);
     } else {
       layoutBlockLevel(child, ctx, floats, contentLeft, childY, contentWidth);
+    }
+    if (pushed !== null) {
+      const line = firstLineIn(child);
+      if (line) {
+        const push = pushed - (line.y + line.baseline - child.y);
+        if (push > 0) {
+          translate(child, 0, push);
+          floats.moveSince(floatMark, push);
+        }
+        pushed = null;
+      }
     }
     // a block with none of the flow's lines in it — an image, a box of a
     // formatting context of its own — puts the clamp point of an `auto`
@@ -1768,6 +1784,8 @@ function layoutBox(
     const room = markerRoom(box, box.marker, ctx.fonts);
     if (room) MARKER_ROOM.set(box, room);
     else MARKER_ROOM.delete(box);
+    if (box.style.listStylePosition === 'inside') MARKER_ASCENT.delete(box);
+    else MARKER_ASCENT.set(box, markerAscent(box, box.marker, ctx.fonts));
   }
   const flow = layoutChildren(box, ctx, floats, box.contentY, contentWidth);
   // A list item with a marker and no line holds one, the marker's, a line
@@ -1852,6 +1870,28 @@ function markerRoom(
   return marker.style && marker.style !== box.style
     ? strutOf(fonts, marker.style)
     : null;
+}
+
+/**
+ * How far an outside marker reaches above the baseline it sits on. The
+ * marker is a line of its own face, the item's or a `::marker` rule's, so a
+ * bullet or a number reaches its face's ascent on that line, and an image,
+ * set on the line bottom on the baseline, the higher of that and its own
+ * height. Where the item's first line is in a block inside it — a link set
+ * `display: block`, a paragraph — and the block's first baseline is nearer
+ * its top than that, the block goes lower by the difference, and its line
+ * stays the height it was: CSS 2.1 (12.5.1) leaves this to the user agent,
+ * and Blink aligns the marker's baseline with the block's and pushes the
+ * block down (`UnpositionedListMarker::AddToBox`). Its first line grew
+ * instead, and design 196's links, under 18px bullets, were 21px tall where
+ * Chrome has them 14px, 7px lower. On the item's own line the two come to
+ * the same: the line grows by what the push would have moved it.
+ */
+const MARKER_ASCENT = new WeakMap<Box, number>();
+
+function markerAscent(box: Box, marker: Marker, fonts: FontsLike): number {
+  const ascent = strutOf(fonts, marker.style ?? box.style).ascent;
+  return marker.image ? Math.max(marker.image.height, ascent) : ascent;
 }
 
 /** The first line box anywhere under a box, in layout order. */
