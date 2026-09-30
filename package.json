@@ -154,7 +154,7 @@
     "prebuild": "rm -rf dist",
     "build": "tsc -p tsconfig.build.json",
     "pretest": "npm run build",
-    "test": "tsx --test test/*.test.ts",
+    "test": "tsx --test test/*.test.ts test/html/*.test.ts",
     "pretypecheck": "npm run build",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint .",

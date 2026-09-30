@@ -27,7 +27,7 @@ afterEach(cleanup);
 
 /** A stand-in for `FontManager#prewarm` that records the families warmed
  *  whole. An `<Html>` document also asks for the faces its text is set in
- *  once its boxes are built, and those calls name them (html.test.ts). */
+ *  once its boxes are built, and those calls name them (html/fonts.test.ts). */
 function recordFamilies(families: string[]) {
   return (family: string, faces?: unknown) => {
     if (faces === undefined) families.push(family);

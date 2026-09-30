@@ -1,0 +1,243 @@
+// <Html> — the document: the streaming source, fragments, and what HTML's
+// parser implies.
+import { afterEach, test } from 'node:test';
+import assert from 'node:assert';
+import { cleanup, renderX11, screen } from 'react-x11/test';
+import type { DrawnNode } from 'react-x11';
+import { Html } from '../../src/index.js';
+import type { ChildNode, Element } from 'domhandler';
+import {
+  HtmlSource,
+  appendChild,
+  createElement,
+  parseFragment,
+  rawTextOf,
+} from '../../src/html/dom.js';
+import { h, lineTextsOf, metric, render, view } from './harness.js';
+
+afterEach(cleanup);
+
+test('a growing source is written as a delta and keeps node identity', () => {
+  const source = new HtmlSource();
+  source.setSource('<p>one</p>', false);
+  const first = source.document.children[0];
+  source.setSource('<p>one</p><p>two</p>', false);
+  assert.strictEqual(
+    source.document.children[0],
+    first,
+    'the settled node is the same object, so its boxes and layout survive',
+  );
+  assert.strictEqual(source.document.children.length, 2);
+});
+
+test('a source that is not an extension re-parses', () => {
+  const source = new HtmlSource();
+  source.setSource('<p>one</p>', false);
+  const first = source.document.children[0];
+  source.setSource('<div>different</div>', false);
+  assert.notStrictEqual(source.document.children[0], first);
+});
+
+test('the last chunk of a stream is still written as a delta', () => {
+  const source = new HtmlSource();
+  source.setSource('<p>one</p>', false);
+  const first = source.document.children[0];
+  source.setSource('<p>one</p><p>two</p>', true);
+  assert.strictEqual(
+    source.document.children[0],
+    first,
+    'completing the stream is an append like any other, so identity survives',
+  );
+  assert.ok(source.complete);
+});
+
+test('a completed source that grows re-parses instead of extending the parse', () => {
+  const source = new HtmlSource();
+  source.setSource('<p>hi</p>', true);
+  // An append-shaped edit to a *completed* document: the parser has been
+  // ended, so this has to reset rather than write. It threw
+  // `.write() after done!` before — and only for an edit at the end of the
+  // document, because an edit anywhere else is not a prefix (#77).
+  source.setSource('<p>hi</p>!', true);
+  assert.strictEqual(rawTextOf(source.document), 'hi!');
+  assert.ok(source.complete, 'the re-parse is ended again');
+});
+
+test('typing at the end of a completed document is a re-parse per keystroke', () => {
+  const source = new HtmlSource();
+  // Every one of these extends the last, so every one of them is the crash.
+  source.setSource('<p>a', true);
+  source.setSource('<p>ab', true);
+  source.setSource('<p>abc', true);
+  assert.strictEqual(rawTextOf(source.document), 'abc');
+  assert.strictEqual(
+    source.setSource('<p>abc', true),
+    false,
+    'and an unchanged source is still no work at all',
+  );
+});
+
+test('the document reports its stylesheets, scripts and resources in one pass', () => {
+  const source = new HtmlSource();
+  source.setSource(
+    '<title>T</title><style>p{color:red}</style>' +
+      '<link rel="stylesheet" href="a.css"><script src="b.js"></script>' +
+      '<img src="c.png">',
+    true,
+  );
+  const facts = source.facts();
+  assert.strictEqual(facts.title, 'T');
+  assert.strictEqual(facts.sheets.length, 2);
+  assert.strictEqual(facts.sheets[0].kind, 'inline');
+  assert.strictEqual(facts.sheets[1].kind, 'link');
+  assert.strictEqual(facts.scripts.length, 1);
+  // the stylesheet link and the image are both resources
+  assert.strictEqual(facts.resources.length, 2);
+});
+
+/** A parsed document's elements, and its text that is not white space. */
+function shapeOf(markup: string): string {
+  const source = new HtmlSource();
+  source.setSource(markup, true);
+  type N = { name?: string; children?: N[]; data?: string };
+  const walk = (nodes: N[]): string =>
+    nodes
+      .map((n) =>
+        n.name !== undefined
+          ? `${n.name}(${walk(n.children ?? [])})`
+          : (n.data ?? '').trim(),
+      )
+      .filter(Boolean)
+      .join(' ');
+  return walk(source.document.children as unknown as N[]);
+}
+
+test("a written <html> holds its content in a body, as HTML's parser has it", () => {
+  // htmlparser2 puts content where it stands. The root box stood in for a
+  // body around the `<html>`, so a first paragraph's margin stood below
+  // the body's, 8px lower than the same page with its `<body>` written.
+  assert.strictEqual(
+    shapeOf('<html><title>t</title><p>a</p></html>'),
+    'html(title(t) body(p(a)))',
+    'the first thing that is not head content opens it',
+  );
+  assert.strictEqual(shapeOf('<html>hi</html>'), 'html(body(hi))', 'text too');
+  assert.strictEqual(
+    shapeOf('<html><body><p>a</p></body><p>b</p></html><div>c</div>'),
+    'html(body(p(a) p(b) div(c)))',
+    'what comes after the body ends goes back into it',
+  );
+  assert.strictEqual(
+    shapeOf('<html><p>a</p><body class="x"><p>b</p></body></html>'),
+    'html(body(p(a) p(b)))',
+    'and a second body is its attributes, on the first',
+  );
+  // with no `<html>`, a body written after content takes that content in
+  assert.strictEqual(
+    shapeOf('<title>t</title><p>a</p><body><div>b</div></body>'),
+    'title(t) body(p(a) div(b))',
+  );
+  // and a fragment is left as it was written
+  assert.strictEqual(shapeOf('<p>a</p>b'), 'p(a) b');
+});
+
+test('a fragment can be parsed and spliced in', () => {
+  const nodes = parseFragment('<em>hi</em>');
+  assert.strictEqual(nodes.length, 1);
+  const holder = createElement('div');
+  appendChild(holder, nodes[0]);
+  assert.strictEqual(holder.children[0], nodes[0]);
+  assert.strictEqual(nodes[0].parent, holder);
+});
+
+test('a /> closes a void element and one in SVG, and opens any other', () => {
+  // melbcss.com comments an attribute out as `/*target="_blank"*/`, which
+  // is no comment inside a tag: the `/` before `>` read as a self-closing
+  // flag, and the link was empty, its text beside it
+  const serialize = (nodes: ChildNode[]): string =>
+    nodes
+      .map((node) =>
+        node.type === 'text'
+          ? (node as unknown as { data: string }).data
+          : `<${(node as Element).name}>${serialize((node as Element).children)}</${(node as Element).name}>`,
+      )
+      .join('');
+  assert.strictEqual(
+    serialize(
+      parseFragment(
+        '<a href="" /*target="_blank"*/><address>TBD</address></a>' +
+          '<div/>in<br/>div</div>' +
+          '<svg><rect/><circle/></svg><math><mi/><mo>+</mo></math>' +
+          // an integration point is closed too: it is read in SVG
+          '<svg><title/><desc/><foreignObject/><path/></svg>',
+      ),
+    ),
+    '<a><address>TBD</address></a>' +
+      '<div>in<br></br>div</div>' +
+      '<svg><rect></rect><circle></circle></svg>' +
+      '<math><mi></mi><mo>+</mo></math>' +
+      '<svg><title></title><desc></desc><foreignObject></foreignObject><path></path></svg>',
+  );
+});
+
+test('a degenerately nested document is capped, not crashed', async () => {
+  // The box tree stops at depth 512 (Blink flattens at the same number), so
+  // fuzzer-shaped nesting cannot blow the stack five phases later.
+  const depth = 4000;
+  const source =
+    '<div>'.repeat(depth) + '<p>bottom</p>' + '</div>'.repeat(depth);
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, partial: false, 'data-testname': 'doc' }),
+    ),
+    { backend: 'mock' },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  // The capped content is dropped; the point is that nothing threw.
+  assert.strictEqual(typeof el.textContent(), 'string');
+  void result;
+});
+
+test('the head is shown where a stylesheet says so, as a browser shows it', async () => {
+  // `display: none` by the UA sheet, like the rest of what has no box of
+  // its own, and no longer skipped whatever the stylesheet said
+  const { node } = await render(
+    '<html><head><meta name="x" content="PASS"><title>T</title>' +
+      '<style>head, meta { display: block } meta::before { content: attr(content) }</style>' +
+      '</head><body><p>body</p></body></html>',
+  );
+  const text = view(node).textContent();
+  assert.ok(text.includes('PASS'), `the meta's ::before is drawn: ${text}`);
+  assert.ok(!text.includes('T\n') && !text.startsWith('T'), 'the title is not');
+  assert.ok(text.includes('body'));
+});
+
+test('head content with no <head> around it stays hidden, as in the head a browser implies', async () => {
+  const { node } = await render(
+    '<title>Title</title><style>* { display: block }</style><p>body</p>',
+  );
+  const text = view(node).textContent();
+  assert.ok(!text.includes('Title'), `no title: ${text}`);
+  assert.ok(!text.includes('display'), 'no stylesheet');
+  assert.ok(text.includes('body'));
+});
+
+metric(
+  'a newline straight after a <pre> start tag is no part of its text',
+  async () => {
+    // HTML's parser drops it as an authoring convenience (13.2.6.4.7), so a
+    // code block written `<pre>` and a line break starts on its first line
+    // of code, and a second newline is a blank line
+    const { node } = await render(
+      '<pre id="p">\nfirst\n  second</pre><pre id="q">\n\nafter a blank</pre>' +
+        '<pre id="r">\r\ncrlf</pre>',
+    );
+    const el = view(node);
+    assert.deepStrictEqual(lineTextsOf(el, 'p'), ['first\n', '  second']);
+    assert.deepStrictEqual(lineTextsOf(el, 'q'), ['\n', 'after a blank']);
+    assert.deepStrictEqual(lineTextsOf(el, 'r'), ['crlf']);
+    assert.ok(!el.textContent().startsWith('\n'), 'nor of the document');
+  },
+);
