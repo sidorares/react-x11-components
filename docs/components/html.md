@@ -940,6 +940,13 @@ so a phone sheet under `(max-device-width: 700px)` applies where the
 element is that narrow and not otherwise. The scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
+The orientation and the aspect ratio are the viewport's too, and follow it;
+the resolution is the display's scale, so a page's high-DPI rules hold on a
+retina panel and not at one dot to the pixel; the rest are a desktop
+screen's with a mouse — `hover` and a `fine` pointer, eight bits of colour,
+no contrast or colour preference forced, and no scripting, since nothing
+here runs one. A feature nothing knows is false, as Media Queries 4 has
+it, and so is a query on a size that is no length.
 `@import` goes through the resource seam. Cascade layers are read (CSS
 Cascade 5): `@layer a, b;` fixes their order, the document's across all of
 its sheets, and a rule in a later layer wins over one in an earlier layer

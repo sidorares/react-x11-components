@@ -641,7 +641,13 @@ export class HtmlViewNode extends Node {
     this._webFonts.setFallback(look.fontFamily);
     this._webFonts.setFaces(
       faces.filter((f) =>
-        mediaMatches(f.rule.media, cssWidth, look.colorScheme, cssHeight),
+        mediaMatches(
+          f.rule.media,
+          cssWidth,
+          look.colorScheme,
+          cssHeight,
+          this._scale,
+        ),
       ),
     );
     this._cascade.setPointer({

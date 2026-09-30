@@ -17154,12 +17154,13 @@ test("device-width is the viewport's width", async () => {
   assert.deepStrictEqual(parseMediaQuery('(device-height >= 30em)'), [
     { minHeight: 480 },
   ]);
-  // and its landscape one runs a term into the `and` after it
+  // and its landscape one runs a term into the `and` after it: two terms,
+  // the width's and the orientation's, which is the viewport's aspect
   assert.deepStrictEqual(
     parseMediaQuery(
       'only screen and (max-device-width: 701px)and (orientation: landscape)',
     ),
-    [{ max: 701 }],
+    [{ max: 701, minAspect: 1 + 1e-9 }],
   );
   const source =
     '<style>#phone{display:none}' +
@@ -18098,4 +18099,55 @@ test('a media query whose size is no length does not parse, and holds nowhere', 
   assert.strictEqual(boxOf(el, 't').height, 10, 'neither hack applies');
   assert.strictEqual(boxOf(el, 'u').height, 20, 'a query that parses does');
   await result.unmount();
+});
+
+test('a media query on the resolution, the pointer or a feature nothing knows is answered as a desktop screen answers it', async () => {
+  // Media Queries 4 makes a feature nothing knows false (3.2), and every
+  // feature `<Html>` did not read held: the Zen Garden's 214 keeps its
+  // high-DPI rules under `(min-resolution: 1.5dppx),
+  // (min-device-pixel-ratio: 1.5)` and Firefox's and Opera's spellings
+  // beside them, and at one dot to the pixel took the rules it keeps for
+  // two. The resolution is the display scale's; a pointer is a mouse
+  const source =
+    '<style>body{margin:0}div{height:10px}' +
+    '@media (min-resolution:1.5dppx),(-webkit-min-device-pixel-ratio:1.5)' +
+    '{#r{height:20px}}' +
+    '@media (min--moz-device-pixel-ratio:1.5),(min-device-pixel-ratio:1.5),' +
+    '(unknown-feature:1){#u{height:30px}}' +
+    '@media (hover:hover) and (pointer:fine) and (color){#p{height:40px}}' +
+    '</style><div id="r"></div><div id="u"></div><div id="p"></div>';
+  const cases: [string, (s: string) => Promise<{ node: DrawnNode }>, number][] =
+    [
+      ['1x', (s) => render(s), 1],
+      ['2x', (s) => render2x(s), 2],
+    ];
+  for (const [name, draw, scale] of cases) {
+    const { node } = await draw(source);
+    const el = view(node);
+    const css = (id: string) => boxOf(el, id).height / scale;
+    assert.strictEqual(
+      css('r'),
+      scale >= 1.5 ? 20 : 10,
+      `${name}: the high-DPI rule holds at 2x and not at 1x`,
+    );
+    assert.strictEqual(css('u'), 10, `${name}: features nothing knows fail`);
+    assert.strictEqual(css('p'), 40, `${name}: a mouse hovers and is fine`);
+  }
+
+  // and the orientation is the viewport's, as it moves
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}#o{height:10px}' +
+      '@media (orientation:portrait){#o{height:20px}}</style>' +
+      '<div id="o"></div>',
+    300,
+  );
+  assert.strictEqual(boxOf(el, 'o').height, 10, '400 by 300 is landscape');
+  await resize(500);
+  assert.strictEqual(boxOf(el, 'o').height, 20, '400 by 500 is portrait');
+  await resize(500, 800);
+  assert.strictEqual(
+    boxOf(el, 'o').height,
+    10,
+    'and 800 by 500 landscape again, a change of width alone',
+  );
 });
