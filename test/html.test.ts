@@ -16036,3 +16036,36 @@ test("a media feature's value may hold parentheses of its own", async () => {
   assert.ok(text.includes('wide'), `the wide rule holds: ${text}`);
   assert.ok(!text.includes('narrow'), `and the narrow one does not: ${text}`);
 });
+
+metric(
+  "an inline flex box that clips sits on its first item's baseline, as it does unclipped",
+  async () => {
+    // A block container that clips sits on its bottom margin edge, for
+    // legacy reasons that stop at block containers (CSS Box Alignment 3,
+    // 9.2). A MediaWiki button is an `overflow: hidden` inline flex box of
+    // one icon, and it stood its whole height on the baseline, every line
+    // holding one the strut's descent taller than a browser's: 32px was 35
+    const { node } = await render(
+      '<style>body{margin:0;font:14px sans-serif}div{width:300px}' +
+        '.button{display:inline-flex;overflow:hidden;align-items:center;' +
+        'min-height:32px}.icon{display:block;width:20px;height:20px}' +
+        '.clip{display:block;overflow:hidden;height:32px}</style>' +
+        '<div id="flex"><span class="button"><span class="icon"></span>' +
+        '</span></div>' +
+        // an inline block that clips keeps the legacy rule
+        '<div id="block"><span class="clip" style="display:inline-block">' +
+        'text</span></div>' +
+        // and a block that clips has its first line's baseline still: only
+        // its last is its margin edge
+        '<div id="first"><span class="button" style="flex-direction:column">' +
+        '<span class="clip">clip</span></span></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'flex').height, 32, 'the button line');
+    assert.ok(
+      boxOf(el, 'block').height > 32,
+      `an inline block's line: ${boxOf(el, 'block').height}`,
+    );
+    assert.strictEqual(boxOf(el, 'first').height, 32, 'a first baseline');
+  },
+);

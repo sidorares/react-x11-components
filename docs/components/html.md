@@ -221,7 +221,10 @@ which makes no box and hands its children, its `::before` and its
 `::after` to its parent's, in its style — a replaced element set so is not
 rendered. An
 inline-block sits on its last line's baseline and an inline-table on its
-first row's. A float, an inline-block and an absolute box of `width: auto`
+first row's, each on its bottom margin edge where it clips what overflows
+it; an inline flex box sits on its first item's, clipping or not, and a
+block that clips has its first line's baseline all the same — only its
+last is its margin edge (CSS Box Alignment 3, 9.2). A float, an inline-block and an absolute box of `width: auto`
 shrink to fit the room their margins leave, and an absolute box the room
 its offset or its static position leaves: at `left: 50%` it has half the
 width. None is narrower than its longest word. A relatively positioned inline box moves its text, its
