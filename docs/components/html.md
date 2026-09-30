@@ -722,7 +722,11 @@ caret of a dropdown and the arrow of a tooltip, and the slanted edge of a
 section, `border-left: 100vw solid transparent`. Sides of one colour are
 rectangles, the top and the bottom full width, and so are a dotted, a
 dashed and a double side next to any other, and a corner one device pixel
-square. `groove`,
+square. A double side is two lines a third of its width each, along its
+outer and its inner edge (CSS Backgrounds 3, 4.2), and where it meets a
+double side of its colour the lines of the two join, so a double border
+of one colour is two frames: the outer along the border edge and the
+inner along the padding edge, as Chrome draws it. `groove`,
 `ridge`, `inset` and `outset` are drawn in two shades of their colour, lit
 from the top left and shaded as Chromium shades them — a groove in black
 is black against a dark grey — each side a trapezoid meeting its

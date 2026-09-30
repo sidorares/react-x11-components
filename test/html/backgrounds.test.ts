@@ -1301,6 +1301,14 @@ metric(
     await expectPixel(ctx, 51, 85, '#0000ff', { message: 'the outer line' });
     await expectPixel(ctx, 51, 92, '#ffffff', { message: 'between the two' });
     await expectPixel(ctx, 51, 99, '#0000ff', { message: 'the inner line' });
+    // and joined at the corners as the border's lines are painted: the
+    // outer lines a frame, and the inner ones a frame inside it
+    await expectPixel(ctx, 3, 92, '#0000ff', {
+      message: 'the outer frame round the corner',
+    });
+    await expectPixel(ctx, 10, 99, '#ffffff', {
+      message: "the top's inner line stopped at the left's",
+    });
     await expectPixel(ctx, 2, 166, '#ffffff', { message: 'past the curve' });
     await expectPixel(ctx, 51, 170, '#0000ff', { message: 'in the ring' });
     await expectPixel(ctx, 51, 200, '#ffffff', { message: 'inside the ring' });
