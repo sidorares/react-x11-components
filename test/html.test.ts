@@ -6202,6 +6202,40 @@ test('nothing loads without onResource, and every reference is offered to it', a
   assert.deepStrictEqual(asked.sort(), ['a.css', 'b.png']);
 });
 
+test("a pseudo-element's background image is asked for, as its element's", async () => {
+  // A generated box has no element of its own, and the images its styles
+  // named were never asked for, so it drew none: design 057 hangs its
+  // coffee cup, its small logo and its photo credit each on an `::after`
+  // with no content but a background. They are its element's to ask for
+  const asked: { url: string; element: string }[] = [];
+  await renderX11(
+    h(Html, {
+      source:
+        '<style>p::after{content:"";display:block;height:10px;' +
+        'background:url(cup.png) no-repeat}' +
+        'p::first-letter{background-image:url(letter.png)}' +
+        'div::before{content:"";border:4px solid;' +
+        'border-image:url(frame.png) 4}</style>' +
+        '<p>text</p><div>more</div>',
+      partial: false,
+      onResource: (r: { url: string; element: { name: string } }) => {
+        asked.push({ url: r.url, element: r.element.name });
+        return null;
+      },
+    }),
+    { backend: 'mock' },
+  );
+  assert.deepStrictEqual(
+    asked.sort((a, b) => a.url.localeCompare(b.url)),
+    [
+      { url: 'cup.png', element: 'p' },
+      { url: 'frame.png', element: 'div' },
+      { url: 'letter.png', element: 'p' },
+    ],
+    `each asked for once, as its element's: ${JSON.stringify(asked)}`,
+  );
+});
+
 test('a stylesheet handed back by the seam reaches the cascade', async () => {
   const result = await renderX11(
     h(
