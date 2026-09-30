@@ -5552,48 +5552,118 @@ metric('Ctrl+A selects the whole document, across every block', async () => {
   void result;
 });
 
-metric('a click on a link reports its href; a drag does not', async () => {
-  const clicks: string[] = [];
-  const result = await renderX11(
-    h(
-      'box',
-      { style: { width: 400, flexDirection: 'column' } },
-      h(Html, {
-        source: '<p><a href="https://example.test/x">a link here</a></p>',
-        partial: false,
-        onLink: (href: string) => clicks.push(href),
-        'data-testname': 'doc',
-      }),
-    ),
-    { width: 440, height: 200, fonts: FONTS! },
-  );
-  const node = screen.getByTestName('doc') as DrawnNode;
-  const el = view(node);
-  const caret = el.textCaretRect(2);
-  assert.ok(caret, 'the link text is laid out');
-  const x = caret.x + 1;
-  const y = caret.y + caret.height / 2;
-  assert.strictEqual(el.hrefAtPoint(x, y), 'https://example.test/x');
+metric('a click on a link reports its href; a drag does not', async (t) => {
+  // Twice: in a document that selects, where a drag leaves a selection behind
+  // as well as having travelled, and in one that selects nothing, where how
+  // far the pointer went is all that tells the two apart.
+  for (const selectable of [true, false]) {
+    const clicks: string[] = [];
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source: '<p><a href="https://example.test/x">a link here</a></p>',
+          partial: false,
+          selectable,
+          onLink: (href: string) => clicks.push(href),
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 200, fonts: FONTS! },
+    );
+    const node = screen.getByTestName('doc') as DrawnNode;
+    const el = view(node);
 
-  // The press lands on the element, which is what a real pointer hits and
-  // what `useLinkClicks` reads `hrefAtPoint` from. The harness places a
-  // pointer by offset from the node's centre.
-  const target = el as unknown as DrawnNode;
-  const dx = x - (target.abs.x + target.abs.width / 2);
-  const dy = y - (target.abs.y + target.abs.height / 2);
-  await act(async () => {
-    fireEvent.mouseDown(target, { dx, dy });
-    fireEvent.mouseUp(target, { dx, dy });
-  });
-  assert.deepStrictEqual(clicks, ['https://example.test/x']);
+    // The press lands on the element, which is what a real pointer hits and
+    // what `useLinkClicks` reads `hrefAtPoint` from. The harness places a
+    // pointer by offset from the node's centre.
+    const target = el as unknown as DrawnNode;
+    const at = (index: number) => {
+      const caret = el.textCaretRect(index);
+      assert.ok(caret, 'the link text is laid out');
+      const x = caret.x + 1;
+      const y = caret.y + caret.height / 2;
+      assert.strictEqual(el.hrefAtPoint(x, y), 'https://example.test/x');
+      return {
+        dx: x - (target.abs.x + target.abs.width / 2),
+        dy: y - (target.abs.y + target.abs.height / 2),
+      };
+    };
 
-  // A press that travelled is a selection gesture, not a click.
-  await act(async () => {
-    fireEvent.mouseDown(target, { dx, dy });
-    fireEvent.mouseUp(target, { dx: dx + 60, dy });
-  });
-  assert.strictEqual(clicks.length, 1, 'the drag did not follow the link');
-  void result;
+    const click = at(2);
+    await act(async () => {
+      fireEvent.mouseDown(target, click);
+      fireEvent.mouseUp(target, click);
+    });
+    assert.deepStrictEqual(clicks, ['https://example.test/x']);
+
+    // A press that travelled is a selection gesture, not a click — and two
+    // things about the harness decide whether this one travels. `mouseUp`
+    // takes no offset: it releases wherever the pointer is, so the pointer
+    // is moved first. And a second press within core's double-click
+    // distance of the first (4px, with no settings daemon on the harness's
+    // server) is a double click for 400ms of the wall clock, which selects
+    // a word on the press. Written as a press and a release at one spot,
+    // that word was all that kept this gesture from being a click, until a
+    // runner slow enough to spend 400ms between the two presses followed
+    // the link. So it presses farther away, and moves.
+    const drag = at(7);
+    assert.ok(
+      Math.abs(drag.dx - click.dx) > 4,
+      `the second press is not a double click: ${drag.dx - click.dx}px away`,
+    );
+    await act(async () => {
+      fireEvent.mouseDown(target, drag);
+    });
+    fireEvent.mouseMove(target, { dx: drag.dx + 60, dy: drag.dy });
+    await act();
+    if (selectable) {
+      await waitFor(() =>
+        assert.strictEqual(
+          node.selectedText(),
+          'here',
+          'the drag selected what it crossed',
+        ),
+      );
+    }
+    await act(async () => {
+      fireEvent.mouseUp(target);
+    });
+    if (!selectable) {
+      assert.strictEqual(
+        node.selectedText(),
+        '',
+        'nothing was selected: the travel alone tells it from a click',
+      );
+    }
+    assert.strictEqual(clicks.length, 1, 'the drag did not follow the link');
+
+    if (selectable) {
+      // A press that did not travel is not a click either when it selected
+      // something, which is the check the travel cannot stand in for: a
+      // double click's second press takes the word under it, so its first
+      // press follows the link and its second does not. Core counts the
+      // presses by `Date.now()`, so the time is held for the pair.
+      const now = Date.now();
+      const held = t.mock.method(Date, 'now', () => now);
+      await act(async () => {
+        fireEvent.doubleClick(target, click);
+      });
+      held.mock.restore();
+      assert.strictEqual(
+        node.selectedText(),
+        'link',
+        'the second press took the word',
+      );
+      assert.strictEqual(
+        clicks.length,
+        2,
+        'the first press followed the link and the second did not',
+      );
+    }
+    await result.unmount();
+  }
 });
 
 metric(
@@ -18099,6 +18169,293 @@ test('a media query whose size is no length does not parse, and holds nowhere', 
   assert.strictEqual(boxOf(el, 'u').height, 20, 'a query that parses does');
   await result.unmount();
 });
+
+test("a rem is the root element's font size, and the initial one in the root's own font size", async () => {
+  // CSS Values 4, 6.1.1: a `rem` is the root element's computed font size,
+  // and where it is on the root's own `font-size`, the property's initial
+  // value. It was the initial size everywhere, so `html { font-size:
+  // 62.5% }`, which a page sets to write its sizes in tenths of a rem, did
+  // nothing for them: the Zen Garden's 220 set its text 1.6 times Chrome's
+  // size. A keyword's size is the initial size's, as it was
+  const { node } = await render(
+    '<html style="font-size:1.5rem;padding-top:1rem"><body style="margin:0">' +
+      '<p id="r" style="margin:0;line-height:1;font-size:2rem">rem</p>' +
+      '<p id="k" style="margin:0;line-height:1;font-size:small">small</p>' +
+      '<p style="margin:0;font-size:10px"><span id="s" style="display:' +
+      'inline-block;width:3rem;height:1em"></span></p></body></html>',
+  );
+  const el = view(node);
+  // the initial size, from the keyword's paragraph: small is 13/16 of it
+  const initial = boxOf(el, 'k').height / 0.8125;
+  const root = 1.5 * initial;
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.01;
+  assert.ok(
+    near(boxOf(el, 'r').y, root),
+    "the root's padding of 1rem is its own size, 1.5rem of the initial " +
+      `${initial}px: ${boxOf(el, 'r').y}`,
+  );
+  assert.ok(
+    near(boxOf(el, 'r').height, 2 * root),
+    `2rem in the body is twice the root's size: ${boxOf(el, 'r').height}`,
+  );
+  assert.ok(
+    near(boxOf(el, 's').width, 3 * root),
+    `and 3rem three times it, however deep: ${boxOf(el, 's').width}`,
+  );
+});
+
+// --- glyphs taller than their line -------------------------------------------
+
+/** A document of one heading whose glyphs are far taller than its lines —
+ *  a 90px face on 20px lines, Zen Garden 215's title — painted straight
+ *  into a context that records what it is asked to draw. */
+async function tallGlyphs(extra = '') {
+  const { node } = await render(
+    '<style>body{margin:0}h1{font:bold 90px/20px sans-serif;margin:0}' +
+      `${extra}</style><div style="padding-top:100px"><h1 id="t">MMM</h1></div>`,
+  );
+  const el = view(node);
+  const tree = (el as unknown as { _tree: never })._tree as {
+    root: LaidBox & {
+      lines: { texts: { layout: { draw(): void } }[] }[] | null;
+    };
+  };
+  const inked: number[] = [];
+  const patch = (box: typeof tree.root): void => {
+    for (const line of box.lines ?? []) {
+      for (const text of line.texts) text.layout.draw = () => inked.push(1);
+    }
+    for (const child of box.children) patch(child as typeof box);
+  };
+  patch(tree.root);
+  const fills: { color: unknown; x: number; y: number; h: number }[] = [];
+  let fillStyle: unknown = null;
+  const ctx = {
+    set fillStyle(v: unknown) {
+      fillStyle = v;
+    },
+    get fillStyle() {
+      return fillStyle;
+    },
+    save() {},
+    restore() {},
+    fillRect(x: number, y: number, _w: number, h: number) {
+      fills.push({ color: fillStyle, x, y, h });
+    },
+  };
+  const { paintDocument } = await import('../src/html/paint.js');
+  const paint = (
+    damage: { x: number; y: number; width: number; height: number } | null,
+    selection: { start: number; end: number } | null = null,
+  ) => {
+    inked.length = 0;
+    fills.length = 0;
+    paintDocument(ctx as never, tree as never, {
+      originX: 0,
+      originY: 0,
+      damage,
+      selection,
+      selectionColor: selection ? '#ff0000' : null,
+      imageFor: () => null,
+    });
+    return { inked: inked.length, fills: [...fills] };
+  };
+  return { el, h1: boxOf(el, 't'), paint };
+}
+
+metric(
+  'glyphs taller than their line are drawn where a repaint meets them',
+  async () => {
+    // A line box is its line-height, whatever its glyphs are (CSS 2.1
+    // 10.8.1), so a 90px face on 20px lines hangs past them by 40px each
+    // way. A repaint of the rows over the line — the strip a scroll of a few
+    // pixels exposes — met no line and no box, and the tops of Zen Garden
+    // 215's title stayed unpainted.
+    const { h1, paint } = await tallGlyphs();
+    assert.strictEqual(h1.height, 20, 'the line is its line-height');
+    assert.ok(paint(null).inked > 0, 'a full paint draws the text');
+    const strip = (y: number) => ({ x: 0, y, width: 400, height: 8 });
+    assert.ok(paint(strip(h1.y - 30)).inked > 0, 'above the line');
+    assert.ok(paint(strip(h1.y + 40)).inked > 0, 'below the line');
+    assert.strictEqual(
+      paint(strip(h1.y - 90)).inked,
+      0,
+      'but not past the ascent',
+    );
+  },
+);
+
+metric(
+  'glyphs taller than their line are drawn from an inline-block too',
+  async () => {
+    // the title is an inline-block on its header's line in 215: the header's
+    // line holds the block's margin box, and the block its own lines
+    const { h1, paint } = await tallGlyphs('h1{display:inline-block}');
+    assert.ok(
+      paint({ x: 0, y: h1.y - 30, width: 400, height: 8 }).inked > 0,
+      'above the line',
+    );
+  },
+);
+
+metric(
+  'a selection over glyphs taller than their line covers the glyphs',
+  async () => {
+    // Blink unites a text's content area with its line box in the block
+    // direction (`ExpandSelectionRectToLineHeight`): a band over tall glyphs
+    // on a short line covers them, as Chrome's does, where ours was the 20px
+    // line through the middle of 90px letters
+    const { el, h1, paint } = await tallGlyphs();
+    const bands = paint(null, { start: 0, end: 2 }).fills.filter(
+      (f) => f.color === '#ff0000',
+    );
+    assert.strictEqual(bands.length, 1, 'one band');
+    assert.ok(
+      bands[0].y < h1.y - 30,
+      `it starts above the line: ${bands[0].y}`,
+    );
+    assert.ok(
+      bands[0].y + bands[0].h > h1.y + h1.height + 15,
+      `and ends below it: ${bands[0].y + bands[0].h}`,
+    );
+    // and the rects the selection seam reports are the ones painted
+    const rects = el.textRangeRects(0, 2);
+    const abs = (el as unknown as { abs: { y: number } }).abs;
+    assert.strictEqual(rects.length, 1);
+    assert.strictEqual(Math.round(rects[0].y - abs.y), bands[0].y);
+  },
+);
+
+metric(
+  'a selection over a line taller than its glyphs fills the line',
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0}p{font:16px/60px sans-serif;margin:0}</style>' +
+        '<p id="p">tall line</p>',
+    );
+    const el = view(node);
+    const p = boxOf(el, 'p');
+    const rects = el.textRangeRects(0, 4);
+    const abs = (el as unknown as { abs: { y: number } }).abs;
+    assert.strictEqual(rects.length, 1);
+    // to a hundredth: a line at a fractional top comes back from its own
+    // bottom a rounding off its height
+    assert.ok(Math.abs(rects[0].y - abs.y - p.y) < 0.01, `at ${rects[0].y}`);
+    assert.ok(Math.abs(rects[0].height - 60) < 0.01, `${rects[0].height}`);
+  },
+);
+
+// --- ::selection -------------------------------------------------------------
+
+/** A document painted with its text selected from `start` to `end`, into a
+ *  context that records each fill's colour and, for each layout drawn, the
+ *  shadow it was cast in — how `drawRecolored` sets selected text in a
+ *  `::selection`'s colour. */
+async function paintSelected(source: string, start: number, end?: number) {
+  const { node } = await render(source);
+  const el = view(node);
+  const tree = (el as unknown as { _tree: never })._tree as {
+    root: LaidBox & {
+      lines: { texts: { layout: { draw(): void } }[] }[] | null;
+    };
+  };
+  const state = { fillStyle: null as unknown, shadowColor: '' };
+  const fills: string[] = [];
+  const casts: string[] = [];
+  const patch = (box: typeof tree.root): void => {
+    for (const line of box.lines ?? []) {
+      for (const text of line.texts) {
+        text.layout.draw = () => casts.push(state.shadowColor);
+      }
+    }
+    for (const child of box.children) patch(child as typeof box);
+  };
+  patch(tree.root);
+  const saved: string[] = [];
+  const ctx = {
+    set fillStyle(v: unknown) {
+      state.fillStyle = v;
+    },
+    get fillStyle() {
+      return state.fillStyle;
+    },
+    set shadowColor(v: string) {
+      state.shadowColor = v;
+    },
+    get shadowColor() {
+      return state.shadowColor;
+    },
+    shadowBlur: 0,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    save() {
+      saved.push(state.shadowColor);
+    },
+    restore() {
+      state.shadowColor = saved.pop() ?? '';
+    },
+    beginPath() {},
+    rect() {},
+    clip() {},
+    fillRect() {
+      fills.push(String(state.fillStyle));
+    },
+  };
+  const { paintDocument } = await import('../src/html/paint.js');
+  const length = (el as unknown as { _tree: { text: string } })._tree.text
+    .length;
+  paintDocument(ctx as never, tree as never, {
+    originX: 0,
+    originY: 0,
+    damage: null,
+    selection: { start, end: end ?? length },
+    selectionColor: '#abcdef',
+    imageFor: () => null,
+  });
+  return { fills, casts };
+}
+
+metric('a ::selection colours the band under the text it covers', async () => {
+  // CSS Pseudo 4, 3.2: its background under the selected text and its
+  // colour for the text, where the palette's highlight was all there was.
+  // Along the chain of highlights (3.5), as Chrome draws it: the span has
+  // no rule and is its div's, and the paragraph's own rule sets a colour
+  // and keeps its div's background. A rule that sets only a colour sets no
+  // band (3.6, paired defaults), and text no rule reaches is the palette's
+  const { fills, casts } = await paintSelected(
+    '<style>body{margin:0}div::selection{background:#ff0000;color:#ffffff}' +
+      'p::selection{color:#00aa00}section::selection{color:#0000ff}' +
+      'p,section,article{margin:0}</style>' +
+      '<div>a <span>b</span><p>c</p></div><section>d</section>' +
+      '<article>e</article>',
+    0,
+  );
+  const red = fills.filter((f) => /^(#ff0000|rgb\(255, 0, 0\))$/i.test(f));
+  assert.strictEqual(red.length, 2, `the div's line and the p's: ${fills}`);
+  assert.strictEqual(
+    fills.filter((f) => f === '#abcdef').length,
+    1,
+    `the article's is the palette's: ${fills}`,
+  );
+  assert.strictEqual(fills.length, 3, `and the section has none: ${fills}`);
+  const cast = (re: RegExp) => casts.some((c) => re.test(c));
+  assert.ok(cast(/^(#ffffff|#fff|rgb\(255, 255, 255\))$/i), `white: ${casts}`);
+  assert.ok(cast(/^(#00aa00|rgb\(0, 170, 0\))$/i), `green: ${casts}`);
+  assert.ok(cast(/^(#0000ff|rgb\(0, 0, 255\))$/i), `blue: ${casts}`);
+});
+
+metric(
+  'text no ::selection reaches is drawn once, in its own colours',
+  async () => {
+    // a document with no rule for one asks nothing: no clip, no cast
+    const { fills, casts } = await paintSelected(
+      '<style>body{margin:0}</style><p>plain text</p>',
+      0,
+    );
+    assert.deepStrictEqual(fills, ['#abcdef'], 'the palette band');
+    assert.deepStrictEqual(casts, [''], 'one draw, cast in nothing');
+  },
+);
 
 test('an inline box around a block that clears a float measures from where clearance moved the block from', async () => {
   // A browser's fragment of an inline box around a block in it is the

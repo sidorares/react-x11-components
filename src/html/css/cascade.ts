@@ -200,12 +200,23 @@ class RuleIndex {
 
 /** The pseudo-elements a rule can style here. */
 type PseudoElement =
-  'before' | 'after' | 'first-letter' | 'first-line' | 'marker';
+  'before' | 'after' | 'first-letter' | 'first-line' | 'marker' | 'selection';
 
 /** A selector's trailing `::before`, `::after`, `::first-letter`,
- *  `::first-line` or `::marker`, or CSS 2's single-colon spelling of any of
- *  its four. */
-const PSEUDO_ELEMENT = /::?(before|after|first-letter|first-line)$|::marker$/i;
+ *  `::first-line`, `::marker` or `::selection`, or CSS 2's single-colon
+ *  spelling of any of its four. */
+const PSEUDO_ELEMENT =
+  /::?(before|after|first-letter|first-line)$|::(marker|selection)$/i;
+
+/**
+ * What a `::selection` makes of the text it covers (CSS Pseudo 4, 3.2): the
+ * colour the text is drawn in, null for its own, and the band under it,
+ * null for none.
+ */
+export interface SelectionStyle {
+  color: string | null;
+  background: string | null;
+}
 
 /**
  * A rule for a pseudo-element, as the pseudo-element it styles and a rule
@@ -227,7 +238,7 @@ function splitPseudoElement(
       ? `${trimmed} *`
       : trimmed;
   return {
-    which: (m[1] ?? 'marker').toLowerCase() as PseudoElement,
+    which: (m[1] ?? m[2]).toLowerCase() as PseudoElement,
     rule: { ...rule, selector },
   };
 }
@@ -570,6 +581,7 @@ export class Cascade {
     'first-letter': new RuleIndex(),
     'first-line': new RuleIndex(),
     marker: new RuleIndex(),
+    selection: new RuleIndex(),
   };
   private _adapter: CssSelectAdapter;
   /** The compounds of the selectors that test the pointer, each without
@@ -628,6 +640,12 @@ export class Cascade {
   /** The families the document loads itself (`fonts.ts`), or null for a
    *  document with no `@font-face`. */
   private _families: FontFamilies | null;
+  /** The root element's computed style: its `font-size` is what a `rem`
+   *  is and its line height what an `rlh` is (CSS Values 4, 6.1.1), in
+   *  every element but the root, whose own declarations measure them from
+   *  the initial values. Set as the root's style is computed, which a build
+   *  does ahead of every element under it. */
+  private _root: ComputedStyle | null = null;
   private _mapFamilies: ((list: string) => string) | undefined;
   /** Whether any declaration has a length in `lh` or `rlh`: only then is
    *  the line height settled ahead of the declarations that read it. */
@@ -1090,6 +1108,56 @@ export class Cascade {
     return out;
   }
 
+  /** Whether any rule styles a `::selection`: a document with none draws
+   *  a selection in the palette's colour, and asks nothing. */
+  get hasSelection(): boolean {
+    return this._pseudo.selection.size > 0;
+  }
+
+  /**
+   * An element's `::selection`, over its parent's (`parent`, null for the
+   * palette's own): the colour and the background the rules that reach it
+   * set, and its parent's for either they leave alone. Both inherit along
+   * the chain of highlights rather than the elements' (CSS Pseudo 4, 3.5,
+   * "highlight inheritance"), which is what Chrome draws: a `<span>` in a
+   * `div::selection { background: red }` is selected in red, and a `<p>`
+   * whose own rule sets only a colour keeps the red under it.
+   *
+   * The palette's highlight is taken only where no rule has set either
+   * (3.6, "paired defaults"): one that sets a colour and no background is
+   * selected over none, as Chrome has it. A rule that sets neither — a
+   * `text-shadow` only — leaves the element where its parent was.
+   */
+  selectionStyle(
+    el: Element,
+    style: ComputedStyle,
+    parent: SelectionStyle | null,
+  ): SelectionStyle | null {
+    const index = this._pseudo.selection;
+    if (!index.size || !index.reaches(el)) return parent;
+    const candidates: Candidate[] = [];
+    this._matchInto(index, el, candidates);
+    let color = false;
+    let background = false;
+    for (const candidate of candidates) {
+      for (const d of candidate.declarations) {
+        if (d.prop === 'color') color = true;
+        else if (d.prop === 'background' || d.prop === 'background-color') {
+          background = true;
+        }
+      }
+    }
+    if (!color && !background) return parent;
+    candidates.sort(byCascade);
+    const own = this._computeStyle(el, style, false, candidates);
+    return {
+      color: color ? own.color : (parent?.color ?? null),
+      background: background
+        ? own.backgroundColor
+        : (parent?.background ?? null),
+    };
+  }
+
   /**
    * An element's `::first-line` style, inheriting from its own, or null
    * when no rule reaches it (CSS 2.1 5.12.1).
@@ -1183,9 +1251,11 @@ export class Cascade {
     // size, so a `font-size: 1.2em` in the cascade resolves against the
     // right em, and again after the font size is settled so every *other*
     // em-relative length in the same rule resolves against this element's.
+    const root = isRootElement(el);
+    const rootStyle = root ? this.initial : (this._root ?? this.initial);
     const ctxParent: UnitContext = {
       em: parentStyle.fontSize,
-      rem: this.initial.fontSize,
+      rem: rootStyle.fontSize,
       initial: this.initial,
       vw: this.viewportWidth,
       vh: this.viewportHeight,
@@ -1194,7 +1264,7 @@ export class Cascade {
       ch: () => this._chOf(parentStyle),
       families: this._mapFamilies,
       lh: () => this._lineHeightOf(parentStyle),
-      rlh: () => this._lineHeightOf(this.initial),
+      rlh: () => this._lineHeightOf(rootStyle),
     };
     // The family, the weight and the slant go with the size: together they
     // pick the face an `ex`, a `ch` or an `lh` in any declaration is
@@ -1252,9 +1322,12 @@ export class Cascade {
       fontStyle: style.fontStyle,
     };
     let line: LineSource | null = null;
+    // the root's other declarations measure a `rem` from its own size
+    if (root) this._root = style;
     const ctx: UnitContext = {
       ...ctxParent,
       em: style.fontSize,
+      rem: root ? style.fontSize : ctxParent.rem,
       ex: () => this._exOf(face),
       ch: () => this._chOf(face),
       lh: () => this._lineHeightOf(line ?? style),
@@ -2107,3 +2180,9 @@ const ABSOLUTE_SIZES = new Set([
   'xxx-large',
   'initial',
 ]);
+
+/** Whether an element is the document's root: its parent the document, or
+ *  none, as the `<html>` the cascade supplies where the markup has none. */
+function isRootElement(el: Element): boolean {
+  return !el.parent || el.parent.type === 'root';
+}

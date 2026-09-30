@@ -42,7 +42,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                         |
 | `fontFamily`      | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                   |
 | `monoFamily`      | `string`                                         | Code font, and a `<textarea>`'s. Default `'monospace'` — there is no theme token for it.                                                                                     |
-| `selectionColor`  | `string`                                         | Selection band fill. Default: theme accent at 35% opacity.                                                                                                                   |
+| `selectionColor`  | `string`                                         | Selection band fill where no `::selection` rule reaches the text. Default: theme accent at 35% opacity.                                                                      |
 | `style`           | `Style \| Style[]`                               | The root `<box>`'s style.                                                                                                                                                    |
 
 ## The handle
@@ -854,6 +854,16 @@ down to it. An element on the line with a colour of its own, a link, keeps
 it. The line's font properties, spacing and `vertical-align` are not
 applied: each would change where the line ends.
 
+**Selection:** `::selection` sets the band under selected text and the
+colour the text is drawn in (CSS Pseudo 4). Both pass down the chain of
+highlights, not the elements, as Chrome has them: a `<span>` in a
+`div::selection { background: red }` is selected in red, and a `<p>` whose
+own rule sets only a colour keeps the red under it. A rule that sets one of
+the two leaves the other at none, so `::selection { color: blue }` draws no
+band, and text no rule reaches is drawn in `selectionColor`. Selected text
+keeps its own decorations and shadows. A selection over glyphs taller than
+their line covers them, and one over a tall line fills it.
+
 **Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `lh`, `rlh`, `vw`, `vh`,
 `vi`, `vb`, `vmin`, `vmax` — and the small, large and dynamic viewports'
 `svh`, `lvw`, `dvmin` and the rest, which on a desktop are the one
@@ -861,7 +871,9 @@ viewport — and the absolute units, and `calc()`, `min()`, `max()` and
 `clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
 `ch` the advance of its "0", as the text engine reports them, or half an em
 where it cannot say; an `lh` is the element's line height, `normal` as its
-font's own, and an `rlh` the root's. A math function comes down to pixels and a percentage, which
+font's own, and an `rlh` the root's. A `rem` is the root element's font
+size, so `html { font-size: 62.5% }` makes it ten pixels, and in the root's
+own `font-size` the initial size, as CSS has both. A math function comes down to pixels and a percentage, which
 layout resolves as it does any percentage; `min(100%, 600px)`, a
 comparison with a percentage in it, is resolved against each width it
 meets. A percentage that cannot resolve makes the whole value `auto` where

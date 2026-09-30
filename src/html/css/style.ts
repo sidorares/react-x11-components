@@ -2081,7 +2081,11 @@ export function applyDeclaration(
       // handed a face at a size of millions shapes and caches glyphs that
       // size, and a nest of `larger`s gets there on its own
       const most = MAX_FONT_SIZE * ctx.scale;
-      const kw = keywordFontSize(value, parent.fontSize, ctx.rem);
+      const kw = keywordFontSize(
+        value,
+        parent.fontSize,
+        ctx.initial?.fontSize ?? ctx.rem,
+      );
       if (kw !== null) {
         style.fontSize = Math.min(kw, most);
         return;
@@ -4321,8 +4325,11 @@ function applyFontShorthand(
   // dropped whole, as CSS drops any value it cannot read — a line height
   // below nought included: `font: 4em/-2em serif` set the text at 4em.
   const size =
-    keywordFontSize(sizeText ?? '', parent.fontSize, ctx.rem) ??
-    parseLength(sizeText ?? '', { ...ctx, em: parent.fontSize });
+    keywordFontSize(
+      sizeText ?? '',
+      parent.fontSize,
+      ctx.initial?.fontSize ?? ctx.rem,
+    ) ?? parseLength(sizeText ?? '', { ...ctx, em: parent.fontSize });
   if (!family || size === null || size === AUTO) return;
   if (lineText && negativeLength(lineText, ctx)) return;
   // What the shorthand does not name goes back to its initial value rather

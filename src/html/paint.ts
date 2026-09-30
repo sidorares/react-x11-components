@@ -70,7 +70,9 @@ import type {
   LineBox,
   LineText,
   Marker,
+  SelectionStyler,
 } from './layout/boxes.js';
+import type { SelectionStyle } from './css/cascade.js';
 import {
   CLIPPED_TEXT,
   clipBoxOf,
@@ -192,6 +194,9 @@ export interface PaintOptions {
   clips?: ClipLevel[];
   /** @internal Whether the tree has a layer below the flow (`hoistNegative`). */
   negative?: boolean;
+  /** @internal Each box's `::selection`, where a rule styles one
+   *  (`BoxTree.selectionStyler`). */
+  selectionStyler?: SelectionStyler | null;
 }
 
 /**
@@ -209,6 +214,19 @@ export interface PaintOptions {
  * (`layoutDocument`).
  */
 export const OUT_OF_FLOW_REACH = new WeakMap<Box, number>();
+
+/**
+ * How far above and below a block's lines its inline content draws, at
+ * most, by the array its lines are: glyphs taller than a `line-height` under
+ * their face's height, and an atomic's ink past the line it is on. The
+ * slack a paint's cull of the lines takes on top of their own rows
+ * (`paintLines`); none for the lines of almost every block, whose content
+ * is inside them.
+ */
+const LINE_INK = new WeakMap<
+  readonly LineBox[],
+  { above: number; below: number }
+>();
 
 export function computePaintBounds(box: Box, moved = false): number {
   // A box with no rectangle of its own gives only what it holds: nothing,
@@ -333,8 +351,21 @@ export function computePaintBounds(box: Box, moved = false): number {
   // above has its bounds already: walked from its line as well, an
   // inline-block in an inline-block was walked twice a level, and twenty of
   // them took seventy milliseconds a layout.
+  //
+  // And a line's text is drawn from its face's ascent above the baseline to
+  // its descent below, its content area (CSS 2.1 10.6.1), which is past the
+  // line box wherever `line-height` is under the face's height: a line box
+  // is its line-height, whatever its glyphs are. Zen Garden 215's 91px title
+  // sits on the 20px lines its body's `line-height: 1.25em` gave it, as a
+  // length, and hangs 40px above them and 40px below — ink that a repaint
+  // of those rows has to reach, where the lines alone do not.
+  let above = 0;
+  let below = 0;
   if (lines) {
+    const movedOff = MOVED_OFF_LINES.get(lines);
     for (const line of lines) {
+      let top = line.y;
+      let bottom = line.y + line.height;
       for (const placed of line.atomics) {
         const atomic = placed.box;
         if (atomic.boundsY === Infinity) continue;
@@ -342,9 +373,31 @@ export function computePaintBounds(box: Box, moved = false): number {
         y1 = Math.min(y1, atomic.boundsY);
         x2 = Math.max(x2, atomic.boundsX + atomic.boundsWidth);
         y2 = Math.max(y2, atomic.boundsY + atomic.boundsHeight);
+        top = Math.min(top, atomic.boundsY);
+        bottom = Math.max(bottom, atomic.boundsY + atomic.boundsHeight);
+      }
+      // what `position: relative` moved off a line the cull finds on its
+      // own (`reachedOff`), wherever it went
+      if (movedOff?.has(line)) continue;
+      for (const text of line.texts) {
+        const natural = text.layout.lines[text.layoutLine];
+        if (!natural) continue;
+        const baseline = text.drawY + natural.baseline;
+        top = Math.min(top, baseline - (natural.ascent ?? 0));
+        bottom = Math.max(bottom, baseline + (natural.descent ?? 0));
+      }
+      if (top < line.y) {
+        y1 = Math.min(y1, top);
+        above = Math.max(above, line.y - top);
+      }
+      if (bottom > line.y + line.height) {
+        y2 = Math.max(y2, bottom);
+        below = Math.max(below, bottom - line.y - line.height);
       }
     }
   }
+  if (lines && (above > 0 || below > 0)) LINE_INK.set(lines, { above, below });
+  else if (lines) LINE_INK.delete(lines);
   if (x1 === Infinity) {
     // nothing to draw: no damage meets it, and no parent takes it in
     box.boundsX = Infinity;
@@ -526,6 +579,7 @@ export function paintDocument(
     ...options,
     canvasSource: canvas?.source,
     negative: tree.negative,
+    selectionStyler: options.selection ? tree.selectionStyler : null,
   });
   ctx.restore();
 }
@@ -4314,7 +4368,12 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     const bottom = top + damage.height;
     let lo = 0;
     let hi = lines.length;
-    const slack = top - box.maxLineHeight;
+    // and a line whose glyphs, or an atomic on it, reach past it
+    // (`LINE_INK`) is drawn where they reach
+    const ink = LINE_INK.get(lines);
+    const above = ink?.above ?? 0;
+    const below = ink?.below ?? 0;
+    const slack = top - box.maxLineHeight - below;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
       if (lines[mid].y > slack) hi = mid;
@@ -4322,8 +4381,11 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     }
     for (let i = lo; i < lines.length; i += 1) {
       const line = lines[i];
-      if (line.y >= bottom) break;
-      if (line.y + line.height > top) visible.push(line);
+      if (line.y - above >= bottom) break;
+      if (line.y < bottom && line.y + line.height > top) visible.push(line);
+      else if (ink && inkInto(line, top, bottom)) {
+        visible.push(line);
+      }
     }
     // and a line the damage misses whose text or inline-block `position:
     // relative` moved into it: drawn by its line, it went undrawn with it
@@ -4331,7 +4393,7 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     if (moved && reachedOff(visible, moved, top, bottom)) {
       const drawn = new Set(visible);
       for (const line of moved) {
-        if (movedInto(line, top, bottom)) drawn.add(line);
+        if (inkInto(line, top, bottom)) drawn.add(line);
       }
       visible.length = 0;
       for (const line of lines) if (drawn.has(line)) visible.push(line);
@@ -4377,6 +4439,10 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // drawing it once per line would be one X request per line for the same
   // batch.
   const drawn = new Set<unknown>();
+  // text a `::selection` colours is drawn in that colour where selected
+  const recolored = options.selectionStyler
+    ? recoloredBands(visible, options)
+    : null;
   for (const line of visible) {
     for (const text of line.texts) {
       if (drawn.has(text.layout)) continue;
@@ -4390,7 +4456,9 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
         // thrown from the protocol encoder.
         continue;
       }
-      text.layout.draw(ctx, text.drawX + dx, top);
+      const bands = recolored?.get(text.layout);
+      if (bands) drawRecolored(ctx, text.layout, text.drawX + dx, top, bands);
+      else text.layout.draw(ctx, text.drawX + dx, top);
     }
   }
 
@@ -4417,15 +4485,16 @@ function reachedOff(
   bottom: number,
 ): boolean {
   for (const line of moved) {
-    if (!visible.includes(line) && movedInto(line, top, bottom)) return true;
+    if (!visible.includes(line) && inkInto(line, top, bottom)) return true;
   }
   return false;
 }
 
-/** Whether what was moved off a line — its inline-blocks and images, where
- *  their ink is, and its texts, where they are drawn — reaches the rows
- *  between `top` and `bottom`. */
-function movedInto(line: LineBox, top: number, bottom: number): boolean {
+/** Whether what a line draws — its inline-blocks and images, where their
+ *  ink is, and its texts, where they are drawn, their glyphs from ascent to
+ *  descent — reaches the rows between `top` and `bottom`: what was moved off
+ *  it, and what hangs past it. */
+function inkInto(line: LineBox, top: number, bottom: number): boolean {
   for (const placed of line.atomics) {
     const box = placed.box;
     if (box.boundsY < bottom && box.boundsY + box.boundsHeight > top) {
@@ -4435,8 +4504,16 @@ function movedInto(line: LineBox, top: number, bottom: number): boolean {
   for (const text of line.texts) {
     const natural = text.layout.lines[text.layoutLine];
     if (!natural) continue;
-    const y = text.drawY + natural.y;
-    if (y < bottom && y + natural.height > top) return true;
+    const baseline = text.drawY + natural.baseline;
+    const y1 = Math.min(
+      text.drawY + natural.y,
+      baseline - (natural.ascent ?? 0),
+    );
+    const y2 = Math.max(
+      text.drawY + natural.y + natural.height,
+      baseline + (natural.descent ?? 0),
+    );
+    if (y1 < bottom && y2 > top) return true;
   }
   return false;
 }
@@ -5306,17 +5383,46 @@ export function forgetDecoratedAncestors(box: Box): void {
  *
  * Translucent under the glyphs rather than inverted over them, so the ink
  * keeps its contrast on either palette — the same call `<textarea>` and
- * `<richtext>` both make.
+ * `<richtext>` both make. From the top of the line to its bottom, and past
+ * them over the glyphs where they are taller than the line (`selectionRows`).
  */
 function paintSelection(
   ctx: PaintContext,
   line: LineBox,
   options: PaintOptions,
 ): void {
+  for (const band of selectedBands(line, options)) {
+    const fill = band.style ? band.style.background : options.selectionColor;
+    if (!fill || isTransparent(fill)) continue;
+    ctx.fillStyle = fill;
+    ctx.fillRect(band.x, band.y, band.width, band.height);
+  }
+}
+
+/** A stretch of selected text on one line, in window pixels, and the
+ *  `::selection` of the element it is in: null for the palette's. */
+interface SelectedBand extends Rect {
+  style: SelectionStyle | null;
+  /** The layout whose text it is. */
+  layout: unknown;
+}
+
+const NO_BANDS: SelectedBand[] = [];
+
+/**
+ * Where the document selection covers a line's text, a band for each
+ * stretch of it one `::selection` styles, in window pixels as the band is
+ * filled — rounded, so a band's text is drawn to its edges and no further
+ * (`drawRecolored`).
+ */
+function selectedBands(line: LineBox, options: PaintOptions): SelectedBand[] {
   const range = options.selection;
-  if (!range || range.end <= range.start || !options.selectionColor) return;
-  if (line.textEnd <= range.start || line.textStart >= range.end) return;
-  ctx.fillStyle = options.selectionColor;
+  if (!range || range.end <= range.start) return NO_BANDS;
+  if (line.textEnd <= range.start || line.textStart >= range.end) {
+    return NO_BANDS;
+  }
+  const styler = options.selectionStyler;
+  const out: SelectedBand[] = [];
   for (const text of line.texts) {
     const natural = text.layout.lines[text.layoutLine];
     if (!natural) continue;
@@ -5326,19 +5432,214 @@ function paintSelection(
     const offsets = layoutOffsets(text.layout);
     const layoutFrom = layoutOffsetOf(text, from);
     const layoutTo = layoutOffsetOf(text, to, true);
-    for (const band of lineBands(
-      text.layout,
-      natural,
-      offsets,
-      layoutFrom,
-      layoutTo,
-    )) {
-      ctx.fillRect(
-        Math.round(band.x + text.drawX + options.originX),
-        Math.round(line.y + options.originY),
-        Math.ceil(band.width),
-        Math.ceil(line.height),
-      );
+    const rows = selectionRows(line, text, natural);
+    const y = Math.round(rows.y + options.originY);
+    const height = Math.ceil(rows.height);
+    const pieces = styler
+      ? stylePieces(text, natural, layoutFrom, layoutTo, styler)
+      : [{ from: layoutFrom, to: layoutTo, style: null }];
+    for (const piece of pieces) {
+      for (const band of lineBands(
+        text.layout,
+        natural,
+        offsets,
+        piece.from,
+        piece.to,
+      )) {
+        out.push({
+          x: Math.round(band.x + text.drawX + options.originX),
+          y,
+          width: Math.ceil(band.width),
+          height,
+          style: piece.style,
+          layout: text.layout,
+        });
+      }
     }
   }
+  return out;
+}
+
+/**
+ * A line's selected text, `from` to `to` in the layout's offsets, cut where
+ * the `::selection` over it changes: a run's is its element's, and a run of
+ * no element's — an inline box's edge, laid out as a spacer — the one
+ * beside it, so a styled band has no palette-coloured gap at a `<span>`.
+ */
+function stylePieces(
+  text: LineText,
+  natural: LineText['layout']['lines'][number],
+  from: number,
+  to: number,
+  styler: SelectionStyler,
+): { from: number; to: number; style: SelectionStyle | null }[] {
+  const runs = natural.runs
+    .filter((run) => run.end > from && run.start < to)
+    .sort((a, b) => a.start - b.start);
+  const boxAt = text.spans.boxAt;
+  const styles: (SelectionStyle | null | undefined)[] = runs.map((run) => {
+    const box = boxAt?.call(text.spans, run.start) ?? null;
+    return box ? styler(box) : undefined;
+  });
+  for (let i = 1; i < styles.length; i += 1) {
+    if (styles[i] === undefined) styles[i] = styles[i - 1];
+  }
+  for (let i = styles.length - 2; i >= 0; i -= 1) {
+    if (styles[i] === undefined) styles[i] = styles[i + 1];
+  }
+  const out: { from: number; to: number; style: SelectionStyle | null }[] = [];
+  runs.forEach((run, i) => {
+    const style = styles[i] ?? null;
+    const last = out[out.length - 1];
+    if (last && last.style === style) last.to = Math.min(to, run.end);
+    else {
+      out.push({
+        from: Math.max(from, run.start),
+        to: Math.min(to, run.end),
+        style,
+      });
+    }
+  });
+  return out;
+}
+
+/**
+ * The layouts whose selected text a `::selection` gives a colour of its
+ * own, each with the bands it is drawn in that colour (`drawRecolored`).
+ * Null where none does, which is every document with no such rule.
+ */
+function recoloredBands(
+  lines: LineBox[],
+  options: PaintOptions,
+): Map<unknown, SelectedBand[]> | null {
+  let out: Map<unknown, SelectedBand[]> | null = null;
+  for (const line of lines) {
+    for (const band of selectedBands(line, options)) {
+      if (!band.style?.color || !(band.width > 0)) continue;
+      out ??= new Map();
+      const list = out.get(band.layout);
+      if (list) list.push(band);
+      else out.set(band.layout, [band]);
+    }
+  }
+  return out;
+}
+
+/**
+ * A layout with some of its text selected in a `::selection`'s colour
+ * (CSS Pseudo 4, 3.2): its own colours everywhere but those bands, and in
+ * each band the glyphs in that band's colour — cast there as a hard shadow
+ * from the layout drawn clear of the window, the way `castShadows` draws a
+ * text shadow, since a layout draws in its runs' own colours. Drawn over
+ * rather than in place of the text, the old glyphs' edges showed round the
+ * new ones. Where the context cannot clip or cast, the text keeps its own
+ * colours.
+ */
+function drawRecolored(
+  ctx: PaintContext,
+  layout: LineText['layout'],
+  left: number,
+  top: number,
+  bands: SelectedBand[],
+): void {
+  if (
+    !ctx.save ||
+    !ctx.restore ||
+    !ctx.beginPath ||
+    !ctx.rect ||
+    !ctx.clip ||
+    !('shadowBlur' in ctx)
+  ) {
+    layout.draw(ctx, left, top);
+    return;
+  }
+  ctx.save();
+  ctx.beginPath();
+  for (const r of outsideOf(bands)) ctx.rect(r.x, r.y, r.width, r.height);
+  ctx.clip();
+  layout.draw(ctx, left, top);
+  ctx.restore();
+  let right = layout.width;
+  for (const natural of layout.lines) {
+    right = Math.max(right, natural.x + natural.width);
+  }
+  const shift = Math.ceil(left + right) + 1;
+  const colors = new Map<string, SelectedBand[]>();
+  for (const band of bands) {
+    const color = band.style!.color!;
+    const group = colors.get(color);
+    if (group) group.push(band);
+    else colors.set(color, [band]);
+  }
+  for (const [color, group] of colors) {
+    ctx.save();
+    ctx.beginPath();
+    for (const r of group) ctx.rect(r.x, r.y, r.width, r.height);
+    ctx.clip();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 0.01;
+    ctx.shadowOffsetX = shift;
+    ctx.shadowOffsetY = 0;
+    layout.draw(ctx, left - shift, top);
+    ctx.restore();
+  }
+}
+
+/** Everything but some rectangles, as rectangles: a strip between each two
+ *  of their edges, less what of it they cover. */
+function outsideOf(rects: readonly Rect[]): Rect[] {
+  const far = COORD_LIMIT;
+  const edges = new Set<number>();
+  for (const r of rects) {
+    edges.add(r.y);
+    edges.add(r.y + r.height);
+  }
+  const ys = [...edges].sort((a, b) => a - b);
+  const out: Rect[] = [
+    { x: -far, y: -far, width: 2 * far, height: ys[0] + far },
+    {
+      x: -far,
+      y: ys[ys.length - 1],
+      width: 2 * far,
+      height: far - ys[ys.length - 1],
+    },
+  ];
+  for (let i = 0; i + 1 < ys.length; i += 1) {
+    const y0 = ys[i];
+    const y1 = ys[i + 1];
+    const spans = rects
+      .filter((r) => r.y <= y0 && r.y + r.height >= y1)
+      .sort((a, b) => a.x - b.x);
+    let x = -far;
+    for (const r of spans) {
+      if (r.x > x) out.push({ x, y: y0, width: r.x - x, height: y1 - y0 });
+      x = Math.max(x, r.x + r.width);
+    }
+    if (x < far) out.push({ x, y: y0, width: far - x, height: y1 - y0 });
+  }
+  return out;
+}
+
+/**
+ * The rows a highlight over a line's text covers: the line box's, united
+ * with the text's content area — its face's ascent above the baseline to
+ * its descent below (CSS 2.1 10.6.1) — which is taller wherever
+ * `line-height` is under the face's height. Blink unites the two in the
+ * block direction (`ExpandSelectionRectToLineHeight`), so a selection over
+ * a tall line fills it and one over tall glyphs on a short line covers
+ * them: Zen Garden 215's 91px title on 20px lines had a band a fifth of
+ * its letters' height through their middle.
+ */
+export function selectionRows(
+  line: LineBox,
+  text: LineText,
+  natural: { baseline: number; ascent?: number; descent?: number },
+): { y: number; height: number } {
+  const baseline = text.drawY + natural.baseline;
+  const top = Math.min(line.y, baseline - (natural.ascent ?? 0));
+  const bottom = Math.max(
+    line.y + line.height,
+    baseline + (natural.descent ?? 0),
+  );
+  return { y: top, height: bottom - top };
 }
