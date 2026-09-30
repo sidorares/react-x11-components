@@ -2949,10 +2949,15 @@ async function mountLooks(
   }[] = [];
   let ctx: unknown = null;
   let watching = false;
+  let midway: (() => void) | null = null;
   const onFrame = (stats: MapFrameStats): void => {
     frames.push({ ...stats });
     if (watching && ctx) {
       watched.push({ stats: { ...stats }, pixels: readWindow(ctx) });
+    }
+    if (midway && stats.restyling && stats.pending < frames[0].pending) {
+      queueMicrotask(midway);
+      midway = null;
     }
   };
   const sources: MapSource[] = [
@@ -3018,6 +3023,29 @@ async function mountLooks(
     async moveTo(next: { center: LngLat; zoom: number }): Promise<void> {
       camera = next;
       await result.rerender(render());
+    },
+    /**
+     * Take `move` partway through the next switch: after the frame that
+     * finishes the first tile in the new style, and before the frame after
+     * it. Core paints a frame synchronously, so a microtask queued from its
+     * `onFrame` runs between the two.
+     *
+     * A move made once `restyle()` returned lands after however many frames
+     * the act took — as many as its round trips let through, which a loaded
+     * runner changes — and at twelve the view was redrawn and a frame from
+     * swapping before the move.
+     */
+    midSwitch(move: () => void): void {
+      midway = move;
+    },
+    /** Frames until one shows the new style: the swap, however long a
+     *  runner takes to paint the frames before it. */
+    async swapped(): Promise<void> {
+      for (let round = 0; frames.every((f) => f.restyling); round++) {
+        assert.ok(round < 400, `still held after ${frames.length} frames`);
+        await settleFrames(1);
+      }
+      assert.ok(midway === null, 'the move came during the switch');
     },
     /** Every recorded frame, as it was on screen. */
     async seen(): Promise<(Looks & { stats: MapFrameStats })[]> {
@@ -3154,17 +3182,31 @@ test('refresh() after an edit in place swaps the whole map, as a new style does'
   );
 });
 
-test('a tile panned into view during a style switch joins the same swap', async () => {
+test('a tile panned into view during a style switch joins the same swap', async (t) => {
   // It has no picture in either style, so while the old one is held it
   // shows the old background — and it is drawn in the new style before
   // the swap, like every tile that was already in view.
+  //
+  // The pan is what makes the bound a moving restyle is held to apply, and
+  // the bound counts from the switch: a runner that had spent it, and the
+  // pan's settle window with it, before the pan's first frame swapped in
+  // that frame, and the old style was never up after the pan. So its clock
+  // is held, and the pan comes partway through the switch however many
+  // frames an act takes.
+  t.mock.method(restyleClock, 'now', () => 0);
   const map = await mountLooks();
-  await map.restyle();
   // Past the east edge of the four tiles, so a fifth comes into view.
-  (map.ref.current as MapHandle).panBy(450, 0);
-  await settleFrames(60);
+  map.midSwitch(() => (map.ref.current as MapHandle).panBy(450, 0));
+  await map.restyle();
+  await map.swapped();
   const frames = await map.seen();
   assertOneLook(frames);
+  const swap = frames.findIndex((f) => !f.stats.restyling);
+  assert.equal(
+    frames[swap].stats.pending,
+    0,
+    'the swap waited for the new tile to be drawn',
+  );
   const after = frames.filter((f) => f.stats.tiles > 0 && repainted(f.stats));
   assert.ok(
     after.some((f) => f.stats.restyling),
@@ -3175,17 +3217,29 @@ test('a tile panned into view during a style switch joins the same swap', async 
   assertNewLook(await map.read(), { labels: false });
 });
 
-test('crossing a zoom level during a style switch holds the old style from the level before', async () => {
+test('crossing a zoom level during a style switch holds the old style from the level before', async (t) => {
   // The new level's tiles have no picture in either style yet. The old
   // style's tiles a level up cover them, as on any zoom — scaled, and in
   // the old style — and the new level is drawn in the new style before
   // the swap.
+  //
+  // The bound's clock is held and the zoom made partway through the
+  // switch, for the reasons the pan above gives. The settle window is left
+  // to run: whether the zoom's first frame draws a layer or none, it shows
+  // the level before, and the swap waits for all of the new one.
+  t.mock.method(restyleClock, 'now', () => 0);
   const map = await mountLooks();
+  map.midSwitch(() => (map.ref.current as MapHandle).zoomTo(4));
   await map.restyle();
-  (map.ref.current as MapHandle).zoomTo(4);
-  await settleFrames(60);
+  await map.swapped();
   const frames = await map.seen();
   assertOneLook(frames);
+  const swap = frames.findIndex((f) => !f.stats.restyling);
+  assert.equal(
+    frames[swap].stats.pending,
+    0,
+    'the swap waited for the new level to be drawn',
+  );
   assert.ok(
     frames.some(
       (f) =>
