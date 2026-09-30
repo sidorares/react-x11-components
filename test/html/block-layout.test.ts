@@ -486,6 +486,73 @@ metric(
   },
 );
 
+test('a percentage width is auto where its containing block is as wide as its content', async () => {
+  // A float, an inline-block, a flex item or a cell is as wide as what it
+  // holds at its widest, and a `width: 100%` in it is a share of that: a
+  // cyclic percentage, which is measured as though it were `auto` and
+  // resolved once the width is there (CSS Sizing 3, 5.2.1). It was taken
+  // of nothing, the box was no width at all, and its content wrapped at
+  // every break in it — so what held it was as wide as its widest word.
+  const i = '<span class="i"></span>';
+  const three = i + i + i;
+  const { node } = await render(
+    '<style>body{margin:0} .f{float:left;clear:both}' +
+      '.i{display:inline-block;width:40px;height:10px}</style>' +
+      `<div class="f" id="a"><div id="a1" style="width:100%">${three}</div></div>` +
+      // half of what its content comes to, which then wraps in it
+      `<div class="f" id="b"><div id="b1" style="width:50%">${i}${i}</div></div>` +
+      // its padding on top of it, as `auto` has it
+      `<div class="f" id="c"><div id="c1" style="width:100%;padding:0 5px">${three}</div></div>` +
+      // an inline-block, a float, a table and a flex box of one
+      `<div class="f" id="d"><span id="d1" style="display:inline-block;width:100%">${three}</span></div>` +
+      `<div class="f" id="e"><div id="e1" style="float:left;width:100%">${three}</div></div>` +
+      '<div class="f" id="g"><table id="g1" style="width:100%;border-spacing:0">' +
+      `<tr><td style="padding:0">${three}</td></tr></table></div>` +
+      '<div class="f" id="h"><div id="h1" style="display:flex;width:100%">' +
+      `<div>${three}</div></div></div>` +
+      // and in an inline-block and a flex item as in a float
+      `<span id="j" style="display:inline-block"><div id="j1" style="width:100%">${three}</div></span>` +
+      '<div style="display:flex"><div id="k">' +
+      `<div id="k1" style="width:100%">${three}</div></div></div>`,
+  );
+  const el = view(node);
+  const width = (id: string) => boxOf(el, id).width;
+  for (const id of ['a', 'd', 'e', 'g', 'h', 'j', 'k']) {
+    assert.deepStrictEqual(
+      [width(id), width(`${id}1`)],
+      [120, 120],
+      `#${id} is as wide as its content, and what is in it fills it`,
+    );
+  }
+  assert.deepStrictEqual([width('b'), width('b1')], [80, 40], 'half of it');
+  assert.deepStrictEqual([width('c'), width('c1')], [130, 140], 'padded');
+});
+
+metric(
+  'a label that clips with an ellipsis is measured whole where a percentage width holds it',
+  async () => {
+    // GitHub's branch button: its label is in a `width: 100%` flex box, as
+    // an item that clips with `text-overflow: ellipsis`. Measured at no
+    // width, the item was cut to its ellipsis, the button was as wide as
+    // that, and the branch's name was not drawn.
+    const label =
+      '<div style="width:100%;display:flex"><div id="label" style="' +
+      'min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis' +
+      '">master</div></div>';
+    const { node } = await render(
+      '<style>body{margin:0} .f{float:left;clear:both}</style>' +
+        `<div class="f" id="button">${label}</div>` +
+        '<div class="f" id="ref">master</div>',
+    );
+    const el = view(node);
+    const name = boxOf(el, 'ref').width;
+    assert.ok(name > 20, `${name}`);
+    assert.strictEqual(boxOf(el, 'button').width, name);
+    assert.strictEqual(boxOf(el, 'label').width, name);
+    assert.ok(el.textContent().includes('master'));
+  },
+);
+
 test("an element of display: contents has no box, and its children are its parent's", async () => {
   // dropped, so the element stayed a block: a wrapper Tailwind's
   // `contents` takes out of a flex row was one item, its children stacked
