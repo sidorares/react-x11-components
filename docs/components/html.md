@@ -437,7 +437,12 @@ on its first line alone, and a gradient runs once across every line.
 instead; its fragments still take their borders and padding at the box's
 two ends alone, where a browser gives every fragment its own. A padded
 `<a>` set as an email's button, a pill badge and a `<kbd>` keycap render as
-a browser renders them.
+a browser renders them. Its edges are no place for a line to break (CSS
+Text 3, 5.1): a line breaks at one only where it breaks the same text
+without it — after a space, after a hyphen, between two ideographs — so a
+word that runs on into an element, or that an element closes after, goes
+to the next line whole with the edges it holds on to, and a line too
+narrow for it runs past its end.
 
 As in a browser, `display: none` is all that hides `<head>`, `<title>`,
 `<style>` and `<script>`: a stylesheet that shows them shows them. What the
