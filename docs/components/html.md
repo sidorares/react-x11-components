@@ -1025,11 +1025,14 @@ well as the measurement. The `fontFamily` and `fontSize` props do not move
 it, since a host sets those to the face it reads pages in and to the web's
 16px `medium`. A `<textarea>` is `monospace` in Chrome, the generic a
 `<pre>` is set in, and so is set in `monoFamily` here, at the theme's size.
-A page that sets a control's font itself, `font: inherit` for one, has the
-box measured in it as a browser would; the widget in a box the palette
-frames still draws in the palette's, and one in a box the page drew draws
-in the page's. A `<meter>` and a `<progress>` keep their parent's font, as
-they do in Chrome.
+A page that sets a control's font itself — `font: inherit`, which a CSS
+reset gives every control, for one — has it, as it does in a browser, which
+draws a control it leaves native in the page's font too: the box is
+measured in that face and size, and the widget in it draws in them, framed
+by the palette or bare in a box the page drew. A button or a select in the
+page's font is core's drawn control on every backend, since a native bezel
+sets its title at AppKit's size whatever it is handed. A `<meter>` and a
+`<progress>` keep their parent's font, as they do in Chrome.
 
 A widget is drawn at the opacity its element and every ancestor come to,
 and at 0 not at all while it still takes a press, as the element does in a
