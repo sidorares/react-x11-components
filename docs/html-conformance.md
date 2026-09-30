@@ -3864,6 +3864,56 @@ another where no white space is between them. The macOS count is of the
 123 bidi tests run alone on each tree, as a sweep of the whole suite on a
 loaded machine is not to be believed there.
 
+### Round 130
+
+333. **A transform moved its box and did nothing else.** `transform` was
+     read for the translation it comes to, which layout applies, and its
+     turns, scales and skews were dropped, with the `rotate` and `scale`
+     properties: the triangle GitHub's menu buttons turn with
+     `rotate(90deg)` to point down pointed right, and so did every
+     accordion's chevron. A transform is read as its functions now and
+     comes to one matrix in the plane, `translate`, `rotate` and `scale`
+     before it as CSS Transforms 2 orders them. The translation stays
+     layout's. The rest is paint's, about `transform-origin`: the box and
+     what it holds are drawn through the matrix, as the stacking context
+     CSS Transforms 1 makes it, and its ink bounds, its scrollable
+     overflow, the hit test, a selection and `elementRect` follow where
+     that puts it. On X11 a box that is more than paths and flat colour is
+     painted on a surface of its own and the surface drawn through the
+     matrix, since ntk draws a glyph as it was shaped and an image through
+     a transform in fixed point.
+334. **A transformed box a fraction of a pixel down the page came off the
+     pixel grid.** What is painted is snapped to the grid a box at a time,
+     and a transform about where the box was laid out undid that: a
+     square mirrored onto itself showed a line of what was under it along
+     each side (`transform-matrix-009`). A box's corner is snapped before
+     its transform, as a browser snaps it.
+335. **A `z-index` ordered a box that was only transformed.** A
+     transformed box is painted with the positioned ones, and was sorted
+     among them by its `z-index`, which applies to a positioned box and to
+     a flex or a grid item and to no other (`z-index-does-not-apply`).
+
+WPT's `css/css-transforms`, 791 reftests of which 74 need a script, went
+from 358 to 406 on X11 and from 353 to 403 on macOS. Of the 297 that fail
+on X11, 178 are of transforms on the elements inside an SVG, which are
+`SvgView`'s, and 96 of three dimensions. What is out of the plane is still
+read and not drawn, and ten tests that passed while everything was dropped
+fail now that half of their list is drawn: `transform3d-scale-005` to `007`,
+`transform3d-perspective-003`, `004` and `008`, `transform3d-matrix3d-003`
+and `004`, `text-perspective-001` and, which needs an animation,
+`individual-transform-combine`; on macOS
+`perspective-transforms-equivalence` with them. `rotateX(45deg)
+scaleY(1.41421356)` is a square in a browser, and here it is the square
+scaled. The `transform-input` tests come and go between sweeps on macOS,
+on either tree.
+
+The CSS 2.1 suite is unchanged on X11. Of the 5,801 reftests of eight other
+directories — `css-backgrounds`, `css-flexbox`, `css-inline`, `css-images`,
+`css-multicol`, `css-break`, `css-fonts` and `css-text` — two more pass and
+none is lost: `css-break/transform-017`, and
+`background-rounded-image-clip-002`, which round 118 lost to a `scale()`
+that was read and not drawn.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,

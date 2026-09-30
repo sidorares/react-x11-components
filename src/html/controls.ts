@@ -29,7 +29,9 @@ import {
   selectedOptions,
 } from './form.js';
 import type { ComputedStyle } from './css/style.js';
+import { invert } from './css/transform.js';
 import { isTransparent } from './css/values.js';
+import { placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import type { FontsLike } from './layout/inline.js';
 import { clipAround } from './paint.js';
@@ -131,9 +133,18 @@ export function controlRectsOf(tree: BoxTree, scale = 1): ControlRect[] {
       fontSize: box.style.fontSize,
     };
     let opacity = 1;
+    // A box scaled to nothing draws nothing of what it holds (CSS
+    // Transforms 1, 6), which is how a page keeps a menu it has not opened.
+    // A widget in it is not mounted; one in a box turned or scaled to
+    // anything else is mounted where the box was laid out, as it is — a
+    // widget is a node of its own, which no matrix of the document's reaches.
+    let flattened = false;
     for (let at: Box | null = box; at; at = at.parent) {
       opacity *= at.style.opacity;
+      const matrix = placedMatrix(at);
+      if (matrix && !invert(matrix)) flattened = true;
     }
+    if (flattened) continue;
     if (opacity < 1) rect.opacity = Math.max(0, opacity);
     // cut by the clips around it where they do not leave it whole, and by
     // its own box where it clips itself

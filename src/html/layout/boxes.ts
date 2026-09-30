@@ -1105,7 +1105,7 @@ class Builder {
       }
     }
     // a translation is moved by the same pass
-    if (style.translate || style.transformTranslate) this._relative = true;
+    if (style.translate || style.transform) this._relative = true;
     if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;
@@ -1410,7 +1410,7 @@ class Builder {
       }
     }
     // a translation is moved by the same pass
-    if (style.translate || style.transformTranslate) this._relative = true;
+    if (style.translate || style.transform) this._relative = true;
     if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;

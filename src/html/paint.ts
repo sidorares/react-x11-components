@@ -55,7 +55,10 @@ import {
   masked,
   scrolls,
 } from './css/style.js';
-import { contained } from './layout/block.js';
+import { LARGEST } from './css/calc.js';
+import { invert, mapRect, transformed } from './css/transform.js';
+import type { Matrix } from './css/transform.js';
+import { contained, placedMatrix } from './layout/block.js';
 import {
   BOX_RAISES,
   LINE_BOX_RAISES,
@@ -166,6 +169,20 @@ export interface PaintContext extends FillContext {
   /** ntk's X11 context has patterns; the Cocoa one does not, and tiles. */
   createPattern?(image: unknown, repetition: string): unknown;
   translate?(x: number, y: number): void;
+  /** Multiplies the context's matrix: what a transformed box is drawn
+   *  through (`paintTransformed`). */
+  transform?(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+  ): void;
+  /** Whether text drawn under a matrix that turns or scales is drawn
+   *  turned and scaled, glyphs and all: the native contexts', and not
+   *  ntk's, whose glyphs are drawn as they were shaped. */
+  scalesText?: boolean;
   /** What every drawing is multiplied by: an element's `opacity`. */
   globalAlpha?: number;
   /** How a drawing meets what is under it; a value a backend does not
@@ -260,6 +277,28 @@ const LINE_INK = new WeakMap<
   readonly LineBox[],
   { above: number; below: number }
 >();
+
+/**
+ * For a box painted through a matrix (`placedMatrix`), the bounds of what
+ * it and its descendants draw before the matrix is applied: what
+ * `boundsX`… would have been, which are where it puts them. The paint
+ * inside the box, and a point taken back into it, are in these.
+ */
+const UNTRANSFORMED = new WeakMap<Box, Rect>();
+
+/** The bounds of what a box painted through a matrix draws, in its own
+ *  coordinates: asked of a box `placedMatrix` answers for, whose entry the
+ *  last `computePaintBounds` wrote. */
+export function ownBounds(box: Box): Rect {
+  return (
+    UNTRANSFORMED.get(box) ?? {
+      x: box.boundsX,
+      y: box.boundsY,
+      width: box.boundsWidth,
+      height: box.boundsHeight,
+    }
+  );
+}
 
 export function computePaintBounds(box: Box, moved = false): number {
   // A box with no rectangle of its own gives only what it holds: nothing,
@@ -443,6 +482,25 @@ export function computePaintBounds(box: Box, moved = false): number {
     y2 = Math.min(y2, rect.y + rect.h);
     if (!(x2 > x1 && y2 > y1)) x1 = Infinity;
   }
+  // A box that turns, scales or skews draws what it holds through its
+  // matrix (`paintTransformed`): its ink is where that puts it, the
+  // rectangle around the one it would have filled, and the one it would
+  // have filled is kept for the paint inside it, which is in its own
+  // coordinates. One flattened to nothing draws nothing.
+  const matrix = own ? placedMatrix(box) : null;
+  if (matrix && x1 !== Infinity) {
+    UNTRANSFORMED.set(box, { x: x1, y: y1, width: x2 - x1, height: y2 - y1 });
+    if (invert(matrix)) {
+      // no further than a length reaches (`LARGEST`): a page's
+      // `scale(1e30)` is a box as large as a browser holds one, and no
+      // larger
+      const to = mapRect(matrix, x1, y1, x2 - x1, y2 - y1);
+      x1 = Math.max(to.x, -LARGEST);
+      y1 = Math.max(to.y, -LARGEST);
+      x2 = Math.min(to.x + to.width, LARGEST);
+      y2 = Math.min(to.y + to.height, LARGEST);
+    } else x1 = Infinity;
+  }
   if (x1 === Infinity) {
     // nothing to draw: no damage meets it, and no parent takes it in
     box.boundsX = Infinity;
@@ -465,12 +523,20 @@ export function computePaintBounds(box: Box, moved = false): number {
   // whether the box clips only matters where its content reaches past it,
   // and its style is one more object a walk of every box would read
   const end = empty ? -Infinity : box.y + box.height;
-  if (bottom <= end) return end;
-  const style = box.style;
-  return box.parent &&
-    (style.overflowX !== 'visible' || style.overflowY !== 'visible')
-    ? end
-    : bottom;
+  let reach = end;
+  if (bottom > end) {
+    const style = box.style;
+    reach =
+      box.parent &&
+      (style.overflowX !== 'visible' || style.overflowY !== 'visible')
+        ? end
+        : bottom;
+  }
+  // the scrollable overflow of a transformed box is where its transform
+  // puts it (CSS Overflow 3, 2.2)
+  if (!matrix || reach === -Infinity) return reach;
+  const to = mapRect(matrix, box.x, box.y, box.width, reach - box.y);
+  return Math.min(to.y + to.height, LARGEST);
 }
 
 /**
@@ -1021,6 +1087,247 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
     for (let i = 0; i < pushed; i += 1) ctx.restore();
   }
   if (fade) ctx.restore();
+}
+
+/** How large a surface a transformed box is drawn on: a large window's
+ *  worth of pixels twice over, and no side longer than a pixmap's may be. */
+const RASTER_LIMIT = 16 * 1024 * 1024;
+const RASTER_SIDE = 16384;
+
+/** What XRender carries a picture's transform in is 16.16 fixed point: a
+ *  number past this does not fit, and is thrown out of the request's
+ *  encoder. */
+const FIXED_LIMIT = 32000;
+
+/**
+ * A box that turns, scales or skews (CSS Transforms 1): painted as it was
+ * laid out, through its matrix — about its `transform-origin`, where its
+ * translation has already put it (`placedMatrix`). What it holds is
+ * painted with it, as the stacking context it is (`stacksLayers`), culled
+ * against the damage taken back through the matrix.
+ *
+ * The native contexts draw everything through a matrix, a text layout's
+ * outlines among it, glyphs and all (`scalesText`). ntk's draws paths
+ * through one; a glyph it draws as it was shaped, upright and at its size,
+ * where the matrix puts its origin, and an image through a transform the
+ * server holds in fixed point, which a picture drawn small far across a
+ * window does not fit. So there only a box that is paths and flat colour —
+ * an icon, a chevron, a spinner — is drawn through the matrix, and any
+ * other on a surface of its own, as it was laid out, with the surface
+ * drawn through the matrix (`paintRaster`): a picture of its text rather
+ * than the text, resampled, and right about where it is and which way up.
+ *
+ * A context with no `transform` draws the box where it was laid out: the
+ * headless mock, which draws nothing, and a recording one.
+ */
+function paintTransformed(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const matrix = placedMatrix(box);
+  if (!matrix) {
+    paintBox(ctx, box, options);
+    return;
+  }
+  if (
+    !intersects(box, options) ||
+    COLLAPSED_CELLS.has(box) ||
+    CLAMPED.has(box)
+  ) {
+    return;
+  }
+  if (typeof ctx.transform !== 'function') {
+    paintPlaced(ctx, box, options);
+    return;
+  }
+  // In the window's coordinates, where the document's origin is the
+  // options': T(origin) · matrix · T(-origin). And about an origin moved
+  // with the box's corner to the pixel it is drawn from: what is painted is
+  // snapped to the pixel grid a box at a time, so a box a fraction of a
+  // pixel down the page is drawn from a whole one, and turned about where
+  // it was laid out it came back off the grid — a square mirrored onto
+  // itself showed a line of what was under it along each side. A browser
+  // snaps a transformed box's corner before its transform the same way.
+  const left = box.x + options.originX;
+  const top = box.y + options.originY;
+  const ox = options.originX + Math.round(left) - left;
+  const oy = options.originY + Math.round(top) - top;
+  const [a, b, c, d] = matrix;
+  const through: Matrix = [
+    a,
+    b,
+    c,
+    d,
+    matrix[4] + ox - (a * ox + c * oy),
+    matrix[5] + oy - (b * ox + d * oy),
+  ];
+  const back = invert(through);
+  if (!back) return;
+  const damage = options.damage;
+  const inside: PaintOptions = {
+    ...options,
+    damage:
+      damage && mapRect(back, damage.x, damage.y, damage.width, damage.height),
+  };
+  if (
+    ctx.scalesText !== true &&
+    !drawnAsPaths(box) &&
+    paintRaster(ctx, box, inside, through)
+  ) {
+    return;
+  }
+  ctx.save();
+  ctx.transform(a, b, c, d, through[4], through[5]);
+  paintPlaced(ctx, box, inside);
+  ctx.restore();
+}
+
+/**
+ * Whether a box's style turns, scales or skews it, which is asked before
+ * every box that may be one is painted (`paintPositioned`, `paintLines`) —
+ * there, and not in `paintBox`, whose frame is one of three a level of
+ * nesting costs the stack: a name more in it, and a document a thousand
+ * boxes deep ran out.
+ */
+function turns(box: Box): boolean {
+  const style = box.style;
+  return (
+    style.transform !== null || style.rotate !== null || style.scale !== null
+  );
+}
+
+/**
+ * `paintBox` for a box whose ink bounds are not in the coordinates it is
+ * being painted in, and so is not culled by them: one painted through a
+ * matrix, in its own (`paintTransformed`).
+ */
+function paintPlaced(ctx: PaintContext, box: Box, options: PaintOptions): void {
+  const opacity = opacityOf(box);
+  if (opacity <= 0) return;
+  const fade = opacity < 1 && typeof ctx.globalAlpha === 'number';
+  if (fade) {
+    ctx.save();
+    ctx.globalAlpha = ctx.globalAlpha! * opacity;
+  }
+  if (!masked(box.style) || !paintMasked(ctx, box, options)) {
+    paintClipped(ctx, box, options);
+  }
+  if (fade) ctx.restore();
+}
+
+/**
+ * Whether all a box and what it holds draw is paths and flat colour:
+ * backgrounds, borders, outlines and inline drawings — no text and no list
+ * marker, whose glyphs a context may not turn, and no image, gradient,
+ * shadow or mask, which one draws through a picture's transform
+ * (`paintTransformed`).
+ */
+function drawnAsPaths(box: Box): boolean {
+  if (box.subtreeTextEnd > box.subtreeTextStart) return false;
+  const stack: Box[] = [box];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at.marker || at.replaced === 'image') return false;
+    const style = at.style;
+    if (
+      style.backgroundImage !== null ||
+      style.backgroundGradient !== null ||
+      style.backgroundImages !== null ||
+      style.boxShadow !== null ||
+      style.borderImage.source !== null ||
+      masked(style)
+    ) {
+      return false;
+    }
+    for (const child of at.children) stack.push(child);
+  }
+  return true;
+}
+
+/**
+ * A transformed box painted on a surface of its own, as it was laid out,
+ * and the surface drawn through its matrix: the part of what it draws that
+ * the damage reaches. True where that is done — or is nothing to do, or
+ * cannot be: a part too large for a surface, or a matrix that does not fit
+ * the fixed point a picture's transform is sent in, which is one that draws
+ * the box a thirtieth its size far across a window, or flatter than can be
+ * seen. None of it is drawn then. False where the context has no surface to
+ * draw on, and the caller draws the box through the matrix itself.
+ */
+function paintRaster(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  through: Matrix,
+): boolean {
+  if (!options.surface || !ctx.drawImage) return false;
+  const own = ownBounds(box);
+  let x0 = Math.floor(own.x + options.originX);
+  let y0 = Math.floor(own.y + options.originY);
+  let x1 = Math.ceil(own.x + own.width + options.originX);
+  let y1 = Math.ceil(own.y + own.height + options.originY);
+  const damage = options.damage;
+  if (damage) {
+    // a pixel more each way: the edge of what is drawn is sampled from
+    // beside it
+    x0 = Math.max(x0, Math.floor(damage.x) - 1);
+    y0 = Math.max(y0, Math.floor(damage.y) - 1);
+    x1 = Math.min(x1, Math.ceil(damage.x + damage.width) + 1);
+    y1 = Math.min(y1, Math.ceil(damage.y + damage.height) + 1);
+  }
+  const w = x1 - x0;
+  const h = y1 - y0;
+  if (!(w > 0 && h > 0)) return true;
+  if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return true;
+  // what the context makes of the draw below: the picture's transform is
+  // the inverse of its matrix after the surface's place in it
+  const placed = invert([
+    through[0],
+    through[1],
+    through[2],
+    through[3],
+    through[0] * x0 + through[2] * y0 + through[4],
+    through[1] * x0 + through[3] * y0 + through[5],
+  ]);
+  if (!placed || placed.some((n) => Math.abs(n) > FIXED_LIMIT)) return true;
+  const surface = options.surface(w, h);
+  if (!surface) return false;
+  try {
+    // the surface's own coordinates, the window's moved to its corner
+    const on: PaintOptions = {
+      ...options,
+      originX: options.originX - x0,
+      originY: options.originY - y0,
+      damage: { x: 0, y: 0, width: w, height: h },
+      canvas: options.canvas && {
+        ...options.canvas,
+        x: options.canvas.x - x0,
+        y: options.canvas.y - y0,
+      },
+      viewport: options.viewport && {
+        ...options.viewport,
+        x: options.viewport.x - x0,
+        y: options.viewport.y - y0,
+      },
+      clips: [],
+    };
+    paintPlaced(surface.getContext('2d') as PaintContext, box, on);
+    ctx.save();
+    ctx.transform!(
+      through[0],
+      through[1],
+      through[2],
+      through[3],
+      through[4],
+      through[5],
+    );
+    ctx.drawImage(surface, x0, y0);
+    ctx.restore();
+    return true;
+  } finally {
+    surface.destroy?.();
+  }
 }
 
 /** A box and what it holds, cut to its `clip` and its `clip-path` as
@@ -2142,7 +2449,9 @@ function paintPositioned(
       return;
     }
   }
-  paintBox(ctx, box, atViewport(box, options));
+  // through its matrix, where it turns, scales or skews
+  if (turns(box)) paintTransformed(ctx, box, atViewport(box, options));
+  else paintBox(ctx, box, atViewport(box, options));
 }
 
 /**
@@ -2181,10 +2490,17 @@ export const FIXED_BOXES = new WeakMap<object, Box[]>();
 export function fixedToViewport(box: Box): boolean {
   if (box.style.position !== 'fixed') return false;
   for (let at = box.parent; at?.parent; at = at.parent) {
-    if (at.style.translate || at.style.transformTranslate) return false;
-    if (contained(at, CONTAIN_LAYOUT | CONTAIN_PAINT)) return false;
+    if (holdsFixed(at)) return false;
   }
   return true;
+}
+
+/** Whether a box is the containing block of the fixed boxes in it: a
+ *  transformed box, or one with layout or paint containment. */
+function holdsFixed(box: Box): boolean {
+  return (
+    transformed(box.style) || contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)
+  );
 }
 
 function rootOf(box: Box): Box {
@@ -2196,17 +2512,22 @@ function rootOf(box: Box): Box {
 /**
  * The box an out-of-flow box is positioned in, whose clips are the ones it
  * is under (`paintPositioned`, and the hit test's `deepestAt`): its nearest
- * positioned or translated ancestor, or the root. Null for a fixed box,
- * which is under none.
+ * positioned or transformed ancestor, or the root. Null for a box fixed to
+ * the viewport, which is under none — one in a transformed box is fixed to
+ * that, and under what it is under.
  */
 export function containingBlockOf(box: Box): Box | null {
-  if (box.style.position === 'fixed') return null;
+  if (box.style.position === 'fixed') {
+    for (let at = box.parent; at?.parent; at = at.parent) {
+      if (holdsFixed(at)) return at;
+    }
+    return null;
+  }
   let containing = box.parent;
   while (
     containing?.parent &&
     containing.style.position === 'static' &&
-    !containing.style.translate &&
-    !containing.style.transformTranslate
+    !transformed(containing.style)
   ) {
     containing = containing.parent;
   }
@@ -2783,8 +3104,7 @@ function layered(parent: Box, child: Box): boolean {
   if (
     style.position !== 'relative' &&
     style.position !== 'sticky' &&
-    !style.translate &&
-    !style.transformTranslate
+    !transformed(style)
   ) {
     return false;
   }
@@ -2798,7 +3118,7 @@ function layered(parent: Box, child: Box): boolean {
  * drawn twice — darker at every antialiased edge — and a translucent
  * background had its alpha doubled.
  */
-function onLine(parent: Box, child: Box): boolean {
+export function onLine(parent: Box, child: Box): boolean {
   if (parent.lines === null && parent.kind !== 'inline') return false;
   if (child.isFloat || child.outOfFlow) return false;
   return (
@@ -2872,7 +3192,8 @@ function settleLayers(box: Box, list: Box[]): void {
  * it itself, and the ones below its flow: positioned with a `z-index`, or a
  * flex item with one; fixed or sticky with none (CSS Positioned Layout 3, as
  * browsers paint them — a fixed header's box set behind its content with
- * `z-index: -1` went behind the page); or under full opacity (CSS Color 4
+ * `z-index: -1` went behind the page); transformed (CSS Transforms 1, 3);
+ * or under full opacity (CSS Color 4
  * 3.2), its own or the opacity it takes from an inline box it broke
  * (`FADED_BLOCKS`), which is painted as one group — faded with it, or at
  * `opacity: 0` not at all, where its root context drew a hover menu's
@@ -2887,6 +3208,10 @@ export function stacksLayers(box: Box): boolean {
   if (masked(style) || pathClips(box)) return true;
   // layout and paint containment make one (CSS Containment 2, 3.3, 3.5)
   if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
+  // and a transform (CSS Transforms 1, 3), on a box one applies to: what it
+  // holds is painted with it, through its matrix, and not by a context
+  // outside it
+  if (transformed(style) && box.kind !== 'inline') return true;
   if (typeof style.zIndex !== 'number') return false;
   return style.position !== 'static' || flexItem(box);
 }
@@ -2910,7 +3235,7 @@ export function clipsFor(box: Box, context: Box): Box[] {
     const fixed = box.style.position === 'fixed';
     while (from && from !== context) {
       const style = from.style;
-      if (style.translate || style.transformTranslate) break;
+      if (transformed(style)) break;
       if (!fixed && style.position !== 'static') break;
       from = from.parent;
     }
@@ -3006,9 +3331,19 @@ function hoistFrom(box: Box, root: boolean): Box[] | null {
 }
 
 function byZIndex(a: Box, b: Box): number {
-  const az = a.style.zIndex === 'auto' ? 0 : a.style.zIndex;
-  const bz = b.style.zIndex === 'auto' ? 0 : b.style.zIndex;
-  return az - bz;
+  return layerOf(a) - layerOf(b);
+}
+
+/** The `z-index` a box is ordered by among its stacking context's layers:
+ *  its own where one applies — to a positioned box, and to a flex or a grid
+ *  item (CSS 2.1 9.9.1, CSS Flexbox 5.4) — and none for a box that is
+ *  among them for its transform alone, which is painted in the document's
+ *  order whatever `z-index` it was given. */
+function layerOf(box: Box): number {
+  const style = box.style;
+  const z = style.zIndex;
+  if (z === 'auto') return 0;
+  return style.position !== 'static' || flexItem(box) ? z : 0;
 }
 
 /** Whether anything this box or its descendants draw is in the damage. */
@@ -5150,7 +5485,8 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   for (const line of visible) {
     for (const placed of line.atomics) {
       if (hoisted && HOISTED.has(placed.box)) continue;
-      paintBox(ctx, placed.box, options);
+      if (turns(placed.box)) paintTransformed(ctx, placed.box, options);
+      else paintBox(ctx, placed.box, options);
     }
   }
 }

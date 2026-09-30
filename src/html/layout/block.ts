@@ -32,6 +32,8 @@ import {
   CONTAIN_SIZE,
   scrolls,
 } from '../css/style.js';
+import { about, linearOf, matrixOf, transformed } from '../css/transform.js';
+import type { Matrix } from '../css/transform.js';
 import { lineOf, spanToName } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import {
@@ -4562,23 +4564,48 @@ export function applyRelativeOffsets(
   if (blocks) for (const block of blocks) translate(block, dx, dy);
 }
 
-/** Whether a box is transformed, which is what makes it a containing
- *  block and a layer as a positioned box is (CSS Transforms 1, 2). */
-export function transformed(style: ComputedStyle): boolean {
-  return style.translate !== null || style.transformTranslate !== null;
+// what makes a box a containing block and a layer, as a positioned box is,
+// is asked here by the layouts beside this one
+export { transformed };
+
+/** How far a box's transform moves it — `translate`, and the translation
+ *  its `transform` comes to with its turns and scales: a percentage is of
+ *  its own border box (CSS Transforms 1, 7). The rest of the transform is
+ *  paint's (`placedMatrix`). */
+function translationOf(box: Box, style = box.style): [number, number] {
+  if (!transformed(style)) return [0, 0];
+  const m = matrixOf(style, box.width, box.height);
+  return [m[4], m[5]];
 }
 
-/** How far `translate` and a `transform` move a box: a percentage is of
- *  its own border box (CSS Transforms 1, 7). */
-function translationOf(box: Box, style = box.style): [number, number] {
-  let dx = 0;
-  let dy = 0;
-  for (const moved of [style.translate, style.transformTranslate]) {
-    if (!moved) continue;
-    dx += resolve(moved[0], box.width, 0);
-    dy += resolve(moved[1], box.height, 0);
+/**
+ * The matrix a box is painted through, in the document's coordinates: what
+ * its transform does besides move it — a turn, a scale, a skew — about its
+ * `transform-origin`, where layout has put it (`applyRelativeOffsets`). Null
+ * for a box that only moves, which is every box but a few, and for an
+ * inline box, which no transform applies to (CSS Transforms 1, 2: a
+ * transformable element is no inline box).
+ */
+export function placedMatrix(box: Box): Matrix | null {
+  const style = box.style;
+  if (
+    style.transform === null &&
+    style.rotate === null &&
+    style.scale === null
+  ) {
+    return null;
   }
-  return [dx, dy];
+  if (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break') {
+    return null;
+  }
+  const linear = linearOf(style);
+  if (!linear) return null;
+  const origin = style.transformOrigin;
+  return about(
+    linear,
+    box.x + resolve(origin[0], box.width, 0),
+    box.y + resolve(origin[1], box.height, 0),
+  );
 }
 
 /**

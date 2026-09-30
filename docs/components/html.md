@@ -776,15 +776,54 @@ padding of its parent counts for nothing, as it would collapse through the
 parent's edge; where the containing block's height is not known,
 `stretch` is `auto`, and as a least height nothing.
 
-**Transforms:** `translate`, and the translation in a `transform` —
-`translate(-50%, -50%)`, Tailwind's `-translate-x-1/2` in either of the
-ways it is written — move a box after layout, as `position: relative`
-does, a percentage being of the box's own size, so the absolute box it
-centres is centred. A transformed box is a containing block for the
-absolute and fixed boxes inside it and is painted with the positioned
-boxes, as in a browser. Rotating, scaling and skewing are read and not
-drawn, and a transform on an inline box that is not an atomic one moves
-nothing, as CSS has it.
+**Transforms:** `transform` and the three properties that are one function
+of it each, `translate`, `rotate` and `scale` (CSS Transforms 1 and 2), in
+the plane of the page, about `transform-origin`. A transform is no part of
+layout: the box is laid out as though it had none, moved by the translation
+its transform comes to — `translate(-50%, -50%)`, Tailwind's
+`-translate-x-1/2` in either of the ways it is written, a percentage being
+of the box's own size, so the absolute box it centres is centred — and
+painted through the rest of it, a turn, a scale or a skew: the triangle a
+menu button turns with `rotate(90deg)` to point down, an accordion's
+chevron at `rotate(180deg)`, a card a hover grows with `scale(1.05)`. What
+the box holds is painted with it. The pointer finds it where it is drawn, a
+selection is made and painted there, and `elementRect` answers the
+rectangle around where it is drawn, as `getBoundingClientRect` does; so is
+what it draws counted in the document's scrollable overflow. A transformed
+box is a containing block for the absolute and fixed boxes inside it and a
+stacking context, painted with the positioned boxes in the document's
+order, whatever `z-index` it has where it is not positioned, as in a
+browser. A box whose transform flattens it to nothing — `scale(0)` — is not
+drawn, is not under the pointer, and mounts no form control. A transform on
+an inline box that is not an atomic one does nothing, as CSS has it.
+
+What is drawn through a matrix is as good as the context is at it. The
+native contexts on macOS and Windows draw everything through one, a text
+layout's outlines among it, glyphs and all. X11's draws paths through one;
+a glyph it draws as it was shaped, where the matrix puts it, and an image
+through a transform the server keeps in fixed point. So there only a box
+that is paths and flat colour — an icon, a chevron, a spinner's ring — is
+drawn through the matrix, and one that holds text, an image, a gradient or
+a shadow is painted on a surface of its own, as it was laid out, and the
+surface drawn through the matrix: exact at a quarter turn or a reflection,
+and resampled — soft — where it is scaled up or turned by another angle.
+Such a box scaled so small that the server's fixed point cannot carry it —
+to a thirtieth of its size far across a wide window, or flatter than can be
+seen — is not drawn there. On every backend a box's corner is snapped to
+the pixel it is drawn from before its transform, as a browser snaps it, so
+a quarter turn of a box a fraction of a pixel down the page stays on the
+grid.
+
+What is out of the plane is read and not drawn: `rotateX()`, `rotateY()`,
+`translateZ()`, `perspective()` and the depth of a `matrix3d()` or a
+`scale3d()` are left out of their list, whose other functions are drawn, so
+`translateZ(0)` and `translate3d(x, y, 0)` are the transforms they are in
+the plane. `perspective`, `transform-style`, `backface-visibility` and
+`transform-box` do nothing, and a card that flips shows both of its faces.
+A form control in a turned or scaled box is mounted where the box was laid
+out, as it is: a widget is a node of its own, which no matrix of the
+document's reaches. `background-attachment: fixed` in a transformed box is
+still fixed, where CSS has it scroll.
 
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
@@ -1205,8 +1244,8 @@ its sheets, and a rule in a later layer wins over one in an earlier layer
 whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
-**Not implemented:** the parts of CSS grid above, transforms but their
-translation, animations and transitions, a multicol container's
+**Not implemented:** the parts of CSS grid above, transforms out of the
+plane of the page, animations and transitions, a multicol container's
 `column-rule`, `column-span` on a box further in than its children, forced
 breaks, and a table in one broken
 between its rows — it goes to the next column whole, and a box a break
@@ -1439,10 +1478,10 @@ article went from 270 ms to under 15 ms on X11, and from about 800 ms to
 17 ms on macOS. A card's hover goes the same way where what else it changes
 moves nothing around the card: a `box-shadow` or an outline's size, which
 reach further and take no room; a `z-index` that stays a stacking
-context's, which reorders the card's layer; and a `transform`'s
-translation, which moves the card and what is in it where it is — so the
-card lifts, its shadow widens and it rises over its neighbour without the
-document being built or laid out again. The repaint is the ink that
+context's, which reorders the card's layer; and a transform on a box that
+had one, which moves, turns or scales the card and what is in it where it
+is — so the card lifts or grows, its shadow widens and it rises over its
+neighbour without the document being built or laid out again. The repaint is the ink that
 changed, what the boxes drew before and what they draw after, not the
 document. The boxes that go with an element go with it: the text in it,
 the anonymous boxes made around what is in it — the text of a link laid out
