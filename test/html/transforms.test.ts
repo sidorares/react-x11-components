@@ -631,6 +631,24 @@ test('on the mock backend a transformed document is laid out and asked, and pain
   );
 });
 
+test('a transformed box is under the pointer over the block after it', async () => {
+  // it is painted with the positioned boxes, after the flow, whether or
+  // not it is positioned: where a box scaled up covers the block after it,
+  // the point is the scaled box's, and taken as a block of the flow it was
+  // the later block's
+  const { node } = await render(
+    '<style>body{margin:0}div{width:40px;height:20px}</style>' +
+      '<div id="a" style="transform:scale(2);transform-origin:0 0"></div>' +
+      '<div id="b"></div>',
+  );
+  const el = view(node);
+  const { abs } = el as unknown as DrawnNode;
+  const at = (x: number, y: number) => el.elementAtPoint(abs.x + x, abs.y + y);
+  assert.strictEqual(at(10, 30), findById(el.document, 'a'), 'over the next');
+  assert.strictEqual(at(10, 10), findById(el.document, 'a'));
+  assert.notStrictEqual(at(10, 45), findById(el.document, 'a'), 'past it');
+});
+
 test('a context with no transform draws a turned box where it was laid out', async () => {
   // the recorder has `save`, `restore` and fills, and no matrix: nothing
   // throws, and the box is drawn as it was laid out
