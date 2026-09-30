@@ -4401,6 +4401,10 @@ export function applyRelativeOffsets(
   if (blocks) for (const block of blocks) translate(block, dx, dy);
 }
 
+// what makes a box a containing block and a layer, as a positioned box is,
+// is asked here by the layouts beside this one
+export { transformed };
+
 /** How far a box's transform moves it — `translate`, and the translation
  *  its `transform` comes to with its turns and scales: a percentage is of
  *  its own border box (CSS Transforms 1, 7). The rest of the transform is
