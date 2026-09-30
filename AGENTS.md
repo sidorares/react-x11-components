@@ -1119,12 +1119,16 @@ is thousands of elements), but the model is the load-bearing reason.
 **It is the first thing here with regular `dependencies`**, and that is a
 fact rather than a preference. ntk already depends on `htmlparser2`,
 `domhandler`, `domutils` and `css-select` for its own deprecated `HtmlView`,
-and ntk is react-x11's dependency — so every app that can use this package
-has all four installed already. Declaring them adds no packages to an
-install; it makes the resolution correct under pnpm's strict layout instead
-of relying on npm hoisting. **Check that this is still true before adding a
-fifth.** If ntk drops them when the document widgets go, the closure argument
-goes with it and the four become this package's to justify alone.
+and on `bidi-js` for its text layout, and ntk is react-x11's dependency — so
+every app that can use this package has all five installed already.
+Declaring them adds no packages to an install; it makes the resolution
+correct under pnpm's strict layout instead of relying on npm hoisting.
+**Check that this is still true before adding a sixth.** If ntk drops the
+first four when the document widgets go, the closure argument goes with
+them and they become this package's to justify alone. `bidi-js` is the
+UAX #9 ntk's own layout resolves with, which is why it is the one `<Html>`
+resolves a paragraph's levels with where a line is laid out a piece at a
+time: the two have to agree about every letter the engine orders.
 
 What is still written out, and why the line falls there: the **CSS parser**
 (postcss is a tooling parser — positions, comments and raws, none of which

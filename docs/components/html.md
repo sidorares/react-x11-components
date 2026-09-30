@@ -366,11 +366,19 @@ at the float, as in `nowrap` text, what follows it up to where the line can
 has to fit beside it too. A word with too little room
 left on a line after an inline-block or a float goes to the next line
 whole.
-A line with an inline-block or a padded element on it is put in visual order
-a piece at a time — the text engine orders the text inside each piece, and
-the line orders the pieces (UAX #9's L2) — so a right-to-left paragraph with
-an image in it reads right to left, and it is aligned whole: a centred line
-is centred with its images, not text first and the image after it.
+A line with an inline-block or a padded element on it is laid out a piece
+at a time and put in visual order by the paragraph's own UAX #9 levels,
+resolved once over its text with an object replacement character for each
+image, as CSS Writing Modes has one taken. A piece the engine would order
+as the paragraph does is kept whole; one whose letters another piece's go
+between, or that an embedding or override opened outside it reorders, is
+laid out again a run of one level at a time. So an override that opens on
+one side of a padded element and closes on the other reads across it, the
+space beside an image in a right-to-left paragraph goes where the letters
+around it say, and the line is aligned whole: a centred line is centred
+with its images, not text first and the image after it. An element that
+reordering splits apart on a line is drawn as a box around each of its
+parts, as CSS 2.1 9.10 has it.
 
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
 on an inline box takes its room back from the line), `padding`,
@@ -854,10 +862,7 @@ so a scroll that copies the pixels it can repaints those where they are
 rather than dragging a fixed header along with the text; a fixed
 background, behind the whole viewport, makes every scroll a repaint. A fragment has no
 root element, and its blocks have the body's `auto` height to resolve
-against. Explicit bidi embeddings and overrides (U+202A–U+202E) that open on
-one side of an inline element with padding, border or margin and close on
-the other are resolved on each side of it separately: the text engine is
-handed the text a piece at a time there.
+against.
 
 ## The decisions
 

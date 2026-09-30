@@ -63,7 +63,13 @@ import {
   TEXT_RAISES,
   TEXT_SHIFTS,
 } from './layout/boxes.js';
-import type { BoxTree, LineBox, LineText, Marker } from './layout/boxes.js';
+import type {
+  BoxTree,
+  EdgePlacement,
+  LineBox,
+  LineText,
+  Marker,
+} from './layout/boxes.js';
 import {
   CLIPPED_TEXT,
   clipBoxOf,
@@ -4811,19 +4817,23 @@ function paintLineBackground(
  * each reaches, its border box, and whether the box opens or closes on it.
  * Where the line holds text `position: relative` moved, taken where the
  * text was: a fragment is moved by its own box's offset.
+ *
+ * A box is more than one fragment on a line where bidi reordering puts
+ * what is not the box's between parts of it (CSS 2.1 9.10): a letter of
+ * another element, an atomic, another element's edge. Its parts are one
+ * fragment wherever nothing else comes between them, whatever room is
+ * between them — a space it hangs, a box of its own inside it — so a line
+ * that reads one way has one fragment of each box, as it always had.
  */
-function fragmentsOn(line: LineBox): Map<Box, InlineFragment> | null {
-  let fragments: Map<Box, InlineFragment> | null = null;
-  const widen = (box: Box, left: number, right: number): void => {
-    fragments ??= new Map();
-    const f = fragments.get(box);
-    if (f) {
-      f.left = Math.min(f.left, left);
-      f.right = Math.max(f.right, right);
-    } else {
-      fragments.set(box, { left, right, start: false, end: false });
-    }
-  };
+function fragmentsOn(line: LineBox): Map<Box, InlineFragment[]> | null {
+  /** What is on the line, where, and which decorated boxes it is in. */
+  const marks: {
+    left: number;
+    right: number;
+    boxes: readonly Box[];
+    /** An edge's own box, whose fragment it opens or closes. */
+    edge?: EdgePlacement;
+  }[] = [];
   const shifted = SHIFTED_LINES.has(line);
   for (const text of line.texts) {
     const natural = text.layout.lines[text.layoutLine];
@@ -4839,7 +4849,7 @@ function fragmentsOn(line: LineBox): Map<Box, InlineFragment> | null {
       const left = Math.max(x, x + run.x);
       const right = Math.min(x + natural.width, x + run.x + run.width);
       if (right <= left) continue;
-      for (const box of decoratedAncestors(owner)) widen(box, left, right);
+      marks.push({ left, right, boxes: decoratedAncestors(owner) });
     }
     // and the spaces `pre-wrap` keeps that the line ends on, which hang
     // past it and are their box's all the same (`LineText.hung`)
@@ -4847,40 +4857,102 @@ function fragmentsOn(line: LineBox): Map<Box, InlineFragment> | null {
       const owner = boxAt.call(text.spans, space.at);
       if (!owner) continue;
       const left = text.drawX - (shift?.x ?? 0) + space.x;
-      for (const box of decoratedAncestors(owner)) {
-        widen(box, left, left + space.width);
-      }
+      marks.push({
+        left,
+        right: left + space.width,
+        boxes: decoratedAncestors(owner),
+      });
     }
   }
   for (const placed of line.atomics) {
     const atomic = placed.box;
-    for (const box of decoratedAncestors(atomic)) {
-      widen(
-        box,
-        placed.x - atomic.marginLeft,
-        placed.x + atomic.width + atomic.marginRight,
-      );
-    }
+    marks.push({
+      left: placed.x - atomic.marginLeft,
+      right: placed.x + atomic.width + atomic.marginRight,
+      boxes: decoratedAncestors(atomic),
+    });
   }
   for (const edge of line.edges ?? []) {
-    const box = edge.box;
-    if (!box.decoration) continue;
-    // The element's `direction` says which side its start is on, whatever
-    // its text reads as (CSS 2.1 8.6); the edge's margin is outside the box,
-    // its border and padding inside.
-    const onLeft = (edge.side === 'start') !== (box.style.direction === 'rtl');
-    if (onLeft) {
-      const left = edge.x + box.marginLeft;
-      widen(box, left, left);
-    } else {
-      const right = edge.x + edge.width - box.marginRight;
-      widen(box, right, right);
+    marks.push({
+      left: edge.x,
+      right: edge.x + edge.width,
+      boxes: decoratedAncestors(edge.box),
+      edge,
+    });
+  }
+  let fragments: Map<Box, InlineFragment[]> | null = null;
+  // each box's parts, left to right
+  const parts = new Map<Box, typeof marks>();
+  for (const mark of marks) {
+    for (const box of mark.boxes) {
+      let list = parts.get(box);
+      if (!list) parts.set(box, (list = []));
+      list.push(mark);
     }
-    const f = fragments!.get(box)!;
-    if (edge.side === 'start') f.start = true;
-    else f.end = true;
+    const own = mark.edge?.box;
+    if (own?.decoration) {
+      let list = parts.get(own);
+      if (!list) parts.set(own, (list = []));
+      list.push(mark);
+    }
+  }
+  for (const [box, list] of parts) {
+    list.sort((a, b) => a.left - b.left || a.right - b.right);
+    const out: InlineFragment[] = [];
+    let open: InlineFragment | null = null;
+    let reach = -Infinity;
+    for (const mark of list) {
+      // The element's `direction` says which side its start is on, whatever
+      // its text reads as (CSS 2.1 8.6); its own edge's margin is outside
+      // the box, its border and padding inside.
+      let left = mark.left;
+      let right = mark.right;
+      const own = mark.edge?.box === box ? mark.edge : null;
+      if (own) {
+        const onLeft =
+          (own.side === 'start') !== (box.style.direction === 'rtl');
+        if (onLeft) left = right = own.x + box.marginLeft;
+        else left = right = own.x + own.width - box.marginRight;
+      }
+      if (!open || between(marks, box, reach, mark.left)) {
+        open = { left, right, start: false, end: false };
+        out.push(open);
+      } else {
+        open.left = Math.min(open.left, left);
+        open.right = Math.max(open.right, right);
+      }
+      reach = Math.max(reach, mark.right);
+      if (own) {
+        if (own.side === 'start') open.start = true;
+        else open.end = true;
+      }
+    }
+    (fragments ??= new Map()).set(box, out);
   }
   return fragments;
+}
+
+/** Whether anything on a line that is not in a box lies between two of its
+ *  parts, from `left` to `right`: what splits it into two fragments. */
+function between(
+  marks: readonly {
+    left: number;
+    right: number;
+    boxes: readonly Box[];
+    edge?: EdgePlacement;
+  }[],
+  box: Box,
+  left: number,
+  right: number,
+): boolean {
+  if (right - left < 0.5) return false;
+  for (const mark of marks) {
+    if (mark.right - mark.left < 0.5) continue;
+    if (mark.boxes.includes(box) || mark.edge?.box === box) continue;
+    const middle = (mark.left + mark.right) / 2;
+    if (middle > left && middle < right) return true;
+  }
+  return false;
 }
 
 function paintInlineBoxes(
@@ -4911,7 +4983,25 @@ function paintInlineBoxes(
   const boxes = [...fragments.keys()].sort((a, b) => depthOf(a) - depthOf(b));
   for (const box of boxes) {
     if (box.style.visibility !== 'visible') continue;
-    const f = fragments.get(box)!;
+    for (const f of fragments.get(box)!) {
+      paintInlineFragment(ctx, line, lines, options, bleeds, box, f, baseline);
+    }
+  }
+}
+
+/** One fragment of an inline box on a line (`paintInlineBoxes`). */
+function paintInlineFragment(
+  ctx: PaintContext,
+  line: LineBox,
+  lines: readonly LineBox[],
+  options: PaintOptions,
+  bleeds: Bleed[] | null,
+  box: Box,
+  f: InlineFragment,
+  baseline: number,
+): void {
+  const shifted = SHIFTED_LINES.has(line);
+  {
     const face = box.decoration!;
     // on its own baseline, which `vertical-align` may raise off the line's
     const own = shifted
@@ -4945,7 +5035,7 @@ function paintInlineBoxes(
       padRight: rightEnds ? box.padRight : 0,
       style,
     };
-    if (fragment.width <= 0) continue;
+    if (fragment.width <= 0) return;
     // its images and gradients from the strip its fragments make, where it
     // goes on to another line, and from its own padding box where it is
     // on this one alone or `clone` says each fragment is its own
@@ -4995,7 +5085,7 @@ function stripsOf(lines: readonly LineBox[]): Map<Box, Strip> {
   for (const line of lines) {
     const fragments = fragmentsOn(line);
     if (!fragments) continue;
-    for (const [box, f] of fragments) {
+    for (const [box, list] of fragments) {
       if (!sliced(box.style)) continue;
       let strip = strips.get(box);
       if (!strip) {
@@ -5003,7 +5093,7 @@ function stripsOf(lines: readonly LineBox[]): Map<Box, Strip> {
         strips.set(box, strip);
       }
       strip.before.set(line, strip.width);
-      strip.width += Math.max(0, f.right - f.left);
+      for (const f of list) strip.width += Math.max(0, f.right - f.left);
       strip.lines += 1;
     }
   }

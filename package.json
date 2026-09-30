@@ -199,6 +199,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
+    "bidi-js": "^1.0.3",
     "css-select": "^7.0.0",
     "domhandler": "^6.0.0",
     "domutils": "^4.0.0",
