@@ -1342,3 +1342,58 @@ test("a table's height goes to its rows as a browser gives it", async () => {
     [50, 200, 50, 250, 50, 150, 150],
   );
 });
+
+test('a table a flex box or a grid stretches gives the height to its rows, and a grid stretches it across', async () => {
+  // A flex or grid layout gave a table item its height by setting the box's,
+  // and a table shares out only the height it sets: the table was 120 tall
+  // around a row as tall as its content, and a cell's `vertical-align` had
+  // nothing to centre in. The height given is a least one, as the table's
+  // own is (CSS 2.1 17.5.3), and its captions take their part of it (CSS
+  // Flexbox 1, 4). And `normal` stretches a table grid item across its area
+  // as it does any box that is not replaced (CSS Grid 1, 6.2): as wide as
+  // its columns, as in a block's flow, it stopped at them, as Chrome's does
+  // not. Measured against Chrome: 116 of 120 to the row, 396 of 400 across.
+  const table = (id: string, attributes = '', caption = '') =>
+    `<table id="${id}t"${attributes}>${caption}<tbody><tr>` +
+    `<td id="${id}" style="vertical-align:middle">` +
+    `<div id="${id}x" style="width:10px;height:20px"></div></td></tr></tbody>` +
+    '</table>';
+  const { node } = await render(
+    '<style>body{margin:0}td{padding:0}table{border-spacing:2px}</style>' +
+      `<div style="display:flex;height:120px">${table('f')}</div>` +
+      // stretched to a line no height of its own made
+      '<div style="display:flex"><div style="height:80px;width:10px"></div>' +
+      `${table('l')}</div>` +
+      '<div style="display:flex;flex-direction:column;height:200px">' +
+      `<div style="height:80px"></div>${table('c', ' style="flex:1"')}</div>` +
+      `<div style="display:grid;grid-template-rows:120px">${table('g')}</div>` +
+      '<div style="display:grid;grid-template-rows:120px">' +
+      `${table('p', '', '<caption style="height:20px"></caption>')}</div>` +
+      // and no shorter than its rows, however short its line or its area
+      `<div style="display:flex;height:10px">${table('s')}</div>` +
+      `<div style="display:grid;grid-template-rows:10px">${table('r')}</div>` +
+      // and `start` sizes it to fit, as in a block's flow
+      `<div style="display:grid;justify-items:start">${table('j')}</div>`,
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  const rect = (id: string) => {
+    const b = box(id);
+    return [b.width, b.height];
+  };
+  // the content in the middle of the cell, which is the row's height
+  const centred = (id: string) => box(`${id}x`).y - box(id).y;
+  assert.deepStrictEqual(rect('ft'), [14, 120], 'stretched down its line');
+  assert.deepStrictEqual(rect('f'), [10, 116], 'and its row with it');
+  assert.strictEqual(centred('f'), 48, 'its content centred in the row');
+  assert.deepStrictEqual(rect('l'), [10, 76], "to a line's height");
+  assert.strictEqual(box('ct').height, 120, 'flexed down a column');
+  assert.strictEqual(box('c').height, 116);
+  assert.deepStrictEqual(rect('gt'), [400, 120], 'stretched across its area');
+  assert.deepStrictEqual(rect('g'), [396, 116], 'and down it');
+  assert.strictEqual(centred('g'), 48);
+  assert.deepStrictEqual(rect('p'), [396, 96], 'its caption given its part');
+  assert.deepStrictEqual(rect('st'), [14, 24], 'no shorter than its row');
+  assert.deepStrictEqual(rect('rt'), [400, 24], 'in an area shorter than it');
+  assert.deepStrictEqual(rect('jt'), [14, 24], 'fit to its content at start');
+});

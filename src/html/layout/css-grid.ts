@@ -31,6 +31,7 @@ import { Box, GRID_TRACKS, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
+  STRETCHED_ACROSS,
   USED_HEIGHT,
   centreButton,
   clampHeight,
@@ -60,6 +61,9 @@ interface Item {
   /** Min-content and max-content widths, margin box, taken when asked. */
   min: number;
   max: number;
+  /** Whether it is a table stretched across its area (`STRETCHED_ACROSS`),
+   *  which `layoutItem` decides. */
+  across: boolean;
 }
 
 /**
@@ -401,21 +405,27 @@ export function layoutGrid(
       // purpose"): a card's `margin-top: auto` takes what its row is taller
       // than the card by, its `flex: 1` grows into it (CSS Flexbox 8.1,
       // 9.7). Its content's own height is the same layout, and kept.
+      // A table shares out among its rows what the area is taller than
+      // they are (`layoutTable`), and is no shorter than they are however
+      // short its area: its rows are the least it can be, as they are
+      // where it has a height of its own (CSS 2.1 17.5.3).
       if (
         child.kind !== 'replaced' &&
         (wide !== null ||
           percentHeightsIn(child) ||
-          (child.kind === 'flex' && height !== child.height))
+          (child.kind === 'flex' && height !== child.height) ||
+          (child.kind === 'table' && height > child.height + 0.01))
       ) {
         FLEXED_HEIGHT.set(child, Math.max(0, height - child.verticalExtra));
         try {
-          ctx.layoutSubtree(child, width, area);
+          layoutAcross(item, width, area, ctx);
         } finally {
           FLEXED_HEIGHT.delete(child);
         }
       }
       child.width = width;
-      child.height = height;
+      child.height =
+        child.kind === 'table' ? Math.max(height, child.height) : height;
       centreButton(child);
     }
     moveTo(
@@ -596,6 +606,7 @@ function place(
           cols: p.bs,
           min: -1,
           max: -1,
+          across: false,
         }
       : {
           box: p.box,
@@ -605,6 +616,7 @@ function place(
           cols: p.as,
           min: -1,
           max: -1,
+          across: false,
         },
   );
 }
@@ -757,7 +769,15 @@ function layoutItem(
     width = Math.min(widest, Math.max(narrowest, room));
   }
   if (child.kind !== 'replaced') {
-    ctx.layoutSubtree(child, width, area);
+    // a table stretched across is as wide as its area, which in a block's
+    // flow it would shrink from to its columns (`STRETCHED_ACROSS`)
+    item.across =
+      across &&
+      child.kind === 'table' &&
+      style.width === AUTO &&
+      !keyword &&
+      through === null;
+    layoutAcross(item, width, area, ctx);
     return;
   }
   // a replaced element sizes itself from its style: then it is given the
@@ -773,6 +793,27 @@ function layoutItem(
     const down =
       style.height === AUTO ? heightThroughRatio(child, child.width) : null;
     if (down !== null) child.height = clampHeight(child, down);
+  }
+}
+
+/** Lay an item out at a width: a table stretched across its area at that
+ *  width as its own (`STRETCHED_ACROSS`), for this layout alone. */
+function layoutAcross(
+  item: Item,
+  width: number,
+  area: number,
+  ctx: LayoutContext,
+): void {
+  const child = item.box;
+  if (!item.across) {
+    ctx.layoutSubtree(child, width, area);
+    return;
+  }
+  STRETCHED_ACROSS.add(child);
+  try {
+    ctx.layoutSubtree(child, width, area);
+  } finally {
+    STRETCHED_ACROSS.delete(child);
   }
 }
 

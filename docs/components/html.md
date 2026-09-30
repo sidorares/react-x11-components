@@ -585,7 +585,8 @@ stretched is as wide as its content fits. `normal` stretches an item but an
 image, which keeps its own size, and a box with an `aspect-ratio`, which is
 as wide as a height it has makes it, and as a block would be where it has
 none; an item stretched down its area is as wide as its ratio makes that
-height. An item's area is its containing block: a percentage in its
+height. A table among them is stretched across its area too, as Chrome
+stretches one, where in a block's flow it is as wide as its columns. An item's area is its containing block: a percentage in its
 margins, its padding, its `min-width` or its `max-width` is of the area's
 width, whatever width the item comes to in it, so `width: 50%; max-width:
 80%` is half its column. While the columns are being sized there is no
@@ -641,7 +642,12 @@ a cell with nothing in it, where borders are separate. A table taller than
 its rows gives them the rest as browsers do, which CSS 2.1 leaves open:
 first to the rows a percentage sets, up to it, then to the rows with
 content that nothing sets, and, where every row with content is set, to
-the empty ones.
+the empty ones. That is so of a height of its own and of one a flex box or
+a grid gives it, stretched down its line or its area or flexed down a
+column: the rows grow to the height, less its captions, and a cell's
+`vertical-align` has the row to move its content in. A table is never
+shorter than its rows, though, whatever height it is given or its line or
+its area has.
 A block in an inline element breaks it (CSS 2.1 9.2.1.1): the pieces of the
 element before and after the block are on lines of their own, without an
 edge where the block cut them, and the block stands between them as a
