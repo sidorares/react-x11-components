@@ -772,7 +772,9 @@ viewport — and the absolute units, and `calc()`, `min()`, `max()` and
 `clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
 `ch` the advance of its "0", as the text engine reports them, or half an em
 where it cannot say; an `lh` is the element's line height, `normal` as its
-font's own, and an `rlh` the root's. A math function comes down to pixels and a percentage, which
+font's own, and an `rlh` the root's. A `rem` is the root element's font
+size, so `html { font-size: 62.5% }` makes it ten pixels, and in the root's
+own `font-size` the initial size, as CSS has both. A math function comes down to pixels and a percentage, which
 layout resolves as it does any percentage; `min(100%, 600px)`, a
 comparison with a percentage in it, is resolved against each width it
 meets. A percentage that cannot resolve makes the whole value `auto` where
