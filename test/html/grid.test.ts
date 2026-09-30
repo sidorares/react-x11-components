@@ -6,6 +6,7 @@ import { sizeTracks } from '../../src/html/layout/tracks.js';
 import {
   RED_PNG,
   boxOf,
+  linesOf,
   metric,
   render,
   renderWithBytes,
@@ -751,6 +752,73 @@ test("a grid item's percentages are of its area's width, not of its own", async 
   assert.deepStrictEqual(across('k'), [0, 270]);
   assert.deepStrictEqual(across('k1'), [30, 210], 'the padding kept');
 });
+
+metric(
+  "an inline grid sits on its first item's baseline, its bottom edge where it has none",
+  async () => {
+    // CSS Grid 1, 10.6: a grid's first baseline is that of its first item
+    // in row-major order, and "if the grid item has no alignment baseline
+    // in the grid's inline axis, then one is first synthesized from its
+    // border edges". A grid took none from an item with no line in it and
+    // had none of its own, so a grid of icons stood its whole height on
+    // the line, and a button around one sat on its content box's bottom:
+    // nextjs.org's 60px sidebar pickers made lines of 60.4px where the
+    // strut reached 8.4px under a baseline 8px from the button's bottom.
+    const mark =
+      '<span class="m" style="display:inline-block;width:10px;height:10px">' +
+      '</span>';
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}' +
+        '.g{display:inline-grid;width:100px} .i{width:36px;height:36px}' +
+        '.s{width:36px;height:20px}</style>' +
+        // an item with no line, in a grid taller than it
+        `<div id="a"><div id="ag" class="g" style="height:60px">` +
+        `<div class="i"></div></div>${mark}</div>` +
+        // the first item where it is placed, not where it is written
+        `<div id="b"><div id="bg" class="g"><div class="s" style="grid-row:2">` +
+        `</div><div class="i" style="grid-row:1"></div></div>${mark}</div>` +
+        // an item with no line before one with text: its edge, not the text
+        `<div id="c"><div id="cg" class="g" style="height:60px;` +
+        `grid-template-columns:auto auto"><div class="i"></div><div>text</div>` +
+        `</div>${mark}</div>` +
+        // an item with a line gives its own
+        `<div id="d"><div id="dg" class="g" style="height:60px;` +
+        `grid-template-columns:auto auto"><div id="dt">text</div>` +
+        `<div class="i"></div></div>${mark}</div>` +
+        // and a grid with no item has none: its bottom margin edge
+        `<div id="e"><div id="eg" class="g" style="height:60px"></div>` +
+        `${mark}</div>` +
+        // a grid in an inline-block gives it the baseline it has on a line
+        // of its own, its first, as Blink and Gecko both have it
+        '<div id="g"><span id="gb" style="display:inline-block;width:100px">' +
+        '<div style="display:grid"><div class="s" style="grid-row:2"></div>' +
+        '<div class="i" style="grid-row:1"></div></div>' +
+        `<div style="height:10px"></div></span>${mark}</div>` +
+        // a button around a grid of icons sits on the first of them
+        '<div id="f"><button id="fb" style="box-sizing:border-box;margin:0;' +
+        'border:0;padding:4px;width:100%;height:60px"><div style="display:' +
+        'grid;grid-template-columns:auto auto"><div class="i"></div>' +
+        '<div class="s"></div></div></button></div>',
+      300,
+    );
+    const el = view(node);
+    const baselineOf = (id: string) => {
+      const [line] = linesOf(el, id);
+      return line.y + line.baseline;
+    };
+    const near = (a: number, b: number, what: string) =>
+      assert.ok(Math.abs(a - b) < 0.01, `${what}: ${a} and ${b}`);
+    near(baselineOf('a'), boxOf(el, 'ag').y + 36, "the item's bottom edge");
+    assert.strictEqual(boxOf(el, 'a').height, 60, 'and a line no taller');
+    near(baselineOf('b'), boxOf(el, 'bg').y + 36, 'the first row');
+    near(baselineOf('c'), boxOf(el, 'cg').y + 36, 'the first item');
+    const [text] = linesOf(el, 'dt');
+    near(baselineOf('d'), text.y + text.baseline, "an item's own");
+    near(baselineOf('e'), boxOf(el, 'eg').y + 60, 'no item');
+    near(baselineOf('g'), boxOf(el, 'gb').y + 36, 'in a block, its first');
+    assert.strictEqual(boxOf(el, 'f').height, 60, 'a button of a grid');
+  },
+);
 
 test("a grid item's percentage height is of its area", async () => {
   // It was of the grid's height, so `height: 100%` in one of two rows was

@@ -477,7 +477,10 @@ same, and are painted so; one with a `z-index` is a stacking context
 whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines, their
 line as tall as that makes it — `last baseline` is taken as the end of the
 line, which is what it falls back to — and a flex box sits on the baseline of its
-first line's item aligned so, or of its first item. Items meet where
+first line's item aligned so, or of its first item. An inline-block whose
+last block is a flex box or a grid sits on that baseline too, the one the
+box has on a line of its own, and a table in one gives it none, as Blink
+and Gecko both have it. Items meet where
 they meet, fractions of a pixel included, and the paint snaps their edges.
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
@@ -514,7 +517,12 @@ bottom of its row. A grid is as wide as
 its tracks, whatever runs past them. An absolutely positioned box
 takes the grid area its lines name for its containing block, and a grid's
 or a flex box's child is where it would be as the box's one item.
-Baseline alignment and subgrids are not read.
+A grid sits on the baseline of its first item in row-major order — the
+first in its first row that holds one, by where it was placed — and an
+item with no line of its own gives the bottom edge of its border box (CSS
+Grid 1, 10.6): a grid of icons sits on the first icon's bottom edge, and a
+grid with no item has no baseline.
+Baseline alignment of the items and subgrids are not read.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —
