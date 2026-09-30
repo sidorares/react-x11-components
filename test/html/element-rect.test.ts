@@ -250,6 +250,85 @@ metric(
   },
 );
 
+metric(
+  "a space a link ends on is the link's where the line goes on, and nobody's where the line ends",
+  async () => {
+    // White space collapses to its first space, which is in the element it
+    // is in (CSS Text 3, 4.1.1): a link written `text </a>` before another
+    // on its line is that space wider than its letters. A line's end
+    // removes the space it ends on (4.1.2), and then no box is wider for
+    // it. The Zen Garden's 066 has its resource links so, in list items
+    // set inline with a padding: each link before another was a space
+    // short, and the item that ended its line a space long, its end edge
+    // set after a space that was no longer there
+    const item = (id: string, text: string) =>
+      `<li id="l${id}"><a id="a${id}" href="#">${text}</a></li> `;
+    const { node } = await render(
+      '<style>body{margin:0;font-size:16px}ul{margin:0;padding:0;' +
+        'list-style:none;width:300px}li{display:inline;padding-left:10px}' +
+        '</style><ul>' +
+        item('1', 'one ') +
+        item('2', 'two') +
+        item('3', 'three ') +
+        item('4', 'awordtoolongtofitwhatisleftofthefirstline') +
+        item('5', 'three') +
+        '</ul>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const [a1, l1, a2, l2, a3, l3, l4] = [
+      'a1',
+      'l1',
+      'a2',
+      'l2',
+      'a3',
+      'l3',
+      'l4',
+    ].map(rect);
+    assert.ok(l4.y > l3.y, 'the third item ends the first line');
+    // a space is a quarter of an em or so in any face
+    const space = l1.x + l1.width - (a2.x - 10);
+    assert.ok(
+      Math.abs(l2.x - (l1.x + l1.width)) < 0.01 && space < 0.01,
+      'the items follow one another',
+    );
+    assert.ok(
+      a1.x + a1.width > a2.x - 10 - 0.01,
+      `the first link reaches the next item, its space in it: ${a1.x + a1.width} of ${a2.x - 10}`,
+    );
+    assert.ok(
+      Math.abs(a1.x + a1.width - (l1.x + l1.width)) < 0.01,
+      'and ends where its item does',
+    );
+    // the link with no space ends at its letters, a space short of the
+    // next item, which the space between the items is
+    assert.ok(
+      l3.x - (a2.x + a2.width) > 2,
+      `a link with no space in it has none: ${l3.x - (a2.x + a2.width)}`,
+    );
+    assert.ok(
+      Math.abs(l3.x + l3.width - (a3.x + a3.width)) < 0.01,
+      `the item that ends the line ends with its link: ${l3.x + l3.width} and ${a3.x + a3.width}`,
+    );
+    // and its link with its letters: the same word with no space after it
+    const bare = rect('a5').width;
+    assert.ok(
+      Math.abs(a3.width - bare) < 0.01,
+      `the space the line ends on is removed: ${a3.width} of ${bare}`,
+    );
+    assert.ok(
+      Math.abs(l3.width - (bare + 10)) < 0.01,
+      `from its item as well: ${l3.width} of ${bare + 10}`,
+    );
+    assert.ok(
+      Math.abs(l2.x + l2.width - (a2.x + a2.width)) < 0.01,
+      'as one in the middle of it does',
+    );
+  },
+);
+
 test('an inline box around a block that clears a float measures from where clearance moved the block from', async () => {
   // A browser's fragment of an inline box around a block in it is the
   // line that holds the block, and where the block has clearance that line

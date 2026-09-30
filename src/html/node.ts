@@ -2707,6 +2707,19 @@ function lineBands(
             height: rows.height,
           });
         }
+        // The spaces a piece of a line ends on, where the line goes on
+        // after them: the engine stripped them from the piece it laid out
+        // as a line, and they are the text's all the same, in the elements
+        // that hold its end — a link whose text ends in a space, before
+        // the next link, is that space wider than its letters
+        if (text.trail && b >= text.textEnd && !rtlLine(natural)) {
+          out.push({
+            x: dx + natural.x + natural.width + text.drawX - moved,
+            y: dy + rows.y,
+            width: text.trail,
+            height: rows.height,
+          });
+        }
         // the spaces `pre-wrap` keeps that the line ends on, which have no
         // run: the engine hung them past the line (`LineText.hung`)
         for (const space of text.hung ?? []) {
@@ -2722,6 +2735,14 @@ function lineBands(
       }
     }
   }
+}
+
+/** Whether a laid-out line's last run reads right to left, its end at its
+ *  left. */
+function rtlLine(natural: {
+  runs: { run?: { direction?: string } }[];
+}): boolean {
+  return natural.runs[natural.runs.length - 1]?.run?.direction === 'rtl';
 }
 
 /** Whether a line's text is where the line ends: its last, with nothing

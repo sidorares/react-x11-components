@@ -1421,6 +1421,7 @@ function linesOf(
           if (!text) continue;
           const m = hung.exec(text);
           if (!m) break;
+          if (!trailing) placed.trailRun = segment.runs[i];
           trailing = m[0] + trailing;
           if (m[0].length < text.length) break;
         }
@@ -1437,6 +1438,7 @@ function linesOf(
               : spaceAdvance(fonts, segment.runs[segment.runs.length - 1]) *
                 trailing.length;
           open.x += open.hang;
+          placed.trail = open.hang;
         }
       } else if (hung.total) holdHung();
       index = segment.nextIndex;
@@ -2390,6 +2392,24 @@ function finishLine(
 ): LineBox | null {
   if (!open.texts.length && !open.atomics.length && !open.edges.length) {
     return null;
+  }
+  if (open.hang > 0) {
+    // The line ends on the spaces its last text ends on, and they are
+    // removed (CSS Text 3, 4.1.2): the text takes no room for them, and
+    // what was set after them, the end edges of the boxes they are in,
+    // stands where the text's content ends. Left a space past it, a list
+    // item that ended its line was a space wider than its link.
+    for (let i = open.order.length - 1; i >= 0; i -= 1) {
+      const placed = open.order[i];
+      if (placed.kind === 'text') {
+        placed.item.trail = 0;
+        placed.item.trailRun = undefined;
+        break;
+      }
+      if (placed.kind !== 'edge') break;
+      placed.at -= open.hang;
+      placed.item.x -= open.hang;
+    }
   }
   const reordered = levels
     ? levelPieces(open, levels) ||
