@@ -439,11 +439,19 @@ function renderControl(
     top: Math.round(at.y),
     width: Math.round(at.width),
     height: Math.round(at.height),
+    // The face and the size the box was measured for, which a `<Button>`'s
+    // or a `<Select>`'s caption inherits: named here because the text
+    // cascade takes the palette's from the window, and a provider inside it
+    // that names a face or a size reaches `useTheme` and not the cascade.
+    fontFamily: look.controlFontFamily ?? look.fontFamily,
+    fontSize: look.controlFontSize ?? look.fontSize,
     // core's `opacity` is CSS's: the widget faded as a group, and at 0 not
     // drawn and still hit
     ...(rect.opacity !== undefined && { opacity: rect.opacity }),
   };
-  const field = rect.bare ? bareField(rect.bare) : fieldChrome(look);
+  const field = rect.bare
+    ? bareField(rect.bare)
+    : fieldChrome(look, rect.kind === 'textarea');
   // A text edit does NOT restyle: the value lives in the widget and in
   // `forms`, and neither changes any box — while a restyle would re-run
   // the cascade and relayout the whole document *per keystroke*. This also
@@ -634,8 +642,10 @@ function renderMessage(
  * why core's own `<Button>` and `<Select>` are components and these are not.
  * The values are the palette's, so a field in a document and a `<Select>`
  * beside it are the same height with the same corner and the same edge.
+ * Its text is in the family and at the size the UA sheet sets the field in,
+ * and so measured it in: a `<textarea>`'s is the code face.
  */
-function fieldChrome(look: RootLook): Style {
+function fieldChrome(look: RootLook, code: boolean): Style {
   return {
     backgroundColor: look.surface,
     borderWidth: look.controlBorder,
@@ -644,8 +654,9 @@ function fieldChrome(look: RootLook): Style {
     paddingLeft: 6,
     paddingRight: 6,
     color: look.color,
-    fontFamily: look.fontFamily,
-    // the size the UA sheet sets the field at, and so measured it at
+    fontFamily: code
+      ? look.monoFamily
+      : (look.controlFontFamily ?? look.fontFamily),
     fontSize: look.controlFontSize ?? look.fontSize,
   };
 }
