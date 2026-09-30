@@ -72,6 +72,7 @@ import type {
 import { FloatContext } from './floats.js';
 import {
   faceExtentOf,
+  isButton,
   joinsBefore,
   layoutInline,
   lineHeightMultiplier,
@@ -2661,9 +2662,11 @@ function blockWidth(
       return ratioMinimum(box, clamped, percentBase, ctx);
     }
     const room = Math.max(0, available);
+    const keyword =
+      style.widthKeyword ?? (fitsContent(box) ? 'fit-content' : null);
     const width =
-      style.widthKeyword && ctx
-        ? contentSizedWidth(box, ctx, style.widthKeyword, room, percentBase)
+      keyword && ctx
+        ? contentSizedWidth(box, ctx, keyword, room, percentBase)
         : room;
     return clampWidth(
       box,
@@ -2680,6 +2683,25 @@ function blockWidth(
       ? Math.max(specified, box.horizontalExtra)
       : specified + box.horizontalExtra;
   return clampWidth(box, borderBox, percentBase, ctx, containingWidth);
+}
+
+/**
+ * Whether a block-level box's `width: auto` is `fit-content` and not the
+ * room its margins leave: a `<button>`'s, of which HTML's rendering section
+ * says "If the computed value of 'inline-size' is 'auto', then the used
+ * value is the fit-content inline size" (button layout, 15.5.3) — whatever
+ * it is laid out as inside, a block, a flex box or a grid, as Blink leaves
+ * it out of the boxes whose `auto` stretches
+ * (`ShouldBlockContainerChildStretchAutoInlineSize`). Set `display: block`
+ * to stand on a line of its own, a button was as wide as the line, where it
+ * is as wide as its label. Not one a flex box, a grid or a pair of offsets
+ * sizes, which stretch it still.
+ *
+ * Asked of every block: most are told from a button by the length of their
+ * name.
+ */
+function fitsContent(box: Box): boolean {
+  return box.el !== null && box.el.name.length === 6 && isButton(box);
 }
 
 /**

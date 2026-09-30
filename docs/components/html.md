@@ -1456,6 +1456,17 @@ the button does — submits its form, resets it, or nothing for
 keeps none of the letter and word spacing, the line height, the case, the
 indent or the shadow of the text around it, as HTML's rendering section has
 it: a button in a body of `line-height: 1.5` is its own font's line tall.
+Its `display` is what HTML's button layout makes of the one it was given:
+a flex box or a grid is that, `inline` and `inline-table` are an
+`inline-block` — a button is never an inline box, broken around the blocks
+in it — and `list-item` and `table` are a block, with no marker and no
+cells; a table's part is left what it is. And its `width: auto` is
+`fit-content`, as the same layout has it: a button set `display: block`,
+`flex` or `grid` is as wide as its content and not as its containing block,
+within its `min-width` and `max-width` and the room its margins leave, and
+`auto` margins share what is left, so `margin: 0 auto` centres it. A flex
+box and a grid still stretch a button that is their item, and two offsets
+an absolute one, as they do in Blink.
 An `<input type=image>` is drawn the same way, as its image, and submits
 the point it was pressed at; until its image arrives, or where it is
 declined, it is a button saying its `alt`, so it can be pressed either way.

@@ -33,6 +33,7 @@ import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import {
   applyDeclaration,
   blockify,
+  settleButton,
   settleContentVisibility,
   settleOverflow,
   settleClamp,
@@ -1237,6 +1238,7 @@ export class Cascade {
             parentStyle,
             inFlexContainer,
             candidates,
+            true,
           ),
           key: this._nextShareKey++,
         };
@@ -1293,6 +1295,7 @@ export class Cascade {
       parentStyle,
       inFlexContainer,
       this._candidates(el),
+      true,
     );
   }
 
@@ -1509,6 +1512,9 @@ export class Cascade {
     parentStyle: ComputedStyle,
     inFlexContainer: boolean,
     candidates: Candidate[],
+    /** Whether the style is the element's own, and not that of one of its
+     *  pseudo-elements. */
+    own = false,
   ): ComputedStyle {
     const style = inherit(parentStyle, this.initial);
     // custom properties first, in cascade order, so every `var()` in the
@@ -1655,6 +1661,10 @@ export class Cascade {
     settleOverflow(style);
     settleContentVisibility(style);
     blockify(style, inFlexContainer);
+    // a button is laid out as one, whatever `display` it was given
+    if (own && el.name.length === 6 && tagOf(el) === 'button') {
+      settleButton(style);
+    }
     decorate(style);
     // which faces of the document's own families this family, weight and
     // slant ask for — known only now, with all three computed
