@@ -13,6 +13,7 @@ import {
   h,
   metric,
   pathsOf,
+  pixelsIn,
   render,
   view,
   windingAt,
@@ -200,11 +201,22 @@ test("a rounded box's border is a ring that follows its corners", async () => {
     [10, 10],
     [10, 10],
   ]);
-  // and sides of two colours are drawn a side at a time, as before
+  // and sides of two colours are each a share of the ring: the top's across
+  // the top, and the rest one fill round the other three
   const green = fills.filter((f) => f.style === parseColor('#00ff00'));
+  const magenta = fills.filter((f) => f.style === parseColor('#ff00ff'));
+  assert.strictEqual(green.length, 1, 'one fill for the three green sides');
+  assert.strictEqual(magenta.length, 1, 'and one for the top');
+  assert.deepStrictEqual(
+    [green[0].x, green[0].y + green[0].h, green[0].w],
+    [0, 128, 104],
+  );
+  assert.ok(green[0].y > 85, `from under the top: ${green[0].y}`);
+  const top = magenta[0];
+  assert.strictEqual(top.y, 84);
   assert.ok(
-    green.length >= 3 && green.every((f) => !f.inner),
-    'straight sides',
+    top.h < 10 && top.x > 0 && top.x + top.w < 104,
+    `the top alone, between its corners: ${top.x} ${top.w}x${top.h}`,
   );
 });
 
@@ -252,7 +264,7 @@ test('groove and ridge are two bands, inset and outset one, lit from the top lef
 metric(
   'sides of different colours meet on the diagonal of the corner they share',
   async () => {
-    // CSS Backgrounds 3, 4.3: a corner is divided between its two sides on
+    // CSS Backgrounds 3, 4.4: a corner is divided between its two sides on
     // the line from its outer point to its inner one. The top and the
     // bottom were drawn full width and the sides between them, so the CSS
     // triangle — one coloured border between transparent ones, on a box of
@@ -761,6 +773,276 @@ test('a border down one side of a rounded box curves its inside by the ellipse l
     [14, 14],
     [14, 14],
   ]);
+});
+
+metric(
+  'a rounded border whose sides differ in colour is a ring, each side in its share of it',
+  async () => {
+    // CSS Backgrounds 3, 4.4: two sides' colours change on the curve of
+    // the corner they share. Drawn a side at a time, the web's spinner —
+    // `border-radius: 50%` and one side of another colour — was a square
+    // frame, and a card with a coloured side was square at every corner
+    const { result } = await render(
+      '<style>body{margin:0;background:#ffffff}div{margin-bottom:10px}</style>' +
+        '<div style="width:24px;height:24px;border:3px solid #cccccc;' +
+        'border-top-color:#0077cc;border-radius:50%"></div>' +
+        '<div style="width:40px;height:30px;border:6px solid;' +
+        'border-color:#ff0000 #00ff00 #0000ff #ff00ff;border-radius:14px">' +
+        '</div>',
+    );
+    const at = (x: number, y: number, color: string, message: string) =>
+      expectPixel(result.ctx, x, y, color, { message, tolerance: 8 });
+    // the spinner, 30 across from the top left: its top a quarter of the
+    // ring, between the diagonals
+    await at(15, 1, '#0077cc', 'the top of the spinner');
+    await at(8, 3, '#0077cc', 'the top, above the top left diagonal');
+    await at(21, 3, '#0077cc', 'and above the top right one');
+    await at(3, 8, '#cccccc', 'the left, below the top left diagonal');
+    await at(26, 8, '#cccccc', 'the right, below the top right one');
+    await at(1, 15, '#cccccc', 'the left');
+    await at(15, 28, '#cccccc', 'the bottom');
+    await at(1, 1, '#ffffff', 'no corner of a frame at the top left');
+    await at(28, 28, '#ffffff', 'nor at the bottom right');
+    await at(15, 15, '#ffffff', 'and nothing inside');
+    // four colours round a card 52 by 42 from 40 down, each corner two
+    await at(0, 40, '#ffffff', 'the card has no square corner');
+    await at(51, 81, '#ffffff', 'at either end');
+    await at(26, 42, '#ff0000', 'its top');
+    await at(10, 43, '#ff0000', 'the top of the top left corner');
+    await at(3, 50, '#ff00ff', 'and the left of it');
+    await at(48, 50, '#00ff00', 'the right of the top right corner');
+    await at(41, 43, '#ff0000', 'and the top of it');
+    await at(41, 78, '#0000ff', 'the bottom of the bottom right corner');
+    await at(3, 71, '#ff00ff', 'the left of the bottom left corner');
+    await at(26, 61, '#ffffff', 'and nothing inside');
+  },
+);
+
+metric(
+  'where two sides of a ring meet, nothing under the border shows between them',
+  async () => {
+    // Two antialiased fills that meet on a line each cover part of the
+    // pixels along it, and the page showed through between them: a pale
+    // seam down each cut. The share drawn first reaches on under the one
+    // drawn over it, whose edge is the cut.
+    const { result } = await render(
+      '<style>body{margin:0;background:#ffffff}</style>' +
+        '<div style="width:40px;height:40px;border:10px solid;' +
+        'border-color:#ff0000 #00ff00;border-radius:50%"></div>',
+    );
+    const data = await pixelsIn(result.ctx, {
+      x: 0,
+      y: 0,
+      width: 60,
+      height: 60,
+    });
+    // Red and green have no blue in them, and nor does any mix of the two:
+    // blue in the ring, away from its edges, is the white under it
+    let worst = 0;
+    let where = '';
+    for (let y = 0; y < 60; y += 1) {
+      for (let x = 0; x < 60; x += 1) {
+        const d = Math.hypot(x + 0.5 - 30, y + 0.5 - 30);
+        if (d < 21.5 || d > 28.5) continue;
+        const blue = data[(y * 60 + x) * 4 + 2];
+        if (blue > worst) [worst, where] = [blue, `${x},${y}`];
+      }
+    }
+    assert.ok(worst <= 16, `the page shows through at ${where}: ${worst}`);
+  },
+);
+
+/** The polygons a paint fills in one colour, each as its corners. */
+async function sharesOf(
+  node: Parameters<typeof view>[0],
+  color: string,
+  damage: { x: number; y: number; width: number; height: number } | null = null,
+): Promise<[number, number][][]> {
+  const { polygons } = await polygonsOf(node, damage);
+  return polygons
+    .filter((p) => p.style === parseColor(color))
+    .map((p) => {
+      const corners: [number, number][] = [];
+      for (let i = 0; i < p.points.length; i += 2) {
+        corners.push([p.points[i], p.points[i + 1]]);
+      }
+      return corners;
+    });
+}
+
+/** How far a point is from the line through two others. */
+function offLine(
+  [x, y]: [number, number],
+  [x0, y0]: [number, number],
+  [x1, y1]: [number, number],
+): number {
+  return (
+    Math.abs((x - x0) * (y1 - y0) - (y - y0) * (x1 - x0)) /
+    Math.hypot(x1 - x0, y1 - y0)
+  );
+}
+
+test("a ring's share is cut on the line from the border box's corner through the padding box's", async () => {
+  // Blink's line: it meets the curve where the widths of the two sides say,
+  // and here, with a left three times the top, that is not the middle of
+  // the corner. A circle 40 across, the padding box from 12,4 to 36,36.
+  // Sides that show what is under them are not drawn over each other, so
+  // each share ends on the line.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:24px;height:32px;border-style:solid;' +
+      'border-width:4px 4px 4px 12px;border-radius:50%;' +
+      'border-color:rgba(255,0,0,.5) rgba(0,255,0,.5) rgba(0,0,255,.5) ' +
+      'rgba(255,0,255,.5)"></div>',
+  );
+  const corner: [number, number][] = [
+    [0, 0],
+    [40, 0],
+    [40, 40],
+    [0, 40],
+  ];
+  const inner: [number, number][] = [
+    [12, 4],
+    [36, 4],
+    [36, 36],
+    [12, 36],
+  ];
+  const sides = [
+    'rgba(255,0,0,.5)',
+    'rgba(0,255,0,.5)',
+    'rgba(0,0,255,.5)',
+    'rgba(255,0,255,.5)',
+  ];
+  for (let side = 0; side < 4; side += 1) {
+    const shares = await sharesOf(node, sides[side]);
+    assert.strictEqual(shares.length, 1, `one share for side ${side}`);
+    const [share] = shares;
+    // the border edge clockwise, then the padding edge back
+    const outside = (p: [number, number]) =>
+      Math.abs(Math.hypot(p[0] - 20, p[1] - 20) - 20) < 1e-6;
+    const turn = share.findIndex((p) => !outside(p));
+    assert.ok(turn > 1, `side ${side} starts on the border edge`);
+    assert.ok(
+      share.slice(turn).every((p) => !outside(p)),
+      `and comes back along the padding edge`,
+    );
+    // Its ends: the corner it starts at, from the last point to the
+    // first, and the one it ends at, where it turns
+    const cuts: [[number, number], [number, number], number][] = [
+      [share[share.length - 1], share[0], side],
+      [share[turn - 1], share[turn], (side + 1) % 4],
+    ];
+    for (const [a, b, c] of cuts) {
+      for (const p of [a, b]) {
+        assert.ok(
+          offLine(p, corner[c], inner[c]) < 1e-6,
+          `side ${side}'s cut at corner ${c} is on the line: ${p}`,
+        );
+      }
+    }
+  }
+});
+
+test('an opaque share is drawn over the one before it, which reaches on under it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:24px;height:24px;border:3px solid #cccccc;' +
+      'border-top-color:#0077cc;border-radius:50%"></div>',
+  );
+  const [top] = await sharesOf(node, '#0077cc');
+  const [rest] = await sharesOf(node, '#cccccc');
+  const { polygons } = await polygonsOf(node);
+  assert.deepStrictEqual(
+    polygons.map((p) => p.style),
+    [parseColor('#0077cc'), parseColor('#cccccc')],
+    'the top first',
+  );
+  // every corner of either on the circle round the box or the one inside
+  // the border
+  for (const p of [...top, ...rest]) {
+    const d = Math.hypot(p[0] - 15, p[1] - 15);
+    assert.ok(
+      Math.abs(d - 15) < 1e-6 || Math.abs(d - 12) < 1e-6,
+      `${p} on the ring's edges`,
+    );
+  }
+  // the grey ends on the diagonals of the top corners, y = x and y = 30 - x …
+  const onCut = rest.filter(([x, y]) =>
+    x < 15 ? Math.abs(y - x) < 1e-6 : Math.abs(y - (30 - x)) < 1e-6,
+  );
+  assert.strictEqual(
+    onCut.length,
+    4,
+    `the grey's four ends: ${rest.join(' ')}`,
+  );
+  // … and the blue reaches past them under it, and not far
+  const under = top.filter(([x, y]) => y > x + 0.5 || y > 30 - x + 0.5);
+  assert.ok(under.length > 0, `the blue goes on under the grey`);
+  assert.ok(
+    top.every(([x, y]) => y < x + 4 && y < 30 - x + 4),
+    `but not far: ${top.join(' ')}`,
+  );
+});
+
+test('a side with no width gives the corner to the one beside it, and a context with no paths draws the sides straight', async () => {
+  // 4.4: where one of two sides is zero-width, the other takes up the whole
+  // corner. No left: the bottom's share runs round the bottom left corner
+  // to the left edge, 16 up from the bottom of a box 42 tall
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:40px;height:30px;border:6px solid #0000ff;' +
+      'border-left:0;border-top-color:transparent;border-radius:16px"></div>',
+  );
+  const shares = await sharesOf(node, '#0000ff');
+  assert.strictEqual(shares.length, 1);
+  assert.ok(
+    shares[0].some(([x, y]) => Math.abs(x) < 1e-6 && Math.abs(y - 26) < 1e-6),
+    `to the left edge: ${shares[0].join(' ')}`,
+  );
+  assert.ok(
+    shares[0].every(([x]) => x > -1e-6),
+    'and nothing left of the box',
+  );
+  // the mock backend's context has no path API
+  const straight = await polygonsOf(node, null, false);
+  assert.deepStrictEqual(straight.polygons, []);
+  assert.ok(straight.rects >= 2, `${straight.rects} rectangles`);
+});
+
+test('a ring repainted a piece at a time is the same ring', async () => {
+  // A share is cut to what the paint reaches, edge by edge; cutting the box
+  // it is drawn in instead would put its corners at the edges of the cut
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:380px;height:380px;border:10px solid #0000ff;' +
+      'border-top-color:#ff0000;border-radius:50%"></div>',
+    500,
+  );
+  // around the top left cut, which crosses the ring at 58.6,58.6
+  const damage = { x: 50, y: 50, width: 20, height: 20 };
+  const reach = [50 - 64, 70 + 64];
+  const red = await sharesOf(node, '#ff0000', damage);
+  const blue = await sharesOf(node, '#0000ff', damage);
+  assert.strictEqual(red.length, 1, 'the top, near the paint');
+  assert.strictEqual(blue.length, 1, 'and the rest');
+  for (const p of [...red[0], ...blue[0]]) {
+    const d = Math.hypot(p[0] - 200, p[1] - 200);
+    const onRing = Math.abs(d - 200) < 1e-6 || Math.abs(d - 190) < 1e-6;
+    const onCut =
+      p.some((v) => Math.abs(v - reach[0]) < 1e-6) ||
+      p.some((v) => Math.abs(v - reach[1]) < 1e-6);
+    assert.ok(
+      p.every((v) => v > reach[0] - 1e-6 && v < reach[1] + 1e-6),
+      `${p} near the paint`,
+    );
+    assert.ok(onRing || onCut, `${p} on the ring's edges or the cut`);
+  }
+  // and the blue ends on the diagonal where the ring is painted whole
+  const ends = blue[0].filter(([x, y]) => Math.abs(y - x) < 1e-6);
+  assert.deepStrictEqual(
+    ends.map(([x]) => Math.round(Math.hypot(x - 200, x - 200))).sort(),
+    [190, 200],
+  );
 });
 
 test('outline and its longhands are read', async () => {

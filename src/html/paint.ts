@@ -4489,7 +4489,7 @@ function paintOutline(
  *
  * Where two sides that meet differ in colour — one of them transparent
  * included — the corner is cut on the diagonal from its outer point to its
- * inner one and each side takes its half (CSS Backgrounds 3, 4.3), so a side
+ * inner one and each side takes its half (CSS Backgrounds 3, 4.4), so a side
  * is a trapezoid, and a triangle where the box inside the borders has no
  * width: the CSS triangle a dropdown's caret and a tooltip's arrow are
  * drawn with, which came out as the rectangle around it. Only a solid side
@@ -4606,7 +4606,7 @@ function paintBorders(
 
 /**
  * Whether the corner two sides meet at is cut on its diagonal, each side
- * taking its half (CSS Backgrounds 3, 4.3): where both have a width, they
+ * taking its half (CSS Backgrounds 3, 4.4): where both have a width, they
  * are painted in different colours or only one is painted at all, and each
  * is solid or unpainted. Sides of one colour make the same corner either
  * way, and so does a corner of a single pixel, which is left to the side
@@ -4628,12 +4628,14 @@ function mitred(
 }
 
 /**
- * Fill a convex polygon, its corners as `x, y` pairs, cut to `area`: the
- * part of it near what is painted, which is what keeps a side thousands of
- * pixels long inside X's coordinates. Cut edge by edge rather than by
- * moving its corners in, which would turn a diagonal that crosses the
- * painted area: a slanted divider, `border-left: 100vw solid transparent`,
- * has a corner far outside it.
+ * Fill a polygon, its corners as `x, y` pairs, cut to `area`: the part of
+ * it near what is painted, which is what keeps a side thousands of pixels
+ * long inside X's coordinates. Cut edge by edge rather than by moving its
+ * corners in, which would turn a diagonal that crosses the painted area: a
+ * slanted divider, `border-left: 100vw solid transparent`, has a corner far
+ * outside it. A polygon that is not convex, a rounded ring's share, may
+ * come out of the cut with an edge run there and back along the area's
+ * border, which fills nothing, and that border is outside the paint.
  */
 function fillPolygon(
   ctx: PaintContext,
@@ -4920,13 +4922,14 @@ function edgeRun(
 
 /**
  * A rounded box's border as the ring between its border edge and its
- * padding edge, each rounded, where every side that has a border has one
- * of the same colour and a solid rule: a card's or a button's. Drawn
- * straight, its corners were square over the background's rounded ones,
- * and an accent border down one side did not follow the corner. The inner
- * radius is the outer less the wider border at that corner (CSS
- * Backgrounds 3, 5.2). False where the border is not such a one, and it is
- * drawn a side at a time.
+ * padding edge, each rounded, where every side that has a border has a
+ * solid rule: a card's or a button's. Drawn straight, its corners were
+ * square over the background's rounded ones, and an accent border down one
+ * side did not follow the corner. The inner radius is the outer less the
+ * wider border at that corner (CSS Backgrounds 3, 5.2). Sides of one colour
+ * are one fill; sides of more are each given their share of the ring
+ * (`ringSides`). False where the border is not such a one, and it is drawn
+ * a side at a time.
  */
 function roundedRing(
   ctx: PaintContext,
@@ -4938,7 +4941,7 @@ function roundedRing(
   options: PaintOptions,
 ): boolean {
   const s = box.style;
-  if (!ctx.roundRect || !ctx.fill || !ctx.beginPath) return false;
+  if (!ctx.fill || !ctx.beginPath) return false;
   const corners = cornersOf(s, w, h);
   if (!corners) return false;
   const sides: [number, string, string][] = [
@@ -4948,13 +4951,34 @@ function roundedRing(
     [box.borderLeft, s.borderLeftColor, s.borderLeftStyle],
   ];
   let color: string | null = null;
+  let mixed = false;
   for (const [width, ink, style] of sides) {
     if (!width) continue;
-    if (style !== 'solid' || (color !== null && ink !== color)) return false;
+    if (style !== 'solid') return false;
+    if (color !== null && ink !== color) mixed = true;
     color = ink;
   }
+  if (mixed) return ringSides(ctx, box, x, y, w, h, corners, options);
+  if (!ctx.roundRect) return false;
   if (color === null) return true;
   if (isTransparent(color)) return true;
+  wholeRing(ctx, box, inkColor(color, s.color), x, y, w, h, corners, options);
+  return true;
+}
+
+/** The ring of a rounded border in one colour, cut to what the paint
+ *  reaches (`cutRing`). */
+function wholeRing(
+  ctx: PaintContext,
+  box: Frame,
+  color: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  corners: Corners,
+  options: PaintOptions,
+): void {
   const ring = cutRing(
     options,
     x,
@@ -4967,9 +4991,9 @@ function roundedRing(
     box.borderBottom,
     box.borderLeft,
   );
-  if (!ring) return true;
+  if (!ring) return;
   const { outer, inner } = ring;
-  ctx.fillStyle = inkColor(color, s.color);
+  ctx.fillStyle = color;
   fillRing(
     ctx,
     outer.rect,
@@ -4977,6 +5001,340 @@ function roundedRing(
     inner ? inner.rect : { x: 0, y: 0, width: 0, height: 0 },
     inner ? inner.corners : outer.corners,
   );
+}
+
+/** How far a chord of a flattened corner may stray from its curve, in
+ *  device pixels: a sixteenth, well inside what antialiasing shows. */
+const CURVE_TOLERANCE = 1 / 16;
+
+/** How far past a cut a share reaches under the one drawn over it, in
+ *  device pixels: past the antialiased edge of either. */
+const SEAM = 1.5;
+
+/** Which way a border's sides run at each corner, clockwise from the top
+ *  left: the side that ends at corner i arrives along `ALONG[i]`, and the
+ *  side that begins there leaves along `ALONG[i + 1]`. */
+const ALONG: readonly (readonly [number, number])[] = [
+  [0, -1],
+  [1, 0],
+  [0, 1],
+  [-1, 0],
+];
+
+/**
+ * A rounded border whose solid sides are not all one colour, each side's
+ * share of the ring filled in its own. Where two sides of different colours
+ * meet, the corner is cut on the line from the border box's corner through
+ * the padding box's, as Blink cuts it: CSS Backgrounds 3, 4.4 puts the
+ * transition on the curve at a point that follows the ratio of the two
+ * widths and leaves the rest to the UA. A corner between a side and one
+ * with no width is all the side's (4.4 again), and sides of one colour that
+ * meet are one fill, so nothing is cut where the colour does not change.
+ * Drawn a side at a time, the spinner the web draws — `border-radius: 50%`
+ * with one side of another colour — was a square frame.
+ *
+ * A share is a polygon: the curves flattened to chords no further than
+ * `CURVE_TOLERANCE` from them, so that it is cut to what the paint reaches
+ * as the square corners are (`fillPolygon`) and a large ring repainted a
+ * strip at a time is the same ring. False where the context draws no
+ * lines, and the sides are drawn straight.
+ */
+function ringSides(
+  ctx: PaintContext,
+  box: Frame,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  corners: Corners,
+  options: PaintOptions,
+): boolean {
+  if (!ctx.moveTo || !ctx.lineTo) return false;
+  const area = clampRect(options, x, y, w, h);
+  if (!area) return true;
+  const s = box.style;
+  const widths = [
+    box.borderTop,
+    box.borderRight,
+    box.borderBottom,
+    box.borderLeft,
+  ];
+  const colors = [
+    s.borderTopColor,
+    s.borderRightColor,
+    s.borderBottomColor,
+    s.borderLeftColor,
+  ];
+  // what each side is painted in, null where it paints nothing
+  const inks = widths.map((width, i) =>
+    width > 0 && !isTransparent(colors[i])
+      ? inkColor(colors[i], s.color)
+      : null,
+  );
+  // Corners from the top left, clockwise. Corner i is where side i - 1
+  // ends and side i begins: the top left ends the left and begins the top.
+  // Two sides of one colour are joined across their corner.
+  const joined = [0, 1, 2, 3].map((i) => {
+    const before = (i + 3) % 4;
+    return widths[before] > 0 && widths[i] > 0 && inks[before] === inks[i];
+  });
+  if (!joined.includes(false)) {
+    // one colour after all, `currentColor` and the colour it is
+    if (!ctx.roundRect) return false;
+    if (inks[0] !== null) {
+      wholeRing(ctx, box, inks[0], x, y, w, h, corners, options);
+    }
+    return true;
+  }
+  const [t, r, b, l] = widths;
+  const x1 = x + w;
+  const y1 = y + h;
+  // the padding box, inside the borders
+  const ix0 = x + l;
+  const iy0 = y + t;
+  const ix1 = Math.max(ix0, x1 - r);
+  const iy1 = Math.max(iy0, y1 - b);
+  const inside = insetCorners(corners, t, r, b, l);
+  const hollow = ix1 > ix0 && iy1 > iy0;
+  // each corner's point on the border box and on the padding box, which
+  // way it points, and the quarter ellipses that round the two there
+  const sx = [-1, 1, 1, -1];
+  const sy = [-1, -1, 1, 1];
+  const ox = [x, x1, x1, x];
+  const oy = [y, y, y1, y1];
+  const px = [ix0, ix1, ix1, ix0];
+  const py = [iy0, iy0, iy1, iy1];
+  type Quarter = { cx: number; cy: number; rx: number; ry: number } | null;
+  const quarter = (
+    i: number,
+    cornerX: number,
+    cornerY: number,
+    rx: number,
+    ry: number,
+  ): Quarter =>
+    rx > 0 && ry > 0
+      ? { cx: cornerX - sx[i] * rx, cy: cornerY - sy[i] * ry, rx, ry }
+      : null;
+  const outer: Quarter[] = [];
+  const inner: Quarter[] = [];
+  for (let i = 0; i < 4; i += 1) {
+    outer.push(quarter(i, ox[i], oy[i], corners.x[i], corners.y[i]));
+    inner.push(
+      hollow ? quarter(i, px[i], py[i], inside.x[i], inside.y[i]) : null,
+    );
+  }
+  // A corner's quarter turns clockwise from the angle it starts at: the top
+  // left's from pointing left to pointing up.
+  const QUARTER = Math.PI / 2;
+  const start = (i: number): number => Math.PI + i * QUARTER;
+  /** Where a line from (fromX, fromY) along (dx, dy) first meets a quarter
+   *  ellipse, as the angle it is at; the line starts outside it. */
+  const crossing = (
+    i: number,
+    q: Quarter,
+    fromX: number,
+    fromY: number,
+    dx: number,
+    dy: number,
+  ): number => {
+    const a0 = start(i);
+    if (!q) return a0;
+    const ux = (fromX - q.cx) / q.rx;
+    const uy = (fromY - q.cy) / q.ry;
+    const vx = dx / q.rx;
+    const vy = dy / q.ry;
+    const qa = vx * vx + vy * vy;
+    const qb = ux * vx + uy * vy;
+    const disc = qb * qb - qa * (ux * ux + uy * uy - 1);
+    const k = qa > 0 && disc > 0 ? (-qb - Math.sqrt(disc)) / qa : 0;
+    let a = Math.atan2(uy + k * vy, ux + k * vx);
+    // into the quarter's own turn
+    a += 2 * Math.PI * Math.round((a0 + QUARTER / 2 - a) / (2 * Math.PI));
+    return Math.min(a0 + QUARTER, Math.max(a0, a));
+  };
+  // Where the shares meet at each corner, as angles on its two quarters: on
+  // the cut, or at the end of the corner where one side has no width and
+  // the other has all of it — the side that has none paints nothing.
+  const cutOuter: number[] = [];
+  const cutInner: number[] = [];
+  for (let i = 0; i < 4; i += 1) {
+    const before = widths[(i + 3) % 4] > 0;
+    const after = widths[i] > 0;
+    if (before && after) {
+      const dx = px[i] - ox[i];
+      const dy = py[i] - oy[i];
+      cutOuter.push(crossing(i, outer[i], ox[i], oy[i], dx, dy));
+      cutInner.push(crossing(i, inner[i], px[i], py[i], dx, dy));
+    } else {
+      const end = before ? start(i) + QUARTER : start(i);
+      cutOuter.push(end);
+      cutInner.push(end);
+    }
+  }
+  // The shares, a run of sides of one colour each, from the corner the
+  // colour changes at to the next one it changes at. Those that show what
+  // is under them are drawn first.
+  const runs: { from: number; to: number; ink: string | null }[] = [];
+  for (let i = 0; i < 4; i += 1) {
+    if (joined[i]) continue;
+    let j = (i + 1) % 4;
+    while (joined[j]) j = (j + 1) % 4;
+    runs.push({ from: i, to: j, ink: inks[i] });
+  }
+  const opaque = (ink: string | null): boolean =>
+    ink !== null && alphaOf(ink) === 1;
+  runs.sort((a, b) => Number(opaque(a.ink)) - Number(opaque(b.ink)));
+  /** Whether a share reaches past its cut at a corner, under the one on
+   *  the other side of it: where that one is drawn after it and covers it. */
+  const under = (k: number, corner: number): boolean => {
+    const before = widths[(corner + 3) % 4] > 0;
+    if (!(before && widths[corner] > 0)) return false;
+    const other = runs.findIndex(
+      (run) => run !== runs[k] && (run.from === corner || run.to === corner),
+    );
+    return other > k && opaque(runs[other].ink);
+  };
+  // The straight part of each side's edge, between the quarters at its
+  // ends, on the border edge and the padding edge: as far as a share may
+  // reach along it past a corner.
+  const straight = (q: Quarter[], across: number, down: number): number[] => {
+    const rx = (i: number) => q[i]?.rx ?? 0;
+    const ry = (i: number) => q[i]?.ry ?? 0;
+    return [
+      across - rx(0) - rx(1),
+      down - ry(1) - ry(2),
+      across - rx(2) - rx(3),
+      down - ry(3) - ry(0),
+    ].map((v) => Math.max(0, v));
+  };
+  const outerRoom = straight(outer, w, h);
+  const innerRoom = straight(inner, ix1 - ix0, iy1 - iy0);
+  /**
+   * A share's end moved past the cut at a corner, onto the other share,
+   * along an edge from the angle `a` it is at on a quarter: `forward` the
+   * way the corner turns, onto the side that begins there, or back onto
+   * the side that ends there. Far enough that the line it ends on is
+   * `SEAM` from the cut, whatever angle the two make; as the angle it
+   * reaches on the quarter and how far it goes on along the straight edge
+   * past it, no further than `room`.
+   */
+  const past = (
+    q: Quarter,
+    i: number,
+    a: number,
+    forward: boolean,
+    room: number,
+  ): [number, number] => {
+    const end = forward ? start(i) + QUARTER : start(i);
+    const sign = forward ? 1 : -1;
+    const [ex, ey] = forward ? ALONG[(i + 1) % 4] : ALONG[i];
+    // the way it goes, and the sine of its angle with the cut
+    let tx = forward ? ex : -ex;
+    let ty = forward ? ey : -ey;
+    if (q && a !== end) {
+      const speed = Math.hypot(q.rx * Math.sin(a), q.ry * Math.cos(a));
+      tx = (sign * -q.rx * Math.sin(a)) / speed;
+      ty = (sign * q.ry * Math.cos(a)) / speed;
+    }
+    const dx = px[i] - ox[i];
+    const dy = py[i] - oy[i];
+    const sine = Math.abs(tx * dy - ty * dx) / Math.hypot(dx, dy);
+    let left = SEAM / Math.max(0.25, sine);
+    let at = a;
+    for (let n = 0; q && n < 8 && left > 0 && at !== end; n += 1) {
+      const speed = Math.hypot(q.rx * Math.sin(at), q.ry * Math.cos(at));
+      const turn = Math.abs(end - at);
+      if (left >= turn * speed) {
+        left -= turn * speed;
+        at = end;
+      } else {
+        at += (sign * left) / speed;
+        left = 0;
+      }
+    }
+    return [at, at === end ? Math.min(left, room) : 0];
+  };
+  const points: number[] = [];
+  /** The point at an angle on a quarter, or the corner where it is square,
+   *  and `over` on past the quarter's end along the edge `along`. */
+  const point = (
+    q: Quarter,
+    a: number,
+    cx: number,
+    cy: number,
+    over = 0,
+    along: readonly number[] = ALONG[0],
+  ): void => {
+    const x = (q ? q.cx + q.rx * Math.cos(a) : cx) + over * along[0];
+    const y = (q ? q.cy + q.ry * Math.sin(a) : cy) + over * along[1];
+    const n = points.length;
+    if (n && points[n - 2] === x && points[n - 1] === y) return;
+    points.push(x, y);
+  };
+  /** A quarter's curve from one angle to another, as chords, after the
+   *  point it starts at. */
+  const sweep = (q: Quarter, from: number, to: number): void => {
+    if (!q || from === to) return;
+    const radius = Math.max(q.rx, q.ry);
+    const step =
+      radius > CURVE_TOLERANCE
+        ? 2 * Math.acos(1 - CURVE_TOLERANCE / radius)
+        : QUARTER;
+    const n = Math.min(64, Math.ceil(Math.abs(to - from) / step));
+    for (let k = 1; k <= n; k += 1) {
+      point(q, from + ((to - from) * k) / n, 0, 0);
+    }
+  };
+  for (let k = 0; k < runs.length; k += 1) {
+    const { from: i, to: j, ink } = runs[k];
+    if (ink === null) continue;
+    // Where the share starts and ends on each edge. Two antialiased fills
+    // that meet on a line each cover half of the pixels along it, and what
+    // is under the border shows through between them. So a share reaches
+    // on under the one drawn after it and covering it, and that one's
+    // edge is the cut, over it — as Blink overdraws a corner, and as the
+    // square corners are drawn.
+    let [so, soOver] = [cutOuter[i], 0];
+    let [si, siOver] = [cutInner[i], 0];
+    let [eo, eoOver] = [cutOuter[j], 0];
+    let [ei, eiOver] = [cutInner[j], 0];
+    const back = (i + 3) % 4;
+    if (under(k, i)) {
+      [so, soOver] = past(outer[i], i, so, false, outerRoom[back]);
+      [si, siOver] = past(inner[i], i, si, false, innerRoom[back]);
+    }
+    if (under(k, j)) {
+      [eo, eoOver] = past(outer[j], j, eo, true, outerRoom[j]);
+      [ei, eiOver] = past(inner[j], j, ei, true, innerRoom[j]);
+    }
+    const onward = ALONG[(j + 1) % 4];
+    const backward = [-ALONG[i][0], -ALONG[i][1]];
+    points.length = 0;
+    // along the border edge, clockwise
+    point(outer[i], so, ox[i], oy[i], soOver, backward);
+    point(outer[i], so, ox[i], oy[i]);
+    sweep(outer[i], so, start(i) + QUARTER);
+    for (let c = (i + 1) % 4; ; c = (c + 1) % 4) {
+      point(outer[c], start(c), ox[c], oy[c]);
+      if (c === j) break;
+      sweep(outer[c], start(c), start(c) + QUARTER);
+    }
+    sweep(outer[j], start(j), eo);
+    point(outer[j], eo, ox[j], oy[j], eoOver, onward);
+    // and back along the padding edge
+    point(inner[j], ei, px[j], py[j], eiOver, onward);
+    point(inner[j], ei, px[j], py[j]);
+    sweep(inner[j], ei, start(j));
+    for (let c = (j + 3) % 4; ; c = (c + 3) % 4) {
+      point(inner[c], start(c) + QUARTER, px[c], py[c]);
+      if (c === i) break;
+      sweep(inner[c], start(c) + QUARTER, start(c));
+    }
+    sweep(inner[i], start(i) + QUARTER, si);
+    point(inner[i], si, px[i], py[i], siOver, backward);
+    ctx.fillStyle = ink;
+    fillPolygon(ctx, points, area);
+  }
   return true;
 }
 

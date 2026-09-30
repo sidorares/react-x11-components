@@ -29,12 +29,13 @@ import {
   findById,
   h,
   metric,
+  pixelsIn,
   render,
   render2x,
   renderWithBytes,
   view,
 } from './harness.js';
-import type { LaidBox } from './harness.js';
+import type { LaidBox, Region } from './harness.js';
 
 afterEach(cleanup);
 
@@ -372,31 +373,6 @@ metric(
     });
   },
 );
-
-interface Region {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-/** A window region's pixels, straight RGBA. */
-function pixelsIn(ctx: unknown, region: Region): Promise<Uint8ClampedArray> {
-  const { x, y, width, height } = region;
-  return new Promise<Uint8ClampedArray>((ok, fail) =>
-    (
-      ctx as {
-        getImageData(
-          x: number,
-          y: number,
-          w: number,
-          h: number,
-          cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
-        ): void;
-      }
-    ).getImageData(x, y, width, height, (e, d) => (e ? fail(e) : ok(d.data))),
-  );
-}
 
 /** The rectangle around the pixels of a window region that are darker than
  *  `below` in every channel. */
