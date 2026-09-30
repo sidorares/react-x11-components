@@ -753,6 +753,53 @@ test("a grid item's percentages are of its area's width, not of its own", async 
   assert.deepStrictEqual(across('k1'), [30, 210], 'the padding kept');
 });
 
+test("a grid item's percentage width is auto for what it makes its columns", async () => {
+  // CSS Sizing 3, 5.2.1: a percentage `width` or `max-width` of an area the
+  // columns are still being sized for is cyclic, and an item that is not
+  // replaced contributes to them as though it were `auto`. The item was
+  // measured at the width its percentage made of the probe's, nothing, so
+  // an `auto` column's least size was none and `width: 100%` was as wide
+  // as whatever else the column came to. Each number here is Chrome's.
+  const { node } = await render(
+    '<style>body{margin:0} .w{width:100px;height:10px}' +
+      '.g{display:grid;width:300px}' +
+      '.t{display:grid;width:10px;grid-template-columns:3px auto 4px;' +
+      'place-items:start} .t>div{grid-column:2}</style>' +
+      // WPT grid-item-percentage-sizes-001: the column is as wide as the
+      // item's content, and 100% of that is the item; a least width that
+      // is a percentage is of nothing, and leaves the column the room the
+      // grid has left
+      '<div class="t"><div id="a" style="width:100%"><div class="w"></div>' +
+      '</div></div><div class="t"><div id="b" style="width:100%;' +
+      'max-width:100%"><div class="w"></div></div></div>' +
+      '<div class="t"><div id="c" style="width:100%;min-width:100%">' +
+      '<div class="w"></div></div></div>' +
+      // an `fr` column's least is its item's content too, and so is a
+      // `min-content` column and a `fit-content()` one
+      '<div class="g" style="grid-template-columns:1fr">' +
+      '<div id="d" style="width:100%"><div class="w" style="width:500px">' +
+      '</div></div></div>' +
+      '<div class="g" style="grid-template-columns:1fr 1fr">' +
+      '<div id="e" style="width:100%"><div class="w" style="width:200px">' +
+      '</div></div><div id="f"></div></div>' +
+      '<div class="g" style="grid-template-columns:min-content 1fr">' +
+      '<div id="g" style="width:50%"><div class="w"></div></div></div>' +
+      '<div class="g" style="grid-template-columns:fit-content(50px) 1fr">' +
+      '<div id="h" style="width:100%"><div class="w"></div></div></div>',
+    700,
+  );
+  const el = view(node);
+  const across = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  assert.deepStrictEqual(across('a'), [3, 100], 'its content, not 3');
+  assert.deepStrictEqual(across('b'), [3, 100], 'nor its greatest width');
+  assert.deepStrictEqual(across('c'), [3, 3], 'the room the grid left');
+  assert.deepStrictEqual(across('d'), [0, 500], 'wider than the grid');
+  assert.deepStrictEqual(across('e'), [0, 200]);
+  assert.deepStrictEqual(across('f'), [200, 100], 'the rest');
+  assert.deepStrictEqual(across('g'), [0, 50], 'half its content');
+  assert.deepStrictEqual(across('h'), [0, 100], 'past fit-content(50px)');
+});
+
 metric(
   "an inline grid sits on its first item's baseline, its bottom edge where it has none",
   async () => {

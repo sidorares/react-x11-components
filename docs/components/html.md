@@ -592,7 +592,10 @@ width, whatever width the item comes to in it, so `width: 50%; max-width:
 80%` is half its column. While the columns are being sized there is no
 area yet, and a percentage in a margin or a padding is of nothing — a
 column is as wide as what is in its item, and the margins and the padding
-come out of that. An item's percentage height is of its area, and a stretched item's
+come out of that. A percentage `width` or `max-width` is `auto` and `none`
+then, but an image's, which is of nothing: an `auto`, `fr` or
+`min-content` column is at least as wide as its item's content, and the item
+`width: 100%` is as wide as the column that makes. An item's percentage height is of its area, and a stretched item's
 height is one what is in it takes percentages of — and one an item that is
 a flex box or a grid lays its own items out in, so a grid of cards, each a
 column ending in a `margin-top: auto` button, has every button at the

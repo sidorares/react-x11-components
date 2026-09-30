@@ -207,6 +207,11 @@ export function layoutGrid(
       const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
       widest = narrowest = Math.max(style.width + extra, box.horizontalExtra);
     } else {
+      // A percentage is of an area the columns are still being sized for,
+      // and what it comes to depends on what the item makes them: it is
+      // `auto` for that (CSS Sizing 3, 5.2.1), and the item's content says
+      // how wide it is. Measured at the width a percentage made of the
+      // probe's, an item `width: 100%` made its `auto` column nothing.
       const fresh = box.intrinsicMaxContent < 0;
       widest = maxContentOf(box, ctx);
       if (box.intrinsicMinContent < 0) {
@@ -214,8 +219,7 @@ export function layoutGrid(
         // which is the max-content one only if it was made just now
         const exact =
           fresh && ctx.fonts ? exactMinContent(box, ctx.fonts) : null;
-        box.intrinsicMinContent =
-          exact ?? measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE);
+        box.intrinsicMinContent = exact ?? minContentOf(box, ctx);
       }
       narrowest = box.intrinsicMinContent;
     }
@@ -653,12 +657,35 @@ function extent(
 }
 
 /** An item's max-content width, its border box's: measured once in the
- *  box's life, as a table cell's is (`Box.intrinsicMaxContent`). */
+ *  box's life, as a table cell's is (`Box.intrinsicMaxContent`). Its
+ *  content's, whatever width it has of its own (`minContentOf`). */
 function maxContentOf(box: Box, ctx: LayoutContext): number {
   if (box.intrinsicMaxContent < 0) {
-    box.intrinsicMaxContent = measureIntrinsicWidth(box, ctx, Infinity);
+    box.intrinsicMaxContent = measureIntrinsicWidth(
+      box,
+      ctx,
+      Infinity,
+      box.kind !== 'replaced',
+    );
   }
   return box.intrinsicMaxContent;
+}
+
+/**
+ * An item's min-content width, its border box's. What it is measured for is
+ * what it contributes to its columns, and the width a percentage makes of
+ * them is not known then: a box that is not replaced is as wide as its
+ * content for that, whatever its own `width` says, and a replaced element
+ * takes its percentage of nothing (CSS Sizing 3, 5.2.1). A width that is a
+ * length is weighed apart (`measure` in `layoutGrid`).
+ */
+function minContentOf(box: Box, ctx: LayoutContext): number {
+  return measureIntrinsicWidth(
+    box,
+    ctx,
+    MIN_CONTENT_PROBE,
+    box.kind !== 'replaced',
+  );
 }
 
 /**
@@ -705,11 +732,7 @@ function layoutItem(
       probed = true;
     }
     if (child.intrinsicMinContent < 0) {
-      child.intrinsicMinContent = measureIntrinsicWidth(
-        child,
-        ctx,
-        MIN_CONTENT_PROBE,
-      );
+      child.intrinsicMinContent = minContentOf(child, ctx);
       probed = true;
     }
     if (probed) resolveEdges(child, area);
