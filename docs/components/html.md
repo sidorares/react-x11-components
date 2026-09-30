@@ -1233,7 +1233,9 @@ In the pane an `<Html>` is given the page's URL as `baseUrl`, and
 [`examples/browser/`](../../examples/browser/) is the host a document's
 requests go to — the page streamed in as it arrives, then every stylesheet,
 image and `@font-face` font through `onResource`, a few requests a host at a
-time. A tab shows the page's `<title>` and its icon; Ctrl+T (⌘T on macOS)
+time, and none of a secure page's stylesheets or fonts over an insecure
+connection, which a browser blocks as mixed content (its images are asked
+for over a secure one instead). A tab shows the page's `<title>` and its icon; Ctrl+T (⌘T on macOS)
 opens one. It is where the component's policy — nothing fetched, nothing
 run — meets an application's: the browser fetches what a page asks for and
 runs none of its scripts.
