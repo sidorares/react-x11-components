@@ -75,7 +75,7 @@ import type {
   ReplacedKind,
   TextLayoutLike,
 } from './layout/boxes.js';
-import { layoutDocument } from './layout/block.js';
+import { layoutDocument, retranslate, transformed } from './layout/block.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { shapingSafe } from './layout/shaping.js';
 import { SurfaceCache } from './surfaces.js';
@@ -92,15 +92,18 @@ import {
 import { lineBands as bandsFor } from '../richtext/runs.js';
 import {
   clipsOverflow,
+  computePaintBounds,
   containingBlockOf,
   FIXED_BOXES,
   fixedToViewport,
   forgetDecoratedAncestors,
   hasRect,
+  hoistNegative,
   holds,
   holdsAbsolute,
   paintDocument,
   queryChildIndex,
+  stackLayers,
 } from './paint.js';
 import type { PaintContext } from './paint.js';
 import { controlRectsOf, measureControl } from './controls.js';
@@ -1375,9 +1378,8 @@ export class HtmlViewNode extends Node {
 
   /** The hovered chain moved: restyle where it did, or the document. */
   private _restyleHover(was: readonly Element[], now: readonly Element[]) {
-    const done = this._hoverInPlace(was, now);
-    if (done === 'painted') this.invalidate(false, this, 'props');
-    else if (done === false) this._invalidate(Stale.Boxes);
+    // a restyle in place names what it repainted (`_hoverInPlace`)
+    if (this._hoverInPlace(was, now) === false) this._invalidate(Stale.Boxes);
   }
 
   /**
@@ -1464,6 +1466,11 @@ export class HtmlViewNode extends Node {
     const fresh = new Map<Element, ComputedStyle>();
     const changed = new Map<Element, ComputedStyle>();
     let refused = false;
+    // what changed beyond ink (`hoverChange`): how far some box's ink
+    // reaches, the order its layer paints in, where one is
+    let reaches = false;
+    let reorders = false;
+    const moving = new Set<Element>();
     const styleOf = (el: Element): ComputedStyle | null => {
       const kept = tree.styles.get(el);
       if (!kept) return null;
@@ -1480,9 +1487,14 @@ export class HtmlViewNode extends Node {
       }
       const style = cascade.styleFor(el, parentStyle, kept.inFlex);
       fresh.set(el, style);
-      const diff = inkOnly(kept.style, style);
+      const diff = hoverChange(kept.style, style);
       if (diff === false) refused = true;
-      else if (diff) changed.set(el, style);
+      else if (diff) {
+        changed.set(el, style);
+        if (diff.reach) reaches = true;
+        if (diff.order) reorders = true;
+        if (diff.move) moving.add(el);
+      }
       return style;
     };
     for (const el of reach) {
@@ -1511,9 +1523,12 @@ export class HtmlViewNode extends Node {
       if (!style) continue;
       const kept = tree.styles.get(owner)!;
       // an anonymous box, a pseudo-element, a marker, a control: a style
-      // derived from the element's, or drawn from it somewhere else
+      // derived from the element's, or drawn from it somewhere else — a
+      // widget mounted beside the document takes its look from it. An
+      // image, a drawing or a rule is drawn here, from its box, like any.
       if (!box.el || box.style !== kept.style) return false;
-      if (box.marker || box.replaced !== 'none') return false;
+      if (box.marker || WIDGETS.has(box.replaced)) return false;
+      if (moving.has(owner) && !movable(box, kept.style, style)) return false;
       restyled.push([box, style]);
       if (box.kind === 'inline') {
         const decoration = inlineDecoration(fonts, box, style);
@@ -1545,8 +1560,20 @@ export class HtmlViewNode extends Node {
       }
     }
 
+    // what each box drew before, to be repainted with what it draws after
+    const inks: Rect[] = [];
+    for (const [box] of restyled) {
+      const ink = inkOf(box);
+      if (ink) inks.push(ink);
+    }
+
     // and only now, all of it
-    for (const [box, style] of restyled) box.style = style;
+    const moved: [Box, ComputedStyle][] = [];
+    for (const [box, style] of restyled) {
+      const was = box.style;
+      box.style = style;
+      if (moving.has(box.el!)) moved.push([box, was]);
+    }
     for (const [box, decoration] of redecorated) {
       // what is inside it keeps which boxes around it paint, and this is
       // one more or one fewer of them
@@ -1562,7 +1589,65 @@ export class HtmlViewNode extends Node {
     for (const [el, style] of changed) {
       tree.styles.set(el, { style, inFlex: tree.styles.get(el)!.inFlex });
     }
+    // A box that moved moves what is in it, as layout moved it the first
+    // time (`applyRelativeOffsets`), and a later layout moves it the same
+    // way; where it reached the document's end, before or after, the
+    // document's height may have changed with it, which only a layout says.
+    let relayout = false;
+    for (const [box, was] of moved) {
+      const before = box.boundsY + box.boundsHeight;
+      retranslate(box, was);
+      tree.relative = true;
+      if (before >= this._documentHeight) relayout = true;
+    }
+    // how far the boxes' ink reaches, and the order their layers paint in,
+    // as layout leaves them (`layoutDocument`)
+    if (reaches || reorders || moved.length) {
+      computePaintBounds(tree.root, tree.movedInline);
+      if (tree.negative) hoistNegative(tree.root);
+      stackLayers(tree.root);
+    }
+    for (const [box] of moved) {
+      if (box.boundsY + box.boundsHeight >= this._documentHeight) {
+        relayout = true;
+      }
+    }
+    if (moved.length) this._reportControls();
+    if (relayout) {
+      this._invalidate(Stale.Layout);
+      return 'painted';
+    }
+    for (const [box] of restyled) {
+      const ink = inkOf(box);
+      if (ink) inks.push(ink);
+    }
+    this._repaintInk(inks);
     return 'painted';
+  }
+
+  /**
+   * Repaint the document where `inks` are, in its own coordinates: the ink
+   * of the boxes a hover restyled, before and after. Past a handful of rects
+   * the damage is one around them all, which is what core would make of
+   * them anyway.
+   */
+  private _repaintInk(inks: Rect[]): void {
+    if (!inks.length) return;
+    const x = this.abs.x;
+    const y = this.abs.y;
+    const place = (r: Rect): Rect => ({
+      x: Math.floor(x + r.x),
+      y: Math.floor(y + r.y),
+      width: Math.ceil(r.width) + 1,
+      height: Math.ceil(r.height) + 1,
+    });
+    if (inks.length > 6) {
+      let all = inks[0];
+      for (const r of inks) all = unionRect(all, r);
+      this.invalidate(false, place(all), 'props');
+      return;
+    }
+    for (const r of inks) this.invalidate(false, place(r), 'props');
   }
 
   /** The document, for an application that wants to read or change it. */
@@ -2507,16 +2592,116 @@ const FACE_FIELDS = [
 /** Whether two styles differ in ink alone: true where they do, null where
  *  they do not differ, false where something else does. Custom properties
  *  are read through the properties that use them. */
-function inkOnly(was: ComputedStyle, now: ComputedStyle): boolean | null {
+/** What a restyle in place changed beyond ink: how far a box's ink
+ *  reaches, the order its layer paints in, or where it is. */
+interface HoverChange {
+  reach: boolean;
+  order: boolean;
+  move: boolean;
+}
+
+/** The replaced boxes that are controls (`BoxTree.controls`, `controls.ts`):
+ *  a widget mounted beside the document, or a button whose press it reports. */
+const WIDGETS = new Set<ReplacedKind>([
+  'input',
+  'textarea',
+  'select',
+  'button',
+  'checkbox',
+  'radio',
+]);
+
+/** What only moves how far a box's ink reaches: a shadow, and an outline's
+ *  size, which take no room (CSS Backgrounds 3, 7.1; CSS UI 4, 3). */
+const INK_REACH = new Set([
+  'boxShadow',
+  'outlineStyle',
+  'outlineWidth',
+  'outlineOffset',
+]);
+
+/**
+ * How two styles of one element differ, for a restyle in place: null where
+ * they do not, a `HoverChange` where every difference is ink, how far ink
+ * reaches, a `z-index` that stays a stacking context's, or a translation —
+ * none of which moves anything but the box and what it holds (CSS
+ * Transforms 1: a transform does not affect layout) — and false where
+ * anything else differs.
+ */
+function hoverChange(
+  was: ComputedStyle,
+  now: ComputedStyle,
+): HoverChange | null | false {
   const a = was as unknown as Record<string, unknown>;
   const b = now as unknown as Record<string, unknown>;
-  let ink = false;
+  let change: HoverChange | null = null;
   for (const key in b) {
     if (key === 'custom' || sameValue(a[key], b[key])) continue;
-    if (!PAINT_ONLY.has(key)) return false;
-    ink = true;
+    change ??= { reach: false, order: false, move: false };
+    if (PAINT_ONLY.has(key)) continue;
+    if (INK_REACH.has(key)) {
+      change.reach = true;
+      continue;
+    }
+    if (key === 'zIndex') {
+      // one stacking context either way, with nothing hoisted below the
+      // flow (`hoistNegative`): only its place among its layers changes
+      const z0 = a[key];
+      const z1 = b[key];
+      if (typeof z0 !== 'number' || typeof z1 !== 'number') return false;
+      if (z0 < 0 || z1 < 0) return false;
+      change.order = true;
+      continue;
+    }
+    if (key === 'transformTranslate' || key === 'translate') {
+      change.move = true;
+      continue;
+    }
+    return false;
   }
-  return ink ? true : null;
+  return change;
+}
+
+/**
+ * Whether a box can take a new translation where it is: a box of its own
+ * rather than an inline one, whose text is what moves; and the same
+ * containing block and stacking context for what is in it, which a
+ * transform makes a box (CSS Transforms 1, 2) — so either transformed
+ * before and after, or already positioned with a `z-index`, and holding
+ * nothing fixed, which only a transform takes in.
+ */
+function movable(box: Box, was: ComputedStyle, now: ComputedStyle): boolean {
+  if (box.kind === 'inline') return false;
+  if (transformed(was) === transformed(now)) return true;
+  if (was.position === 'static') return false;
+  if (typeof was.zIndex !== 'number' || typeof now.zIndex !== 'number') {
+    return false;
+  }
+  const stack: Box[] = [...box.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at.style.position === 'fixed') return false;
+    for (const child of at.children) stack.push(child);
+  }
+  return true;
+}
+
+/** Where a box draws, in document coordinates: its ink bounds, or for an
+ *  inline box or a run of text, which are drawn on their block's lines and
+ *  have none of their own, the block's. */
+function inkOf(box: Box): Rect | null {
+  let at: Box | null = box;
+  while (at && (at.kind === 'text' || at.kind === 'break' || !hasRect(at))) {
+    at = at.parent;
+  }
+  if (!at || at.boundsY === Infinity) return null;
+  if (!(at.boundsWidth > 0 && at.boundsHeight > 0)) return null;
+  return {
+    x: at.boundsX,
+    y: at.boundsY,
+    width: at.boundsWidth,
+    height: at.boundsHeight,
+  };
 }
 
 /** Structural equality for a computed value: a number, a string, or the
