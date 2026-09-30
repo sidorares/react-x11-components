@@ -1,5 +1,5 @@
 {
-  "lastPassed": 56,
+  "lastPassed": 67,
   "exceptions": {
     "017": "ntk 8.15.0 fits a line to its width plus a 64th without rounding each element's text up to a 64th first, as Blink does, and fits a line Chrome breaks; ntk 8.16.0's fit: 'items' mends it, awaiting its publish",
     "024": "ntk 8.15.0's line fit, as 017",
