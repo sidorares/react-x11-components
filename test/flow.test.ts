@@ -8,6 +8,7 @@
 // on the default `'xserver'` backend, because `fireEvent` injects through
 // the X server — still headless, still no `$DISPLAY`.
 import { test, afterEach } from 'node:test';
+import type { Mock } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
 
@@ -74,7 +75,7 @@ import {
   pointAtFraction,
 } from '../src/flow/paths.js';
 import { flowClock } from '../src/flow/node.js';
-import { holdClock } from './held-clock.js';
+import { FRAME_MS, holdClock } from './held-clock.js';
 
 const h = React.createElement;
 
@@ -4927,12 +4928,20 @@ test('a pan that brings the pane past `EDGE_BATCH` edges repaints it whole, and 
   assert.strictEqual(pixelsApart(part, await pixelsOf(ctx, leg)), 0);
 });
 
-test('2D dashes hold still through a pan whose frames come slowly, and keep their speed when ticks are cheap', async () => {
+test('2D dashes hold still through a pan whose frames come slowly, and keep their speed when ticks are cheap', async (t) => {
   // A tick repaints the box the dashes are in. Over a dense graph in a
   // large window that was 75 ms on XQuartz against a 60 ms timer, and the
   // pan's steps — each asked for by the frame before — came slower than
   // the 120 ms the dashes waited: ticks and pan steps took turns, 2 frames
   // a second. The wait follows what frames cost now.
+  //
+  // On the pane's clock, held from the mount: a frame of it is 16 ms, and
+  // the dashes' timer comes round every fourth. On the real one this slept
+  // a step of the pan away, and a runner that took twice the sleep over
+  // one had held the view still for the 300 ms the dashes wait — so they
+  // marched in the middle of the pan, as they should have.
+  const clock = holdClock(t, flowClock);
+  const ROUND = 4; // frames
   await renderX11(
     h(FLOW_ELEMENT, {
       nodes: nodes(),
@@ -4943,35 +4952,59 @@ test('2D dashes hold still through a pan whose frames come slowly, and keep thei
   await act();
   const node = pane() as unknown as {
     _dashPhase: number;
-    _tickCost: number;
     setViewport(v: object): void;
   };
-  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  await wait(200);
-  // frames that cost 150 ms, and a pan stepping at that pace
-  node._tickCost = 150;
+  // What a frame costs is held too: a paint works it out from the server's
+  // answer to the frame before it, and that is the wall's.
+  let cost = 0;
+  Object.defineProperty(node, '_tickCost', { get: () => cost, set() {} });
+  // The timer's rounds, whether the dashes marched in one or not: each
+  // arms the next.
+  const rounds = (): number =>
+    (flowClock.arm as Mock<typeof flowClock.arm>).mock.callCount();
+  const frames = async (count: number): Promise<void> => {
+    for (let i = 0; i < count; i++) await clock.frame();
+  };
+  /** Ticks' worth of travel since `from` — 1.4 px each, at zoom 1. */
+  const marched = (from: number): number =>
+    Math.round(((node._dashPhase - from) / 1.4) * 1e6) / 1e6;
+
+  await frames(2 * ROUND);
+  assert.ok(node._dashPhase > 0, 'marching before the pan');
+  // frames that cost 150 ms, and a pan stepping at that pace: ten frames of
+  // the clock to a step, under the two frames' cost the dashes wait out
+  cost = 150;
+  const STEP = 10; // frames
   let phase = node._dashPhase;
-  for (let step = 1; step <= 6; step++) {
+  const before = rounds();
+  for (let step = 1; step <= 4; step++) {
     await act(() => node.setViewport({ x: step * 4, y: 0, zoom: 1 }));
-    node._tickCost = 150;
-    await wait(150);
+    await frames(STEP);
   }
-  assert.strictEqual(node._dashPhase, phase, 'still while the view moves');
-  // held still, they march again
-  await wait(700);
-  assert.ok(node._dashPhase > phase, 'and march once it rests');
-  // cheap frames: a tick every 60 ms, at the speed they always had
-  node._tickCost = 0;
-  phase = node._dashPhase;
-  const started = Date.now();
-  await wait(600);
-  node._tickCost = 0;
-  const ticks = (node._dashPhase - phase) / 1.4;
-  const expected = (Date.now() - started) / 60;
-  assert.ok(
-    ticks >= expected * 0.6,
-    `${ticks.toFixed(1)} ticks' worth in ${expected.toFixed(1)} tick times`,
+  assert.strictEqual(
+    rounds() - before,
+    (4 * STEP) / ROUND,
+    'the timer came round all through it',
   );
+  assert.strictEqual(marched(phase), 0, 'still while the view moves');
+  // held still, they march again: on the timer's first round 300 ms after
+  // the last step, and not before it
+  let rested = STEP;
+  while (marched(phase) === 0 && rested < 100) {
+    await clock.frame();
+    rested++;
+  }
+  const still = rested * FRAME_MS;
+  assert.ok(
+    still >= 300 && still < 300 + ROUND * FRAME_MS,
+    `and march once it has rested 300 ms: ${still}`,
+  );
+  // cheap frames: a tick every round of the timer, at the speed they
+  // always had
+  cost = 0;
+  phase = node._dashPhase;
+  await frames(5 * ROUND);
+  assert.strictEqual(marched(phase), 5, 'a tick a round, five rounds');
 });
 
 test('a 2D pan blits the whole pane and pins the furniture, and draws what a repaint draws', async () => {
