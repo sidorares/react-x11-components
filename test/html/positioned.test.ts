@@ -10,6 +10,7 @@ import {
   linesOf,
   metric,
   render,
+  render2x,
   view,
 } from './harness.js';
 import type { LaidBox, PaintOp } from './harness.js';
@@ -282,6 +283,234 @@ metric('clip shows the part of an absolute box it names', async () => {
     'an empty clip shows nothing',
   );
 });
+
+test('clip-path is read: a rectangle in a box, a box alone, and a shape not drawn', async () => {
+  // CSS Masking 1, 5.1: a basic shape, a `<geometry-box>`, or both in
+  // either order. The rectangles of CSS Shapes 1, 3.1 are read as they are
+  // written, a percentage among their lengths having no pixels yet; a
+  // shape that is no rectangle is a value, which sets the property, and
+  // clips nothing; and anything else leaves the value before it standing.
+  const { node } = await render(
+    '<style>p { clip-path: inset(1px) } #kept { clip-path: inset(1px 2px 3px 4px 5px) }' +
+      ' #none { clip-path: none } #circle { -webkit-clip-path: circle(40%) }</style>' +
+      '<p id="one" style="clip-path:inset(50%)"></p>' +
+      '<p id="two" style="clip-path:inset(1px -2px)"></p>' +
+      '<p id="round" style="clip-path:inset(0 round 4px 8px / 50%) padding-box"></p>' +
+      '<p id="rect" style="clip-path:content-box rect(auto 10px 50% 0)"></p>' +
+      '<p id="xywh" style="clip-path:xywh(1px 2px 30% 4px round 5px)"></p>' +
+      '<p id="box" style="clip-path:fill-box"></p>' +
+      '<p id="kept"></p><p id="none"></p><p id="circle"></p>' +
+      '<p id="auto" style="clip-path:inset(auto)"></p>' +
+      '<p id="wide" style="clip-path:xywh(0 0 -1px 0)"></p>' +
+      '<p id="twice" style="clip-path:border-box inset(0) padding-box"></p>',
+  );
+  const el = view(node);
+  const path = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { clipPath: unknown } }).style
+      .clipPath;
+  const square = { radii: null, radiiY: null };
+  assert.deepStrictEqual(path('one'), {
+    box: 'border-box',
+    shape: 'inset',
+    lengths: [{ pct: 50 }, { pct: 50 }, { pct: 50 }, { pct: 50 }],
+    ...square,
+  });
+  assert.deepStrictEqual(
+    path('two'),
+    { box: 'border-box', shape: 'inset', lengths: [1, -2, 1, -2], ...square },
+    'one to four insets, as a margin is written, and a negative one',
+  );
+  assert.deepStrictEqual(
+    path('round'),
+    {
+      box: 'padding-box',
+      shape: 'inset',
+      lengths: [0, 0, 0, 0],
+      radii: [4, 8, 4, 8],
+      radiiY: [{ pct: 50 }, { pct: 50 }, { pct: 50 }, { pct: 50 }],
+    },
+    'round takes what border-radius takes',
+  );
+  assert.deepStrictEqual(path('rect'), {
+    box: 'content-box',
+    shape: 'rect',
+    lengths: ['auto', 10, { pct: 50 }, 0],
+    ...square,
+  });
+  assert.deepStrictEqual(path('xywh'), {
+    box: 'border-box',
+    shape: 'xywh',
+    lengths: [1, 2, { pct: 30 }, 4],
+    radii: [5, 5, 5, 5],
+    radiiY: null,
+  });
+  assert.deepStrictEqual(
+    path('box'),
+    { box: 'content-box', shape: null, lengths: [0, 0, 0, 0], ...square },
+    'a box alone, an SVG one the CSS box it stands for: the box is the shape',
+  );
+  const inherited = {
+    box: 'border-box',
+    shape: 'inset',
+    lengths: [1, 1, 1, 1],
+    ...square,
+  };
+  assert.deepStrictEqual(path('kept'), inherited, 'five insets are no value');
+  assert.deepStrictEqual(path('auto'), inherited, 'nor is an auto inset');
+  assert.deepStrictEqual(path('wide'), inherited, 'nor a negative width');
+  assert.deepStrictEqual(path('twice'), inherited, 'nor two boxes');
+  assert.strictEqual(path('none'), null);
+  assert.strictEqual(path('circle'), null, 'a circle is a value, not drawn');
+});
+
+metric(
+  'clip-path shows the part of a box its shape names, and of all the box holds',
+  async () => {
+    // CSS Masking 1, 5.1: the element shows through the shape, and so does
+    // everything in it — an absolute box whose containing block is outside
+    // too, which a box that clips its overflow lets out. It was not read:
+    // Tailwind 4's `.sr-only`, `clip-path: inset(50%)` on a pixel square
+    // that also clips its overflow, showed the one pixel, and a box hidden
+    // by the path alone was drawn whole.
+    const { node } = await render(
+      '<style>body{margin:0}div{width:100px;height:60px}</style>' +
+        '<div id="a" style="background:#ff0000;' +
+        'clip-path:inset(10px 20px 30px 40px)">' +
+        '<div style="position:absolute;top:0;left:0;width:300px;' +
+        'height:300px;background:#0000ff"></div></div>' +
+        '<div id="b" style="padding:10px;border:5px solid;' +
+        'background:#00ff00;clip-path:inset(10% 25% round 8px) content-box">' +
+        '</div>' +
+        '<div id="c" style="background:#ffff00;' +
+        'clip-path:rect(5px 50px auto 10px)"></div>' +
+        '<div id="d" style="background:#00ffff;' +
+        'clip-path:xywh(10px 50% 30% 20px)"></div>' +
+        '<div id="e" style="border-radius:20px;padding:5px;' +
+        'background:#ff00ff;clip-path:padding-box"></div>' +
+        '<div style="background:#800000;clip-path:inset(50%)">hidden' +
+        '<div style="position:fixed;top:0;left:0;background:#808000"></div>' +
+        '</div>' +
+        '<div style="background:#008000;clip-path:inset(75% 0)"></div>' +
+        '<div style="background:#000080;clip-path:rect(40px 10px 20px 30px)">' +
+        '</div>',
+    );
+    const el = view(node);
+    const ops: PaintOp[] = [];
+    const fills = await fillsOf(el, ops);
+    const clip = (color: string, nth = 0) =>
+      clipsAround(ops, color)[nth].map(
+        (c) => c.op === 'clip' && [c.x, c.y, c.w, c.h, c.radii],
+      );
+    const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map((id) =>
+      boxOf(el, id),
+    );
+    const inA = [[a.x + 40, a.y + 10, 40, 20, null]];
+    assert.deepStrictEqual(clip('#ff0000'), inA, 'in from each edge');
+    assert.deepStrictEqual(
+      clip('#0000ff'),
+      inA,
+      'and what it holds with it, positioned from outside or not',
+    );
+    // the content box is 100 by 60, 15px in from the border box: 10% of
+    // its height down, 25% of its width across
+    assert.deepStrictEqual(
+      clip('#00ff00'),
+      [[b.x + 15 + 25, b.y + 15 + 6, 50, 48, [8, 8, 8, 8]]],
+      'in the box it names, rounded',
+    );
+    assert.deepStrictEqual(
+      clip('#ffff00'),
+      [[c.x + 10, c.y + 5, 40, 55, null]],
+      "rect()'s edges are from the top and the left, auto the box's own",
+    );
+    assert.deepStrictEqual(
+      clip('#00ffff'),
+      [[d.x + 10, d.y + 30, 30, 20, null]],
+      'xywh() is a corner and a size',
+    );
+    assert.deepStrictEqual(
+      clip('#ff00ff'),
+      [[e.x, e.y, 110, 70, [20, 20, 20, 20]]],
+      "a box alone is the shape, with the element's corners",
+    );
+    for (const [color, why] of [
+      ['#800000', 'insets that meet leave nothing'],
+      ['#808000', 'of what the box holds either, fixed or not'],
+      ['#008000', 'nor do insets that pass each other'],
+      ['#000080', 'nor a rect() whose edges cross'],
+    ]) {
+      assert.ok(!fills.some((f) => f.style === parseColor(color)), why);
+    }
+    assert.ok(!ops.some((op) => op.op === 'text'), 'and its text is not drawn');
+  },
+);
+
+metric(
+  'what a clip-path cuts away is not under the pointer, nor in the ink a repaint looks for',
+  async () => {
+    // Nothing the path cuts away is drawn, so nothing of it is hit: a
+    // label hidden for a screen reader alone took the hover and the press
+    // of the link drawn where it lay. And the box's ink ends at the path,
+    // which is what a paint culls by.
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<a id="under" href="#u" style="display:block;width:200px;' +
+        'height:100px"></a>' +
+        '<div id="hidden" style="position:absolute;top:0;left:0;width:200px;' +
+        'height:100px;clip-path:inset(50%)"><a id="in" href="#i" ' +
+        'style="display:block;height:50px">label</a></div>' +
+        '<div id="part" style="position:absolute;top:0;left:0;width:200px;' +
+        'height:100px;clip-path:inset(0 0 50px 100px round 40px)">' +
+        '<b id="far" style="position:fixed;top:0;left:0;width:300px;' +
+        'height:300px"></b></div>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as { abs: { x: number; y: number } };
+    const at = (x: number, y: number) =>
+      el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id;
+    assert.strictEqual(at(50, 25), 'under', 'past every path');
+    assert.strictEqual(at(50, 75), 'under', 'and past what one holds');
+    assert.strictEqual(at(150, 25), 'far', 'in the path, what it holds');
+    assert.strictEqual(at(102, 2), 'under', 'outside its rounded corner');
+    assert.strictEqual(at(112, 12), 'far', 'and inside it');
+    const bounds = (id: string) => {
+      const box = boxOf(el, id) as unknown as Record<string, number>;
+      return [box.boundsX, box.boundsY, box.boundsWidth, box.boundsHeight];
+    };
+    assert.deepStrictEqual(bounds('hidden'), [Infinity, Infinity, 0, 0]);
+    assert.deepStrictEqual(bounds('part'), [100, 0, 100, 50]);
+  },
+);
+
+metric(
+  'a clip-path is measured in CSS pixels, and hit in them, at a display scale of 2',
+  async () => {
+    // The path's lengths are the cascade's, device pixels; a pointer's
+    // point is logical. With the document offset in its window, a device
+    // origin and a logical one differ.
+    const { node } = await render2x(
+      '<style>body{margin:0}</style>' +
+        '<div id="a" style="width:100px;height:40px;background:#ff0000;' +
+        'clip-path:inset(0 0 10px 50px)"></div>',
+    );
+    const el = view(node);
+    const a = boxOf(el, 'a');
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops);
+    const [red] = clipsAround(ops, '#ff0000');
+    assert.deepStrictEqual(
+      red.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
+      [[a.x + 100, a.y, 100, 60]],
+      'two device pixels to each of its own',
+    );
+    const { abs } = el as unknown as { abs: { x: number; y: number } };
+    const at = (x: number, y: number) =>
+      el.elementAtPoint(abs.x / 2 + x, abs.y / 2 + y)?.attribs.id;
+    assert.strictEqual(at(60, 20), 'a', 'inside the path');
+    assert.notStrictEqual(at(40, 20), 'a', 'left of it');
+    assert.notStrictEqual(at(60, 35), 'a', 'and under it');
+  },
+);
 
 test('an absolute box a max-width or max-height holds is centred by its auto margins', async () => {
   // CSS 2.1 10.4 and 10.7: with both offsets and an auto size, the box

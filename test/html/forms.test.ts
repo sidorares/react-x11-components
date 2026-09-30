@@ -556,6 +556,63 @@ test('a control is cut by its own clip and by the boxes that clip it, from its c
   });
 });
 
+test('a control is cut by a clip-path, its own and every one around it', async () => {
+  // CSS Masking 1, 5.1. Tailwind 4's `.sr-only` — nextjs.org's sheet has
+  // it — hides with `clip-path: inset(50%)` where the older one had
+  // `clip: rect(0, 0, 0, 0)`: a control under it was cut to the pixel its
+  // own `overflow: hidden` left, which showed, and with no `overflow` was
+  // not cut at all. A path cuts all its element holds, a box positioned
+  // from outside it too, which a box that clips its overflow lets out.
+  const { node } = await render(
+    '<style>body{margin:0}input{margin:0}</style>' +
+      '<input type="checkbox" id="sr" style="position:absolute;top:50px;' +
+      'left:10px;width:1px;height:1px;padding:0;margin:-1px;' +
+      'overflow:hidden;clip-path:inset(50%);white-space:nowrap;' +
+      'border-width:0">' +
+      '<input id="own" style="position:absolute;top:100px;left:0;' +
+      'width:100px;clip-path:inset(0 60px 0 0)">' +
+      '<div style="height:30px;clip-path:inset(0 0 0 20px)">' +
+      '<input id="in" style="width:150px"></div>' +
+      '<div style="clip-path:inset(50%)">' +
+      '<input id="out" style="position:absolute;top:150px;left:0">' +
+      '<input id="fixed" style="position:fixed;top:200px;left:0"></div>' +
+      '<div style="width:200px;clip-path:inset(-4px)">' +
+      '<input id="whole" style="width:150px"></div>',
+  );
+  const clips = clipsOf(node) as Record<
+    string,
+    { x: number; y: number; width: number; height: number } | null
+  >;
+  assert.deepStrictEqual(
+    [clips.sr?.width, clips.sr?.height],
+    [0, 0],
+    'none of a control hidden for a screen reader alone shows',
+  );
+  const own = boxOf(view(node), 'own');
+  assert.deepStrictEqual(
+    clips.own,
+    { x: 0, y: 100, width: 40, height: own.height },
+    'its own path',
+  );
+  assert.deepStrictEqual(
+    clips.in,
+    { x: 20, y: 0, width: 380, height: 30 },
+    'the path of a box it is in',
+  );
+  for (const id of ['out', 'fixed']) {
+    assert.deepStrictEqual(
+      [clips[id]?.width, clips[id]?.height],
+      [0, 0],
+      `and of one it is positioned out of (${id})`,
+    );
+  }
+  assert.strictEqual(
+    clips.whole,
+    null,
+    'a path that leaves it whole cuts none',
+  );
+});
+
 metric(
   'a widget the document cuts is cut on the pixels it is cut at, at a display scale of 2',
   async () => {

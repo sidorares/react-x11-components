@@ -26,7 +26,13 @@ import {
   paintRunRules,
 } from '../richtext/runs.js';
 import type { FillContext } from '../richtext/runs.js';
-import { alphaOf, inkColor, isTransparent, resolve } from './css/values.js';
+import {
+  AUTO,
+  alphaOf,
+  inkColor,
+  isTransparent,
+  resolve,
+} from './css/values.js';
 import { blend, borderShades } from './css/color.js';
 import type { Len } from './css/values.js';
 import type {
@@ -398,6 +404,18 @@ export function computePaintBounds(box: Box, moved = false): number {
   }
   if (lines && (above > 0 || below > 0)) LINE_INK.set(lines, { above, below });
   else if (lines) LINE_INK.delete(lines);
+  // a `clip-path` cuts the box and all it holds: no ink past the path, and
+  // none where it leaves nothing — though the scrollable overflow is what
+  // it was, as a browser has it, which is why a page that hides a box with
+  // one makes it a pixel square as well
+  if (own && box.style.clipPath) {
+    const { rect } = clipPathOf(box, DOCUMENT);
+    x1 = Math.max(x1, rect.x);
+    y1 = Math.max(y1, rect.y);
+    x2 = Math.min(x2, rect.x + rect.w);
+    y2 = Math.min(y2, rect.y + rect.h);
+    if (!(x2 > x1 && y2 > y1)) x1 = Infinity;
+  }
   if (x1 === Infinity) {
     // nothing to draw: no damage meets it, and no parent takes it in
     box.boundsX = Infinity;
@@ -936,28 +954,71 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
     return;
   }
   // `clip` shows the part of an absolutely positioned box it names, its own
-  // background and borders among it (CSS 2.1 11.1.2) — written out here,
-  // not called: a frame more a level and a deep document ran out of stack
-  const clip = box.outOfFlow && box.style.clip ? clipOf(box, options) : null;
-  if (!clip || (clip.w > 0 && clip.h > 0)) {
-    const clipped = !!clip && pushClip(ctx, clip, null);
-    paintContent(ctx, box, options);
-    if (clipped) ctx.restore();
+  // background and borders among it (CSS 2.1 11.1.2), and `clip-path` the
+  // part of any box (`pushOwnClips`) — the content painted here, not in a
+  // call of its own: a frame more a level and a deep document ran out of
+  // stack
+  const pushed = pushOwnClips(ctx, box, options);
+  if (pushed >= 0) {
+    paintContent(ctx, box, pathClips(box) ? underPath(options) : options);
+    for (let i = 0; i < pushed; i += 1) ctx.restore();
   }
   if (fade) ctx.restore();
 }
 
-/** A box and what it holds, cut to its `clip` as `paintBox` cuts it. */
+/** A box and what it holds, cut to its `clip` and its `clip-path` as
+ *  `paintBox` cuts it. */
 function paintClipped(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
 ): void {
-  const clip = box.outOfFlow && box.style.clip ? clipOf(box, options) : null;
-  if (clip && !(clip.w > 0 && clip.h > 0)) return;
-  const clipped = !!clip && pushClip(ctx, clip, null);
-  paintContent(ctx, box, options);
-  if (clipped) ctx.restore();
+  const pushed = pushOwnClips(ctx, box, options);
+  if (pushed < 0) return;
+  paintContent(ctx, box, pathClips(box) ? underPath(options) : options);
+  for (let i = 0; i < pushed; i += 1) ctx.restore();
+}
+
+/**
+ * Cut what follows to what a box shows of itself: the part its `clip`
+ * names, where it is absolutely positioned, and the part its `clip-path`
+ * does (CSS Masking 1, 5.1). How many clips were pushed, for the caller to
+ * restore — none where the context cannot clip — or -1 where they leave
+ * none of the box to show, and nothing was pushed.
+ */
+function pushOwnClips(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): number {
+  const style = box.style;
+  const clip = box.outOfFlow && style.clip ? clipOf(box, options) : null;
+  if (clip && !(clip.w > 0 && clip.h > 0)) return -1;
+  const path = pathClips(box) ? clipPathOf(box, options) : null;
+  if (path && !(path.rect.w > 0 && path.rect.h > 0)) return -1;
+  let pushed = 0;
+  if (clip && pushClip(ctx, clip, null)) pushed += 1;
+  if (path && pushClip(ctx, path.rect, path.radii)) pushed += 1;
+  return pushed;
+}
+
+/** Whether a box is cut to a `clip-path`: one with a rectangle of its own
+ *  for the path to be measured in. An inline box is drawn on its block's
+ *  lines, and is not cut. */
+export function pathClips(box: Box): boolean {
+  return box.style.clipPath !== null && hasRect(box);
+}
+
+/**
+ * The options what a box cut to a `clip-path` holds is painted with: no
+ * clip around it for a positioned box to escape. The path cuts all the
+ * element holds, whatever that is positioned from, where a box that clips
+ * its overflow lets out a box whose containing block is outside it — put
+ * off until that clip ended (`paintPositioned`), one in here was painted
+ * with the path gone too.
+ */
+function underPath(options: PaintOptions): PaintOptions {
+  return { ...options, clips: [] };
 }
 
 const MASK_LAYERS = new WeakMap<ComputedStyle, ComputedStyle[]>();
@@ -1632,6 +1693,8 @@ function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
     style.overflowY === 'visible' &&
     opacityOf(child) >= 1 &&
     !masked(style) &&
+    // cut to a path with all it holds, as one group
+    !style.clipPath &&
     // containment makes it a stacking context, painted whole
     !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
   );
@@ -1660,6 +1723,7 @@ function flowFlex(parent: Box, child: Box, options: PaintOptions): boolean {
     style.overflowY === 'visible' &&
     !(child.outOfFlow && style.clip) &&
     !masked(style) &&
+    !style.clipPath &&
     !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
   );
 }
@@ -2101,16 +2165,155 @@ function clipOf(
  *  origin is, its scale, and how far an axis left open has to reach. */
 type ClipSpace = Pick<PaintOptions, 'originX' | 'originY' | 'scale' | 'damage'>;
 
+/** The document's own coordinates, as a space to place a clip in. */
+const DOCUMENT: ClipSpace = { originX: 0, originY: 0, scale: 1, damage: null };
+
+/**
+ * A box's `clip-path` in window coordinates (CSS Masking 1, 5.1): the
+ * rectangle its shape is (CSS Shapes 1, 3.1), each edge on the pixel it
+ * falls nearest as a box's are, and its corners where it has any — of no
+ * area where the shape leaves none of the box to show. Measured in the box
+ * the path names, the border box unless it says: `inset()` in from its
+ * edges, `rect()` and `xywh()` from its top left, and the box itself, with
+ * the element's own corners, where no shape is written.
+ */
+function clipPathOf(
+  box: Box,
+  options: ClipSpace,
+): {
+  rect: { x: number; y: number; w: number; h: number };
+  radii: Corners | null;
+} {
+  const path = box.style.clipPath!;
+  // the box it is measured in, in from the border box — or out from it
+  const within = path.box;
+  const [it, ir, ib, il] =
+    within === 'margin-box'
+      ? [-box.marginTop, -box.marginRight, -box.marginBottom, -box.marginLeft]
+      : edgeInsets(box, within);
+  const width = Math.max(0, box.width - il - ir);
+  const height = Math.max(0, frameHeight(box) - it - ib);
+  // how far in from that box's edges the rectangle's are
+  const [a, b, c, d] = path.lengths;
+  let top = 0;
+  let right = 0;
+  let bottom = 0;
+  let left = 0;
+  if (path.shape === 'inset') {
+    top = resolve(a, height);
+    right = resolve(b, width);
+    bottom = resolve(c, height);
+    left = resolve(d, width);
+    // a pair that adds up to more than the box is across is reduced to
+    // it, each in its proportion, as overlapping radii are (3.1):
+    // `inset(50%)` and `inset(75%)` are both the box's centre, and nothing
+    if (left + right > width && left > 0 && right > 0) {
+      const f = Math.max(0, width) / (left + right);
+      left *= f;
+      right *= f;
+    }
+    if (top + bottom > height && top > 0 && bottom > 0) {
+      const f = Math.max(0, height) / (top + bottom);
+      top *= f;
+      bottom *= f;
+    }
+  } else if (path.shape === 'rect') {
+    // four edges from the top and the left, `auto` the box's own; the
+    // right and the bottom are no less than the left and the top
+    top = a === AUTO ? 0 : resolve(a, height);
+    left = d === AUTO ? 0 : resolve(d, width);
+    right = b === AUTO ? 0 : width - Math.max(left, resolve(b, width));
+    bottom = c === AUTO ? 0 : height - Math.max(top, resolve(c, height));
+  } else if (path.shape === 'xywh') {
+    left = resolve(a, width);
+    top = resolve(b, height);
+    right = width - left - Math.max(0, resolve(c, width));
+    bottom = height - top - Math.max(0, resolve(d, height));
+  }
+  const x0 = box.x + options.originX + il;
+  const y0 = frameY(box) + options.originY + it;
+  const x = Math.round(x0 + left);
+  const y = Math.round(y0 + top);
+  const rect = {
+    x,
+    y,
+    w: Math.max(0, Math.round(x0 + width - right) - x),
+    h: Math.max(0, Math.round(y0 + height - bottom) - y),
+  };
+  let radii: Corners | null = null;
+  if (path.shape === null) {
+    // the box alone: its edge, shaped as the element's corners shape it
+    const corners = cornersOf(box.style, box.width, frameHeight(box));
+    if (corners) {
+      radii =
+        within === 'margin-box'
+          ? spreadCorners(
+              corners,
+              box.width,
+              frameHeight(box),
+              -it,
+              -ir,
+              -ib,
+              -il,
+            )
+          : roundedOf(insetCorners(corners, it, ir, ib, il));
+    }
+  } else if (path.radii) {
+    // a percentage is of the box the shape is in, and the radii are fitted
+    // to the rectangle they round
+    radii = cornersFor(path.radii, path.radiiY, width, height, rect.w, rect.h);
+  }
+  return { rect, radii };
+}
+
+/** Corners, or null where every one of them is square. */
+function roundedOf(c: Corners): Corners | null {
+  for (let i = 0; i < 4; i += 1) if (c.x[i] > 0 && c.y[i] > 0) return c;
+  return null;
+}
+
+/**
+ * Whether a point of the document is in what a box's `clip-path` leaves of
+ * it: what a hit test asks, since nothing the path cuts away — of the box
+ * or of anything in it — is under a pointer (`deepestAt`).
+ */
+export function inClipPath(box: Box, x: number, y: number): boolean {
+  const { rect, radii } = clipPathOf(box, DOCUMENT);
+  const right = rect.x + rect.w;
+  const bottom = rect.y + rect.h;
+  if (x < rect.x || x >= right || y < rect.y || y >= bottom) return false;
+  if (!radii) return true;
+  // inside the rectangle, and past a corner's curve: each corner is a
+  // quarter of an ellipse about a centre its radii in from the two edges
+  for (let i = 0; i < 4; i += 1) {
+    const rx = radii.x[i];
+    const ry = radii.y[i];
+    if (!(rx > 0 && ry > 0)) continue;
+    const onLeft = i === 0 || i === 3;
+    const cx = onLeft ? rect.x + rx : right - rx;
+    const cy = i < 2 ? rect.y + ry : bottom - ry;
+    if (onLeft ? x >= cx : x <= cx) continue;
+    if (i < 2 ? y >= cy : y <= cy) continue;
+    const dx = (x - cx) / rx;
+    const dy = (y - cy) / ry;
+    if (dx * dx + dy * dy > 1) return false;
+  }
+  return true;
+}
+
 /**
  * The part of the document a box shows through, in the document's own
  * pixels, or null where nothing cuts it: the `clip` it is cut to (CSS 2.1
  * 11.1.2), and the clips of the boxes it is under — each that clips its
  * overflow or is cut to a `clip` of its own, from its containing block up
  * (11.1.1), so an absolute box is outside a box that clips where its
- * containing block is, and a fixed one outside them all. A rectangle of no
- * area where none of it shows. Painting cuts what it draws as it walks
- * down; this is for what is not painted here and has to be cut all the
- * same, a control's widget (`controlRectsOf`).
+ * containing block is, and a fixed one outside them all. And every
+ * `clip-path` from the box up, its own among them: a path cuts all its
+ * element holds, whatever that is positioned from (CSS Masking 1, 5.1) —
+ * to the rectangle a path's shape is, its corners left square. A rectangle
+ * of no area where none of it shows. Painting cuts what it draws as it
+ * walks down; this is for what is not painted here and has to be cut all
+ * the same, a control's widget (`controlRectsOf`).
  */
 export function clipAround(box: Box, scale = 1): Rect | null {
   const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
@@ -2134,6 +2337,9 @@ export function clipAround(box: Box, scale = 1): Rect | null {
   for (let outer = holder(box); outer; outer = holder(outer)) {
     if (outer.outOfFlow && outer.style.clip) under(clipOf(outer, space));
     if (clipsOverflow(outer)) under(clipEdge(outer, space).rect);
+  }
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (pathClips(at)) under(clipPathOf(at, space).rect);
   }
   if (!cut) return null;
   return {
@@ -2224,6 +2430,24 @@ function cornersOf(style: ComputedStyle, w: number, h: number): Corners | null {
   ) {
     return null;
   }
+  return cornersFor(across, down, w, h, w, h);
+}
+
+/**
+ * Radii as corners in pixels: each a length or a percentage of a box `w`
+ * by `h`, across and down, and all of them reduced together where two on a
+ * side of the rectangle they round — `fitW` by `fitH`, which for a
+ * `border-radius` is that box, and for a `clip-path`'s `round` is the
+ * rectangle inside it — would overlap. Null where every corner is square.
+ */
+function cornersFor(
+  across: readonly Len[],
+  down: readonly Len[] | null,
+  w: number,
+  h: number,
+  fitW: number,
+  fitH: number,
+): Corners | null {
   const vertical = down ?? across;
   const x: Corners['x'] = [0, 0, 0, 0];
   const y: Corners['y'] = [0, 0, 0, 0];
@@ -2241,10 +2465,10 @@ function cornersOf(style: ComputedStyle, w: number, h: number): Corners | null {
   const fit = (side: number, sum: number): void => {
     if (sum > side) f = Math.min(f, Math.max(0, side) / sum);
   };
-  fit(w, x[0] + x[1]);
-  fit(h, y[1] + y[2]);
-  fit(w, x[2] + x[3]);
-  fit(h, y[3] + y[0]);
+  fit(fitW, x[0] + x[1]);
+  fit(fitH, y[1] + y[2]);
+  fit(fitW, x[2] + x[3]);
+  fit(fitH, y[3] + y[0]);
   if (f < 1) {
     for (let i = 0; i < 4; i += 1) {
       x[i] *= f;
@@ -2495,8 +2719,9 @@ function stacksLayers(box: Box): boolean {
   const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
   if (style.opacity < 1 || FADED_BLOCKS.has(box)) return true;
-  // and so does a mask, which is applied to the group (CSS Masking 1, 7)
-  if (masked(style)) return true;
+  // and so does a mask, which is applied to the group (CSS Masking 1, 7),
+  // and a clip path, which cuts it (5.1)
+  if (masked(style) || pathClips(box)) return true;
   // layout and paint containment make one (CSS Containment 2, 3.3, 3.5)
   if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
   if (typeof style.zIndex !== 'number') return false;
