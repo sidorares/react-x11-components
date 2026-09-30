@@ -1,7 +1,4 @@
 {
-  "lastPassed": 68,
-  "exceptions": {
-    "041": "background-attachment: fixed is placed against the document, not the scroll pane's viewport, and the pane's scroll blit copies it; needs a react-x11 seam for an element whose paint depends on its scroll pane's scrollport",
-    "051": "background-attachment: fixed, as 041"
-  }
+  "lastPassed": 73,
+  "exceptions": {}
 }

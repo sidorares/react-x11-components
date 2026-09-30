@@ -796,7 +796,14 @@ the viewport is cut off. A document that reads the viewport's height — a
 `vh`, a percentage height on the root, a box placed against the initial
 containing block — follows it when the window is resized, a frame behind
 the scroll box it is measured by; one that reads none is not laid out again
-when only the height moved. A fragment has no
+when only the height moved. A `position: fixed` box and a
+`background-attachment: fixed` background stay where that viewport is as
+the box scrolls the element: laid out against it at the document's top,
+drawn where it is now, and found there by the pointer. The element tells
+the scroll box what it draws that way (react-x11's `viewportFixedRects`),
+so a scroll that copies the pixels it can repaints those where they are
+rather than dragging a fixed header along with the text; a fixed
+background, behind the whole viewport, makes every scroll a repaint. A fragment has no
 root element, and its blocks have the body's `auto` height to resolve
 against. Explicit bidi embeddings and overrides (U+202A–U+202E) that open on
 one side of an inline element with padding, border or margin and close on

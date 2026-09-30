@@ -74,6 +74,8 @@ import { collapseEdges } from './collapse.js';
 import {
   clipsFor,
   computePaintBounds,
+  FIXED_BOXES,
+  fixedToViewport,
   hoistNegative,
   OUT_OF_FLOW_REACH,
   stackLayers,
@@ -258,8 +260,12 @@ export function layoutDocument(
   // an `overflow: hidden` card made a page a browser shows 400px tall run
   // on to 980, blank
   let bottom = Math.max(root.height, reach);
+  let fixed: Box[] | null = null;
   for (const { box } of ctx.positioned) {
-    if (box.style.position === 'fixed') continue;
+    if (box.style.position === 'fixed') {
+      if (fixedToViewport(box)) (fixed ??= []).push(box);
+      continue;
+    }
     if (clipsFor(box, root).length) continue;
     // and what it holds, where it does not clip it: a page set in an
     // absolute wrapper 497px tall runs on below it, and the document with
@@ -267,6 +273,8 @@ export function layoutDocument(
     // end of the scroll
     bottom = Math.max(bottom, OUT_OF_FLOW_REACH.get(box) ?? box.y + box.height);
   }
+  if (fixed) FIXED_BOXES.set(tree, fixed);
+  else FIXED_BOXES.delete(tree);
   return {
     width: viewportWidth,
     height: bottom,

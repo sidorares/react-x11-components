@@ -93,6 +93,8 @@ import { lineBands as bandsFor } from '../richtext/runs.js';
 import {
   clipsOverflow,
   containingBlockOf,
+  FIXED_BOXES,
+  fixedToViewport,
   forgetDecoratedAncestors,
   hasRect,
   holds,
@@ -712,6 +714,55 @@ export class HtmlViewNode extends Node {
     return true;
   }
 
+  /**
+   * The viewport the document is seen through, in window coordinates: the
+   * content box of the pane that scrolls the element, where one does —
+   * what `position: fixed` and a fixed background are placed against, as
+   * a browser places them against its page area. Null where nothing
+   * scrolls it, and the element is its own.
+   */
+  private _viewport(): Rect | null {
+    for (let node = this.parent; node; node = node.parent) {
+      // `Scrollable`'s, and not every node's: asked the way core asks it
+      const scroller = node as { isScroller?: () => boolean };
+      if (!scroller.isScroller?.()) continue;
+      const box = node.contentBox();
+      return box.width > 0 && box.height > 0 ? box : null;
+    }
+    return null;
+  }
+
+  /**
+   * What the document draws fixed to the viewport of the pane that scrolls
+   * it, for that pane's scroll blit to repaint rather than copy with the
+   * text (react-x11's `viewportFixedRects`): the whole viewport where a
+   * fixed background shows through it, which makes a scroll a repaint, and
+   * where each fixed box is drawn. Null for a document with neither, and
+   * where nothing scrolls the element.
+   */
+  override viewportFixedRects(): Rect[] | null {
+    const tree = this._tree;
+    const viewport = tree && this._viewport();
+    if (!tree || !viewport) return null;
+    if (hasFixedBackground(tree)) return [viewport];
+    const boxes = FIXED_BOXES.get(tree);
+    if (!boxes) return null;
+    // laid out against the viewport at the document's top, and drawn at the
+    // viewport (`atViewport`)
+    const root = tree.root;
+    const out: Rect[] = [];
+    for (const box of boxes) {
+      if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
+      out.push({
+        x: viewport.x + box.boundsX - root.x,
+        y: viewport.y + box.boundsY - root.y,
+        width: box.boundsWidth,
+        height: box.boundsHeight,
+      });
+    }
+    return out.length ? out : null;
+  }
+
   private _viewportHeight(): number {
     // The viewport a `vh` resolves against is the one the document is seen
     // through, not the document — a document taller than it does not make
@@ -1247,7 +1298,20 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     if (!tree) return null;
     const local = this._toDocument(x, y);
-    return deepestAt(tree, local.x, local.y);
+    return deepestAt(tree, local.x, local.y, undefined, this._fixedShift());
+  }
+
+  /** How far a box fixed to the viewport is drawn from where it was laid
+   *  out, in the document's pixels: the scroll of the pane the element is
+   *  in (`atViewport`). Null where nothing scrolls it. */
+  private _fixedShift(): { x: number; y: number } | null {
+    const tree = this._tree;
+    const viewport = tree && FIXED_BOXES.has(tree) && this._viewport();
+    if (!tree || !viewport) return null;
+    return {
+      x: viewport.x - this.abs.x - tree.root.x,
+      y: viewport.y - this.abs.y - tree.root.y,
+    };
   }
 
   /**
@@ -1264,7 +1328,13 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     if (!tree) return null;
     const hit = { text: false };
-    const el = deepestAt(tree, x - this.abs.x, y - this.abs.y, hit);
+    const el = deepestAt(
+      tree,
+      x - this.abs.x,
+      y - this.abs.y,
+      hit,
+      this._fixedShift(),
+    );
     const cursor = el ? tree.styles.get(el)?.style.cursor : null;
     // a keyword; a `url()` this cannot load falls back, as its list would
     if (cursor && cursor !== 'auto' && /^[a-z-]+$/.test(cursor)) return cursor;
@@ -1585,6 +1655,7 @@ export class HtmlViewNode extends Node {
       // the root's background covers the whole element, not only the
       // document: an element grown past its content is canvas too
       canvas: this.abs,
+      viewport: this._viewport() ?? undefined,
       scale: this._scale,
       damage,
       selection: range
@@ -1612,6 +1683,30 @@ export class HtmlViewNode extends Node {
 }
 
 const EMPTY_SET: ReadonlySet<Element> = new Set();
+
+/** Whether a tree has a background fixed to the viewport: an image a box
+ *  names (`tree.backgrounds`), or the canvas's image or gradient — the
+ *  root's, or the body's it paints, which the root box stands in for where
+ *  the markup has neither element. */
+function hasFixedBackground(tree: BoxTree): boolean {
+  for (const box of tree.backgrounds) {
+    if (box.style.backgroundAttachment === 'fixed') return true;
+  }
+  const root = tree.root;
+  const body = root.children.find((child) => child.el?.name === 'body');
+  for (const box of body ? [root, body] : [root]) {
+    const style = box.style;
+    if (
+      style.backgroundAttachment === 'fixed' &&
+      (style.backgroundImage ||
+        style.backgroundImages ||
+        style.backgroundGradient)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /** A sheet as the restyle reads it: its text, the encoding it was decoded
  *  from, the element that brought it, and what its URLs resolve against. */
@@ -2173,6 +2268,10 @@ function deepestAt(
   /** Told whether what was found was found under text: a run's, rather
    *  than a box's. */
   hit?: { text: boolean },
+  /** How far a box fixed to the viewport is drawn from where it was laid
+   *  out (`HtmlViewNode._fixedShift`): the point is taken back by it in
+   *  there, as paint moved the box by it (`atViewport`). */
+  fixedShift: { x: number; y: number } | null = null,
 ): Element | null {
   const box = tree.root;
   let found: Element | null = box.el;
@@ -2213,7 +2312,28 @@ function deepestAt(
   // Zen Garden's archive links are absolute `<li>`s in an `overflow:
   // hidden` list with no height of its own, and not one of them could be
   // hovered or pressed.
+  let atViewport = false;
   const enter = (
+    child: Box,
+    context: readonly number[],
+    clipped: readonly Box[],
+  ): void => {
+    if (!fixedShift || atViewport || !fixedToViewport(child)) {
+      enterAt(child, context, clipped);
+      return;
+    }
+    x -= fixedShift.x;
+    y -= fixedShift.y;
+    atViewport = true;
+    try {
+      enterAt(child, context, clipped);
+    } finally {
+      x += fixedShift.x;
+      y += fixedShift.y;
+      atViewport = false;
+    }
+  };
+  const enterAt = (
     child: Box,
     context: readonly number[],
     clipped: readonly Box[],
