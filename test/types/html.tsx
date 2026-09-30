@@ -84,6 +84,8 @@ const rect: HtmlControlRect = {
   y: 0,
   width: 100,
   height: 24,
+  fontFamily: 'sans-serif',
+  fontSize: 14,
 };
 void rect;
 

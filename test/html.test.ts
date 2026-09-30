@@ -17862,11 +17862,9 @@ test("a control's text is the palette's size, not its parent's", async () => {
       borderTop: number;
     };
     const field = (await screen.findByPlaceholder('field')) as unknown as {
-      props: { style: Record<string, unknown> | Record<string, unknown>[] };
+      resolvedTextStyle(): { size: number };
     };
-    const written = [field.props.style]
-      .flat()
-      .reduce((all, one) => ({ ...all, ...one }), {}).fontSize as number;
+    const written = field.resolvedTextStyle().size / scale;
     await result.unmount();
     return [out, [button.padTop / scale, button.borderTop / scale, written]];
   };
@@ -17991,6 +17989,96 @@ test("a control's text is the palette's face, not the page's", async () => {
     'each widget draws in the face and at the size its box was measured for',
   );
   assert.deepStrictEqual(await families(2), [boxes, widgets], 'the same at 2x');
+});
+
+test('a control the page set in its own font draws in it', async () => {
+  // `font` applies to every element (CSS Fonts 4), and the UA sheet only
+  // sets a control's default: a reset's `input, select, button, textarea {
+  // font: inherit }` puts them in the page's face and size, in Chrome as
+  // here. The box was measured in that font, and the widget in it drew in
+  // the palette's, which the frame named whatever the element's was: a
+  // field's text, a submit button's label and a select's caption at 12px
+  // in a hole cut for 20
+  const faces = FONTS
+    ? {
+        ...FONTS,
+        'Page Face': FONTS.monospace,
+        'Palette Face': FONTS['sans-serif'],
+      }
+    : null;
+  const source =
+    '<style>input, select, button, textarea { font: inherit }</style>' +
+    '<body style="font-size:20px">' +
+    '<input id="i" placeholder="field"><textarea id="a"></textarea>' +
+    '<input id="u" type="submit" value="Send">' +
+    '<select id="s"><option>Opt</option></select></body>';
+  const fonts = async (scale: 1 | 2): Promise<string[][]> => {
+    const result = await renderX11(
+      h(
+        'window',
+        { width: 600, height: 200 } as Record<string, unknown>,
+        h(
+          ThemeProvider,
+          { value: { fontFamily: 'Palette Face', fontSize: 12 } } as Record<
+            string,
+            unknown
+          >,
+          h(
+            'box',
+            { style: { width: 560, flexDirection: 'column' } },
+            h(Html, {
+              source,
+              partial: false,
+              fontFamily: 'Page Face',
+              'data-testname': 'doc',
+            }),
+          ),
+        ),
+      ),
+      {
+        ...(faces ? { fonts: faces } : { backend: 'mock' as const }),
+        wrap: false,
+        ...(scale === 2 && { scale: 2 }),
+      },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const boxes = ['i', 'a', 'u', 's'].map((id) => {
+      const { style } = boxOf(el, id) as unknown as {
+        style: { fontFamily: string; fontSize: number };
+      };
+      return `${style.fontFamily} ${style.fontSize / scale}`;
+    });
+    // what the widgets draw in: a field's and an area's own text, and the
+    // text of a button's label and a select's caption
+    const drawn = (node: DrawnNode) => {
+      const text = (
+        node as unknown as {
+          resolvedTextStyle(): { family: string; size: number };
+        }
+      ).resolvedTextStyle();
+      return `${text.family} ${text.size / scale}`;
+    };
+    const widgets = [
+      await screen.findByPlaceholder('field'),
+      screen.all((n) => n.kind === 'textarea')[0],
+      screen.getByText('Send', { selector: 'text', exact: true }),
+      screen.getByText('Opt', { selector: 'text', exact: true }),
+    ].map(drawn);
+    await result.unmount();
+    return [boxes, widgets];
+  };
+  const [boxes, widgets] = await fonts(1);
+  assert.deepStrictEqual(
+    boxes,
+    ['Page Face 20', 'Page Face 20', 'Page Face 20', 'Page Face 20'],
+    "each control's box in the page's face and size",
+  );
+  assert.deepStrictEqual(
+    widgets,
+    boxes,
+    'each widget draws in the face and at the size its box was measured in',
+  );
+  assert.deepStrictEqual(await fonts(2), [boxes, widgets], 'the same at 2x');
 });
 
 test('an inline box around a block that clears a float measures from where clearance moved the block from', async () => {
