@@ -2208,7 +2208,20 @@ export function applyDeclaration(
         )
         .filter(Boolean)
         .join(', ');
-      style.fontFamily = ctx.families ? ctx.families(list) : list;
+      // A list that ends in no generic family ends in the document's own
+      // font: where no face in the list matches, the text is set in the
+      // user agent's default (CSS Fonts 4, 5.1), which for a browser is its
+      // standard font and here is the one the document is set in. The text
+      // engine's own answer for a name nothing has is its platform's pick,
+      // Verdana under fontconfig: the Zen Garden's 216 sets its summary in
+      // Montserrat alone, which no machine here has, and Chrome sets it in
+      // Times where ours was Verdana, a fifth wider
+      const last = names[names.length - 1].trim();
+      const generic =
+        !/^['"]/.test(last) && GENERIC_FAMILY.has(last.toLowerCase());
+      const fallback = generic ? null : (ctx.fallbackFamily?.() ?? null);
+      const full = fallback ? `${list}, ${fallback}` : list;
+      style.fontFamily = ctx.families ? ctx.families(full) : full;
       return;
     }
     case 'font-size': {
@@ -5864,3 +5877,23 @@ export function blockify(style: ComputedStyle, inFlexContainer: boolean): void {
       return;
   }
 }
+
+/** The generic font families, which a list ending in one falls back
+ *  through already, in the text engine (CSS Fonts 4, 4.2). */
+const GENERIC_FAMILY = new Set([
+  'serif',
+  'sans-serif',
+  'monospace',
+  'cursive',
+  'fantasy',
+  'system-ui',
+  'ui-serif',
+  'ui-sans-serif',
+  'ui-monospace',
+  'ui-rounded',
+  'math',
+  'emoji',
+  'fangsong',
+  '-apple-system',
+  'blinkmacsystemfont',
+]);
