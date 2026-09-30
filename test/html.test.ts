@@ -3780,6 +3780,32 @@ test('a vw length follows the width of the viewport', async () => {
   assert.strictEqual(boxOf(el, 'half').width, 300);
 });
 
+test('the small, large and dynamic viewports, and its inline and block axes, are the viewport', async () => {
+  // melbcss.com's body is `min-height: 100svh`: an unread unit dropped the
+  // declaration, and the page did not fill the window
+  const { el, resize } = await renderScrolled(
+    '<body style="margin:0">' +
+      '<div id="s" style="height:10svh;width:10svw"></div>' +
+      '<div id="l" style="height:10lvh;width:10LVW"></div>' +
+      '<div id="d" style="height:10dvh;width:calc(10dvw + 1px)"></div>' +
+      '<div id="ib" style="height:10vb;width:10vi"></div>' +
+      '<div id="m" style="width:10svmin;height:10dvmax"></div></body>',
+    300,
+    400,
+  );
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('s'), [40, 30]);
+  assert.deepStrictEqual(size('l'), [40, 30]);
+  assert.deepStrictEqual(size('d'), [41, 30]);
+  assert.deepStrictEqual(size('ib'), [40, 30]);
+  assert.deepStrictEqual(size('m'), [30, 40]);
+  // and like `vh` and `vw`, each follows the side of the viewport it reads
+  await resize(500, 600);
+  assert.deepStrictEqual(size('s'), [60, 50]);
+  assert.deepStrictEqual(size('ib'), [60, 50]);
+  assert.deepStrictEqual(size('m'), [50, 60]);
+});
+
 test('a document a hair past a whole pixel measures that pixel', async () => {
   // A sum of Yoga's single-precision positions carries noise — a page
   // exactly 100vh tall came to 737.0000076 under a 737 pixel viewport — and

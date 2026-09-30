@@ -49,6 +49,7 @@ import { parseDeclarations } from './parse.js';
 import { CounterStyles, counterStyleRule } from './counter-styles.js';
 import type { CounterStyleRule } from './counter-styles.js';
 import type { UnitContext } from './values.js';
+import { viewportUnit } from './values.js';
 import { customProperties, substituteIn } from './vars.js';
 import type { CustomProps } from './vars.js';
 
@@ -703,7 +704,7 @@ export class Cascade {
     for (const d of declarations) {
       if (!VIEWPORT_UNIT.test(d.value)) continue;
       for (const m of d.value.matchAll(VIEWPORT_UNITS)) {
-        const unit = m[1].toLowerCase();
+        const unit = viewportUnit(m[1]);
         if (unit !== 'vh') this.readsViewportWidth = true;
         if (unit !== 'vw') this.readsViewportHeight = true;
       }
@@ -1537,8 +1538,8 @@ const PSEUDOS = {
 
 /** A length in a unit of the viewport: a number, then the unit, and no
  *  more of a name after it. */
-const VIEWPORT_UNIT = /\d(?:vw|vh|vmin|vmax)(?![\w-])/i;
-const VIEWPORT_UNITS = /\d(vw|vh|vmin|vmax)(?![\w-])/gi;
+const VIEWPORT_UNIT = /\d[sld]?v(?:w|h|i|b|min|max)(?![\w-])/i;
+const VIEWPORT_UNITS = /\d([sld]?v(?:w|h|i|b|min|max))(?![\w-])/gi;
 
 /**
  * A selector with its `[attr~=""]` made one that matches nothing: an empty
