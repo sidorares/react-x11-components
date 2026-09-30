@@ -2091,7 +2091,13 @@ export function applyDeclaration(
         style.lineHeight = len;
         style.lineHeightIsLength = true;
       } else if (len && typeof len === 'object') {
-        const px = resolve(len, style.fontSize);
+        // a percentage of the element's own font size, the one it is
+        // computed with (CSS 2.1 10.8.1), which `em` already is: not the
+        // size in `style` as this declaration comes up, which a `font`
+        // earlier in the same rule has just set to its own — `p { font:
+        // 12px …; line-height: 100% }` under a `.lead { font-size: 16px }`
+        // set sixteen-pixel text on twelve-pixel lines
+        const px = resolve(len, ctx.em);
         if (px < 0) return;
         style.lineHeight = px;
         style.lineHeightIsLength = true;
@@ -4264,12 +4270,10 @@ function applyFontShorthand(
   style.lineHeight = 'normal';
   style.lineHeightIsLength = false;
   applyDeclaration(style, parent, 'font-size', sizeText, ctx);
-  if (lineText) {
-    applyDeclaration(style, parent, 'line-height', lineText, {
-      ...ctx,
-      em: style.fontSize,
-    });
-  }
+  // against the element's own size, which `ctx.em` is once the cascade has
+  // settled it: a later rule's `font-size` outranks this one's, and
+  // `font: 12px/150%` under a `font-size: 16px` is on 24px lines
+  if (lineText) applyDeclaration(style, parent, 'line-height', lineText, ctx);
   applyDeclaration(style, parent, 'font-family', family, ctx);
 }
 
