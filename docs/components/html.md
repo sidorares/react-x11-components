@@ -595,6 +595,26 @@ spaced, and the middle for `fill`. Where the image is not there yet, the
 border is drawn as its style says. A piece is scaled from a copy of its
 own, so no colour of the image next to it bleeds into its edge.
 
+**Masks:** `mask-image` and the longhands that place it — `mask-repeat`,
+`mask-position`, `mask-size`, `mask-origin`, `mask-clip` — and the `mask`
+shorthand, each under its `-webkit-` name too (CSS Masking 1). The element
+and everything in it are drawn as a group on a surface of their own and cut
+by the alpha of its mask layers, which are placed, sized and repeated as a
+background's layers are, in its border box unless they say otherwise, and
+added one over another; the group is then drawn in its place, cut to the
+mask painting area. That is how Wikipedia and every design system that
+draws its icons with CSS writes an icon: a `background-color` masked by an
+SVG. A layer whose image has not arrived is transparent, so an icon is not
+drawn at all until its image is, rather than as a solid square. A mask is
+an image's alpha: `mask-mode: luminance`, and the compositing operators
+but `add`, are read and not honoured, and a `url(#id)` naming an SVG
+`<mask>` element in the document draws the element unmasked. Where the
+backend has no offscreen surface, the element is drawn unmasked. A
+`@supports` test of a mask property answers that it is supported, so the
+background image a page keeps under `not` for an engine without masks is
+not drawn under the mask; every other `@supports` block is entered, as it
+always was.
+
 **Outlines:** `outline` and its longhands, and `outline-offset`: a border
 of the outline's width, style and colour round the border box grown by
 the offset, taking no room and drawn over the box's content, with the

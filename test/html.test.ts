@@ -43,6 +43,7 @@ import {
   parseStylesheet,
   parseDeclarations,
   specificityOf,
+  supportsCondition,
 } from '../src/html/css/parse.js';
 import {
   parseColor,
@@ -16100,4 +16101,148 @@ test('a sticky box is where a browser starts it, not moved by its insets', async
   // no further down than its containing block lets it: 196 + 25 - 10,
   // short of the 196 + 30 its `top` asks for
   assert.strictEqual(boxOf(el, 'lim').y, 211);
+});
+
+metric(
+  'a mask shows its element where its image is opaque, and nothing before it arrives',
+  async () => {
+    // CSS Masking 1: the element drawn as a group, and cut by the alpha of
+    // its mask layers, placed as a background's are. Wikipedia draws every
+    // icon as a `background-color` masked by an SVG, and each was a solid
+    // square. A layer whose image has not arrived is transparent black:
+    // the element is not drawn at all until it does.
+    const half =
+      `<svg ${SVG_NS} width="20" height="20">` +
+      '<rect width="10" height="20" fill="#000000"/></svg>';
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0;background:#ffffff}div{width:40px;height:20px;' +
+        'background:#ff0000}#m{mask:url(m.svg) no-repeat}' +
+        '#w{-webkit-mask-image:url(m.svg);-webkit-mask-repeat:no-repeat;' +
+        '-webkit-mask-position:right;-webkit-mask-size:20px}' +
+        '#late{mask-image:url(late.svg)}' +
+        '#g{mask-image:linear-gradient(#000000,#000000 50%,' +
+        'transparent 50%)}#a{background:none}#a::after{content:"";' +
+        'display:block;width:20px;height:20px;background:#0000ff;' +
+        'mask:url(m.svg)}#f{mask-image:url(#svg-mask)}</style>' +
+        '<div id="m"></div><div id="w"></div><div id="late"></div>' +
+        '<div id="g"></div><div id="a"></div><div id="f"></div>',
+      { 'm.svg': svgBytes(half) },
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 5, 10, '#ff0000', { message: 'under the image' });
+    await expectPixel(ctx, 15, 10, '#ffffff', {
+      message: 'where it is transparent',
+    });
+    await expectPixel(ctx, 30, 10, '#ffffff', { message: 'past it' });
+    await expectPixel(ctx, 25, 30, '#ff0000', {
+      message: 'placed and sized, under its -webkit- names',
+    });
+    await expectPixel(ctx, 5, 30, '#ffffff', { message: 'and not repeated' });
+    await expectPixel(ctx, 5, 50, '#ffffff', {
+      message: 'an image that has not arrived shows nothing',
+    });
+    await expectPixel(ctx, 5, 65, '#ff0000', { message: 'a gradient mask' });
+    await expectPixel(ctx, 5, 75, '#ffffff', { message: 'its clear half' });
+    await expectPixel(ctx, 5, 90, '#0000ff', { message: 'a pseudo-element' });
+    await expectPixel(ctx, 15, 90, '#ffffff', {
+      message: "the pseudo-element's mask",
+    });
+    await expectPixel(ctx, 35, 110, '#ff0000', {
+      message:
+        'an SVG <mask> named by a fragment is not drawn, nor is its want',
+    });
+  },
+);
+
+metric(
+  'a mask is placed and sized in CSS pixels at a display scale of 2',
+  async () => {
+    // its size and position are lengths, device pixels by the time they are
+    // stored, and its image's own size is CSS pixels until it is drawn
+    const half =
+      `<svg ${SVG_NS} width="20" height="20">` +
+      '<rect width="10" height="20" fill="#000000"/></svg>';
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 200, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0;background:#ffffff}div{width:40px;' +
+            'height:20px;background:#ff0000;mask:url(m.svg) right / 20px ' +
+            'no-repeat}</style><div></div>',
+          partial: false,
+          onResource: (r: { url: string; kind: string }) =>
+            r.kind === 'image' && r.url === 'm.svg'
+              ? { kind: 'image' as const, bytes: svgBytes(half) }
+              : null,
+        }),
+      ),
+      atScale2({ width: 240, height: 100, fonts: FONTS! }),
+    );
+    // in device pixels: the image covers 40 to 80, opaque from 40 to 60
+    await expectPixel(result.ctx, 50, 20, '#ff0000', { message: 'opaque' });
+    await expectPixel(result.ctx, 70, 20, '#ffffff', { message: 'clear' });
+    await expectPixel(result.ctx, 30, 20, '#ffffff', { message: 'outside' });
+  },
+);
+
+test('a mask longhand with a var() in it resets its own list, not the others', async () => {
+  // A declaration with a `var()` is set back to its initial value first, in
+  // case what it substitutes is no value. The mask's lists are one field,
+  // and that put back the whole of it: Wikipedia's `mask-size:
+  // calc(var(--x) - 4px)` undid the `mask-repeat: no-repeat` before it,
+  // and its chevron repeated
+  const { node } = await render(
+    '<style>#m{--x:24px;mask-repeat:no-repeat;mask-position:center;' +
+      'mask-size:calc(var(--x) - 4px);mask-image:url(m.svg)}' +
+      '#i{mask-repeat:no-repeat;mask-size:var(--missing)}</style>' +
+      '<p id="m">x</p><p id="i">x</p>',
+  );
+  const el = view(node);
+  const mask = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style.mask;
+  assert.deepStrictEqual(mask('m').repeats, [['no-repeat', 'no-repeat']]);
+  assert.deepStrictEqual(mask('m').positions, [[{ pct: 50 }, { pct: 50 }]]);
+  assert.deepStrictEqual(mask('m').sizes, [[20, 'auto']]);
+  // a var() that substitutes nothing leaves its own list at the start
+  assert.deepStrictEqual(mask('i').sizes, ['auto']);
+  assert.deepStrictEqual(mask('i').repeats, [['no-repeat', 'no-repeat']]);
+});
+
+test('a @supports test of the mask is answered, and every other is entered', () => {
+  // A page keeps a background image under `not` for an engine without
+  // masks. Entered as every `@supports` block was, Wikipedia's chevron was
+  // that image in black under its mask, over its blue
+  assert.strictEqual(
+    supportsCondition('not ((-webkit-mask-image:none) or (mask-image:none))'),
+    false,
+  );
+  assert.strictEqual(supportsCondition('(mask-image: none)'), true);
+  assert.strictEqual(
+    supportsCondition('(mask-image: none) and (-webkit-mask-size: 1px)'),
+    true,
+  );
+  // what it cannot answer it does not: Tailwind 4 keeps its variables'
+  // starting values under a test for engines without `@property`
+  for (const unknown of [
+    '(display: grid)',
+    'not (display: grid)',
+    'selector(:focus-visible)',
+    '(mask-image: none) and (display: grid)',
+    '((-webkit-hyphens: none) and (not (margin-trim: inline))) or ' +
+      '((-moz-orient: inline) and (not (color:rgb(from red r g b))))',
+  ]) {
+    assert.strictEqual(supportsCondition(unknown), null, unknown);
+  }
+  const sheet = parseStylesheet(
+    '@supports not (mask-image: none) { .a { color: red } }' +
+      '@supports (mask-image: none) { .b { color: red } }' +
+      '@supports (display: grid) { .c { color: red } }' +
+      '.d { @supports not (mask: none) { color: red } }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.selector),
+    ['.b', '.c'],
+  );
 });

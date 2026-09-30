@@ -78,7 +78,8 @@ import type {
 import { layoutDocument } from './layout/block.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { shapingSafe } from './layout/shaping.js';
-import { SurfaceCache } from './surfaces.js';
+import { SurfaceCache, newSurface } from './surfaces.js';
+import type { SurfaceLike } from './surfaces.js';
 import { faceExtentOf, inlineDecoration, runFor } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
 import type { TextRun } from '../richtext/index.js';
@@ -226,6 +227,8 @@ export class HtmlViewNode extends Node {
   private _sheetsRead: SheetsRead | null = null;
   /** Blurred shadows, drawn once each. */
   private _shadowCache: SurfaceCache | null = null;
+  /** Whether the backend was found to have no offscreen surface. */
+  private _noSurface = false;
   private _cascade: Cascade | null = null;
   private _tree: BoxTree | null = null;
   /** The faces `_warmFaces` has asked the font matcher for, and of which
@@ -463,6 +466,12 @@ export class HtmlViewNode extends Node {
           kind: 'image',
           element,
         });
+      }
+      // and each mask layer's, which is an image as a background's is
+      for (const url of box.style.mask.images) {
+        if (typeof url === 'string') {
+          this._resources.request({ url, kind: 'image', element });
+        }
       }
     }
     // and every image generated content names, which is only known there
@@ -1573,6 +1582,15 @@ export class HtmlViewNode extends Node {
     }
   }
 
+  /** A surface for the painter to draw a masked element on, asked of the
+   *  backend until it is found to have none. */
+  private _surface(width: number, height: number): SurfaceLike | null {
+    if (this._noSurface) return null;
+    const surface = newSurface(this.app, width, height);
+    if (!surface) this._noSurface = true;
+    return surface;
+  }
+
   private _paint(
     ctx: Context2D,
     tree: BoxTree,
@@ -1600,6 +1618,7 @@ export class HtmlViewNode extends Node {
         const size = image ? this._resources.imageSize(url) : null;
         return image && size ? { image, ...size } : null;
       },
+      surface: (width, height) => this._surface(width, height),
       cached: (key, width, height, draw) =>
         (this._shadowCache ??= new SurfaceCache(this.app)).get(
           key,
