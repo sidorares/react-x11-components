@@ -14,7 +14,7 @@
 // as `preserveAspectRatio` says, and clipped to it.
 import { parseDocument } from 'htmlparser2';
 import { Element, Text } from 'domhandler';
-import type { ChildNode } from 'domhandler';
+import type { ChildNode, ParentNode } from 'domhandler';
 import * as ntk from 'react-x11/ntk';
 import { isSvgRoot } from './dom.js';
 import { inkColor, isTransparent, parseColor } from './css/values.js';
@@ -186,6 +186,13 @@ export class SvgDrawing {
   /** Whether a length in the tree is a percentage of the viewport; null
    *  until the tree is first read. */
   private _percent: boolean | null = null;
+  /** Whether a `<use>` in the tree is one `SvgView` cannot draw as it
+   *  stands (`needsExpanding`). */
+  private _uses = false;
+  /** The document's last node when a `<use>` was last looked up and its
+   *  element not found: a streamed document may bring it yet, and has
+   *  when its last node is another. Undefined where none was missing. */
+  private _missingAt: ChildNode | null | undefined = undefined;
   private _failed = false;
   /** An SVG image's own document, rather than an element of this one. */
   private readonly _standalone: boolean;
@@ -298,9 +305,17 @@ export class SvgDrawing {
     const root = this._root;
     const count = root.children.length;
     const last = root.lastChild;
-    const grown = count !== this._seen || last !== this._seenLast;
-    if (grown || this._percent === null) this._percent = hasPercent(root);
-    const viewport = this._percent ? `${width}x${height}` : '';
+    // more of the document has arrived since a `<use>` found nothing
+    const arrived =
+      this._missingAt !== undefined &&
+      lastNode(documentOf(root)) !== this._missingAt;
+    const grown = count !== this._seen || last !== this._seenLast || arrived;
+    if (grown || this._percent === null) {
+      this._percent = hasPercent(root);
+      this._uses = needsExpanding(root);
+    }
+    const sized = this._percent || this._uses;
+    const viewport = sized ? `${width}x${height}` : '';
     if (this._view && !grown && viewport === this._seenViewport) {
       return this._view;
     }
@@ -311,11 +326,13 @@ export class SvgDrawing {
     }
     try {
       const view = this._view ?? new View(null);
+      const missing = { any: false };
       view.setSvgDom(
-        this._percent || root.name.includes(':')
-          ? copyTree(root, this._percent ? [width, height] : null)
+        sized || root.name.includes(':')
+          ? copyTree(root, sized ? [width, height] : null, missing)
           : root,
       );
+      this._missingAt = missing.any ? lastNode(documentOf(root)) : undefined;
       this._view = view;
       this._seen = count;
       this._seenLast = last;
@@ -413,13 +430,154 @@ function hasPercent(root: Element): boolean {
   return walk(root);
 }
 
+/** The element a `<use>` refers to by a fragment, its id: one in another
+ *  document is none here, where nothing is fetched for a drawing. */
+function useTarget(el: Element): string | null {
+  const href = el.attribs.href ?? el.attribs['xlink:href'] ?? '';
+  return href.length > 1 && href.startsWith('#') ? href.slice(1) : null;
+}
+
+/** The elements under a root by their ids, the first of each. */
+function idsUnder(root: Element): Map<string, Element> {
+  const ids = new Map<string, Element>();
+  const walk = (el: Element): void => {
+    for (const child of el.children) {
+      if (child.type !== 'tag') continue;
+      const tag = child as Element;
+      const id = tag.attribs.id;
+      if (id && !ids.has(id)) ids.set(id, tag);
+      walk(tag);
+    }
+  };
+  walk(root);
+  return ids;
+}
+
+/**
+ * Whether a `<use>` under the root is one `SvgView` cannot draw as it
+ * stands: it looks a reference up among the root's own elements, and draws
+ * a `<symbol>` as its children where they are. So one to an element
+ * outside the root — an icon sprite's, a hidden `<svg>` of symbols at the
+ * top of the page — and one to a symbol with a `viewBox` of its own are
+ * drawn from a copy (`copyTree`).
+ */
+function needsExpanding(root: Element): boolean {
+  let ids: Map<string, Element> | null = null;
+  const walk = (el: Element): boolean => {
+    for (const child of el.children) {
+      if (child.type !== 'tag') continue;
+      const tag = child as Element;
+      if (localName(tag.name) === 'use') {
+        const id = useTarget(tag);
+        if (id !== null) {
+          ids ??= idsUnder(root);
+          const target = ids.get(id);
+          if (!target) return true;
+          if (localName(target.name) === 'symbol' && viewBoxOf(target)) {
+            return true;
+          }
+        }
+      }
+      if (walk(tag)) return true;
+    }
+    return false;
+  };
+  return walk(root);
+}
+
+function documentOf(el: Element): ParentNode {
+  let top: ParentNode = el;
+  while (top.parent) top = top.parent;
+  return top;
+}
+
+/** The last node of a document, in its order: what a document that is
+ *  still arriving has another of once more of it has. */
+function lastNode(top: ParentNode): ChildNode | null {
+  let last: ChildNode | null = top.lastChild;
+  while (last && 'lastChild' in last && last.lastChild) last = last.lastChild;
+  return last;
+}
+
+/** The first element of a document with an id, in its order. */
+function elementById(top: ParentNode, id: string): Element | null {
+  const stack: ChildNode[] = [...top.children].reverse();
+  for (let node = stack.pop(); node; node = stack.pop()) {
+    if (node.type !== 'tag') continue;
+    const el = node as Element;
+    if (el.attribs.id === id) return el;
+    for (let i = el.children.length - 1; i >= 0; i -= 1) {
+      stack.push(el.children[i]);
+    }
+  }
+  return null;
+}
+
+/** How deep a `<use>` may be of a `<use>`: one that reaches itself stops. */
+const USE_DEPTH = 8;
+
+/** A `<use>`'s `width` or `height`, in user units: a number, or a
+ *  percentage of the viewport's; null for none, and for `auto`. */
+function useLength(value: string | undefined, of: number): number | null {
+  if (value === undefined) return null;
+  const n = parseFloat(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return value.trim().endsWith('%') ? (n / 100) * of : n;
+}
+
+/** The transform that fits a `viewBox` into a viewport at `x`, `y`, as
+ *  `preserveAspectRatio` says (SVG 2, 8.2). */
+function fitTransform(
+  box: [number, number, number, number],
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  preserve: string | undefined,
+): string {
+  const fit = (preserve ?? '').trim().split(/\s+/);
+  if (fit[0] === 'defer') fit.shift();
+  let sx = width / box[2];
+  let sy = height / box[3];
+  if (fit[0] !== 'none') {
+    const align = ALIGN.exec(fit[0] ?? '') ?? ['xMidYMid', 'Mid', 'Mid'];
+    const scale = fit[1] === 'slice' ? Math.max(sx, sy) : Math.min(sx, sy);
+    x += (width - box[2] * scale) * AT[align[1]];
+    y += (height - box[3] * scale) * AT[align[2]];
+    sx = scale;
+    sy = scale;
+  }
+  return `translate(${x - box[0] * sx},${y - box[1] * sy}) scale(${sx},${sy})`;
+}
+
+/** What a `<use>` says of where its element goes, and not of how it looks:
+ *  the rest is the group's the element is drawn in. */
+const USE_PLACEMENT = new Set([
+  'href',
+  'xlink:href',
+  'x',
+  'y',
+  'width',
+  'height',
+]);
+
 /**
  * The tree `SvgView` reads, where the document's own will not do: with
  * local names — `SvgView` knows `rect`, not `svg:rect`, and a prefix is
  * dropped only where it is bound to SVG — and with its percentages resolved
- * against a viewport of `[width, height]` user units, where one is given.
+ * against a viewport of `[width, height]` user units, where one is given;
+ * and with each `<use>` that `SvgView` cannot draw (`needsExpanding`) as a
+ * group of what it refers to (SVG 2, 5.5): the element, from wherever in
+ * the document it is, or a symbol's children, its `viewBox` fitted to the
+ * viewport the `<use>` gives it — its `width` and `height`, and all of the
+ * drawing's where it has none. `missing.any` is set where one refers to an
+ * element the document does not have.
  */
-function copyTree(root: Element, viewport: [number, number] | null): Element {
+function copyTree(
+  root: Element,
+  viewport: [number, number] | null,
+  missing?: { any: boolean },
+): Element {
   const colon = root.name.indexOf(':');
   const prefix = colon < 0 ? null : `${root.name.slice(0, colon)}:`;
   const strip = (name: string): string =>
@@ -427,7 +585,69 @@ function copyTree(root: Element, viewport: [number, number] | null): Element {
   const diagonal = viewport
     ? Math.sqrt((viewport[0] ** 2 + viewport[1] ** 2) / 2)
     : 0;
-  const copy = (el: Element, resolve: boolean): Element => {
+  let ids: Map<string, Element> | null = null;
+  const expand = (
+    use: Element,
+    resolve: boolean,
+    depth: number,
+  ): Element | null => {
+    const id = useTarget(use);
+    if (id === null || depth >= USE_DEPTH) return null;
+    ids ??= idsUnder(root);
+    const inside = ids.get(id);
+    const target = inside ?? elementById(documentOf(root), id);
+    if (!target) {
+      if (missing) missing.any = true;
+      return null;
+    }
+    const symbol = localName(target.name) === 'symbol';
+    const box = symbol ? viewBoxOf(target) : null;
+    // one of the root's own with no viewport to fit: `SvgView` draws it
+    if (inside && !box) return null;
+    const attribs: Record<string, string> = {};
+    for (const name in use.attribs) {
+      if (!USE_PLACEMENT.has(name)) attribs[name] = use.attribs[name];
+    }
+    const x = parseFloat(use.attribs.x ?? '') || 0;
+    const y = parseFloat(use.attribs.y ?? '') || 0;
+    let placed = '';
+    if (box && viewport) {
+      const width =
+        useLength(use.attribs.width, viewport[0]) ??
+        useLength(target.attribs.width, viewport[0]) ??
+        viewport[0];
+      const height =
+        useLength(use.attribs.height, viewport[1]) ??
+        useLength(target.attribs.height, viewport[1]) ??
+        viewport[1];
+      placed = fitTransform(
+        box,
+        x,
+        y,
+        width,
+        height,
+        svgAttr(target, 'preserveAspectRatio'),
+      );
+    } else if (x || y) placed = `translate(${x},${y})`;
+    const transform = `${attribs.transform ?? ''} ${placed}`.trim();
+    if (transform) attribs.transform = transform;
+    // a length in a symbol with a `viewBox` is of that, and left as it is
+    const within = resolve && !box;
+    const children: ChildNode[] = [];
+    if (symbol) {
+      for (const child of target.children) {
+        if (child.type === 'tag') {
+          children.push(copy(child as Element, within, depth + 1));
+        }
+      }
+    } else children.push(copy(target, within, depth + 1));
+    return new Element('g', attribs, children);
+  };
+  const copy = (el: Element, resolve: boolean, depth = 0): Element => {
+    if (localName(el.name) === 'use') {
+      const group = expand(el, resolve, depth);
+      if (group) return group;
+    }
     const here = resolve && !OWN_UNITS.has(localName(el.name));
     const attribs = { ...el.attribs };
     if (here && viewport && el !== root) {
@@ -444,8 +664,9 @@ function copyTree(root: Element, viewport: [number, number] | null): Element {
     }
     const children: ChildNode[] = [];
     for (const child of el.children) {
-      if (child.type === 'tag') children.push(copy(child as Element, here));
-      else if (child.type === 'text') children.push(new Text(child.data));
+      if (child.type === 'tag') {
+        children.push(copy(child as Element, here, depth));
+      } else if (child.type === 'text') children.push(new Text(child.data));
     }
     return new Element(strip(el.name), attribs, children);
   };
