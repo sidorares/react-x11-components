@@ -412,7 +412,13 @@ padding and border counted once, and a width, height or basis of its own is
 its content box's unless `box-sizing` says otherwise. An `auto` margin takes
 the free space on its side, so `margin-left: auto` puts an item at the end
 of its row. A row of flex items inside another item is as wide as its items
-side by side and the gaps between them; a gap is a length, or a percentage
+side by side and the gaps between them — an item with a `width` of its own
+counting as that width, whatever the row would shrink it to (CSS Flexbox
+9.9) — and a percentage `max-width` on a box with a width takes nothing
+from what the box gives the size of whatever holds it, being a percentage
+of the size that is being worked out (CSS Sizing 3, 5.2.1): a row of
+buttons `width: 98px; max-width: 100%` is as wide as its buttons. A gap is
+a length, or a percentage
 of the container's size along it. A percentage in an item's padding, its
 margins or its `min-width` and `max-width` is of the container's content
 width, the item's containing block's, whatever width the item was flexed

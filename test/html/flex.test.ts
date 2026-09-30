@@ -712,6 +712,50 @@ test('a flex item its content holds is frozen at that size, and the rest share w
   );
 });
 
+test("a flex box is no narrower than its items' widths make it", async () => {
+  // What an item with a width of its own gives the size of its flex box is
+  // that width (CSS Flexbox 9.9.3), and a percentage `max-width` on a box
+  // takes nothing from what it gives the size of what holds it: it is a
+  // percentage of the size being worked out, and none to that (CSS Sizing
+  // 3, 5.2.1). Measured as the items were laid out in no width at all —
+  // shrunk by the row, cut to 100% of nothing — a row of buttons with
+  // widths came to less than its buttons, and the item beside it that
+  // takes the rest pushed them out of their box: nextjs.org's header,
+  // whose Deploy button is `width: 98px; max-width: 100%`
+  const { node } = await render(
+    '<style>body{margin:0} .row{display:flex;width:300px}' +
+      '.rest{width:100%} .b{height:10px}</style>' +
+      '<div class="row"><div class="rest"></div>' +
+      '<div id="a" style="display:flex">' +
+      '<div id="b" class="b" style="width:98px;max-width:100%"></div>' +
+      '<div id="c" class="b" style="width:40px"></div></div></div>' +
+      // a block in an item, as a flex item in one
+      '<div class="row"><div class="rest"></div><div id="d">' +
+      '<div class="b" style="width:98px;max-width:100%"></div></div></div>' +
+      // within a `max-width` that is a length, and no less than a minimum
+      '<div class="row"><div class="rest"></div>' +
+      '<div id="e" style="display:flex">' +
+      '<div class="b" style="width:98px;max-width:60px"></div>' +
+      '<div class="b" style="width:10px;min-width:30px"></div></div></div>' +
+      // a replaced box's percentage limit is of nothing at its least (CSS
+      // Sizing 3, 5.2.1), which is what lets an image shrink
+      '<div class="row"><div class="rest"></div><div id="f">' +
+      '<svg style="display:block;width:98px;max-width:100%;height:10px">' +
+      '</svg></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.deepStrictEqual(
+    [box('a').width, box('b').width, box('c').width],
+    [138, 98, 40],
+    'a row of items with widths is as wide as they are',
+  );
+  assert.strictEqual(box('a').x, 162, 'and the item beside it has the rest');
+  assert.strictEqual(box('d').width, 98, 'a block with a width in an item');
+  assert.strictEqual(box('e').width, 90, 'within its limits in pixels');
+  assert.ok(box('f').width < 98, 'and a replaced box gives way');
+});
+
 test('what is in a stretched or flexed item takes its percentages of its height', async () => {
   // CSS Flexbox 9.8: an item stretched across its line, or flexed in a
   // column of a height of its own, has a definite height, and `h-full` in

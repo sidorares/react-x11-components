@@ -3056,6 +3056,22 @@ export function intrinsicWidth(box: Box): number {
     // counts as `auto`, so its content decides.
     if (typeof style.width === 'number') {
       contribution = Math.max(own, min + margins);
+      // And it is that width where the box was laid out at less. In a row
+      // of flex items it was shrunk to fit the width this is measured at,
+      // and what an item gives its flex box's own size is its width (CSS
+      // Flexbox 9.9.3); under a percentage `max-width` it was cut short,
+      // by a percentage of the size being worked out, which is none to
+      // what a box contributes (5.2.1). But a replaced box's is of nothing
+      // at its least and none at its most: as it was laid out.
+      const cyclic = typeof style.maxWidth === 'object';
+      if (cyclic ? child.kind !== 'replaced' : row) {
+        let stated = style.width + contentExtra(child);
+        if (typeof style.maxWidth === 'number') {
+          stated = Math.min(stated, style.maxWidth + contentExtra(child));
+        }
+        stated = Math.max(stated, child.horizontalExtra, min);
+        contribution = Math.max(contribution, stated + margins);
+      }
     } else {
       let inner = intrinsicWidth(child) + child.horizontalExtra;
       if (typeof style.maxWidth === 'number') {
