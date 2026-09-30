@@ -97,12 +97,13 @@ export function layoutTable(
   // out by its contents after all (CSS 2.1 17.5.2.1), stretched or not
   const fixed = style.tableLayout === 'fixed' && !own;
   // a percentage of the table's width less its spacing (CSS 2.1 17.5.2.1)
-  const set = columnWidths(columnBoxes, columnGroups, available);
+  const set = columnWidths(columnBoxes, columnGroups, available, partWidth);
   const widths = fixed
     ? fixedColumns(cells, set, columnCount, available, spacing)
     : autoColumns(
         cells,
         set,
+        columnWidths(columnBoxes, columnGroups, available, partLeast),
         columnCount,
         available,
         ctx,
@@ -511,10 +512,15 @@ function fixedColumns(
     const px = ownWidth(cell.box.style, available);
     if (px === null) continue;
     const box = cell.box;
-    const outer =
-      box.style.boxSizing === 'border-box'
-        ? Math.max(px, box.horizontalExtra)
-        : px + box.horizontalExtra;
+    // A length within a length `max-width`, which a `min-width` raises
+    // and does nothing else to: a fixed table does not measure its cells'
+    // content, so a least width has nothing to hold up (CSS Tables 3,
+    // 3.8.2 and 3.8.3, as Blink reads them). A percentage is held by a
+    // percentage limit only (`ownWidth`). Unheld, a cell `width: 300px;
+    // max-width: 100px` took 300 of the table.
+    const outer = isPct(box.style.width)
+      ? outerWidth(box, px)
+      : Math.min(outerWidth(box, px), cellLimits(box).cap);
     const last = Math.min(columnCount, cell.column + cell.colSpan);
     let taken = spacing * (last - cell.column - 1);
     let open = 0;
@@ -559,10 +565,22 @@ function fixedColumns(
  * When they do not, the surplus over each column's minimum is scaled down in
  * proportion, so a column of long prose gives up more than a column of
  * dates. A column with an explicit `width` is honoured before either.
+ *
+ * What a cell asks is its content within its length limits (CSS Tables 3,
+ * 3.8.2): its outer min-content width is `max(min-width, min-content)`
+ * and its outer max-content width `max(min-width, min-content,
+ * min(max-width, max-content))`. A `max-width` caps the min-content too,
+ * as Blink has it where the draft does not (`CreateCellInlineConstraint`),
+ * so that `td { max-width: 50px }` over a long word, or a line that does
+ * not wrap and ends in an ellipsis, makes a column 50 wide and not the
+ * word's. Neither limit sets the column's width, which only a `width`
+ * does: a cell `min-width: 100px` over 10px of content in a table of 600
+ * takes its share of the rest, as one 100 wide would.
  */
 function autoColumns(
   cells: Cell[],
   columnWidths: (number | null)[],
+  columnLeast: (number | null)[],
   columnCount: number,
   available: number,
   ctx: LayoutContext,
@@ -576,6 +594,8 @@ function autoColumns(
     columnCount,
   ).fill(null);
   const spanning: Cell[] = [];
+  // each cell's outer min-content and max-content, within its limits
+  const asks = new Map<Cell, { min: number; max: number }>();
 
   for (const cell of cells) {
     // Two probe layouts per cell: unconstrained for max-content, and at no
@@ -599,12 +619,19 @@ function autoColumns(
         (ctx.fonts && exactMinContent(cell.box, ctx.fonts)) ??
         measureIntrinsicWidth(cell.box, ctx, MIN_CONTENT_PROBE, true);
     }
+    const { floor, cap } = cellLimits(cell.box);
+    const low = Math.min(Math.max(cell.box.intrinsicMinContent, floor), cap);
+    const ask = {
+      min: low,
+      max: Math.max(low, Math.min(cell.box.intrinsicMaxContent, cap)),
+    };
+    asks.set(cell, ask);
     if (cell.colSpan > 1) {
       spanning.push(cell);
       continue;
     }
-    max[cell.column] = Math.max(max[cell.column], cell.box.intrinsicMaxContent);
-    min[cell.column] = Math.max(min[cell.column], cell.box.intrinsicMinContent);
+    max[cell.column] = Math.max(max[cell.column], ask.max);
+    min[cell.column] = Math.max(min[cell.column], ask.min);
     const width = cellWidth(cell, containingWidth);
     if (width !== null) {
       explicit[cell.column] = Math.max(explicit[cell.column] ?? 0, width);
@@ -612,10 +639,17 @@ function autoColumns(
   }
 
   // a column's own width counts as its cells' do: at least that, and its
-  // content's max where that is wider (CSS 2.1 17.5.2.2, step 2)
+  // content's max where that is wider (CSS 2.1 17.5.2.2, step 2); and its
+  // `min-width` alone is the least it and its content are, as a cell's
+  // is, and sets no width (CSS Tables 3, 3.8.2)
   for (let c = 0; c < columnCount; c += 1) {
     const own = columnWidths[c];
     if (own !== null) explicit[c] = Math.max(explicit[c] ?? 0, own);
+    const floor = columnLeast[c];
+    if (floor !== null) {
+      min[c] = Math.max(min[c], floor);
+      max[c] = Math.max(max[c], floor);
+    }
   }
 
   // A spanning cell comes after the cells of one column, the narrower
@@ -654,7 +688,7 @@ function autoColumns(
   // least a column gives way to when the table has less room than its
   // cells' widths want, as beside a float
   const least = min.slice();
-  for (const cell of spanning) grow(least, cell.box.intrinsicMinContent, cell);
+  for (const cell of spanning) grow(least, asks.get(cell)!.min, cell);
   for (let c = 0; c < columnCount; c += 1) {
     if (explicit[c] !== null) {
       max[c] = Math.max(min[c], explicit[c] as number);
@@ -666,8 +700,9 @@ function autoColumns(
   // with 20px between them, has 60 to share, where it had none
   for (const cell of spanning) {
     const own = cellWidth(cell, containingWidth) ?? 0;
-    grow(min, Math.max(cell.box.intrinsicMinContent, own), cell);
-    grow(max, Math.max(cell.box.intrinsicMaxContent, own), cell);
+    const ask = asks.get(cell)!;
+    grow(min, Math.max(ask.min, own), cell);
+    grow(max, Math.max(ask.max, own), cell);
   }
   for (let c = 0; c < columnCount; c += 1) min[c] = Math.min(min[c], max[c]);
 
@@ -715,24 +750,24 @@ function autoColumns(
  * The width each column is set to, or null: a column's own `width`, or its
  * group's shared among the columns of a group that has none of its own
  * (HTML's `<colgroup span>`); and a group's `width` spread over its columns
- * where theirs come to less (CSS 2.1 17.5.2.2, step 4). Each within its
- * `min-width` and `max-width`, which apply to columns and column groups as
- * to any block (10.4), so `min-width` alone sets one.
+ * where theirs come to less (CSS 2.1 17.5.2.2, step 4). Or, as `read`
+ * says, the least each is (`partLeast`), shared and spread the same way.
  */
 function columnWidths(
   columnBoxes: (Box | null)[],
   columnGroups: (Box | null)[],
   base: number,
+  read: (box: Box, base: number) => number | null,
 ): (number | null)[] {
   const widths = columnBoxes.map((column) =>
-    column ? partWidth(column, base) : null,
+    column ? read(column, base) : null,
   );
   let group: Box | null = null;
   for (let c = 0; c <= columnGroups.length; c += 1) {
     if (c < columnGroups.length && columnGroups[c] === group) continue;
     // the group that ends here, over its columns from `start`
     if (group) {
-      const width = partWidth(group, base);
+      const width = read(group, base);
       let start = c - 1;
       while (start > 0 && columnGroups[start - 1] === group) start -= 1;
       if (width !== null) {
@@ -751,48 +786,71 @@ function columnWidths(
   return widths;
 }
 
-/** A column's or a column group's width, within its limits, or null where
- *  it sets none. The limits are lengths: a percentage in them does what it
- *  does in a cell's (`cellWidth`). */
+/** A column's or a column group's width, or null where it sets none: its
+ *  `width`, raised to a length `min-width`. A `max-width` does nothing to
+ *  it. CSS Tables 3, 3.8.2 makes a column's outer min-content width
+ *  `max(min-width, width)`, which is at least as wide as any `max-width`
+ *  could hold it to, and Blink reads no `max-width` on a column at all
+ *  (`CreateColumn`): `<col style="width:100px; max-width:50px">` is 100
+ *  wide, where it was 50. A percentage `max-width` holds a percentage
+ *  `width` (`ownWidth`), and a percentage `min-width` is ignored. */
 function partWidth(box: Box, base: number): number | null {
-  const style = box.style;
-  const width = ownWidth(style, base);
-  const min = typeof style.minWidth === 'number' ? style.minWidth : 0;
-  if (width === null && !(min > 0)) return null;
-  const max = typeof style.maxWidth === 'number' ? style.maxWidth : null;
-  let out = width ?? 0;
-  if (max !== null) out = Math.min(out, max);
-  return Math.max(0, out, min);
+  const width = ownWidth(box.style, base);
+  if (width === null) return null;
+  return Math.max(0, width, partLeast(box) ?? 0);
+}
+
+/** The least a column or a column group is, where a length `min-width`
+ *  says: what its cells ask is held up to it, and it sets no width of its
+ *  own, which a fixed table's columns have nothing but (`fixedColumns`).
+ *  Read as a width, `<col style="min-width:100px">` held a column of
+ *  prose to 100 in an auto table, where it is as wide as the prose is. */
+function partLeast(box: Box): number | null {
+  const min = box.style.minWidth;
+  return typeof min === 'number' && min > 0 ? min : null;
 }
 
 /** A cell's own `width`, its padding and borders in, or null. A
  *  percentage is a share of the table its padding and borders are part
  *  of, as browsers read it: added on, a 90% cell and a 10% one came to
- *  more than the table, which then took it back from both. Held within its
- *  `min-width` and `max-width` as a column's is (`partWidth`), which CSS
- *  2.1 leaves undefined and every browser does: a cell set `width: 3in;
- *  max-width: 1in` is an inch wide, and one with `min-width` alone is as
- *  wide as that.
+ *  more than the table, which then took it back from both. A length is
+ *  held within a length `max-width`, which CSS 2.1 leaves undefined and
+ *  every browser does: a cell set `width: 3in; max-width: 1in` is an inch
+ *  wide. A percentage is not: `width: 50%; max-width: 100px` is half the
+ *  table, as in Blink, which keeps a percentage apart from the lengths
+ *  that cap what a cell's content asks (`autoColumns`). A `min-width`
+ *  sets no width, and holds up what the cell asks instead.
  *
- *  Where they are lengths. A percentage `min-width` is ignored, and a
- *  percentage `max-width` holds a percentage `width` and nothing else
+ *  A percentage `max-width` holds a percentage `width` and nothing else
  *  (CSS Tables 3, 3.8.2, and `ownWidth`): a cell `width: 100px;
- *  max-width: 10%` in a table of 600 is 100 wide, where it was 60, and
- *  one set `min-width: 150%` takes no more than its content asks. */
+ *  max-width: 10%` in a table of 600 is 100 wide, where it was 60. */
 function cellWidth(cell: Cell, base: number): number | null {
-  const style = cell.box.style;
-  const len = style.width;
-  const width = ownWidth(style, base);
-  const min = typeof style.minWidth === 'number' ? style.minWidth : 0;
-  if (width === null && !(min > 0)) return null;
-  const max = typeof style.maxWidth === 'number' ? style.maxWidth : null;
-  let own = width ?? 0;
-  if (max !== null) own = Math.min(own, max);
-  own = Math.max(0, own, min);
-  if (isPct(len) && own === width) {
-    return Math.max(width, cell.box.horizontalExtra);
-  }
-  return own + cell.box.horizontalExtra;
+  const box = cell.box;
+  const width = ownWidth(box.style, base);
+  if (width === null) return null;
+  if (isPct(box.style.width)) return Math.max(width, box.horizontalExtra);
+  return Math.min(outerWidth(box, width), cellLimits(box).cap);
+}
+
+/** A cell's length `min-width` and `max-width` as border-box widths, the
+ *  limit raised to the least, or 0 and Infinity where it has none: what
+ *  its column sizes its content within (`autoColumns`), and a fixed table
+ *  its width (`fixedColumns`). As Blink's `InlineSizesFromStyle`. */
+function cellLimits(box: Box): { floor: number; cap: number } {
+  const { minWidth, maxWidth } = box.style;
+  const floor = typeof minWidth === 'number' ? outerWidth(box, minWidth) : 0;
+  const cap =
+    typeof maxWidth === 'number'
+      ? Math.max(outerWidth(box, maxWidth), floor)
+      : Infinity;
+  return { floor, cap };
+}
+
+/** A width a cell's style gives, as its border box. */
+function outerWidth(box: Box, width: number): number {
+  return box.style.boxSizing === 'border-box'
+    ? Math.max(width, box.horizontalExtra)
+    : width + box.horizontalExtra;
 }
 
 /** A cell's, a column's or a column group's `width` as the columns read

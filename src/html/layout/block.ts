@@ -132,7 +132,8 @@ export interface LayoutContext {
    * its padding, its margins and its width limits are of (CSS 2.1 8.3,
    * 8.4, 10.4). Left out, `width` is both — a box probed at the room there
    * is for it. For a table cell it is the width of its row, which its
-   * padding's percentages are of.
+   * padding's percentages are of, and it says the cell is laid out in its
+   * columns: at `width`, whatever its limits say.
    */
   layoutSubtree(box: Box, width: number, containing?: number): void;
   /** How many flex boxes' Yoga passes are running, one inside the last's
@@ -1689,24 +1690,32 @@ function layoutSubtree(
   ctx: LayoutContext,
   width: number,
   /** Its containing block's width, where `width` is the box's own. */
-  containing = width,
+  containing?: number,
 ): void {
-  resolveEdges(box, Number.isFinite(containing) ? containing : 0);
+  const base = containing ?? width;
+  resolveEdges(box, Number.isFinite(base) ? base : 0);
   if (box.kind === 'replaced') {
     sizeReplaced(box, width);
     box.x = 0;
     box.y = 0;
     return;
   }
-  // within its limits, a percentage among them of its containing block's
+  // Within its limits, a percentage among them of its containing block's
   // width and not of its own: a flex item `max-width: 50%` that the flex
-  // layout made half its row was laid out at a quarter of it. A table
-  // cell's is of nothing, and ignored: what a percentage limit does to a
-  // cell it does where its column is sized (CSS Tables 3, 3.8.2), and a
-  // cell is laid out in the width its columns came to.
-  const borderBox = Number.isFinite(width)
-    ? clampWidth(box, width, box.kind === 'table-cell' ? NaN : containing)
-    : Infinity;
+  // layout made half its row was laid out at a quarter of it.
+  //
+  // A table cell laid out in its columns, which hand it its row's width,
+  // is as wide as they are (CSS Tables 3, 3.10.2): its limits are theirs
+  // to weigh (3.8.2), and have been. Clamped again, `td { max-width:
+  // 50px }` in a column 200 wide set its text in 50 of it. Probed for
+  // what it asks of them, at none, it keeps within its length limits as
+  // any box does; a percentage one is of nothing and does not hold it.
+  let borderBox = Infinity;
+  if (Number.isFinite(width)) {
+    if (box.kind !== 'table-cell') borderBox = clampWidth(box, width, base);
+    else if (containing !== undefined) borderBox = width;
+    else borderBox = clampWidth(box, width, NaN);
+  }
   layoutInternals(box, ctx, borderBox, 0, 0);
 }
 
