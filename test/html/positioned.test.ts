@@ -303,6 +303,52 @@ test('an absolute box a max-width or max-height holds is centred by its auto mar
   );
 });
 
+test('an absolute form control with both offsets on an axis fills what they leave', async () => {
+  // A form control is an inline block to CSS, whatever draws it (HTML's
+  // rendering section), and Chrome sizes one positioned with both offsets
+  // as it sizes any box (CSS 2.1 10.3.7, 10.6.4): to what they leave. It
+  // was sized as a replaced element here, at its intrinsic size — so the
+  // invisible `<select class="absolute inset-0 opacity-0">` a page lays
+  // over a picker it draws, to take the press, covered only a corner of
+  // it: nextjs.org's language switchers.
+  const { node } = await render(
+    '<style>body{margin:0}.w{position:relative;width:200px;height:40px}' +
+      '.w>*{position:absolute;inset:0;margin:0}</style>' +
+      '<div class="w"><select id="select"><option>One</option></select></div>' +
+      '<div class="w"><input id="text"></div>' +
+      '<div class="w"><textarea id="area"></textarea></div>' +
+      '<div class="w"><input id="submit" type="submit" value="Go"></div>' +
+      '<div class="w"><input id="check" type="checkbox" style="margin:3px">' +
+      '</div>' +
+      // a limit makes it a size like one set, and auto margins share the
+      // rest (10.4)
+      '<div class="w"><input id="held" style="max-width:100px;' +
+      'box-sizing:border-box;margin:auto"></div>' +
+      // one offset is no pair of them: the control's own size across
+      '<div class="w"><input id="start" style="right:auto"></div>' +
+      '<div><input id="plain" style="margin:0"></div>' +
+      // and a replaced element keeps its own size (10.3.8, 10.6.5)
+      '<div class="w"><img id="img" width="10" height="10"></div>',
+  );
+  const el = view(node);
+  const rect = (id: string) => {
+    const box = boxOf(el, id);
+    const parent = (box as LaidBox & { parent: LaidBox }).parent;
+    return [box.x - parent.x, box.y - parent.y, box.width, box.height];
+  };
+  for (const id of ['select', 'text', 'area', 'submit']) {
+    assert.deepStrictEqual(rect(id), [0, 0, 200, 40], id);
+  }
+  assert.deepStrictEqual(rect('check'), [3, 3, 194, 34], 'inside its margins');
+  assert.deepStrictEqual(rect('held'), [50, 0, 100, 40], 'held and centred');
+  assert.deepStrictEqual(
+    rect('start'),
+    [0, 0, boxOf(el, 'plain').width, 40],
+    'its own width, and the height its offsets leave',
+  );
+  assert.deepStrictEqual(rect('img'), [0, 0, 10, 10], 'an image is its size');
+});
+
 test('translate and the translation in a transform are read', async () => {
   const { node } = await render(
     '<div id="a" style="translate:10px 20%"></div>' +

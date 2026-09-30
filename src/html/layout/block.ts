@@ -3319,6 +3319,22 @@ function placeFloat(
   });
 }
 
+/** Whether a box is a form control's: a replaced box for what draws it,
+ *  a widget, and an inline block for how it is sized. */
+function isControl(box: Box): boolean {
+  switch (box.replaced) {
+    case 'input':
+    case 'textarea':
+    case 'select':
+    case 'button':
+    case 'checkbox':
+    case 'radio':
+      return true;
+    default:
+      return false;
+  }
+}
+
 /**
  * An absolutely positioned box, against its containing block: a box's
  * padding box, or an inline box's fragments (`inlineContainingBlock`). An
@@ -3440,11 +3456,25 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
       top ?? (bottom === null && at ? at.from.y + at.y - cbY : 0),
     );
   }
+  // A form control is an inline block to CSS and no replaced element,
+  // whatever draws it (HTML's rendering section): with both offsets and no
+  // size of its own it fills what they leave, as any box does, where an
+  // image keeps its own (10.3.8, 10.6.5). A page lays an invisible
+  // `<select>` over a picker it draws, `position: absolute; inset: 0`, to
+  // take the press, and it has to cover it.
+  const control = isControl(box);
   if (box.kind === 'replaced') {
     sizeReplaced(box, cbWidth);
     stretchReplaced(
       box,
-      style.widthKeyword === 'stretch' ? width : null,
+      style.widthKeyword === 'stretch' ||
+        (control &&
+          style.width === AUTO &&
+          style.widthKeyword === null &&
+          left !== null &&
+          right !== null)
+        ? width
+        : null,
       cbWidth,
     );
   } else layoutOwn(box, ctx, width);
@@ -3513,7 +3543,9 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     );
     // — a box with a ratio has its height from its width
     const stretches =
-      style.height === AUTO && box.kind !== 'replaced' && !boxRatio(box);
+      style.height === AUTO &&
+      (box.kind !== 'replaced' || control) &&
+      !boxRatio(box);
     // both offsets and no height: the box fills what they leave, its
     // `auto` margins nothing (10.6.4, rule 5) — unless `min-height` or
     // `max-height` moves that, which makes it a height like one set, and

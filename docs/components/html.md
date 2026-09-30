@@ -508,7 +508,11 @@ collapsed table row or column gives its room and its spacing back —
 element or a positioned box with a `z-index` of its own, and over that
 context's background (CSS 2.1 Appendix E). An absolute box with both
 offsets on an axis fills what they leave, or, with a width, shares it
-between its `auto` margins, which is how `margin: auto` centres one. A box
+between its `auto` margins, which is how `margin: auto` centres one. A form
+control fills it too, as it does in Chrome — it is an inline block to CSS,
+whatever draws it — so the invisible `<select>` a page lays over a picker
+it draws, `position: absolute; inset: 0`, covers all of it and takes the
+press anywhere on it; an image keeps its own size (CSS 2.1 10.3.8). A box
 is painted with each edge on the pixel it falls nearest, as browsers snap
 one, so a rule `1pt` wide is a pixel and boxes that meet at a fraction of a
 pixel share the column between them. A corner's radius is a length or a
