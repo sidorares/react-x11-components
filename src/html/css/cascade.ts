@@ -694,6 +694,7 @@ export class Cascade {
       for (const bp of sheet.breakpoints) breakpoints.add(bp);
       // a query on the viewport's height reads it as a `vh` does
       if (sheet.readsHeight) this.readsViewportHeight = true;
+      if (sheet.readsWidth) this.readsViewportWidth = true;
     }
     this.breakpoints = [...breakpoints].sort((a, b) => a - b);
     this.counterStyles = new CounterStyles(counterStyles);
@@ -1474,7 +1475,15 @@ export class Cascade {
       if (!bucket) return;
       for (const indexed of bucket) {
         const rule = indexed.rule;
-        if (!mediaMatches(rule.media, width, this.look.colorScheme, height)) {
+        if (
+          !mediaMatches(
+            rule.media,
+            width,
+            this.look.colorScheme,
+            height,
+            this.scale,
+          )
+        ) {
           continue;
         }
         if (!indexed.compiled) {

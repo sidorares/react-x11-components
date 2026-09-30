@@ -64,6 +64,10 @@ export interface Stylesheet {
    *  which makes a document restyle when the height moves, as a `vh`
    *  does. */
   readsHeight?: boolean;
+  /** Whether one tests its aspect ratio, which a width that crosses no
+   *  breakpoint can change: the document restyles as one with a `vw`
+   *  does. */
+  readsWidth?: boolean;
   /** The `@font-face` rules, in order (see `fonts.ts`). */
   fontFaces: FontFaceRule[];
   /** `@counter-style` rules, in order: a name and its descriptors, which
@@ -108,6 +112,16 @@ export interface MediaCondition {
    *  `max-height` and a range on `height` (Media Queries 4, 4.2). */
   minHeight?: number;
   maxHeight?: number;
+  /** The display's resolution in dots per CSS pixel, its scale: `min-`
+   *  and `max-resolution`, and WebKit's `-webkit-min-device-pixel-ratio`,
+   *  which a design writes to swap in its high-DPI images. */
+  minResolution?: number;
+  maxResolution?: number;
+  /** The viewport's width over its height: `aspect-ratio` and its `min-`
+   *  and `max-`, the device's the viewport's too, and `orientation`, which
+   *  is landscape where the width is the greater. */
+  minAspect?: number;
+  maxAspect?: number;
   /** `prefers-color-scheme`, answered from the palette in force. */
   scheme?: 'light' | 'dark';
   /** Set when the query could not be evaluated as a width or scheme test:
@@ -240,6 +254,10 @@ export function parseStylesheet(
             if (c.minHeight !== undefined || c.maxHeight !== undefined) {
               sheet.readsHeight = true;
             }
+            if (c.minAspect !== undefined || c.maxAspect !== undefined) {
+              sheet.readsHeight = true;
+              sheet.readsWidth = true;
+            }
           }
           // A nested `@media` intersects with the one above it; pushing a
           // level rather than merging keeps "all of these blocks hold" exact
@@ -348,6 +366,10 @@ export function parseStylesheet(
           if (c.max !== undefined) breakpoints.add(c.max + MAX_EDGE);
           if (c.minHeight !== undefined || c.maxHeight !== undefined) {
             sheet.readsHeight = true;
+          }
+          if (c.minAspect !== undefined || c.maxAspect !== undefined) {
+            sheet.readsHeight = true;
+            sheet.readsWidth = true;
           }
         }
         styleRule(
@@ -1794,6 +1816,8 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
     let pass = true;
     let sawWidth = false;
     let sawHeight = false;
+    let sawResolution = false;
+    let sawAspect = false;
     const negated = /^\s*not\b/i.test(group);
     // `and` needs white space after it, where a `(` would make it a
     // function, and none after the `)` it follows: DuckDuckGo writes
@@ -1891,7 +1915,73 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
           // renderer needs.
           pass = false;
         } else if (key === 'orientation') {
-          pass = feature[2].trim().toLowerCase() === 'landscape';
+          // the viewport's, as its aspect ratio: portrait where its height
+          // is at least its width (Media Queries 4, 4.5)
+          const orientation = feature[2].trim().toLowerCase();
+          if (orientation === 'portrait') {
+            condition.maxAspect = Math.min(condition.maxAspect ?? Infinity, 1);
+            sawAspect = true;
+          } else if (orientation === 'landscape') {
+            condition.minAspect = Math.max(
+              condition.minAspect ?? 0,
+              1 + ASPECT_EDGE,
+            );
+            sawAspect = true;
+          } else pass = false;
+        } else if (ASPECT_FEATURES.test(key)) {
+          const ratio = ratioOf(feature[2]);
+          if (ratio === null) pass = false;
+          else {
+            if (!key.startsWith('max-')) {
+              condition.minAspect = Math.max(condition.minAspect ?? 0, ratio);
+            }
+            if (!key.startsWith('min-')) {
+              condition.maxAspect = Math.min(
+                condition.maxAspect ?? Infinity,
+                ratio,
+              );
+            }
+            sawAspect = true;
+          }
+        } else if (RESOLUTION_FEATURES.has(key)) {
+          const dppx = resolutionOf(feature[2], key.startsWith('-webkit-'));
+          if (dppx === null) pass = false;
+          else {
+            if (!key.includes('max-')) {
+              condition.minResolution = Math.max(
+                condition.minResolution ?? 0,
+                dppx,
+              );
+            }
+            if (!key.includes('min-')) {
+              condition.maxResolution = Math.min(
+                condition.maxResolution ?? Infinity,
+                dppx,
+              );
+            }
+            sawResolution = true;
+          }
+        } else if (desktopFeature(key, feature[2]) !== true) {
+          // any other feature as a desktop screen with a mouse answers
+          // it, and one nothing knows is false (Media Queries 4, 3.2):
+          // Firefox's and Opera's resolution features, which a design lists
+          // beside WebKit's, held here, and a page at one dot to the pixel
+          // took the rules it keeps for two
+          pass = false;
+        }
+        continue;
+      }
+      const flag = /^\(\s*(-?[a-z][a-z0-9-]*)\s*\)$/i.exec(term);
+      if (flag) {
+        // a feature in the boolean context, `(hover)`: true where its value
+        // is anything but zero or none
+        const key = flag[1].toLowerCase();
+        if (
+          !BOOLEAN_TRUE.has(key) &&
+          !RESOLUTION_FEATURES.has(key) &&
+          desktopFeature(key, null) !== true
+        ) {
+          pass = false;
         }
         continue;
       }
@@ -1907,12 +1997,22 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
       // `not` over a scheme is the other scheme. `not` over a width range
       // is not expressible as one range; the honest reduction is to decide
       // it statically rather than invert it wrongly.
-      if (!sawWidth && !sawHeight && pass && condition.scheme) {
+      if (
+        !sawWidth &&
+        !sawHeight &&
+        !sawResolution &&
+        !sawAspect &&
+        pass &&
+        condition.scheme
+      ) {
         out.push({ scheme: condition.scheme === 'dark' ? 'light' : 'dark' });
         continue;
       }
       out.push({
-        staticPass: !sawWidth && !sawHeight && pass ? false : !pass,
+        staticPass:
+          !sawWidth && !sawHeight && !sawResolution && !sawAspect && pass
+            ? false
+            : !pass,
       });
       continue;
     }
@@ -1923,6 +2023,8 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
     if (
       !sawWidth &&
       !sawHeight &&
+      !sawResolution &&
+      !sawAspect &&
       condition.scheme === undefined &&
       condition.min === undefined &&
       condition.max === undefined
@@ -2021,6 +2123,123 @@ export function supportsCondition(prelude: string): boolean | null {
  * first `)` found no feature there — the term was passed over as though it
  * said nothing, and every narrow-screen rule held at every width.
  */
+/** `aspect-ratio` and the device's, bare or `min-`/`max-`. */
+const ASPECT_FEATURES = /^(?:min-|max-)?(?:device-)?aspect-ratio$/;
+
+/** How far past square a landscape viewport is: any width over the height. */
+const ASPECT_EDGE = 1e-9;
+
+/** A ratio, `16/9` or `16 / 9` or `1.5`, as a number; null for anything
+ *  else, or a ratio of nothing. */
+function ratioOf(value: string): number | null {
+  const m = /^\s*(\d*\.?\d+)\s*(?:\/\s*(\d*\.?\d+)\s*)?$/.exec(value);
+  if (!m) return null;
+  const ratio = Number(m[1]) / (m[2] === undefined ? 1 : Number(m[2]));
+  return Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+}
+
+/** The resolution features, the standard's and WebKit's, which Chrome
+ *  answers; `min--moz-device-pixel-ratio` and `-o-min-device-pixel-ratio`
+ *  are no feature of its, and none of this. */
+const RESOLUTION_FEATURES = new Set([
+  'resolution',
+  'min-resolution',
+  'max-resolution',
+  '-webkit-device-pixel-ratio',
+  '-webkit-min-device-pixel-ratio',
+  '-webkit-max-device-pixel-ratio',
+]);
+
+/** A resolution in dots per CSS pixel: `2dppx`, `2x`, `192dpi`, `75.6dpcm`,
+ *  or WebKit's device pixel ratio, a number. Null for anything else. */
+function resolutionOf(value: string, ratio: boolean): number | null {
+  const m = /^\s*(\d*\.?\d+(?:e[+-]?\d+)?)\s*(dppx|x|dpi|dpcm)?\s*$/i.exec(
+    value,
+  );
+  if (!m) return null;
+  const n = Number(m[1]);
+  const unit = (m[2] ?? '').toLowerCase();
+  if (ratio) return unit ? null : n;
+  if (unit === 'dppx' || unit === 'x') return n;
+  if (unit === 'dpi') return n / 96;
+  if (unit === 'dpcm') return (n * 2.54) / 96;
+  return null;
+}
+
+/** The features true in the boolean context whatever the viewport: a
+ *  size, a scheme, an orientation, there is always one. */
+const BOOLEAN_TRUE = new Set([
+  'width',
+  'height',
+  'device-width',
+  'device-height',
+  'aspect-ratio',
+  'orientation',
+  'prefers-color-scheme',
+]);
+
+/**
+ * A media feature as a desktop screen driven by a mouse answers it — the
+ * device `<Html>` draws on — for the features that do not depend on the
+ * viewport: true, false, or null for a feature nothing knows, which is
+ * false (Media Queries 4, 3.2). `value` is null in the boolean context.
+ * The colour is eight bits a component on no palette and no grid; scripts
+ * never run here, so `scripting` is `none`.
+ */
+function desktopFeature(key: string, value: string | null): boolean | null {
+  const v = value?.trim().toLowerCase() ?? null;
+  const numeric = (feature: string, has: number): boolean | null => {
+    const bare = key.replace(/^(min|max)-/, '');
+    if (bare !== feature) return null;
+    if (v === null) return key === feature ? has !== 0 : null;
+    const n = Number(v);
+    if (!Number.isFinite(n)) return false;
+    if (key.startsWith('min-')) return has >= n;
+    if (key.startsWith('max-')) return has <= n;
+    return has === n;
+  };
+  const keyword = (answers: Record<string, boolean>, bool: boolean) =>
+    v === null ? bool : (answers[v] ?? false);
+  switch (key) {
+    case 'hover':
+    case 'any-hover':
+      return keyword({ hover: true, none: false }, true);
+    case 'pointer':
+    case 'any-pointer':
+      return keyword({ fine: true, coarse: false, none: false }, true);
+    case 'update':
+      return keyword({ fast: true, slow: false, none: false }, true);
+    case 'overflow-block':
+    case 'overflow-inline':
+      return keyword({ scroll: true }, true);
+    case 'scan':
+      return false;
+    case 'color-gamut':
+      return keyword({ srgb: true }, true);
+    case 'dynamic-range':
+    case 'video-dynamic-range':
+      return keyword({ standard: true }, true);
+    case 'prefers-contrast':
+    case 'prefers-reduced-transparency':
+    case 'prefers-reduced-data':
+      return keyword({ 'no-preference': true }, false);
+    case 'forced-colors':
+      return keyword({ none: true }, false);
+    case 'scripting':
+      return keyword({ none: true }, false);
+    case 'display-mode':
+      return keyword({ browser: true }, true);
+    case '-webkit-transform-3d':
+      return v === null || v === '1';
+  }
+  return (
+    numeric('color', 8) ??
+    numeric('monochrome', 0) ??
+    numeric('color-index', 0) ??
+    numeric('grid', 0)
+  );
+}
+
 function mediaFeature(term: string): [string, string, string] | null {
   const m = /^\(\s*([a-z-]+)\s*:([\s\S]*)\)$/i.exec(term);
   if (!m) return null;
@@ -2047,6 +2266,8 @@ export function mediaMatches(
   /** The viewport's height in CSS pixels; a test of it holds at no height
    *  where none is given. */
   height = NaN,
+  /** The display's scale, device pixels to the CSS pixel. */
+  resolution = 1,
 ): boolean {
   if (!media) return true;
   for (const block of media) {
@@ -2061,6 +2282,10 @@ export function mediaMatches(
         (c.max === undefined || width <= c.max) &&
         (c.minHeight === undefined || height >= c.minHeight) &&
         (c.maxHeight === undefined || height <= c.maxHeight) &&
+        (c.minResolution === undefined || resolution >= c.minResolution) &&
+        (c.minAspect === undefined || width >= c.minAspect * height) &&
+        (c.maxAspect === undefined || width <= c.maxAspect * height) &&
+        (c.maxResolution === undefined || resolution <= c.maxResolution) &&
         (c.scheme === undefined || c.scheme === scheme)
       ) {
         any = true;
