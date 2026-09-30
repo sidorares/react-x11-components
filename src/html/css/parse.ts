@@ -242,8 +242,11 @@ export function parseStylesheet(
         } else if (name === 'supports' && at.block !== null) {
           // Everything in a `@supports` block is markup this renderer either
           // understands or ignores per-declaration, so entering it is closer
-          // to right than skipping it.
-          walk(at.block, media, layer, path);
+          // to right than skipping it — but for a condition it can answer
+          // false (`supportsCondition`)
+          if (supportsCondition(at.prelude) !== false) {
+            walk(at.block, media, layer, path);
+          }
         } else if (name === 'layer') {
           // `@layer a, b;` names layers, and so fixes their order, and
           // `@layer a { … }` puts rules in one; one with no name is a layer
@@ -342,7 +345,9 @@ export function parseStylesheet(
           depth + 1,
         );
       } else if (name === 'supports') {
-        styleRule(selectors, item.block, media, layer, path, depth + 1);
+        if (supportsCondition(item.prelude) !== false) {
+          styleRule(selectors, item.block, media, layer, path, depth + 1);
+        }
       } else if (name === 'layer' && LAYER_NAME.test(item.prelude.trim())) {
         const [ranks, full] = enter(item.prelude.trim(), layer, path);
         styleRule(selectors, item.block, media, ranks, full, depth + 1);
@@ -1775,7 +1780,7 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
         sawWidth = true;
         continue;
       }
-      const feature = /^\(\s*([a-z-]+)\s*:\s*([^)]+?)\s*\)$/i.exec(term);
+      const feature = mediaFeature(term);
       if (feature) {
         const key = feature[1].toLowerCase();
         const len = parseLength(feature[2], ZERO_UNITS);
@@ -1843,6 +1848,104 @@ export function parseMediaQuery(prelude: string): MediaCondition[] {
     out.push(condition);
   }
   return out.length ? out : [{ staticPass: true }];
+}
+
+/**
+ * The properties whose support a `@supports` condition is answered for:
+ * the mask's, which pages test before they draw an icon as a masked colour
+ * and keep a background image under `not` for an engine without them.
+ * Drawn here, and the fallback drawn too, an icon was its image in black
+ * under the mask, over the colour it was meant to be.
+ */
+const ANSWERED = new Set(
+  [
+    'mask',
+    'mask-image',
+    'mask-repeat',
+    'mask-position',
+    'mask-size',
+    'mask-origin',
+    'mask-clip',
+  ].flatMap((name) => [name, `-webkit-${name}`]),
+);
+
+/**
+ * Whether a `@supports` condition holds (CSS Conditional 3, 6): true or
+ * false where it turns on declarations of the properties this answers for
+ * (`ANSWERED`), combined by `not`, `and` and `or`; null where it turns on
+ * anything else, or is none, and the block is entered as every one was.
+ * Answering more is not safe without a list of what this draws: Tailwind 4
+ * keeps its variables' starting values under a test for engines without
+ * `@property`, which this is, and false there would drop every shadow and
+ * gradient it writes.
+ */
+export function supportsCondition(prelude: string): boolean | null {
+  const text = prelude.trim();
+  if (/^not\b/i.test(text)) {
+    const inner = supportsCondition(text.slice(3));
+    return inner === null ? null : !inner;
+  }
+  // the terms at the top level, and the one operator between them
+  const terms: string[] = [];
+  let op = '';
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (c === '(') depth += 1;
+    else if (c === ')') depth -= 1;
+    else if (depth === 0 && /\s/.test(c)) {
+      const word = /^\s+(and|or)\s+/i.exec(text.slice(i));
+      if (!word) continue;
+      const next = word[1].toLowerCase();
+      // `and` and `or` mixed without parentheses is no condition
+      if (op && op !== next) return null;
+      op = next;
+      terms.push(text.slice(start, i));
+      i += word[0].length - 1;
+      start = i + 1;
+    }
+    if (depth < 0) return null;
+  }
+  if (terms.length) {
+    terms.push(text.slice(start));
+    const values = terms.map(supportsCondition);
+    if (op === 'and') {
+      if (values.includes(false)) return false;
+      return values.includes(null) ? null : true;
+    }
+    if (values.includes(true)) return true;
+    return values.includes(null) ? null : false;
+  }
+  // one term: a condition in parentheses, or a declaration in them
+  if (!(text.startsWith('(') && text.endsWith(')'))) return null;
+  const inner = text.slice(1, -1).trim();
+  if (inner.startsWith('(') || /^not\b/i.test(inner)) {
+    return supportsCondition(inner);
+  }
+  const declaration = /^([a-z-]+)\s*:\s*(\S[\s\S]*)$/i.exec(inner);
+  if (!declaration || !ANSWERED.has(declaration[1].toLowerCase())) return null;
+  return true;
+}
+
+/**
+ * A `(name: value)` media feature: the whole term, its name, and its value
+ * read to the parenthesis that closes the feature, or null where the term is
+ * no such thing. A value may hold parentheses of its own: MediaWiki's
+ * breakpoints are `(max-width: calc(640px - 1px))`, and a value read to the
+ * first `)` found no feature there — the term was passed over as though it
+ * said nothing, and every narrow-screen rule held at every width.
+ */
+function mediaFeature(term: string): [string, string, string] | null {
+  const m = /^\(\s*([a-z-]+)\s*:([\s\S]*)\)$/i.exec(term);
+  if (!m) return null;
+  let depth = 0;
+  for (const c of m[2]) {
+    if (c === '(') depth += 1;
+    else if (c === ')' && --depth < 0) return null;
+  }
+  const value = m[2].trim();
+  return depth === 0 && value ? [term, m[1], value] : null;
 }
 
 /** A `@media` width is compared with the viewport in CSS pixels — the

@@ -43,6 +43,7 @@ import {
   CONTAIN_PAINT,
   CONTAIN_SIZE,
   copyStyle,
+  masked,
   scrolls,
 } from './css/style.js';
 import { contained } from './layout/block.js';
@@ -126,6 +127,15 @@ export interface PaintContext extends FillContext {
   translate?(x: number, y: number): void;
   /** What every drawing is multiplied by: an element's `opacity`. */
   globalAlpha?: number;
+  /** How a drawing meets what is under it; a value a backend does not
+   *  have does not stick, and reads back as the one before. */
+  globalCompositeOperation?: string;
+}
+
+/** An offscreen surface, as painting uses one. */
+export interface Offscreen {
+  getContext(kind: '2d'): unknown;
+  destroy?(): void;
 }
 
 export interface PaintOptions {
@@ -156,6 +166,10 @@ export interface PaintOptions {
   viewport?: Rect;
   /** @internal Painting a fixed box already moved to the viewport. */
   atViewport?: boolean;
+  /** A transparent surface `width` by `height` to draw on and composite
+   *  with `drawImage`, the caller's to `destroy` once it has: a masked
+   *  element is drawn on one. Null where there is no surface to be had. */
+  surface?(width: number, height: number): Offscreen | null;
   /** A drawing made once for its key on a surface `width` by `height` and
    *  kept, to be drawn with `drawImage`: a blurred shadow, whose blur is
    *  the cost. Null where there is no surface to be had. */
@@ -786,8 +800,13 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
     ctx.save();
     ctx.globalAlpha = ctx.globalAlpha! * opacity;
   }
+  if (masked(box.style) && paintMasked(ctx, box, options)) {
+    if (fade) ctx.restore();
+    return;
+  }
   // `clip` shows the part of an absolutely positioned box it names, its own
-  // background and borders among it (CSS 2.1 11.1.2)
+  // background and borders among it (CSS 2.1 11.1.2) — written out here,
+  // not called: a frame more a level and a deep document ran out of stack
   const clip = box.outOfFlow && box.style.clip ? clipOf(box, options) : null;
   if (!clip || (clip.w > 0 && clip.h > 0)) {
     const clipped = !!clip && pushClip(ctx, clip, null);
@@ -795,6 +814,145 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
     if (clipped) ctx.restore();
   }
   if (fade) ctx.restore();
+}
+
+/** A box and what it holds, cut to its `clip` as `paintBox` cuts it. */
+function paintClipped(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const clip = box.outOfFlow && box.style.clip ? clipOf(box, options) : null;
+  if (clip && !(clip.w > 0 && clip.h > 0)) return;
+  const clipped = !!clip && pushClip(ctx, clip, null);
+  paintContent(ctx, box, options);
+  if (clipped) ctx.restore();
+}
+
+const MASK_LAYERS = new WeakMap<ComputedStyle, ComputedStyle[]>();
+
+/** No corners: a mask layer is placed in the box's rectangle, which its
+ *  radii do not round (CSS Masking 1, 7). */
+const SQUARE_RADII: ComputedStyle['borderRadius'] = [0, 0, 0, 0];
+
+/**
+ * A style for each of a box's mask layers, top first, as `layersOf` makes
+ * a background's: the box's own style with the layer's image, repeat, size,
+ * position, origin and clip in its background's place, and no colour — so
+ * the background painter places and repeats a mask layer as it does a
+ * background layer, which is what CSS Masking 1 says a mask layer is (7).
+ * Made once a style.
+ */
+function maskLayersOf(style: ComputedStyle): ComputedStyle[] {
+  let layers = MASK_LAYERS.get(style);
+  if (layers) return layers;
+  const mask = style.mask;
+  const nth = <T>(list: readonly T[], i: number): T => list[i % list.length];
+  layers = mask.images.map((image, i) => {
+    const layer = Object.create(style) as ComputedStyle;
+    layer.backgroundColor = null;
+    layer.backgroundImages = null;
+    layer.backgroundImage = typeof image === 'string' ? image : null;
+    layer.backgroundGradient =
+      image !== null && typeof image !== 'string' ? image : null;
+    layer.backgroundRepeat = nth(mask.repeats, i);
+    layer.backgroundSize = nth(mask.sizes, i);
+    layer.backgroundAttachment = 'scroll';
+    [layer.backgroundPositionX, layer.backgroundPositionY] = nth(
+      mask.positions,
+      i,
+    );
+    layer.backgroundOrigin = nth(mask.origins, i);
+    layer.backgroundClip = nth(mask.clips, i);
+    layer.backgroundClipText = false;
+    layer.borderRadius = SQUARE_RADII;
+    layer.borderRadiusY = null;
+    return layer;
+  });
+  MASK_LAYERS.set(style, layers);
+  return layers;
+}
+
+/**
+ * A masked box (CSS Masking 1, 7): the box and what it holds drawn on a
+ * surface of their own, which the alpha of its mask layers — painted as a
+ * background's are, on a second surface, each added over the ones below
+ * it — then cuts with `destination-in`, and the result drawn in its place,
+ * as the group a mask makes. Only the mask painting area, the border box,
+ * can show, and only its part in the damage is drawn.
+ *
+ * A layer whose image has not arrived is transparent black (7.2), so a box
+ * none of whose layers can be drawn yet draws nothing: an icon masked out
+ * of its `background-color` is not a solid square while its image loads.
+ * False where there is no surface to draw on, or no `destination-in` to
+ * draw with, and the caller paints the box unmasked.
+ */
+function paintMasked(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): boolean {
+  const layers = maskLayersOf(box.style);
+  const drawable = layers.some(
+    (layer) =>
+      !!layer.backgroundGradient ||
+      (!!layer.backgroundImage &&
+        !!options.backgroundImageFor?.(layer.backgroundImage)),
+  );
+  if (!drawable) return true;
+  if (!options.surface || !ctx.drawImage) return false;
+  let x0 = Math.floor(box.x + options.originX);
+  let y0 = Math.floor(frameY(box) + options.originY);
+  let x1 = Math.ceil(box.x + box.width + options.originX);
+  let y1 = Math.ceil(frameY(box) + frameHeight(box) + options.originY);
+  const damage = options.damage;
+  if (damage) {
+    x0 = Math.max(x0, Math.floor(damage.x));
+    y0 = Math.max(y0, Math.floor(damage.y));
+    x1 = Math.min(x1, Math.ceil(damage.x + damage.width));
+    y1 = Math.min(y1, Math.ceil(damage.y + damage.height));
+  }
+  const w = x1 - x0;
+  const h = y1 - y0;
+  if (!(w > 0 && h > 0)) return true;
+  const content = options.surface(w, h);
+  const mask = content && options.surface(w, h);
+  try {
+    if (!content || !mask) return false;
+    const cctx = content.getContext('2d') as PaintContext;
+    const mctx = mask.getContext('2d') as PaintContext;
+    // the surfaces' own coordinates, the window's moved to their corner
+    const on: PaintOptions = {
+      ...options,
+      originX: options.originX - x0,
+      originY: options.originY - y0,
+      damage: { x: 0, y: 0, width: w, height: h },
+      canvas: options.canvas && {
+        ...options.canvas,
+        x: options.canvas.x - x0,
+        y: options.canvas.y - y0,
+      },
+      viewport: options.viewport && {
+        ...options.viewport,
+        x: options.viewport.x - x0,
+        y: options.viewport.y - y0,
+      },
+      clips: [],
+    };
+    for (let i = layers.length - 1; i >= 0; i -= 1) {
+      paintLayer(mctx, box, on, layers[i], frameImages(mctx, box, on));
+    }
+    paintClipped(cctx, box, on);
+    cctx.globalCompositeOperation = 'destination-in';
+    if (cctx.globalCompositeOperation !== 'destination-in') return false;
+    cctx.drawImage!(mask, 0, 0);
+    cctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(content, x0, y0);
+    return true;
+  } finally {
+    content?.destroy?.();
+    mask?.destroy?.();
+  }
 }
 
 function paintContent(
@@ -1342,6 +1500,7 @@ function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
     style.overflowX === 'visible' &&
     style.overflowY === 'visible' &&
     opacityOf(child) >= 1 &&
+    !masked(style) &&
     // containment makes it a stacking context, painted whole
     !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
   );
@@ -1369,6 +1528,7 @@ function flowFlex(parent: Box, child: Box, options: PaintOptions): boolean {
     style.overflowX === 'visible' &&
     style.overflowY === 'visible' &&
     !(child.outOfFlow && style.clip) &&
+    !masked(style) &&
     !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
   );
 }
@@ -2157,6 +2317,8 @@ function stacksLayers(box: Box): boolean {
   const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
   if (style.opacity < 1 || FADED_BLOCKS.has(box)) return true;
+  // and so does a mask, which is applied to the group (CSS Masking 1, 7)
+  if (masked(style)) return true;
   // layout and paint containment make one (CSS Containment 2, 3.3, 3.5)
   if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
   if (typeof style.zIndex !== 'number') return false;

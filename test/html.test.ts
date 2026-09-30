@@ -43,6 +43,7 @@ import {
   parseStylesheet,
   parseDeclarations,
   specificityOf,
+  supportsCondition,
 } from '../src/html/css/parse.js';
 import {
   parseColor,
@@ -2390,6 +2391,10 @@ async function fillsOf(
     originY?: number;
     canvas?: { x: number; y: number; width: number; height: number };
     viewport?: { x: number; y: number; width: number; height: number };
+    surface?: (
+      width: number,
+      height: number,
+    ) => { getContext(kind: '2d'): unknown; destroy?(): void } | null;
     imageFor?: () => unknown;
     cached?: (
       key: string,
@@ -16210,6 +16215,376 @@ metric(
       Math.abs(text.drawY + natural.baseline - (plain.y + plain.baseline)) <
         1e-6,
       'and its glyphs are drawn on it',
+    );
+  },
+);
+
+test('`:focus` matches no element, and a rule that names it stays in the cascade', async () => {
+  // css-select has no `:focus`, and threw on one: every rule naming it was
+  // dropped, `:not(:focus)` among them, and Wikipedia's skip link stood in
+  // the flow at the top of every page
+  const { node } = await render(
+    '<style>body,p{margin:0}' +
+      '.skip:not(:focus){position:absolute;width:1px;height:1px;' +
+      'overflow:hidden}' +
+      'a:focus,p:focus-within,p:focus-visible{margin-left:50px}</style>' +
+      '<a id="skip" class="skip" href="#p">Jump to content</a>' +
+      '<p id="p"><a id="a" href="#">text</a></p>',
+  );
+  const el = view(node);
+  const skip = boxOf(el, 'skip');
+  assert.deepStrictEqual([skip.width, skip.height], [1, 1]);
+  assert.strictEqual(boxOf(el, 'p').y, 0, 'and takes no room in the flow');
+  assert.strictEqual(boxOf(el, 'p').x, 0, 'nothing is focused');
+});
+
+metric(
+  "a form control is drawn at its element's opacity, and a hidden one is not mounted",
+  async () => {
+    // A CSS-only dropdown lays an invisible checkbox over its label —
+    // Wikipedia's language button, `opacity: 0` and as big as the label —
+    // and the widget was drawn over the label regardless. A browser draws
+    // it at the opacity its element and every ancestor come to, and at 0
+    // not at all, while its whole box still takes the press.
+    const changes: [string | undefined, unknown][] = [];
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}.menu{position:relative;width:160px;' +
+            'height:32px}.menu input{position:absolute;top:0;left:0;' +
+            'width:100%;height:100%;margin:0;opacity:0}</style>' +
+            '<div class="menu"><input type="checkbox" id="c">' +
+            '<label for="c">52 languages</label></div>' +
+            '<div style="opacity:.5"><p style="opacity:.5">' +
+            '<input type="checkbox" id="half"></p></div>' +
+            '<p style="visibility:hidden"><input type="checkbox" id="h"></p>',
+          partial: false,
+          onControlChange: (
+            el: { attribs: Record<string, string> },
+            v: unknown,
+          ) => void changes.push([el.attribs.id, v]),
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 200, fonts: FONTS! },
+    );
+    await act();
+    const widgets = screen.getAllByRole('checkbox');
+    assert.strictEqual(widgets.length, 2, 'the hidden one is not mounted');
+    const opacityOf = (n: DrawnNode) =>
+      (n.parent as unknown as { style: { opacity?: number } }).style.opacity;
+    const [menu, half] = widgets as DrawnNode[];
+    assert.strictEqual(opacityOf(menu), 0, 'the menu checkbox is not seen');
+    assert.strictEqual(opacityOf(half), 0.25, 'a faded one is faded twice');
+    assert.deepStrictEqual(
+      [menu.abs.width, menu.abs.height],
+      [160, 32],
+      'and it takes the whole of its box',
+    );
+    // a press over the label's end toggles it, as a browser's does
+    const at = { x: menu.abs.x + 150, y: menu.abs.y + 16 };
+    await act(async () => {
+      fireEvent.mouseDown(menu, {
+        dx: at.x - (menu.abs.x + menu.abs.width / 2),
+        dy: at.y - (menu.abs.y + menu.abs.height / 2),
+      });
+      fireEvent.mouseUp(menu, {
+        dx: at.x - (menu.abs.x + menu.abs.width / 2),
+        dy: at.y - (menu.abs.y + menu.abs.height / 2),
+      });
+    });
+    assert.deepStrictEqual(changes, [['c', true]]);
+  },
+);
+
+test("a media feature's value may hold parentheses of its own", async () => {
+  // MediaWiki writes its breakpoints `(max-width: calc(640px - 1px))`: the
+  // value was read to the first `)`, found no feature, and the term was
+  // passed over — every narrow-screen rule held at every width, and hid
+  // Wikipedia's Read, Edit and View history tabs on a desktop
+  assert.deepStrictEqual(
+    parseMediaQuery('screen and (max-width:calc(640px - 1px))'),
+    [{ max: 639 }],
+  );
+  assert.deepStrictEqual(
+    parseMediaQuery(
+      '(min-width: calc(40rem - 1px)) and (max-width: calc(1680px - 1px))',
+    ),
+    [{ min: 639, max: 1679 }],
+  );
+  const { node } = await render(
+    '<style>@media screen and (max-width:calc(200px - 1px)){#a{display:none}}' +
+      '@media screen and (min-width:calc(200px - 1px)){#b{display:none}}' +
+      '</style><p id="a">wide</p><p id="b">narrow</p>',
+  );
+  const text = view(node).textContent();
+  assert.ok(text.includes('wide'), `the wide rule holds: ${text}`);
+  assert.ok(!text.includes('narrow'), `and the narrow one does not: ${text}`);
+});
+
+metric(
+  "an inline flex box that clips sits on its first item's baseline, as it does unclipped",
+  async () => {
+    // A block container that clips sits on its bottom margin edge, for
+    // legacy reasons that stop at block containers (CSS Box Alignment 3,
+    // 9.2). A MediaWiki button is an `overflow: hidden` inline flex box of
+    // one icon, and it stood its whole height on the baseline, every line
+    // holding one the strut's descent taller than a browser's: 32px was 35
+    const { node } = await render(
+      '<style>body{margin:0;font:14px sans-serif}div{width:300px}' +
+        '.button{display:inline-flex;overflow:hidden;align-items:center;' +
+        'min-height:32px}.icon{display:block;width:20px;height:20px}' +
+        '.clip{display:block;overflow:hidden;height:32px}</style>' +
+        '<div id="flex"><span class="button"><span class="icon"></span>' +
+        '</span></div>' +
+        // an inline block that clips keeps the legacy rule
+        '<div id="block"><span class="clip" style="display:inline-block">' +
+        'text</span></div>' +
+        // and a block that clips has its first line's baseline still: only
+        // its last is its margin edge
+        '<div id="first"><span class="button" style="flex-direction:column">' +
+        '<span class="clip">clip</span></span></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'flex').height, 32, 'the button line');
+    assert.ok(
+      boxOf(el, 'block').height > 32,
+      `an inline block's line: ${boxOf(el, 'block').height}`,
+    );
+    assert.strictEqual(boxOf(el, 'first').height, 32, 'a first baseline');
+  },
+);
+
+test('a sticky box is where a browser starts it, not moved by its insets', async () => {
+  // Taken as `position: relative`, a sticky box was moved by its `top`
+  // wherever it started: Wikipedia's contents, `top: 24px` well below the
+  // top of the page, stood 24px lower than a browser draws it. At rest —
+  // nothing here scrolls a box in the document, and the viewport starts at
+  // the top — a box moves only as far as keeps it inside its scroll
+  // container's scrollport less its insets, and inside its containing block
+  const { node } = await render(
+    '<style>body{margin:0}div{height:20px}.s{position:sticky}' +
+      '.port{overflow:auto;height:50px}</style>' +
+      '<div id="first" class="s" style="top:10px"></div>' +
+      '<div style="height:100px"></div>' +
+      '<div id="below" class="s" style="top:24px"></div>' +
+      '<div class="port" style="border:3px solid"><div style="height:200px">' +
+      '</div><div id="foot" class="s" style="bottom:0"></div></div>' +
+      '<div class="port" style="height:40px"><div style="height:25px">' +
+      '<div id="lim" class="s" style="top:30px;height:10px"></div></div>' +
+      '<div style="height:200px"></div></div>',
+  );
+  const el = view(node);
+  // within 10px of the top: moved down to it
+  assert.strictEqual(boxOf(el, 'first').y, 10);
+  // past it: where the flow put it
+  assert.strictEqual(boxOf(el, 'below').y, 120);
+  // at the foot of a scroller's content, up to the foot of its scrollport,
+  // inside the border: 140 + 3 + 50 - 20
+  assert.strictEqual(boxOf(el, 'foot').y, 173);
+  // no further down than its containing block lets it: 196 + 25 - 10,
+  // short of the 196 + 30 its `top` asks for
+  assert.strictEqual(boxOf(el, 'lim').y, 211);
+});
+
+metric(
+  'a mask shows its element where its image is opaque, and nothing before it arrives',
+  async () => {
+    // CSS Masking 1: the element drawn as a group, and cut by the alpha of
+    // its mask layers, placed as a background's are. Wikipedia draws every
+    // icon as a `background-color` masked by an SVG, and each was a solid
+    // square. A layer whose image has not arrived is transparent black:
+    // the element is not drawn at all until it does.
+    const half =
+      `<svg ${SVG_NS} width="20" height="20">` +
+      '<rect width="10" height="20" fill="#000000"/></svg>';
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0;background:#ffffff}div{width:40px;height:20px;' +
+        'background:#ff0000}#m{mask:url(m.svg) no-repeat}' +
+        '#w{-webkit-mask-image:url(m.svg);-webkit-mask-repeat:no-repeat;' +
+        '-webkit-mask-position:right;-webkit-mask-size:20px}' +
+        '#late{mask-image:url(late.svg)}' +
+        '#g{mask-image:linear-gradient(#000000,#000000 50%,' +
+        'transparent 50%)}#a{background:none}#a::after{content:"";' +
+        'display:block;width:20px;height:20px;background:#0000ff;' +
+        'mask:url(m.svg)}#f{mask-image:url(#svg-mask)}</style>' +
+        '<div id="m"></div><div id="w"></div><div id="late"></div>' +
+        '<div id="g"></div><div id="a"></div><div id="f"></div>',
+      { 'm.svg': svgBytes(half) },
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 5, 10, '#ff0000', { message: 'under the image' });
+    await expectPixel(ctx, 15, 10, '#ffffff', {
+      message: 'where it is transparent',
+    });
+    await expectPixel(ctx, 30, 10, '#ffffff', { message: 'past it' });
+    await expectPixel(ctx, 25, 30, '#ff0000', {
+      message: 'placed and sized, under its -webkit- names',
+    });
+    await expectPixel(ctx, 5, 30, '#ffffff', { message: 'and not repeated' });
+    await expectPixel(ctx, 5, 50, '#ffffff', {
+      message: 'an image that has not arrived shows nothing',
+    });
+    await expectPixel(ctx, 5, 65, '#ff0000', { message: 'a gradient mask' });
+    await expectPixel(ctx, 5, 75, '#ffffff', { message: 'its clear half' });
+    await expectPixel(ctx, 5, 90, '#0000ff', { message: 'a pseudo-element' });
+    await expectPixel(ctx, 15, 90, '#ffffff', {
+      message: "the pseudo-element's mask",
+    });
+    await expectPixel(ctx, 35, 110, '#ff0000', {
+      message:
+        'an SVG <mask> named by a fragment is not drawn, nor is its want',
+    });
+  },
+);
+
+metric(
+  'a mask is placed and sized in CSS pixels at a display scale of 2',
+  async () => {
+    // its size and position are lengths, device pixels by the time they are
+    // stored, and its image's own size is CSS pixels until it is drawn
+    const half =
+      `<svg ${SVG_NS} width="20" height="20">` +
+      '<rect width="10" height="20" fill="#000000"/></svg>';
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 200, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0;background:#ffffff}div{width:40px;' +
+            'height:20px;background:#ff0000;mask:url(m.svg) right / 20px ' +
+            'no-repeat}</style><div></div>',
+          partial: false,
+          onResource: (r: { url: string; kind: string }) =>
+            r.kind === 'image' && r.url === 'm.svg'
+              ? { kind: 'image' as const, bytes: svgBytes(half) }
+              : null,
+        }),
+      ),
+      atScale2({ width: 240, height: 100, fonts: FONTS! }),
+    );
+    // in device pixels: the image covers 40 to 80, opaque from 40 to 60
+    await expectPixel(result.ctx, 50, 20, '#ff0000', { message: 'opaque' });
+    await expectPixel(result.ctx, 70, 20, '#ffffff', { message: 'clear' });
+    await expectPixel(result.ctx, 30, 20, '#ffffff', { message: 'outside' });
+  },
+);
+
+test('a mask longhand with a var() in it resets its own list, not the others', async () => {
+  // A declaration with a `var()` is set back to its initial value first, in
+  // case what it substitutes is no value. The mask's lists are one field,
+  // and that put back the whole of it: Wikipedia's `mask-size:
+  // calc(var(--x) - 4px)` undid the `mask-repeat: no-repeat` before it,
+  // and its chevron repeated
+  const { node } = await render(
+    '<style>#m{--x:24px;mask-repeat:no-repeat;mask-position:center;' +
+      'mask-size:calc(var(--x) - 4px);mask-image:url(m.svg)}' +
+      '#i{mask-repeat:no-repeat;mask-size:var(--missing)}</style>' +
+      '<p id="m">x</p><p id="i">x</p>',
+  );
+  const el = view(node);
+  const mask = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style.mask;
+  assert.deepStrictEqual(mask('m').repeats, [['no-repeat', 'no-repeat']]);
+  assert.deepStrictEqual(mask('m').positions, [[{ pct: 50 }, { pct: 50 }]]);
+  assert.deepStrictEqual(mask('m').sizes, [[20, 'auto']]);
+  // a var() that substitutes nothing leaves its own list at the start
+  assert.deepStrictEqual(mask('i').sizes, ['auto']);
+  assert.deepStrictEqual(mask('i').repeats, [['no-repeat', 'no-repeat']]);
+});
+
+test('a @supports test of the mask is answered, and every other is entered', () => {
+  // A page keeps a background image under `not` for an engine without
+  // masks. Entered as every `@supports` block was, Wikipedia's chevron was
+  // that image in black under its mask, over its blue
+  assert.strictEqual(
+    supportsCondition('not ((-webkit-mask-image:none) or (mask-image:none))'),
+    false,
+  );
+  assert.strictEqual(supportsCondition('(mask-image: none)'), true);
+  assert.strictEqual(
+    supportsCondition('(mask-image: none) and (-webkit-mask-size: 1px)'),
+    true,
+  );
+  // what it cannot answer it does not: Tailwind 4 keeps its variables'
+  // starting values under a test for engines without `@property`
+  for (const unknown of [
+    '(display: grid)',
+    'not (display: grid)',
+    'selector(:focus-visible)',
+    '(mask-image: none) and (display: grid)',
+    '((-webkit-hyphens: none) and (not (margin-trim: inline))) or ' +
+      '((-moz-orient: inline) and (not (color:rgb(from red r g b))))',
+  ]) {
+    assert.strictEqual(supportsCondition(unknown), null, unknown);
+  }
+  const sheet = parseStylesheet(
+    '@supports not (mask-image: none) { .a { color: red } }' +
+      '@supports (mask-image: none) { .b { color: red } }' +
+      '@supports (display: grid) { .c { color: red } }' +
+      '.d { @supports not (mask: none) { color: red } }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.selector),
+    ['.b', '.c'],
+  );
+});
+
+metric(
+  'a fixed box in a masked element is drawn where the viewport is, on its surface',
+  async () => {
+    // A masked element is drawn on a surface of its own, its origin moved
+    // to the surface's corner. A fixed box in it is placed by where the
+    // viewport is from that origin, so the viewport moves with it: left in
+    // window coordinates, the box was drawn the scroll away from where it
+    // belongs
+    const { node } = await render(
+      '<style>body{margin:0}.m{height:2000px;' +
+        'mask-image:linear-gradient(#000000,#000000)}.bar{position:fixed;' +
+        'left:0;bottom:0;width:100px;height:20px;background:#ff0000}' +
+        '</style><div class="m"><div class="bar"></div></div>',
+    );
+    const el = view(node);
+    await act();
+    // surfaces that keep what is filled on them
+    const filled: { style: unknown; y: number }[] = [];
+    const surface = () => {
+      let fillStyle: unknown = null;
+      const ctx = {
+        globalCompositeOperation: 'source-over',
+        get fillStyle() {
+          return fillStyle;
+        },
+        set fillStyle(v: unknown) {
+          fillStyle = v;
+        },
+        save() {},
+        restore() {},
+        fillRect(_x: number, y: number) {
+          filled.push({ style: fillStyle, y });
+        },
+        drawImage() {},
+      };
+      return { getContext: () => ctx, destroy() {} };
+    };
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops, {
+      originY: -300,
+      viewport: { x: 0, y: 0, width: 440, height: 600 },
+      surface,
+    });
+    const composite = ops.find((op) => op.op === 'image') as
+      { y: number } | undefined;
+    const bar = filled.find((f) => f.style === parseColor('#ff0000'));
+    assert.ok(composite && bar, 'the mask drew its element on a surface');
+    assert.strictEqual(
+      composite.y + bar.y,
+      580,
+      "at the viewport's bottom in the window",
     );
   },
 );

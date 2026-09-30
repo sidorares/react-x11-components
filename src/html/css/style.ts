@@ -510,6 +510,10 @@ export interface ComputedStyle {
    *  replaced whole when any of them changes, and `NO_BORDER_IMAGE` where
    *  nothing sets them. */
   borderImage: BorderImage;
+  /** `mask-image` and the longhands that place its layers (CSS Masking 1,
+   *  7): one object, replaced whole when any of them changes, and
+   *  `NO_MASK` where nothing sets them. */
+  mask: MaskLayers;
   /** `-webkit-text-fill-color`: what the glyphs are filled with where it
    *  is not the text's `color` — Tailwind's `text-transparent` over a
    *  `bg-clip-text` gradient; null for `color`, as `currentColor` is. */
@@ -852,6 +856,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backgroundClips: null,
     backgroundOrigins: null,
     borderImage: NO_BORDER_IMAGE,
+    mask: NO_MASK,
     textFillColor: null,
 
     textDecorationLine: 'none',
@@ -1915,6 +1920,67 @@ export function applyDeclaration(
       if (!pairs) return;
       [style.backgroundPositionX, style.backgroundPositionY] = pairs[0];
       style.backgroundPositions = pairs.length > 1 ? pairs : null;
+      return;
+    }
+
+    // --- masking --------------------------------------------------------------
+    // Each `-webkit-` name is the same property's (Compatibility, 5): every
+    // engine takes both, and a page writes both — Wikipedia's icons do.
+    case 'mask':
+    case '-webkit-mask': {
+      const mask = readMask(value, ctx);
+      if (mask) style.mask = mask;
+      return;
+    }
+    case 'mask-image':
+    case '-webkit-mask-image': {
+      // `none` a layer as much as an image is; a bad url drops it all
+      const images: BackgroundImage[] = [];
+      for (const part of splitCommas(value)) {
+        const image = maskImageOf(part, ctx);
+        if (image === undefined) return;
+        images.push(image);
+      }
+      if (images.length) style.mask = { ...style.mask, images };
+      return;
+    }
+    case 'mask-repeat':
+    case '-webkit-mask-repeat': {
+      const repeats = layerValues(value, (part) => {
+        const words = splitValue(part.toLowerCase());
+        return words.length <= 2 ? readRepeat(words) : null;
+      });
+      if (repeats) style.mask = { ...style.mask, repeats };
+      return;
+    }
+    case 'mask-size':
+    case '-webkit-mask-size': {
+      const sizes = layerValues(value, (part) =>
+        backgroundSizeOf(splitValue(part), ctx),
+      );
+      if (sizes) style.mask = { ...style.mask, sizes };
+      return;
+    }
+    case 'mask-position':
+    case '-webkit-mask-position': {
+      const positions = layerValues(value, (part) =>
+        positionPair(splitValue(part), ctx),
+      );
+      if (positions) style.mask = { ...style.mask, positions };
+      return;
+    }
+    case 'mask-origin':
+    case '-webkit-mask-origin': {
+      const origins = layerValues(value, (part) => maskBox(part));
+      if (origins) style.mask = { ...style.mask, origins };
+      return;
+    }
+    case 'mask-clip':
+    case '-webkit-mask-clip': {
+      const clips = layerValues(value, (part) =>
+        part.toLowerCase() === 'no-clip' ? 'border-box' : maskBox(part),
+      );
+      if (clips) style.mask = { ...style.mask, clips };
       return;
     }
 
@@ -3156,6 +3222,157 @@ export const NO_BORDER_IMAGE: BorderImage = {
   repeat: ['stretch', 'stretch'],
 };
 
+/**
+ * An element's mask layers (CSS Masking 1, 7), top first, a list a
+ * property as a background's are: each layer takes the images' place in
+ * the others, and they repeat where they are fewer. A layer's image is a
+ * url, a gradient, or null for `none` — which is the one layer of an
+ * element that is not masked.
+ */
+export interface MaskLayers {
+  images: readonly BackgroundImage[];
+  repeats: readonly BackgroundRepeat[];
+  sizes: readonly ComputedStyle['backgroundSize'][];
+  positions: readonly (readonly [Len, Len])[];
+  /** The box a layer is placed in, and the one it is painted in: the
+   *  border box unless a layer says (7.5, 7.6). */
+  origins: readonly VisualBox[];
+  clips: readonly VisualBox[];
+}
+
+/** Whether a style masks its element: a layer of its mask has an image. */
+export function masked(style: ComputedStyle): boolean {
+  const mask = style.mask;
+  if (mask === NO_MASK) return false;
+  for (const image of mask.images) if (image !== null) return true;
+  return false;
+}
+
+/**
+ * One layer's `mask-image`: a url, a gradient — or none, for an image
+ * function this does not draw, or a `url(#id)`, which names an SVG
+ * `<mask>` element in the document rather than an image to fetch (7.2):
+ * drawn with no mask rather than as the transparent layer a mask that
+ * cannot be had is, since this draws no `<mask>`. Undefined where it is no
+ * image at all.
+ */
+function maskImageOf(
+  text: string,
+  ctx: UnitContext,
+): BackgroundImage | undefined {
+  const image = backgroundImageOf(text, ctx);
+  return typeof image === 'string' && image[0] === '#' ? null : image;
+}
+
+/** A `<geometry-box>` as an HTML element has it (CSS Masking 1, 7.5): the
+ *  SVG boxes are its content box and its border box. */
+function maskBox(text: string): VisualBox | null {
+  const v = text.trim().toLowerCase();
+  if (isVisualBox(v)) return v;
+  if (v === 'fill-box') return 'content-box';
+  if (v === 'stroke-box' || v === 'view-box') return 'border-box';
+  return null;
+}
+
+/**
+ * The `mask` shorthand (CSS Masking 1, 7.10): a layer a comma group, each
+ * an image, a position with a size after a `/`, a repeat, one box for the
+ * origin and the clip or two, `no-clip`, a compositing operator and a
+ * mode, each at most once, in any order. The operator and the mode are
+ * read and not honoured: layers are added, and an image masks by its
+ * alpha, which is what `match-source` makes of one. Null where a layer is
+ * not one, which drops the declaration.
+ */
+function readMask(value: string, ctx: UnitContext): MaskLayers | null {
+  const out = {
+    images: [] as BackgroundImage[],
+    repeats: [] as BackgroundRepeat[],
+    sizes: [] as ComputedStyle['backgroundSize'][],
+    positions: [] as [Len, Len][],
+    origins: [] as VisualBox[],
+    clips: [] as VisualBox[],
+  };
+  for (const text of splitCommas(value)) {
+    const parts = splitValue(text).flatMap(splitSlash);
+    let image: BackgroundImage = null;
+    let repeat = NO_MASK.repeats[0];
+    let size: ComputedStyle['backgroundSize'] = 'auto';
+    let position: [Len, Len] = [0, 0];
+    const boxes: VisualBox[] = [];
+    let seen = 0;
+    const once = (bit: number): boolean => {
+      if (seen & bit) return false;
+      seen |= bit;
+      return true;
+    };
+    for (let i = 0; i < parts.length;) {
+      const part = parts[i];
+      const v = part.toLowerCase();
+      if (v === 'none' || v.startsWith('url(') || IMAGE_FUNCTION.test(v)) {
+        if (!once(1)) return null;
+        const read = maskImageOf(part, ctx);
+        if (read === undefined) return null;
+        image = read;
+        i += 1;
+      } else if (v === 'repeat-x' || v === 'repeat-y' || REPEATS.has(v)) {
+        if (!once(2)) return null;
+        const pair = REPEATS.has(v) && REPEATS.has(parts[i + 1]?.toLowerCase());
+        const read = readRepeat(pair ? [v, parts[i + 1].toLowerCase()] : [v]);
+        if (!read) return null;
+        repeat = read;
+        i += pair ? 2 : 1;
+      } else if (maskBox(v) || v === 'no-clip') {
+        if (boxes.length === 2 || (v === 'no-clip' && !once(4))) return null;
+        boxes.push(maskBox(v) ?? 'border-box');
+        i += 1;
+      } else if (/^(?:add|subtract|intersect|exclude)$/.test(v)) {
+        if (!once(8)) return null;
+        i += 1;
+      } else if (/^(?:alpha|luminance|match-source)$/.test(v)) {
+        if (!once(16)) return null;
+        i += 1;
+      } else if (isPositionPart(v, ctx)) {
+        if (!once(32)) return null;
+        let end = i;
+        while (
+          end < parts.length &&
+          isPositionPart(parts[end].toLowerCase(), ctx)
+        ) {
+          end += 1;
+        }
+        const read = positionPair(parts.slice(i, end), ctx);
+        if (!read) return null;
+        position = read;
+        i = end;
+        if (parts[i] !== '/') continue;
+        const first = parts[i + 1]?.toLowerCase();
+        if (first === 'cover' || first === 'contain') {
+          size = first;
+          i += 2;
+        } else if (first !== undefined && isSizePart(first, ctx)) {
+          const two =
+            i + 2 < parts.length && isSizePart(parts[i + 2].toLowerCase(), ctx);
+          size =
+            backgroundSizeOf(parts.slice(i + 1, i + (two ? 3 : 2)), ctx) ??
+            'auto';
+          i += two ? 3 : 2;
+        } else {
+          return null;
+        }
+      } else {
+        return null;
+      }
+    }
+    out.images.push(image);
+    out.repeats.push(repeat);
+    out.sizes.push(size);
+    out.positions.push(position);
+    out.origins.push(boxes[0] ?? 'border-box');
+    out.clips.push(boxes[1] ?? boxes[0] ?? 'border-box');
+  }
+  return out.images.length ? out : null;
+}
+
 /** One to four values, one a side as `margin` takes them; null where one
  *  is not a value. */
 function sidesOf<T>(
@@ -3349,6 +3566,15 @@ function repeatPair(x: RepeatMode, y: RepeatMode): BackgroundRepeat {
 }
 
 const REPEAT = repeatPair('repeat', 'repeat');
+
+export const NO_MASK: MaskLayers = {
+  images: [null],
+  repeats: [REPEAT],
+  sizes: ['auto'],
+  positions: [[0, 0]],
+  origins: ['border-box'],
+  clips: ['border-box'],
+};
 
 function applyBorderShorthand(
   style: ComputedStyle,
@@ -4813,6 +5039,11 @@ export function initialOne(
   initial: ComputedStyle,
   name: string,
 ): void {
+  const list = MASK_LISTS[name];
+  if (list) {
+    style.mask = { ...style.mask, [list]: initial.mask[list] };
+    return;
+  }
   const keys = INHERIT_TARGETS[name];
   if (!keys) return;
   for (const key of keys) {
@@ -4825,6 +5056,11 @@ function inheritOne(
   parent: ComputedStyle,
   name: string,
 ): void {
+  const list = MASK_LISTS[name];
+  if (list) {
+    style.mask = { ...style.mask, [list]: parent.mask[list] };
+    return;
+  }
   const keys = INHERIT_TARGETS[name];
   if (!keys) return;
   // A border colour left to `currentColor` inherits as the keyword and
@@ -4839,6 +5075,27 @@ const SIDES = ['Top', 'Right', 'Bottom', 'Left'] as const;
 const sides = (
   make: (side: (typeof SIDES)[number]) => keyof ComputedStyle,
 ): (keyof ComputedStyle)[] => SIDES.map(make);
+
+/**
+ * The list of the mask's layers each longhand is, which `initial`,
+ * `inherit` and a `var()` that fails reset alone: one field holds them all,
+ * and reset whole, a `mask-size: calc(var(--x) - 4px)` put back the
+ * `mask-repeat: no-repeat` before it, and Wikipedia's chevron repeated.
+ */
+const MASK_LISTS: Record<string, keyof MaskLayers> = {
+  'mask-image': 'images',
+  '-webkit-mask-image': 'images',
+  'mask-repeat': 'repeats',
+  '-webkit-mask-repeat': 'repeats',
+  'mask-size': 'sizes',
+  '-webkit-mask-size': 'sizes',
+  'mask-position': 'positions',
+  '-webkit-mask-position': 'positions',
+  'mask-origin': 'origins',
+  '-webkit-mask-origin': 'origins',
+  'mask-clip': 'clips',
+  '-webkit-mask-clip': 'clips',
+};
 
 const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   color: ['color'],
@@ -4855,6 +5112,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   ],
   'background-origin': ['backgroundOrigin', 'backgroundOrigins'],
   'border-image': ['borderImage'],
+  mask: ['mask'],
+  '-webkit-mask': ['mask'],
   'border-image-source': ['borderImage'],
   'border-image-slice': ['borderImage'],
   'border-image-width': ['borderImage'],

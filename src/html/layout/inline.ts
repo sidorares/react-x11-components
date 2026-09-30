@@ -2281,7 +2281,14 @@ function atomicBaseline(box: Box): number {
   const bottom = box.height + box.marginTop + box.marginBottom;
   if (
     box.kind === 'replaced' ||
-    scrolls(box.style) ||
+    // a box that clips sits on its bottom margin edge, for legacy reasons
+    // that stop at block containers (CSS Box Alignment 3, 9.2) — and an
+    // inline table, as browsers keep it: an inline flex box that clips
+    // sits on its first item's, as it does unclipped. A MediaWiki button
+    // is an `overflow: hidden` inline flex box of one icon, and stood its
+    // whole height on the baseline, the line under it the strut's descent
+    // taller
+    (scrolls(box.style) && box.kind !== 'flex') ||
     // layout containment keeps its baseline in (CSS Containment 2, 3.3)
     box.style.contain & CONTAIN_LAYOUT
   ) {
@@ -2416,7 +2423,13 @@ function childBaseline(
   if (child.outOfFlow || child.isFloat || child.kind === 'replaced') {
     return null;
   }
-  if (scrolls(child.style)) {
+  // the legacy rule is a block container's last baseline alone (CSS Box
+  // Alignment 3, 9.2): its first is its first line's, clipped or not
+  if (
+    inside === lastBaselineIn &&
+    child.kind !== 'flex' &&
+    scrolls(child.style)
+  ) {
     return child.y + child.height + child.marginBottom;
   }
   return inside(child);

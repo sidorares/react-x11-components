@@ -246,7 +246,7 @@ export function layoutDocument(
   // against where it *was* — which is the whole of what makes it relative —
   // and the ink bounds are computed after that, so culling sees where boxes
   // ended up rather than where they were laid out.
-  if (tree.relative) applyRelativeOffsets(root);
+  if (tree.relative) applyRelativeOffsets(root, viewportWidth, viewportHeight);
   const reach = computePaintBounds(root, tree.movedInline);
   if (tree.negative) hoistNegative(root);
   stackLayers(root);
@@ -4127,9 +4127,15 @@ export function establishesBFC(box: Box): boolean {
 
 /** What a box's `position: relative` offset moves it by, applied after
  *  layout so it does not affect anything else's position — which is the
- *  whole of what makes it *relative* — and its translation with it. */
-export function applyRelativeOffsets(box: Box): void {
-  for (const child of box.children) applyRelativeOffsets(child);
+ *  whole of what makes it *relative* — and its translation with it, and
+ *  where `position: sticky` puts one at rest (`stickyOffset`). */
+export function applyRelativeOffsets(
+  box: Box,
+  viewportWidth: number,
+  viewportHeight: number,
+): void {
+  for (const child of box.children)
+    applyRelativeOffsets(child, viewportWidth, viewportHeight);
   const style = box.style;
   if (transformed(style) && box.kind !== 'inline') {
     // a transform moves the box it is on, and an inline box is none
@@ -4140,7 +4146,10 @@ export function applyRelativeOffsets(box: Box): void {
     }
   }
   if (style.position !== 'relative' && style.position !== 'sticky') return;
-  const [dx, dy] = relativeOffset(box);
+  const [dx, dy] =
+    style.position === 'sticky'
+      ? stickyOffset(box, viewportWidth, viewportHeight)
+      : relativeOffset(box);
   if (!(dx || dy)) return;
   translate(box, dx, dy);
   if (box.kind !== 'inline') {
@@ -4203,6 +4212,111 @@ function relativeOffset(box: Box): [number, number] {
   const dx = right !== null && (left === null || rtl) ? -right : (left ?? 0);
   const dy = top ?? (bottom !== null ? -bottom : 0);
   return [dx, dy];
+}
+
+/**
+ * Where `position: sticky` puts a box at rest (CSS Positioned Layout 3,
+ * 3.4): moved only as far as keeps its border box inside the sticky view
+ * rectangle — its nearest scroll container's scrollport, scrolled to its
+ * start, less its insets — and no further than keeps its margin box in its
+ * containing block, `top` winning over `bottom` and the start side over the
+ * end. Nothing here scrolls a box the document holds, so for one of those
+ * this is where the box stays. The viewport does scroll, and the document
+ * with it, and a sticky box does not follow: against the viewport only its
+ * `top` and its start side are kept, which at rest put a box as a browser
+ * does, while a `bottom: 0` would pin a footer to the middle of the page
+ * once it was scrolled. Taken as `relative`, a box stood its `top` below
+ * where a browser starts it: Wikipedia's contents, 24px low.
+ */
+function stickyOffset(
+  box: Box,
+  viewportWidth: number,
+  viewportHeight: number,
+): [number, number] {
+  const style = box.style;
+  // the scroll container a sticky box keeps to: the nearest box that
+  // scrolls, or the viewport, whose are the root's and the body's overflow
+  let port = box.parent;
+  while (port && !scrolls(port.style)) port = port.parent;
+  const tag = port?.el?.name;
+  const inside = !!port && tag !== 'html' && tag !== 'body';
+  let cb = box.parent;
+  while (cb && cb.kind === 'inline') cb = cb.parent;
+  if (!cb) return [0, 0];
+  // the scrollport, at its start: a scroll container's padding box, or
+  // the viewport, which the document's top is at
+  const px = port && inside ? port.x + port.borderLeft : 0;
+  const py = port && inside ? port.y + port.borderTop : 0;
+  const pw =
+    port && inside
+      ? port.width - port.borderLeft - port.borderRight
+      : viewportWidth;
+  const ph =
+    port && inside
+      ? port.height - port.borderTop - port.borderBottom
+      : viewportHeight;
+  const dx = stuck(
+    box.x,
+    box.width,
+    box.marginLeft,
+    box.marginRight,
+    cb.contentX,
+    cb.contentWidth,
+    px,
+    pw,
+    resolveOrNull(style.left, pw),
+    inside ? resolveOrNull(style.right, pw) : null,
+    // `left` wins where both hold, or `right` in a right-to-left block
+    cb.style.direction !== 'rtl',
+  );
+  const dy = stuck(
+    box.y,
+    box.height,
+    box.marginTop,
+    box.marginBottom,
+    cb.contentY,
+    cb.contentHeight,
+    py,
+    ph,
+    resolveOrNull(style.top, ph),
+    inside ? resolveOrNull(style.bottom, ph) : null,
+    true,
+  );
+  return [dx, dy];
+}
+
+/**
+ * How far a sticky box moves along one axis: toward the end until its
+ * start edge is `start` inside the scrollport's, or toward the start until
+ * its end edge is `end` inside the scrollport's, each no further than its
+ * margin box stays in its containing block — and where both would move
+ * it, `startWins` says which does.
+ */
+function stuck(
+  at: number,
+  size: number,
+  marginStart: number,
+  marginEnd: number,
+  cbAt: number,
+  cbSize: number,
+  portAt: number,
+  portSize: number,
+  start: number | null,
+  end: number | null,
+  startWins: boolean,
+): number {
+  let byStart = 0;
+  if (start !== null && Number.isFinite(start) && at < portAt + start) {
+    const room = cbAt + cbSize - (at + size + marginEnd);
+    byStart = Math.max(0, Math.min(portAt + start - at, room));
+  }
+  let byEnd = 0;
+  if (end !== null && Number.isFinite(end)) {
+    const over = at + size - (portAt + portSize - end);
+    const room = at - marginStart - cbAt;
+    if (over > 0) byEnd = -Math.max(0, Math.min(over, room));
+  }
+  return startWins ? byStart || byEnd : byEnd || byStart;
 }
 
 /**

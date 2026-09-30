@@ -505,6 +505,9 @@ function renderControl(
     top: Math.round(at.y),
     width: Math.round(at.width),
     height: Math.round(at.height),
+    // core's `opacity` is CSS's: the widget faded as a group, and at 0 not
+    // drawn and still hit
+    ...(rect.opacity !== undefined && { opacity: rect.opacity }),
   };
   const field = rect.bare ? bareField(rect.bare) : fieldChrome(look);
   const report = (value: string | boolean): void => {
@@ -528,6 +531,9 @@ function renderControl(
       widget = h(Checkbox, {
         checked: attr(el, 'checked') !== undefined,
         disabled,
+        // the element's whole box takes the press, as it does in a browser:
+        // a page that sizes one over its label, invisible, means the label
+        style: { width: '100%', height: '100%' },
         onChange: (ev) => {
           const next = ev.value;
           if (next) el.attribs.checked = '';

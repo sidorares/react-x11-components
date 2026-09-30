@@ -36,6 +36,7 @@ import type { ContentItem } from '../css/content.js';
 import {
   CONTAIN_STYLE,
   FIRST_LINE_INHERITED,
+  NO_MASK,
   copyStyle,
   firstLineParent,
   inherit,
@@ -653,9 +654,10 @@ export interface BoxTree {
   controls: Box[];
   /** Every box carrying an `href`, for click and hover. */
   links: Box[];
-  /** Every element's box with a `background-image` or a border image,
-   *  for the host to be asked for: a document has a handful, and finding
-   *  them was a walk over every box after every build. */
+  /** Every box with a `background-image`, a border image or a mask image,
+   *  an element's or a pseudo-element's, for the host to be asked for: a
+   *  document has a handful, and finding them was a walk over every box
+   *  after every build. */
   backgrounds: Box[];
   /** Every image generated content names, the element whose
    *  pseudo-element names it, for the host to be asked for, and whether its
@@ -2621,12 +2623,13 @@ function breakAround(inline: Box): Box[] | null {
 }
 
 /** Whether a style names an image for its box to be drawn with: a
- *  background's, or a border's. */
+ *  background's, a border's, or a mask's. */
 function namesImages(style: ComputedStyle): boolean {
   return (
     !!style.backgroundImage ||
     !!style.backgroundImages ||
-    typeof style.borderImage.source === 'string'
+    typeof style.borderImage.source === 'string' ||
+    style.mask !== NO_MASK
   );
 }
 

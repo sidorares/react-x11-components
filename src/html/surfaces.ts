@@ -8,7 +8,7 @@
 import { Surface } from 'react-x11/ntk';
 
 /** ntk's `Surface`, as this uses it. */
-interface SurfaceLike {
+export interface SurfaceLike {
   getContext(kind: '2d'): unknown;
   destroy?(): void;
 }
@@ -16,6 +16,26 @@ interface SurfaceLike {
 interface Kept {
   surface: SurfaceLike;
   pixels: number;
+}
+
+/**
+ * A transparent surface of its own, the caller's to destroy once drawn: a
+ * masked element is drawn on one and composited. Null where the backend
+ * has no offscreen surface — the headless mock.
+ */
+export function newSurface(
+  app: unknown,
+  width: number,
+  height: number,
+): SurfaceLike | null {
+  try {
+    return new Surface(app as never, {
+      width,
+      height,
+    }) as unknown as SurfaceLike;
+  } catch {
+    return null;
+  }
 }
 
 /**

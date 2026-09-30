@@ -211,7 +211,7 @@ padding at a side, whose text is shaped on its own — `inline-block`, floats
 and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
 and `rowspan`, and the anonymous table CSS builds around table parts that
-have none), `position: relative | absolute | fixed`, `display: flex` (and
+have none), `position: relative | absolute | fixed | sticky`, `display: flex` (and
 the legacy `-webkit-box`, a flex box in its `-webkit-box-orient`'s
 direction, packed, aligned and flexed by the `-webkit-box-*` properties as
 Blink lays one out, or where it clamps its lines vertically a block of its
@@ -221,7 +221,18 @@ which makes no box and hands its children, its `::before` and its
 `::after` to its parent's, in its style — a replaced element set so is not
 rendered. An
 inline-block sits on its last line's baseline and an inline-table on its
-first row's. A float, an inline-block and an absolute box of `width: auto`
+first row's, each on its bottom margin edge where it clips what overflows
+it; an inline flex box sits on its first item's, clipping or not, and a
+block that clips has its first line's baseline all the same — only its
+last is its margin edge (CSS Box Alignment 3, 9.2). A sticky box is placed
+at rest: moved only as far as keeps it inside its scroll container's
+scrollport, scrolled to its start, less its insets, and its margin box
+inside its containing block. Nothing here scrolls a box the document
+holds, so that is where one inside such a box stays; the viewport does
+scroll, and against it only `top` and the start side are kept — a sticky
+box is where a browser starts it, and scrolls away with the page rather
+than following it, where a `bottom: 0` footer would otherwise be pinned to
+the middle of it. A float, an inline-block and an absolute box of `width: auto`
 shrink to fit the room their margins leave, and an absolute box the room
 its offset or its static position leaves: at `left: 50%` it has half the
 width. None is narrower than its longest word. A relatively positioned inline box moves its text, its
@@ -588,6 +599,26 @@ spaced, and the middle for `fill`. Where the image is not there yet, the
 border is drawn as its style says. A piece is scaled from a copy of its
 own, so no colour of the image next to it bleeds into its edge.
 
+**Masks:** `mask-image` and the longhands that place it — `mask-repeat`,
+`mask-position`, `mask-size`, `mask-origin`, `mask-clip` — and the `mask`
+shorthand, each under its `-webkit-` name too (CSS Masking 1). The element
+and everything in it are drawn as a group on a surface of their own and cut
+by the alpha of its mask layers, which are placed, sized and repeated as a
+background's layers are, in its border box unless they say otherwise, and
+added one over another; the group is then drawn in its place, cut to the
+mask painting area. That is how Wikipedia and every design system that
+draws its icons with CSS writes an icon: a `background-color` masked by an
+SVG. A layer whose image has not arrived is transparent, so an icon is not
+drawn at all until its image is, rather than as a solid square. A mask is
+an image's alpha: `mask-mode: luminance`, and the compositing operators
+but `add`, are read and not honoured, and a `url(#id)` naming an SVG
+`<mask>` element in the document draws the element unmasked. Where the
+backend has no offscreen surface, the element is drawn unmasked. A
+`@supports` test of a mask property answers that it is supported, so the
+background image a page keeps under `not` for an engine without masks is
+not drawn under the mask; every other `@supports` block is entered, as it
+always was.
+
 **Outlines:** `outline` and its longhands, and `outline-offset`: a border
 of the outline's width, style and colour round the border box grown by
 the offset, taking no room and drawn over the box's content, with the
@@ -766,7 +797,10 @@ did not know them would drop it.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
-from this renderer's own pointer state. Escapes are read wherever they stand,
+from this renderer's own pointer state. `:focus`, `:focus-visible` and
+`:focus-within` match nothing: no element of the document takes the focus,
+a control's widget does, beside it. So `:not(:focus)` holds, and
+Wikipedia's skip link, hidden with it, stays hidden. Escapes are read wherever they stand,
 so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A group
 with a selector in it that is not one — an unknown pseudo-class, a name that
 starts with a digit — is dropped whole, as CSS 2.1 drops it. Rules nest
@@ -775,7 +809,8 @@ standing for it and a selector without one a descendant, and an `@media`,
 `@supports` or `@layer` inside one holds for the same element, which is how
 Tailwind 4 writes its `hover:` and `md:` variants. `@media` width and
 `prefers-color-scheme` queries are evaluated, widths in Media Queries 4's
-ranges, `(width >= 48rem)`, as well as `min-width` — the scheme is the react-x11
+ranges, `(width >= 48rem)`, as well as `min-width`, a `calc()` in a value
+too — the scheme is the react-x11
 palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
 `@import` goes through the resource seam. Cascade layers are read (CSS
@@ -786,7 +821,7 @@ round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms but their
 translation, animations and transitions, multi-column, gradients other than
-linear ones, `position: sticky` (treated as `relative`), and the font
+linear ones, a sticky box that follows the viewport as it scrolls, and the font
 properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
 drawn only where the table's collapse. A percentage `height` resolves where
 the containing block's height is set, and on an absolutely positioned box.
@@ -845,6 +880,12 @@ element, at the rectangles layout reserved for them — the escape hatch
 [`<Flow>`](flow.md) opened for a node whose body is a form. A drawn control
 would take no focus, say nothing to a screen reader, and have to reimplement
 every keyboard convention the platform already has.
+
+A widget is drawn at the opacity its element and every ancestor come to,
+and at 0 not at all while it still takes a press, as the element does in a
+browser: a CSS-only dropdown lays an invisible checkbox over its label, and
+a press anywhere on the label opens it, since a checkbox's widget takes its
+element's whole box. A `visibility: hidden` control is not mounted.
 
 A `<button>` is the exception, because its content is the document's: an
 icon, a label in spans, a pill of the page's own design — most of the
