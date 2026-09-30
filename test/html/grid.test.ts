@@ -685,6 +685,73 @@ test('place-content sets align-content then justify-content, the second the firs
   assert.deepStrictEqual(at('e'), [0, 0]);
 });
 
+test("a grid item's percentages are of its area's width, not of its own", async () => {
+  // CSS Grid 1, 3.3 and 6.4: an item's grid area is its containing block,
+  // and CSS 2.1 8.3, 8.4 and 10.4 take a percentage in a margin, a padding
+  // or a width limit of the containing block's width. The item was laid
+  // out with the width it came to standing for its area's, so each was
+  // taken of the item: `width: 50%; max-width: 80%` was four tenths of its
+  // column, and an item aligned to the start with `min-width: 50%` was as
+  // wide as what it held. Each number here is Chrome's.
+  const { node } = await render(
+    '<style>body{margin:0} *{box-sizing:border-box}' +
+      '.g{display:grid;width:600px;grid-template-columns:1fr 1fr}' +
+      '.w{width:40px;height:10px}</style>' +
+      // a width and its limit, and a padding inside a width
+      '<div class="g"><div id="a" style="width:50%;max-width:80%"></div>' +
+      '<div id="b" style="width:50%;padding:0 10%"><div id="b1"></div></div>' +
+      '</div>' +
+      // as wide as its content and its padding; stretched between margins
+      '<div class="g"><div id="c" style="justify-self:start;padding:0 10%">' +
+      '<div class="w" id="c1"></div></div>' +
+      '<div id="d" style="margin:0 10%"></div></div>' +
+      // a least width, and margins an item is aligned within
+      '<div class="g"><div id="e" style="justify-self:start;min-width:50%">' +
+      '</div><div id="f" style="justify-self:end;margin:0 10%;width:50%">' +
+      '</div></div>' +
+      // While the columns are sized there is no area for a percentage to
+      // be of, and it is of nothing (CSS Sizing 3, 5.2.1): a column is as
+      // wide as what is in its item, and the margins and the padding come
+      // out of that. Of the grid's width, they made the columns 340 wide.
+      '<div class="g" style="grid-template-columns:auto auto;' +
+      'justify-content:start"><div id="g" style="margin:0 25%">' +
+      '<div class="w"></div></div><div id="h" style="padding:0 25%">' +
+      '<div class="w" id="h1"></div></div></div>' +
+      // down the item too, and in an item that is a flex box
+      '<div class="g" style="grid-template-columns:200px 1fr">' +
+      '<div id="i" style="margin-top:10%;padding-top:5%">' +
+      '<div class="w"></div></div><div id="j" style="display:flex;' +
+      'height:100px;padding:0 10%;max-width:90%">' +
+      '<div id="j1" style="flex:1"></div></div></div>' +
+      // and in one laid out again in the height it is stretched to
+      '<div class="g" style="height:80px"><div id="k" style="display:flex;' +
+      'padding:0 10%;max-width:90%"><div id="k1" style="flex:1"></div>' +
+      '</div></div>',
+    700,
+  );
+  const el = view(node);
+  const across = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  assert.deepStrictEqual(across('a'), [0, 150], 'half its column');
+  assert.deepStrictEqual(across('b'), [300, 150]);
+  assert.deepStrictEqual(across('b1'), [330, 90], 'a tenth of the column in');
+  assert.deepStrictEqual(across('c'), [0, 100], 'its content and its padding');
+  assert.deepStrictEqual(across('c1'), [30, 40]);
+  assert.deepStrictEqual(across('d'), [330, 240], 'between its margins');
+  assert.deepStrictEqual(across('e'), [0, 150], 'half its column at the least');
+  assert.deepStrictEqual(across('f'), [420, 150], 'a margin from the end');
+  assert.deepStrictEqual(across('g'), [10, 20], 'in a column of its content');
+  assert.deepStrictEqual(across('h'), [40, 40]);
+  assert.deepStrictEqual(across('h1'), [50, 40], 'a quarter of 40 in');
+  const i = boxOf(el, 'i');
+  const j = boxOf(el, 'j');
+  assert.strictEqual(i.y - j.y, 20, 'a margin a tenth of its column down');
+  assert.strictEqual(i.height, 80, 'stretched, under that margin');
+  assert.deepStrictEqual(across('j'), [200, 360], 'nine tenths of 400');
+  assert.deepStrictEqual(across('j1'), [240, 280]);
+  assert.deepStrictEqual(across('k'), [0, 270]);
+  assert.deepStrictEqual(across('k1'), [30, 210], 'the padding kept');
+});
+
 test("a grid item's percentage height is of its area", async () => {
   // It was of the grid's height, so `height: 100%` in one of two rows was
   // as tall as both; and what is in a stretched item takes its percentages

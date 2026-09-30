@@ -79,7 +79,13 @@ export function layoutGrid(
       positionOutOfFlow(child, box, ctx, false);
       continue;
     }
-    resolveEdges(child, Number.isFinite(contentWidth) ? contentWidth : 0);
+    // While the columns are sized, the area an item is in has no width for
+    // the percentages in its margins and its padding to be of, and they
+    // are of nothing (CSS Sizing 3, 5.2.1): a column is as wide as what
+    // is in the item. They are of the area once it has a width
+    // (`layoutItem`). Taken of the grid's width, an item `margin: 0 25%`
+    // made its `min-content` column half the grid wide.
+    resolveEdges(child, 0);
     boxes.push(child);
   }
   // the gaps: a percentage of the grid's content size along them, and of
@@ -241,7 +247,7 @@ export function layoutGrid(
       item,
       extent(widths, lefts, item.col, item.cols),
       ctx,
-      heightBefore(item),
+      spanBefore(item),
     );
   }
 
@@ -303,12 +309,7 @@ export function layoutGrid(
     if (Object.is(child.percentHeightBase, tall) || !percentOwn(child))
       continue;
     child.percentHeightBase = tall;
-    layoutItem(
-      item,
-      extent(widths, lefts, item.col, item.cols),
-      ctx,
-      heightBeforeRows(child, tall),
-    );
+    layoutItem(item, extent(widths, lefts, item.col, item.cols), ctx, tall);
   }
   GRID_TRACKS.set(box, {
     cols: tracksOf(widths, lefts, keepCols),
@@ -387,7 +388,7 @@ export function layoutGrid(
       ) {
         FLEXED_HEIGHT.set(child, Math.max(0, height - child.verticalExtra));
         try {
-          ctx.layoutSubtree(child, width);
+          ctx.layoutSubtree(child, width, area);
         } finally {
           FLEXED_HEIGHT.delete(child);
         }
@@ -626,15 +627,25 @@ function maxContentOf(box: Box, ctx: LayoutContext): number {
   return box.intrinsicMaxContent;
 }
 
-/** Lay an item out in its area: stretched across it where its width is
- *  `auto` and it is stretched, or at its content's width, no wider than
- *  the area, where it is aligned instead. */
+/**
+ * Lay an item out in its area: stretched across it where its width is
+ * `auto` and it is stretched, or at its content's width, no wider than
+ * the area, where it is aligned instead.
+ *
+ * The area is the item's containing block (CSS Grid 1, 3.3), so it is its
+ * width that a percentage in the item's margins, its padding, its
+ * `min-width` and its `max-width` is of (6.4, and CSS 2.1 8.3, 8.4 and
+ * 10.4), whatever width the item comes to in it. With its own width
+ * standing for its area's, an item `width: 50%; max-width: 80%` was four
+ * tenths of its column, and one `min-width: 50%` aligned to the start was
+ * as wide as its text.
+ */
 function layoutItem(
   item: Item,
   area: number,
   ctx: LayoutContext,
-  /** Its border box's height before the rows are sized, where it has one. */
-  tall: number | null,
+  /** The height of the rows it spans, where they have one yet. */
+  rows: number,
 ): void {
   const child = item.box;
   const style = child.style;
@@ -643,19 +654,35 @@ function layoutItem(
     style.justifySelf === 'auto'
       ? (parent?.justifyItems ?? 'normal')
       : style.justifySelf;
+  resolveEdges(child, area);
+  // its border box's height before the rows are sized, where it has one
+  const tall = heightBeforeRows(child, rows);
   const margins = child.marginLeft + child.marginRight;
   const room = Math.max(0, area - margins);
-  // its content's widths, border box: measured once in its life
+  // Its content's widths, border box: measured once in its life, with the
+  // percentages in its padding of nothing, as they are while the columns
+  // are sized, and here with what those come to of its area. Measuring
+  // resolves its edges against nothing, and they are put back.
+  const padded = percentPadding(child);
   const content = (): [number, number] => {
-    if (child.intrinsicMaxContent < 0) maxContentOf(child, ctx);
+    let probed = false;
+    if (child.intrinsicMaxContent < 0) {
+      maxContentOf(child, ctx);
+      probed = true;
+    }
     if (child.intrinsicMinContent < 0) {
       child.intrinsicMinContent = measureIntrinsicWidth(
         child,
         ctx,
         MIN_CONTENT_PROBE,
       );
+      probed = true;
     }
-    return [child.intrinsicMinContent, child.intrinsicMaxContent];
+    if (probed) resolveEdges(child, area);
+    return [
+      child.intrinsicMinContent + padded,
+      child.intrinsicMaxContent + padded,
+    ];
   };
   const keyword = style.widthKeyword;
   // `stretch` fills its area, and so does `normal` but for a replaced
@@ -708,7 +735,7 @@ function layoutItem(
     width = Math.min(widest, Math.max(narrowest, room));
   }
   if (child.kind !== 'replaced') {
-    ctx.layoutSubtree(child, width);
+    ctx.layoutSubtree(child, width, area);
     return;
   }
   // a replaced element sizes itself from its style: then it is given the
@@ -725,6 +752,21 @@ function layoutItem(
       style.height === AUTO ? heightThroughRatio(child, child.width) : null;
     if (down !== null) child.height = clampHeight(child, down);
   }
+}
+
+/** What the percentages in a box's padding come to across it, its edges
+ *  resolved: what a width of its content's, measured with them of nothing,
+ *  is short of its border box by. */
+function percentPadding(box: Box): number {
+  const { paddingLeft, paddingRight } = box.style;
+  let out = 0;
+  if (isPct(paddingLeft)) {
+    out += box.padLeft - Math.max(0, resolve(paddingLeft, 0));
+  }
+  if (isPct(paddingRight)) {
+    out += box.padRight - Math.max(0, resolve(paddingRight, 0));
+  }
+  return out;
 }
 
 /** Whether a box's content is its least size through a ratio, which it is
