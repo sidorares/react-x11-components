@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.14.1](https://github.com/sidorares/react-x11-components/compare/v0.14.0...v0.14.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **html:** a double border of one colour is two frames, its lines joined at the corners ([#503](https://github.com/sidorares/react-x11-components/issues/503)) ([5e74324](https://github.com/sidorares/react-x11-components/commit/5e743244e820bfc4b32e59001094c4e70feb37f6))
+* **html:** a grid item with a percentage width makes an auto column as wide as its content, where it made it nothing ([#508](https://github.com/sidorares/react-x11-components/issues/508)) ([c4e5ecd](https://github.com/sidorares/react-x11-components/commit/c4e5ecdd427bab1133e09222e3af2e4573064fc7))
+* **html:** a rule that names a shape inside an inline SVG paints it, where only the root's fill and stroke were read ([#495](https://github.com/sidorares/react-x11-components/issues/495)) ([226903a](https://github.com/sidorares/react-x11-components/commit/226903afd29aa7eb0891b8bdd0fadf1cdcd90b7a))
+* **html:** a table a flex box or a grid stretches gives the height to its rows, and a grid stretches one across its area ([#506](https://github.com/sidorares/react-x11-components/issues/506)) ([b2a6150](https://github.com/sidorares/react-x11-components/commit/b2a6150e00d90dcf458ea8165ffa7ffd43b99523))
+* **html:** a table cell on the baseline that sets a height needs that height of its row, not the height and its lift ([#507](https://github.com/sidorares/react-x11-components/issues/507)) ([d3ad4a0](https://github.com/sidorares/react-x11-components/commit/d3ad4a08ac92900789665009c121b941e92bd3b7))
+* **html:** a table in a flex row, a grid, a float or an inline-table is as wide as its columns and the spacing either side of them ([#504](https://github.com/sidorares/react-x11-components/issues/504)) ([8ea437a](https://github.com/sidorares/react-x11-components/commit/8ea437af05ceb670a548f65267626abee66073f1))
+* **html:** a thick 3D border keeps its corners on their diagonals where only part of it is repainted ([#501](https://github.com/sidorares/react-x11-components/issues/501)) ([3ee6d7b](https://github.com/sidorares/react-x11-components/commit/3ee6d7b5d086d268a586723587396d5133633208))
+* **html:** a thick rounded border and a border-area background stay out of the content where only part of the box is repainted ([#510](https://github.com/sidorares/react-x11-components/issues/510)) ([c45f377](https://github.com/sidorares/react-x11-components/commit/c45f377b2824152d64019af4f80cd0f0d00fd917))
+* **html:** an SVG image is painted as its own style sheets say, where it was drawn black ([#509](https://github.com/sidorares/react-x11-components/issues/509)) ([71c657d](https://github.com/sidorares/react-x11-components/commit/71c657d5b5f50dc946dbd45682250d91f5a8bc09))
+
 ## [0.14.0](https://github.com/sidorares/react-x11-components/compare/v0.13.0...v0.14.0) (2026-09-30)
 
 
