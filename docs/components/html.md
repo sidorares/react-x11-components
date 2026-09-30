@@ -429,7 +429,10 @@ A flex container is laid out by Yoga, the engine react-x11 lays itself out
 with, and each item by this one: an item of `width: auto` is as wide as its
 content, its max-content width, before the row grows or shrinks it, its
 padding and border counted once, and a width, height or basis of its own is
-its content box's unless `box-sizing` says otherwise. An `auto` margin takes
+its content box's unless `box-sizing` says otherwise. An item, and a grid's,
+is a formatting context of its own: the margins of what it holds stay
+inside it, and the one under its last block makes it that much taller. An
+`auto` margin takes
 the free space on its side, so `margin-left: auto` puts an item at the end
 of its row. A row of flex items inside another item is as wide as its items
 side by side and the gaps between them — an item with a `width` of its own
