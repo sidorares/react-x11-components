@@ -298,6 +298,68 @@ metric(
   },
 );
 
+metric(
+  "a double border's lines join at its corners, two frames one inside the other",
+  async () => {
+    // CSS Backgrounds 3, 4.2: two parallel solid lines, and Chrome draws a
+    // double border of one colour as a frame along the border edge and one
+    // along the padding edge. The top and the bottom were two lines the
+    // width of the box and the sides two lines between them, so the outer
+    // frame was open at each corner and the inner line of the top ran on
+    // past the side's to the border edge
+    const { result } = await render(
+      '<style>body{margin:0;background:#ffffff}' +
+        'div{width:40px;height:20px;margin:4px}</style>' +
+        '<div style="border:6px double #ff0000"></div>' +
+        '<div style="border:3px double #0000ff"></div>' +
+        '<div style="border:double #00ff00;border-width:6px 12px"></div>',
+    );
+    const ctx = result.ctx;
+    const at = (x: number, y: number, color: string, message: string) =>
+      expectPixel(ctx, x, y, color, { message });
+    // 6px, from 4,4 to 56,36: lines of two pixels, two apart
+    await at(4, 4, '#ff0000', 'the corner of the outer frame');
+    await at(4, 7, '#ff0000', 'its left line, beside the gap under the top');
+    await at(55, 33, '#ff0000', 'its right line, over the bottom');
+    await at(7, 7, '#ffffff', 'between the two lines at the corner');
+    await at(7, 9, '#ffffff', "the top's inner line stops at the left's");
+    await at(8, 9, '#ff0000', 'and meets it');
+    await at(52, 31, '#ffffff', "the bottom's stops at the right's");
+    await at(51, 31, '#ff0000', 'and meets it too');
+    // 3px, from 4,40 to 50,66: a pixel each, a pixel apart
+    await at(4, 41, '#0000ff', 'a one-pixel outer frame, closed');
+    await at(5, 41, '#ffffff', 'between the lines');
+    await at(5, 42, '#ffffff', 'no notch where the inner line ran on');
+    await at(6, 42, '#0000ff', 'the corner of the inner frame');
+    // the sides twice as wide as the top, from 4,70: each line a third of
+    // its own side, and a frame whatever the widths
+    await at(7, 73, '#00ff00', "the left's outer line, four wide");
+    await at(8, 72, '#ffffff', 'the gap beside it');
+    await at(11, 74, '#ffffff', "the top's inner line stops at the left's");
+    await at(12, 74, '#00ff00', 'its inner line, twelve in less a third');
+  },
+);
+
+test("a double border wider than the paint's reach keeps its lines at its edges", async () => {
+  // Only the part of a side near the repaint goes to the server, and the
+  // two lines were split out of that part: repainted 60px down a border
+  // 300px wide, the top's lines were drawn a third of 144px each, at the
+  // edges of what was left of it
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:0;height:0;border:300px double #0000ff"></div>',
+  );
+  const ink = parseColor('#0000ff');
+  const fills = await fillsOf(view(node), undefined, {
+    damage: { x: 290, y: 60, width: 20, height: 20 },
+  });
+  assert.deepStrictEqual(
+    fills.filter((f) => f.style === ink).map((f) => [f.x, f.y, f.w, f.h]),
+    [[226, 0, 148, 100]],
+    'the outer line of the top, a third of 300px, cut across to the reach',
+  );
+});
+
 /** The polygons a paint fills — paths of straight lines, each as its
  *  corners — and how many rectangles, over the part of the document `damage`
  *  names, or all of it. */

@@ -4483,7 +4483,8 @@ function paintOutline(
  * width: the CSS triangle a dropdown's caret and a tooltip's arrow are
  * drawn with, which came out as the rectangle around it. Only a solid side
  * is cut, and only against a side that is solid or paints nothing; dots,
- * dashes and a double border's two lines keep their rectangles.
+ * dashes and a double border's two lines keep their rectangles, the lines
+ * joined where two double sides of one colour meet (`fillSide`).
  */
 function paintBorders(
   ctx: PaintContext,
@@ -4528,21 +4529,16 @@ function paintBorders(
     paths && mitred(b, r, bottomInk, rightInk, bottomStyle, rightStyle);
   const bl = paths && mitred(b, l, bottomInk, leftInk, bottomStyle, leftStyle);
 
+  const widths = [t, r, b, l];
+  const joins = doubleJoins(box);
+  /** A side with square corners, the top first and clockwise. */
   const edge = (
-    ex: number,
-    ey: number,
-    ew: number,
-    eh: number,
+    at: number,
     style: ComputedStyle['borderTopStyle'],
     color: string,
-    horizontal: boolean,
   ): void => {
-    const rect = clampRect(options, ex, ey, ew, eh);
-    if (!rect) return;
     ctx.fillStyle = color;
-    // The un-clamped start is the dash phase's origin, so the pattern does
-    // not crawl as the viewport moves along a long edge.
-    fillEdge(ctx, rect, horizontal ? ex : ey, style, horizontal);
+    fillSide(ctx, options, at, x, y, w, h, widths, style, joins);
   };
   /** A side with a cut corner: its outer edge and then its inner one. */
   const side = (points: number[], color: string): void => {
@@ -4573,7 +4569,7 @@ function paintBorders(
         [x, y, x1, y, cutRight ? px1 : x1, py0, cutLeft ? px0 : x, py0],
         topInk,
       );
-    } else edge(x, y, w, t, topStyle, topInk, true);
+    } else edge(0, topStyle, topInk);
   }
   if (bottomInk !== null) {
     const cutLeft = bl && !over(leftInk);
@@ -4583,17 +4579,17 @@ function paintBorders(
         [x1, y1, x, y1, cutLeft ? px0 : x, py1, cutRight ? px1 : x1, py1],
         bottomInk,
       );
-    } else edge(x, y1 - b, w, b, bottomStyle, bottomInk, true);
+    } else edge(2, bottomStyle, bottomInk);
   }
   if (leftInk !== null) {
     if (tl || bl) {
       side([x, bl ? y1 : py1, x, tl ? y : py0, px0, py0, px0, py1], leftInk);
-    } else edge(x, y + t, l, h - t - b, leftStyle, leftInk, false);
+    } else edge(3, leftStyle, leftInk);
   }
   if (rightInk !== null) {
     if (tr || br) {
       side([x1, tr ? y : py0, x1, br ? y1 : py1, px1, py1, px1, py0], rightInk);
-    } else edge(x1 - r, y + t, r, h - t - b, rightStyle, rightInk, false);
+    } else edge(1, rightStyle, rightInk);
   }
 }
 
@@ -4976,8 +4972,9 @@ function roundedRing(
  * the value is for. The shapes are the border painter's own, so that the
  * background shows exactly where that border would: the ring `roundedRing`
  * fills where a rounded border is solid, the ring the trapezoids of a 3D
- * style make, and otherwise the rectangles `fillEdge` fills a side at a
- * time — the dots, the dashes, the two lines of a double border. All of
+ * style make, and otherwise the rectangles `fillSide` fills a side at a
+ * time — the dots, the dashes, the two lines of a double border joined as
+ * they are painted, by the sides' colours though neither is drawn. All of
  * them run clockwise and a ring's inside the other way, so the clip is the
  * union by the non-zero rule, the one every context's `clip` takes. False
  * where the border paints nothing or the context cannot clip, and nothing
@@ -5024,22 +5021,19 @@ function pushBorderArea(
     ctx.rect(area.x + area.w - r, area.y + t, r, area.h - t - b);
   } else {
     const path = { fillRect: ctx.rect.bind(ctx) };
-    const edge = (
-      ex: number,
-      ey: number,
-      ew: number,
-      eh: number,
-      style: ComputedStyle['borderTopStyle'],
-      horizontal: boolean,
-    ): void => {
-      const rect = clampRect(options, ex, ey, ew, eh);
-      if (rect) fillEdge(path, rect, horizontal ? ex : ey, style, horizontal);
-    };
-    const between = h - t - b;
-    if (t > 0) edge(x, y, w, t, s.borderTopStyle, true);
-    if (b > 0) edge(x, y + h - b, w, b, s.borderBottomStyle, true);
-    if (l > 0) edge(x, y + t, l, between, s.borderLeftStyle, false);
-    if (r > 0) edge(x + w - r, y + t, r, between, s.borderRightStyle, false);
+    const widths = [t, r, b, l];
+    const joins = doubleJoins(box);
+    const styles = [
+      s.borderTopStyle,
+      s.borderRightStyle,
+      s.borderBottomStyle,
+      s.borderLeftStyle,
+    ];
+    for (let at = 0; at < 4; at += 1) {
+      if (widths[at] > 0) {
+        fillSide(path, options, at, x, y, w, h, widths, styles[at], joins);
+      }
+    }
   }
   ctx.clip();
   return true;
@@ -5247,6 +5241,111 @@ function paintCollapsedBorders(
   }
 }
 
+/**
+ * One side of a border box at `x, y`, `w` by `h` — `at` counts the top
+ * first and clockwise — as rectangles cut to what the paint reaches: the
+ * top and the bottom the width of the box and the left and the right
+ * between them, so a corner is a square of one side or the other.
+ *
+ * A double side is two lines, a band each along its outer and its inner
+ * edge. Where it meets another double side of its colour (`joins`, the
+ * top left corner first) the lines of the two meet as two frames do, one
+ * inside the other (CSS Backgrounds 3, 4.2 and 4.3): the outer line of the
+ * left or the right runs on to the outer line of the top or the bottom,
+ * and the inner line of the top or the bottom stops at the inner line of
+ * the side. With square corners the outer frame was open at each of them
+ * and the inner line of the top ran on past the side's to the border edge.
+ * Each line is cut to the paint on its own, so a border wider than the
+ * reach around the paint keeps its lines at its edges, and not at the
+ * edges of the part of it cut out.
+ */
+function fillSide(
+  ctx: Pick<FillContext, 'fillRect'>,
+  options: PaintOptions,
+  at: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  widths: readonly number[],
+  style: ComputedStyle['borderTopStyle'],
+  joins: readonly boolean[],
+): void {
+  const [t, r, b, l] = widths;
+  const width = widths[at];
+  const horizontal = (at & 1) === 0;
+  if (style === 'double' && width >= 3) {
+    const band = doubleBand(width);
+    const line = (lx: number, ly: number, lw: number, lh: number): void => {
+      const rect = clampRect(options, lx, ly, lw, lh);
+      if (rect) ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    };
+    if (horizontal) {
+      // the outer line the width of the box, and the inner one from the
+      // inner line of a side it joins, or from the edge of the box
+      const from = joins[at === 0 ? 0 : 3] ? x + l - doubleBand(l) : x;
+      const to = joins[at === 0 ? 1 : 2] ? x + w - r + doubleBand(r) : x + w;
+      line(x, at === 0 ? y : y + h - band, w, band);
+      line(from, at === 0 ? y + t - band : y + h - b, to - from, band);
+    } else {
+      // the outer line from the outer line of a side it joins, or from
+      // that side's inner edge, and the inner one between the two sides
+      const from = joins[at === 3 ? 0 : 1] ? y + doubleBand(t) : y + t;
+      const to = joins[at === 3 ? 3 : 2] ? y + h - doubleBand(b) : y + h - b;
+      line(at === 3 ? x : x + w - band, from, band, to - from);
+      line(at === 3 ? x + l - band : x + w - r, y + t, band, h - t - b);
+    }
+    return;
+  }
+  const ex = at === 1 ? x + w - r : x;
+  const ey = at === 0 ? y : at === 2 ? y + h - b : y + t;
+  const rect = horizontal
+    ? clampRect(options, ex, ey, w, width)
+    : clampRect(options, ex, ey, width, h - t - b);
+  // The un-clamped start is the dash phase's origin, so the pattern does
+  // not crawl as the viewport moves along a long edge.
+  if (rect) fillEdge(ctx, rect, horizontal ? ex : ey, style, horizontal);
+}
+
+/**
+ * The corners of a box where two double sides of one colour meet, the top
+ * left first and clockwise, and whose lines `fillSide` joins. By the
+ * colours as written, a transparent one included, which is how a clip to
+ * the border's area draws the border it does not paint.
+ */
+function doubleJoins(box: Frame): readonly boolean[] {
+  const s = box.style;
+  const color = (
+    width: number,
+    style: ComputedStyle['borderTopStyle'],
+    value: string,
+  ): string | null =>
+    style === 'double' && width >= 3 ? inkColor(value, s.color) : null;
+  const top = color(box.borderTop, s.borderTopStyle, s.borderTopColor);
+  const bottom = color(
+    box.borderBottom,
+    s.borderBottomStyle,
+    s.borderBottomColor,
+  );
+  if (top === null && bottom === null) return UNJOINED;
+  const right = color(box.borderRight, s.borderRightStyle, s.borderRightColor);
+  const left = color(box.borderLeft, s.borderLeftStyle, s.borderLeftColor);
+  return [
+    top !== null && top === left,
+    top !== null && top === right,
+    bottom !== null && bottom === right,
+    bottom !== null && bottom === left,
+  ];
+}
+
+const UNJOINED: readonly boolean[] = [false, false, false, false];
+
+/** How wide each of a double border's two lines is, the gap between them
+ *  what is left of the side. */
+function doubleBand(thickness: number): number {
+  return Math.max(1, Math.floor(thickness / 3));
+}
+
 function fillEdge(
   ctx: Pick<FillContext, 'fillRect'>,
   rect: { x: number; y: number; w: number; h: number },
@@ -5275,7 +5374,7 @@ function fillEdge(
     return;
   }
   if (style === 'double' && thickness >= 3) {
-    const band = Math.max(1, Math.floor(thickness / 3));
+    const band = doubleBand(thickness);
     if (horizontal) {
       ctx.fillRect(x, y, length, band);
       ctx.fillRect(x, y + thickness - band, length, band);
