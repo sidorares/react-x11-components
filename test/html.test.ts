@@ -6611,6 +6611,28 @@ test('a form control or a frame keeps its height when only its width is set', as
   assert.strictEqual(f.width, e.width, 'a frame 96px tall is as wide');
 });
 
+test("a control's text keeps none of the spacing, line height, case or indent around it", async () => {
+  // HTML's rendering section, 15.3.10. melbcss.com's buttons sit in a body
+  // of `line-height: 1.5`, and inherited it: each was half a line taller
+  // than Chrome's.
+  const { node } = await render(
+    '<button id="c">Go</button>' +
+      '<div style="line-height:3;letter-spacing:5px;word-spacing:9px;' +
+      'text-transform:uppercase;text-indent:40px">' +
+      '<button id="a">Go on</button>' +
+      '<button id="b" style="line-height:3">Go on</button></div>' +
+      '<button id="d">Go on</button>',
+  );
+  const el = view(node);
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('a'), size('d'), 'as it would be anywhere');
+  assert.ok(boxOf(el, 'c').width < boxOf(el, 'd').width, 'a wider label');
+  assert.ok(
+    boxOf(el, 'b').height > boxOf(el, 'a').height,
+    'a line height of its own is still its own',
+  );
+});
+
 test('a stylesheet handed over as bytes is decoded as CSS says', () => {
   // CSS 2.1 4.4 and CSS Syntax 3 3.2, in order: a byte order mark, the
   // protocol's charset, an `@charset` at the very start — UTF-16 named in
