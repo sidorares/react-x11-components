@@ -581,11 +581,13 @@ page's footer at the bottom. `justify-content` and `align-content` place
 the tracks, and `place-content` sets both — so `place-content: center`
 centres a page's one column. An item is stretched to its area or aligned in it by
 `justify-self`, `align-self` and its `auto` margins, and one that is not
-stretched is as wide as its content fits. `normal` stretches an item but an
+stretched is as wide as its content fits. `normal`, which is what an unset
+`align-items` is, stretches an item but an
 image, which keeps its own size, and a box with an `aspect-ratio`, which is
 as wide as a height it has makes it, and as a block would be where it has
-none; an item stretched down its area is as wide as its ratio makes that
-height. A table among them is stretched across its area too, as Chrome
+none; `stretch`, the grid's or the item's own, stretches those too, and an
+item stretched down its area is as wide as its ratio makes that
+height. In a flex box `normal` is `stretch`. A table among the items is stretched across its area too, as Chrome
 stretches one, where in a block's flow it is as wide as its columns. An item's area is its containing block: a percentage in its
 margins, its padding, its `min-width` or its `max-width` is of the area's
 width, whatever width the item comes to in it, so `width: 50%; max-width:

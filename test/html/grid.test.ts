@@ -5,11 +5,13 @@ import { cleanup, waitFor } from 'react-x11/test';
 import { sizeTracks } from '../../src/html/layout/tracks.js';
 import {
   RED_PNG,
+  SVG_NS,
   boxOf,
   linesOf,
   metric,
   render,
   renderWithBytes,
+  svgBytes,
   view,
 } from './harness.js';
 import type { LaidBox } from './harness.js';
@@ -652,6 +654,57 @@ test('a grid item with a ratio is sized by it, and justify-items: normal starts 
   assert.deepStrictEqual(size('h'), [80, 80]);
   assert.strictEqual(boxOf(el, 'ig').width, 100);
   assert.strictEqual(boxOf(el, 'g').width, 0);
+});
+
+test("a grid's align-items: stretch stretches an image, and normal does not", async () => {
+  // CSS Grid 1, 6.2 and CSS Box Alignment 3, 6.1: `normal` stretches an
+  // item that has neither a natural size nor a ratio, and `stretch` every
+  // item. `normal` was dropped where it was written and the initial value
+  // was `stretch`, so the grid could not tell the two apart, and read both
+  // as `normal`: an image under the grid's `stretch` kept its own height.
+  // Each number here is Chrome's.
+  const img = (w: number, h: number) =>
+    svgBytes(`<svg ${SVG_NS} width="${w}" height="${h}"></svg>`);
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0} .g{display:grid;width:300px;' +
+      'grid-template:80px/300px} .s{align-items:stretch}' +
+      '.s.n{align-items:normal}</style>' +
+      // stretched down its row, and as wide as its ratio makes that
+      '<div class="g s"><img id="a" src="sq.svg"></div>' +
+      // `normal`, unset or written over a `stretch`, leaves it be
+      '<div class="g"><img id="b" src="sq.svg"></div>' +
+      '<div class="g s n"><img id="c" src="sq.svg"></div>' +
+      // stretched across as well, within a greatest width of its area's
+      '<div style="display:grid;grid-template-columns:1fr 1fr;' +
+      'align-items:stretch;height:80px;width:600px"><div></div>' +
+      '<img id="d" src="wide.svg" style="padding:0 10%;max-width:50%;' +
+      'justify-self:stretch"></div>' +
+      // a box with a ratio, and the `auto` column the stretched height of
+      // one makes, before the rows are sized
+      '<div class="g s"><div id="e" style="aspect-ratio:2"></div></div>' +
+      '<div class="g s" style="grid-template-columns:auto 1fr">' +
+      '<img id="f" src="tall.svg"><div></div></div>' +
+      // an item's own `align-self: normal` is the same `normal`
+      '<div class="g s"><img id="g" src="sq.svg" style="align-self:normal">' +
+      '</div>' +
+      // and in a flex box `normal` is `stretch`, where it was dropped
+      '<div style="display:flex;height:40px;align-items:center;' +
+      'align-items:normal"><div id="h" style="width:10px"></div></div>',
+    { 'sq.svg': img(10, 10), 'wide.svg': img(40, 4), 'tall.svg': img(10, 20) },
+  );
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  await waitFor(() => assert.deepStrictEqual(size('b'), [10, 10]));
+  assert.deepStrictEqual(size('a'), [80, 80], 'the row down, its ratio across');
+  assert.deepStrictEqual(size('c'), [10, 10]);
+  assert.deepStrictEqual(
+    size('d'),
+    [210, 80],
+    "half its area and a tenth's padding",
+  );
+  assert.deepStrictEqual(size('e'), [160, 80], 'a box with a ratio too');
+  assert.deepStrictEqual(size('f'), [40, 80]);
+  assert.deepStrictEqual(size('g'), [10, 10]);
+  assert.deepStrictEqual(size('h'), [10, 40]);
 });
 
 test('place-content sets align-content then justify-content, the second the first again', async () => {

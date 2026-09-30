@@ -374,18 +374,19 @@ export function layoutGrid(
     } else if (align === 'center') dy = (tall - outerHeight) / 2;
     else if (align === 'flex-end') dy = tall - outerHeight;
     else if (
-      (align === 'stretch' || align === 'baseline') &&
+      (align === 'stretch' || align === 'normal' || align === 'baseline') &&
       child.style.height === AUTO &&
       !child.style.heightKeyword &&
-      (child.style.alignSelf === 'stretch' ||
+      (align === 'stretch' ||
         (child.kind !== 'replaced' && !child.style.aspectRatio))
     ) {
       // a stretched item is its area's height, within its own least and
       // greatest (10.3): taller than what it holds, or shorter where its
       // tracks let it be, what it holds then running past it. An image, a
-      // control or a box with an `aspect-ratio` keeps its own height, as
-      // `normal` has one with a natural size or a ratio — which is what
-      // the grid's `stretch` may be, and the item's own may not.
+      // control or a box with an `aspect-ratio` keeps its own height under
+      // `normal`, which stretches only an item with neither a natural size
+      // nor a ratio, and is stretched by `stretch`, the grid's or its own
+      // (6.2, and CSS Box Alignment 3, 6.1).
       const stretched = tall - child.marginTop - child.marginBottom;
       const height = clampHeight(
         child,
@@ -939,9 +940,9 @@ function percentOwn(box: Box): boolean {
 /**
  * An item's border-box height before the rows are sized, where it has one
  * then: a height of its own — a percentage of the rows it spans where they
- * have a length for a size — or the rows' where it is stretched down them
- * by its own `align-self`. Null where it has none, which is where its
- * height is its content's.
+ * have a length for a size — or the rows' where `stretch` stretches it
+ * down them, its own `align-self` or the grid's `align-items`. Null where
+ * it has none, which is where its height is its content's.
  */
 function heightBeforeRows(box: Box, rows: number): number | null {
   const style = box.style;
@@ -954,10 +955,12 @@ function heightBeforeRows(box: Box, rows: number): number | null {
         : own + box.verticalExtra,
     );
   }
+  const align =
+    style.alignSelf === AUTO ? box.parent?.style.alignItems : style.alignSelf;
   if (
     style.height === AUTO &&
     !style.heightKeyword &&
-    style.alignSelf === 'stretch' &&
+    align === 'stretch' &&
     Number.isFinite(rows) &&
     !autoMargins(box, 'y').some(Boolean)
   ) {

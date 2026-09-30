@@ -761,9 +761,19 @@ export interface ComputedStyle {
     | 'space-between'
     | 'space-around'
     | 'space-evenly';
-  alignItems: 'flex-start' | 'flex-end' | 'center' | 'stretch' | 'baseline';
+  /** `normal` is `stretch` in a flex box, and is kept apart from it only
+   *  in a grid, where it does not stretch an item with a natural size or a
+   *  ratio (`settleAlign`). */
+  alignItems:
+    'normal' | 'flex-start' | 'flex-end' | 'center' | 'stretch' | 'baseline';
   alignSelf:
-    'auto' | 'flex-start' | 'flex-end' | 'center' | 'stretch' | 'baseline';
+    | 'auto'
+    | 'normal'
+    | 'flex-start'
+    | 'flex-end'
+    | 'center'
+    | 'stretch'
+    | 'baseline';
   alignContent:
     | 'flex-start'
     | 'flex-end'
@@ -1114,7 +1124,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     flexDirection: 'row',
     flexWrap: 'nowrap',
     justifyContent: 'normal',
-    alignItems: 'stretch',
+    alignItems: 'normal',
     alignSelf: 'auto',
     alignContent: 'stretch',
     flexGrow: 0,
@@ -2906,13 +2916,17 @@ export function applyDeclaration(
       return;
     }
     case 'align-items': {
-      const v = alignKeyword(value);
+      const v =
+        value.trim().toLowerCase() === 'normal'
+          ? 'normal'
+          : alignKeyword(value);
       if (v) style.alignItems = v as ComputedStyle['alignItems'];
       return;
     }
     case 'align-self': {
-      if (value.toLowerCase() === 'auto') {
-        style.alignSelf = AUTO;
+      const keyword = value.trim().toLowerCase();
+      if (keyword === 'auto' || keyword === 'normal') {
+        style.alignSelf = keyword;
         return;
       }
       const v = alignKeyword(value);
@@ -3370,6 +3384,28 @@ export function settleContentVisibility(style: ComputedStyle): void {
     style.contain |=
       CONTAIN_SIZE | CONTAIN_LAYOUT | CONTAIN_STYLE | CONTAIN_PAINT;
     style.contain &= ~CONTAIN_INLINE_SIZE;
+  }
+}
+
+/**
+ * `align-items: normal` and `align-self: normal`, settled once the cascade
+ * knows what the box and its parent are. In a grid `normal` stretches an
+ * item only where it has neither a natural size nor a ratio, and `stretch`
+ * stretches every item (CSS Grid 1, 6.2; CSS Box Alignment 3, 6.1), so the
+ * grid keeps the two apart; everywhere else `normal` is `stretch`, and a
+ * flex box reads nothing new. Unread, `normal` was dropped, and a grid could
+ * not tell an unset `align-items` from `stretch`: an image under an explicit
+ * `stretch` kept the height its ratio gave it.
+ */
+export function settleAlign(
+  style: ComputedStyle,
+  parent: ComputedStyle | null,
+): void {
+  if (style.alignItems === 'normal' && !style.grid) {
+    style.alignItems = 'stretch';
+  }
+  if (style.alignSelf === 'normal' && !parent?.grid) {
+    style.alignSelf = 'stretch';
   }
 }
 

@@ -32,6 +32,7 @@ import type { Declaration, StyleRule, Stylesheet } from './parse.js';
 import {
   applyDeclaration,
   blockify,
+  settleAlign,
   settleButton,
   settleContentVisibility,
   settleOverflow,
@@ -1744,6 +1745,7 @@ export class Cascade {
       style.alignBlocks = null;
     }
     settleClamp(style, parentStyle);
+    settleAlign(style, parentStyle);
     settleOverflow(style);
     settleContentVisibility(style);
     blockify(style, inFlexContainer);
