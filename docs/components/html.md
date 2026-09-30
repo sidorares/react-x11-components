@@ -500,7 +500,13 @@ stretched is as wide as its content fits. `normal` stretches an item but an
 image, which keeps its own size, and a box with an `aspect-ratio`, which is
 as wide as a height it has makes it, and as a block would be where it has
 none; an item stretched down its area is as wide as its ratio makes that
-height. An item's percentage height is of its area, and a stretched item's
+height. An item's area is its containing block: a percentage in its
+margins, its padding, its `min-width` or its `max-width` is of the area's
+width, whatever width the item comes to in it, so `width: 50%; max-width:
+80%` is half its column. While the columns are being sized there is no
+area yet, and a percentage in a margin or a padding is of nothing — a
+column is as wide as what is in its item, and the margins and the padding
+come out of that. An item's percentage height is of its area, and a stretched item's
 height is one what is in it takes percentages of — and one an item that is
 a flex box or a grid lays its own items out in, so a grid of cards, each a
 column ending in a `margin-top: auto` button, has every button at the
