@@ -62,6 +62,10 @@ import type {
 import type { FloatContext } from './floats.js';
 import { tableGrid } from './grid.js';
 
+/** How a paragraph's lines are fitted to their width, and measured: as a
+ *  browser fits them (`FontsLike`'s `fit`). */
+const PARAGRAPH_FIT = 'items' as const;
+
 /** The slice of ntk's font manager this needs. Structural, as everywhere. */
 export interface FontsLike {
   layout(
@@ -82,6 +86,13 @@ export interface FontsLike {
       /** Whether soft wraps are made at all: false is a line to each
        *  forced break, cut at `maxWidth` where `overflow` says so. ntk's. */
       wrap?: boolean;
+      /** `'items'` fits a line as a browser does, each run's part of it
+       *  rounded up to a 64th of a pixel before it is added, as Blink
+       *  rounds an element's text on a line up to a LayoutUnit — and
+       *  reports a line as wide as that, so a box as wide as its text
+       *  holds it. What a paragraph's lines are laid out with; ntk's, from
+       *  8.16.1, which an engine without it leaves at the advances' sum. */
+      fit?: 'items';
     },
   ): TextLayoutLike;
   match(
@@ -137,7 +148,9 @@ export function widestWord(
       text: run.text.replace(/[ \t\u200b]+/g, '\n'),
     })),
     {},
-    {},
+    // measured as the lines are fitted, or a word across two elements is
+    // read narrower than it fits
+    { fit: PARAGRAPH_FIT },
   );
   widest = 0;
   for (const line of words.lines) widest = Math.max(widest, line.width);
@@ -646,6 +659,7 @@ function linesOf(
       align: justifyRest && !justifyLast ? engineAlign(lastAlign) : align,
       direction: style.direction,
       overflowWrap: cutWrap(style, cut, wrapWords),
+      fit: PARAGRAPH_FIT,
       ...cut,
     };
     let layout = fonts.layout(runs, base, layoutOptions);
@@ -796,6 +810,7 @@ function linesOf(
             align: 'left',
             direction: style.direction,
             overflowWrap: wrapWords,
+            fit: PARAGRAPH_FIT,
           },
         }
       : null;
@@ -1010,6 +1025,7 @@ function linesOf(
         align,
         direction: style.direction,
         overflowWrap: wrapWords,
+        fit: PARAGRAPH_FIT,
       };
       let layout = fonts.layout(segment.runs, base, tailOptions);
       LAYOUT_RUNS.set(layout, segment.runs);
@@ -1095,6 +1111,7 @@ function linesOf(
       align: 'left',
       direction: style.direction,
       overflowWrap: wrapWords,
+      fit: PARAGRAPH_FIT,
       maxLines: 1,
     });
     LAYOUT_RUNS.set(fragment, segment.runs);
@@ -1395,6 +1412,7 @@ function layoutSpaced(
     align,
     direction: style.direction,
     overflowWrap: wrapWords,
+    fit: PARAGRAPH_FIT,
   };
   let layout = fonts.layout(runs, base, layoutOptions);
   LAYOUT_RUNS.set(layout, runs);
@@ -1612,6 +1630,7 @@ function layoutChunked(
       align,
       direction: style.direction,
       overflowWrap: cutWrap(style, cut, wrapWords),
+      fit: PARAGRAPH_FIT,
       ...cut,
     };
     let layout = fonts.layout(chunkRuns, base, chunkOptions);
@@ -1788,7 +1807,9 @@ function unbreakableAfter(
     if (stop > 0) runs.push({ ...item.run, text: text.slice(0, stop) });
     break;
   }
-  return runs.length ? width + fonts.layout(runs, base, {}).width : width;
+  return runs.length
+    ? width + fonts.layout(runs, base, { fit: PARAGRAPH_FIT }).width
+    : width;
 }
 
 /**

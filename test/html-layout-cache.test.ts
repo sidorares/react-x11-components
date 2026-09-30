@@ -178,6 +178,7 @@ test("every field of a block's style, and every option, is what a layout is foun
     overflow: 'ellipsis',
     overflowWrap: 'normal',
     wrap: false,
+    fit: 'items',
   };
   const engine = countingEngine();
   const cache = new TextLayoutCache(engine);
