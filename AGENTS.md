@@ -411,8 +411,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.25.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.25.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.26.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.26.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -540,6 +540,16 @@ it up. **The floor is a running one and moves often** — every move since
   scrolled at 14 frames a second at 2x. It also has hover follow content
   that scrolls under a still pointer (#793), and `roundRect` take
   elliptical `{ x, y }` radii.
+- `^2.26.0` — `<Select>`'s `labelStyle` and `chevronStyle` (react-x11#796),
+  style slots over its caption and its chevron in the shape `<Slider>`'s
+  took. A `<select>` the page gave a border, a background or
+  `appearance: none` is mounted bare in its content box, as a text field
+  is, its caption in the element's colour and font and its arrow in that
+  colour, or left out at `appearance: none`. The caption had named the
+  palette's `text` itself, so nothing reached it, and melbcss.com's select
+  was the palette's white framed dropdown inside the page's padding. Either
+  slot also makes it the drawn trigger, where a native popup bezel would
+  draw AppKit's frame over the page's box.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1225,7 +1235,9 @@ parsed (`absoluteUrls`, `css/parse.ts`) — and `onResource` and `onLink` see
 absolute URLs. Without a base nothing is resolved, which is what every host
 before it saw. `examples/browser/` is the host that does fetch, and the
 place a fetching policy belongs: a cache per page process, per-host pacing,
-`file:` only for `file:` pages, no cookies.
+`file:` only for `file:` pages, no mixed content (a secure page's
+stylesheets and fonts over an insecure connection are blocked and its images
+upgraded, as a browser has it), no cookies.
 
 **The browser runs each tab's page in a `<Frame>`, and two things about a
 pane are worth knowing before the next example makes one.** A pane is a

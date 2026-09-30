@@ -14,6 +14,9 @@
 //   - **`file:` only for `file:` pages.** A page from the web naming
 //     `file:///etc/passwd` as an image gets nothing; a local page gets its
 //     local images.
+//   - **No mixed content.** A secure page's stylesheets and fonts come over
+//     a secure connection or not at all, and its images are asked for over
+//     one (`mixedContent`), as a browser has it.
 //   - **No cookies, no scripts, no downloads.** Nothing is stored between
 //     requests, and anything that is not a document, an image, a stylesheet
 //     or a font is not fetched at all.
@@ -155,6 +158,9 @@ export class Network {
     page: string,
     signal?: AbortSignal,
   ): Promise<Fetched | null> {
+    const allowed = mixedContent(url, kind, page);
+    if (allowed === null) return Promise.resolve(null);
+    if (allowed !== url) return this.resource(allowed, kind, page, signal);
     const scheme = schemeOf(url);
     if (scheme === 'file' && schemeOf(page) !== 'file') {
       return Promise.resolve(null);
@@ -421,6 +427,38 @@ export function resourceResult(
       'RIFFWEBP';
   if (webp || fetched.type === 'image/avif') return null;
   return { kind: 'image', bytes: b };
+}
+
+/**
+ * What a secure page may ask an insecure origin for (W3C Mixed Content,
+ * Level 2): the URL to ask for, or null for nothing. An image is
+ * upgradeable, asked for over `https:` instead, as Chrome does; a
+ * stylesheet or a font is blockable, and not asked for at all. So a page
+ * served over `https:` that imports Google Fonts over `http:`, as the Zen
+ * Garden's older designs do, is drawn in its fallback faces, as it is in a
+ * browser. A loopback host is potentially trustworthy (Secure Contexts,
+ * 3.2), and an insecure page asks for what it names.
+ */
+export function mixedContent(
+  url: string,
+  kind: ResourceKind,
+  page: string,
+): string | null {
+  if (schemeOf(page) !== 'https' || schemeOf(url) !== 'http') return url;
+  try {
+    const host = new URL(url).hostname;
+    if (
+      host === 'localhost' ||
+      host.endsWith('.localhost') ||
+      host === '[::1]' ||
+      /^127\./.test(host)
+    ) {
+      return url;
+    }
+  } catch {
+    return null;
+  }
+  return kind === 'image' ? `https:${url.slice('http:'.length)}` : null;
 }
 
 /**

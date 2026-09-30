@@ -493,7 +493,21 @@ function renderControl(
         options: options.map((o) => ({ value: o.value, label: o.label })),
         value: selectedOption(el) ?? undefined,
         disabled,
-        style: { width: '100%', height: '100%' },
+        style: rect.bare
+          ? [BARE_TRIGGER, { width: '100%', height: '100%' }]
+          : { width: '100%', height: '100%' },
+        // the slots choose the drawn trigger on every backend, and put the
+        // caption and the arrow in the page's ink
+        ...(rect.bare && {
+          labelStyle: {
+            color: rect.bare.color,
+            fontFamily: rect.bare.fontFamily,
+            fontSize: rect.bare.fontSize,
+          },
+          chevronStyle: rect.bare.chevron
+            ? { color: rect.bare.color }
+            : { display: 'none' },
+        }),
         onChange: (ev) => {
           const next = String(ev.value ?? '');
           forms.remember(el);
@@ -653,6 +667,24 @@ function bareField(bare: BareField): Style {
     fontSize: bare.fontSize,
   };
 }
+
+/**
+ * The trigger of a `<select>` whose box the page styled: no frame, no fill
+ * and none of its own insets, and no wash under the pointer, since the box
+ * it would tint is the document's. Core's focus ring still marks it for the
+ * keyboard.
+ */
+const BARE_TRIGGER: Style = {
+  paddingTop: 0,
+  paddingBottom: 0,
+  paddingLeft: 0,
+  paddingRight: 0,
+  borderWidth: 0,
+  borderRadius: 0,
+  backgroundColor: 'transparent',
+  ':hover': { backgroundColor: 'transparent' },
+  ':active': { backgroundColor: 'transparent' },
+};
 
 /** Select the option of a drop-down `<select>` whose value is `value`, and
  *  no other. */

@@ -395,7 +395,8 @@ sizes its columns and its rows by the track sizing algorithm:
 an item spanning several tracks grows the ones its content sizes, and the
 `fr` rows of a grid with a height or a `min-height` fill it, which puts a
 page's footer at the bottom. `justify-content` and `align-content` place
-the tracks. An item is stretched to its area or aligned in it by
+the tracks, and `place-content` sets both — so `place-content: center`
+centres a page's one column. An item is stretched to its area or aligned in it by
 `justify-self`, `align-self` and its `auto` margins, and one that is not
 stretched is as wide as its content fits. `normal` stretches an item but an
 image, which keeps its own size, and a box with an `aspect-ratio`, which is
@@ -951,7 +952,8 @@ toolbar — and the window where nothing does, since the element sizes to its
 content. So `html, body { height: 100% }` is a viewport tall and `bottom: 0`
 with nothing positioned around it is the viewport's bottom, as in a browser;
 the document is as tall as what overflows its root, so nothing longer than
-the viewport is cut off. A document that reads the viewport's height — a
+the viewport is cut off — an inline element's padding and border below its
+line among it, as a browser counts them, where nothing clips them. A document that reads the viewport's height — a
 `vh`, a percentage height on the root, a box placed against the initial
 containing block — follows it when the window is resized, a frame behind
 the scroll box it is measured by; one that reads none is not laid out again
@@ -1022,16 +1024,23 @@ An `<input type=image>` is drawn the same way, as its image, and submits
 the point it was pressed at; until its image arrives, or where it is
 declined, it is a button saying its `alt`, so it can be pressed either way.
 
-**A text field the page styled is the page's to draw.** Give an `<input>` or
-a `<textarea>` a border or a background of its own, or `appearance: none`,
-and the document paints that box, as a browser drops a field's native look
-for the author's; the widget is mounted bare inside its content box, with no
-frame or fill, and writes in the element's own colour and font, which the
-author chose to go on that background. Its size is then its text's, and the
-border and padding around it are the author's. `appearance: none` is how a
-design system writes every field it has, often with neither a border nor a
-background. A field with none of the three keeps the theme's frame, and so
-does every `<input type=submit>`: core's `<Button>` draws its own label.
+**A text field the page styled is the page's to draw.** Give an `<input>`, a
+`<textarea>` or a `<select>` a border or a background of its own, or
+`appearance: none`, and the document paints that box, as a browser drops a
+field's native look for the author's; the widget is mounted bare inside its
+content box, with no frame or fill, and writes in the element's own colour
+and font, which the author chose to go on that background. Its size is then
+its text's, and the border and padding around it are the author's. A
+`<select>` keeps its arrow, in that colour, as a browser keeps one on a
+select the page gave a border or a background, and loses it at
+`appearance: none`, where the page draws its own — as a background image,
+most often. Its widget is core's `<Select>` restyled through its
+`labelStyle` and `chevronStyle` slots, which also make it the drawn trigger
+on every backend: under a native popup bezel the page's box would have
+AppKit's drawn over it. `appearance: none` is how a design system writes
+every field it has, often with neither a border nor a background. A field
+with none of the three keeps the theme's frame, and so does every
+`<input type=submit>`: core's `<Button>` draws its own label.
 
 **The application scrolls it, and height does not frighten it.** The element
 sizes to its content; put it in a `<box overflow="scroll">`, the same shape
@@ -1328,11 +1337,14 @@ In the pane an `<Html>` is given the page's URL as `baseUrl`, and
 [`examples/browser/`](../../examples/browser/) is the host a document's
 requests go to — the page streamed in as it arrives, then every stylesheet,
 image and `@font-face` font through `onResource`, a few requests a host at a
-time. A form's submission through `onSubmit` is a navigation like a link's:
-a GET goes to the URL it wrote, and a POST sends its body, with the `Origin`
-and `Referer` of the page it was on, and becomes a step of the history that
-Reload sends again. A tab shows the page's `<title>` and its icon; Ctrl+T
-(⌘T on macOS) opens one. It is where the component's policy — nothing fetched, nothing
+time, and none of a secure page's stylesheets or fonts over an insecure
+connection, which a browser blocks as mixed content (its images are asked
+for over a secure one instead). A form's submission through `onSubmit` is a
+navigation like a link's: a GET goes to the URL it wrote, and a POST sends
+its body, with the `Origin` and `Referer` of the page it was on, and becomes
+a step of the history that Reload sends again. A tab shows the page's
+`<title>` and its icon; Ctrl+T (⌘T on macOS) opens one. It is where the
+component's policy — nothing fetched, nothing
 run — meets an application's: the browser fetches what a page asks for and
 runs none of its scripts.
 

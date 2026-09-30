@@ -45,6 +45,7 @@ import { inkColor, isTransparent, resolve } from '../css/values.js';
 import {
   BOX_RAISES,
   LINE_BOX_RAISES,
+  PADDED_FACES,
   isOffset,
   letteredAfter,
   SHADOWED_TEXT,
@@ -3929,6 +3930,9 @@ function inlineEdges(
     }
   }
   box.decoration = inlineDecoration(fonts, box, s);
+  if (!box.decoration && fonts && (box.padTop > 0 || box.padBottom > 0)) {
+    PADDED_FACES.set(box, faceExtent(fonts, s));
+  } else PADDED_FACES.delete(box);
   const left = box.marginLeft + box.borderLeft + box.padLeft;
   const right = box.padRight + box.borderRight + box.marginRight;
   return s.direction === 'rtl' ? [right, left] : [left, right];
@@ -6042,13 +6046,19 @@ function ownsLeading(
   block: ComputedStyle,
   style: ComputedStyle,
 ): boolean {
-  // a bold or an italic face keeps its family's line metrics, and a
-  // paragraph is thick with <strong>, <em> and <a>
+  // the block's own face is past at once. A bold or an italic one is not:
+  // a paragraph is thick with <strong>, <em> and <a>, and most families'
+  // faces share their line metrics, but not every one's — Helvetica Neue
+  // Bold reaches 0.975em above its baseline to the regular's 0.952, and
+  // Blink, which rounds each to a whole pixel, sets a 12px bold word on a
+  // 19.2px line a pixel taller. It is measured once for its style, below.
   if (
     style.lineHeight === block.lineHeight &&
     style.lineHeightIsLength === block.lineHeightIsLength &&
     style.fontSize === block.fontSize &&
-    style.fontFamily === block.fontFamily
+    style.fontFamily === block.fontFamily &&
+    style.fontWeight === block.fontWeight &&
+    style.fontStyle === block.fontStyle
   ) {
     return false;
   }
