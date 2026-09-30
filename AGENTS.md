@@ -1345,6 +1345,32 @@ a hover in it can reach; Tailwind 4 writes `:hover` inside `:is()` and
 `:where()` as a matter of course, so "nested" there means a function it
 cannot read a selector list in, and nothing more.
 
+**A transform is two halves, and inside one every number is the box's
+own.** Its translation is layout's — `applyRelativeOffsets` moves the box
+and what it holds, so everything that reads a box finds it moved — and what
+is left, a turn, a scale or a skew, is paint's: `paintTransformed` draws
+the box through `placedMatrix`, about its origin where the translation put
+it (`css/transform.ts` has why the two are one matrix). So under a box that
+turns, the `x`, `y` and ink bounds of everything it holds are in the
+coordinates it was laid out in, and only the box's own `boundsX`… are where
+it is drawn. **A rectangle taken out of such a box goes through
+`throughTransforms`, and a point taken into one through the inverse**
+(`deepestAt`, `nearestText`): without the first, a link hovered in a turned
+box was repainted where it was laid out. It is the 1x-display trap with a
+matrix for the scale, and has the same answer: a test of a transformed box
+that reads geometry back turns the box, and does not only move it. What a
+matrix reaches is the context's: ntk draws a glyph as it was shaped, where
+the matrix puts it, and says so by having no `scalesText`, and it draws an
+image through a picture transform in 16.16 fixed point, in the window's
+coordinates — a photograph at a fortieth of its size 2,200 pixels across
+threw from the request's encoder, which blanks the document. So there only
+a box that is paths and flat colour is drawn through the matrix
+(`drawnAsPaths`), and any other on a surface, the surface through the
+matrix (`paintRaster`). **Anything new a box can draw that is not a path
+goes on `drawnAsPaths`' list**, and the stress that found this is worth
+rerunning after: hostile values (`scale(1e30)`, `skewX(90deg)`), and an
+image far across a window wider than any test's.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

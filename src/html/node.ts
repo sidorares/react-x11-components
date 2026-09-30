@@ -82,7 +82,8 @@ import type {
   ReplacedKind,
   TextLayoutLike,
 } from './layout/boxes.js';
-import { layoutDocument, retranslate, transformed } from './layout/block.js';
+import { layoutDocument, placedMatrix, retranslate } from './layout/block.js';
+import { invert, mapPoint, mapRect, transformed } from './css/transform.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { shapingSafe } from './layout/shaping.js';
 import { SurfaceCache, newSurface } from './surfaces.js';
@@ -111,6 +112,8 @@ import {
   holdsAbsolute,
   inClip,
   inClipPath,
+  onLine,
+  ownBounds,
   paintDocument,
   pathClips,
   queryChildIndex,
@@ -1417,6 +1420,9 @@ export class HtmlViewNode extends Node {
         rect = { x: caret.x, y: caret.y, width: 0, height: caret.height };
       }
     }
+    // where it is drawn: the rectangle around it, turned and scaled as the
+    // boxes it is in are, and itself (`getBoundingClientRect`, CSSOM View)
+    rect = throughTransforms(rect, box);
     const s = this._scale;
     return {
       x: rect.x / s,
@@ -2442,7 +2448,27 @@ function nearestText(box: Box, x: number, y: number): number | null {
       axisDistance(y, node.boundsY, node.boundsHeight) * 4 +
       axisDistance(x, node.boundsX, node.boundsWidth);
     if (boundsDistance >= bestDistance) return;
+    // in a box painted through a matrix, the point taken back through it
+    // (`deepestAt`): the text is where it was laid out
+    const matrix = placedMatrix(node);
+    if (!matrix) {
+      visitIn(node);
+      return;
+    }
+    const back = invert(matrix);
+    if (!back) return;
+    const px = x;
+    const py = y;
+    [x, y] = mapPoint(back, px, py);
+    try {
+      visitIn(node);
+    } finally {
+      x = px;
+      y = py;
+    }
+  };
 
+  const visitIn = (node: Box): void => {
     const lines = node.lines;
     if (lines?.length) {
       // The line nearest in y, by binary search; then outward both ways
@@ -2548,7 +2574,16 @@ function caretAt(
           const caret = text.layout.caretPosition(
             codePointAtOffset(offsets, layoutUnits),
           );
-          found = { x: text.drawX + caret.x, y: line.y, height: line.height };
+          const at = throughTransforms(
+            {
+              x: text.drawX + caret.x,
+              y: line.y,
+              width: 0,
+              height: line.height,
+            },
+            node,
+          );
+          found = { x: at.x, y: at.y, height: at.height };
           return;
         }
       }
@@ -2561,6 +2596,21 @@ function caretAt(
   };
   visit(box);
   return found;
+}
+
+/**
+ * A rectangle in a box's own coordinates — the ones it and what it holds
+ * were laid out in — as the rectangle around where it is drawn: through
+ * the matrix of each box from `from` up that is painted through one
+ * (`placedMatrix`). The rectangle itself, in a document that transforms
+ * nothing but by moving it.
+ */
+function throughTransforms(rect: Rect, from: Box | null): Rect {
+  for (let at = from; at; at = at.parent) {
+    const matrix = placedMatrix(at);
+    if (matrix) rect = mapRect(matrix, rect.x, rect.y, rect.width, rect.height);
+  }
+  return rect;
 }
 
 /** Every band a document range covers, in window coordinates. The subtree
@@ -2782,11 +2832,26 @@ function collectBands(
 ): void {
   if (box.subtreeTextEnd <= box.subtreeTextStart) return;
   if (box.subtreeTextEnd <= from || box.subtreeTextStart >= to) return;
+  const first = out.length;
   if (box.lines) lineBands(box.lines, from, to, dx, dy, out, false, ink);
   // Atomics are ordinary children, reached below.
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     collectBands(child, from, to, dx, dy, out, ink);
+  }
+  // where a box painted through a matrix draws them
+  const matrix = out.length > first ? placedMatrix(box) : null;
+  if (!matrix) return;
+  for (let i = first; i < out.length; i += 1) {
+    const band = out[i];
+    const to = mapRect(
+      matrix,
+      band.x - dx,
+      band.y - dy,
+      band.width,
+      band.height,
+    );
+    out[i] = { ...band, ...to, x: to.x + dx, y: to.y + dy };
   }
 }
 
@@ -2886,10 +2951,49 @@ function deepestAt(
       atViewport = false;
     }
   };
+  // A box painted through a matrix (`placedMatrix`) is under the point
+  // where the matrix puts it: inside the rectangle around what it draws
+  // there, the point is taken back through the matrix, into the
+  // coordinates the box and all it holds were laid out in, and the walk
+  // goes on with that. An icon turned a quarter is pressed where it is
+  // drawn; a box flattened to nothing is nowhere.
   const enterAt = (
     child: Box,
     context: readonly number[],
     clipped: readonly Box[],
+  ): void => {
+    const matrix = placedMatrix(child);
+    if (!matrix) {
+      enterIn(child, context, clipped, null);
+      return;
+    }
+    if (
+      x < child.boundsX ||
+      x >= child.boundsX + child.boundsWidth ||
+      y < child.boundsY ||
+      y >= child.boundsY + child.boundsHeight
+    ) {
+      return;
+    }
+    const back = invert(matrix);
+    if (!back) return;
+    const px = x;
+    const py = y;
+    [x, y] = mapPoint(back, px, py);
+    try {
+      enterIn(child, context, clipped, ownBounds(child));
+    } finally {
+      x = px;
+      y = py;
+    }
+  };
+  const enterIn = (
+    child: Box,
+    context: readonly number[],
+    clipped: readonly Box[],
+    /** What the box draws in its own coordinates, where those are not the
+     *  ones its bounds are in: a box painted through a matrix. */
+    bounds: Rect | null,
   ): void => {
     const style = child.style;
     // What a `clip-path` cuts away of a box it cuts away of all the box
@@ -2920,6 +3024,14 @@ function deepestAt(
       // a flex item with a `z-index` is layered unpositioned (`layered`)
       const z = style.zIndex === 'auto' ? 0 : style.zIndex;
       context = [...context, z < 0 ? HIT_NEGATIVE : HIT_POSITIONED, z];
+    } else if (
+      transformed(style) &&
+      child.kind !== 'inline' &&
+      child.parent &&
+      !onLine(child.parent, child)
+    ) {
+      // a transformed box is painted with the positioned ones (`layered`)
+      context = [...context, HIT_POSITIONED, 0];
     } else if (style.float !== 'none') context = [...context, HIT_FLOAT];
     if (clipped.length !== 0 && child.outOfFlow) {
       const containing = containingBlockOf(child);
@@ -2934,17 +3046,18 @@ function deepestAt(
       y < child.y + child.height;
     const own = inside && hasRect(child);
     if (!own) {
-      const reach = child.boundsY;
-      const known =
-        Number.isFinite(reach) &&
-        (child.boundsWidth > 0 || child.boundsHeight > 0);
+      const left = bounds ? bounds.x : child.boundsX;
+      const reach = bounds ? bounds.y : child.boundsY;
+      const across = bounds ? bounds.width : child.boundsWidth;
+      const down = bounds ? bounds.height : child.boundsHeight;
+      const known = Number.isFinite(reach) && (across > 0 || down > 0);
       if (!known) {
         if (!inside) return;
       } else if (
-        x < child.boundsX ||
-        x >= child.boundsX + child.boundsWidth ||
+        x < left ||
+        x >= left + across ||
         y < reach ||
-        y >= reach + child.boundsHeight
+        y >= reach + down
       ) {
         return;
       }
@@ -3160,10 +3273,20 @@ const INK_REACH = new Set([
   'outlineOffset',
 ]);
 
+/** What transforms a box: it moves, turns or scales where it is, and
+ *  nothing around it does (CSS Transforms 1, 3). */
+const TRANSFORM_FIELDS = new Set([
+  'translate',
+  'rotate',
+  'scale',
+  'transform',
+  'transformOrigin',
+]);
+
 /**
  * How two styles of one element differ, for a restyle in place: null where
  * they do not, a `HoverChange` where every difference is ink, how far ink
- * reaches, a `z-index` that stays a stacking context's, or a translation —
+ * reaches, a `z-index` that stays a stacking context's, or a transform —
  * none of which moves anything but the box and what it holds (CSS
  * Transforms 1: a transform does not affect layout) — and false where
  * anything else differs.
@@ -3202,7 +3325,7 @@ function hoverChange(
       change.order = true;
       continue;
     }
-    if (key === 'transformTranslate' || key === 'translate') {
+    if (TRANSFORM_FIELDS.has(key)) {
       change.move = true;
       continue;
     }
@@ -3245,12 +3368,17 @@ function inkOf(box: Box): Rect | null {
   }
   if (!at || at.boundsY === Infinity) return null;
   if (!(at.boundsWidth > 0 && at.boundsHeight > 0)) return null;
-  return {
-    x: at.boundsX,
-    y: at.boundsY,
-    width: at.boundsWidth,
-    height: at.boundsHeight,
-  };
+  // its bounds are in the coordinates of the box it is in, which a box
+  // around it painted through a matrix draws somewhere else
+  return throughTransforms(
+    {
+      x: at.boundsX,
+      y: at.boundsY,
+      width: at.boundsWidth,
+      height: at.boundsHeight,
+    },
+    at.parent,
+  );
 }
 
 /** Structural equality for a computed value: a number, a string, or the

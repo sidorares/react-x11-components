@@ -523,6 +523,87 @@ metric(
 );
 
 metric(
+  'a hover that turns a transformed box turns it in place, to the pixels a rebuild draws',
+  async () => {
+    // an accordion's chevron, a card that grows under the pointer: a
+    // transform moves nothing but its box (CSS Transforms 1, 3), so a box
+    // transformed before and after is turned where it is — and repainted
+    // where it was drawn and where it is drawn now, which are not where it
+    // was laid out
+    const { result, node } = await render(
+      '<style>html{background:#ffffff}body{margin:0}' +
+        ' .k{margin:40px;width:60px;height:20px;background:#00aa00;' +
+        'transform:rotate(10deg)}' +
+        ' .k:hover{transform:rotate(90deg) scale(1.5)}</style>' +
+        '<div class="k" id="k"></div><p id="away">away from it</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'k'));
+    const hovered = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'the document was built again');
+    assert.ok(bytesApart(hovered, quiet) > 0, 'the hover drew nothing');
+    // on its side and half as large again: 30 by 90 about (70, 50)
+    const k = el.elementRect(findById(el.document, 'k')!)!;
+    assert.deepStrictEqual(
+      [k.x, k.y, k.width, k.height].map(Math.round),
+      [55, 5, 30, 90],
+    );
+    assert.strictEqual(
+      bytesApart(hovered, await rebuilt(result, el)),
+      0,
+      'not as a rebuild draws it',
+    );
+    const again = treeOf(el);
+    el.setHover(...pointIn(el, 'away'));
+    const left = await snapshot(result, el);
+    assert.ok(treeOf(el) === again, 'built again to leave it');
+    assert.strictEqual(bytesApart(left, quiet), 0, 'not as it was');
+  },
+);
+
+metric(
+  'a link in a turned box is hovered where it is drawn, and repainted there',
+  async () => {
+    const { result, node } = await render(
+      '<style>html{background:#ffffff}body{margin:0}' +
+        ' a{color:#0000ee;text-decoration:none}' +
+        ' a:hover{color:#ff0000;text-decoration:underline}' +
+        ' .r{margin:60px 0 60px 40px;width:160px;transform:rotate(30deg)}' +
+        '</style>' +
+        '<div class="r">in a turned box, <a id="a" href="#x">a link</a></div>' +
+        '<p id="away">away from it</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+    const a = findById(el.document, 'a');
+    // the middle of where the link is drawn is the link's
+    const [x, y] = pointIn(el, 'a');
+    assert.strictEqual(el.elementAtPoint(x, y), a, 'under the pointer');
+    assert.strictEqual(el.hrefAtPoint(x, y), '#x');
+    el.setHover(x, y);
+    const hovered = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'the document was built again');
+    assert.ok(bytesApart(hovered, quiet) > 0, 'the hover drew nothing');
+    assert.strictEqual(
+      bytesApart(hovered, await rebuilt(result, el)),
+      0,
+      'not as a rebuild draws it',
+    );
+    el.setHover(...pointIn(el, 'away'));
+    assert.strictEqual(
+      bytesApart(await snapshot(result, el), quiet),
+      0,
+      'not as it was',
+    );
+  },
+);
+
+metric(
   'a hover in place repaints what it restyled, not the document',
   async () => {
     const { node } = await render(HOVER_PAGE, 300);
