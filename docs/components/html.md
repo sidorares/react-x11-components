@@ -927,16 +927,23 @@ spacing, the line height, the case, the indent or the shadow of the text
 around it, as HTML's rendering section has it: a button in a body of
 `line-height: 1.5` is its own font's line tall.
 
-**A text field the page styled is the page's to draw.** Give an `<input>` or
-a `<textarea>` a border or a background of its own, or `appearance: none`,
-and the document paints that box, as a browser drops a field's native look
-for the author's; the widget is mounted bare inside its content box, with no
-frame or fill, and writes in the element's own colour and font, which the
-author chose to go on that background. Its size is then its text's, and the
-border and padding around it are the author's. `appearance: none` is how a
-design system writes every field it has, often with neither a border nor a
-background. A field with none of the three keeps the theme's frame, and so
-does every `<input type=submit>`: core's `<Button>` draws its own label.
+**A text field the page styled is the page's to draw.** Give an `<input>`, a
+`<textarea>` or a `<select>` a border or a background of its own, or
+`appearance: none`, and the document paints that box, as a browser drops a
+field's native look for the author's; the widget is mounted bare inside its
+content box, with no frame or fill, and writes in the element's own colour
+and font, which the author chose to go on that background. Its size is then
+its text's, and the border and padding around it are the author's. A
+`<select>` keeps its arrow, in that colour, as a browser keeps one on a
+select the page gave a border or a background, and loses it at
+`appearance: none`, where the page draws its own — as a background image,
+most often. Its widget is core's `<Select>` restyled through its
+`labelStyle` and `chevronStyle` slots, which also make it the drawn trigger
+on every backend: under a native popup bezel the page's box would have
+AppKit's drawn over it. `appearance: none` is how a design system writes
+every field it has, often with neither a border nor a background. A field
+with none of the three keeps the theme's frame, and so does every
+`<input type=submit>`: core's `<Button>` draws its own label.
 
 **The application scrolls it, and height does not frighten it.** The element
 sizes to its content; put it in a `<box overflow="scroll">`, the same shape
