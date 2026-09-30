@@ -1179,7 +1179,8 @@ _before the widget exists_, which is why `controls.ts` measures against the
 same font metrics and the same palette tokens (`fontFamily`, `fontSize`,
 `paddingY`, `borderWidth`, `radius`) core's own widgets read — the UA sheet
 sets a control's text in the palette's face and size, not its parent's, as
-Chrome sets it in a system font, and the widget is handed both.
+Chrome sets it in a system font, and the widget is handed the element's
+computed face and size, the page's where it set its own (`font: inherit`).
 `<textinput>` and `<textarea>` are elements rather than components and draw
 no frame of their own, so the component supplies one from those tokens — a
 form in a document and a form in the window around it have to be the same
