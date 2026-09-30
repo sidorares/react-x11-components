@@ -765,7 +765,9 @@ it. The line's font properties, spacing and `vertical-align` are not
 applied: each would change where the line ends.
 
 **Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `lh`, `rlh`, `vw`, `vh`,
-`vmin`, `vmax` and the absolute units, and `calc()`, `min()`, `max()` and
+`vi`, `vb`, `vmin`, `vmax` — and the small, large and dynamic viewports'
+`svh`, `lvw`, `dvmin` and the rest, which on a desktop are the one
+viewport — and the absolute units, and `calc()`, `min()`, `max()` and
 `clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
 `ch` the advance of its "0", as the text engine reports them, or half an em
 where it cannot say; an `lh` is the element's line height, `normal` as its
