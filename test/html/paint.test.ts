@@ -450,6 +450,34 @@ metric(
   },
 );
 
+metric('a radial gradient is a mask, as a linear one is', async () => {
+  // a vignette: `mask-image: radial-gradient(…)` shows its element where
+  // the gradient is opaque. It was drawn as nothing, so as no mask, and
+  // the element was not drawn at all
+  const { result, node } = await render(
+    '<style>body{margin:0;background:#ffffff}div{width:200px;height:100px;' +
+      'background:#ff0000;mask-image:radial-gradient(closest-side,' +
+      '#000000 50%,transparent 50%)}</style><div></div>',
+  );
+  const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+  await waitFor(async () => {
+    for (const [x, y, shown] of [
+      [100, 50, true],
+      [140, 50, true],
+      [160, 50, false],
+      [100, 70, true],
+      [100, 80, false],
+      [10, 10, false],
+    ] as [number, number, boolean][]) {
+      const [r, g] = await pixelAt(result.ctx, at.x + x, at.y + y);
+      assert.ok(
+        shown ? r > 200 && g < 60 : g > 200,
+        `${shown ? 'shown' : 'masked'} at ${x},${y}: ${r},${g}`,
+      );
+    }
+  });
+});
+
 metric(
   'a mask is placed and sized in CSS pixels at a display scale of 2',
   async () => {

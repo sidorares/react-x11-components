@@ -108,14 +108,42 @@ export interface BoxShadow {
   inset: boolean;
 }
 
+/** A gradient's colour stop: its colour, at a position along the gradient
+ *  or, with none, where its neighbours put it. */
+export interface GradientStop {
+  color: string;
+  at: Len | null;
+}
+
 /** A `linear-gradient()` (CSS Images 3, 3.1): its direction, an angle
  *  clockwise from up or a corner the box's shape turns into one, and its
- *  colour stops, each at a position or where its neighbours put it. */
+ *  colour stops. */
 export interface LinearGradient {
+  kind: 'linear';
   angle: number;
   corner: 'top left' | 'top right' | 'bottom left' | 'bottom right' | null;
-  stops: { color: string; at: Len | null }[];
+  stops: GradientStop[];
 }
+
+/** A `radial-gradient()` (CSS Images 3, 3.2): its ending shape, a circle or
+ *  an ellipse; that shape's size, a keyword for the side or the corner of
+ *  the box it reaches or the radii it was given, one for a circle and two
+ *  for an ellipse; its centre, a position in the box; and its colour stops,
+ *  along the ray from the centre to the shape's edge. */
+export interface RadialGradient {
+  kind: 'radial';
+  circle: boolean;
+  extent: RadialExtent | null;
+  radii: [Len, Len] | null;
+  at: [Len, Len];
+  stops: GradientStop[];
+}
+
+export type RadialExtent =
+  'closest-side' | 'closest-corner' | 'farthest-side' | 'farthest-corner';
+
+/** An image a gradient function draws. */
+export type Gradient = LinearGradient | RadialGradient;
 
 /** Where a grid item starts or ends (CSS Grid 1, 8.3): a line, counted
  *  among the lines of a name where it has one; a span, to a line of a name
@@ -302,7 +330,7 @@ export type BorderStyle =
   | 'outset';
 
 /** A background layer's image: a url, a gradient, or none. */
-export type BackgroundImage = string | LinearGradient | null;
+export type BackgroundImage = string | Gradient | null;
 
 /** An intrinsic size: `min-content`, `max-content` or `fit-content`, and
  *  `fit-content()`, whose argument stands in for the room (`fit`). */
@@ -612,7 +640,7 @@ export interface ComputedStyle {
   backgroundImage: string | null;
   /** A background drawn rather than fetched: the first layer's linear
    *  gradient, where it is one. */
-  backgroundGradient: LinearGradient | null;
+  backgroundGradient: Gradient | null;
   /** How the first layer repeats across and down (CSS Backgrounds 3, 3.4):
    *  one of a few pairs made once, so a style copies no array. */
   backgroundRepeat: BackgroundRepeat;
@@ -3961,7 +3989,7 @@ function backgroundImageOf(
   ctx: UnitContext,
 ): BackgroundImage | undefined {
   const v = text.trim();
-  if (IMAGE_FUNCTION.test(v.toLowerCase())) return parseLinearGradient(v, ctx);
+  if (IMAGE_FUNCTION.test(v.toLowerCase())) return parseGradient(v, ctx);
   return parseUrl(v);
 }
 
@@ -3983,7 +4011,7 @@ function layerValues<T>(
 interface BackgroundLayer {
   color: string | null;
   image: string | null;
-  gradient: LinearGradient | null;
+  gradient: Gradient | null;
   repeat: ComputedStyle['backgroundRepeat'];
   size: ComputedStyle['backgroundSize'];
   attachment: ComputedStyle['backgroundAttachment'];
@@ -3999,7 +4027,7 @@ interface BackgroundLayer {
  * is dropped rather than resetting the background it meant to replace
  * (CSS 2.1 4.2). What CSS3 adds is read too, so that a declaration a
  * browser keeps is kept: `/ cover` after the position, `space` and `round`,
- * a gradient — drawn as nothing, over the layer's colour.
+ * and a gradient, over the layer's colour.
  */
 function readBackgroundLayer(
   text: string,
@@ -4034,7 +4062,7 @@ function readBackgroundLayer(
         const url = parseUrl(part);
         if (url === undefined) return null;
         layer.image = url;
-      } else if (v !== 'none') layer.gradient = parseLinearGradient(part, ctx);
+      } else if (v !== 'none') layer.gradient = parseGradient(part, ctx);
       i += 1;
     } else if (v === 'repeat-x' || v === 'repeat-y' || REPEATS.has(v)) {
       if (!once(2)) return null;
@@ -4098,10 +4126,8 @@ function readBackgroundLayer(
 
 /**
  * A `linear-gradient()`, or null for any other image function and for one
- * that is no gradient: a direction by angle, by side or by corner, with a
- * colour interpolation method (`in oklab`, which Tailwind 4 writes) read and
- * not honoured, and at least two stops, each with no position, one, or two;
- * a bare percentage between stops, a hint, is passed over.
+ * that is no gradient: a direction by angle, by side or by corner, and its
+ * colour stops.
  */
 function parseLinearGradient(
   text: string,
@@ -4110,14 +4136,13 @@ function parseLinearGradient(
   const m = /^linear-gradient\((.*)\)$/is.exec(text.trim());
   if (!m) return null;
   const args = splitCommas(m[1]).map((a) => a.trim());
-  const out: LinearGradient = { angle: Math.PI, corner: null, stops: [] };
-  const first = (args[0] ?? '')
-    .toLowerCase()
-    .replace(
-      /\bin\s+[a-z-]+(?:\s+(?:shorter|longer|increasing|decreasing)\s+hue)?/,
-      '',
-    )
-    .trim();
+  const out: LinearGradient = {
+    kind: 'linear',
+    angle: Math.PI,
+    corner: null,
+    stops: [],
+  };
+  const first = withoutInterpolation(args[0] ?? '');
   let from = 0;
   if (!first || first.startsWith('to ')) {
     from = 1;
@@ -4153,7 +4178,120 @@ function parseLinearGradient(
       from = 1;
     }
   }
-  for (const arg of args.slice(from)) {
+  const stops = parseStops(args.slice(from), ctx);
+  if (!stops) return null;
+  out.stops = stops;
+  return out;
+}
+
+/**
+ * A `radial-gradient()` (CSS Images 3, 3.2.1), or null for anything else:
+ * an ending shape, `circle` or `ellipse`, and its size, in either order —
+ * a keyword for the side or corner of the box it reaches, one length for a
+ * circle's radius, or two lengths or percentages for an ellipse's — then
+ * `at` and its centre, a position as `background-position` writes one;
+ * each of the three may be left out, for an ellipse through the farthest
+ * corner from the middle of the box. A colour interpolation method is read
+ * and not honoured, and the stops are a linear gradient's, spaced along
+ * the ray from the centre to the shape's edge.
+ */
+function parseRadialGradient(
+  text: string,
+  ctx: UnitContext,
+): RadialGradient | null {
+  const m = /^radial-gradient\((.*)\)$/is.exec(text.trim());
+  if (!m) return null;
+  const args = splitCommas(m[1]).map((a) => a.trim());
+  const out: RadialGradient = {
+    kind: 'radial',
+    circle: false,
+    extent: null,
+    radii: null,
+    at: [{ pct: 50 }, { pct: 50 }],
+    stops: [],
+  };
+  const first = withoutInterpolation(args[0] ?? '');
+  let from = 0;
+  if (!first) from = 1;
+  else if (parseColor(splitValue(first)[0]) === null) {
+    from = 1;
+    const words = splitValue(first);
+    const at = words.indexOf('at');
+    if (at >= 0) {
+      const position = positionPair(words.slice(at + 1), ctx);
+      if (!position) return null;
+      out.at = position;
+    }
+    let shape: string | null = null;
+    const sizes: Len[] = [];
+    // the size is one run of words, the shape's keyword before or after it
+    let sized = false;
+    for (const word of at >= 0 ? words.slice(0, at) : words) {
+      if (word === 'circle' || word === 'ellipse') {
+        if (shape) return null;
+        shape = word;
+        if (sizes.length || out.extent) sized = true;
+        continue;
+      }
+      if (sized || out.extent) return null;
+      if (RADIAL_EXTENTS.has(word)) {
+        if (sizes.length) return null;
+        out.extent = word as RadialExtent;
+        continue;
+      }
+      const len = parseLength(word, ctx);
+      if (len === null || len === AUTO || !notNegative(len)) return null;
+      sizes.push(len);
+    }
+    if (sizes.length === 1) {
+      // a circle's radius is a length: a percentage of what, the spec asks
+      const [r] = sizes;
+      if (shape === 'ellipse' || typeof r !== 'number') {
+        return null;
+      }
+      out.circle = true;
+      out.radii = [r, r];
+    } else if (sizes.length === 2) {
+      if (shape === 'circle') return null;
+      out.radii = [sizes[0], sizes[1]];
+    } else if (sizes.length) return null;
+    else {
+      out.circle = shape === 'circle';
+      out.extent ??= 'farthest-corner';
+    }
+  }
+  const stops = parseStops(args.slice(from), ctx);
+  if (!stops) return null;
+  out.stops = stops;
+  return out;
+}
+
+const RADIAL_EXTENTS = new Set([
+  'closest-side',
+  'closest-corner',
+  'farthest-side',
+  'farthest-corner',
+]);
+
+/** A gradient's first argument, lower-cased, without the colour
+ *  interpolation method CSS Images 4 adds to it (`in oklab`, which
+ *  Tailwind 4 writes): read, and not honoured. */
+function withoutInterpolation(arg: string): string {
+  return arg
+    .toLowerCase()
+    .replace(
+      /\bin\s+[a-z-]+(?:\s+(?:shorter|longer|increasing|decreasing)\s+hue)?/,
+      '',
+    )
+    .trim();
+}
+
+/** A gradient's colour stops, at least two, each with no position, one or
+ *  two; a bare length between two stops, a hint, is passed over. Null
+ *  where an argument is none of those. */
+function parseStops(args: string[], ctx: UnitContext): GradientStop[] | null {
+  const stops: GradientStop[] = [];
+  for (const arg of args) {
     const parts = splitValue(arg);
     const color = parseColor(parts[0] ?? '');
     if (color === null) {
@@ -4164,14 +4302,19 @@ function parseLinearGradient(
     if (parts.length > 3) return null;
     const at = parts.slice(1).map((p) => parseLength(p, ctx));
     if (at.some((p) => p === null || p === AUTO)) return null;
-    if (!at.length) out.stops.push({ color, at: null });
-    for (const p of at) out.stops.push({ color, at: p as Len });
+    if (!at.length) stops.push({ color, at: null });
+    for (const p of at) stops.push({ color, at: p as Len });
   }
-  return out.stops.length >= 2 ? out : null;
+  return stops.length >= 2 ? stops : null;
+}
+
+/** A gradient function's image, where it is one this draws. */
+function parseGradient(text: string, ctx: UnitContext): Gradient | null {
+  return parseLinearGradient(text, ctx) ?? parseRadialGradient(text, ctx);
 }
 
 /** The images CSS3 has beyond `url()`, which a layer may name: a linear
- *  gradient is drawn, and the rest draw as nothing. */
+ *  and a radial gradient are drawn, and the rest draw as nothing. */
 const IMAGE_FUNCTION =
   /^(?:-(?:webkit|moz|o|ms)-)?(?:(?:repeating-)?(?:linear|radial|conic)-gradient|gradient|image-set|cross-fade|element|paint)\(/;
 

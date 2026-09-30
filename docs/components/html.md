@@ -766,7 +766,8 @@ text` paints the background through the element's text instead of behind its
 box — Tailwind's `bg-clip-text text-transparent` headline, with
 `-webkit-text-fill-color` read as the glyphs' own fill — as the text laid
 out again with no ink of its own and filled with the gradient, which both
-text engines do natively. `background-clip: border-area` (CSS Backgrounds 4)
+text engines do natively; an elliptical gradient fills it as a picture of
+itself, drawn once. `background-clip: border-area` (CSS Backgrounds 4)
 paints a layer where the border paints: its widths and styles and not its
 colour, so a transparent border shows the layer through a double border's
 two lines, a dotted one's dots or a rounded one's ring, the shapes the
@@ -775,8 +776,19 @@ an image the size of the padding box, or the size `background-size` gives
 it, repeated like one: by angle, side or corner, with its stops where they
 say or spread between their neighbours, and a colour interpolation method,
 `in oklab` as Tailwind 4 writes it, read and not honoured; the gradient is
-mixed in sRGB. Radial, conic and repeating gradients are drawn as nothing,
-over the colour. The root's background covers the whole canvas, as CSS 2.1
+mixed in sRGB. A `radial-gradient()` is drawn the same way (CSS Images 3,
+3.2): a circle or an ellipse, to the nearest or the furthest side or
+corner of its box or of the radii it names, centred where `at` puts it,
+its stops along the ray from the centre to its edge and past it, and
+wherever a linear one is: a layer, a mask, a border image. One with no
+width or no height is its last colour, as Chrome draws it, and one whose
+circle or centre is further off than a context carries is drawn as the
+part of it the box sees. **Radial
+gradients are drawn on X11 and Wayland**, whose contexts have them;
+react-x11's macOS and Windows contexts paint one flat, in a single colour,
+so there it is drawn as nothing, over the colour. Conic and repeating
+gradients, and the prefixed spellings of all of them, are drawn as nothing
+everywhere. The root's background covers the whole canvas, as CSS 2.1
 has it: `<html>`'s, or `<body>`'s where `<html>` has none, over the body's
 margin and down the whole element when an application grows it past the
 document — so an email's `<body bgcolor>` colours the message rather than a
@@ -803,7 +815,7 @@ of the shadow a paint reached was made again for every strip, which at 2x
 was most of each frame on a page with one in view.
 
 **Border images:** `border-image` and its longhands, over an image, an
-SVG drawing or a `linear-gradient()`: the image cut into nine by its
+SVG drawing or a gradient: the image cut into nine by its
 slices and drawn over the border, and past it by the outset, in place of
 the border's style — the corners scaled into theirs, the edges along their
 sides stretched, repeated from the middle, rounded to whole tiles or
@@ -1082,8 +1094,8 @@ whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms but their
-translation, animations and transitions, multi-column, gradients other than
-linear ones, a sticky box that follows the viewport as it scrolls, and the font
+translation, animations and transitions, multi-column, conic and repeating
+gradients, a sticky box that follows the viewport as it scrolls, and the font
 properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
 drawn only where the table's collapse. A percentage `height` resolves where
 the containing block's height is set, and on an absolutely positioned box.
