@@ -2,13 +2,14 @@
 // asked for.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup, screen } from 'react-x11/test';
+import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { featuresOf } from '../../src/html/layout/inline.js';
 import type { FontsLike } from '../../src/html/layout/inline.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
+  FONTS,
   boxOf,
   findById,
   h,
@@ -160,9 +161,10 @@ test('an unquoted family name is its words with one space between', async () => 
   const family = (id: string) =>
     (boxOf(view(node), id) as unknown as { style: { fontFamily: string } })
       .style.fontFamily;
+  // and a list with no generic family at its end goes on to the document's
   assert.deepStrictEqual(
     [family('a'), family('b')],
-    ['Courier New, serif', 'Courier  New'],
+    ['Courier New, serif', 'Courier  New, sans-serif'],
   );
 });
 
@@ -240,6 +242,47 @@ test('a font-family with a name that is none is dropped (CSS 2.1 15.3)', async (
   assert.strictEqual(
     family('c'),
     'Arial Black, Segoe UI, -apple-system, monospace',
+  );
+});
+
+test("a family list no face matches, with no generic family at its end, is set in the document's font", async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CSS Fonts 4, 5.1: where no face in the list matches, the text is set in
+  // the user agent's default font, which here is the document's. The text
+  // engine answered a name nothing has with its own pick instead — its
+  // first face here, fontconfig's Verdana on a desktop: the Zen Garden's
+  // 216 sets its summary in Montserrat alone, which Chrome sets in its
+  // standard font and ours set a fifth wider. The size is pinned, because
+  // `monospace` on its own is set smaller than a list with more in it
+  const span = (id: string, family: string) =>
+    `<p style="margin:0"><span id="${id}" style="font-size:20px;` +
+    `${family ? `font-family:${family}` : ''}">iiiiimmmmm</span></p>`;
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 600, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          span('none', '') +
+          span('own', 'NoSuchFamilyAnywhere') +
+          span('generic', 'NoSuchFamilyAnywhere, serif'),
+        partial: false,
+        fontFamily: 'monospace',
+        'data-testname': 'doc',
+      }),
+    ),
+    { width: 640, height: 200, fonts: FONTS },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const width = (id: string) =>
+    el.elementRect(findById(el.document, id)!)!.width;
+  assert.ok(
+    Math.abs(width('own') - width('none')) < 0.01,
+    `a name nothing has is the document's monospace: ${width('own')} ${width('none')}`,
+  );
+  assert.ok(
+    Math.abs(width('generic') - width('none')) > 1,
+    `and a list that ends in a generic falls back through it: ${width('generic')}`,
   );
 });
 

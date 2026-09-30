@@ -244,6 +244,17 @@ asked. Nothing here knows the container: a fontkit that cuts an instance out
 of a WOFF2 ([windowkit/fontkit#1](https://github.com/windowkit/fontkit/pull/1))
 answers, and the text is set in the face at every weight its axis has.
 
+**A list that no face matches ends in the document's font.** A
+`font-family` list an author wrote that does not end in a generic family
+(`serif`, `monospace`, `system-ui` and the rest) has the document's own
+family, the `fontFamily` prop, after it: where nothing the author named is
+installed, the text is set in the user agent's default font (CSS Fonts 4,
+5.1), as a browser sets it in its standard font — not in whatever the text
+engine picks for a name it has never heard of, which under fontconfig is
+its own default. A list that ends in a generic falls back through that, and
+the UA sheet's own families, the palette's face a control is set in and
+`monoFamily`, are the host's and stay as they are given.
+
 **A family is registered under a name nothing else has.** Fonts go to
 react-x11's font manager, which is the application's, so the component
 registers each family's faces under a private name (`loadFont`'s `family`)
