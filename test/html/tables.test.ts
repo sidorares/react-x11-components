@@ -943,6 +943,42 @@ test('a height a cell on the baseline sets is a least one, not room under its li
   );
 });
 
+test('a cell spanning rows on the baseline asks its first row for its baseline and the rows for its content', async () => {
+  // As Chrome sizes it: the ascent of a spanning cell counts in its first
+  // row and nothing under it does, and the rows it spans hold its content
+  // with no room for the lift, which hangs out of it.
+  const { node } = await render(
+    '<style>body{margin:0} table{border-spacing:0}' +
+      ' td{padding:0;vertical-align:baseline}</style>' +
+      // beside a cell that is not on the baseline, the padded spanning cell
+      // is what makes the first row as deep as it is
+      '<table><tr id="p1"><td style="vertical-align:middle">x</td>' +
+      '<td rowspan="2" style="padding-top:40px"><div id="s">s</div></td>' +
+      '</tr><tr id="p2"><td><div id="y">y</div></td></tr></table>' +
+      // lifted by the padded cell and six lines tall, it is a table as tall
+      // as its lines
+      '<table id="q"><tr><td style="padding-top:40px">a</td>' +
+      '<td rowspan="2"><div id="f">1</div><div>2</div><div>3</div>' +
+      '<div>4</div><div>5</div><div id="l">6</div></td></tr>' +
+      '<tr><td>b</td></tr></table>',
+  );
+  const el = view(node);
+  const [p1, s, p2, y, q, f, l] = ['p1', 's', 'p2', 'y', 'q', 'f', 'l'].map(
+    (id) => boxOf(el, id),
+  );
+  assert.ok(
+    p1.height > 40 && p1.height < 40 + s.height,
+    `down to the spanning cell's baseline: ${p1.height}`,
+  );
+  assert.strictEqual(p2.height, y.height, 'and the row under it its own');
+  assert.ok(f.y - q.y >= 40, `lifted by the padded cell: ${f.y - q.y}`);
+  assert.strictEqual(
+    q.height,
+    l.y + l.height - f.y,
+    'the rows hold the lines, and not the lift',
+  );
+});
+
 test("a table cell takes its row's vertical-align", async () => {
   // HTML's rendering rules make the rows middle and the cells inherit, so
   // `<tr valign="top">`, all over mail, sets its cells at the top
