@@ -28,6 +28,7 @@ import {
 import type { RenderX11Options } from 'react-x11/test';
 import { screenRect } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
+import { CARET_BLINK_MS } from 'react-x11/node';
 
 import {
   CODE_EDITOR_ELEMENT,
@@ -37,7 +38,7 @@ import {
   lineModeLanguage,
   sql,
 } from '../src/index.js';
-import { stopInterval } from '../src/code-language/timers.js';
+import { blinkClock } from '../src/code-editor/node.js';
 import type {
   CodeEditorEvent,
   CodeEditorNode,
@@ -48,6 +49,7 @@ import type {
   Token,
   Tokenizer,
 } from '../src/index.js';
+import { FRAME_MS, holdClock } from './held-clock.js';
 
 const h = React.createElement;
 
@@ -958,7 +960,13 @@ test('a selection across lines is one band, and a scroll copies it as drawn', as
   }
 });
 
-test("a caret blink repaints the caret's row, not the editor", async () => {
+test("a caret blink repaints the caret's row, not the editor", async (t) => {
+  // The blink runs on a clock the test holds. On the wall clock a runner
+  // slow enough to spend a blink between reading the blinked frame and
+  // repainting the editor whole found the caret turned in between, and the
+  // repaint drew the other phase. Held, the caret turns when a frame the
+  // test takes reaches the blink, and at no other time.
+  const clock = holdClock(t, blinkClock);
   const value = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
   const { ctx, windowNode } = await renderX11(
     h(CodeEditor, { defaultValue: value, style: { flexGrow: 1 } }),
@@ -969,33 +977,42 @@ test("a caret blink repaints the caret's row, not the editor", async () => {
   node.focus();
   node.moveCaret({ line: 3, ch: 2 }, false);
   await act();
-  const record = recordPasses(node);
-  // the blink is on a timer of its own: wait for it to turn the caret off
-  await waitFor(() => assert.ok(record.passes.length > 0, 'a blink painted'), {
-    timeout: 2000,
-  });
-  record.stop();
   const row = node.metrics().lineHeight;
-  for (const d of record.passes) {
-    assert.ok(d, 'the blink is a bounded pass');
+  let shown = await editorPixels(ctx, node);
+  for (const phase of ['off', 'on again']) {
+    const record = recordPasses(node);
+    // a blink's worth of frames, the last of which reaches the blink
+    for (let i = 0; i < Math.ceil(CARET_BLINK_MS / FRAME_MS); i++) {
+      assert.ok(await clock.frame(), 'the blink is waiting for its time');
+    }
+    record.stop();
+    assert.ok(record.passes.length > 0, `the caret turning ${phase} painted`);
+    for (const d of record.passes) {
+      assert.ok(d, 'the blink is a bounded pass');
+      assert.ok(
+        d.height <= row + 2 && d.width < abs.width,
+        `the blink repainted ${d.width}×${d.height} of a ${abs.width}×${abs.height} editor`,
+      );
+    }
+    const blinked = await editorPixels(ctx, node);
     assert.ok(
-      d.height <= row + 2 && d.width < abs.width,
-      `the blink repainted ${d.width}×${d.height} of a ${abs.width}×${abs.height} editor`,
+      !Buffer.from(blinked).equals(Buffer.from(shown)),
+      `the caret turned ${phase} on screen`,
     );
+    await act(() => {
+      (windowNode as unknown as { invalidate(all: boolean): void }).invalidate(
+        true,
+      );
+    });
+    assert.ok(
+      Buffer.from(blinked).equals(Buffer.from(await editorPixels(ctx, node))),
+      `the frame the caret turned ${phase} in is the frame a full repaint draws`,
+    );
+    shown = blinked;
   }
-  const blinked = await editorPixels(ctx, node);
-  await act(() => {
-    (windowNode as unknown as { invalidate(all: boolean): void }).invalidate(
-      true,
-    );
-  });
-  assert.ok(
-    Buffer.from(blinked).equals(Buffer.from(await editorPixels(ctx, node))),
-    'the blinked frame is the frame a full repaint draws',
-  );
 });
 
-test('an edit repaints the rows it changed, and paints what a full repaint would', async () => {
+test('an edit repaints the rows it changed, and paints what a full repaint would', async (t) => {
   // A keystroke used to claim the whole editor: forty lines, the gutter and
   // the thumbs for one character. It claims its rows now — the edited ones,
   // the caret's before and after, the selection's, the bracket pair's, and
@@ -1015,6 +1032,9 @@ test('an edit repaints the rows it changed, and paints what a full repaint would
     { length: 60 },
     (_, i) => special[i] ?? `const v${i} = f(${i}, [${i} + 1]); // note ${i}`,
   ).join('\n');
+  // the blink is held and takes no step: a comparison it landed between
+  // would see two carets
+  holdClock(t, blinkClock);
   for (const scale of [1, 2]) {
     const { ctx, windowNode } = await renderX11(
       h(CodeEditor, {
@@ -1030,11 +1050,6 @@ test('an edit repaints the rows it changed, and paints what a full repaint would
     const { abs } = node as unknown as DrawnNode;
     const area = abs.width * abs.height;
     node.focus();
-    // the blink runs on its own timer, and a comparison it lands between
-    // would see two carets
-    const inner = node as unknown as { _blinkTimer: unknown };
-    stopInterval(inner._blinkTimer as never);
-    inner._blinkTimer = null;
     node.moveCaret({ line: 4, ch: 6 }, false);
     await act();
     const at = (line: number, ch: number): Position => ({ line, ch });

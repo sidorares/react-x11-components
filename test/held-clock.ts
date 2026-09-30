@@ -1,17 +1,18 @@
 // An animation's clock, held: its time moves only when the test says so.
 //
-// Six things here run on the wall clock on purpose — the maps wheel's glide
+// Seven things here run on the wall clock on purpose — the maps wheel's glide
 // and the window a map counts as moving in after it (`glideClock` and
 // `settleClock` in ../src/maps/controller.ts), a reorder drop's flight home
 // (`flightClock` in ../src/reorder/clock.ts), the march of `<Flow>`'s dashed
 // edges (`flowClock` in ../src/flow/node.ts), the virtual window's idea
-// of a scroll in flight (`windowClock` in ../src/internal/window.ts) and the
+// of a scroll in flight (`windowClock` in ../src/internal/window.ts), the
 // rest `<Html>` holds a hover for while its content moves under the pointer
-// (`hoverClock` in ../src/html/node.ts). Each
-// reads the time as it goes, and a timer takes its next step. A runner slow
-// enough to spend a step's wait inside one `await` finds the step already
-// taken, and each has failed that way. Held, a step is taken when a `frame()`
-// the test takes brings the time to it.
+// (`hoverClock` in ../src/html/node.ts) and `<CodeEditor>`'s caret blink
+// (`blinkClock` in ../src/code-editor/node.ts). Each waits on a timer for
+// its next step, and all but the blink read the time as they go. A runner
+// slow enough to spend a step's wait inside one `await` finds the step
+// already taken, and each has failed that way. Held, a step is taken when a
+// `frame()` the test takes brings the time to it.
 //
 // It stands in for the clock and nothing else: the event still goes through
 // the in-process X server, and the harness's own timers and the component's
@@ -22,9 +23,10 @@
 import type { TestContext } from 'node:test';
 import { act } from 'react-x11/test';
 
-/** The shape the clocks share: the time, and a timer for the next step. */
+/** The shape the clocks share: a timer for the next step, and the time —
+ *  which the caret's blink, a timer and nothing else, does not read. */
 export interface AnimationClock {
-  now(): number;
+  now?(): number;
   arm(step: () => void, ms: number): unknown;
   disarm(handle: unknown): void;
 }
@@ -40,7 +42,8 @@ export interface HeldClock {
    *  are taken. False when none was waiting. */
   frame(): Promise<boolean>;
   /** Frames until nothing asks for another, and how many it took — for an
-   *  animation that ends, which the dashes and the window do not. */
+   *  animation that ends, which the dashes, the window and the blink do
+   *  not. */
   finish(): Promise<number>;
 }
 
@@ -50,10 +53,10 @@ export function holdClock(t: TestContext, clock: AnimationClock): HeldClock {
   let time = 0;
   // By handle, as real timers are: a step disarmed is gone, and two armed
   // at once both run. Each waits what it asked for — a frame for the glide
-  // and the flight, longer for the dashes' tick, the window's idle one and
-  // a held hover's rest.
+  // and the flight, longer for the dashes' tick, the window's idle one, a
+  // held hover's rest and the caret's blink.
   const waiting = new Map<unknown, { step: () => void; at: number }>();
-  t.mock.method(clock, 'now', () => time);
+  if (clock.now) t.mock.method(clock as { now(): number }, 'now', () => time);
   t.mock.method(clock, 'arm', (step: () => void, ms: number) => {
     const handle = {};
     waiting.set(handle, { step, at: time + ms });

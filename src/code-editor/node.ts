@@ -57,7 +57,7 @@ import {
   XK_UP,
 } from 'react-x11/keysyms';
 
-import { startInterval, stopInterval } from '../code-language/timers.js';
+import { startTimeout, stopTimeout } from '../code-language/timers.js';
 import { spliceAll } from '../internal/splice.js';
 import type { TimerId } from '../code-language/timers.js';
 import {
@@ -105,6 +105,23 @@ const PREFERRED_WIDTH = 360;
 const GUTTER_PAD = 8; // each side of the line numbers
 const CARET_MARGIN = 24; // keep this many px visible beside the caret
 const MATCH_SCAN_LIMIT = 20000; // chars examined looking for a bracket match
+
+/**
+ * The caret's blink: a timer, armed again at each step. A test holds it
+ * (`holdClock` in test/held-clock.ts) and takes a step when it says. On the
+ * real clock a runner slow enough to spend a blink between two reads of the
+ * screen finds the caret turned in between, and a test that compares the
+ * two sees two carets. Exported from this module and not from `./index.ts`:
+ * this is for the tests.
+ */
+export const blinkClock = {
+  arm(step: () => void, ms: number): TimerId {
+    return startTimeout(step, ms);
+  },
+  disarm(handle: TimerId): void {
+    stopTimeout(handle);
+  },
+};
 
 /**
  * The editor's imperative surface — what `ev.target` and the component's
@@ -2831,10 +2848,12 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
     this._focused = true;
     this._caretOn = true;
     if (this._blinkTimer == null) {
-      this._blinkTimer = startInterval(() => {
+      const blink = (): void => {
+        this._blinkTimer = blinkClock.arm(blink, CARET_BLINK_MS);
         this._caretOn = !this._caretOn;
         this._claimCaretRow();
-      }, CARET_BLINK_MS);
+      };
+      this._blinkTimer = blinkClock.arm(blink, CARET_BLINK_MS);
     }
     this._repaint();
   }
@@ -2867,7 +2886,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   handleBlur(): void {
     this._focused = false;
     this.breakUndoRun();
-    stopInterval(this._blinkTimer);
+    blinkClock.disarm(this._blinkTimer);
     this._blinkTimer = null;
     this._repaint();
   }
@@ -2920,7 +2939,7 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   }
 
   override destroySubtree(): void {
-    stopInterval(this._blinkTimer);
+    blinkClock.disarm(this._blinkTimer);
     this._blinkTimer = null;
     this._tok?.dispose?.();
     this._tok = null;
