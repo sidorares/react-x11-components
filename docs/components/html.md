@@ -1027,7 +1027,15 @@ A `<button>` is the exception, because its content is the document's: an
 icon, a label in spans, a pill of the page's own design — most of the
 buttons on the web — which a widget's text label drew as "Button". It is
 laid out and drawn like any box, in the palette's control look where the
-page leaves it alone, and a press on it is reported through
+page leaves it alone. A background or a border of the page's, a radius
+among them, or `appearance: none`, takes that look off, as each takes a
+button's native look off in Blink, and what is left are Chrome's UA edges:
+1px above and below the label and 6px beside it, a 2px outset border,
+square corners and a border box. That is what a page that styles its
+buttons builds on — Codex sets the side padding of Wikipedia's search
+button and a 32px minimum, and leaves the rest to the browser — where the
+palette's padding stood the button taller than the field beside it. A
+press on it is reported through
 `onControlChange`, with its `value`, as a widget's is, and then does what
 the button does — submits its form, resets it, or nothing for
 `type=button`; it takes no focus of its own. Its text, like every control's,
