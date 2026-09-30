@@ -306,7 +306,8 @@ sizes its columns and its rows by the track sizing algorithm:
 an item spanning several tracks grows the ones its content sizes, and the
 `fr` rows of a grid with a height or a `min-height` fill it, which puts a
 page's footer at the bottom. `justify-content` and `align-content` place
-the tracks. An item is stretched to its area or aligned in it by
+the tracks, and `place-content` sets both — so `place-content: center`
+centres a page's one column. An item is stretched to its area or aligned in it by
 `justify-self`, `align-self` and its `auto` margins, and one that is not
 stretched is as wide as its content fits. `normal` stretches an item but an
 image, which keeps its own size, and a box with an `aspect-ratio`, which is

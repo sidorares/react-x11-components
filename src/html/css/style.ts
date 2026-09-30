@@ -2573,7 +2573,12 @@ export function applyDeclaration(
       return;
     }
     case 'align-content': {
-      const v = alignKeyword(value);
+      // `normal` is `stretch` in a flex and a grid container, the only
+      // boxes it moves anything in (CSS Box Alignment 3, 5.1)
+      const v =
+        value.trim().toLowerCase() === 'normal'
+          ? 'stretch'
+          : alignKeyword(value);
       if (v) style.alignContent = v as ComputedStyle['alignContent'];
       return;
     }
@@ -2806,6 +2811,30 @@ export function applyDeclaration(
           style.justifyItems = keyword;
         } else if (name === 'justify-self') style.justifySelf = keyword;
       }
+      return;
+    }
+    case 'place-content': {
+      // `<'align-content'> <'justify-content'>?` (CSS Box Alignment 3,
+      // 5.3), either half one keyword or two — `first baseline`, `safe
+      // center` — and the second the first again where it is left out,
+      // but for a baseline, which is no `justify-content`: `start`
+      const words = value.trim().toLowerCase().split(/\s+/);
+      const span = (at: number) =>
+        /^(?:safe|unsafe|first|last)$/.test(words[at] ?? '') ? 2 : 1;
+      const cut = span(0);
+      const align = words.slice(0, cut).join(' ');
+      const rest = words.slice(cut);
+      if (rest.length && rest.length !== span(cut)) return;
+      const justify = rest.length
+        ? rest.join(' ')
+        : /baseline$/.test(align)
+          ? 'start'
+          : align;
+      // a shorthand is one declaration: either half unread drops both
+      if (align !== 'normal' && !alignKeyword(align)) return;
+      if (!justifyKeyword(justify)) return;
+      applyDeclaration(style, parent, 'align-content', align, ctx);
+      applyDeclaration(style, parent, 'justify-content', justify, ctx);
       return;
     }
     case 'place-items':
