@@ -1,7 +1,8 @@
 // An animation's clock, held: its time moves only when the test says so.
 //
-// Five things here run on the wall clock on purpose — the maps wheel's glide
-// (`glideClock` in ../src/maps/controller.ts), a reorder drop's flight home
+// Six things here run on the wall clock on purpose — the maps wheel's glide
+// and the window a map counts as moving in after it (`glideClock` and
+// `settleClock` in ../src/maps/controller.ts), a reorder drop's flight home
 // (`flightClock` in ../src/reorder/clock.ts), the march of `<Flow>`'s dashed
 // edges (`flowClock` in ../src/flow/node.ts), the virtual window's idea
 // of a scroll in flight (`windowClock` in ../src/internal/window.ts) and the
@@ -28,8 +29,9 @@ export interface AnimationClock {
   disarm(handle: unknown): void;
 }
 
-/** A 60Hz frame — what the glide's and the flight's own timers wait. */
-const FRAME_MS = 16;
+/** A 60Hz frame — what the glide's and the flight's own timers wait, and
+ *  what a `frame()` moves a held clock on by. */
+export const FRAME_MS = 16;
 
 export interface HeldClock {
   /** Whether a step is waiting for its time. */
