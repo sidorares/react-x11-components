@@ -16060,6 +16060,43 @@ metric(
   },
 );
 
+metric(
+  "a word after an element's text fits the line as a browser fits it, with a 64th to spare",
+  async () => {
+    // A line of text in two sizes is composed a piece at a time, and a piece
+    // that may start a line goes to the next one where it does not fit the
+    // room left: past it by a 64th of a pixel, as a browser fits a line
+    // (Blink's `AddEpsilon`), where it was half a pixel. The Zen Garden's
+    // 074 ran "Andrew" a third of a pixel past its 120px column after
+    // "Modern by", where Chrome breaks before it
+    const source = (width: string) =>
+      `<style>body{margin:0}p{margin:0;width:${width};font:9px/20px ` +
+      'sans-serif}b{font-size:12px}</style>' +
+      '<p id="p"><b>Modern</b> by <b>Andrew</b></p>';
+    const wide = await render(source('400px'));
+    const [line] = linesOf(view(wide.node), 'p');
+    const last = line.texts[line.texts.length - 1];
+    const end = extentOf(last)[1];
+    await wide.result.unmount();
+    const linesAt = async (width: number) => {
+      const { node, result } = await render(source(`${width}px`));
+      const n = linesOf(view(node), 'p').length;
+      await result.unmount();
+      return n;
+    };
+    assert.strictEqual(
+      await linesAt(end - 0.25),
+      2,
+      `a quarter of a pixel short of ${end}, the word goes to the next line`,
+    );
+    assert.strictEqual(
+      await linesAt(end - 0.005),
+      1,
+      'a two-hundredth short, it fits',
+    );
+  },
+);
+
 /** The images a paint drew that show through the clips around them. */
 function shownImages(ops: PaintOp[]) {
   type Area = { x: number; y: number; w: number; h: number };
