@@ -18,6 +18,7 @@ import {
   CELL_CONTENT,
   MIN_CONTENT_PROBE,
   clampHeight,
+  cyclicWidth,
   exactMinContent,
   layoutBlockIn,
   measureIntrinsicWidth,
@@ -40,12 +41,16 @@ export function layoutTable(
     tableGrid(table);
   table.captionTop = 0;
   table.captionBottom = 0;
+  // a percentage of a width that is not known is `auto`: the table is as
+  // wide as its columns where its content is measured (`cyclicWidth`)
+  const auto =
+    table.style.width === AUTO || cyclicWidth(table.style, contentWidth);
   if (!columnCount) {
     // With no columns, an auto table is as wide as its widest caption can
     // be and its `min-width` asks, as one with columns is at the least
     // (17.5.2), rather than as the room on offer: a caption over no cells
     // was centred in the width of the page.
-    if (table.style.width === AUTO) {
+    if (auto) {
       let inner = captions.length
         ? captionMinimum(captions, ctx) - table.horizontalExtra
         : 0;
@@ -76,7 +81,7 @@ export function layoutTable(
 
   // a fixed layout needs a width to be fixed to; with `auto` a table is laid
   // out by its contents after all (CSS 2.1 17.5.2.1)
-  const fixed = style.tableLayout === 'fixed' && style.width !== AUTO;
+  const fixed = style.tableLayout === 'fixed' && !auto;
   // a percentage of the table's width less its spacing (CSS 2.1 17.5.2.1)
   const set = columnWidths(columnBoxes, columnGroups, available);
   const widths = fixed
@@ -88,14 +93,14 @@ export function layoutTable(
         available,
         ctx,
         contentWidth,
-        style.width !== AUTO,
+        !auto,
         spacing,
       );
 
   // --- place ---------------------------------------------------------------
   // An auto table is at least as wide as its widest caption can be (CSS 2.1
   // 17.5.2), and as its `min-width` asks; the columns share what that adds.
-  if (style.width === AUTO) {
+  if (auto) {
     let room = 0;
     if (captions.length) {
       room = captionMinimum(captions, ctx) - table.horizontalExtra - gaps;
@@ -145,7 +150,7 @@ export function layoutTable(
   // gives its room back either way, set width or not.
   const used = x - table.contentX;
   let tableContentWidth = contentWidth;
-  if (style.width === AUTO) {
+  if (auto) {
     tableContentWidth = used;
     table.width = tableContentWidth + table.horizontalExtra;
   } else if (used > contentWidth || anyGone) {

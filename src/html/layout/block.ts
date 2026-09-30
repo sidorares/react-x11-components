@@ -2504,7 +2504,7 @@ function blockWidth(
 ): number {
   const style = box.style;
   const available = containingWidth - box.marginLeft - box.marginRight;
-  if (style.width === AUTO) {
+  if (style.width === AUTO || cyclicWidth(style, percentBase)) {
     // a width its height gives it through its ratio
     const fromRatio = ratioWidth(box);
     if (fromRatio !== null) {
@@ -2531,6 +2531,24 @@ function blockWidth(
       ? Math.max(specified, box.horizontalExtra)
       : specified + box.horizontalExtra;
   return clampWidth(box, borderBox, percentBase, ctx, containingWidth);
+}
+
+/**
+ * Whether a box's `width` is a percentage of a width that is not there to
+ * take it of: its containing block's, while that is being found from what
+ * it holds — a float's, an inline-block's, a flex item's or a table cell's
+ * content measured at its widest. The percentage is cyclic, and the box is
+ * measured as though its width were `auto` (CSS Sizing 3, 5.2.1); it is a
+ * share of the width that comes to once there is one.
+ *
+ * Taken as a share of nothing, the box was no width at all, and its content
+ * wrapped at every word in it: a float around a `width: 100%` block was as
+ * wide as the block's longest word, and one around a `width: 100%` flex box
+ * of a label that clips — the branch button of a GitHub repository — as
+ * wide as nothing, its label gone.
+ */
+export function cyclicWidth(style: ComputedStyle, base: number): boolean {
+  return isPct(style.width) && !Number.isFinite(base);
 }
 
 /**
@@ -2732,7 +2750,7 @@ function shrinkToFitWidth(
   offset = 0,
 ): number {
   const style = box.style;
-  if (style.width !== AUTO) {
+  if (style.width !== AUTO && !cyclicWidth(style, available)) {
     const specified = Math.max(0, resolve(style.width, available, 0));
     const borderBox =
       style.boxSizing === 'border-box'
