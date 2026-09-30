@@ -9,6 +9,7 @@ import {
   pixelAt,
   renderX11,
   screen,
+  userEvent,
   waitFor,
 } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
@@ -517,6 +518,89 @@ metric(
       }
     ).hitTest(el.abs.x + 30, el.abs.y + 66);
     assert.ok(hit === el, 'and a press there is the document’s');
+  },
+);
+
+metric(
+  'a control with a negative tabindex takes the focus and is no Tab stop',
+  async () => {
+    // HTML 6.6.3: a negative `tabindex` is focusable and not reached by
+    // sequential navigation. None was read, so the native `<select
+    // tabindex="-1" aria-hidden="true">` Radix keeps beside the picker it
+    // draws — cut to nothing — was a stop the eye could not find, and Space
+    // on it opened an empty menu. A positive one is not handed over: it
+    // would put a page's control ahead of the application's own.
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<input placeholder="first">' +
+            '<input placeholder="skipped" tabindex="-1" autofocus>' +
+            '<select tabindex="-1" aria-hidden="true"><option>x</option>' +
+            '</select>' +
+            '<div aria-hidden="TRUE"><input type="checkbox" tabindex=" -1 ">' +
+            '</div>' +
+            '<input type="submit" value="Go" tabindex="-2px">' +
+            '<textarea tabindex="-1"></textarea>' +
+            '<input placeholder="late" tabindex="3">' +
+            '<input placeholder="last" tabindex="x" aria-hidden="false">',
+          partial: false,
+          selectable: false,
+        }),
+      ),
+      // Tab is a key press, which only the in-process server takes
+      { width: 440, height: 400, fonts: FONTS! },
+    );
+    await act();
+    // a node with the props it was mounted with, which core's type leaves
+    // to the element
+    type Mounted = DrawnNode & {
+      props: { placeholder?: string; role?: string; 'aria-hidden'?: boolean };
+    };
+    const focused = (): string | undefined => {
+      const find = (node: Mounted): Mounted | null => {
+        if (node.focused) return node;
+        for (const child of node.children as Mounted[]) {
+          const hit = find(child);
+          if (hit) return hit;
+        }
+        return null;
+      };
+      const props = find(result.windowNode as unknown as Mounted)?.props;
+      return props && (props.placeholder ?? props.role ?? 'unnamed');
+    };
+    assert.strictEqual(focused(), 'skipped', 'autofocus reaches it');
+    const stops: (string | undefined)[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      await userEvent.tab();
+      stops.push(focused());
+    }
+    assert.deepStrictEqual(
+      stops,
+      ['first', 'late', 'last', 'first'],
+      'Tab passes the negative ones, and a positive one stays where it is',
+    );
+    // `aria-hidden` on the element or around it keeps the widget from an
+    // assistive technology: on the box it is mounted in, which core leaves
+    // out of the accessibility tree with all it holds
+    const hidden = (node: DrawnNode): boolean => {
+      let at = node as Mounted | null;
+      for (; at; at = at.parent as Mounted | null) {
+        if (at.props['aria-hidden'] === true) return true;
+      }
+      return false;
+    };
+    assert.deepStrictEqual(
+      [
+        hidden(screen.getByRole('combobox') as DrawnNode),
+        hidden(screen.getByRole('checkbox') as DrawnNode),
+        hidden(screen.getByPlaceholder('first') as DrawnNode),
+        hidden(screen.getByPlaceholder('last') as DrawnNode),
+      ],
+      [true, true, false, false],
+    );
   },
 );
 

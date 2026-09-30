@@ -1101,6 +1101,18 @@ A `<select>` shows the option it has selected, its first where none is
 marked, and nothing where it has no options — not the "Select…" core's
 `<Select>` prompts an application's user with.
 
+A control with a negative `tabindex` takes the focus — from a press, from
+its label, from `autofocus` — and is no Tab stop, as HTML has it (6.6.3).
+One with `aria-hidden="true"` on it, or on an element around it, is left
+out of the accessibility tree, and still takes the focus, as it does in a
+browser. The two are how a page keeps a control for its form alone: the
+native `<select aria-hidden="true" tabindex="-1">` Radix lays beside its
+picker was a Tab stop nobody could see. A radio button's `tabindex` is not
+read: core's `<Radio>` hands no props to the node that takes the focus, as
+its other widgets do. Nor is a `tabindex` of zero or more, which asks for a
+place in an order that is the application's: a page's control does not go
+ahead of the window's own.
+
 A `<button>` is the exception, because its content is the document's: an
 icon, a label in spans, a pill of the page's own design — most of the
 buttons on the web — which a widget's text label drew as "Button". It is
