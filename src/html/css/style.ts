@@ -538,6 +538,9 @@ export interface ComputedStyle {
   /** `column-fill`: whether the columns are balanced, or each filled
    *  before the next is started; `balance-all` is `balance`. */
   columnFill: 'balance' | 'auto';
+  /** `column-span: all`: whether the box is set across all the columns of
+   *  the multicol container it is in (CSS Multi-column 1, 6). */
+  columnSpan: boolean;
   /** How a line cut by `overflow` ends: `clip`, or with an ellipsis. */
   textOverflow: 'clip' | 'ellipsis';
   /** `aspect-ratio`: a box's width over its height, where its height is
@@ -988,6 +991,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     widows: 2,
     breakInside: 'auto',
     columnFill: 'balance',
+    columnSpan: false,
     textOverflow: 'clip',
     aspectRatio: null,
     objectFit: 'fill',
@@ -1537,6 +1541,13 @@ export function applyDeclaration(
       const v = value.trim();
       if (!/^\+?\d+$/.test(v) || Number(v) < 1) return;
       style[name] = Number(v);
+      return;
+    }
+    case '-webkit-column-span':
+    case 'column-span': {
+      const v = value.trim().toLowerCase();
+      if (v === 'all') style.columnSpan = true;
+      else if (v === 'none') style.columnSpan = false;
       return;
     }
     case 'column-fill': {
@@ -5800,6 +5811,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   widows: ['widows'],
   'break-inside': ['breakInside'],
   'column-fill': ['columnFill'],
+  'column-span': ['columnSpan'],
+  '-webkit-column-span': ['columnSpan'],
   'page-break-inside': ['breakInside'],
   'text-overflow': ['textOverflow'],
   // a flex box's and its items', and a grid's

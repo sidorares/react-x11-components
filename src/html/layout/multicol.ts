@@ -437,7 +437,14 @@ const MOST_COLUMNS = 2000;
  * of a block with it. A box that can be cut anywhere is cut at the foot of
  * the column, and goes on at the head of the next.
  */
-function fill(groups: Group[], top: number, height: number): Filled {
+function fill(
+  groups: Group[],
+  top: number,
+  height: number,
+  /** Whether the columns can be no taller: the container's own height, or
+   *  its `max-height`, is what they are. */
+  fixed: boolean,
+): Filled {
   const starts = [0];
   const tops = [top];
   const cut = [false];
@@ -522,17 +529,20 @@ function fill(groups: Group[], top: number, height: number): Filled {
       const widows = Math.min(block.style.widows, count);
       const a = run[0];
       if (a >= head && k > 0 && k < orphans) {
-        if (a === head) {
-          // at the head of the column already: they stay, and hang out
+        if (a === head && !fixed) {
+          // at the head of the column already: they stay, and hang out,
+          // for a taller column to take them in
           missed(run[orphans - 1]);
           over = true;
           i = run[orphans - 1] + 1;
           goesOn = false;
           continue;
         }
-        // too few would stay: the block goes to the next column whole
+        // too few would stay: the block goes to the next column whole —
+        // or, at the head of a column that can be no taller, breaks where
+        // it must, with fewer
         missed(run[orphans - 1]);
-        at = a;
+        if (a !== head) at = a;
       } else if (k > 0 && count - k < widows) {
         // Too few would go: more go with them, as many as leave `orphans`
         // behind, which may be fewer than `widows` asks for. Of the lines
@@ -615,6 +625,9 @@ export function layoutColumns(
   columns: Columns,
   strip: number,
   limit: number,
+  /** Where the strip starts: the content box's top, or under a box that
+   *  spans the columns (`spansColumns`). */
+  top = box.contentY,
 ): number {
   const gathered: Gathered = {
     units: [],
@@ -625,7 +638,6 @@ export function layoutColumns(
   };
   gather(box, gathered);
   const groups = groupsOf(gathered.units);
-  const top = box.contentY;
   // as far down as the content goes, past a box with a height it overflows:
   // what stands out of a box takes room in a column as what is in it does
   for (const group of groups) strip = Math.max(strip, group.bottom - top);
@@ -633,7 +645,7 @@ export function layoutColumns(
   let filled: Filled;
   if (box.style.columnFill === 'auto') {
     height = Number.isFinite(limit) ? limit : strip;
-    filled = fill(groups, top, height);
+    filled = fill(groups, top, height, height >= limit);
     // a container with a `max-height` and less than a column of content
     // is as tall as its content
     if (filled.starts.length === 1) height = Math.min(height, strip);
@@ -645,12 +657,12 @@ export function layoutColumns(
       limit,
       Math.max(strip / columns.count, tallestOf(groups)),
     );
-    filled = fill(groups, top, height);
+    filled = fill(groups, top, height, height >= limit);
     for (let pass = 0; pass < 4096; pass += 1) {
       if (filled.starts.length <= columns.count && !filled.over) break;
       if (height >= limit || !Number.isFinite(filled.shortage)) break;
       height = Math.min(limit, height + filled.shortage);
-      filled = fill(groups, top, height);
+      filled = fill(groups, top, height, height >= limit);
     }
   }
   // all in one column where it started, and nothing to move — but a float
@@ -937,6 +949,21 @@ function rowsOf(lines: LineBox[], gathered: Gathered): void {
       for (const text of texts) COLUMN_ROWS.set(text, rows);
     }
   }
+}
+
+/**
+ * Whether a box is set across all the columns of the multicol container it
+ * is a child of (`column-span: all`, CSS Multi-column 1, 6): a block-level
+ * box in its flow. One further in, in a box of the container's, is set in its column
+ * as it would be without: the box around it is not broken about it here.
+ */
+export function spansColumns(box: Box): boolean {
+  return (
+    box.style.columnSpan &&
+    flows(box) &&
+    // block-level: on an inline-block it does nothing
+    !box.style.display.startsWith('inline')
+  );
 }
 
 /** Forget the pieces an earlier layout broke a box's content in, where

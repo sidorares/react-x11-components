@@ -509,7 +509,12 @@ on in columns past its edge; under `column-fill: auto` its columns are that
 tall, each filled before the next is started, and with no height to fill
 to the first holds everything. A float that cannot be cut, an image, stays
 with the lines beside it, where a browser takes it to the next column and
-sets those lines again without it. A box a break falls inside has a piece in each
+sets those lines again without it. A child of the container that says
+`column-span: all` is set across all its columns: what comes before it is
+balanced in columns of its own, the box under them as wide as the
+container, and what follows in columns under it; its margins collapse only
+with those of a spanner next to it, and the container is no narrower than
+it where its content sets its width. A box a break falls inside has a piece in each
 column: its background and its borders are drawn a piece at a time, with no
 edge at the break, `elementRect` answers the rectangle that takes in all of
 them, as a browser's bounding rect does, and a point between two of them is
@@ -1202,7 +1207,8 @@ round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms but their
 translation, animations and transitions, a multicol container's
-`column-rule`, `column-span` and forced breaks, and a table in one broken
+`column-rule`, `column-span` on a box further in than its children, forced
+breaks, and a table in one broken
 between its rows — it goes to the next column whole, and a box a break
 falls inside casts no shadow — conic and repeating
 gradients, a sticky box that follows the viewport as it scrolls, and the font
