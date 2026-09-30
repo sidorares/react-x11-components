@@ -284,6 +284,100 @@ metric('clip shows the part of an absolute box it names', async () => {
   );
 });
 
+metric(
+  'what a clip cuts away is not under the pointer, and what paint draws past it is',
+  async () => {
+    // Nothing `clip` cuts away is drawn (CSS 2.1 11.1.2), so nothing of it
+    // is hit: a label hidden for a screen reader alone, the older
+    // `.sr-only`'s `clip: rect(0, 0, 0, 0)`, took the hover and the press
+    // of the link drawn where it lay. What is cut is what paint cuts — the
+    // box, and all it holds but a fixed box where it is no stacking
+    // context, which paints that one itself — so each answer here is held
+    // to the clip its fill was drawn under.
+    const { node } = await render(
+      '<style>body{margin:0}div,i,b{position:absolute;left:0;width:200px;' +
+        'height:100px}b{position:fixed;left:40px;width:100px}</style>' +
+        '<a id="under" href="#u" style="display:block;width:200px;' +
+        'height:400px"></a>' +
+        '<div id="hidden" style="top:0;clip:rect(0,0,0,0)">' +
+        '<a id="in" href="#i" style="display:block;height:50px">label</a>' +
+        '</div>' +
+        '<div id="part" style="top:100px;clip:rect(0,60px,auto,0)">' +
+        '<i id="abs" style="top:50px;height:50px;background:#0000ff"></i>' +
+        '<b id="far" style="top:100px;height:40px;background:#ff0000"></b>' +
+        '</div>' +
+        '<div id="layer" style="top:200px;z-index:1;' +
+        'clip:rect(0,60px,auto,0)">' +
+        '<b id="kept" style="top:200px;background:#00ff00"></b></div>' +
+        // one that clips its overflow as well, the point outside both
+        '<div id="both" style="top:300px;width:50px;overflow:hidden;' +
+        'clip:rect(0,20px,auto,0)">' +
+        '<b id="out" style="top:300px;background:#ffff00"></b></div>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as { abs: { x: number; y: number } };
+    const at = (x: number, y: number) =>
+      el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id;
+    assert.strictEqual(at(50, 25), 'under', 'past an empty clip');
+    assert.strictEqual(at(50, 75), 'under', 'and past the box it cuts');
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops);
+    const clips = (color: string) =>
+      clipsAround(ops, color).map((under) =>
+        under.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
+      );
+    const shown = [0, 100, 60, 100];
+    assert.strictEqual(at(30, 120), 'part', 'in the clip, the box');
+    assert.deepStrictEqual(clips('#0000ff'), [[shown]]);
+    assert.strictEqual(at(30, 170), 'abs', 'and what it holds');
+    assert.strictEqual(at(180, 170), 'under', 'which the clip cuts with it');
+    assert.strictEqual(at(180, 120), 'under', 'as it cuts the box');
+    assert.deepStrictEqual(clips('#ff0000'), [[]], 'a fixed box is let out');
+    assert.strictEqual(at(120, 120), 'far', 'and is hit where it is drawn');
+    assert.deepStrictEqual(
+      clips('#00ff00'),
+      [[[0, 200, 60, 100]]],
+      'a stacking context cuts the fixed box it paints',
+    );
+    assert.strictEqual(at(50, 250), 'kept', 'hit in the clip');
+    assert.strictEqual(at(120, 250), 'under', 'and not past it');
+    assert.deepStrictEqual(clips('#ffff00'), [[]]);
+    assert.strictEqual(at(120, 350), 'out', 'past a clip and an edge at once');
+    assert.strictEqual(at(30, 350), 'under', 'in the edge, past the clip');
+  },
+);
+
+metric(
+  'a clip is measured in CSS pixels, and hit in them, at a display scale of 2',
+  async () => {
+    // The clip's lengths are the cascade's, device pixels, and so is the
+    // box they are measured from; a pointer's point is logical. With the
+    // document offset in its window, a device origin and a logical one
+    // differ.
+    const { node } = await render2x(
+      '<style>body{margin:0}</style>' +
+        '<div id="a" style="position:absolute;top:0;left:0;width:100px;' +
+        'height:40px;background:#ff0000;clip:rect(0,auto,30px,50px)"></div>',
+    );
+    const el = view(node);
+    const a = boxOf(el, 'a');
+    const ops: PaintOp[] = [];
+    await fillsOf(el, ops);
+    const [red] = clipsAround(ops, '#ff0000');
+    assert.deepStrictEqual(
+      red.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
+      [[a.x + 100, a.y, 100, 60]],
+      'two device pixels to each of its own',
+    );
+    const { abs } = el as unknown as { abs: { x: number; y: number } };
+    const at = (x: number, y: number) =>
+      el.elementAtPoint(abs.x / 2 + x, abs.y / 2 + y)?.attribs.id;
+    assert.strictEqual(at(60, 20), 'a', 'inside the clip');
+    assert.notStrictEqual(at(40, 20), 'a', 'left of it');
+    assert.notStrictEqual(at(60, 35), 'a', 'and under it');
+  },
+);
+
 test('clip-path is read: a rectangle in a box, a box alone, and a shape not drawn', async () => {
   // CSS Masking 1, 5.1: a basic shape, a `<geometry-box>`, or both in
   // either order. The rectangles of CSS Shapes 1, 3.1 are read as they are

@@ -614,7 +614,13 @@ cut at: out from the box it names by its length, or in where the length is
 negative, the rounded corners moving out as a browser's do. A box that
 scrolls cuts at its padding box whatever the margin says. A table clips to its table box, with its
 captions outside the clip. `clip` shows the part of an absolutely positioned
-box it names. `clip-path` shows the part of any box its shape names, and
+box it names, and of what the box holds, and nothing it cuts away is under
+the pointer (CSS 2.1 11.1.2): a label hidden for a screen reader alone with
+`clip: rect(0, 0, 0, 0)` takes no hover and no press from the link it lies
+over. One thing is let out of it, a `position: fixed` box in a clipped box
+that is no stacking context — one with no `z-index`, not itself fixed —
+which is drawn whole and found where it is drawn; a browser cuts that one
+too. `clip-path` shows the part of any box its shape names, and
 of everything in the box — one positioned from outside it too, which a box
 that clips its overflow lets out — and nothing it cuts away is under the
 pointer (CSS Masking 1, 5.1). The shapes are the rectangles of CSS Shapes:
@@ -1416,7 +1422,9 @@ than that still has links below the first screen. A clip hides only what
 it holds, not a positioned box whose containing block is outside it, and
 paint draws such a box past the edge. The hit test finds it there too:
 the Zen Garden's archive links are absolute items in an `overflow: hidden`
-list that has no height of its own. Where two boxes overlap, the answer
+list that has no height of its own. What a `clip` or a `clip-path` cuts
+away of a box is not drawn, and is not under the pointer either, though the
+point is inside the box. Where two boxes overlap, the answer
 follows CSS paint order, `z-index` included. An infobox floated out of
 one section and hanging over the next keeps its links, and the next
 section's box does not take them. A box that is not visible is not under
