@@ -6745,6 +6745,63 @@ test('a form control or a frame keeps its height when only its width is set', as
   assert.strictEqual(f.width, e.width, 'a frame 96px tall is as wide');
 });
 
+test("a button the page styled takes the web's UA edges, not the palette's", async () => {
+  // Codex gives Wikipedia's search button its side padding and a 32px
+  // min-height, and leaves the padding above and below the label to the
+  // browser: Chrome's 1px fits under the minimum, and the palette's did
+  // not, so the button stood taller than the field beside it and the flex
+  // row stretched the field's wrapper to match. The palette's chrome is for
+  // a button the page left alone; a background or a border of the page's,
+  // a radius among them, or `appearance: none`, drops it, as each drops a
+  // control's native look in Blink.
+  await renderX11(
+    h(
+      ThemeProvider,
+      { value: { paddingY: 7, borderWidth: 3, radius: 5 } } as Record<
+        string,
+        unknown
+      >,
+      h(
+        'box',
+        { style: { width: 600, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<button id="plain">Go</button>' +
+            '<button id="colored" style="color:red;cursor:default">Go</button>' +
+            '<button id="codex" style="border-width:1px;border-style:solid;' +
+            'padding-left:11px;padding-right:11px;min-height:32px">Go</button>' +
+            '<button id="filled" style="background:#eee">Go</button>' +
+            '<button id="round" style="border-radius:0">Go</button>' +
+            '<button id="bare" style="appearance:none">Go</button>',
+          partial: false,
+          // the palette's side padding is 0.75em
+          fontSize: 16,
+          'data-testname': 'doc',
+        }),
+      ),
+    ),
+    FONTS
+      ? { width: 640, height: 200, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const edges = (id: string) => {
+    const box = edgesOf(boxOf(el, id));
+    return [box.padTop, box.padLeft, box.borderLeft, box.style.borderRadius[0]];
+  };
+  assert.deepStrictEqual(edges('plain'), [7, 12, 3, 5], "the palette's");
+  assert.deepStrictEqual(
+    edges('colored'),
+    [7, 12, 3, 5],
+    'its colour and cursor are not its chrome',
+  );
+  assert.deepStrictEqual(edges('codex'), [1, 11, 1, 0], "Chrome's above");
+  assert.strictEqual(boxOf(el, 'codex').height, 32, 'its minimum holds it');
+  assert.deepStrictEqual(edges('filled'), [1, 6, 2, 0], "Chrome's all round");
+  assert.deepStrictEqual(edges('round'), [1, 6, 2, 0], 'a radius is a border');
+  assert.deepStrictEqual(edges('bare'), [1, 6, 2, 0], 'and so is appearance');
+});
+
 test("a control's text keeps none of the spacing, line height, case or indent around it", async () => {
   // HTML's rendering section, 15.3.10. melbcss.com's buttons sit in a body
   // of `line-height: 1.5`, and inherited it: each was half a line taller
