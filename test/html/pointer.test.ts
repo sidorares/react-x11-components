@@ -1163,6 +1163,45 @@ metric(
 );
 
 metric(
+  "a hover reaches a sprite's icon through what its <use> hands the copy",
+  async () => {
+    // A copy's tree has nothing above what the `<use>` names (SVG 2,
+    // 5.5.3), so `a:hover .p` never reaches a sprite's shape, hovered or
+    // not, as in Chrome. What the copy inherits from the `<use>` does, and
+    // the `<use>` is in the drawing the hovered link holds.
+    const { result, node } = await render(
+      '<style>body{margin:0} svg{display:block} a{display:block;width:60px}' +
+        ' a:hover .p{fill:#ff0000} .q{fill:inherit} a:hover use{fill:#00aa00}' +
+        '</style><svg style="display:none"><symbol id="s" viewBox="0 0 20 20">' +
+        '<rect class="p" width="10" height="20" fill="#000000"/>' +
+        '<rect class="q" x="10" width="10" height="20"/></symbol></svg>' +
+        '<a id="a" href="#x"><svg width="20" height="20"><use href="#s"/></svg></a>' +
+        '<p id="w">elsewhere</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const { abs } = el as unknown as DrawnNode;
+    const pixel = (x: number, y: number, colour: string, message: string) =>
+      expectPixel(result.ctx, abs.x + x, abs.y + y, colour, { message });
+    await pixel(5, 10, '#000000', 'not hovered');
+    await pixel(15, 10, '#000000', 'nothing to inherit yet');
+
+    const hovered = await hoverInPlace(result, el, 'a');
+    assert.ok(bytesApart(hovered, quiet) > 0, 'the hover drew nothing');
+    await pixel(
+      5,
+      10,
+      '#000000',
+      "a rule of the link's for the sprite's shape",
+    );
+    await pixel(15, 10, '#00aa00', 'what the copy inherits from the <use>');
+    const left = await hoverInPlace(result, el, 'w');
+    assert.strictEqual(bytesApart(left, quiet), 0, 'not as it was before');
+  },
+);
+
+metric(
   'a hover waits for a scroll to stop, and follows a move of the pointer at once',
   async (t) => {
     // Core asks what is under a still pointer after every frame that moved

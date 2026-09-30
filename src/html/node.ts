@@ -1729,7 +1729,7 @@ export class HtmlViewNode extends Node {
         const box = this._firstBoxesOf(tree).get(el);
         const was = box && SHAPE_STYLES.get(box);
         if (!box || was === undefined) continue;
-        const shapes = cascade.shapeStyles(el, style);
+        const shapes = cascade.shapeStyles(el, style, tree.shapeCopies);
         if (shapes?.key !== was?.key) redrawn.push([box, shapes]);
       }
     }

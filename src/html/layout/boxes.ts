@@ -16,7 +16,7 @@
 // reason richtext's node gives for answering from what it draws: an index
 // built by a second traversal can disagree with the boxes, and a selection
 // that disagrees with the glyphs is worse than no selection.
-import type { Element } from 'domhandler';
+import type { ChildNode, Element } from 'domhandler';
 
 import type { TextRun } from '../../richtext/index.js';
 import {
@@ -28,6 +28,7 @@ import {
   NON_RENDERED,
   tagOf,
 } from '../dom.js';
+import { ShapeCopies } from '../css/cascade.js';
 import type {
   Cascade,
   FirstLetterRules,
@@ -789,6 +790,11 @@ export interface BoxTree {
    *  could reach one: worked out as a drawing is first painted, since a
    *  page of icons shows few of them at once. */
   shapeStyler: ShapeStyler | null;
+  /** What the drawings of this build share in `Cascade.shapeStyles`: the
+   *  document's elements by their ids, indexed when first asked, where a
+   *  `<use>` finds the icon a sprite has for it; and what the rules matched
+   *  in each copy a `<use>` makes. Null where `shapeStyler` is. */
+  shapeCopies: ShapeCopies | null;
   /** Whether a float or an out-of-flow box sits in an inline box: where
    *  none does, layout looks for them among a block's own children and
    *  goes through no inline box to find them. */
@@ -845,6 +851,28 @@ export function buildBoxes(
 ): BoxTree {
   const builder = new Builder(options);
   return builder.run(root as Element);
+}
+
+/** A document's first element with an id: one walk of it, the first time
+ *  an id is asked for (`ShapeCopies`). */
+function idIndex(root: Element): (id: string) => Element | null {
+  let index: Map<string, Element> | null = null;
+  return (id) => {
+    if (!index) {
+      index = new Map();
+      const stack: ChildNode[] = [...root.children].reverse();
+      for (let node = stack.pop(); node; node = stack.pop()) {
+        if (!isElement(node)) continue;
+        const own = node.attribs.id;
+        if (own && !index.has(own)) index.set(own, node);
+        const children = node.children;
+        for (let i = children.length - 1; i >= 0; i -= 1) {
+          stack.push(children[i]);
+        }
+      }
+    }
+    return index.get(id) ?? null;
+  };
 }
 
 /**
@@ -938,6 +966,7 @@ class Builder {
     const anonymous = anonymousStyles(cascade.initial);
     fixUp(rootBox, anonymous);
     assignSubtreeRanges(rootBox);
+    const copies = cascade.stylesShapes ? new ShapeCopies(idIndex(root)) : null;
     return {
       root: rootBox,
       anonymous,
@@ -954,7 +983,8 @@ class Builder {
       firstLine: this._firstLine,
       firstLineStyler: this._firstLine ? this._firstLineStyler() : null,
       selectionStyler: cascade.hasSelection ? this._selectionStyler() : null,
-      shapeStyler: cascade.stylesShapes ? this._shapeStyler() : null,
+      shapeStyler: copies ? this._shapeStyler(copies) : null,
+      shapeCopies: copies,
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,
       clipText: this._clipText,
@@ -989,12 +1019,12 @@ class Builder {
 
   /** `BoxTree.shapeStyler`, over this build's cascade: each drawing's
    *  once, from its box's style as it is when first asked. */
-  private _shapeStyler(): ShapeStyler {
+  private _shapeStyler(copies: ShapeCopies): ShapeStyler {
     const cascade = this._options.cascade;
     return (box) => {
       let shapes = SHAPE_STYLES.get(box);
       if (shapes === undefined) {
-        shapes = box.el ? cascade.shapeStyles(box.el, box.style) : null;
+        shapes = box.el ? cascade.shapeStyles(box.el, box.style, copies) : null;
         SHAPE_STYLES.set(box, shapes);
       }
       return shapes;

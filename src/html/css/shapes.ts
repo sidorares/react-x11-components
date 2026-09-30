@@ -25,8 +25,36 @@ export type ShapeStyle = Readonly<Record<string, string>>;
 /** What the rules give the elements of one drawing, and all of it as a
  *  string: what a drawing's tree was last made with (`SvgDrawing`). */
 export interface ShapeStyles {
+  /** Each element's, where it stands. */
   readonly of: ReadonlyMap<Element, ShapeStyle>;
+  /**
+   * What they give the copy a `<use>` draws, by the `<use>`, then by each
+   * element of the copy's original; null where they give none. A copy is
+   * styled in a tree of its own, which its original is the top of (SVG 2,
+   * 5.5.3, as Chrome has it): a rule finds no ancestor of that element's
+   * and none of the `<use>`'s, and no sibling of it, and what the top
+   * inherits is the `<use>`'s. So `symbol .line` reaches a sprite's line
+   * where `.sprite .line` does not, and an element a `<use>` draws may be
+   * styled otherwise than where it stands.
+   */
+  readonly used: ReadonlyMap<Element, ReadonlyMap<Element, ShapeStyle>> | null;
   readonly key: string;
+}
+
+/** The id a `<use>` names the element it draws by: a fragment of its
+ *  `href`. One in another document is none here, where nothing is fetched
+ *  for a drawing. */
+export function useHref(el: Element): string | null {
+  const href = el.attribs.href ?? el.attribs['xlink:href'] ?? '';
+  return href.length > 1 && href.startsWith('#') ? href.slice(1) : null;
+}
+
+/** Whether an element is a `<use>`, with a prefix or not. */
+export function isUse(el: Element): boolean {
+  const name = el.name;
+  if (name === 'use') return true;
+  const i = name.indexOf(':');
+  return i >= 0 && name.slice(i + 1).toLowerCase() === 'use';
 }
 
 /** Each property read, and whether it is inherited. */
