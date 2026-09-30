@@ -154,11 +154,57 @@ export function blinkMetrics(face: unknown): unknown {
   return face;
 }
 
-/** The browser's network, over a cache on disk. */
+/** How often a request a server did not answer is made again, a second
+ *  and then two apart. */
+const ATTEMPTS = 3;
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A status that says what is at a URL, and will say it again tomorrow: a
+ *  2xx, or a 4xx but the two that ask to be tried again. A 5xx, a 429 and
+ *  a 408 are a server that is busy. */
+function answers(status: number): boolean {
+  return status >= 200 && status < 500 && status !== 408 && status !== 429;
+}
+
+/**
+ * The browser's network, over a cache on disk.
+ *
+ * What is kept is what a server said: a file, or that it has none there.
+ * A request that got no answer — a reset, a timeout, a busy server — is
+ * made again, and if there is still none is not kept and is `dropped`,
+ * which fails the page it was for. Kept as missing, as it was, one dropped
+ * request for a design's page made it "no such design" in every run after,
+ * and the run stepped over it as though it had passed: nineteen designs
+ * were never compared. An image or a stylesheet dropped the same way would
+ * have left its page compared without it.
+ */
 export class CachedNetwork {
   private _network = new Network();
+  /** The URLs no answer came for, since they were last taken. */
+  private _dropped: string[] = [];
   constructor(private readonly _dir: string) {
     mkdirSync(_dir, { recursive: true });
+  }
+
+  /** The requests that went unanswered, and the list cleared. */
+  takeDropped(): string[] {
+    const dropped = this._dropped;
+    this._dropped = [];
+    return dropped;
+  }
+
+  /** What a server answers for a URL: its status, or null for none. */
+  private async _status(url: string): Promise<number | null> {
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(30_000),
+        redirect: 'follow',
+      });
+      await response.body?.cancel();
+      return response.status;
+    } catch {
+      return null;
+    }
   }
 
   private _paths(url: string): { meta: string; body: string } {
@@ -177,8 +223,10 @@ export class CachedNetwork {
     const head = JSON.parse(readFileSync(meta, 'utf8')) as Omit<
       Fetched,
       'bytes'
-    > & { missing?: boolean };
-    if (head.missing) return null;
+    > & { missing?: boolean; answered?: boolean };
+    // one kept as missing before a server's answer was told from none is
+    // asked for again
+    if (head.missing) return head.answered ? null : undefined;
     return { ...head, bytes: new Uint8Array(readFileSync(body)) };
   }
 
@@ -186,7 +234,10 @@ export class CachedNetwork {
     if (/^(document:)?file:/.test(url)) return;
     const { meta, body } = this._paths(url);
     if (!fetched) {
-      writeFileSync(meta, JSON.stringify({ url, missing: true }));
+      writeFileSync(
+        meta,
+        JSON.stringify({ url, missing: true, answered: true }),
+      );
       return;
     }
     const { bytes, ...head } = fetched;
@@ -206,7 +257,26 @@ export class CachedNetwork {
     if (allowed !== url) return this.resource(allowed, kind, page);
     const kept = this._read(url);
     if (kept !== undefined) return kept;
-    const fetched = await this._network.resource(url, kind, page);
+    let fetched = await this._network.resource(url, kind, page);
+    if (!fetched && /^https?:/i.test(url)) {
+      // nothing came back: the server has nothing there, or did not answer
+      let answered = false;
+      for (let attempt = 0; attempt < ATTEMPTS && !answered; attempt += 1) {
+        if (attempt) await pause(1000 * attempt);
+        const status = await this._status(url);
+        if (status === null || !answers(status)) continue;
+        answered = true;
+        // there after all: what the browser's network makes of it now is
+        // what there is, a file of a kind it does not take included
+        if (status < 300) {
+          fetched = await this._network.resource(url, kind, page);
+        }
+      }
+      if (!answered) {
+        this._dropped.push(url);
+        return null;
+      }
+    }
     this._write(url, fetched);
     return fetched;
   }
@@ -217,7 +287,11 @@ export class CachedNetwork {
     url: string,
   ): Promise<{ source: string; url: string; charset: string } | null> {
     let kept = this._read(`document:${url}`);
-    if (kept === undefined) {
+    for (let attempt = 0; kept === undefined; attempt += 1) {
+      if (attempt === ATTEMPTS) {
+        throw new Error(`no answer from the server for ${url}`);
+      }
+      if (attempt) await pause(1000 * attempt);
       try {
         const response = await this._network.document(
           url,
@@ -225,8 +299,9 @@ export class CachedNetwork {
         );
         const chunks: Uint8Array[] = [];
         for await (const chunk of response.body) chunks.push(chunk);
+        if (!answers(response.status)) continue;
         kept =
-          response.status >= 200 && response.status < 300
+          response.status < 300
             ? {
                 url: response.url,
                 status: response.status,
@@ -235,10 +310,10 @@ export class CachedNetwork {
                 bytes: new Uint8Array(Buffer.concat(chunks)),
               }
             : null;
+        this._write(`document:${url}`, kept);
       } catch {
-        kept = null;
+        // no response at all: asked again
       }
-      this._write(`document:${url}`, kept);
     }
     if (!kept) return null;
     const head = new TextDecoder('latin1').decode(kept.bytes.subarray(0, 1024));
