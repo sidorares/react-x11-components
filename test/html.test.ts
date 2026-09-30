@@ -17888,3 +17888,34 @@ test("a control's text is the palette's size, not its parent's", async () => {
     'the same in CSS px at 2x',
   );
 });
+
+test('an inline box around a block that clears a float measures from where clearance moved the block from', async () => {
+  // A browser's fragment of an inline box around a block in it is the
+  // line that holds the block, and where the block has clearance that line
+  // starts where the block would have been without it: Chrome measures a
+  // span of a float and a block clearing it from the float's top. Ours
+  // started at the block, and the Zen Garden's 214, whose content is an
+  // inline box of floats and a footer that clears them, measured 1,700px
+  // short. A margin stays outside the fragment, as Chrome has it
+  const { node, result } = await render(
+    '<style>body{margin:0}.s{display:inline}.f{float:left;width:100px;' +
+      'height:80px}.c{clear:both;height:40px}</style>' +
+      '<div style="height:10px"></div>' +
+      '<div class="s" id="a"><div class="f"></div><div class="c"></div></div>' +
+      '<div style="height:10px;clear:both"></div>' +
+      '<div class="s" id="b"><div class="c" style="margin-top:15px"></div></div>',
+  );
+  const el = view(node);
+  const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+  assert.deepStrictEqual(
+    [rect('a').y, rect('a').height],
+    [10, 120],
+    "from the float's top to the cleared block's bottom",
+  );
+  assert.deepStrictEqual(
+    [rect('b').y, rect('b').height],
+    [155, 40],
+    'and a margin stays outside',
+  );
+  await result.unmount();
+});

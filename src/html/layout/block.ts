@@ -38,6 +38,7 @@ import {
   BOX_RAISES,
   Box,
   CLAMPED,
+  CLEARED_FROM,
   CUT_BLOCKS,
   GRID_TRACKS,
   FIRST_LINE,
@@ -927,6 +928,8 @@ function layoutChildren(
     }
     first = false;
     const moved = childY !== at;
+    if (moved) CLEARED_FROM.set(child, at);
+    else CLEARED_FROM.delete(child);
     if (!moved && collapsesThrough(child)) {
       // nothing in it parts its margins: they and the ones either side of
       // it are one (CSS 2.1 8.3.1), still hanging for what comes next —

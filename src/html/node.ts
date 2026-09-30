@@ -60,6 +60,7 @@ import {
   BOX_RAISES,
   buildBoxes,
   CONTENT_IMAGES,
+  CLEARED_FROM,
   CUT_BLOCKS,
   GENERATED_FROM,
   INLINE_OFFSETS,
@@ -1285,11 +1286,16 @@ export class HtmlViewNode extends Node {
       for (const block of (box.cut ? CUT_BLOCKS.get(box) : null) ?? []) {
         const around = block.parent;
         if (!around) continue;
+        // from where clearance moved it down from, as Blink's line around
+        // a block in an inline box starts there: the Zen Garden's 214
+        // makes its content an inline box of floats and a footer that
+        // clears them, and Chrome measures it from the floats' top
+        const top = Math.min(block.y, CLEARED_FROM.get(block) ?? block.y);
         bands.push({
           x: around.contentX,
-          y: block.y,
+          y: top,
           width: around.contentWidth,
-          height: block.height,
+          height: block.y + block.height - top,
         });
       }
       for (const band of bands) rect = rect ? unionRect(rect, band) : band;
