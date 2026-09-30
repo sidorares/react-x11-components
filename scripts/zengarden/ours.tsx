@@ -401,16 +401,14 @@ export async function capture(
     if (!view) throw new Error('no <Html> element in the tree');
     const paths = elementPaths(view.document);
     const boxes = new Map<string, Rect>();
-    let bottom = height;
     for (const [element, path] of paths) {
       const rect = view.elementRect(element);
-      if (!rect) continue;
-      boxes.set(path, rect);
-      if (path.startsWith('/html[0]/body[0]')) {
-        bottom = Math.max(bottom, rect.y + rect.height);
-      }
+      if (rect) boxes.set(path, rect);
     }
-    const docHeight = Math.ceil(Math.max(bottom, view.abs.height));
+    // as tall as the pane scrolls: the document's scrollable overflow, which
+    // is what Chrome's content size is — not the bottom of every box in it,
+    // which takes in the text a box scrolls inside itself
+    const docHeight = Math.ceil(Math.max(height, view.abs.height));
     const image = await readPage(
       result,
       pane!,
