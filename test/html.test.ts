@@ -6757,10 +6757,11 @@ test("a button the page styled takes the web's UA edges, not the palette's", asy
   await renderX11(
     h(
       ThemeProvider,
-      { value: { paddingY: 7, borderWidth: 3, radius: 5 } } as Record<
-        string,
-        unknown
-      >,
+      // the palette's side padding is 0.75em, and a control's text is at
+      // the theme's size, not the document's
+      {
+        value: { paddingY: 7, borderWidth: 3, radius: 5, fontSize: 16 },
+      } as Record<string, unknown>,
       h(
         'box',
         { style: { width: 600, flexDirection: 'column' } },
@@ -6774,8 +6775,6 @@ test("a button the page styled takes the web's UA edges, not the palette's", asy
             '<button id="round" style="border-radius:0">Go</button>' +
             '<button id="bare" style="appearance:none">Go</button>',
           partial: false,
-          // the palette's side padding is 0.75em
-          fontSize: 16,
           'data-testname': 'doc',
         }),
       ),
