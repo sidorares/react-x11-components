@@ -40,8 +40,11 @@ import type {
   BackgroundRepeat,
   BoxShadow,
   ComputedStyle,
+  Gradient,
+  GradientStop,
   ImageRepeat,
   LinearGradient,
+  RadialGradient,
   RepeatMode,
 } from './css/style.js';
 import {
@@ -130,6 +133,24 @@ export interface PaintContext extends FillContext {
     x1: number,
     y1: number,
   ): { addColorStop(offset: number, color: string): void };
+  createRadialGradient?(
+    x0: number,
+    y0: number,
+    r0: number,
+    x1: number,
+    y1: number,
+    r1: number,
+  ): { addColorStop(offset: number, color: string): void };
+  /** Multiplies the current matrix, which a fill's paint is sampled
+   *  through and a path already laid down is not. */
+  transform?(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+  ): void;
   clip?(): void;
   /** Canvas shadows: ntk bakes and caches the blur, CoreGraphics draws it. */
   shadowColor?: string;
@@ -722,7 +743,7 @@ function paintCanvas(
       ctx.fillStyle = inkColor(style.backgroundColor as string, style.color);
       ctx.fillRect(area.x, area.y, area.w, area.h);
     }
-    if (style.backgroundGradient && ctx.createLinearGradient && visible) {
+    if (style.backgroundGradient && visible) {
       // sized by the root element's box and repeated down the canvas, as a
       // browser does — the stripes a short page with a gradient on its
       // body shows — or by the viewport, where it is fixed
@@ -2976,7 +2997,7 @@ function paintBackground(
     ctx.fillStyle = inkColor(color as string, style.color);
     fill();
   }
-  if (gradient && ctx.createLinearGradient) {
+  if (gradient) {
     // over the colour, as the layer an image is: the size of the padding
     // box, which is where it starts, and repeated under the borders — or
     // the viewport's, where it is fixed; its line runs across the whole of
@@ -2998,7 +3019,7 @@ function paintBackground(
       // one fill in the rounded shape; under the borders it carries on
       // with its end colours where a browser would show the next tile
       if (!(at.width > 0 && at.height > 0)) return;
-      ctx.fillStyle = linearGradient(
+      const paint = gradientFill(
         ctx,
         gradient,
         at.x,
@@ -3008,7 +3029,7 @@ function paintBackground(
         style.color,
         rect,
       );
-      fill();
+      if (paint) fillGradient(ctx, paint, rect, rounded);
     } else paintGradient(ctx, style, gradient, rect, at);
   }
 }
@@ -3038,7 +3059,7 @@ const NO_SIZE: IntrinsicSize = { width: null, height: null, ratio: 0 };
 function paintGradient(
   ctx: PaintContext,
   style: ComputedStyle,
-  gradient: LinearGradient,
+  gradient: Gradient,
   area: { x: number; y: number; w: number; h: number },
   at: Rect,
 ): void {
@@ -3087,17 +3108,8 @@ function paintGradient(
   ) {
     // a sliver of a root repeated down a long canvas: the one tile, and
     // its end colours on past it
-    ctx.fillStyle = linearGradient(
-      ctx,
-      gradient,
-      x0,
-      y0,
-      w,
-      h,
-      style.color,
-      area,
-    );
-    ctx.fillRect(area.x, area.y, area.w, area.h);
+    const paint = gradientFill(ctx, gradient, x0, y0, w, h, style.color, area);
+    if (paint) fillGradient(ctx, paint, area);
     return;
   }
   for (let y = fromY; y < toY; y += stepY) {
@@ -3109,17 +3121,8 @@ function paintGradient(
       const right = Math.min(x + w, area.x + area.w);
       if (right <= left) continue;
       const tile = { x: left, y: top, w: right - left, h: bottom - top };
-      ctx.fillStyle = linearGradient(
-        ctx,
-        gradient,
-        x,
-        y,
-        w,
-        h,
-        style.color,
-        tile,
-      );
-      ctx.fillRect(tile.x, tile.y, tile.w, tile.h);
+      const paint = gradientFill(ctx, gradient, x, y, w, h, style.color, tile);
+      if (paint) fillGradient(ctx, paint, tile);
     }
   }
 }
@@ -3159,32 +3162,11 @@ function linearGradient(
   const dy = -Math.cos(angle);
   const length = Math.abs(w * dx) + Math.abs(h * dy);
   const stops = gradient.stops;
-  const at: (number | null)[] = stops.map((stop) =>
-    stop.at === null
-      ? null
-      : length > 0
-        ? resolve(stop.at, length) / length
-        : 0,
-  );
-  if (at[0] === null) at[0] = 0;
-  if (at[at.length - 1] === null) at[at.length - 1] = 1;
-  for (let i = 1; i < at.length; i += 1) {
-    if (at[i] === null) {
-      // spread the ones without a position between the ones with
-      let j = i;
-      while (at[j] === null) j += 1;
-      const from = at[i - 1]!;
-      const to = at[j]!;
-      for (let k = i; k < j; k += 1) {
-        at[k] = from + ((to - from) * (k - i + 1)) / (j - i + 1);
-      }
-    }
-    at[i] = Math.max(at[i]!, at[i - 1]!);
-  }
+  const at = stopOffsets(stops, length);
   // the context's offsets are 0 to 1, so a line that stops reach past runs
   // from the first to the last, and the box sees the part of it between
-  const from = Math.min(0, at[0]!);
-  const to = Math.max(1, at[at.length - 1]!);
+  const from = Math.min(0, at[0]);
+  const to = Math.max(1, at[at.length - 1]);
   const startX = x + w / 2 - (dx * length) / 2;
   const startY = y + h / 2 - (dy * length) / 2;
   const x0 = startX + dx * length * from;
@@ -3215,9 +3197,276 @@ function linearGradient(
   }
   const g = ctx.createLinearGradient!(x0, y0, x1, y1);
   for (let i = 0; i < stops.length; i += 1) {
-    g.addColorStop((at[i]! - from) / (to - from), colors[i]);
+    g.addColorStop((at[i] - from) / (to - from), colors[i]);
   }
   return g;
+}
+
+/**
+ * Where each of a gradient's stops is along a line `length` long, as a
+ * fraction of it (CSS Images 3, 3.5.1): a stop without a position is
+ * spread evenly between its neighbours', the first at 0 and the last at 1
+ * where they have none, and none is before the one before it.
+ */
+function stopOffsets(stops: GradientStop[], length: number): number[] {
+  const at: (number | null)[] = stops.map((stop) =>
+    stop.at === null
+      ? null
+      : length > 0
+        ? resolve(stop.at, length) / length
+        : 0,
+  );
+  if (at[0] === null) at[0] = 0;
+  if (at[at.length - 1] === null) at[at.length - 1] = 1;
+  for (let i = 1; i < at.length; i += 1) {
+    if (at[i] === null) {
+      // spread the ones without a position between the ones with
+      let j = i;
+      while (at[j] === null) j += 1;
+      const from = at[i - 1]!;
+      const to = at[j]!;
+      for (let k = i; k < j; k += 1) {
+        at[k] = from + ((to - from) * (k - i + 1)) / (j - i + 1);
+      }
+    }
+    at[i] = Math.max(at[i]!, at[i - 1]!);
+  }
+  return at as number[];
+}
+
+/** What a gradient fills with: the context's gradient, or the one colour
+ *  it comes to, and the matrix it is sampled through where it is an
+ *  ellipse — a context's radial gradients are circles, and an ellipse is
+ *  one stretched along its longer axis. */
+interface GradientFill {
+  style: unknown;
+  matrix: [number, number, number, number, number, number] | null;
+}
+
+/** A gradient's fill for a box at (`x`, `y`), `w` by `h`: null where the
+ *  context draws no gradient of its kind. */
+function gradientFill(
+  ctx: PaintContext,
+  gradient: Gradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  currentColor: string,
+  visible: { x: number; y: number; w: number; h: number } | null = null,
+): GradientFill | null {
+  if (gradient.kind === 'radial') {
+    return radialGradient(ctx, gradient, x, y, w, h, currentColor, visible);
+  }
+  if (!ctx.createLinearGradient) return null;
+  return {
+    style: linearGradient(ctx, gradient, x, y, w, h, currentColor, visible),
+    matrix: null,
+  };
+}
+
+/**
+ * A `radial-gradient()` across a box (CSS Images 3, 3.2.2): centred where
+ * its position puts it, and as large as its radii, or as its keyword says
+ * — the side or the corner of the box nearest the centre or furthest from
+ * it, and for an ellipse through a corner, the ellipse with the shape the
+ * sides would give it. The stops are spaced along the ray from the centre
+ * to the ending shape's edge, which for an ellipse is its horizontal
+ * radius; one before the centre, where the ray starts, gives the colour
+ * there and no more, and one past the edge carries the gradient on.
+ *
+ * A shape with no width or no height is drawn as its last colour, as
+ * Chrome draws each (crbug.com/635727): the spec draws a zero width as a
+ * gradient mirrored about the centre line, which Chrome does not.
+ */
+function radialGradient(
+  ctx: PaintContext,
+  gradient: RadialGradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  currentColor: string,
+  visible: { x: number; y: number; w: number; h: number } | null = null,
+): GradientFill | null {
+  const colors = gradient.stops.map((stop) =>
+    inkColor(stop.color, currentColor),
+  );
+  const cx = resolve(gradient.at[0], w);
+  const cy = resolve(gradient.at[1], h);
+  let rx: number;
+  let ry: number;
+  if (gradient.radii) {
+    rx = resolve(gradient.radii[0], w);
+    ry = resolve(gradient.radii[1], h);
+  } else {
+    const extent = gradient.extent ?? 'farthest-corner';
+    const side = extent.startsWith('closest') ? Math.min : Math.max;
+    const sx = side(Math.abs(cx), Math.abs(w - cx));
+    const sy = side(Math.abs(cy), Math.abs(h - cy));
+    const corner = extent.endsWith('corner');
+    if (gradient.circle) {
+      rx = ry = corner ? Math.hypot(sx, sy) : side(sx, sy);
+    } else {
+      // through the corner, in the shape the sides give it
+      rx = corner ? sx * Math.SQRT2 : sx;
+      ry = corner ? sy * Math.SQRT2 : sy;
+    }
+  }
+  if (!(rx > 0 && ry > 0)) {
+    return { style: colors[colors.length - 1], matrix: null };
+  }
+  if (!hasRadialGradients(ctx)) return null;
+  let at = stopOffsets(gradient.stops, rx);
+  let inks = colors;
+  if (at[0] < 0) {
+    // the colour at the centre, between the stops either side of it
+    const first = colorAlong(at, colors, 0);
+    const i = at.findIndex((t) => t > 0);
+    if (i < 0) return { style: first, matrix: null };
+    at = [0, ...at.slice(i)];
+    inks = [first, ...colors.slice(i)];
+  }
+  const ax = x + cx;
+  const ay = y + cy;
+  const seen = visible ?? { x, y, w, h };
+  if (!(Math.abs(ax) < RADIAL_REACH && Math.abs(ay) < RADIAL_REACH)) {
+    return farRadial(ctx, at, inks, ax, ay, rx, ry, seen);
+  }
+  let to = Math.max(1, at[at.length - 1]);
+  if (Math.max(rx, ry) * to > GRADIENT_REACH) {
+    // as far along the ray as what is seen of it reaches, and no further:
+    // a circle a context cannot carry, cut to the part it draws
+    let reach = 0;
+    for (const px of [seen.x, seen.x + seen.w]) {
+      for (const py of [seen.y, seen.y + seen.h]) {
+        reach = Math.max(reach, Math.hypot((px - ax) / rx, (py - ay) / ry));
+      }
+    }
+    if (reach > 0 && reach < to) {
+      const last = colorAlong(at, inks, reach);
+      const kept = at.filter((t) => t < reach).length;
+      at = [...at.slice(0, kept), reach];
+      inks = [...inks.slice(0, kept), last];
+      to = reach;
+    }
+  }
+  const circle = rx === ry;
+  // a circle as wide as the ellipse is narrow, stretched along the other
+  // axis: the matrix only ever widens, so its inverse, which a context
+  // samples the gradient through, reaches no further than the centre does
+  const r = Math.min(rx, ry);
+  const g = circle
+    ? ctx.createRadialGradient!(ax, ay, 0, ax, ay, r * to)
+    : ctx.createRadialGradient!(0, 0, 0, 0, 0, r * to);
+  for (let i = 0; i < at.length; i += 1) {
+    g.addColorStop(at[i] / to, inks[i]);
+  }
+  return {
+    style: g,
+    matrix: circle ? null : [rx / r, 0, 0, ry / r, ax, ay],
+  };
+}
+
+/**
+ * How far from the origin a radial gradient's centre may be and still be
+ * the context's to draw: ntk makes a gradient past what X RENDER carries at
+ * a scale that fits, and its 16.16 matrix holds that scale to a fraction of
+ * a pixel to here.
+ */
+const RADIAL_REACH = 1 << 18;
+
+/**
+ * A radial gradient whose centre is further off than a context carries —
+ * `at 0 calc(infinity * 1px)`, which comes to the largest length there is —
+ * across the part of it that is seen: from that far its rings are as good
+ * as straight, so it is drawn as the linear gradient that runs the way the
+ * rings spread there, as fast as they do, cut to what is seen as a linear
+ * gradient's line is. The rings bend away from it by the square of what is
+ * seen over eight times the distance, under a pixel from here.
+ */
+function farRadial(
+  ctx: PaintContext,
+  at: number[],
+  colors: string[],
+  ax: number,
+  ay: number,
+  rx: number,
+  ry: number,
+  seen: { x: number; y: number; w: number; h: number },
+): GradientFill | null {
+  if (!ctx.createLinearGradient) return null;
+  // the middle of what is seen, in the circle's own space, and how fast
+  // the gradient runs there, a pixel
+  const px = seen.x + seen.w / 2;
+  const py = seen.y + seen.h / 2;
+  const ux = (px - ax) / rx;
+  const uy = (py - ay) / ry;
+  const t = Math.hypot(ux, uy);
+  const gx = ux / rx / t;
+  const gy = uy / ry / t;
+  const g2 = gx * gx + gy * gy;
+  if (!(t > 0 && g2 > 0 && Number.isFinite(t / g2))) {
+    return { style: colorAlong(at, colors, t), matrix: null };
+  }
+  // the line it runs along, from where it would start to where it is 1
+  const lx = gx / g2;
+  const ly = gy / g2;
+  return {
+    style: clippedGradient(
+      ctx,
+      at,
+      colors,
+      px - lx * t,
+      py - ly * t,
+      lx,
+      ly,
+      seen,
+    ),
+    matrix: null,
+  };
+}
+
+/**
+ * Whether a context draws radial gradients. react-x11's macOS and Windows
+ * contexts have the method and paint what it returns flat, in one colour
+ * — over whatever a vignette was meant to let through — and theirs takes
+ * no circles, which is how it is told from one that draws them: ntk's and
+ * the Wayland context's take the six numbers canvas gives it. There a
+ * radial gradient is drawn as nothing, as every one was.
+ */
+function hasRadialGradients(ctx: PaintContext): boolean {
+  return (ctx.createRadialGradient?.length ?? 0) >= 6;
+}
+
+/**
+ * Fills a rectangle, rounded where `corners` says, with a gradient. An
+ * ellipse's shape is laid down first and filled under its matrix, which a
+ * context applies to the fill's paint and not to a path it already has.
+ */
+function fillGradient(
+  ctx: PaintContext,
+  fill: GradientFill,
+  r: { x: number; y: number; w: number; h: number },
+  corners: Corners | null = null,
+): void {
+  ctx.fillStyle = fill.style;
+  if (!fill.matrix) {
+    if (corners) {
+      ctx.beginPath!();
+      roundedRect(ctx, r.x, r.y, r.w, r.h, corners);
+      ctx.fill!();
+    } else ctx.fillRect(r.x, r.y, r.w, r.h);
+    return;
+  }
+  if (!ctx.transform || !ctx.beginPath || !ctx.rect || !ctx.fill) return;
+  ctx.save();
+  ctx.beginPath();
+  if (corners) roundedRect(ctx, r.x, r.y, r.w, r.h, corners);
+  else ctx.rect(r.x, r.y, r.w, r.h);
+  ctx.transform(...fill.matrix);
+  ctx.fill();
+  ctx.restore();
 }
 
 /**
@@ -3275,28 +3524,30 @@ function clippedGradient(
     cx + (t1 - tc) * lx,
     cy + (t1 - tc) * ly,
   );
-  // the colour at a place on the line: a stop's, or between two
-  const colorAt = (t: number): string => {
-    if (!(t > at[0])) return colors[0];
-    for (let i = 1; i < at.length; i += 1) {
-      if (t > at[i]) continue;
-      const span = at[i] - at[i - 1];
-      const f = span > 0 ? (t - at[i - 1]) / span : 1;
-      return (
-        blend(colors[i - 1], colors[i], f) ??
-        (f < 0.5 ? colors[i - 1] : colors[i])
-      );
-    }
-    return colors[colors.length - 1];
-  };
-  g.addColorStop(0, colorAt(t0));
+  g.addColorStop(0, colorAlong(at, colors, t0));
   for (let i = 0; i < at.length; i += 1) {
     if (at[i] > t0 && at[i] < t1) {
       g.addColorStop((at[i] - t0) / (t1 - t0), colors[i]);
     }
   }
-  g.addColorStop(1, colorAt(t1));
+  g.addColorStop(1, colorAlong(at, colors, t1));
   return g;
+}
+
+/** The colour at a place along a gradient whose stops are at `at`: a
+ *  stop's, or between two. */
+function colorAlong(at: number[], colors: string[], t: number): string {
+  if (!(t > at[0])) return colors[0];
+  for (let i = 1; i < at.length; i += 1) {
+    if (t > at[i]) continue;
+    const span = at[i] - at[i - 1];
+    const f = span > 0 ? (t - at[i - 1]) / span : 1;
+    return (
+      blend(colors[i - 1], colors[i], f) ??
+      (f < 0.5 ? colors[i - 1] : colors[i])
+    );
+  }
+  return colors[colors.length - 1];
 }
 
 /**
@@ -3908,17 +4159,9 @@ function paintBorderImage(
       h,
       (sctx) => {
         if (svg) svg.draw(sctx, 0, 0, w, h, scale);
-        else if (typeof source !== 'string' && sctx.createLinearGradient) {
-          sctx.fillStyle = linearGradient(
-            sctx,
-            source,
-            0,
-            0,
-            w,
-            h,
-            box.style.color,
-          );
-          sctx.fillRect(0, 0, w, h);
+        else if (typeof source !== 'string') {
+          const paint = gradientFill(sctx, source, 0, 0, w, h, box.style.color);
+          if (paint) fillGradient(sctx, paint, { x: 0, y: 0, w, h });
         }
       },
     );
@@ -4042,11 +4285,11 @@ function paintBorderImage(
   return true;
 }
 
-const GRADIENT_KEYS = new WeakMap<LinearGradient, string>();
+const GRADIENT_KEYS = new WeakMap<Gradient, string>();
 
 /** A gradient as a key for what is drawn of it: its angle and stops, and
  *  the colour `currentColor` among them is. */
-function gradientKey(gradient: LinearGradient, color: string): string {
+function gradientKey(gradient: Gradient, color: string): string {
   let key = GRADIENT_KEYS.get(gradient);
   if (key === undefined) {
     key = JSON.stringify(gradient);
@@ -4963,12 +5206,14 @@ function paintClippedText(
     const gradient =
       style.backgroundGradient ??
       (style.backgroundImages?.find(
-        (image): image is LinearGradient =>
+        (image): image is Gradient =>
           image !== null && typeof image !== 'string',
       ) ||
         null);
     let fill: unknown = null;
-    if (gradient && ctx.createLinearGradient) {
+    // where the fill is a picture of the gradient, the corner it starts at
+    let origin: { x: number; y: number } | null = null;
+    if (gradient) {
       if (!(area.width > 0 && area.height > 0)) continue;
       // the text it shows through: what the fill is drawn over
       let x0 = Infinity;
@@ -4983,7 +5228,7 @@ function paintClippedText(
           y1 = Math.max(y1, r.y + r.height);
         }
       }
-      fill = linearGradient(
+      const paint = gradientFill(
         ctx,
         gradient,
         area.x,
@@ -4993,7 +5238,40 @@ function paintClippedText(
         style.color,
         x1 > x0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null,
       );
-    } else if (!isTransparent(style.backgroundColor)) {
+      if (paint?.matrix) {
+        // An ellipse is a circle filled through a matrix, which would draw
+        // the glyphs through it too: they are filled with a picture of the
+        // gradient instead, drawn once at the area's size
+        const left = Math.round(area.x);
+        const top = Math.round(area.y);
+        const w = Math.max(1, Math.round(area.x + area.width) - left);
+        const h = Math.max(1, Math.round(area.y + area.height) - top);
+        const picture =
+          ctx.createPattern && ctx.translate
+            ? options.cached?.(
+                `clip-text|${gradientKey(gradient, style.color)}|${w}x${h}`,
+                w,
+                h,
+                (sctx) => {
+                  const p = gradientFill(
+                    sctx,
+                    gradient,
+                    0,
+                    0,
+                    w,
+                    h,
+                    style.color,
+                  );
+                  if (p) fillGradient(sctx, p, { x: 0, y: 0, w, h });
+                },
+              )
+            : null;
+        if (!picture) continue;
+        fill = ctx.createPattern!(picture, 'no-repeat');
+        origin = { x: left, y: top };
+      } else if (paint) fill = paint.style;
+    }
+    if (fill === null && !isTransparent(style.backgroundColor)) {
       fill = inkColor(style.backgroundColor as string, style.color);
     }
     if (fill === null) continue;
@@ -5005,7 +5283,11 @@ function paintClippedText(
       for (const r of part.rects) ctx.rect(r.x, r.y, r.width, r.height);
       ctx.clip();
       ctx.fillStyle = fill;
-      inkless.draw(ctx, part.x, part.y);
+      if (origin) {
+        // a pattern is placed from the origin of the space it fills
+        ctx.translate!(origin.x, origin.y);
+        inkless.draw(ctx, part.x - origin.x, part.y - origin.y);
+      } else inkless.draw(ctx, part.x, part.y);
       ctx.restore();
     }
   }

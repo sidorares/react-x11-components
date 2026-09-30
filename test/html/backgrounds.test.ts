@@ -11,6 +11,7 @@ import {
   waitFor,
 } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
+import { blend } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
   RED_PNG,
@@ -435,6 +436,312 @@ test('a gradient on the root repeats down a canvas taller than the page', async 
   );
 });
 
+/** The radial gradients a paint filled with: the circles each was made
+ *  from, its stops, and the matrix it was filled under, an ellipse's. */
+function radialFills(fills: Fill[]) {
+  return fills
+    .filter((f) => (f.style as { circles?: number[] } | null)?.circles)
+    .map((f) => {
+      const g = f.style as { circles: number[]; stops: [number, string][] };
+      const round = (v: number) => Math.round(v * 1000) / 1000 + 0;
+      return {
+        rect: [f.x, f.y, f.w, f.h],
+        circles: g.circles.map(round),
+        stops: g.stops.map(([at, color]) => [round(at), color]),
+        matrix: f.matrix?.map(round) ?? null,
+      };
+    });
+}
+
+const radial = (gradient: string, more = ''): string =>
+  '<style>body{margin:0}</style><div style="width:200px;height:100px;' +
+  `background-image:radial-gradient(${gradient});${more}"></div>`;
+
+test('a radial gradient is an ellipse through the farthest corner, from the middle of the box', async () => {
+  // CSS Images 3, 3.2: with no shape, size or position, an ellipse centred
+  // in the box through its corners, in the shape the box's sides give it.
+  // It was drawn as nothing: the Zen Garden's 216 has its preamble on a
+  // disc of one, white at the middle, and ours had no disc at all. A
+  // context's radial gradients are circles, so an ellipse is one as wide as
+  // the ellipse is narrow, filled under a matrix that stretches it
+  const { node } = await render(radial('#ff0000, #0000ff'));
+  const [g] = radialFills(await fillsOf(view(node)));
+  assert.ok(g, 'a radial gradient is filled with');
+  assert.deepStrictEqual(g.rect, [0, 0, 200, 100], 'across the box');
+  assert.deepStrictEqual(
+    g.circles,
+    [0, 0, 0, 0, 0, 70.711],
+    'a circle of the smaller radius, 50 by the root of two',
+  );
+  assert.deepStrictEqual(
+    g.matrix,
+    [2, 0, 0, 1, 100, 50],
+    'stretched to the larger, about the middle of the box',
+  );
+  assert.deepStrictEqual(
+    g.stops,
+    [
+      [0, parseColor('#ff0000')],
+      [1, parseColor('#0000ff')],
+    ],
+    'its stops from the centre to the edge',
+  );
+});
+
+test("a radial gradient's shape, size and centre are the ones it names", async () => {
+  const shape = async (gradient: string) => {
+    const { node } = await render(radial(`${gradient}, #ff0000, #0000ff`));
+    const [g] = radialFills(await fillsOf(view(node)));
+    cleanup();
+    return g ? [g.circles, g.matrix] : null;
+  };
+  // a circle is filled where it is, under no matrix
+  assert.deepStrictEqual(
+    await shape('circle closest-side at 30px 40px'),
+    [[30, 40, 0, 30, 40, 30], null],
+    'a circle to the nearest side',
+  );
+  assert.deepStrictEqual(
+    await shape('farthest-side circle at 50px 20px'),
+    [[50, 20, 0, 50, 20, 150], null],
+    'to the furthest, the keywords in either order',
+  );
+  assert.deepStrictEqual(
+    await shape('circle at left top'),
+    [[0, 0, 0, 0, 0, 223.607], null],
+    'and, with no size, to the furthest corner',
+  );
+  assert.deepStrictEqual(
+    await shape('25px at 100% 100%'),
+    [[200, 100, 0, 200, 100, 25], null],
+    'one length is a circle of that radius',
+  );
+  assert.deepStrictEqual(
+    await shape('closest-side at 50px 20px'),
+    [
+      [0, 0, 0, 0, 0, 20],
+      [2.5, 0, 0, 1, 50, 20],
+    ],
+    'an ellipse to the nearest sides, 50 across and 20 down',
+  );
+  assert.deepStrictEqual(
+    await shape('ellipse closest-corner at 50px 20px'),
+    [
+      [0, 0, 0, 0, 0, 28.284],
+      [2.5, 0, 0, 1, 50, 20],
+    ],
+    'through the nearest corner, in that shape',
+  );
+  assert.deepStrictEqual(
+    await shape('25% 80px at center'),
+    [
+      [0, 0, 0, 0, 0, 50],
+      [1, 0, 0, 1.6, 100, 50],
+    ],
+    'two sizes are its radii, a percentage of the box each way',
+  );
+  // what the grammar has no place for is no gradient
+  for (const bad of [
+    'circle 10px 20px',
+    'ellipse 10px',
+    'circle 50%',
+    '10px -5px',
+    'closest-side 10px',
+    'circle circle',
+    'at nowhere',
+  ]) {
+    assert.strictEqual(await shape(bad), null, `${bad} is drawn as nothing`);
+  }
+});
+
+test("a radial gradient's stops run from its centre, along the ray to its edge and past it", async () => {
+  const stops = async (gradient: string) => {
+    const { node } = await render(radial(gradient));
+    const fills = await fillsOf(view(node));
+    const [g] = radialFills(fills);
+    cleanup();
+    return g ? { r: g.circles[5], stops: g.stops } : fills.map((f) => f.style);
+  };
+  const [black, white, red, blue] = [
+    '#000000',
+    '#ffffff',
+    '#ff0000',
+    '#0000ff',
+  ].map((c) => parseColor(c)!);
+  // a length is a distance along the ray, a percentage a share of it; a
+  // stop past the edge makes the circle that much larger
+  assert.deepStrictEqual(
+    await stops('circle 40px, #ff0000 10px, #0000ff 150%'),
+    {
+      r: 60,
+      stops: [
+        [0.167, red],
+        [1, blue],
+      ],
+    },
+    'a stop past the edge carries the gradient on',
+  );
+  // the ray starts at the centre: a stop before it gives the colour there
+  assert.deepStrictEqual(
+    await stops('circle 100px, #000000 -100px, #ffffff 100px'),
+    {
+      r: 100,
+      stops: [
+        [0, blend(black, white, 0.5)],
+        [1, white],
+      ],
+    },
+    'a stop before the centre is the colour between, at it',
+  );
+  // a shape with no width or no height is its last colour, as Chrome
+  // draws each
+  for (const flat of [
+    'circle 0px, #ff0000, #0000ff',
+    '0px 50px, #ff0000, #0000ff',
+    'closest-side at 0 50%, #ff0000, #0000ff',
+  ]) {
+    assert.deepStrictEqual(
+      await stops(flat),
+      [blue],
+      `${flat} is its last colour`,
+    );
+  }
+});
+
+test('a radial gradient a context cannot carry is cut to what is seen of it', async () => {
+  // a context's gradients are 16.16 fixed point, and a circle too large
+  // for that is one only to where the box sees it: its stops past there
+  // are never drawn, and the colour at the cut ends it
+  const { node } = await render(
+    radial('circle 100000px, #ff0000, #0000ff 100%'),
+  );
+  const [g] = radialFills(await fillsOf(view(node)));
+  const [red, blue] = ['#ff0000', '#0000ff'].map((c) => parseColor(c)!);
+  // the box's corners are 111.8px from its middle
+  assert.deepStrictEqual(g.circles, [100, 50, 0, 100, 50, 111.803]);
+  assert.deepStrictEqual(
+    g.stops,
+    [
+      [0, red],
+      [1, blend(red, blue, Math.hypot(100, 50) / 100000)],
+    ],
+    'the colour that far along its ray, at the edge',
+  );
+});
+
+test('a radial gradient centred out of reach is drawn as the line it is where it is seen', async () => {
+  // `at 0 calc(infinity * 1px)` is a centre at the largest length there
+  // is, thirty million pixels down, which no context's matrix carries:
+  // from there the rings are straight across the box, and the gradient is
+  // the linear one that runs the way they spread. WPT's
+  // css-images/gradient/gradient-infinity-003 has one whose first stop is
+  // as far off as its centre, so all of its box is that stop's colour
+  const { node } = await render(
+    radial(
+      'circle at 0 calc(infinity * 1px), #00ff00 calc(infinity * 1px), #ff0000 0',
+    ),
+  );
+  const fills = await fillsOf(view(node));
+  assert.strictEqual(radialFills(fills).length, 0, 'no circle is asked for');
+  const [line] = gradientFills(fills);
+  assert.ok(line, 'a linear gradient is');
+  // all of it but the corner furthest from the centre, a sliver of a
+  // pixel past the stop
+  const lime = parseColor('#00ff00');
+  const other = line.stops.find(([, color]) => color !== lime);
+  assert.ok(
+    line.stops[0][1] === lime && (!other || other[0] > 0.9999),
+    `in the first stop's colour across it: ${JSON.stringify(line.stops)}`,
+  );
+  // up the box, away from a centre far below it
+  const [x0, y0, x1, y1] = line.line;
+  assert.ok(
+    Math.abs(x1 - x0) < 1 && y0 <= 101 && y1 >= -1 && y1 < y0,
+    `within the box, away from the centre: ${line.line}`,
+  );
+});
+
+test('a radial gradient in a rounded box is the rounded shape, filled under its matrix', async () => {
+  // the shape is laid down before the matrix is set, which a context
+  // applies to a fill's paint and not to the path it already has: the
+  // matrix first would have stretched the box with the gradient
+  const { node } = await render(
+    radial('#ff0000, #0000ff', 'border-radius:50%'),
+  );
+  const ops: PaintOp[] = [];
+  const fills = await fillsOf(view(node), ops);
+  const [g] = radialFills(fills);
+  assert.deepStrictEqual(g.rect, [0, 0, 200, 100], "the box's own bounds");
+  assert.deepStrictEqual(g.matrix, [2, 0, 0, 1, 100, 50]);
+  const fill = fills.find((f) => f.matrix)!;
+  assert.ok(
+    fill.radii !== null || (fill.corners?.length ?? 0) > 0,
+    'and its rounded corners',
+  );
+  // and the matrix is gone after it
+  const at = ops.findIndex((op) => op.op === 'fill' && op.matrix);
+  assert.strictEqual(ops[at + 1]?.op, 'restore', 'restored after the fill');
+});
+
+test('a context that paints a radial gradient flat is not asked for one', async () => {
+  // react-x11's macOS and Windows contexts have `createRadialGradient` and
+  // paint what it returns in one colour: a vignette would cover what it
+  // darkens the edges of. Theirs takes no circles, and nothing is drawn
+  const { node } = await render(
+    radial('#ff0000, #0000ff', 'background-color:#00ff00'),
+  );
+  const fills = await fillsOf(view(node), undefined, { flatRadial: true });
+  assert.ok(
+    fills.every((f) => !(f.style as { flat?: boolean } | null)?.flat),
+    'no fill is the flat gradient',
+  );
+  assert.ok(
+    fills.some((f) => f.style === parseColor('#00ff00')),
+    'and the colour under it is drawn',
+  );
+  // one that comes to a single colour needs no gradient, and is drawn
+  cleanup();
+  const { node: flat } = await render(radial('circle 0px, #ff0000, #0000ff'));
+  assert.ok(
+    (await fillsOf(view(flat), undefined, { flatRadial: true })).some(
+      (f) => f.style === parseColor('#0000ff'),
+    ),
+    'a shape with no size is still its last colour',
+  );
+});
+
+metric(
+  'a radial gradient is drawn as an ellipse, not as a circle',
+  async () => {
+    // real pixels, where the matrix has to be one the context fills through:
+    // a hard stop half way out an ellipse 100 across and 50 down is 50 from
+    // the centre sideways and 25 down
+    const { result, node } = await render(
+      '<style>body{margin:0}</style><div style="width:200px;height:100px;' +
+        'background:radial-gradient(closest-side, #ff0000 50%, #0000ff 50%)">' +
+        '</div>',
+    );
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    await waitFor(async () => {
+      for (const [x, y, red] of [
+        [100, 50, true],
+        [140, 50, true],
+        [160, 50, false],
+        [100, 70, true],
+        [100, 80, false],
+        [60, 50, true],
+        [100, 20, false],
+      ] as [number, number, boolean][]) {
+        const [r, , b] = await pixelAt(result.ctx, at.x + x, at.y + y);
+        assert.ok(
+          red ? r > 200 && b < 60 : b > 200 && r < 60,
+          `${red ? 'red' : 'blue'} at ${x},${y}: ${r},${b}`,
+        );
+      }
+    });
+  },
+);
+
 test('background-size is read, in its longhand and after the position', async () => {
   const { node } = await render(
     '<div id="a" style="background-size:cover"></div>' +
@@ -615,6 +922,40 @@ metric(
     assert.ok(b1 > r1, `and the last towards its end: ${r1}, ${b1}`);
     // above the glyphs, inside the box
     assert.ok(isNear(await pixelAt(result.ctx, 180, 2), '#ffffff'));
+  },
+);
+
+metric(
+  'an elliptical gradient painted through text fills the glyphs where they are',
+  async () => {
+    // an ellipse is a circle filled under a matrix, which glyphs drawn
+    // under it would be stretched by too: the text is filled with a
+    // picture of the gradient instead
+    const { result } = await render(
+      '<style>body{margin:0}h1{margin:0;font:48px/1 sans-serif;width:360px;' +
+        'background:radial-gradient(closest-side,#ff0000 50%,#0000ff 50%);' +
+        'background-clip:text;color:transparent}</style><h1>HHHHHHH</h1>',
+    );
+    await waitFor(async () => {
+      const ink: [number, number, number][] = [];
+      for (let x = 0; x < 360; x += 2) {
+        const [r, g, b] = await pixelAt(result.ctx, x, 24);
+        if (g < 60 && (r > 200 || b > 200)) ink.push([x, r, b]);
+      }
+      assert.ok(ink.length > 20, `${ink.length} pixels of ink`);
+      assert.ok(ink[0][0] < 12, `the first glyph where it is: ${ink[0][0]}`);
+      // half way out the ellipse is 90 either side of the middle
+      for (const [x, r, b] of ink) {
+        if (Math.abs(x - 180) < 80) assert.ok(r > b, `red at ${x}: ${r},${b}`);
+        if (Math.abs(x - 180) > 100)
+          assert.ok(b > r, `blue at ${x}: ${r},${b}`);
+      }
+      assert.ok(
+        ink.some(([x]) => Math.abs(x - 180) < 80) &&
+          ink.some(([x]) => Math.abs(x - 180) > 100),
+        'glyphs in both',
+      );
+    });
   },
 );
 

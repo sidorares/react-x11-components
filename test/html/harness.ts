@@ -151,6 +151,8 @@ export interface Fill {
   corners?: [number, number][];
   /** The context's shadow when the fill was made, where it had a blur. */
   shadow?: { color: string; blur: number; x: number; y: number };
+  /** The matrix the fill was made under, where `transform` set one. */
+  matrix?: number[];
 }
 
 /** What a paint did, in order: a fill, or a clip pushed or popped. */
@@ -206,6 +208,8 @@ export async function fillsOf(
       ratio: number;
     } | null;
     scale?: number;
+    /** A context whose radial gradients are one colour. */
+    flatRadial?: boolean;
   },
 ): Promise<Fill[]> {
   const { paintDocument } = await import('../../src/html/paint.js');
@@ -246,6 +250,8 @@ export async function fillsOf(
         }
       : undefined;
   const saved: [string, number, number, number][] = [];
+  let matrix: number[] | null = null;
+  const matrices: (number[] | null)[] = [];
   const ctx = {
     shadowColor: 'rgba(0, 0, 0, 0)',
     shadowBlur: 0,
@@ -264,6 +270,7 @@ export async function fillsOf(
         ctx.shadowOffsetX,
         ctx.shadowOffsetY,
       ]);
+      matrices.push(matrix);
       ops?.push({ op: 'save' });
     },
     restore() {
@@ -276,6 +283,7 @@ export async function fillsOf(
           ctx.shadowOffsetY,
         ] = state;
       }
+      matrix = matrices.pop() ?? null;
       ops?.push({ op: 'restore' });
     },
     fillRect(x: number, y: number, w: number, h: number) {
@@ -331,6 +339,7 @@ export async function fillsOf(
         };
         const shadow = shadowOf();
         if (shadow) fill.shadow = shadow;
+        if (matrix) fill.matrix = matrix;
         fills.push(fill);
         ops?.push({ op: 'fill', ...fill });
         curves = null;
@@ -343,6 +352,7 @@ export async function fillsOf(
         if (inner) Object.assign(fill, { inner, rule });
         const shadow = shadowOf();
         if (shadow) fill.shadow = shadow;
+        if (matrix) fill.matrix = matrix;
         fills.push(fill);
         ops?.push({ op: 'fill', ...fill });
       }
@@ -387,7 +397,34 @@ export async function fillsOf(
         },
       };
     },
+    createRadialGradient(
+      x0: number,
+      y0: number,
+      r0: number,
+      x1: number,
+      y1: number,
+      r1: number,
+    ) {
+      const stops: [number, string][] = [];
+      return {
+        circles: [x0, y0, r0, x1, y1, r1],
+        stops,
+        addColorStop(at: number, color: string) {
+          stops.push([at, color]);
+        },
+      };
+    },
+    transform(...m: number[]) {
+      matrix = m;
+    },
   };
+  if (options?.flatRadial) {
+    // react-x11's macOS context: the method, with no circles to take
+    (ctx as { createRadialGradient: unknown }).createRadialGradient = () => ({
+      flat: true,
+      addColorStop() {},
+    });
+  }
   for (const layout of layouts) {
     (layout as { draw: unknown }).draw = (_: unknown, x: number, y: number) => {
       const shadow = shadowOf();
