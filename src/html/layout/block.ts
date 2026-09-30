@@ -4344,6 +4344,10 @@ export function establishesBFC(box: Box): boolean {
   ) {
     return true;
   }
+  // a flex item, and a grid's: each an independent formatting context, which
+  // the margins of what it holds stay inside (CSS Flexbox 1, 4; CSS Grid 1,
+  // 6.1)
+  if (box.parent?.kind === 'flex' && !box.outOfFlow) return true;
   // The root element establishes the document's formatting context. Here it
   // is a box below the synthetic initial containing block, so it is named:
   // without it, <html>'s own margin collapsed with <body>'s first block's.

@@ -1023,6 +1023,34 @@ test('a flex item stretched across a column is as tall as its ratio makes it', a
   assert.deepStrictEqual([box('b').width, box('b').height], [100, 50]);
 });
 
+test("the margins of what a flex item holds stay inside it, and a grid's", async () => {
+  // Each is an independent formatting context (CSS Flexbox 1, 4; CSS Grid
+  // 1, 6.1), so the margin at the bottom of its last block ends inside it
+  // and makes it taller. It went out through the item's bottom edge, as
+  // through a plain block's, and was lost to the item's height: a column of
+  // sections stood closer than a browser's by the margin at each one's end
+  const { node } = await render(
+    '<style>body{margin:0}.flex{display:flex;width:400px}' +
+      '.column{flex-direction:column}.grid{display:grid;width:400px}' +
+      '.c{margin:10px 0 20px;height:20px}</style>' +
+      '<div class="flex column" id="column"><section id="a">' +
+      '<div class="c"></div></section><section id="b"><div class="c">' +
+      '</div></section></div>' +
+      '<div class="flex" id="row"><section id="c"><div class="c"></div>' +
+      '</section></div>' +
+      '<div class="grid" id="grid"><section id="d"><div class="c"></div>' +
+      '</section></div>',
+  );
+  const box = (id: string) => boxOf(view(node), id);
+  for (const id of ['a', 'b', 'c', 'd']) {
+    assert.strictEqual(box(id).height, 50, `item ${id}, its margins in it`);
+  }
+  assert.strictEqual(box('b').y - box('a').y, 50, 'one item under another');
+  assert.strictEqual(box('column').height, 100, 'the column');
+  assert.strictEqual(box('row').height, 50, 'the row');
+  assert.strictEqual(box('grid').height, 50, 'the grid');
+});
+
 metric(
   "an inline flex box that clips sits on its first item's baseline, as it does unclipped",
   async () => {
