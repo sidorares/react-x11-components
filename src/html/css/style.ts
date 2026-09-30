@@ -43,6 +43,7 @@ import type { CustomProps } from './vars.js';
 import { parseRotate, parseScale, parseTransform } from './transform.js';
 import type { TransformFunction } from './transform.js';
 import { LIGHT_DARK, lightDark, usedColorScheme } from './color.js';
+import { svgPaint } from './shapes.js';
 
 export type Display =
   | 'none'
@@ -5154,19 +5155,6 @@ const POINTER_EVENTS = new Set([
   'stroke',
   'all',
 ]);
-/**
- * A `fill` or a `stroke` (SVG 2, 13.2): `none`, a colour, or a `url()`
- * naming a gradient in the drawing, with what follows it, its fallback,
- * left off. Null for anything else, `context-fill` and `context-stroke`
- * among it, which only a marker or a `<use>` has a context for.
- */
-function svgPaint(value: string): string | null {
-  const v = value.trim();
-  if (v.toLowerCase() === 'none') return 'none';
-  const url = /^url\(\s*(['"]?)(#[^'")\s]+)\1\s*\)/i.exec(v);
-  if (url) return `url(${url[2]})`;
-  return parseColor(v);
-}
 
 const OBJECT_FITS = new Set(['fill', 'contain', 'cover', 'none', 'scale-down']);
 

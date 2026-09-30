@@ -17,6 +17,7 @@ import { Element, Text } from 'domhandler';
 import type { ChildNode, ParentNode } from 'domhandler';
 import * as ntk from 'react-x11/ntk';
 import { isSvgRoot } from './dom.js';
+import type { ShapeStyle, ShapeStyles } from './css/shapes.js';
 import { inkColor, isTransparent, parseColor } from './css/values.js';
 
 export { isSvgRoot };
@@ -183,7 +184,8 @@ export class SvgDrawing {
   private _seen = -1;
   private _seenLast: ChildNode | null = null;
   private _seenViewport = '';
-  /** The `fill` and `stroke` the view's tree was last given its root's. */
+  /** The `fill` and `stroke` the view's tree was last given its root's,
+   *  and what the document's rules gave the elements in it. */
   private _seenPaint = '';
   /** Whether a length in the tree is a percentage of the viewport; null
    *  until the tree is first read. */
@@ -216,7 +218,8 @@ export class SvgDrawing {
    * and `stroke` the root's own where the document's styles set them (SVG
    * 2, 13.2): they are properties, which a style sheet's rule sets over
    * the presentation attribute, and what is in the drawing inherits them
-   * from its root.
+   * from its root. `shapes` is what the rules give the elements inside it,
+   * the same way, where they give any.
    */
   draw(
     ctx: ClipContext,
@@ -228,6 +231,7 @@ export class SvgDrawing {
     color?: string,
     fill: string | null = null,
     stroke: string | null = null,
+    shapes: ShapeStyles | null = null,
   ): void {
     if (this._failed || !(w > 0 && h > 0)) return;
     // the mock backend has no path API, and SvgView draws paths
@@ -261,8 +265,8 @@ export class SvgDrawing {
       (fill === null ? '' : `fill:${fill};`) +
       (stroke === null ? '' : `stroke:${stroke};`);
     const view = box
-      ? this._viewFor(box[2], box[3], paint)
-      : this._viewFor(w / scale, h / scale, paint);
+      ? this._viewFor(box[2], box[3], paint, shapes)
+      : this._viewFor(w / scale, h / scale, paint, shapes);
     if (!view) return;
     ctx.save();
     try {
@@ -317,6 +321,7 @@ export class SvgDrawing {
     height: number,
     /** The root's `fill` and `stroke` as declarations, or none. */
     paint = '',
+    shapes: ShapeStyles | null = null,
   ): SvgViewLike | null {
     const root = this._root;
     const count = root.children.length;
@@ -332,11 +337,12 @@ export class SvgDrawing {
     }
     const sized = this._percent || this._uses;
     const viewport = sized ? `${width}x${height}` : '';
+    const painted = shapes ? `${paint}|${shapes.key}` : paint;
     if (
       this._view &&
       !grown &&
       viewport === this._seenViewport &&
-      paint === this._seenPaint
+      painted === this._seenPaint
     ) {
       return this._view;
     }
@@ -349,16 +355,16 @@ export class SvgDrawing {
       const view = this._view ?? new View(null);
       const missing = { any: false };
       const tree =
-        sized || root.name.includes(':')
-          ? copyTree(root, sized ? [width, height] : null, missing)
+        sized || shapes || root.name.includes(':')
+          ? copyTree(root, sized ? [width, height] : null, missing, shapes)
           : root;
-      view.setSvgDom(paint ? painted(tree, paint) : tree);
+      view.setSvgDom(paint ? withPaint(tree, paint) : tree);
       this._missingAt = missing.any ? lastNode(documentOf(root)) : undefined;
       this._view = view;
       this._seen = count;
       this._seenLast = last;
       this._seenViewport = viewport;
-      this._seenPaint = paint;
+      this._seenPaint = painted;
       return view;
     } catch {
       this._failed = true;
@@ -373,7 +379,7 @@ export class SvgDrawing {
  * its `style` — where `SvgView` reads a root's paint, over its presentation
  * attributes, for what is under it to inherit.
  */
-function painted(root: Element, paint: string): Element {
+function withPaint(root: Element, paint: string): Element {
   const style = root.attribs.style;
   return new Element(
     root.name,
@@ -609,11 +615,20 @@ const USE_PLACEMENT = new Set([
  * viewport the `<use>` gives it — its `width` and `height`, and all of the
  * drawing's where it has none. `missing.any` is set where one refers to an
  * element the document does not have.
+ *
+ * And with what the document's rules give each element (`shapes`), where
+ * `SvgView` reads an element's own: at the end of its `style`, over its
+ * presentation attributes and over what that attribute says, which the
+ * cascade that made them has weighed already. An element a rule gives
+ * `display: none` is left out, with what is in it, and a shape one hides
+ * — `visibility` is inherited, and a shape in a hidden group may be shown
+ * again — is left out alone.
  */
 function copyTree(
   root: Element,
   viewport: [number, number] | null,
   missing?: { any: boolean },
+  shapes: ShapeStyles | null = null,
 ): Element {
   const colon = root.name.indexOf(':');
   const prefix = colon < 0 ? null : `${root.name.slice(0, colon)}:`;
@@ -627,6 +642,7 @@ function copyTree(
     use: Element,
     resolve: boolean,
     depth: number,
+    hidden: boolean,
   ): Element | null => {
     const id = useTarget(use);
     if (id === null || depth >= USE_DEPTH) return null;
@@ -645,6 +661,8 @@ function copyTree(
     for (const name in use.attribs) {
       if (!USE_PLACEMENT.has(name)) attribs[name] = use.attribs[name];
     }
+    const own = shapes?.of.get(use);
+    if (own) restyle(attribs, own);
     const x = parseFloat(use.attribs.x ?? '') || 0;
     const y = parseFloat(use.attribs.y ?? '') || 0;
     let placed = '';
@@ -671,22 +689,52 @@ function copyTree(
     // a length in a symbol with a `viewBox` is of that, and left as it is
     const within = resolve && !box;
     const children: ChildNode[] = [];
-    if (symbol) {
-      for (const child of target.children) {
-        if (child.type === 'tag') {
-          children.push(copy(child as Element, within, depth + 1));
-        }
-      }
-    } else children.push(copy(target, within, depth + 1));
+    if (symbol) copyInto(children, target, within, depth + 1, hidden);
+    else if (shown(target, hidden)) {
+      children.push(copy(target, within, depth + 1, hidden));
+    }
     return new Element('g', attribs, children);
   };
-  const copy = (el: Element, resolve: boolean, depth = 0): Element => {
+  /** Whether an element is drawn at all, in a group that is hidden or
+   *  not: one no rule gives `display: none`, and no shape a rule hides. */
+  const shown = (el: Element, hidden: boolean): boolean => {
+    if (!shapes) return true;
+    const own = shapes.of.get(el);
+    const name = localName(el.name);
+    if (own?.display === 'none' && !UNDRAWN.has(name)) return false;
+    return !(hiddenIn(own, hidden) && HIDEABLE.has(name));
+  };
+  const copyInto = (
+    children: ChildNode[],
+    el: Element,
+    resolve: boolean,
+    depth: number,
+    hidden: boolean,
+  ): void => {
+    for (const child of el.children) {
+      if (child.type === 'tag') {
+        if (shown(child as Element, hidden)) {
+          children.push(copy(child as Element, resolve, depth, hidden));
+        }
+      } else if (child.type === 'text') children.push(new Text(child.data));
+    }
+  };
+  const copy = (
+    el: Element,
+    resolve: boolean,
+    depth = 0,
+    /** Whether the element inherits a `visibility` of `hidden`. */
+    hidden = false,
+  ): Element => {
+    const own = shapes?.of.get(el);
+    hidden = hiddenIn(own, hidden);
     if (localName(el.name) === 'use') {
-      const group = expand(el, resolve, depth);
+      const group = expand(el, resolve, depth, hidden);
       if (group) return group;
     }
     const here = resolve && !OWN_UNITS.has(localName(el.name));
     const attribs = { ...el.attribs };
+    if (own) restyle(attribs, own);
     if (here && viewport && el !== root) {
       for (const name in attribs) {
         const axis = PERCENT_OF[name];
@@ -700,14 +748,77 @@ function copyTree(
       }
     }
     const children: ChildNode[] = [];
-    for (const child of el.children) {
-      if (child.type === 'tag') {
-        children.push(copy(child as Element, here, depth));
-      } else if (child.type === 'text') children.push(new Text(child.data));
-    }
+    copyInto(children, el, here, depth, hidden);
     return new Element(strip(el.name), attribs, children);
   };
   return copy(root, true);
+}
+
+/** What `display: none` takes nothing from: `SvgView` draws none of them
+ *  where they stand, and what refers to one still finds it (SVG 2, 5.3). */
+const UNDRAWN = new Set([
+  'defs',
+  'symbol',
+  'lineargradient',
+  'radialgradient',
+  'stop',
+  'clippath',
+  'mask',
+  'pattern',
+  'marker',
+  'style',
+]);
+
+/** What `visibility: hidden` leaves undrawn: the elements with something
+ *  of their own to draw, and a `<use>`, since what it draws inherits the
+ *  property from it. */
+const HIDEABLE = new Set([
+  'path',
+  'rect',
+  'circle',
+  'ellipse',
+  'line',
+  'polyline',
+  'polygon',
+  'text',
+  'image',
+  'use',
+]);
+
+/** Whether an element is hidden, given whether what it is in is. */
+function hiddenIn(own: ShapeStyle | undefined, hidden: boolean): boolean {
+  const visibility = own?.visibility;
+  return visibility === undefined || visibility === 'inherit'
+    ? hidden
+    : visibility === 'hidden';
+}
+
+/**
+ * An element's attributes with what the rules give it: each property at
+ * the end of its `style`, where `SvgView` reads it over the attribute of
+ * its name — but `opacity`, which it reads from the attribute alone. One
+ * the rules put back to what the element inherits is taken out of both.
+ */
+function restyle(attribs: Record<string, string>, own: ShapeStyle): void {
+  let style = attribs.style ?? '';
+  let added = '';
+  for (const prop in own) {
+    const value = own[prop];
+    if (prop === 'display' || prop === 'visibility') continue;
+    if (value === 'inherit') {
+      delete attribs[prop];
+      if (style) {
+        style = style
+          .split(';')
+          .filter((d) => d.slice(0, d.indexOf(':')).trim() !== prop)
+          .join(';');
+      }
+    } else if (prop === 'opacity') attribs.opacity = value;
+    else added += `${prop}:${value};`;
+  }
+  style = style && added ? `${style};${added}` : style || added;
+  if (style) attribs.style = style;
+  else delete attribs.style;
 }
 
 /**

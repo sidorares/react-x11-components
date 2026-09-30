@@ -54,6 +54,13 @@ import type { UnitContext } from './values.js';
 import { viewportUnit } from './values.js';
 import { customProperties, substituteIn } from './vars.js';
 import type { CustomProps } from './vars.js';
+import {
+  ROOT_BOX_PROPS,
+  SHAPE_TAGS,
+  isShapeProp,
+  shapeValue,
+} from './shapes.js';
+import type { ShapeContext, ShapeStyle, ShapeStyles } from './shapes.js';
 
 /** Where a declaration came from. Higher wins before specificity is asked. */
 const enum Origin {
@@ -139,6 +146,14 @@ interface IndexedRule {
   compiled: boolean;
   /** Which rule this is, in a sharing key (`Cascade.sharedStyleFor`). */
   id: number;
+  /** For a rule asked of the elements in a drawing by their type, or of
+   *  them all (`Cascade.shapeStyles`): the ids and classes it asks of its
+   *  subject's ancestors (`ancestorKeys`). Null until a drawing asks, and
+   *  in every other rule. */
+  needs: readonly string[] | null;
+  /** For a rule kept for drawings: whether it declares something a
+   *  drawing's root does not have from its box's style. Null until asked. */
+  root: boolean | null;
 }
 
 /**
@@ -194,6 +209,11 @@ class RuleIndex {
    */
   reaches(el: Element): boolean {
     if (this.universal.length || this.byTag.has(tagOf(el))) return true;
+    return this.names(el);
+  }
+
+  /** Whether a bucket here is for `el`'s id, or for a class of its. */
+  names(el: Element): boolean {
     if (this.byId.size) {
       const id = attr(el, 'id');
       if (id && this.byId.has(id)) return true;
@@ -209,18 +229,19 @@ class RuleIndex {
     return false;
   }
 
-  add(rule: StyleRule): void {
+  add(rule: StyleRule, key = rightmostKey(rule.selector)): void {
     this.size += 1;
     const indexed: IndexedRule = {
       rule,
       match: null,
       compiled: false,
       id: this._nextId++,
+      needs: null,
+      root: null,
     };
     if (rule.selector.includes(':hover') || rule.selector.includes(':active')) {
       this.hoverSensitive = true;
     }
-    const key = rightmostKey(rule.selector);
     if (UNSHAREABLE.test(rule.selector)) {
       if (key.kind === 'id') this.ownStyleIds.add(key.name);
       else if (key.kind === 'class') this.ownStyleClasses.add(key.name);
@@ -641,7 +662,14 @@ function rightmostKey(selector: string): {
       start = i + 1;
     }
   }
-  const compound = selector.slice(start);
+  return compoundKey(selector.slice(start));
+}
+
+/** A compound selector's most selective key (`rightmostKey`). */
+function compoundKey(compound: string): {
+  kind: 'id' | 'class' | 'tag' | 'any';
+  name: string;
+} {
   let id: string | null = null;
   let cls: string | null = null;
   let tag: string | null = null;
@@ -673,6 +701,39 @@ function rightmostKey(selector: string): {
   if (cls) return { kind: 'class', name: cls };
   if (tag && tag !== '*') return { kind: 'tag', name: tag };
   return { kind: 'any', name: '' };
+}
+
+/**
+ * The ids and classes a selector asks of its subject's ancestors: for each
+ * compound a descendant or a child combinator follows, its id, or else its
+ * first class, as `#name` or `.name`. Such a compound is an ancestor of
+ * the subject — one a sibling combinator follows is a sibling of one — so
+ * an element with no ancestor of some such name is not the rule's, which
+ * is known without matching it. A compound with neither asks nothing.
+ */
+function ancestorKeys(selector: string): string[] {
+  const keys: string[] = [];
+  const compounds = compoundsOf(selector);
+  for (let i = 0; i < compounds.length - 1; i += 1) {
+    const { text, next } = compounds[i];
+    if (next !== ' ' && next !== '>') continue;
+    const key = compoundKey(text);
+    if (key.kind === 'id') keys.push(`#${key.name}`);
+    else if (key.kind === 'class') keys.push(`.${key.name}`);
+  }
+  return keys;
+}
+
+/** What the rules asked of every element of a drawing, or of every one of
+ *  a type, ask of its ancestors (`Cascade.shapeStyles`). */
+interface ShapeNeeds {
+  /** The classes and the ids some such rule names in an ancestor. */
+  classes: Set<string>;
+  ids: Set<string>;
+  /** Whether a rule asked of every element asks nothing of its ancestors,
+   *  and the types with such a rule. */
+  universal: boolean;
+  tags: Set<string>;
 }
 
 function balancedEnd(
@@ -763,6 +824,13 @@ export class Cascade {
     marker: new RuleIndex(),
     selection: new RuleIndex(),
   };
+  /** The author's rules that could style a shape in a drawing: the ones
+   *  that declare a property a shape has (`shapes.ts`) and whose subject
+   *  is no element of HTML's alone. They are in `_index` too, for the
+   *  elements that have boxes; these are asked of the ones in an inline
+   *  `<svg>`, which have none (`shapeStyles`). */
+  private _shapes = new RuleIndex();
+  private _shapeNeeds: ShapeNeeds | null = null;
   private _adapter: CssSelectAdapter;
   /** The compounds of the selectors that test the pointer, each without
    *  its `:hover` or `:active` (`pointerCompounds`), and their matchers,
@@ -875,7 +943,17 @@ export class Cascade {
         if (!this._lh && usesLh(rule.declarations)) this._lh = true;
         const pseudo = splitPseudoElement(rule);
         if (pseudo) this._pseudo[pseudo.which].add(pseudo.rule);
-        else this._index.add(rule);
+        else {
+          const key = rightmostKey(rule.selector);
+          this._index.add(rule, key);
+          if (
+            rule.order >= 0 &&
+            (key.kind !== 'tag' || SHAPE_TAGS.has(key.name)) &&
+            declaresShape(rule.declarations)
+          ) {
+            this._shapes.add(rule, key);
+          }
+        }
         this._noteHover((pseudo?.rule ?? rule).selector);
       }
       for (const bp of sheet.breakpoints) breakpoints.add(bp);
@@ -1743,6 +1821,185 @@ export class Cascade {
     return { style: asRoot(this.styleFor(synthetic, parent, false)), html };
   }
 
+  /** Whether any rule could style a shape in a drawing: a document with
+   *  none asks nothing of its drawings (`shapeStyles`). */
+  get stylesShapes(): boolean {
+    return this._shapes.size > 0;
+  }
+
+  /** Whether a pointer move can change what a rule gives a shape in a
+   *  drawing. */
+  get shapesFollowPointer(): boolean {
+    return this._shapes.hoverSensitive;
+  }
+
+  /**
+   * What the rules give the elements of an inline drawing, `root` and what
+   * is in it, or null where none reaches one: the narrow cascade of
+   * `shapes.ts`. `style` is the root's computed style — its `color`, its
+   * custom properties and its font size are what a value in the drawing is
+   * read against, as though every element in it had inherited them, which
+   * all but one a rule gives its own has.
+   *
+   * An element's rules and its `style` attribute are put in cascade order,
+   * and each property is the last valid declaration's. The presentation
+   * attributes are below them all (SVG 2, 6.2), and `SvgView` reads those
+   * itself. The root's box has its paint, its opacity and whether it is
+   * shown from its computed style, so those are left out for it.
+   *
+   * Asked as a drawing is first painted (`BoxTree.shapeStyler`), of the
+   * rules in `_shapes` alone: a page of hundreds of icons pays for the ones
+   * it shows, a look in the buckets for each of their elements where no
+   * rule reaches them, and a document with no such rule nothing.
+   */
+  shapeStyles(root: Element, style: ComputedStyle): ShapeStyles | null {
+    const index = this._shapes;
+    if (!index.size) return null;
+    // The rules kept by a class or an id are asked of the elements with
+    // that name. The rest — `.dark .logo path`, `.menu [aria-hidden]` — are
+    // asked of every `<path>`, or of every element, and nearly all of them
+    // are for some other part of the page: each says so by the class or the
+    // id it asks of an ancestor, which is looked for once for the drawing,
+    // around it and in it, where matching the rule would look for it from
+    // each of its elements. On a page with none of them around a drawing,
+    // nothing is matched at all.
+    const needs = (this._shapeNeeds ??= this._needsOfShapes());
+    const found = new Set<string>();
+    const asks = needs.classes.size > 0 || needs.ids.size > 0;
+    const note = (el: Element): void => {
+      if (needs.ids.size) {
+        const id = attr(el, 'id');
+        if (id && needs.ids.has(id)) found.add(`#${id}`);
+      }
+      if (needs.classes.size) {
+        const className = attr(el, 'class');
+        if (className) {
+          for (const name of className.split(/\s+/)) {
+            if (needs.classes.has(name)) found.add(`.${name}`);
+          }
+        }
+      }
+    };
+    if (asks) {
+      let at = root.parent;
+      while (at && at.type === 'tag') {
+        note(at as Element);
+        at = at.parent;
+      }
+    }
+    const live = (indexed: IndexedRule): boolean => {
+      const keys = indexed.needs;
+      if (keys) for (const key of keys) if (!found.has(key)) return false;
+      return true;
+    };
+    // The root's box has its paint from its computed style, so most of the
+    // rules that name a drawing by its class — an icon set's — have
+    // nothing else to say of it.
+    const liveForRoot = (indexed: IndexedRule): boolean =>
+      (indexed.root ??= declaresRootShape(indexed.rule.declarations)) &&
+      live(indexed);
+
+    let of: Map<Element, ShapeStyle> | null = null;
+    let key = '';
+    let ctx: ShapeContext | null = null;
+    // in document order, the root first: an element's place in it is what
+    // the key names it by, and its ancestors in the drawing are noted
+    // before it is asked of
+    const stack: Element[] = [root];
+    let place = -1;
+    while (stack.length) {
+      const el = stack.pop()!;
+      place += 1;
+      // what is in a `<foreignObject>` is not the drawing's to draw
+      if (el.name !== 'foreignobject' && el.name !== 'foreignObject') {
+        const children = el.children;
+        for (let i = children.length - 1; i >= 0; i -= 1) {
+          const child = children[i];
+          if (child.type === 'tag') stack.push(child as Element);
+        }
+      }
+      if (asks) note(el);
+      const tag = tagOf(el);
+      const asked = found.size
+        ? index.universal.length > 0 || index.byTag.has(tag)
+        : needs.universal || needs.tags.has(tag);
+      if (!asked && !index.names(el)) continue;
+      const candidates: Candidate[] = [];
+      this._matchInto(
+        index,
+        el,
+        candidates,
+        undefined,
+        el === root ? liveForRoot : live,
+      );
+      if (!candidates.length) continue;
+      const inline = attr(el, 'style');
+      if (inline) pushInlineShapes(candidates, inline);
+      candidates.sort(byCascade);
+      ctx ??= {
+        color: style.color,
+        scheme: style.colorScheme,
+        units: {
+          em: style.fontSize,
+          rem: (this._root ?? this.initial).fontSize,
+          vw: this.viewportWidth,
+          vh: this.viewportHeight,
+          scale: this.scale,
+          initial: this.initial,
+        },
+      };
+      let own: Record<string, string> | null = null;
+      for (const c of candidates) {
+        for (const d of pick(c)) {
+          if (!isShapeProp(d.prop)) continue;
+          if (el === root && ROOT_BOX_PROPS.has(d.prop)) continue;
+          // a `var()` with nothing to stand for it is invalid at
+          // computed-value time, and the property as though `unset`
+          const value = shapeValue(
+            d.prop,
+            d.vars ? (substituteIn(d.value, style.custom) ?? 'unset') : d.value,
+            ctx,
+          );
+          if (value !== null) (own ??= {})[d.prop] = value;
+        }
+      }
+      if (!own) continue;
+      (of ??= new Map()).set(el, own);
+      key += `${place}{`;
+      for (const prop in own) key += `${prop}:${own[prop]};`;
+      key += '}';
+    }
+    return of ? { of, key } : null;
+  }
+
+  /** `ShapeNeeds`, and each such rule's own (`IndexedRule.needs`). */
+  private _needsOfShapes(): ShapeNeeds {
+    const index = this._shapes;
+    const needs: ShapeNeeds = {
+      classes: new Set(),
+      ids: new Set(),
+      universal: false,
+      tags: new Set(),
+    };
+    const read = (bucket: IndexedRule[]): boolean => {
+      let free = false;
+      for (const indexed of bucket) {
+        const keys = ancestorKeys(indexed.rule.selector);
+        indexed.needs = keys;
+        if (!keys.length) free = true;
+        for (const key of keys) {
+          (key[0] === '#' ? needs.ids : needs.classes).add(key.slice(1));
+        }
+      }
+      return free;
+    };
+    needs.universal = read(index.universal);
+    for (const [tag, bucket] of index.byTag) {
+      if (read(bucket)) needs.tags.add(tag);
+    }
+    return needs;
+  }
+
   /**
    * Whether the pointer's move from `was` to where it is changed which
    * rules match `el`, or its `::before`, `::after` or another of its
@@ -1785,6 +2042,8 @@ export class Cascade {
     el: Element,
     out: Candidate[] | null,
     matched?: number[],
+    /** The rules to try, where some are known not to match without it. */
+    live?: (indexed: IndexedRule) => boolean,
   ): void {
     // A media query's width is CSS pixels; the viewport is kept in device.
     const width = this.viewportWidth / this.scale;
@@ -1793,6 +2052,7 @@ export class Cascade {
     const consider = (bucket: IndexedRule[] | undefined): void => {
       if (!bucket) return;
       for (const indexed of bucket) {
+        if (live !== undefined && !live(indexed)) continue;
         const rule = indexed.rule;
         if (
           !mediaMatches(
@@ -2087,6 +2347,51 @@ function setsContent(c: Candidate): boolean {
 
 /** Whether a rule's declarations set a custom property, by the array. */
 const CUSTOM_IN = new WeakMap<Declaration[], boolean>();
+
+/** Whether declarations set a property a shape in a drawing has. */
+function declaresShape(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) if (isShapeProp(d.prop)) return true;
+  return false;
+}
+
+/** Whether declarations set one a drawing's root does not have from its
+ *  box's style (`ROOT_BOX_PROPS`). */
+function declaresRootShape(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) {
+    if (isShapeProp(d.prop) && !ROOT_BOX_PROPS.has(d.prop)) return true;
+  }
+  return false;
+}
+
+/** A `style` attribute's declarations of a shape's properties, as
+ *  candidates: over every rule, and its `!important` ones over theirs. */
+function pushInlineShapes(out: Candidate[], inline: string): void {
+  const declarations = parseDeclarations(inline).filter((d) =>
+    isShapeProp(d.prop),
+  );
+  const normal = declarations.filter((d) => !d.important);
+  const important = declarations.filter((d) => d.important);
+  if (normal.length) {
+    out.push({
+      origin: Origin.Inline,
+      layer: null,
+      specificity: 0,
+      order: 0,
+      declarations: normal,
+      only: -1,
+    });
+  }
+  if (important.length) {
+    out.push({
+      origin: Origin.InlineImportant,
+      layer: null,
+      specificity: 0,
+      order: 0,
+      declarations: important,
+      only: -1,
+    });
+  }
+}
 
 function pick(c: Candidate): Declaration[] {
   return c.only < 0 ? c.declarations : [c.declarations[c.only]];

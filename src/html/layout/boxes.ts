@@ -38,6 +38,7 @@ import type { CollapsedTable } from './collapse.js';
 import { quoteAt } from '../css/content.js';
 import type { CounterStyles } from '../css/counter-styles.js';
 import type { ContentItem } from '../css/content.js';
+import type { ShapeStyles } from '../css/shapes.js';
 import {
   CONTAIN_STYLE,
   FIRST_LINE_INHERITED,
@@ -713,6 +714,15 @@ export const COLUMN_ROWS = new WeakMap<
  *  that would ask the three maps above of every box ask first. */
 export const columned = { any: false };
 
+/** What the document's rules give the elements inside an inline `<svg>`
+ *  (`Cascade.shapeStyles`), null where they give none. */
+export type ShapeStyler = (box: Box) => ShapeStyles | null;
+
+/** What `BoxTree.shapeStyler` answered for each drawing's box it has been
+ *  asked of, which are the ones painted: a box restyled where it is has
+ *  its answer put here again (`HtmlViewNode._hoverInPlace`). */
+export const SHAPE_STYLES = new WeakMap<Box, ShapeStyles | null>();
+
 /** The element a pseudo-element's box is generated from, which has no
  *  element of its own (`Box.pseudo`): whose the images its styles name are,
  *  when the host is asked for them. */
@@ -774,6 +784,11 @@ export interface BoxTree {
    *  one: worked out as a selection is first painted over it, not as the
    *  tree is built, since most builds are never selected in. */
   selectionStyler: SelectionStyler | null;
+  /** What the rules give the elements in each inline `<svg>`
+   *  (`ShapeStyler`), which have no boxes and no styles, where any rule
+   *  could reach one: worked out as a drawing is first painted, since a
+   *  page of icons shows few of them at once. */
+  shapeStyler: ShapeStyler | null;
   /** Whether a float or an out-of-flow box sits in an inline box: where
    *  none does, layout looks for them among a block's own children and
    *  goes through no inline box to find them. */
@@ -939,6 +954,7 @@ class Builder {
       firstLine: this._firstLine,
       firstLineStyler: this._firstLine ? this._firstLineStyler() : null,
       selectionStyler: cascade.hasSelection ? this._selectionStyler() : null,
+      shapeStyler: cascade.stylesShapes ? this._shapeStyler() : null,
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,
       clipText: this._clipText,
@@ -968,6 +984,20 @@ class Builder {
       let at = box;
       while (at && !at.el) at = at.parent;
       return at?.el ? of(at.el) : null;
+    };
+  }
+
+  /** `BoxTree.shapeStyler`, over this build's cascade: each drawing's
+   *  once, from its box's style as it is when first asked. */
+  private _shapeStyler(): ShapeStyler {
+    const cascade = this._options.cascade;
+    return (box) => {
+      let shapes = SHAPE_STYLES.get(box);
+      if (shapes === undefined) {
+        shapes = box.el ? cascade.shapeStyles(box.el, box.style) : null;
+        SHAPE_STYLES.set(box, shapes);
+      }
+      return shapes;
     };
   }
 

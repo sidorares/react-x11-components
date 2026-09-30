@@ -88,6 +88,7 @@ import type {
   LineText,
   Marker,
   SelectionStyler,
+  ShapeStyler,
 } from './layout/boxes.js';
 import type { SelectionStyle } from './css/cascade.js';
 import {
@@ -247,6 +248,9 @@ export interface PaintOptions {
   /** @internal Each box's `::selection`, where a rule styles one
    *  (`BoxTree.selectionStyler`). */
   selectionStyler?: SelectionStyler | null;
+  /** @internal What the rules give the shapes in each drawing, where one
+   *  could reach any (`BoxTree.shapeStyler`). */
+  shapeStyler?: ShapeStyler | null;
 }
 
 /**
@@ -705,6 +709,7 @@ export function paintDocument(
     canvasSource: canvas?.source,
     negative: tree.negative,
     selectionStyler: options.selection ? tree.selectionStyler : null,
+    shapeStyler: tree.shapeStyler,
   });
   ctx.restore();
 }
@@ -5420,7 +5425,8 @@ function fitted(
 /** An inline `<svg>`, drawn in its content box. Its `currentColor` is the
  *  box's `color`, as an icon's is the text's around it, and what it is
  *  painted with the box's `fill` and `stroke`, where the document's style
- *  sheets set them: an icon set's `.icon { fill: currentColor }`. */
+ *  sheets set them: an icon set's `.icon { fill: currentColor }`. What
+ *  they give a shape inside it is asked for here (`BoxTree.shapeStyler`). */
 function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (!box.el) return;
   const x = Math.round(box.contentX + options.originX);
@@ -5442,6 +5448,7 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
     style.color,
     paint(style.fill),
     paint(style.stroke),
+    options.shapeStyler?.(box) ?? null,
   );
 }
 
