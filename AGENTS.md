@@ -1363,6 +1363,21 @@ with the rest — they add up across passes — so nothing may read an inline
 box's rect: `computePaintBounds` read it as the box's reach and measured a
 card grid three times its height.
 
+**A context lent to code that is not ours comes back as it was lent.** The
+window's 2D context outlives the frame: core keeps one per window, and a
+save a paint leaves open keeps its clip and its transform on it for every
+frame after. ntk's `SvgView` saves as it draws and restores in no
+`finally`, so a drawing it throws on halfway — nextjs.org's icons,
+`fill="var(--accents-3)"` — left its saves open, `SvgDrawing.draw`'s one
+restore took the last of them for its own, and the clip to a sixteen-pixel
+icon stayed on the window. Everything painted after it, and every frame
+after that, drew nothing, with no error anywhere: no X request failed, and
+the document was laid out and painted as it should have been. `lend`
+(`svg.ts`) hands the drawing the same context through a proxy that counts
+its saves, restores what it left open, and makes none of the restores it
+makes past its own. **Anything else that hands the context to code that
+may throw — a callback, a library's painter — lends it the same way.**
+
 **A pointer move costs what it changed, and a scroll costs no hover at
 all.** Three things, and each is a rule for whatever is added to the
 cascade or the box tree next. A hover is restyled where it happened

@@ -971,7 +971,10 @@ refers to from outside its symbol, a gradient by `url()`, is not followed,
 and nothing is fetched for a `<use>` of another document's. An SVG image's
 root `background-color`, in its `style`, covers the whole image, as a
 browser paints it over the canvas. XHTML's `<svg:svg>`, under a prefix
-declared for the SVG namespace, is the same element.
+declared for the SVG namespace, is the same element. A drawing `SvgView`
+cannot read — a colour it does not know, such as a `var()` in a
+presentation attribute or a root's own `color: currentColor` — is left
+undrawn, an empty box, and the rest of the document is drawn.
 
 **Backgrounds:** `background-color`, and `background-image` — through
 `onResource`, like an `<img>` — with `background-repeat`, `space` and

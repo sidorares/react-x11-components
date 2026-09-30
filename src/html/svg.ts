@@ -155,6 +155,66 @@ interface ClipContext {
   fillRect?(x: number, y: number, w: number, h: number): void;
 }
 
+/** A context as a drawing it is lent to sees it (`lend`). */
+interface Lent {
+  readonly ctx: ClipContext;
+  /** The saves the drawing has made on it and not restored. */
+  open: number;
+}
+
+const LENT = new WeakMap<object, Lent>();
+
+/**
+ * The context a drawing is lent: the same context, keeping count of the
+ * saves the drawing makes on it, so that whatever it leaves saved can be
+ * restored after it, and making none of the restores it makes past them.
+ *
+ * `SvgView` saves the context as it starts to draw, and around an element
+ * with a `transform`, and restores in no `finally`: an element it throws
+ * on — a colour it cannot read, `fill="var(--c)"` — leaves those saves
+ * open. The restore after the drawing then took the last of them for its
+ * own save, and the clip to the drawing's box was left on the window's
+ * context: everything a later paint drew, in that frame and every frame
+ * after, was cut to a sixteen-pixel icon. nextjs.org's blog drew its
+ * heading, the icon beside it, and nothing more.
+ */
+function lend(ctx: ClipContext): Lent {
+  const known = LENT.get(ctx);
+  if (known) return known;
+  const bound = new WeakMap<object, unknown>();
+  const save = () => {
+    ctx.save();
+    lent.open += 1;
+  };
+  const restore = () => {
+    if (lent.open === 0) return;
+    lent.open -= 1;
+    ctx.restore();
+  };
+  const lent: Lent = {
+    open: 0,
+    ctx: new Proxy(ctx, {
+      get(target, key) {
+        if (key === 'save') return save;
+        if (key === 'restore') return restore;
+        // on the context itself: an accessor, a method and a private field
+        // all see the context they belong to
+        const value: unknown = Reflect.get(target, key);
+        if (typeof value !== 'function') return value;
+        let method = bound.get(value);
+        if (!method) {
+          method = value.bind(target);
+          bound.set(value, method);
+        }
+        return method;
+      },
+      set: (target, key, value) => Reflect.set(target, key, value),
+    }),
+  };
+  LENT.set(ctx, lent);
+  return lent;
+}
+
 const ALIGN = /^x(Min|Mid|Max)Y(Min|Mid|Max)$/;
 const AT: Record<string, number> = { Min: 0, Mid: 0.5, Max: 1 };
 
@@ -269,6 +329,10 @@ export class SvgDrawing {
       : this._viewFor(w / scale, h / scale, paint, shapes);
     if (!view) return;
     ctx.save();
+    // the view draws on the context lent, which counts its saves
+    const lent = lend(ctx);
+    const outer = lent.open;
+    lent.open = 0;
     try {
       ctx.beginPath();
       ctx.rect(x, y, w, h);
@@ -276,7 +340,7 @@ export class SvgDrawing {
       const opts = color ? { color } : undefined;
       if (!box) {
         view.draw(
-          ctx,
+          lent.ctx,
           x,
           y,
           view.naturalWidth * scale,
@@ -289,7 +353,7 @@ export class SvgDrawing {
           .split(/\s+/);
         if (fit[0] === 'defer') fit.shift();
         if (fit[0] === 'none') {
-          view.draw(ctx, x, y, w, h, opts);
+          view.draw(lent.ctx, x, y, w, h, opts);
         } else {
           const align = ALIGN.exec(fit[0] ?? '') ?? ['xMidYMid', 'Mid', 'Mid'];
           const sx = w / box[2];
@@ -298,7 +362,7 @@ export class SvgDrawing {
           const dw = box[2] * s;
           const dh = box[3] * s;
           view.draw(
-            ctx,
+            lent.ctx,
             x + (w - dw) * AT[align[1]],
             y + (h - dh) * AT[align[2]],
             dw,
@@ -312,6 +376,11 @@ export class SvgDrawing {
       // out of paint on every frame, where nothing could catch it
       this._failed = true;
     } finally {
+      // what the drawing saved and did not restore, before this one's own
+      // save — which the restore after it would otherwise have taken, and
+      // this one's clip been left on the window's context (`lend`)
+      for (; lent.open > 0; lent.open -= 1) ctx.restore();
+      lent.open = outer;
       ctx.restore();
     }
   }
