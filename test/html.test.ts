@@ -14306,6 +14306,27 @@ test('a flex container lays its items out in its content box', async () => {
   assert.deepStrictEqual([d.x, d.y - 364], [140, 70]);
 });
 
+test("a flex item's negative margin takes its container's end back in", async () => {
+  // A flex box with no height is as tall as its items' margin boxes (CSS
+  // Flexbox 9.4, 9.8). Codex hangs Wikipedia's search field a pixel over
+  // its form's border with `margin: -1px`, and the form came out a pixel
+  // taller than Chrome's: a rule under the field. The bottom of each item
+  // was taken at its border box, which a negative margin ends inside of.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="a" style="display:flex;border:1px solid">' +
+      '<div style="flex:1;margin:-1px;height:32px"></div></div>' +
+      '<div id="b" style="display:flex">' +
+      '<div style="flex:1;margin-bottom:-5px;height:32px"></div></div>' +
+      '<div id="c" style="display:flex;flex-direction:column">' +
+      '<div style="margin-bottom:-5px;height:32px"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 32, 'its border and the field');
+  assert.strictEqual(boxOf(el, 'b').height, 27, 'across a row');
+  assert.strictEqual(boxOf(el, 'c').height, 27, 'down a column');
+});
+
 test('a flex item is no smaller than its content, unless its minimum says', async () => {
   // `min-width: auto` in a row and `min-height: auto` in a column are the
   // least an item's content comes to (CSS Flexbox 4.5). Yoga has no such

@@ -478,7 +478,10 @@ function placeItems(
       definite,
       !row,
     );
-    bottom = Math.max(bottom, top + child.height);
+    // to the end of its margin box, as Yoga measured the box: a negative
+    // margin takes the item's end back in, which Codex's search field
+    // hangs a pixel over its form's border with, top and bottom
+    bottom = Math.max(bottom, top + child.height + child.marginBottom);
   }
   return bottom;
 }
