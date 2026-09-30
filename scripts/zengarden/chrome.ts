@@ -9,6 +9,12 @@
 // - **The viewport, not the window**: device metrics are set to the size
 //   the bench renders at, one CSS pixel to a device pixel, scrollbars
 //   hidden, so both engines lay out in the same room.
+// - **A screen the size of the viewport** (`screenWidth`, `screenHeight`):
+//   headless Chrome's screen is 800 by 600 whatever its window, smaller
+//   than the viewport the bench asks for, which no desktop's is — so a
+//   sheet a page keeps for a tablet, `(max-device-width: 1024px)`, was
+//   taken 1280 across. <Html> answers the device features from the
+//   viewport, and so does the reference.
 // - **Every element's border box** (`DOMSnapshot.captureSnapshot`): an
 //   inline element's is the union of its fragments, as `elementRect` gives
 //   it. Taken at the viewport the page was laid out in, before the
@@ -217,6 +223,8 @@ export class Chrome {
         height,
         deviceScaleFactor: 1,
         mobile: false,
+        screenWidth: width,
+        screenHeight: height,
       });
       await this._load(url, sessionId, send);
       const snapshot = (await send('DOMSnapshot.captureSnapshot', {
