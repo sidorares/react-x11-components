@@ -211,7 +211,7 @@ padding at a side, whose text is shaped on its own — `inline-block`, floats
 and `clear`, lists with their
 markers, tables (the auto algorithm and `table-layout: fixed`, with `colspan`
 and `rowspan`, and the anonymous table CSS builds around table parts that
-have none), `position: relative | absolute | fixed`, `display: flex` (and
+have none), `position: relative | absolute | fixed | sticky`, `display: flex` (and
 the legacy `-webkit-box`, a flex box in its `-webkit-box-orient`'s
 direction, packed, aligned and flexed by the `-webkit-box-*` properties as
 Blink lays one out, or where it clamps its lines vertically a block of its
@@ -224,7 +224,15 @@ inline-block sits on its last line's baseline and an inline-table on its
 first row's, each on its bottom margin edge where it clips what overflows
 it; an inline flex box sits on its first item's, clipping or not, and a
 block that clips has its first line's baseline all the same — only its
-last is its margin edge (CSS Box Alignment 3, 9.2). A float, an inline-block and an absolute box of `width: auto`
+last is its margin edge (CSS Box Alignment 3, 9.2). A sticky box is placed
+at rest: moved only as far as keeps it inside its scroll container's
+scrollport, scrolled to its start, less its insets, and its margin box
+inside its containing block. Nothing here scrolls a box the document
+holds, so that is where one inside such a box stays; the viewport does
+scroll, and against it only `top` and the start side are kept — a sticky
+box is where a browser starts it, and scrolls away with the page rather
+than following it, where a `bottom: 0` footer would otherwise be pinned to
+the middle of it. A float, an inline-block and an absolute box of `width: auto`
 shrink to fit the room their margins leave, and an absolute box the room
 its offset or its static position leaves: at `left: 50%` it has half the
 width. None is narrower than its longest word. A relatively positioned inline box moves its text, its
@@ -789,7 +797,7 @@ round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms but their
 translation, animations and transitions, multi-column, gradients other than
-linear ones, `position: sticky` (treated as `relative`), and the font
+linear ones, a sticky box that follows the viewport as it scrolls, and the font
 properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
 drawn only where the table's collapse. A percentage `height` resolves where
 the containing block's height is set, and on an absolutely positioned box.

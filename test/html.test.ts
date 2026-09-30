@@ -16069,3 +16069,35 @@ metric(
     assert.strictEqual(boxOf(el, 'first').height, 32, 'a first baseline');
   },
 );
+
+test('a sticky box is where a browser starts it, not moved by its insets', async () => {
+  // Taken as `position: relative`, a sticky box was moved by its `top`
+  // wherever it started: Wikipedia's contents, `top: 24px` well below the
+  // top of the page, stood 24px lower than a browser draws it. At rest —
+  // nothing here scrolls a box in the document, and the viewport starts at
+  // the top — a box moves only as far as keeps it inside its scroll
+  // container's scrollport less its insets, and inside its containing block
+  const { node } = await render(
+    '<style>body{margin:0}div{height:20px}.s{position:sticky}' +
+      '.port{overflow:auto;height:50px}</style>' +
+      '<div id="first" class="s" style="top:10px"></div>' +
+      '<div style="height:100px"></div>' +
+      '<div id="below" class="s" style="top:24px"></div>' +
+      '<div class="port" style="border:3px solid"><div style="height:200px">' +
+      '</div><div id="foot" class="s" style="bottom:0"></div></div>' +
+      '<div class="port" style="height:40px"><div style="height:25px">' +
+      '<div id="lim" class="s" style="top:30px;height:10px"></div></div>' +
+      '<div style="height:200px"></div></div>',
+  );
+  const el = view(node);
+  // within 10px of the top: moved down to it
+  assert.strictEqual(boxOf(el, 'first').y, 10);
+  // past it: where the flow put it
+  assert.strictEqual(boxOf(el, 'below').y, 120);
+  // at the foot of a scroller's content, up to the foot of its scrollport,
+  // inside the border: 140 + 3 + 50 - 20
+  assert.strictEqual(boxOf(el, 'foot').y, 173);
+  // no further down than its containing block lets it: 196 + 25 - 10,
+  // short of the 196 + 30 its `top` asks for
+  assert.strictEqual(boxOf(el, 'lim').y, 211);
+});
