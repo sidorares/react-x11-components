@@ -15,6 +15,15 @@
 //   sheet a page keeps for a tablet, `(max-device-width: 1024px)`, was
 //   taken 1280 across. <Html> answers the device features from the
 //   viewport, and so does the reference.
+// - **Every animation at rest, and no transitions**, by a sheet of the
+//   inspector's: no duration, no delay and one iteration, so that an
+//   animation is over as it starts — one that fills forwards holds its
+//   last keyframe, as it does for good once it has run, and any other
+//   leaves the style it started from, which is what <Html>, which runs
+//   none, draws. Left running, a design that spins a picture for ever was
+//   captured at whatever angle it had come to, and differed from itself
+//   from one run to the next; switched off outright, one that fades its
+//   panels in from nothing and holds them never showed them.
 // - **Every element's border box** (`DOMSnapshot.captureSnapshot`): an
 //   inline element's is the union of its fragments, as `elementRect` gives
 //   it. Taken at the viewport the page was laid out in, before the
@@ -42,6 +51,31 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { PNG } from 'pngjs';
+
+/** The sheet that brings a page to rest: every animation over as it
+ *  starts and no transition, on every element and its pseudo-elements,
+ *  whatever the page says. */
+const STILL =
+  '*, *::before, *::after { animation-duration: 0s !important; ' +
+  'animation-delay: 0s !important; ' +
+  'animation-iteration-count: 1 !important; ' +
+  'transition: none !important; }';
+
+/** Put `STILL` on a loaded page, as a sheet the inspector adds: the
+ *  document is left as it was, with no element more in it. */
+async function holdStill(
+  send: (m: string, p?: Record<string, unknown>) => Promise<unknown>,
+): Promise<void> {
+  await send('DOM.enable');
+  await send('CSS.enable');
+  const { frameTree } = (await send('Page.getFrameTree')) as {
+    frameTree: { frame: { id: string } };
+  };
+  const { styleSheetId } = (await send('CSS.createStyleSheet', {
+    frameId: frameTree.frame.id,
+  })) as { styleSheetId: string };
+  await send('CSS.setStyleSheetText', { styleSheetId, text: STILL });
+}
 
 export interface Rect {
   x: number;
@@ -227,6 +261,7 @@ export class Chrome {
         screenHeight: height,
       });
       await this._load(url, sessionId, send);
+      await holdStill(send);
       const snapshot = (await send('DOMSnapshot.captureSnapshot', {
         computedStyles: ['display'],
       })) as unknown as Snapshot;
