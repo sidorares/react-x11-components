@@ -521,6 +521,23 @@ export interface ComputedStyle {
    *  multicol container, which this lays out as one column and which
    *  `line-clamp` does not clamp (CSS Overflow 4, 5.2). */
   columns: number;
+  /** `column-count` where it is a number, and `column-width` where it is
+   *  a length; null for `auto` (CSS Multi-column 1, 2 and 3). */
+  columnCount: number | null;
+  columnWidth: number | null;
+  /** Whether `column-gap` is `normal`: nothing in a flex box or a grid,
+   *  and an em between the columns of a multicol container (4.1). */
+  columnGapNormal: boolean;
+  /** The fewest lines of a block a column may end on, and the fewest it
+   *  may start with (CSS Fragmentation 3, 4.3). Inherited. */
+  orphans: number;
+  widows: number;
+  /** `break-inside`: whether a column break may fall inside the box;
+   *  `avoid-column` and `avoid-page` are read as `avoid`. */
+  breakInside: 'auto' | 'avoid';
+  /** `column-fill`: whether the columns are balanced, or each filled
+   *  before the next is started; `balance-all` is `balance`. */
+  columnFill: 'balance' | 'auto';
   /** How a line cut by `overflow` ends: `clip`, or with an ellipsis. */
   textOverflow: 'clip' | 'ellipsis';
   /** `aspect-ratio`: a box's width over its height, where its height is
@@ -816,6 +833,8 @@ export const INHERITED = [
   'fontFeatureSettings',
   'tabSize',
   'tabSizeIsLength',
+  'orphans',
+  'widows',
   'whiteSpace',
   'overflowWrap',
   'wordBreak',
@@ -962,6 +981,13 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     webkitBoxAlign: null,
     webkitBoxFlex: 0,
     columns: 0,
+    columnCount: null,
+    columnWidth: null,
+    columnGapNormal: true,
+    orphans: 2,
+    widows: 2,
+    breakInside: 'auto',
+    columnFill: 'balance',
     textOverflow: 'clip',
     aspectRatio: null,
     objectFit: 'fill',
@@ -1175,6 +1201,8 @@ export function inherit(
   out.fontFeatureSettings = parent.fontFeatureSettings;
   out.tabSize = parent.tabSize;
   out.tabSizeIsLength = parent.tabSizeIsLength;
+  out.orphans = parent.orphans;
+  out.widows = parent.widows;
   out.whiteSpace = parent.whiteSpace;
   out.overflowWrap = parent.overflowWrap;
   out.wordBreak = parent.wordBreak;
@@ -1321,6 +1349,15 @@ const BORDER_WIDTH_KEYWORDS: Record<string, number> = {
   thick: 5,
 };
 
+/** `-webkit-` names that are the multicol properties' own. */
+const MULTICOL_ALIASES: Record<string, string> = {
+  '-webkit-columns': 'columns',
+  '-webkit-column-count': 'column-count',
+  '-webkit-column-width': 'column-width',
+  '-webkit-column-gap': 'column-gap',
+  '-webkit-column-break-inside': 'break-inside',
+};
+
 /**
  * Apply one declaration to a style, in place.
  *
@@ -1336,7 +1373,12 @@ export function applyDeclaration(
   rawValue: string,
   ctx: UnitContext,
 ): void {
-  const name = prop.toLowerCase();
+  const written = prop.toLowerCase();
+  // the multicol properties under the names WebKit had them by, which
+  // Blink still reads, each an alias of the property (`-webkit-column-
+  // count` in its `css_properties.json5`): a page written for it alone
+  // names no other
+  const name = MULTICOL_ALIASES[written] ?? written;
   let value = rawValue.trim();
   if (!value) return;
   // a logical property is the physical one it stands for, the CSS-wide
@@ -1464,17 +1506,56 @@ export function applyDeclaration(
     case 'column-count':
     case 'column-width':
     case 'columns': {
-      // `auto`, or a count, a width or both of them
+      // `auto`, or a count, a width or both of them, in either order; what
+      // the shorthand leaves out is `auto`
       const bit = name === 'column-count' ? 1 : name === 'column-width' ? 2 : 3;
-      let set = 0;
+      let count: number | null = null;
+      let width: number | null = null;
       for (const part of splitValue(value)) {
         const v = part.toLowerCase();
         if (v === 'auto') continue;
-        if (/^\d+$/.test(v) && Number(v) >= 1) set |= 1;
-        else if (parseLength(part, ctx) !== null) set |= 2;
-        else return;
+        if (/^\d+$/.test(v) && Number(v) >= 1) {
+          if (count !== null || !(bit & 1)) return;
+          count = Number(v);
+          continue;
+        }
+        const len = parseLength(part, ctx);
+        if (typeof len !== 'number' || !(len > 0)) return;
+        if (width !== null || !(bit & 2)) return;
+        width = len;
       }
-      style.columns = (style.columns & ~bit) | (set & bit);
+      if (bit & 1) style.columnCount = count;
+      if (bit & 2) style.columnWidth = width;
+      style.columns =
+        (style.columnCount !== null ? 1 : 0) |
+        (style.columnWidth !== null ? 2 : 0);
+      return;
+    }
+    case 'orphans':
+    case 'widows': {
+      // a whole number of lines, one or more
+      const v = value.trim();
+      if (!/^\+?\d+$/.test(v) || Number(v) < 1) return;
+      style[name] = Number(v);
+      return;
+    }
+    case 'column-fill': {
+      const v = value.trim().toLowerCase();
+      if (v === 'auto') style.columnFill = 'auto';
+      else if (v === 'balance' || v === 'balance-all') {
+        style.columnFill = 'balance';
+      }
+      return;
+    }
+    case 'break-inside':
+    case 'page-break-inside': {
+      const v = value.trim().toLowerCase();
+      if (v === 'auto') style.breakInside = 'auto';
+      else if (/^avoid(?:-page|-column|-region)?$/.test(v)) {
+        // the legacy property knows `avoid` alone
+        if (name === 'page-break-inside' && v !== 'avoid') return;
+        style.breakInside = 'avoid';
+      }
       return;
     }
     case '-webkit-box-flex': {
@@ -2852,7 +2933,11 @@ export function applyDeclaration(
       const col = parts.length > 1 ? gap(parts[1]) : row;
       if (row === null || col === null) return;
       if (which !== 'column-gap') style.rowGap = row;
-      if (which !== 'row-gap') style.columnGap = col;
+      if (which !== 'row-gap') {
+        style.columnGap = col;
+        const word = parts[parts.length - 1].toLowerCase();
+        style.columnGapNormal = word === 'normal';
+      }
       return;
     }
     case 'grid-template-columns':
@@ -5481,6 +5566,8 @@ const INHERITED_NAMES = new Set<string>([
   'border-spacing',
   'empty-cells',
   'quotes',
+  'orphans',
+  'widows',
 ]);
 
 export function isInherited(name: string): boolean {
@@ -5706,9 +5793,14 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   '-webkit-box-pack': ['webkitBoxPack'],
   '-webkit-box-align': ['webkitBoxAlign'],
   '-webkit-box-flex': ['webkitBoxFlex'],
-  columns: ['columns'],
-  'column-count': ['columns'],
-  'column-width': ['columns'],
+  columns: ['columns', 'columnCount', 'columnWidth'],
+  'column-count': ['columns', 'columnCount'],
+  'column-width': ['columns', 'columnWidth'],
+  orphans: ['orphans'],
+  widows: ['widows'],
+  'break-inside': ['breakInside'],
+  'column-fill': ['columnFill'],
+  'page-break-inside': ['breakInside'],
   'text-overflow': ['textOverflow'],
   // a flex box's and its items', and a grid's
   'flex-direction': ['flexDirection'],
@@ -5723,12 +5815,12 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'flex-shrink': ['flexShrink'],
   'flex-basis': ['flexBasis'],
   order: ['order'],
-  gap: ['rowGap', 'columnGap'],
+  gap: ['rowGap', 'columnGap', 'columnGapNormal'],
   'row-gap': ['rowGap'],
-  'column-gap': ['columnGap'],
-  'grid-gap': ['rowGap', 'columnGap'],
+  'column-gap': ['columnGap', 'columnGapNormal'],
+  'grid-gap': ['rowGap', 'columnGap', 'columnGapNormal'],
   'grid-row-gap': ['rowGap'],
-  'grid-column-gap': ['columnGap'],
+  'grid-column-gap': ['columnGap', 'columnGapNormal'],
   'grid-template-columns': ['gridColumns'],
   'grid-template-rows': ['gridRows'],
   'grid-auto-rows': ['gridAutoRows'],
