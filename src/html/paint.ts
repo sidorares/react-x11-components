@@ -157,9 +157,9 @@ export interface PaintOptions {
   /** Where the document's origin sits in the window. Scrolling is this. */
   originX: number;
   originY: number;
-  /** Device pixels per logical pixel, for the run rules — a line through
-   *  is a logical pixel thick, not a device one; an underline's thickness
-   *  is its style's, in device pixels already. Default 1. */
+  /** Device pixels per logical pixel, for the run rules — the two lines
+   *  of a double one are a logical pixel apart, not a device one; a rule's
+   *  thickness is its style's, in device pixels already. Default 1. */
   scale?: number;
   /** The rectangle being repainted, in window coordinates, or null for all. */
   damage: Rect | null;

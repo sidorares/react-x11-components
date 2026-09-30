@@ -3075,6 +3075,8 @@ const PAINT_ONLY = new Set([
   'underlineThickness',
   'underlineOffset',
   'lineThrough',
+  'lineThroughStyle',
+  'lineThroughThickness',
 ]);
 
 /** The fields of a run its ink is: what `runFor` takes from `PAINT_ONLY`. */
@@ -3085,6 +3087,8 @@ const INK_FIELDS = [
   'underlineOffset',
   'underlineThickness',
   'strike',
+  'strikeStyle',
+  'strikeThickness',
 ] as const;
 
 /** The fields of a run its shape is, which ink never changes. */

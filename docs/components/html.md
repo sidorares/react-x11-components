@@ -924,9 +924,18 @@ and `text-underline-offset`. Left at `auto`, an underline is a tenth of the
 font size thick and half of that under the baseline, a pixel each at the
 least — the font size of the element that set it, so one line runs through
 whatever is inside (CSS Text Decoration 4, 2.4 and 2.9; neither text engine
-reports a face's own underline, so `from-font` is `auto`). A dotted one over
-three pixels thick is round dots spread from one end of it to the other,
-and squares under that. `unicode-bidi` is carried out as
+reports a face's own underline, so `from-font` is `auto`). A line through is
+as thick, by the same element's font size, and in the same five styles; its
+middle is a third of the ascent above the baseline — the ascent of the text
+it crosses, a font size at a time, so text of another size inside it is
+crossed out through its own middle, where an underline is one line (2.5 has
+a line through worked out again at each font size, from the metrics of the
+fonts that size is set in, and 2.9 asks one position only of underlines and
+overlines). A dotted rule over three pixels thick is round dots spread from
+one end of it to the other, and squares under that; a dashed one's dashes
+are three times its thickness long and two apart, twice and one from three
+pixels thick, the first at its start and the last at its end; and the two
+lines of a double one are a pixel apart. `unicode-bidi` is carried out as
 the bidi controls it stands for, laid out around the element's text and no
 part of the document's: a copy, a caret and a selection skip them. HTML's
 `dir` isolates its element, `dir="auto"` and `<bdi>` take their first
