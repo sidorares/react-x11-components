@@ -1,12 +1,15 @@
 // <Html> — replaced elements: images, SVG, aspect-ratio and object-fit.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { cleanup, expectPixel, waitFor } from 'react-x11/test';
+import { act, cleanup, expectPixel, renderX11, waitFor } from 'react-x11/test';
+import { Html } from '../../src/index.js';
 import {
+  FONTS,
   RED_PNG,
   SVG_NS,
   boxOf,
   fillsOf,
+  h,
   metric,
   render,
   renderWithBytes,
@@ -213,6 +216,78 @@ metric(
     await expectPixel(ctx, 5, 45, '#ff0000', { message: 'inside the clip' });
     await expectPixel(ctx, 20, 45, '#ffffff', { message: 'outside the clip' });
     await expectPixel(ctx, 5, 55, '#ff00ff', { message: 'currentColor' });
+  },
+);
+
+metric(
+  'a <use> draws an element from anywhere in the document, a symbol fitted to its viewport',
+  async () => {
+    // SVG 2, 5.5: a `<use>` refers to an element of the document, and a
+    // `<symbol>` is drawn in a viewport of the use's, its `viewBox` fitted
+    // to it. An icon sprite is a drawing that is not displayed, of symbols
+    // every icon on the page is a `<use>` of: Docusaurus's external-link
+    // arrow, GitHub's octicons. The drawing looked among its own elements
+    // and found nothing, and a symbol of its own was drawn unfitted.
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg{display:block}</style>' +
+        '<svg style="display:none"><symbol id="half" viewBox="0 0 24 24">' +
+        '<rect x="12" width="12" height="24" fill="currentColor"/></symbol>' +
+        '<rect id="bar" width="30" height="10" fill="#0000ff"/></svg>' +
+        // 24 units across 12 pixels: the right half, in the box's colour
+        '<div style="color:#ff0000"><svg width="12" height="12">' +
+        '<use href="#half"/></svg></div>' +
+        // a symbol of the drawing's own, in the viewport the use gives it
+        '<svg width="40" height="20"><symbol id="own" viewBox="0 0 2 2">' +
+        '<rect width="1" height="2" fill="#00ff00"/></symbol>' +
+        '<use xlink:href="#own" x="20" width="20" height="20"/></svg>' +
+        // an element that is no symbol, moved by the use's `x`
+        '<svg width="60" height="10"><use href="#bar" x="20"/></svg>' +
+        // and one that refers to nothing draws nothing
+        '<svg width="10" height="10"><use href="#none"/></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 3, 6, '#ffffff', { message: 'the left half' });
+    await expectPixel(ctx, 9, 6, '#ff0000', { message: 'the right, fitted' });
+    await expectPixel(ctx, 10, 22, '#ffffff', { message: 'before its x' });
+    await expectPixel(ctx, 25, 22, '#00ff00', { message: 'its left half' });
+    await expectPixel(ctx, 35, 22, '#ffffff', { message: 'its right' });
+    await expectPixel(ctx, 10, 37, '#ffffff', { message: 'moved by x' });
+    await expectPixel(ctx, 35, 37, '#0000ff', { message: 'the other’s rect' });
+    await expectPixel(ctx, 55, 37, '#ffffff', { message: 'and no wider' });
+    await expectPixel(ctx, 5, 47, '#ffffff', { message: 'nothing found' });
+  },
+);
+
+metric(
+  'a <use> finds the element a document that is still arriving brings later',
+  async () => {
+    // a sprite at the end of the body, after the icons that use it
+    const icon =
+      '<style>body{margin:0}svg{display:block}</style>' +
+      '<svg width="12" height="12"><use href="#late"/></svg><p>text</p>';
+    const doc = (source: string) =>
+      h(
+        'box',
+        { style: { width: 300, flexDirection: 'column' } },
+        h(Html, { source, 'data-testname': 'doc' }),
+      );
+    const result = await renderX11(doc(icon), {
+      width: 340,
+      height: 200,
+      fonts: FONTS!,
+    });
+    await expectPixel(result.ctx, 6, 6, '#ffffff', { message: 'not yet' });
+    await act(() =>
+      result.rerender(
+        doc(
+          icon +
+            '<svg style="display:none"><symbol id="late" viewBox="0 0 2 2">' +
+            '<rect width="2" height="2" fill="#ff0000"/></symbol></svg>',
+        ),
+      ),
+    );
+    await expectPixel(result.ctx, 6, 6, '#ff0000', { message: 'now it has' });
   },
 );
 

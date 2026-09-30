@@ -25,7 +25,7 @@ import type {} from 'react-x11/jsx-runtime';
 
 import { cancelLater, later } from '../internal/timers.js';
 import { hx } from './hx.js';
-import { attr, tagOf } from './dom.js';
+import { attr, isElement, tagOf } from './dom.js';
 import type { Document, Element } from './dom.js';
 import type { HtmlViewNode } from './node.js';
 import type { RootLook } from './css/style.js';
@@ -468,6 +468,7 @@ function renderControl(
     ...(rect.opacity !== undefined && { opacity: rect.opacity }),
   };
   const field = rect.bare ? bareField(rect.bare) : fieldChrome(look);
+  const order = tabOrder(el);
   // A button or a select whose font the page set is the drawn control: a
   // native bezel sets its title at AppKit's size, whatever it is handed,
   // in a bezel only as tall as that title, where the box was measured for
@@ -490,6 +491,7 @@ function renderControl(
       widget = h(Checkbox, {
         checked: attr(el, 'checked') !== undefined,
         disabled,
+        ...order,
         // the element's whole box takes the press, as it does in a browser:
         // a page that sizes one over its label, invisible, means the label
         style: { width: '100%', height: '100%' },
@@ -498,6 +500,9 @@ function renderControl(
       break;
     case 'radio': {
       const value = attr(el, 'value') ?? 'on';
+      // No `tabindex` reaches a radio: core's `<Radio>` takes no props for
+      // the node it draws, as the other widgets do, and the group's box is
+      // not the one that takes the focus.
       widget = h(
         RadioGroup,
         {
@@ -512,6 +517,7 @@ function renderControl(
       widget = h(Button, {
         label: buttonLabel(el),
         disabled,
+        ...order,
         ...(ownFont && { native: false }),
         style: { width: '100%', height: '100%' },
         onPress: () => ctx.press(el),
@@ -526,6 +532,7 @@ function renderControl(
         // none: core's "Select…" is an application's prompt, not a page's
         placeholder: '',
         disabled,
+        ...order,
         style: rect.bare
           ? [BARE_TRIGGER, { width: '100%', height: '100%' }]
           : { width: '100%', height: '100%' },
@@ -566,6 +573,7 @@ function renderControl(
       widget = hx('textarea', {
         defaultValue: forms.value(el),
         maxLength: maxLength(el),
+        ...order,
         style: [field, { width: '100%', height: '100%' }],
         onChange: readOnly ? undefined : (ev) => typed(ev.value),
       });
@@ -576,6 +584,7 @@ function renderControl(
         defaultValue: forms.value(el),
         placeholder: attr(el, 'placeholder'),
         maxLength: maxLength(el),
+        ...order,
         // Core's word for a password field: nothing in it reaches a
         // selection, PRIMARY included.
         sensitive: type === 'password',
@@ -619,10 +628,49 @@ function renderControl(
     },
     hx(
       'box',
-      { ref: ctx.widgets.refOf(el), style: frame, selectable: false },
+      {
+        ref: ctx.widgets.refOf(el),
+        style: frame,
+        selectable: false,
+        // a control the page keeps from assistive technology is kept from
+        // it here: core leaves the node, and the widget in it, out of the
+        // accessibility tree
+        ...(ariaHidden(el) && { 'aria-hidden': true }),
+      },
       widget,
     ),
   );
+}
+
+/**
+ * What an element's `tabindex` says of its widget's place in the Tab order
+ * (HTML 6.6.3): a negative one is focusable — by a press, by its label, by
+ * `autofocus` — and not reached by Tab, which is core's `tabIndex={-1}`
+ * too. Radix lays a native `<select tabindex="-1" aria-hidden="true">`
+ * beside the picker it draws, cut to nothing: it was a stop the eye could
+ * not find, and Space on it opened an empty menu.
+ *
+ * Nothing else is handed over. Zero is where a control already is, and a
+ * positive one would put a page's control ahead of the application's own,
+ * whose window it is: the order between a document and what is around it
+ * is not the document's to set.
+ */
+function tabOrder(el: Element): { tabIndex: -1 } | undefined {
+  // the rules for parsing integers (HTML 2.3.4.1): white space, a sign,
+  // digits, and whatever follows them ignored
+  const m = /^[ \t\n\f\r]*([+-]?\d+)/.exec(attr(el, 'tabindex') ?? '');
+  return m && Number(m[1]) < 0 ? { tabIndex: -1 } : undefined;
+}
+
+/** Whether an element is hidden from assistive technology: `aria-hidden`
+ *  is true on it or on an element around it (WAI-ARIA 1.2, 6.6). */
+function ariaHidden(el: Element): boolean {
+  for (let at: Element | null = el; at;) {
+    if (attr(at, 'aria-hidden')?.trim().toLowerCase() === 'true') return true;
+    const parent: Element['parent'] = at.parent;
+    at = isElement(parent) ? parent : null;
+  }
+  return false;
 }
 
 /** How far past its box a widget's focus ring is drawn, and then some. */

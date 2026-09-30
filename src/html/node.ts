@@ -109,7 +109,9 @@ import {
   hoistNegative,
   holds,
   holdsAbsolute,
+  inClipPath,
   paintDocument,
+  pathClips,
   queryChildIndex,
   selectionRows,
   stackLayers,
@@ -2843,6 +2845,12 @@ function deepestAt(
     clipped: readonly Box[],
   ): void => {
     const style = child.style;
+    // What a `clip-path` cuts away of a box it cuts away of all the box
+    // holds, whatever that is positioned from (CSS Masking 1, 5.1), and
+    // nothing not drawn is under a pointer: a label a page hides for a
+    // screen reader alone under `clip-path: inset(50%)` took the hover and
+    // the press of what was drawn where it lay.
+    if (pathClips(child) && !inClipPath(child, x, y)) return;
     if (
       style.position !== 'static' ||
       (child.parent?.kind === 'flex' && typeof style.zIndex === 'number')

@@ -9,6 +9,7 @@ import {
   pixelAt,
   renderX11,
   screen,
+  userEvent,
   waitFor,
 } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
@@ -520,6 +521,89 @@ metric(
   },
 );
 
+metric(
+  'a control with a negative tabindex takes the focus and is no Tab stop',
+  async () => {
+    // HTML 6.6.3: a negative `tabindex` is focusable and not reached by
+    // sequential navigation. None was read, so the native `<select
+    // tabindex="-1" aria-hidden="true">` Radix keeps beside the picker it
+    // draws — cut to nothing — was a stop the eye could not find, and Space
+    // on it opened an empty menu. A positive one is not handed over: it
+    // would put a page's control ahead of the application's own.
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<input placeholder="first">' +
+            '<input placeholder="skipped" tabindex="-1" autofocus>' +
+            '<select tabindex="-1" aria-hidden="true"><option>x</option>' +
+            '</select>' +
+            '<div aria-hidden="TRUE"><input type="checkbox" tabindex=" -1 ">' +
+            '</div>' +
+            '<input type="submit" value="Go" tabindex="-2px">' +
+            '<textarea tabindex="-1"></textarea>' +
+            '<input placeholder="late" tabindex="3">' +
+            '<input placeholder="last" tabindex="x" aria-hidden="false">',
+          partial: false,
+          selectable: false,
+        }),
+      ),
+      // Tab is a key press, which only the in-process server takes
+      { width: 440, height: 400, fonts: FONTS! },
+    );
+    await act();
+    // a node with the props it was mounted with, which core's type leaves
+    // to the element
+    type Mounted = DrawnNode & {
+      props: { placeholder?: string; role?: string; 'aria-hidden'?: boolean };
+    };
+    const focused = (): string | undefined => {
+      const find = (node: Mounted): Mounted | null => {
+        if (node.focused) return node;
+        for (const child of node.children as Mounted[]) {
+          const hit = find(child);
+          if (hit) return hit;
+        }
+        return null;
+      };
+      const props = find(result.windowNode as unknown as Mounted)?.props;
+      return props && (props.placeholder ?? props.role ?? 'unnamed');
+    };
+    assert.strictEqual(focused(), 'skipped', 'autofocus reaches it');
+    const stops: (string | undefined)[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      await userEvent.tab();
+      stops.push(focused());
+    }
+    assert.deepStrictEqual(
+      stops,
+      ['first', 'late', 'last', 'first'],
+      'Tab passes the negative ones, and a positive one stays where it is',
+    );
+    // `aria-hidden` on the element or around it keeps the widget from an
+    // assistive technology: on the box it is mounted in, which core leaves
+    // out of the accessibility tree with all it holds
+    const hidden = (node: DrawnNode): boolean => {
+      let at = node as Mounted | null;
+      for (; at; at = at.parent as Mounted | null) {
+        if (at.props['aria-hidden'] === true) return true;
+      }
+      return false;
+    };
+    assert.deepStrictEqual(
+      [
+        hidden(screen.getByRole('combobox') as DrawnNode),
+        hidden(screen.getByRole('checkbox') as DrawnNode),
+        hidden(screen.getByPlaceholder('first') as DrawnNode),
+        hidden(screen.getByPlaceholder('last') as DrawnNode),
+      ],
+      [true, true, false, false],
+    );
+  },
+);
+
 test('a control is cut by its own clip and by the boxes that clip it, from its containing block up', async () => {
   // A widget is mounted beside the document, so nothing the document
   // clips with reached it (CSS 2.1 11.1.1): the field of a panel folded
@@ -554,6 +638,63 @@ test('a control is cut by its own clip and by the boxes that clip it, from its c
     own: { x: 10, y: 300, width: 1, height: 1 },
     area: null,
   });
+});
+
+test('a control is cut by a clip-path, its own and every one around it', async () => {
+  // CSS Masking 1, 5.1. Tailwind 4's `.sr-only` — nextjs.org's sheet has
+  // it — hides with `clip-path: inset(50%)` where the older one had
+  // `clip: rect(0, 0, 0, 0)`: a control under it was cut to the pixel its
+  // own `overflow: hidden` left, which showed, and with no `overflow` was
+  // not cut at all. A path cuts all its element holds, a box positioned
+  // from outside it too, which a box that clips its overflow lets out.
+  const { node } = await render(
+    '<style>body{margin:0}input{margin:0}</style>' +
+      '<input type="checkbox" id="sr" style="position:absolute;top:50px;' +
+      'left:10px;width:1px;height:1px;padding:0;margin:-1px;' +
+      'overflow:hidden;clip-path:inset(50%);white-space:nowrap;' +
+      'border-width:0">' +
+      '<input id="own" style="position:absolute;top:100px;left:0;' +
+      'width:100px;clip-path:inset(0 60px 0 0)">' +
+      '<div style="height:30px;clip-path:inset(0 0 0 20px)">' +
+      '<input id="in" style="width:150px"></div>' +
+      '<div style="clip-path:inset(50%)">' +
+      '<input id="out" style="position:absolute;top:150px;left:0">' +
+      '<input id="fixed" style="position:fixed;top:200px;left:0"></div>' +
+      '<div style="width:200px;clip-path:inset(-4px)">' +
+      '<input id="whole" style="width:150px"></div>',
+  );
+  const clips = clipsOf(node) as Record<
+    string,
+    { x: number; y: number; width: number; height: number } | null
+  >;
+  assert.deepStrictEqual(
+    [clips.sr?.width, clips.sr?.height],
+    [0, 0],
+    'none of a control hidden for a screen reader alone shows',
+  );
+  const own = boxOf(view(node), 'own');
+  assert.deepStrictEqual(
+    clips.own,
+    { x: 0, y: 100, width: 40, height: own.height },
+    'its own path',
+  );
+  assert.deepStrictEqual(
+    clips.in,
+    { x: 20, y: 0, width: 380, height: 30 },
+    'the path of a box it is in',
+  );
+  for (const id of ['out', 'fixed']) {
+    assert.deepStrictEqual(
+      [clips[id]?.width, clips[id]?.height],
+      [0, 0],
+      `and of one it is positioned out of (${id})`,
+    );
+  }
+  assert.strictEqual(
+    clips.whole,
+    null,
+    'a path that leaves it whole cuts none',
+  );
 });
 
 metric(

@@ -586,7 +586,22 @@ cut at: out from the box it names by its length, or in where the length is
 negative, the rounded corners moving out as a browser's do. A box that
 scrolls cuts at its padding box whatever the margin says. A table clips to its table box, with its
 captions outside the clip. `clip` shows the part of an absolutely positioned
-box it names. Inline elements have all of it but the
+box it names. `clip-path` shows the part of any box its shape names, and
+of everything in the box — one positioned from outside it too, which a box
+that clips its overflow lets out — and nothing it cuts away is under the
+pointer (CSS Masking 1, 5.1). The shapes are the rectangles of CSS Shapes:
+`inset()`, `rect()` and `xywh()`, with the corners `round` gives them, in
+the box the value names, the border box unless it says; or that box alone,
+rounded as the element is. Insets that meet or pass each other leave
+nothing, which is how Tailwind 4's `.sr-only` hides a label with
+`inset(50%)`. An edge is on the pixel it falls nearest, where a browser
+antialiases it. The element is a stacking context painted whole in its
+place, as one under full opacity is, and its scrollable overflow is what it
+was, as a browser has it: a box hidden by a path alone still makes the
+page as long as it reaches. `circle()`, `ellipse()`, `polygon()`, `path()`,
+`shape()` and a `url()` naming an SVG `<clipPath>` are read and cut
+nothing, and an inline box that is not atomic is not cut. Inline elements
+have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on
 the sides its `direction` says (CSS 2.1 8.6) — and its background, images
@@ -705,10 +720,16 @@ names a shape inside the drawing is not read. An SVG root's `width` and
 of them is absolute, and its ratio comes from them or from its `viewBox`,
 which is fitted to its box as `preserveAspectRatio` says. A percentage in
 its geometry is of its viewport, and `currentColor` is the `color` the
-element inherits. An SVG image's root `background-color`, in its `style`, covers
-the whole image, as a browser paints it over the canvas. XHTML's
-`<svg:svg>`, under a prefix declared for the SVG namespace, is the same
-element.
+element inherits. An inline drawing's `<use>` refers to an element anywhere
+in the document, so an icon drawn from a sprite — a `<symbol>` in a hidden
+`<svg>` at the top of the page — is drawn, in the colour of where it is
+used; a symbol's `viewBox` is fitted to the viewport the `<use>` gives it,
+its `width` and `height`, or all of the drawing. What the element itself
+refers to from outside its symbol, a gradient by `url()`, is not followed,
+and nothing is fetched for a `<use>` of another document's. An SVG image's
+root `background-color`, in its `style`, covers the whole image, as a
+browser paints it over the canvas. XHTML's `<svg:svg>`, under a prefix
+declared for the SVG namespace, is the same element.
 
 **Backgrounds:** `background-color`, and `background-image` — through
 `onResource`, like an `<img>` — with `background-repeat`, `space` and
@@ -1144,12 +1165,27 @@ technology. A checkbox, a radio, a select or a submit button the page gave
 an `overflow` other than `visible` is cut at its own border box as well: a
 browser paints no control past it, and a widget has a size of its own. A
 text field cuts its own text and is left alone, and a widget nothing cuts
-is not clipped at all, so its focus ring shows around it. `clip-path` is
-not read.
+is not clipped at all, so its focus ring shows around it. A `clip-path`
+cuts a widget as it cuts the element, its own and every one around it,
+whatever the control is positioned from: one under Tailwind 4's `.sr-only`,
+`clip-path: inset(50%)`, shows nothing. It is cut to the path's rectangle;
+the corners a `round` gives it do not round a widget.
 
 A `<select>` shows the option it has selected, its first where none is
 marked, and nothing where it has no options — not the "Select…" core's
 `<Select>` prompts an application's user with.
+
+A control with a negative `tabindex` takes the focus — from a press, from
+its label, from `autofocus` — and is no Tab stop, as HTML has it (6.6.3).
+One with `aria-hidden="true"` on it, or on an element around it, is left
+out of the accessibility tree, and still takes the focus, as it does in a
+browser. The two are how a page keeps a control for its form alone: the
+native `<select aria-hidden="true" tabindex="-1">` Radix lays beside its
+picker was a Tab stop nobody could see. A radio button's `tabindex` is not
+read: core's `<Radio>` hands no props to the node that takes the focus, as
+its other widgets do. Nor is a `tabindex` of zero or more, which asks for a
+place in an order that is the application's: a page's control does not go
+ahead of the window's own.
 
 A `<button>` is the exception, because its content is the document's: an
 icon, a label in spans, a pill of the page's own design — most of the
