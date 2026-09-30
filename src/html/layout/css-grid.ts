@@ -63,6 +63,25 @@ interface Item {
 }
 
 /**
+ * The first of a grid's items in row-major order: the one furthest to the
+ * start of the first row that holds an item, which the grid's baseline is
+ * taken from (CSS Grid 1, 10.6).
+ */
+function firstItem(items: Item[]): Box | null {
+  let first: Item | null = null;
+  for (const item of items) {
+    if (
+      first === null ||
+      item.row < first.row ||
+      (item.row === first.row && item.col < first.col)
+    ) {
+      first = item;
+    }
+  }
+  return first?.box ?? null;
+}
+
+/**
  * Lay out a grid container's children. Returns the content height.
  */
 export function layoutGrid(
@@ -317,6 +336,7 @@ export function layoutGrid(
     rows: tracksOf(heights, tops, keepRows),
     colLines,
     rowLines,
+    first: firstItem(items),
   });
 
   for (const item of items) {

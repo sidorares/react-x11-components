@@ -649,6 +649,55 @@ metric("an inline-block's text sits on the line's baseline", async () => {
 });
 
 metric(
+  'a flex box in an inline-block gives it its first baseline, and a table none',
+  async () => {
+    // An inline-block sits on its last line box's baseline, or its last
+    // block's with one (CSS 2.1 10.8.1) — and where that block is a flex
+    // box or a grid, on the baseline the box has on a line of its own, its
+    // first: Blink asks only a block container for its last, and Gecko a
+    // child for its default one. A table in one gives none, in both. Asked
+    // for its last, a wrapping row of chips in a card sat the card on its
+    // last row.
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}' +
+        '.b{display:inline-block;width:120px}</style>' +
+        // two lines of items: the first line's
+        '<div id="a">x<span id="ab" class="b"><div style="display:flex;' +
+        'flex-wrap:wrap"><div id="a1" style="width:100px">a</div>' +
+        '<div style="width:100px">b</div></div></span></div>' +
+        // a column's first item
+        '<div id="c">x<span class="b"><div style="display:flex;' +
+        'flex-direction:column"><div id="c1">a</div><div>b</div></div>' +
+        '</span></div>' +
+        // the last block is the flex box: its first line, under the text
+        '<div id="d">x<span class="b"><div>top</div><div style="display:' +
+        'flex"><div id="d1">a<br>b</div></div></span></div>' +
+        // text after it is the last line box, and wins
+        '<div id="e">x<span class="b"><div style="display:flex">' +
+        '<div>a<br>b</div></div><div id="e1">bottom</div></span></div>' +
+        // and a table gives none: the bottom margin edge
+        '<div id="f">x<span id="fb" class="b"><table><tr><td>a</td></tr>' +
+        '<tr><td>b</td></tr></table></span></div>',
+      300,
+    );
+    const el = view(node);
+    const baselineOf = (id: string, last = false) => {
+      const lines = linesOf(el, id);
+      const line = lines[last ? lines.length - 1 : 0];
+      return line.y + line.baseline;
+    };
+    const near = (a: number, b: number, what: string) =>
+      assert.ok(Math.abs(a - b) < 0.01, `${what}: ${a} and ${b}`);
+    near(baselineOf('a'), baselineOf('a1'), 'the first line of items');
+    near(baselineOf('c'), baselineOf('c1'), "a column's first item");
+    near(baselineOf('d'), baselineOf('d1'), "the flex box's first line");
+    near(baselineOf('e'), baselineOf('e1'), 'a line box after it');
+    const table = boxOf(el, 'fb');
+    near(baselineOf('f'), table.y + table.height, 'a table, none');
+  },
+);
+
+metric(
   'a button with no line in it sits on the bottom of its content box',
   async () => {
     // An inline-block with no line box in it sits on the bottom of its

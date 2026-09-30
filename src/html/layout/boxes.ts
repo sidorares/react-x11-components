@@ -641,12 +641,16 @@ export const CLAMPED = new WeakSet<Box>();
 /** A grid's tracks as its layout left them, each column's and each row's
  *  start and end from the content box's corner, with the lines of each
  *  axis by number and by name: what an absolutely positioned box's grid
- *  area is found in (CSS Grid 1, 9.1). */
+ *  area is found in (CSS Grid 1, 9.1). And the first of its items in
+ *  row-major order, where they were placed and not where they were
+ *  written, which the grid's own baseline is taken from (10.6): null for a
+ *  grid with no item. */
 export interface GridTracks {
   cols: [number, number][];
   rows: [number, number][];
   colLines: GridLines;
   rowLines: GridLines;
+  first: Box | null;
 }
 export const GRID_TRACKS = new WeakMap<Box, GridTracks>();
 
