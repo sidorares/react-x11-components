@@ -67,12 +67,16 @@ import {
   buildBoxes,
   CONTENT_IMAGES,
   CLEARED_FROM,
+  COLUMN_LINES,
+  COLUMN_PIECES,
+  COLUMN_ROWS,
   CUT_BLOCKS,
   GENERATED_FROM,
   INLINE_OFFSETS,
   LINE_BOX_RAISES,
   SHIFTED_LINES,
   TEXT_SHIFTS,
+  columned,
 } from './layout/boxes.js';
 import type {
   Box,
@@ -2434,7 +2438,16 @@ function nearestText(box: Box, x: number, y: number): number | null {
       const distance = dy * 4 + dx;
       if (distance >= bestDistance) continue;
       bestDistance = distance;
-      const local = text.layout.indexAt(x - text.drawX, y - text.drawY);
+      // in the row that is this line's, where the layout's other lines are
+      // in another column and a point past this one is not over them
+      let row = y - text.drawY;
+      if (columned.any && COLUMN_ROWS.has(text)) {
+        row = Math.max(
+          natural.y,
+          Math.min(row, natural.y + natural.height - 0.01),
+        );
+      }
+      const local = text.layout.indexAt(x - text.drawX, row);
       const offsets = layoutOffsetsOf(text.layout);
       const units = offsets.length
         ? offsets[Math.max(0, Math.min(local, offsets.length - 1))]
@@ -2475,7 +2488,10 @@ function nearestText(box: Box, x: number, y: number): number | null {
       // while vertical distance alone could still beat the best.
       let lo = 0;
       let hi = lines.length;
-      while (lo < hi) {
+      // the lines columns took apart are in no order down the page: each
+      // is tried
+      const apart = columned.any && COLUMN_LINES.has(lines);
+      while (!apart && lo < hi) {
         const mid = (lo + hi) >> 1;
         if (lines[mid].y > y) hi = mid;
         else lo = mid + 1;
@@ -2486,8 +2502,10 @@ function nearestText(box: Box, x: number, y: number): number | null {
         tryLine(lines[i]);
       }
       for (let i = lo; i < lines.length; i += 1) {
-        if (axisDistance(y, lines[i].y, lines[i].height) * 4 >= bestDistance)
+        if (axisDistance(y, lines[i].y, lines[i].height) * 4 >= bestDistance) {
+          if (apart) continue;
           break;
+        }
         tryLine(lines[i]);
       }
     }
@@ -3039,11 +3057,21 @@ function deepestAt(
         ? clipped.filter((clip) => holds(clip, containing))
         : [];
     }
-    const inside =
-      x >= child.x &&
-      x < child.x + child.width &&
-      y >= child.y &&
-      y < child.y + child.height;
+    // in one of its pieces, where columns broke it: its rect takes in the
+    // columns between them, which are other boxes'
+    const pieces = columned.any ? COLUMN_PIECES.get(child) : undefined;
+    const inside = pieces
+      ? pieces.some(
+          (piece) =>
+            x >= piece.x &&
+            x < piece.x + piece.width &&
+            y >= piece.y &&
+            y < piece.y + piece.height,
+        )
+      : x >= child.x &&
+        x < child.x + child.width &&
+        y >= child.y &&
+        y < child.y + child.height;
     const own = inside && hasRect(child);
     if (!own) {
       const left = bounds ? bounds.x : child.boundsX;

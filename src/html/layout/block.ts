@@ -37,10 +37,18 @@ import type { Matrix } from '../css/transform.js';
 import { lineOf, spanToName } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import {
+  columnsOf,
+  forgetColumns,
+  layoutColumns,
+  spansColumns,
+} from './multicol.js';
+import type { Columns } from './multicol.js';
+import {
   BOX_RAISES,
   Box,
   CLAMPED,
   CLEARED_FROM,
+  COLUMN_PIECES,
   CUT_BLOCKS,
   GRID_TRACKS,
   FIRST_LINE,
@@ -49,6 +57,7 @@ import {
   LINE_BOX_RAISES,
   SHIFTED_LINES,
   TEXT_SHIFTS,
+  columned,
   isBlank,
 } from './boxes.js';
 import type {
@@ -1809,9 +1818,13 @@ function layoutBox(
     return;
   }
 
+  // A multicol container's content is laid out as one column, all of it,
+  // and then set in the columns there are (`layoutColumns`)
+  const columns = columnsOf(box, contentWidth);
+  const flowWidth = columns ? columns.width : contentWidth;
   const ownFloats = establishesBFC(box) || !outerFloats;
   const floats = ownFloats
-    ? new FloatContext(box.contentX, box.contentX + contentWidth)
+    ? new FloatContext(box.contentX, box.contentX + flowWidth)
     : outerFloats;
   // the line a pass before gave a marker, which this one may not
   if (box.marker) box.lines = null;
@@ -1822,7 +1835,19 @@ function layoutBox(
     if (box.style.listStylePosition === 'inside') MARKER_ASCENT.delete(box);
     else MARKER_ASCENT.set(box, markerAscent(box, box.marker, ctx.fonts));
   }
-  const flow = layoutChildren(box, ctx, floats, box.contentY, contentWidth);
+  // a column wide while its content is laid out, for what reads the box
+  // it is in rather than the width it is handed
+  // and about a box that spans them, in rows of columns (`layoutRows`)
+  const rows =
+    columns && columns.count > 1 && box.children.some(spansColumns)
+      ? layoutRows(box, ctx, columns, contentWidth, borderBoxWidth)
+      : null;
+  if (columns) box.width = columns.width + box.horizontalExtra;
+  const flow =
+    rows === null
+      ? layoutChildren(box, ctx, floats, box.contentY, flowWidth)
+      : { height: rows, hanging: NO_MARGIN };
+  box.width = borderBoxWidth;
   // A list item with a marker and no line holds one, the marker's, a line
   // of its own face tall: an empty `<li>` is a line tall in a browser, and
   // an inline-block around one sits on its marker's baseline.
@@ -1866,7 +1891,16 @@ function layoutBox(
           floats.bottom === -Infinity ? 0 : floats.bottom - box.contentY,
         )
       : height;
-  finishHeight(box, withFloats);
+  if (rows !== null) finishHeight(box, rows);
+  else if (columns) {
+    finishHeight(
+      box,
+      layoutColumns(box, columns, withFloats, columnLimit(box)),
+    );
+  } else {
+    if (box.style.columns) forgetColumns(box);
+    finishHeight(box, withFloats);
+  }
   // The margin that escaped through this box's bottom edge becomes part of
   // its own: the parent's flow loop reads `child.marginBottom` for the next
   // sibling's collapse, which is exactly where an escaped margin goes.
@@ -1882,6 +1916,99 @@ function layoutBox(
     BUTTON_CONTENT.set(box, { height: withFloats, down: 0 });
     centreButton(box);
   }
+}
+
+/**
+ * A multicol container's content about the boxes that span its columns
+ * (`column-span: all`, CSS Multi-column 1, 6): what comes before one is set
+ * in columns of its own, balanced, the spanner under them across the whole
+ * container, and what comes after in columns under that. A spanner is a
+ * formatting context of its own and its margins collapse with no column
+ * content's, only with the spanner's next to it. Answers the content's
+ * height.
+ */
+function layoutRows(
+  box: Box,
+  ctx: LayoutContext,
+  columns: Columns,
+  contentWidth: number,
+  borderBoxWidth: number,
+): number {
+  const all = box.children;
+  const limit = columnLimit(box);
+  const top = box.contentY;
+  let y = top;
+  /** The bottom margin of the spanner just before, which the next thing
+   *  comes under: all of it, or what the next spanner's does not cover. */
+  let margin: number | null = null;
+  let from = 0;
+  try {
+    for (let i = 0; i <= all.length; i += 1) {
+      const child = all[i];
+      if (child && !spansColumns(child)) continue;
+      const row = all.slice(from, i);
+      from = i + 1;
+      if (row.length) {
+        const set = row.some(
+          (in_) =>
+            in_.kind !== 'text' && in_.kind !== 'break' && !in_.outOfFlow,
+        );
+        if (set && margin !== null) {
+          y += margin;
+          margin = null;
+        }
+        // the row's content as a strip a column wide, and then in columns,
+        // no taller than the container has left
+        box.children = row;
+        box.width = columns.width + box.horizontalExtra;
+        const floats = new FloatContext(
+          box.contentX,
+          box.contentX + columns.width,
+        );
+        const flow = layoutChildren(box, ctx, floats, y, columns.width);
+        box.width = borderBoxWidth;
+        const strip = Math.max(
+          flow.height,
+          floats.bottom === -Infinity ? 0 : floats.bottom - y,
+        );
+        y += layoutColumns(
+          box,
+          columns,
+          strip,
+          Math.max(0, limit - (y - top)),
+          y,
+        );
+      }
+      if (!child) break;
+      resolveEdges(child, contentWidth);
+      y +=
+        margin === null ? child.marginTop : Math.max(margin, child.marginTop);
+      layoutBlockLevel(
+        child,
+        ctx,
+        new FloatContext(box.contentX, box.contentX + contentWidth),
+        box.contentX,
+        y,
+        contentWidth,
+      );
+      y = child.y + child.height;
+      margin = child.marginBottom;
+    }
+  } finally {
+    box.children = all;
+    box.width = borderBoxWidth;
+  }
+  return y + (margin ?? 0) - top;
+}
+
+/** The tallest a multicol container's columns may be: its own height where
+ *  it has one, and its `max-height`; no limit where it has neither. */
+function columnLimit(box: Box): number {
+  const height = box.height;
+  finishHeight(box, specifiedHeight(box) === null ? Infinity : 0);
+  const limit = box.height - box.verticalExtra;
+  box.height = height;
+  return Math.max(0, limit);
 }
 
 /**
@@ -3067,6 +3194,9 @@ export function intrinsicWidth(box: Box, seen?: { cut: boolean }): number {
   const sideBySide = !Number.isFinite(box.width);
   let left = 0;
   let right = 0;
+  /** In a multicol container, the widest box that spans its columns. */
+  const spanning = box.style.columns !== 0 && box.kind === 'block';
+  let across = 0;
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (child.outOfFlow) continue;
@@ -3112,6 +3242,11 @@ export function intrinsicWidth(box: Box, seen?: { cut: boolean }): number {
       if (min > inner) inner = min;
       contribution = Math.max(inner + margins, own);
     }
+    if (spanning && spansColumns(child)) {
+      // across the columns, and no part of what a column is as wide as
+      across = Math.max(across, contribution);
+      continue;
+    }
     if (row) {
       total += contribution;
       items += 1;
@@ -3136,6 +3271,19 @@ export function intrinsicWidth(box: Box, seen?: { cut: boolean }): number {
   if (row && items) {
     const gap = gapOf(box.style.columnGap, NaN);
     widest = Math.max(widest, total + gap * (items - 1));
+  }
+  // A multicol container is as wide as its columns side by side, each as
+  // wide as its content or as `column-width` where that is wider, and the
+  // gaps between them (as Blink measures one,
+  // `NGColumnLayoutAlgorithm::ComputeMinMaxSizes`)
+  if (box.style.columns && box.kind === 'block') {
+    const count = box.style.columnCount ?? 1;
+    const gap = box.style.columnGapNormal
+      ? box.style.fontSize
+      : gapOf(box.style.columnGap, NaN);
+    widest = Math.max(widest, box.style.columnWidth ?? 0);
+    // and no narrower than a box that spans them
+    widest = Math.max(widest * count + gap * (count - 1), across);
   }
   return widest;
 }
@@ -4212,6 +4360,17 @@ function translate(box: Box, dx: number, dy: number): void {
     box.marker.x += dx;
     box.marker.y += dy;
   }
+  // the pieces columns broke it in, which are kept beside it
+  if (columned.any) {
+    const pieces = COLUMN_PIECES.get(box);
+    if (pieces) {
+      for (const piece of pieces) {
+        piece.x += dx;
+        piece.y += dy;
+        piece.wholeY += dy;
+      }
+    }
+  }
   if (box.lines) {
     for (const line of box.lines) {
       line.x += dx;
@@ -4336,6 +4495,10 @@ export function establishesBFC(box: Box): boolean {
   if (style.lineClamp !== null) return true;
   if (style.float !== 'none') return true;
   if (style.position === 'absolute' || style.position === 'fixed') return true;
+  // a multicol container (CSS Multi-column 1, 2), and a box that spans
+  // one's columns (6)
+  if (style.columns && box.kind === 'block') return true;
+  if (style.columnSpan && box.parent?.style.columns) return true;
   if (
     style.display === 'inline-block' ||
     style.display === 'flex' ||

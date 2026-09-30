@@ -190,6 +190,8 @@ export async function fillsOf(
     originY?: number;
     canvas?: { x: number; y: number; width: number; height: number };
     viewport?: { x: number; y: number; width: number; height: number };
+    /** The rectangle being repainted; all of it where none is given. */
+    damage?: { x: number; y: number; width: number; height: number };
     surface?: (
       width: number,
       height: number,

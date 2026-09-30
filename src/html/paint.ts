@@ -67,6 +67,10 @@ import {
   CLAMPED,
   CLIPPED_CELLS,
   COLLAPSED_CELLS,
+  COLUMN_LINES,
+  COLUMN_PIECES,
+  COLUMN_ROWS,
+  columned,
   FADED_BLOCKS,
   PAINT_ORDER,
   INLINE_OFFSETS,
@@ -78,6 +82,7 @@ import {
 } from './layout/boxes.js';
 import type {
   BoxTree,
+  ColumnPiece,
   EdgePlacement,
   LineBox,
   LineText,
@@ -1620,6 +1625,13 @@ function paintOwnBackground(
   if (box.kind === 'table-row' || box.kind === 'table-row-group') return;
   if (hidden(box)) return;
   const style = box.style;
+  if (columned.any) {
+    const pieces = COLUMN_PIECES.get(box);
+    if (pieces) {
+      paintColumnPieces(ctx, box, pieces, options);
+      return;
+    }
+  }
   if (style.boxShadow) paintShadows(ctx, box, options, false);
   if (box !== options.canvasSource) {
     paintLayers(ctx, box, options, frameImages(ctx, box, options));
@@ -1630,6 +1642,88 @@ function paintOwnBackground(
   }
   if (box.kind === 'table') paintPartBackgrounds(ctx, box, options);
 }
+
+/**
+ * The background and the borders of a block a column break falls inside
+ * (CSS Multi-column 1), a piece at a time: drawn in each column as the
+ * whole box standing there, and cut to the piece of it that is — which is
+ * `box-decoration-break: slice`, CSS's default (CSS Fragmentation 3, 6.1):
+ * no border and no padding at a break, and the background going on from
+ * one piece to the next. Its shadow is not drawn: a sliced box casts one as
+ * a whole and this has no whole box to cast it from.
+ */
+function paintColumnPieces(
+  ctx: PaintContext,
+  box: Box,
+  pieces: readonly ColumnPiece[],
+  options: PaintOptions,
+): void {
+  if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip)
+    return;
+  for (const piece of pieces) {
+    if (!(piece.height > 0 && piece.width > 0)) continue;
+    const frame: Frame = {
+      x: piece.x,
+      y: piece.wholeY,
+      width: piece.width,
+      height: piece.wholeHeight,
+      captionTop: 0,
+      captionBottom: 0,
+      borderTop: box.borderTop,
+      borderRight: box.borderRight,
+      borderBottom: box.borderBottom,
+      borderLeft: box.borderLeft,
+      padTop: box.padTop,
+      padRight: box.padRight,
+      padBottom: box.padBottom,
+      padLeft: box.padLeft,
+      style: box.style,
+    };
+    const left = Math.round(piece.x + options.originX);
+    const top = Math.round(piece.y + options.originY);
+    const right = Math.round(piece.x + piece.width + options.originX);
+    const bottom = Math.round(piece.y + piece.height + options.originY);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left, top, right - left, bottom - top);
+    ctx.clip();
+    paintLayers(ctx, frame, options, frameImages(ctx, frame, options));
+    paintBorders(ctx, frame, options);
+    ctx.restore();
+  }
+}
+
+/**
+ * Clip to the rows of a text's layout that are in the text's column
+ * (`COLUMN_ROWS`), where the layout is drawn at `left` and `top`: the rest
+ * of it is another column's, drawn there. Answers whether it clipped, and
+ * the caller restores.
+ */
+function clipToRows(
+  ctx: PaintContext,
+  text: LineText,
+  rows: { top: number; bottom: number },
+  left: number,
+  top: number,
+): boolean {
+  if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip)
+    return false;
+  const y1 = Math.round(top + rows.top);
+  const y2 = Math.round(top + rows.bottom);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(
+    Math.floor(left) - ROW_REACH,
+    y1,
+    Math.ceil(text.layout.width) + 2 * ROW_REACH,
+    y2 - y1,
+  );
+  ctx.clip();
+  return true;
+}
+
+/** How far to either side of its layout a column's text may draw. */
+const ROW_REACH = 2048;
 
 /**
  * How `paintLayers` draws a frame's image layers: each in the area its
@@ -5281,14 +5375,19 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     const above = ink?.above ?? 0;
     const below = ink?.below ?? 0;
     const slack = top - box.maxLineHeight - below;
-    while (lo < hi) {
+    // the lines columns took apart are in no order down the page
+    const apart = columned.any && COLUMN_LINES.has(lines);
+    while (!apart && lo < hi) {
       const mid = (lo + hi) >> 1;
       if (lines[mid].y > slack) hi = mid;
       else lo = mid + 1;
     }
     for (let i = lo; i < lines.length; i += 1) {
       const line = lines[i];
-      if (line.y - above >= bottom) break;
+      if (line.y - above >= bottom) {
+        if (apart) continue;
+        break;
+      }
       if (line.y < bottom && line.y + line.height > top) visible.push(line);
       else if (ink && inkInto(line, top, bottom)) {
         visible.push(line);
@@ -5355,8 +5454,10 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     : null;
   for (const line of visible) {
     for (const text of line.texts) {
-      if (drawn.has(text.layout)) continue;
-      drawn.add(text.layout);
+      // once for each column its lines are in, where they are in several
+      const rows = columned.any ? COLUMN_ROWS.get(text) : undefined;
+      if (drawn.has(rows ?? text.layout)) continue;
+      drawn.add(rows ?? text.layout);
       const top = text.drawY + dy;
       if (top < -COORD_LIMIT || top + text.layout.height > COORD_LIMIT) {
         // A single layout so tall its own lines overflow the Int16 envelope
@@ -5367,8 +5468,11 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
         continue;
       }
       const bands = recolored?.get(text.layout);
+      const clipped =
+        rows !== undefined && clipToRows(ctx, text, rows, text.drawX + dx, top);
       if (bands) drawRecolored(ctx, text.layout, text.drawX + dx, top, bands);
       else text.layout.draw(ctx, text.drawX + dx, top);
+      if (clipped) ctx.restore();
     }
   }
 
@@ -5680,10 +5784,15 @@ function paintTextShadows(
       if (cast === null) continue;
       const left = text.drawX + dx;
       if (cast !== MIXED) {
-        // every run casts the same: the layout's once for each shadow
-        if (whole.has(layout)) continue;
-        whole.add(layout);
+        // every run casts the same: the layout's once for each shadow, in
+        // each column its lines are in
+        const rows = columned.any ? COLUMN_ROWS.get(text) : undefined;
+        if (whole.has(rows ?? layout)) continue;
+        whole.add(rows ?? layout);
+        const clipped =
+          rows !== undefined && clipToRows(ctx, text, rows, left, top);
         castShadows(ctx, text, left, top, cast, null);
+        if (clipped) ctx.restore();
         continue;
       }
       const natural = layout.lines[text.layoutLine];

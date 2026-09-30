@@ -671,6 +671,48 @@ export const CUT_BLOCKS = new WeakMap<Box, Box[]>();
  *  the clearance in (`elementRect`). Only the blocks that had clearance. */
 export const CLEARED_FROM = new WeakMap<Box, number>();
 
+/**
+ * One piece of a block that a column break falls inside (CSS Multi-column
+ * 1): its border box in one column, as far as the box goes in it, and where
+ * the whole box would stand there — the box its background and its borders
+ * are drawn as, cut to the piece (`box-decoration-break: slice`).
+ */
+export interface ColumnPiece {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** The top of the whole box, in this column, and its height. */
+  wholeY: number;
+  wholeHeight: number;
+}
+
+/** The pieces of each block a column break falls inside, in the order of
+ *  the columns. The block's own rect is what takes them all in, as a
+ *  browser's bounding rect of it is. */
+export const COLUMN_PIECES = new WeakMap<Box, ColumnPiece[]>();
+
+/** The lines of a box that columns took apart: they are not one under
+ *  another, and a search that counts on their tops rising reads them all
+ *  instead. */
+export const COLUMN_LINES = new WeakSet<LineBox[]>();
+
+/**
+ * The rows of a text's layout that are in the text's own column, from the
+ * layout's origin, where the layout's lines went to more than one: a layout
+ * is drawn whole, so it is drawn once for each column, there, and clipped
+ * to the rows that are that column's. One object for all the texts of a
+ * layout in a column, which is what tells a draw of it from another.
+ */
+export const COLUMN_ROWS = new WeakMap<
+  LineText,
+  { top: number; bottom: number }
+>();
+
+/** Whether any layout has broken a box between columns: what the walks
+ *  that would ask the three maps above of every box ask first. */
+export const columned = { any: false };
+
 /** The element a pseudo-element's box is generated from, which has no
  *  element of its own (`Box.pseudo`): whose the images its styles name are,
  *  when the host is asked for them. */
