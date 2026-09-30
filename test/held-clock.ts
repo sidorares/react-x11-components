@@ -1,13 +1,14 @@
 // An animation's clock, held: its time moves only when the test says so.
 //
-// Two animations here run on the wall clock on purpose — the maps wheel's
-// glide (`glideClock` in ../src/maps/controller.ts) and a reorder drop's
-// flight home (`flightClock` in ../src/reorder/clock.ts). Each reads the
-// time when it starts and again at every step, and a timer takes the steps.
-// A runner slow enough to spend the whole animation inside one `await` finds
-// it already over, and both have failed on CI that way. Held, the step taken
-// under the event is all that happens there, and every step after it is a
-// `frame()` the test takes.
+// Four things here run on the wall clock on purpose — the maps wheel's glide
+// (`glideClock` in ../src/maps/controller.ts), a reorder drop's flight home
+// (`flightClock` in ../src/reorder/clock.ts), the march of `<Flow>`'s dashed
+// edges (`flowClock` in ../src/flow/node.ts) and the virtual window's idea
+// of a scroll in flight (`windowClock` in ../src/internal/window.ts). Each
+// reads the time as it goes, and a timer takes its next step. A runner slow
+// enough to spend a step's wait inside one `await` finds the step already
+// taken, and each has failed that way. Held, a step is taken when a `frame()`
+// the test takes brings the time to it.
 //
 // It stands in for the clock and nothing else: the event still goes through
 // the in-process X server, and the harness's own timers and the component's
@@ -18,23 +19,24 @@
 import type { TestContext } from 'node:test';
 import { act } from 'react-x11/test';
 
-/** The shape both clocks share: the time, and a timer for the next step. */
+/** The shape the clocks share: the time, and a timer for the next step. */
 export interface AnimationClock {
   now(): number;
   arm(step: () => void, ms: number): unknown;
   disarm(handle: unknown): void;
 }
 
-/** A 60Hz frame — what both animations' own timers wait. */
+/** A 60Hz frame — what the glide's and the flight's own timers wait. */
 const FRAME_MS = 16;
 
 export interface HeldClock {
-  /** Whether a step is waiting for its frame. */
+  /** Whether a step is waiting for its time. */
   readonly pending: boolean;
-  /** One frame: the clock moves on by a frame and the waiting steps are
-   *  taken. False when there were none. */
+  /** One frame: the clock moves on by a frame and the steps due by then
+   *  are taken. False when none was waiting. */
   frame(): Promise<boolean>;
-  /** Frames until nothing asks for another, and how many it took. */
+  /** Frames until nothing asks for another, and how many it took — for an
+   *  animation that ends, which the dashes and the window do not. */
   finish(): Promise<number>;
 }
 
@@ -43,12 +45,13 @@ export interface HeldClock {
 export function holdClock(t: TestContext, clock: AnimationClock): HeldClock {
   let time = 0;
   // By handle, as real timers are: a step disarmed is gone, and two armed
-  // at once both run.
-  const waiting = new Map<unknown, () => void>();
+  // at once both run. Each waits what it asked for — a frame for the glide
+  // and the flight, longer for the dashes' tick and the window's idle one.
+  const waiting = new Map<unknown, { step: () => void; at: number }>();
   t.mock.method(clock, 'now', () => time);
-  t.mock.method(clock, 'arm', (step: () => void) => {
+  t.mock.method(clock, 'arm', (step: () => void, ms: number) => {
     const handle = {};
-    waiting.set(handle, step);
+    waiting.set(handle, { step, at: time + ms });
     return handle;
   });
   t.mock.method(clock, 'disarm', (handle: unknown) => {
@@ -60,9 +63,13 @@ export function holdClock(t: TestContext, clock: AnimationClock): HeldClock {
     },
     async frame() {
       if (waiting.size === 0) return false;
-      const due = [...waiting.values()];
-      waiting.clear();
       time += FRAME_MS;
+      const due: (() => void)[] = [];
+      for (const [handle, { step, at }] of waiting) {
+        if (at > time) continue;
+        waiting.delete(handle);
+        due.push(step);
+      }
       await act(async () => {
         for (const step of due) step();
       });
@@ -71,8 +78,8 @@ export function holdClock(t: TestContext, clock: AnimationClock): HeldClock {
     async finish() {
       let frames = 0;
       while (await held.frame()) {
-        // Both are over in well under a second; a hundred frames is one
-        // that never ends.
+        // The glide and the flight are over in well under a second; a
+        // hundred frames is one that never ends.
         if (++frames > 100) throw new Error('the animation never ended');
       }
       return frames;

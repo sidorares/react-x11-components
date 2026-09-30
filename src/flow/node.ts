@@ -215,8 +215,6 @@ interface PanelCanvas {
  * global that wandered in would become an implicit `@types/node` dependency
  * a consumer has to satisfy. */
 const timers = globalThis as {
-  setInterval?(fn: () => void, ms: number): unknown;
-  clearInterval?(id: unknown): void;
   setTimeout?(fn: () => void, ms: number): unknown;
   clearTimeout?(id: unknown): void;
 };
@@ -301,14 +299,28 @@ const VISUAL_PROPS = [
 const clock = globalThis as { performance?: { now(): number } };
 
 /**
- * The pane's time: what a pan is stamped with, and what the dashes' march
- * reads to decide it has held still. A test holds it (test/flow.test.ts):
- * a runner that spends longer than the dashes' wait over one step of a pan
- * lets them march in the middle of it — as they should — and a test of the
- * pan cannot tell that from a march it should not have made.
+ * The pane's time and the dashes' timer: what a pan is stamped with, what
+ * the dashes' march reads to decide it has held still, and what takes the
+ * march's steps. A test holds both (`holdClock` in test/held-clock.ts). On
+ * the real clock a runner that spends longer than the dashes' wait over one
+ * step of a pan lets them march in the middle of it, as they should, and
+ * one that stalls before the pan lets a tick claim the dashes the first step
+ * copies, which declines the copy. A test of the pan cannot tell either from
+ * a march it should not have made.
+ *
+ * The shape of the map's `glideClock`. Exported from this module and not
+ * from `./index.ts`: this is for the tests.
  */
 export const flowClock = {
-  now: (): number => clock.performance?.now() ?? Date.now(),
+  now(): number {
+    return clock.performance?.now() ?? Date.now();
+  },
+  arm(step: () => void, ms: number): unknown {
+    return timers.setTimeout?.(step, ms) ?? null;
+  },
+  disarm(handle: unknown): void {
+    timers.clearTimeout?.(handle);
+  },
 };
 const now = (): number => flowClock.now();
 
@@ -3230,67 +3242,71 @@ export class FlowGraphNode extends Node implements FlowInstance {
 
   private _startAnimation(): void {
     if (this._animTimer != null) return;
-    this._animTimer =
-      timers.setInterval?.(() => {
-        // A pan that blits copies the pane's pixels, dashes and all, and a
-        // tick claims the dashes inside the band it copies — which declines
-        // the copy: every frame a tick landed in repainted the whole pane,
-        // a sixth of a pan's frames and all of its stutter. So the dashes
-        // sit the pan out, phase and all, and what the pan copies and what
-        // it draws agree; they march again once it has held still.
-        //
-        // And the view moving at all is what they wait out, not a blit that
-        // happened: a tick declines the blit it lands beside, so a pan
-        // whose frames ran past the wait had its ticks back, each one
-        // cancelling the next blit and repainting the pane — over the
-        // stress example's widgets in a large window, 2 frames a second,
-        // ticks and pan steps taking turns. A step since the last tick, or
-        // one within two ticks, holds the dashes still whatever a frame
-        // costs. Under GL a tick is a uniform and blits nothing, and they
-        // march through a pan as before.
-        //
-        // A 2D tick is a repaint of the box the dashes are in, which over a
-        // dense graph in a large window is most of the pane: 75 ms a tick on
-        // XQuartz, against a timer of 60. So the wait scales with what
-        // frames cost: the view held still for two frames' worth, and one
-        // tick every two frames at most — the dashes slow down before the
-        // thread is theirs, and a pan whose frames come slowly still sees
-        // them hold still.
-        const t = now();
-        const lastTick = this._tickAt;
-        this._tickAt = t;
-        if (t - this._blittedPanAt < ANIMATION_MS * 2) return;
-        let steps = 1;
-        if (!this._gl) {
-          const cost = this._tickCost * 2;
-          const still = Math.max(ANIMATION_MS * 2, cost);
-          if (this._viewMovedAt > lastTick || t - this._viewMovedAt < still) {
-            return;
-          }
-          // a tick under ANIMATION_MS apart, less a millisecond of timer
-          // slop; further while ticks are dear — and then the dashes cover
-          // the ground the skipped ticks would have, so they slow down in
-          // steps and not in speed
-          const since = t - this._marchedAt;
-          if (since < Math.max(ANIMATION_MS, cost) - 1) return;
-          steps = Math.min(4, Math.max(1, Math.round(since / ANIMATION_MS)));
+    const tick = (): void => {
+      // A step at a time rather than an interval, so that a test can hold
+      // the timer (`flowClock`), and armed again before anything else,
+      // which is when an interval would have been.
+      this._animTimer = flowClock.arm(tick, ANIMATION_MS);
+      // A pan that blits copies the pane's pixels, dashes and all, and a
+      // tick claims the dashes inside the band it copies — which declines
+      // the copy: every frame a tick landed in repainted the whole pane,
+      // a sixth of a pan's frames and all of its stutter. So the dashes
+      // sit the pan out, phase and all, and what the pan copies and what
+      // it draws agree; they march again once it has held still.
+      //
+      // And the view moving at all is what they wait out, not a blit that
+      // happened: a tick declines the blit it lands beside, so a pan
+      // whose frames ran past the wait had its ticks back, each one
+      // cancelling the next blit and repainting the pane — over the
+      // stress example's widgets in a large window, 2 frames a second,
+      // ticks and pan steps taking turns. A step since the last tick, or
+      // one within two ticks, holds the dashes still whatever a frame
+      // costs. Under GL a tick is a uniform and blits nothing, and they
+      // march through a pan as before.
+      //
+      // A 2D tick is a repaint of the box the dashes are in, which over a
+      // dense graph in a large window is most of the pane: 75 ms a tick on
+      // XQuartz, against a timer of 60. So the wait scales with what
+      // frames cost: the view held still for two frames' worth, and one
+      // tick every two frames at most — the dashes slow down before the
+      // thread is theirs, and a pan whose frames come slowly still sees
+      // them hold still.
+      const t = now();
+      const lastTick = this._tickAt;
+      this._tickAt = t;
+      if (t - this._blittedPanAt < ANIMATION_MS * 2) return;
+      let steps = 1;
+      if (!this._gl) {
+        const cost = this._tickCost * 2;
+        const still = Math.max(ANIMATION_MS * 2, cost);
+        if (this._viewMovedAt > lastTick || t - this._viewMovedAt < still) {
+          return;
         }
-        this._marchedAt = t;
-        this._dashPhase += ANIMATION_SPEED * steps;
-        // the box the last paint saw animated edges in, not the pane: a
-        // marching dash should not cost a full grid repaint per tick. And
-        // only the part of it the pane shows — an edge on its way out of
-        // the pane takes the box past it, and claimed whole, a tick
-        // repainted everything the window has beside the graph.
-        const box = this._animBox ? this._device(this._animBox) : this.abs;
-        const shown = intersectRects(box, this.contentBox());
-        if (shown) this.invalidate(false, shown, 'animation');
-      }, ANIMATION_MS) ?? null;
+        // a tick under ANIMATION_MS apart, less a millisecond of timer
+        // slop; further while ticks are dear — and then the dashes cover
+        // the ground the skipped ticks would have, so they slow down in
+        // steps and not in speed
+        const since = t - this._marchedAt;
+        if (since < Math.max(ANIMATION_MS, cost) - 1) return;
+        steps = Math.min(4, Math.max(1, Math.round(since / ANIMATION_MS)));
+      }
+      this._marchedAt = t;
+      this._dashPhase += ANIMATION_SPEED * steps;
+      // the box the last paint saw animated edges in, not the pane: a
+      // marching dash should not cost a full grid repaint per tick. And
+      // only the part of it the pane shows — an edge on its way out of
+      // the pane takes the box past it, and claimed whole, a tick
+      // repainted everything the window has beside the graph.
+      const box = this._animBox ? this._device(this._animBox) : this.abs;
+      const shown = intersectRects(box, this.contentBox());
+      if (shown) this.invalidate(false, shown, 'animation');
+    };
+    this._animTimer = flowClock.arm(tick, ANIMATION_MS);
   }
 
   private _stopAnimation(): void {
     if (this._animTimer == null) return;
-    timers.clearInterval?.(this._animTimer);
+    flowClock.disarm(this._animTimer);
     this._animTimer = null;
   }
 

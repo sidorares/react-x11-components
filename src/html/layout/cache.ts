@@ -268,6 +268,7 @@ export const OPTION_FIELDS = [
   'overflow',
   'overflowWrap',
   'wrap',
+  'fit',
 ] as const satisfies readonly (keyof Options)[];
 
 /** An option missing from `OPTION_FIELDS` names itself here. */
@@ -287,6 +288,7 @@ function sameOptions(a: Options, b: Options): boolean {
     a.maxLines === b.maxLines &&
     a.overflow === b.overflow &&
     a.overflowWrap === b.overflowWrap &&
-    a.wrap === b.wrap
+    a.wrap === b.wrap &&
+    a.fit === b.fit
   );
 }

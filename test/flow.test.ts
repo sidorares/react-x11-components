@@ -74,6 +74,7 @@ import {
   pointAtFraction,
 } from '../src/flow/paths.js';
 import { flowClock } from '../src/flow/node.js';
+import { holdClock } from './held-clock.js';
 
 const h = React.createElement;
 
@@ -4207,9 +4208,19 @@ test('a pan past panel canvases still moves the pane’s pixels', async () => {
   assert.deepStrictEqual(moved, [4, 4, 4], 'every step moved the pixels');
 });
 
-test('the dashes sit a pan out, and every step of it moves the pixels', async () => {
+test('the dashes sit a pan out, and every step of it moves the pixels', async (t) => {
   // A tick claims the dashes inside the band a pan copies, which declines
   // the copy: every frame a tick landed in repainted the pane whole.
+  //
+  // The pane's clock is held from the mount, and the dashes' timer with it.
+  // On the real one a runner that stalled over one step let the dashes
+  // march in the middle of the pan, which is what they should do after a
+  // pause and not what this pan is asking about; and one that stalled
+  // between the mount and the pan let a tick claim the dashes the first
+  // step copies, which declined that copy — CI's Node 24 job counted 15 of
+  // 16. Held, a tick comes only with a frame this takes, and at a frame a
+  // step one comes due four times in the middle of the pan.
+  const clock = holdClock(t, flowClock);
   await mount({
     nodes: [
       { id: 'a', position: { x: 100, y: 100 }, data: { label: 'a' } },
@@ -4218,6 +4229,7 @@ test('the dashes sit a pan out, and every step of it moves the pixels', async ()
     edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
   });
   await act();
+  assert.ok(clock.pending, 'the dashes wait on the held clock');
   const wnd = (pane().root as unknown as { window: unknown }).window as {
     scrollRegion(rect: unknown, dx: number, dy: number): boolean;
   };
@@ -4232,35 +4244,22 @@ test('the dashes sit a pan out, and every step of it moves the pixels', async ()
     invalidate(...a: unknown[]): void;
   };
   let ticks = 0;
-  let panning = false;
   const invalidate = node.invalidate.bind(node);
   node.invalidate = (...a: unknown[]) => {
-    if (a[2] === 'animation' && panning) ticks++;
+    if (a[2] === 'animation') ticks++;
     invalidate(...a);
   };
-  // The pane's time is held through the pan, 20 ms a step: a runner that
-  // took longer than the dashes' wait over one step let them march in the
-  // middle of it, which is what they should do after a pause and not what
-  // this pan is asking about. Counted from the first step, since a tick due
-  // before the pan began is no tick in the middle of one.
-  const realNow = flowClock.now;
-  let held = realNow();
-  flowClock.now = () => held;
   const steps = 16;
-  try {
-    for (let step = 1; step <= steps; step++) {
-      held += 20;
-      await act(() => node.setViewport({ x: step * 4, y: 0, zoom: 1 }));
-      panning = true;
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    await act();
-  } finally {
-    flowClock.now = realNow;
+  for (let step = 1; step <= steps; step++) {
+    await act(() => node.setViewport({ x: step * 4, y: 0, zoom: 1 }));
+    await clock.frame();
   }
   assert.strictEqual(ticks, 0, 'no tick in the middle of the pan');
   assert.strictEqual(moved, steps, 'and every step was a copy');
-  await until(() => ticks >= 2);
+  // How long they wait scales with what a frame costs, and the server's
+  // answers still decide that: frames until they march, with a bound far
+  // past any wait a frame's cost asks for.
+  for (let frame = 0; ticks < 2 && frame < 500; frame++) await clock.frame();
   assert.ok(ticks >= 2, `the dashes march again once it stops (${ticks})`);
 });
 

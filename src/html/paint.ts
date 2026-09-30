@@ -173,6 +173,14 @@ export interface PaintOptions {
  * document's height — handed up rather than kept on every box, where
  * writing it and reading it back cost this walk a fifth of its time.
  */
+/**
+ * How far down an out-of-flow box's scrollable overflow reaches: its border
+ * box, and what it holds where it does not clip it (`computePaintBounds`),
+ * which the box it is in does not take in and the document does
+ * (`layoutDocument`).
+ */
+export const OUT_OF_FLOW_REACH = new WeakMap<Box, number>();
+
 export function computePaintBounds(box: Box, moved = false): number {
   // A box with no rectangle of its own gives only what it holds: nothing,
   // until a child with bounds is met.
@@ -184,8 +192,12 @@ export function computePaintBounds(box: Box, moved = false): number {
   // How far down the content reaches, for the document's height: the
   // border box, and every box and line under it, but not past a box that
   // clips what it holds — where the scrollable overflow ends. Out-of-flow
-  // boxes are the layout's to count.
-  let bottom = y2;
+  // boxes are the layout's to count. A border box of no area reaches
+  // nowhere, as a browser has it (Blink's `ScrollableOverflowCalculator`
+  // adds no empty rect): the empty blocks a design leaves at its end,
+  // below the last one's bottom margin, made the page that margin taller
+  const empty = own && !(box.width > 0 && box.height > 0);
+  let bottom = empty ? -Infinity : y2;
   // A shadow is ink past the box, and no overflow: a repaint of the strip
   // under a card has to reach the card, and the document is no taller.
   const shadows = own ? box.style.boxShadow : null;
@@ -260,6 +272,7 @@ export function computePaintBounds(box: Box, moved = false): number {
     }
     const reach = computePaintBounds(child, moved);
     if (!child.outOfFlow) bottom = Math.max(bottom, reach);
+    else OUT_OF_FLOW_REACH.set(child, reach);
     if (child.boundsY === Infinity) continue;
     x1 = Math.min(x1, child.boundsX);
     y1 = Math.min(y1, child.boundsY);
@@ -303,7 +316,7 @@ export function computePaintBounds(box: Box, moved = false): number {
   if (!own) return bottom;
   // whether the box clips only matters where its content reaches past it,
   // and its style is one more object a walk of every box would read
-  const end = box.y + box.height;
+  const end = empty ? -Infinity : box.y + box.height;
   if (bottom <= end) return end;
   const style = box.style;
   return box.parent &&
@@ -641,12 +654,14 @@ function paddingBox(box: Box, options: PaintOptions): Rect {
 }
 
 /** Where a layer of a box's background is placed, in window coordinates:
- *  the box its `background-origin` names (CSS Backgrounds 3, 3.8). */
+ *  the box its `background-origin` names (CSS Backgrounds 3, 3.8) — of the
+ *  whole strip, for a fragment of an inline box that is sliced. */
 function originBox(
-  box: Frame,
+  frame: Frame,
   options: PaintOptions,
   style: ComputedStyle,
 ): Rect {
+  const box = frame.strip ?? frame;
   const [t, r, b, l] = edgeInsets(box, style.backgroundOrigin);
   return {
     x: box.x + l + options.originX,
@@ -724,7 +739,12 @@ type Frame = Pick<
   | 'style'
 > &
   // the padding a `content-box` background is inset by, where it has any
-  Partial<Pick<Box, 'padTop' | 'padRight' | 'padBottom' | 'padLeft'>>;
+  Partial<Pick<Box, 'padTop' | 'padRight' | 'padBottom' | 'padLeft'>> & {
+    /** Of an inline box's fragment, where the box goes on to another line:
+     *  its fragments laid end to end as one box, which its images and
+     *  gradients are placed in (`box-decoration-break: slice`). */
+    strip?: Frame;
+  };
 
 /** Where a box's background and border go: its border box, which for a
  *  table leaves out the captions around it (CSS 2.1 17.4). */
@@ -2100,7 +2120,7 @@ function flexItem(box: Box): boolean {
  * outside a box that clips where its containing block is, a fixed one
  * outside every one, and a relative one inside every one.
  */
-function clipsFor(box: Box, context: Box): Box[] {
+export function clipsFor(box: Box, context: Box): Box[] {
   let from: Box | null = box.parent;
   if (box.outOfFlow) {
     const fixed = box.style.position === 'fixed';
@@ -4026,7 +4046,13 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const bleeds: Bleed[] = [];
   for (const line of visible) {
     if (line.background) paintLineBackground(ctx, line, options);
-    paintInlineBoxes(ctx, line, options, line === lines[0] ? null : bleeds);
+    paintInlineBoxes(
+      ctx,
+      line,
+      lines,
+      options,
+      line === lines[0] ? null : bleeds,
+    );
     for (const text of line.texts) {
       const natural = text.layout.lines[text.layoutLine];
       if (natural)
@@ -4559,14 +4585,13 @@ function paintLineBackground(
   );
 }
 
-function paintInlineBoxes(
-  ctx: PaintContext,
-  line: LineBox,
-  options: PaintOptions,
-  /** Where a fragment that reaches up over the lines before goes, to be
-   *  drawn again over their text; null for a block's first line. */
-  bleeds: Bleed[] | null = null,
-): void {
+/**
+ * The fragments of the decorated inline boxes on a line: how far across it
+ * each reaches, its border box, and whether the box opens or closes on it.
+ * Where the line holds text `position: relative` moved, taken where the
+ * text was: a fragment is moved by its own box's offset.
+ */
+function fragmentsOn(line: LineBox): Map<Box, InlineFragment> | null {
   let fragments: Map<Box, InlineFragment> | null = null;
   const widen = (box: Box, left: number, right: number): void => {
     fragments ??= new Map();
@@ -4578,19 +4603,12 @@ function paintInlineBoxes(
       fragments.set(box, { left, right, start: false, end: false });
     }
   };
-  // Every text on a line is drawn on one baseline (`finishLine`), and an
-  // engine's is from the top of its layout rather than of the line. Taken
-  // where the line has each text: a box `position: relative` moves is
-  // moved by its own offset below, and the boxes around it are not.
-  let baseline = line.y + line.baseline;
   const shifted = SHIFTED_LINES.has(line);
   for (const text of line.texts) {
     const natural = text.layout.lines[text.layoutLine];
     const boxAt = text.spans.boxAt;
     if (!natural || !boxAt) continue;
     const shift = shifted ? TEXT_SHIFTS.get(text) : undefined;
-    const raise = shifted ? (TEXT_RAISES.get(text) ?? 0) : 0;
-    baseline = text.drawY - (shift?.y ?? 0) + raise + natural.baseline;
     const x = text.drawX - (shift?.x ?? 0) + natural.x;
     for (const run of natural.runs) {
       const owner = boxAt.call(text.spans, run.start);
@@ -4631,13 +4649,38 @@ function paintInlineBoxes(
     if (edge.side === 'start') f.start = true;
     else f.end = true;
   }
+  return fragments;
+}
+
+function paintInlineBoxes(
+  ctx: PaintContext,
+  line: LineBox,
+  /** The block's lines, which `line` is one of. */
+  lines: readonly LineBox[],
+  options: PaintOptions,
+  /** Where a fragment that reaches up over the lines before goes, to be
+   *  drawn again over their text; null for a block's first line. */
+  bleeds: Bleed[] | null = null,
+): void {
+  const fragments = fragmentsOn(line);
   if (!fragments) return;
-  const boxes = [...(fragments as Map<Box, InlineFragment>).keys()].sort(
-    (a, b) => depthOf(a) - depthOf(b),
-  );
+  // Every text on a line is drawn on one baseline (`finishLine`), and an
+  // engine's is from the top of its layout rather than of the line. Taken
+  // where the line has each text: a box `position: relative` moves is
+  // moved by its own offset below, and the boxes around it are not.
+  let baseline = line.y + line.baseline;
+  const shifted = SHIFTED_LINES.has(line);
+  for (const text of line.texts) {
+    const natural = text.layout.lines[text.layoutLine];
+    if (!natural || !text.spans.boxAt) continue;
+    const shift = shifted ? TEXT_SHIFTS.get(text) : undefined;
+    const raise = shifted ? (TEXT_RAISES.get(text) ?? 0) : 0;
+    baseline = text.drawY - (shift?.y ?? 0) + raise + natural.baseline;
+  }
+  const boxes = [...fragments.keys()].sort((a, b) => depthOf(a) - depthOf(b));
   for (const box of boxes) {
     if (box.style.visibility !== 'visible') continue;
-    const f = (fragments as Map<Box, InlineFragment>).get(box)!;
+    const f = fragments.get(box)!;
     const face = box.decoration!;
     // on its own baseline, which `vertical-align` may raise off the line's
     const own = shifted
@@ -4672,9 +4715,13 @@ function paintInlineBoxes(
       style,
     };
     if (fragment.width <= 0) continue;
-    // its images from its own padding box, as its gradients are, each
-    // fragment alike: `slice` would lay them out as though the fragments
-    // were one box end to end, which a box on one line is
+    // its images and gradients from the strip its fragments make, where it
+    // goes on to another line, and from its own padding box where it is
+    // on this one alone or `clone` says each fragment is its own
+    if (!(f.start && f.end) && sliced(box.style)) {
+      const strip = stripFor(lines, line, box, fragment);
+      if (strip) fragment.strip = strip;
+    }
     paintLayers(ctx, fragment, options, frameImages(ctx, fragment, options));
     paintBorders(ctx, fragment, options);
     if (box.style.outlineStyle !== 'none') paintOutline(ctx, fragment, options);
@@ -4682,6 +4729,93 @@ function paintInlineBoxes(
       bleeds.push({ fragment, lineTop: line.y + (moved?.y ?? 0) });
     }
   }
+}
+
+/** Whether an inline box places background images or gradients, which
+ *  `slice` places across its fragments, as one box end to end. */
+function sliced(style: ComputedStyle): boolean {
+  return (
+    style.boxDecorationBreak === 'slice' &&
+    (style.backgroundImage !== null ||
+      style.backgroundGradient !== null ||
+      style.backgroundImages !== null)
+  );
+}
+
+/** Where an inline box's fragments sit along the strip they make laid end
+ *  to end: how wide it is, on how many lines, and how far along it each
+ *  line's fragment starts, in the box's direction. */
+interface Strip {
+  width: number;
+  lines: number;
+  before: Map<LineBox, number>;
+}
+
+/** Of a block's lines, by the array they are, the strip of each inline box
+ *  on them that `sliced` says places images across its fragments: made
+ *  once a layout, as `MOVED_OFF_LINES` is, so a repaint of one line reads
+ *  the lines before it without going over them again. What `sliced` reads
+ *  is never restyled in place (`HtmlViewNode`), which lays the lines out
+ *  again instead. */
+const STRIPS = new WeakMap<readonly LineBox[], Map<Box, Strip>>();
+
+function stripsOf(lines: readonly LineBox[]): Map<Box, Strip> {
+  const strips = new Map<Box, Strip>();
+  for (const line of lines) {
+    const fragments = fragmentsOn(line);
+    if (!fragments) continue;
+    for (const [box, f] of fragments) {
+      if (!sliced(box.style)) continue;
+      let strip = strips.get(box);
+      if (!strip) {
+        strip = { width: 0, lines: 0, before: new Map() };
+        strips.set(box, strip);
+      }
+      strip.before.set(line, strip.width);
+      strip.width += Math.max(0, f.right - f.left);
+      strip.lines += 1;
+    }
+  }
+  return strips;
+}
+
+/**
+ * The box an inline box's fragment on `line` is a slice of (CSS
+ * Fragmentation 3, 5.4): the box's fragments laid end to end in its
+ * direction, as though it had not wrapped — as wide as
+ * they are together, with the box's own borders and padding at its two
+ * ends, placed so that this fragment is where it falls along it. So an
+ * image `no-repeat` at the start is on the first fragment alone, and a
+ * gradient runs once across them all. Undefined where the box is on one
+ * line.
+ */
+function stripFor(
+  lines: readonly LineBox[],
+  line: LineBox,
+  box: Box,
+  fragment: Frame,
+): Frame | undefined {
+  let strips = STRIPS.get(lines);
+  if (!strips) {
+    strips = stripsOf(lines);
+    STRIPS.set(lines, strips);
+  }
+  const strip = strips.get(box);
+  const before = strip?.before.get(line);
+  if (!strip || strip.lines < 2 || before === undefined) return undefined;
+  const x =
+    box.style.direction === 'rtl'
+      ? fragment.x + fragment.width + before - strip.width
+      : fragment.x - before;
+  return {
+    ...fragment,
+    x,
+    width: strip.width,
+    borderLeft: box.borderLeft,
+    borderRight: box.borderRight,
+    padLeft: box.padLeft,
+    padRight: box.padRight,
+  };
 }
 
 /** An inline box's style on a line it does not both start and end on: no
@@ -4759,6 +4893,20 @@ function decoratedAncestors(box: Box): Box[] {
   }
   DECORATED.set(box, found);
   return found;
+}
+
+/** A restyle in place (a `:hover`) gave an inline box a decoration where it
+ *  had none, or took it away, and the lists kept above do not know: every
+ *  box whose list could name it — inside it, through the inline boxes the
+ *  walk above climbs — looks again. A document built again has new boxes,
+ *  and so no lists. */
+export function forgetDecoratedAncestors(box: Box): void {
+  const stack = [...box.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    DECORATED.delete(at);
+    if (at.kind === 'inline') stack.push(...at.children);
+  }
 }
 
 /**

@@ -60,8 +60,12 @@ import {
   BOX_RAISES,
   buildBoxes,
   CONTENT_IMAGES,
+  CUT_BLOCKS,
+  GENERATED_FROM,
+  INLINE_OFFSETS,
   LINE_BOX_RAISES,
   SHIFTED_LINES,
+  TEXT_SHIFTS,
 } from './layout/boxes.js';
 import type {
   Box,
@@ -89,6 +93,7 @@ import { lineBands as bandsFor } from '../richtext/runs.js';
 import {
   clipsOverflow,
   containingBlockOf,
+  forgetDecoratedAncestors,
   hasRect,
   holds,
   holdsAbsolute,
@@ -440,13 +445,15 @@ export class HtmlViewNode extends Node {
    */
   private _requestBackgrounds(tree: BoxTree): void {
     for (const box of tree.backgrounds) {
-      if (!box.el) continue;
+      // a pseudo-element's are its element's
+      const element = box.el ?? GENERATED_FROM.get(box);
+      if (!element) continue;
       // each layer's, where there is more than one
       for (const url of box.style.backgroundImages ?? [
         box.style.backgroundImage,
       ]) {
         if (typeof url === 'string') {
-          this._resources.request({ url, kind: 'image', element: box.el });
+          this._resources.request({ url, kind: 'image', element });
         }
       }
       const border = box.style.borderImage.source;
@@ -454,7 +461,7 @@ export class HtmlViewNode extends Node {
         this._resources.request({
           url: border,
           kind: 'image',
-          element: box.el,
+          element,
         });
       }
     }
@@ -1196,37 +1203,26 @@ export class HtmlViewNode extends Node {
       rect = { x: box.x, y: box.y, width: box.width, height: box.height };
     } else {
       const bands: Rect[] = [];
-      // an inline box's fragments are on the lines of the block it is laid
-      // out in, and no text of a float or a positioned box inside it — on
-      // lines of their own — is one of them (CSSOM View 6.1): a list item
-      // made inline around an absolute link measured as the link
-      let block: Box | null = box.parent;
-      while (block && !block.lines) block = block.parent;
-      if (box.subtreeTextEnd > box.subtreeTextStart) {
-        if (box.kind === 'inline' && block?.lines) {
-          lineBands(
-            block.lines,
-            box.subtreeTextStart,
-            box.subtreeTextEnd,
-            0,
-            0,
-            bands,
-          );
-        } else {
-          collectBands(
-            tree.root,
-            box.subtreeTextStart,
-            box.subtreeTextEnd,
-            0,
-            0,
-            bands,
-          );
-        }
+      const fonts = this._layouts?.fonts ?? null;
+      // an inline box broken around the blocks in it is its pieces, a box
+      // of the element's each (CSS 2.1 9.2.1.1), and its fragments are
+      // theirs; and on the lines between them it has a fragment around each
+      // block, across the box the block is in and as tall as its border
+      // box, as a browser's has — Blink's block-in-inline, Gecko's split
+      // inline's anonymous block. A list item made inline around a block
+      // link measured as the empty edge after it
+      for (const piece of piecesOf(tree.root, box)) {
+        inlineBands(tree.root, piece, fonts, bands);
       }
-      if (box.kind === 'inline') {
-        fragmentReach(box, bands);
-        const fonts = this._layouts?.fonts;
-        if (fonts) fragmentHeights(box, bands, fonts);
+      for (const block of (box.cut ? CUT_BLOCKS.get(box) : null) ?? []) {
+        const around = block.parent;
+        if (!around) continue;
+        bands.push({
+          x: around.contentX,
+          y: block.y,
+          width: around.contentWidth,
+          height: block.height,
+        });
       }
       for (const band of bands) rect = rect ? unionRect(rect, band) : band;
       if (!rect) {
@@ -1481,7 +1477,14 @@ export class HtmlViewNode extends Node {
 
     // and only now, all of it
     for (const [box, style] of restyled) box.style = style;
-    for (const [box, decoration] of redecorated) box.decoration = decoration;
+    for (const [box, decoration] of redecorated) {
+      // what is inside it keeps which boxes around it paint, and this is
+      // one more or one fewer of them
+      if ((decoration === null) !== (box.decoration === null)) {
+        forgetDecoratedAncestors(box);
+      }
+      box.decoration = decoration;
+    }
     for (const text of texts) {
       const next = relaid.get(text.layout);
       if (next) text.layout = next;
@@ -1654,6 +1657,94 @@ function boxFor(root: Box, element: Element): Box | null {
     }
   }
   return null;
+}
+
+/**
+ * An inline element's boxes: the one it has, or where a block in it broke
+ * it (`breakAround`), each piece, in document order.
+ */
+function piecesOf(root: Box, first: Box): Box[] {
+  // the first piece is cut at its end where there are more
+  if (first.kind !== 'inline' || !(first.cut & 2)) return [first];
+  const pieces: Box[] = [];
+  const stack: Box[] = [root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (box.el === first.el && box.kind === 'inline') pieces.push(box);
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      stack.push(box.children[i]);
+    }
+  }
+  return pieces;
+}
+
+/**
+ * The bands of one inline box's fragments, or a text's: on the lines of
+ * the block it is laid out in, and no text of a float or a positioned box
+ * inside it — on lines of their own — is one of them (CSSOM View 6.1): a
+ * list item made inline around an absolute link measured as the link.
+ * Each across its text, the inline-blocks and inline boxes' edges it holds
+ * and its own padding and border where it starts or ends there, and as
+ * tall as its border box.
+ */
+function inlineBands(
+  root: Box,
+  box: Box,
+  fonts: FontsLike | null,
+  out: Rect[],
+): void {
+  // its own, apart from any other piece's: `fragmentHeights` makes each of
+  // the bands it is handed as tall as this box on that band's line
+  const bands: Rect[] = [];
+  let block: Box | null = box.parent;
+  while (block && !block.lines) block = block.parent;
+  if (box.subtreeTextEnd > box.subtreeTextStart) {
+    if (box.kind === 'inline' && block?.lines) {
+      lineBands(
+        block.lines,
+        box.subtreeTextStart,
+        box.subtreeTextEnd,
+        0,
+        0,
+        bands,
+        true,
+      );
+    } else {
+      collectBands(root, box.subtreeTextStart, box.subtreeTextEnd, 0, 0, bands);
+    }
+  }
+  if (box.kind === 'inline') {
+    fragmentReach(box, bands);
+    if (fonts) fragmentHeights(box, bands, fonts);
+    // where `position: relative` on it or an inline box around it moved
+    // it, all of it (CSS 2.1 9.4.3), as `getBoundingClientRect` has it
+    // (CSSOM View 6.1): the bands are where the lines put it, and a link
+    // moved 120px down measured on its line, as wide as from where it was
+    // laid out to where it was drawn
+    const { x, y } = relativeOffsetOf(box);
+    if (x || y) {
+      for (const band of bands) {
+        band.x += x;
+        band.y += y;
+      }
+    }
+  }
+  out.push(...bands);
+}
+
+/** How far an inline box and the inline boxes around it moved it by their
+ *  relative offsets (`INLINE_OFFSETS`). */
+function relativeOffsetOf(box: Box): { x: number; y: number } {
+  let x = 0;
+  let y = 0;
+  for (let at: Box | null = box; at?.kind === 'inline'; at = at.parent) {
+    const offset = INLINE_OFFSETS.get(at);
+    if (offset) {
+      x += offset.x;
+      y += offset.y;
+    }
+  }
+  return { x, y };
 }
 
 /** Where the document's text goes on after a box with none: the start of
@@ -2004,6 +2095,9 @@ function lineBands(
   dx: number,
   dy: number,
   out: Rect[],
+  /** Where the lines put the text, not where a relative offset moved it
+   *  (`TEXT_SHIFTS`): what an inline box's own offset is added to. */
+  laidOut = false,
 ): void {
   // First line whose text can reach `from`, by binary search over the
   // sorted text starts; stop at the first line past `to`.
@@ -2032,8 +2126,9 @@ function lineBands(
           layoutOffsetOf(text, a),
           layoutOffsetOf(text, b, true),
         )) {
+          const moved = laidOut ? (TEXT_SHIFTS.get(text)?.x ?? 0) : 0;
           out.push({
-            x: dx + band.x + text.drawX,
+            x: dx + band.x + text.drawX - moved,
             y: dy + line.y,
             width: band.width,
             height: line.height,

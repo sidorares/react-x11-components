@@ -2982,7 +2982,13 @@ metric('a ch is the advance of the font\'s "0"', async () => {
   const el = view(node);
   const b = boxOf(el, 'b').width;
   assert.ok(b > 100, `ten zeros are wider than ten half ems: ${b}`);
-  assert.ok(Math.abs(boxOf(el, 'a').width - b) < 0.01);
+  // the zeros laid out are rounded up to a 64th, as a browser rounds an
+  // element's text on a line, and a length is not: Chrome's 10ch at 20px
+  // Menlo is 120.40625, its ten zeros 120.421875
+  assert.ok(
+    Math.abs(boxOf(el, 'a').width - b) <= 1 / 64 + 1e-9,
+    `ten of a ch are ten zeros: ${boxOf(el, 'a').width}, ${b}`,
+  );
 });
 
 metric('letter-spacing and word-spacing reach the text', async () => {
@@ -3382,6 +3388,81 @@ test("html and body at 100% follow the viewport's height", async () => {
   assert.strictEqual(boxOf(el, 'fill').height, 450);
   assert.strictEqual(el.abs.height, 450);
 });
+
+metric(
+  'a positioned box a clipping box holds makes the document no taller',
+  async () => {
+    // The document scrolls its scrollable overflow, and that takes in a
+    // positioned box only where no box on the way to it clips it (CSS
+    // Overflow 3, 2.2): one inside a box that clips it is that box's to
+    // scroll. One whose containing block is outside the clipping box is not
+    // clipped by it and still counts. Every positioned box counted, and a
+    // page a browser shows no taller than its window scrolled on into blank
+    const { node } = await render(
+      '<style>body{margin:0}.clip{position:absolute;top:50px;width:100px;' +
+        'height:150px;overflow:hidden}.deep{position:absolute;top:900px;' +
+        'width:50px;height:50px}.flow{overflow:hidden;height:20px}' +
+        '.out{position:absolute;top:400px;left:200px;width:10px;height:10px}' +
+        '</style><div class="clip"><div class="deep"></div></div>' +
+        '<div class="flow"><div class="out"></div></div>',
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(
+      el.abs.height,
+      410,
+      'as tall as the box that escapes its clip, not the one clipped',
+    );
+  },
+);
+
+metric(
+  'what a positioned box holds past its end makes the document taller',
+  async () => {
+    // A positioned box's scrollable overflow is its border box and what it
+    // holds, where it does not clip it (CSS Overflow 3, 2.2), and the
+    // document's takes it in. It took the border box alone: design 094 sets
+    // its page in an absolute wrapper 497px tall, and its text ran on
+    // below the document's end, where no scroll could reach it
+    const { node } = await render(
+      '<style>body{margin:0}.w{position:absolute;top:0;width:300px;' +
+        'height:200px}.t{height:900px}.c{overflow:hidden}</style>' +
+        '<div class="w"><div class="t"></div></div>' +
+        '<div class="w c"><div class="t" style="height:1500px"></div></div>',
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(
+      el.abs.height,
+      900,
+      'as tall as what runs past the wrapper, not what a clip cuts',
+    );
+  },
+);
+
+metric(
+  'an empty block past the end of the content makes the document no taller',
+  async () => {
+    // A box of no area adds nothing to the scrollable overflow it is in, as
+    // a browser has it: Blink's ScrollableOverflowCalculator unites no
+    // empty rect. Design 068 sets html and body a window tall and ends on
+    // a block with a 30px bottom margin and five empty ones after it, set
+    // below the margin, and the page ran 30px past Chrome's
+    const { node } = await render(
+      '<style>html,body{height:100%;margin:0}.last{height:900px;' +
+        'margin-bottom:30px}</style>' +
+        '<div class="last"></div><div></div>' +
+        '<div style="width:0;height:5px"></div>',
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(
+      el.abs.height,
+      900,
+      'as tall as the last block, not the empty ones after its margin',
+    );
+  },
+);
 
 test('a box placed against the initial containing block follows the viewport', async () => {
   // nothing positioned around it: `bottom: 0` is the viewport's bottom
@@ -5468,8 +5549,12 @@ metric(
     const cellOf = (id: string) =>
       (boxOf(el, id) as LaidBox & { parent: LaidBox }).parent;
     const ref = boxOf(el, 'ref').width;
-    assert.strictEqual(cellOf('a').width, ref, 'in a row: as wide as "a b"');
-    assert.strictEqual(cellOf('c').width, ref, 'loose in a table: the same');
+    // give or take a 64th for each element's text on the line, which a line
+    // is measured in, each rounded up (`fit: 'items'`): three spans in a
+    // cell are 110.328125 in Chrome where their text as one is 110.3125
+    const near = (width: number) => Math.abs(width - ref) <= 2 / 64 + 1e-9;
+    assert.ok(near(cellOf('a').width), 'in a row: as wide as "a b"');
+    assert.ok(near(cellOf('c').width), 'loose in a table: the same');
   },
 );
 
@@ -6156,6 +6241,40 @@ test('nothing loads without onResource, and every reference is offered to it', a
     { backend: 'mock' },
   );
   assert.deepStrictEqual(asked.sort(), ['a.css', 'b.png']);
+});
+
+test("a pseudo-element's background image is asked for, as its element's", async () => {
+  // A generated box has no element of its own, and the images its styles
+  // named were never asked for, so it drew none: design 057 hangs its
+  // coffee cup, its small logo and its photo credit each on an `::after`
+  // with no content but a background. They are its element's to ask for
+  const asked: { url: string; element: string }[] = [];
+  await renderX11(
+    h(Html, {
+      source:
+        '<style>p::after{content:"";display:block;height:10px;' +
+        'background:url(cup.png) no-repeat}' +
+        'p::first-letter{background-image:url(letter.png)}' +
+        'div::before{content:"";border:4px solid;' +
+        'border-image:url(frame.png) 4}</style>' +
+        '<p>text</p><div>more</div>',
+      partial: false,
+      onResource: (r: { url: string; element: { name: string } }) => {
+        asked.push({ url: r.url, element: r.element.name });
+        return null;
+      },
+    }),
+    { backend: 'mock' },
+  );
+  assert.deepStrictEqual(
+    asked.sort((a, b) => a.url.localeCompare(b.url)),
+    [
+      { url: 'cup.png', element: 'p' },
+      { url: 'frame.png', element: 'div' },
+      { url: 'letter.png', element: 'p' },
+    ],
+    `each asked for once, as its element's: ${JSON.stringify(asked)}`,
+  );
 });
 
 test('a stylesheet handed back by the seam reaches the cascade', async () => {
@@ -14929,6 +15048,38 @@ metric(
 );
 
 metric(
+  'an inline box a hover gives a background paints it in place, and one it takes it from does not',
+  async () => {
+    // the text inside a link keeps the list of decorated boxes around it,
+    // which a hover that gives the link its first background changes
+    const { result, node } = await render(
+      '<style>body{margin:0} a{color:#0000ee} a:hover{background:#ffff00}</style>' +
+        '<p>Some text with <a href="#x">a <span id="s">link</span> in it that' +
+        ' runs on long enough to wrap onto the next line</a> and more.</p>' +
+        '<p id="q">Another paragraph.</p>',
+      200,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+
+    el.setHover(...pointIn(el, 's'));
+    const hovered = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), tree, 'the document was built again');
+    assert.notDeepStrictEqual(hovered, quiet, 'the hover drew nothing');
+    assert.deepStrictEqual(hovered, await rebuilt(result, el));
+
+    // …and off it, from the document built with the background
+    const again = treeOf(el);
+    el.setHover(...pointIn(el, 'q'));
+    const left = await snapshot(result, el);
+    assert.strictEqual(treeOf(el), again, 'the document was built again');
+    assert.deepStrictEqual(left, quiet);
+    assert.deepStrictEqual(left, await rebuilt(result, el));
+  },
+);
+
+metric(
   'a move that touches no rule restyles nothing, and one that changes more than ink builds the document again',
   async () => {
     const { result, node } = await render(
@@ -15280,6 +15431,91 @@ metric(
 );
 
 metric(
+  "an inline element broken around a block takes the block's line in, as a browser does",
+  async () => {
+    // CSS 2.1 9.2.1.1 breaks an inline box around a block inside it, and a
+    // browser reports the inline's box across the lines between its pieces
+    // too: Blink's block-in-inline and Gecko's split inline each give it a
+    // fragment around the block, across the box the block is in and as
+    // tall as its border box. Design 050 makes its archive list items
+    // inline around block links, and each measured as the empty edge after
+    // its link, nowhere near it
+    const { node } = await render(
+      '<style>body{margin:0}div{width:120px;padding-left:10px}' +
+        'ul{margin:0;padding:40px 0 0}li{display:inline}' +
+        'a{display:block;margin:4px 0 4px 5px;height:14px}</style>' +
+        '<div><ul><li id="one"><a href="#">first</a></li>' +
+        '<li id="two">before <a href="#">second</a> after</li></ul></div>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const one = rect('one');
+    assert.deepStrictEqual(
+      [one.x, one.y, one.width, one.height],
+      [10, 44, 120, 14],
+      `a link's line, across the list: ${JSON.stringify(one)}`,
+    );
+    const two = rect('two');
+    assert.ok(
+      two.x === 10 && two.width === 120,
+      `across the list, the text either side in it: ${JSON.stringify(two)}`,
+    );
+    assert.ok(
+      two.y < one.y + one.height + 10 && two.y + two.height > one.y + 60,
+      `from the line before its link to the line after it: ${JSON.stringify(two)}`,
+    );
+  },
+);
+
+metric(
+  "a relatively positioned inline element's rect is where its offset moves it",
+  async () => {
+    // CSS 2.1 9.4.3 moves a relatively positioned box and everything in it,
+    // and `getBoundingClientRect` reports where it went (CSSOM View 6.1).
+    // Design 068 moves its footer links 120px down and 40px right, and each
+    // measured on its own line, as wide as from where it was laid out to
+    // where it was drawn: its text moved across and not down, its edges
+    // not at all
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;font-size:16px;line-height:20px}' +
+        '.r{position:relative;top:120px;left:40px}' +
+        '.o{position:relative;top:10px;left:5px}</style>' +
+        '<p>Text <a id="still" href="#">link</a></p>' +
+        '<p>Text <a id="moved" class="r" href="#">link</a></p>' +
+        '<p>Text <span class="o" id="outer">outer ' +
+        '<a id="inner" class="r" href="#">inner</a></span></p>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const still = rect('still');
+    const moved = rect('moved');
+    assert.ok(
+      Math.abs(moved.x - (still.x + 40)) < 0.5 &&
+        Math.abs(moved.y - (still.y + 20 + 120)) < 0.5,
+      `40px right and 120px down of where it was laid out: ${JSON.stringify(moved)}, not ${JSON.stringify(still)}`,
+    );
+    assert.ok(
+      Math.abs(moved.width - still.width) < 0.5,
+      `as wide as its text: ${moved.width}`,
+    );
+    const outer = rect('outer');
+    const inner = rect('inner');
+    assert.ok(
+      Math.abs(outer.y - (still.y + 40 + 10)) < 0.5,
+      `a box moves by its own offset: ${outer.y}`,
+    );
+    assert.ok(
+      Math.abs(inner.y - (outer.y + 120)) < 0.5,
+      `and one inside it by its own and the one around it: ${inner.y}`,
+    );
+  },
+);
+
+metric(
   "an inline element's rect is its border box down, not its line's height",
   async () => {
     // CSSOM View 6.1: a fragment's border box is its font's content area
@@ -15467,5 +15703,259 @@ metric(
     assert.ok(own.length > 0 && own.every((run) => run.letterSpacing === 2));
     for (const run of own)
       assert.ok(!run.kernAcross, 'an element spaces apart');
+  },
+);
+
+metric(
+  "a paragraph's lines are fitted as a browser fits them, each element's text rounded up to a 64th",
+  async () => {
+    // A browser rounds each element's text on a line up to a 64th of a
+    // pixel before it adds it, and fits the sum with a 64th to spare
+    // (Blink's `SnappedWidth`, `CanFitOnLine`): the Zen Garden's 024 has a
+    // line of Verdana 0.002px past its 529px, three elements' text on it,
+    // that Chrome breaks and the sum of its advances fitted. The engine does
+    // that for a layout made with `fit: 'items'`, and reports a line as wide
+    // as it fitted it, so a box sized to its text still holds it
+    const { result, node } = await render(
+      '<style>body{margin:0}p{margin:0;width:300px}.f{float:left}</style>' +
+        '<p>alpha <b>beta</b> gamma, and a line long enough to wrap</p>' +
+        '<p><span class="f" id="f">one <i>two</i> three <b>four</b></span></p>',
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(linesOf(el, 'f').length, 1, 'a float holds its text');
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const made: { fit?: string; maxWidth?: number }[] = [];
+    const recording: FontsLike = {
+      layout: (runs, style, options) => {
+        made.push(options);
+        return fonts.layout(runs, style, options);
+      },
+      match: (...args) => fonts.match(...args),
+    };
+    const { layoutDocument } = await import('../src/html/layout/block.js');
+    const tree = (el as unknown as { _tree: unknown })._tree;
+    layoutDocument(tree as never, recording, 400, 600);
+    const wrapping = made.filter((options) => options.maxWidth !== undefined);
+    assert.ok(wrapping.length > 0, 'a paragraph was laid out to a width');
+    assert.ok(
+      wrapping.every((options) => options.fit === 'items'),
+      `every one fitted as a browser fits it: ${JSON.stringify(wrapping)}`,
+    );
+  },
+);
+
+/** The images a paint drew that show through the clips around them. */
+function shownImages(ops: PaintOp[]) {
+  type Area = { x: number; y: number; w: number; h: number };
+  const meet = (a: Area, b: Area): Area => {
+    const x = Math.max(a.x, b.x);
+    const y = Math.max(a.y, b.y);
+    return {
+      x,
+      y,
+      w: Math.min(a.x + a.w, b.x + b.w) - x,
+      h: Math.min(a.y + a.h, b.y + b.h) - y,
+    };
+  };
+  let clip: Area | null = null;
+  const saved: (Area | null)[] = [];
+  const shown: Area[] = [];
+  for (const op of ops) {
+    if (op.op === 'save') saved.push(clip);
+    else if (op.op === 'restore') clip = saved.pop() ?? null;
+    else if (op.op === 'clip') clip = clip ? meet(clip, op) : op;
+    else if (op.op === 'image') {
+      const seen = clip ? meet(clip, op) : op;
+      if (seen.w > 0 && seen.h > 0) {
+        shown.push({ x: op.x, y: op.y, w: op.w, h: op.h });
+      }
+    }
+  }
+  return shown;
+}
+
+metric(
+  "a wrapped inline box's image is placed in its fragments laid end to end",
+  async () => {
+    // CSS Fragmentation 3, 5.4: `box-decoration-break: slice`, CSS's
+    // default, places a box's background as though its fragments were one
+    // box end to end, of which each shows its slice. An arrow `no-repeat`
+    // in a link's left padding was placed in each fragment's own padding
+    // box, and so drawn again over the text at the start of every line the
+    // link wrapped onto
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/30px sans-serif}p{margin:0;' +
+        'width:160px}a{padding-left:20px;background:#ffff00 url(i.png) ' +
+        '0 3px no-repeat}</style><p>Read <a href="#">the guide for the ' +
+        'whole design team</a> first.</p>',
+    );
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops, {
+      backgroundImageFor: () => ({
+        image: {},
+        width: 10,
+        height: 10,
+        ratio: 1,
+      }),
+    });
+    const yellow = parseColor('#ffff00');
+    const fragments = ops.flatMap((op) =>
+      op.op === 'fill' && op.style === yellow ? [op] : [],
+    );
+    assert.ok(fragments.length >= 2, 'the link wraps');
+    assert.deepStrictEqual(
+      shownImages(ops).map((r) => [r.x, r.y]),
+      [[fragments[0].x, fragments[0].y + 3]],
+      'on the first fragment alone',
+    );
+  },
+);
+
+metric(
+  "a wrapped inline box's gradient runs across its fragments, and `clone` starts it on each",
+  async () => {
+    // Sliced, a gradient spans the strip a box's fragments make laid end
+    // to end in its direction, the first line's fragment at its start —
+    // the left, or the right where the box is right to left — and each
+    // line's carries on where the line before's stopped; it started again
+    // on each. `box-decoration-break: clone` places it in each fragment's
+    // own box, as it was
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/30px sans-serif}p{margin:0;' +
+        'width:160px;height:150px}span{background:linear-gradient(' +
+        'to right,#ff0000,#0000ff)}#c{box-decoration-break:clone}</style>' +
+        '<p>A <span>gradient across every line this wraps onto</span></p>' +
+        '<p dir="rtl">A <span>gradient across every line this wraps onto' +
+        '</span></p><p>A <span id="c">gradient across every line this ' +
+        'wraps onto</span></p><p><i id="w" style="-webkit-box-decoration-' +
+        'break:clone">prefixed</i></p>',
+    );
+    const el = view(node);
+    const fills = gradientFills(await fillsOf(el));
+    // each paragraph's fragments, a line at a time, and each one's slice
+    // of its gradient's line: from how far along it its left edge is to
+    // how far its right edge is, in pixels
+    const slices = (p: number) =>
+      fills
+        .filter((f) => f.y >= p * 150 && f.y < (p + 1) * 150)
+        .sort((a, b) => a.y - b.y)
+        .map((f) => ({
+          from: f.x - f.line[0],
+          to: f.x + f.w - f.line[0],
+          length: f.line[2] - f.line[0],
+        }));
+    const near = (a: number, b: number, message: string) =>
+      assert.ok(Math.abs(a - b) <= 1, `${message}: ${a} against ${b}`);
+    const ltr = slices(0);
+    assert.ok(ltr.length >= 2, 'the span wraps');
+    near(ltr[0].from, 0, 'the first line starts it');
+    for (let i = 1; i < ltr.length; i += 1) {
+      near(ltr[i].from, ltr[i - 1].to, `line ${i + 1} carries it on`);
+    }
+    near(ltr.at(-1)!.to, ltr.at(-1)!.length, 'and the last ends it');
+
+    const rtl = slices(1);
+    assert.ok(rtl.length >= 2, 'the right-to-left span wraps');
+    near(rtl[0].to, rtl[0].length, 'its first line is at the right end');
+    for (let i = 1; i < rtl.length; i += 1) {
+      near(rtl[i].to, rtl[i - 1].from, `line ${i + 1} carries it on leftward`);
+    }
+    near(rtl.at(-1)!.from, 0, 'and its last is at the left');
+
+    const cloned = slices(2);
+    assert.ok(cloned.length >= 2, 'the cloned span wraps');
+    for (const [i, slice] of cloned.entries()) {
+      near(slice.from, 0, `line ${i + 1} starts it again`);
+      near(slice.to, slice.length, `and line ${i + 1} ends it`);
+    }
+    assert.strictEqual(
+      (boxOf(el, 'w') as unknown as { style: ComputedStyle }).style
+        .boxDecorationBreak,
+      'clone',
+      'under its prefixed name too',
+    );
+  },
+);
+
+test("a box's leading is split as a browser splits it: the half above rounded down to a whole pixel", async () => {
+  // CSS gives each side of a box's text half its leading; which side of the
+  // pixel grid a half that is not whole goes to is the user agent's, and
+  // Blink rounds the half above down (`CalculateLeadingSpace`). On a
+  // browser's whole-pixel metrics a 13px Arial on an 18px line has 1px of
+  // leading over its 15 and 2px under; split evenly, it reached half a pixel
+  // above the 12px strut beside it, and the line came out 18.5px tall —
+  // every design in the Zen Garden's 040 list, eight of them to a column
+  const { strutOf } = await import('../src/html/layout/inline.js');
+  const faces: Record<number, { ascent: number; descent: number }> = {
+    12: { ascent: 11, descent: 3 },
+    13: { ascent: 12, descent: 3 },
+  };
+  const fonts = {
+    layout: () => {
+      throw new Error('not laid out');
+    },
+    match: (_family: string, { size }: { size: number }) => ({
+      metrics: () => ({ ...faces[size], lineGap: 0, lineHeight: 15 }),
+    }),
+  } as unknown as FontsLike;
+  // what the strut reads of a style
+  const style = (fontSize: number, lineHeight: number): ComputedStyle =>
+    ({
+      fontFamily: 'Blink',
+      fontSize,
+      fontWeight: 400,
+      fontStyle: 'normal',
+      lineHeight,
+      lineHeightIsLength: true,
+    }) as unknown as ComputedStyle;
+  assert.deepStrictEqual(
+    strutOf(fonts, style(12, 18)),
+    { ascent: 13, descent: 5 },
+    'four pixels of leading, two above and two below',
+  );
+  assert.deepStrictEqual(
+    strutOf(fonts, style(13, 18)),
+    { ascent: 13, descent: 5 },
+    'three, one above and two below: level with the 12px strut',
+  );
+  assert.deepStrictEqual(
+    strutOf(fonts, style(13, 12)),
+    { ascent: 10, descent: 2 },
+    'and less than none, rounded down all the same',
+  );
+});
+
+metric(
+  "a paragraph's baseline is where a browser puts it, and its glyphs are drawn on it",
+  async () => {
+    // A paragraph laid out whole takes its baselines from the text engine,
+    // which splits the leading evenly; its lines are placed as the strut's
+    // are, and the layout drawn that much higher, so its glyphs, its
+    // decorations and an inline box beside it agree
+    const { result, node } = await render(
+      '<style>body{margin:0}p{margin:0;font:13px/18px sans-serif}</style>' +
+        '<p id="plain">plain text</p>',
+    );
+    const el = view(node);
+    await act();
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const face = fonts
+      .match('sans-serif', { size: 13, weight: 400, style: 'normal' })
+      .metrics(13);
+    const [plain] = linesOf(el, 'plain');
+    const want =
+      face.ascent + Math.floor((18 - face.ascent - face.descent) / 2 + 1e-6);
+    assert.ok(
+      Math.abs(plain.baseline - want) < 0.01,
+      `the leading's half above rounded down: ${plain.baseline}, not ${want}`,
+    );
+    const [text] = plain.texts;
+    const natural = text.layout.lines[text.layoutLine];
+    assert.ok(
+      Math.abs(text.drawY + natural.baseline - (plain.y + plain.baseline)) <
+        1e-6,
+      'and its glyphs are drawn on it',
+    );
   },
 );

@@ -320,6 +320,11 @@ export interface ComputedStyle {
   float: 'none' | 'left' | 'right';
   clear: 'none' | 'left' | 'right' | 'both';
   boxSizing: 'content-box' | 'border-box';
+  /** `box-decoration-break` (CSS Fragmentation 3, 5.4): how an inline box
+   *  that goes on to another line places its background images and
+   *  gradients — `slice`, from its fragments laid end to end as one box,
+   *  or `clone`, from each fragment's own. */
+  boxDecorationBreak: 'slice' | 'clone';
   /** Whether a block is a line-clamp container, and how many lines of its
    *  formatting context it shows (CSS Overflow 4, 5.3.1): its `max-lines`,
    *  or Infinity for `line-clamp: auto`, which shows as many as its height
@@ -747,6 +752,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     float: 'none',
     clear: 'none',
     boxSizing: 'content-box',
+    boxDecorationBreak: 'slice',
     lineClamp: null,
     maxLines: null,
     clampContinue: 'auto',
@@ -1364,6 +1370,12 @@ export function applyDeclaration(
     case 'box-sizing': {
       const v = value.toLowerCase();
       if (v === 'border-box' || v === 'content-box') style.boxSizing = v;
+      return;
+    }
+    case 'box-decoration-break':
+    case '-webkit-box-decoration-break': {
+      const v = value.trim().toLowerCase();
+      if (v === 'slice' || v === 'clone') style.boxDecorationBreak = v;
       return;
     }
     case 'aspect-ratio': {
@@ -4923,6 +4935,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'min-height': ['minHeight', 'minHeightKeyword'],
   'max-height': ['maxHeight', 'maxHeightKeyword'],
   'box-sizing': ['boxSizing'],
+  'box-decoration-break': ['boxDecorationBreak'],
+  '-webkit-box-decoration-break': ['boxDecorationBreak'],
   margin: sides((s) => `margin${s}`),
   'margin-top': ['marginTop'],
   'margin-right': ['marginRight'],
