@@ -16,7 +16,8 @@
 // show, what to load, the zoom — numbers and strings, so a browser re-render
 // that changed none of them sends nothing. Out, through callbacks that
 // arrive as one-way messages: a document to make a history step of, its
-// title and icon, a link followed. The history is the browser's; the
+// title and icon, a link followed or a form submitted — which is a link
+// with, for a POST, a body. The history is the browser's; the
 // documents are this process's, kept by the id the browser gave the
 // navigation that loaded each one.
 import {

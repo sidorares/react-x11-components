@@ -1187,6 +1187,21 @@ component that silently made requests would turn "render this HTML" into
 error. **Do not add a convenience default that fetches**; the absence is the
 feature.
 
+**A form is a link it writes itself, and it sends nothing either.**
+`onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
+entry list, encodes it and resolves the action, and the host decides
+whether the request goes anywhere — `examples/browser/` sends it. The pure
+half (which controls a form owns, what Enter submits, what a reset puts
+back, why a form is invalid) is `form.ts` and is tested with no display;
+the widgets, the presses on a `<button>`, a `<label>` or an image button,
+the validation message and `autofocus` are `widgets.ts`. Two things there
+are load-bearing: typed text lives in `FormState` beside the DOM — the
+`value` attribute is the field's default, and a `<textarea>` has none — and
+**a widget is keyed by its element, not by where it is.** Keyed by
+position, every relayout that moved a field (a stylesheet landing while
+someone typed) mounted a new widget, and the focus and the caret went with
+the old one.
+
 Two things it changed elsewhere, both extractions rather than copies:
 
 - **`src/richtext/runs.ts`** is new: the per-run decoration painter and the

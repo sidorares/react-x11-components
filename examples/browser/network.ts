@@ -17,6 +17,12 @@
 //   - **No cookies, no scripts, no downloads.** Nothing is stored between
 //     requests, and anything that is not a document, an image, a stylesheet
 //     or a font is not fetched at all.
+//   - **A form's POST says where it came from.** Its `Origin` and `Referer`
+//     are the page's, as a browser's are, because a server tells a form's
+//     POST from a forged one by them. What it cannot send is a session: with
+//     no cookies, a form that needs one — a sign-in, most that carry a CSRF
+//     token — is refused by its site. A search form, DuckDuckGo Lite's
+//     among them, needs none.
 //
 // The User-Agent says what this is. Sites that sniff for a browser they
 // know send what they send to an unknown one, which is usually the simpler
