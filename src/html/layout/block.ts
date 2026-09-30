@@ -1071,11 +1071,20 @@ function layoutBesideFloats(
         band = over;
         continue;
       }
+      // Where no float narrows the room on either side, the box is where
+      // it would be were there none, and one too wide for its containing
+      // block overflows it here: below the floats it would be the same box
+      // in the same room. Blink tests a fit only against a side a float is
+      // on (`can_expand_outside_opportunity`, BlockLayoutAlgorithm::
+      // LayoutNewFormattingContext). Design 209's 247px heading, which
+      // clips its overflow, in a 240px column beside a float that ends
+      // left of the column, went under the float, 555px down.
+      if (lo === -Infinity && hi === Infinity) fits = true;
       // What is too wide overflows at the end of the line, as far as a
       // negative margin there takes it, but no further into a float or
       // past the room; at the start it would run into the floats, and
       // waits below them (the suite's floats-wrap-bfc-with-margin tests)
-      if (inRoom) {
+      else if (inRoom) {
         fits = box.marginLeft + box.width + box.marginRight <= room + 0.5;
       } else if (rtl) {
         const limit = Math.max(contentLeft + Math.min(0, box.marginLeft), lo);

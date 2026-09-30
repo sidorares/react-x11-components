@@ -356,7 +356,9 @@ holds its floats and sits beside
 another block's rather than under them, its margins its containing
 block's: a column with `overflow: hidden` and a 220px margin beside a
 200px sidebar starts 220px in, the margin overlapping the float, and one
-the floats leave too little room for goes below them.
+the floats leave too little room for goes below them. One too wide for its
+containing block where no float narrows its room stays where it is and
+overflows it, as it would with no floats; below them it would be as wide.
 A float in a paragraph goes on the line it is met on (CSS 2.1 9.5.1): at
 that line's top where it fits beside what the line holds already, which
 moves over for it, and at the next line's top where it does not — so an
