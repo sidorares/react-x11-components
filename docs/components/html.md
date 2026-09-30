@@ -176,13 +176,31 @@ declares a family once per script and a self-hosted family often declares
 every weight it has; a page that uses two weights of the Latin half asks for
 two files. The sources are tried in order: one whose `format()` is not a
 font a text engine reads (`embedded-opentype`, `svg`) is passed over, and so
-is one the host declines or whose bytes do not register — a WOFF2 on macOS,
-whose CoreText reads no such container, falls through to the WOFF beside
-it. `local()` is not looked up.
+is one the host declines, one whose bytes do not register — a WOFF2 on
+macOS, whose CoreText reads no such container, falls through to the WOFF
+beside it — and one the engine reads and cannot set text in, below.
+`local()` is not looked up.
 
 Until a face has loaded its family is left out of the list, and the text is
 set in the next family the author named, as `font-display: swap` has it;
 when it arrives the document is set again.
+
+**A face the text engine cannot set costs its family, not the document.**
+A variable font is drawn by cutting an instance out of it, and ntk, the
+engine on X11 and Wayland, cuts one for the weight and the size a style asks
+for with fontkit — which, as released, cuts none out of a WOFF or a WOFF2,
+the containers a variable web font is served in. The throw came out of the
+first text layout in the family at any weight but the file's default, and
+the document was left blank: nextjs.org's blog, for the first bold word set
+in Geist. So a face is asked for an instance once, before it is registered,
+and one that refuses is a source that did not load: the next is tried — a
+`.ttf` or an `.otf` of the same face is cut without trouble — and with none
+left the family stays out of the list, as a browser leaves out a font it
+cannot use. It is said once a connection, in development, with the engine's
+own reason. CoreText and DirectWrite move an axis themselves and are not
+asked. Nothing here knows the container: a fontkit that cuts an instance out
+of a WOFF2 ([windowkit/fontkit#1](https://github.com/windowkit/fontkit/pull/1))
+answers, and the text is set in the face at every weight its axis has.
 
 **A family is registered under a name nothing else has.** Fonts go to
 react-x11's font manager, which is the application's, so the component

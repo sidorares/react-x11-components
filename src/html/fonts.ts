@@ -35,6 +35,18 @@
 // keyed by a family list, the text layouts', the metrics', ntk's, that the
 // text has to be set again.
 //
+// **A face the text engine cannot set is not registered.** A face is drawn by
+// the engine, and an engine can read a file it cannot draw every weight of:
+// ntk cuts an instance out of a variable face for the weight and the size a
+// style asks for, and fontkit, which does the cutting, could not cut one out
+// of a WOFF2 — the container nearly every variable web font is served in.
+// The throw came out of the first text layout in the family, and the
+// document it took down was nextjs.org's blog, for Geist. So a face is asked
+// for an instance once, before it is registered (`refusal`), and one the
+// engine refuses is a source that did not load: the next is tried, and with
+// none left the family stays out of the list and the text is set in the
+// next one, as a browser sets it when it cannot use a font.
+//
 // A family split by `unicode-range` is registered a name per range, since the
 // font manager picks among one name's faces by weight and slant alone, and
 // the range that holds the most of the document's characters goes first: the
@@ -46,7 +58,7 @@
 // anywhere in the app (react-x11's `loadFont` says so), and nothing is ever
 // unregistered — the font manager has no way to. A session that visits many
 // sites keeps their faces, one registration per distinct declaration.
-import { loadFont } from 'react-x11';
+import { loadFont, openFont } from 'react-x11';
 import type { Element } from 'domhandler';
 
 import type { FontFaceRule } from './css/parse.js';
@@ -126,6 +138,8 @@ interface Registry {
   /** Faces being loaded, by `faceKey`, so a second document waits for the
    *  first document's request rather than making its own. */
   pending: Map<string, Promise<boolean>>;
+  /** Whether a face the engine refused has been said (`warnRefused`). */
+  warned: boolean;
 }
 
 const REGISTRIES = new WeakMap<object, Registry>();
@@ -138,6 +152,7 @@ function registryOf(app: object): Registry {
       names: new Map(),
       ready: new Set(),
       pending: new Map(),
+      warned: false,
     };
     REGISTRIES.set(app, registry);
   }
@@ -493,12 +508,12 @@ export class WebFonts implements FontFamilies {
         }
         if (isPromise(answer)) {
           answer.then(
-            (result) => after(this._register(face, result)),
+            (result) => after(this._register(face, result, source.url)),
             () => after(false),
           );
           return 'waiting';
         }
-        if (this._register(face, answer)) {
+        if (this._register(face, answer, source.url)) {
           finish(true);
           if (sync) face.state = 'ready';
           else this._settled(face, true);
@@ -529,12 +544,24 @@ export class WebFonts implements FontFamilies {
   /** Register a face's bytes under its group's name. False when the host
    *  declined, or the font manager could not read them — a `.woff2` on
    *  macOS, whose CoreText reads no such container, or a file that is not a
-   *  font — and the next source is tried. */
-  private _register(face: Face, result: ResourceResult | null): boolean {
+   *  font — or read them and cannot set text in them (`refusal`), and the
+   *  next source is tried. */
+  private _register(
+    face: Face,
+    result: ResourceResult | null,
+    url: string,
+  ): boolean {
     if (this._destroyed || !this._app || result?.kind !== 'font') return false;
     const { weight, style } = face.rule;
+    const app = this._app as Parameters<typeof loadFont>[0];
     try {
-      loadFont(this._app as Parameters<typeof loadFont>[0], result.bytes, {
+      // `loadFont` opens the file first too, and finds this one opened
+      const refused = refusal(app, openFont(app, result.bytes), this._fallback);
+      if (refused !== null) {
+        warnRefused(registryOf(this._app), url, refused);
+        return false;
+      }
+      loadFont(app, result.bytes, {
         family: face.group.name,
         // a range is registered at the weight nearest regular in it: the
         // font manager picks among a group's faces by distance from one
@@ -558,6 +585,89 @@ export class WebFonts implements FontFamilies {
     this._forget();
     this._changed();
   }
+}
+
+/** The slice of an opened face `refusal` reads: react-x11's `Font`. */
+interface OpenedFace {
+  variationAxes?: Record<string, { min: number; default: number; max: number }>;
+  variation?(settings: Record<string, number>): unknown;
+}
+
+/** The axes a style moves without naming one: ntk sets `wght` from the
+ *  weight and `opsz` from the size (its `docs/fonts.md`), and nothing here
+ *  hands it a `font-variation-settings`. A face with neither is set as its
+ *  file has it, whatever else varies in it. */
+const DRIVEN_AXES = ['wght', 'opsz'];
+
+/**
+ * Why the text engine cannot set text in an opened face, or null when it
+ * can: the face is asked for the instance a layout will ask it for, at the
+ * far end of each axis a style moves, and the answer is the engine's own.
+ * What it cost unasked was the document: ntk instantiates inside `match`,
+ * so the throw came out of the first layout in the family, at whatever
+ * weight was not the file's default.
+ *
+ * Only an engine that draws through the face is asked. CoreText and
+ * DirectWrite move an axis themselves, and the face react-x11 opens there
+ * is fontkit's, for an application to read: what it cannot do says nothing
+ * about what they draw.
+ */
+export function refusal(
+  app: object,
+  font: OpenedFace,
+  family: string,
+): string | null {
+  const axes = font.variationAxes;
+  if (!axes || typeof font.variation !== 'function') return null;
+  const settings: Record<string, number> = {};
+  for (const tag of DRIVEN_AXES) {
+    const axis = axes[tag];
+    if (!axis) continue;
+    const far = axis.max !== axis.default ? axis.max : axis.min;
+    if (far !== axis.default) settings[tag] = far;
+  }
+  if (!Object.keys(settings).length) return null;
+  try {
+    font.variation(settings);
+    return null;
+  } catch (error) {
+    return instantiates(app, family)
+      ? String((error as Error)?.message ?? error)
+      : null;
+  }
+}
+
+/** Whether the engine's faces are cut into instances as an opened one is:
+ *  the face it matches a family with has `variation`, as ntk's has and a
+ *  CoreText or DirectWrite one has not. An engine that cannot say — no
+ *  family to match — is taken to, since what is at stake is the document. */
+function instantiates(app: object, family: string): boolean {
+  try {
+    const fonts = (app as { fonts?: { match?(family: string): unknown } })
+      .fonts;
+    const face = fonts?.match?.(family) as OpenedFace | null | undefined;
+    return !face || typeof face.variation === 'function';
+  } catch {
+    return true;
+  }
+}
+
+/** Said once a connection, in development: a page set in its fallback
+ *  family looks like a font that never loaded, and this says it did. */
+function warnRefused(registry: Registry, url: string, why: string): void {
+  if (registry.warned) return;
+  registry.warned = true;
+  const g = globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+    console?: { warn(message: string): void };
+  };
+  if (g.process?.env?.NODE_ENV === 'production') return;
+  g.console?.warn(
+    `@react-x11/components: <Html> loaded the font at ${url} and the text ` +
+      'engine cannot set text in it, so its family is left out and the text ' +
+      'is set in the next one — as it is for every face the engine refuses. ' +
+      `A variable font served as WOFF2 is the usual cause.\n${why}`,
+  );
 }
 
 /** A face's identity within a registered name. */
