@@ -42,6 +42,7 @@ import {
   scrolls,
 } from '../css/style.js';
 import { inkColor, isTransparent, resolve } from '../css/values.js';
+import { tagOf } from '../dom.js';
 import {
   BOX_RAISES,
   LINE_BOX_RAISES,
@@ -3299,6 +3300,7 @@ function atomicRaise(
  */
 function atomicBaseline(box: Box): number {
   const bottom = box.height + box.marginTop + box.marginBottom;
+  const button = isButton(box);
   if (
     box.kind === 'replaced' ||
     // a box that clips sits on its bottom margin edge, for legacy reasons
@@ -3307,8 +3309,8 @@ function atomicBaseline(box: Box): number {
     // sits on its first item's, as it does unclipped. A MediaWiki button
     // is an `overflow: hidden` inline flex box of one icon, and stood its
     // whole height on the baseline, the line under it the strut's descent
-    // taller
-    (scrolls(box.style) && box.kind !== 'flex') ||
+    // taller. Nor a `<button>`, which sits on its label clipped or not
+    (scrolls(box.style) && box.kind !== 'flex' && !button) ||
     // layout containment keeps its baseline in (CSS Containment 2, 3.3)
     box.style.contain & CONTAIN_LAYOUT
   ) {
@@ -3322,7 +3324,25 @@ function atomicBaseline(box: Box): number {
         box.kind === 'flex'
         ? firstBaselineIn(box)
         : lastBaselineIn(box);
-  return baseline === null ? bottom : box.marginTop + (baseline - box.y);
+  if (baseline !== null) return box.marginTop + (baseline - box.y);
+  // A `<button>` with no line in it sits on the bottom of its content box,
+  // not of its margin box: where its label would have sat. No specification
+  // says so and every browser does — Blink gives the element the content
+  // box as the edge its baseline is synthesized from
+  // (`HTMLButtonElement::AdjustStyle`). An icon button drawn of blocks, the
+  // three bars of a menu toggle, stood its padding under the baseline, and
+  // the line it was on was as much taller: GitHub's header, by four pixels.
+  return button
+    ? bottom - box.marginBottom - box.borderBottom - box.padBottom
+    : bottom;
+}
+
+/** Whether a box is a `<button>` element's: one drawn as the document's,
+ *  which a replaced control is not. */
+function isButton(box: Box): boolean {
+  return (
+    box.el !== null && box.kind !== 'replaced' && tagOf(box.el) === 'button'
+  );
 }
 
 /**

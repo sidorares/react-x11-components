@@ -648,6 +648,49 @@ metric("an inline-block's text sits on the line's baseline", async () => {
   );
 });
 
+metric(
+  'a button with no line in it sits on the bottom of its content box',
+  async () => {
+    // An inline-block with no line box in it sits on the bottom of its
+    // margin box (CSS 2.1 10.8.1), and a `<button>` on the bottom of its
+    // content box, where its label would be: every browser's rule, which
+    // Blink writes as the edge a button's baseline is synthesized from. Nor
+    // does a button that clips leave its label's baseline for its bottom
+    // edge. A menu toggle of three bars stood its padding under the
+    // baseline, and its line was that much taller.
+    const bars = '<span class="bar"></span>'.repeat(3);
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/24px sans-serif}' +
+        'button{margin:0;border:0;padding:4px;font:inherit}' +
+        '.bar{display:block;width:22px;height:2px;margin:4px auto}</style>' +
+        `<div id="a">x<button id="b">${bars}</button></div>` +
+        // above its padding and its border, whatever its margin
+        '<div id="c">x<button id="d" style="width:40px;height:40px;' +
+        'padding:4px 4px 10px;border:3px solid;margin-bottom:7px"></button>' +
+        '</div>' +
+        '<div id="e">x<button id="f" style="overflow:hidden">Label</button>' +
+        '</div>' +
+        // and a box that is no button keeps its margin box's
+        '<div id="g">x<span id="h" style="display:inline-block;width:22px;' +
+        'height:22px;padding:4px;margin-bottom:7px"></span></div>',
+    );
+    const el = view(node);
+    const baselineOf = (id: string) => {
+      const [line] = linesOf(el, id);
+      return line.y + line.baseline;
+    };
+    const bottom = (id: string) => boxOf(el, id).y + boxOf(el, id).height;
+    const near = (a: number, b: number, what: string) =>
+      assert.ok(Math.abs(a - b) < 0.01, `${what}: ${a} and ${b}`);
+    near(bottom('b') - 4, baselineOf('a'), 'the bars, over the padding');
+    assert.strictEqual(boxOf(el, 'b').height, 30);
+    near(bottom('d') - 13, baselineOf('c'), 'over its padding and border');
+    const [label] = linesOf(el, 'f');
+    near(label.y + label.baseline, baselineOf('e'), 'a label that clips');
+    near(bottom('h') + 7, baselineOf('g'), 'an inline-block, its margin box');
+  },
+);
+
 metric('a no-break space beside a block is a line of its own', async () => {
   // CSS's white space is the space, the tab and the line breaks (CSS Text
   // 3, 4.1); `trim` and `\s` take the no-break space in too, so the
