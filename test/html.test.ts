@@ -17363,3 +17363,35 @@ test("an inline box that a line breaks inside ends that line's fragment at its t
   assert.ok(word.x < -400, `where the indent put it: ${word.x}`);
   await indented.result.unmount();
 });
+
+metric(
+  "an inline box's padding below its line makes the document taller, where nothing clips it",
+  async () => {
+    // An inline box's fragments count in the scrollable overflow of the
+    // block they are in, their padding and border with them (CSS Overflow
+    // 3, 2.2; Blink adds each inline box fragment's border box). Design
+    // 150's footer links, 50px of padding under their text, made Chrome's
+    // page 19px taller than the box they end
+    const page = (wrap: string) =>
+      '<style>html,body{margin:0}body{font:16px/20px sans-serif}</style>' +
+      `<div style="height:900px"></div><div${wrap}><p style="margin:0">` +
+      'text <a id="a" style="padding-bottom:100px">link</a></p></div>';
+    const open = await render(page(''));
+    const el = view(open.node);
+    await act();
+    const link = el.elementRect(findById(el.document, 'a')!)!;
+    const reach = link.y + link.height;
+    assert.ok(reach > 1000, `the link's padding reaches ${reach}`);
+    assert.ok(
+      Math.abs(el.abs.height - reach) <= 1,
+      `and the document with it: ${el.abs.height}`,
+    );
+    await open.result.unmount();
+    // a box that clips what it holds is where the overflow ends
+    const clipped = await render(page(' style="overflow:hidden"'));
+    const inside = view(clipped.node);
+    await act();
+    assert.strictEqual(inside.abs.height, 920, 'clipped, the page ends at 920');
+    await clipped.result.unmount();
+  },
+);

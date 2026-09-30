@@ -50,6 +50,7 @@ import { contained } from './layout/block.js';
 import {
   BOX_RAISES,
   LINE_BOX_RAISES,
+  PADDED_FACES,
   Box,
   CLAMPED,
   CLIPPED_CELLS,
@@ -247,6 +248,27 @@ export function computePaintBounds(box: Box, moved = false): number {
     x2 = Math.max(x2, box.x + box.width + reach);
     y2 = Math.max(y2, box.y + box.height + reach);
   }
+  // An inline box's fragments are boxes on the lines they are on, and its
+  // padding and border reach above and below those lines: they count in
+  // the scrollable overflow of the block it is in (CSS Overflow 3, 2.2) —
+  // Blink adds each inline box fragment's border box
+  // (`ScrollableOverflowCalculator::AddItemsInternal`). Design 150's footer
+  // links, 50px of padding under their text, made Chrome's page 19px
+  // taller than the box they end. Only a box with padding or a border
+  // above or below its text can reach past its lines.
+  if (
+    box.kind === 'inline' &&
+    box.padTop + box.padBottom + box.borderTop + box.borderBottom > 0
+  ) {
+    const reach = inlineFragmentsReach(box);
+    if (reach) {
+      x1 = Math.min(x1, reach.x1);
+      y1 = Math.min(y1, reach.y1);
+      x2 = Math.max(x2, reach.x2);
+      y2 = Math.max(y2, reach.y2);
+      bottom = Math.max(bottom, reach.y2);
+    }
+  }
   const lines = box.lines;
   if (lines) {
     let tallest = 0;
@@ -367,6 +389,55 @@ export function hasRect(box: Box): boolean {
   if (box.kind !== 'block') return true;
   const display = box.style.display;
   return display !== 'table-column' && display !== 'table-column-group';
+}
+
+/**
+ * Where an inline box's fragments are, over the lines of the block it is
+ * in that hold its text: from its face's ascent and its top padding and
+ * border above each line's baseline to its descent and its bottom ones
+ * below, as `paintInlineBoxes` draws them. Null for a box with no text or
+ * no face.
+ */
+function inlineFragmentsReach(
+  box: Box,
+): { x1: number; y1: number; x2: number; y2: number } | null {
+  const face = box.decoration ?? PADDED_FACES.get(box);
+  if (!face || box.subtreeTextEnd <= box.subtreeTextStart) return null;
+  let block = box.parent;
+  while (block && block.kind === 'inline') block = block.parent;
+  const lines = block?.lines;
+  if (!lines?.length) return null;
+  const from = box.subtreeTextStart;
+  const to = box.subtreeTextEnd;
+  let lo = 0;
+  let hi = lines.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid].textEnd > from) hi = mid;
+    else lo = mid + 1;
+  }
+  const moved = offsetOf(box);
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  for (let i = lo; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.textStart >= to) break;
+    if (line.textEnd <= from) continue;
+    const raise = SHIFTED_LINES.has(line)
+      ? (LINE_BOX_RAISES.get(line)?.get(box) ?? BOX_RAISES.get(box) ?? 0)
+      : 0;
+    const baseline = line.y + line.baseline - raise + (moved?.y ?? 0);
+    x1 = Math.min(x1, line.x);
+    x2 = Math.max(x2, line.x + line.width);
+    y1 = Math.min(y1, baseline - face.ascent - box.padTop - box.borderTop);
+    y2 = Math.max(
+      y2,
+      baseline + face.descent + box.padBottom + box.borderBottom,
+    );
+  }
+  return x1 === Infinity ? null : { x1, y1, x2, y2 };
 }
 
 /** Children lists past this size get the sorted viewport index; below it a

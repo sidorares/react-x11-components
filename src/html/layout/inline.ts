@@ -45,6 +45,7 @@ import { inkColor, isTransparent, resolve } from '../css/values.js';
 import {
   BOX_RAISES,
   LINE_BOX_RAISES,
+  PADDED_FACES,
   isOffset,
   letteredAfter,
   SHADOWED_TEXT,
@@ -3913,6 +3914,9 @@ function inlineEdges(
     }
   }
   box.decoration = inlineDecoration(fonts, box, s);
+  if (!box.decoration && fonts && (box.padTop > 0 || box.padBottom > 0)) {
+    PADDED_FACES.set(box, faceExtent(fonts, s));
+  } else PADDED_FACES.delete(box);
   const left = box.marginLeft + box.borderLeft + box.padLeft;
   const right = box.padRight + box.borderRight + box.marginRight;
   return s.direction === 'rtl' ? [right, left] : [left, right];

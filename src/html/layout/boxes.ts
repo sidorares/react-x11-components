@@ -591,6 +591,12 @@ export const BOX_RAISES = new WeakMap<Box, number>();
  *  background, drawn from its baseline, is put there by line. */
 export const LINE_BOX_RAISES = new WeakMap<LineBox, Map<Box, number>>();
 
+/** The face of an inline box with padding above or below its text and
+ *  nothing to paint behind it, which has no `decoration`: its fragments
+ *  still reach past its lines by the padding, and count in the scrollable
+ *  overflow of the block they are in (`computePaintBounds`). */
+export const PADDED_FACES = new WeakMap<Box, InlineDecoration>();
+
 /** The table cells wholly in columns `visibility: collapse` took out of
  *  their table (CSS 2.1 17.5.5), which the paint pass leaves out: a cell is
  *  no descendant of its column and inherits nothing from it, so its own
