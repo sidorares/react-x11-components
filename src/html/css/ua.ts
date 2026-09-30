@@ -42,6 +42,7 @@ export function lookKey(look: RootLook): string {
     look.controlBorder,
     look.controlRadius,
     look.controlFontSize,
+    look.controlFontFamily,
   ].join('|');
 }
 
@@ -204,16 +205,19 @@ input, button, select, textarea, meter, progress {
   margin: 3px 2px;
 }
 /* A control's text is a system font's, not its parent's: Chrome gives these
-   four \`font: -webkit-small-control\`, the default size less 2pt (13.33px)
-   at any size around it, and Gecko \`-moz-field\` the same. The system here
-   is the palette, and its size is the one core's widgets are set at — so a
-   document's form is its window's, and the box a control is measured into
-   is the size the widget mounted in it draws. A <meter> and a <progress>
-   keep their parent's, as they do in Chrome. */
+   four \`font: -webkit-small-control\`, Arial at the default size less 2pt
+   (13.33px) whatever the text around it is set in, and Gecko \`-moz-field\`
+   the same. The system here is the palette, and its family and size are the
+   ones core's widgets are set in — so a document's form is its window's,
+   and the box a control is measured into is the size the widget mounted in
+   it draws. A <textarea> is then \`monospace\` in Chrome, the sheet's code
+   face here; a <meter> and a <progress> keep their parent's font, as they
+   do in Chrome. */
 input, button, select, textarea {
-  font-family: ${look.fontFamily};
+  font-family: ${look.controlFontFamily ?? look.fontFamily};
   font-size: ${look.controlFontSize ?? look.fontSize}px;
 }
+textarea { font-family: ${mono}; }
 /* Chrome's own UA margins for the checkables, near enough: they are the
    controls that sit hard against their label text otherwise. */
 /* HTML's rendering section (15.3.10): a control's text keeps none of the

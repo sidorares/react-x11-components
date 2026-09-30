@@ -707,6 +707,13 @@ export interface RootLook {
    * this is the system's. Without it, `fontSize`.
    */
   controlFontSize?: number;
+  /**
+   * The family they set it in, `theme.fontFamily`, for the same reason: a
+   * browser's system font is its own, Arial in Chrome whatever the page is
+   * set in. A `<textarea>` is `monoFamily`, a browser's `monospace`, as it
+   * is in Chrome. Without it, `fontFamily`.
+   */
+  controlFontFamily?: string;
 }
 
 export function initialStyle(look: RootLook, scale = 1): ComputedStyle {

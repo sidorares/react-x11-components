@@ -17888,3 +17888,107 @@ test("a control's text is the palette's size, not its parent's", async () => {
     'the same in CSS px at 2x',
   );
 });
+
+test("a control's text is the palette's face, not the page's", async () => {
+  // Chrome's `-webkit-small-control` is Arial whatever the page is set in
+  // (`LayoutThemeFontProvider::DefaultGUIFont`), and a textarea is then
+  // `monospace` (Blink's html.css). The system here is the palette, whose
+  // face core's widgets draw in: in the document's, the Zen Garden's serif
+  // page set its fields in Times where Chrome's are Arial, and a `<Select>`
+  // the box was measured for in Times drew its caption in another. A
+  // textarea is the code face, as `monospace` is everywhere in the sheet.
+  // And a widget draws in the face and at the size its box was measured
+  // for, though the provider that names them is inside the window, where
+  // the text cascade does not see it
+  const faces = FONTS
+    ? {
+        ...FONTS,
+        'Page Face': FONTS.monospace,
+        'Palette Face': FONTS['sans-serif'],
+        'Code Face': FONTS.monospace,
+      }
+    : null;
+  const source =
+    '<body><span id="t">x</span>' +
+    '<input id="i" placeholder="field"><select id="s"><option>Opt</option></select>' +
+    '<button id="b">Go</button><input id="u" type="submit" value="Send">' +
+    '<textarea id="a"></textarea><meter id="m"></meter>' +
+    '<select id="own" style="font-family:inherit"></select></body>';
+  const families = async (scale: 1 | 2): Promise<string[][]> => {
+    const result = await renderX11(
+      h(
+        'window',
+        { width: 500, height: 200 } as Record<string, unknown>,
+        h(
+          ThemeProvider,
+          { value: { fontFamily: 'Palette Face', fontSize: 12 } } as Record<
+            string,
+            unknown
+          >,
+          h(
+            'box',
+            { style: { width: 460, flexDirection: 'column' } },
+            h(Html, {
+              source,
+              partial: false,
+              fontFamily: 'Page Face',
+              monoFamily: 'Code Face',
+              'data-testname': 'doc',
+            }),
+          ),
+        ),
+      ),
+      {
+        ...(faces ? { fonts: faces } : { backend: 'mock' as const }),
+        wrap: false,
+        ...(scale === 2 && { scale: 2 }),
+      },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const boxes = ['t', 'i', 's', 'b', 'u', 'a', 'm', 'own'].map(
+      (id) =>
+        (boxOf(el, id) as unknown as { style: { fontFamily: string } }).style
+          .fontFamily,
+    );
+    // what the mounted widgets draw in: the field and the area their own
+    // style, the button and the select caption what they inherit
+    const drawn = (node: DrawnNode) => {
+      const text = (
+        node as unknown as {
+          resolvedTextStyle(): { family: string; size: number };
+        }
+      ).resolvedTextStyle();
+      return `${text.family} ${text.size / scale}`;
+    };
+    const widgets = [
+      await screen.findByPlaceholder('field'),
+      screen.all((n) => n.kind === 'textarea')[0],
+      screen.getByText('Send', { selector: 'text', exact: true }),
+      screen.getByText('Opt', { selector: 'text', exact: true }),
+    ].map(drawn);
+    await result.unmount();
+    return [boxes, widgets];
+  };
+  const [boxes, widgets] = await families(1);
+  assert.deepStrictEqual(
+    boxes,
+    [
+      'Page Face',
+      'Palette Face',
+      'Palette Face',
+      'Palette Face',
+      'Palette Face',
+      'Code Face',
+      'Page Face',
+      'Page Face',
+    ],
+    "text, four controls in the palette's face, a textarea in the code " +
+      'face, a meter and a select told to inherit in the page face',
+  );
+  assert.deepStrictEqual(
+    widgets,
+    ['Palette Face 12', 'Code Face 12', 'Palette Face 12', 'Palette Face 12'],
+    'each widget draws in the face and at the size its box was measured for',
+  );
+  assert.deepStrictEqual(await families(2), [boxes, widgets], 'the same at 2x');
+});
