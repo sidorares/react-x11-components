@@ -1016,6 +1016,7 @@ export class HtmlViewNode extends Node {
             y: r.y / s,
             width: r.width / s,
             height: r.height / s,
+            fontSize: r.fontSize / s,
             ...(r.bare && {
               bare: {
                 ...r.bare,
@@ -2033,6 +2034,8 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.y !== q.y ||
       p.width !== q.width ||
       p.height !== q.height ||
+      p.fontFamily !== q.fontFamily ||
+      p.fontSize !== q.fontSize ||
       p.opacity !== q.opacity ||
       !sameBare(p.bare, q.bare)
     ) {

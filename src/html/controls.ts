@@ -54,6 +54,14 @@ export interface ControlRect {
   width: number;
   height: number;
   /**
+   * The element's computed face and size: what `measureControl` measured
+   * its box in, and so what the widget sets its text in. The palette's,
+   * from the UA sheet, unless the page set its own — `font: inherit`, which
+   * a CSS reset gives every control, for one.
+   */
+  fontFamily: string;
+  fontSize: number;
+  /**
    * Set on a text field or a `<select>` whose own box the author styled —
    * gave it a border or a background (`styledField`). The document draws
    * that box, and the widget goes bare inside its content box, here, with
@@ -78,7 +86,9 @@ export interface BareField {
   width: number;
   height: number;
   color: string;
+  /** @deprecated The rect's own `fontFamily`, which every rect carries. */
   fontFamily: string;
+  /** @deprecated The rect's own `fontSize`, which every rect carries. */
   fontSize: number;
   /**
    * A `<select>`'s: whether it draws its arrow. It does unless the page set
@@ -103,6 +113,8 @@ export function controlRectsOf(tree: BoxTree): ControlRect[] {
       y: box.y,
       width: box.width,
       height: box.height,
+      fontFamily: box.style.fontFamily,
+      fontSize: box.style.fontSize,
     };
     let opacity = 1;
     for (let at: Box | null = box; at; at = at.parent) {
