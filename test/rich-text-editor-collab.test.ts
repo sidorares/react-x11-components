@@ -19,7 +19,7 @@ import {
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { keymap } from 'prosemirror-keymap';
-import type { Command, Plugin } from 'prosemirror-state';
+import type { Command, Plugin, PluginKey } from 'prosemirror-state';
 
 import { RichTextEditor, remoteCaret } from '../src/rich-text-editor/index.js';
 import type { RichTextEditorHandle } from '../src/rich-text-editor/index.js';
@@ -53,6 +53,12 @@ interface Awareness {
   setLocalStateField(field: string, value: unknown): void;
 }
 
+interface YUndoManager {
+  /** How long after an edit the next one still joins its undo step, in
+   *  milliseconds of `Date.now()`. 500 unless told otherwise. */
+  captureTimeout: number;
+}
+
 const load = (name: string): Promise<unknown> => import(name);
 
 const Y = (await load('yjs')) as {
@@ -66,6 +72,7 @@ const yProsemirror = (await load('y-prosemirror')) as {
     options: { cursorBuilder: typeof remoteCaret },
   ): Plugin;
   yUndoPlugin(): Plugin;
+  yUndoPluginKey: PluginKey<{ undoManager: YUndoManager }>;
   undo: Command;
   redo: Command;
 };
@@ -175,7 +182,22 @@ async function mountPair(): Promise<{
     ),
   );
   assert.ok(ada.current && bob.current, 'both handles are set');
+  // An undo step here is everything its editor typed, whatever the clock
+  // says. yUndoPlugin's UndoManager joins an edit to the step before it
+  // while the two are less than `captureTimeout` apart, and a key goes
+  // through the X server: a runner slow enough to spend the half second
+  // between two of them gave a word's last letter a step of its own, and
+  // one undo took back the 'o' of 'hello'.
+  for (const editor of [ada.current, bob.current])
+    undoManagerOf(editor).captureTimeout = Infinity;
   return { ada: ada.current, bob: bob.current };
+}
+
+/** The UndoManager `yUndoPlugin()` made for an editor. */
+function undoManagerOf(editor: RichTextEditorHandle): YUndoManager {
+  const state = yProsemirror.yUndoPluginKey.getState(editor.state);
+  assert.ok(state, 'the editor runs yUndoPlugin');
+  return state.undoManager;
 }
 
 /** Every textblock's element, in document order: Ada's, then Bob's. */

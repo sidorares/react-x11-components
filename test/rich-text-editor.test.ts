@@ -309,10 +309,17 @@ test('markdown shortcuts turn into structure as they are typed', async () => {
   );
 });
 
-test('undo takes a typing run back in one step; redo, and Ctrl+Y, replay it', async () => {
+test('undo takes a typing run back in one step; redo, and Ctrl+Y, replay it', async (t) => {
   const { editor } = await mount({ defaultValue: 'base' });
   await focusAtEnd();
+  // A typing run is prosemirror-history's: edits less than half a second
+  // apart, by the `Date.now()` each transaction is stamped with. A key goes
+  // through the X server, and a runner slow enough to spend that between
+  // two of them made the word two steps, so the time is held for the run.
+  const now = Date.now();
+  const held = t.mock.method(Date, 'now', () => now);
   await type(' word');
+  held.mock.restore();
   assert.strictEqual(editor.getValue(), 'base word');
   await ctrl(KEY_Z);
   assert.strictEqual(editor.getValue(), 'base');
