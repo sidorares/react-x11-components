@@ -666,7 +666,16 @@ is a pill. A rounded box's border is a ring rounded on both its edges, the
 inside by each radius less the border across it, where every side that has
 one has it in one colour and a solid rule: a card's, a button's, and an
 accent down one side, which curves into the corners it meets; a rounded
-box with sides of different colours has them drawn straight. `groove`,
+box with sides of different colours has them drawn straight. Two solid
+sides of different colours share their corner on its diagonal, from its
+outer point to its inner one (CSS Backgrounds 3, 4.3), so each is a
+trapezoid — and a triangle on a box with nothing inside its borders, which
+is the CSS triangle: one coloured border between transparent ones, the
+caret of a dropdown and the arrow of a tooltip, and the slanted edge of a
+section, `border-left: 100vw solid transparent`. Sides of one colour are
+rectangles, the top and the bottom full width, and so are a dotted, a
+dashed and a double side next to any other, and a corner one device pixel
+square. `groove`,
 `ridge`, `inset` and `outset` are drawn in two shades of their colour, lit
 from the top left and shaded as Chromium shades them — a groove in black
 is black against a dark grey — each side a trapezoid meeting its

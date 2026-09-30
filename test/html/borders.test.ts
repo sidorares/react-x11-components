@@ -1,7 +1,7 @@
 // <Html> — borders, radii, outlines, border images and box shadows.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { cleanup, renderX11, screen } from 'react-x11/test';
+import { cleanup, expectPixel, renderX11, screen } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
 import { NO_BORDER_IMAGE } from '../../src/html/css/style.js';
 import type { BorderImage, ComputedStyle } from '../../src/html/css/style.js';
@@ -237,6 +237,207 @@ test('groove and ridge are two bands, inset and outset one, lit from the top lef
   // the outset: a band a side, the top and the left lit
   const outset = of(36, 72);
   assert.deepStrictEqual(outset, [lit, shadow, shadow, lit]);
+});
+
+metric(
+  'sides of different colours meet on the diagonal of the corner they share',
+  async () => {
+    // CSS Backgrounds 3, 4.3: a corner is divided between its two sides on
+    // the line from its outer point to its inner one. The top and the
+    // bottom were drawn full width and the sides between them, so the CSS
+    // triangle — one coloured border between transparent ones, on a box of
+    // no size — was the rectangle around it: a dropdown's caret, a
+    // tooltip's arrow
+    const { result } = await render(
+      '<style>body{margin:0;background:#ffffff}' +
+        'div{width:0;height:0;margin-bottom:10px}</style>' +
+        '<div style="border:20px solid transparent;' +
+        'border-top-color:#ff0000;border-bottom:0"></div>' +
+        '<div style="border-left:20px solid transparent;' +
+        'border-right:20px solid transparent;' +
+        'border-bottom:30px solid #0000ff"></div>' +
+        '<div style="border:20px solid transparent;' +
+        'border-left-color:#00ff00;border-right:0"></div>' +
+        '<div style="width:20px;height:10px;border:20px solid;' +
+        'border-color:#ff0000 #00ff00 #0000ff #ff00ff"></div>',
+    );
+    const ctx = result.ctx;
+    const at = (x: number, y: number, color: string, message: string) =>
+      expectPixel(ctx, x, y, color, { message, tolerance: 8 });
+    // pointing down, 40 by 20 at the top
+    await at(20, 3, '#ff0000', 'the down triangle, under its base');
+    await at(5, 2, '#ff0000', 'along its base');
+    await at(20, 15, '#ff0000', 'near its point');
+    await at(3, 12, '#ffffff', 'beside its left slope');
+    await at(36, 12, '#ffffff', 'beside its right slope');
+    await at(0, 19, '#ffffff', 'the corner under its left slope');
+    await at(39, 19, '#ffffff', 'the corner under its right slope');
+    // pointing up, 40 by 30 from 30 down
+    await at(20, 55, '#0000ff', 'the up triangle, over its base');
+    await at(20, 40, '#0000ff', 'under its point');
+    await at(1, 59, '#0000ff', 'the end of its base');
+    await at(0, 30, '#ffffff', 'the corner over its left slope');
+    await at(39, 30, '#ffffff', 'the corner over its right slope');
+    await at(5, 40, '#ffffff', 'beside its left slope');
+    // pointing right, 20 by 40 from 70 down: its top and bottom are
+    // transparent and as tall as the box between them, which left the side
+    // no height at all
+    await at(3, 90, '#00ff00', 'the right triangle, by its base');
+    await at(15, 90, '#00ff00', 'near its point');
+    await at(19, 70, '#ffffff', 'the corner over its slope');
+    await at(19, 109, '#ffffff', 'the corner under its slope');
+    // four colours round a box, 60 by 50 from 120 down: each corner is
+    // two colours, where it was all the top's or the bottom's
+    await at(10, 123, '#ff0000', 'the top of the top left corner');
+    await at(3, 130, '#ff00ff', "and the left's half of it");
+    await at(56, 130, '#00ff00', "the right's half of the top right");
+    await at(3, 160, '#ff00ff', "the left's half of the bottom left");
+    await at(10, 166, '#0000ff', "and the bottom's");
+    await at(56, 160, '#00ff00', "the right's half of the bottom right");
+    await at(30, 145, '#ffffff', 'and nothing inside it');
+  },
+);
+
+/** The polygons a paint fills — paths of straight lines, each as its
+ *  corners — and how many rectangles, over the part of the document `damage`
+ *  names, or all of it. */
+async function polygonsOf(
+  node: Parameters<typeof view>[0],
+  damage: { x: number; y: number; width: number; height: number } | null = null,
+  paths = true,
+): Promise<{
+  polygons: { style: unknown; points: number[] }[];
+  rects: number;
+}> {
+  const { paintDocument } = await import('../../src/html/paint.js');
+  const polygons: { style: unknown; points: number[] }[] = [];
+  let rects = 0;
+  let points: number[] = [];
+  const ctx = {
+    fillStyle: null as unknown,
+    save() {},
+    restore() {},
+    fillRect() {
+      rects += 1;
+    },
+  };
+  // a context with no path API is the mock backend's
+  if (paths) {
+    Object.assign(ctx, {
+      beginPath() {
+        points = [];
+      },
+      moveTo: (x: number, y: number) => points.push(x, y),
+      lineTo: (x: number, y: number) => points.push(x, y),
+      closePath() {},
+      fill: () => polygons.push({ style: ctx.fillStyle, points }),
+    });
+  }
+  paintDocument(
+    ctx as never,
+    (view(node) as unknown as { _tree: never })._tree,
+    {
+      originX: 0,
+      originY: 0,
+      damage,
+      selection: null,
+      selectionColor: null,
+      imageFor: () => null,
+    },
+  );
+  return { polygons, rects };
+}
+
+test('a corner is cut only where a cut would show, and a side only where a corner of it is', async () => {
+  // Four sides alike are four rectangles, as they were: one colour makes the
+  // same corner whichever side has it, whatever the widths. So are a corner
+  // of one pixel, and dots and dashes.
+  const plain = await render(
+    '<style>body{margin:0}div{width:40px;height:20px}</style>' +
+      '<div style="border:4px solid #ff0000"></div>' +
+      '<div style="border:solid #00ff00;border-width:2px 8px"></div>' +
+      '<div style="border:1px solid;border-color:#0000ff #ff00ff"></div>' +
+      '<div style="border:4px dashed #00ffff;border-left-color:#ffff00"></div>',
+  );
+  const alike = await polygonsOf(plain.node);
+  assert.deepStrictEqual(alike.polygons, [], 'no path among them');
+  assert.ok(alike.rects >= 16, `${alike.rects} rectangles`);
+  cleanup();
+  // One side of another colour, opaque: it is drawn after the top and the
+  // bottom and takes its half of each corner over them, so they stay
+  // rectangles and it alone is a trapezoid, the height of the box
+  const { node } = await render(
+    '<style>body{margin:0}div{width:40px;height:20px}</style>' +
+      '<div style="border:4px solid #ff0000;border-left-color:#0000ff"></div>',
+  );
+  const one = await polygonsOf(node);
+  assert.deepStrictEqual(one.polygons, [
+    { style: parseColor('#0000ff'), points: [0, 28, 0, 0, 4, 4, 4, 24] },
+  ]);
+  assert.strictEqual(one.rects, 3, 'the top, the bottom and the right');
+  // and a context that draws no path draws the sides straight
+  const straight = await polygonsOf(node, null, false);
+  assert.strictEqual(straight.rects, 4);
+  cleanup();
+  // A side that shows what is under it covers nothing: the top and the
+  // bottom are cut back to the diagonal too
+  const sheer = await render(
+    '<style>body{margin:0}div{width:40px;height:20px}</style>' +
+      '<div style="border:4px solid #ff0000;' +
+      'border-left-color:rgba(0,0,255,0.5)"></div>',
+  );
+  const three = await polygonsOf(sheer.node);
+  assert.deepStrictEqual(
+    three.polygons.map((p) => p.points),
+    [
+      [0, 0, 48, 0, 48, 4, 4, 4],
+      [48, 28, 0, 28, 4, 24, 48, 24],
+      [0, 28, 0, 0, 4, 4, 4, 24],
+    ],
+  );
+  assert.strictEqual(three.rects, 1, 'the right');
+});
+
+test('a side cut to what the paint reaches keeps its slope', async () => {
+  // A slanted divider is a triangle the width of the page, and only what is
+  // near the painted area goes to the server. Cut by moving its corners in,
+  // the diagonal turned and crossed the painted area somewhere else.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:0;height:0;border-left:1000px solid transparent;' +
+      'border-bottom:400px solid #00aa77"></div>',
+  );
+  const whole = await polygonsOf(node);
+  assert.deepStrictEqual(
+    whole.polygons.map((p) => p.points),
+    [[1000, 400, 0, 400, 1000, 0, 1000, 0]],
+  );
+  const { polygons } = await polygonsOf(node, {
+    x: 480,
+    y: 180,
+    width: 20,
+    height: 20,
+  });
+  assert.strictEqual(polygons.length, 1);
+  const corners: [number, number][] = [];
+  for (let i = 0; i < polygons[0].points.length; i += 2) {
+    corners.push([polygons[0].points[i], polygons[0].points[i + 1]]);
+  }
+  // the diagonal, from the bottom left to the top right
+  const above = ([x, y]: [number, number]): number => 400 - 0.4 * x - y;
+  assert.ok(
+    corners.every(([x, y]) => x > 300 && x < 700 && y > 0 && y < 400),
+    `cut to the neighbourhood of the paint: ${corners.join(' ')}`,
+  );
+  assert.ok(
+    corners.every((c) => above(c) < 1e-6),
+    `nothing over the diagonal: ${corners.join(' ')}`,
+  );
+  assert.strictEqual(
+    corners.filter((c) => Math.abs(above(c)) < 1e-6).length,
+    2,
+    `and two corners on it, where it is cut: ${corners.join(' ')}`,
+  );
 });
 
 test("a percentage radius is of the box's width across and its height down", async () => {
