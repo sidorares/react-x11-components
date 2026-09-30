@@ -2340,6 +2340,8 @@ function lineBands(
         const b = Math.min(to, text.textEnd);
         if (b <= a) continue;
         const offsets = layoutOffsetsOf(text.layout);
+        const shift = TEXT_SHIFTS.get(text)?.x ?? 0;
+        const moved = laidOut ? shift : 0;
         for (const band of bandsFor(
           text.layout,
           natural,
@@ -2347,11 +2349,22 @@ function lineBands(
           layoutOffsetOf(text, a),
           layoutOffsetOf(text, b, true),
         )) {
-          const moved = laidOut ? (TEXT_SHIFTS.get(text)?.x ?? 0) : 0;
+          // The spaces a line ends on are removed (CSS Text 3, 4.1.2), and
+          // take no room on it: the engine sets them past the line's
+          // content, where a caret after them goes, and a band that took
+          // them in made a link that ends a line a space wider than
+          // Chrome's. So a band is no wider than the line, where the lines
+          // put the text; `pre-wrap`'s spaces, which hang, are below
+          const start = band.x + text.drawX - shift;
+          const left = Math.max(start, line.x);
+          const right = Math.max(
+            left,
+            Math.min(start + band.width, line.x + line.width),
+          );
           out.push({
-            x: dx + band.x + text.drawX - moved,
+            x: dx + left + shift - moved,
             y: dy + line.y,
-            width: band.width,
+            width: right - left,
             height: line.height,
           });
         }
@@ -2360,7 +2373,6 @@ function lineBands(
         for (const space of text.hung ?? []) {
           const at = documentOffsetOf(text, space.at);
           if (at < a || at >= b) continue;
-          const moved = laidOut ? (TEXT_SHIFTS.get(text)?.x ?? 0) : 0;
           out.push({
             x: dx + space.x + text.drawX - moved,
             y: dy + line.y,
