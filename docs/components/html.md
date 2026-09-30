@@ -811,9 +811,18 @@ and one outside sRGB is clipped into it. `color-mix()` mixes in any of
 the spaces above but the wide-gamut RGB ones, premultiplied, so a colour
 mixed with `transparent` keeps its hue: Tailwind 4's `bg-blue-500/50` is
 written that way. A mix with `currentColor` in it is mixed where the
-colour is used. Relative colours, `light-dark()` and the system colours
-are not read, and a declaration using one is dropped, as a browser that
-did not know them would drop it.
+colour is used. `light-dark()` takes its first colour where the element's
+colour scheme is light and its second where it is dark (CSS Color 5), in
+any value a colour stands in, a custom property's included. The scheme is
+the element's `color-scheme` resolved against the react-x11 palette's in
+force, which stands for the reader's preference: `light dark` follows the
+palette, `light` or `only dark` holds whatever it is, and `normal` — the
+initial value — is the palette's own, since the palette is this renderer's
+default look. The scheme picks nothing else: where a browser also turns
+its canvas and its own colours dark, the canvas here is the palette's
+whatever the page says. Relative colours and the system colours are not read, and a
+declaration using one is dropped, as a browser that did not know them
+would drop it.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
