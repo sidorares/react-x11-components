@@ -15729,6 +15729,35 @@ metric(
 );
 
 metric(
+  "an inline element whose text is set at no size is where its block's content starts",
+  async () => {
+    // Text at `font-size: 0` takes no room and gets no box, so an element
+    // of it is on no line; CSS puts it on lines of no height at its block's
+    // top (9.4.2), and a browser measures it as nothing there. It measured
+    // as where the next text that took room starts: the Zen Garden's 170
+    // hides a heading at size 0 and its `<abbr>` was the end of the
+    // paragraph above it, 1,700px up the page
+    const { node } = await render(
+      '<style>body{margin:0}.w{position:relative;height:300px}' +
+        'h2{position:absolute;bottom:0;right:28px;width:112px;height:69px;' +
+        'font-size:0;line-height:0;margin:0}</style>' +
+        '<div class="w"><p>text</p><h2 id="h">So what is this ' +
+        '<abbr id="a">CSS</abbr> about?</h2></div>',
+      400,
+    );
+    const el = view(node);
+    await act();
+    const a = el.elementRect(findById(el.document, 'a')!)!;
+    const h = el.elementRect(findById(el.document, 'h')!)!;
+    assert.deepStrictEqual(
+      [a.x, a.y, a.width, a.height],
+      [h.x, h.y, 0, 0],
+      `nothing, where the heading's content starts: ${JSON.stringify(a)}`,
+    );
+  },
+);
+
+metric(
   "a relatively positioned inline element's rect is where its offset moves it",
   async () => {
     // CSS 2.1 9.4.3 moves a relatively positioned box and everything in it,

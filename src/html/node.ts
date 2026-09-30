@@ -1289,6 +1289,27 @@ export class HtmlViewNode extends Node {
       }
       for (const band of bands) rect = rect ? unionRect(rect, band) : band;
       if (!rect) {
+        // on no line, where its block has none: text set at no size takes
+        // no room and gets no box, and CSS puts it on lines of no height
+        // at the block's top (9.4.2), as a browser measures it — nothing,
+        // where the block's content starts. Where the text after it
+        // starts was the next text that took room, elsewhere in the
+        // document: the Zen Garden's 170 hides a heading at `font-size:
+        // 0`, and an `<abbr>` in it measured as the end of the paragraph
+        // above it
+        let block = box.parent;
+        while (block && block.kind === 'inline') block = block.parent;
+        if (block && !block.lines?.length) {
+          const rtl = block.style.direction === 'rtl';
+          rect = {
+            x: rtl ? block.contentX + block.contentWidth : block.contentX,
+            y: block.contentY,
+            width: 0,
+            height: 0,
+          };
+        }
+      }
+      if (!rect) {
         // an empty subtree's range is `[0, 0)`, wherever it stands: where
         // its text would be is where the text after it starts
         const caret = caretAt(tree.root, textAfter(tree.root, box));
