@@ -1,0 +1,774 @@
+// <Html> — flex layout.
+import { afterEach, test } from 'node:test';
+import assert from 'node:assert';
+import { cleanup, waitFor } from 'react-x11/test';
+import { parseColor } from '../../src/html/css/values.js';
+import {
+  RED_PNG,
+  boxOf,
+  fillsOf,
+  linesOf,
+  metric,
+  render,
+  renderWithBytes,
+  view,
+} from './harness.js';
+import type { PlacedLine } from './harness.js';
+
+afterEach(cleanup);
+
+metric('display:flex lays out through yoga', async () => {
+  const { node } = await render(
+    '<style>.row{display:flex}.row>div{flex:1}</style>' +
+      '<div class="row"><div>a</div><div>b</div><div>c</div></div>',
+    300,
+  );
+  const tree = (view(node) as unknown as { _tree: { root: unknown } })._tree;
+  const items: { x: number; width: number }[] = [];
+  const walk = (box: {
+    kind: string;
+    style: { display: string };
+    x: number;
+    width: number;
+    children: unknown[];
+  }): void => {
+    if (box.kind === 'flex') {
+      for (const child of box.children) {
+        const c = child as typeof box;
+        items.push({ x: c.x, width: c.width });
+      }
+    }
+    for (const child of box.children) walk(child as typeof box);
+  };
+  walk(tree.root as never);
+  assert.strictEqual(items.length, 3, 'three flex items');
+  assert.ok(
+    items[0].x < items[1].x && items[1].x < items[2].x,
+    'laid out in a row',
+  );
+  assert.ok(
+    Math.abs(items[0].width - items[1].width) < 2,
+    'flex: 1 shares the line evenly',
+  );
+});
+
+metric(
+  'a flex container whose children are bare text still renders them',
+  async () => {
+    // Flex has no inline formatting context: a run of inline content becomes
+    // an anonymous item. Dropping it renders an empty row.
+    const { node } = await render('<div style="display:flex">just text</div>');
+    const el = view(node);
+    assert.ok(el.textContent().includes('just text'));
+    const tree = (
+      view(node) as unknown as {
+        _tree: { root: { children: { height: number }[] } };
+      }
+    )._tree;
+    assert.ok(tree.root.children[0].height > 10, 'the row has the text height');
+  },
+);
+
+test('a flex item as wide as its content keeps it on one line', async () => {
+  // An item exactly as wide as its content — `width: fit-content` in a
+  // column, an item its content sizes in a row, a flex box sized to what it
+  // holds — has that width held by Yoga as a float32, and a width rounded
+  // down under the content laid it out a hair too narrow: meetup.com's
+  // "About us" and "Related topics" headings wrapped their last word. Two
+  // boxes whose widths sum to 116.728px, which a float32 holds as
+  // 116.72799682…, stand in for a line of text.
+  const line = (n: number) =>
+    `<div style="line-height:10px">` +
+    `<span id="a${n}" style="display:inline-block;width:106.728px;height:10px"></span>` +
+    `<span id="b${n}" style="display:inline-block;width:10px;height:10px"></span>` +
+    `</div>`;
+  const shapes = [
+    (n: number) =>
+      `<div style="display:flex;flex-direction:column">` +
+      `<div id="fit${n}" style="width:fit-content">${line(n)}</div></div>`,
+    (n: number) =>
+      `<div style="display:flex;align-items:baseline;justify-content:space-between">` +
+      `<div style="display:flex;gap:8px">${line(n)}</div></div>`,
+    (n: number) =>
+      `<div style="display:flex">` +
+      `<div style="display:flex;flex-direction:column">${line(n)}</div></div>`,
+    (n: number) =>
+      `<div style="display:flex;flex-direction:column;width:fit-content">` +
+      `<div style="display:flex">${line(n)}</div></div>`,
+  ];
+  const { node } = await render(shapes.map((shape, n) => shape(n)).join(''));
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'fit0').width, 116.728);
+  shapes.forEach((_, n) =>
+    assert.strictEqual(
+      boxOf(el, `b${n}`).y,
+      boxOf(el, `a${n}`).y,
+      `shape ${n}: the second box beside the first, not under it`,
+    ),
+  );
+});
+
+test('a replaced flex item is as wide as the flex layout made it', async () => {
+  // Laid out alone a replaced box takes its own `width` or its intrinsic
+  // one: two fields `width: 0; flex: 1` were no width at all, and so never
+  // mounted, and images `flex: 1` overlapped at their own widths.
+  const { node } = await render(
+    '<div style="display:flex;width:300px">' +
+      '<input id="a" style="width:0;flex:1;margin:0">' +
+      '<input id="b" style="width:0;flex:1;margin:0">' +
+      '<img id="c" width="50" height="20" style="flex:1">' +
+      '</div>',
+  );
+  const el = view(node);
+  const [a, b, c] = ['a', 'b', 'c'].map((id) => boxOf(el, id));
+  assert.deepStrictEqual(
+    [a.width, b.width, c.width],
+    [100, 100, 100],
+    'each takes a third',
+  );
+  assert.deepStrictEqual([a.x, b.x, c.x], [a.x, a.x + 100, a.x + 200]);
+});
+
+test('a flex and a grid property is inherited, and set back to its initial value', async () => {
+  // `inherit`, `initial` and `unset` reached none of them: `align-self:
+  // inherit` in the suite's flex boxes was `auto`
+  const { node } = await render(
+    '<div style="display:flex;flex-flow:column wrap;justify-content:center;' +
+      'align-items:flex-end;align-self:center;align-content:space-between;' +
+      'flex:2 3 40px;order:4;gap:6px 8px;grid-template-columns:10px 20px;' +
+      'justify-items:center;grid-column:2 / 3">' +
+      '<div id="a" style="flex-flow:inherit;justify-content:inherit;' +
+      'align-items:inherit;align-self:inherit;align-content:inherit;' +
+      'flex:inherit;order:inherit;gap:inherit;' +
+      'grid-template-columns:inherit;justify-items:inherit;' +
+      'grid-column:inherit"></div>' +
+      '<div id="b" style="flex-direction:row-reverse;order:3;flex-grow:2;' +
+      'order:initial;flex-grow:initial;flex-direction:unset"></div></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+  const a = style('a');
+  assert.strictEqual(a.flexDirection, 'column');
+  assert.strictEqual(a.flexWrap, 'wrap');
+  assert.strictEqual(a.justifyContent, 'center');
+  assert.strictEqual(a.alignItems, 'flex-end');
+  assert.strictEqual(a.alignSelf, 'center');
+  assert.strictEqual(a.alignContent, 'space-between');
+  assert.deepStrictEqual([a.flexGrow, a.flexShrink, a.flexBasis], [2, 3, 40]);
+  assert.strictEqual(a.order, 4);
+  assert.deepStrictEqual([a.rowGap, a.columnGap], [6, 8]);
+  assert.ok(a.gridColumns !== null, 'the template');
+  assert.strictEqual(a.justifyItems, 'center');
+  const b = style('b');
+  assert.strictEqual(b.order, 0);
+  assert.strictEqual(b.flexGrow, 0);
+  assert.strictEqual(b.flexDirection, 'row');
+});
+
+metric(
+  'flex items are painted in `order`, and by a `z-index` of their own',
+  async () => {
+    // CSS Flexbox 5.4: an item paints as an inline block does, in `order`,
+    // and a `z-index` makes it a stacking context unpositioned
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex} .r>div{width:40px;' +
+        'height:20px;margin-right:-20px}</style>' +
+        '<div class="r"><div style="order:2;background:#ff0000"></div>' +
+        '<div style="order:1;background:#00ff00"></div></div>' +
+        '<div class="r"><div style="z-index:2;background:#0000ff"></div>' +
+        '<div style="z-index:1;background:#ffff00"></div></div>',
+    );
+    const fills = await fillsOf(view(node));
+    const at = (color: string) =>
+      fills.findIndex((f) => f.style === parseColor(color));
+    assert.ok(at('#00ff00') < at('#ff0000'), 'the second in `order` over');
+    assert.ok(at('#ffff00') < at('#0000ff'), 'the higher `z-index` over');
+  },
+);
+
+metric(
+  "a flex box's background goes with the flow's, and its items with its lines",
+  async () => {
+    // CSS 2.1 Appendix E: a block-level flex box's background and borders
+    // are painted with the other blocks', in the document's order, and its
+    // items as inline blocks are, over all of them — painted whole in its
+    // place, it covered the block after it that a negative margin drew up
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="display:flex;height:40px;background:#ff0000">' +
+        '<div style="width:20px;background:#0000ff"></div></div>' +
+        '<div style="height:40px;margin-top:-40px;background:#00ff00"></div>',
+    );
+    const fills = await fillsOf(view(node));
+    const at = (color: string) =>
+      fills.findIndex((f) => f.style === parseColor(color));
+    assert.ok(at('#ff0000') < at('#00ff00'), 'the next block over the box');
+    assert.ok(at('#00ff00') < at('#0000ff'), 'and the item over both');
+  },
+);
+
+metric(
+  "justify-content's start, end, left and right follow the flex box's direction",
+  async () => {
+    // CSS Box Alignment 3, 6.1: `start` and `end` are the writing mode's,
+    // so a reversed row turns them round; `left` and `right` are the
+    // page's along a row, and `start` along a column. Read as the main
+    // axis's own ends, `right` put a column's items at its bottom
+    const place = async (css: string) => {
+      const { node } = await render(
+        '<style>body{margin:0} .f{display:flex;width:100px;height:100px}' +
+          '.f>div{width:20px;height:20px}</style>' +
+          `<div class="f" style="${css}"><div id="i"></div></div>`,
+      );
+      const box = boxOf(view(node), 'i');
+      cleanup();
+      return [box.x, box.y];
+    };
+    assert.deepStrictEqual(
+      await place('flex-direction:column;justify-content:right'),
+      [0, 0],
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:row-reverse;justify-content:start'),
+      [0, 0],
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:row-reverse;justify-content:right'),
+      [80, 0],
+    );
+    assert.deepStrictEqual(
+      await place('direction:rtl;justify-content:left'),
+      [0, 0],
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:column-reverse;justify-content:end'),
+      [0, 80],
+    );
+    assert.deepStrictEqual(
+      await place('justify-content:unsafe center'),
+      [40, 0],
+    );
+  },
+);
+
+metric(
+  'a replaced flex item is the size the flex layout makes it',
+  async () => {
+    // An image was measured as nothing wide — its content's width, of which
+    // it has none — and then laid out at its natural size whatever the
+    // flex layout said: it did not grow, stretch or shrink. It grows, as
+    // tall as its ratio makes the width it grew to (CSS Flexbox 9.4, step
+    // 7), and stretches; it shrinks no further than its natural width; a
+    // line of a definite height that stretches it gives it the width its
+    // ratio makes of that height; and `flex-basis: content` is its
+    // content's width whatever width it has
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex;width:200px}</style>' +
+        '<div class="r"><canvas id="a" width="20" height="10" ' +
+        'style="flex-grow:1"></canvas></div>' +
+        '<div class="r" style="width:10px"><canvas id="b" width="60" ' +
+        'height="60"></canvas></div>' +
+        '<div class="r" style="height:50px"><canvas id="c" width="20" ' +
+        'height="150"></canvas></div>' +
+        '<div class="r"><div id="d" style="flex-basis:content;width:0">' +
+        '<span style="display:inline-block;width:30px"></span></div></div>',
+    );
+    const el = view(node);
+    const size = (id: string) => {
+      const box = boxOf(el, id);
+      return [box.width, box.height];
+    };
+    assert.deepStrictEqual(size('a'), [200, 100], 'grown along its row');
+    assert.deepStrictEqual(size('b'), [60, 60], 'not shrunk under its width');
+    const [width, height] = size('c');
+    assert.strictEqual(height, 50, 'stretched across its line');
+    assert.ok(Math.abs(width - (50 * 20) / 150) < 0.01, `${width}`);
+    assert.strictEqual(size('d')[0], 30, "its content's width, not its own");
+  },
+);
+
+metric('flex items are laid out in `order`', async () => {
+  // CSS Flexbox 5.4: `order` first, the document's where it is the same;
+  // an `order` that is no integer is no value
+  const { node } = await render(
+    '<style>body{margin:0} .r{display:flex} .r>div{width:20px;height:10px}' +
+      '</style><div class="r"><div id="a" style="order:2"></div>' +
+      '<div id="b"></div><div id="c" style="order:-1"></div>' +
+      '<div id="d" style="order:1.5"></div></div>',
+  );
+  const el = view(node);
+  const x = (id: string) => boxOf(el, id).x;
+  assert.deepStrictEqual(
+    ['a', 'b', 'c', 'd'].map(x),
+    [60, 20, 0, 40],
+    'c, then b and d as they come, then a',
+  );
+});
+
+metric(
+  'flex items aligned by their baselines line up their first lines',
+  async () => {
+    // Yoga has no baseline for an item it measures, and lined them up by
+    // their bottoms; a line of them is as tall as their baselines make it,
+    // and a box that wraps sets one at its line's start below its margin
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex;align-items:baseline;width:300px}' +
+        '.r>div{width:60px}</style>' +
+        '<div class="r" id="row"><div id="a" style="font-size:40px;' +
+        'line-height:40px">A</div><div id="b" style="font-size:10px;' +
+        'line-height:10px;padding-bottom:40px">b</div></div>' +
+        '<div class="r" id="wrap" style="flex-wrap:wrap;align-items:flex-start;' +
+        'width:120px"><div id="c" style="margin-top:10px;height:8px"></div>' +
+        '<div style="height:30px"></div><div style="height:16px"></div></div>',
+    );
+    const el = view(node);
+    const baseline = (id: string) => {
+      const [line] = linesOf(el, id);
+      return line.y + line.baseline;
+    };
+    assert.ok(
+      Math.abs(baseline('a') - baseline('b')) < 0.01,
+      `${baseline('a')} and ${baseline('b')}`,
+    );
+    const row = boxOf(el, 'row');
+    const b = boxOf(el, 'b');
+    assert.ok(b.y > row.y, 'the small one lower');
+    assert.ok(
+      Math.abs(row.y + row.height - (b.y + b.height)) < 0.01,
+      'and the line as tall as it reaches',
+    );
+    assert.strictEqual(
+      boxOf(el, 'c').y - boxOf(el, 'wrap').y,
+      10,
+      'its margin above it',
+    );
+  },
+);
+
+metric("an inline flex box sits on its first item's baseline", async () => {
+  // CSS Flexbox 8.5: its first line's items aligned by their baselines, or
+  // its first item — not its last line box, as an inline block does
+  const { node } = await render(
+    '<style>body{margin:0}</style><div id="p">x<span id="f" ' +
+      'style="display:inline-flex"><span style="font-size:10px;' +
+      'line-height:10px">b</span><span style="font-size:30px;' +
+      'line-height:30px">C</span></span></div>',
+  );
+  const el = view(node);
+  const [line] = linesOf(el, 'p');
+  const flex = boxOf(el, 'f');
+  const small = flex.children[0] as unknown as { lines: PlacedLine[] };
+  const [first] = small.lines;
+  assert.ok(
+    Math.abs(first.y + first.baseline - (line.y + line.baseline)) < 0.01,
+    'the small item on the line',
+  );
+});
+
+metric(
+  "a flex item takes its padding once, and its content's width",
+  async () => {
+    // Yoga holds an item's padding and adds it itself, so the measure answers
+    // inside it; an item of `width: auto` is as wide as its content (CSS
+    // Flexbox 9.2), not a share of the row
+    const place = async (items: string, width = 700) => {
+      const { node } = await render(
+        '<style>body{margin:0;font:14px/20px sans-serif}.r{display:flex;' +
+          'gap:12px}.r>div{padding:12px}</style>' +
+          `<div class="r">${items}</div>`,
+        width,
+      );
+      const el = view(node);
+      const out = ['a', 'b'].map((id) => {
+        const b = boxOf(el, id);
+        return { x: b.x, width: b.width, height: b.height };
+      });
+      cleanup();
+      return out;
+    };
+    const [a, b] = await place(
+      '<div id="a">Install</div><div id="b">Run</div>',
+    );
+    assert.strictEqual(a.height, 44, '12 + 20 + 12, not the padding twice');
+    assert.ok(a.width < 100, `as wide as its word and padding: ${a.width}`);
+    assert.ok(
+      Math.abs(b.x - (a.x + a.width + 12)) < 1e-6,
+      'and the next after it',
+    );
+    // `flex: 1` shares the row, padding and all
+    const [c, d] = await place(
+      '<div id="a" style="flex:1">Install</div><div id="b" style="flex:1">Run</div>',
+    );
+    assert.deepStrictEqual([c.width, d.width, c.height], [344, 344, 44]);
+    // a width of its own is its content box's, 100 + 24 + 4
+    const [e] = await place(
+      '<div id="a" style="width:100px;border:2px solid">W</div><div id="b"></div>',
+    );
+    assert.strictEqual(e.width, 128);
+    // and a row inside a row is as wide as its items side by side
+    const [f] = await place(
+      '<div id="a" style="display:flex;gap:4px;padding:0"><span>One</span>' +
+        '<span>Two</span></div><div id="b">x</div>',
+    );
+    const [one] = await place(
+      '<div id="a" style="padding:0">One</div><div id="b"></div>',
+    );
+    assert.ok(f.width > one.width * 2, `${f.width} holds both words`);
+    // and an auto margin takes the free space on its side
+    const [, end] = await place(
+      '<div id="a">A</div><div id="b" style="margin-left:auto">B</div>',
+    );
+    assert.ok(Math.abs(end.x + end.width - 700) < 1e-6, `${end.x + end.width}`);
+  },
+);
+
+metric(
+  'an absolute box in a flex box is where it would be as its one item',
+  async () => {
+    // CSS Flexbox 4.1: its static position is in the flex box's content box,
+    // aligned by justify-content and align-self; it was at the box's corner.
+    // And its containing block is its own: one in a flex box that is not
+    // positioned was placed against the flex box
+    const place = async (css: string, child = 'width:20px;height:10px') => {
+      const { node } = await render(
+        '<style>body{margin:0}</style>' +
+          '<div style="position:relative;padding:7px">' +
+          `<div style="display:flex;width:100px;height:60px;padding:5px;${css}">` +
+          `<div id="a" style="position:absolute;${child}"></div></div></div>`,
+      );
+      const b = boxOf(view(node), 'a');
+      cleanup();
+      return [b.x, b.y];
+    };
+    assert.deepStrictEqual(
+      await place('justify-content:center;align-items:flex-end'),
+      [52, 62],
+      'centred along the row, at the end across it',
+    );
+    assert.deepStrictEqual(
+      await place(
+        'flex-direction:column;justify-content:flex-end;align-items:center',
+      ),
+      [52, 62],
+      'and the same down a column',
+    );
+    assert.deepStrictEqual(
+      await place('flex-direction:row-reverse'),
+      [92, 12],
+      'a reversed row starts at its end',
+    );
+    assert.deepStrictEqual(
+      await place('', 'top:0;left:0;width:20px;height:10px'),
+      [0, 0],
+      "its offsets are from its containing block's padding edge",
+    );
+  },
+);
+
+metric(
+  "an intrinsic size is a flex item's width, stretched or not",
+  async () => {
+    const { node } = await render(
+      '<style>body{margin:0}span{padding:0 4px}</style>' +
+        '<div style="display:flex;flex-direction:column;width:300px">' +
+        '<div id="badge" style="width:fit-content">New</div>' +
+        '<div id="stretched">New</div></div>' +
+        '<div style="display:flex;width:200px">' +
+        '<div id="whole" style="min-width:max-content">stays whole here</div>' +
+        '<div id="wraps">this one shrinks and wraps instead</div></div>' +
+        '<div style="width:1000px"><div style="float:left" id="ref">' +
+        'stays whole here</div></div>',
+    );
+    const el = view(node);
+    const width = (id: string) => boxOf(el, id).width;
+    assert.strictEqual(width('stretched'), 300);
+    assert.ok(width('badge') < 100, `${width('badge')}: not stretched`);
+    assert.strictEqual(
+      width('whole'),
+      width('ref'),
+      'min-w-max keeps a row item from shrinking below its content',
+    );
+  },
+);
+
+test('a flex container lays its items out in its content box', async () => {
+  // a border-box height holds the padding: `h-16 py-2 items-center` put
+  // its items eight pixels low, centred in 64px from the top of 48
+  const { node } = await render(
+    '<style>body{margin:0} *{box-sizing:border-box}</style>' +
+      '<div style="display:flex;align-items:center;height:64px;padding:8px 0">' +
+      '<div id="a" style="height:20px;width:50px"></div></div>' +
+      // and a column with a minimum height gives its flex-1 the rest
+      '<div style="display:flex;flex-direction:column;min-height:300px">' +
+      '<div style="height:30px"></div><div id="b" style="flex:1"></div>' +
+      '<div id="c" style="height:30px"></div></div>' +
+      // an aspect-ratio box centres in the height its ratio gives it
+      '<div style="width:320px;aspect-ratio:16/9;display:flex;' +
+      'align-items:center;justify-content:center">' +
+      '<div id="d" style="width:40px;height:40px"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').y, 22);
+  assert.strictEqual(boxOf(el, 'b').height, 240);
+  assert.strictEqual(boxOf(el, 'c').y, 334);
+  const d = boxOf(el, 'd');
+  assert.deepStrictEqual([d.x, d.y - 364], [140, 70]);
+});
+
+test("a flex item's negative margin takes its container's end back in", async () => {
+  // A flex box with no height is as tall as its items' margin boxes (CSS
+  // Flexbox 9.4, 9.8). Codex hangs Wikipedia's search field a pixel over
+  // its form's border with `margin: -1px`, and the form came out a pixel
+  // taller than Chrome's: a rule under the field. The bottom of each item
+  // was taken at its border box, which a negative margin ends inside of.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="a" style="display:flex;border:1px solid">' +
+      '<div style="flex:1;margin:-1px;height:32px"></div></div>' +
+      '<div id="b" style="display:flex">' +
+      '<div style="flex:1;margin-bottom:-5px;height:32px"></div></div>' +
+      '<div id="c" style="display:flex;flex-direction:column">' +
+      '<div style="margin-bottom:-5px;height:32px"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 32, 'its border and the field');
+  assert.strictEqual(boxOf(el, 'b').height, 27, 'across a row');
+  assert.strictEqual(boxOf(el, 'c').height, 27, 'down a column');
+});
+
+test('a flex item is no smaller than its content, unless its minimum says', async () => {
+  // `min-width: auto` in a row and `min-height: auto` in a column are the
+  // least an item's content comes to (CSS Flexbox 4.5). Yoga has no such
+  // minimum: it shrank a row's items under what they held, and a column's
+  // first item under its content, which the next one was drawn over.
+  const { node } = await render(
+    '<style>body{margin:0} .i{display:inline-block;width:150px;' +
+      'height:10px}</style>' +
+      '<div style="display:flex;width:200px">' +
+      '<div id="a" style="flex:1"><span class="i"></span></div>' +
+      '<div id="b" style="flex:1"><span class="i"></span></div></div>' +
+      // `min-w-0` lets it go, and so does a box that clips
+      '<div style="display:flex;width:200px">' +
+      '<div id="c" style="flex:1;min-width:0"><span class="i"></span></div>' +
+      '<div id="d" style="flex:1;overflow:hidden"><span class="i"></span>' +
+      '</div></div>' +
+      '<div style="display:flex;flex-direction:column;height:30px">' +
+      '<div id="e"><div style="height:60px"></div></div>' +
+      '<div id="f" style="height:20px"></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.deepStrictEqual(
+    [box('a').width, box('b').width],
+    [150, 150],
+    'a row overflows before an item shrinks under its content',
+  );
+  assert.ok(box('c').width < 150, 'min-width: 0');
+  assert.ok(box('d').width < 150, 'overflow: hidden');
+  assert.strictEqual(box('e').height, 60, 'a column item');
+  assert.strictEqual(box('f').y, box('e').y + 60, 'and the one after it');
+});
+
+test('a flex item with a width is held to the lesser of it and its content', async () => {
+  // CSS Flexbox 4.5: its automatic minimum is the lesser of its specified
+  // size suggestion and its content size suggestion. It was given none: a
+  // `width: 250px; flex-basis: 0` sidebar beside `flex: 1 1 0` content was
+  // no width at all, and drawn over the content (iana.org's root zone)
+  const { node } = await render(
+    '<style>body{margin:0} .i{display:inline-block;height:10px}</style>' +
+      '<div style="display:flex;flex-direction:row-reverse;width:600px">' +
+      '<main id="m" style="flex-grow:1;flex-basis:0"></main>' +
+      '<nav id="n" style="flex-basis:0;width:250px">' +
+      '<div style="width:230px;margin-right:20px;height:10px"></div></nav>' +
+      '</div>' +
+      // content wider than the width: the width
+      '<div style="display:flex;width:100px"><div id="w" style="width:250px">' +
+      '<span class="i" style="width:300px"></span></div></div>' +
+      // content narrower than it: the content
+      '<div style="display:flex;width:300px">' +
+      '<div id="a" style="width:50%;flex-basis:0">' +
+      '<span class="i" style="width:10px"></span></div>' +
+      '<div id="b" style="width:50%;flex-basis:0">' +
+      '<div style="width:200px;height:10px"></div></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.deepStrictEqual(
+    [box('n').x, box('n').width, box('m').x, box('m').width],
+    [0, 250, 250, 350],
+    'the sidebar is its width, the content the rest',
+  );
+  assert.strictEqual(box('w').width, 250, 'no wider than its width');
+  assert.deepStrictEqual(
+    [box('a').width, box('b').width],
+    [10, 150],
+    'no narrower than the lesser',
+  );
+});
+
+test('what is in a stretched or flexed item takes its percentages of its height', async () => {
+  // CSS Flexbox 9.8: an item stretched across its line, or flexed in a
+  // column of a height of its own, has a definite height, and `h-full` in
+  // it fills it — a sidebar's scrolling list, a column's panel. They had
+  // nothing to take a percentage of, and were as tall as their content.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;height:200px">' +
+      '<aside style="width:100px"><div id="a" style="height:100%"></div>' +
+      '</aside><main style="flex:1"></main></div>' +
+      '<div style="display:flex;flex-direction:column;height:200px">' +
+      '<div style="height:40px"></div>' +
+      '<div style="flex:1"><div id="b" style="height:50%"></div></div>' +
+      '</div>' +
+      // and a column item is as tall as the column makes it, shrunk too,
+      // to the lesser of its height and its content's
+      '<div style="display:flex;flex-direction:column;height:100px">' +
+      '<div id="c" style="height:150px"><div style="height:120px"></div>' +
+      '</div><div id="d" style="height:150px;min-height:0"></div></div>' +
+      // and one with a ratio no shorter than its width through the ratio
+      '<div style="display:flex;flex-direction:column;width:100px;height:0">' +
+      '<div id="e" style="aspect-ratio:1"></div>' +
+      '<div id="f" style="aspect-ratio:2;height:100px"></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.strictEqual(box('a').height, 200, 'h-full in a stretched item');
+  assert.strictEqual(box('b').height, 80, 'half of the flexed item');
+  assert.strictEqual(box('c').height, 120, 'no shorter than its content');
+  assert.strictEqual(box('d').height, 0, 'min-height: 0 lets it go');
+  assert.strictEqual(box('e').height, 100, 'a square stays square');
+  assert.strictEqual(box('f').height, 50, 'shrunk to its ratio');
+});
+
+metric(
+  'a flex row measured for its content does not grow its flex: 1 items',
+  async () => {
+    // Tailwind UI's list item: a row of an avatar and a column that takes
+    // `flex-1`, beside a column of a role and a badge. Measuring the row's
+    // max-content laid it out at an infinite width, which Yoga took for a
+    // width and grew the column to fill; the row came back vast, and the
+    // role beside it was squeezed until "Designer" broke inside itself.
+    const { node } = await render(
+      '<style>body{margin:0} *{box-sizing:border-box;margin:0}</style>' +
+        '<div style="display:flex;align-items:center;' +
+        'justify-content:space-between;gap:24px;width:600px">' +
+        '<div id="left" style="display:flex;min-width:0;gap:16px">' +
+        '<div style="width:48px;height:48px"></div>' +
+        '<div id="col" style="min-width:0;flex:1"><p>Leslie Alexander</p>' +
+        '<p>leslie.alexander@example.com</p></div></div>' +
+        '<div id="right" style="display:flex;flex-direction:column;' +
+        'align-items:center"><p id="role">Co-Founder / CEO</p>' +
+        '<span>Active</span></div></div>',
+    );
+    const el = view(node);
+    const left = boxOf(el, 'left');
+    const col = boxOf(el, 'col');
+    // the left side is as wide as its content: the avatar, the gap, the text
+    assert.ok(
+      Math.abs(left.width - (48 + 16 + col.width)) < 0.5,
+      `${left.width} is the avatar, the gap and ${col.width}`,
+    );
+    assert.ok(left.width < 400, `the left side is ${left.width}, not the row`);
+    // and the role is on one line
+    assert.strictEqual(linesOf(el, 'role').length, 1);
+  },
+);
+
+test('a flex item with a ratio sizes across its line from its size along it', async () => {
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      // down a column, as wide as the height it was flexed to
+      '<div style="display:inline-flex;flex-direction:column;' +
+      'flex-wrap:wrap;height:100px">' +
+      '<div id="a" style="aspect-ratio:1;min-height:0;height:50px;flex:1">' +
+      '</div></div>' +
+      // along a row, as wide as the height it is stretched to, and no
+      // narrower than that however little room there is
+      '<div style="display:flex;width:0;height:100px">' +
+      '<div id="b" style="aspect-ratio:1"></div></div>' +
+      '<div style="display:flex;width:0;height:100px">' +
+      '<div id="c" style="aspect-ratio:1/2"><div style="width:100px">' +
+      '</div></div></div>' +
+      // a column's content basis is its width through its ratio
+      '<div style="display:flex;flex-direction:column">' +
+      '<div id="d" style="flex-basis:content;width:100px;aspect-ratio:1;' +
+      'height:20px;min-height:0"></div></div>' +
+      // and an image grown along a row is as tall as that makes it
+      '<div style="display:flex;width:100px">' +
+      '<img id="e" src="r.png" style="width:50px;aspect-ratio:1;flex:1;' +
+      'min-height:0"></div>',
+    { 'r.png': RED_PNG },
+  );
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  await waitFor(() => assert.deepStrictEqual(size('e'), [100, 100]));
+  assert.deepStrictEqual(size('a'), [100, 100]);
+  assert.deepStrictEqual(size('b'), [100, 100]);
+  assert.deepStrictEqual(size('c'), [100, 100], 'its content is wider');
+  assert.deepStrictEqual(size('d'), [100, 100]);
+});
+
+test("a column with no height keeps its items' flex-basis", async () => {
+  // Yoga takes a basis only where the flex box's main size is definite, and
+  // read `flex: 0 0 50px` down such a column as the item's own height, or
+  // as its content's
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;flex-direction:column">' +
+      '<div id="a" style="flex:0 0 50px">x</div>' +
+      '<div id="b" style="flex-basis:30px;height:80px;padding:5px"></div>' +
+      '</div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').height, 50);
+  assert.strictEqual(boxOf(el, 'b').height, 40, 'its content box, padded');
+});
+
+test('a flex item stretched across a column is as tall as its ratio makes it', async () => {
+  // a replaced item was measured at the width it was given and answered
+  // its natural height, along a column as it did along a row before
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;flex-direction:column;width:200px">' +
+      '<canvas id="a" width="100" height="50" style="width:stretch;' +
+      'align-self:start;min-height:0"></canvas>' +
+      '<canvas id="b" width="100" height="50" style="width:50%;' +
+      'align-self:start;min-height:0"></canvas></div>',
+  );
+  const box = (id: string) => boxOf(view(node), id);
+  assert.deepStrictEqual([box('a').width, box('a').height], [200, 100]);
+  assert.deepStrictEqual([box('b').width, box('b').height], [100, 50]);
+});
+
+metric(
+  "an inline flex box that clips sits on its first item's baseline, as it does unclipped",
+  async () => {
+    // A block container that clips sits on its bottom margin edge, for
+    // legacy reasons that stop at block containers (CSS Box Alignment 3,
+    // 9.2). A MediaWiki button is an `overflow: hidden` inline flex box of
+    // one icon, and it stood its whole height on the baseline, every line
+    // holding one the strut's descent taller than a browser's: 32px was 35
+    const { node } = await render(
+      '<style>body{margin:0;font:14px sans-serif}div{width:300px}' +
+        '.button{display:inline-flex;overflow:hidden;align-items:center;' +
+        'min-height:32px}.icon{display:block;width:20px;height:20px}' +
+        '.clip{display:block;overflow:hidden;height:32px}</style>' +
+        '<div id="flex"><span class="button"><span class="icon"></span>' +
+        '</span></div>' +
+        // an inline block that clips keeps the legacy rule
+        '<div id="block"><span class="clip" style="display:inline-block">' +
+        'text</span></div>' +
+        // and a block that clips has its first line's baseline still: only
+        // its last is its margin edge
+        '<div id="first"><span class="button" style="flex-direction:column">' +
+        '<span class="clip">clip</span></span></div>',
+    );
+    const el = view(node);
+    assert.strictEqual(boxOf(el, 'flex').height, 32, 'the button line');
+    assert.ok(
+      boxOf(el, 'block').height > 32,
+      `an inline block's line: ${boxOf(el, 'block').height}`,
+    );
+    assert.strictEqual(boxOf(el, 'first').height, 32, 'a first baseline');
+  },
+);

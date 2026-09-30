@@ -30,7 +30,7 @@ const h = React.createElement;
 
 afterEach(cleanup);
 
-// Real font files, as in html.test.ts: DejaVu on Linux, Arial on macOS, and
+// Real font files, as in html/harness.ts: DejaVu on Linux, Arial on macOS, and
 // the metric tests skip on a box with neither.
 const FONT_CANDIDATES: Array<[string, string]> = [
   [

@@ -151,6 +151,13 @@ finds out from a blank window has been failed by the page.
   ignores it, and nothing in the repo edits it by hand.
 - `test/` — `node --test` files run through `tsx`, one per component plus
   the repo-wide guards (`treeshake.test.ts`, `package.test.ts`).
+- `test/html/` — `<Html>`'s tests, a file a subject (`floats.test.ts`,
+  `tables.test.ts`, `media.test.ts`, …) over the `harness.ts` they share.
+  They were one file of eighteen thousand lines that every change appended
+  to, so any two changes conflicted at its end. **A new test goes in the
+  file its subject has, beside the tests it is like**, and not at the end
+  of the longest one; a helper a second file comes to need moves to
+  `harness.ts`.
 - `test/types/` — type-level tests, compiled by `npm run typecheck`.
 - `scripts/check-package.ts` — the exports-map/publishability check. `tsc`
   is the build now, but it has no opinion about the exports map, so this
