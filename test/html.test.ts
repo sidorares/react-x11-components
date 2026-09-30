@@ -17546,6 +17546,34 @@ metric(
 );
 
 metric(
+  'a line with no text on it keeps the lines in text order, so the text before it is found',
+  async () => {
+    // A line holding only an atomic that wrapped — here an inline-block,
+    // in #435 a submit button — recorded its text as [0, 0), after a line
+    // that ended at 4. Lines are found by their text with a binary search
+    // over those ranges as sorted, which that one broke: the span on the
+    // first line measured as no box, and the caret into it had nowhere
+    // to go.
+    const { node } = await render(
+      '<div style="width:200px"><span id="s">text</span>' +
+        '<span style="display:inline-block;width:190px;height:10px"></span>' +
+        '</div>',
+    );
+    const el = view(node);
+    const lines = (
+      el as unknown as {
+        _tree: { root: { children: { lines?: { y: number }[] }[] } };
+      }
+    )._tree.root.children[0].lines!;
+    assert.strictEqual(lines.length, 2, 'the inline-block wrapped alone');
+    const s = el.elementRect(findById(el.document, 's')!);
+    assert.ok(s && s.width > 0, `the span has its box: ${JSON.stringify(s)}`);
+    assert.strictEqual(s.y, lines[0].y, 'on the first line');
+    assert.ok(el.textCaretRect(2), 'and a caret inside it');
+  },
+);
+
+metric(
   "an inline box's padding below its line makes the document taller, where nothing clips it",
   async () => {
     // An inline box's fragments count in the scrollable overflow of the
