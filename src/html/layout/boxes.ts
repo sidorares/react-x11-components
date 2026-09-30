@@ -649,6 +649,12 @@ export const PAINT_ORDER = new WeakMap<Box, Box[]>();
  *  a browser's does (`elementRect`). */
 export const CUT_BLOCKS = new WeakMap<Box, Box[]>();
 
+/** Where a block that clearance moved below the floats would have stood
+ *  without it, its border edge's top (CSS 2.1 9.5.2): a browser's
+ *  fragment of an inline box around such a block starts there, and takes
+ *  the clearance in (`elementRect`). Only the blocks that had clearance. */
+export const CLEARED_FROM = new WeakMap<Box, number>();
+
 /** The element a pseudo-element's box is generated from, which has no
  *  element of its own (`Box.pseudo`): whose the images its styles name are,
  *  when the host is asked for them. */
