@@ -14,14 +14,7 @@
 // is a property of the design rather than a setting.
 import React from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import {
-  Button,
-  Checkbox,
-  Radio,
-  RadioGroup,
-  Select,
-  useTheme,
-} from 'react-x11';
+import { useTheme } from 'react-x11';
 import type { DrawnNode, MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
@@ -31,18 +24,13 @@ import type {} from 'react-x11/jsx-runtime';
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
-import { attr, tagOf } from './dom.js';
 import type { Document, Element } from './dom.js';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
 import type { HtmlViewProps, ScriptRequest } from './node.js';
 import type { RootLook } from './css/style.js';
-import {
-  buttonLabel,
-  optionsOf,
-  selectedOption,
-  textareaValue,
-} from './controls.js';
-import type { BareField, ControlRect } from './controls.js';
+import type { ControlRect } from './controls.js';
+import type { FormSubmission } from './form.js';
+import { useForms } from './widgets.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
 export {
@@ -53,6 +41,13 @@ export {
 export type { HtmlViewProps, ScriptRequest } from './node.js';
 export type { ResourceRequest, ResourceResult } from './resources.js';
 export type { BareField, ControlRect } from './controls.js';
+export type {
+  FormEnctype,
+  FormMethod,
+  FormSubmission,
+  SubmitContext,
+} from './form.js';
+export { formSubmission } from './form.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
 export type {
   AnyNode,
@@ -154,6 +149,15 @@ export interface HtmlProps {
    * calls the handle's `refresh()`.
    */
   onControlChange?: (element: Element, value: string | boolean) => void;
+  /**
+   * A form was submitted — a submit button pressed, or Enter in one of its
+   * text fields. Handed over as the request it makes: the method, the URL
+   * (resolved as `onLink`'s `href` is, and for a GET with the form's entries
+   * as its query), a POST's encoded body and its content type, and the
+   * entries themselves. Absent means submitting does nothing: this
+   * component never sends anything by itself, any more than it navigates.
+   */
+  onSubmit?: (submission: FormSubmission) => void;
   /** Base text style. Defaults: theme `fontSize` (14), `sans-serif`. */
   fontSize?: number;
   fontFamily?: string;
@@ -287,13 +291,26 @@ export function Html(props: HtmlProps): ReactElement {
     onScript,
     onDocument,
     onControlChange,
+    onSubmit,
     style,
   } = props;
 
   const theme = useTheme() as unknown as Record<string, unknown>;
   const links = useLinkClicks(onLink);
-  const buttons = useButtonPresses(onControlChange);
   const menu = useSelectionMenu(selectable);
+
+  // The element, for the document's base when a form is submitted, as well
+  // as wherever the application's `ref` wants it.
+  const viewNode = React.useRef<HtmlViewNode | null>(null);
+  const outerRef = props.ref;
+  const viewRef = React.useCallback(
+    (node: HtmlViewNode | null) => {
+      viewNode.current = node;
+      if (typeof outerRef === 'function') outerRef(node);
+      else if (outerRef) (outerRef as React.RefObject<unknown>).current = node;
+    },
+    [outerRef],
+  );
 
   const look = React.useMemo(
     () => deriveLook(theme, props),
@@ -307,6 +324,13 @@ export function Html(props: HtmlProps): ReactElement {
   const documentRef = React.useRef<Document | null>(null);
   const [controls, setControls] = React.useState<ControlRect[]>([]);
   const [domRevision, setDomRevision] = React.useState(0);
+  const forms = useForms({
+    view: viewNode,
+    baseUrl,
+    onControlChange,
+    onSubmit,
+    touch: () => setDomRevision((n) => n + 1),
+  });
 
   const handleDocument = React.useCallback(
     (doc: Document) => {
@@ -340,7 +364,7 @@ export function Html(props: HtmlProps): ReactElement {
     onDocument: handleDocument,
     onControls: handleControls,
     domRevision,
-    ref: props.ref as React.Ref<unknown>,
+    ref: viewRef as React.Ref<unknown>,
     // grown with the component, where an application grows it: the root's
     // background covers the whole of it, as a page's covers the window
     style: { alignSelf: 'stretch', flexGrow: 1 },
@@ -349,16 +373,7 @@ export function Html(props: HtmlProps): ReactElement {
   const children: ReactNode[] = [
     h(ELEMENT, { key: 'view', ...viewProps } as Record<string, unknown>),
   ];
-  for (const rect of controls) {
-    children.push(
-      renderControl(
-        rect,
-        look,
-        () => setDomRevision((n) => n + 1),
-        onControlChange,
-      ),
-    );
-  }
+  children.push(...forms.render(controls, look));
 
   const rootStyle: Style = { flexDirection: 'column', position: 'relative' };
   return hx(
@@ -376,11 +391,11 @@ export function Html(props: HtmlProps): ReactElement {
       ...links,
       onMouseDown: (ev: X11MouseEvent<DrawnNode>) => {
         links.onMouseDown(ev);
-        buttons.onMouseDown(ev);
+        forms.onMouseDown(ev);
       },
       onMouseUp: (ev: X11MouseEvent<DrawnNode>) => {
         links.onMouseUp(ev);
-        buttons.onMouseUp(ev);
+        forms.onMouseUp(ev);
       },
       ...menu,
       'data-testname': props['data-testname'],
@@ -428,315 +443,6 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
     }),
     [],
   );
-}
-
-/**
- * A press and a release on the same `<button>` the document draws, reported
- * as a pressed widget reports one: `onControlChange` with the button and its
- * `value`. A `<button>` is laid out and drawn like any box (the UA sheet's
- * `button` rule) — its content is the page's, and most of the buttons on
- * the web are an icon or a pill of a page's own design — so it is the
- * element that finds out it was pressed, not a widget. A disabled one, or
- * a press that lands in a link inside one, is not a press of it.
- */
-function useButtonPresses(onControlChange: HtmlProps['onControlChange']): {
-  onMouseDown: (ev: X11MouseEvent<DrawnNode>) => void;
-  onMouseUp: (ev: X11MouseEvent<DrawnNode>) => void;
-} {
-  const press = React.useRef<Element | null>(null);
-  const buttonAt = (ev: X11MouseEvent<DrawnNode>): Element | null => {
-    const target = ev.target as {
-      elementAtPoint?: (x: number, y: number) => Element | null;
-    } | null;
-    let node =
-      typeof target?.elementAtPoint === 'function'
-        ? target.elementAtPoint(ev.x, ev.y)
-        : null;
-    for (
-      ;
-      node;
-      node = node.parent?.type === 'tag' ? (node.parent as Element) : null
-    ) {
-      if (tagOf(node) === 'a' && attr(node, 'href') !== undefined) return null;
-      if (tagOf(node) === 'button') {
-        return attr(node, 'disabled') === undefined ? node : null;
-      }
-    }
-    return null;
-  };
-  return {
-    onMouseDown: (ev) => {
-      press.current = onControlChange && ev.button === 1 ? buttonAt(ev) : null;
-    },
-    onMouseUp: (ev) => {
-      const pressed = press.current;
-      press.current = null;
-      if (!pressed || !onControlChange || ev.button !== 1) return;
-      if (buttonAt(ev) !== pressed) return;
-      onControlChange(pressed, attr(pressed, 'value') ?? '');
-    },
-  };
-}
-
-// --- the widgets ------------------------------------------------------------
-
-/**
- * One form control, as a real widget at the rectangle layout reserved for it.
- *
- * Every one of these is a **core** widget rather than something drawn here:
- * a `<select>` in a document drops the same menu as a `<Select>` in the
- * window around it, a `<textinput>` gets the same caret, the same IME and the
- * same edit menu, and all of them join the window's focus order. The
- * alternative — drawing them in the paint pass — would be a picture of a form.
- */
-function renderControl(
-  rect: ControlRect,
-  look: RootLook,
-  touch: () => void,
-  onChange: HtmlProps['onControlChange'],
-): ReactNode {
-  const el = rect.element;
-  const key = `${rect.kind}:${rect.x},${rect.y}`;
-  const disabled = attr(el, 'disabled') !== undefined;
-  const readOnly = attr(el, 'readonly') !== undefined;
-  // a field whose box the document draws takes its content box
-  const at = rect.bare ?? rect;
-  const frame: Style = {
-    position: 'absolute',
-    left: Math.round(at.x),
-    top: Math.round(at.y),
-    width: Math.round(at.width),
-    height: Math.round(at.height),
-    // core's `opacity` is CSS's: the widget faded as a group, and at 0 not
-    // drawn and still hit
-    ...(rect.opacity !== undefined && { opacity: rect.opacity }),
-  };
-  const field = rect.bare ? bareField(rect.bare) : fieldChrome(look);
-  const report = (value: string | boolean): void => {
-    onChange?.(el, value);
-    touch();
-  };
-  // A text edit does NOT touch: the value lives in the widget and is echoed
-  // into the DOM attribute, and neither changes any box — while `touch()`
-  // would re-run the cascade and relayout the whole document *per
-  // keystroke*. This also matches HTML's own semantics: typing updates the
-  // value property, not the attribute selectors match against. The
-  // checkables keep the full touch, because `[checked]` is a selector
-  // documents really use.
-  const reportText = (value: string): void => {
-    onChange?.(el, value);
-  };
-
-  let widget: ReactNode;
-  switch (rect.kind) {
-    case 'checkbox':
-      widget = h(Checkbox, {
-        checked: attr(el, 'checked') !== undefined,
-        disabled,
-        // the element's whole box takes the press, as it does in a browser:
-        // a page that sizes one over its label, invisible, means the label
-        style: { width: '100%', height: '100%' },
-        onChange: (ev) => {
-          const next = ev.value;
-          if (next) el.attribs.checked = '';
-          else delete el.attribs.checked;
-          report(next);
-        },
-      });
-      break;
-    case 'radio': {
-      // Core's radio is a group member and HTML's is a free-standing input
-      // that happens to share a `name`. Each one is therefore its own
-      // one-member `RadioGroup`, and the exclusivity that makes it a group
-      // is done where HTML actually keeps it: in the DOM.
-      const value = attr(el, 'value') ?? 'on';
-      widget = h(
-        RadioGroup,
-        {
-          value: attr(el, 'checked') !== undefined ? value : undefined,
-          onChange: () => {
-            clearRadioGroup(el);
-            el.attribs.checked = '';
-            report(value);
-          },
-        },
-        h(Radio, { key: 'r', value, disabled }),
-      );
-      break;
-    }
-    case 'button':
-      widget = h(Button, {
-        label: buttonLabel(el),
-        disabled,
-        style: { width: '100%', height: '100%' },
-        onPress: () => report(attr(el, 'value') ?? ''),
-      });
-      break;
-    case 'select': {
-      const options = optionsOf(el);
-      widget = h(Select, {
-        options: options.map((o) => ({ value: o.value, label: o.label })),
-        value: selectedOption(el) ?? undefined,
-        disabled,
-        style: rect.bare
-          ? [BARE_TRIGGER, { width: '100%', height: '100%' }]
-          : { width: '100%', height: '100%' },
-        // the slots choose the drawn trigger on every backend, and put the
-        // caption and the arrow in the page's ink
-        ...(rect.bare && {
-          labelStyle: {
-            color: rect.bare.color,
-            fontFamily: rect.bare.fontFamily,
-            fontSize: rect.bare.fontSize,
-          },
-          chevronStyle: rect.bare.chevron
-            ? { color: rect.bare.color }
-            : { display: 'none' },
-        }),
-        onChange: (ev) => {
-          const next = String(ev.value ?? '');
-          setSelectedOption(el, next);
-          report(next);
-        },
-      });
-      break;
-    }
-    case 'textarea':
-      // Uncontrolled on purpose: the widget owns the live text the way a
-      // browser's does, and a re-render from any other cause remounts it
-      // with whatever was last echoed into the DOM.
-      widget = hx('textarea', {
-        defaultValue: textareaValue(el),
-        style: [field, { width: '100%', height: '100%' }],
-        onChange: readOnly ? undefined : (ev) => reportText(ev.value),
-      });
-      break;
-    case 'input': {
-      const type = (attr(el, 'type') ?? 'text').toLowerCase();
-      widget = hx('textinput', {
-        defaultValue: attr(el, 'value') ?? '',
-        placeholder: attr(el, 'placeholder'),
-        // Core's word for a password field: nothing in it reaches a
-        // selection, PRIMARY included.
-        sensitive: type === 'password',
-        style: [field, { width: '100%', height: '100%' }],
-        onChange: readOnly
-          ? undefined
-          : (ev) => {
-              el.attribs.value = ev.value;
-              reportText(ev.value);
-            },
-      });
-      break;
-    }
-    default:
-      return null;
-  }
-  return hx('box', { key, style: frame, selectable: false }, widget);
-}
-
-/**
- * The chrome a text field needs.
- *
- * `<textinput>` and `<textarea>` are core *elements* rather than components,
- * so they draw no frame of their own — an application supplies one, which is
- * why core's own `<Button>` and `<Select>` are components and these are not.
- * The values are the palette's, so a field in a document and a `<Select>`
- * beside it are the same height with the same corner and the same edge.
- */
-function fieldChrome(look: RootLook): Style {
-  return {
-    backgroundColor: look.surface,
-    borderWidth: look.controlBorder,
-    borderColor: look.borderColor,
-    borderRadius: look.controlRadius,
-    paddingLeft: 6,
-    paddingRight: 6,
-    color: look.color,
-    fontFamily: look.fontFamily,
-    // the size the UA sheet sets the field at, and so measured it at
-    fontSize: look.controlFontSize ?? look.fontSize,
-  };
-}
-
-/**
- * A text field whose box the author styled: the document draws the border
- * and the background, so the widget draws neither, and its text is the
- * element's colour and font, which the author chose to go on that
- * background, rather than the theme's.
- */
-function bareField(bare: BareField): Style {
-  return {
-    backgroundColor: 'transparent',
-    borderWidth: 0,
-    borderRadius: 0,
-    paddingLeft: 0,
-    paddingRight: 0,
-    color: bare.color,
-    fontFamily: bare.fontFamily,
-    fontSize: bare.fontSize,
-  };
-}
-
-/**
- * The trigger of a `<select>` whose box the page styled: no frame, no fill
- * and none of its own insets, and no wash under the pointer, since the box
- * it would tint is the document's. Core's focus ring still marks it for the
- * keyboard.
- */
-const BARE_TRIGGER: Style = {
-  paddingTop: 0,
-  paddingBottom: 0,
-  paddingLeft: 0,
-  paddingRight: 0,
-  borderWidth: 0,
-  borderRadius: 0,
-  backgroundColor: 'transparent',
-  ':hover': { backgroundColor: 'transparent' },
-  ':active': { backgroundColor: 'transparent' },
-};
-
-function clearRadioGroup(el: Element): void {
-  const name = attr(el, 'name');
-  if (!name) return;
-  let root: Element | null = el;
-  while (root?.parent && root.parent.type === 'tag')
-    root = root.parent as Element;
-  if (!root) return;
-  const walk = (node: Element): void => {
-    for (const child of node.children) {
-      if (child.type !== 'tag') continue;
-      const tag = child.name.toLowerCase();
-      if (
-        tag === 'input' &&
-        (child.attribs.type ?? '').toLowerCase() === 'radio' &&
-        child.attribs.name === name
-      ) {
-        delete child.attribs.checked;
-      }
-      walk(child);
-    }
-  };
-  walk(root);
-}
-
-function setSelectedOption(el: Element, value: string): void {
-  const walk = (node: Element): void => {
-    for (const child of node.children) {
-      if (child.type !== 'tag') continue;
-      if (child.name.toLowerCase() === 'option') {
-        let label = '';
-        for (const kid of child.children) {
-          if (kid.type === 'text') label += kid.data;
-        }
-        const own = child.attribs.value ?? label.trim();
-        if (own === value) child.attribs.selected = '';
-        else delete child.attribs.selected;
-      }
-      walk(child);
-    }
-  };
-  walk(el);
 }
 
 declare module 'react-x11/jsx-runtime' {
