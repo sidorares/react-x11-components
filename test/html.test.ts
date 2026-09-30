@@ -2975,7 +2975,13 @@ metric('a ch is the advance of the font\'s "0"', async () => {
   const el = view(node);
   const b = boxOf(el, 'b').width;
   assert.ok(b > 100, `ten zeros are wider than ten half ems: ${b}`);
-  assert.ok(Math.abs(boxOf(el, 'a').width - b) < 0.01);
+  // the zeros laid out are rounded up to a 64th, as a browser rounds an
+  // element's text on a line, and a length is not: Chrome's 10ch at 20px
+  // Menlo is 120.40625, its ten zeros 120.421875
+  assert.ok(
+    Math.abs(boxOf(el, 'a').width - b) <= 1 / 64 + 1e-9,
+    `ten of a ch are ten zeros: ${boxOf(el, 'a').width}, ${b}`,
+  );
 });
 
 metric('letter-spacing and word-spacing reach the text', async () => {
@@ -5512,8 +5518,12 @@ metric(
     const cellOf = (id: string) =>
       (boxOf(el, id) as LaidBox & { parent: LaidBox }).parent;
     const ref = boxOf(el, 'ref').width;
-    assert.strictEqual(cellOf('a').width, ref, 'in a row: as wide as "a b"');
-    assert.strictEqual(cellOf('c').width, ref, 'loose in a table: the same');
+    // give or take a 64th for each element's text on the line, which a line
+    // is measured in, each rounded up (`fit: 'items'`): three spans in a
+    // cell are 110.328125 in Chrome where their text as one is 110.3125
+    const near = (width: number) => Math.abs(width - ref) <= 2 / 64 + 1e-9;
+    assert.ok(near(cellOf('a').width), 'in a row: as wide as "a b"');
+    assert.ok(near(cellOf('c').width), 'loose in a table: the same');
   },
 );
 
@@ -15640,6 +15650,45 @@ metric(
     assert.ok(own.length > 0 && own.every((run) => run.letterSpacing === 2));
     for (const run of own)
       assert.ok(!run.kernAcross, 'an element spaces apart');
+  },
+);
+
+metric(
+  "a paragraph's lines are fitted as a browser fits them, each element's text rounded up to a 64th",
+  async () => {
+    // A browser rounds each element's text on a line up to a 64th of a
+    // pixel before it adds it, and fits the sum with a 64th to spare
+    // (Blink's `SnappedWidth`, `CanFitOnLine`): the Zen Garden's 024 has a
+    // line of Verdana 0.002px past its 529px, three elements' text on it,
+    // that Chrome breaks and the sum of its advances fitted. The engine does
+    // that for a layout made with `fit: 'items'`, and reports a line as wide
+    // as it fitted it, so a box sized to its text still holds it
+    const { result, node } = await render(
+      '<style>body{margin:0}p{margin:0;width:300px}.f{float:left}</style>' +
+        '<p>alpha <b>beta</b> gamma, and a line long enough to wrap</p>' +
+        '<p><span class="f" id="f">one <i>two</i> three <b>four</b></span></p>',
+    );
+    const el = view(node);
+    await act();
+    assert.strictEqual(linesOf(el, 'f').length, 1, 'a float holds its text');
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const made: { fit?: string; maxWidth?: number }[] = [];
+    const recording: FontsLike = {
+      layout: (runs, style, options) => {
+        made.push(options);
+        return fonts.layout(runs, style, options);
+      },
+      match: (...args) => fonts.match(...args),
+    };
+    const { layoutDocument } = await import('../src/html/layout/block.js');
+    const tree = (el as unknown as { _tree: unknown })._tree;
+    layoutDocument(tree as never, recording, 400, 600);
+    const wrapping = made.filter((options) => options.maxWidth !== undefined);
+    assert.ok(wrapping.length > 0, 'a paragraph was laid out to a width');
+    assert.ok(
+      wrapping.every((options) => options.fit === 'items'),
+      `every one fitted as a browser fits it: ${JSON.stringify(wrapping)}`,
+    );
   },
 );
 
