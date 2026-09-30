@@ -181,6 +181,7 @@ export function layoutFlex(
       stretch: NaN,
       main: NaN,
       least: NaN,
+      most: NaN,
       held: NaN,
       auto: false,
     };
@@ -210,6 +211,17 @@ export function layoutFlex(
   // answer for a line every item of which its minimum stops is put right
   // (`stoppedLine`)
   const short = hold.frozen && (row ? bounded : capped);
+  // and any line may have room left over, where a row has a width to have
+  // it in: Yoga's answer for one every item of which that may grow its
+  // maximum stops is put right too (`cappedLines`) — broken into lines as
+  // Yoga breaks them, at the box's size along them where a box that wraps
+  // has one, and in one line where it does not
+  const roomy = row ? bounded : true;
+  const breaks = hold.frozen
+    ? Infinity
+    : row
+      ? contentWidth
+      : (height ?? Infinity);
   // each item's size along the main axis, read the once a layout (`Laid`)
   const read = (): void => {
     for (const { node, laid } of items) {
@@ -219,10 +231,13 @@ export function layoutFlex(
   const calculate = (): void => {
     ask();
     read();
-    if (!short) return;
+    if (!short && !roomy) return;
     const room = row ? contentWidth : (height ?? root.getComputedHeight());
     const gap = row ? columnGap : rowGap;
-    if (stoppedLine(items, row, room, gap, hold, ask)) read();
+    if (short && stoppedLine(items, row, room, gap, hold, ask)) read();
+    if (roomy && cappedLines(items, row, room, breaks, gap, hold, ask)) {
+      read();
+    }
   };
   ctx.flexDepth = depth + 1;
   try {
@@ -704,6 +719,9 @@ function applyItem(
   // told it
   let leastWidth = NaN;
   let leastHeight = NaN;
+  // and the most, as Yoga is told it
+  let mostWidth = NaN;
+  let mostHeight = NaN;
   const minWidth = resolveOrNull(style.minWidth, containingWidth);
   if (minWidth !== null) {
     leastWidth = minWidth + across;
@@ -711,7 +729,10 @@ function applyItem(
   }
   if (style.maxWidth !== 'none') {
     const maxWidth = resolveOrNull(style.maxWidth, containingWidth);
-    if (maxWidth !== null) node.setMaxWidth(maxWidth + across);
+    if (maxWidth !== null) {
+      mostWidth = maxWidth + across;
+      node.setMaxWidth(mostWidth);
+    }
   }
   if (style.widthKeyword || style.minWidthKeyword || style.maxWidthKeyword) {
     // an intrinsic size is the item's content's, measured here and handed
@@ -731,7 +752,10 @@ function applyItem(
       leastWidth = size(style.minWidthKeyword);
       node.setMinWidth(leastWidth);
     }
-    if (style.maxWidthKeyword) node.setMaxWidth(size(style.maxWidthKeyword));
+    if (style.maxWidthKeyword) {
+      mostWidth = size(style.maxWidthKeyword);
+      node.setMaxWidth(mostWidth);
+    }
   }
   const minHeight = resolveOrNull(style.minHeight, NaN);
   if (minHeight !== null) {
@@ -740,11 +764,15 @@ function applyItem(
   }
   if (style.maxHeight !== 'none') {
     const maxHeight = resolveOrNull(style.maxHeight, NaN);
-    if (maxHeight !== null) node.setMaxHeight(maxHeight + down);
+    if (maxHeight !== null) {
+      mostHeight = maxHeight + down;
+      node.setMaxHeight(mostHeight);
+    }
   }
 
   const row = box.parent?.style.flexDirection.startsWith('row') ?? true;
   laid.least = row ? leastWidth : leastHeight;
+  laid.most = row ? mostWidth : mostHeight;
   // Yoga takes a length for a basis only where the flex box's main size is
   // definite, and else the item's own size along it: down a column of no
   // height of its own it read `flex: 0 0 3rem` as the item's height, or
@@ -923,6 +951,9 @@ interface Laid {
   /** The least it may be along the main axis, where its own style says:
    *  the minimum this engine set on its node, or NaN. */
   least: number;
+  /** The most it may be along the main axis, where its own style says: the
+   *  maximum this engine set on its node, or NaN. */
+  most: number;
   /** The size along the main axis it is frozen at, inflexible (`freezeAt`),
    *  or NaN. */
   held: number;
@@ -1646,7 +1677,8 @@ function shrinks(box: Box, laid: Laid): boolean {
   return box.style.flexShrink > 0 && Number.isNaN(laid.held);
 }
 
-/** How near to its room a line may be and be short of it (`stoppedLine`). */
+/** How near to its room a line may be and be short of it (`stoppedLine`),
+ *  or have room to spare (`cappedLines`). */
 const SHORT = 0.001;
 
 /** The least an item may be along the main axis, its border box: the
@@ -1655,6 +1687,242 @@ function leastOf(box: Box, laid: Laid, row: boolean): number {
   const extra = row ? box.horizontalExtra : box.verticalExtra;
   return Number.isNaN(laid.least) ? extra : Math.max(laid.least, extra);
 }
+
+/**
+ * Put right the lines of a flex box on which every item that may grow is
+ * stopped by its maximum and Yoga made them smaller for it; whether Yoga
+ * was asked again. Each such line is laid out with every item of it that
+ * may grow frozen at its maximum, which is where CSS Flexbox leaves them
+ * (9.7, step 4): the line has room left over with every one of them as
+ * large as it goes. It is also where Yoga leaves them itself, where its
+ * rounding is not below 0.
+ *
+ * It is `stoppedLine`'s rounding the other way. Yoga's first pass takes
+ * each item its maximum stops out of the sum of the grow factors, and the
+ * second divides the room still left by what is left of the sum: with
+ * every item stopped, `(a + b + c) - a - b - c` in float32s. Where that is
+ * 0, or a rounding above it, the quotient is vast and each item is held to
+ * its maximum, which is right; where it is a rounding below, each is held
+ * to its minimum. Three items of `flex-grow: 3.361`, `2.417` and `1.988`,
+ * each `max-width: 10px`, in a row 100 wide came out nothing wide, as a
+ * third of such lines of random factors do. Sums of whole numbers, and of
+ * halves and quarters of them, are exact, so a box whose factors are those
+ * is not looked at (`exactSums`).
+ *
+ * What makes a line one to put right is Yoga's answer, looked at as
+ * `stoppedLine` looks at its. Every item of the line that may grow has a
+ * maximum, and the line has room to spare with each of them at it. And
+ * one of them came out short of its maximum and no larger than its
+ * hypothetical size (9.7, step 2), which Yoga, sharing out room, makes no
+ * item: Yoga is asked for the line with nothing growing, where each item
+ * is that size. No larger rather than smaller, because an item held to
+ * its minimum is often that size: an empty one is nothing wide either
+ * way. Any other line is put back as it was, and the two layouts that
+ * took are the cost of a box with a factor that is not a whole number and
+ * an item short of its maximum; any other box has cost a sum.
+ *
+ * A few of the lines put right are still not a browser's. Once
+ * some of its items are frozen, 9.7 shares out to the rest only the part
+ * of the room their factors come to, where that is less than 1 (step 4,
+ * b), and Yoga has no such rule: an item of `flex-grow: 0.1` left alone
+ * on a line is at its maximum here, as Yoga would have had it, and a
+ * tenth of the room in Chrome.
+ *
+ * A box that wraps has lines like it: the last line of a grid of cards
+ * with a `max-width` has room for every card it has. Yoga breaks lines by
+ * its items' hypothetical sizes, which the layout with nothing growing
+ * gives, and they are broken here as it breaks them (`linesOf`). Freezing
+ * a line's items at their maximums moves no break: the line has room for
+ * every item on it at that size, so it keeps them all, and the item after
+ * it, which did not fit with them smaller, fits no better with them larger.
+ * But Yoga holds a size to an item's maximum before its minimum, so where
+ * the maximum is the smaller — or smaller than the item's padding and
+ * borders — it breaks a line by one size and lays the item out at another:
+ * `max-width: 2px; min-width: 10px` is 10 wide, on a line it was put on
+ * as 2. A box that wraps with an item like that is left as Yoga had it.
+ */
+function cappedLines(
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  row: boolean,
+  /** The flex box's size along the main axis. */
+  room: number,
+  /** The size Yoga breaks lines at: the flex box's where it wraps and has
+   *  one, and else Infinity, for the one line. */
+  breaks: number,
+  /** The gap between two items. */
+  gap: number,
+  hold: Hold,
+  /** Lay the flex box out, as its nodes now are. */
+  ask: () => void,
+): boolean {
+  // two at the least: what is left of a sum of one, less it, is 0 exactly
+  const growing = items.filter(({ box, laid }) => grows(box, laid));
+  if (growing.length < 2 || exactSums(growing)) return false;
+  // one short of its maximum, as each on such a line is
+  const short = growing.some(
+    ({ box, laid }) => laid.main < mostOf(box, laid, row) - 0.01,
+  );
+  if (!short) return false;
+  if (breaks === Infinity) {
+    // and on the one line, every one of them with a maximum, and room left
+    // over as Yoga has it
+    let used = gap * (items.length - 1);
+    for (const { box, laid } of items) used += laid.main + marginsOf(box, row);
+    const capped = growing.every(({ box, laid }) => !Number.isNaN(laid.most));
+    if (!capped || !(used < room - SHORT)) return false;
+  } else if (
+    // and on lines broken where the layout says, with no item that Yoga
+    // breaks a line by at another size
+    items.some(({ box, laid }) => laid.most < leastOf(box, laid, row))
+  ) {
+    return false;
+  }
+
+  const flexible = items.filter(({ laid }) => Number.isNaN(laid.held));
+  for (const { node } of flexible) {
+    node.setFlexGrow(0);
+    node.setFlexShrink(0);
+  }
+  ask();
+  // each item its hypothetical size, on every line
+  const hypothetical = items.map(({ node }) =>
+    row ? node.getComputedWidth() : node.getComputedHeight(),
+  );
+  const frozen = new Set<Box>();
+  for (const line of linesOf(items, hypothetical, row, breaks, gap)) {
+    const growers = line.filter((i) => grows(items[i].box, items[i].laid));
+    if (growers.length < 2) continue;
+    // the line with each item that may grow at its maximum: Infinity where
+    // one has none
+    let size = gap * (line.length - 1);
+    let smaller = false;
+    for (const i of line) {
+      const { box, laid } = items[i];
+      size += marginsOf(box, row);
+      if (!grows(box, laid)) {
+        size += hypothetical[i];
+        continue;
+      }
+      const most = mostOf(box, laid, row);
+      size += most;
+      if (
+        laid.main < most - 0.01 &&
+        (laid.main < hypothetical[i] || nearly(laid.main, hypothetical[i]))
+      ) {
+        smaller = true;
+      }
+    }
+    if (!smaller || !(size < room - SHORT)) continue;
+    for (const i of growers) frozen.add(items[i].box);
+  }
+  for (const { box, node, laid } of flexible) {
+    if (frozen.has(box)) {
+      freezeAt(node, laid, row, mostOf(box, laid, row), hold);
+    } else {
+      node.setFlexGrow(box.style.flexGrow);
+      node.setFlexShrink(box.style.flexShrink);
+    }
+  }
+  ask();
+  return true;
+}
+
+/**
+ * The lines Yoga breaks a flex box's items into, as indices of them. A line
+ * takes items while their hypothetical sizes, their margins and the gaps
+ * between them come to no more than the size it breaks at, and always
+ * takes one — added up in float32s, in the order Yoga adds them, so that an
+ * item that fits exactly is on the line it is on in Yoga's.
+ */
+function linesOf(
+  items: readonly { box: Box }[],
+  /** Each item's hypothetical size along the main axis. */
+  sizes: readonly number[],
+  row: boolean,
+  breaks: number,
+  gap: number,
+): number[][] {
+  if (breaks === Infinity) return [items.map((_, i) => i)];
+  const f = Math.fround;
+  const limit = f(breaks);
+  const lines: number[][] = [];
+  let line: number[] = [];
+  let used = 0;
+  items.forEach(({ box }, i) => {
+    const size = f(sizes[i]);
+    const style = box.style;
+    const [start, end] = row
+      ? [style.marginLeft, style.marginRight]
+      : [style.marginTop, style.marginBottom];
+    const margin = f(
+      (start === AUTO ? 0 : f(row ? box.marginLeft : box.marginTop)) +
+        (end === AUTO ? 0 : f(row ? box.marginRight : box.marginBottom)),
+    );
+    let lead = line.length ? f(gap) : 0;
+    if (line.length && f(f(f(used + size) + margin) + lead) > limit) {
+      lines.push(line);
+      line = [];
+      used = 0;
+      lead = 0;
+    }
+    used = f(used + f(f(size + margin) + lead));
+    line.push(i);
+  });
+  lines.push(line);
+  return lines;
+}
+
+/** Whether Yoga may grow an item: it has a grow factor, and is not frozen
+ *  (`freezeAt`). */
+function grows(box: Box, laid: Laid): boolean {
+  return box.style.flexGrow > 0 && Number.isNaN(laid.held);
+}
+
+/** The most an item may be along the main axis, its border box: the
+ *  maximum of its own, where it has one, and no less than its least size;
+ *  Infinity where it has none. */
+function mostOf(box: Box, laid: Laid, row: boolean): number {
+  if (Number.isNaN(laid.most)) return Infinity;
+  return Math.max(laid.most, leastOf(box, laid, row));
+}
+
+/** An item's margins along the main axis, where they are not `auto`: an
+ *  `auto` margin is none to the size of its line (CSS Flexbox 8.1). */
+function marginsOf(box: Box, row: boolean): number {
+  const style = box.style;
+  if (row) {
+    return (
+      (style.marginLeft === AUTO ? 0 : box.marginLeft) +
+      (style.marginRight === AUTO ? 0 : box.marginRight)
+    );
+  }
+  return (
+    (style.marginTop === AUTO ? 0 : box.marginTop) +
+    (style.marginBottom === AUTO ? 0 : box.marginBottom)
+  );
+}
+
+/**
+ * Whether Yoga's sums of these items' grow factors are exact: in float32s,
+ * as it adds them, a sum of whole numbers is, and so is one of halves and
+ * quarters of them, and what is left of it less each of its terms is then
+ * 0 exactly (`cappedLines`).
+ */
+function exactSums(items: readonly { box: Box }[]): boolean {
+  let sum = 0;
+  for (const { box } of items) {
+    const factor = box.style.flexGrow * EXACT;
+    if (!Number.isInteger(factor)) return false;
+    sum += factor;
+  }
+  // every sum along the way a whole number of the parts under a float32's
+  // 24 bits of significand
+  return sum < 2 ** 24;
+}
+
+/** The parts of one a grow factor may be a whole number of and have its
+ *  sums exact (`exactSums`). */
+const EXACT = 1024;
 
 /** An item's min-content width, its border box's, taken the once: its
  *  content's, whatever width it has of its own (`keywordWidth`'s too). */
