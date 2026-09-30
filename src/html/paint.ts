@@ -3975,16 +3975,6 @@ function tileSize(
 }
 
 /**
- * Borders, as four rectangles.
- *
- * Not as a stroked path, for the reason richtext gives about its underlines:
- * the mock backend has no path API, and a 1px border on a pixel grid is a
- * rectangle rather than something an antialiased stroke improves. Corners are
- * mitred by drawing the top and bottom full-width and the sides between them,
- * which is right whenever the two sides share a colour and close enough when
- * they do not.
- */
-/**
  * A box's outline (CSS 2.1 18.4, CSS UI 4 5): a border of its own width,
  * style and colour round the border box grown by `outline-offset` — which
  * a negative offset brings inside it, as Tailwind UI's `-outline-offset-1`
@@ -4042,6 +4032,25 @@ function paintOutline(
   );
 }
 
+/**
+ * Borders, a side at a time.
+ *
+ * As rectangles where they can be, the top and the bottom full width and
+ * the sides between them, and not as a stroked path, for the reason
+ * richtext gives about its underlines: the mock backend has no path API, and
+ * a 1px border on a pixel grid is a rectangle rather than something an
+ * antialiased stroke improves. That is every border whose sides share a
+ * colour, where a corner looks the same whichever side it is given to.
+ *
+ * Where two sides that meet differ in colour — one of them transparent
+ * included — the corner is cut on the diagonal from its outer point to its
+ * inner one and each side takes its half (CSS Backgrounds 3, 4.3), so a side
+ * is a trapezoid, and a triangle where the box inside the borders has no
+ * width: the CSS triangle a dropdown's caret and a tooltip's arrow are
+ * drawn with, which came out as the rectangle around it. Only a solid side
+ * is cut, and only against a side that is solid or paints nothing; dots,
+ * dashes and a double border's two lines keep their rectangles.
+ */
 function paintBorders(
   ctx: PaintContext,
   box: Frame,
@@ -4061,6 +4070,30 @@ function paintBorders(
   if (roundedRing(ctx, box, x, y, w, h, options)) return;
   if (sculpted(s) && paintSculpted(ctx, box, x, y, w, h, options)) return;
 
+  const t = box.borderTop;
+  const r = box.borderRight;
+  const b = box.borderBottom;
+  const l = box.borderLeft;
+  /** What a side is painted in, null where it paints nothing. */
+  const ink = (width: number, color: string): string | null =>
+    width > 0 && !isTransparent(color) ? inkColor(color, s.color) : null;
+  const topInk = ink(t, s.borderTopColor);
+  const rightInk = ink(r, s.borderRightColor);
+  const bottomInk = ink(b, s.borderBottomColor);
+  const leftInk = ink(l, s.borderLeftColor);
+  // the corners cut on the diagonal; none where the context draws no path,
+  // and the sides are rectangles
+  const paths = !!(ctx.beginPath && ctx.moveTo && ctx.lineTo && ctx.fill);
+  const topStyle = s.borderTopStyle;
+  const rightStyle = s.borderRightStyle;
+  const bottomStyle = s.borderBottomStyle;
+  const leftStyle = s.borderLeftStyle;
+  const tl = paths && mitred(t, l, topInk, leftInk, topStyle, leftStyle);
+  const tr = paths && mitred(t, r, topInk, rightInk, topStyle, rightStyle);
+  const br =
+    paths && mitred(b, r, bottomInk, rightInk, bottomStyle, rightStyle);
+  const bl = paths && mitred(b, l, bottomInk, leftInk, bottomStyle, leftStyle);
+
   const edge = (
     ex: number,
     ey: number,
@@ -4072,47 +4105,130 @@ function paintBorders(
   ): void => {
     const rect = clampRect(options, ex, ey, ew, eh);
     if (!rect) return;
-    ctx.fillStyle = inkColor(color, s.color);
+    ctx.fillStyle = color;
     // The un-clamped start is the dash phase's origin, so the pattern does
     // not crawl as the viewport moves along a long edge.
     fillEdge(ctx, rect, horizontal ? ex : ey, style, horizontal);
   };
-  if (box.borderTop > 0 && !isTransparent(s.borderTopColor)) {
-    edge(x, y, w, box.borderTop, s.borderTopStyle, s.borderTopColor, true);
+  /** A side with a cut corner: its outer edge and then its inner one. */
+  const side = (points: number[], color: string): void => {
+    const area = clampRect(options, x, y, w, h);
+    if (!area) return;
+    ctx.fillStyle = color;
+    fillPolygon(ctx, points, area);
+  };
+  // the border box's far edges, and the padding box inside it
+  const x1 = x + w;
+  const y1 = y + h;
+  const px0 = x + l;
+  const py0 = y + t;
+  const px1 = Math.max(px0, x1 - r);
+  const py1 = Math.max(py0, y1 - b);
+  // The left and the right are drawn after the top and the bottom. Where
+  // one of them is opaque it draws its half of a cut corner over the side
+  // drawn before, which keeps the whole corner: two halves each
+  // antialiased along the diagonal would let what is under the border
+  // show through between them.
+  const over = (color: string | null): boolean =>
+    color !== null && alphaOf(color) === 1;
+  if (topInk !== null) {
+    const cutLeft = tl && !over(leftInk);
+    const cutRight = tr && !over(rightInk);
+    if (cutLeft || cutRight) {
+      side(
+        [x, y, x1, y, cutRight ? px1 : x1, py0, cutLeft ? px0 : x, py0],
+        topInk,
+      );
+    } else edge(x, y, w, t, topStyle, topInk, true);
   }
-  if (box.borderBottom > 0 && !isTransparent(s.borderBottomColor)) {
-    edge(
-      x,
-      y + h - box.borderBottom,
-      w,
-      box.borderBottom,
-      s.borderBottomStyle,
-      s.borderBottomColor,
-      true,
-    );
+  if (bottomInk !== null) {
+    const cutLeft = bl && !over(leftInk);
+    const cutRight = br && !over(rightInk);
+    if (cutLeft || cutRight) {
+      side(
+        [x1, y1, x, y1, cutLeft ? px0 : x, py1, cutRight ? px1 : x1, py1],
+        bottomInk,
+      );
+    } else edge(x, y1 - b, w, b, bottomStyle, bottomInk, true);
   }
-  if (box.borderLeft > 0 && !isTransparent(s.borderLeftColor)) {
-    edge(
-      x,
-      y + box.borderTop,
-      box.borderLeft,
-      h - box.borderTop - box.borderBottom,
-      s.borderLeftStyle,
-      s.borderLeftColor,
-      false,
-    );
+  if (leftInk !== null) {
+    if (tl || bl) {
+      side([x, bl ? y1 : py1, x, tl ? y : py0, px0, py0, px0, py1], leftInk);
+    } else edge(x, y + t, l, h - t - b, leftStyle, leftInk, false);
   }
-  if (box.borderRight > 0 && !isTransparent(s.borderRightColor)) {
-    edge(
-      x + w - box.borderRight,
-      y + box.borderTop,
-      box.borderRight,
-      h - box.borderTop - box.borderBottom,
-      s.borderRightStyle,
-      s.borderRightColor,
-      false,
-    );
+  if (rightInk !== null) {
+    if (tr || br) {
+      side([x1, tr ? y : py0, x1, br ? y1 : py1, px1, py1, px1, py0], rightInk);
+    } else edge(x1 - r, y + t, r, h - t - b, rightStyle, rightInk, false);
   }
+}
+
+/**
+ * Whether the corner two sides meet at is cut on its diagonal, each side
+ * taking its half (CSS Backgrounds 3, 4.3): where both have a width, they
+ * are painted in different colours or only one is painted at all, and each
+ * is solid or unpainted. Sides of one colour make the same corner either
+ * way, and so does a corner of a single pixel, which is left to the side
+ * that has it.
+ */
+function mitred(
+  a: number,
+  b: number,
+  inkA: string | null,
+  inkB: string | null,
+  styleA: ComputedStyle['borderTopStyle'],
+  styleB: ComputedStyle['borderTopStyle'],
+): boolean {
+  if (!(a > 0 && b > 0) || (a <= 1 && b <= 1) || inkA === inkB) return false;
+  return (
+    (inkA === null || styleA === 'solid') &&
+    (inkB === null || styleB === 'solid')
+  );
+}
+
+/**
+ * Fill a convex polygon, its corners as `x, y` pairs, cut to `area`: the
+ * part of it near what is painted, which is what keeps a side thousands of
+ * pixels long inside X's coordinates. Cut edge by edge rather than by
+ * moving its corners in, which would turn a diagonal that crosses the
+ * painted area: a slanted divider, `border-left: 100vw solid transparent`,
+ * has a corner far outside it.
+ */
+function fillPolygon(
+  ctx: PaintContext,
+  points: number[],
+  area: { x: number; y: number; w: number; h: number },
+): void {
+  const bounds = [area.x, area.y, area.x + area.w, area.y + area.h];
+  let cut = points;
+  // each edge of the area in turn: what is inside it is kept, and an edge
+  // of the polygon that crosses it ends on it (Sutherland–Hodgman)
+  for (let edge = 0; edge < 4 && cut.length; edge += 1) {
+    const axis = edge & 1;
+    const bound = bounds[edge];
+    const sign = edge < 2 ? 1 : -1;
+    const from = cut;
+    cut = [];
+    for (let i = 0; i < from.length; i += 2) {
+      const j = (i + 2) % from.length;
+      const da = sign * (from[i + axis] - bound);
+      const db = sign * (from[j + axis] - bound);
+      if (da >= 0) cut.push(from[i], from[i + 1]);
+      if (da < 0 !== db < 0) {
+        const k = da / (da - db);
+        const other =
+          from[i + 1 - axis] + (from[j + 1 - axis] - from[i + 1 - axis]) * k;
+        if (axis) cut.push(other, bound);
+        else cut.push(bound, other);
+      }
+    }
+  }
+  if (cut.length < 6) return;
+  ctx.beginPath!();
+  ctx.moveTo!(cut[0], cut[1]);
+  for (let i = 2; i < cut.length; i += 2) ctx.lineTo!(cut[i], cut[i + 1]);
+  ctx.closePath?.();
+  ctx.fill!();
 }
 
 /**
