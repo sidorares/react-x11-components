@@ -17085,3 +17085,34 @@ metric(
     await result.unmount();
   },
 );
+
+test('a box that clips its overflow, too wide for a column no float narrows, stays at its top beside the float', async () => {
+  // Where no float narrows the room on either side, a box with a
+  // formatting context of its own is where it would be were there none, and
+  // one too wide for its containing block overflows it; below the floats it
+  // would be the same box in the same room. Blink tests the fit only against
+  // a side a float is on. Design 209's 247px heading in a 240px column,
+  // beside a float that ends left of the column, went under the float
+  const { node, result } = await render(
+    '<style>body{margin:0}.w{width:520px;display:flow-root}' +
+      '.f{float:left;width:250px;height:300px}.c{margin-left:265px;' +
+      'width:240px}.h{overflow:hidden;height:37px;width:247px}</style>' +
+      '<div class="w"><div class="f"></div><div class="c">' +
+      '<div class="h" id="free"></div></div></div>' +
+      // and one a float does narrow still goes under it
+      '<div class="w"><div class="f" style="width:280px"></div>' +
+      '<div class="c" id="col"><div class="h" id="narrowed"></div></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(
+    boxOf(el, 'free').y,
+    0,
+    'the heading stays at the column top, overflowing it',
+  );
+  assert.strictEqual(
+    boxOf(el, 'narrowed').y - boxOf(el, 'col').y,
+    300,
+    'where a float narrows the column, it waits below the float',
+  );
+  await result.unmount();
+});
