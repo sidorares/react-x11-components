@@ -337,6 +337,125 @@ metric(
   },
 );
 
+const STATIC_IN_CELL =
+  '<style>body{margin:0} td{padding:0;height:80px}' +
+  '.a{position:absolute;width:10px;height:10px}' +
+  '.i{width:36px;height:36px}</style>';
+
+test("an absolute box's static position moves with its cell's content", async () => {
+  // CSS 2.1 10.6.4: a box with neither `top` nor `bottom` is where it
+  // "would have been in the normal flow", and `vertical-align` moves the
+  // flow of a cell down its box. The position is kept from the cell's
+  // corner, which stays where the row is, and was left there: a badge on
+  // an icon in a `middle` cell stood at the cell's top, 22px above the
+  // icon, where Chrome has the two at one height.
+  const { node } = await render(
+    STATIC_IN_CELL +
+      '<table style="border-spacing:0"><tr>' +
+      '<td id="middle" style="vertical-align:middle">' +
+      '<div id="middle-a" class="a"></div><div class="i"></div></td>' +
+      '<td id="bottom" style="vertical-align:bottom">' +
+      '<div id="bottom-a" class="a"></div><div class="i"></div></td>' +
+      '<td id="top" style="vertical-align:top">' +
+      '<div id="top-a" class="a"></div><div class="i"></div></td>' +
+      // under the block before it, as it would have been
+      '<td id="after" style="vertical-align:middle">' +
+      '<div class="i"></div><div id="after-a" class="a"></div></td>' +
+      // from a block in the cell, which moved with the rest
+      '<td id="inner" style="vertical-align:middle"><div>' +
+      '<div id="inner-a" class="a"></div><div class="i"></div></div></td>' +
+      // and where the cell is what it is positioned against
+      '<td id="own" style="vertical-align:middle;position:relative">' +
+      '<div id="own-a" class="a"></div><div class="i"></div></td>' +
+      '</tr></table>',
+  );
+  const el = view(node);
+  const down = (id: string) => boxOf(el, `${id}-a`).y - boxOf(el, id).y;
+  // 80px of cell around 36 of content: 22 above it in the middle, 44 at
+  // the bottom
+  assert.strictEqual(down('middle'), 22, 'in the middle');
+  assert.strictEqual(down('bottom'), 44, 'at the bottom');
+  assert.strictEqual(down('top'), 0, 'at the top');
+  assert.strictEqual(down('after'), 22 + 36, 'after a block');
+  assert.strictEqual(down('inner'), 22, 'in a block of the cell');
+  assert.strictEqual(down('own'), 22, 'against the cell itself');
+});
+
+test('a cell laid out again moves its static positions once', async () => {
+  // A table's cells are laid out each time the table is, which a pass
+  // does more than once for one that is measured before it is placed: in
+  // an inline-block, a float, a flex item, a cell of another table, an
+  // absolute box. Each layout of a cell sets its static positions anew,
+  // and they go down with its content once, by what the last layout
+  // moved it.
+  const table = (id: string) =>
+    `<table style="border-spacing:0"><tr><td id="${id}" ` +
+    'style="vertical-align:bottom">' +
+    `<div id="${id}-a" class="a"></div><div class="i"></div></td></tr></table>`;
+  const { node } = await render(
+    STATIC_IN_CELL +
+      `<div style="display:inline-block">${table('inline-block')}</div>` +
+      `<div style="float:left">${table('float')}</div>` +
+      `<div style="clear:both;display:flex"><div>${table('flex')}</div></div>` +
+      `<div style="display:grid">${table('grid')}</div>` +
+      '<table style="border-spacing:0"><tr><td style="height:auto">' +
+      `<table style="border-spacing:0"><tr><td style="height:auto">` +
+      `${table('nested')}</td></tr></table></td></tr></table>` +
+      '<div style="position:relative"><div style="position:absolute">' +
+      `${table('absolute')}</div></div>`,
+  );
+  const el = view(node);
+  for (const id of [
+    'inline-block',
+    'float',
+    'flex',
+    'grid',
+    'nested',
+    'absolute',
+  ]) {
+    assert.strictEqual(boxOf(el, id).height, 80, `${id}: the cell`);
+    assert.strictEqual(
+      boxOf(el, `${id}-a`).y - boxOf(el, id).y,
+      44,
+      `${id}: at the bottom, and no further`,
+    );
+  }
+});
+
+metric(
+  "a static position in a cell's line goes where the line went",
+  async () => {
+    // In a line it is found from the line (`staticPositions`), and kept
+    // from the cell's corner all the same: on the line where the box is
+    // inline-level, under it where it would have broken it, in an inline
+    // box or not — and on the row's baseline with the line hung from it.
+    const { node } = await render(
+      STATIC_IN_CELL +
+        '<style>td{font:16px/20px sans-serif}</style>' +
+        '<table style="border-spacing:0"><tr>' +
+        '<td id="on" style="vertical-align:middle">' +
+        'text <span id="on-a" class="a"></span> more</td>' +
+        '<td id="under" style="vertical-align:middle"><span>in <b>a span ' +
+        '<span id="under-a" class="a" style="display:block"></span></b>' +
+        '</span> tail</td></tr></table>' +
+        '<table style="border-spacing:0"><tr>' +
+        '<td style="vertical-align:baseline;font-size:40px;' +
+        'line-height:50px">Big</td>' +
+        '<td id="hung" style="vertical-align:baseline">' +
+        '<div id="hung-a" class="a"></div>small</td></tr></table>',
+    );
+    const el = view(node);
+    const down = (id: string) => boxOf(el, `${id}-a`).y - boxOf(el, id).y;
+    // a 20px line in the middle of 80: 30 above it
+    assert.strictEqual(down('on'), 30, 'on its line');
+    assert.strictEqual(down('under'), 30 + 20, 'under the line it breaks');
+    const [line] = linesOf(el, 'hung');
+    const lift = line.y - boxOf(el, 'hung').y;
+    assert.ok(lift > 10, `the line hangs from the row's baseline: ${lift}`);
+    assert.strictEqual(down('hung'), lift, 'and the box at its top');
+  },
+);
+
 metric("a caption is outside the table's border, above or below", async () => {
   const { node } = await render(
     '<table id="t" style="border:5px solid #0000ff"><caption id="c">' +
