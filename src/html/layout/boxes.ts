@@ -243,6 +243,10 @@ export interface TextLayoutLike {
     height: number;
     baseline: number;
     width: number;
+    /** Its width with the white space it ends on kept, in the item it
+     *  ends: how far it moves the pen where text goes on after it on the
+     *  same line. ntk's, from 8.17.0; an engine without it leaves it out. */
+    advance?: number;
     ascent: number;
     descent: number;
     start: number;

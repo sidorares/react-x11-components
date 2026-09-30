@@ -17365,6 +17365,78 @@ test("an inline box that a line breaks inside ends that line's fragment at its t
 });
 
 metric(
+  'a piece of a line goes on after the white space it ends on as far as the engine says it takes',
+  async () => {
+    // A line composed a piece at a time — here an indented one with an
+    // inline-block in it — lays out the text before the inline-block alone,
+    // and its engine strips the space it ends on. The space is on the line,
+    // and it takes what the engine says the line takes with it, `advance`:
+    // with each element's text rounded up to a 64th with its spaces, once,
+    // as Blink rounds it, the text rounded and a space added after it came
+    // to more, and the Zen Garden's 166 broke a line Chrome fits. A spy
+    // engine says every line's space takes 40px, and the inline-block is
+    // there
+    const source =
+      '<p style="margin:0;text-indent:1px">one ' +
+      '<span id="ib" style="display:inline-block;width:10px;height:10px">' +
+      '</span> two</p>';
+    const { node } = await render(source);
+    const el = view(node) as unknown as {
+      app: { fonts: FontsLike };
+      _source: { document: unknown };
+      _cascade: unknown;
+    };
+    const engine = el.app.fonts;
+    const { buildBoxes } = await import('../src/html/layout/boxes.js');
+    const { layoutDocument } = await import('../src/html/layout/block.js');
+    const atomicX = (fonts: FontsLike) => {
+      const tree = buildBoxes(el._source.document as never, {
+        cascade: el._cascade as never,
+        scale: 1,
+        imageSize: () => null,
+        urlSize: () => null,
+        controlSize: () => ({ width: 0, height: 0 }) as never,
+      });
+      layoutDocument(tree, fonts, 400, 600);
+      const find = (box: LaidBox): LaidBox | null => {
+        if (box.el?.attribs.id === 'ib') return box;
+        for (const child of box.children) {
+          const hit = find(child);
+          if (hit) return hit;
+        }
+        return null;
+      };
+      return find(tree.root as unknown as LaidBox)!.x;
+    };
+    // what the engine itself says the space after "one" takes, before the
+    // spy says 40px instead
+    let gap = NaN;
+    const spaced: FontsLike = {
+      layout: (content, style, options) => {
+        const layout = engine.layout(content, style, options);
+        const text = content.map((run) => run.text).join('');
+        for (const line of layout.lines) {
+          if (text.endsWith('one ') && line.advance !== undefined) {
+            gap = line.advance - line.width;
+          }
+          line.advance = line.width + 40;
+        }
+        return layout;
+      },
+      match: (family, style) => engine.match(family, style),
+    };
+    const own = atomicX(engine);
+    const told = atomicX(spaced);
+    assert.ok(gap > 1 && gap < 10, `the engine's space after "one": ${gap}`);
+    assert.ok(
+      Math.abs(told - own - (40 - gap)) < 0.01,
+      `the inline-block is as far past "one" as the spy says: ${told} ` +
+        `against ${own} with a ${gap}px space`,
+    );
+  },
+);
+
+metric(
   "an inline box's padding below its line makes the document taller, where nothing clips it",
   async () => {
     // An inline box's fragments count in the scrollable overflow of the
