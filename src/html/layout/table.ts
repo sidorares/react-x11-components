@@ -249,16 +249,44 @@ export function layoutTable(
   }
   // A row-spanning cell only forces height when the rows it covers do not
   // already provide it — otherwise a `rowspan="3"` cell would make each of
-  // its three rows as tall as all of it.
+  // its three rows as tall as all of it — and what they come short of it
+  // is shared out over them (`growRows`), where it all went to the last.
+  // Blink takes the cells in an order of its own: one inside another's
+  // rows first, so that the outer one is given what the inner left it; of
+  // two over the same rows, the taller; and else from the top down.
+  const spanning: number[] = [];
+  const lastRow = (cell: Cell): number =>
+    Math.min(rows.length - 1, cell.row + cell.rowSpan - 1);
   for (let i = 0; i < cells.length; i += 1) {
-    const cell = cells[i];
-    if (cell.rowSpan <= 1) continue;
-    const last = Math.min(rows.length - 1, cell.row + cell.rowSpan - 1);
-    let covered = 0;
-    for (let r = cell.row; r <= last; r += 1) covered += rowHeight[r];
-    covered += rowSpacing * (last - cell.row);
-    const missing = needs(i) - covered;
-    if (missing > 0) rowHeight[last] += missing;
+    if (cells[i].rowSpan > 1) spanning.push(i);
+  }
+  if (spanning.length) {
+    const starts: boolean[] = new Array<boolean>(rows.length).fill(false);
+    for (const i of spanning) {
+      if (lastRow(cells[i]) > cells[i].row) starts[cells[i].row] = true;
+    }
+    spanning.sort((a, b) => {
+      const p = cells[a];
+      const q = cells[b];
+      const pEnd = lastRow(p);
+      const qEnd = lastRow(q);
+      if (p.row === q.row && pEnd === qEnd) return needs(b) - needs(a);
+      if (p.row >= q.row && pEnd <= qEnd) return -1;
+      if (q.row >= p.row && qEnd <= pEnd) return 1;
+      return p.row - q.row;
+    });
+    const sizing = rowSizing(rows, cells);
+    for (const i of spanning) {
+      const cell = cells[i];
+      const last = lastRow(cell);
+      let covered = 0;
+      for (let r = cell.row; r <= last; r += 1) covered += rowHeight[r];
+      covered += rowSpacing * (last - cell.row);
+      const missing = needs(i) - covered;
+      if (missing > 0) {
+        growRows(rowHeight, sizing, missing, null, cell.row, last, starts);
+      }
+    }
   }
 
   // What the rows come to before any height is shared out to them, the
@@ -1003,32 +1031,48 @@ function rowSizing(rows: Box[], cells: Cell[]): RowSizing[] {
 
 /**
  * The height a table has past its rows' given out among them, as browsers
- * give it (the CSS Tables 3 draft leaves it open, csswg-drafts#4418): first
- * to the rows a percentage sets, up to it; then to the rows nothing sets
- * that have content, in proportion to their heights; then, where every row
- * with content is set, to the empty rows, those nothing sets first, evenly;
- * and else to every row with content, in proportion. A row whose cells set
- * its height keeps it while an empty row beside it takes the rest.
+ * give it (the CSS Tables 3 draft leaves it open, csswg-drafts#4418; this is
+ * Blink's `DistributeExcessBlockSizeToRows`): first to the rows a percentage
+ * of `base` sets, up to it; then to the rows nothing sets that have
+ * content, in proportion to their heights; then, where every row with
+ * content is set, to the empty rows, those nothing sets first, evenly; and
+ * else to every row with content, in proportion. A row whose cells set its
+ * height keeps it while an empty row beside it takes the rest.
+ *
+ * What a cell spanning the rows `first` to `last` needs past them goes out
+ * the same way, with three differences, and `starts` says which rows a
+ * spanning cell starts in. A percentage is of nothing yet (`base` is null),
+ * so a row one sets is a row nothing sets. Before anything else, the rows
+ * after the first that another spanning cell starts in take it all,
+ * evenly. And empty rows take none of it unless every row is empty, when
+ * the last takes it.
  */
 function growRows(
   heights: number[],
   sizing: RowSizing[],
   extra: number,
-  base: number,
+  base: number | null,
+  first = 0,
+  last = heights.length - 1,
+  starts: boolean[] | null = null,
 ): void {
-  const n = heights.length;
-  const deficit = heights.map((h, r) => {
-    const pct = sizing[r].percent;
-    return pct ? Math.max(0, (pct / 100) * base - h) : 0;
-  });
+  const deficit: number[] = [];
   const empty: number[] = [];
   const nothingSetEmpty: number[] = [];
   const full: number[] = [];
   const nothingSetFull: number[] = [];
+  const spanned: number[] = [];
   let setFull = 0;
-  for (let r = 0; r < n; r += 1) {
-    const set = sizing[r].constrained || sizing[r].percent !== null;
-    if (heights[r] === 0 && deficit[r] === 0) {
+  let owed = 0;
+  for (let r = first; r <= last; r += 1) {
+    const pct = sizing[r].percent;
+    const short =
+      pct && base !== null ? Math.max(0, (pct / 100) * base - heights[r]) : 0;
+    deficit.push(short);
+    owed += short;
+    const set = pct !== null ? base !== null : sizing[r].constrained;
+    if (starts?.[r] && r > first) spanned.push(r);
+    if (heights[r] === 0 && short === 0) {
       empty.push(r);
       if (!set) nothingSetEmpty.push(r);
     } else {
@@ -1037,10 +1081,11 @@ function growRows(
       else nothingSetFull.push(r);
     }
   }
-  const owed = deficit.reduce((a, b) => a + b, 0);
   if (owed > 0) {
     const give = Math.min(owed, extra);
-    for (let r = 0; r < n; r += 1) heights[r] += (give * deficit[r]) / owed;
+    for (let r = first; r <= last; r += 1) {
+      heights[r] += (give * deficit[r - first]) / owed;
+    }
     extra -= give;
     if (!(extra > 0)) return;
   }
@@ -1052,8 +1097,12 @@ function growRows(
         even || !(sum > 0) ? extra / which.length : (extra * heights[r]) / sum;
     }
   };
-  if (nothingSetFull.length) grow(nothingSetFull, false);
-  else if (empty.length && empty.length + setFull === n) {
+  if (spanned.length) grow(spanned, true);
+  else if (nothingSetFull.length) grow(nothingSetFull, false);
+  else if (starts) {
+    if (full.length) grow(full, false);
+    else heights[last] += extra;
+  } else if (empty.length && empty.length + setFull === last - first + 1) {
     grow(nothingSetEmpty.length ? nothingSetEmpty : empty, true);
   } else grow(full, false);
 }
