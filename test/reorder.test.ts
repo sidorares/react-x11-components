@@ -93,6 +93,8 @@ interface ListSpec extends Omit<ReorderListProps, 'children' | 'onReorder'> {
   live?: boolean;
   size?: { width: number; height: number };
   onReorder?: (change: ReorderChange) => void;
+  /** Called each time an item renders its content, for counting renders. */
+  onItemRender?: (id: ReorderId) => void;
 }
 
 /**
@@ -110,6 +112,7 @@ function List(spec: ListSpec): ReactElement {
     live = true,
     size = ITEM,
     onReorder,
+    onItemRender,
     ...rest
   } = spec;
   // `live` decides who owns the order: the harness applies every change
@@ -130,25 +133,36 @@ function List(spec: ListSpec): ReactElement {
       style: { gap: GAP, padding: 10 },
       ...rest,
     },
-    order.map((id) =>
-      h(
-        ReorderItem,
-        {
-          key: id,
-          id,
-          disabled: disabledItems.includes(id),
-          'data-testname': `${name}-${id}`,
-          style: {
-            ...size,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 6,
-          },
+    order.map((id) => {
+      const content = (): ReactElement =>
+        h(
+          React.Fragment,
+          null,
+          handle &&
+            h(ReorderHandle, { 'data-testname': `${name}-${id}-handle` }),
+          h('text', null, `Item ${id}`),
+        );
+      return h(ReorderItem, {
+        key: id,
+        id,
+        disabled: disabledItems.includes(id),
+        'data-testname': `${name}-${id}`,
+        style: {
+          ...size,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
         },
-        handle && h(ReorderHandle, { 'data-testname': `${name}-${id}-handle` }),
-        h('text', null, `Item ${id}`),
-      ),
-    ),
+        // a function of the item's state is called each time the item
+        // renders, which is what counts them
+        children: onItemRender
+          ? () => {
+              onItemRender(id);
+              return content();
+            }
+          : content(),
+      });
+    }),
   );
 }
 
@@ -1781,28 +1795,153 @@ test('items added and removed mid-drag are the ones the drop lands among', async
   ]);
 });
 
-test('a few hundred items still answer one gesture', async () => {
-  const changes: ReorderChange[] = [];
-  const many = Array.from({ length: 300 }, (_, i) => `i${i}`);
-  await mount(
-    view(
-      h(List, {
-        name: 'l',
-        items: many,
-        onReorder: (c) => changes.push(c),
-        size: { width: 160, height: 12 },
-        style: { gap: 0, padding: 4, height: 200, overflow: 'scroll' },
-      }),
-    ),
+/**
+ * What the drag events a list is handed cost it: one entry per `onDragOver`
+ * or `onDrop` core dispatches to its root, holding how many item rectangles
+ * (`abs`) the list read while it handled that event. Core reads `abs` too,
+ * to lay out and paint, once a frame and so as often as a busy machine
+ * draws one; inside the list's own handler nothing but the list runs.
+ */
+function rectanglesRead(
+  list: DrawnNode,
+  items: readonly DrawnNode[],
+): number[] {
+  const perEvent: number[] = [];
+  let reads = 0;
+  let handling = false;
+  // core takes the handler off `props` as it dispatches, and a render of the
+  // list replaces `props` — so whatever props the list is given are wrapped
+  const wrap = (props: Record<string, unknown>): Record<string, unknown> => {
+    const wrapped = { ...props };
+    for (const name of ['onDragOver', 'onDrop']) {
+      const handler = props[name] as ((ev: unknown) => unknown) | undefined;
+      if (!handler) continue;
+      wrapped[name] = (ev: unknown): unknown => {
+        const before = reads;
+        handling = true;
+        try {
+          return handler(ev);
+        } finally {
+          handling = false;
+          perEvent.push(reads - before);
+        }
+      };
+    }
+    return wrapped;
+  };
+  const root = retained(list);
+  let props = wrap(root.props);
+  Object.defineProperty(root, 'props', {
+    configurable: true,
+    get: () => props,
+    set: (next: Record<string, unknown>) => {
+      props = wrap(next);
+    },
+  });
+  for (const node of items) {
+    let abs = node.abs;
+    Object.defineProperty(node, 'abs', {
+      configurable: true,
+      get: () => {
+        if (handling) reads++;
+        return abs;
+      },
+      set: (next: typeof abs) => {
+        abs = next;
+      },
+    });
+  }
+  return perEvent;
+}
+
+/**
+ * Settle until the list has been handed `count` drag events. A motion
+ * reaches it on ntk's frame clock, whenever a busy machine gets round to it,
+ * and two motions that neither waited for become one.
+ */
+async function handed(events: readonly number[], count: number) {
+  for (let tries = 0; events.length < count; tries++) {
+    if (tries === 300) {
+      assert.fail(`the list was handed ${events.length} drag events`);
+    }
+    await landed();
+  }
+  await act();
+}
+
+test('ten times the items cost a drag event ten times the rectangles, and no more renders', async () => {
+  // A smoke test for an accidental O(n²), and a count rather than a clock: a
+  // stopwatch around the gesture failed a full suite on a loaded machine at
+  // twice its budget, and passed alone at the edge of it.
+  const renders = { short: 0, long: 0 };
+  const changes = { short: [] as ReorderChange[], long: [] as ReorderChange[] };
+  const list = (name: 'short' | 'long', count: number): ReactElement =>
+    h(List, {
+      name,
+      items: Array.from({ length: count }, (_, i) => `i${i}`),
+      onReorder: (c) => changes[name].push(c),
+      onItemRender: () => {
+        renders[name]++;
+      },
+      size: { width: 160, height: 12 },
+      style: { gap: 0, padding: 4, height: 200, overflow: 'scroll' },
+    });
+  await mount(view(list('short', 30), list('long', 300)));
+  assert.strictEqual(orderOf('long').length, 300);
+
+  /** The first item dragged to the gap after the sixth, counted. */
+  const gesture = async (name: 'short' | 'long', count: number) => {
+    const events = rectanglesRead(
+      screen.getByTestName(name),
+      Array.from({ length: count }, (_, i) => item(name, `i${i}`)),
+    );
+    const from = item(name, 'i0');
+    const to = item(name, 'i5');
+    const before = renders[name];
+    await act(async () => {
+      fireEvent.mouseDown(from);
+    });
+    await act(async () => {
+      fireEvent.mouseMove(from, { dx: 6 });
+    });
+    await handed(events, 1);
+    await act(async () => {
+      fireEvent.mouseMove(to, { dy: 4 });
+    });
+    await handed(events, 2);
+    const moving = renders[name] - before;
+    await act(async () => {
+      fireEvent.mouseUp(to, { dy: 4 });
+    });
+    await handed(events, 3);
+    assert.strictEqual(changes[name].at(-1)?.to, 5, `${name}: the drop`);
+    return { events, moving, renders: renders[name] - before };
+  };
+  const short = await gesture('short', 30);
+  const long = await gesture('long', 300);
+  const counts = `short ${JSON.stringify(short)}, long ${JSON.stringify(long)}`;
+
+  // the same three events in both: the motion that crossed the threshold,
+  // the one over the sixth item, and the drop
+  assert.strictEqual(short.events.length, 3, counts);
+  assert.strictEqual(long.events.length, 3, counts);
+  assert.ok(
+    short.events.some((n) => n > 0),
+    `the list read no rectangle through \`abs\`, so this counts nothing: ${counts}`,
   );
-  assert.strictEqual(orderOf('l').length, 300);
-  const started = Date.now();
-  await dragTo(item('l', 'i0'), item('l', 'i5'), { dy: 4 });
-  await release(item('l', 'i5'), { dy: 4 });
-  assert.deepStrictEqual(changes.at(-1)?.to, 5);
-  // a rectangle per item per motion, and nothing else: this is a smoke test
-  // for an accidental O(n²), not a benchmark
-  assert.ok(Date.now() - started < 4000, `${Date.now() - started}ms`);
+  // The list reads every item's rectangle to find the closest edge, which is
+  // the design: ten times the items, ten times the reads. Every rectangle
+  // read again for each item would be a hundred times.
+  long.events.forEach((n, i) =>
+    assert.ok(n <= short.events[i]! * 10, `event ${i}: ${counts}`),
+  );
+  // A motion re-renders the item it lifted and the items the line left and
+  // reached, never the list — so no more of them in a long list.
+  assert.ok(short.moving > 0, counts);
+  assert.ok(long.moving <= short.moving, counts);
+  // The drop does re-render every item, since the app handed the list a new
+  // order; an item a render or two, not one per item.
+  assert.ok(long.renders <= short.renders * 10, counts);
 });
 
 test('the whole surface still answers at scale 2: combine, multi and the flight', async () => {
