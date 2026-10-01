@@ -790,7 +790,8 @@ export interface ComputedStyle {
     | 'center'
     | 'stretch'
     | 'space-between'
-    | 'space-around';
+    | 'space-around'
+    | 'space-evenly';
   flexGrow: number;
   flexShrink: number;
   flexBasis: Len | 'auto' | 'content';
