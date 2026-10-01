@@ -364,12 +364,32 @@ export class SvgDrawing {
     }
     const box = viewBoxOf(root);
     // the viewport in user units, which a percentage is of
+    let vw = w / scale;
+    let vh = h / scale;
+    // An image with no `viewBox` is laid out at its own size, along an
+    // axis it has one on, and stretched to the rectangle along it, as a
+    // raster image is: Blink gives it a `viewBox` of its own size that
+    // `preserveAspectRatio: none` fits. Drawn at its own size, an icon of
+    // `width="24" height="24"` shown 48 wide was a quarter of its box.
+    let kx = 1;
+    let ky = 1;
+    if (!box && this._standalone) {
+      const own = this.intrinsics;
+      if (own.width !== null && own.width > 0) {
+        kx = vw / own.width;
+        vw = own.width;
+      }
+      if (own.height !== null && own.height > 0) {
+        ky = vh / own.height;
+        vh = own.height;
+      }
+    }
     const paint =
       (fill === null ? '' : `fill:${fill};`) +
       (stroke === null ? '' : `stroke:${stroke};`);
     const view = box
       ? this._viewFor(box[2], box[3], paint, shapes)
-      : this._viewFor(w / scale, h / scale, paint, shapes);
+      : this._viewFor(vw, vh, paint, shapes);
     if (!view) return;
     ctx.save();
     // the view draws on the context lent, which counts its saves
@@ -386,8 +406,8 @@ export class SvgDrawing {
           lent.ctx,
           x,
           y,
-          view.naturalWidth * scale,
-          view.naturalHeight * scale,
+          view.naturalWidth * scale * kx,
+          view.naturalHeight * scale * ky,
           opts,
         );
       } else {

@@ -1152,8 +1152,11 @@ otherwise than the element where it stands. A symbol a rule gives
 Chrome has it.
 
 An SVG root's `width` and `height` are CSS lengths, a percentage one too;
-its intrinsic size is what of them is absolute, and its ratio comes from them or from its `viewBox`,
-which is fitted to its box as `preserveAspectRatio` says. A percentage in
+its intrinsic size is what of them is absolute, and its ratio comes from
+them or from its `viewBox`, which is fitted to its box as
+`preserveAspectRatio` says. An SVG image with no `viewBox` is laid out at
+its own size and stretched to its box, along each axis it has a size on,
+as a raster image is and as Chrome draws one. A percentage in
 its geometry is of its viewport, and `currentColor` is the `color` the
 element inherits. An inline drawing's `<use>` refers to an element anywhere
 in the document, so an icon drawn from a sprite — a `<symbol>` in a hidden
