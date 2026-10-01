@@ -2181,9 +2181,13 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   });
   marker.layout = layout;
   // a space between it and the content — the one its style's suffix ends
-  // in, or its own text's — in its own face: a line measures without it
-  const gap =
-    marker.flush && !/\s$/.test(marker.text) ? 0 : markerGap(fonts, face);
+  // in, or its own text's — in its own face: a line measures without the
+  // spaces it ends in, and with a no-break space, which `content: "1.\a0"`
+  // writes and which was a second gap on top of its own
+  const trailing = marker.flush
+    ? (/[ \t\n\r\f]*$/.exec(marker.text)?.[0].length ?? 0)
+    : 1;
+  const gap = trailing ? trailing * markerGap(fonts, face) : 0;
   // The marker sits on the first line of the item's *content*, which is not
   // always the item's own: an `<li>` holding a paragraph, or one holding text
   // and a nested list, has its inline content in an anonymous block. Looking
