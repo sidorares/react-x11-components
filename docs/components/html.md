@@ -511,7 +511,8 @@ measures it at that height. In a column that wraps, each line is as wide
 as its widest item, every item `fit-content` (9.4, steps 7 and 8), and is
 placed across the box by this engine, Yoga laying out only what goes down
 it: `align-content` centres, ends or spaces the lines out in what the box
-has past them, or stretches them to it, and a line wider than the box runs
+has past them, or stretches them to it, its `start` and `end` the box's
+left and right sides, and a line wider than the box runs
 past both its sides where it is centred, or past its start where it is
 ended, starting at its right edge where the lines run right to left. A
 stretched item is as wide as its line, within its limits, and as tall as
@@ -604,12 +605,11 @@ height wherever the row had room along it for every item, and squashed a
 taller one to it. `align-content: center` and `flex-end` move such a line
 by its own height, past both edges or the far one where it is taller than
 the row, and `start` and `end` are the row's top and bottom, which a row
-that wraps in reverse has at its lines' ends. The one line of a row
-`space-around` spaces out stays at the row's start where an item on it is
-stretched, and an item
-stretched across a line `space-between` or `space-around` spaces out is
-taller than the line by the room put between lines — Yoga's reading, not
-the specification's. Items go in `order`, and in the document's where two have the
+that wraps in reverse has at its lines' ends. `space-between`,
+`space-around` and `space-evenly` put the room the lines leave between
+them and around them, the latter two centring a row's one line, and an
+item stretched across a line spaced out so is as tall as the line, where
+Yoga made it taller by the room after the line too. Items go in `order`, and in the document's where two have the
 same, and are painted so; one with a `z-index` is a stacking context
 whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines, their
 line as tall as that makes it — `last baseline` is taken as the end of the
