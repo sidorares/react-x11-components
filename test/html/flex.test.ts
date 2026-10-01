@@ -1087,6 +1087,24 @@ test("a flex item's limits and flex basis are the ones its style says", async ()
   );
 });
 
+test('a flex box measured for its min-content width counts each item at its own', async () => {
+  // A box's min-content width is measured by laying it out in no room, and
+  // what a flex item gives it there is its min-content width (CSS Flexbox
+  // 9.9.1), not a share of a line: an item that does not shrink, its flex
+  // base size its content's widest, two floats side by side, made this box
+  // 90 wide where Chrome has 60 — the floats one above the other, the gap
+  // and the 10 beside them
+  const { node } = await render(
+    '<style>body{margin:0} .f{float:left;width:30px;height:10px}</style>' +
+      '<div id="g" style="display:flex;width:min-content;column-gap:20px">' +
+      '<div id="h" style="flex:0 0 auto"><div class="f"></div>' +
+      '<div class="f"></div></div><div style="width:10px"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'g').width, 60, 'its min-content width');
+  assert.strictEqual(boxOf(el, 'h').width, 60, 'and the item its widest in it');
+});
+
 test("a flex box is no narrower than its items' widths make it", async () => {
   // What an item with a width of its own gives the size of its flex box is
   // that width (CSS Flexbox 9.9.3), and a percentage `max-width` on a box

@@ -189,6 +189,7 @@ export function layoutFlex(
       basis: NaN,
       sized: false,
       content: NaN,
+      fitted: NaN,
       base: NaN,
       held: NaN,
       minimum: NaN,
@@ -236,6 +237,7 @@ export function layoutFlex(
           floor,
           ceiling,
           between: betweenOf(items, row, row ? columnGap : rowGap),
+          probe: row && contentWidth === MIN_CONTENT_PROBE,
         }
       : null;
   // and the lines of a box that wraps may have room left over, where a
@@ -1029,6 +1031,10 @@ function applyItem(
         answers.set(inner, answer);
       }
     }
+    // along a row, the width it answered where it might choose one
+    if (alongRow && wm !== Y.MEASURE_MODE_EXACTLY) {
+      laid.fitted = answer.width + box.horizontalExtra;
+    }
     // down a column, its content's height where nothing held it to one:
     // its flex base size, where that is its content's (`Laid.sized`) — for
     // a basis that says so, what a height of its own has no say in
@@ -1096,6 +1102,10 @@ interface Laid {
    *  there: its max-content width along a row, its height at its width
    *  down a column. NaN until measured so. */
   content: number;
+  /** The border-box width the measure function last answered along a row
+   *  where Yoga asked for one it might choose, its content's fitted to the
+   *  room: the flex base size Yoga takes for it (`FlexLine.probe`). */
+  fitted: number;
   /** The flex base size its line was shared out from where this engine
    *  shared it (`resolveLine`), or NaN. */
   base: number;
@@ -1739,6 +1749,18 @@ interface FlexLine {
   /** What is between the items' border boxes along it: the gaps, and
    *  their margins, an `auto` one none (8.1). */
   between: number;
+  /**
+   * Whether it is a row laid out in no room at all — how the box's
+   * min-content width is measured (`MIN_CONTENT_PROBE`), where what an
+   * item contributes to that is its min-content width and not a share of
+   * a line. An item whose flex base size is its content's is taken there
+   * at the size Yoga took, its content fitted to no room, and not at its
+   * max-content width (`Laid.fitted`): a `flex: none` box of two floats
+   * counted at its widest made a `width: min-content` flex box half as
+   * wide again as Chrome has it. A row that is truly as wide as nothing is
+   * taken the same way, and is laid out as Yoga has it.
+   */
+  probe: boolean;
 }
 
 /** What is between the border boxes of a line's items along the main
@@ -1824,10 +1846,10 @@ function resolveLine(
   /** Lay the flex box out, as its nodes now are. */
   ask: () => void,
 ): boolean {
-  if (!unshared(items, row, room - line.between)) return false;
+  if (!unshared(items, row, room - line.between, line.probe)) return false;
   let unknown = false;
   for (const { box, laid } of items) {
-    laid.base = baseOf(box, laid, row);
+    laid.base = baseOf(box, laid, row, line.probe);
     if (Number.isNaN(laid.base) && Number.isNaN(laid.held)) unknown = true;
   }
   if (unknown) askBases(items, row, ask);
@@ -1929,6 +1951,8 @@ function unshared(
   row: boolean,
   /** The room for the items' border boxes. */
   room: number,
+  /** Whether the line is a min-content probe's (`FlexLine.probe`). */
+  probe: boolean,
 ): boolean {
   let sum = 0;
   for (const { laid } of items) sum += laid.main;
@@ -1943,7 +1967,7 @@ function unshared(
     if (!Number.isNaN(laid.least) || !Number.isNaN(laid.most)) return true;
     const { flexGrow: grow, flexShrink: shrink } = box.style;
     const least = leastOf(box, laid, row);
-    const base = baseOf(box, laid, row);
+    const base = baseOf(box, laid, row, probe);
     const size = laid.main;
     grows += grow;
     shrinks += shrink;
@@ -1972,11 +1996,13 @@ function unshared(
 const NEAR = 0.01;
 
 /** An item's flex base size, its border box's, where this engine knows it:
- *  what its style says, or its content's size as last measured — and no
- *  less than its padding and borders, as Yoga has it. Else NaN. */
-function baseOf(box: Box, laid: Laid, row: boolean): number {
+ *  what its style says, or its content's size as last measured — fitted
+ *  to no room, in a min-content probe (`FlexLine.probe`) — and no less than
+ *  its padding and borders, as Yoga has it. Else NaN. */
+function baseOf(box: Box, laid: Laid, row: boolean, probe: boolean): number {
   const extra = row ? box.horizontalExtra : box.verticalExtra;
-  return Math.max(laid.sized ? laid.content : laid.basis, extra);
+  const content = probe ? laid.fitted : laid.content;
+  return Math.max(laid.sized ? content : laid.basis, extra);
 }
 
 /**
