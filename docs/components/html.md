@@ -485,6 +485,10 @@ padding and border counted once, and a width, height or basis of its own is
 its content box's unless `box-sizing` says otherwise. One that may not
 shrink stays that wide in a row too narrow for it — `shrink-0` beside
 `shrink-0` runs out of the row on one line each rather than wrapping — and
+items that may shrink give up the room the row lacks in proportion to that
+width times their `flex-shrink`, however much wider than the row it is: a
+paragraph beside "Pricing plans" in a row of 300px comes to 245px of it, as
+in Chrome. And
 one a `min-width` of its own holds wider than the room it is offered, as
 `min-w-max` in a narrow row or column does, or its longest word holds in a
 row that wraps, is as tall as its content at that width. A table among them

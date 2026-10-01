@@ -731,6 +731,81 @@ metric(
   },
 );
 
+metric(
+  'flex items that may shrink give up room in proportion to their content at its widest',
+  async () => {
+    // A line too narrow for its items takes the room it lacks from each in
+    // proportion to its flex shrink factor times its flex base size (CSS
+    // Flexbox 9.7, step 4c), and an item's base size is its content at its
+    // widest, whatever the room (9.2.3 E). Yoga asks for it as at most the
+    // row's width, and an item that may shrink was fitted to that: one
+    // wider than the row was weighed as no wider, and gave up too little
+    // beside a narrower one. Eight floats of 50 beside two in a row of 300
+    // were 225 and 75, where Chrome has 240 and 60
+    const floats = (n: number) => '<div class="f"></div>'.repeat(n);
+    const long = 'Documentation pages and more words here to wrap them';
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex;width:300px;line-height:20px}' +
+        '.f{float:left;width:50px;height:10px}' +
+        '.w{width:max-content} .n{width:min-content}</style>' +
+        `<div class="r"><div id="a">${floats(8)}</div>` +
+        `<div id="b">${floats(2)}</div></div>` +
+        // with a shrink factor of its own
+        `<div class="r"><div id="c" style="flex-shrink:2">${floats(8)}</div>` +
+        `<div id="d">${floats(2)}</div></div>` +
+        // words, which wrap at the width that leaves them
+        `<div class="w" id="w1">${long}</div>` +
+        '<div class="w" id="w2">Pricing plans</div>' +
+        '<div class="n" id="n2">Pricing plans</div>' +
+        `<div class="r"><div id="e">${long}</div>` +
+        '<div id="f">Pricing plans</div></div>' +
+        // and the narrower held at its longest word, which the rest of the
+        // line then comes out of
+        `<div class="r" style="width:200px"><div id="g">${long}</div>` +
+        '<div id="h">Pricing plans</div></div>' +
+        // A flex box's content at its narrowest is still its items' at
+        // theirs, 50 and 50, and each of them is that in it
+        '<div id="i" style="display:flex;width:min-content">' +
+        `<div id="j">${floats(8)}</div><div id="k">${floats(2)}</div></div>`,
+    );
+    const el = view(node);
+    const box = (id: string) => boxOf(el, id);
+    const near = (actual: number, expected: number, message: string) =>
+      assert.ok(
+        Math.abs(actual - expected) < 0.01,
+        `${message}: ${actual}, not ${expected}`,
+      );
+    near(box('a').width, 240, 'the wider gives up four fifths');
+    near(box('b').width, 60, 'and the narrower one fifth');
+    near(box('b').x, box('a').x + 240, 'beside it');
+    // 200 short, weighed 2 × 400 to 1 × 100
+    near(box('c').width, 400 - (200 * 800) / 900, 'by twice its base');
+    near(box('d').width, 100 - (200 * 100) / 900, 'and the other once');
+    // as Chrome has the paragraph and the two words, 245 and 55 in Arial
+    const long1 = box('w1').width;
+    const short = box('w2').width;
+    assert.ok(long1 > 300, `the words are wider than the row: ${long1}`);
+    const lacks = long1 + short - 300;
+    near(box('e').width, long1 - (lacks * long1) / (long1 + short), 'words');
+    near(box('f').width, short - (lacks * short) / (long1 + short), 'two');
+    assert.strictEqual(box('f').height, 40, 'which wrap');
+    // in 200, the two words' share would leave them narrower than
+    // "Pricing", so they are held there, and the paragraph has the rest
+    const word = box('n2').width;
+    assert.ok(
+      short - ((long1 + short - 200) * short) / (long1 + short) < word,
+      'their share is narrower than their longest word',
+    );
+    near(box('h').width, word, 'held at their longest word');
+    near(box('g').width, 200 - word, 'and the paragraph the rest');
+    assert.deepStrictEqual(
+      [box('i').width, box('j').width, box('k').width],
+      [100, 50, 50],
+      'a flex box at its narrowest, and its items in it',
+    );
+  },
+);
+
 test("a flex item's percentages are of the flex box's width, not of its own", async () => {
   // CSS 2.1 8.3, 8.4 and 10.4: a percentage in a margin, a padding or a
   // width limit is of the containing block's width, and a flex item's
