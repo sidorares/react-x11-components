@@ -297,10 +297,20 @@ export class SvgDrawing {
     { cascade: Cascade; own: Map<string, ImagePaint | null> }
   >();
 
-  constructor(root: Element, intrinsics: IntrinsicSize, standalone = false) {
+  /** The element an SVG image's URL names by its fragment, its own
+   *  `:target`: a sprite sheet shows the icon `image.svg#icon` names. */
+  private readonly _target: Element | null;
+
+  constructor(
+    root: Element,
+    intrinsics: IntrinsicSize,
+    standalone = false,
+    target: Element | null = null,
+  ) {
     this._root = root;
     this.intrinsics = intrinsics;
     this._standalone = standalone;
+    this._target = target;
   }
 
   /**
@@ -477,6 +487,7 @@ export class SvgDrawing {
         null,
         null,
         this._root,
+        this._target,
       );
       entry = { cascade, own: new Map() };
       this._cascades.set(made, entry);
@@ -1201,7 +1212,10 @@ function restyle(attribs: Record<string, string>, own: ShapeStyle): void {
  * which is how a PNG or a JPEG goes on to the image decoder. Nothing names
  * the type, so it is sniffed: markup, with an `<svg>` root.
  */
-export function svgFromBytes(bytes: Uint8Array): SvgDrawing | null {
+export function svgFromBytes(
+  bytes: Uint8Array,
+  fragment = '',
+): SvgDrawing | null {
   let i = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
   while (
     bytes[i] === 0x20 ||
@@ -1217,7 +1231,9 @@ export function svgFromBytes(bytes: Uint8Array): SvgDrawing | null {
   try {
     const doc = parseDocument(text, { xmlMode: true });
     const root = findRoot(doc.children);
-    return root ? new SvgDrawing(root, svgIntrinsics(root), true) : null;
+    if (!root) return null;
+    const target = fragment ? elementById(doc, fragment) : null;
+    return new SvgDrawing(root, svgIntrinsics(root), true, target);
   } catch {
     return null;
   }

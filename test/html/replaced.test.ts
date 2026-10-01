@@ -634,6 +634,15 @@ metric(
         rect(0, 'class="st0" fill="#00aa00"') + rect(10, 'fill="#0000ff"'),
       ),
     };
+    // the element an image's URL names by its fragment is its `:target`,
+    // which a sprite sheet shows its icons with
+    const target = svg(
+      '<style>.t { fill: #0000ff } .t:target { fill: #00aa00 } ' +
+        '.u:not(:target) { fill: #ff00ff }</style>',
+      `<g id="on" class="t">${rect(0)}</g><g class="t">${rect(10)}</g>` +
+        `<g class="u">${rect(20)}</g>`,
+    );
+    Object.assign(images, { 'target.svg': target, 'target.svg#on': target });
     const rows: [string, string[], string][] = [
       ['<img src="st.svg">', ['#00aa00', '#0000ff'], 'its own style sheet'],
       [
@@ -652,6 +661,16 @@ metric(
       ['<img src="media.svg">', ['#0000ff', '#0000ff'], 'its viewport, wide'],
       ['<img class="n" src="media.svg">', ['#00aa00'], 'and narrow'],
       ['<img src="bare.svg">', ['#00aa00', '#0000ff'], 'no sheet of its own'],
+      [
+        '<img src="target.svg#on">',
+        ['#00aa00', '#0000ff', '#ff00ff'],
+        "the element its URL's fragment names",
+      ],
+      [
+        '<img src="target.svg">',
+        ['#0000ff', '#0000ff', '#ff00ff'],
+        'and none where it names none',
+      ],
     ];
     const { result } = await renderWithBytes(
       '<style>body{margin:0} img,div{display:block;width:30px;height:20px}' +
