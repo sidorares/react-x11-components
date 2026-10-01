@@ -100,7 +100,11 @@ export function layoutTable(
   // a fixed layout needs a width to be fixed to; with `auto` a table is laid
   // out by its contents after all (CSS 2.1 17.5.2.1), stretched or not
   const fixed = style.tableLayout === 'fixed' && !own;
-  // a percentage of the table's width less its spacing (CSS 2.1 17.5.2.1)
+  // A percentage, a column's or a cell's, is of the table's width less
+  // its spacing: CSS Tables 3's assignable table width, which Blink takes
+  // one of in either layout. A cell's was of the width with the spacing
+  // in, so a 50% cell in a table of 300 spaced 2 was 150 and the other
+  // 144, where they are 147 each.
   const set = columnWidths(columnBoxes, columnGroups, available, fixed);
   const widths = fixed
     ? fixedColumns(cells, set, columnCount, available, spacing)
@@ -111,7 +115,6 @@ export function layoutTable(
         columnCount,
         available,
         ctx,
-        contentWidth,
         !auto,
         spacing,
       );
@@ -664,7 +667,6 @@ function autoColumns(
   columnCount: number,
   available: number,
   ctx: LayoutContext,
-  containingWidth: number,
   fill: boolean,
   spacing: number,
 ): number[] {
@@ -712,7 +714,7 @@ function autoColumns(
     }
     max[cell.column] = Math.max(max[cell.column], ask.max);
     min[cell.column] = Math.max(min[cell.column], ask.min);
-    const width = cellWidth(cell, containingWidth);
+    const width = cellWidth(cell, available);
     if (width !== null) {
       explicit[cell.column] = Math.max(explicit[cell.column] ?? 0, width);
     }
@@ -779,7 +781,7 @@ function autoColumns(
   // single cell's is (step 1), so a cell over three columns set to 100px,
   // with 20px between them, has 60 to share, where it had none
   for (const cell of spanning) {
-    const own = cellWidth(cell, containingWidth) ?? 0;
+    const own = cellWidth(cell, available) ?? 0;
     const ask = asks.get(cell)!;
     grow(min, Math.max(ask.min, own), cell);
     grow(max, Math.max(ask.max, own), cell);
@@ -902,15 +904,16 @@ function partLeast(box: Box): number | null {
 }
 
 /** A cell's own `width`, its padding and borders in, or null. A
- *  percentage is a share of the table its padding and borders are part
- *  of, as browsers read it: added on, a 90% cell and a 10% one came to
- *  more than the table, which then took it back from both. A length is
- *  held within a length `max-width`, which CSS 2.1 leaves undefined and
- *  every browser does: a cell set `width: 3in; max-width: 1in` is an inch
- *  wide. A percentage is not: `width: 50%; max-width: 100px` is half the
- *  table, as in Blink, which keeps a percentage apart from the lengths
- *  that cap what a cell's content asks (`autoColumns`). A `min-width`
- *  sets no width, and holds up what the cell asks instead.
+ *  percentage is a share of `base`, the table's width less its spacing,
+ *  and its padding and borders are part of it, as browsers read it:
+ *  added on, a 90% cell and a 10% one came to more than the table, which
+ *  then took it back from both. A length is held within a length
+ *  `max-width`, which CSS 2.1 leaves undefined and every browser does: a
+ *  cell set `width: 3in; max-width: 1in` is an inch wide. A percentage is
+ *  not: `width: 50%; max-width: 100px` is half the table, as in Blink,
+ *  which keeps a percentage apart from the lengths that cap what a cell's
+ *  content asks (`autoColumns`). A `min-width` sets no width, and holds
+ *  up what the cell asks instead.
  *
  *  A percentage `max-width` holds a percentage `width` and nothing else
  *  (CSS Tables 3, 3.8.2, and `ownWidth`): a cell `width: 100px;

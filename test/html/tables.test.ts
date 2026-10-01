@@ -1293,6 +1293,73 @@ test("a cell's percentage is a share of the table, its borders in it", async () 
   assert.ok(Math.abs(a.width - 9 * b.width) < 0.01, `${a.width} ${b.width}`);
 });
 
+test("a cell's percentage is of the table's width less its spacing", async () => {
+  // A column's percentage is of the assignable table width: the table's
+  // content width less its border-spacing, n + 1 of it for n columns
+  // (CSS Tables 3), and Blink resolves one against it in either layout. A
+  // cell's was of the content width with the spacing in, so a 50% cell
+  // in a table of 300 spaced 2 was 150 and the other 144, in a table set
+  // to a width and in one a grid or a flex column stretches alike. A
+  // column's own percentage, and a fixed table's, were already of it.
+  // Each number here is Chrome's.
+  const { node } = await render(
+    '<style>body{margin:0} td{padding:0} .w{width:10px;height:10px}</style>' +
+      '<table style="width:300px"><tbody><tr><td id="a" style="width:50%">' +
+      '<div class="w"></div></td><td id="b"><div class="w"></div></td>' +
+      '</tr></tbody></table>' +
+      // several, beside a column they leave the rest to
+      '<table style="width:300px"><tbody><tr><td id="c" style="width:30%">' +
+      '<div class="w"></div></td><td id="d" style="width:30%">' +
+      '<div class="w"></div></td><td id="e"><div class="w"></div></td>' +
+      '</tr></tbody></table>' +
+      // a hundred percent between them
+      '<table style="width:300px;border-spacing:10px"><tbody><tr>' +
+      '<td id="f" style="width:20%"></td><td id="g" style="width:30%"></td>' +
+      '<td id="h" style="width:50%"></td></tr></tbody></table>' +
+      // the table's padding and border out, the cell's in
+      '<table style="width:300px;padding:10px;border:5px solid"><tbody><tr>' +
+      '<td id="k" style="width:50%;padding:0 10px;border:3px solid">' +
+      '<div id="k1" class="w"></div></td><td id="l"><div class="w"></div>' +
+      '</td></tr></tbody></table>' +
+      // no spacing to take out
+      '<table style="width:300px;border-collapse:collapse"><tbody><tr>' +
+      '<td id="m" style="width:50%"><div class="w"></div></td>' +
+      '<td><div class="w"></div></td></tr></tbody></table>' +
+      // stretched across a grid area, and across a flex column
+      '<div style="display:grid;width:300px"><table><tbody><tr>' +
+      '<td id="n" style="width:50%"><div class="w"></div></td>' +
+      '<td><div class="w"></div></td></tr></tbody></table></div>' +
+      '<div style="display:flex;flex-direction:column;width:400px"><table>' +
+      '<tbody><tr><td id="p" style="width:50%"><div class="w"></div></td>' +
+      '<td><div class="w"></div></td></tr></tbody></table></div>' +
+      // and a fixed table
+      '<table style="width:300px;table-layout:fixed"><tbody><tr>' +
+      '<td id="q" style="width:50%"><div class="w"></div></td>' +
+      '<td><div class="w"></div></td></tr></tbody></table>',
+  );
+  const el = view(node);
+  const tenth = (v: number) => Math.round(v * 10) / 10;
+  const across = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  const tenths = (id: string) => across(id).map(tenth);
+  assert.deepStrictEqual(across('a'), [2, 147], 'half of 300 less 6');
+  assert.deepStrictEqual(across('b'), [151, 147]);
+  assert.deepStrictEqual(tenths('c'), [2, 87.6], 'three tenths of 292');
+  assert.deepStrictEqual(tenths('d'), [91.6, 87.6]);
+  assert.deepStrictEqual(tenths('e'), [181.2, 116.8], 'and the rest');
+  assert.deepStrictEqual(
+    ['f', 'g', 'h'].map((id) => tenth(boxOf(el, id).width)),
+    [52, 78, 130],
+    'shares of 260',
+  );
+  assert.deepStrictEqual(across('k'), [17, 132], 'half of 270 less 6');
+  assert.strictEqual(boxOf(el, 'k1').x, 30);
+  assert.deepStrictEqual(across('l'), [151, 132]);
+  assert.strictEqual(boxOf(el, 'm').width, 150, 'half the table');
+  assert.strictEqual(boxOf(el, 'n').width, 147, 'half of 300 less 6');
+  assert.strictEqual(boxOf(el, 'p').width, 197, 'half of 400 less 6');
+  assert.strictEqual(boxOf(el, 'q').width, 147);
+});
+
 metric(
   'a cell set to a narrow percentage is no narrower than its word',
   async () => {
