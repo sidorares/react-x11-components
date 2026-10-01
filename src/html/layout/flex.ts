@@ -710,7 +710,7 @@ function placeItems(
     const placed = crossed?.get(child);
     const across =
       lined && !placed
-        ? lineMarginFix(box.style, child, node, row, started?.has(child))
+        ? lineMarginFix(box.style, child, node, row, own, started?.has(child))
         : 0;
     const itemHeight = row ? heightOf(node, laid) : laid.main;
     const left =
@@ -926,6 +926,14 @@ function applyItem(
   if (style.flexShrink) node.setFlexShrink(style.flexShrink);
   if (style.alignSelf !== AUTO)
     node.setAlignSelf(ALIGN[style.alignSelf] ?? Y.ALIGN_AUTO);
+  // `stretch` sets an item whose height is a percentage of none at its
+  // line's start, as tall as its content (`heightOfNone`), where Yoga,
+  // which is handed no height for it, stretched it across the line
+  if (row && box.parent && heightOfNone(style, own)) {
+    const align =
+      style.alignSelf === AUTO ? box.parent.style.alignItems : style.alignSelf;
+    if (align === 'stretch') node.setAlignSelf(Y.ALIGN_FLEX_START);
+  }
 
   // Yoga's sizes are border boxes, as `box-sizing: border-box` has them;
   // a `content-box` length is the content's, and the item's padding and
@@ -3041,6 +3049,8 @@ function lineMarginFix(
   item: Box,
   node: YogaNode,
   row: boolean,
+  /** Whether the flex box has a definite height. */
+  own: boolean,
   started = false,
 ): number {
   const reverse = container.flexWrap === 'wrap-reverse';
@@ -3059,6 +3069,11 @@ function lineMarginFix(
         : null;
   } else {
     align = style.alignSelf === AUTO ? container.alignItems : style.alignSelf;
+    // which sets one whose height is a percentage of none at its line's
+    // start, as Yoga is told it does (`applyItem`)
+    if (align === 'stretch' && row && heightOfNone(style, own)) {
+      align = 'flex-start';
+    }
   }
   const leading = node.getComputedMargin(row ? Y.EDGE_TOP : Y.EDGE_LEFT);
   const trailing = node.getComputedMargin(row ? Y.EDGE_BOTTOM : Y.EDGE_RIGHT);
@@ -3309,6 +3324,22 @@ function linesReach(
     reach = Math.max(reach, top + tall + below + lead);
   }
   return reach;
+}
+
+/**
+ * Whether a row item's height is a percentage of a height its flex box has
+ * none of. That is `auto` to the item's size (CSS 2.1 10.5), and is not
+ * handed to Yoga (`applyItem`), but it is not `auto` to its alignment:
+ * `stretch` stretches an item whose height computes to `auto` (CSS Flexbox
+ * 8.3), and this one's computes to the percentage. Such an item is as tall
+ * as its content, set at its line's start, which is what Yoga is told.
+ */
+function heightOfNone(
+  style: ComputedStyle,
+  /** Whether the flex box has a definite height. */
+  own: boolean,
+): boolean {
+  return !own && isPct(style.height);
 }
 
 /** Whether an item is stretched across its line: `stretch`, its own or its
