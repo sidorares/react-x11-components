@@ -1153,6 +1153,70 @@ test('a flex line is shared out as CSS Flexbox 9.7 has it where Yoga comes out e
   near('l2', 55.088, 'and one shrunk by half of what is left');
 });
 
+test("a flex line short of room shrinks each item by its content box's share of it, and not its padding's", async () => {
+  // CSS Flexbox 9.7, step 4c: an item's share of what its line is short of
+  // is its flex shrink factor times its inner flex base size, its content
+  // box's. Yoga 3.2.1 weighs it by the border box's, so a padded item gave
+  // up more than its share — on a line with no limits anywhere, which is
+  // the one Yoga is otherwise trusted with. Each line here is Chrome's
+  const line = (box: string, ...items: string[]) =>
+    `<div style="display:flex;${box}">` +
+    items.map((s) => `<div ${s}></div>`).join('') +
+    '</div>';
+  const { node } = await render(
+    '<style>body{margin:0} .r>div>div{height:6px} .c>div>div{width:6px}</style>' +
+      '<div class="r">' +
+      // a hundred each of content, shrunk by fifty each: Yoga took sixty
+      // from the first for its padding, and forty from the other
+      line(
+        'width:150px',
+        'id="a1" style="width:100px;padding-left:50px"',
+        'id="a2" style="width:100px"',
+      ) +
+      // fifty of content beside a hundred, short of seventy: a third of it
+      // and two thirds, where Yoga weighed 100 against 120
+      line(
+        'width:150px',
+        'id="b1" style="width:100px;padding-left:50px;box-sizing:border-box"',
+        'id="b2" style="width:100px;padding-left:20px"',
+      ) +
+      // by the shrink factor times the content, the factors not the same
+      line(
+        'width:250px',
+        'id="c1" style="width:100px;padding:0 30px;flex-shrink:2"',
+        'id="c2" style="width:100px;border-left:10px solid"',
+        'id="c3" style="width:40px;flex-shrink:0"',
+      ) +
+      '</div><div class="c">' +
+      // and down a column of a height
+      line(
+        'flex-direction:column;width:30px;height:150px',
+        'id="d1" style="height:100px;padding-top:50px"',
+        'id="d2" style="height:100px"',
+      ) +
+      '</div>',
+    700,
+  );
+  const el = view(node);
+  const near = (id: string, expected: number, message: string) => {
+    const b = boxOf(el, id);
+    const actual = id.startsWith('d') ? b.height : b.width;
+    assert.ok(
+      Math.abs(actual - expected) < 0.01,
+      `${message} (#${id}): ${actual}, not ${expected}`,
+    );
+  };
+  near('a1', 100, 'its padding and fifty of content');
+  near('a2', 50, 'beside one shrunk by as much');
+  near('b1', 76.667, 'shrunk by a third of seventy');
+  near('b2', 73.333, 'and the other by two thirds');
+  near('c1', 120, 'shrunk by twice its content against the other');
+  near('c2', 90, 'shrunk by its content alone');
+  near('c3', 40, 'beside one that does not shrink');
+  near('d1', 100, 'down a column, its padding and fifty of content');
+  near('d2', 50, 'beside one shrunk by as much');
+});
+
 test("a flex item's limits and flex basis are the ones its style says", async () => {
   // what reaches the line is what CSS says each of these is, where Yoga was
   // told otherwise
