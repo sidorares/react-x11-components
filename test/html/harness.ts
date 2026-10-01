@@ -823,6 +823,35 @@ export function edgesOf(box: LaidBox) {
   };
 }
 
+/** A window region, in device pixels. */
+export interface Region {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** A window region's pixels, straight RGBA. */
+export function pixelsIn(
+  ctx: unknown,
+  region: Region,
+): Promise<Uint8ClampedArray> {
+  const { x, y, width, height } = region;
+  return new Promise<Uint8ClampedArray>((ok, fail) =>
+    (
+      ctx as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+          cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+        ): void;
+      }
+    ).getImageData(x, y, width, height, (e, d) => (e ? fail(e) : ok(d.data))),
+  );
+}
+
 /** The fills a document's boxes paint, of one colour. */
 export async function fillsIn(source: string, color: string): Promise<Fill[]> {
   const { node } = await render('<style>body{margin:0}</style>' + source);

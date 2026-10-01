@@ -725,11 +725,19 @@ corners vertical radii of their own; radii too large for their box are
 reduced together, so `calc(infinity * 1px)`, Tailwind 4's `rounded-full`,
 is a pill. A rounded box's border is a ring rounded on both its edges, the
 inside by each radius less the border across it, where every side that has
-one has it in one colour and a solid rule: a card's, a button's, and an
-accent down one side, which curves into the corners it meets; a rounded
-box with sides of different colours has them drawn straight. Two solid
+one has a solid rule: a card's, a button's, and an accent down one side,
+which curves into the corners it meets. Where its sides are of different
+colours each has its share of the ring, the colour changing on the curve of
+a corner on the line from the corner of the border box through the corner
+of the padding box, as Chrome changes it (CSS Backgrounds 3, 4.4) — so the
+spinner, `border-radius: 50%` with one side of another colour, is a ring
+with a quarter of it in that colour. A side with no width gives the whole
+of its corners to the sides beside it, and an opaque share is drawn over a
+little of the one next to it, so the page does not show through where the
+two meet. A dotted, dashed or double side on a rounded box has its border
+drawn straight. Two solid
 sides of different colours share their corner on its diagonal, from its
-outer point to its inner one (CSS Backgrounds 3, 4.3), so each is a
+outer point to its inner one (CSS Backgrounds 3, 4.4), so each is a
 trapezoid — and a triangle on a box with nothing inside its borders, which
 is the CSS triangle: one coloured border between transparent ones, the
 caret of a dropdown and the arrow of a tooltip, and the slanted edge of a
