@@ -2365,6 +2365,41 @@ test('a column that wraps sets its lines where align-content says, each as wide 
   assert.deepStrictEqual(at('ra'), [0, 150], 'the start, in reverse');
 });
 
+test('a column that wraps sets its lines at the start or the end of the box, whichever way they wrap', async () => {
+  // `start` and `end` are the box's own edges (CSS Box Alignment 3, 5.1),
+  // its lines' cross start and end turned round where they wrap in
+  // reverse. The lines were set at the start for either, so `end` was at
+  // the start, and `start` in reverse at the end, as Chrome has neither.
+  const column = (id: string, style: string) =>
+    '<div style="display:flex;flex-direction:column;width:200px;' +
+    `height:50px;${style}"><div id="${id}" style="width:30px;height:20px">` +
+    '</div></div>';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      column('s', 'flex-wrap:wrap;align-content:start') +
+      column('e', 'flex-wrap:wrap;align-content:end') +
+      column('rs', 'flex-wrap:wrap-reverse;align-content:start') +
+      column('re', 'flex-wrap:wrap-reverse;align-content:end') +
+      column('ls', 'flex-wrap:wrap;align-content:start;direction:rtl') +
+      column('le', 'flex-wrap:wrap;align-content:end;direction:rtl') +
+      column(
+        'lrs',
+        'flex-wrap:wrap-reverse;align-content:start;direction:rtl',
+      ) +
+      column('lre', 'flex-wrap:wrap-reverse;align-content:end;direction:rtl'),
+  );
+  const el = view(node);
+  const x = (id: string) => boxOf(el, id).x;
+  assert.strictEqual(x('s'), 0, 'at the start');
+  assert.strictEqual(x('e'), 170, 'at the end');
+  assert.strictEqual(x('rs'), 0, 'at the start, in reverse');
+  assert.strictEqual(x('re'), 170, 'at the end, in reverse');
+  assert.strictEqual(x('ls'), 170, 'at the start, rtl');
+  assert.strictEqual(x('le'), 0, 'at the end, rtl');
+  assert.strictEqual(x('lrs'), 170, 'at the start, rtl in reverse');
+  assert.strictEqual(x('lre'), 0, 'at the end, rtl in reverse');
+});
+
 test('a column that wraps is as wide as its items at their narrowest where they are wider, whatever align-content says', async () => {
   // Each item is `fit-content` across the box, no narrower than its
   // content at its narrowest (9.4, step 7). Where `align-content` does not
