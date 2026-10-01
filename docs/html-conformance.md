@@ -3914,6 +3914,29 @@ none is lost: `css-break/transform-017`, and
 `background-rounded-image-clip-002`, which round 118 lost to a `scale()`
 that was read and not drawn.
 
+### Round 131
+
+336. **A relative colour was not read**, and the declaration it was in
+     was dropped. CSS Color 5 lets any colour function start from another
+     colour, `rgb(from <colour> r g b / alpha)`, and name the origin's
+     channels in its own: `g r b` swaps two of them, and
+     `oklch(from var(--brand) calc(l + 0.1) c h)` is a theme's colour made
+     lighter, which is how a design system derives its hover shades from
+     one custom property. The origin is taken into the function's space,
+     each of `color()`'s RGB and XYZ spaces among them, and a channel is a
+     number, a keyword naming one of the origin's, or a calculation over
+     them, with the keywords in the function's own ranges: `r` up to 255,
+     `s` and `l` up to 100, a hue in degrees. An alpha left out is the
+     origin's. One whose origin is `currentColor` waits for the colour
+     where it is used, as a mix does, so a child that inherits it works it
+     out from its own. A channel of an absolute colour may be a `calc()`
+     now too, which was dropped with the rest.
+
+css-color went from 236 to 252 of 296 on X11, the sixteen
+`relative-currentcolor` tests, and none was lost there or in css-values,
+css-variables or css-backgrounds. The CSS 2.1 suite has no colour of this
+kind in it.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -4036,8 +4059,8 @@ directories and caniemail's feature list:
    gradients, `calc()`, custom properties (`var()`), CSS Color 4 —
    Tailwind's output is written in them — and `@font-face` through
    `onResource`. CSS Color 4's functions were done in round 19, read in
-   this package rather than by ntk's colour parser, and `color-mix()` in
-   round 22; relative colours remain. `calc()`, `min()`, `max()` and
+   this package rather than by ntk's colour parser, `color-mix()` in
+   round 22 and relative colours in round 131. `calc()`, `min()`, `max()` and
    `clamp()` were done in round 20, custom properties in round 21, and the
    logical properties Tailwind 4 writes its spacing in, with `inset`, in
    round 33. Linear gradients were done in round 39, `box-shadow` in

@@ -188,8 +188,10 @@ test('a functional colour is read as CSS Color 4 reads it, and handed on as ntk 
     ['color(srgb 0 0.6 0)', '#009900'],
     ['color(display-p3 0.6 0.6 0.6)', '#999999'],
     ['color(nope 1 1 1)', null],
-    // `calc()` and `var()` are not read here, and the declaration is dropped
-    ['rgb(calc(1) 0 0)', null],
+    // a channel may be a calculation; one that comes to no number drops the
+    // declaration
+    ['rgb(calc(1) 0 0)', '#010000'],
+    ['rgb(calc(1px) 0 0)', null],
   ];
   for (const [value, want] of cases) {
     assert.strictEqual(parseColor(value), want, value);

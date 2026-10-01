@@ -1443,8 +1443,14 @@ drawing context as `#rrggbb` or `rgba()`, which both backends read alike,
 and one outside sRGB is clipped into it. `color-mix()` mixes in any of
 the spaces above but the wide-gamut RGB ones, premultiplied, so a colour
 mixed with `transparent` keeps its hue: Tailwind 4's `bg-blue-500/50` is
-written that way. A mix with `currentColor` in it is mixed where the
-colour is used. `light-dark()` takes its first colour where the element's
+written that way. A relative colour (CSS Color 5) takes another colour
+into any of the functions above and reads its channels by name, each one
+kept, swapped, set or worked out with `calc()`:
+`oklch(from var(--brand) calc(l + 0.1) c h / 50%)`. The names are numbers
+in the function's own range (`r` up to 255, `s` and `l` up to 100, a hue
+in degrees), and an alpha left out is the origin's. A mix or a relative
+colour with `currentColor` in it is worked out where the colour is used.
+A channel of any colour function may be a `calc()`. `light-dark()` takes its first colour where the element's
 colour scheme is light and its second where it is dark (CSS Color 5), in
 any value a colour stands in, a custom property's included. The scheme is
 the element's `color-scheme` resolved against the react-x11 palette's in

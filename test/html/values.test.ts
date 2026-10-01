@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { cleanup, pixelAt, waitFor } from 'react-x11/test';
 import {
+  inkColor,
   isTransparent,
   parseColor,
   parseLength,
@@ -364,6 +365,62 @@ test('color-mix() mixes in the space it names, premultiplied and weighted', () =
     assert.strictEqual(parseColor(value), want, value);
   }
 });
+
+test('a relative colour takes its origin into its function and reads its channels', () => {
+  const cases: [string, string | null][] = [
+    ['rgb(from red r g b)', '#ff0000'],
+    // the keywords are the origin's channels, in any order
+    ['rgb(from #800000 g r b)', '#008000'],
+    // in the function's own ranges: `r` up to 255, `h` in degrees
+    ['rgb(from red calc(r / 2) g b)', '#800000'],
+    ['hsl(from red calc(h + 120) s l)', '#00ff00'],
+    ['oklch(from green l c h)', '#008000'],
+    ['lab(from green l a b)', '#008000'],
+    ['color(from green display-p3 r g b)', '#008000'],
+    ['color(from green xyz-d50 x y z)', '#008000'],
+    // an alpha left out is the origin's, and `alpha` is it too
+    ['rgb(from rgb(0 128 0 / 0.5) r g b)', 'rgba(0, 128, 0, 0.5)'],
+    ['rgb(from red r g b / calc(alpha / 2))', 'rgba(255, 0, 0, 0.5)'],
+    ['oklch(from green l c h / 50%)', 'rgba(0, 128, 0, 0.5)'],
+    // a channel the function does not have, or one too few
+    ['rgb(from red x g b)', null],
+    ['rgb(from red r g)', null],
+    ['rgb(from nope r g b)', null],
+    // and a calculation stands for a number in an absolute colour too
+    ['rgb(calc(255 / 2) 0 0)', '#800000'],
+  ];
+  for (const [value, want] of cases) {
+    assert.strictEqual(parseColor(value), want, value);
+  }
+});
+
+metric(
+  'a relative colour from currentColor is worked out where it is used',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>body { margin: 0; color: #ff0000 }' +
+        '#a { background-color: rgb(from currentColor g r b) }' +
+        // an inherited one waits for the child's colour
+        '#b { color: #800000; background-color: inherit }' +
+        '#c { color: #ffff00; color: hsl(from currentColor 240 s l) }' +
+        '</style></head><body><div id="a"><div id="b">b</div></div>' +
+        '<p id="c">c</p></body></html>',
+      {},
+    );
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+    assert.strictEqual(
+      inkColor(style('a').backgroundColor as string, '#ff0000'),
+      '#00ff00',
+    );
+    assert.strictEqual(
+      inkColor(style('b').backgroundColor as string, '#800000'),
+      '#008000',
+    );
+    // in `color` itself, currentColor is the inherited colour
+    assert.strictEqual(style('c').color, '#0000ff');
+  },
+);
 
 metric(
   'a color-mix() with currentColor in it mixes the colour where it is used',
