@@ -483,7 +483,7 @@ function linesOf(
   // text a box's background shows through (`background-clip: text`): its
   // layouts are made through a recorder, so paint can lay the same text out
   // again with no ink of its own and fill it with that background
-  if (options.clipText && clipsText(block, items)) {
+  if (options.clipText && clipsText(items)) {
     CLIPPED_TEXT.add(block);
     fonts = recording(fonts);
   }
@@ -5408,9 +5408,9 @@ export function inklessLayout(layout: object): TextLayoutLike | null {
 }
 
 /** Whether any of a block's text is text a background shows through. */
-function clipsText(block: Box, items: Item[]): boolean {
+function clipsText(items: Item[]): boolean {
   for (const item of items) {
-    if (item.kind === 'text' && !item.control && clipBoxOf(item.box, block)) {
+    if (item.kind === 'text' && !item.control && clipBoxOf(item.box)) {
       return true;
     }
   }
@@ -5418,12 +5418,16 @@ function clipsText(block: Box, items: Item[]): boolean {
 }
 
 /** The box whose background a text box's glyphs show: the nearest element
- *  box from it up to the block its lines are in with `background-clip:
- *  text`, or null. */
-export function clipBoxOf(box: Box | null, block: Box): Box | null {
+ *  box from it up with `background-clip: text`, or null. That is past the
+ *  block its lines are in: an ancestor's background is clipped to the text
+ *  of its descendants in flow and floating, a block, an inline-block, a
+ *  flex item or a table cell's among them (CSS Backgrounds 4, 3.7), and
+ *  `bg-clip-text` on a `<div>` round a heading showed nothing through it.
+ *  Not past an absolutely positioned box, whose text is its own. */
+export function clipBoxOf(box: Box | null): Box | null {
   for (let at = box; at; at = at.parent) {
     if (at.kind !== 'text' && at.style.backgroundClipText) return at;
-    if (at === block) break;
+    if (at.outOfFlow) return null;
   }
   return null;
 }

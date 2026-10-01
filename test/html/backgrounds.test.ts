@@ -985,6 +985,48 @@ metric(
   },
 );
 
+metric(
+  "a background painted through text shows through its descendants' text",
+  async () => {
+    // CSS Backgrounds 4: the text of the box and of its descendants in flow
+    // and floating, a block, an inline-block or a flex item's among them:
+    // `bg-clip-text` on a `<div>` round a heading showed nothing through
+    // it. An absolutely positioned descendant's text is its own.
+    const { node, result } = await render(
+      '<style>body{margin:0}.c{background:#00ff00;background-clip:text;' +
+        'color:transparent;font:48px/1 sans-serif}p{margin:0}' +
+        'i{position:absolute;left:300px;top:0;font-style:normal;' +
+        'color:#0000ff}</style>' +
+        '<div class="c"><p id="b">HH</p>' +
+        '<span style="display:inline-block">HH</span>' +
+        '<div style="display:flex"><span>HH</span></div><i>HH</i></div>',
+    );
+    const green = async (y: number) => {
+      let n = 0;
+      for (let x = 0; x < 120; x += 1) {
+        const [r, g, b] = await pixelAt(result.ctx, x, y);
+        if (g > 200 && r < 80 && b < 80) n += 1;
+      }
+      return n;
+    };
+    const top = boxOf(view(node), 'b').y;
+    for (const [i, what] of [
+      'a block',
+      'an inline-block',
+      'a flex item',
+    ].entries()) {
+      assert.ok((await green(top + 48 * i + 24)) > 10, what);
+    }
+    // the absolute box's own ink, not the background
+    let blue = 0;
+    for (let x = 300; x < 400; x += 1) {
+      const [, g, b] = await pixelAt(result.ctx, x, top + 24);
+      if (b > 200 && g < 80) blue += 1;
+    }
+    assert.ok(blue > 10, `${blue} blue in the absolute box`);
+  },
+);
+
 test('background layers are read, top first, from the shorthand and the longhands', async () => {
   const { node } = await render(
     '<style>.d{background-image:url(a.png),url(b.png)}' +
