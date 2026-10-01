@@ -955,8 +955,7 @@ included. A `<style>` inside the `<svg>` is one of the document's style
 sheets, which is where a drawing exported from an editor keeps its colours
 — `.st0 { fill: #fff }` for `<path class="st0">`. Those properties are the
 ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
-no others: a rule's `transform`, font or dash pattern is not, nor is what a
-rule gives an element a `<use>` brings from outside the drawing. What is in
+no others: a rule's `transform`, font or dash pattern is not. What is in
 a drawing has no box, so the pointer is over the drawing and never over a
 shape: `a:hover svg path` follows it, and `path:hover` matches nothing.
 
@@ -974,6 +973,17 @@ an image answers the colour scheme of the element that embeds it — its
 `color-scheme`, or else the palette's — as Chrome answers it, and a width
 query or a `vw` in one is of the rectangle it is drawn in.
 
+What a `<use>` draws is a copy in a tree of its own, as SVG 2 has it and
+Chrome draws it. A rule is matched against the element the `<use>` names
+with nothing above that element and nothing beside it, so for an icon from
+a sprite `symbol .line` and `#icon .line` reach its line, and
+`.sprite .line`, `svg .line`, `use .line` and `a:hover .line` do not. What
+the copy inherits is the `<use>`'s: its `fill` and `stroke`, the `color` a
+`currentColor` is, its custom properties — and so what a hover changes of
+it, `a:hover use { fill: red }` or a link's `color`. A copy of one of the
+drawing's own elements is styled the same way, and so may be drawn
+otherwise than the element where it stands.
+
 An SVG root's `width` and `height` are CSS lengths, a percentage one too;
 its intrinsic size is what of them is absolute, and its ratio comes from them or from its `viewBox`,
 which is fitted to its box as `preserveAspectRatio` says. A percentage in
@@ -982,7 +992,8 @@ element inherits. An inline drawing's `<use>` refers to an element anywhere
 in the document, so an icon drawn from a sprite — a `<symbol>` in a hidden
 `<svg>` at the top of the page — is drawn, in the colour of where it is
 used; a symbol's `viewBox` is fitted to the viewport the `<use>` gives it,
-its `width` and `height`, or all of the drawing. What the element itself
+its `width` and `height`, or all of the drawing, and what is in it
+inherits the symbol's own paint, `<symbol fill="…">`. What the element itself
 refers to from outside its symbol, a gradient by `url()`, is not followed,
 and nothing is fetched for a `<use>` of another document's. An SVG image's
 root `background-color`, in its `style`, covers the whole image, as a

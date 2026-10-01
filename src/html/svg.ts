@@ -20,6 +20,7 @@ import { isSvgRoot, rawTextOf } from './dom.js';
 import { Cascade } from './css/cascade.js';
 import { parseMediaQuery, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
+import { useHref } from './css/shapes.js';
 import type { ShapeStyle, ShapeStyles } from './css/shapes.js';
 import type { RootLook } from './css/style.js';
 import { inkColor, isTransparent, parseColor } from './css/values.js';
@@ -710,13 +711,6 @@ function hasPercent(root: Element): boolean {
   return walk(root);
 }
 
-/** The element a `<use>` refers to by a fragment, its id: one in another
- *  document is none here, where nothing is fetched for a drawing. */
-function useTarget(el: Element): string | null {
-  const href = el.attribs.href ?? el.attribs['xlink:href'] ?? '';
-  return href.length > 1 && href.startsWith('#') ? href.slice(1) : null;
-}
-
 /** The elements under a root by their ids, the first of each. */
 function idsUnder(root: Element): Map<string, Element> {
   const ids = new Map<string, Element>();
@@ -736,10 +730,10 @@ function idsUnder(root: Element): Map<string, Element> {
 /**
  * Whether a `<use>` under the root is one `SvgView` cannot draw as it
  * stands: it looks a reference up among the root's own elements, and draws
- * a `<symbol>` as its children where they are. So one to an element
- * outside the root — an icon sprite's, a hidden `<svg>` of symbols at the
- * top of the page — and one to a symbol with a `viewBox` of its own are
- * drawn from a copy (`copyTree`).
+ * a `<symbol>` as its children where they are, with the `<use>`'s paint.
+ * So one to an element outside the root — an icon sprite's, a hidden
+ * `<svg>` of symbols at the top of the page — and one to a symbol with a
+ * `viewBox` or a paint of its own are drawn from a copy (`copyTree`).
  */
 function needsExpanding(root: Element): boolean {
   let ids: Map<string, Element> | null = null;
@@ -748,12 +742,15 @@ function needsExpanding(root: Element): boolean {
       if (child.type !== 'tag') continue;
       const tag = child as Element;
       if (localName(tag.name) === 'use') {
-        const id = useTarget(tag);
+        const id = useHref(tag);
         if (id !== null) {
           ids ??= idsUnder(root);
           const target = ids.get(id);
           if (!target) return true;
-          if (localName(target.name) === 'symbol' && viewBoxOf(target)) {
+          if (
+            localName(target.name) === 'symbol' &&
+            (viewBoxOf(target) || symbolOwn(target))
+          ) {
             return true;
           }
         }
@@ -841,6 +838,44 @@ const USE_PLACEMENT = new Set([
   'height',
 ]);
 
+/** A `<symbol>`'s attributes that paint what is in it: its presentation
+ *  attributes and its `style` (SVG 2, 6.3). Not where it goes, the viewport
+ *  it makes or a name, which a symbol's copy is no group to have. */
+const SYMBOL_PAINTS = new Set([
+  'style',
+  'fill',
+  'fill-opacity',
+  'fill-rule',
+  'stroke',
+  'stroke-width',
+  'stroke-linecap',
+  'stroke-linejoin',
+  'stroke-miterlimit',
+  'stroke-dasharray',
+  'stroke-dashoffset',
+  'stroke-opacity',
+  'color',
+  'opacity',
+  'visibility',
+  'display',
+  'font-family',
+  'font-size',
+  'font-style',
+  'font-weight',
+  'text-anchor',
+]);
+
+/** A `<symbol>`'s own attributes that paint what is in it, or null where
+ *  it has none: Chrome draws a sprite's `<symbol fill="…">` in that fill,
+ *  where `SvgView` draws a symbol's children alone. */
+function symbolOwn(symbol: Element): Record<string, string> | null {
+  let kept: Record<string, string> | null = null;
+  for (const name in symbol.attribs) {
+    if (SYMBOL_PAINTS.has(name)) (kept ??= {})[name] = symbol.attribs[name];
+  }
+  return kept;
+}
+
 /**
  * The tree `SvgView` reads, where the document's own will not do: with
  * local names — `SvgView` knows `rect`, not `svg:rect`, and a prefix is
@@ -859,7 +894,10 @@ const USE_PLACEMENT = new Set([
  * cascade that made them has weighed already. An element a rule gives
  * `display: none` is left out, with what is in it, and a shape one hides
  * — `visibility` is inherited, and a shape in a hidden group may be shown
- * again — is left out alone.
+ * again — is left out alone. What a `<use>` draws has what the rules give
+ * its copy (`ShapeStyles.used`), which may not be what they give the
+ * element where it stands, so where they give anything, every `<use>` is
+ * drawn from a copy here.
  */
 function copyTree(
   root: Element,
@@ -880,8 +918,10 @@ function copyTree(
     resolve: boolean,
     depth: number,
     hidden: boolean,
+    /** What the rules give the `<use>`. */
+    own: ShapeStyle | undefined,
   ): Element | null => {
-    const id = useTarget(use);
+    const id = useHref(use);
     if (id === null || depth >= USE_DEPTH) return null;
     ids ??= idsUnder(root);
     const inside = ids.get(id);
@@ -892,13 +932,16 @@ function copyTree(
     }
     const symbol = localName(target.name) === 'symbol';
     const box = symbol ? viewBoxOf(target) : null;
-    // one of the root's own with no viewport to fit: `SvgView` draws it
-    if (inside && !box) return null;
+    const kept = symbol ? symbolOwn(target) : null;
+    // one of the root's own that `SvgView` draws as it is: with no
+    // viewport to fit, no paint of a symbol's own, and no rule's styles
+    if (inside && !box && !kept && !shapes) return null;
+    // what the rules give the copy, element by element
+    const styles = shapes?.used?.get(use) ?? null;
     const attribs: Record<string, string> = {};
     for (const name in use.attribs) {
       if (!USE_PLACEMENT.has(name)) attribs[name] = use.attribs[name];
     }
-    const own = shapes?.of.get(use);
     if (own) restyle(attribs, own);
     const x = parseFloat(use.attribs.x ?? '') || 0;
     const y = parseFloat(use.attribs.y ?? '') || 0;
@@ -926,17 +969,33 @@ function copyTree(
     // a length in a symbol with a `viewBox` is of that, and left as it is
     const within = resolve && !box;
     const children: ChildNode[] = [];
-    if (symbol) copyInto(children, target, within, depth + 1, hidden);
-    else if (shown(target, hidden)) {
-      children.push(copy(target, within, depth + 1, hidden));
+    if (symbol) {
+      // The symbol is the top of the copy, and paints what is in it: its
+      // attributes, and what the rules give it there. `SvgView` draws a
+      // symbol's children alone, so they go in a group that is it.
+      const mine = styles?.get(target);
+      const inner = hiddenIn(mine, hidden);
+      copyInto(children, target, within, depth + 1, inner, styles);
+      if (kept || mine) {
+        const paints = { ...kept };
+        if (mine) restyle(paints, mine);
+        const group = new Element('g', paints, children.splice(0));
+        children.push(group);
+      }
+    } else if (shown(target, hidden, styles)) {
+      children.push(copy(target, within, depth + 1, hidden, styles));
     }
     return new Element('g', attribs, children);
   };
   /** Whether an element is drawn at all, in a group that is hidden or
    *  not: one no rule gives `display: none`, and no shape a rule hides. */
-  const shown = (el: Element, hidden: boolean): boolean => {
-    if (!shapes) return true;
-    const own = shapes.of.get(el);
+  const shown = (
+    el: Element,
+    hidden: boolean,
+    styles: ReadonlyMap<Element, ShapeStyle> | null,
+  ): boolean => {
+    if (!styles) return true;
+    const own = styles.get(el);
     const name = localName(el.name);
     if (own?.display === 'none' && !UNDRAWN.has(name)) return false;
     return !(hiddenIn(own, hidden) && HIDEABLE.has(name));
@@ -947,11 +1006,12 @@ function copyTree(
     resolve: boolean,
     depth: number,
     hidden: boolean,
+    styles: ReadonlyMap<Element, ShapeStyle> | null,
   ): void => {
     for (const child of el.children) {
       if (child.type === 'tag') {
-        if (shown(child as Element, hidden)) {
-          children.push(copy(child as Element, resolve, depth, hidden));
+        if (shown(child as Element, hidden, styles)) {
+          children.push(copy(child as Element, resolve, depth, hidden, styles));
         }
       } else if (child.type === 'text') children.push(new Text(child.data));
     }
@@ -962,11 +1022,14 @@ function copyTree(
     depth = 0,
     /** Whether the element inherits a `visibility` of `hidden`. */
     hidden = false,
+    /** What the rules give the elements of the tree it is in: the
+     *  drawing's, or a `<use>`'s copy's. */
+    styles: ReadonlyMap<Element, ShapeStyle> | null = shapes?.of ?? null,
   ): Element => {
-    const own = shapes?.of.get(el);
+    const own = styles?.get(el);
     hidden = hiddenIn(own, hidden);
     if (localName(el.name) === 'use') {
-      const group = expand(el, resolve, depth, hidden);
+      const group = expand(el, resolve, depth, hidden, own);
       if (group) return group;
     }
     const here = resolve && !OWN_UNITS.has(localName(el.name));
@@ -985,7 +1048,7 @@ function copyTree(
       }
     }
     const children: ChildNode[] = [];
-    copyInto(children, el, here, depth, hidden);
+    copyInto(children, el, here, depth, hidden, styles);
     return new Element(strip(el.name), attribs, children);
   };
   return copy(root, true);

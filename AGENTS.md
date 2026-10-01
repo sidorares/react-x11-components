@@ -1432,6 +1432,22 @@ tells it the image's `<svg>` is `:root` (the cascade's own `:root` is
 the cascade, and the cascade must not import `svg.ts` back — which is why
 `svgSizeHint` lives in `cascade.ts`.
 
+**A `<use>`'s copy is matched in a tree of its own.** A selector sees
+nothing above the element the `<use>` names and nothing beside it, and the
+copy inherits from the `<use>` (SVG 2, 5.5.3). So one element can have two
+styles, where it stands (`ShapeStyles.of`) and in each copy (`used`), and
+`copyTree` draws every `<use>` itself once a rule reaches the drawing. The
+matchers for a copy are compiled apart, over `_copyAdapter`, with nothing
+kept between calls: css-select remembers what it found above an element
+for as long as the matcher lives, and above an element is not the same in
+a copy. What a copy matched is the same whichever `<use>` makes it, so it
+is kept for the build with the document's id index (`ShapeCopies`), and a
+page of hundreds of sprite icons matches each symbol once. Blink used to
+style a copy as its original where the original stands
+(`CorrespondingElement()`), and that is still how it is remembered. Chrome
+154 does not: `.sprite .line` misses a sprite's line. Settle a claim like
+that with a test page in Chrome, not with the recollection.
+
 **A transform is two halves, and inside one every number is the box's
 own.** Its translation is layout's — `applyRelativeOffsets` moves the box
 and what it holds, so everything that reads a box finds it moved — and what

@@ -293,6 +293,45 @@ metric(
 );
 
 metric(
+  "a sprite's symbol a rule styles is drawn as more of it arrives",
+  async () => {
+    // the sprite after the icons, and its symbol cut between two chunks
+    const icon =
+      '<style>body{margin:0}svg{display:block} symbol .a{fill:#00aa00}' +
+      '</style><svg width="12" height="12"><use href="#late"/></svg><p>text</p>';
+    const doc = (source: string) =>
+      h(
+        'box',
+        { style: { width: 300, flexDirection: 'column' } },
+        h(Html, { source, 'data-testname': 'doc' }),
+      );
+    const result = await renderX11(doc(icon), {
+      width: 340,
+      height: 200,
+      fonts: FONTS!,
+    });
+    await expectPixel(result.ctx, 3, 6, '#ffffff', { message: 'not yet' });
+    const half =
+      icon +
+      '<svg style="display:none"><symbol id="late" viewBox="0 0 2 2">' +
+      '<rect class="a" width="1" height="2" fill="#ff0000"/>';
+    await act(() => result.rerender(doc(half)));
+    await expectPixel(result.ctx, 3, 6, '#00aa00', { message: 'its first' });
+    await expectPixel(result.ctx, 9, 6, '#ffffff', { message: 'and no more' });
+    await act(() =>
+      result.rerender(
+        doc(
+          half +
+            '<rect class="a" x="1" width="1" height="2" fill="#ff0000"/>' +
+            '</symbol></svg>',
+        ),
+      ),
+    );
+    await expectPixel(result.ctx, 9, 6, '#00aa00', { message: 'its second' });
+  },
+);
+
+metric(
   "an inline SVG is painted with the fill and stroke the document's styles give it",
   async () => {
     // `fill` and `stroke` are properties (SVG 2, 13.2): a rule of the
@@ -539,6 +578,93 @@ metric(
           message: `${message}, ${j}`,
         });
       }
+    }
+  },
+);
+
+metric(
+  'a shape a <use> draws is styled where its copy is, from a sprite outside the drawing too',
+  async () => {
+    // A `<use>` draws a copy of what it names, in a tree of the copy's own
+    // (SVG 2, 5.5.3, as Chrome has it): a rule is matched against the
+    // original with nothing above what the `<use>` names, and the copy
+    // inherits from the `<use>`. An icon sprite's `<symbol>` is outside the
+    // drawing, in a hidden `<svg>` of them, so no rule reached it, and
+    // every sprite icon was drawn from its attributes alone.
+    const sq = (attrs = '') => `<rect width="10" height="10" ${attrs}/>`;
+    const symbol = (id: string, inside: string, attrs = '') =>
+      `<symbol id="${id}" viewBox="0 0 10 10" ${attrs}>${inside}</symbol>`;
+    const use = (id: string, attrs = '') =>
+      `<svg width="10" height="10"><use href="#${id}" ${attrs}/></svg>`;
+    const sprite =
+      '<svg class="sprite" style="display:none"><g></g>' +
+      symbol('a', sq('class="ln"')) +
+      symbol('b', sq('class="sp" fill="#00aa00"')) +
+      symbol('c', sq('class="ho" fill="#00aa00"')) +
+      symbol('d', sq()) +
+      symbol('e', sq(), 'fill="#00aa00"') +
+      '<g id="f" class="k">' +
+      sq() +
+      '</g>' +
+      symbol('g', sq('class="v"')) +
+      symbol('h', sq('class="cc"')) +
+      symbol('i', sq('class="fc"')) +
+      symbol('inner', sq('class="in"')) +
+      symbol('j', '<use href="#inner"/>') +
+      symbol('k', sq('fill="#00aa00"') + sq('class="hd" fill="#ff0000"')) +
+      symbol('l', sq()) +
+      '</svg>';
+    const rows: [string, string, string][] = [
+      [use('a'), '#00aa00', 'a rule that names the symbol above it'],
+      [use('b'), '#00aa00', "and none that names the sprite's"],
+      [`<div class="host">${use('c')}</div>`, '#00aa00', "nor the <use>'s"],
+      [use('d'), '#00aa00', 'a rule on the symbol, inherited'],
+      [use('e'), '#00aa00', "the symbol's own fill"],
+      [use('f'), '#00aa00', 'a group of the sprite'],
+      [
+        `<div class="hv">${use('g')}</div>`,
+        '#00aa00',
+        "a variable, the <use>'s",
+      ],
+      [
+        `<div style="color:#00aa00">${use('h')}</div>`,
+        '#00aa00',
+        "currentColor, the <use>'s",
+      ],
+      [use('i'), '#00aa00', 'the top of its tree is its first child'],
+      [use('j'), '#00aa00', 'a <use> in the copy, and its copy'],
+      [use('k'), '#00aa00', 'display: none in the copy'],
+      [use('l'), '#000000', 'and no rule'],
+      // one of the drawing's own: its copy is not where it stands
+      [
+        '<svg class="x" width="10" height="10"><defs>' +
+          sq('id="m" fill="#00aa00"') +
+          '</defs><use href="#m"/></svg>',
+        '#00aa00',
+        'a rule that reaches the original alone',
+      ],
+      [
+        '<svg class="y" width="10" height="10"><defs>' +
+          sq('id="n"') +
+          '</defs><use href="#n"/></svg>',
+        '#00aa00',
+        'a rule on the <use>, inherited',
+      ],
+    ];
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0} svg{display:block}' +
+        'symbol .ln{fill:#00aa00} .sprite .sp{fill:#ff0000}' +
+        '.host .ho{fill:#ff0000} #d{fill:#00aa00} .k rect{fill:#00aa00}' +
+        '.sprite{--c:#ff0000} .hv{--c:#00aa00} .v{fill:var(--c)}' +
+        '.cc{fill:currentColor} symbol:first-child .fc{fill:#00aa00}' +
+        '.in{fill:#00aa00} .hd{display:none}' +
+        '.x rect{fill:#ff0000} .y use{fill:#00aa00}</style>' +
+        sprite +
+        rows.map(([markup]) => markup).join(''),
+      {},
+    );
+    for (const [i, [, colour, message]] of rows.entries()) {
+      await expectPixel(result.ctx, 5, i * 10 + 5, colour, { message });
     }
   },
 );

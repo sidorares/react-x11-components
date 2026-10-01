@@ -58,7 +58,9 @@ import {
   ROOT_BOX_PROPS,
   SHAPE_TAGS,
   isShapeProp,
+  isUse,
   shapeValue,
+  useHref,
 } from './shapes.js';
 import type { ShapeContext, ShapeStyle, ShapeStyles } from './shapes.js';
 
@@ -154,6 +156,10 @@ interface IndexedRule {
   /** For a rule kept for drawings: whether it declares something a
    *  drawing's root does not have from its box's style. Null until asked. */
   root: boolean | null;
+  /** The selector as it is matched in the tree a `<use>`'s copy is in
+   *  (`Cascade.shapeStyles`), compiled once one is first asked. */
+  inCopy: ((el: Element) => boolean) | null;
+  inCopyCompiled: boolean;
 }
 
 /**
@@ -238,6 +244,8 @@ class RuleIndex {
       id: this._nextId++,
       needs: null,
       root: null,
+      inCopy: null,
+      inCopyCompiled: false,
     };
     if (rule.selector.includes(':hover') || rule.selector.includes(':active')) {
       this.hoverSensitive = true;
@@ -598,12 +606,15 @@ function compileSelector(
   selector: string,
   adapter: CssSelectAdapter,
   pseudos: typeof PSEUDOS = PSEUDOS,
+  /** Whether what it answers may be kept: not where the adapter's tree
+   *  moves under it, as a `<use>`'s copy's does (`Cascade.shapeStyles`). */
+  cache = true,
 ): (el: Element) => boolean {
   return compile(noEmptyWords(selector), {
     adapter,
     xmlMode: false,
     pseudos,
-    cacheResults: !POINTER_PSEUDO.test(selector),
+    cacheResults: cache && !POINTER_PSEUDO.test(selector),
   } as unknown as Parameters<typeof compile>[1]) as unknown as (
     node: Element,
   ) => boolean;
@@ -725,6 +736,30 @@ function ancestorKeys(selector: string): string[] {
   return keys;
 }
 
+/** What the rules matched in the copy a `<use>` makes of an element: each
+ *  element they reach, with its place in the copy and its rules in cascade
+ *  order; how many elements the copy has; and the `<use>`s in it. */
+interface CopyMatch {
+  rules: { el: Element; at: number; candidates: Candidate[] }[];
+  size: number;
+  uses: Element[];
+}
+
+/**
+ * What `Cascade.shapeStyles` keeps for the drawings of one build of the
+ * boxes (`BoxTree.shapeCopies`): the document's elements by their ids, and
+ * what the rules matched in the copy of each element a `<use>` names —
+ * the same whichever `<use>` makes it, so a page of hundreds of icons from
+ * one sprite matches each symbol once. A build is made again whenever the
+ * document or its style sheets change, and a pointer move changes nothing
+ * a copy is matched by: nothing in one is under the pointer.
+ */
+export class ShapeCopies {
+  /** @internal */
+  readonly matched = new Map<Element, CopyMatch>();
+  constructor(readonly byId: (id: string) => Element | null) {}
+}
+
 /** What the rules asked of every element of a drawing, or of every one of
  *  a type, ask of its ancestors (`Cascade.shapeStyles`). */
 interface ShapeNeeds {
@@ -833,6 +868,17 @@ export class Cascade {
   private _shapes = new RuleIndex();
   private _shapeNeeds: ShapeNeeds | null = null;
   private _adapter: CssSelectAdapter;
+  /**
+   * The tree a `<use>`'s copy is in, for `_copyAdapter`: the element it is
+   * a copy of, which is its top (`ShapeStyles.used`). A copy is its own
+   * tree, a shadow tree of the `<use>`'s (SVG 2, 5.5.1), so a selector is
+   * matched against its original with nothing above that element and
+   * nothing beside it — the top of a copy is its tree's first child and
+   * its last, whichever of its parent's it is. And nothing in it is under
+   * the pointer, as nothing in a drawing is: it has no box to be.
+   */
+  private _copyTop: Element | null = null;
+  private _copyAdapter: CssSelectAdapter;
   /** The compounds of the selectors that test the pointer, each without
    *  its `:hover` or `:active` (`pointerCompounds`), and their matchers,
    *  compiled when a pointer move first asks (`hoverTouches`). */
@@ -990,6 +1036,16 @@ export class Cascade {
       isHovered: (el: Element) => this._pointer.hovered.has(el),
       isActive: (el: Element) => this._pointer.active.has(el),
       isVisited: () => false,
+    };
+    this._copyAdapter = {
+      ...this._adapter,
+      getParent: (el) => (el === this._copyTop ? null : DomUtils.getParent(el)),
+      getSiblings: (el) =>
+        el === this._copyTop ? [el] : DomUtils.getSiblings(el),
+      prevElementSibling: (el) =>
+        el === this._copyTop ? null : DomUtils.prevElementSibling(el),
+      isHovered: () => false,
+      isActive: () => false,
     };
   }
 
@@ -1857,12 +1913,24 @@ export class Cascade {
    * itself. The root's box has its paint, its opacity and whether it is
    * shown from its computed style, so those are left out for it.
    *
+   * What a `<use>` draws is a copy, styled in a tree of its own
+   * (`ShapeStyles.used`): the element it names is looked for as `copyTree`
+   * looks — the drawing's own first, then the document's — and what is in
+   * it asked of where it stands in that tree, once a build for all the
+   * `<use>`s that name it (`ShapeCopies`). An icon sprite's `<symbol>`,
+   * outside the drawing in a hidden `<svg>` of them, is styled that way,
+   * and so is one of the drawing's own.
+   *
    * Asked as a drawing is first painted (`BoxTree.shapeStyler`), of the
    * rules in `_shapes` alone: a page of hundreds of icons pays for the ones
    * it shows, a look in the buckets for each of their elements where no
    * rule reaches them, and a document with no such rule nothing.
    */
-  shapeStyles(root: Element, style: ComputedStyle): ShapeStyles | null {
+  shapeStyles(
+    root: Element,
+    style: ComputedStyle,
+    copies: ShapeCopies | null = null,
+  ): ShapeStyles | null {
     const index = this._shapes;
     if (!index.size) return null;
     // The rules kept by a class or an id are asked of the elements with
@@ -1872,9 +1940,9 @@ export class Cascade {
     // id it asks of an ancestor, which is looked for once for the drawing,
     // around it and in it, where matching the rule would look for it from
     // each of its elements. On a page with none of them around a drawing,
-    // nothing is matched at all.
+    // nothing is matched at all. A copy's tree has nothing around it.
     const needs = (this._shapeNeeds ??= this._needsOfShapes());
-    const found = new Set<string>();
+    let found = new Set<string>();
     const asks = needs.classes.size > 0 || needs.ids.size > 0;
     const note = (el: Element): void => {
       if (needs.ids.size) {
@@ -1909,43 +1977,58 @@ export class Cascade {
       (indexed.root ??= declaresRootShape(indexed.rule.declarations)) &&
       live(indexed);
 
-    let of: Map<Element, ShapeStyle> | null = null;
-    let key = '';
-    let ctx: ShapeContext | null = null;
-    // in document order, the root first: an element's place in it is what
-    // the key names it by, and its ancestors in the drawing are noted
-    // before it is asked of
-    const stack: Element[] = [root];
-    let place = -1;
-    while (stack.length) {
-      const el = stack.pop()!;
-      place += 1;
-      // what is in a `<foreignObject>` is not the drawing's to draw
-      if (el.name !== 'foreignobject' && el.name !== 'foreignObject') {
-        const children = el.children;
-        for (let i = children.length - 1; i >= 0; i -= 1) {
-          const child = children[i];
-          if (child.type === 'tag') stack.push(child as Element);
+    /** The elements under `top` and it, in document order, the top first:
+     *  its ancestors are noted before an element is asked of. Each with
+     *  the rules it matched, in cascade order, where it matched any. */
+    const walk = (
+      top: Element,
+      inCopy: boolean,
+      each: (el: Element, candidates: Candidate[] | null) => void,
+    ): void => {
+      const stack: Element[] = [top];
+      while (stack.length) {
+        const el = stack.pop()!;
+        // what is in a `<foreignObject>` is not the drawing's to draw
+        if (el.name !== 'foreignobject' && el.name !== 'foreignObject') {
+          const children = el.children;
+          for (let i = children.length - 1; i >= 0; i -= 1) {
+            const child = children[i];
+            if (child.type === 'tag') stack.push(child as Element);
+          }
         }
+        if (asks) note(el);
+        const tag = tagOf(el);
+        const asked = found.size
+          ? index.universal.length > 0 || index.byTag.has(tag)
+          : needs.universal || needs.tags.has(tag);
+        if (!asked && !index.names(el)) {
+          each(el, null);
+          continue;
+        }
+        const candidates: Candidate[] = [];
+        this._matchInto(
+          index,
+          el,
+          candidates,
+          undefined,
+          el === root && !inCopy ? liveForRoot : live,
+          inCopy,
+        );
+        if (candidates.length) {
+          const inline = attr(el, 'style');
+          if (inline) pushInlineShapes(candidates, inline);
+          candidates.sort(byCascade);
+        }
+        each(el, candidates.length ? candidates : null);
       }
-      if (asks) note(el);
-      const tag = tagOf(el);
-      const asked = found.size
-        ? index.universal.length > 0 || index.byTag.has(tag)
-        : needs.universal || needs.tags.has(tag);
-      if (!asked && !index.names(el)) continue;
-      const candidates: Candidate[] = [];
-      this._matchInto(
-        index,
-        el,
-        candidates,
-        undefined,
-        el === root ? liveForRoot : live,
-      );
-      if (!candidates.length) continue;
-      const inline = attr(el, 'style');
-      if (inline) pushInlineShapes(candidates, inline);
-      candidates.sort(byCascade);
+    };
+
+    let ctx: ShapeContext | null = null;
+    /** What an element's rules come to, against the drawing's style. */
+    const resolve = (
+      candidates: Candidate[],
+      isRoot: boolean,
+    ): Record<string, string> | null => {
       ctx ??= {
         color: style.color,
         scheme: style.colorScheme,
@@ -1962,7 +2045,7 @@ export class Cascade {
       for (const c of candidates) {
         for (const d of pick(c)) {
           if (!isShapeProp(d.prop)) continue;
-          if (el === root && ROOT_BOX_PROPS.has(d.prop)) continue;
+          if (isRoot && ROOT_BOX_PROPS.has(d.prop)) continue;
           // a `var()` with nothing to stand for it is invalid at
           // computed-value time, and the property as though `unset`
           const value = shapeValue(
@@ -1973,13 +2056,96 @@ export class Cascade {
           if (value !== null) (own ??= {})[d.prop] = value;
         }
       }
-      if (!own) continue;
-      (of ??= new Map()).set(el, own);
-      key += `${place}{`;
+      return own;
+    };
+    // an element's place in the walks is what the key names it by
+    let key = '';
+    let place = -1;
+    const keep = (
+      into: Map<Element, ShapeStyle>,
+      el: Element,
+      own: Record<string, string>,
+      at: number,
+    ): void => {
+      into.set(el, own);
+      key += `${at}{`;
       for (const prop in own) key += `${prop}:${own[prop]};`;
       key += '}';
+    };
+
+    // (made as they are first needed: most drawings need none of them)
+    let of = null as Map<Element, ShapeStyle> | null;
+    // the `<use>`s met, and the drawing's own elements by their ids, which
+    // one looks in first
+    let uses = null as Element[] | null;
+    let ids = null as Map<string, Element> | null;
+    walk(root, false, (el, candidates) => {
+      place += 1;
+      if (isUse(el)) (uses ??= []).push(el);
+      if (el !== root) {
+        const id = el.attribs.id;
+        if (id && !ids?.has(id)) (ids ??= new Map()).set(id, el);
+      }
+      const own = candidates && resolve(candidates, el === root);
+      if (own) keep((of ??= new Map()), el, own, place);
+    });
+    if (!uses) return of ? { of, used: null, key } : null;
+
+    // Each element a `<use>` names, in the tree of its copy: once however
+    // many name it, and one a copy's `<use>` names in turn, however deep —
+    // `copyTree` stops at a depth, and a `<use>` that names what it is in
+    // finds it being walked. What is matched there is the same for every
+    // drawing, and kept for the build (`ShapeCopies`); what it comes to is
+    // the drawing's, since every property the copy inherits is the
+    // `<use>`'s, and its custom properties and its colour are the
+    // drawing's, as they are for the rest of it.
+    const byId = copies?.byId ?? ((id: string) => elementById(root, id));
+    const matched = copies?.matched ?? new Map<Element, CopyMatch>();
+    const match = (target: Element): CopyMatch => {
+      let copy = matched.get(target);
+      if (copy) return copy;
+      const rules: CopyMatch['rules'] = [];
+      const inner: Element[] = [];
+      let size = 0;
+      found = new Set();
+      this._copyTop = target;
+      try {
+        walk(target, true, (el, candidates) => {
+          if (isUse(el)) inner.push(el);
+          if (candidates) rules.push({ el, at: size, candidates });
+          size += 1;
+        });
+      } finally {
+        this._copyTop = null;
+      }
+      copy = { rules, size, uses: inner };
+      matched.set(target, copy);
+      return copy;
+    };
+    let used: Map<Element, ReadonlyMap<Element, ShapeStyle>> | null = null;
+    const made = new Map<Element, Map<Element, ShapeStyle> | null>();
+    for (let i = 0; i < uses.length; i += 1) {
+      const use = uses[i];
+      const id = useHref(use);
+      if (id === null) continue;
+      const target = ids?.get(id) ?? byId(id);
+      if (!target) continue;
+      let into = made.get(target);
+      if (into === undefined) {
+        made.set(target, null);
+        const copy = match(target);
+        for (const next of copy.uses) uses.push(next);
+        into = null;
+        for (const { el, at, candidates } of copy.rules) {
+          const own = resolve(candidates, false);
+          if (own) keep((into ??= new Map()), el, own, place + 1 + at);
+        }
+        place += copy.size;
+        made.set(target, into);
+      }
+      if (into) (used ??= new Map()).set(use, into);
     }
-    return of ? { of, key } : null;
+    return of || used ? { of: of ?? new Map(), used, key } : null;
   }
 
   /** `ShapeNeeds`, and each such rule's own (`IndexedRule.needs`). */
@@ -2054,6 +2220,9 @@ export class Cascade {
     matched?: number[],
     /** The rules to try, where some are known not to match without it. */
     live?: (indexed: IndexedRule) => boolean,
+    /** Whether `el` is matched where a `<use>` draws a copy of it
+     *  (`_copyTop`). */
+    inCopy = false,
   ): void {
     // A media query's width is CSS pixels; the viewport is kept in device.
     const width = this.viewportWidth / this.scale;
@@ -2075,22 +2244,43 @@ export class Cascade {
         ) {
           continue;
         }
-        if (!indexed.compiled) {
-          indexed.compiled = true;
-          try {
-            indexed.match = compileSelector(
-              rule.selector,
-              this._adapter,
-              this._pseudos,
-            );
-          } catch {
-            // A selector this matcher does not know (`::-moz-…`, a CSS4 form
-            // it has not learnt) drops out of the cascade rather than out of
-            // the render.
-            indexed.match = null;
+        let match: ((el: Element) => boolean) | null;
+        if (inCopy) {
+          if (!indexed.inCopyCompiled) {
+            indexed.inCopyCompiled = true;
+            try {
+              // what it finds above an element depends on which copy it is
+              // in, so none of it is kept
+              indexed.inCopy = compileSelector(
+                rule.selector,
+                this._copyAdapter,
+                this._pseudos,
+                false,
+              );
+            } catch {
+              indexed.inCopy = null;
+            }
           }
+          match = indexed.inCopy;
+        } else {
+          if (!indexed.compiled) {
+            indexed.compiled = true;
+            try {
+              indexed.match = compileSelector(
+                rule.selector,
+                this._adapter,
+                this._pseudos,
+              );
+            } catch {
+              // A selector this matcher does not know (`::-moz-…`, a CSS4
+              // form it has not learnt) drops out of the cascade rather than
+              // out of the render.
+              indexed.match = null;
+            }
+          }
+          match = indexed.match;
         }
-        if (!indexed.match || !indexed.match(el)) continue;
+        if (!match || !match(el)) continue;
         matched?.push(indexed.id);
         if (out === null) continue;
         const origin = rule.order < 0 ? Origin.UserAgent : Origin.Author;
@@ -2361,6 +2551,23 @@ function setsContent(c: Candidate): boolean {
 
 /** Whether a rule's declarations set a custom property, by the array. */
 const CUSTOM_IN = new WeakMap<Declaration[], boolean>();
+
+/** The document's first element with an id, looked for from one of its
+ *  elements: `shapeStyles`' answer where no index of them is handed in. */
+function elementById(from: Element, id: string): Element | null {
+  let top: Element['parent'] | Element = from;
+  while (top.parent) top = top.parent;
+  const stack = [...top.children].reverse();
+  for (let node = stack.pop(); node; node = stack.pop()) {
+    if (node.type !== 'tag') continue;
+    const el = node as Element;
+    if (el.attribs.id === id) return el;
+    for (let i = el.children.length - 1; i >= 0; i -= 1) {
+      stack.push(el.children[i]);
+    }
+  }
+  return null;
+}
 
 /** Whether declarations set a property a shape in a drawing has. */
 function declaresShape(declarations: readonly Declaration[]): boolean {
