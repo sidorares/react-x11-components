@@ -797,6 +797,159 @@ metric(
 );
 
 metric(
+  "a list marker's image with no size of its own is a square half its face's ascent across",
+  async () => {
+    // CSS Lists 3 (3.3) sizes it by CSS Images' default sizing in a 1em
+    // square, which Blink and Gecko both find too large
+    // (w3c/csswg-drafts#4207): Blink's square is half the ascent, rounded
+    // first, and what has only a ratio is fitted into it. An SVG with only
+    // a `viewBox` came to 0 by 0 and drew no marker, and inside the item
+    // to the 300 by 150 a generated image defaults to
+    const images = {
+      'square.svg': svgBytes(
+        `<svg ${SVG_NS} viewBox="0 0 40 40">` +
+          '<rect width="40" height="40" fill="#ff0000"/></svg>',
+      ),
+      'wide.svg': svgBytes(
+        `<svg ${SVG_NS} viewBox="0 0 80 40">` +
+          '<rect width="80" height="40" fill="#ff0000"/></svg>',
+      ),
+      'bare.svg': svgBytes(
+        `<svg ${SVG_NS}><rect width="100%" height="100%" fill="#ff0000"/>` +
+          '</svg>',
+      ),
+      'narrow.svg': svgBytes(
+        `<svg ${SVG_NS} width="30"><rect width="100%" height="100%" ` +
+          'fill="#ff0000"/></svg>',
+      ),
+    };
+    const source =
+      '<style>body{margin:0}ul{margin:0;padding:0 0 0 80px;' +
+      'font:40px/60px sans-serif}li{margin:0;' +
+      'list-style-image:url(square.svg)}#b{list-style-image:url(wide.svg)}' +
+      '#c{list-style-image:url(bare.svg)}' +
+      '#d{list-style-image:url(narrow.svg)}' +
+      '#e{list-style-position:inside}</style><ul><li id="a">a</li>' +
+      '<li id="b">b</li><li id="c">c</li><li id="d">d</li>' +
+      '<li id="e">e</li></ul>';
+    const { result, el } = await renderWithBytes(source, images);
+    await act();
+    const fonts = (
+      result as unknown as {
+        app: {
+          fonts: {
+            match(
+              family: string,
+              opts: { size: number },
+            ): { metrics(size: number): { ascent: number } };
+          };
+        };
+      }
+    ).app.fonts;
+    const sideAt = (size: number) =>
+      Math.round(fonts.match('sans-serif', { size }).metrics(size).ascent) / 2;
+    const side = sideAt(40);
+    // 18 in Arial, whose ascent at 40px is 36.2, as Chrome has it
+    assert.ok(side > 15 && side < 20, `half the ascent: ${side}`);
+    type Marked = LaidBox & {
+      marker: { image?: { width: number; height: number } } | null;
+    };
+    const imageOf = (id: string) => (boxOf(el, id) as Marked).marker?.image;
+    const sizes = Object.fromEntries(
+      ['a', 'b', 'c', 'd'].map((id) => [id, imageOf(id)]),
+    );
+    assert.deepStrictEqual(
+      Object.fromEntries(
+        Object.entries(sizes).map(([id, image]) => [
+          id,
+          image && [image.width, image.height],
+        ]),
+      ),
+      {
+        a: [side, side],
+        // a ratio alone, as large as fits in the square
+        b: [side, side / 2],
+        // no size and no ratio, the square
+        c: [side, side],
+        // a width and no ratio, the square's height
+        d: [30, side],
+      },
+    );
+
+    // drawn: the square, its bottom on the first line's baseline and the
+    // gap a bullet has between it and the text
+    const reach = async (...edges: [number, number, number, number]) => {
+      // whole pixels: a box's edge can be a float's residue off one, and a
+      // read of 59.99… rows is refused
+      const [x0, x1, y0, y1] = edges.map(Math.round);
+      const w = x1 - x0;
+      const data: Uint8ClampedArray = await new Promise((ok, fail) =>
+        (
+          result.ctx as unknown as {
+            getImageData(
+              x: number,
+              y: number,
+              w: number,
+              h: number,
+              cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+            ): void;
+          }
+        ).getImageData(x0, y0, w, y1 - y0, (e, d) =>
+          e ? fail(e) : ok(d.data),
+        ),
+      );
+      let [left, right, top, bottom] = [Infinity, -Infinity, Infinity, -1];
+      for (let i = 0; i < data.length; i += 4) {
+        // red over white, more than half covered
+        if (data[i] < 200 || data[i + 1] > 127 || data[i + 2] > 127) continue;
+        const x = x0 + ((i / 4) % w);
+        const y = y0 + Math.floor(i / 4 / w);
+        [left, right] = [Math.min(left, x), Math.max(right, x + 1)];
+        [top, bottom] = [Math.min(top, y), Math.max(bottom, y + 1)];
+      }
+      return { width: right - left, height: bottom - top, left, bottom };
+    };
+    const outside = await reach(0, 80, 0, 60);
+    const baseline = linesOf(el, 'a')[0].baseline;
+    assert.ok(
+      Math.abs(outside.width - side) <= 1 &&
+        Math.abs(outside.height - side) <= 1,
+      `a ${side}px square: ${outside.width} by ${outside.height}`,
+    );
+    assert.ok(
+      Math.abs(outside.bottom - baseline) <= 1,
+      `on the baseline, ${baseline}: ${outside.bottom}`,
+    );
+    // inside the item, the first thing on its line, and as large
+    const e = boxOf(el, 'e');
+    const inside = await reach(e.x, e.x + 40, e.y, e.y + 60);
+    assert.ok(
+      Math.abs(inside.width - side) <= 1 && Math.abs(inside.height - side) <= 1,
+      `inside, a ${side}px square: ${inside.width} by ${inside.height}`,
+    );
+    assert.strictEqual(
+      inside.left,
+      Math.round(e.x),
+      'at the start of the line',
+    );
+
+    // the square is device pixels: twice as large at 2x
+    cleanup();
+    const twice = await renderWithBytes(source, images, 400, 2);
+    await act();
+    const image = (boxOf(twice.el, 'a') as Marked).marker?.image;
+    assert.deepStrictEqual(image && [image.width, image.height], [
+      sideAt(80),
+      sideAt(80),
+    ]);
+    assert.ok(
+      Math.abs(sideAt(80) - 2 * side) <= 1,
+      `twice ${side}: ${sideAt(80)}`,
+    );
+  },
+);
+
+metric(
   "a list item's first line is as tall as its marker's image",
   async () => {
     // CSS 2.1 12.5.1 leaves where an outside marker goes to the user

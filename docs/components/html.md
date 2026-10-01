@@ -448,7 +448,12 @@ inline-block is. A list's marker hangs outside its item, or with
 `list-style-position: inside` is the first thing on its first line and
 takes its room there; a `list-style-image` is the marker where it loads —
 asked for through `onResource`, its bottom on the first line's baseline —
-and the `list-style-type`'s is until then. An outside marker that reaches
+and the `list-style-type`'s is until then. An image with no size of its
+own, an SVG with only a `viewBox`, is fitted into a square half its face's
+ascent across, which is Blink's: CSS Lists 3 says 1em, and both engines
+find that too large
+([w3c/csswg-drafts#4207](https://github.com/w3c/csswg-drafts/issues/4207)).
+An outside marker that reaches
 higher above its baseline than the item's first line does makes room as
 Blink does: the line grows where it is the item's own, and where it is in a
 block inside the item — a paragraph, a link set `display: block` — the

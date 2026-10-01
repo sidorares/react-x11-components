@@ -1047,6 +1047,10 @@ export class HtmlViewNode extends Node {
           scale: this._scale,
           imageSize: (el) => this._resources.imageSize(imageUrlOf(el) ?? ''),
           urlSize: (url) => this._resources.imageSize(url),
+          faceAscent: (style) => {
+            const fonts = this._fonts();
+            return fonts ? faceExtentOf(fonts, style).ascent : undefined;
+          },
           controlSize: (el, kind, style) =>
             measureControl(el, kind, style, this._fonts(), look),
         });

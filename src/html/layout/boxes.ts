@@ -49,7 +49,7 @@ import {
   inherit,
 } from '../css/style.js';
 import { AUTO } from '../css/values.js';
-import { svgIntrinsics } from '../svg.js';
+import { concreteSize, svgIntrinsics } from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
 import type { ComputedStyle } from '../css/style.js';
 import type { GridLines } from './grid-lines.js';
@@ -83,8 +83,9 @@ export interface Marker {
   /** Its own style where a `::marker` rule gives it one; the item's where
    *  none does. */
   style: ComputedStyle | null;
-  /** The image it is, `list-style-image`'s, at its size in device pixels,
-   *  where that has arrived; its text is then not drawn. */
+  /** The image it is, `list-style-image`'s, where that has arrived, at its
+   *  size in device pixels — its own, or the one a marker image with none
+   *  is given (`Builder._markerImageSize`); its text is then not drawn. */
   image?: { url: string; width: number; height: number };
   /** Its text is its own — a string `list-style-type`, a `::marker`'s
    *  `content` — and ends at the content's edge, with no gap a number
@@ -832,6 +833,10 @@ export interface BuildOptions {
   imageSize(el: Element): IntrinsicSize | null;
   /** The same for an image named by url — generated content's. */
   urlSize?(url: string): IntrinsicSize | null;
+  /** How far a style's first face reaches above its baseline, in device
+   *  pixels: what a list marker's image with no size of its own is sized
+   *  by (`_markerImageSize`). Where it is not known, 0.8em. */
+  faceAscent?(style: ComputedStyle): number | undefined;
   /** The size a real widget wants, so the box in the flow is the size the
    *  control will be drawn at. */
   controlSize(
@@ -1251,7 +1256,7 @@ class Builder {
     let markerStyle: ComputedStyle | null = null;
     let ownMarker = false;
     let markerImage: { url: string; size: IntrinsicSize } | null = null;
-    let insideImage: string | null = null;
+    let insideImage: NonNullable<Marker['image']> | null = null;
     if (style.display === 'list-item' && style.listStyleImage) {
       // asked for as generated content's images are, and the tree built
       // again when it arrives; until it has, and where it never does, the
@@ -1286,20 +1291,20 @@ class Builder {
         flush = true;
       }
       if (markerImage && !ownMarker) {
-        if (style.listStylePosition === 'inside') insideImage = markerImage.url;
+        const [width, height] = this._markerImageSize(
+          markerImage.size,
+          markerStyle ?? style,
+        );
+        const image = { url: markerImage.url, width, height };
+        if (style.listStylePosition === 'inside') insideImage = image;
         else {
-          const scale = this._options.scale ?? 1;
           box.marker = {
             text: '',
             layout: null,
             x: 0,
             y: 0,
             style: markerStyle,
-            image: {
-              url: markerImage.url,
-              width: (markerImage.size.width ?? 0) * scale,
-              height: (markerImage.size.height ?? 0) * scale,
-            },
+            image,
           };
         }
       } else if (text && style.listStylePosition === 'inside') {
@@ -1336,7 +1341,7 @@ class Builder {
     if (insideImage) {
       // an inline image at the start of the first line, as a generated
       // image is, and the space a marker's text ends in
-      this._contentImage(insideImage, box, style, el);
+      this._contentImage(insideImage.url, box, style, el, insideImage);
       this._textNode(' ', box, style, el);
     } else if (insideMarker) {
       this._insideMarker(insideMarker, style, markerStyle, box, el);
@@ -1817,6 +1822,9 @@ class Builder {
     into: Box,
     style: ComputedStyle,
     owner: Element,
+    /** Its size where it is a list marker's, which has one whatever the
+     *  image says (`_markerImageSize`). */
+    marker?: { width: number; height: number },
   ): void {
     const box = new Box('replaced', null, {
       ...inherit(style, this._options.cascade.initial),
@@ -1827,11 +1835,39 @@ class Builder {
     CONTENT_IMAGES.set(box, url);
     const size = this._options.urlSize?.(url) ?? null;
     this._contentImages.push({ url, element: owner, sized: !!size });
-    if (size) setIntrinsics(box, size, this._options.scale ?? 1);
+    if (marker) {
+      const { width, height } = marker;
+      const ratio = width > 0 && height > 0 ? width / height : 0;
+      box.intrinsic = { width, height, missing: 0, ratio };
+    } else if (size) setIntrinsics(box, size, this._options.scale ?? 1);
     else box.intrinsic = { width: 0, height: 0, missing: 0, ratio: 0 };
     this._ws = after('atomic', this._ws, this._ws);
     this._lettered = false;
     this._abandonLetter();
+  }
+
+  /**
+   * A list marker image's size, in device pixels: its own where it has one,
+   * and where it lacks some — an SVG with only a `viewBox`, or with no size
+   * and no ratio — CSS Images' default sizing in a square half its face's
+   * ascent across. CSS Lists 3 (3.3) makes the square 1em, which both
+   * engines find too large (w3c/csswg-drafts#4207): Blink's is half the
+   * ascent, rounded to a whole pixel first
+   * (`LayoutListMarkerImage::DefaultSize`), Gecko's 0.4em, and this is
+   * Blink's. A `viewBox` alone came to 0 by 0 and drew no marker at all,
+   * and inside the item to the 300 by 150 a generated image defaults to.
+   */
+  private _markerImageSize(
+    size: IntrinsicSize,
+    style: ComputedStyle,
+  ): [number, number] {
+    let side = 0;
+    // CoreText reads a size of 0 as its default twelve points
+    if ((size.width === null || size.height === null) && style.fontSize > 0) {
+      const ascent = this._options.faceAscent?.(style) ?? style.fontSize * 0.8;
+      side = Math.round(ascent) / 2;
+    }
+    return concreteSize(size, side, side, this._options.scale ?? 1);
   }
 
   /** A text node, whitespace-processed per the inherited `white-space`. */

@@ -757,6 +757,8 @@ export async function renderWithBytes(
   source: string,
   images: Record<string, Uint8Array>,
   width = 400,
+  /** The display's, as `atScale2` sets it. */
+  scale = 1,
 ) {
   const result = await renderX11(
     h(
@@ -773,7 +775,12 @@ export async function renderWithBytes(
       }),
     ),
     FONTS
-      ? { width: width + 40, height: 400, fonts: FONTS }
+      ? {
+          width: width + 40,
+          height: 400,
+          fonts: FONTS,
+          ...(scale !== 1 && { scale }),
+        }
       : { backend: 'mock' as const },
   );
   return { result, el: view(screen.getByTestName('doc') as DrawnNode) };
