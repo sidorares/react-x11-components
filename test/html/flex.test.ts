@@ -1843,6 +1843,54 @@ test('an item across a row that wraps in reverse is within its own margins', asy
   assert.deepStrictEqual(at('d'), [35, 10], 'centred within them');
 });
 
+test('an item whose height is a percentage of none is not stretched across its row', async () => {
+  // `stretch` stretches an item whose height computes to `auto` (CSS
+  // Flexbox 8.3, 9.4 step 11). A percentage of a height the row does not
+  // have is `auto` to the item's size (CSS 2.1 10.5), but it computes to the
+  // percentage, so the item is as tall as its content and at its line's
+  // start, within its margins. Yoga was handed no height for it and
+  // stretched it, to the 30px item beside it or to the line a `min-height`
+  // made. A percentage of a height the row has is a height as before.
+  const block = '<div style="width:30px;height:13px"></div>';
+  const beside = '<div style="width:30px;height:30px"></div>';
+  const row = (style: string, item: string) =>
+    `<div style="display:flex;width:100px;${style}">${item}${beside}</div>`;
+  const half = (id: string, style = '') =>
+    `<div id="${id}" style="height:50%;${style}">${block}</div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      row('', half('a')) +
+      row('', half('b', 'margin:2px 0 3px')) +
+      row('', half('c', 'height:calc(50% + 4px)')) +
+      row('', half('d', 'min-height:20px')) +
+      row('flex-wrap:wrap;min-height:40px', half('e')) +
+      row('flex-wrap:wrap;min-height:40px', half('f', 'margin:5px 0 3px')) +
+      row(
+        'flex-wrap:wrap-reverse;min-height:40px',
+        half('g', 'margin:5px 0 3px'),
+      ) +
+      row(
+        'align-items:baseline',
+        half('h', 'align-self:stretch;margin-top:4px'),
+      ) +
+      row('height:40px', half('i')),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.y - item.parent.y, item.height];
+  };
+  assert.deepStrictEqual(at('a'), [0, 13], 'as tall as its content');
+  assert.deepStrictEqual(at('b'), [2, 13], 'within its margins');
+  assert.deepStrictEqual(at('c'), [0, 13], 'and with a length added');
+  assert.deepStrictEqual(at('d'), [0, 20], 'within its min-height');
+  assert.deepStrictEqual(at('e'), [0, 13], 'in a row that wraps');
+  assert.deepStrictEqual(at('f'), [5, 13], 'within its margins there');
+  assert.deepStrictEqual(at('g'), [24, 13], 'at the bottom, in reverse');
+  assert.deepStrictEqual(at('h'), [4, 13], 'beside baselines');
+  assert.deepStrictEqual(at('i'), [0, 20], 'half a row of a height');
+});
+
 test('a row that wraps spaces its lines out, each as tall as its tallest item', async () => {
   // `space-between`, `space-around` and `space-evenly` put the room left
   // beside the lines of a row that wraps between them (CSS Flexbox 9.4,
