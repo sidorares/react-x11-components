@@ -668,6 +668,32 @@ metric(
 );
 
 metric(
+  "an intrinsic size takes a percentage padding of the box's containing block",
+  async () => {
+    // The sizes are measured with the box's edges resolved against nothing,
+    // which is how they are kept whatever the room; a percentage padding was
+    // left at nothing, inside the content, where it is of the containing
+    // block's width as any box's is
+    const { node } = await render(
+      '<style>body{margin:0} i{display:inline-block;width:60px;' +
+        'height:10px}</style><div style="width:400px">' +
+        '<div id="a" style="width:max-content"><i></i></div>' +
+        '<div id="b" style="width:max-content;padding-left:10%"><i></i></div>' +
+        '<div id="c" style="width:fit-content;padding:0 5% 0 10%">' +
+        '<i></i></div>' +
+        '<div id="d" style="width:min-content;border-right:5px solid;' +
+        'padding-right:25%"><i></i> <i></i></div></div>',
+    );
+    const el = view(node);
+    const width = (id: string) => boxOf(el, id).width;
+    assert.strictEqual(width('a'), 60);
+    assert.strictEqual(width('b'), 100, 'its content and 40px of padding');
+    assert.strictEqual(width('c'), 120, 'and 60px either side');
+    assert.strictEqual(width('d'), 165, 'its widest word, and its edges');
+  },
+);
+
+metric(
   'fit-content() fits the content in the room its argument makes',
   async () => {
     // CSS Sizing 3, 3.1: min(max-content, max(min-content, the argument)),

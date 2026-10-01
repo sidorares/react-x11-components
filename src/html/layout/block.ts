@@ -2909,10 +2909,8 @@ export function contentSizedWidth(
   // the content's sizes, whatever width the box has of its own: a
   // `min-width: max-content` beside a `width` is its content's widest,
   // and a probe of the box at no width answered the probe's width
-  let probed = false;
   if (box.intrinsicMaxContent < 0) {
     box.intrinsicMaxContent = measureIntrinsicWidth(box, ctx, Infinity, true);
-    probed = true;
   }
   if (size !== 'max-content' && box.intrinsicMinContent < 0) {
     box.intrinsicMinContent = measureIntrinsicWidth(
@@ -2921,12 +2919,19 @@ export function contentSizedWidth(
       MIN_CONTENT_PROBE,
       true,
     );
-    probed = true;
   }
-  if (probed) resolveEdges(box, percentBase);
-  const max = box.intrinsicMaxContent;
+  // The probes resolved a percentage of the box's padding or border
+  // against nothing, which is how the sizes are kept, whatever the width
+  // around the box: what one comes to against `percentBase` goes on top.
+  // Left out, `width: max-content; padding-left: 10%` was as wide as its
+  // content, the padding inside it.
+  resolveEdges(box, 0);
+  const bare = box.horizontalExtra;
+  resolveEdges(box, Number.isFinite(percentBase) ? percentBase : 0);
+  const extra = box.horizontalExtra - bare;
+  const max = box.intrinsicMaxContent + extra;
   if (size === 'max-content') return max;
-  const min = box.intrinsicMinContent;
+  const min = box.intrinsicMinContent + extra;
   if (size === 'min-content') return min;
   return Math.min(
     max,
