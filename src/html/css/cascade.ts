@@ -2597,9 +2597,18 @@ function dropPaletteChrome(out: Candidate[]): void {
   }
   if (!chrome) return;
   let styled = false;
+  // `appearance` by the value that wins: `appearance: none; appearance:
+  // auto` keeps the control's look, as a reset a page takes back does
+  let appearance = '';
   for (let j = i; j < out.length && !styled; j += 1) {
-    styled = pick(out[j]).some(stylesChrome);
+    for (const d of pick(out[j])) {
+      if (d.prop === 'appearance' || d.prop === '-webkit-appearance') {
+        const v = d.value.trim().toLowerCase();
+        if (/^[a-z-]+$/.test(v)) appearance = v;
+      } else if (stylesChrome(d)) styled = true;
+    }
   }
+  if (appearance === 'none') styled = true;
   if (!styled) return;
   let kept = 0;
   for (const c of out) {
@@ -2612,8 +2621,9 @@ function dropPaletteChrome(out: Candidate[]): void {
 }
 
 /** Whether a declaration styles what a control's native look draws: Blink's
- *  `is_background` and `is_border` properties and their shorthands, and an
- *  `appearance` of `none`. */
+ *  `is_background` and `is_border` properties and their shorthands. An
+ *  `appearance` of `none` does too, where it is the one that wins
+ *  (`dropPaletteChrome`). */
 function stylesChrome(d: Declaration): boolean {
   const prop = d.prop;
   if (prop.startsWith('background')) {
@@ -2622,10 +2632,7 @@ function stylesChrome(d: Declaration): boolean {
   if (prop.startsWith('border')) {
     return prop !== 'border-collapse' && prop !== 'border-spacing';
   }
-  return (
-    (prop === 'appearance' || prop === '-webkit-appearance') &&
-    d.value.trim().toLowerCase() === 'none'
-  );
+  return false;
 }
 
 /** An implied element's style as the root box's: its look, not its role —

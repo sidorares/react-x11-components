@@ -300,7 +300,10 @@ test("a button the page styled takes the web's UA edges, not the palette's", asy
             'padding-left:11px;padding-right:11px;min-height:32px">Go</button>' +
             '<button id="filled" style="background:#eee">Go</button>' +
             '<button id="round" style="border-radius:0">Go</button>' +
-            '<button id="bare" style="appearance:none">Go</button>',
+            '<button id="bare" style="appearance:none">Go</button>' +
+            // a reset the page takes back: the value that wins counts
+            '<button id="back" style="appearance:none;appearance:auto">' +
+            'Go</button>',
           partial: false,
           'data-testname': 'doc',
         }),
@@ -326,6 +329,7 @@ test("a button the page styled takes the web's UA edges, not the palette's", asy
   assert.deepStrictEqual(edges('filled'), [1, 6, 2, 0], "Chrome's all round");
   assert.deepStrictEqual(edges('round'), [1, 6, 2, 0], 'a radius is a border');
   assert.deepStrictEqual(edges('bare'), [1, 6, 2, 0], 'and so is appearance');
+  assert.deepStrictEqual(edges('back'), [7, 12, 3, 5], 'where it wins');
 });
 
 metric("a button's content is centred down a box taller than it", async () => {
