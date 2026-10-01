@@ -102,6 +102,24 @@ test('specificity counts ids, classes and types', () => {
   assert.strictEqual(specificityOf('a[href]'), specificityOf('a.x'));
 });
 
+test('a pseudo-class that takes selectors counts them as Selectors 4 has it', () => {
+  const same = (a: string, b: string) =>
+    assert.strictEqual(specificityOf(a), specificityOf(b), `${a} as ${b}`);
+  // `:where()` counts nothing: a typography plugin's rule is a class
+  same(':where(.a .b) p', 'p');
+  same('.prose :where(p):not(:where([class~="not-prose"] *))', '.prose');
+  // `:is()`, `:not()` and `:has()` the most specific in their list
+  same(':is(#a, .b) span', '#a span');
+  same(':not(.a, .b.c)', '.b.c');
+  same(':has(> img.x)', 'img.x');
+  // `:nth-child(An+B of S)` a class and the most specific in S
+  same(':nth-child(even of .foo, #bar, target)', '#bar.foo');
+  same(':nth-child(2n+1)', '.a');
+  // and the rest a class each
+  same('a:hover', 'a.x');
+  same(':lang(en)', '.a');
+});
+
 test('a universal selector counts nothing, and does not stop the scan', () => {
   // The scan took `*` and `|` for the start of a name and then skipped
   // none of it, so it stood still on them for ever: `* { margin: 0 }` —

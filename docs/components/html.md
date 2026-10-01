@@ -1526,7 +1526,13 @@ from this renderer's own pointer state. `:focus`, `:focus-visible` and
 no element of the document takes it itself, a control's widget does,
 beside it, and a text field's says so (see [Forms](#forms)). Nothing else in
 a document is focused, so `:not(:focus)` holds everywhere else, and
-Wikipedia's skip link, hidden with it, stays hidden. Escapes are read wherever they stand,
+Wikipedia's skip link, hidden with it, stays hidden. `:target` is the
+element an SVG image's URL names by its fragment, and none in a document.
+Specificity is Selectors 4's: `:where()` counts nothing, `:is()`, `:not()`
+and `:has()` count the most specific selector in their list, and
+`:nth-child(2n of .a)` a class and the most specific in its list, so a
+library's `.prose :where(p)` is a class and gives way to a page's
+`.intro p`. Escapes are read wherever they stand,
 so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A group
 with a selector in it that is not one — an unknown pseudo-class, a name that
 starts with a digit — is dropped whole, as CSS 2.1 drops it. Rules nest
