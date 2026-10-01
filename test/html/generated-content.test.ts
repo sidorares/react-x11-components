@@ -1009,13 +1009,16 @@ metric(
       '.s{font-size:16px;line-height:30px}.in{list-style-position:inside}' +
       '.pre{white-space:pre}.rtl{direction:rtl;padding:0 80px 0 0}</style>';
     // the red image's and the blue box's columns on an item's line, in
-    // device pixels, a pixel counted where it is more than half covered
+    // device pixels, a pixel counted where it is more than half covered;
+    // the item's whole rows, since an item a marker made taller ends where
+    // the face puts its baseline — 30.15px down, in DejaVu Sans
     const inkOf = async (
       result: { ctx: unknown },
       at: { y: number; height: number },
       width: number,
     ) => {
-      const { y, height } = at;
+      const y = Math.ceil(at.y);
+      const height = Math.floor(at.y + at.height) - y;
       const data = await pixelsIn(result.ctx, { x: 0, y, width, height });
       const red = [Infinity, -Infinity];
       const blue = [Infinity, -Infinity];
