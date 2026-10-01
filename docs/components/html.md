@@ -642,9 +642,15 @@ so content the baseline moved down can hang out of it. A fixed table takes
 its columns' widths from its `<col>`s, then from its first row's cells, border box and
 all, and shares what is left among the rest (CSS 2.1 17.5.2.1); with
 `width: auto` it is laid out by its content, as the section says, where a
-column's `width` counts as its cells' do, and a column group's is spread
-over its columns (17.5.2.2). A percentage in a cell's padding is of the
-width of its row — the columns and the spacing between them — as browsers
+column's `width` counts as its cells' do (17.5.2.2). A column group's
+`width` is the default of each `<col>` in it that sets none, and each takes
+the whole of it, not a share: the width specified for a column is its own,
+or else its group's (CSS Tables 3, 3.8.3), as in Chrome, where CSS 2.1
+17.5.2.2 spread the group's width over its columns. A group with no `<col>`
+stands for each column it spans, and a fixed table takes the group's width
+for those and for no `<col>`, as Blink does. A percentage in a cell's
+padding is of the width of its row — the columns and the spacing between
+them — as browsers
 take it, and of nothing while the columns are sized, so a padded cell's
 column is as wide as its content asks. A cell's `min-width` and
 `max-width` are weighed where the columns are sized, and as lengths (CSS
@@ -658,7 +664,9 @@ table's first row too, where a `min-width` only raises it. The cell is
 then laid out at the width of the columns it spans, whatever its limits
 say (3.10.2). A column's or a column group's `min-width` is the least it
 is, and its `max-width` does nothing, as in Blink: a column's outer
-min-content width is `max(min-width, width)` already. A percentage
+min-content width is `max(min-width, width)` already. A group's
+`min-width` raises the width it gives its `<col>`s and is not the least of
+any of them, only of the columns it stands for. A percentage
 `min-width` is ignored, and a percentage `max-width` holds a percentage
 `width` and nothing else. A column's or a column group's background is
 painted under the cells that start in it, its image placed in the box those

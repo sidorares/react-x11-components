@@ -101,13 +101,13 @@ export function layoutTable(
   // out by its contents after all (CSS 2.1 17.5.2.1), stretched or not
   const fixed = style.tableLayout === 'fixed' && !own;
   // a percentage of the table's width less its spacing (CSS 2.1 17.5.2.1)
-  const set = columnWidths(columnBoxes, columnGroups, available, partWidth);
+  const set = columnWidths(columnBoxes, columnGroups, available, fixed);
   const widths = fixed
     ? fixedColumns(cells, set, columnCount, available, spacing)
     : autoColumns(
         cells,
         set,
-        columnWidths(columnBoxes, columnGroups, available, partLeast),
+        columnLeast(columnBoxes, columnGroups),
         columnCount,
         available,
         ctx,
@@ -787,43 +787,54 @@ function autoColumns(
 }
 
 /**
- * The width each column is set to, or null: a column's own `width`, or its
- * group's shared among the columns of a group that has none of its own
- * (HTML's `<colgroup span>`); and a group's `width` spread over its columns
- * where theirs come to less (CSS 2.1 17.5.2.2, step 4). Or, as `read`
- * says, the least each is (`partLeast`), shared and spread the same way.
+ * The width each column is set to, or null, from the `<col>` and the
+ * `<colgroup>` it is in. A group is its columns' default and no more: the
+ * width specified for a column is its column's, or else its group's (CSS
+ * Tables 3, 3.8.3), so a `<col>` with a width of its own keeps it however
+ * wide the group is, and one with none takes the group's whole, not a
+ * share of it. A group with no `<col>` stands for each column it spans
+ * (`<colgroup span>`), and each is as wide as the group says. That is
+ * HTML 4's "a default width for each column" and Blink's
+ * (`ColumnConstraintsBuilder`), where CSS 2.1 17.5.2.2 spread a group's
+ * width over its columns wherever theirs came to less: a group of 100
+ * over two columns of 20 made each 50, and over two of none made each 50,
+ * where Chrome has 20 and 100.
+ *
+ * Only a length is a default, raised to the group's `min-width` and the
+ * `<col>`'s, and only in an auto table, as Blink has it: a fixed table
+ * takes no group's width for a `<col>`, and its columns share the table as
+ * though the group set none. A `<col>` with a percentage keeps it.
  */
 function columnWidths(
   columnBoxes: (Box | null)[],
   columnGroups: (Box | null)[],
   base: number,
-  read: (box: Box, base: number) => number | null,
+  fixed: boolean,
 ): (number | null)[] {
-  const widths = columnBoxes.map((column) =>
-    column ? read(column, base) : null,
-  );
-  let group: Box | null = null;
-  for (let c = 0; c <= columnGroups.length; c += 1) {
-    if (c < columnGroups.length && columnGroups[c] === group) continue;
-    // the group that ends here, over its columns from `start`
-    if (group) {
-      const width = read(group, base);
-      let start = c - 1;
-      while (start > 0 && columnGroups[start - 1] === group) start -= 1;
-      if (width !== null) {
-        let have = 0;
-        for (let i = start; i < c; i += 1) have += widths[i] ?? 0;
-        if (have < width) {
-          const each = (width - have) / (c - start);
-          for (let i = start; i < c; i += 1) {
-            widths[i] = (widths[i] ?? 0) + each;
-          }
-        }
-      }
-    }
-    group = c < columnGroups.length ? columnGroups[c] : null;
-  }
-  return widths;
+  return columnBoxes.map((column, c) => {
+    const group = columnGroups[c];
+    if (!column) return group ? partWidth(group, base) : null;
+    const own = partWidth(column, base);
+    if (own !== null || fixed || !group || isPct(group.style.width)) return own;
+    const width = partWidth(group, base);
+    return width === null ? null : Math.max(width, partLeast(column) ?? 0);
+  });
+}
+
+/** The least each column is, where a `min-width` says (`partLeast`): its
+ *  `<col>`'s, or, where it has none, the group it is in. A group's
+ *  `min-width` does not reach the `<col>`s in it, as in Blink, which makes
+ *  a group's limits a column's only where the group stands for it:
+ *  `<colgroup style="min-width:100px">` over two `<col>`s of 10px content
+ *  is 20 wide, where the 100 was spread over them. */
+function columnLeast(
+  columnBoxes: (Box | null)[],
+  columnGroups: (Box | null)[],
+): (number | null)[] {
+  return columnBoxes.map((column, c) => {
+    const part = column ?? columnGroups[c];
+    return part ? partLeast(part) : null;
+  });
 }
 
 /** A column's or a column group's width, or null where it sets none: its
