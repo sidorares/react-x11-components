@@ -1360,7 +1360,8 @@ test('a column, or a column group, sets its columns in an auto table (CSS 2.1 17
       '<table style="width:300px"><col style="min-width:50px"><col>' +
       '<tr><td id="l1"><div style="width:10px"></div></td>' +
       '<td><div style="width:50px"></div></td></tr></table>' +
-      // a group wider than its columns spreads the rest over them
+      // a group is its columns' default, and columns with widths of their
+      // own keep them however wide it is (CSS Tables 3, 3.8.3)
       '<table id="s"><colgroup style="width:100px"><col style="width:20px">' +
       '<col style="width:20px"></colgroup>' +
       '<tr><td id="s1"></td><td id="s2"></td></tr></table>' +
@@ -1381,12 +1382,114 @@ test('a column, or a column group, sets its columns in an auto table (CSS 2.1 17
   assert.strictEqual(boxOf(el, 'c').width, 300, 'its width, unheld');
   assert.strictEqual(boxOf(el, 'm').width, 80);
   assert.strictEqual(boxOf(el, 'l1').width, 150, 'a share by 50 of 100');
-  assert.strictEqual(boxOf(el, 's').width, 100);
-  assert.strictEqual(boxOf(el, 's1').width, 50);
-  assert.strictEqual(boxOf(el, 's2').width, 50);
+  assert.strictEqual(boxOf(el, 's').width, 40);
+  assert.strictEqual(boxOf(el, 's1').width, 20);
+  assert.strictEqual(boxOf(el, 's2').width, 20);
   assert.strictEqual(boxOf(el, 'p1').width, 75, 'a quarter, by its content');
   assert.strictEqual(boxOf(el, 'p2').width, 100, 'its width, not a tenth');
   assert.strictEqual(boxOf(el, 'p3').width, 75, 'the lesser percentage');
+});
+
+test("a column group's width is the default of each column in it, as a whole (CSS Tables 3, 3.8.3)", async () => {
+  // What a column is set to is its `<col>`'s width, or else its group's
+  // (3.8.3), and a group with no `<col>` stands for every column it spans:
+  // HTML 4's "a default width for each column", and Blink's. The numbers
+  // are Chrome's. CSS 2.1 17.5.2.2 spread a group's width over its
+  // columns, which made every one of these tables 100 wide.
+  const d = (w: number) => `<div style="width:${w}px;height:6px"></div>`;
+  const row = (id: string, n: number, inner = '') =>
+    '<tr>' +
+    Array.from(
+      { length: n },
+      (_, i) => `<td id="${id}${i + 1}">${inner}</td>`,
+    ).join('') +
+    '</tr>';
+  const { node } = await render(
+    '<style>body{margin:0}table{border-spacing:0}td{padding:0}' +
+      '.f{table-layout:fixed;width:360px}</style>' +
+      // a <col> with no width takes the group's whole
+      '<table id="a"><colgroup style="width:100px"><col><col></colgroup>' +
+      row('a', 2) +
+      '</table>' +
+      // and one with a width keeps it, wider than the group or not
+      '<table id="b"><colgroup style="width:100px"><col style="width:20px">' +
+      '<col></colgroup>' +
+      row('b', 2) +
+      '</table>' +
+      '<table id="c"><colgroup style="width:100px"><col style="width:80px">' +
+      '<col style="width:80px"></colgroup>' +
+      row('c', 2) +
+      '</table>' +
+      // a group with no <col> is each of its columns, and so is a <col span>
+      '<table id="e"><colgroup span="3" style="width:90px"></colgroup>' +
+      row('e', 3) +
+      '</table>' +
+      '<table id="j"><colgroup style="width:100px"><col span="2"></colgroup>' +
+      row('j', 2) +
+      '</table>' +
+      // the default is the group's width raised to its min-width
+      '<table id="i"><colgroup style="width:100px;min-width:150px"><col>' +
+      '<col></colgroup>' +
+      row('i', 2) +
+      '</table>' +
+      // a group's min-width reaches its <col>s no more than a min-width
+      // alone sets a width, and a percentage is no default
+      '<table id="g"><colgroup style="min-width:100px"><col><col></colgroup>' +
+      row('g', 2, d(10)) +
+      '</table>' +
+      '<table id="h"><colgroup span="2" style="min-width:100px"></colgroup>' +
+      row('h', 2, d(10)) +
+      '</table>' +
+      '<table id="k"><colgroup style="width:30%"><col><col></colgroup>' +
+      row('k', 2, d(10)) +
+      '</table>' +
+      // content wider than the default widens its column, and a table with
+      // a width gives the rest to the column the group is not over
+      '<table id="m"><colgroup style="width:100px"><col><col></colgroup>' +
+      `<tr><td id="m1">${d(150)}</td><td id="m2"></td></tr></table>` +
+      '<table id="n" style="width:400px"><colgroup style="width:100px"><col>' +
+      '<col></colgroup>' +
+      row('n', 3) +
+      '</table>' +
+      // a fixed table takes no default for a <col>, and does take a group
+      // that stands for its columns
+      '<table id="fa" class="f"><colgroup style="width:100px"><col><col>' +
+      '</colgroup>' +
+      row('fa', 3) +
+      '</table>' +
+      '<table id="fb" class="f"><colgroup span="2" style="width:50px">' +
+      '</colgroup>' +
+      row('fb', 3) +
+      '</table>' +
+      '<table id="fg" class="f"><colgroup span="2" ' +
+      'style="width:50px;min-width:100px"></colgroup>' +
+      row('fg', 3) +
+      '</table>' +
+      '<table id="fc" class="f"><colgroup style="width:100px">' +
+      '<col style="width:20px"><col style="width:20px"></colgroup>' +
+      row('fc', 3) +
+      '</table>',
+    400,
+  );
+  const el = view(node);
+  const widths = (id: string, n: number) =>
+    Array.from({ length: n }, (_, i) => boxOf(el, `${id}${i + 1}`).width);
+  assert.deepStrictEqual(widths('a', 2), [100, 100]);
+  assert.strictEqual(boxOf(el, 'a').width, 200, 'each the whole');
+  assert.deepStrictEqual(widths('b', 2), [20, 100]);
+  assert.deepStrictEqual(widths('c', 2), [80, 80], 'wider than the group');
+  assert.deepStrictEqual(widths('e', 3), [90, 90, 90]);
+  assert.deepStrictEqual(widths('j', 2), [100, 100]);
+  assert.deepStrictEqual(widths('i', 2), [150, 150]);
+  assert.deepStrictEqual(widths('g', 2), [10, 10], 'by their content');
+  assert.deepStrictEqual(widths('h', 2), [100, 100], "the group's own");
+  assert.deepStrictEqual(widths('k', 2), [10, 10]);
+  assert.deepStrictEqual(widths('m', 2), [150, 100]);
+  assert.deepStrictEqual(widths('n', 3), [100, 100, 200]);
+  assert.deepStrictEqual(widths('fa', 3), [120, 120, 120], 'shared alike');
+  assert.deepStrictEqual(widths('fb', 3), [50, 50, 260]);
+  assert.deepStrictEqual(widths('fg', 3), [100, 100, 160]);
+  assert.deepStrictEqual(widths('fc', 3), [20, 20, 320]);
 });
 
 metric(
