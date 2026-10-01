@@ -123,7 +123,6 @@ export function layoutFlex(
   // and the measure that asked came back vast: a row beside such an item
   // was squeezed to wrap every word.
   const bounded = Number.isFinite(contentWidth);
-  if (bounded) root.setWidth(contentWidth);
   // The content box's height, where it is definite: a length or a
   // percentage that resolves, or what `aspect-ratio` makes of the width —
   // less the padding and borders a `border-box` height holds, which put
@@ -223,6 +222,35 @@ export function layoutFlex(
     root.insertChild(node, items.length);
     items.push({ box: child, node, laid });
   }
+
+  // A column that wraps is as wide as its content box, but each of its
+  // lines is as wide as its widest item, every item `fit-content` across
+  // (CSS Flexbox 9.4, steps 7 and 8), and `align-content` stretches lines
+  // short of the box to it (step 9). Handed the box's width as a size, Yoga
+  // measures a stretched item at it wherever the column has room for every
+  // item down it, and so a line is never wider: an item wider than the box
+  // at its narrowest ran out of its line, and stretched across it, the
+  // others were the box's width. Where an item outgrows the box, so, the
+  // box is held to its width from both sides instead, and Yoga measures
+  // each item as at most that wide, which `innerWidth` makes `fit-content`
+  // — the maximum a percentage, as a minimum and a maximum that are the
+  // same are a size to Yoga. Only there: held so, Yoga stretches a line
+  // short of the box to it and lays each stretched item out again at its
+  // height less its top and bottom margins (its multi-line pass adds the
+  // margins across a column where it means the ones down it), and leaves
+  // lines past the box that `align-content` centres or ends at its start.
+  // Neither can happen where an item outgrows the box and `align-content`
+  // stretches its lines.
+  const fitLines =
+    wrapsColumn(box.style, contentWidth) &&
+    box.style.alignContent === 'stretch' &&
+    items.some(({ box: child, laid }) =>
+      outgrows(child, box.style, ctx, laid, contentWidth),
+    );
+  if (fitLines) {
+    root.setMinWidth(contentWidth);
+    root.setMaxWidthPercent(100);
+  } else if (bounded) root.setWidth(contentWidth);
 
   const direction =
     box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR;
@@ -778,7 +806,19 @@ function applyItem(
   const across = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
   const down = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
   if (style.width !== AUTO) {
-    laid.set = setLength(node, true, style.width, containingWidth, across);
+    // a percentage of a column that wraps resolved here: Yoga takes one of
+    // a box it does not hold to a size for no width, and measured a `w-1/2`
+    // item as wide as its content
+    const here =
+      box.parent !== null && wrapsColumn(box.parent.style, containingWidth);
+    laid.set = setLength(
+      node,
+      true,
+      style.width,
+      containingWidth,
+      across,
+      here,
+    );
   }
   // Down a column, a basis of the content's — `content`, or a percentage
   // of a height that is not definite (CSS Flexbox 7.2.3) — is its content's
@@ -1255,6 +1295,8 @@ function setLength(
   base: number,
   /** Padding and border a `content-box` length goes without. */
   extra: number,
+  /** Whether a percentage is resolved here wherever its base is known. */
+  resolved = false,
 ): number {
   const px = (v: number) => {
     if (across) node.setWidth(v);
@@ -1271,7 +1313,7 @@ function setLength(
     // Yoga takes a percentage or points, not both: `calc(100% - 20px)`
     // resolves here where its base is known, and so does a percentage with
     // padding to add, and a percentage is kept alone where it is not
-    if (!len.px && !len.of && !extra) return percent(len.pct);
+    if (!len.px && !len.of && !extra && !resolved) return percent(len.pct);
     if (Number.isFinite(base)) return px(resolve(len, base) + extra);
     if (len.of) return NaN;
     return percent(len.pct);
@@ -2795,6 +2837,64 @@ function stretches(
     : style.width === AUTO &&
         style.marginLeft !== AUTO &&
         style.marginRight !== AUTO;
+}
+
+/** Whether a flex box laid out at a width is a column that wraps, whose
+ *  lines are as wide as their items and not as the box (`layoutFlex`). */
+function wrapsColumn(style: ComputedStyle, width: number): boolean {
+  return (
+    Number.isFinite(width) &&
+    !style.flexDirection.startsWith('row') &&
+    style.flexWrap !== 'nowrap'
+  );
+}
+
+/**
+ * Whether an item a column that wraps stretches across its line is, at its
+ * narrowest, wider than the column: its line is then wider than the box
+ * (CSS Flexbox 9.4, step 8), which an item that is not stretched makes it
+ * in Yoga already. Its narrowest is what the measure holds it to across a
+ * column (`applyItem`): its min-content width, a replaced element's natural
+ * one, within its maximum — and none for one with something in it that
+ * takes a percentage of a height, which is fitted to the column.
+ */
+function outgrows(
+  box: Box,
+  container: ComputedStyle,
+  ctx: LayoutContext,
+  laid: Laid,
+  /** The column's content width. */
+  width: number,
+): boolean {
+  if (box.style.widthKeyword || !stretches(box, container, false)) return false;
+  if (percentHeightsIn(box)) return false;
+  const room = width - box.marginLeft - box.marginRight;
+  const over = (size: number): boolean => size > room && !nearly(size, room);
+  let least: number;
+  if (box.kind === 'replaced') least = replacedMinimum(box, width) ?? 0;
+  else {
+    // At its widest first, as the measure takes it (`applyItem`): no wider
+    // than the room, it is no wider at its narrowest; and laid out for it,
+    // the box has the words its narrowest is read from (`minContentOf`).
+    let widest = MAX_CONTENT.get(box);
+    if (widest === undefined) {
+      widest = measureIntrinsicWidth(box, ctx, Infinity) - box.horizontalExtra;
+      MAX_CONTENT.set(box, widest);
+      // a probe lays the box out where the kept layout was
+      laid.width = NaN;
+    }
+    if (!over(widest + box.horizontalExtra)) return false;
+    least = minContentOf(box, ctx, laid);
+  }
+  if (box.style.maxWidth !== 'none') {
+    const most = resolveOrNull(box.style.maxWidth, width);
+    const extra =
+      box.style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
+    if (most !== null) {
+      least = Math.min(least, Math.max(most + extra, box.horizontalExtra));
+    }
+  }
+  return over(least);
 }
 
 /** How deep flex boxes are laid out by Yoga, one inside another's measure
