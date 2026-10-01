@@ -28,7 +28,7 @@ import {
   NON_RENDERED,
   tagOf,
 } from '../dom.js';
-import { ShapeCopies } from '../css/cascade.js';
+import { ShapeCopies, metaColorScheme } from '../css/cascade.js';
 import type {
   Cascade,
   FirstLetterRules,
@@ -974,6 +974,7 @@ class Builder {
   run(root: Element): BoxTree {
     const cascade = this._options.cascade;
     cascade.beginSharing(this._options.kept ?? null);
+    cascade.pageColorScheme = metaColorScheme(root);
     const { style: rootStyle, html: impliedHtml } = cascade.rootStyle(
       hasBody(root),
       hasHtml(root),

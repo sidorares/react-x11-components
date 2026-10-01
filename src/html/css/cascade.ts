@@ -22,6 +22,7 @@ import { Element as DomElement, isTag } from 'domhandler';
 import type { Element } from 'domhandler';
 
 import { attr, tagOf } from '../dom.js';
+import { usedColorScheme } from './color.js';
 import {
   asciiLower,
   escapeEnd,
@@ -1129,6 +1130,11 @@ export class Cascade {
   /** The pseudo-classes css-select is handed: `:root` this cascade's, and
    *  the focus's three answered from `_focus`. */
   private _pseudos: typeof PSEUDOS;
+  /** The colour schemes the page says it supports with a `<meta
+   *  name="color-scheme">` (HTML 4.2.5.4), which its root element takes
+   *  as it takes a presentational attribute: under any rule that sets its
+   *  `color-scheme`. Set by the box builder from the document. */
+  pageColorScheme: string | null = null;
 
   constructor(
     sheets: Stylesheet[],
@@ -2508,6 +2514,18 @@ export class Cascade {
     this._matchInto(this._index, el, out, matched);
 
     const hints = presentationHints(el);
+    // the page's colour schemes are its root's where no rule sets them
+    if (
+      this.pageColorScheme &&
+      el.name === 'html' &&
+      !(el.parent && isTag(el.parent as Element))
+    ) {
+      hints.push({
+        prop: 'color-scheme',
+        value: this.pageColorScheme,
+        important: false,
+      });
+    }
     if (hints.length) {
       out.push({
         origin: Origin.Presentation,
@@ -2717,6 +2735,33 @@ function pragmaLanguage(root: { children: unknown[] }): string {
 }
 
 const PRAGMA_LANGUAGE = new WeakMap<object, string>();
+
+/**
+ * The page's supported colour schemes: the content of the first `<meta
+ * name="color-scheme">` that is a `color-scheme` value (HTML 4.2.5.4), or
+ * null. Looked for where a `<meta>` is, at the top of a fragment and in
+ * the `<html>` and its `<head>`, and not through the body.
+ */
+export function metaColorScheme(root: { children: unknown[] }): string | null {
+  const stack: { children: unknown[] }[] = [root];
+  while (stack.length) {
+    const node = stack.pop()!;
+    for (const child of node.children) {
+      if (!isTag(child as Element)) continue;
+      const el = child as Element;
+      if (el.name === 'meta') {
+        const name = el.attribs.name?.trim().toLowerCase();
+        const content = el.attribs.content?.trim();
+        if (name === 'color-scheme' && content && usedColorScheme(content)) {
+          return content;
+        }
+      } else if (el.name === 'html' || el.name === 'head') {
+        stack.push(el);
+      }
+    }
+  }
+  return null;
+}
 
 /** RFC 4647's extended filtering, of a tag's subtags by a range's, as
  *  css-select does it. */
