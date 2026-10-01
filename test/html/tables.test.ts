@@ -943,6 +943,42 @@ test('a height a cell on the baseline sets is a least one, not room under its li
   );
 });
 
+test('a cell spanning rows on the baseline asks its first row for its baseline and the rows for its content', async () => {
+  // As Chrome sizes it: the ascent of a spanning cell counts in its first
+  // row and nothing under it does, and the rows it spans hold its content
+  // with no room for the lift, which hangs out of it.
+  const { node } = await render(
+    '<style>body{margin:0} table{border-spacing:0}' +
+      ' td{padding:0;vertical-align:baseline}</style>' +
+      // beside a cell that is not on the baseline, the padded spanning cell
+      // is what makes the first row as deep as it is
+      '<table><tr id="p1"><td style="vertical-align:middle">x</td>' +
+      '<td rowspan="2" style="padding-top:40px"><div id="s">s</div></td>' +
+      '</tr><tr id="p2"><td><div id="y">y</div></td></tr></table>' +
+      // lifted by the padded cell and six lines tall, it is a table as tall
+      // as its lines
+      '<table id="q"><tr><td style="padding-top:40px">a</td>' +
+      '<td rowspan="2"><div id="f">1</div><div>2</div><div>3</div>' +
+      '<div>4</div><div>5</div><div id="l">6</div></td></tr>' +
+      '<tr><td>b</td></tr></table>',
+  );
+  const el = view(node);
+  const [p1, s, p2, y, q, f, l] = ['p1', 's', 'p2', 'y', 'q', 'f', 'l'].map(
+    (id) => boxOf(el, id),
+  );
+  assert.ok(
+    p1.height > 40 && p1.height < 40 + s.height,
+    `down to the spanning cell's baseline: ${p1.height}`,
+  );
+  assert.strictEqual(p2.height, y.height, 'and the row under it its own');
+  assert.ok(f.y - q.y >= 40, `lifted by the padded cell: ${f.y - q.y}`);
+  assert.strictEqual(
+    q.height,
+    l.y + l.height - f.y,
+    'the rows hold the lines, and not the lift',
+  );
+});
+
 test("a table cell takes its row's vertical-align", async () => {
   // HTML's rendering rules make the rows middle and the cells inherit, so
   // `<tr valign="top">`, all over mail, sets its cells at the top
@@ -1477,4 +1513,140 @@ test('a table a flex box or a grid stretches gives the height to its rows, and a
   assert.deepStrictEqual(rect('st'), [14, 24], 'no shorter than its row');
   assert.deepStrictEqual(rect('rt'), [400, 24], 'in an area shorter than it');
   assert.deepStrictEqual(rect('jt'), [14, 24], 'fit to its content at start');
+});
+
+test('a table a flex box stretches across a column or flexes along a row is as wide as that', async () => {
+  // A flex layout gave a table item its width and the table shrank to its
+  // columns, as one does in a block's flow: 14 wide at the start of a column
+  // 300 wide, and `flex: 1` along a row stopped at its columns. A flex box
+  // stretches a table as it does any item that is not replaced (CSS Flexbox
+  // 9.4, step 11), and an item along a row is the size its line flexed it
+  // to (9.7). Measured against Chrome, every number here.
+  const cell = (id: string, width = 10) =>
+    `<td id="${id}"><div style="width:${width}px;height:20px"></div></td>`;
+  const table = (id: string, attributes = '') =>
+    `<table id="${id}t"${attributes}><tbody><tr>${cell(id)}</tr></tbody>` +
+    '</table>';
+  const column = (inside: string, style = '') =>
+    `<div style="display:flex;flex-direction:column;width:300px${style}">` +
+    `${inside}</div>`;
+  const { node } = await render(
+    '<style>body{margin:0}td{padding:0}table{border-spacing:2px}</style>' +
+      column(table('a')) +
+      column(table('s', ' style="align-self:stretch"'), ';align-items:center') +
+      // where it is not stretched, as wide as its columns
+      column(table('k'), ';align-items:flex-start') +
+      column(table('m', ' style="margin:0 auto"')) +
+      '<div style="display:flex;width:300px">' +
+      `${table('g', ' style="flex:1"')}${table('h', ' style="flex:2"')}</div>` +
+      `<div style="display:flex;width:300px">${table('n')}</div>` +
+      // its columns share what it is wider than they are
+      column(
+        `<table id="dt"><tbody><tr>${cell('d1')}${cell('d2', 30)}</tr>` +
+          '</tbody></table>',
+      ) +
+      // no narrower than they can be, however narrow the column
+      '<div style="display:flex;flex-direction:column;width:5px">' +
+      `${table('w')}</div>` +
+      column(table('o', ' style="width:100px"')) +
+      '<div><div style="display:inline-flex;flex-direction:column">' +
+      `${table('i')}<div style="width:200px;height:10px"></div></div></div>`,
+  );
+  const el = view(node);
+  const rect = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.width, b.height];
+  };
+  assert.deepStrictEqual(rect('at'), [300, 24], 'stretched across a column');
+  assert.deepStrictEqual(rect('a'), [296, 20], 'and its cell with it');
+  assert.deepStrictEqual(rect('st'), [300, 24], 'by its own align-self');
+  assert.deepStrictEqual(rect('kt'), [14, 24], 'at the start of a column');
+  assert.deepStrictEqual(rect('mt'), [14, 24], 'between auto margins');
+  assert.strictEqual(boxOf(el, 'mt').x, 143, 'centred by them');
+  assert.deepStrictEqual(rect('gt'), [100, 24], 'flexed along a row');
+  assert.deepStrictEqual(rect('ht'), [200, 24]);
+  assert.strictEqual(boxOf(el, 'ht').x, 100);
+  assert.deepStrictEqual(rect('g'), [96, 20]);
+  assert.deepStrictEqual(rect('nt'), [14, 24], 'as wide as it is along a row');
+  assert.deepStrictEqual(
+    [rect('d1')[0], rect('d2')[0]],
+    [73.5, 220.5],
+    'its columns sharing what it is wider by',
+  );
+  assert.deepStrictEqual(rect('wt'), [14, 24], 'no narrower than its columns');
+  assert.deepStrictEqual(rect('ot'), [100, 24], 'its own width its own');
+  assert.deepStrictEqual(rect('it'), [200, 24], 'as wide as a wider sibling');
+});
+
+test('a table flex item is no smaller than its rows or its columns, and an absolute one between two offsets is as tall as its rows', async () => {
+  // Yoga flexed a table item as small as its line, whatever a table can be,
+  // and the next item went where that ended, over the rest of it: down a
+  // column 40 tall, a table of a 60px row was flexed to 20 beside its next
+  // item, and laid out 64 tall around it. A table is no smaller than its
+  // rows down a column, nor than its columns at their narrowest along a
+  // row, whatever its own least or its own size says (Blink: "Tables can't
+  // shrink below their min-intrinsic size"), and its automatic minimum
+  // down a column takes in the spacing under its rows, which read as a
+  // block's content it did not. A table flexed shorter than a height of its
+  // own is as short as that, where its rows let it be. And an absolutely
+  // positioned table is as tall as its rows between two offsets, as it is
+  // as wide as its columns between two (Blink: "Replaced/tables don't
+  // stretch in abspos"), where it was stretched down around rows that were
+  // not. Measured against Chrome, every number here.
+  const table = (id: string, attributes: string, width: number, h = 20) =>
+    `<table id="${id}t"${attributes}><tbody><tr><td id="${id}">` +
+    `<div style="width:${width}px;height:${h}px"></div></td></tr></tbody>` +
+    '</table>';
+  const column = (inside: string, next: string) =>
+    '<div style="display:flex;flex-direction:column;height:40px">' +
+    `${inside}<div id="${next}" style="height:20px"></div></div>`;
+  const row = (inside: string, next: string) =>
+    `<div style="display:flex;width:60px">${inside}` +
+    `<div id="${next}" style="min-width:0;width:20px;height:10px"></div>` +
+    '</div>';
+  const { node } = await render(
+    '<style>body{margin:0}td{padding:0}table{border-spacing:2px}</style>' +
+      column(table('a', ' style="min-height:0"', 10, 60), 'an') +
+      column(table('h', ' style="height:100px"', 10, 60), 'hn') +
+      column(table('s', '', 10, 60), 'sn') +
+      row(table('r', ' style="min-width:0"', 70), 'rn') +
+      row(table('v', ' style="width:30px"', 70), 'vn') +
+      '<div style="position:relative;height:100px">' +
+      `${table('p', ' style="position:absolute;top:0;bottom:0"', 10)}</div>` +
+      '<div style="position:relative;height:100px">' +
+      table(
+        'q',
+        ' style="position:absolute;top:0;bottom:0;margin:auto 0"',
+        10,
+      ) +
+      '</div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  // where the next item starts, from the table's top or its left
+  const below = (id: string) => box(`${id}n`).y - box(`${id}t`).y;
+  const after = (id: string) => box(`${id}n`).x - box(`${id}t`).x;
+  assert.strictEqual(box('at').height, 64, 'no shorter than its rows');
+  assert.strictEqual(below('a'), 64, 'and the next item after them');
+  assert.strictEqual(box('an').height, 0, 'which gives up its height');
+  assert.strictEqual(box('ht').height, 64, 'flexed under its own height');
+  assert.strictEqual(box('h').height, 60, 'its row as tall as its content');
+  assert.strictEqual(below('h'), 64);
+  assert.strictEqual(box('st').height, 64);
+  assert.strictEqual(below('s'), 64, 'the spacing under its rows taken in');
+  assert.strictEqual(box('rt').width, 74, 'no narrower than its columns');
+  assert.strictEqual(after('r'), 74, 'and the next item after them');
+  assert.strictEqual(box('rn').width, 0);
+  assert.strictEqual(box('vt').width, 74, 'whatever width it has');
+  assert.strictEqual(after('v'), 74);
+  assert.deepStrictEqual(
+    [box('pt').width, box('pt').height],
+    [14, 24],
+    'absolute between two offsets, as tall as its row',
+  );
+  assert.strictEqual(
+    box('qt').y - box('pt').y,
+    138,
+    'its auto margins centring it',
+  );
 });
