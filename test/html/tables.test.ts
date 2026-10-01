@@ -1460,6 +1460,42 @@ test("a table's height goes to its rows as a browser gives it", async () => {
   );
 });
 
+test('what a spanning cell needs past its rows is shared out over them as Chrome shares it', async () => {
+  // It all went to the last row the cell spans. Chrome shares it out much
+  // as it does a table's height (Blink's `DistributeExcessBlockSizeToRows`),
+  // and the numbers are its: in proportion over the rows nothing sets; to
+  // the rows that set a height, and not the empty ones beside them; to a
+  // row another spanning cell starts in, taking the inner of two spanning
+  // cells first; and a percentage row, of a height not known yet, is one
+  // nothing sets.
+  const { node } = await render(
+    '<style>body{margin:0} table{border-spacing:0}' +
+      ' td{padding:0;vertical-align:top} i{display:block;width:10px}</style>' +
+      '<table style="border-spacing:2px">' +
+      '<tr id="a1"><td><i style="height:50px"></i></td>' +
+      '<td rowspan="2" style="height:100px"><i></i></td></tr>' +
+      '<tr id="a2"><td><i style="height:20px"></i></td></tr></table>' +
+      '<table><tr id="b1"><td style="height:30px"></td>' +
+      '<td rowspan="3" style="height:90px"><i></i></td></tr>' +
+      '<tr id="b2"><td></td></tr>' +
+      '<tr id="b3"><td style="height:30px"></td></tr></table>' +
+      '<table><tr id="c1"><td><i style="height:20px"></i></td>' +
+      '<td rowspan="3" style="height:200px"><i></i></td><td></td></tr>' +
+      '<tr id="c2"><td><i style="height:20px"></i></td>' +
+      '<td rowspan="2" style="height:150px"><i></i></td></tr>' +
+      '<tr id="c3"><td><i style="height:20px"></i></td></tr></table>' +
+      '<table><tr id="d1" style="height:10%"><td><i style="height:50px"></i>' +
+      '</td><td rowspan="2" style="height:100px"><i></i></td></tr>' +
+      '<tr id="d2"><td><i style="height:20px"></i></td></tr></table>',
+  );
+  const el = view(node);
+  const height = (id: string) => Math.round(boxOf(el, id).height * 10) / 10;
+  assert.deepStrictEqual(
+    ['a1', 'a2', 'b1', 'b2', 'b3', 'c1', 'c2', 'c3', 'd1', 'd2'].map(height),
+    [70, 28, 45, 0, 45, 20, 105, 75, 71.4, 28.6],
+  );
+});
+
 test('a table a flex box or a grid stretches gives the height to its rows, and a grid stretches it across', async () => {
   // A flex or grid layout gave a table item its height by setting the box's,
   // and a table shares out only the height it sets: the table was 120 tall
