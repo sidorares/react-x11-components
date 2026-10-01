@@ -6,7 +6,8 @@
 // compiles a selector to a closure once and the closure is what runs per
 // element, and it has the combinator, `:nth-child(an+b)` and attribute-
 // operator cases right — so it is imported, through an adapter that answers
-// `:hover` from this renderer's own pointer state.
+// `:hover` from this renderer's own pointer state, and pseudo-classes that
+// answer `:focus` and its kin from which element's widget holds the focus.
 //
 // What is *not* delegated is the choice of which selectors to try. Testing
 // every rule against every element is O(rules × elements) and is what makes
@@ -36,6 +37,7 @@ import {
   settleButton,
   settleContentVisibility,
   settleOverflow,
+  settleOutline,
   settleClamp,
   copyStyle,
   decorate,
@@ -190,10 +192,12 @@ class RuleIndex {
   /** Whether any rule in here is pointer-sensitive, so the renderer knows
    *  whether a pointer move can change the cascade at all. */
   hoverSensitive = false;
-  /** The rules that test `:hover`, in buckets of their own: the ones whose
-   *  answers a pointer move can change, which is all that is asked to know
-   *  whether an element's did (`Cascade.pointerChanged`). Null until there
-   *  is one. */
+  /** …and focus-sensitive, for a widget taking the focus or giving it up. */
+  focusSensitive = false;
+  /** The rules that test `:hover` or the focus, in buckets of their own:
+   *  the ones whose answers a pointer move or a focus change can change,
+   *  which is all that is asked to know whether an element's did
+   *  (`Cascade.pointerChanged`). Null until there is one. */
   pointer: RuleIndex | null = null;
   /** The buckets holding a rule an element cannot share its style under
    *  (`UNSHAREABLE`): the ids, classes and tags whose elements compute
@@ -250,6 +254,8 @@ class RuleIndex {
     if (rule.selector.includes(':hover') || rule.selector.includes(':active')) {
       this.hoverSensitive = true;
     }
+    const focus = FOCUS.test(rule.selector);
+    if (focus) this.focusSensitive = true;
     if (UNSHAREABLE.test(rule.selector)) {
       if (key.kind === 'id') this.ownStyleIds.add(key.name);
       else if (key.kind === 'class') this.ownStyleClasses.add(key.name);
@@ -257,7 +263,7 @@ class RuleIndex {
       else this.ownStyleEverywhere = true;
     }
     this._bucket(key).push(indexed);
-    if (HOVER.test(rule.selector)) {
+    if (focus || HOVER.test(rule.selector)) {
       this.pointer ??= new RuleIndex();
       this.pointer.size += 1;
       this.pointer._bucket(key).push(indexed);
@@ -350,8 +356,18 @@ function splitPseudoElement(
  * handed none), so a selector that tests only it never changes as the
  * pointer moves — Wikipedia's buttons' `:focus:not(:active)` among them.
  * A press that sets it would have to be counted here too.
+ *
+ * The focus is the other state a change of reaches only some elements, and
+ * `kind` says which is asked for: `FOCUS_STATE` finds the compounds that
+ * test `:focus`, `:focus-visible` or `:focus-within` the same way. Either
+ * kind leaves the other's pseudo-classes out of a compound as well as its
+ * own, so what is left matches wherever the compound could, in any state —
+ * `a:focus:hover` is a compound of `a`'s, for both.
  */
-export function pointerCompounds(selector: string): PointerCompounds {
+export function pointerCompounds(
+  selector: string,
+  kind: StateKind = HOVER_STATE,
+): PointerCompounds {
   const out: PointerCompounds = {
     compounds: [],
     siblings: false,
@@ -359,9 +375,32 @@ export function pointerCompounds(selector: string): PointerCompounds {
     has: [],
     followed: [],
   };
-  scanComplex(selector, out);
+  scanComplex(selector, out, kind);
   return out;
 }
+
+/** A state a change of reaches only the elements some compound names: which
+ *  selectors mention it at all, which tests it anywhere, and which of the
+ *  pseudo-classes `STATE_PSEUDO_AT` takes out of a compound are its own. */
+export interface StateKind {
+  mentions: RegExp;
+  any: RegExp;
+  own: RegExp;
+}
+
+/** The pointer's: `:hover`, and `:active`, which nothing sets. */
+export const HOVER_STATE: StateKind = {
+  mentions: /:(?:hover|active)/i,
+  any: /:hover(?![\w-])/i,
+  own: /^:hover$/i,
+};
+
+/** The focus's: `:focus`, `:focus-visible` and `:focus-within`. */
+export const FOCUS_STATE: StateKind = {
+  mentions: /:focus/i,
+  any: /:focus(?:-visible|-within)?(?![\w-])/i,
+  own: /^:focus/i,
+};
 
 export interface PointerCompounds {
   compounds: string[];
@@ -451,11 +490,15 @@ function closeOf(text: string, open: number): number {
 }
 
 /** `pointerCompounds` for one complex selector, into `out`. */
-function scanComplex(selector: string, out: PointerCompounds): void {
+function scanComplex(
+  selector: string,
+  out: PointerCompounds,
+  kind: StateKind,
+): void {
   for (const { text, next } of compoundsOf(selector)) {
     const compoundsFrom = out.compounds.length;
     const hasFrom = out.has.length;
-    const found = scanCompound(text, out);
+    const found = scanCompound(text, out, kind);
     const sibling = next === '+' || next === '~';
     if (found.args.length) {
       out.has.push({
@@ -487,11 +530,13 @@ function scanComplex(selector: string, out: PointerCompounds): void {
  * it (`bare`), whether it tests the element's own hover (`pointer`), the
  * arguments of each `:has()` of the element's that tests it below (`args`),
  * and whether a selector nested in it named another element's (`below`),
- * whose compounds went into `out`.
+ * whose compounds went into `out`. Of the focus, likewise, for
+ * `FOCUS_STATE`.
  */
 function scanCompound(
   text: string,
   out: PointerCompounds,
+  kind: StateKind,
 ): { bare: string; pointer: boolean; below: boolean; args: string[] } {
   let bare = '';
   let pointer = false;
@@ -516,9 +561,9 @@ function scanCompound(
     else if (c === '[') bracket += 1;
     else if (c === ']') bracket = Math.max(0, bracket - 1);
     else if (c === ':' && bracket === 0 && text[i + 1] !== ':') {
-      const m = POINTER_PSEUDO_AT.exec(text.slice(i));
+      const m = STATE_PSEUDO_AT.exec(text.slice(i));
       if (m) {
-        if (m[0].length === 6) pointer = true;
+        if (kind.own.test(m[0])) pointer = true;
         i += m[0].length - 1;
         continue;
       }
@@ -529,7 +574,7 @@ function scanCompound(
         const arg = text.slice(open + 1, close);
         const whole = text.slice(i, close + 1);
         i = close;
-        if (!HOVER.test(arg)) {
+        if (!kind.any.test(arg)) {
           bare += whole;
           continue;
         }
@@ -550,15 +595,15 @@ function scanCompound(
           const own: string[] = [];
           let any = false;
           for (const entry of selectorsOf(arg)) {
-            if (!HOVER.test(entry)) continue;
+            if (!kind.any.test(entry)) continue;
             const parts = compoundsOf(entry);
             if (parts.length !== 1) {
-              scanComplex(entry, out);
+              scanComplex(entry, out, kind);
               below = true;
               continue;
             }
             // of this element itself
-            const one = scanCompound(parts[0].text, out);
+            const one = scanCompound(parts[0].text, out, kind);
             if (one.below) below = true;
             if (!one.pointer && !one.args.length) continue;
             if (one.pointer) pointer = true;
@@ -585,22 +630,28 @@ function scanCompound(
 const FUNCTION_AT = /^:([\w-]+)\(/;
 
 /** `:hover` anywhere in a selector. */
-const HOVER = /:hover(?![\w-])/i;
+const HOVER = HOVER_STATE.any;
 
-/** `:hover` or `:active` at the start of a string, and nothing longer. */
-const POINTER_PSEUDO_AT = /^:(?:hover|active)(?![\w-])/i;
+/** `:focus`, `:focus-visible` or `:focus-within` anywhere in a selector. */
+const FOCUS = FOCUS_STATE.any;
 
-/** `:hover` or `:active` anywhere in a selector. */
-const POINTER_PSEUDO = /:(?:hover|active)(?![\w-])/i;
+/** A pseudo-class of a state this renderer keeps — `:hover`, `:active`,
+ *  `:focus` and its two kin — at the start of a string, and nothing
+ *  longer. */
+const STATE_PSEUDO_AT =
+  /^:(?:hover|active|focus(?:-visible|-within)?)(?![\w-])/i;
+
+/** Any of them anywhere in a selector. */
+const STATE_PSEUDO = /:(?:hover|active|focus(?:-visible|-within)?)(?![\w-])/i;
 
 /**
  * A selector compiled to a matcher over this adapter. css-select keeps the
  * answers of a `:has()` above the subject, or of the ancestors a
  * descendant combinator tried under one, for as long as the matcher lives
  * (`cacheResults`) — which is the cascade's life, and a pointer move is no
- * new cascade. So a selector that tests the pointer keeps none: with them,
- * `#box:has(a:hover) .m` answered what it did before the first move, for
- * good.
+ * new cascade. So a selector that tests the pointer or the focus keeps
+ * none: with them, `#box:has(a:hover) .m` answered what it did before the
+ * first move, for good.
  */
 function compileSelector(
   selector: string,
@@ -614,7 +665,7 @@ function compileSelector(
     adapter,
     xmlMode: false,
     pseudos,
-    cacheResults: cache && !POINTER_PSEUDO.test(selector),
+    cacheResults: cache && !STATE_PSEUDO.test(selector),
   } as unknown as Parameters<typeof compile>[1]) as unknown as (
     node: Element,
   ) => boolean;
@@ -804,6 +855,138 @@ export interface PointerState {
 
 const NO_POINTER: PointerState = { hovered: new Set(), active: new Set() };
 
+/** Where the focus is, for `:focus` and its kin: the element whose widget
+ *  holds it, whether that shows (`:focus-visible`), and the element with
+ *  every element around it (`:focus-within`). No element of a document
+ *  takes the focus itself; a control's widget, mounted beside it, does. */
+export interface FocusState {
+  element: Element | null;
+  visible: boolean;
+  within: ReadonlySet<Element>;
+}
+
+export const NO_FOCUS: FocusState = {
+  element: null,
+  visible: false,
+  within: new Set(),
+};
+
+/**
+ * What the selectors that test one state — the pointer, or the focus — say
+ * of the elements a change of it can restyle: the compounds that test it,
+ * each without it and with whether a sibling combinator follows it, and
+ * the anchors of the `:has()`s that test it (`pointerCompounds`).
+ */
+class StateRules {
+  /** The compounds, each without the state, and their matchers, compiled
+   *  when a change first asks (`touches`). */
+  private _compounds = new Map<string, boolean>();
+  private _matchers:
+    { match: (el: Element) => boolean; followed: boolean }[] | null = null;
+  /** Whether a change can be restyled where it happened
+   *  (`HtmlViewNode._hoverInPlace`): false where a selector tests the
+   *  state inside a functional pseudo-class, which reaches elements no
+   *  compound names. */
+  local = true;
+  /** The compounds whose `:has()` tests the state, each without it,
+   *  whether its argument starts at a sibling, and whether a sibling
+   *  combinator follows it (`anchors`). */
+  private _anchors = new Map<
+    string,
+    { siblings: boolean; followed: boolean }
+  >();
+  private _anchorMatchers:
+    | {
+        match: (el: Element) => boolean;
+        siblings: boolean;
+        followed: boolean;
+      }[]
+    | null = null;
+
+  constructor(private readonly _kind: StateKind) {}
+
+  note(selector: string): void {
+    if (!this._kind.mentions.test(selector)) return;
+    const found = pointerCompounds(selector, this._kind);
+    if (found.nested) this.local = false;
+    const followed = new Set(found.followed);
+    for (const c of found.compounds) {
+      this._compounds.set(
+        c,
+        followed.has(c) || (this._compounds.get(c) ?? false),
+      );
+    }
+    for (const { anchor, siblings } of found.has) {
+      const was = this._anchors.get(anchor);
+      this._anchors.set(anchor, {
+        siblings: siblings || (was?.siblings ?? false),
+        followed: followed.has(anchor) || (was?.followed ?? false),
+      });
+    }
+  }
+
+  /** `Cascade.hoverTouches`, for this state. */
+  touches(
+    el: Element,
+    compile: (selector: string) => ((el: Element) => boolean) | null,
+  ): HoverTouch {
+    // the followed ones first, so the first that matches is the answer
+    this._matchers ??= [...this._compounds]
+      .sort(([, a], [, b]) => Number(b) - Number(a))
+      .flatMap(([compound, followed]) => {
+        const match = compile(compound);
+        return match ? [{ match, followed }] : [];
+      });
+    for (const { match, followed } of this._matchers) {
+      if (match(el)) return followed ? HOVER_FOLLOWED : HOVER_TOUCHED;
+    }
+    return HOVER_UNTOUCHED;
+  }
+
+  /** `Cascade.hoverAnchors`, for this state. */
+  anchors(
+    el: Element,
+    into: Map<Element, HoverTouch>,
+    compile: (selector: string) => ((el: Element) => boolean) | null,
+  ): void {
+    if (!this._anchors.size) return;
+    this._anchorMatchers ??= [...this._anchors]
+      .sort(([, a], [, b]) => Number(b.followed) - Number(a.followed))
+      .flatMap(([anchor, { siblings, followed }]) => {
+        const match = compile(anchor);
+        return match ? [{ match, siblings, followed }] : [];
+      });
+    const note = (at: Element, followed: boolean): void => {
+      if (followed) into.set(at, HOVER_FOLLOWED);
+      else if (!into.has(at)) into.set(at, HOVER_TOUCHED);
+    };
+    const siblings = this._anchorMatchers.some((m) => m.siblings);
+    for (let at: Element | null = el; at;) {
+      if (at !== el) {
+        for (const { match, followed } of this._anchorMatchers) {
+          if (match(at)) {
+            note(at, followed);
+            break;
+          }
+        }
+      }
+      if (siblings) {
+        for (let s = at.prev; s; s = s.prev) {
+          if (!isTag(s as Element)) continue;
+          for (const m of this._anchorMatchers) {
+            if (m.siblings && m.match(s as Element)) {
+              note(s as Element, m.followed);
+              break;
+            }
+          }
+        }
+      }
+      const parent: Element['parent'] = at.parent;
+      at = parent && isTag(parent as Element) ? (parent as Element) : null;
+    }
+  }
+}
+
 /**
  * The face a style's font-relative units are measured in: its family list,
  * size, weight and slant, the four that pick one. A family's faces can be
@@ -879,32 +1062,12 @@ export class Cascade {
    */
   private _copyTop: Element | null = null;
   private _copyAdapter: CssSelectAdapter;
-  /** The compounds of the selectors that test the pointer, each without
-   *  its `:hover` or `:active` (`pointerCompounds`), and their matchers,
-   *  compiled when a pointer move first asks (`hoverTouches`). */
-  private _hoverCompounds = new Map<string, boolean>();
-  private _hoverMatchers:
-    { match: (el: Element) => boolean; followed: boolean }[] | null = null;
-  /** Whether a pointer move can be restyled where it happened
-   *  (`HtmlViewNode._hoverInPlace`): false where a selector tests the
-   *  pointer inside a functional pseudo-class, which reaches elements no
-   *  compound names. */
-  hoverLocal = true;
-  /** The compounds whose `:has()` tests the pointer, each without it,
-   *  whether its argument starts at a sibling, and whether a sibling
-   *  combinator follows it (`hoverAnchors`). */
-  private _hoverAnchors = new Map<
-    string,
-    { siblings: boolean; followed: boolean }
-  >();
-  private _anchorMatchers:
-    | {
-        match: (el: Element) => boolean;
-        siblings: boolean;
-        followed: boolean;
-      }[]
-    | null = null;
+  /** What the selectors that test the pointer, and the ones that test the
+   *  focus, say of the elements a change of it reaches. */
+  private _hoverRules = new StateRules(HOVER_STATE);
+  private _focusRules = new StateRules(FOCUS_STATE);
   private _pointer: PointerState = NO_POINTER;
+  private _focus: FocusState = NO_FOCUS;
   readonly initial: ComputedStyle;
   readonly look: RootLook;
   /** Viewport width the media queries were evaluated at, in device pixels
@@ -952,7 +1115,8 @@ export class Cascade {
   /** Whether any declaration has a length in `lh` or `rlh`: only then is
    *  the line height settled ahead of the declarations that read it. */
   private _lh = false;
-  /** The pseudo-classes css-select is handed, `:root` this cascade's. */
+  /** The pseudo-classes css-select is handed: `:root` this cascade's, and
+   *  the focus's three answered from `_focus`. */
   private _pseudos: typeof PSEUDOS;
 
   constructor(
@@ -969,9 +1133,18 @@ export class Cascade {
      *  `<svg>`, which is `:root` there (Selectors 4, 14.1). */
     documentElement: Element | null = null,
   ) {
-    this._pseudos = documentElement
-      ? { ...PSEUDOS, root: (el: Element) => el === documentElement }
-      : PSEUDOS;
+    // css-select has none of the focus's three, and a pseudo-class is
+    // handed only the element, so they are this cascade's own closures
+    this._pseudos = {
+      ...PSEUDOS,
+      ...(documentElement && {
+        root: (el: Element) => el === documentElement,
+      }),
+      focus: (el: Element) => this._focus.element === el,
+      'focus-visible': (el: Element) =>
+        this._focus.visible && this._focus.element === el,
+      'focus-within': (el: Element) => this._focus.within.has(el),
+    };
     this._xHeightOf = xHeight;
     this._zeroWidthOf = zeroWidth;
     this._normalLineOf = normalLine;
@@ -1009,7 +1182,9 @@ export class Cascade {
             this._shapes.add(rule, key);
           }
         }
-        this._noteHover((pseudo?.rule ?? rule).selector);
+        const selector = (pseudo?.rule ?? rule).selector;
+        this._hoverRules.note(selector);
+        this._focusRules.note(selector);
       }
       for (const bp of sheet.breakpoints) breakpoints.add(bp);
       // a query on the viewport's height reads it as a `vh` does
@@ -1079,6 +1254,36 @@ export class Cascade {
     this._pointer = pointer;
   }
 
+  /** Whether a widget taking the focus or giving it up can change what this
+   *  cascade produces. */
+  get focusSensitive(): boolean {
+    return (
+      this._index.focusSensitive ||
+      this._pseudo.before.focusSensitive ||
+      this._pseudo.after.focusSensitive ||
+      this._pseudo['first-letter'].focusSensitive ||
+      this._pseudo['first-line'].focusSensitive ||
+      this._pseudo.marker.focusSensitive
+    );
+  }
+
+  setFocus(focus: FocusState): void {
+    this._focus = focus;
+  }
+
+  /** Whether a pointer move can be restyled where it happened
+   *  (`HtmlViewNode._hoverInPlace`): false where a selector tests the
+   *  pointer inside a functional pseudo-class, which reaches elements no
+   *  compound names. */
+  get hoverLocal(): boolean {
+    return this._hoverRules.local;
+  }
+
+  /** …and a focus change. */
+  get focusLocal(): boolean {
+    return this._focusRules.local;
+  }
+
   /**
    * Which pseudo-elements' rules test the pointer: none's
    * (`HOVER_PSEUDO_NONE`); a `::before`'s or an `::after`'s only
@@ -1088,15 +1293,23 @@ export class Cascade {
    * move cannot.
    */
   get hoverPseudo(): 0 | 1 | 2 {
+    return this._pseudoRules('hoverSensitive');
+  }
+
+  /** …and which test the focus. */
+  get focusPseudo(): 0 | 1 | 2 {
+    return this._pseudoRules('focusSensitive');
+  }
+
+  private _pseudoRules(state: 'hoverSensitive' | 'focusSensitive'): 0 | 1 | 2 {
     if (
-      this._pseudo['first-letter'].hoverSensitive ||
-      this._pseudo['first-line'].hoverSensitive ||
-      this._pseudo.marker.hoverSensitive
+      this._pseudo['first-letter'][state] ||
+      this._pseudo['first-line'][state] ||
+      this._pseudo.marker[state]
     ) {
       return HOVER_PSEUDO_OTHER;
     }
-    return this._pseudo.before.hoverSensitive ||
-      this._pseudo.after.hoverSensitive
+    return this._pseudo.before[state] || this._pseudo.after[state]
       ? HOVER_PSEUDO_GENERATED
       : HOVER_PSEUDO_NONE;
   }
@@ -1112,17 +1325,13 @@ export class Cascade {
    * table restyle the rows after it.
    */
   hoverTouches(el: Element): HoverTouch {
-    // the followed ones first, so the first that matches is the answer
-    this._hoverMatchers ??= [...this._hoverCompounds]
-      .sort(([, a], [, b]) => Number(b) - Number(a))
-      .flatMap(([compound, followed]) => {
-        const match = this._compile(compound);
-        return match ? [{ match, followed }] : [];
-      });
-    for (const { match, followed } of this._hoverMatchers) {
-      if (match(el)) return followed ? HOVER_FOLLOWED : HOVER_TOUCHED;
-    }
-    return HOVER_UNTOUCHED;
+    return this._hoverRules.touches(el, (selector) => this._compile(selector));
+  }
+
+  /** `hoverTouches` for the focus: whether `el` taking the focus or giving
+   *  it up, or its `:focus-within` changing, can change a style. */
+  focusTouches(el: Element): HoverTouch {
+    return this._focusRules.touches(el, (selector) => this._compile(selector));
   }
 
   /**
@@ -1134,61 +1343,12 @@ export class Cascade {
    * siblings can change with it (`hoverTouches`).
    */
   hoverAnchors(el: Element, into: Map<Element, HoverTouch>): void {
-    if (!this._hoverAnchors.size) return;
-    this._anchorMatchers ??= [...this._hoverAnchors]
-      .sort(([, a], [, b]) => Number(b.followed) - Number(a.followed))
-      .flatMap(([anchor, { siblings, followed }]) => {
-        const match = this._compile(anchor);
-        return match ? [{ match, siblings, followed }] : [];
-      });
-    const note = (at: Element, followed: boolean): void => {
-      if (followed) into.set(at, HOVER_FOLLOWED);
-      else if (!into.has(at)) into.set(at, HOVER_TOUCHED);
-    };
-    const siblings = this._anchorMatchers.some((m) => m.siblings);
-    for (let at: Element | null = el; at;) {
-      if (at !== el) {
-        for (const { match, followed } of this._anchorMatchers) {
-          if (match(at)) {
-            note(at, followed);
-            break;
-          }
-        }
-      }
-      if (siblings) {
-        for (let s = at.prev; s; s = s.prev) {
-          if (!isTag(s as Element)) continue;
-          for (const m of this._anchorMatchers) {
-            if (m.siblings && m.match(s as Element)) {
-              note(s as Element, m.followed);
-              break;
-            }
-          }
-        }
-      }
-      const parent: Element['parent'] = at.parent;
-      at = parent && isTag(parent as Element) ? (parent as Element) : null;
-    }
+    this._hoverRules.anchors(el, into, (selector) => this._compile(selector));
   }
 
-  private _noteHover(selector: string): void {
-    if (!/:(?:hover|active)/i.test(selector)) return;
-    const found = pointerCompounds(selector);
-    if (found.nested) this.hoverLocal = false;
-    const followed = new Set(found.followed);
-    for (const c of found.compounds) {
-      this._hoverCompounds.set(
-        c,
-        followed.has(c) || (this._hoverCompounds.get(c) ?? false),
-      );
-    }
-    for (const { anchor, siblings } of found.has) {
-      const was = this._hoverAnchors.get(anchor);
-      this._hoverAnchors.set(anchor, {
-        siblings: siblings || (was?.siblings ?? false),
-        followed: followed.has(anchor) || (was?.followed ?? false),
-      });
-    }
+  /** `hoverAnchors` for the focus: `form:has(input:focus)`'s form. */
+  focusAnchors(el: Element, into: Map<Element, HoverTouch>): void {
+    this._focusRules.anchors(el, into, (selector) => this._compile(selector));
   }
 
   /** A selector compiled as a rule's is, or null where css-select refuses
@@ -1363,6 +1523,11 @@ export class Cascade {
     if (this._index.hoverSensitive) {
       if (this._pointer.hovered.has(el)) key += '\u0001:hover';
       if (this._pointer.active.has(el)) key += '\u0001:active';
+    }
+    // `:focus-within` is not shared under (`UNSHAREABLE`), and the focus
+    // is on one element
+    if (this._focus.element === el && this._index.focusSensitive) {
+      key += this._focus.visible ? '\u0001:focus-visible' : '\u0001:focus';
     }
     const attribs = el.attribs;
     for (const name in attribs) {
@@ -1686,6 +1851,7 @@ export class Cascade {
       families: this._mapFamilies,
       lh: () => this._lineHeightOf(parentStyle),
       rlh: () => this._lineHeightOf(rootStyle),
+      focusRing: this.look.focusRing,
     };
     // The family, the weight and the slant go with the size: together they
     // pick the face an `ex`, a `ch` or an `lh` in any declaration is
@@ -1803,6 +1969,7 @@ export class Cascade {
     settleClamp(style, parentStyle);
     settleAlign(style, parentStyle);
     settleOverflow(style);
+    settleOutline(style, this.look, this.scale);
     settleContentVisibility(style);
     blockify(style, inFlexContainer);
     // a button is laid out as one, whatever `display` it was given
@@ -2183,19 +2350,27 @@ export class Cascade {
    * nothing else, since no other rule's answer is the pointer's. An element
    * they answer the same for, under a parent whose style is what it was, has
    * the style it had — which is most of what a move reaches: the rows of a
-   * hovered table body, what is in a hovered card.
+   * hovered table body, what is in a hovered card. The focus's move from
+   * `wasFocus` likewise, the rules that test it asked under both.
    */
-  pointerChanged(el: Element, was: PointerState): boolean {
+  pointerChanged(
+    el: Element,
+    was: PointerState,
+    wasFocus: FocusState = this._focus,
+  ): boolean {
     const now = this._pointer;
+    const nowFocus = this._focus;
     const after = this._pointerAnswers(el);
     this._pointer = was;
+    this._focus = wasFocus;
     const before = this._pointerAnswers(el);
     this._pointer = now;
+    this._focus = nowFocus;
     return before !== after;
   }
 
-  /** The ids of the rules testing the pointer that match `el` as things
-   *  stand, the element's and each pseudo-element's. */
+  /** The ids of the rules testing the pointer or the focus that match
+   *  `el` as things stand, the element's and each pseudo-element's. */
   private _pointerAnswers(el: Element): string {
     let answers = '';
     const ask = (index: RuleIndex, name: string): void => {
@@ -2416,18 +2591,19 @@ function asRoot(style: ComputedStyle): ComputedStyle {
  *  fragment, whose style the root box takes (`rootStyle`), and never a
  *  fragment's top-level elements, which css-select would take for it.
  *
- *  `:focus` and its two kin match nothing: no element of the document takes
- *  the focus — a control's widget does, beside it. css-select has none of
- *  the three and throws on them, which dropped every rule that named one,
- *  `:not(:focus)` among them: Wikipedia's skip link hides with
- *  `.mw-jump-link:not(:focus)`, and without it stood in the flow at the top
- *  of every page. */
+ *  `:focus` and its two kin are here as matching nothing, and each cascade
+ *  answers them from where the focus is (`Cascade.setFocus`): no element
+ *  of the document takes it itself — a control's widget does, beside it.
+ *  css-select has none of the three and throws on them, which dropped
+ *  every rule that named one, `:not(:focus)` among them: Wikipedia's skip
+ *  link hides with `.mw-jump-link:not(:focus)`, and without it stood in
+ *  the flow at the top of every page. */
 const PSEUDOS = {
   root: (el: Element) =>
     el.name === 'html' && !(el.parent && isTag(el.parent as Element)),
-  focus: () => false,
-  'focus-visible': () => false,
-  'focus-within': () => false,
+  focus: (_el: Element) => false,
+  'focus-visible': (_el: Element) => false,
+  'focus-within': (_el: Element) => false,
   // css-select's, but its ranges and tags lower-cased as ASCII has it, and
   // no other script (CSS 2.1 4.1.3): Unicode's took `:lang(\u212Al)`, a
   // Kelvin sign for the K, for `:lang(kl)`

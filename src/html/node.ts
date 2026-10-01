@@ -56,8 +56,15 @@ import {
   HOVER_PSEUDO_NONE,
   HOVER_PSEUDO_OTHER,
   HOVER_UNTOUCHED,
+  NO_FOCUS,
 } from './css/cascade.js';
-import type { HoverTouch, KeptStyles, MetricFace } from './css/cascade.js';
+import type {
+  FocusState,
+  HoverTouch,
+  KeptStyles,
+  MetricFace,
+  PointerState,
+} from './css/cascade.js';
 import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { MediaCondition, Stylesheet } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
@@ -129,7 +136,7 @@ import {
   stacksLayers,
 } from './paint.js';
 import type { PaintContext } from './paint.js';
-import { controlRectsOf, measureControl } from './controls.js';
+import { controlRectsOf, measureControl, styledField } from './controls.js';
 import type { BareField, ControlRect } from './controls.js';
 import { ResourceStore } from './resources.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
@@ -290,6 +297,8 @@ export class HtmlViewNode extends Node {
    *  the text carries surrogate pairs. null until checked. */
   private _pointsAreUnits: boolean | null = null;
   private _hovered: Element[] = [];
+  /** Which element's widget holds the focus (`setFocus`). */
+  private _focus: FocusState = NO_FOCUS;
   /** Where the pointer last moved to, in logical window pixels, while it
    *  is over the element (`defaultMouseMove`). */
   private _pointerAt: { x: number; y: number } | null = null;
@@ -402,6 +411,12 @@ export class HtmlViewNode extends Node {
             controlBorder: look.controlBorder * s,
             controlRadius: look.controlRadius * s,
             controlFontSize: (look.controlFontSize ?? look.fontSize) * s,
+            ...(look.focusRingWidth !== undefined && {
+              focusRingWidth: look.focusRingWidth * s,
+            }),
+            ...(look.focusRingOffset !== undefined && {
+              focusRingOffset: look.focusRingOffset * s,
+            }),
           };
     this._deviceLookFor = look;
     this._deviceLookAt = s;
@@ -711,6 +726,7 @@ export class HtmlViewNode extends Node {
       hovered: new Set(this._hovered),
       active: EMPTY_SET,
     });
+    this._cascade.setFocus(this._focus);
     this._mediaBand = this._cascade.mediaBand(width);
   }
 
@@ -1539,24 +1555,78 @@ export class HtmlViewNode extends Node {
    * with the styles of every element the move did not reach kept.
    */
   private _restyleHover(was: readonly Element[], now: readonly Element[]) {
+    const cascade = this._cascade;
     const reach = this._hoverReach(was, now);
-    if (reach !== null) {
+    if (reach !== null && cascade) {
       if (!reach.size) return;
-      if (this._hoverInPlace(reach, was)) return;
+      const before = { hovered: new Set(was), active: EMPTY_SET };
+      if (this._hoverInPlace(reach, before, this._focus, cascade.hoverPseudo)) {
+        return;
+      }
     }
     this._invalidate(Stale.Boxes, reach);
+  }
+
+  /** The element whose widget holds the focus, or null (`setFocus`). */
+  get focusedElement(): Element | null {
+    return this._focus.element;
+  }
+
+  /**
+   * The focus moved: `element`'s widget took it, or, given null, no widget
+   * of this document holds it now — it went to something else in the
+   * window, or nowhere. `visible` is whether it shows, `:focus-visible`,
+   * which it always does in a text field. Restyles what `:focus` and its
+   * kin reach as a hover does (`_restyleHover`), and returns whether the
+   * cascade's answer could have changed.
+   *
+   * No element of a document takes the focus: a control's widget, mounted
+   * beside it, does, and says so here. Only a text field's does, so far —
+   * the widgets core draws as components keep their own focus to
+   * themselves.
+   */
+  setFocus(element: Element | null, visible = true): boolean {
+    const was = this._focus;
+    if (was.element === element && (!element || was.visible === visible)) {
+      return false;
+    }
+    const within = new Set<Element>();
+    for (
+      let at: Element | null = element;
+      at;
+      at = isElement(at.parent) ? at.parent : null
+    ) {
+      within.add(at);
+    }
+    const now: FocusState = element ? { element, visible, within } : NO_FOCUS;
+    this._focus = now;
+    const cascade = this._cascade;
+    cascade?.setFocus(now);
+    if (!cascade || !cascade.focusSensitive) return false;
+    const reach = cascade.focusLocal
+      ? this._stateReach(
+          [...was.within],
+          [...now.within],
+          // one element, whose ring came or went
+          was.element === element ? element : null,
+          (el) => cascade.focusTouches(el),
+          (el, into) => cascade.focusAnchors(el, into),
+        )
+      : null;
+    if (reach !== null) {
+      if (!reach.size) return true;
+      const pointer = { hovered: new Set(this._hovered), active: EMPTY_SET };
+      if (this._hoverInPlace(reach, pointer, was, cascade.focusPseudo)) {
+        return true;
+      }
+    }
+    this._invalidate(Stale.Boxes, reach);
+    return true;
   }
 
   /**
    * The elements whose styles a move of the hovered chain can change, or
    * null where that cannot be said (`Cascade.hoverLocal`).
-   *
-   * Only an element whose hover state flipped and that a compound testing
-   * the pointer could match can change (`Cascade.hoverTouches`), with its
-   * subtree, and its later siblings' where a sibling combinator is in play;
-   * and the elements a `:has()` testing the pointer may flip, which are
-   * around the ones that changed. A move between two paragraphs under
-   * `a:hover` reaches nothing.
    */
   private _hoverReach(
     was: readonly Element[],
@@ -1564,12 +1634,41 @@ export class HtmlViewNode extends Node {
   ): Set<Element> | null {
     const cascade = this._cascade;
     if (!cascade || !cascade.hoverLocal) return null;
+    return this._stateReach(
+      was,
+      now,
+      null,
+      (el) => cascade.hoverTouches(el),
+      (el, into) => cascade.hoverAnchors(el, into),
+    );
+  }
+
+  /**
+   * The elements whose styles a move of the hovered chain can change, or
+   * of the focus's chain.
+   *
+   * Only an element whose hover state flipped and that a compound testing
+   * the pointer could match can change (`Cascade.hoverTouches`), with its
+   * subtree, and its later siblings' where a sibling combinator is in play;
+   * and the elements a `:has()` testing the pointer may flip, which are
+   * around the ones that changed. A move between two paragraphs under
+   * `a:hover` reaches nothing. The focus's the same way, its chain the
+   * focused element and every element around it, and `also` one whose
+   * state flipped though it is in both — the ring coming or going.
+   */
+  private _stateReach(
+    was: readonly Element[],
+    now: readonly Element[],
+    also: Element | null,
+    touches: (el: Element) => HoverTouch,
+    anchors: (el: Element, into: Map<Element, HoverTouch>) => void,
+  ): Set<Element> {
     const before = new Set(was);
     const after = new Set(now);
     const roots = new Map<Element, HoverTouch>();
-    const flipped = (el: Element, other: Set<Element>): void => {
-      if (other.has(el)) return;
-      const touch = cascade.hoverTouches(el);
+    const flipped = (el: Element, other: Set<Element> | null): void => {
+      if (other?.has(el)) return;
+      const touch = touches(el);
       if (touch > (roots.get(el) ?? HOVER_UNTOUCHED)) roots.set(el, touch);
     };
     for (const el of was) flipped(el, after);
@@ -1578,10 +1677,14 @@ export class HtmlViewNode extends Node {
     // side is where a `:has()` is looked for from
     const deepest = (chain: readonly Element[], other: Set<Element>) => {
       const el = chain[0];
-      if (el && !other.has(el)) cascade.hoverAnchors(el, roots);
+      if (el && !other.has(el)) anchors(el, roots);
     };
     deepest(was, after);
     deepest(now, before);
+    if (also) {
+      flipped(also, null);
+      anchors(also, roots);
+    }
 
     // the roots' subtrees, which inherit from them and a descendant
     // combinator reaches, and their later siblings' too where a sibling
@@ -1626,8 +1729,10 @@ export class HtmlViewNode extends Node {
    *  - The boxes take their new styles: an element's own, the text in it,
    *    the anonymous boxes the fix-up made around what is in it, and its
    *    `::before` and `::after`, styled again by their own rules. A box
-   *    whose style is derived some other way — a marker, a first letter, a
-   *    control — is not one to restyle here.
+   *    whose style is derived some other way — a marker, a first letter —
+   *    is not one to restyle here. A control's is, and its widget is told
+   *    (`_reportControls`), unless the page took to drawing the field or
+   *    stopped.
    *  - Each layout of their text is made again from the runs it was made
    *    from (`TextLayoutCache.inputsOf`) with the new ink (`runFor`), where
    *    its geometry comes out the same.
@@ -1637,10 +1742,16 @@ export class HtmlViewNode extends Node {
    * costs what it changed, in a document of any length. True where it was
    * restyled here, or had nothing to restyle; false where the boxes have to
    * be built again.
+   *
+   * A focus change is answered the same way (`setFocus`): `before` and
+   * `beforeFocus` are the states the change was from, and `pseudoRules`
+   * which pseudo-elements' rules test the state that changed.
    */
   private _hoverInPlace(
     reach: ReadonlySet<Element>,
-    was: readonly Element[],
+    before: PointerState,
+    beforeFocus: FocusState,
+    pseudoRules: 0 | 1 | 2,
   ): boolean {
     const cascade = this._cascade;
     const tree = this._tree;
@@ -1649,17 +1760,15 @@ export class HtmlViewNode extends Node {
     if (this._stale !== Stale.Nothing || this._laidOutWidth < 0) return false;
     if (reach.size > HOVER_RESTYLE_LIMIT) return false;
     // a first line's, a first letter's and a marker's styles are layout's
-    const pseudoRules = cascade.hoverPseudo;
     if (pseudoRules === HOVER_PSEUDO_OTHER) return false;
 
-    // whether the rules that test the pointer answer differently for an
-    // element than they did before the move
-    const before = { hovered: new Set(was), active: EMPTY_SET };
+    // whether the rules that test the pointer or the focus answer
+    // differently for an element than they did before the change
     const flips = new Map<Element, boolean>();
     const flipped = (el: Element): boolean => {
       let flip = flips.get(el);
       if (flip === undefined) {
-        flip = cascade.pointerChanged(el, before);
+        flip = cascade.pointerChanged(el, before, beforeFocus);
         flips.set(el, flip);
       }
       return flip;
@@ -1677,6 +1786,8 @@ export class HtmlViewNode extends Node {
     let reaches = false;
     let reorders = false;
     const moving = new Set<Element>();
+    /** Whether a control's box was restyled: its widget is told. */
+    let widgets = false;
     const styleOf = (el: Element): ComputedStyle | null => {
       const kept = tree.styles.get(el);
       if (!kept) return null;
@@ -1820,11 +1931,20 @@ export class HtmlViewNode extends Node {
         if (!style) continue;
         const kept = tree.styles.get(el)!.style;
         // a style derived from the element's, or drawn from it somewhere
-        // else — a widget mounted beside the document takes its look from
-        // it. An image, a drawing or a rule is drawn here, from its box,
-        // like any.
+        // else. A widget mounted beside the document takes its look from
+        // it, and is told again once it is restyled — unless the page took
+        // to drawing the field, or stopped, which is another size of box.
+        // An image, a drawing or a rule is drawn here, from its box, like
+        // any.
         if (box.style !== kept) return false;
-        if (box.marker || WIDGETS.has(box.replaced)) return false;
+        if (box.marker) return false;
+        if (WIDGETS.has(box.replaced)) {
+          const kind = box.replaced!;
+          if (styledField(kind, kept) !== styledField(kind, style)) {
+            return false;
+          }
+          widgets = true;
+        }
         if (moving.has(el) && !movable(box, kept, style)) return false;
         ink = !quiet.has(el);
       } else if (above) {
@@ -1944,7 +2064,7 @@ export class HtmlViewNode extends Node {
         relayout = true;
       }
     }
-    if (moved.length) this._reportControls();
+    if (moved.length || widgets) this._reportControls();
     if (relayout) {
       this._invalidate(Stale.Layout);
       return true;

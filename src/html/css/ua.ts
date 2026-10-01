@@ -247,6 +247,17 @@ input, select, button, textarea {
   text-indent: initial;
   text-shadow: initial;
 }
+/* Chrome's ring round a control that shows it has the focus, and \`auto\` is
+   the platform's own: the palette's ring here (\`settleOutline\`), round
+   the element's border box, which the document draws — the field's widget
+   draws none, so a page's \`outline: none\`, or a ring of its own, is what
+   shows. Only a text field's widget tells the document it has the focus:
+   the other controls are core's components, which draw their own ring and
+   keep their focus to themselves. */
+input:focus-visible, textarea:focus-visible {
+  outline: auto 1px -webkit-focus-ring-color;
+  outline-offset: 0;
+}
 input[type=checkbox] { margin: 3px 4px 3px 4px; }
 input[type=radio] { margin: 3px 4px 3px 5px; }
 input[type=hidden] { display: none; }
@@ -292,6 +303,9 @@ details[open] > summary:first-of-type { list-style-type: disclosure-open; }
  * and border longhand, radius included — along with the native look it
  * would lose in a browser. Nothing stays half the palette's and half the
  * page's.
+ *
+ * A field's frame is its widget's, but its corners are the element's too:
+ * the focus ring the document draws round it is rounded as the frame is.
  */
 function chromeText(look: RootLook): string {
   return `
@@ -300,5 +314,6 @@ button {
   border: ${look.controlBorder}px solid ${look.borderColor};
   border-radius: ${look.controlRadius}px;
 }
+input, textarea { border-radius: ${look.controlRadius}px; }
 `;
 }

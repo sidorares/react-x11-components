@@ -15,10 +15,13 @@ import {
 import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
+import type { HtmlViewNode } from '../../src/html/index.js';
 import {
   FONTS,
   boxOf,
   edgesOf,
+  fillsOf,
+  findById,
   h,
   linesOf,
   metric,
@@ -898,6 +901,220 @@ metric(
         hidden(screen.getByPlaceholder('last') as DrawnNode),
       ],
       [true, true, false, false],
+    );
+  },
+);
+
+/** A laid-out box's computed outline, border colour and shadows. */
+type FocusStyled = LaidBox & {
+  style: {
+    outlineStyle: string;
+    outlineWidth: number;
+    outlineOffset: number;
+    outlineColor: string;
+    borderTopColor: string;
+    boxShadow: unknown;
+    backgroundColor: string;
+  };
+};
+
+const styleOf = (el: HtmlViewNode, id: string) =>
+  (boxOf(el, id) as FocusStyled).style;
+
+metric(
+  "a text field's widget holding the focus is its element's :focus, ringed as the page says",
+  async () => {
+    // github.com/login: Primer's `.form-control:focus` gives the field an
+    // accent border and an inset shadow, and takes the outline away.
+    // Nothing matched `:focus`, so the border stayed grey — and core drew
+    // its own ring round the widget, which is the content box of a field
+    // the page draws: a thinner frame inside the page's border.
+    const { result, node } = await render(
+      '<style>body{margin:0} form{margin:0}' +
+        ' input{margin:0 0 10px;padding:5px;width:100px;height:20px;' +
+        'border:2px solid #808080;background:#000000;color:#ffffff}' +
+        ' input:focus{border-color:#0000ff;' +
+        'box-shadow:inset 0 0 0 2px #0000ff;outline:none}' +
+        ' form:focus-within{background:#00ff00}</style>' +
+        '<form id="form"><input id="a" placeholder="a"></form>' +
+        '<input id="b" placeholder="b">',
+    );
+    const el = view(node);
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    const rgb = (id: string, x: number, y: number) => {
+      const box = boxOf(el, id);
+      return pixelAt(result.ctx, at.x + box.x + x, at.y + box.y + y);
+    };
+    const is = (want: [number, number, number]) => (got: number[]) =>
+      got.slice(0, 3).every((c, i) => Math.abs(c - want[i]) < 40);
+    const blue = is([0, 0, 255]);
+    const grey = is([128, 128, 128]);
+    const black = is([0, 0, 0]);
+    const green = is([0, 255, 0]);
+    const a = screen.getByPlaceholder('a') as DrawnNode;
+    const b = screen.getByPlaceholder('b') as DrawnNode;
+    const expect = async (
+      what: string,
+      checks: [string, number, number, (px: number[]) => boolean][],
+    ) => {
+      await waitFor(async () => {
+        for (const [id, x, y, ok] of checks) {
+          const px = await rgb(id, x, y);
+          assert.ok(ok(px), `${what}: ${id} at ${x},${y} is ${px}`);
+        }
+      });
+    };
+
+    await expect('nothing focused', [
+      ['a', 1, 17, grey],
+      ['form', 300, 10, (px) => !green(px)],
+    ]);
+    await act(async () => {
+      a.focus();
+    });
+    assert.strictEqual(el.focusedElement, findById(el.document, 'a'));
+    // and its caret is the text's colour, a browser's `caret-color: auto`
+    assert.strictEqual(
+      (a as unknown as { props: { caretColor?: string } }).props.caretColor,
+      '#ffffff',
+    );
+    await expect('the first field focused', [
+      // the page's border and the shadow inside it
+      ['a', 1, 17, blue],
+      ['a', 3, 17, blue],
+      // where core's ring stood, round the content box: the field's ground
+      ['a', 5, 17, black],
+      ['a', 20, 5, black],
+      ['b', 1, 17, grey],
+      ['form', 300, 10, green],
+    ]);
+    // from one field to the next: the form it leaves loses its
+    // `:focus-within`, and the field its `:focus`
+    await act(async () => {
+      b.focus();
+    });
+    await expect('the second field focused', [
+      ['a', 1, 17, grey],
+      ['b', 1, 17, blue],
+      ['form', 300, 10, (px) => !green(px)],
+    ]);
+    await act(async () => {
+      b.blur();
+    });
+    await expect('nothing focused again', [['b', 1, 17, grey]]);
+    assert.strictEqual(el.focusedElement, null);
+  },
+);
+
+metric(
+  "a field's focus ring is its element's outline, the palette's where the page says nothing",
+  async () => {
+    // Chrome's `:focus-visible { outline: auto 1px -webkit-focus-ring-color }`
+    // and `auto` the platform's ring, which is the palette's: its colour,
+    // its width and its gap. A page's `outline: none` takes it away, as it
+    // does in a browser, and the widget draws none of its own either way.
+    const { node } = await render(
+      '<input id="a" placeholder="a">' +
+        '<input id="b" placeholder="b" style="outline:none">' +
+        '<textarea id="c" placeholder="c" ' +
+        'style="outline:3px auto -webkit-focus-ring-color"></textarea>',
+    );
+    const el = view(node);
+    for (const id of ['a', 'b']) {
+      assert.strictEqual(styleOf(el, id).outlineStyle, 'none', id);
+    }
+    const field = screen.getByPlaceholder('a') as DrawnNode;
+    const own = (field as unknown as { props: { style: unknown } }).props.style;
+    assert.ok(
+      [own]
+        .flat(Infinity)
+        .some(
+          (s) => (s as { outlineWidth?: number } | null)?.outlineWidth === 0,
+        ),
+      'the widget draws no ring',
+    );
+    await act(async () => {
+      field.focus();
+    });
+    const a = styleOf(el, 'a');
+    assert.deepStrictEqual(
+      [a.outlineStyle, a.outlineWidth, a.outlineOffset, a.outlineColor],
+      ['auto', 2, 1, '#2980b9'],
+      "the palette's ring",
+    );
+    // drawn round the field's frame, whose corners the palette's are
+    const fills = await fillsOf(el);
+    assert.ok(
+      fills.some((f) => f.style === '#2980b9'),
+      'the document draws it',
+    );
+    await act(async () => {
+      (screen.getByPlaceholder('b') as DrawnNode).focus();
+    });
+    assert.strictEqual(styleOf(el, 'a').outlineStyle, 'none');
+    assert.strictEqual(styleOf(el, 'b').outlineStyle, 'none', 'outline: none');
+    // a page's own `auto`, and the keyword, are the palette's too
+    const c = styleOf(el, 'c');
+    assert.deepStrictEqual(
+      [c.outlineStyle, c.outlineWidth, c.outlineColor],
+      ['auto', 2, '#2980b9'],
+    );
+  },
+);
+
+metric(
+  'a field taking the focus is restyled where it is, not built again',
+  async () => {
+    // a click into a search field is not a restyle of the article around it
+    const paragraphs = Array.from(
+      { length: 200 },
+      (_, i) => `<p>Paragraph ${i} with enough text in it to wrap once.</p>`,
+    ).join('');
+    const { node } = await render(
+      '<style>body{margin:0} .f{border:1px solid #808080;padding:4px}' +
+        ' .f:focus{border-color:#0000ff;outline:none}' +
+        ' .box:focus-within{background:#eeeeee}</style>' +
+        `<div class="box"><input id="q" class="f" placeholder="q"></div>${paragraphs}`,
+      300,
+    );
+    const el = view(node);
+    await act();
+    const treeOf = () => (el as unknown as { _tree: unknown })._tree;
+    const tree = treeOf();
+    await act(async () => {
+      (screen.getByPlaceholder('q') as DrawnNode).focus();
+    });
+    assert.strictEqual(styleOf(el, 'q').borderTopColor, '#0000ff');
+    assert.ok(treeOf() === tree, 'the document was built again');
+    await act(async () => {
+      (screen.getByPlaceholder('q') as DrawnNode).blur();
+    });
+    assert.strictEqual(styleOf(el, 'q').borderTopColor, '#808080');
+    assert.ok(treeOf() === tree, 'the document was built again');
+  },
+);
+
+metric(
+  'a field whose widget goes with the focus in it takes its :focus away',
+  async () => {
+    // core forgets a node that unmounts while focused rather than blurring
+    // it, so no blur says the element lost it
+    const { node } = await render(
+      '<style>input:focus{border:1px solid #0000ff}</style>' +
+        '<input id="a" placeholder="a">',
+    );
+    const el = view(node);
+    await act(async () => {
+      (screen.getByPlaceholder('a') as DrawnNode).focus();
+    });
+    const input = findById(el.document, 'a')!;
+    assert.strictEqual(el.focusedElement, input);
+    await act(async () => {
+      input.attribs.style = 'display:none';
+      el.touchDocument();
+    });
+    await waitFor(() =>
+      assert.strictEqual(el.focusedElement, null, 'still focused'),
     );
   },
 );

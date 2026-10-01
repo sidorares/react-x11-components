@@ -557,6 +557,14 @@ it up. **The floor is a running one and moves often** — every move since
   was the palette's white framed dropdown inside the page's padding. Either
   slot also makes it the drawn trigger, where a native popup bezel would
   draw AppKit's frame over the page's box.
+- `^2.26.3` — an empty paragraph is one line on Cocoa (react-x11#798, in
+  2.26.1), so the caret of an empty field is as tall as the text it will
+  hold: CoreText set no line for no text, and an empty `<textinput>`'s
+  caret was six device pixels on macOS — github.com's login field, which
+  `<Html>` focuses on load, among them. The same three releases keep hover
+  to the active window on macOS (#800) and make `-apple-system` and
+  `BlinkMacSystemFont` the system font (#803), which head GitHub's font
+  stack and had fallen to Helvetica.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
