@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/sidorares/react-x11-components/compare/v0.16.1...v0.17.0) (2026-10-01)
+
+
+### Features
+
+* **html:** read [@keyframes](https://github.com/keyframes) and the animation properties, and draw what an animation that fills forwards leaves, where a panel that fades in stayed hidden ([#583](https://github.com/sidorares/react-x11-components/issues/583)) ([893af49](https://github.com/sidorares/react-x11-components/commit/893af49532be973a6893c0ce0b52fc8315b58206))
+
+
+### Bug Fixes
+
+* **html:** the items a column aligns by baselines line up their left edges at its cross start, where each was at its own margin from there ([#581](https://github.com/sidorares/react-x11-components/issues/581)) ([998ace8](https://github.com/sidorares/react-x11-components/commit/998ace83baf3bc57638bc3226fb0491be02ea77b))
+* **html:** the lines of a row that wraps and aligns by baselines are as tall as their items, where Yoga made each the furthest any item reached down and the largest bottom margin besides, and an item that starts a line further along than one alone on the line before is not lined up with it ([#580](https://github.com/sidorares/react-x11-components/issues/580)) ([93ebb2c](https://github.com/sidorares/react-x11-components/commit/93ebb2c4d1e7538e9674c3ab09db5fbae682a895))
+
 ## [0.16.1](https://github.com/sidorares/react-x11-components/compare/v0.16.0...v0.16.1) (2026-10-01)
 
 
