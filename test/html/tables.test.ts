@@ -807,6 +807,115 @@ metric(
   },
 );
 
+test("a cell's length limits hold what it asks of its column, and it is laid out as wide as its columns", async () => {
+  // CSS Tables 3, 3.8.2: a cell asks of its column its content within its
+  // limits, `max(min-width, min-content, min(max-width, max-content))`,
+  // and Blink holds the min-content to the `max-width` too. A `max-width`
+  // held no column, and a `min-width` set one as a `width` would; and the
+  // cell was laid out held to its limits whatever its columns came to,
+  // where it is as wide as they are (3.10.2). Each number here is
+  // Chrome's.
+  const { node } = await render(
+    '<style>body{margin:0} table{border-spacing:0} td{padding:0}' +
+      '.w{width:100px;height:10px} .f{float:left;width:40px;height:10px}' +
+      '</style>' +
+      // content wider than the limit
+      '<table><tr><td id="a" style="max-width:50px">' +
+      '<div class="w" style="width:200px"></div></td></tr></table>' +
+      // content that can be 40 wide and would be 80, laid out in 50
+      '<table><tr><td id="b" style="max-width:50px"><div id="b1">' +
+      '<div class="f"></div><div class="f"></div></div></td></tr></table>' +
+      // and given its share of a wider table by that 50
+      '<table style="width:600px"><tr><td id="c" style="max-width:50px">' +
+      '<div id="c1"><div class="f"></div><div class="f"></div></div></td>' +
+      '<td id="c2"><div class="w"></div></td></tr></table>' +
+      // a column wider than the limit, which the cell fills
+      '<table><tr><td style="max-width:50px"><div id="d1" style="height:10px">' +
+      '</div></td></tr><tr><td><div class="w" style="width:200px"></div>' +
+      '</td></tr></table>' +
+      // beside a narrower width
+      '<table><tr><td id="e" style="width:30px;max-width:50px">' +
+      '<div class="w" style="width:200px"></div></td></tr></table>' +
+      // with its padding in
+      '<table><tr><td id="f" style="max-width:50px;padding:0 10px">' +
+      '<div id="f1"><div class="f"></div><div class="f"></div></div>' +
+      '</td></tr></table>' +
+      // across two columns
+      '<table><tr><td colspan="2" style="max-width:50px">' +
+      '<div class="w" style="width:300px"></div></td></tr><tr>' +
+      '<td id="g1"><div class="w" style="width:10px"></div></td>' +
+      '<td><div class="w" style="width:10px"></div></td></tr></table>' +
+      // a percentage width, which a length limit does not hold
+      '<table style="width:600px"><tr>' +
+      '<td id="h" style="width:50%;max-width:100px"></td><td></td></tr>' +
+      '</table>' +
+      // a limit under the least width, raised to it
+      '<table style="width:600px"><tr>' +
+      '<td id="k" style="max-width:50px;min-width:80px">' +
+      '<div class="w" style="width:200px"></div></td>' +
+      '<td><div class="w" style="width:160px"></div></td></tr></table>' +
+      // a least width alone, which sets no width
+      '<table style="width:600px"><tr><td id="m" style="min-width:100px">' +
+      '<div class="w" style="width:10px"></div></td>' +
+      '<td><div class="w"></div></td></tr></table>' +
+      // and a width of the border box, which padding does not add to
+      '<table style="width:600px"><tr><td id="n" style="' +
+      'box-sizing:border-box;width:100px;padding:0 20px"></td>' +
+      '<td><div class="w"></div></td></tr></table>',
+    700,
+  );
+  const el = view(node);
+  const across = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  assert.strictEqual(boxOf(el, 'a').width, 50, 'the limit, not its content');
+  assert.strictEqual(boxOf(el, 'b').width, 50);
+  assert.strictEqual(boxOf(el, 'b1').width, 50, 'and its content is too');
+  assert.deepStrictEqual(across('c'), [0, 200], 'a share by 50 of 150');
+  assert.strictEqual(boxOf(el, 'c1').width, 200, 'and laid out in it');
+  assert.deepStrictEqual(across('c2'), [200, 400]);
+  assert.strictEqual(boxOf(el, 'd1').width, 200, 'as wide as its column');
+  assert.strictEqual(boxOf(el, 'e').width, 50, 'its content, held');
+  assert.strictEqual(boxOf(el, 'f').width, 70);
+  assert.deepStrictEqual(across('f1'), [10, 50]);
+  assert.strictEqual(boxOf(el, 'g1').width, 25, 'half of 50');
+  assert.strictEqual(boxOf(el, 'h').width, 300, 'half the table');
+  assert.strictEqual(boxOf(el, 'k').width, 200, 'a share by 80 of 240');
+  assert.strictEqual(boxOf(el, 'm').width, 300, 'a share by 100 of 200');
+  assert.strictEqual(boxOf(el, 'n').width, 100);
+});
+
+test("a fixed table's cell is held to a length max-width, and a min-width does not set its column", async () => {
+  // A fixed table does not measure its cells' content (CSS Tables 3,
+  // 3.8.3): a first-row cell's `width` sets its column, within a length
+  // `max-width` that its `min-width` raises, and the `min-width` does
+  // nothing else, on a cell or on a column, as in Blink. The `max-width`
+  // was not read, and a `min-width` held the cell's content where the
+  // column did not. Each number here is Chrome's.
+  const { node } = await render(
+    '<style>body{margin:0} table{border-spacing:0;table-layout:fixed;' +
+      'width:600px} td{padding:0}</style>' +
+      '<table><tr><td id="p" style="width:300px;max-width:100px">' +
+      '<div id="p1" style="height:10px"></div></td>' +
+      '<td id="p2" style="min-width:400px"><div id="p3" style="height:10px">' +
+      '</div></td><td></td></tr></table>' +
+      '<table><tr>' +
+      '<td id="q" style="width:300px;max-width:100px;min-width:200px"></td>' +
+      '<td id="q2" style="width:50%;max-width:100px"></td><td></td></tr>' +
+      '</table>' +
+      '<table><col style="min-width:400px"><col><col>' +
+      '<tr><td id="r"></td><td></td><td></td></tr></table>',
+    700,
+  );
+  const el = view(node);
+  const across = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  assert.deepStrictEqual(across('p'), [0, 100], 'its width, held');
+  assert.strictEqual(boxOf(el, 'p1').width, 100);
+  assert.deepStrictEqual(across('p2'), [100, 250], 'a share of the rest');
+  assert.strictEqual(boxOf(el, 'p3').width, 250, 'and laid out in it');
+  assert.strictEqual(boxOf(el, 'q').width, 200, 'the limit, raised');
+  assert.deepStrictEqual(across('q2'), [200, 300], 'a percentage, not held');
+  assert.strictEqual(boxOf(el, 'r').width, 200, 'a third');
+});
+
 test("a cell's percentage padding is of its row's width, and a percentage limit is its column's to weigh", async () => {
   // CSS 2.1 8.4 takes a percentage in a padding of the containing block's
   // width; for a cell that is its row's, the columns and the spacing
@@ -1243,10 +1352,14 @@ test('a column, or a column group, sets its columns in an auto table (CSS 2.1 17
     '<style>body{margin:0}table{border-spacing:0}td{padding:0}</style>' +
       // an empty group is one column, and its width is that column's
       '<table id="g"><colgroup style="width:100px"></colgroup><tr><td></td></tr></table>' +
-      // a column within its limits
+      // A column's `max-width` does nothing: its outer min-content width
+      // is `max(min-width, width)` (CSS Tables 3, 3.8.2), and Blink reads
+      // none. Its `min-width` is the least it is, and sets no width.
       '<table id="c"><col style="width:300px;max-width:50px"><tr><td></td></tr></table>' +
-      // a limit alone sets one
       '<table id="m"><colgroup style="min-width:80px"></colgroup><tr><td></td></tr></table>' +
+      '<table style="width:300px"><col style="min-width:50px"><col>' +
+      '<tr><td id="l1"><div style="width:10px"></div></td>' +
+      '<td><div style="width:50px"></div></td></tr></table>' +
       // a group wider than its columns spreads the rest over them
       '<table id="s"><colgroup style="width:100px"><col style="width:20px">' +
       '<col style="width:20px"></colgroup>' +
@@ -1265,8 +1378,9 @@ test('a column, or a column group, sets its columns in an auto table (CSS 2.1 17
   );
   const el = view(node);
   assert.strictEqual(boxOf(el, 'g').width, 100);
-  assert.strictEqual(boxOf(el, 'c').width, 50);
+  assert.strictEqual(boxOf(el, 'c').width, 300, 'its width, unheld');
   assert.strictEqual(boxOf(el, 'm').width, 80);
+  assert.strictEqual(boxOf(el, 'l1').width, 150, 'a share by 50 of 100');
   assert.strictEqual(boxOf(el, 's').width, 100);
   assert.strictEqual(boxOf(el, 's1').width, 50);
   assert.strictEqual(boxOf(el, 's2').width, 50);

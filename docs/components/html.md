@@ -641,11 +641,21 @@ column's `width` counts as its cells' do, and a column group's is spread
 over its columns (17.5.2.2). A percentage in a cell's padding is of the
 width of its row — the columns and the spacing between them — as browsers
 take it, and of nothing while the columns are sized, so a padded cell's
-column is as wide as its content asks. A cell's, a column's or a column
-group's `min-width` and `max-width` are weighed where the columns are
-sized, and as lengths: a percentage `min-width` is ignored, and a
-percentage `max-width` holds a percentage `width` and nothing else (CSS
-Tables 3, 3.8.2). A column's or a column group's background is
+column is as wide as its content asks. A cell's `min-width` and
+`max-width` are weighed where the columns are sized, and as lengths (CSS
+Tables 3, 3.8.2): a cell asks of its column its content held up to its
+`min-width` and down to its `max-width` — its min-content too, as Blink
+has it, so `td { max-width: 50px }` over a long word, or over a line that
+does not wrap and ends in an ellipsis, makes a column 50 wide — and
+neither sets the column's width, which only a `width` does. A length
+`max-width` holds a length `width` and not a percentage one, in a fixed
+table's first row too, where a `min-width` only raises it. The cell is
+then laid out at the width of the columns it spans, whatever its limits
+say (3.10.2). A column's or a column group's `min-width` is the least it
+is, and its `max-width` does nothing, as in Blink: a column's outer
+min-content width is `max(min-width, width)` already. A percentage
+`min-width` is ignored, and a percentage `max-width` holds a percentage
+`width` and nothing else. A column's or a column group's background is
 painted under the cells that start in it, its image placed in the box those
 cells make, `border-spacing` takes a length for the rows as well as the
 columns, and a
