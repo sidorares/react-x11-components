@@ -42,7 +42,13 @@ import type { ContentItem, CounterChange } from './content.js';
 import type { CustomProps } from './vars.js';
 import { parseRotate, parseScale, parseTransform } from './transform.js';
 import type { TransformFunction } from './transform.js';
-import { LIGHT_DARK, lightDark, usedColorScheme } from './color.js';
+import {
+  LIGHT_DARK,
+  SYSTEM_COLOR,
+  lightDark,
+  systemColors,
+  usedColorScheme,
+} from './color.js';
 import { svgPaint } from './shapes.js';
 
 export type Display =
@@ -1370,6 +1376,11 @@ export function firstLineParent(
 // --- applying a declaration -------------------------------------------------
 
 /** Longhands that take a colour and nothing else, by property name. */
+/** The properties a colour is written in, alone or in a shorthand, a
+ *  shadow, a gradient or an image's mask. */
+const TAKES_COLOR =
+  /^(?:color|background|border|outline|box-shadow|text-shadow|text-decoration|text-emphasis|column-rule|fill|stroke|stop-color|flood-color|lighting-color|caret-color|accent-color|scrollbar-color|filter|mask|list-style|-webkit-text-(?:fill|stroke))/;
+
 const COLOR_PROPS: Record<string, keyof ComputedStyle> = {
   color: 'color',
   'background-color': 'backgroundColor',
@@ -1493,6 +1504,11 @@ export function applyDeclaration(
   // writing it in an inline style, where it still wins by being last.
   if (/!\s*important$/i.test(value)) {
     value = value.replace(/!\s*important$/i, '').trim();
+  }
+  // a system colour is a `light-dark()` of its own, in a property that
+  // takes a colour: `Menu` is a font in `font`, and `Mark` a family's name
+  if (TAKES_COLOR.test(name) && SYSTEM_COLOR.test(value)) {
+    value = systemColors(value, ctx.systemColors);
   }
   // the branch of each `light-dark()` this element's scheme picks, before
   // anything reads the value: it stands wherever a colour can, in a

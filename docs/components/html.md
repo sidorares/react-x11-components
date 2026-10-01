@@ -1444,43 +1444,48 @@ no value. `:root` is the `<html>` element, the one a browser implies
 around a fragment too, so a fragment's `:root { --brand: … }` reaches all
 of it.
 
-**Colours:** the named colours, hex with three, four, six or eight
-digits, and CSS Color 4's functions: `rgb()` and `hsl()` in either the comma
-or the space form, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, and
-`color()` in its predefined spaces. They are read here and handed to the
-drawing context as `#rrggbb` or `rgba()`, which both backends read alike,
-and one outside sRGB is clipped into it. `color-mix()` mixes in any of
-the spaces above but the wide-gamut RGB ones, premultiplied, so a colour
-mixed with `transparent` keeps its hue: Tailwind 4's `bg-blue-500/50` is
-written that way. A relative colour (CSS Color 5) takes another colour
-into any of the functions above and reads its channels by name, each one
-kept, swapped, set or worked out with `calc()`:
-`oklch(from var(--brand) calc(l + 0.1) c h / 50%)`. The names are numbers
-in the function's own range (`r` up to 255, `s` and `l` up to 100, a hue
-in degrees), and an alpha left out is the origin's. A mix or a relative
-colour with `currentColor` in it is worked out where the colour is used.
-A channel of any colour function may be a `calc()`. `light-dark()` takes its first colour where the element's
-colour scheme is light and its second where it is dark (CSS Color 5), in
-any value a colour stands in, a custom property's included. The scheme is
-the element's `color-scheme` resolved against the react-x11 palette's in
-force, which stands for the reader's preference: `light dark` follows the
-palette, `light` or `only dark` holds whatever it is, and `normal` — the
-initial value — is the palette's own, since the palette is this renderer's
-default look. A page's `<meta name="color-scheme">` is its root element's
-`color-scheme` where no rule sets one, as HTML has it. Where the root
-element's scheme is the palette's, the document is drawn on the window's
-own ground in the palette's colours, as an unstyled one always is. Where it is the other — a page that is
-`color-scheme: light` under a dark palette, as a Docusaurus site is until
-its script runs — its canvas is opaque, in that scheme's `Canvas` colour,
-which is what CSS Color Adjust gives an embedded document whose scheme is
-not its embedder's; and the text and the links the page does not colour are
-a browser's for that scheme, black on white with `#0000ee` links or white
-on `#121212` with `#9e9eff`. So a page that sets dark text on no background
-is read on white, whatever the window is. The rest of what the palette
-gives stays the palette's: the UA sheet's borders and rules, and the
-widgets a form control is. The system colours are not read, and a
-declaration using one is dropped, as a browser that did not know them
-would drop it.
+**Colours:** the named colours, hex with three, four, six or eight digits,
+the system colours, and CSS Color 4's functions: `rgb()` and `hsl()` in
+either the comma or the space form, `hwb()`, `lab()`, `lch()`, `oklab()`,
+`oklch()`, and `color()` in its predefined spaces. They are read here and
+handed to the drawing context as `#rrggbb` or `rgba()`, which both backends
+read alike, and one outside sRGB is clipped into it. `color-mix()` mixes in
+any of the spaces above but the wide-gamut RGB ones, premultiplied, so a
+colour mixed with `transparent` keeps its hue: Tailwind 4's
+`bg-blue-500/50` is written that way. A relative colour (CSS Color 5) takes
+another colour into any of the functions above and reads its channels by
+name, each one kept, swapped, set or worked out with `calc()`: `oklch(from
+var(--brand) calc(l + 0.1) c h / 50%)`. The names are numbers in the
+function's own range (`r` up to 255, `s` and `l` up to 100, a hue in
+degrees), and an alpha left out is the origin's. A mix or a relative colour
+with `currentColor` in it is worked out where the colour is used. A channel
+of any colour function may be a `calc()`. A system colour (CSS Color 4) is
+the palette's where the element's colour scheme is the palette's — `Canvas`
+its ground, `CanvasText` its text, `LinkText` and `AccentColor` its accent,
+`ButtonFace`, `ButtonText` and `ButtonBorder` its controls', `GrayText` its
+muted text — since the palette is this renderer's platform, and Chrome's in
+the other scheme, in an SVG image and for the ones the palette has none of.
+The deprecated ones are the colours they are the same as. `light-dark()`
+takes its first colour where the element's colour scheme is light and its
+second where it is dark (CSS Color 5), in any value a colour stands in, a
+custom property's included. The scheme is the element's `color-scheme`
+resolved against the react-x11 palette's in force, which stands for the
+reader's preference: `light dark` follows the palette, `light` or `only
+dark` holds whatever it is, and `normal` — the initial value — is the
+palette's own, since the palette is this renderer's default look. A page's
+`<meta name="color-scheme">` is its root element's `color-scheme` where no
+rule sets one, as HTML has it. Where the root element's scheme is the
+palette's, the document is drawn on the window's own ground in the
+palette's colours, as an unstyled one always is. Where it is the other — a
+page that is `color-scheme: light` under a dark palette, as a Docusaurus
+site is until its script runs — its canvas is opaque, in that scheme's
+`Canvas` colour, which is what CSS Color Adjust gives an embedded document
+whose scheme is not its embedder's; and the text and the links the page
+does not colour are a browser's for that scheme, black on white with
+`#0000ee` links or white on `#121212` with `#9e9eff`. So a page that sets
+dark text on no background is read on white, whatever the window is. The
+rest of what the palette gives stays the palette's: the UA sheet's borders
+and rules, and the widgets a form control is.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
