@@ -3242,7 +3242,9 @@ function crossLines(
   for (const size of across) room -= size;
   let at = 0;
   let between = gap;
-  switch (style.alignContent as string) {
+  // `start` and `end` are the box's own edges, the lines' ends turned
+  // round where they wrap in reverse
+  switch (crossContent(style)) {
     case 'flex-end':
       at = room;
       break;
