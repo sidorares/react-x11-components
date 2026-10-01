@@ -1956,6 +1956,67 @@ test('a row that wraps spaces its lines out, each as tall as its tallest item', 
   assert.deepStrictEqual(at('bb'), [0, 13]);
 });
 
+test('a row that wraps in reverse sets lines too tall for it at its top for space-around and space-evenly', async () => {
+  // Where the lines overflow the box, `space-around` and `space-evenly`
+  // fall back to `safe center` (CSS Box Alignment 3, 5.1; CSS Flexbox
+  // 8.4), and `safe` sets the lines at the box's own start (4.3): the top,
+  // where lines that wrap in reverse start at the bottom. Yoga fell back
+  // to `flex-start`, the bottom there, and ran the lines out past the top.
+  // `space-between` falls back to `flex-start`, which they were at.
+  const block = (height: number) =>
+    `<div style="width:60px;height:${height}px"></div>`;
+  const row = (id: string, style: string, ...heights: number[]) =>
+    '<div style="display:flex;flex-wrap:wrap-reverse;width:100px;' +
+    `${style}">` +
+    heights
+      .map((height, i) => `<div id="${id}${i}">${block(height)}</div>`)
+      .join('') +
+    '</div>';
+  const sized = (id: string, style: string, ...heights: number[]) =>
+    '<div style="display:flex;flex-wrap:wrap-reverse;width:100px;' +
+    `${style}">` +
+    heights
+      .map((height, i) => block(height).replace('<div', `<div id="${id}${i}"`))
+      .join('') +
+    '</div>';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      row('a', 'height:20px;align-content:space-around', 15, 25) +
+      row('v', 'height:20px;align-content:space-evenly', 15, 25) +
+      row('b', 'height:20px;align-content:space-between', 15, 25) +
+      // a row of a maximum height and none of its own
+      row('m', 'max-height:20px;align-content:space-around', 15, 25) +
+      // items Yoga does not stretch, and one line
+      sized('f', 'height:20px;align-content:space-around', 15, 25) +
+      row('o', 'height:20px;align-content:space-around', 35) +
+      sized('e', 'height:20px;align-content:space-evenly', 35) +
+      // and where the lines wrap down, their start is the top already
+      row('w', 'height:20px;align-content:space-around', 15, 25).replace(
+        'wrap-reverse',
+        'wrap',
+      ),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.y - item.parent.y, item.height];
+  };
+  assert.deepStrictEqual(at('a0'), [25, 15], 'space around');
+  assert.deepStrictEqual(at('a1'), [0, 25]);
+  assert.deepStrictEqual(at('v0'), [25, 15], 'space evenly');
+  assert.deepStrictEqual(at('v1'), [0, 25]);
+  assert.deepStrictEqual(at('b0'), [5, 15], 'space between, at the bottom');
+  assert.deepStrictEqual(at('b1'), [-20, 25]);
+  assert.deepStrictEqual(at('m0'), [25, 15], 'in a row of a max-height');
+  assert.deepStrictEqual(at('m1'), [0, 25]);
+  assert.deepStrictEqual(at('f0'), [25, 15], 'items of their own height');
+  assert.deepStrictEqual(at('f1'), [0, 25]);
+  assert.deepStrictEqual(at('o0'), [0, 35], 'one line, space around');
+  assert.deepStrictEqual(at('e0'), [0, 35], 'one line, space evenly');
+  assert.deepStrictEqual(at('w0'), [0, 15], 'wrapping down');
+  assert.deepStrictEqual(at('w1'), [15, 25]);
+});
+
 test('last baseline is its fallback alignment, the end', async () => {
   // CSS Box Alignment 3, 4.2: where a box cannot be aligned by its last
   // baseline it is aligned to the end, and nothing here aligns by one. The
@@ -2429,6 +2490,41 @@ test('a column that wraps is as wide as its items at their narrowest where they 
   assert.deepStrictEqual(at('ea'), [-50, 100], 'ended past the start');
   assert.deepStrictEqual(at('aa'), [0, 100], 'no room to space');
   assert.deepStrictEqual(at('ra'), [-50, 100], 'from the right, in reverse');
+});
+
+test('a column that wraps in reverse sets lines too wide for it at its start for space-around and space-evenly', async () => {
+  // `safe center`, the fallback of both where the lines overflow the box
+  // (CSS Box Alignment 3, 4.3 and 5.1), sets them at the box's own start:
+  // its left, or its right where it runs right to left, which is where
+  // lines that wrap in reverse end. They were set from the lines' start,
+  // past the box's start.
+  const column = (id: string, style: string) =>
+    '<div style="display:flex;flex-direction:column;flex-wrap:wrap-reverse;' +
+    `width:50px;height:40px;${style}">` +
+    `<div id="${id}a" style="height:30px"><div style="width:15px"></div>` +
+    `</div><div id="${id}b" style="height:30px">` +
+    '<div style="width:45px"></div></div></div>';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      column('a', 'align-content:space-around') +
+      column('v', 'align-content:space-evenly') +
+      column('l', 'align-content:space-around;direction:rtl') +
+      column('e', 'align-content:space-evenly;direction:rtl') +
+      column('b', 'align-content:space-between') +
+      // and where they do not wrap in reverse, the box's start is theirs
+      column('w', 'align-content:space-around;direction:rtl').replace(
+        'wrap-reverse',
+        'wrap',
+      ),
+  );
+  const el = view(node);
+  const at = (id: string) => boxOf(el, id).x;
+  assert.deepStrictEqual([at('aa'), at('ab')], [45, 0], 'space around');
+  assert.deepStrictEqual([at('va'), at('vb')], [45, 0], 'space evenly');
+  assert.deepStrictEqual([at('la'), at('lb')], [-10, 5], 'at the right, rtl');
+  assert.deepStrictEqual([at('ea'), at('eb')], [-10, 5]);
+  assert.deepStrictEqual([at('ba'), at('bb')], [35, -10], 'space between');
+  assert.deepStrictEqual([at('wa'), at('wb')], [35, -10], 'wrapping on');
 });
 
 test('a column that wraps into lines spaces them, and keeps the sizes of the items it stretches', async () => {

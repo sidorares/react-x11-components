@@ -514,7 +514,12 @@ it: `align-content` centres, ends or spaces the lines out in what the box
 has past them, or stretches them to it, its `start` and `end` the box's
 left and right sides, and a line wider than the box runs
 past both its sides where it is centred, or past its start where it is
-ended, starting at its right edge where the lines run right to left. A
+ended, starting at its right edge where the lines run right to left.
+Lines wider than the box that `space-around` or `space-evenly` would space
+out are set at its own start, its left or its right where it runs right to
+left, and run past its end (`safe center`, CSS Box Alignment 3, 4.3 and
+5.1), whichever way they wrap: in reverse they were set from their own
+start, past the box's. A
 stretched item is as wide as its line, within its limits, and as tall as
 its content makes it at the width it had before it was stretched, as the
 specification has it where a column wraps (9.8) and as Chrome does: an
@@ -609,7 +614,11 @@ that wraps in reverse has at its lines' ends. `space-between`,
 `space-around` and `space-evenly` put the room the lines leave between
 them and around them, the latter two centring a row's one line, and an
 item stretched across a line spaced out so is as tall as the line, where
-Yoga made it taller by the room after the line too. Items go in `order`, and in the document's where two have the
+Yoga made it taller by the room after the line too. Lines taller than the
+row the latter two would space out are set at its top and run past its
+bottom, `safe center` setting them at the box's own start, where Yoga set
+them at the lines' start: in a row that wraps in reverse, at the bottom,
+and they ran past the top. Items go in `order`, and in the document's where two have the
 same, and are painted so; one with a `z-index` is a stacking context
 whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines, their
 line as tall as that makes it — `last baseline` is taken as the end of the

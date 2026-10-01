@@ -323,12 +323,13 @@ export function layoutFlex(
   // `align-content` spaces out come out of its layout as tall as their
   // line and the room after it as well (`unspace`): laid out so that each
   // is as tall as its line, where the box has room to space them out in —
-  // a height, or a minimum one
+  // a height, or a minimum one — and with the lines at its start where it
+  // may be too short for them, a height or a maximum one
   const spaced =
     row &&
     bounded &&
     !hold.frozen &&
-    (height !== null || floor > 0) &&
+    (height !== null || floor > 0 || ceiling < Infinity) &&
     spacesLines(box.style);
   const ask =
     restretched.length > 0
@@ -3247,6 +3248,16 @@ function spacesLines(style: ComputedStyle): boolean {
  * makes too, and is kept. Where they do, Yoga is asked again as the row
  * is, for where the lines and the items are, and the heights are kept from
  * the first layout.
+ *
+ * And where the lines are taller than the row, `space-around` and
+ * `space-evenly` fall back to `safe center`, which sets them at the row's
+ * own start, its top (CSS Box Alignment 3, 4.3 and 5.1; CSS Flexbox 8.4).
+ * Yoga falls back to `flex-start` for both, which is the bottom where the
+ * lines run bottom to top, and ran them out past the row's top. It sets
+ * the lines of a row that wraps in reverse top to bottom and turns them
+ * over once they are set, so it is asked for them at `flex-end` there,
+ * which comes out at the top — where the lines it set at their start, or
+ * spaced, reach past the row's bottom.
  */
 function unspace(
   root: YogaNode,
@@ -3256,6 +3267,16 @@ function unspace(
   layout: () => void,
 ): void {
   for (const { laid } of items) laid.unstretched = NaN;
+  const lines = root.getAlignContent();
+  // where the lines start at the row's bottom, its start is their end
+  const safe =
+    reverse &&
+    (lines === Y.ALIGN_SPACE_AROUND || lines === Y.ALIGN_SPACE_EVENLY);
+  const atEnd = (): void => {
+    root.setAlignContent(Y.ALIGN_FLEX_END);
+    layout();
+    root.setAlignContent(lines);
+  };
   // each item Yoga stretches: `stretch`, with no height of its own
   const align = root.getAlignItems();
   const stretched = items.filter(({ node }) => {
@@ -3266,15 +3287,24 @@ function unspace(
   });
   if (stretched.length === 0) {
     layout();
+    // spaced where there is room, and else at their start, past the bottom
+    if (
+      safe &&
+      linesReach(root, items, reverse) - root.getComputedHeight() > NEAR
+    ) {
+      atEnd();
+    }
     return;
   }
-  const lines = root.getAlignContent();
   root.setAlignContent(Y.ALIGN_FLEX_START);
   layout();
   root.setAlignContent(lines);
-  if (!(root.getComputedHeight() - linesReach(root, items, reverse) > NEAR)) {
+  const room = root.getComputedHeight() - linesReach(root, items, reverse);
+  if (safe && room < -NEAR) {
+    atEnd();
     return;
   }
+  if (!(room > NEAR)) return;
   const heights = stretched.map(({ node }) => node.getComputedHeight());
   layout();
   stretched.forEach(({ node, laid }, i) => {
@@ -3397,9 +3427,10 @@ interface Across {
  * where they are short of the box; `center` and `flex-end` whether they are
  * or not, so that lines wider than the box run past both its sides, or its
  * start; and the spacing values only where there is room, setting the lines
- * at the box's start where there is none (CSS Box Alignment 3, 4.3:
- * `space-between` falls back to `flex-start`, `space-around` and
- * `space-evenly` to `safe center`, the start where the lines overflow). An
+ * at their start where there is none, or at the box's (CSS Box Alignment 3,
+ * 4.3: `space-between` falls back to `flex-start`, `space-around` and
+ * `space-evenly` to `safe center`, the box's own start where the lines
+ * overflow, and not theirs where they wrap in reverse). An
  * item with an `auto` margin across its line takes the room the line has
  * past it on that side (8.1), and none where there is none; a stretched
  * item is as wide as its line less its margins, within its limits (9.4,
@@ -3447,6 +3478,10 @@ function crossLines(
   for (const size of across) room -= size;
   let at = 0;
   let between = gap;
+  // Where they are wider than the box, `space-around` and `space-evenly`
+  // set the lines at the box's own start (`safe center`), which is where
+  // their last one ends where they wrap in reverse: they run past its end
+  const reverse = style.flexWrap === 'wrap-reverse';
   switch (crossContent(style)) {
     case 'flex-end':
       at = room;
@@ -3464,13 +3499,13 @@ function crossLines(
       if (room > 0) {
         at = room / count / 2;
         between += room / count;
-      }
+      } else if (reverse) at = room;
       break;
     case 'space-evenly':
       if (room > 0) {
         at = room / (count + 1);
         between += room / (count + 1);
-      }
+      } else if (reverse) at = room;
       break;
   }
   const placed = new Map<Box, Across>();
