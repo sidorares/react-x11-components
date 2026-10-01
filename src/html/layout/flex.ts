@@ -175,6 +175,17 @@ export function layoutFlex(
     );
   } else PAINT_ORDER.delete(box);
 
+  // Whether a line weighs its items one against another as it shrinks
+  // them, each by its flex base size (CSS Flexbox 9.7, step 4c): the one
+  // line of a row that does not wrap, two or more of whose items may
+  // shrink. One that shrinks alone comes to the room the rest leave it,
+  // whatever its base, and a line of a row that wraps is too narrow for
+  // an item only where that is alone on it.
+  const weighs =
+    box.style.flexWrap === 'nowrap' &&
+    box.style.flexDirection.startsWith('row') &&
+    flowing.filter((child) => child.style.flexShrink > 0).length > 1;
+
   const items: { box: Box; node: YogaNode; laid: Laid }[] = [];
   for (const child of flowing) {
     const node = Y.Node.create(flexConfig());
@@ -207,6 +218,7 @@ export function layoutFlex(
       laid,
       height !== null,
       own ? definite : NaN,
+      weighs,
     );
     root.insertChild(node, items.length);
     items.push({ box: child, node, laid });
@@ -736,6 +748,9 @@ function applyItem(
   /** That height where it is definite, and a percentage may be of it, and
    *  else NaN: one a column flexed the box to is not (`USED_HEIGHT`). */
   definite: number,
+  /** Whether its line weighs it against another as it shrinks them, by
+   *  their flex base sizes (`layoutFlex`). */
+  weighed: boolean,
 ): void {
   const style = box.style;
   const own = Number.isFinite(definite);
@@ -1028,16 +1043,24 @@ function applyItem(
       widthThrough && given && !exact && flexed ? widthThrough(h) : null;
     // Along a row, an item's flex base size is its content at its widest,
     // whatever the room (CSS Flexbox 9.2.3 E, `content` as `max-content`),
-    // which Yoga asks for as at most the row's width: a replaced element's,
-    // and that of one that may not shrink, which is as wide as that (9.7).
-    // Fitted to the room, a `shrink-0` item of words was held to its
-    // content at its narrowest, and wrapped where it overflows the row.
-    // One that may shrink is fitted, as any item is across a column — and
-    // so is every item of a row laid out in no room, which is the flex box
-    // measured for its content at its narrowest (`MIN_CONTENT_PROBE`): that
-    // is the sum of its items' content at their narrowest, whatever they
-    // may shrink by, as Chrome and the css-flexbox suite have it
-    // (`intrinsic-size/row-001`, `gap-015`), and not their bases.
+    // which Yoga asks for as at most the row's width. One that may not
+    // shrink is as wide as that (9.7): fitted to the room, a `shrink-0`
+    // item of words was held to its content at its narrowest, and wrapped
+    // where it overflows the row. And one that may shrink gives up room in
+    // proportion to it, where its line weighs it against another (9.7,
+    // step 4c, its flex shrink factor times its base): fitted, an item of
+    // words wider than the row was weighed as no wider than the row, and
+    // gave up too little of it beside a narrower one — 230 and 70 of a row
+    // of 300, where Chrome has 245 and 55. One that shrinks alone is
+    // fitted, which comes to the same and keeps the layout it is measured
+    // at for the one it is given: at its widest, a paragraph in a row laid
+    // itself out twice.
+    // And every item of a row laid out in no room is fitted, which is the
+    // flex box measured for its content at its narrowest
+    // (`MIN_CONTENT_PROBE`): that is the sum of its items' content at their
+    // narrowest, whatever they may shrink by, as Chrome and the css-flexbox
+    // suite have it (`intrinsic-size/row-001`, `gap-015`), and not their
+    // bases.
     // Across a column, the item is `fit-content` wide where it is not
     // stretched (9.4, step 7): fitted to the column, but no narrower than
     // its content at its narrowest, past the column where that is wider,
@@ -1052,7 +1075,12 @@ function applyItem(
     // it that takes a percentage of a height is fitted to the column still:
     // the flex layout makes its height definite only after this, and
     // measured without it, an image `height: 100%` is its natural width.
-    const widest = alongRow && !exact;
+    const widest =
+      alongRow &&
+      !exact &&
+      (box.kind === 'replaced' ||
+        (containingWidth !== MIN_CONTENT_PROBE &&
+          (style.flexShrink === 0 || weighed)));
     const narrowest =
       alongRow || percentHeightsIn(box)
         ? undefined
@@ -1062,9 +1090,7 @@ function applyItem(
     const fitted =
       through !== null
         ? through
-        : widest &&
-            (box.kind === 'replaced' ||
-              (style.flexShrink === 0 && containingWidth !== MIN_CONTENT_PROBE))
+        : widest
           ? content()
           : innerWidth(width, wm, content, narrowest);
     // Across a column, no wider than its maximum: Yoga hands the measure
