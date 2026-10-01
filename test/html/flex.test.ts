@@ -348,6 +348,81 @@ metric(
   },
 );
 
+test('an item with an auto margin across a row aligned by baselines takes the room its line has past it', async () => {
+  // An item with an `auto` margin across the line takes no part in
+  // aligning it by baselines (CSS Flexbox 8.3, 9.4 step 8): the margin
+  // takes the room past it (8.1). Yoga takes the pass that sets the items
+  // of a row that wraps across their lines for any row an item of is
+  // aligned by its baseline, and that pass reads the alignment and not the
+  // margins: it set each of these by its baseline, as tall as the items
+  // and not the row, and the items beside it by its baseline too.
+  const row = (style: string, items: string) =>
+    `<div style="display:flex;width:200px;${style}">${items}</div>`;
+  const item = (id: string, style: string) =>
+    `<div${id ? ` id="${id}"` : ''} style="width:20px;${style}"></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      row(
+        'align-items:baseline;height:60px',
+        item('a', 'height:18px;margin-top:auto') + item('', 'height:18px'),
+      ) +
+      row(
+        'height:60px',
+        item('b', 'height:10px;margin:auto 0 3px;align-self:baseline') +
+          item('', 'height:18px;align-self:baseline'),
+      ) +
+      // beside two items that are aligned by their baselines
+      row(
+        'height:60px',
+        item('c', 'height:10px;margin-top:auto;align-self:baseline') +
+          item('d', 'height:10px;margin-top:4px;align-self:baseline') +
+          item('', 'height:30px;align-self:baseline'),
+      ) +
+      // beside one, which is at the line's start whatever it is beside
+      row(
+        'align-items:baseline',
+        item('e', 'height:50px;margin-top:auto') + item('f', 'height:18px'),
+      ) +
+      row(
+        'align-items:baseline',
+        item('g', 'height:10px;margin:auto 0') +
+          item('h', 'height:18px;margin-top:7px'),
+      ) +
+      row(
+        'align-items:baseline',
+        item('i', 'height:18px;margin:5px 0 auto') + item('j', 'height:18px'),
+      ) +
+      // not stretched, and the line is the row's for the others in it
+      row(
+        'align-items:baseline;height:60px',
+        '<div id="k" style="align-self:stretch;margin-bottom:auto">' +
+          item('', 'height:12px') +
+          '</div>' +
+          item('l', 'height:10px;align-self:center') +
+          item('m', 'height:10px;margin-top:auto;align-self:flex-start') +
+          item('', 'height:18px'),
+      ),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const box = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [box.y - box.parent.y, box.height];
+  };
+  assert.deepStrictEqual(at('a'), [42, 18], 'at the end of the row');
+  assert.deepStrictEqual(at('b'), [47, 10], 'within its bottom margin');
+  assert.deepStrictEqual(at('c'), [50, 10], 'at the end, beside two');
+  assert.deepStrictEqual(at('d'), [20, 10], 'the two by their baselines');
+  assert.deepStrictEqual(at('e'), [0, 50], 'as tall as the row');
+  assert.deepStrictEqual(at('f'), [0, 18], 'the other at its start');
+  assert.deepStrictEqual(at('g'), [7.5, 10], 'centred');
+  assert.deepStrictEqual(at('h'), [7, 18], 'the other within its margin');
+  assert.deepStrictEqual(at('i'), [5, 18], 'at the start');
+  assert.deepStrictEqual(at('j'), [0, 18], 'the other not below it');
+  assert.deepStrictEqual(at('k'), [0, 12], 'not stretched');
+  assert.deepStrictEqual(at('l'), [25, 10], 'centred in the row');
+  assert.deepStrictEqual(at('m'), [50, 10], 'the margin over its alignment');
+});
+
 metric("an inline flex box sits on its first item's baseline", async () => {
   // CSS Flexbox 8.5: its first line's items aligned by their baselines, or
   // its first item — not its last line box, as an inline block does
@@ -1768,6 +1843,71 @@ test('an item across a row that wraps in reverse is within its own margins', asy
   assert.deepStrictEqual(at('d'), [35, 10], 'centred within them');
 });
 
+test('a row that wraps spaces its lines out, each as tall as its tallest item', async () => {
+  // `space-between`, `space-around` and `space-evenly` put the room left
+  // beside the lines of a row that wraps between them (CSS Flexbox 9.4,
+  // step 9; CSS Box Alignment 3, 5.1), and a stretched item is as tall as
+  // its line (step 11). Yoga laid a stretched item out again as tall as its
+  // line and the room after it, so on two lines `space-between` made the
+  // 10px item 80 tall, and the row as tall as that; `space-evenly` was not
+  // handed to it, and the lines were stretched. A row with one line
+  // centres it for `space-around` and `space-evenly`, where Yoga had it at
+  // the row's top.
+  const block = (height: number) =>
+    `<div style="width:60px;height:${height}px"></div>`;
+  const row = (id: string, style: string) =>
+    '<div style="display:flex;flex-wrap:wrap;width:100px;' +
+    `${style}"><div id="${id}a">${block(10)}</div>` +
+    `<div id="${id}b">${block(20)}</div></div>`;
+  const line = (id: string, style: string) =>
+    '<div style="display:flex;flex-wrap:wrap;width:200px;height:60px;' +
+    `${style}"><div id="${id}a">${block(13)}</div>` +
+    `<div id="${id}b">${block(5)}</div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      row('s', 'height:100px;align-content:space-between') +
+      row('a', 'height:100px;align-content:space-around') +
+      row('v', 'height:90px;align-content:space-evenly') +
+      row(
+        'r',
+        'height:100px;align-content:space-around;flex-wrap:wrap-reverse',
+      ) +
+      row('m', 'min-height:100px;align-content:space-between') +
+      row('c', 'height:100px;align-content:space-between;align-items:center') +
+      line('o', 'align-content:space-around') +
+      line('e', 'align-content:space-evenly') +
+      line('b', 'align-content:space-between'),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.y - item.parent.y, item.height];
+  };
+  assert.deepStrictEqual(at('sa'), [0, 10], 'space between');
+  assert.deepStrictEqual(at('sb'), [80, 20]);
+  assert.deepStrictEqual(at('aa'), [17.5, 10], 'space around');
+  assert.deepStrictEqual(at('ab'), [62.5, 20]);
+  assert.deepStrictEqual(at('va'), [20, 10], 'space evenly');
+  assert.deepStrictEqual(at('vb'), [50, 20]);
+  assert.deepStrictEqual(at('ra'), [72.5, 10], 'from the bottom, in reverse');
+  assert.deepStrictEqual(at('rb'), [17.5, 20]);
+  assert.deepStrictEqual(at('ma'), [0, 10], 'in a row of a min-height');
+  assert.deepStrictEqual(at('mb'), [80, 20]);
+  assert.strictEqual(
+    (boxOf(el, 'ma') as LaidBox & { parent: LaidBox }).parent.height,
+    100,
+    'which is as tall as its min-height',
+  );
+  assert.deepStrictEqual(at('ca'), [0, 10], 'centred in their lines');
+  assert.deepStrictEqual(at('cb'), [80, 20]);
+  assert.deepStrictEqual(at('oa'), [23.5, 13], 'one line, space around');
+  assert.deepStrictEqual(at('ob'), [23.5, 13], 'stretched to the line');
+  assert.deepStrictEqual(at('ea'), [23.5, 13], 'one line, space evenly');
+  assert.deepStrictEqual(at('eb'), [23.5, 13]);
+  assert.deepStrictEqual(at('ba'), [0, 13], 'one line, space between');
+  assert.deepStrictEqual(at('bb'), [0, 13]);
+});
+
 test('last baseline is its fallback alignment, the end', async () => {
   // CSS Box Alignment 3, 4.2: where a box cannot be aligned by its last
   // baseline it is aligned to the end, and nothing here aligns by one. The
@@ -2156,7 +2296,11 @@ test('a column that wraps sets its lines where align-content says, each as wide 
       column('a', 'align-content:space-around') +
       column('v', 'align-content:space-evenly') +
       column('s', 'align-content:space-between') +
-      column('l', 'align-content:flex-start;direction:rtl'),
+      column('l', 'align-content:flex-start;direction:rtl') +
+      // `start` and `end` are the box's left and right, where the lines of
+      // one that wraps in reverse start and end at the other sides
+      column('n', 'align-content:end') +
+      column('r', 'align-content:start;flex-wrap:wrap-reverse'),
   );
   const el = view(node);
   const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
@@ -2169,6 +2313,8 @@ test('a column that wraps sets its lines where align-content says, each as wide 
   assert.deepStrictEqual(at('sa'), [0, 150], 'space between one line');
   assert.deepStrictEqual(at('la'), [150, 150], 'from the right, rtl');
   assert.deepStrictEqual(at('lb'), [150, 150]);
+  assert.deepStrictEqual(at('na'), [150, 150], 'the end, at the right');
+  assert.deepStrictEqual(at('ra'), [0, 150], 'the start, in reverse');
 });
 
 test('a column that wraps sets its lines at the start or the end of the box, whichever way they wrap', async () => {
