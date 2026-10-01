@@ -426,7 +426,11 @@ inline-block sits on its last line's baseline and an inline-table on its
 first row's, each on its bottom margin edge where it clips what overflows
 it; an inline flex box sits on its first item's, clipping or not, and a
 block that clips has its first line's baseline all the same — only its
-last is its margin edge (CSS Box Alignment 3, 9.2). A `<button>` sits on
+last is its margin edge (CSS Box Alignment 3, 9.2). A scroll container
+holds whichever baseline it gives to its border box, at either edge
+(9.1), as deep in a box as it is: an inline flex box that clips a line
+taller than itself sits on its bottom edge, and one with `overflow: clip`,
+which is no scroll container, on its line. A `<button>` sits on
 its content's baseline whether it clips or not, and on the bottom edge of
 its content box where its content has none, as it does in Blink: a button
 of an icon is no taller on its line than it is. A sticky box is placed
@@ -621,7 +625,9 @@ them at the lines' start: in a row that wraps in reverse, at the bottom,
 and they ran past the top. Items go in `order`, and in the document's where two have the
 same, and are painted so; one with a `z-index` is a stacking context
 whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines, their
-line as tall as that makes it — `last baseline` is taken as the end of the
+line as tall as that makes it — an item shorter than its first line, or
+whose padding puts the line under it, on that line all the same, and only
+one that is a scroll container on its border edge — `last baseline` is taken as the end of the
 line, which is what it falls back to — and a flex box sits on the baseline of its
 first line's item aligned so, or of its first item. An inline-block whose
 last block is a flex box or a grid sits on that baseline too, the one the

@@ -348,6 +348,53 @@ metric(
   },
 );
 
+metric(
+  "a flex item's first line is its baseline past its border box, unless it scrolls",
+  async () => {
+    // CSS Box Alignment 3, 9.1: a baseline is clamped to the border edge of
+    // a scroll container alone — at either side, and wherever that is in
+    // the item. An item shorter than its text, or whose padding puts the
+    // text under it, was clamped to its height, and stood below the items
+    // beside it by as much as its line hung out of it
+    const row = (id: string, item: string) =>
+      `<div class="r"><div id="${id}" ${item}</div>` +
+      `<div id="${id}-by">x</div></div>`;
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}' +
+        '.r{display:flex;align-items:baseline;width:300px}</style>' +
+        row('short', 'style="height:4px">x') +
+        row('max', 'style="max-height:4px">x') +
+        row('padded', 'style="padding-top:30px;height:0">x') +
+        row('clip', 'style="overflow:clip;height:4px">x') +
+        row('hidden', 'style="overflow:hidden;height:4px">x') +
+        row(
+          'above',
+          'style="overflow:hidden;height:30px"><div style="margin-top:-20px">' +
+            'x</div>',
+        ) +
+        row('nested', '><div style="overflow:auto;height:4px">x</div>x'),
+    );
+    const el = view(node);
+    const baseline = (id: string) => {
+      const [line] = linesOf(el, id);
+      return line.y + line.baseline;
+    };
+    const near = (a: number, b: number, what: string) =>
+      assert.ok(Math.abs(a - b) < 0.01, `${what}: ${a}, ${b}`);
+    for (const id of ['short', 'max', 'padded', 'clip']) {
+      near(baseline(id), baseline(`${id}-by`), `${id} on its line`);
+    }
+    const hidden = boxOf(el, 'hidden');
+    near(hidden.y + hidden.height, baseline('hidden-by'), 'on its bottom');
+    near(boxOf(el, 'above').y, baseline('above-by'), 'on its top');
+    near(
+      boxOf(el, 'nested').y + 4,
+      baseline('nested-by'),
+      'on the bottom of the box inside it that scrolls',
+    );
+  },
+);
+
 test('an item with an auto margin across a row aligned by baselines takes the room its line has past it', async () => {
   // An item with an `auto` margin across the line takes no part in
   // aligning it by baselines (CSS Flexbox 8.3, 9.4 step 8): the margin
@@ -2686,6 +2733,34 @@ metric(
       `an inline block's line: ${boxOf(el, 'block').height}`,
     );
     assert.strictEqual(boxOf(el, 'first').height, 32, 'a first baseline');
+  },
+);
+
+metric(
+  'an inline flex box that clips sits on its border edge where its first line is past it',
+  async () => {
+    // A scroll container's baseline is clamped to its border edge (CSS Box
+    // Alignment 3, 9.1), on a line as in a flex line, and where it is
+    // inside an inline block too: each sat on its item's line, under it
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}' +
+        '.clip{display:inline-flex;overflow:hidden;height:6px}</style>' +
+        '<div id="flex">x<span id="f" class="clip"><span>y</span></span></div>' +
+        '<div id="inside">x<span id="i" style="display:inline-block">' +
+        '<span class="clip" style="display:flex">y</span></span></div>',
+    );
+    const el = view(node);
+    for (const [p, id] of [
+      ['flex', 'f'],
+      ['inside', 'i'],
+    ]) {
+      const [line] = linesOf(el, p);
+      const box = boxOf(el, id);
+      assert.ok(
+        Math.abs(box.y + box.height - (line.y + line.baseline)) < 0.01,
+        `${id}: ${box.y + box.height}, ${line.y + line.baseline}`,
+      );
+    }
   },
 );
 
