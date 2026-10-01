@@ -631,8 +631,10 @@ the flow would have put it and the flow is what moved: a badge over an icon
 in a `middle` cell stays on the icon. A height a cell sets is a least one
 for its row, beside what its content needs once `vertical-align: baseline`
 has moved it down to the row's baseline, and not more room under that move
-(CSS 2.1 17.5.3), as in Chrome. A fixed table takes its columns'
-widths from its `<col>`s, then from its first row's cells, border box and
+(CSS 2.1 17.5.3), as in Chrome. A cell spanning rows asks its first row for
+its baseline and the rows for its content and height alone, as Chrome does,
+so content the baseline moved down can hang out of it. A fixed table takes
+its columns' widths from its `<col>`s, then from its first row's cells, border box and
 all, and shares what is left among the rest (CSS 2.1 17.5.2.1); with
 `width: auto` it is laid out by its content, as the section says, where a
 column's `width` counts as its cells' do, and a column group's is spread
