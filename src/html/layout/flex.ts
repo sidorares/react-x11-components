@@ -270,7 +270,7 @@ export function layoutFlex(
   // their side margins are not their top and bottom ones (`unstretch`):
   // laid out so that each has the height it was sized at
   const restretched = row || hold.frozen ? [] : stretchedDown(root, items);
-  const sized = bounded && !fitLines ? contentWidth : null;
+  const sized = bounded ? contentWidth : null;
   const ask =
     restretched.length > 0
       ? (): void => unstretch(items, restretched, sized, layout)
