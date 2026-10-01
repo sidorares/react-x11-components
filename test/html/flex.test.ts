@@ -648,6 +648,96 @@ test('a column aligned by baselines keeps each margin across it once', async () 
   assert.strictEqual(x('d'), 5, 'beside one aligned by its own');
 });
 
+test('a column lines up the left edges of the items it aligns by baselines, at its cross start', async () => {
+  // A horizontal item has no baseline across a column, and one is made
+  // from its border box: the line-under edge of a vertical writing mode,
+  // its left, whichever way the text runs (CSS Box Alignment 3, 9.1). The
+  // items aligned by it share that edge, and are set together at the
+  // line's cross start, as Chrome sets them.
+  const { node } = await render(
+    '<style>body{margin:0} .c{display:flex;flex-direction:column;' +
+      'width:200px} .c>div{height:10px}</style>' +
+      '<div class="c" style="align-items:baseline">' +
+      '<div id="a" style="width:20px"></div>' +
+      '<div id="b" style="width:30px;margin-left:4px"></div>' +
+      '<div id="c" style="width:40px;margin-left:1px"></div></div>' +
+      // from the right, the item reaching furthest from its left edge
+      // to its right margin edge at the line's start
+      '<div class="c" style="align-items:baseline;direction:rtl">' +
+      '<div id="d" style="width:20px"></div>' +
+      '<div id="e" style="width:50px;margin-right:3px"></div>' +
+      '<div id="f" style="width:30px;margin:0 10px 0 6px"></div></div>' +
+      // the column's direction, not the item's own
+      '<div class="c" style="align-items:baseline">' +
+      '<div id="g" style="width:20px;margin-left:3px"></div>' +
+      '<div id="h" style="width:50px;margin-right:3px;direction:rtl"></div>' +
+      '<div id="i" style="width:30px;margin-left:6px"></div></div>' +
+      // out past the start where they reach further than the column
+      '<div class="c" style="align-items:baseline;direction:rtl;width:50px">' +
+      '<div id="j" style="width:80px"></div>' +
+      '<div id="k" style="width:20px;margin-right:5px"></div></div>' +
+      // and the items aligned otherwise where their alignment says
+      '<div class="c"><div id="l" style="width:20px;margin-left:3px;' +
+      'align-self:baseline"></div><div id="m" style="width:30px;' +
+      'margin-left:4px;align-self:center"></div><div id="n" style="' +
+      'width:40px;margin-left:8px;align-self:baseline"></div>' +
+      '<div id="o" style="width:40px;align-self:flex-end"></div></div>',
+  );
+  const el = view(node);
+  const x = (id: string) => {
+    const box = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return box.x - box.parent.x;
+  };
+  const xs = (ids: string) => [...ids].map(x);
+  assert.deepStrictEqual(xs('abc'), [4, 4, 4], 'at the largest left margin');
+  assert.deepStrictEqual(xs('def'), [147, 147, 147], 'flush right');
+  assert.deepStrictEqual(xs('ghi'), [6, 6, 6], 'by the column');
+  assert.deepStrictEqual(xs('jk'), [-30, -30], 'past the start');
+  assert.deepStrictEqual(xs('ln'), [8, 8], 'the two aligned by baselines');
+  assert.strictEqual(x('m'), 87, 'centred within its margin');
+  assert.strictEqual(x('o'), 160, 'at the end');
+});
+
+test('a column that wraps lines up the left edges of each line’s items aligned by baselines, in a line as wide as they come to', async () => {
+  // Each line is a group of its own, set at its cross start: the right,
+  // where the column runs right to left or wraps in reverse. And it is as
+  // wide as the most any of its items reaches before the shared edge and
+  // the most any reaches past it (CSS Flexbox 9.4, step 8), which is what
+  // `align-content` shares the room past the lines out from.
+  const column = (style: string, id: string) =>
+    `<div class="c" style="${style}">` +
+    `<div id="${id}1" style="width:20px;margin-left:2px"></div>` +
+    `<div id="${id}2" style="width:30px;margin-left:5px"></div>` +
+    `<div id="${id}3" style="width:60px"></div>` +
+    `<div id="${id}4" style="width:40px;margin-left:3px"></div>` +
+    `<div id="${id}5" style="width:20px;margin-left:9px"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0} .c{display:flex;flex-flow:column wrap;' +
+      'align-items:baseline;width:200px;height:30px} .c>div{height:10px}' +
+      '</style>' +
+      column('', 'a') +
+      column('flex-wrap:wrap-reverse', 'r') +
+      column('width:60px', 'n') +
+      '<div class="c" style="direction:rtl">' +
+      '<div id="d1" style="width:20px;margin-right:2px"></div>' +
+      '<div id="d2" style="width:30px;margin-left:5px"></div>' +
+      '<div id="d3" style="width:60px"></div>' +
+      '<div id="d4" style="width:40px;margin-right:3px"></div>' +
+      '<div id="d5" style="width:20px;margin-right:9px"></div></div>',
+  );
+  const el = view(node);
+  const xs = (id: string) =>
+    [1, 2, 3, 4, 5].map((i) => {
+      const box = boxOf(el, `${id}${i}`) as LaidBox & { parent: LaidBox };
+      return box.x - box.parent.x;
+    });
+  // 65 and 49 wide, and stretched by half of the 86 left each
+  assert.deepStrictEqual(xs('a'), [5, 5, 5, 117, 117], 'from the left');
+  assert.deepStrictEqual(xs('r'), [140, 140, 140, 52, 52], 'in reverse');
+  assert.deepStrictEqual(xs('n'), [5, 5, 5, 74, 74], 'past the column');
+  assert.deepStrictEqual(xs('d'), [140, 140, 140, 46, 46], 'right to left');
+});
+
 test('a row aligned by baselines laid out again for a ratio keeps each margin across it once', async () => {
   // An image stretched across a row of a height takes its width from that
   // through its ratio, and the row is laid out again for it; with its

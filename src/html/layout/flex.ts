@@ -710,6 +710,12 @@ function placeItems(
   let bottom = 0;
   // the lines of a row that wraps in reverse are turned round to run up it
   const reverse = row && box.style.flexWrap === 'wrap-reverse';
+  // the left edge a column's items aligned by baselines share, where it
+  // does not wrap (`baselineEdge`); a column that wraps is `crossed`
+  const edge =
+    row || box.style.flexWrap !== 'nowrap'
+      ? NaN
+      : baselineEdge(box.style, items);
   for (const { box: child, node, laid } of items) {
     const placed = crossed?.get(child);
     const across =
@@ -719,7 +725,11 @@ function placeItems(
     const itemHeight = row ? heightOf(node, laid) : laid.main;
     const left =
       box.contentX +
-      (placed ? placed.x : node.getComputedLeft() + (row ? 0 : across));
+      (placed
+        ? placed.x
+        : !Number.isNaN(edge) && byBaseline(box.style, child.style, false)
+          ? edge
+          : node.getComputedLeft() + (row ? 0 : across));
     // which Yoga turns an item round in by the height it laid it out at, and
     // not the one it is (`unspace`)
     const top =
@@ -2920,14 +2930,49 @@ function baselineLines<T extends { box: Box; node: YogaNode }>(
 /** Whether an item takes part in aligning its line by baselines (CSS
  *  Flexbox 8.3, 9.4 step 8): aligned by its baseline, with no `auto`
  *  margin across the line, which takes it over its alignment. */
-function byBaseline(container: ComputedStyle, item: ComputedStyle): boolean {
+function byBaseline(
+  container: ComputedStyle,
+  item: ComputedStyle,
+  /** Whether the line is a row's, across which its margins are its top
+   *  and bottom ones; a column's are its left and right ones. */
+  row = true,
+): boolean {
   const aligned =
     item.alignSelf === AUTO ? container.alignItems : item.alignSelf;
   return (
     aligned === 'baseline' &&
-    item.marginTop !== AUTO &&
-    item.marginBottom !== AUTO
+    (row ? item.marginTop : item.marginLeft) !== AUTO &&
+    (row ? item.marginBottom : item.marginRight) !== AUTO
   );
+}
+
+/**
+ * Where the items a column that does not wrap aligns by baselines have
+ * their left edges, from its content box's: NaN where it has none.
+ *
+ * A horizontal item has no baseline across a column, and one is made from
+ * its border box — the line-under edge of the vertical writing mode it is
+ * taken to have, its left, whichever way its text runs (CSS Box Alignment
+ * 3, 9.1). So the items share their left edges, and are set together at
+ * the line's cross start, the column's left or, where it runs right to
+ * left, its right (9.3; CSS Flexbox 8.3), as Chrome sets them: as far from
+ * there as the most any of them reaches past its edge on that side. Yoga
+ * never aligns a column by baselines, and sets each at its line's start
+ * with its margin there, so that is the furthest any of them is from the
+ * start: the rightmost left edge, or from the right the leftmost.
+ */
+function baselineEdge(
+  container: ComputedStyle,
+  items: readonly { box: Box; node: YogaNode }[],
+): number {
+  const rtl = container.direction === 'rtl';
+  let edge = NaN;
+  for (const { box, node } of items) {
+    if (!byBaseline(container, box.style, false)) continue;
+    const left = node.getComputedLeft();
+    if (!(rtl ? left >= edge : left <= edge)) edge = left;
+  }
+  return edge;
 }
 
 /**
@@ -3445,9 +3490,10 @@ interface Across {
  * item with an `auto` margin across its line takes the room the line has
  * past it on that side (8.1), and none where there is none; a stretched
  * item is as wide as its line less its margins, within its limits (9.4,
- * step 11), and as tall as the column made it; and the rest are where
- * `align-self` says, a baseline at the line's start, as a column has none
- * across it to align by.
+ * step 11), and as tall as the column made it; those aligned by baselines
+ * share their left edges, set together at the line's start, where a column
+ * that does not wrap sets them (`baselineEdge`); and the rest are where
+ * `align-self` says.
  */
 function crossLines(
   style: ComputedStyle,
@@ -3481,9 +3527,25 @@ function crossLines(
     lead.push(fromRight ? r : l);
     trail.push(fromRight ? l : r);
   });
-  const across = lines.map((line) =>
-    line.reduce((most, i) => Math.max(most, sizes[i] + lead[i] + trail[i]), 0),
-  );
+  // A line is as wide as its widest item, margins and all, and as the
+  // items it aligns by baselines come to, sharing their left edges: the
+  // most any reaches from the line's start to that edge, and the most any
+  // reaches past it (`baselineEdge`; 9.4 step 8). `reach` is each line's
+  // first, where those items' left edges are from its start.
+  const reach: number[] = [];
+  const across = lines.map((line) => {
+    let most = 0;
+    let before = -Infinity;
+    let after = -Infinity;
+    for (const i of line) {
+      most = Math.max(most, sizes[i] + lead[i] + trail[i]);
+      if (!byBaseline(style, items[i].box.style, false)) continue;
+      before = Math.max(before, lead[i] + (fromRight ? sizes[i] : 0));
+      after = Math.max(after, trail[i] + (fromRight ? 0 : sizes[i]));
+    }
+    reach.push(before);
+    return Math.max(most, before + after);
+  });
   const count = lines.length;
   let room = width - gap * (count - 1);
   for (const size of across) room -= size;
@@ -3541,6 +3603,8 @@ function crossLines(
         if (itemWidth > most) itemWidth = most;
         if (itemWidth < least) itemWidth = least;
         itemWidth = Math.max(itemWidth, box.horizontalExtra);
+      } else if (byBaseline(style, own, false)) {
+        offset = reach[k] - (fromRight ? itemWidth : 0);
       } else {
         const align = own.alignSelf === AUTO ? style.alignItems : own.alignSelf;
         if (align === 'center') offset += free / 2;
