@@ -1143,6 +1143,9 @@ export class Cascade {
     /** The document's element where it is not an `<html>`: an SVG image's
      *  `<svg>`, which is `:root` there (Selectors 4, 14.1). */
     documentElement: Element | null = null,
+    /** The element the document's URL names by its fragment, which is
+     *  `:target` (Selectors 4, 9.1): an SVG image's, `image.svg#icon`. */
+    target: Element | null = null,
   ) {
     // css-select has none of the focus's three, and a pseudo-class is
     // handed only the element, so they are this cascade's own closures
@@ -1151,6 +1154,7 @@ export class Cascade {
       ...(documentElement && {
         root: (el: Element) => el === documentElement,
       }),
+      ...(target && { target: (el: Element) => el === target }),
       focus: (el: Element) => this._focus.element === el,
       'focus-visible': (el: Element) =>
         this._focus.visible && this._focus.element === el,
@@ -2625,6 +2629,9 @@ const PSEUDOS = {
   focus: (_el: Element) => false,
   'focus-visible': (_el: Element) => false,
   'focus-within': (_el: Element) => false,
+  // css-select has none, and threw on one, so `:not(:target)` matched
+  // nothing: a document is drawn at no fragment, an SVG image at its own
+  target: (_el: Element) => false,
   // css-select's, but its ranges and tags lower-cased as ASCII has it, and
   // no other script (CSS 2.1 4.1.3): Unicode's took `:lang(\u212Al)`, a
   // Kelvin sign for the K, for `:lang(kl)`

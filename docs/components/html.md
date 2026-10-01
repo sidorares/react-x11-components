@@ -1090,7 +1090,9 @@ one with a `media` query is under it, and one whose `type` is not
 `text/css` is none, as a browser has them. `prefers-color-scheme` inside
 an image answers the colour scheme of the element that embeds it — its
 `color-scheme`, or else the palette's — as Chrome answers it, and a width
-query or a `vw` in one is of the rectangle it is drawn in.
+query or a `vw` in one is of the rectangle it is drawn in. The element its
+URL names by a fragment is its `:target`: `sprite.svg#check` shows the
+icon a sheet hides the others of with `g:not(:target) { display: none }`.
 
 What a `<use>` draws is a copy in a tree of its own, as SVG 2 has it and
 Chrome draws it. A rule is matched against the element the `<use>` names

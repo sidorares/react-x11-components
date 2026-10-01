@@ -182,7 +182,7 @@ export class ResourceStore {
       if (!synchronous) this._changed('image');
       return;
     }
-    const svg = svgFromBytes(result.bytes);
+    const svg = svgFromBytes(result.bytes, fragmentOf(url));
     if (svg) {
       entry.image = svg;
       entry.size = svg.intrinsics;
@@ -321,5 +321,17 @@ function decodeImage(bytes: Uint8Array): ImageLike | Promise<ImageLike> | null {
     return new ctor(bytes);
   } catch {
     return null;
+  }
+}
+
+/** A URL's fragment, decoded, or '' where it has none. */
+function fragmentOf(url: string): string {
+  const hash = url.indexOf('#');
+  if (hash < 0) return '';
+  const fragment = url.slice(hash + 1);
+  try {
+    return decodeURIComponent(fragment);
+  } catch {
+    return fragment;
   }
 }
