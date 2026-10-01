@@ -2,6 +2,7 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, expectPixel, renderX11, waitFor } from 'react-x11/test';
+import * as ntk from 'react-x11/ntk';
 import { Html } from '../../src/index.js';
 import {
   FONTS,
@@ -603,6 +604,123 @@ metric('a viewBox of no height, or no width, draws nothing', async () => {
   await expectPixel(ctx, 40, 60, '#ffffff', { message: 'the inline one' });
   await expectPixel(ctx, 40, 100, '#0000ff', {
     message: 'a negative extent is no viewBox, and draws',
+  });
+});
+
+/** The part of a context the stand-ins for `SvgView.draw` below call. */
+interface CanvasLike {
+  save(): void;
+  restore(): void;
+  translate(x: number, y: number): void;
+  beginPath(): void;
+  rect(x: number, y: number, w: number, h: number): void;
+  clip(): void;
+}
+
+/** A document of an inline SVG and a band after it, the band's colour
+ *  given. */
+function afterAnSvg(svg: string, band: string) {
+  return h(
+    'box',
+    { style: { width: 200, flexDirection: 'column' } },
+    h(Html, {
+      source:
+        '<style>body{margin:0}svg,div{display:block}</style>' +
+        `${svg}<div style="height:20px;background:${band}"></div>`,
+      partial: false,
+    }),
+  );
+}
+
+metric(
+  'an inline SVG ntk cannot draw leaves the rest of the document drawn, and every frame after',
+  async () => {
+    // nextjs.org's icons: a root that sets `color: currentColor`, which
+    // ntk reads as a colour named "currentColor", and a presentation
+    // attribute that is a `var()`. ntk throws on both halfway through the
+    // drawing, and the clip to the icon's box stayed on the window's
+    // context: nothing past the icon was drawn, in that frame or any after.
+    const icons =
+      '<svg viewBox="0 0 16 16" width="16" height="16" style="color:currentColor">' +
+      '<path fill="currentColor" d="M0 0h16v16H0z"/></svg>' +
+      '<svg viewBox="0 0 6 6" width="7" height="7">' +
+      '<path d="M0 0h6v6H0z" fill="var(--accents-3)"/></svg>';
+    const result = await renderX11(afterAnSvg(icons, '#0000ff'), {
+      width: 240,
+      height: 100,
+      fonts: FONTS!,
+    });
+    await expectPixel(result.ctx, 100, 33, '#0000ff', {
+      message: 'the band after the icons',
+    });
+    await act(() => result.rerender(afterAnSvg(icons, '#ff0000')));
+    await expectPixel(result.ctx, 100, 33, '#ff0000', {
+      message: 'and a frame after that',
+    });
+  },
+);
+
+metric(
+  'a drawing that throws with saves open is unwound to where it began',
+  async (t) => {
+    // Whatever throws out of `SvgView`, however deep: the saves it made and
+    // did not restore are restored after it, the clip and the transform it
+    // left with them, and what follows is drawn where it is.
+    const SvgView = (
+      ntk as unknown as {
+        SvgView: { prototype: { draw(ctx: unknown): void } };
+      }
+    ).SvgView;
+    t.mock.method(SvgView.prototype, 'draw', (ctx: CanvasLike) => {
+      ctx.save();
+      ctx.translate(50, 0);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, 1, 1);
+      ctx.clip();
+      throw new Error('a drawing ntk cannot read');
+    });
+    const svg = '<svg width="10" height="10"></svg>';
+    const result = await renderX11(afterAnSvg(svg, '#0000ff'), {
+      width: 240,
+      height: 100,
+      fonts: FONTS!,
+    });
+    await expectPixel(result.ctx, 5, 20, '#0000ff', {
+      message: 'from the left edge, unclipped',
+    });
+    await act(() => result.rerender(afterAnSvg(svg, '#ff0000')));
+    await expectPixel(result.ctx, 5, 20, '#ff0000', {
+      message: 'and in a frame after',
+    });
+  },
+);
+
+metric('a drawing restores none of what it did not save', async (t) => {
+  // A restore past a drawing's own saves would take its caller's: the
+  // clip of the box the drawing is in, which the box after it — painted
+  // after it, a replaced element in its place — is cut to
+  const SvgView = (
+    ntk as unknown as {
+      SvgView: { prototype: { draw(ctx: unknown): void } };
+    }
+  ).SvgView;
+  t.mock.method(SvgView.prototype, 'draw', (ctx: CanvasLike) => {
+    for (let i = 0; i < 4; i += 1) ctx.restore();
+  });
+  const result = await renderX11(
+    afterAnSvg(
+      '<div style="overflow:hidden;height:15px">' +
+        '<svg width="10" height="10"></svg>' +
+        '<svg width="10" height="40" style="background:#ff0000"></svg></div>',
+      '#0000ff',
+    ),
+    { width: 240, height: 100, fonts: FONTS! },
+  );
+  await expectPixel(result.ctx, 5, 12, '#ff0000', { message: 'inside' });
+  await expectPixel(result.ctx, 5, 25, '#0000ff', { message: 'the band' });
+  await expectPixel(result.ctx, 5, 42, '#ffffff', {
+    message: 'the box still clips what it holds',
   });
 });
 
