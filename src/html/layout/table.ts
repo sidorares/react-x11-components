@@ -73,6 +73,10 @@ export function layoutTable(
       table.width = Math.max(0, inner) + table.horizontalExtra;
     }
     layoutCaptions(captions, ctx, table);
+    TABLE_CONTENT.set(
+      table,
+      table.captionTop + table.captionBottom + table.verticalExtra,
+    );
     return 0;
   }
 
@@ -250,6 +254,19 @@ export function layoutTable(
     if (missing > 0) rowHeight[last] += missing;
   }
 
+  // What the rows come to before any height is shared out to them, the
+  // spacing above, below and between them in (`TABLE_CONTENT`)
+  let rowsOwn = rowSpacing;
+  for (let r = 0; r < rows.length; r += 1) {
+    if (rows[r].style.visibility !== 'collapse') {
+      rowsOwn += rowHeight[r] + rowSpacing;
+    }
+  }
+  TABLE_CONTENT.set(
+    table,
+    rowsOwn + table.captionTop + table.captionBottom + table.verticalExtra,
+  );
+
   // A table's own height, within its least and greatest, is a least
   // height: what its rows come short of it goes to them (CSS 2.1 17.5.3,
   // which leaves how to its user agents: `growRows`). So is the height a
@@ -257,9 +274,13 @@ export function layoutTable(
   // `USED_HEIGHT`), which is its wrapper box's, captions and all (CSS
   // Flexbox 1, 4): taken as the table's box alone, a table stretched down
   // its line kept its rows at their content's height, and a cell had
-  // nothing for `vertical-align` to centre its content in.
+  // nothing for `vertical-align` to centre its content in. That one is its
+  // height in place of its own, which the flex layout started from: flexed
+  // down a column shorter than a height of its own, it is as short as that,
+  // where its rows let it be (Blink: "A table interprets forced block-size
+  // as the block-size of its rows", `flex_layout_algorithm.cc`).
   const wanted = resolveOrNull(style.height, table.percentHeightBase);
-  const given = FLEXED_HEIGHT.get(table) ?? USED_HEIGHT.get(table) ?? NaN;
+  const given = givenHeight(table);
   if (rows.length) {
     const extraBox = table.verticalExtra;
     const set =
@@ -268,10 +289,9 @@ export function layoutTable(
         : style.boxSizing === 'border-box'
           ? wanted
           : wanted + extraBox;
-    let inner = clampHeight(table, set) - extraBox;
-    if (Number.isFinite(given)) {
-      inner = Math.max(inner, given - table.captionTop - table.captionBottom);
-    }
+    const inner = Number.isFinite(given)
+      ? given - table.captionTop - table.captionBottom
+      : clampHeight(table, set) - extraBox;
     let total = 0;
     for (const h of rowHeight) total += h;
     const extra = inner - total - rowSpacing * (rows.length + 1);
@@ -405,6 +425,20 @@ export function layoutTable(
   }
 
   return y - top;
+}
+
+/**
+ * A table's height as its rows and captions came to in its last layout,
+ * border box, apart from a height it sets or is given: the least it can be
+ * at the width it was laid out at. What a flex layout holds a table item to
+ * down a column (`flex.ts`'s `autoMinimums`).
+ */
+export const TABLE_CONTENT = new WeakMap<Box, number>();
+
+/** The content height a flex or grid layout gave a table, its captions in
+ *  (`FLEXED_HEIGHT`, `USED_HEIGHT`), and else NaN. */
+export function givenHeight(table: Box): number {
+  return FLEXED_HEIGHT.get(table) ?? USED_HEIGHT.get(table) ?? NaN;
 }
 
 /** Whether `visibility: collapse` takes a column out: its own, or the
