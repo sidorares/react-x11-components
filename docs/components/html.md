@@ -1087,6 +1087,21 @@ out, as it is: a widget is a node of its own, which no matrix of the
 document's reaches. `background-attachment: fixed` in a transformed box is
 still fixed, where CSS has it scroll.
 
+**Animations:** `@keyframes`, and `@-webkit-keyframes`, which never takes
+the place of an `@keyframes` of the same name, as in Chrome; `animation`
+and its eight longhands, under their `-webkit-` names too. Nothing runs: a
+document is drawn as it stands once each of its animations has run one
+iteration at no length. One that fills forwards (`forwards` or `both`)
+then holds the frame it ends on — its `to`, or its `from` where it plays in
+reverse — over the author's declarations and under their `!important`
+ones, as the animation origin is (CSS Cascade 5, 6.1); any other leaves the
+element's own style. So a page that fades its panels in and holds them
+shows them, and one that cycles hidden panels through `visibility` shows
+none — what Chrome draws with every animation set to no length, which is
+how the Zen Garden bench holds it. The iteration count, the duration and
+the delay are read and not used, so an animation of two `alternate`
+iterations, or of half of one, is drawn as it ends its first.
+
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
 (CSS Containment 2). A box with size containment is laid out as though it
@@ -1595,9 +1610,9 @@ whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms out of the
-plane of the page, animations and transitions, a multicol container's
-`column-rule`, `column-span` on a box further in than its children, forced
-breaks, and a table in one broken
+plane of the page, animations that run and transitions, a multicol
+container's `column-rule`, `column-span` on a box further in than its
+children, forced breaks, and a table in one broken
 between its rows — it goes to the next column whole, and a box a break
 falls inside casts no shadow — conic and repeating
 gradients, a sticky box that follows the viewport as it scrolls, and the font

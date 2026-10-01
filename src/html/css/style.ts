@@ -42,6 +42,13 @@ import type { CustomProps } from './vars.js';
 import { parseRotate, parseScale, parseTransform } from './transform.js';
 import type { TransformFunction } from './transform.js';
 import {
+  ANIMATION_LONGHANDS,
+  NO_ANIMATIONS,
+  animationLonghand,
+  parseAnimation,
+} from './animation.js';
+import type { Animations } from './animation.js';
+import {
   LIGHT_DARK,
   SYSTEM_COLOR,
   lightDark,
@@ -590,6 +597,10 @@ export interface ComputedStyle {
   /** `transform-origin`: the point a transform turns and scales about,
    *  from the border box's top left, a percentage of its width and height. */
   transformOrigin: [Len, Len];
+  /** `animation` and its longhands, each a list (`css/animation.ts`):
+   *  `NO_ANIMATIONS`, shared, where nothing sets one. What they leave on
+   *  the style is in its other fields already (`Cascade._computeStyle`). */
+  animations: Animations;
   zIndex: number | 'auto';
   /** A keyword, a length to raise the box by, or a percentage of its own
    *  line height. */
@@ -1085,6 +1096,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     scale: null,
     transform: null,
     transformOrigin: [{ pct: 50 }, { pct: 50 }],
+    animations: NO_ANIMATIONS,
     zIndex: AUTO,
     verticalAlign: 'baseline',
 
@@ -1438,13 +1450,23 @@ const BORDER_WIDTH_KEYWORDS: Record<string, number> = {
   thick: 5,
 };
 
-/** `-webkit-` names that are the multicol properties' own. */
-const MULTICOL_ALIASES: Record<string, string> = {
+/** `-webkit-` names that are the multicol properties' own, and the
+ *  animation's. */
+const PREFIXED_ALIASES: Record<string, string> = {
   '-webkit-columns': 'columns',
   '-webkit-column-count': 'column-count',
   '-webkit-column-width': 'column-width',
   '-webkit-column-gap': 'column-gap',
   '-webkit-column-break-inside': 'break-inside',
+  '-webkit-animation': 'animation',
+  '-webkit-animation-name': 'animation-name',
+  '-webkit-animation-duration': 'animation-duration',
+  '-webkit-animation-timing-function': 'animation-timing-function',
+  '-webkit-animation-delay': 'animation-delay',
+  '-webkit-animation-iteration-count': 'animation-iteration-count',
+  '-webkit-animation-direction': 'animation-direction',
+  '-webkit-animation-fill-mode': 'animation-fill-mode',
+  '-webkit-animation-play-state': 'animation-play-state',
 };
 
 /**
@@ -1463,11 +1485,11 @@ export function applyDeclaration(
   ctx: UnitContext,
 ): void {
   const written = prop.toLowerCase();
-  // the multicol properties under the names WebKit had them by, which
-  // Blink still reads, each an alias of the property (`-webkit-column-
-  // count` in its `css_properties.json5`): a page written for it alone
-  // names no other
-  const name = MULTICOL_ALIASES[written] ?? written;
+  // the multicol and animation properties under the names WebKit had them
+  // by, which Blink still reads, each an alias of the property (`-webkit-
+  // column-count` in its `css_properties.json5`): a page written for it
+  // alone names no other
+  const name = PREFIXED_ALIASES[written] ?? written;
   let value = rawValue.trim();
   if (!value) return;
   // a logical property is the physical one it stands for, the CSS-wide
@@ -1904,6 +1926,27 @@ export function applyDeclaration(
     case 'opacity': {
       const a = parseAlpha(value);
       if (a !== null) style.opacity = a;
+      return;
+    }
+    case 'animation': {
+      const animations = parseAnimation(value);
+      if (animations) style.animations = animations;
+      return;
+    }
+    case 'animation-name':
+    case 'animation-duration':
+    case 'animation-timing-function':
+    case 'animation-delay':
+    case 'animation-iteration-count':
+    case 'animation-direction':
+    case 'animation-fill-mode':
+    case 'animation-play-state': {
+      const animations = animationLonghand(
+        style.animations,
+        ANIMATION_LONGHANDS[name],
+        value,
+      );
+      if (animations) style.animations = animations;
       return;
     }
     case 'translate': {
@@ -5646,6 +5689,14 @@ export function initialOne(
     style.mask = { ...style.mask, [list]: initial.mask[list] };
     return;
   }
+  const animation = ANIMATION_LONGHANDS[PREFIXED_ALIASES[name] ?? name];
+  if (animation) {
+    style.animations = {
+      ...style.animations,
+      [animation]: initial.animations[animation],
+    };
+    return;
+  }
   const keys = INHERIT_TARGETS[name];
   if (!keys) return;
   for (const key of keys) {
@@ -5661,6 +5712,15 @@ function inheritOne(
   const list = MASK_LISTS[name];
   if (list) {
     style.mask = { ...style.mask, [list]: parent.mask[list] };
+    return;
+  }
+  // each longhand of the animation is a list of its own, as the mask's are
+  const animation = ANIMATION_LONGHANDS[PREFIXED_ALIASES[name] ?? name];
+  if (animation) {
+    style.animations = {
+      ...style.animations,
+      [animation]: parent.animations[animation],
+    };
     return;
   }
   const keys = INHERIT_TARGETS[name];
@@ -5717,6 +5777,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'border-image': ['borderImage'],
   mask: ['mask'],
   '-webkit-mask': ['mask'],
+  animation: ['animations'],
+  '-webkit-animation': ['animations'],
   'border-image-source': ['borderImage'],
   'border-image-slice': ['borderImage'],
   'border-image-width': ['borderImage'],
