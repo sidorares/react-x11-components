@@ -470,6 +470,129 @@ test('an item with an auto margin across a row aligned by baselines takes the ro
   assert.deepStrictEqual(at('m'), [50, 10], 'the margin over its alignment');
 });
 
+test('a row aligned by baselines that one item takes part in is a line as tall as the row', async () => {
+  // An item aligned by its baseline that shares it with no other is at
+  // its line's start (CSS Flexbox 8.3, 9.4 step 8), and the line of a row
+  // that does not wrap is the row where the row has a height (9.4 step
+  // 15), or as tall as its items' margin boxes where it has none. Yoga
+  // takes its pass for the lines of a row that wraps for any row aligned
+  // by baselines, and makes the line there as tall as the items: one
+  // centred or at the end in a row of a height was centred or ended in
+  // that. And it sizes a line aligned by baselines as the most any item
+  // reaches down to its bottom edge and the largest bottom margin besides,
+  // whichever items those are.
+  const row = (style: string, items: string, id = '') =>
+    `<div${id ? ` id="${id}"` : ''} style="display:flex;width:200px;` +
+    `${style}">${items}</div>`;
+  const item = (id: string, style: string) =>
+    `<div${id ? ` id="${id}"` : ''} style="width:20px;${style}"></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      row(
+        'align-items:baseline;height:60px',
+        item('a', 'height:10px;align-self:center') + item('', 'height:18px'),
+      ) +
+      row(
+        'align-items:baseline;height:60px',
+        item('b', 'height:10px;align-self:flex-end') + item('', 'height:18px'),
+      ) +
+      row(
+        'align-items:baseline;height:60px',
+        item('c', 'height:10px;margin:5px 0 9px;align-self:center') +
+          item('d', 'height:18px;margin-top:3px'),
+      ) +
+      // the one aligned by its own `align-self`
+      row(
+        'height:60px',
+        item('e', 'height:10px;align-self:baseline') +
+          item('f', 'height:20px;margin-top:4px;align-self:flex-start') +
+          item('g', 'height:10px;align-self:flex-end'),
+      ) +
+      // and none: every item aligned otherwise
+      row(
+        'align-items:baseline;height:60px',
+        item('h', 'height:10px;align-self:center') +
+          item('i', 'height:18px;align-self:flex-end'),
+      ) +
+      row(
+        'align-items:baseline',
+        item('j', 'height:10px;margin-bottom:20px;align-self:flex-start') +
+          item('', 'height:30px'),
+        'k',
+      ),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const box = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [box.y - box.parent.y, box.height];
+  };
+  assert.deepStrictEqual(at('a'), [25, 10], 'centred in the row');
+  assert.deepStrictEqual(at('b'), [50, 10], 'at the end of the row');
+  assert.deepStrictEqual(at('c'), [23, 10], 'centred within its margins');
+  assert.deepStrictEqual(at('d'), [3, 18], 'the other at its start');
+  assert.deepStrictEqual(at('e'), [0, 10], 'at the start');
+  assert.deepStrictEqual(at('f'), [4, 20], 'within its margin');
+  assert.deepStrictEqual(at('g'), [50, 10], 'and at the end of the row');
+  assert.deepStrictEqual(at('h'), [25, 10], 'centred, beside none');
+  assert.deepStrictEqual(at('i'), [42, 18], 'at the end, beside none');
+  assert.deepStrictEqual(at('j'), [0, 10], 'at the start');
+  assert.strictEqual(
+    boxOf(el, 'k').height,
+    30,
+    'as tall as the tallest margin box, and not that and a bottom margin',
+  );
+});
+
+test('a column aligned by baselines keeps each margin across it once', async () => {
+  // Yoga takes no pass for lines down a column that does not wrap, aligned
+  // by baselines or not, and keeps an item's margins across it: added back
+  // for that pass, a margin was there twice.
+  const { node } = await render(
+    '<style>body{margin:0} .c{display:flex;flex-direction:column;' +
+      'width:100px} .c>div{width:20px;height:10px}</style>' +
+      '<div class="c" style="align-items:baseline">' +
+      '<div id="a" style="margin-left:7px;align-self:flex-start"></div>' +
+      '<div id="b" style="margin-left:4px"></div>' +
+      '<div id="c" style="margin-left:3px;align-self:center"></div></div>' +
+      '<div class="c"><div style="align-self:baseline"></div>' +
+      '<div id="d" style="margin-left:5px;align-self:flex-start"></div></div>',
+  );
+  const el = view(node);
+  const x = (id: string) => {
+    const box = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return box.x - box.parent.x;
+  };
+  assert.strictEqual(x('a'), 7, 'at the start, within its margin');
+  assert.strictEqual(x('b'), 4, 'by its baseline: at the start');
+  assert.strictEqual(x('c'), 41.5, 'centred within its margin');
+  assert.strictEqual(x('d'), 5, 'beside one aligned by its own');
+});
+
+test('a row aligned by baselines laid out again for a ratio keeps each margin across it once', async () => {
+  // An image stretched across a row of a height takes its width from that
+  // through its ratio, and the row is laid out again for it; with its
+  // items lined up by their baselines, that layout takes no pass for
+  // lines, and the margins added back for one were there twice.
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0} .r>div{width:20px}</style>' +
+      '<div class="r" style="display:flex;align-items:baseline;width:300px;' +
+      'height:60px"><div style="height:10px"></div>' +
+      '<div style="height:18px"></div>' +
+      '<div id="a" style="height:10px;margin-top:6px;align-self:flex-start">' +
+      '</div><div id="b" style="height:10px;margin:2px 0 8px;' +
+      'align-self:center"></div>' +
+      '<img id="c" src="r.png" style="align-self:stretch"></div>',
+    { 'r.png': RED_PNG },
+  );
+  const at = (id: string) => {
+    const box = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [box.y - box.parent.y, box.height];
+  };
+  await waitFor(() => assert.strictEqual(boxOf(el, 'c').width, 60));
+  assert.deepStrictEqual(at('a'), [6, 10], 'within its margin');
+  assert.deepStrictEqual(at('b'), [22, 10], 'centred within its margins');
+});
+
 metric("an inline flex box sits on its first item's baseline", async () => {
   // CSS Flexbox 8.5: its first line's items aligned by their baselines, or
   // its first item — not its last line box, as an inline block does

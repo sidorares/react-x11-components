@@ -252,11 +252,14 @@ export function layoutFlex(
   const direction =
     box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR;
   const row = box.style.flexDirection.startsWith('row');
-  // Yoga aligns the lines of a box that wraps, or aligns by baselines, in
-  // one pass of its own, which drops a margin (`lineMarginFix`)
+  // Yoga aligns the lines of a box that wraps, or of a row that aligns by
+  // baselines, in one pass of its own, which drops a margin
+  // (`lineMarginFix`) — and not those of a column that does not wrap,
+  // whatever it aligns by, whose margins Yoga keeps
   let baselines =
-    box.style.alignItems === 'baseline' ||
-    items.some(({ box: child }) => child.style.alignSelf === 'baseline');
+    row &&
+    (box.style.alignItems === 'baseline' ||
+      items.some(({ box: child }) => child.style.alignSelf === 'baseline'));
   // An `auto` margin across a row that wraps takes the room its line has
   // past the item (CSS Flexbox 8.1, 9.6), where Yoga's pass that sets the
   // items across their lines reads an item's alignment and not its
@@ -269,35 +272,36 @@ export function layoutFlex(
       const aligned = autoAcross(child.style, reverse);
       if (aligned) node.setAlignSelf(ALIGN[aligned]);
     }
-  } else if (row && baselines) {
+  } else if (baselines) {
     // Yoga takes a row that does not wrap through that pass as well, and
-    // sets its line there as tall as its items and not the row, and an
-    // item with an `auto` margin by its baseline: at the top, where the
-    // margin puts it at the bottom, and every item beside it as far down
-    // as its height reached. That item takes no part in aligning the line
-    // by baselines (9.4 step 8), and Yoga is told the alignment its
-    // margins come to. With fewer than two items left that do take part,
-    // they come to their line's start, which Yoga is told as well: then
-    // nothing in the row is aligned by its baseline, Yoga takes no such
-    // pass, and the line is the row. Two or more are lined up by their
-    // baselines once those are known (`baselineLines`).
-    const auto = items.filter(({ box: child }) =>
-      autoAcross(child.style, false),
+    // sets its line there as tall as its items and not the row: an item
+    // centred or at the end of a row of a height was centred or ended in
+    // the items' height. It has sized that line already, as the most any
+    // item reaches down to its bottom edge — a baseline, to Yoga — and the
+    // largest bottom margin besides, whichever items those are: a row of
+    // no height of its own was as tall as both. And it sets an item with
+    // an `auto` margin by its baseline: at the top, where the margin puts
+    // it at the bottom, and every item beside it as far down as its height
+    // reached. That item takes no part in aligning the line by baselines
+    // (9.4 step 8), and Yoga is told the alignment its margins come to.
+    // With fewer than two items left that do take part, they come to their
+    // line's start (8.3), which Yoga is told as well: then nothing in the
+    // row is aligned by its baseline, Yoga takes no such pass, and the line
+    // is the row. Two or more are lined up by their baselines once those
+    // are known (`baselineLines`), and the row laid out again with none.
+    for (const { box: child, node } of items) {
+      const aligned = autoAcross(child.style, false);
+      if (aligned) node.setAlignSelf(ALIGN[aligned]);
+    }
+    const aligned = items.filter(({ box: child }) =>
+      byBaseline(box.style, child.style),
     );
-    if (auto.length > 0) {
-      for (const { box: child, node } of auto) {
-        node.setAlignSelf(ALIGN[autoAcross(child.style, false)!]);
+    if (aligned.length < 2) {
+      for (const { node } of aligned) node.setAlignSelf(Y.ALIGN_FLEX_START);
+      if (box.style.alignItems === 'baseline') {
+        root.setAlignItems(Y.ALIGN_FLEX_START);
       }
-      const aligned = items.filter(({ box: child }) =>
-        byBaseline(box.style, child.style),
-      );
-      if (aligned.length < 2) {
-        for (const { node } of aligned) node.setAlignSelf(Y.ALIGN_FLEX_START);
-        if (box.style.alignItems === 'baseline') {
-          root.setAlignItems(Y.ALIGN_FLEX_START);
-        }
-        baselines = false;
-      }
+      baselines = false;
     }
   }
   // frozen at its least size on the one line of a box that does not
@@ -445,13 +449,15 @@ export function layoutFlex(
     }
   }
 
+  // whether Yoga's last layout took its pass for lines (`placeItems`)
+  let lined = box.style.flexWrap !== 'nowrap' || baselines;
   let bottom = placeItems(
     box,
     ctx,
     items,
     row,
     own,
-    box.style.flexWrap !== 'nowrap' || baselines,
+    lined,
     contentWidth,
     undefined,
     crossed ? crossLines(box.style, items, contentWidth, columnGap) : undefined,
@@ -461,11 +467,11 @@ export function layoutFlex(
   // by the flex layout again, set at their lines' starts with the margins
   // that put their baselines together, which makes each line as tall as
   // that does
-  const lines = row && baselines ? baselineLines(box.style, items) : null;
+  const lines = baselines ? baselineLines(box.style, items) : null;
+  const started = new Set<Box>();
   if (lines) {
     // every one of them, and the box's own `baseline` too, which is what
     // takes Yoga down that pass
-    const started = new Set<Box>();
     for (const line of lines) {
       line.forEach(({ box: child, node }, i) => {
         node.setAlignSelf(Y.ALIGN_FLEX_START);
@@ -476,6 +482,8 @@ export function layoutFlex(
     if (box.style.alignItems === 'baseline') {
       root.setAlignItems(Y.ALIGN_FLEX_START);
     }
+    // so it takes it only where the row wraps
+    lined = box.style.flexWrap !== 'nowrap';
     ctx.flexDepth = depth + 1;
     try {
       calculate();
@@ -488,7 +496,7 @@ export function layoutFlex(
       items,
       row,
       own,
-      box.style.flexWrap !== 'nowrap',
+      lined,
       contentWidth,
       started,
     );
@@ -516,8 +524,9 @@ export function layoutFlex(
       items,
       row,
       own,
-      box.style.flexWrap !== 'nowrap' || baselines,
+      lined,
       contentWidth,
+      started,
     );
   }
 
