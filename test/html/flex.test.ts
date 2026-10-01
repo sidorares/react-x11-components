@@ -1574,6 +1574,111 @@ test('a flex item that is a flex or grid container lays its items out in the hei
   assert.deepStrictEqual(at('g2'), [70, 30]);
 });
 
+test('a row that wraps stretches its items to a line as tall as its tallest item, past the box', async () => {
+  // The lines of a row that wraps are as tall as their tallest items, each
+  // as tall as its content (CSS Flexbox 9.4, steps 7 and 8), and one taller
+  // than the box runs past it; a stretched item is as tall as its line
+  // (step 11). Yoga measured them at the box's height wherever the row had
+  // room along it for them all, and squashed the 13px block's item, and
+  // the item beside it, to 10. Its margins are the line's too, and its
+  // `max-height` holds it; an image is as tall as its ratio makes its
+  // width; a row a column flexed to a height is the same. Where the lines
+  // run bottom to top, the line starts at the box's bottom and runs past
+  // its top. A percentage height is of the box still: Yoga takes one of a
+  // box it does not hold to a size for none.
+  const block = '<div style="width:30px;height:13px"></div>';
+  const short = '<div style="width:30px;height:5px"></div>';
+  const row = (style: string, items: string) =>
+    '<div style="display:flex;flex-wrap:wrap;width:100px;height:10px;' +
+    `${style}">${items}</div>`;
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      row('', `<div id="a">${block}</div><div id="b">${short}</div>`) +
+      row(
+        'flex-wrap:wrap-reverse',
+        `<div id="c">${block}</div><div id="d">${short}</div>`,
+      ) +
+      row(
+        '',
+        `<div id="e" style="margin:2px 0 3px">${block}</div>` +
+          `<div id="f">${short}</div>`,
+      ) +
+      row('', `<div id="g" style="max-height:11px">${block}</div>`) +
+      row('', `<img id="h" src="r.png" style="width:20px">`) +
+      row(
+        '',
+        `<div id="i">${block}</div>` +
+          `<div id="j" style="height:50%">${block}</div>`,
+      ) +
+      '<div style="display:flex;flex-direction:column;height:30px">' +
+      '<div style="display:flex;flex-wrap:wrap;flex:1 1 0;min-height:0">' +
+      '<div id="k"><div style="width:30px;height:40px"></div></div>' +
+      `<div id="l">${short}</div></div></div>`,
+    { 'r.png': RED_PNG },
+  );
+  /** How far down its flex box an item is, and how tall. */
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.y - item.parent.y, item.height];
+  };
+  await waitFor(() => assert.deepStrictEqual(at('h'), [0, 20], 'the image'));
+  assert.deepStrictEqual(at('a'), [0, 13], 'as tall as its block');
+  assert.deepStrictEqual(at('b'), [0, 13], 'stretched to the line');
+  assert.deepStrictEqual(at('c'), [-3, 13], 'from the bottom, in reverse');
+  assert.deepStrictEqual(at('d'), [-3, 13]);
+  assert.deepStrictEqual(at('e'), [2, 13], 'within its margins');
+  assert.deepStrictEqual(at('f'), [0, 18], 'which are the line’s');
+  assert.deepStrictEqual(at('g'), [0, 11], 'within its max-height');
+  assert.deepStrictEqual(at('i'), [0, 13]);
+  assert.deepStrictEqual(at('j'), [0, 5], 'half the box');
+  assert.deepStrictEqual(at('k'), [0, 40], 'in a row a column flexed');
+  assert.deepStrictEqual(at('l'), [0, 40]);
+});
+
+test('a row that wraps centres or ends its line by its items’ height', async () => {
+  // `align-content` puts the room left beside the lines of a row that
+  // wraps before them, or around them (CSS Flexbox 9.4, step 9), and where
+  // the lines are taller than the box, takes it from there, past its
+  // edges. Yoga measured each stretched item at the box's height where the
+  // row had room along it for them all, and its one line had nothing to
+  // move by: it stayed at the box's top. And `start` and `end` were read
+  // as `flex-start` and `flex-end`, which a row that wraps in reverse has
+  // at its bottom and its top.
+  const block = '<div style="width:30px;height:13px"></div>';
+  const short = '<div style="width:30px;height:5px"></div>';
+  const row = (id: string, style: string) =>
+    '<div style="display:flex;flex-wrap:wrap;width:100px;' +
+    `${style}"><div id="${id}">${block}</div><div>${short}</div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      row('a', 'height:60px;align-content:center') +
+      row('b', 'height:60px;align-content:flex-end') +
+      row('c', 'height:10px;align-content:center') +
+      row('d', 'height:10px;align-content:flex-end') +
+      row('e', 'height:60px;align-content:center;flex-wrap:wrap-reverse') +
+      row('f', 'height:60px;align-content:flex-start') +
+      // `start` and `end` are the box's top and bottom, where its lines
+      // start and end are the other way round
+      row('g', 'height:60px;align-content:end;flex-wrap:wrap-reverse') +
+      row('h', 'height:60px;align-content:start;flex-wrap:wrap-reverse') +
+      row('i', 'height:10px;align-content:end;flex-wrap:wrap-reverse'),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.y - item.parent.y, item.height];
+  };
+  assert.deepStrictEqual(at('a'), [23.5, 13], 'centred');
+  assert.deepStrictEqual(at('b'), [47, 13], 'at the end');
+  assert.deepStrictEqual(at('c'), [-1.5, 13], 'past both edges');
+  assert.deepStrictEqual(at('d'), [-3, 13], 'past the top');
+  assert.deepStrictEqual(at('e'), [23.5, 13], 'centred, in reverse');
+  assert.deepStrictEqual(at('f'), [0, 13], 'at the start, as it was');
+  assert.deepStrictEqual(at('g'), [47, 13], 'the end, at the bottom');
+  assert.deepStrictEqual(at('h'), [0, 13], 'the start, at the top');
+  assert.deepStrictEqual(at('i'), [-3, 13], 'the end, past the top');
+});
+
 test('last baseline is its fallback alignment, the end', async () => {
   // CSS Box Alignment 3, 4.2: where a box cannot be aligned by its last
   // baseline it is aligned to the end, and nothing here aligns by one. The
