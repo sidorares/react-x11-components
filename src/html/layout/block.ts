@@ -1674,7 +1674,7 @@ export function measureIntrinsicWidth(
   // not through `ctx.layoutSubtree`, which is this and one frame more on
   // the stack for every level of a document that measures what it holds
   // (`layoutTable`)
-  layoutSubtree(box, ctx, available);
+  layoutSubtree(box, ctx, available, undefined, true);
   const specified = box.style.width;
   if (!content && specified !== AUTO && Number.isFinite(box.width)) {
     return box.width;
@@ -1697,6 +1697,8 @@ export function layoutSubtree(
   width: number,
   /** Its containing block's width, where `width` is the box's own. */
   containing?: number,
+  /** Whether this lays it out to measure it (`measureIntrinsicWidth`). */
+  measuring = false,
 ): void {
   const base = containing ?? width;
   resolveEdges(box, Number.isFinite(base) ? base : 0);
@@ -1708,7 +1710,12 @@ export function layoutSubtree(
   }
   // Within its limits, a percentage among them of its containing block's
   // width and not of its own: a flex item `max-width: 50%` that the flex
-  // layout made half its row was laid out at a quarter of it.
+  // layout made half its row was laid out at a quarter of it. An
+  // intrinsic limit is among them, as it is in a block's flow: without it,
+  // a flex or grid item `min-width: max-content` that its layout made as
+  // wide as its content was laid out at a smaller `max-width`, where the
+  // minimum wins (CSS Sizing 3, 3.1). Not where the box is laid out to be
+  // measured, since that is what an intrinsic limit is measured from.
   //
   // A table cell laid out in its columns, which hand it its row's width,
   // is as wide as they are (CSS Tables 3, 3.10.2): its limits are theirs
@@ -1718,8 +1725,9 @@ export function layoutSubtree(
   // any box does; a percentage one is of nothing and does not hold it.
   let borderBox = Infinity;
   if (Number.isFinite(width)) {
-    if (box.kind !== 'table-cell') borderBox = clampWidth(box, width, base);
-    else if (containing !== undefined) borderBox = width;
+    if (box.kind !== 'table-cell') {
+      borderBox = clampWidth(box, width, base, measuring ? undefined : ctx);
+    } else if (containing !== undefined) borderBox = width;
     else borderBox = clampWidth(box, width, NaN);
   }
   layoutInternals(box, ctx, borderBox, 0, 0);
@@ -2634,7 +2642,9 @@ export function clampHeight(box: Box, height: number): number {
       out,
       min + (box.style.boxSizing === 'border-box' ? 0 : box.verticalExtra),
     );
-  return Math.max(0, out);
+  // no shorter than its padding and borders, as `clampWidth` is no
+  // narrower
+  return Math.max(box.verticalExtra, out);
 }
 
 /** Place a block-level box horizontally, honouring `margin: auto`. */
@@ -2854,7 +2864,10 @@ export function clampWidth(
       keywordWidth(box, ctx, style.minWidthKeyword, containingWidth, room),
     );
   }
-  return Math.max(0, out);
+  // and no narrower than its padding and borders: a `border-box` length
+  // less than them leaves its content box none wide, and not less (CSS
+  // Sizing 3, 3.3)
+  return Math.max(box.horizontalExtra, out);
 }
 
 /** An intrinsic `min-width` or `max-width` in the room a box's margins

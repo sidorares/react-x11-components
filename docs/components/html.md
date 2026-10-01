@@ -813,7 +813,9 @@ parts, as CSS 2.1 9.10 has it.
 **Boxes:** `width`/`height` with `min-`/`max-`, `margin` (a negative one
 on an inline box takes its room back from the line), `padding`,
 `border` (width, style, colour, radius; a width is whole device pixels,
-rounded down, and a hairline one), `box-sizing`, `overflow`, `clip`,
+rounded down, and a hairline one), `box-sizing` (a `border-box` size or
+limit under the padding and borders leaves the content box none wide, so
+the box is as big as them, as in Chrome), `overflow`, `clip`,
 `opacity` — an element under 1 is a stacking context painted whole in its
 place, the positioned boxes in it with it, at 0 not at all and between
 faded, each thing drawn in it multiplied rather than the
@@ -961,7 +963,10 @@ played.
 and `min-w-max` — as CSS Sizing 3 has them: a block as wide as its content
 where its room holds it, auto margins centring it; one as wide as its
 longest line, or as its longest word, whatever the room; a flex item of one
-not stretched across a column, and a row item not shrunk below it. And
+not stretched across a column, and a row item not shrunk below it. A
+minimum of one wins over a smaller `max-width`, as a length does: a flex
+or grid item `min-width: max-content; max-width: 20px` is as wide as its
+content. And
 `fit-content()` of a length or a percentage, which fits the content in the
 room its argument makes: no wider than the content at its widest, nor
 narrower than its longest word. The sizes are the content's, whatever

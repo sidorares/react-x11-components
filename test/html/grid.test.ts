@@ -1066,3 +1066,17 @@ test('gaps may be percentages, and a grid is as wide as its tracks', async () =>
   assert.strictEqual(boxOf(el, 'd').width, 50);
   assert.ok(boxOf(el, 'e').width >= 120, `${boxOf(el, 'e').width}`);
 });
+
+test("a grid item's intrinsic minimum wins over a smaller maximum", async () => {
+  // Stretched across its area within its limits, the minimum the strongest
+  // of them (CSS Sizing 3, 3.1): the grid's layout made it as wide as its
+  // content, and laying it out at that width cut it to the maximum again
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:grid;grid-template-columns:300px">' +
+      '<div id="a" style="height:6px;min-width:max-content;max-width:20px;' +
+      'padding-left:22px"><div style="width:119px;height:6px"></div>' +
+      '</div></div>',
+  );
+  assert.strictEqual(boxOf(view(node), 'a').width, 141);
+});

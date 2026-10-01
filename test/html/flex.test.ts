@@ -1895,3 +1895,108 @@ metric(
     assert.strictEqual(boxOf(el, 'first').height, 32, 'a first baseline');
   },
 );
+
+test("a flex item's intrinsic minimum wins over a smaller maximum", async () => {
+  // `min-width: max-content` beside a `max-width` under it: the minimum is
+  // the strongest limit (CSS Sizing 3, 3.1), and the item is as wide as
+  // its content. The flex layout made it so, and laying it out at that
+  // width cut it to the maximum again, where a minimum that is a length
+  // would have held: a random line against Chrome found 37 lines in 1,500
+  const block = '<div style="width:119px;height:6px"></div>';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;width:313.822px">' +
+      '<div id="row" style="height:6px;min-width:max-content;' +
+      'max-width:23.356%;flex-grow:1.361;flex-shrink:0.465;' +
+      `padding-left:22px;margin-left:auto">${block}</div></div>` +
+      // across a column, stretched
+      '<div style="display:flex;flex-direction:column;width:300px">' +
+      '<div id="column" style="height:6px;min-width:max-content;' +
+      `max-width:20px;padding-left:22px">${block}</div></div>` +
+      // and in a flex box as wide as its items, whose layout measures the
+      // item for its content's width after it has laid it out at its
+      // minimum: measured, it was left laid out at no width at all
+      '<div style="display:inline-flex"><div id="inline" ' +
+      'style="min-width:min-content;max-width:20px;padding-left:22px">' +
+      '<div style="width:30px;height:6px"></div></div></div>',
+    400,
+  );
+  const el = view(node);
+  const row = boxOf(el, 'row');
+  assert.ok(Math.abs(row.width - 141) < 0.01, `along a row: ${row.width}`);
+  assert.ok(
+    Math.abs(row.x - (313.822 - 141)) < 0.01,
+    `at the end of it, its auto margin taking what is left: ${row.x}`,
+  );
+  assert.strictEqual(boxOf(el, 'column').width, 141, 'across a column');
+  assert.strictEqual(boxOf(el, 'inline').width, 52, 'in an inline flex box');
+});
+
+test("a flex item's border-box limits under its padding and borders leave it as wide as them", async () => {
+  // A `border-box` length less than the padding and borders leaves the
+  // content box none wide, and not less (CSS Sizing 3, 3.3): Yoga made
+  // each of these as wide as its padding and borders, and laying the item
+  // out within its limits cut it narrower than them. And sharing out the
+  // line, Yoga took the first for as wide as its maximum, and the `auto`
+  // margins after it took the 2.33px between — a line from the random
+  // differential against Chrome, whole
+  const { node } = await render(
+    '<style>body{margin:0}.row{display:flex;width:300px}' +
+      '.row>div{height:6px;box-sizing:border-box}' +
+      '.line{display:flex;width:227px}.line>div{height:6px}</style>' +
+      '<div class="line"><div id="a" style="width:138px;' +
+      'max-width:20.668px;flex-grow:1;padding-right:19px;' +
+      'border-left:4px solid;box-sizing:border-box"></div>' +
+      '<div id="a1" style="width:103.812px;flex-basis:203.65px;' +
+      'min-width:58.736px;padding-right:1.72px;margin-left:auto;' +
+      'margin-right:5.31px"></div>' +
+      '<div style="width:238px;flex-basis:58px;min-width:0;' +
+      'max-width:154.247px;margin-left:auto">' +
+      '<div style="width:228px;height:6px"></div></div>' +
+      '<div id="a3" style="width:134px;flex-basis:content;' +
+      'max-width:29.528%;box-sizing:border-box">' +
+      '<div style="width:81px;height:6px"></div></div></div>' +
+      // the rest of the line is what is left of it
+      '<div class="row"><div id="b" style="flex:1;min-width:0;' +
+      'max-width:10px;padding-left:22px;border-right:3px solid"></div>' +
+      '<div id="c" style="flex:1"></div></div>' +
+      // and a minimum over the maximum is under them too
+      '<div class="row"><div id="d" style="min-width:20px;max-width:10px;' +
+      'padding-left:22px"></div></div>',
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').width, 23, 'its padding and border');
+  assert.strictEqual(boxOf(el, 'a1').x, 23, 'the line over-full after it');
+  const last = boxOf(el, 'a3');
+  assert.ok(
+    Math.abs(last.x + last.width - 227) < 0.01,
+    `and its end at the line's: ${last.x + last.width}`,
+  );
+  assert.strictEqual(
+    boxOf(el, 'b').width,
+    25,
+    'flexed, its padding and border',
+  );
+  assert.strictEqual(boxOf(el, 'c').x, 25, 'the next after them');
+  assert.strictEqual(boxOf(el, 'c').width, 275, 'with the rest of the line');
+  assert.strictEqual(boxOf(el, 'd').width, 22, 'over its minimum');
+});
+
+test('a flex item measured for its content after it was laid out is laid out again', async () => {
+  // Measuring an item's max-content width lays it out with no limit on
+  // its width. Where Yoga had already asked for the item at the width the
+  // flex layout then gave it, the item kept the measurement's layout: a
+  // `min-width` holding it wider than a line too short for it, which 9.7
+  // shares out (`resolveLine`), left it infinitely wide
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;width:100px">' +
+      '<div style="flex-shrink:0;width:80px;height:6px"></div>' +
+      '<div id="a" style="flex-shrink:2;flex-grow:1;min-width:121px">' +
+      '<div style="width:48px;height:6px"></div></div></div>',
+  );
+  const a = boxOf(view(node), 'a');
+  assert.strictEqual(a.width, 121, 'its minimum');
+  assert.strictEqual(a.x, 80, 'after the first');
+});

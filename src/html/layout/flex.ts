@@ -858,6 +858,19 @@ function applyItem(
     }
   }
 
+  // a `border-box` maximum under the item's padding and borders is them,
+  // its content box none wide (CSS Sizing 3, 3.3), where Yoga lays the
+  // item out as wide as them and shares out its line as though it were
+  // as wide as the maximum: the `auto` margins after `max-width:
+  // 20.668px` with 23px of padding and border took the 2.33px between
+  if (mostWidth < box.horizontalExtra) {
+    mostWidth = box.horizontalExtra;
+    node.setMaxWidth(mostWidth);
+  }
+  if (mostHeight < box.verticalExtra) {
+    mostHeight = box.verticalExtra;
+    node.setMaxHeight(mostHeight);
+  }
   // a maximum under the minimum is the minimum (CSS 2.1 10.4, 10.7), where
   // Yoga holds an item that comes to more than both at the maximum
   if (mostWidth < leastWidth) {
@@ -999,6 +1012,11 @@ function applyItem(
     if (width === undefined) {
       width = measureIntrinsicWidth(box, ctx, Infinity) - box.horizontalExtra;
       MAX_CONTENT.set(box, width);
+      // measured, it is laid out with no limit on its width, and not at
+      // the one it was last laid out at, which Yoga may give it again: an
+      // item `min-width: min-content` that Yoga asked at its minimum and
+      // then with no limit was left laid out infinitely wide
+      laid.width = NaN;
     }
     // within what its least and greatest heights make of widths through
     // its ratio: its size before it is flexed, and not after
