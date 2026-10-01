@@ -3498,8 +3498,17 @@ function sizeReplaced(
   const ih = own.missing & 2 ? null : own.height;
   // `aspect-ratio` over its own, unless written `auto` and it has one
   const aspect = style.aspectRatio;
-  const ratio =
-    aspect && !(aspect.auto && own.ratio > 0) ? aspect.ratio : own.ratio;
+  const pages = aspect !== null && !(aspect.auto && own.ratio > 0);
+  const ratio = pages ? aspect.ratio : own.ratio;
+  // A ratio of the page's is of the box `box-sizing` names (CSS Sizing 4,
+  // 5.1): one axis's content size to the other's goes through the border
+  // box there. Written with `auto`, it is of the content box, as the
+  // replaced element's own is, whichever it is.
+  const outer = pages && !aspect.auto && style.boxSizing === 'border-box';
+  const ox = outer ? box.horizontalExtra : 0;
+  const oy = outer ? box.verticalExtra : 0;
+  const widthOf = (h: number): number => Math.max(0, (h + oy) * ratio - ox);
+  const heightOf = (w: number): number => Math.max(0, (w + ox) / ratio - oy);
   // the width a block would have here: what a ratio with no size fills, and
   // an `hr`, whose whole appearance is its border across the line
   const room = (): number => {
@@ -3515,16 +3524,16 @@ function sizeReplaced(
     // which moves both axes together
     if (iw !== null) {
       w = iw;
-      h = ih ?? iw / ratio;
+      h = ih ?? heightOf(iw);
     } else if (ih !== null) {
       h = ih;
-      w = ih * ratio;
+      w = widthOf(ih);
     } else {
       // a ratio and no size: CSS 2.1 leaves it undefined and suggests the
       // width a block would have, which is what browsers do — or, where the
       // containing block waits on this box, the default object size
       w = Number.isFinite(containingWidth) ? room() : own.width;
-      h = w / ratio;
+      h = heightOf(w);
     }
     [w, h] = constrained(w, h, minW, maxW, minH, maxH);
   } else {
@@ -3533,12 +3542,12 @@ function sizeReplaced(
     // again" for a limit)
     const usedHeight = height === null ? null : clamp(height, minH, maxH);
     if (width !== null) w = width;
-    else if (usedHeight !== null && ratio > 0) w = usedHeight * ratio;
+    else if (usedHeight !== null && ratio > 0) w = widthOf(usedHeight);
     else if (box.replaced === 'hr') w = room();
     else w = own.width;
     w = clamp(w, minW, maxW);
     if (usedHeight !== null) h = usedHeight;
-    else if (ratio > 0) h = clamp(w / ratio, minH, maxH);
+    else if (ratio > 0) h = clamp(heightOf(w), minH, maxH);
     else h = clamp(own.height, minH, maxH);
   }
   box.width = w + box.horizontalExtra;

@@ -1015,7 +1015,13 @@ test('aspect-ratio makes an auto height of the width, grown to what it holds', a
       // and a height it gives is one a percentage resolves against
       '<div style="width:200px;aspect-ratio:2"><div id="f" style="height:50%">' +
       '</div></div>' +
-      '<iframe id="g" style="width:320px;aspect-ratio:16/9;border:0"></iframe>',
+      '<iframe id="g" style="width:320px;aspect-ratio:16/9;border:0"></iframe>' +
+      // a replaced box's too, its ratio written without `auto`; with it,
+      // of the content box whatever the box-sizing
+      '<iframe id="h" style="box-sizing:border-box;width:100px;' +
+      'aspect-ratio:2;border:0;border-left:20px solid"></iframe>' +
+      '<iframe id="i" style="box-sizing:border-box;width:100px;' +
+      'aspect-ratio:auto 2;border:0;border-left:20px solid"></iframe>',
   );
   const el = view(node);
   const heightOf = (id: string) => boxOf(el, id).height;
@@ -1027,6 +1033,8 @@ test('aspect-ratio makes an auto height of the width, grown to what it holds', a
   assert.strictEqual(heightOf('f'), 50);
   // a frame has no ratio of its own, and takes the one it is given
   assert.strictEqual(heightOf('g'), 180);
+  assert.strictEqual(heightOf('h'), 50, 'its border box half as tall');
+  assert.strictEqual(heightOf('i'), 40, 'its content box half as tall');
 });
 
 test('object-fit places an image in its box, and object-position in it', async () => {
