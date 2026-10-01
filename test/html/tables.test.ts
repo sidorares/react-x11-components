@@ -957,6 +957,135 @@ test("a fixed table's cell is held to a length max-width, and a min-width does n
   assert.strictEqual(boxOf(el, 'r').width, 200, 'a third');
 });
 
+/** A fixed table 300 wide, its first row's cells given `cells` as their
+ *  styles (`style|attributes`) and ids `<id>0`, `<id>1`, …, and the
+ *  `<col>`s `cols` before its body. */
+function fixedTable(id: string, cells: string[], table = '', cols = '') {
+  const tds = cells.map((cell, i) => {
+    const [style, attributes = ''] = cell.split('|');
+    return `<td id="${id}${i}" style="${style}" ${attributes}></td>`;
+  });
+  return (
+    `<table id="${id}" style="width:300px;table-layout:fixed;${table}">` +
+    `${cols}<tbody><tr>${tds.join('')}</tr></tbody></table>`
+  );
+}
+
+test("a fixed table's percentages are scaled to come to 100%, where they widened it", async () => {
+  // A fixed table's percentages are of its width less its spacing, and
+  // where they come to more than 100% Blink scales each down until they
+  // come to that, so the table keeps its width: two cells of 60% in a
+  // table of 300 were 176.4 each, and the table 359 wide. A content-box
+  // cell's padding and borders go on its share once it is scaled, and
+  // the shares are scaled down again where that makes them too wide. A
+  // `<col>`'s percentage gives way to a larger one of its cell's, and a
+  // cell spanning columns sets each that has none to its share of its
+  // percentage. Each number here is Chrome's.
+  const { node } = await render(
+    '<style>body{margin:0} td{padding:0;height:10px}</style>' +
+      fixedTable('a', ['width:60%', 'width:60%']) +
+      // a column set to neither has none of it
+      fixedTable('b', ['width:60%', 'width:60%', '']) +
+      fixedTable('c', ['width:40%', 'width:40%', 'width:40%']) +
+      fixedTable('d', ['width:150%']) +
+      // columns
+      fixedTable('e', ['', ''], '', '<col style="width:60%">'.repeat(2)) +
+      // no spacing: 150 each
+      fixedTable('f', ['width:60%', 'width:60%'], 'border-collapse:collapse') +
+      // 147 of the 294, and 10 on each, scaled down to 147 again
+      fixedTable('g', ['width:60%;padding:0 5px', 'width:60%;padding:0 5px']) +
+      // 147 and 157, scaled down to 294 between them
+      fixedTable('h', [
+        'width:60%;padding:0 5px;box-sizing:border-box',
+        'width:60%;padding:0 5px',
+      ]) +
+      // half of 30% and 30%, and 60%: 73, 73 and 146
+      fixedTable('k', ['width:60%|colspan=2', 'width:60%']) +
+      fixedTable('m', ['width:60%', ''], '', '<col style="width:20%">'),
+  );
+  const el = view(node);
+  const tenth = (v: number) => Math.round(v * 10) / 10;
+  const widths = (id: string, count: number) =>
+    Array.from({ length: count }, (_, i) => tenth(boxOf(el, id + i).width));
+  for (const id of 'abcdefghkm') {
+    assert.strictEqual(boxOf(el, id).width, 300, `table ${id} keeps its width`);
+  }
+  assert.deepStrictEqual(widths('a', 2), [147, 147]);
+  assert.deepStrictEqual(widths('b', 3), [146, 146, 0]);
+  assert.deepStrictEqual(widths('c', 3), [97.3, 97.3, 97.3]);
+  assert.deepStrictEqual(widths('d', 1), [296]);
+  assert.deepStrictEqual(widths('e', 2), [147, 147]);
+  assert.deepStrictEqual(widths('f', 2), [150, 150]);
+  assert.deepStrictEqual(widths('g', 2), [147, 147]);
+  assert.deepStrictEqual(widths('h', 2), [142.2, 151.8]);
+  assert.deepStrictEqual(widths('k', 2), [148, 146]);
+  assert.deepStrictEqual(widths('m', 2), [176.4, 117.6]);
+});
+
+test("a fixed table's lengths come before its percentages, and only they widen it", async () => {
+  // Blink shares a fixed table out in turn: the lengths, then the
+  // percentages in what the lengths leave, scaled down to it, then the
+  // columns set to neither. Where none is set to neither, what is left
+  // goes to the lengths, and the percentages keep theirs. The lengths,
+  // and a `<col>`'s `min-width`, are the least the table is, and widen
+  // it; a percentage never does. A cell spanning columns gives each that
+  // has no length an even share of its own, less the spacing between
+  // them. Each number here is Chrome's.
+  const { node } = await render(
+    '<style>body{margin:0} td{padding:0;height:10px}</style>' +
+      // what 60% leaves goes to the length, where the two shared it
+      fixedTable('a', ['width:100px', 'width:60%']) +
+      fixedTable('b', ['width:30%', 'width:30%', 'width:50px']) +
+      fixedTable(
+        'c',
+        ['width:100px', 'width:60%'],
+        'border-collapse:collapse',
+      ) +
+      // 60% is scaled down to what 200 leaves, where it widened the table
+      fixedTable('d', ['width:200px', 'width:60%']) +
+      fixedTable('e', ['width:100px', 'width:80%', '']) +
+      fixedTable('f', ['width:50%', 'width:50%', 'width:100px']) +
+      // the lengths widen the table, and leave the percentage nothing
+      fixedTable('g', ['width:200px', 'width:200px', 'width:50%']) +
+      fixedTable('h', ['', ''], '', '<col style="min-width:400px">') +
+      // 99 to each column the span has no length for
+      fixedTable(
+        'k',
+        ['width:200px|colspan=2', ''],
+        '',
+        '<col style="width:50px">',
+      ) +
+      fixedTable(
+        'm',
+        ['width:200px|colspan=2', ''],
+        '',
+        '<col style="width:30%">',
+      ),
+    600,
+  );
+  const el = view(node);
+  const tenth = (v: number) => Math.round(v * 10) / 10;
+  const widths = (id: string, count: number) =>
+    Array.from({ length: count }, (_, i) => tenth(boxOf(el, id + i).width));
+  for (const id of 'abcdefkm') {
+    assert.strictEqual(boxOf(el, id).width, 300, `table ${id} keeps its width`);
+  }
+  assert.deepStrictEqual(widths('a', 2), [117.6, 176.4]);
+  assert.deepStrictEqual(widths('b', 3), [87.6, 87.6, 116.8]);
+  assert.deepStrictEqual(widths('c', 2), [120, 180]);
+  assert.deepStrictEqual(widths('d', 2), [200, 94]);
+  assert.deepStrictEqual(widths('e', 3), [100, 192, 0]);
+  assert.deepStrictEqual(widths('f', 3), [96, 96, 100]);
+  assert.strictEqual(boxOf(el, 'g').width, 408, 'as wide as its lengths');
+  assert.deepStrictEqual(widths('g', 3), [200, 200, 0]);
+  assert.strictEqual(boxOf(el, 'h').width, 406, 'as its least');
+  assert.deepStrictEqual(widths('h', 2), [200, 200]);
+  // 50 + 2 + 99, and what is left
+  assert.deepStrictEqual(widths('k', 2), [151, 143]);
+  // 87.6 of 30% + 2 + 99
+  assert.deepStrictEqual(widths('m', 2), [188.6, 105.4]);
+});
+
 test("a cell's percentage padding is of its row's width, and a percentage limit is its column's to weigh", async () => {
   // CSS 2.1 8.4 takes a percentage in a padding of the containing block's
   // width; for a cell that is its row's, the columns and the spacing

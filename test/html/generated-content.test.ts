@@ -24,6 +24,7 @@ import {
   findById,
   linesOf,
   metric,
+  pixelsIn,
   render,
   renderWithBytes,
   renderWithImages,
@@ -982,6 +983,128 @@ metric(
     assert.ok(boxOf(el, 'b').height >= 30, 'an empty item holds it too');
     // and one whose first line is in a block inside it, which goes lower
     assert.ok(boxOf(el, 'c').height >= 30, 'an item around a block');
+  },
+);
+
+metric(
+  "a list marker's image is 7px from the content, outside the item and inside it, as Chrome sets it",
+  async () => {
+    // CSS 2.1 12.5.1 leaves where a marker goes to the user agent. Blink
+    // puts an image 7px from the content (`kCMarkerPaddingPx`): outside
+    // the item, between the image and the content's edge, and inside it,
+    // after the image, where ours was a space. Outside, ours was 0.4em,
+    // 16px at 40px text, and Chrome draws the image at x 53 to 72 before
+    // content at 80; inside, a space, 11px in 40px Arial, and the
+    // content's own space after the image went into it
+    const images = {
+      'x.svg': svgBytes(
+        `<svg ${SVG_NS} width="20" height="20">` +
+          '<rect width="20" height="20" fill="#ff0000"/></svg>',
+      ),
+    };
+    const sheet =
+      '<style>body{margin:0}ul{margin:0;padding:0 0 0 80px;' +
+      'font:40px/50px sans-serif;list-style-image:url(x.svg)}li{margin:0}' +
+      'b{display:inline-block;width:10px;height:10px;background:#0000ff}' +
+      '.s{font-size:16px;line-height:30px}.in{list-style-position:inside}' +
+      '.pre{white-space:pre}.rtl{direction:rtl;padding:0 80px 0 0}</style>';
+    // the red image's and the blue box's columns on an item's line, in
+    // device pixels, a pixel counted where it is more than half covered;
+    // the item's whole rows, since an item a marker made taller ends where
+    // the face puts its baseline — 30.15px down, in DejaVu Sans
+    const inkOf = async (
+      result: { ctx: unknown },
+      at: { y: number; height: number },
+      width: number,
+    ) => {
+      const y = Math.ceil(at.y);
+      const height = Math.floor(at.y + at.height) - y;
+      const data = await pixelsIn(result.ctx, { x: 0, y, width, height });
+      const red = [Infinity, -Infinity];
+      const blue = [Infinity, -Infinity];
+      for (let i = 0; i < data.length; i += 4) {
+        const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+        const ink =
+          r > 200 && g < 128 && b < 128
+            ? red
+            : b > 200 && r < 128 && g < 128
+              ? blue
+              : null;
+        if (!ink) continue;
+        const x = (i / 4) % width;
+        [ink[0], ink[1]] = [Math.min(ink[0], x), Math.max(ink[1], x + 1)];
+      }
+      return { red, blue };
+    };
+    const { result, el } = await renderWithBytes(
+      sheet +
+        '<ul><li id="a"><b></b>a</li></ul>' +
+        '<ul class="s"><li id="s"><b></b>a</li></ul>' +
+        '<ul class="in"><li id="i"><b></b>a</li></ul>' +
+        '<ul class="in"><li id="sp"> <b></b>a</li></ul>' +
+        '<ul class="in pre"><li id="pre"> <b></b>a</li></ul>' +
+        '<ul class="rtl"><li id="r"><b></b>a</li></ul>' +
+        '<ul class="rtl in"><li id="ri"><b></b>a</li></ul>',
+      images,
+    );
+    await act();
+    const ink = (id: string) => inkOf(result, boxOf(el, id), 440);
+    // outside: the image ends 7px before the content, at any text size
+    for (const id of ['a', 's']) {
+      assert.deepStrictEqual(
+        await ink(id),
+        { red: [53, 73], blue: [80, 90] },
+        `#${id}, outside`,
+      );
+    }
+    // inside: the image at the content's edge, the content 7px after it
+    assert.deepStrictEqual(
+      await ink('i'),
+      { red: [80, 100], blue: [107, 117] },
+      'inside',
+    );
+    // and the content's own space after that, kept as it is after an
+    // image, one space whether it collapses or not
+    const spaced = (await ink('sp')).blue[0];
+    assert.ok(spaced > 107 + 5, `a space after the gap: ${spaced}`);
+    assert.strictEqual((await ink('pre')).blue[0], spaced, 'white-space: pre');
+    // at the start of a right-to-left line, which is its right
+    assert.deepStrictEqual(
+      await ink('r'),
+      { red: [327, 347], blue: [310, 320] },
+      'right to left, outside',
+    );
+    assert.deepStrictEqual(
+      await ink('ri'),
+      { red: [300, 320], blue: [283, 293] },
+      'right to left, inside',
+    );
+
+    // 7 CSS pixels: 14 device pixels at 2x, so the page is the page at 1x
+    // doubled. Blink writes its 7 into the marker's margins unzoomed, and
+    // Chrome's is 7 device pixels at a device scale of 2
+    cleanup();
+    const twice = await renderWithBytes(
+      sheet +
+        '<ul><li id="a"><b></b>a</li></ul>' +
+        '<ul class="in"><li id="i"><b></b>a</li></ul>',
+      images,
+      400,
+      2,
+    );
+    await act();
+    const device = (id: string) =>
+      inkOf(twice.result, boxOf(twice.el, id), 880);
+    assert.deepStrictEqual(
+      await device('a'),
+      { red: [106, 146], blue: [160, 180] },
+      'outside, at 2x',
+    );
+    assert.deepStrictEqual(
+      await device('i'),
+      { red: [160, 200], blue: [214, 234] },
+      'inside, at 2x',
+    );
   },
 );
 

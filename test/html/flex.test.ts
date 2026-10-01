@@ -5,12 +5,14 @@ import { cleanup, waitFor } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
 import {
   RED_PNG,
+  SVG_NS,
   boxOf,
   fillsOf,
   linesOf,
   metric,
   render,
   renderWithBytes,
+  svgBytes,
   view,
 } from './harness.js';
 import type { LaidBox, PlacedLine } from './harness.js';
@@ -729,6 +731,81 @@ metric(
   },
 );
 
+metric(
+  'flex items that may shrink give up room in proportion to their content at its widest',
+  async () => {
+    // A line too narrow for its items takes the room it lacks from each in
+    // proportion to its flex shrink factor times its flex base size (CSS
+    // Flexbox 9.7, step 4c), and an item's base size is its content at its
+    // widest, whatever the room (9.2.3 E). Yoga asks for it as at most the
+    // row's width, and an item that may shrink was fitted to that: one
+    // wider than the row was weighed as no wider, and gave up too little
+    // beside a narrower one. Eight floats of 50 beside two in a row of 300
+    // were 225 and 75, where Chrome has 240 and 60
+    const floats = (n: number) => '<div class="f"></div>'.repeat(n);
+    const long = 'Documentation pages and more words here to wrap them';
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex;width:300px;line-height:20px}' +
+        '.f{float:left;width:50px;height:10px}' +
+        '.w{width:max-content} .n{width:min-content}</style>' +
+        `<div class="r"><div id="a">${floats(8)}</div>` +
+        `<div id="b">${floats(2)}</div></div>` +
+        // with a shrink factor of its own
+        `<div class="r"><div id="c" style="flex-shrink:2">${floats(8)}</div>` +
+        `<div id="d">${floats(2)}</div></div>` +
+        // words, which wrap at the width that leaves them
+        `<div class="w" id="w1">${long}</div>` +
+        '<div class="w" id="w2">Pricing plans</div>' +
+        '<div class="n" id="n2">Pricing plans</div>' +
+        `<div class="r"><div id="e">${long}</div>` +
+        '<div id="f">Pricing plans</div></div>' +
+        // and the narrower held at its longest word, which the rest of the
+        // line then comes out of
+        `<div class="r" style="width:200px"><div id="g">${long}</div>` +
+        '<div id="h">Pricing plans</div></div>' +
+        // A flex box's content at its narrowest is still its items' at
+        // theirs, 50 and 50, and each of them is that in it
+        '<div id="i" style="display:flex;width:min-content">' +
+        `<div id="j">${floats(8)}</div><div id="k">${floats(2)}</div></div>`,
+    );
+    const el = view(node);
+    const box = (id: string) => boxOf(el, id);
+    const near = (actual: number, expected: number, message: string) =>
+      assert.ok(
+        Math.abs(actual - expected) < 0.01,
+        `${message}: ${actual}, not ${expected}`,
+      );
+    near(box('a').width, 240, 'the wider gives up four fifths');
+    near(box('b').width, 60, 'and the narrower one fifth');
+    near(box('b').x, box('a').x + 240, 'beside it');
+    // 200 short, weighed 2 × 400 to 1 × 100
+    near(box('c').width, 400 - (200 * 800) / 900, 'by twice its base');
+    near(box('d').width, 100 - (200 * 100) / 900, 'and the other once');
+    // as Chrome has the paragraph and the two words, 245 and 55 in Arial
+    const long1 = box('w1').width;
+    const short = box('w2').width;
+    assert.ok(long1 > 300, `the words are wider than the row: ${long1}`);
+    const lacks = long1 + short - 300;
+    near(box('e').width, long1 - (lacks * long1) / (long1 + short), 'words');
+    near(box('f').width, short - (lacks * short) / (long1 + short), 'two');
+    assert.strictEqual(box('f').height, 40, 'which wrap');
+    // in 200, the two words' share would leave them narrower than
+    // "Pricing", so they are held there, and the paragraph has the rest
+    const word = box('n2').width;
+    assert.ok(
+      short - ((long1 + short - 200) * short) / (long1 + short) < word,
+      'their share is narrower than their longest word',
+    );
+    near(box('h').width, word, 'held at their longest word');
+    near(box('g').width, 200 - word, 'and the paragraph the rest');
+    assert.deepStrictEqual(
+      [box('i').width, box('j').width, box('k').width],
+      [100, 50, 50],
+      'a flex box at its narrowest, and its items in it',
+    );
+  },
+);
+
 test("a flex item's percentages are of the flex box's width, not of its own", async () => {
   // CSS 2.1 8.3, 8.4 and 10.4: a percentage in a margin, a padding or a
   // width limit is of the containing block's width, and a flex item's
@@ -1291,6 +1368,75 @@ test('a flex box measured for its min-content width counts each item at its own'
   assert.strictEqual(boxOf(el, 'h').width, 60, 'and the item its widest in it');
 });
 
+test('a flex box that wraps is as narrow as its widest item at its min-content width', async () => {
+  // A row that may wrap may put each item on a line of its own, so its
+  // min-content width is the largest of its items' min-content
+  // contributions, and not their sum, which is a row that does not wrap's
+  // (CSS Flexbox 9.9.1). Summed, a `width: min-content` box around three
+  // 30px items was 90 wide with them side by side, where Chrome has 30,
+  // one under another; its max-content width is still their sum
+  const { node } = await render(
+    '<style>body{margin:0} .i{width:30px;height:6px}' +
+      '.w{display:flex;flex-wrap:wrap}</style>' +
+      '<div id="a" style="width:min-content"><div class="w">' +
+      '<div id="a1" class="i"></div><div id="a2" class="i"></div>' +
+      '<div class="i"></div></div></div>' +
+      // the gaps between items on a line are none, and the widest decides
+      '<div id="b" style="width:min-content"><div class="w" ' +
+      'style="column-gap:20px"><div class="i"></div><div class="i"></div>' +
+      '<div class="i" style="width:40px"></div></div></div>' +
+      // `wrap-reverse` wraps too
+      '<div id="c" style="width:min-content"><div class="w" ' +
+      'style="flex-wrap:wrap-reverse"><div class="i"></div>' +
+      '<div class="i"></div><div class="i"></div></div></div>' +
+      // a least width of its own holds two items to a line
+      '<div id="d" style="width:min-content"><div class="w" ' +
+      'style="min-width:70px"><div class="i"></div><div class="i"></div>' +
+      '<div class="i"></div></div></div>' +
+      // an item's `min-width: min-content` around one, in a row too narrow
+      // for it: its padding and the widest item
+      '<div style="display:flex;width:40px"><div id="e" ' +
+      'style="min-width:min-content;padding-left:22px"><div class="w">' +
+      '<div class="i"></div><div class="i"></div><div class="i"></div>' +
+      '</div></div></div>' +
+      // as an item of a row that does not wrap, which sums it with the rest
+      '<div id="f" style="width:min-content"><div style="display:flex">' +
+      '<div class="w"><div class="i"></div><div class="i"></div>' +
+      '<div class="i"></div></div><div class="i"></div></div></div>' +
+      // and a row that does not wrap sums its items and its gaps
+      '<div id="g" style="width:min-content"><div style="display:flex;' +
+      'column-gap:20px"><div class="i"></div><div class="i"></div>' +
+      '<div class="i"></div></div></div>' +
+      // at its widest, side by side, and within a greatest width there
+      '<div id="h" style="width:max-content"><div class="w" ' +
+      'style="column-gap:20px"><div class="i"></div><div class="i"></div>' +
+      '<div class="i"></div></div></div>' +
+      '<div id="k" style="width:max-content"><div class="w" ' +
+      'style="max-width:70px"><div class="i"></div><div class="i"></div>' +
+      '<div class="i"></div></div></div>',
+  );
+  const el = view(node);
+  const size = (id: string): [number, number] => {
+    const box = boxOf(el, id);
+    return [box.width, box.height];
+  };
+  assert.deepStrictEqual(size('a'), [30, 18], 'one item to a line');
+  const [a1, a2] = [boxOf(el, 'a1'), boxOf(el, 'a2')];
+  assert.deepStrictEqual(
+    [a2.x - a1.x, a2.y - a1.y],
+    [0, 6],
+    'the next under the first',
+  );
+  assert.deepStrictEqual(size('b'), [40, 18], 'the widest, and no gap');
+  assert.deepStrictEqual(size('c'), [30, 18], 'wrap-reverse');
+  assert.deepStrictEqual(size('d'), [70, 12], 'its least width');
+  assert.deepStrictEqual(size('e'), [52, 18], 'an item held to it');
+  assert.deepStrictEqual(size('f'), [60, 18], 'beside an item');
+  assert.deepStrictEqual(size('g'), [130, 6], 'a row that does not wrap');
+  assert.deepStrictEqual(size('h'), [130, 6], 'its max-content width');
+  assert.deepStrictEqual(size('k'), [70, 12], 'within its greatest width');
+});
+
 test("a flex box is no narrower than its items' widths make it", async () => {
   // What an item with a width of its own gives the size of its flex box is
   // that width (CSS Flexbox 9.9.3), and a percentage `max-width` on a box
@@ -1585,6 +1731,93 @@ test("a column with no height keeps its items' flex-basis", async () => {
   assert.strictEqual(boxOf(el, 'a').height, 50);
   assert.strictEqual(boxOf(el, 'b').height, 40, 'its content box, padded');
 });
+
+test('an item across a column is no narrower than its content at its narrowest', async () => {
+  // Where it is not stretched, an item is `fit-content` across a column
+  // (CSS Flexbox 9.4, step 7): fitted to the column, and past it where its
+  // content at its narrowest is wider — past both sides, centred. It was
+  // fitted to the column whatever it held. Its `min-width` has no say in
+  // that: an automatic minimum is the main axis's (4.5), and Chrome's `b`
+  // is 201 wide with `min-width: 0` as without it.
+  const block = '<div style="width:201px;height:13px"></div>';
+  const column = 'display:flex;flex-direction:column;width:50px';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      `<div style="${column};align-items:flex-start">` +
+      `<div id="a">${block}</div></div>` +
+      `<div style="${column};align-items:center;margin-left:100px">` +
+      `<div id="b" style="min-width:0">${block}</div>` +
+      `<div id="c" style="max-width:100px">${block}</div>` +
+      `<div id="d" style="align-self:stretch">${block}</div>` +
+      // no wider at its narrowest than the column: fitted to it
+      '<div id="e"><div style="float:left;width:30px;height:5px"></div>' +
+      '<div style="float:left;width:30px;height:5px"></div></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  assert.deepStrictEqual(at('a'), [0, 201], 'from the start, past the end');
+  assert.deepStrictEqual(at('b'), [24.5, 201], 'centred, past both sides');
+  assert.deepStrictEqual(at('c'), [75, 100], 'within its maximum');
+  assert.deepStrictEqual(at('d'), [100, 50], "stretched, the column's");
+  assert.deepStrictEqual(at('e'), [100, 50], 'fitted to the column');
+});
+
+test("a replaced item across a column is its natural width, and the column's where it has none", async () => {
+  // its content at its narrowest is its natural width; one with only a
+  // ratio has none, and is fitted to the column (css-flexbox
+  // `align-items-007`); and held to a `max-width: 100%`, it is as tall as
+  // that width makes it, where Yoga held the width it was measured at
+  // and kept the height
+  const column = 'display:flex;flex-direction:column;align-items:center';
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      `<div style="${column};width:4px;margin-left:20px">` +
+      '<img id="a" src="r.png"><img id="b" src="r.png" style="max-width:100%">' +
+      '</div>' +
+      `<div style="${column};width:50px">` +
+      '<svg id="c" viewBox="0 0 200 100"></svg></div>' +
+      // a percentage of a height in it, which the flex layout makes
+      // definite only after it is measured, leaves it fitted to the column
+      // (css-sizing `intrinsic-percent-replaced-017`)
+      `<div style="${column};width:100px;height:100px">` +
+      '<div id="d" style="max-height:100%">' +
+      '<img src="big.svg" style="max-height:100%"></div></div>',
+    {
+      'r.png': RED_PNG,
+      'big.svg': svgBytes(`<svg ${SVG_NS} width="200" height="200"/>`),
+    },
+  );
+  const at = (id: string) => {
+    const box = boxOf(el, id);
+    return [box.x, box.width, box.height];
+  };
+  await waitFor(() => assert.deepStrictEqual(at('a'), [17, 10, 10]));
+  assert.deepStrictEqual(at('b'), [20, 4, 4]);
+  assert.deepStrictEqual(at('c'), [0, 50, 25]);
+  await waitFor(() => assert.deepStrictEqual(at('d'), [0, 100, 100]));
+});
+
+metric(
+  "a flex row across a column is as wide as its items' narrowest side by side",
+  async () => {
+    // a flex box's content at its narrowest is its items' side by side, and
+    // read as its widest word (`exactMinContent`), the item was as wide as
+    // the first, and the second ran out of it
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="display:flex;flex-direction:column;align-items:flex-start;' +
+        'width:20px"><div id="r" style="display:flex">' +
+        '<div id="a">Documentation</div><div id="b">pages</div></div></div>',
+    );
+    const el = view(node);
+    const [r, a, b] = ['r', 'a', 'b'].map((id) => boxOf(el, id));
+    assert.strictEqual(b.x, a.x + a.width, 'side by side');
+    assert.ok(
+      Math.abs(r.width - (a.width + b.width)) < 0.01,
+      `${r.width} is as wide as ${a.width} and ${b.width}`,
+    );
+  },
+);
 
 test('a flex item stretched across a column is as tall as its ratio makes it', async () => {
   // a replaced item was measured at the width it was given and answered

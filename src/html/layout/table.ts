@@ -25,6 +25,7 @@ import {
   cyclicWidth,
   exactMinContent,
   layoutBlockIn,
+  layoutSubtree,
   measureIntrinsicWidth,
   moveContent,
   moveTo,
@@ -33,16 +34,31 @@ import {
 import type { LayoutContext } from './block.js';
 import { firstBaselineIn } from './inline.js';
 import { tableGrid } from './grid.js';
-import type { Cell } from './grid.js';
+import type { Cell, TableGrid } from './grid.js';
 
-/** Lay out a table's insides. Returns the content height. */
+/**
+ * Lay out a table's insides. Returns the content height.
+ *
+ * A table in a cell is measured and laid out from inside the layout of the
+ * table around it, so nested tables hold every level's frames on the stack
+ * at once. So this is the phases and nothing else, and what waits on the
+ * stack while a cell's content is measured (`measureCell`) and laid out
+ * (`layoutCells`) is the few values passed between them; the columns'
+ * arithmetic (`sizeColumns`, `autoColumns`) and the rows' (`placeRows`)
+ * are done before or after, in frames of their own. As one function, every
+ * local of every phase in the one frame the interpreter keeps whole, a
+ * level of nested tables took 4 KB of the stack where it takes 2.8, and
+ * `display: table-cell` boxes 254 deep, as deep as the parser lets a
+ * document go, ran out of the 984 KB V8 gives the main thread: the
+ * document came out blank. (The box builder stops them at 128 now, for
+ * paint's sake, `MAX_DEPTH`.)
+ */
 export function layoutTable(
   table: Box,
   ctx: LayoutContext,
   contentWidth: number,
 ): number {
-  const { rows, captions, cells, columnCount, columnBoxes, columnGroups } =
-    tableGrid(table);
+  const grid = tableGrid(table);
   table.captionTop = 0;
   table.captionBottom = 0;
   // a percentage of a width that is not known is `auto`: the table is as
@@ -52,41 +68,10 @@ export function layoutTable(
   // — and one a grid stretches across its area is as wide as that, as a
   // table with a width of its own is (`STRETCHED_ACROSS`)
   const auto = own && !STRETCHED_ACROSS.has(table);
-  if (!columnCount) {
-    // With no columns, an auto table is as wide as its widest caption can
-    // be and its `min-width` asks, as one with columns is at the least
-    // (17.5.2), rather than as the room on offer: a caption over no cells
-    // was centred in the width of the page.
-    if (auto) {
-      let inner = captions.length
-        ? captionMinimum(captions, ctx) - table.horizontalExtra
-        : 0;
-      const min = resolveOrNull(table.style.minWidth, contentWidth);
-      if (min !== null) {
-        inner = Math.max(
-          inner,
-          table.style.boxSizing === 'border-box'
-            ? min - table.horizontalExtra
-            : min,
-        );
-      }
-      table.width = Math.max(0, inner) + table.horizontalExtra;
-    }
-    layoutCaptions(captions, ctx, table);
-    TABLE_CONTENT.set(
-      table,
-      table.captionTop + table.captionBottom + table.verticalExtra,
-    );
+  if (!grid.columnCount) {
+    layoutColumnless(table, grid.captions, ctx, contentWidth, auto);
     return 0;
   }
-
-  const style = table.style;
-  // between the columns, and between the rows (CSS 2.1 17.6.1)
-  const apart = style.borderCollapse !== 'collapse';
-  const spacing = apart ? style.borderSpacing : 0;
-  const rowSpacing = apart ? style.borderSpacingY : 0;
-  const gaps = spacing * (columnCount + 1);
-  const available = Math.max(0, contentWidth - gaps);
 
   // While the columns are sized, a percentage in a cell's padding is of
   // nothing: the width it is of is the one the columns are being sized to
@@ -95,11 +80,87 @@ export function layoutTable(
   // widths, below. Taken of the table's width here, and of the cell's own
   // where the cell was laid out, a padded cell's column was wider than
   // its share and its padding narrower.
-  for (const cell of cells) resolveEdges(cell.box, 0);
+  for (const cell of grid.cells) resolveEdges(cell.box, 0);
 
   // a fixed layout needs a width to be fixed to; with `auto` a table is laid
   // out by its contents after all (CSS 2.1 17.5.2.1), stretched or not
-  const fixed = style.tableLayout === 'fixed' && !own;
+  const fixed = table.style.tableLayout === 'fixed' && !own;
+  if (!fixed) for (const cell of grid.cells) measureCell(cell.box, ctx);
+  const columns = sizeColumns(table, grid, contentWidth, fixed, auto, ctx);
+  layoutCaptions(grid.captions, ctx, table);
+  const natural = layoutCells(grid.cells, columns, ctx);
+  return placeRows(table, grid, columns, natural);
+}
+
+/** A table with no columns, and its captions. */
+function layoutColumnless(
+  table: Box,
+  captions: Box[],
+  ctx: LayoutContext,
+  contentWidth: number,
+  auto: boolean,
+): void {
+  // With no columns, an auto table is as wide as its widest caption can
+  // be and its `min-width` asks, as one with columns is at the least
+  // (17.5.2), rather than as the room on offer: a caption over no cells
+  // was centred in the width of the page.
+  if (auto) {
+    let inner = captions.length
+      ? captionMinimum(captions, ctx) - table.horizontalExtra
+      : 0;
+    const min = resolveOrNull(table.style.minWidth, contentWidth);
+    if (min !== null) {
+      inner = Math.max(
+        inner,
+        table.style.boxSizing === 'border-box'
+          ? min - table.horizontalExtra
+          : min,
+      );
+    }
+    table.width = Math.max(0, inner) + table.horizontalExtra;
+  }
+  layoutCaptions(captions, ctx, table);
+  TABLE_CONTENT.set(
+    table,
+    table.captionTop + table.captionBottom + table.verticalExtra,
+  );
+}
+
+/** Where a table's columns are (`sizeColumns`). */
+interface Columns {
+  widths: number[];
+  /** Each column's left edge. */
+  columnX: number[];
+  /** Whether `visibility: collapse` takes each column out, and any. */
+  gone: boolean[];
+  anyGone: boolean;
+  /** Where the columns end: past the last one left in, and the spacing
+   *  after it. */
+  end: number;
+  /** Between the columns, and between the rows (CSS 2.1 17.6.1). */
+  spacing: number;
+  rowSpacing: number;
+}
+
+/** A table's columns sized and placed, and the table as wide as they
+ *  make it. Its cells are measured already (`measureCell`). */
+function sizeColumns(
+  table: Box,
+  grid: TableGrid,
+  contentWidth: number,
+  fixed: boolean,
+  auto: boolean,
+  ctx: LayoutContext,
+): Columns {
+  const { cells, captions, columnCount, columnBoxes, columnGroups } = grid;
+  const style = table.style;
+  // between the columns, and between the rows (CSS 2.1 17.6.1)
+  const apart = style.borderCollapse !== 'collapse';
+  const spacing = apart ? style.borderSpacing : 0;
+  const rowSpacing = apart ? style.borderSpacingY : 0;
+  const gaps = spacing * (columnCount + 1);
+  const available = Math.max(0, contentWidth - gaps);
+
   // An auto table is at least as wide as its widest caption can be (CSS 2.1
   // 17.5.2), and as its `min-width` asks; the columns share what that adds
   // as they share a width of the table's own (`autoColumns`).
@@ -122,7 +183,15 @@ export function layoutTable(
   // helps decide it (`autoColumns`).
   const set = columnWidths(columnBoxes, columnGroups, available, fixed);
   const widths = fixed
-    ? fixedColumns(cells, set, columnCount, available, spacing)
+    ? fixedColumns(
+        cells,
+        set,
+        columnPercents(columnBoxes, columnGroups),
+        columnLeast(columnBoxes, columnGroups),
+        columnCount,
+        available,
+        spacing,
+      )
     : autoColumns(
         cells,
         set,
@@ -130,7 +199,6 @@ export function layoutTable(
         columnPercents(columnBoxes, columnGroups),
         columnCount,
         available,
-        ctx,
         !auto,
         spacing,
         room,
@@ -173,33 +241,39 @@ export function layoutTable(
     tableContentWidth = used;
     table.width = used + table.horizontalExtra;
   }
-  layoutCaptions(captions, ctx, table);
+  return { widths, columnX, gone, anyGone, end: x, spacing, rowSpacing };
+}
 
-  const top = table.contentY + table.captionTop;
-  let y = top;
-  const rowTop: number[] = new Array<number>(rows.length);
-  const rowHeight: number[] = new Array<number>(rows.length).fill(0);
-  y += rowSpacing;
-
-  // Size every cell at its column width first, so a row's height is the
-  // tallest cell in it rather than the first one that was measured. What
-  // its content came to is kept apart from a height the cell sets: it is
-  // that content `vertical-align` moves in the cell.
-  //
-  // A percentage in a cell's padding is of the width of its row: the
-  // columns and the spacing between them, without the spacing either side
-  // and the table's own padding. CSS 2.1 8.4 has it of the containing
-  // block's width and names none for a cell; the row's is what browsers
-  // take, and what the table's content box is wherever there is no
-  // spacing. Every column counts, one `visibility: collapse` takes out
-  // too, so that taking it out changes no row's height.
-  let rowWidth = spacing * Math.max(0, columnCount - 1);
+/**
+ * Every cell laid out at its columns' width, all of them before a row is
+ * sized, so a row's height is the tallest cell in it rather than the first
+ * one that was measured. What its content came to is kept apart from a
+ * height the cell sets: it is that content `vertical-align` moves in the
+ * cell.
+ *
+ * A percentage in a cell's padding is of the width of its row: the
+ * columns and the spacing between them, without the spacing either side
+ * and the table's own padding. CSS 2.1 8.4 has it of the containing
+ * block's width and names none for a cell; the row's is what browsers
+ * take, and what the table's content box is wherever there is no
+ * spacing. Every column counts, one `visibility: collapse` takes out
+ * too, so that taking it out changes no row's height.
+ *
+ * Returns what each cell's content came to.
+ */
+function layoutCells(
+  cells: Cell[],
+  columns: Columns,
+  ctx: LayoutContext,
+): number[] {
+  const { widths, spacing } = columns;
+  let rowWidth = spacing * Math.max(0, widths.length - 1);
   for (const columnWidth of widths) rowWidth += columnWidth;
   const natural: number[] = new Array<number>(cells.length);
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i];
     const width = spannedWidth(widths, cell, spacing);
-    ctx.layoutSubtree(cell.box, width, rowWidth);
+    layoutSubtree(cell.box, ctx, width, rowWidth);
     natural[i] = CELL_CONTENT.get(cell.box) ?? cell.box.height;
     // A height a cell sets is a least one: its content is laid out as a
     // block's, which keeps a height it sets and lets the content run out of
@@ -227,6 +301,28 @@ export function layoutTable(
       );
     }
   }
+  return natural;
+}
+
+/** The rows' heights, and the rows and the cells placed, once every cell
+ *  is laid out at its columns' width (`layoutCells`) and its content came
+ *  to `natural`. Returns the rows' height. */
+function placeRows(
+  table: Box,
+  grid: TableGrid,
+  columns: Columns,
+  natural: number[],
+): number {
+  const { rows, cells } = grid;
+  const { widths, columnX, gone, anyGone, spacing, rowSpacing } = columns;
+  const columnCount = widths.length;
+  const style = table.style;
+  const top = table.contentY + table.captionTop;
+  let y = top;
+  const rowTop: number[] = new Array<number>(rows.length);
+  const rowHeight: number[] = new Array<number>(rows.length).fill(0);
+  y += rowSpacing;
+
   // A cell aligned on the baseline — every value but `top`, `middle` and
   // `bottom` — hangs its first line on its first row's baseline, the lowest
   // of theirs from the row's top (CSS 2.1 17.5.3), and the row is as tall as
@@ -447,7 +543,7 @@ export function layoutTable(
   // left edge to the last one's right, the spacing around them outside it
   // (CSS 2.1 17.5.1), as it is above and below.
   const gridX = table.contentX + spacing;
-  const gridWidth = Math.max(0, x - spacing - gridX);
+  const gridWidth = Math.max(0, columns.end - spacing - gridX);
   for (let r = 0; r < rows.length; r += 1) {
     const row = rows[r];
     row.x = gridX;
@@ -563,74 +659,191 @@ function spannedWidth(widths: number[], cell: Cell, spacing: number): number {
 /**
  * `table-layout: fixed`: the columns and the first row decide, and the rest
  * of the table is not measured at all, which is the whole point of it (CSS
- * 2.1 17.5.2.1). A column with a `width` sets its own; failing that, a cell
- * of the first row with one sets the columns it spans, by its border box and
- * less the spacing between them; the columns left share what remains, and
- * where nothing remains, what is left of a table wider than its columns is
- * shared among all of them.
+ * 2.1 17.5.2.1). Each column is set to a length, to a percentage of the
+ * table's width less its spacing, or to neither. A `<col>` set to a length
+ * has it whatever its cells say; otherwise a cell of the first row sets
+ * the column it is in, its percentage over the `<col>`'s where it is the
+ * larger. A cell spanning columns gives each that has no length an even
+ * share of its border box less the spacing between them, and each that
+ * has neither an even share of its percentage: `<td colspan=2
+ * style="width:60%">` sets two columns to 30%, and one 200 wide over a
+ * `<col>` of 50 and a column of nothing makes that 99, where it was the
+ * 148 the `<col>` left. All of this is Blink's, which CSS 2.1 leaves to
+ * the browser.
+ *
+ * The table's width is shared out as Blink shares it too
+ * (`SynchronizeAssignableTableInlineSizeAndColumnsFixed`): the lengths
+ * first, then the percentages, then what is left to the columns set to
+ * neither. Percentages that come to more than 100% are scaled until they
+ * come to that, and percentages that come to more than the lengths leave
+ * are scaled down to it. Where no column is set to neither, what is left
+ * goes to the lengths, or failing those to the percentages. Only a column's
+ * least widens the table: its length, or a `<col>`'s `min-width`. Taken
+ * as lengths, two cells of 60% made a table of 300 one of 359, where each
+ * is 147 and the table 300; and a length of 100 beside a 60% column
+ * shared what the two left with it, 106.4 and 187.6, where the length
+ * takes it all, 117.6 and 176.4.
  */
 function fixedColumns(
   cells: Cell[],
   columnWidths: (number | null)[],
+  columnPercents: (number | null)[],
+  columnLeast: (number | null)[],
   columnCount: number,
   available: number,
   spacing: number,
 ): number[] {
-  const widths: number[] = new Array<number>(columnCount).fill(0);
-  const set: boolean[] = new Array<boolean>(columnCount).fill(false);
-  for (let c = 0; c < columnCount; c += 1) {
-    const px = columnWidths[c];
-    if (px === null) continue;
-    widths[c] = px;
-    set[c] = true;
-  }
+  // each column's length, its percentage, and what a cell with the
+  // percentage adds to it where its padding and borders are not in it
+  const length = columnWidths.map((px, c) =>
+    columnPercents[c] === null ? px : null,
+  );
+  const percent = columnPercents.slice();
+  const added: number[] = new Array<number>(columnCount).fill(0);
   for (const cell of cells) {
     if (cell.row > 0) break;
-    const px = ownWidth(cell.box.style, available);
-    if (px === null) continue;
     const box = cell.box;
+    const first = cell.column;
+    const last = Math.min(columnCount, first + cell.colSpan);
+    const span = last - first;
+    const share = ownPercent(box.style);
+    if (share !== null) {
+      for (let c = first; c < last; c += 1) {
+        if (length[c] !== null) continue;
+        if (span > 1) {
+          if (percent[c] === null) percent[c] = share / span;
+        } else if (percent[c] === null || share > (percent[c] as number)) {
+          percent[c] = share;
+          added[c] =
+            box.style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
+        }
+      }
+      continue;
+    }
+    const px = ownWidth(box.style, available);
+    if (px === null) continue;
     // A length within a length `max-width`, which a `min-width` raises
     // and does nothing else to: a fixed table does not measure its cells'
     // content, so a least width has nothing to hold up (CSS Tables 3,
-    // 3.8.2 and 3.8.3, as Blink reads them). A percentage is held by a
-    // percentage limit only (`ownWidth`). Unheld, a cell `width: 300px;
+    // 3.8.2 and 3.8.3, as Blink reads them). Unheld, a cell `width: 300px;
     // max-width: 100px` took 300 of the table.
-    const outer = isPct(box.style.width)
-      ? outerWidth(box, px)
-      : Math.min(outerWidth(box, px), cellLimits(box).cap);
-    const last = Math.min(columnCount, cell.column + cell.colSpan);
-    let taken = spacing * (last - cell.column - 1);
-    let open = 0;
-    for (let c = cell.column; c < last; c += 1) {
-      if (set[c]) taken += widths[c];
-      else open += 1;
-    }
-    if (!open) continue;
-    const each = Math.max(0, outer - taken) / open;
-    for (let c = cell.column; c < last; c += 1) {
-      if (set[c]) continue;
-      widths[c] = each;
-      set[c] = true;
+    const outer = Math.min(outerWidth(box, px), cellLimits(box).cap);
+    const each = Math.max(0, outer - spacing * (span - 1)) / span;
+    for (let c = first; c < last; c += 1) {
+      if (length[c] === null) length[c] = each;
     }
   }
-  let used = 0;
-  let unset = 0;
+
+  // The table is as wide as the least its columns come to, which is what
+  // widens it past its own width: the lengths, and the `min-width` of each
+  // `<col>` set to anything else.
+  let least = 0;
+  let total = 0;
   for (let c = 0; c < columnCount; c += 1) {
-    if (set[c]) used += widths[c];
-    else unset += 1;
-  }
-  const remaining = Math.max(0, available - used);
-  if (unset) {
-    for (let c = 0; c < columnCount; c += 1) {
-      if (!set[c]) widths[c] = remaining / unset;
+    const floor = columnLeast[c] ?? 0;
+    const px = length[c];
+    if (percent[c] === null && px !== null) {
+      length[c] = Math.max(px, floor);
+      least += length[c] as number;
+    } else {
+      least += floor;
     }
-  } else if (remaining > 0 && columnCount) {
+    if (percent[c] !== null) total += percent[c] as number;
+  }
+  const target = Math.max(available, least);
+  const scale = total > 100 ? 100 / total : 1;
+  const ofTarget: number[] = new Array<number>(columnCount).fill(0);
+  let lengths = 0;
+  let percents = 0;
+  let percentCount = 0;
+  let autoCount = 0;
+  let zeroCount = 0;
+  for (let c = 0; c < columnCount; c += 1) {
+    const share = percent[c];
+    const px = length[c];
+    if (share !== null) {
+      ofTarget[c] = Math.max(
+        columnLeast[c] ?? 0,
+        ((share * scale) / 100) * target + added[c],
+      );
+      percents += ofTarget[c];
+      percentCount += 1;
+    } else if (px === null) {
+      autoCount += 1;
+    } else if (px > 0) {
+      lengths += px;
+    } else {
+      zeroCount += 1;
+    }
+  }
+
+  const widths: number[] = new Array<number>(columnCount).fill(0);
+  let assigned = 0;
+  // the lengths fit, since they widen the table; they grow into what the
+  // percentages leave where no column is set to neither
+  if (lengths > 0) {
+    const room = Math.max(0, target - percents);
+    const grow = !autoCount && lengths < room ? room / lengths : 1;
     for (let c = 0; c < columnCount; c += 1) {
-      widths[c] +=
-        used > 0 ? (widths[c] / used) * remaining : remaining / columnCount;
+      const px = length[c];
+      if (percent[c] !== null || px === null || !(px > 0)) continue;
+      widths[c] = px * grow;
+      assigned += widths[c];
+    }
+  }
+  if (assigned >= target) return widths;
+  // the percentages are scaled down to what the lengths leave, and up to
+  // it where no column is set to neither
+  if (percentCount) {
+    const room = target - assigned;
+    const toRoom = percents > room || (!autoCount && percents < room);
+    for (let c = 0; c < columnCount; c += 1) {
+      if (percent[c] === null) continue;
+      widths[c] = !toRoom
+        ? ofTarget[c]
+        : percents > 0
+          ? (ofTarget[c] * room) / percents
+          : room / percentCount;
+      assigned += widths[c];
+    }
+  }
+  // The columns set to neither share what is left. One set to 0 is set to
+  // a length that gets nothing, unless every column is set to 0.
+  const rest = target - assigned;
+  const all = zeroCount === columnCount;
+  if (!all && !autoCount) return widths;
+  for (let c = 0; c < columnCount; c += 1) {
+    if (percent[c] !== null) continue;
+    if (all || length[c] === null) {
+      widths[c] = rest / (all ? zeroCount : autoCount);
     }
   }
   return widths;
+}
+
+/**
+ * A cell's max-content and min-content widths, for `autoColumns`: two probe
+ * layouts, unconstrained for max-content, and at no width for min-content
+ * (`MIN_CONTENT_PROBE`) — which the line breaker answers by breaking at
+ * every opportunity, so the widest line is the longest unbreakable word.
+ *
+ * Cached on the box, because intrinsic widths are width-independent by
+ * definition — measuring them per layout pass made a *resize* of a 500-row
+ * table cost as much as its first layout (223ms of re-probing measured
+ * against 10ms with the cache). The cache's invalidation rule is the box's
+ * lifetime: any DOM or style change rebuilds the tree.
+ *
+ * Every cell is measured before the columns are sized, and not in the loop
+ * that sizes them, so that the frame a table in the cell is measured under
+ * is this small one and not `autoColumns`'s (`layoutTable`).
+ */
+function measureCell(box: Box, ctx: LayoutContext): void {
+  if (box.intrinsicMaxContent >= 0) return;
+  box.intrinsicMaxContent = measureIntrinsicWidth(box, ctx, Infinity);
+  // where its words say it exactly, read from the layout just made
+  box.intrinsicMinContent =
+    (ctx.fonts && exactMinContent(box, ctx.fonts)) ??
+    measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE, true);
 }
 
 /**
@@ -680,7 +893,6 @@ function autoColumns(
   columnPercents: (number | null)[],
   columnCount: number,
   available: number,
-  ctx: LayoutContext,
   fill: boolean,
   spacing: number,
   room: number,
@@ -698,27 +910,7 @@ function autoColumns(
   const asks = new Map<Cell, { min: number; max: number }>();
 
   for (const cell of cells) {
-    // Two probe layouts per cell: unconstrained for max-content, and at no
-    // width for min-content (`MIN_CONTENT_PROBE`) — which the line breaker
-    // answers by breaking at every opportunity, so the widest line is the
-    // longest unbreakable word.
-    //
-    // Cached on the box, because intrinsic widths are width-independent by
-    // definition — measuring them per layout pass made a *resize* of a
-    // 500-row table cost as much as its first layout (223ms of re-probing
-    // measured against 10ms with the cache). The cache's invalidation rule
-    // is the box's lifetime: any DOM or style change rebuilds the tree.
-    if (cell.box.intrinsicMaxContent < 0) {
-      cell.box.intrinsicMaxContent = measureIntrinsicWidth(
-        cell.box,
-        ctx,
-        Infinity,
-      );
-      // where its words say it exactly, read from the layout just made
-      cell.box.intrinsicMinContent =
-        (ctx.fonts && exactMinContent(cell.box, ctx.fonts)) ??
-        measureIntrinsicWidth(cell.box, ctx, MIN_CONTENT_PROBE, true);
-    }
+    // what its content asks, measured before (`measureCell`)
     const { floor, cap } = cellLimits(cell.box);
     const low = Math.min(Math.max(cell.box.intrinsicMinContent, floor), cap);
     const ask = {
@@ -1096,11 +1288,11 @@ function columnWidths(
   });
 }
 
-/** The percentage each column of an auto table is set to, or null: its
- *  `<col>`'s, or its group's where the group stands for it with no
- *  `<col>`. A group's percentage is no default for the `<col>`s in it,
- *  and a column set to 0% has none, as Blink has both
- *  (`ColumnConstraintsBuilder`, `CreateColumn`). */
+/** The percentage each column is set to, or null: its `<col>`'s, or its
+ *  group's where the group stands for it with no `<col>`. A group's
+ *  percentage is no default for the `<col>`s in it, and a column set to
+ *  0% has none, as Blink has both (`ColumnConstraintsBuilder`,
+ *  `CreateColumn`). */
 function columnPercents(
   columnBoxes: (Box | null)[],
   columnGroups: (Box | null)[],
@@ -1143,9 +1335,10 @@ function partWidth(box: Box, base: number): number | null {
 
 /** The least a column or a column group is, where a length `min-width`
  *  says: what its cells ask is held up to it, and it sets no width of its
- *  own, which a fixed table's columns have nothing but (`fixedColumns`).
- *  Read as a width, `<col style="min-width:100px">` held a column of
- *  prose to 100 in an auto table, where it is as wide as the prose is. */
+ *  own. A fixed table's columns ask nothing, so there it is only the least
+ *  the table is (`fixedColumns`). Read as a width, `<col
+ *  style="min-width:100px">` held a column of prose to 100 in an auto
+ *  table, where it is as wide as the prose is. */
 function partLeast(box: Box): number | null {
   const min = box.style.minWidth;
   return typeof min === 'number' && min > 0 ? min : null;
@@ -1166,16 +1359,18 @@ function cellWidth(cell: Cell): number | null {
   return Math.min(outerWidth(box, width), cellLimits(box).cap);
 }
 
-/** A cell's, a column's or a column group's percentage `width` in an auto
- *  table, or null where it is none: no more than a percentage `max-width`
- *  (CSS Tables 3, 3.8.2, as `ownWidth`), and not a `calc()` that adds a
- *  length to it, which is `auto` (`tableWidth`). It is a share of the
+/** A cell's, a column's or a column group's percentage `width`, or null
+ *  where it is none: no more than a percentage `max-width` (CSS Tables 3,
+ *  3.8.2, as `ownWidth`), and not a `calc()` that adds a length to it,
+ *  which is `auto` (`tableWidth`). In an auto table it is a share of the
  *  table that the cell's padding and borders are part of, as browsers
  *  read it: added on, a 90% cell and a 10% one came to more than the
- *  table, which then took it back from both. A length `max-width` does not
- *  hold it: `width: 50%; max-width: 100px` is half the table, as in Blink,
- *  which keeps a percentage apart from the lengths that cap what a cell's
- *  content asks. */
+ *  table, which then took it back from both. In a fixed one a
+ *  `content-box` cell's are added to it, as Blink's
+ *  `percent_border_padding` has them (`fixedColumns`). A length
+ *  `max-width` does not hold it: `width: 50%; max-width: 100px` is half
+ *  the table, as in Blink, which keeps a percentage apart from the lengths
+ *  that cap what a cell's content asks. */
 function ownPercent(style: ComputedStyle): number | null {
   const width = style.width;
   if (!isPct(width) || width.px || width.of) return null;

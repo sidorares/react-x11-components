@@ -453,6 +453,12 @@ own, an SVG with only a `viewBox`, is fitted into a square half its face's
 ascent across, which is Blink's: CSS Lists 3 says 1em, and both engines
 find that too large
 ([w3c/csswg-drafts#4207](https://github.com/w3c/csswg-drafts/issues/4207)).
+An image is 7px from the content, Blink's distance, where CSS 2.1 leaves
+it to the user agent: between the image and the content's edge outside the
+item, and after the image inside it, where the content's own space after
+it is kept, as after any image. Blink's 7 is unzoomed, and at a device
+scale of 2 Chrome's is 7 device pixels; this one is 7 CSS pixels at any
+scale, so that a page at 2x is the page at 1x doubled.
 An outside marker that reaches
 higher above its baseline than the item's first line does makes room as
 Blink does: the line grows where it is the item's own, and where it is in a
@@ -479,12 +485,27 @@ padding and border counted once, and a width, height or basis of its own is
 its content box's unless `box-sizing` says otherwise. One that may not
 shrink stays that wide in a row too narrow for it — `shrink-0` beside
 `shrink-0` runs out of the row on one line each rather than wrapping — and
+items that may shrink give up the room the row lacks in proportion to that
+width times their `flex-shrink`, however much wider than the row it is: a
+paragraph beside "Pricing plans" in a row of 300px comes to 245px of it, as
+in Chrome. And
 one a `min-width` of its own holds wider than the room it is offered, as
 `min-w-max` in a narrow row or column does, or its longest word holds in a
 row that wraps, is as tall as its content at that width. A table among them
 is as wide as the flex layout makes it, as Chrome has it — the size its
 line flexed it to along a row, and stretched across a column as any item
-is — where in a block's flow it is as wide as its columns. An item, and a grid's,
+is — where in a block's flow it is as wide as its columns. Across a column,
+an item that is not stretched — `items-start`, `items-center`, an
+`align-self` of its own — is `fit-content` wide (CSS Flexbox 9.4): as wide
+as its content in the room the column has, and no narrower than its content
+at its narrowest, so a word or a box wider than the column runs out past
+it, past both sides where it is centred, as in Chrome. `min-width: 0`
+changes nothing there, an automatic minimum being the main axis's alone.
+An image is its natural width, and one with only a ratio, such as an SVG
+with only a `viewBox`, the column's. An item with something in it that
+takes a percentage of a height is fitted to the column, though: it is
+measured before the flex layout makes that height definite, where Chrome
+measures it at that height. An item, and a grid's,
 is a formatting context of its own: the margins of what it holds stay
 inside it, and the one under its last block makes it that much taller. An
 `auto` margin takes
@@ -667,9 +688,19 @@ spanning rows asks its first row for its baseline and the rows for its
 content and height alone, as Chrome does, so content the baseline moved
 down can hang out of it. A fixed table takes its columns' widths from its
 `<col>`s, then from its first row's cells, border box and
-all, and shares what is left among the rest (CSS 2.1 17.5.2.1); with
-`width: auto` it is laid out by its content, as the section says, where a
-column's `width` counts as its cells' do (17.5.2.2). A column group's
+all (CSS 2.1 17.5.2.1), and shares its width out as Blink does: the
+lengths first, then the percentages in what the lengths leave, scaled down
+to it, then the columns set to neither. Percentages that come to more than
+100% are scaled until they come to that, and a content-box cell's padding
+and borders go on its share, so two cells of 60% in a table of 300 are 147
+each and the table stays 300 wide. Where no column is set to neither, what
+is left goes to the lengths, or failing those to the percentages. Only the
+lengths, and a `<col>`'s `min-width`, widen the table. A cell spanning
+columns gives each it spans with no length an even share of its width less
+the spacing between them, and each with neither an even share of its
+percentage. With `width: auto` it is laid out by its content, as the
+section says, where a column's `width` counts as its cells' do
+(17.5.2.2). A column group's
 `width` is the default of each `<col>` in it that sets none, and each takes
 the whole of it, not a share: the width specified for a column is its own,
 or else its group's (CSS Tables 3, 3.8.3), as in Chrome, where CSS 2.1
@@ -691,8 +722,9 @@ over 10px of content one of 33.33. A table measured for what it asks of a
 table cell, a flex box or a grid around it, or set `width: max-content`,
 asks for its content alone, and laid out in that, shares it; one measured
 for a float or an inline block asks for its percentages too, as in Chrome.
-The percentages come to no more than 100%, the columns' in order, the one
-that would take them past it having what is left; a spanning cell's
+An auto table's percentages come to no more than 100%, the columns' in
+order, the one that would take them past it having what is left; a
+spanning cell's
 percentage goes to the columns it spans that have none, in proportion to
 their content; and a `<col>` with a percentage takes its group's length
 beside it. The table's width — its own, the room it has, or what its
@@ -1829,8 +1861,11 @@ degenerately nested document — a few hundred unclosed `<div>`s, a runaway
 template — would otherwise be a stack overflow far from its cause. The
 parser puts what is opened deeper into the element at the cap, as Blink's
 does, so what is lost is the nesting and not the content; and the box
-builder still stops at 512 boxes, for the anonymous boxes a table builds
-round each level. Documents this deep are not documents.
+builder still stops at 512 boxes, counting the anonymous boxes a table
+builds round each level, and drops what is deeper: a `display:
+table-cell` in another is four boxes a level, a table, a row group, a row
+and the cell, so it stops 128 cells deep. Documents this deep are not
+documents.
 
 **Lengths are kept to what a browser holds.** A length is ±33,554,428
 pixels at most, as a browser holds one and as `calc()` already made an

@@ -1671,21 +1671,27 @@ export function measureIntrinsicWidth(
   available: number,
   content = false,
 ): number {
+  // not through `ctx.layoutSubtree`, which is this and one frame more on
+  // the stack for every level of a document that measures what it holds
+  // (`layoutTable`)
   layoutSubtree(box, ctx, available, undefined, true);
   const specified = box.style.width;
   if (!content && specified !== AUTO && Number.isFinite(box.width)) {
     return box.width;
   }
-  return intrinsicWidth(box) + box.horizontalExtra;
+  return (
+    intrinsicWidth(box, undefined, available === MIN_CONTENT_PROBE) +
+    box.horizontalExtra
+  );
 }
 
 /**
  * Lay a box and everything under it out at a width, at the origin — what
- * `LayoutContext.layoutSubtree` hands to `flex.ts` and `table.ts`, and what
- * the shrink-to-fit probe uses. A replaced box is sized rather than laid out,
- * because there is nothing inside it to lay out.
+ * `LayoutContext.layoutSubtree` hands to `flex.ts` and `css-grid.ts`, and
+ * what the shrink-to-fit probe and a table's cells use. A replaced box is
+ * sized rather than laid out, because there is nothing inside it to lay out.
  */
-function layoutSubtree(
+export function layoutSubtree(
   box: Box,
   ctx: LayoutContext,
   width: number,
@@ -2127,12 +2133,12 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const style = box.style;
   if (marker.image) {
     // an image: its bottom on the first line's baseline, as an inline
-    // image's is, and the gap a bullet has before the content
+    // image's is, and its own gap before the content (`MARKER_IMAGE_GAP`)
     const first = firstLineIn(box);
     marker.y = first
       ? first.y + first.baseline - marker.image.height
       : box.contentY;
-    const gap = Math.round(style.fontSize * 0.4);
+    const { gap } = marker.image;
     // at the start of the line, which is its right in a right-to-left item
     marker.x =
       style.direction === 'rtl'
@@ -3072,6 +3078,10 @@ const PREFERRED = new WeakMap<Box, number>();
  * or is indented, a block with widths of its own.
  */
 export function exactMinContent(box: Box, fonts: FontsLike): number | null {
+  // a flex row's is its items' side by side, a grid's its columns', and a
+  // replaced element has no words: read as its widest word, a row of two
+  // in a flex column's item was as narrow as the wider of them
+  if (box.kind !== 'block' && box.kind !== 'table-cell') return null;
   if (hasWidths(box.style) || contained(box, CONTAIN_WIDTH)) return null;
   const inner = exactWords(box, fonts);
   return inner === null ? null : inner + box.horizontalExtra;
@@ -3205,8 +3215,17 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
  * `seen.cut` is set where a line it measured was cut short by
  * `text-overflow`, in a box with a width to cut it at: the line is wider
  * than it was drawn, and the answer is of what was drawn.
+ *
+ * `narrowest` says the box was laid out by the min-content probe
+ * (`MIN_CONTENT_PROBE`), and the answer is its min-content width: the
+ * probe lays a box out at no width, but one with a least width of its own
+ * at that, and nothing in the layout tells the two apart.
  */
-export function intrinsicWidth(box: Box, seen?: { cut: boolean }): number {
+export function intrinsicWidth(
+  box: Box,
+  seen?: { cut: boolean },
+  narrowest = false,
+): number {
   // under size containment, as though it held nothing: the size
   // `contain-intrinsic-size` gives it, or none (CSS Containment 2, 3.2)
   if (contained(box, CONTAIN_WIDTH)) {
@@ -3240,11 +3259,17 @@ export function intrinsicWidth(box: Box, seen?: { cut: boolean }): number {
   }
   let widest = 0;
   // A row of flex items is as wide as all of them side by side, and gaps
-  // between them; any other box is as wide as the widest thing in it
+  // between them; any other box is as wide as the widest thing in it. So
+  // is a row that wraps, at its narrowest: each of its items may be a line
+  // of its own, and it is as wide as the widest of them (CSS Flexbox
+  // 9.9.1). Summed, a wrapping row of three 30px items made a
+  // `width: min-content` box around it 90 wide, the items side by side,
+  // where Chrome has 30, one under another
   const display = box.style.display;
   const row =
     (display === 'flex' || display === 'inline-flex') &&
     box.style.flexDirection.startsWith('row');
+  const wraps = row && narrowest && box.style.flexWrap !== 'nowrap';
   let total = 0;
   let items = 0;
   const lines = box.lines;
@@ -3312,7 +3337,8 @@ export function intrinsicWidth(box: Box, seen?: { cut: boolean }): number {
         contribution = Math.max(contribution, stated + margins);
       }
     } else {
-      let inner = intrinsicWidth(child, seen) + child.horizontalExtra;
+      let inner =
+        intrinsicWidth(child, seen, narrowest) + child.horizontalExtra;
       if (typeof style.maxWidth === 'number') {
         inner = Math.min(inner, style.maxWidth + contentExtra(child));
       }
@@ -3324,10 +3350,10 @@ export function intrinsicWidth(box: Box, seen?: { cut: boolean }): number {
       across = Math.max(across, contribution);
       continue;
     }
-    if (row) {
+    if (row && !wraps) {
       total += contribution;
       items += 1;
-    } else if (!sideBySide) widest = Math.max(widest, contribution);
+    } else if (wraps || !sideBySide) widest = Math.max(widest, contribution);
     else if (child.isFloat) {
       const clear = style.clear;
       if (clear !== 'none') {

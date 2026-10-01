@@ -85,13 +85,29 @@ export interface Marker {
   style: ComputedStyle | null;
   /** The image it is, `list-style-image`'s, where that has arrived, at its
    *  size in device pixels — its own, or the one a marker image with none
-   *  is given (`Builder._markerImageSize`); its text is then not drawn. */
-  image?: { url: string; width: number; height: number };
+   *  is given (`Builder._markerImageSize`); its text is then not drawn.
+   *  `gap` is the room between it and the content, in device pixels
+   *  (`MARKER_IMAGE_GAP`). */
+  image?: { url: string; width: number; height: number; gap: number };
   /** Its text is its own — a string `list-style-type`, a `::marker`'s
    *  `content` — and ends at the content's edge, with no gap a number
    *  or a bullet is set apart by. */
   flush?: true;
 }
+
+/**
+ * The room between a list marker's image and the item's content, in CSS
+ * pixels: between the image and the content's edge outside the item, and
+ * after the image inside it. CSS 2.1 (12.5.1) leaves where a marker goes
+ * to the user agent, and this is Blink's `kCMarkerPaddingPx`
+ * (`ListMarker::InlineMarginsForOutside` and `…ForInside`), which WebKit
+ * has too. Outside, ours was the gap a bullet has, 0.4em — 16 pixels at
+ * 40px text where Chrome has 7 — and inside the space a marker's text ends
+ * in, a space's width. Blink writes it into the marker's margins unzoomed,
+ * so at a device scale of 2 Chrome's is 7 device pixels; here it is 7 CSS
+ * pixels at any scale, so that a page at 2x is the page at 1x doubled.
+ */
+const MARKER_IMAGE_GAP = 7;
 
 /** An out-of-flow box's static position, as an offset from the box whose
  *  flow it was taken from, which may yet move. */
@@ -887,8 +903,17 @@ function idIndex(root: Element): (id: string) => Element | null {
  * output, a runaway template) from a stack overflow five phases later.
  * Blink's parser flattens at 512 for the same reason; content past the cap
  * is dropped, which beats the alternative of crashing the application.
+ *
  * The parser keeps a document to 256 elements (`dom.ts`), so what reaches
- * this now is the anonymous boxes a table builds round each of them.
+ * this is the anonymous boxes a table builds round them, which the builder
+ * counts as it goes (`wrappersAround`), since the fix-up makes them after
+ * it. Counted as elements, a `display: table-cell` box in another was one
+ * level where it is four boxes — a table, a row group, a row and the cell
+ * — and every pass pays for a box: painting one takes some 800 bytes of
+ * the stack. Two hundred and fifty cells deep, a thousand boxes, layout
+ * and paint each ran out of the 984 KB V8 gives the main thread, and the
+ * document came out blank. 512 boxes paint in under half of it, and are a
+ * cell in a cell 128 deep.
  */
 const MAX_DEPTH = 512;
 
@@ -1225,8 +1250,10 @@ class Builder {
       return;
     }
 
-    if (this._depth >= MAX_DEPTH) return;
     const kind = boxKindFor(style.display);
+    // the box, and the anonymous boxes the fix-up will put round it
+    const depth = 1 + wrappersAround(into.kind, kind, style);
+    if (this._depth + depth > MAX_DEPTH) return;
     const box = new Box(kind, el, style);
     into.append(box);
     if (
@@ -1295,7 +1322,8 @@ class Builder {
           markerImage.size,
           markerStyle ?? style,
         );
-        const image = { url: markerImage.url, width, height };
+        const gap = MARKER_IMAGE_GAP * (this._options.scale ?? 1);
+        const image = { url: markerImage.url, width, height, gap };
         if (style.listStylePosition === 'inside') insideImage = image;
         else {
           box.marker = {
@@ -1337,19 +1365,23 @@ class Builder {
       : null;
     const ownLetter = ownRules ? { rules: ownRules, punctuation: [] } : null;
     if (ownLetter) this._firstLetter = ownLetter;
-    this._depth += 1;
+    this._depth += depth;
     if (insideImage) {
       // an inline image at the start of the first line, as a generated
-      // image is, and the space a marker's text ends in
-      this._contentImage(insideImage.url, box, style, el, insideImage);
-      this._textNode(' ', box, style, el);
+      // image is, and the room after it Blink gives it rather than a
+      // space: the content's own white space after it is kept, as it is
+      // after an image (`MARKER_IMAGE_GAP`)
+      const { url, gap } = insideImage;
+      const image = this._contentImage(url, box, style, el, insideImage);
+      if (style.direction === 'rtl') image.style.marginLeft = gap;
+      else image.style.marginRight = gap;
     } else if (insideMarker) {
       this._insideMarker(insideMarker, style, markerStyle, box, el);
     }
     this._pseudo(el, 'before', style, box);
     this._children(el, box, style, childInFlex, el, key);
     this._pseudo(el, 'after', style, box);
-    this._depth -= 1;
+    this._depth -= depth;
     this._letterAfter(flow, skipped, outerLetter, ownLetter);
     if (flow !== 'inline') this._endLine();
     this._ws = after(flow, this._ws, around);
@@ -1825,7 +1857,7 @@ class Builder {
     /** Its size where it is a list marker's, which has one whatever the
      *  image says (`_markerImageSize`). */
     marker?: { width: number; height: number },
-  ): void {
+  ): Box {
     const box = new Box('replaced', null, {
       ...inherit(style, this._options.cascade.initial),
       display: 'inline',
@@ -1844,6 +1876,7 @@ class Builder {
     this._ws = after('atomic', this._ws, this._ws);
     this._lettered = false;
     this._abandonLetter();
+    return box;
   }
 
   /**
@@ -2531,6 +2564,47 @@ function after(
     default:
       return 'start';
   }
+}
+
+/**
+ * How many anonymous boxes the fix-up will put between a box of `kind` and
+ * the box it is appended to, `parent` (`fixUpTable`, `wrapOrphans`,
+ * `wrapTableParts`): a table part outside a table is given what it is
+ * missing of one, and what is in a table and no part of it is given a
+ * cell, a row and a row group. A cell in a block is in a table, a row group
+ * and a row of its own, and a block in a row is in a cell. Counted against
+ * `MAX_DEPTH`, which bounds the boxes and not the elements.
+ */
+function wrappersAround(
+  parent: BoxKind,
+  kind: BoxKind,
+  style: ComputedStyle,
+): number {
+  const column =
+    style.display === 'table-column' || style.display === 'table-column-group';
+  switch (parent) {
+    case 'table':
+      if (kind === 'table-row-group' || kind === 'table-caption' || column) {
+        return 0;
+      }
+      return kind === 'table-row' ? 1 : kind === 'table-cell' ? 2 : 3;
+    case 'table-row-group':
+      return kind === 'table-row' ? 0 : kind === 'table-cell' ? 1 : 2;
+    case 'table-row':
+      return kind === 'table-cell' ? 0 : 1;
+  }
+  // a part out of flow is no part (`isTablePart`)
+  if (
+    style.position === 'absolute' ||
+    style.position === 'fixed' ||
+    style.float !== 'none'
+  ) {
+    return 0;
+  }
+  if (kind === 'table-row-group' || kind === 'table-caption' || column) {
+    return 1;
+  }
+  return kind === 'table-row' ? 2 : kind === 'table-cell' ? 3 : 0;
 }
 
 function boxKindFor(display: ComputedStyle['display']): BoxKind {
