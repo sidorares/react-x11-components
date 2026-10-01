@@ -754,3 +754,27 @@ test('stretch fills what the margins leave of the containing block', async () =>
   assert.deepStrictEqual(size('h'), [80, 80]);
   assert.strictEqual(boxOf(el, 'i').width, 200);
 });
+
+test('a border-box limit under the padding and borders leaves the box as big as them', async () => {
+  // A `border-box` length less than the padding and borders leaves the
+  // content box none wide, and not less (CSS Sizing 3, 3.3): a maximum
+  // under them made a block, a float or an absolute box narrower than its
+  // own padding, and a block shorter
+  const { node } = await render(
+    '<style>body{margin:0}.p{max-width:20.668px;padding-right:19px;' +
+      'border-left:4px solid;box-sizing:border-box;height:6px}</style>' +
+      '<div style="width:300px;position:relative">' +
+      '<div id="a" class="p"></div>' +
+      '<div id="b" style="height:30px;max-height:5px;padding-top:20px;' +
+      'box-sizing:border-box;width:10px"></div>' +
+      '<div id="c" class="p" style="float:left">' +
+      '<div style="width:119px;height:6px"></div></div>' +
+      '<div id="d" class="p" style="position:absolute">' +
+      '<div style="width:119px;height:6px"></div></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').width, 23, 'a block, its padding wide');
+  assert.strictEqual(boxOf(el, 'b').height, 20, 'and its padding tall');
+  assert.strictEqual(boxOf(el, 'c').width, 23, 'a float');
+  assert.strictEqual(boxOf(el, 'd').width, 23, 'an absolute box');
+});
