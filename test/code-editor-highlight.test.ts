@@ -19,7 +19,7 @@ import {
   sql,
   tokenizeText,
 } from '../src/index.js';
-import { stopInterval } from '../src/code-language/timers.js';
+import { blinkClock } from '../src/code-editor/node.js';
 import type {
   CodeEditorNode,
   Diagnostic,
@@ -28,6 +28,7 @@ import type {
   Token,
   Tokenizer,
 } from '../src/index.js';
+import { holdClock } from './held-clock.js';
 
 const h = React.createElement;
 
@@ -432,15 +433,8 @@ type Inner = {
   _scrollX: number;
   _scrollY: number;
   _widest: number;
-  _blinkTimer: unknown;
   _caretOn: boolean;
 };
-
-function holdBlink(node: CodeEditorNode): void {
-  const inner = node as unknown as Inner;
-  stopInterval(inner._blinkTimer as never);
-  inner._blinkTimer = null;
-}
 
 /** Where two frames of the editor differ, in text rows, and — with
  *  CODE_EDITOR_DUMP=<dir> — both frames as PNGs to look at. */
@@ -641,7 +635,10 @@ const ORACLE_DOCS: Array<{
 
 for (const { name: docName, doc, snippets, share } of ORACLE_DOCS)
   for (const scale of [1, 2]) {
-    test(`${docName}: an edited editor paints what a fresh editor paints for the same state, at ${scale}x`, async () => {
+    test(`${docName}: an edited editor paints what a fresh editor paints for the same state, at ${scale}x`, async (t) => {
+      // the blink is held and takes no step, so every frame compared has
+      // the caret on
+      holdClock(t, blinkClock);
       const options = {
         scale,
         width: 400,
@@ -666,7 +663,6 @@ for (const { name: docName, doc, snippets, share } of ORACLE_DOCS)
         );
         const node = editorNode();
         node.focus();
-        holdBlink(node);
         const trail: string[] = [];
         for (let step = 1; step <= 40; step++) {
           trail.push(randomAction(node, r, snippets));
@@ -702,7 +698,6 @@ for (const { name: docName, doc, snippets, share } of ORACLE_DOCS)
         );
         const node = editorNode();
         node.focus();
-        holdBlink(node);
         node.select(cp.anchor, cp.head);
         const inner = node as unknown as Inner;
         inner._scrollX = cp.scrollX;
@@ -726,12 +721,13 @@ for (const { name: docName, doc, snippets, share } of ORACLE_DOCS)
 // --- geometry past the X protocol's 16 bits --------------------------------
 
 for (const scale of [1, 2]) {
-  test(`a selection, a squiggle and a bracket across a 6,000-character line paint, at ${scale}x`, async () => {
+  test(`a selection, a squiggle and a bracket across a 6,000-character line paint, at ${scale}x`, async (t) => {
     // A line past 32,767 device pixels is drawn in pieces (#131), but a
     // selection band, a squiggle or a bracket's highlight across it was one
     // rectangle as wide as the line, and X11 coordinates are 16 bits: the
     // paint threw, and the window stopped painting.
     const long = `(${'x'.repeat(6000)})`;
+    holdClock(t, blinkClock);
     const { ctx } = await renderX11(
       h(CodeEditor, {
         defaultValue: `${long}\nshort`,
@@ -748,7 +744,6 @@ for (const scale of [1, 2]) {
     );
     const node = editorNode();
     node.focus();
-    holdBlink(node);
     node.selectAll();
     await act();
     node.moveCaret({ line: 0, ch: 1 }, false); // beside `(`: its `)` 6,000 characters on
@@ -1078,11 +1073,12 @@ test('taking the widest line away takes its horizontal scroll with it', async ()
   assert.equal(inner._maxScrollX(), 0, 'nothing is wider than the view now');
 });
 
-test('a controlled editor repaints the rows a keystroke changed, not the editor', async () => {
+test('a controlled editor repaints the rows a keystroke changed, not the editor', async (t) => {
   // The parent holds the text and hands it back on every change, with a
   // new `onChange` and, often, a new `diagnostics` array. A new value was
   // the whole editor repainted, over the rows the keystroke had claimed.
   const language = javascript();
+  holdClock(t, blinkClock);
   const initial = Array.from(
     { length: 40 },
     (_, i) => `const v${i} = f(${i});`,
@@ -1106,7 +1102,6 @@ test('a controlled editor repaints the rows a keystroke changed, not the editor'
   });
   const node = editorNode();
   node.focus();
-  holdBlink(node);
   node.moveCaret(at(5, 4), false);
   await act();
   const { abs } = node as unknown as DrawnNode;
