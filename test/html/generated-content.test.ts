@@ -878,7 +878,10 @@ metric(
 
     // drawn: the square, its bottom on the first line's baseline and the
     // gap a bullet has between it and the text
-    const reach = async (x0: number, x1: number, y0: number, y1: number) => {
+    const reach = async (...edges: [number, number, number, number]) => {
+      // whole pixels: a box's edge can be a float's residue off one, and a
+      // read of 59.99… rows is refused
+      const [x0, x1, y0, y1] = edges.map(Math.round);
       const w = x1 - x0;
       const data: Uint8ClampedArray = await new Promise((ok, fail) =>
         (
@@ -924,7 +927,11 @@ metric(
       Math.abs(inside.width - side) <= 1 && Math.abs(inside.height - side) <= 1,
       `inside, a ${side}px square: ${inside.width} by ${inside.height}`,
     );
-    assert.strictEqual(inside.left, e.x, 'at the start of the line');
+    assert.strictEqual(
+      inside.left,
+      Math.round(e.x),
+      'at the start of the line',
+    );
 
     // the square is device pixels: twice as large at 2x
     cleanup();
