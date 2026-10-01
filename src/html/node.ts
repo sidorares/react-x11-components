@@ -1051,6 +1051,10 @@ export class HtmlViewNode extends Node {
             const fonts = this._fonts();
             return fonts ? faceExtentOf(fonts, style).ascent : undefined;
           },
+          faceExtent: (style) => {
+            const fonts = this._fonts();
+            return fonts ? faceExtentOf(fonts, style) : undefined;
+          },
           controlSize: (el, kind, style) =>
             measureControl(el, kind, style, this._fonts(), look),
         });
