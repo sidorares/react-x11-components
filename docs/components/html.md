@@ -657,10 +657,15 @@ the flow would have put it and the flow is what moved: a badge over an icon
 in a `middle` cell stays on the icon. A height a cell sets is a least one
 for its row, beside what its content needs once `vertical-align: baseline`
 has moved it down to the row's baseline, and not more room under that move
-(CSS 2.1 17.5.3), as in Chrome. A cell spanning rows asks its first row for
-its baseline and the rows for its content and height alone, as Chrome does,
-so content the baseline moved down can hang out of it. A fixed table takes
-its columns' widths from its `<col>`s, then from its first row's cells, border box and
+(CSS 2.1 17.5.3), as in Chrome. That height is of the box the cell's
+`box-sizing` names, at least its padding and border where that is the
+border box, and the cell's `min-height` and `max-height` count for nothing
+in it, as in Chrome; the quirks-mode rule that takes every cell's height as
+a border box is not followed, since `<Html>` has no quirks mode. A cell
+spanning rows asks its first row for its baseline and the rows for its
+content and height alone, as Chrome does, so content the baseline moved
+down can hang out of it. A fixed table takes its columns' widths from its
+`<col>`s, then from its first row's cells, border box and
 all, and shares what is left among the rest (CSS 2.1 17.5.2.1); with
 `width: auto` it is laid out by its content, as the section says, where a
 column's `width` counts as its cells' do (17.5.2.2). A column group's

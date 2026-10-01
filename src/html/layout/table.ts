@@ -209,12 +209,24 @@ export function layoutTable(
     // it, and a cell does not. `<td height="10">` with a line in it is as
     // tall as the line (CSS 2.1 17.5.3), where it was 10px with the line
     // hanging out of it.
-    if (natural[i] > cell.box.height) cell.box.height = natural[i];
+    //
+    // The height is of the box `box-sizing` names, and a border-box one
+    // holds at least the padding and border; a cell's `min-height` and
+    // `max-height` count for nothing here, as in Blink (`ComputeRowData`),
+    // so the height its own layout clamped to them is not kept. The padding
+    // went on a border-box height a second time, and a cell set 80px tall
+    // was 100px. (Quirks mode takes every cell's height as a border box;
+    // `<Html>` has no quirks mode.)
+    cell.box.height = natural[i];
     const specified = resolveOrNull(cell.box.style.height, NaN);
     if (specified !== null) {
+      const extra = cell.box.verticalExtra;
+      const set = Math.max(0, specified);
       cell.box.height = Math.max(
         cell.box.height,
-        specified + cell.box.verticalExtra,
+        cell.box.style.boxSizing === 'border-box'
+          ? Math.max(set, extra)
+          : set + extra,
       );
     }
   }

@@ -783,6 +783,47 @@ metric(
   },
 );
 
+test("a cell's height is of the box its box-sizing names, and its min-height is none", async () => {
+  // CSS 2.1 17.5.3: a cell's height is a least one, and `box-sizing` says
+  // of which box. Blink's `ComputeRowData` takes the greater of the height
+  // and the padding and border for a border-box cell, the two added for any
+  // other, and leaves the cell's `min-height` and `max-height` out of it.
+  // The padding went on top of a border-box height a second time, and a
+  // row that should have been 80px was 100px.
+  const cell = (id: string, style: string) =>
+    `<table><tr id="${id}"><td style="${style}">` +
+    '<div style="height:20px"></div></td><td></td></tr></table>';
+  const { node } = await render(
+    '<style>body{margin:0} table{border-spacing:0} td{padding:0}</style>' +
+      cell('a', 'height:80px;box-sizing:border-box;padding:10px 0') +
+      cell('b', 'height:80px;padding:10px 0') +
+      cell(
+        'c',
+        'height:30px;box-sizing:border-box;padding:10px 0;border:5px solid',
+      ) +
+      '<table><tr id="d"><td style="height:10px;box-sizing:border-box;' +
+      'padding:10px 0"></td></tr></table>' +
+      cell('e', 'min-height:100px') +
+      cell(
+        'f',
+        'height:80px;box-sizing:border-box;padding:10px 0;min-height:120px',
+      ) +
+      cell(
+        'g',
+        'height:80px;box-sizing:border-box;padding:10px 0;max-height:40px',
+      ),
+  );
+  const el = view(node);
+  const height = (id: string) => boxOf(el, id).height;
+  assert.strictEqual(height('a'), 80, 'the padding inside the height');
+  assert.strictEqual(height('b'), 100, 'and outside it, for a content box');
+  assert.strictEqual(height('c'), 50, 'its content and padding and border');
+  assert.strictEqual(height('d'), 20, 'its padding, set shorter than it');
+  assert.strictEqual(height('e'), 20, 'no min-height');
+  assert.strictEqual(height('f'), 80, 'no min-height over a height');
+  assert.strictEqual(height('g'), 80, 'and no max-height under one');
+});
+
 metric(
   "a table's parts take no margins, and a cell's width keeps within min and max",
   async () => {
