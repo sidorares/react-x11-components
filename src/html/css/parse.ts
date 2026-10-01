@@ -951,11 +951,13 @@ const PSEUDO_CLASSES = new Set([
 /**
  * Specificity, packed. Counted from the selector text rather than from a
  * parse: `#a` is an id, `.a`/`[a]`/`:a` is a class, a bare name is a type,
- * and a pseudo-*element* (`::before`) counts as a type. Functional
- * pseudo-classes are counted as one class each, which is right for
- * `:hover`/`:nth-child()` and approximate for `:is()`/`:not()` — whose
- * specificity is their argument's. The approximation costs an author who
- * writes `:is(#id)` and expects it to beat a class; nothing else.
+ * and a pseudo-*element* (`::before`) counts as a type. A pseudo-class
+ * that takes selectors counts as Selectors 4 (17) has it: `:is()`,
+ * `:not()` and `:has()` as the most specific selector in their list,
+ * `:where()` as nothing, and `:nth-child(An+B of S)` as a class and the
+ * most specific in S. Counted as a class each, `:where()` was not the
+ * zero a library writes it to be: a typography plugin's
+ * `.prose :where(p)` beat a page's own `.intro p`.
  */
 const LEGACY_PSEUDO_ELEMENTS = /^(?:before|after|first-line|first-letter)$/i;
 
@@ -966,6 +968,8 @@ export function specificityOf(selector: string): number {
   let ids = 0;
   let classes = 0;
   let types = 0;
+  /** What the selectors inside pseudo-classes come to, packed. */
+  let inner = 0;
   let i = 0;
   const n = selector.length;
   while (i < n) {
@@ -985,14 +989,29 @@ export function specificityOf(selector: string): number {
         i = identEnd(selector, i + 2);
       } else {
         const name = readIdent(selector, i + 1);
+        const lower = name.value.toLowerCase();
+        i = name.end;
+        let argument: string | null = null;
+        if (selector[i] === '(') {
+          const end = componentEnd(selector, i);
+          argument = selector.slice(i + 1, end - 1);
+          i = end;
+        }
         // CSS 2 spelled the four pseudo-elements it had with one colon
         if (LEGACY_PSEUDO_ELEMENTS.test(name.value)) {
           types += 1;
+        } else if (argument !== null && SELECTOR_LIST_PSEUDOS.has(lower)) {
+          inner += mostSpecific(argument);
+        } else if (argument !== null && lower === 'where') {
+          // nothing
         } else {
           classes += 1;
+          if (argument !== null && NTH_OF_PSEUDOS.has(lower)) {
+            const of = /\sof\s/i.exec(argument);
+            if (of)
+              inner += mostSpecific(argument.slice(of.index + of[0].length));
+          }
         }
-        i = name.end;
-        if (selector[i] === '(') i = componentEnd(selector, i);
       }
     } else if (c === '*' || c === '|') {
       // the universal selector, and a namespace's bar, count nothing
@@ -1004,7 +1023,40 @@ export function specificityOf(selector: string): number {
       i += 1;
     }
   }
-  return ids * 1_000_000 + classes * 1_000 + types;
+  return ids * 1_000_000 + classes * 1_000 + types + inner;
+}
+
+/** The pseudo-classes whose specificity is their argument's most specific
+ *  selector, the old names of `:is()` among them. */
+const SELECTOR_LIST_PSEUDOS = new Set([
+  'is',
+  'not',
+  'has',
+  'matches',
+  '-webkit-any',
+  '-moz-any',
+]);
+
+/** The pseudo-classes an `of S` may follow. */
+const NTH_OF_PSEUDOS = new Set(['nth-child', 'nth-last-child']);
+
+/** The specificity of the most specific selector in a list, packed. */
+function mostSpecific(list: string): number {
+  let most = 0;
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i <= list.length; i += 1) {
+    const c = list[i];
+    if (c === '(' || c === '[') depth += 1;
+    else if (c === ')' || c === ']') depth -= 1;
+    else if (c === '"' || c === "'" || c === '\\') {
+      i = componentEnd(list, i) - 1;
+    } else if ((c === ',' && depth === 0) || i === list.length) {
+      most = Math.max(most, specificityOf(list.slice(start, i)));
+      start = i + 1;
+    }
+  }
+  return most;
 }
 
 // --- the little scanner -----------------------------------------------------
