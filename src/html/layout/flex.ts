@@ -34,6 +34,7 @@ import { Box, PAINT_ORDER, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
+  STRETCHED_ACROSS,
   USED_HEIGHT,
   centreButton,
   clampHeight,
@@ -55,6 +56,7 @@ import {
 } from './block.js';
 import { layoutGrid } from './css-grid.js';
 import { firstBaselineIn } from './inline.js';
+import { TABLE_CONTENT } from './table.js';
 import type { LayoutContext } from './block.js';
 
 // `react-x11/yoga` re-exports yoga's own declarations, so the node shape and
@@ -185,6 +187,7 @@ export function layoutFlex(
       narrowest: NaN,
       held: NaN,
       auto: false,
+      across: false,
     };
     applyItem(node, child, ctx, contentWidth, laid, height !== null, own);
     root.insertChild(node, items.length);
@@ -609,7 +612,8 @@ function layoutItemAt(
   // one: the tallest card of a row is laid out the once. A table shares
   // what it is given past its rows among them (`layoutTable`), and a
   // height short of them is none it can have: it is laid out again where
-  // it was given more.
+  // it was given more — or less than a height of its own, which it takes
+  // in place of that one, down to its rows.
   const given = definite ?? (column ? height : null);
   let shares = false;
   if (given !== null && (box.kind === 'flex' || box.kind === 'table')) {
@@ -617,7 +621,8 @@ function layoutItemAt(
     shares =
       box.kind === 'flex'
         ? !(Math.abs(natural - given) <= 0.01)
-        : !(natural >= given - 0.01);
+        : !(natural >= given - 0.01) ||
+          (box.style.height !== AUTO && natural > given + 0.01);
   }
   if (given !== null) {
     const inner = Math.max(0, given - box.verticalExtra);
@@ -640,7 +645,7 @@ function layoutItemAt(
     const heights = definite !== null ? FLEXED_HEIGHT : USED_HEIGHT;
     heights.set(box, tall);
     try {
-      ctx.layoutSubtree(box, width, containing);
+      layoutAt(box, ctx, width, containing, laid);
     } finally {
       heights.delete(box);
     }
@@ -788,6 +793,18 @@ function applyItem(
   laid.least = row ? leastWidth : leastHeight;
   laid.most = row ? mostWidth : mostHeight;
   laid.narrowest = leastWidth;
+  // A table is as wide as the flex layout makes it, as any item is: the
+  // size its line flexed it to along a row (9.7), and across a column's
+  // line the line's, stretched (9.4, step 11) — where in a block's flow it
+  // is as wide as its columns. Laid out at that width and then shrunk to
+  // them, it was a table its columns wide at the start of a column, and one
+  // `flex: 1` along a row stopped at them where Chrome's fills its share
+  laid.across =
+    box.kind === 'table' &&
+    (row ||
+      (box.parent !== null &&
+        !style.widthKeyword &&
+        stretches(box, box.parent.style, false)));
   // Yoga takes a length for a basis only where the flex box's main size is
   // definite, and else the item's own size along it: down a column of no
   // height of its own it read `flex: 0 0 3rem` as the item's height, or
@@ -1002,6 +1019,10 @@ interface Laid {
   /** Whether that is its automatic minimum (`holdAt`), its content's size,
    *  and not a minimum the line stopped at (`stoppedLine`). */
   auto: boolean;
+  /** Whether it is a table the flex layout gives its width — flexed along a
+   *  row, stretched across a column's line — which it is laid out at as its
+   *  own (`STRETCHED_ACROSS`, `layoutAt`). */
+  across: boolean;
 }
 
 /**
@@ -1140,7 +1161,7 @@ function layoutNaturally(
     box.height = kept.height;
   } else {
     const at = ctx.positioned.length;
-    ctx.layoutSubtree(box, width, containing);
+    layoutAt(box, ctx, width, containing, laid);
     // a replaced box is sized, not laid out, and has no layout to count
     if (box.kind !== 'replaced') {
       NATURAL.set(box, {
@@ -1161,6 +1182,33 @@ function layoutNaturally(
   laid.width = box.width;
   laid.height = box.height;
   laid.tall = NaN;
+}
+
+/**
+ * Lay an item out at a border-box width: a table the flex layout gives its
+ * width at that width as its own (`Laid.across`), for this layout alone. A
+ * width Yoga asks its content at is one the table comes to by its columns
+ * all the same — its widest, or the room where that is less — so that is
+ * no matter; an unbounded one, a probe of a box around the flex box, is
+ * the table's to shrink in.
+ */
+function layoutAt(
+  box: Box,
+  ctx: LayoutContext,
+  width: number,
+  containing: number,
+  laid: Laid,
+): void {
+  if (!laid.across || !Number.isFinite(width)) {
+    ctx.layoutSubtree(box, width, containing);
+    return;
+  }
+  STRETCHED_ACROSS.add(box);
+  try {
+    ctx.layoutSubtree(box, width, containing);
+  } finally {
+    STRETCHED_ACROSS.delete(box);
+  }
 }
 
 /**
@@ -1350,12 +1398,6 @@ function autoMinimums(
   for (const { box, node, laid } of items) {
     if (box.kind === 'text' || box.kind === 'break') continue;
     const style = box.style;
-    // a box that scrolls or clips has none, but for one that asks for its
-    // content's height
-    const asked = !row && style.minHeightKeyword !== null;
-    if (!asked && scrolls(style)) {
-      continue;
-    }
     const width = meant(
       row ? laid.main : node.getComputedWidth(),
       laid.set,
@@ -1363,6 +1405,39 @@ function autoMinimums(
       laid.width,
       row ? laid.held : NaN,
     );
+    // A table is no smaller than it can be along either axis, whatever its
+    // own least says, `min-width: 0` and `min-height: 0` among it: its
+    // columns at their narrowest along a row, and down a column its rows
+    // and captions at the width it has, however short a height of its own
+    // is (CSS 2.1 17.5.2 and 17.5.3; Blink, `length_utils.cc`: "Tables
+    // can't shrink below their min-intrinsic size"). The line is laid out
+    // with it so, and the items after it start where it ends: Yoga had it
+    // as small as its line, and the next item over the rest of it — read
+    // as a block's content, two pixels into it, the spacing under its rows
+    if (box.kind === 'table') {
+      // as wide as its columns at their widest, where Yoga measured that,
+      // it has room for them at their narrowest, which is a layout less
+      const widest = row ? MAX_CONTENT.get(box) : undefined;
+      if (
+        widest !== undefined &&
+        laid.main >= widest + box.horizontalExtra - 0.01
+      ) {
+        continue;
+      }
+      const least = row
+        ? minContentOf(box, ctx, laid)
+        : tableContent(box, ctx, width, containingWidth, laid);
+      if (laid.main >= least - 0.01) continue;
+      holdAt(node, laid, row, least, hold);
+      changed = true;
+      continue;
+    }
+    // a box that scrolls or clips has none, but for one that asks for its
+    // content's height
+    const asked = !row && style.minHeightKeyword !== null;
+    if (!asked && scrolls(style)) {
+      continue;
+    }
     // a replaced item's content along a row is its natural width
     if (row && box.kind === 'replaced') {
       if (style.minWidth !== AUTO || style.minWidthKeyword) continue;
@@ -1519,6 +1594,25 @@ function autoMinimums(
     changed = true;
   }
   return changed;
+}
+
+/** A table item's rows and captions at a border-box width, its border box's
+ *  height apart from one it sets (`TABLE_CONTENT`): read from its layout
+ *  there, which it is given where it has another, and kept for the pass. */
+function tableContent(
+  box: Box,
+  ctx: LayoutContext,
+  width: number,
+  containing: number,
+  laid: Laid,
+): number {
+  const kept = keptNatural(box, ctx, width, containing);
+  if (kept !== null && !Number.isNaN(kept.content)) return kept.content;
+  // where the box has that layout still, it is put back and not made again
+  layoutNaturally(box, ctx, width, containing, laid);
+  const content = TABLE_CONTENT.get(box) ?? box.height;
+  remember(box, ctx, width, containing, 'content', content);
+  return content;
 }
 
 /** A laid-out item's content height, its border box's: no less than its

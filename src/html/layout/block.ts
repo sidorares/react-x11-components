@@ -83,7 +83,7 @@ import {
 import type { FontsLike, InlineOptions, InlineResult } from './inline.js';
 import type { TextRun } from '../../richtext/index.js';
 import { layoutFlex } from './flex.js';
-import { finishCaptions, layoutTable } from './table.js';
+import { finishCaptions, givenHeight, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
 import {
   clipsFor,
@@ -2341,13 +2341,16 @@ export const FLEXED_HEIGHT = new WeakMap<Box, number>();
 export const USED_HEIGHT = new WeakMap<Box, number>();
 
 /**
- * A table a grid stretches across its area, whose `auto` width is then the
- * one it is laid out at. `normal` stretches any grid item but a replaced
- * one (CSS Grid 1, 6.2), a table among them, where in a block's flow a
- * table's `auto` width is its columns' (CSS 2.1 17.5.2; Blink leaves tables
- * out of the boxes a block stretches, `space_utils.cc`, and stretches them
- * in a grid, `grid_item.cc`). Set by `css-grid.ts` for the item's own
- * layout alone, and never while its widths are measured.
+ * A table a grid or a flex layout gives its width, whose `auto` width is
+ * then the one it is laid out at. `normal` stretches any grid item but a
+ * replaced one across its area (CSS Grid 1, 6.2), and a flex item across a
+ * column's line (CSS Flexbox 9.4, step 11), a table among them; and a flex
+ * item along a row is the size the line flexed it to (9.7) — where in a
+ * block's flow a table's `auto` width is its columns' (CSS 2.1 17.5.2;
+ * Blink leaves tables out of the boxes a block stretches, `space_utils.cc`,
+ * and stretches them in a grid, `grid_item.cc`, and a flex box). Set by
+ * `css-grid.ts` and `flex.ts` for the item's own layout alone, and never
+ * while its widths are measured.
  */
 export const STRETCHED_ACROSS = new WeakSet<Box>();
 
@@ -2538,6 +2541,14 @@ function finishHeight(box: Box, contentHeight: number): void {
   }
   if (box.kind === 'table-cell') {
     CELL_CONTENT.set(box, contentHeight + box.verticalExtra);
+  }
+  // A table a flex or grid layout gave a height is as tall as that, or as
+  // its rows where they need more, which `layoutTable` has shared it out
+  // among — whatever height it has of its own, which the flex layout
+  // started from (`layoutTable`)
+  if (box.kind === 'table' && Number.isFinite(givenHeight(box))) {
+    box.height = contentHeight + box.verticalExtra;
+    return;
   }
   const set = specifiedHeight(box);
   // at least zero: a `calc()` may come to less
@@ -3815,10 +3826,16 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
       0,
       cbHeight - top - bottom - box.marginTop - box.marginBottom,
     );
-    // — a box with a ratio has its height from its width
+    // — a box with a ratio has its height from its width, and a table is
+    // as tall as its rows, as it is as wide as its columns between two
+    // offsets: `normal` stretches neither (Blink: "Replaced/tables don't
+    // stretch in abspos", `out_of_flow_layout_part.cc`), and a table taken
+    // to the height its offsets leave was that tall around rows that were
+    // not
     const stretches =
       style.height === AUTO &&
       (box.kind !== 'replaced' || control) &&
+      box.kind !== 'table' &&
       !boxRatio(box);
     // both offsets and no height: the box fills what they leave, its
     // `auto` margins nothing (10.6.4, rule 5) — unless `min-height` or

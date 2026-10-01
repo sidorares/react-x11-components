@@ -476,7 +476,10 @@ shrink stays that wide in a row too narrow for it — `shrink-0` beside
 `shrink-0` runs out of the row on one line each rather than wrapping — and
 one a `min-width` of its own holds wider than the room it is offered, as
 `min-w-max` in a narrow row or column does, or its longest word holds in a
-row that wraps, is as tall as its content at that width. An item, and a grid's,
+row that wraps, is as tall as its content at that width. A table among them
+is as wide as the flex layout makes it, as Chrome has it — the size its
+line flexed it to along a row, and stretched across a column as any item
+is — where in a block's flow it is as wide as its columns. An item, and a grid's,
 is a formatting context of its own: the margins of what it holds stay
 inside it, and the one under its last block makes it that much taller. An
 `auto` margin takes
@@ -503,7 +506,10 @@ column — unless its own minimum or an `overflow` that scrolls lets it go,
 as Tailwind's `min-w-0` does; in a column that is the lesser of a height of
 its own and its content's, and an item with an `aspect-ratio` counts its
 width through the ratio as content, and along a row a definite height
-through it. An item its minimum stops is frozen at it, and the others on
+through it. A table is no smaller than it can be whatever its minimum or
+its size says: its columns at their narrowest along a row, and its rows
+and captions, the spacing round them in, down a column — the item after it
+starting where it ends, as in Chrome. An item its minimum stops is frozen at it, and the others on
 its line share what is left (CSS Flexbox 9.7): of three `flex: 1` items, one
 holding a long word is as wide as the word and the other two halve the
 rest, and a line too short for any of its items has each at its least size,
@@ -630,8 +636,10 @@ the flow would have put it and the flow is what moved: a badge over an icon
 in a `middle` cell stays on the icon. A height a cell sets is a least one
 for its row, beside what its content needs once `vertical-align: baseline`
 has moved it down to the row's baseline, and not more room under that move
-(CSS 2.1 17.5.3), as in Chrome. A fixed table takes its columns'
-widths from its `<col>`s, then from its first row's cells, border box and
+(CSS 2.1 17.5.3), as in Chrome. A cell spanning rows asks its first row for
+its baseline and the rows for its content and height alone, as Chrome does,
+so content the baseline moved down can hang out of it. A fixed table takes
+its columns' widths from its `<col>`s, then from its first row's cells, border box and
 all, and shares what is left among the rest (CSS 2.1 17.5.2.1); with
 `width: auto` it is laid out by its content, as the section says, where a
 column's `width` counts as its cells' do, and a column group's is spread
@@ -658,9 +666,11 @@ content that nothing sets, and, where every row with content is set, to
 the empty ones. That is so of a height of its own and of one a flex box or
 a grid gives it, stretched down its line or its area or flexed down a
 column: the rows grow to the height, less its captions, and a cell's
-`vertical-align` has the row to move its content in. A table is never
-shorter than its rows, though, whatever height it is given or its line or
-its area has.
+`vertical-align` has the row to move its content in. A height a flex box
+gives it stands in for its own, which the flex layout started from, so a
+table flexed down a column shorter than its `height` is as short as that.
+A table is never shorter than its rows, though, whatever height it is
+given or its line or its area has.
 A block in an inline element breaks it (CSS 2.1 9.2.1.1): the pieces of the
 element before and after the block are on lines of their own, without an
 edge where the block cut them, and the block stands between them as a
@@ -720,7 +730,9 @@ between its `auto` margins, which is how `margin: auto` centres one. A form
 control fills it too, as it does in Chrome — it is an inline block to CSS,
 whatever draws it — so the invisible `<select>` a page lays over a picker
 it draws, `position: absolute; inset: 0`, covers all of it and takes the
-press anywhere on it; an image keeps its own size (CSS 2.1 10.3.8). A box
+press anywhere on it; an image keeps its own size (CSS 2.1 10.3.8), and a
+table is as wide as its columns and as tall as its rows, which its `auto`
+margins place, as Chrome has it. A box
 is painted with each edge on the pixel it falls nearest, as browsers snap
 one, so a rule `1pt` wide is a pixel and boxes that meet at a fraction of a
 pixel share the column between them. A corner's radius is a length or a
@@ -987,7 +999,9 @@ the copy inherits is the `<use>`'s: its `fill` and `stroke`, the `color` a
 `currentColor` is, its custom properties — and so what a hover changes of
 it, `a:hover use { fill: red }` or a link's `color`. A copy of one of the
 drawing's own elements is styled the same way, and so may be drawn
-otherwise than the element where it stands.
+otherwise than the element where it stands. A symbol a rule gives
+`display: none` is still found by a `<use>`, which draws nothing of it, as
+Chrome has it.
 
 An SVG root's `width` and `height` are CSS lengths, a percentage one too;
 its intrinsic size is what of them is absolute, and its ratio comes from them or from its `viewBox`,

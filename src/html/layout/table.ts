@@ -73,6 +73,10 @@ export function layoutTable(
       table.width = Math.max(0, inner) + table.horizontalExtra;
     }
     layoutCaptions(captions, ctx, table);
+    TABLE_CONTENT.set(
+      table,
+      table.captionTop + table.captionBottom + table.verticalExtra,
+    );
     return 0;
   }
 
@@ -220,17 +224,23 @@ export function layoutTable(
   // needs the lift and its content, and a height it sets is a least one
   // beside that rather than more room under the lift: two cells set
   // `height: 80px` with text of two sizes in them are a row 80px tall, where
-  // the lift on top of the height made it 104px. A cell spanning rows needs
-  // the same of them, which is where Chrome differs: it sizes a spanning
-  // cell by its content and height alone and lets the lifted content hang
-  // out of it, and the rows here "encompass the cell" (17.5.3).
-  const lift = baselineLifts(cells, rows.length, natural);
+  // the lift on top of the height made it 104px.
+  //
+  // A cell spanning rows asks its first row for its baseline and nothing
+  // under it, and the rows it spans for its content and height alone, as
+  // Chrome sizes it (Blink's `RowBaselineTabulator` gives it an ascent and
+  // no descent): the lifted content hangs out of the cell. 17.5.3 asks only
+  // that the rows encompass the cell, whose box is as tall as its content.
+  const { lift, own: ascent } = baselineLifts(cells, rows.length, natural);
   const needs = (i: number): number =>
-    Math.max(cells[i].box.height, lift[i] + natural[i]);
+    cells[i].rowSpan > 1
+      ? cells[i].box.height
+      : Math.max(cells[i].box.height, lift[i] + natural[i]);
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i];
-    if (cell.rowSpan > 1) continue;
-    rowHeight[cell.row] = Math.max(rowHeight[cell.row], needs(i));
+    const need = cell.rowSpan > 1 ? lift[i] + ascent[i] : needs(i);
+    // NaN for a spanning cell with no baseline, which Math.max would keep
+    if (need > rowHeight[cell.row]) rowHeight[cell.row] = need;
   }
   for (let r = 0; r < rows.length; r += 1) {
     const specified = resolveOrNull(rows[r].style.height, NaN);
@@ -250,6 +260,19 @@ export function layoutTable(
     if (missing > 0) rowHeight[last] += missing;
   }
 
+  // What the rows come to before any height is shared out to them, the
+  // spacing above, below and between them in (`TABLE_CONTENT`)
+  let rowsOwn = rowSpacing;
+  for (let r = 0; r < rows.length; r += 1) {
+    if (rows[r].style.visibility !== 'collapse') {
+      rowsOwn += rowHeight[r] + rowSpacing;
+    }
+  }
+  TABLE_CONTENT.set(
+    table,
+    rowsOwn + table.captionTop + table.captionBottom + table.verticalExtra,
+  );
+
   // A table's own height, within its least and greatest, is a least
   // height: what its rows come short of it goes to them (CSS 2.1 17.5.3,
   // which leaves how to its user agents: `growRows`). So is the height a
@@ -257,9 +280,13 @@ export function layoutTable(
   // `USED_HEIGHT`), which is its wrapper box's, captions and all (CSS
   // Flexbox 1, 4): taken as the table's box alone, a table stretched down
   // its line kept its rows at their content's height, and a cell had
-  // nothing for `vertical-align` to centre its content in.
+  // nothing for `vertical-align` to centre its content in. That one is its
+  // height in place of its own, which the flex layout started from: flexed
+  // down a column shorter than a height of its own, it is as short as that,
+  // where its rows let it be (Blink: "A table interprets forced block-size
+  // as the block-size of its rows", `flex_layout_algorithm.cc`).
   const wanted = resolveOrNull(style.height, table.percentHeightBase);
-  const given = FLEXED_HEIGHT.get(table) ?? USED_HEIGHT.get(table) ?? NaN;
+  const given = givenHeight(table);
   if (rows.length) {
     const extraBox = table.verticalExtra;
     const set =
@@ -268,10 +295,9 @@ export function layoutTable(
         : style.boxSizing === 'border-box'
           ? wanted
           : wanted + extraBox;
-    let inner = clampHeight(table, set) - extraBox;
-    if (Number.isFinite(given)) {
-      inner = Math.max(inner, given - table.captionTop - table.captionBottom);
-    }
+    const inner = Number.isFinite(given)
+      ? given - table.captionTop - table.captionBottom
+      : clampHeight(table, set) - extraBox;
     let total = 0;
     for (const h of rowHeight) total += h;
     const extra = inner - total - rowSpacing * (rows.length + 1);
@@ -405,6 +431,20 @@ export function layoutTable(
   }
 
   return y - top;
+}
+
+/**
+ * A table's height as its rows and captions came to in its last layout,
+ * border box, apart from a height it sets or is given: the least it can be
+ * at the width it was laid out at. What a flex layout holds a table item to
+ * down a column (`flex.ts`'s `autoMinimums`).
+ */
+export const TABLE_CONTENT = new WeakMap<Box, number>();
+
+/** The content height a flex or grid layout gave a table, its captions in
+ *  (`FLEXED_HEIGHT`, `USED_HEIGHT`), and else NaN. */
+export function givenHeight(table: Box): number {
+  return FLEXED_HEIGHT.get(table) ?? USED_HEIGHT.get(table) ?? NaN;
 }
 
 /** Whether `visibility: collapse` takes a column out: its own, or the
@@ -831,21 +871,22 @@ function lengthAgainst(len: Len, base: number): number | null {
  * increase the height of the cell box": taken from the set height, a cell
  * holding one block of 30px in 80px hung the text beside it from 80px. An
  * empty cell has nothing to align and says nothing about the row's, as in a
- * browser.
+ * browser. `own` is each cell's baseline from its top, NaN where it has none
+ * to give.
  */
 function baselineLifts(
   cells: Cell[],
   rowCount: number,
   natural: number[],
-): number[] {
+): { lift: number[]; own: number[] } {
   const lift = new Array<number>(cells.length).fill(0);
+  const own = new Array<number>(cells.length).fill(NaN);
   let any = false;
   for (const cell of cells) {
     const va = cell.box.style.verticalAlign;
     if (va !== 'top' && va !== 'middle' && va !== 'bottom') any = true;
   }
-  if (!any) return lift;
-  const own = new Array<number>(cells.length).fill(NaN);
+  if (!any) return { lift, own };
   const row = new Array<number>(rowCount).fill(-Infinity);
   for (let i = 0; i < cells.length; i += 1) {
     const box = cells[i].box;
@@ -862,7 +903,7 @@ function baselineLifts(
   for (let i = 0; i < cells.length; i += 1) {
     if (own[i] === own[i]) lift[i] = row[cells[i].row] - own[i];
   }
-  return lift;
+  return { lift, own };
 }
 
 /** Whether a cell has anything in flow in it. */

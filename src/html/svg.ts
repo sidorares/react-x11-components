@@ -972,10 +972,15 @@ function copyTree(
     if (symbol) {
       // The symbol is the top of the copy, and paints what is in it: its
       // attributes, and what the rules give it there. `SvgView` draws a
-      // symbol's children alone, so they go in a group that is it.
+      // symbol's children alone, so they go in a group that is it. Where
+      // it stands a symbol is drawn by nobody, so `display: none` takes
+      // nothing from it there (`UNDRAWN`); at the top of a copy it takes
+      // the copy, as Chrome has it.
       const mine = styles?.get(target);
       const inner = hiddenIn(mine, hidden);
-      copyInto(children, target, within, depth + 1, inner, styles);
+      if (mine?.display !== 'none') {
+        copyInto(children, target, within, depth + 1, inner, styles);
+      }
       if (kept || mine) {
         const paints = { ...kept };
         if (mine) restyle(paints, mine);
