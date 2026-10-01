@@ -1056,7 +1056,10 @@ in the document, so an icon drawn from a sprite — a `<symbol>` in a hidden
 `<svg>` at the top of the page — is drawn, in the colour of where it is
 used; a symbol's `viewBox` is fitted to the viewport the `<use>` gives it,
 its `width` and `height`, or all of the drawing, and what is in it
-inherits the symbol's own paint, `<symbol fill="…">`. What the element itself
+inherits the symbol's own paint, `<symbol fill="…">`. The sprite may come
+after the icons, at the end of the body, and in a document that is still
+arriving (`partial`) an icon is drawn again as more of its symbol arrives,
+as a drawing is as more of itself does. What the element itself
 refers to from outside its symbol, a gradient by `url()`, is not followed,
 and nothing is fetched for a `<use>` of another document's. An SVG image's
 root `background-color`, in its `style`, covers the whole image, as a
