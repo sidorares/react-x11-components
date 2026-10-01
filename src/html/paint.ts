@@ -1761,6 +1761,9 @@ function shadowReach(blur: number): number {
 
 const SQUARE: Corners = { x: [0, 0, 0, 0], y: [0, 0, 0, 0] };
 
+/** A rectangle with no area, where a ring has no inside. */
+const NOWHERE: Rect = { x: 0, y: 0, width: 0, height: 0 };
+
 /** Corners shrunk by `by` — an inner shadow's spread — or grown where it
  *  is negative; a square corner stays square. */
 function grownCorners(c: Corners, by: number): Corners {
@@ -1838,15 +1841,6 @@ function paintShadows(
       ) {
         continue;
       }
-      // Cut, as a background is (`clampRect`), to what the paint reaches
-      // and as far again as the blur does, so the cut edges cast nothing
-      // on it. A shadow down a box thousands of pixels tall went to the
-      // server whole, and its outline, sent in 16.16 fixed point, threw.
-      const within = reach + CLAMP_PAD;
-      const cut = clampAround(options, shape, within);
-      if (!cut) continue;
-      Object.assign(shape, cut);
-      const own = clampAround(options, rect, within) ?? rect;
       const around =
         spreadCorners(
           corners,
@@ -1857,11 +1851,31 @@ function paintShadows(
           s.spread,
           s.spread,
         ) ?? SQUARE;
+      // Cut, as a background is (`clampArea`), to what the paint reaches
+      // and as far again as the blur does, so the cut edges cast nothing
+      // on it, and the box with it, which a ring is the band outside and
+      // the shadow is clipped out of. A shadow down a box thousands of
+      // pixels tall went to the server whole, and its outline, sent in
+      // 16.16 fixed point, threw.
+      const [cut, own] = clampPair(
+        options,
+        reach + CLAMP_PAD,
+        { rect: shape, corners: around },
+        { rect, corners },
+      );
+      if (!cut) continue;
+      const { x, y, width, height } = cut.rect;
       const color = inkColor(s.color, style.color);
       if (!(s.blur > 0) && !s.x && !s.y && s.spread >= 0 && !covered) {
         // a ring about the box: the band between it and the spread
         ctx.fillStyle = color;
-        fillRing(ctx, shape, around, own, corners);
+        fillRing(
+          ctx,
+          cut.rect,
+          cut.corners,
+          own ? own.rect : NOWHERE,
+          own ? own.corners : SQUARE,
+        );
         continue;
       }
       if (!(s.blur > 0) && covered) {
@@ -1871,14 +1885,7 @@ function paintShadows(
           s,
           color,
           (dx) => {
-            roundedRect(
-              ctx,
-              shape.x - dx,
-              shape.y,
-              shape.width,
-              shape.height,
-              around,
-            );
+            roundedRect(ctx, x - dx, y, width, height, cut.corners);
           },
           0,
         );
@@ -1890,21 +1897,24 @@ function paintShadows(
         ctx.save();
         ctx.beginPath();
         ctx.rect!(
-          shape.x - reach - 1,
-          shape.y - reach - 1,
-          shape.width + 2 * reach + 2,
-          shape.height + 2 * reach + 2,
+          x - reach - 1,
+          y - reach - 1,
+          width + 2 * reach + 2,
+          height + 2 * reach + 2,
         );
-        roundedRect(
-          ctx,
-          own.x,
-          own.y,
-          own.width,
-          own.height,
-          corners,
-          true,
-          true,
-        );
+        if (own) {
+          const { rect: r } = own;
+          roundedRect(
+            ctx,
+            r.x,
+            r.y,
+            r.width,
+            r.height,
+            own.corners,
+            true,
+            true,
+          );
+        }
         ctx.clip!();
       }
       fillShadow(
@@ -1912,16 +1922,9 @@ function paintShadows(
         s,
         color,
         (dx) => {
-          shadowShape(
-            ctx,
-            shape.x - dx,
-            shape.y,
-            shape.width,
-            shape.height,
-            around,
-          );
+          shadowShape(ctx, x - dx, y, width, height, cut.corners);
         },
-        shape.x + shape.width + reach,
+        x + width + reach,
       );
       if (clipped) ctx.restore();
     }
@@ -1947,9 +1950,6 @@ function paintShadows(
       );
     }
   }
-  const padCut = clampAround(options, pad, furthest + CLAMP_PAD);
-  if (!padCut) return;
-  Object.assign(pad, padCut);
   const inner = insetCorners(
     corners,
     box.borderTop,
@@ -1961,32 +1961,50 @@ function paintShadows(
     const s = shadows[i];
     if (!s.inset || (s.blur > 0 && !canShadow)) continue;
     const color = inkColor(s.color, style.color);
-    // the hole the shadow is cast around, moved and shrunk by the spread
-    const hole = {
-      x: pad.x + s.x + s.spread,
-      y: pad.y + s.y + s.spread,
-      width: Math.max(0, pad.width - 2 * s.spread),
-      height: Math.max(0, pad.height - 2 * s.spread),
-    };
-    const within = grownCorners(inner, -s.spread);
+    // The hole the shadow is cast around, moved and shrunk by the spread,
+    // cut with the padding box: made from the cut one, it was a spread in
+    // from the cut rather than from the box's edge, and a spread wider
+    // than the margin left none.
+    const [area, hole] = clampPair(
+      options,
+      furthest + CLAMP_PAD,
+      { rect: pad, corners: inner },
+      {
+        rect: {
+          x: pad.x + s.x + s.spread,
+          y: pad.y + s.y + s.spread,
+          width: Math.max(0, pad.width - 2 * s.spread),
+          height: Math.max(0, pad.height - 2 * s.spread),
+        },
+        corners: grownCorners(inner, -s.spread),
+      },
+    );
+    if (!area) continue;
     if (!(s.blur > 0) && !s.x && !s.y && s.spread >= 0) {
       // Tailwind's `ring-inset`: a band inside the padding edge
       ctx.fillStyle = color;
-      fillRing(ctx, pad, inner, hole, within);
+      fillRing(
+        ctx,
+        area.rect,
+        area.corners,
+        hole ? hole.rect : NOWHERE,
+        hole ? hole.corners : SQUARE,
+      );
       continue;
     }
     if (!ctx.clip || !ctx.save || !ctx.rect) continue;
+    const { x, y, width, height } = area.rect;
     ctx.save();
     ctx.beginPath();
-    roundedRect(ctx, pad.x, pad.y, pad.width, pad.height, inner);
+    roundedRect(ctx, x, y, width, height, area.corners);
     ctx.clip();
     // a frame around the hole, as wide as the blur and the offset reach
     const reach = shadowReach(s.blur) + Math.abs(s.x) + Math.abs(s.y) + 1;
     const frame = {
-      x: pad.x - reach,
-      y: pad.y - reach,
-      width: pad.width + 2 * reach,
-      height: pad.height + 2 * reach,
+      x: x - reach,
+      y: y - reach,
+      width: width + 2 * reach,
+      height: height + 2 * reach,
     };
     fillShadow(
       ctx,
@@ -1994,15 +2012,9 @@ function paintShadows(
       color,
       (dx) => {
         ctx.rect!(frame.x - dx, frame.y, frame.width, frame.height);
-        if (hole.width > 0 && hole.height > 0) {
-          shadowShape(
-            ctx,
-            hole.x - dx,
-            hole.y,
-            hole.width,
-            hole.height,
-            within,
-          );
+        if (hole) {
+          const { rect: r } = hole;
+          shadowShape(ctx, r.x - dx, r.y, r.width, r.height, hole.corners);
         }
       },
       frame.x + frame.width + shadowReach(s.blur),
@@ -3439,14 +3451,8 @@ function clampArea(
   corners: Corners | null,
 ): Area | null {
   if (corners && curvesPast(corners, CLAMP_PAD)) {
-    const cut = cutRounded(
-      roundedWindow(options, x, y, w, h, corners),
-      x,
-      y,
-      w,
-      h,
-      corners,
-    );
+    const shape = { rect: { x, y, width: w, height: h }, corners };
+    const cut = cutRounded(roundedWindow(options, [shape]), shape);
     if (!cut) return null;
     const { rect } = cut;
     return {
@@ -3459,6 +3465,41 @@ function clampArea(
   }
   const rect = clampRect(options, x, y, w, h);
   return rect && { x: rect.x, y: rect.y, w: rect.w, h: rect.h, corners };
+}
+
+/**
+ * Two rounded rectangles drawn against each other — a shadow's shape and
+ * the box it is clipped out of, a hole and what it is cut in — cut to one
+ * window, `pad` round what the paint reaches, as `clampArea` cuts one:
+ * where neither has a corner that curves further than `CLAMP_PAD`, as
+ * square ones are, keeping their corners, and otherwise to a window moved
+ * out past every curve of either it would cross, each square on the sides
+ * it cut. `CLAMP_PAD` and not `pad`, because what a shadow's margin has
+ * past it is what the blur casts back across the cut, and a corner bent
+ * into the margin is cast that far further in. Null for one with nothing
+ * in the window.
+ */
+function clampPair(
+  options: PaintOptions,
+  pad: number,
+  a: Rounded,
+  b: Rounded,
+): [Rounded | null, Rounded | null] {
+  if (!curvesPast(a.corners, CLAMP_PAD) && !curvesPast(b.corners, CLAMP_PAD)) {
+    return [clampKeeping(options, a, pad), clampKeeping(options, b, pad)];
+  }
+  const cut = roundedWindow(options, [a, b], pad);
+  return [cutRounded(cut, a), cutRounded(cut, b)];
+}
+
+/** `clampAround` for a rounded rectangle, keeping its corners. */
+function clampKeeping(
+  options: PaintOptions,
+  { rect, corners }: Rounded,
+  pad: number,
+): Rounded | null {
+  const cut = clampAround(options, rect, pad);
+  return cut && { rect: cut, corners };
 }
 
 /** Whether a corner curves further than `by` along either of its sides. */
@@ -5016,7 +5057,7 @@ function wholeRing(
     ctx,
     outer.rect,
     outer.corners,
-    inner ? inner.rect : { x: 0, y: 0, width: 0, height: 0 },
+    inner ? inner.rect : NOWHERE,
     inner ? inner.corners : outer.corners,
   );
 }
@@ -5387,21 +5428,18 @@ function cutRing(
   bottom: number,
   left: number,
 ): { outer: Rounded; inner: Rounded | null } | null {
-  const cut = roundedWindow(options, x, y, w, h, corners);
-  const outer = cutRounded(cut, x, y, w, h, corners);
+  const edge = { rect: { x, y, width: w, height: h }, corners };
+  const cut = roundedWindow(options, [edge]);
+  const outer = cutRounded(cut, edge);
   if (!outer) return null;
   const iw = w - left - right;
   const ih = h - top - bottom;
   const inner =
     iw > 0 && ih > 0
-      ? cutRounded(
-          cut,
-          x + left,
-          y + top,
-          iw,
-          ih,
-          insetCorners(corners, top, right, bottom, left),
-        )
+      ? cutRounded(cut, {
+          rect: { x: x + left, y: y + top, width: iw, height: ih },
+          corners: insetCorners(corners, top, right, bottom, left),
+        })
       : null;
   // a window inside the padding edge, where the ring has nothing
   if (inner && sameRounded(outer, inner)) return null;
@@ -5412,32 +5450,34 @@ function cutRing(
 type Cut = [number, number, number, number];
 
 /**
- * The window `clampRect` cuts to, for a rectangle with rounded corners: a
- * cut is straight, so a side of it is moved out past any corner's curve it
- * would cross.
+ * The window `clampRect` cuts to, `pad` round what the paint reaches, for
+ * rectangles with rounded corners: a cut is straight, so a side of it is
+ * moved out past any corner's curve it would cross, in any of them.
  */
 function roundedWindow(
   options: PaintOptions,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  corners: Corners,
+  shapes: readonly Rounded[],
+  pad = CLAMP_PAD,
 ): Cut {
-  const { x: cx, y: cy } = corners;
   // where each corner's curve runs, across and down
-  const across: [number, number][] = [
-    [x, x + cx[0]],
-    [x + w - cx[1], x + w],
-    [x + w - cx[2], x + w],
-    [x, x + cx[3]],
-  ];
-  const down: [number, number][] = [
-    [y, y + cy[0]],
-    [y, y + cy[1]],
-    [y + h - cy[2], y + h],
-    [y + h - cy[3], y + h],
-  ];
+  const across: [number, number][] = [];
+  const down: [number, number][] = [];
+  for (const { rect, corners } of shapes) {
+    const { x, y, width: w, height: h } = rect;
+    const { x: cx, y: cy } = corners;
+    across.push(
+      [x, x + cx[0]],
+      [x + w - cx[1], x + w],
+      [x + w - cx[2], x + w],
+      [x, x + cx[3]],
+    );
+    down.push(
+      [y, y + cy[0]],
+      [y, y + cy[1]],
+      [y + h - cy[2], y + h],
+      [y + h - cy[3], y + h],
+    );
+  }
   const d = options.damage;
   const side = (at: number, spans: [number, number][], towards: number) =>
     Math.max(
@@ -5445,10 +5485,10 @@ function roundedWindow(
       Math.min(COORD_LIMIT, outOfSpans(at, spans, towards)),
     );
   return [
-    side(d ? d.x - CLAMP_PAD : -COORD_LIMIT, across, -1),
-    side(d ? d.y - CLAMP_PAD : -COORD_LIMIT, down, -1),
-    side(d ? d.x + d.width + CLAMP_PAD : COORD_LIMIT, across, 1),
-    side(d ? d.y + d.height + CLAMP_PAD : COORD_LIMIT, down, 1),
+    side(d ? d.x - pad : -COORD_LIMIT, across, -1),
+    side(d ? d.y - pad : -COORD_LIMIT, down, -1),
+    side(d ? d.x + d.width + pad : COORD_LIMIT, across, 1),
+    side(d ? d.y + d.height + pad : COORD_LIMIT, down, 1),
   ];
 }
 
@@ -5460,11 +5500,7 @@ function roundedWindow(
  */
 function cutRounded(
   [x0, y0, x1, y1]: Cut,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  c: Corners,
+  { rect: { x, y, width: w, height: h }, corners: c }: Rounded,
 ): Rounded | null {
   const l = Math.max(x, x0);
   const t = Math.max(y, y0);
