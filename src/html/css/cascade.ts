@@ -30,7 +30,13 @@ import {
   readIdent,
   startsIdent,
 } from './parse.js';
-import type { Declaration, StyleRule, Stylesheet } from './parse.js';
+import type {
+  Declaration,
+  KeyframesRule,
+  StyleRule,
+  Stylesheet,
+} from './parse.js';
+import { NO_ANIMATIONS, restingFrames } from './animation.js';
 import {
   applyDeclaration,
   blockify,
@@ -73,8 +79,11 @@ const enum Origin {
   Presentation = 1,
   Author = 2,
   Inline = 3,
-  AuthorImportant = 4,
-  InlineImportant = 5,
+  /** What an animation leaves (`restingFrames`): over every declaration
+   *  but an `!important` one (CSS Cascade 5, 6.1). */
+  Animation = 4,
+  AuthorImportant = 5,
+  InlineImportant = 6,
 }
 
 interface Candidate {
@@ -1094,6 +1103,9 @@ export class Cascade {
   readonly breakpoints: number[];
   /** The counter styles the sheets define, over the predefined ones. */
   readonly counterStyles: CounterStyles;
+  /** The `@keyframes` rules, by name, in document order: which one a name
+   *  finds turns on the media in force (`keyframes`). */
+  private _keyframes = new Map<string, KeyframesRule[]>();
 
   /** A face's x-height, for `ex`, where the fonts can say. */
   private _xHeightOf: FaceMetric | null;
@@ -1211,6 +1223,17 @@ export class Cascade {
         const selector = (pseudo?.rule ?? rule).selector;
         this._hoverRules.note(selector);
         this._focusRules.note(selector);
+      }
+      for (const rule of sheet.keyframes ?? []) {
+        let named = this._keyframes.get(rule.name);
+        if (!named) this._keyframes.set(rule.name, (named = []));
+        named.push(rule);
+        for (const frame of rule.frames) {
+          const declarations = frame.declarations;
+          if (!this._vars && usesVars(declarations)) this._vars = true;
+          this._noteViewportUnits(declarations);
+          if (!this._lh && usesLh(declarations)) this._lh = true;
+        }
       }
       for (const bp of sheet.breakpoints) breakpoints.add(bp);
       // a query on the viewport's height reads it as a `vh` does
@@ -1398,6 +1421,42 @@ export class Cascade {
       else break;
     }
     return band;
+  }
+
+  /**
+   * The `@keyframes` an animation's name finds, or null: of the rules of
+   * the name whose media hold, the one in the latest layer — no layer
+   * outranking any, as for a style rule — and the last of those, but that
+   * an `@-webkit-keyframes` never takes the place of an `@keyframes`, as in
+   * Blink (`ScopedStyleResolver::AddKeyframeStyle`).
+   */
+  keyframes(name: string): KeyframesRule | null {
+    const named = this._keyframes.get(name);
+    if (!named) return null;
+    const width = this.viewportWidth / this.scale;
+    const height = this.viewportHeight / this.scale;
+    let found: KeyframesRule | null = null;
+    for (const rule of named) {
+      if (
+        !mediaMatches(
+          rule.media,
+          width,
+          this.look.colorScheme,
+          height,
+          this.scale,
+        )
+      ) {
+        continue;
+      }
+      if (found) {
+        const by = compareLayers(rule.layer, found.layer);
+        if (by < 0 || (by === 0 && rule.prefixed && !found.prefixed)) {
+          continue;
+        }
+      }
+      found = rule;
+    }
+    return found;
   }
 
   /** Computed styles by sharing key, for one build (`sharedStyleFor`): one
@@ -1840,7 +1899,14 @@ export class Cascade {
     return line;
   }
 
-  /** `styleFor`, from the rules and hints already gathered for `el`. */
+  /**
+   * `styleFor`, from the rules and hints already gathered for `el`, and
+   * what its animations leave on it (`restingFrames`). Which animations an
+   * element has is the cascade's answer, so an element with one that
+   * leaves a frame is styled twice: the second time with the frame's
+   * declarations among the rest, at the animation origin, over the
+   * author's normal ones and under their `!important` ones.
+   */
   private _computeStyle(
     el: Element,
     parentStyle: ComputedStyle,
@@ -1849,6 +1915,41 @@ export class Cascade {
     /** Whether the style is the element's own, and not that of one of its
      *  pseudo-elements. */
     own = false,
+  ): ComputedStyle {
+    let style = this._cascadeStyle(
+      el,
+      parentStyle,
+      inFlexContainer,
+      candidates,
+      own,
+    );
+    if (style.animations !== NO_ANIMATIONS && this._keyframes.size) {
+      const frames = restingFrames(style.animations, (name) =>
+        this.keyframes(name),
+      );
+      if (frames) {
+        style = this._cascadeStyle(
+          el,
+          parentStyle,
+          inFlexContainer,
+          withAnimations(candidates, frames),
+          own,
+        );
+      }
+    }
+    // which faces of the document's own families this family, weight and
+    // slant ask for — known only now, with all three computed
+    this._families?.note(style);
+    return style;
+  }
+
+  /** The style the candidates come to, in their order. */
+  private _cascadeStyle(
+    el: Element,
+    parentStyle: ComputedStyle,
+    inFlexContainer: boolean,
+    candidates: Candidate[],
+    own: boolean,
   ): ComputedStyle {
     const style = inherit(parentStyle, this.initial);
     // custom properties first, in cascade order, so every `var()` in the
@@ -2004,9 +2105,6 @@ export class Cascade {
       settleButton(style);
     }
     decorate(style);
-    // which faces of the document's own families this family, weight and
-    // slant ask for — known only now, with all three computed
-    this._families?.note(style);
     return style;
   }
 
@@ -2883,6 +2981,31 @@ function pushInlineShapes(out: Candidate[], inline: string): void {
 
 function pick(c: Candidate): Declaration[] {
   return c.only < 0 ? c.declarations : [c.declarations[c.only]];
+}
+
+/** Candidates in cascade order with what an element's animations leave
+ *  among them: after every normal declaration and before the first
+ *  `!important` one, a later animation after an earlier. */
+function withAnimations(
+  candidates: readonly Candidate[],
+  frames: readonly Declaration[][],
+): Candidate[] {
+  let at = 0;
+  while (at < candidates.length && candidates[at].origin < Origin.Animation) {
+    at += 1;
+  }
+  return [
+    ...candidates.slice(0, at),
+    ...frames.map((declarations, order) => ({
+      origin: Origin.Animation,
+      layer: null,
+      specificity: 0,
+      order,
+      declarations,
+      only: -1,
+    })),
+    ...candidates.slice(at),
+  ];
 }
 
 function pushRule(out: Candidate[], rule: StyleRule, origin: Origin): void {

@@ -18,6 +18,7 @@ import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
 import { hoverClock } from '../../src/html/node.js';
+import type { ComputedStyle } from '../../src/html/css/style.js';
 import { holdClock } from '../held-clock.js';
 import {
   FONTS,
@@ -387,6 +388,37 @@ metric(
     const hovered = await snapshot(result, el);
     assert.strictEqual(treeOf(el), tree);
     assert.deepStrictEqual(hovered, await rebuilt(result, el));
+  },
+);
+
+metric(
+  'a hover that pauses an animation is restyled in place, and one that starts one takes the frame it ends on',
+  async () => {
+    // Zen Garden 219 pauses its marquees under the pointer: the lists of an
+    // element's animations draw nothing, and what an animation leaves is in
+    // the rest of its style
+    const { node } = await render(
+      '<style>body{margin:0} @keyframes in { to { opacity: .5 } }' +
+        ' #m { animation: in 9s infinite linear }' +
+        ' #m:hover { animation-play-state: paused }' +
+        ' #f:hover { animation: in 1s forwards }</style>' +
+        '<p id="m">marquee</p><p id="f">fade</p>',
+      300,
+    );
+    const el = view(node);
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'm'));
+    await act();
+    assert.strictEqual(treeOf(el), tree, 'the document was built again');
+    assert.deepStrictEqual(style('m').animations.playStates, ['paused']);
+    assert.strictEqual(style('m').opacity, 1);
+
+    assert.strictEqual(style('f').opacity, 1);
+    el.setHover(...pointIn(el, 'f'));
+    await act();
+    assert.strictEqual(style('f').opacity, 0.5);
   },
 );
 

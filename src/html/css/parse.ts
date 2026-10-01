@@ -77,6 +77,43 @@ export interface Stylesheet {
   /** `@counter-style` rules, in order: a name and its descriptors, which
    *  the cascade reads into counter styles (CSS Counter Styles 3, 3). */
   counterStyles?: { prelude: string; declarations: Declaration[] }[];
+  /** `@keyframes` rules, in order (`KeyframesRule`). */
+  keyframes?: KeyframesRule[];
+}
+
+/**
+ * One `@keyframes` rule (CSS Animations 1, 3): the frames of the animation
+ * an `animation-name` names. Which rule a name finds is the cascade's to
+ * say (`Cascade.keyframes`): the last of its name whose media hold, in the
+ * latest layer, and never a prefixed one over one that is not.
+ */
+export interface KeyframesRule {
+  /** As written: a name is case-sensitive, as a custom ident is. */
+  name: string;
+  /** `@-webkit-keyframes`, which Chrome reads and which never takes the
+   *  place of an `@keyframes` of the same name, wherever either comes. */
+  prefixed: boolean;
+  /** The frames in the order written, which is the order two at one
+   *  offset cascade in. */
+  frames: Keyframe[];
+  /** The `@media` blocks the rule sits under, as a style rule's. */
+  media: MediaCondition[][] | null;
+  /** The cascade layer the rule is in, as a style rule's. */
+  layer: readonly number[] | null;
+}
+
+/** One frame of a `@keyframes`: a block of declarations at the offsets its
+ *  selector names. */
+export interface Keyframe {
+  /** Where in an iteration the frame is, 0 to 1: one per selector in its
+   *  list, `from` 0 and `to` 1. */
+  offsets: number[];
+  /** What the frame sets: no `!important` one, which a frame ignores, and
+   *  none of the animation's or a transition's own properties. */
+  declarations: Declaration[];
+  /** The `animation-timing-function` the frame eases to the next one by,
+   *  as written; null where it gives none and the animation's is used. */
+  easing: string | null;
 }
 
 /**
@@ -322,9 +359,22 @@ export function parseStylesheet(
             prelude: at.prelude,
             declarations: parseDeclarations(at.block),
           });
+        } else if (
+          (name === 'keyframes' || name === '-webkit-keyframes') &&
+          at.block !== null
+        ) {
+          const keyframes = parseKeyframes(at.prelude, at.block);
+          if (keyframes) {
+            (sheet.keyframes ??= []).push({
+              ...keyframes,
+              prefixed: name !== 'keyframes',
+              media,
+              layer,
+            });
+          }
         }
-        // @keyframes, @page: nothing to do, and the block was already
-        // consumed.
+        // @page, and an at-rule nobody knows: nothing to do, and the block
+        // was already consumed.
         continue;
       }
 
@@ -1763,6 +1813,105 @@ const GENERIC_FAMILIES = new Set([
   'revert',
   'default',
 ]);
+
+/** The properties a keyframe does not set: the animation's own, and a
+ *  transition's (CSS Animations 1, 3). */
+const NOT_IN_KEYFRAMES = /^(?:-webkit-)?(?:animation|transition)(?:-|$)/;
+
+/** A `<number-token>` percentage, `+12.5%` or `1e2%`. */
+const KEYFRAME_PERCENT = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%$/i;
+
+/**
+ * A `@keyframes` block's name and frames (CSS Animations 1, 3), or null
+ * where its prelude is no name. A frame whose selector is not a list of
+ * `from`, `to` and percentages from 0 to 100 is dropped whole, as a style
+ * rule with a bad selector is, and the frames around it stand.
+ */
+function parseKeyframes(
+  prelude: string,
+  block: string,
+): { name: string; frames: Keyframe[] } | null {
+  const name = keyframesName(prelude);
+  if (name === null) return null;
+  const frames: Keyframe[] = [];
+  let i = 0;
+  const n = block.length;
+  while (i < n) {
+    i = skipTrivia(block, i);
+    if (i >= n) break;
+    // a frame holds declarations and nothing else
+    if (block[i] === '@' && startsIdent(block, i + 1)) {
+      i = readAtRule(block, i).end;
+      continue;
+    }
+    const braceAt = scanTo(block, i, '{');
+    if (braceAt >= n) break;
+    const selector = block.slice(i, braceAt);
+    const body = readBlock(block, braceAt);
+    i = body.end;
+    const offsets = keyframeOffsets(selector);
+    if (!offsets) continue;
+    let easing: string | null = null;
+    const declarations: Declaration[] = [];
+    for (const d of parseDeclarations(body.body)) {
+      if (d.important) continue;
+      if (
+        d.prop === 'animation-timing-function' ||
+        d.prop === '-webkit-animation-timing-function'
+      ) {
+        easing = d.value;
+      } else if (!NOT_IN_KEYFRAMES.test(d.prop)) {
+        declarations.push(d);
+      }
+    }
+    frames.push({ offsets, declarations, easing });
+  }
+  return { name, frames };
+}
+
+/** A `@keyframes` prelude's name: a string, or an identifier that is not
+ *  `none` or a CSS-wide keyword; null for anything else. */
+function keyframesName(prelude: string): string | null {
+  const v = prelude.trim();
+  if (!v) return null;
+  if (v[0] === '"' || v[0] === "'") {
+    const name = unquote(v);
+    return name !== v && name ? name : null;
+  }
+  if (!startsIdent(v, 0)) return null;
+  const ident = readIdent(v, 0);
+  if (ident.end !== v.length) return null;
+  return KEYFRAMES_RESERVED.has(ident.value.toLowerCase()) ? null : ident.value;
+}
+
+const KEYFRAMES_RESERVED = new Set([
+  'none',
+  'inherit',
+  'initial',
+  'unset',
+  'revert',
+  'revert-layer',
+  'default',
+]);
+
+/** A keyframe selector's offsets, 0 to 1, or null where any of its list is
+ *  not one. */
+function keyframeOffsets(selector: string): number[] | null {
+  const out: number[] = [];
+  for (const part of selector.split(',')) {
+    const v = part.trim().toLowerCase();
+    if (v === 'from') out.push(0);
+    else if (v === 'to') out.push(1);
+    else if (KEYFRAME_PERCENT.test(v)) {
+      const pct = Number(v.slice(0, -1));
+      if (!(pct >= 0 && pct <= 100)) return null;
+      out.push(pct / 100);
+    } else {
+      return null;
+    }
+  }
+  return out;
+}
 
 /**
  * A `@font-face` block, or null when it names no family or no source — a

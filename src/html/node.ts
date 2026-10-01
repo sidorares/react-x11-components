@@ -3518,6 +3518,14 @@ function hoverChange(
       }
       continue;
     }
+    // what an element's animations leave is in its other fields already
+    // (`Cascade._computeStyle`); the lists themselves draw nothing
+    if (key === 'animations') {
+      if (!sameValue(a[key], b[key])) {
+        change ??= { ink: false, reach: false, order: false, move: false };
+      }
+      continue;
+    }
     if (sameValue(a[key], b[key])) continue;
     change ??= { ink: true, reach: false, order: false, move: false };
     change.ink = true;
