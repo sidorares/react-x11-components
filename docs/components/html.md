@@ -506,7 +506,23 @@ running out of the box — its content's, a `min-width` of its own such as
 Tailwind's `min-w-max`, or no more than its padding and borders. On the
 lines of a box that wraps, a held item still
 takes its share of the line's room on top of its minimum — Yoga's reading,
-not the specification's. An item with a ratio is as wide, down a column, as the height
+not the specification's. The one line of a box that does not wrap is shared
+out as CSS Flexbox 9.7 has it wherever an item has a minimum or a maximum
+of its own, or the flex factors come to less than 1: each item from its
+flex base size, going round until no limit stops one, a minimum over a
+maximum winning, and factors under 1 sharing out only that part of the
+room. So `flex: 1; min-width: 200px` beside a `flex: 1` in a row of 600 is
+300 wide, as in Chrome — grown from nothing, where Yoga grew it from its
+minimum to 400 — and `width: 100px` three times with minimums of 95, 45
+and 0 in a row of 150 is 95, 45 and 10, where Yoga left all three 100 wide.
+A line with no limits of its own is Yoga's, which weighs an item's share of
+what the line is short of by its border box where the specification weighs
+its content box: two items 100 wide, one with 50 pixels of padding, are 90
+and 60 in a row of 150, and 100 and 50 in Chrome. A percentage height,
+minimum, maximum or flex basis of an item down a column of a definite
+height is of that height; down one of no definite height, a percentage
+height is `auto` and a percentage flex basis is `content`, the content's
+height whatever height the item has of its own. An item with a ratio is as wide, down a column, as the height
 it was flexed to makes it, and an image grown along a row is as tall. A
 `flex-basis` holds down a column with no height of its own, where Yoga
 would read the item's height in its place. An item stretched across its

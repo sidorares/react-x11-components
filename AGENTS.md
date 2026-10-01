@@ -1158,6 +1158,20 @@ line is not "is there a library" but **"would a bug be visible"**: flexbox is
 long, subtle and silently wrong when wrong; block flow and floats are none of
 those.
 
+**And one step of it is written out, because Yoga's is silently wrong.**
+Yoga 3.2.1 shares a line out in two passes where CSS Flexbox 9.7 goes round
+until no limit stops an item, divides by a running sum (react/yoga#2006),
+and weighs, floors and starts items as 9.7 does not. So the one line of a
+box that does not wrap is shared out here (`resolveLine` in
+`layout/flex.ts`) wherever an item has a minimum or a maximum, or the
+factors come to less than 1, and Yoga is handed every item frozen at its
+size; it still breaks lines, places items and aligns them. The rule that
+keeps it cheap: **compare before asking.** A line's flex base sizes are
+nearly always known here — a length, or the content's size the measure
+function found — so 9.7 is sums of numbers, and Yoga is asked again only
+where its answer differs. A page of Tailwind rows, most of them
+`min-w-0`, makes the same calls into Yoga as before.
+
 **Three phases, three invalidation reasons, and the split is the component.**
 Boxes depend on the DOM and the stylesheets; layout depends on the width;
 paint depends on neither. So a resize skips the cascade and an expose skips
