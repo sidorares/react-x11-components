@@ -1856,8 +1856,11 @@ degenerately nested document — a few hundred unclosed `<div>`s, a runaway
 template — would otherwise be a stack overflow far from its cause. The
 parser puts what is opened deeper into the element at the cap, as Blink's
 does, so what is lost is the nesting and not the content; and the box
-builder still stops at 512 boxes, for the anonymous boxes a table builds
-round each level. Documents this deep are not documents.
+builder still stops at 512 boxes, counting the anonymous boxes a table
+builds round each level, and drops what is deeper: a `display:
+table-cell` in another is four boxes a level, a table, a row group, a row
+and the cell, so it stops 128 cells deep. Documents this deep are not
+documents.
 
 **Lengths are kept to what a browser holds.** A length is ±33,554,428
 pixels at most, as a browser holds one and as `calc()` already made an
