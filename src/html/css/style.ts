@@ -656,7 +656,8 @@ export interface ComputedStyle {
   /** Its shadows front to back, the ones that can be seen; null for none. */
   boxShadow: BoxShadow[] | null;
   /** Its outline (CSS 2.1 18.4, CSS UI 4): drawn around the border box,
-   *  grown by `outlineOffset`, taking no room; `auto` is drawn solid. */
+   *  grown by `outlineOffset`, taking no room; `auto` is the palette's
+   *  focus ring (`settleOutline`), drawn solid. */
   outlineStyle: BorderStyle | 'auto';
   outlineWidth: number;
   outlineColor: string;
@@ -923,6 +924,51 @@ export interface RootLook {
    * is in Chrome. Without it, `fontFamily`.
    */
   controlFontFamily?: string;
+  /**
+   * The ring the palette's widgets draw round the one that has the focus —
+   * `theme.focusRing`, `focusRingWidth` and `focusRingOffset` — which is
+   * what an `outline-style: auto` is, the platform's own (CSS UI 4, 5.3),
+   * and what `-webkit-focus-ring-color` names. Without them, core's own
+   * defaults.
+   */
+  focusRing?: string;
+  focusRingWidth?: number;
+  focusRingOffset?: number;
+}
+
+/** Core's focus ring, where a look names none (`DEFAULT_FOCUS_RING`). */
+const FOCUS_RING = { color: '#2980b9', width: 2, offset: 1 };
+
+/**
+ * An `outline-style: auto` as the platform's focus ring: the palette's
+ * width and, where the outline's colour is the text's or the keyword's,
+ * its colour, the palette's gap outside `outline-offset` — so a field the
+ * document draws is ringed as the window's own fields are. A browser
+ * draws `auto` in a style of its own the same way, whatever width it was
+ * given. `look` is the device one, as every length here is, and `scale`
+ * what makes core's defaults device lengths too.
+ */
+export function settleOutline(
+  style: ComputedStyle,
+  look: RootLook,
+  scale: number,
+): void {
+  if (style.outlineStyle !== 'auto') return;
+  style.outlineWidth = look.focusRingWidth ?? FOCUS_RING.width * scale;
+  style.outlineOffset += look.focusRingOffset ?? FOCUS_RING.offset * scale;
+  if (style.outlineColor === 'currentColor') {
+    style.outlineColor = look.focusRing ?? FOCUS_RING.color;
+  }
+}
+
+/** `-webkit-focus-ring-color`, a colour of an outline's. */
+function outlineColorOf(v: string, ctx: UnitContext): string | null {
+  const lower = v.trim().toLowerCase();
+  if (lower === 'invert') return 'currentColor';
+  if (lower === '-webkit-focus-ring-color') {
+    return ctx.focusRing ?? FOCUS_RING.color;
+  }
+  return parseColor(v);
 }
 
 export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
@@ -2099,7 +2145,7 @@ export function applyDeclaration(
           width = w;
           continue;
         }
-        const c = v === 'invert' ? 'currentColor' : parseColor(part);
+        const c = outlineColorOf(part, ctx);
         if (c === null) return;
         color = c;
       }
@@ -2120,8 +2166,7 @@ export function applyDeclaration(
     }
     case 'outline-color': {
       // `invert` is the text's colour where a browser cannot invert
-      const v = value.trim().toLowerCase();
-      const c = v === 'invert' ? 'currentColor' : parseColor(value);
+      const c = outlineColorOf(value, ctx);
       if (c !== null) style.outlineColor = c;
       return;
     }

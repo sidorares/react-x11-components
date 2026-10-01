@@ -101,7 +101,37 @@ export function useForms(options: FormsOptions): Forms {
   // and its undo. Keyed by position, each move mounted a new one, and a
   // page whose stylesheet landed while someone was typing lost the field
   // from under them.
-  const widgets = React.useMemo(() => new WidgetBoxes(), []);
+  const widgets = React.useMemo(
+    () =>
+      new WidgetBoxes((el) => {
+        // a field that unmounts with the focus is forgotten rather than
+        // blurred, and the document is told it went
+        const node = view.current;
+        if (node?.focusedElement === el) node.setFocus(null);
+      }),
+    [view],
+  );
+
+  // Which element's field holds the focus, for `:focus` and its kin
+  // (`HtmlViewNode.setFocus`). A blur is told a microtask later, and only
+  // where no field took the focus in the meantime: core blurs one field
+  // and then focuses the next, and a move from one to the other is one
+  // change to the document, not two.
+  const blurred = React.useRef<Element | null>(null);
+  const focused = (el: Element, on: boolean) => {
+    if (on) {
+      blurred.current = null;
+      view.current?.setFocus(el, true);
+      return;
+    }
+    blurred.current = el;
+    void Promise.resolve().then(() => {
+      if (blurred.current !== el) return;
+      blurred.current = null;
+      const node = view.current;
+      if (node?.focusedElement === el) node.setFocus(null);
+    });
+  };
 
   React.useEffect(() => {
     if (!invalid) return;
@@ -271,6 +301,7 @@ export function useForms(options: FormsOptions): Forms {
     setChecked,
     checkRadio,
     press,
+    focused,
     submitFrom: (field) => {
       const plan = implicitSubmission(field);
       if (plan) submit(plan.form, plan.submitter);
@@ -346,6 +377,9 @@ class WidgetBoxes {
   private _boxes = new Map<Element, DrawnNode>();
   private _refs = new WeakMap<Element, (node: DrawnNode | null) => void>();
 
+  /** `gone` hears of each element whose widget's box unmounted. */
+  constructor(private readonly _gone: (el: Element) => void) {}
+
   idOf(el: Element): number {
     let id = this._ids.get(el);
     if (id === undefined) this._ids.set(el, (id = ++this._next));
@@ -358,7 +392,10 @@ class WidgetBoxes {
     if (!ref) {
       ref = (node) => {
         if (node) this._boxes.set(el, node);
-        else if (this._boxes.get(el)) this._boxes.delete(el);
+        else if (this._boxes.get(el)) {
+          this._boxes.delete(el);
+          this._gone(el);
+        }
       };
       this._refs.set(el, ref);
     }
@@ -415,6 +452,8 @@ interface ControlContext {
   checkRadio: (el: Element) => void;
   /** A button was pressed: what it does to its form. */
   press: (button: Element) => void;
+  /** A field's widget took the focus, or gave it up. */
+  focused: (el: Element, on: boolean) => void;
   /** Enter in a text field: its form's implicit submission. */
   submitFrom: (field: Element) => void;
 }
@@ -574,8 +613,10 @@ function renderControl(
         defaultValue: forms.value(el),
         maxLength: maxLength(el),
         ...order,
-        style: [field, { width: '100%', height: '100%' }],
+        style: [field, FIELD_BOX],
         onChange: readOnly ? undefined : (ev) => typed(ev.value),
+        onFocus: () => ctx.focused(el, true),
+        onBlur: () => ctx.focused(el, false),
       });
       break;
     case 'input': {
@@ -588,7 +629,11 @@ function renderControl(
         // Core's word for a password field: nothing in it reaches a
         // selection, PRIMARY included.
         sensitive: type === 'password',
-        style: [field, { width: '100%', height: '100%' }],
+        // a browser's caret is the field's text colour (`caret-color:
+        // auto`), which is the page's where the page drew the field — the
+        // palette's own field keeps the palette's caret
+        ...(rect.bare && { caretColor: rect.bare.color }),
+        style: [field, FIELD_BOX],
         onChange: readOnly
           ? undefined
           : (ev) => {
@@ -600,6 +645,8 @@ function renderControl(
             },
         // Enter submits the field's form, as it does in a browser
         onSubmit: () => ctx.submitFrom(el),
+        onFocus: () => ctx.focused(el, true),
+        onBlur: () => ctx.focused(el, false),
       });
       break;
     }
@@ -675,6 +722,16 @@ function ariaHidden(el: Element): boolean {
 
 /** How far past its box a widget's focus ring is drawn, and then some. */
 const RING_REACH = 8;
+
+/**
+ * A text field's box: all of its frame, and no focus ring of its own. Its
+ * ring is its element's `outline`, which the document draws round the
+ * border box (the UA sheet's `:focus-visible`), so a page's
+ * `outline: none` takes it away and a ring of the page's own replaces it,
+ * as they do in a browser. Core's, drawn round the widget, stood inside the
+ * border of a field the page drew, where the widget is only the content box.
+ */
+const FIELD_BOX: Style = { width: '100%', height: '100%', outlineWidth: 0 };
 
 /** A field's `maxlength`, which the widget enforces as it is typed into. */
 function maxLength(el: Element): number | undefined {

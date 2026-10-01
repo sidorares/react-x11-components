@@ -1132,9 +1132,12 @@ test('outline and its longhands are read', async () => {
     ['dashed', 2, -1],
   );
   assert.strictEqual(style('b').outlineStyle, 'none');
+  // `auto` is the platform's ring, which is the palette's: its colour where
+  // the outline's is the text's, which `invert` is, and its width
+  const c = style('c');
   assert.deepStrictEqual(
-    [style('c').outlineStyle, style('c').outlineColor],
-    ['auto', 'currentColor'],
+    [c.outlineStyle, c.outlineColor, c.outlineWidth],
+    ['auto', '#2980b9', 2],
   );
   assert.strictEqual(
     style('d').outlineStyle,
