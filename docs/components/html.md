@@ -674,9 +674,12 @@ the whole of it, not a share: the width specified for a column is its own,
 or else its group's (CSS Tables 3, 3.8.3), as in Chrome, where CSS 2.1
 17.5.2.2 spread the group's width over its columns. A group with no `<col>`
 stands for each column it spans, and a fixed table takes the group's width
-for those and for no `<col>`, as Blink does. A percentage in a cell's
-padding is of the width of its row — the columns and the spacing between
-them — as browsers
+for those and for no `<col>`, as Blink does. A percentage `width`, a
+cell's or a column's, is of the table's width less its `border-spacing` in
+either layout — CSS Tables 3's assignable table width, the spacing either
+side of every column out — as Blink takes it, so a `width: 50%` cell in a
+table of 300 spaced 2 is 147. A percentage in a cell's padding is of the
+width of its row — the columns and the spacing between them — as browsers
 take it, and of nothing while the columns are sized, so a padded cell's
 column is as wide as its content asks. A cell's `min-width` and
 `max-width` are weighed where the columns are sized, and as lengths (CSS
