@@ -1423,6 +1423,63 @@ test("a border-area clip is a dashed or dotted side's pattern wherever the paint
   }
 });
 
+test('a rounded background cut to what the paint reaches keeps its shape', async () => {
+  // A paint that reaches part of a box cuts its background to 64 pixels
+  // round what it repaints, and the cut was filled with the box's own
+  // corners: a corner left at a cut edge curves no further into it than
+  // its radius, which leaves what is painted alone while the radius is no
+  // more than 64. A circle's is more. A strip repainted across the curve of
+  // one 400 across was filled as a rectangle 148 across with corners of
+  // 200, a path that crosses itself, and an image in the box was clipped
+  // to it: the strip was filled outside the circle and left bare inside.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="width:380px;height:380px;border:10px solid #0000ff;' +
+      'background:#ffcc00 url(a.png);border-radius:50%"></div>',
+  );
+  const ink = parseColor('#ffcc00');
+  const circle = (x: number, y: number) => Math.hypot(x - 200, y - 200) < 200;
+  // across the curve, by its top, its left and two of its corners
+  const strips = [
+    { x: 150, y: 0, width: 20, height: 20 },
+    { x: 0, y: 150, width: 20, height: 20 },
+    { x: 330, y: 40, width: 20, height: 20 },
+    { x: 50, y: 50, width: 20, height: 20 },
+  ];
+  for (const damage of strips) {
+    const { fills, clips } = await pathsOf(view(node), damage, () => ({
+      image: {},
+      width: 400,
+      height: 400,
+      ratio: 1,
+    }));
+    const at = `repainted at ${damage.x},${damage.y}`;
+    const colour = fills.filter((f) => f.style === ink);
+    assert.strictEqual(colour.length, 1, `one fill of the colour, ${at}`);
+    assert.strictEqual(clips.length, 1, `one clip, the image's, ${at}`);
+    const wrong: string[] = [];
+    for (let y = damage.y; y < damage.y + damage.height; y += 1) {
+      for (let x = damage.x; x < damage.x + damage.width; x += 1) {
+        const [px, py] = [x + 0.5, y + 0.5];
+        // clear of the curve, which the recorder bends in straight lines
+        if (Math.abs(Math.hypot(px - 200, py - 200) - 200) < 1) continue;
+        const inside = circle(px, py);
+        if ((windingAt(colour[0].outlines, px, py) !== 0) !== inside) {
+          wrong.push(`colour ${x},${y}`);
+        }
+        if ((windingAt(clips[0], px, py) !== 0) !== inside) {
+          wrong.push(`image ${x},${y}`);
+        }
+      }
+    }
+    assert.deepStrictEqual(
+      wrong.slice(0, 4),
+      [],
+      `the circle and nothing else, ${at}: ${wrong.length} wrong`,
+    );
+  }
+});
+
 metric(
   'an inline box whose background is an image or a gradient alone is painted',
   async () => {

@@ -976,20 +976,15 @@ function originBox(
  * it falls nearest, as browsers snap a box — boxes that meet share the
  * column their edge is in, and a rule 1.33px wide is one pixel, not two —
  * with the border box's corners less the widths between (5.3), where
- * `rounded` asks for them. Null where it has no area.
+ * `rounded` asks for them — cut to what the paint reaches (`clampArea`).
+ * Null where it has no area there.
  */
 function clipArea(
   box: Frame,
   options: PaintOptions,
   style: ComputedStyle,
   rounded: boolean,
-): {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  corners: Corners | null;
-} | null {
+): Area | null {
   const left = box.x + options.originX;
   const top = frameY(box) + options.originY;
   const right = left + box.width;
@@ -1018,7 +1013,7 @@ function clipArea(
       -l,
     );
   }
-  return { x, y, w, h, corners };
+  return clampArea(options, x, y, w, h, corners);
 }
 
 /** What the background and border painters read of a box — which an
@@ -1744,9 +1739,7 @@ function frameImages(
   options: PaintOptions,
 ): (layer: ComputedStyle) => void {
   return (layer) => {
-    const painted = clipArea(frame, options, layer, true);
-    const area =
-      painted && clampRect(options, painted.x, painted.y, painted.w, painted.h);
+    const area = clipArea(frame, options, layer, true);
     if (area) {
       paintBackgroundImage(
         ctx,
@@ -1754,7 +1747,7 @@ function frameImages(
         area,
         originBox(frame, options, layer),
         options,
-        painted.corners,
+        area.corners,
       );
     }
   };
@@ -3417,6 +3410,63 @@ function clampRect(
   return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
 }
 
+/** A rectangle with its corners, square where they are null. */
+interface Area {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  corners: Corners | null;
+}
+
+/**
+ * `clampRect` for a rectangle that may be rounded, with the corners it is
+ * left with. Where no radius is larger than `CLAMP_PAD` they are its own,
+ * and it is cut as a square one is: a corner the cut leaves on a cut edge
+ * curves no further in from it than the margin, which keeps it out of what
+ * is painted. A larger radius, a circle's or a pill's, would bend into it
+ * — a circle 400 across repainted a strip at a time was another shape in
+ * every strip across its curve — so there the window is moved out past
+ * any curve it would cross, and a corner on a side it cut is square
+ * (`cutRounded`, as a rounded border's ring is cut).
+ */
+function clampArea(
+  options: PaintOptions,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  corners: Corners | null,
+): Area | null {
+  if (corners && curvesPast(corners, CLAMP_PAD)) {
+    const cut = cutRounded(
+      roundedWindow(options, x, y, w, h, corners),
+      x,
+      y,
+      w,
+      h,
+      corners,
+    );
+    if (!cut) return null;
+    const { rect } = cut;
+    return {
+      x: rect.x,
+      y: rect.y,
+      w: rect.width,
+      h: rect.height,
+      corners: cut.corners,
+    };
+  }
+  const rect = clampRect(options, x, y, w, h);
+  return rect && { x: rect.x, y: rect.y, w: rect.w, h: rect.h, corners };
+}
+
+/** Whether a corner curves further than `by` along either of its sides. */
+function curvesPast({ x, y }: Corners, by: number): boolean {
+  for (let i = 0; i < 4; i += 1) if (x[i] > by || y[i] > by) return true;
+  return false;
+}
+
 function paintBackground(
   ctx: PaintContext,
   box: Frame,
@@ -3427,20 +3477,16 @@ function paintBackground(
   const gradient = style.backgroundGradient;
   const solid = !isTransparent(color);
   if (!solid && !gradient) return;
-  const area = clipArea(
+  const rect = clipArea(
     box,
     options,
     style,
     !!(ctx.roundRect && ctx.fill && ctx.beginPath),
   );
-  const rect = area && clampRect(options, area.x, area.y, area.w, area.h);
   if (!rect) return;
-  const rounded = area.corners;
+  const rounded = rect.corners;
   const fill = (): void => {
     if (rounded) {
-      // The clamp can only have cut edges further than CLAMP_PAD outside
-      // the damage, and a sane radius is smaller than that — so a corner
-      // that survives the cut is whole, and a cut edge is offscreen.
       ctx.beginPath!();
       roundedRect(ctx, rect.x, rect.y, rect.w, rect.h, rounded);
       ctx.fill!();
@@ -5352,10 +5398,10 @@ interface Rounded {
  * the box first and insetting the cut by the borders put the hole a
  * border's width in from the cut rather than from the box's edge, and left
  * none where a border was wider than `CLAMP_PAD`: the ring filled whatever
- * of the box a paint reached. A cut is straight, so a side of the window
- * is moved out past any corner's curve it would cross, and a corner on a
- * side the window cut is square, its curve being outside. Null where the
- * ring has nothing in the window.
+ * of the box a paint reached. The window is the border edge's
+ * (`roundedWindow`), whose curves the padding edge's run inside, and each
+ * edge is cut to it as `cutRounded` cuts one. Null where the ring has
+ * nothing in the window.
  */
 function cutRing(
   options: PaintOptions,
@@ -5369,9 +5415,45 @@ function cutRing(
   bottom: number,
   left: number,
 ): { outer: Rounded; inner: Rounded | null } | null {
+  const cut = roundedWindow(options, x, y, w, h, corners);
+  const outer = cutRounded(cut, x, y, w, h, corners);
+  if (!outer) return null;
+  const iw = w - left - right;
+  const ih = h - top - bottom;
+  const inner =
+    iw > 0 && ih > 0
+      ? cutRounded(
+          cut,
+          x + left,
+          y + top,
+          iw,
+          ih,
+          insetCorners(corners, top, right, bottom, left),
+        )
+      : null;
+  // a window inside the padding edge, where the ring has nothing
+  if (inner && sameRounded(outer, inner)) return null;
+  return { outer, inner };
+}
+
+/** Where a paint is cut to (`roundedWindow`): left, top, right, bottom. */
+type Cut = [number, number, number, number];
+
+/**
+ * The window `clampRect` cuts to, for a rectangle with rounded corners: a
+ * cut is straight, so a side of it is moved out past any corner's curve it
+ * would cross.
+ */
+function roundedWindow(
+  options: PaintOptions,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  corners: Corners,
+): Cut {
   const { x: cx, y: cy } = corners;
-  // where each corner's curve runs, across and down — the padding edge's
-  // run inside the border edge's
+  // where each corner's curve runs, across and down
   const across: [number, number][] = [
     [x, x + cx[0]],
     [x + w - cx[1], x + w],
@@ -5390,54 +5472,47 @@ function cutRing(
       -COORD_LIMIT,
       Math.min(COORD_LIMIT, outOfSpans(at, spans, towards)),
     );
-  const x0 = side(d ? d.x - CLAMP_PAD : -COORD_LIMIT, across, -1);
-  const y0 = side(d ? d.y - CLAMP_PAD : -COORD_LIMIT, down, -1);
-  const x1 = side(d ? d.x + d.width + CLAMP_PAD : COORD_LIMIT, across, 1);
-  const y1 = side(d ? d.y + d.height + CLAMP_PAD : COORD_LIMIT, down, 1);
-  const cut = (
-    rx: number,
-    ry: number,
-    rw: number,
-    rh: number,
-    c: Corners,
-  ): Rounded | null => {
-    const l = Math.max(rx, x0);
-    const t = Math.max(ry, y0);
-    const r = Math.min(rx + rw, x1);
-    const b = Math.min(ry + rh, y1);
-    if (r <= l || b <= t) return null;
-    // the corners of the sides the window left where they were
-    const kept = [
-      t === ry && l === rx,
-      t === ry && r === rx + rw,
-      b === ry + rh && r === rx + rw,
-      b === ry + rh && l === rx,
-    ];
-    return {
-      rect: { x: l, y: t, width: r - l, height: b - t },
-      corners: {
-        x: c.x.map((v, i) => (kept[i] ? v : 0)) as Corners['x'],
-        y: c.y.map((v, i) => (kept[i] ? v : 0)) as Corners['y'],
-      },
-    };
+  return [
+    side(d ? d.x - CLAMP_PAD : -COORD_LIMIT, across, -1),
+    side(d ? d.y - CLAMP_PAD : -COORD_LIMIT, down, -1),
+    side(d ? d.x + d.width + CLAMP_PAD : COORD_LIMIT, across, 1),
+    side(d ? d.y + d.height + CLAMP_PAD : COORD_LIMIT, down, 1),
+  ];
+}
+
+/**
+ * A rounded rectangle cut to a window (`roundedWindow`), as `clampRect`
+ * cuts a rectangle: a corner on a side the window cut is square, its
+ * curve being outside, and the rest are whole. Null where none of it is in
+ * the window.
+ */
+function cutRounded(
+  [x0, y0, x1, y1]: Cut,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  c: Corners,
+): Rounded | null {
+  const l = Math.max(x, x0);
+  const t = Math.max(y, y0);
+  const r = Math.min(x + w, x1);
+  const b = Math.min(y + h, y1);
+  if (r <= l || b <= t) return null;
+  // the corners of the sides the window left where they were
+  const kept = [
+    t === y && l === x,
+    t === y && r === x + w,
+    b === y + h && r === x + w,
+    b === y + h && l === x,
+  ];
+  return {
+    rect: { x: l, y: t, width: r - l, height: b - t },
+    corners: {
+      x: c.x.map((v, i) => (kept[i] ? v : 0)) as Corners['x'],
+      y: c.y.map((v, i) => (kept[i] ? v : 0)) as Corners['y'],
+    },
   };
-  const outer = cut(x, y, w, h, corners);
-  if (!outer) return null;
-  const iw = w - left - right;
-  const ih = h - top - bottom;
-  const inner =
-    iw > 0 && ih > 0
-      ? cut(
-          x + left,
-          y + top,
-          iw,
-          ih,
-          insetCorners(corners, top, right, bottom, left),
-        )
-      : null;
-  // a window inside the padding edge, where the ring has nothing
-  if (inner && sameRounded(outer, inner)) return null;
-  return { outer, inner };
 }
 
 /** A position moved out of any of `spans` it is inside, towards their
