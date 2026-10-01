@@ -12,6 +12,7 @@ import {
   fillsOf,
   h,
   metric,
+  pixelsIn,
   render,
   renderWithBytes,
   renderWithImages,
@@ -328,6 +329,97 @@ metric(
       ),
     );
     await expectPixel(result.ctx, 9, 6, '#00aa00', { message: 'its second' });
+  },
+);
+
+metric(
+  "a sprite's symbol is drawn as more of it arrives, with no rule for it",
+  async () => {
+    // The symbol cut between two chunks, as the test above has it, and no
+    // rule to restyle anything when the second lands: what the copy was
+    // made from has to say so itself. The first copy found the symbol with
+    // one of its rects, and the icon kept only that one for good.
+    const icon =
+      '<style>body{margin:0}svg{display:block}</style>' +
+      '<svg width="12" height="12"><use href="#late"/></svg><p>text</p>';
+    const doc = (source: string) =>
+      h(
+        'box',
+        { style: { width: 300, flexDirection: 'column' } },
+        h(Html, { source, 'data-testname': 'doc' }),
+      );
+    const result = await renderX11(doc(icon), {
+      width: 340,
+      height: 200,
+      fonts: FONTS!,
+    });
+    await expectPixel(result.ctx, 3, 6, '#ffffff', { message: 'not yet' });
+    const half =
+      icon +
+      '<svg style="display:none"><symbol id="late" viewBox="0 0 2 2">' +
+      '<rect width="1" height="2" fill="#0000ff"/>';
+    await act(() => result.rerender(doc(half)));
+    await expectPixel(result.ctx, 3, 6, '#0000ff', { message: 'its first' });
+    await expectPixel(result.ctx, 9, 6, '#ffffff', { message: 'and no more' });
+    await act(() =>
+      result.rerender(
+        doc(
+          half +
+            '<rect x="1" width="1" height="2" fill="#0000ff"/></symbol></svg>',
+        ),
+      ),
+    );
+    await expectPixel(result.ctx, 9, 6, '#0000ff', { message: 'its second' });
+    await expectPixel(result.ctx, 3, 6, '#0000ff', {
+      message: 'and its first',
+    });
+  },
+);
+
+metric(
+  'a drawing read from a copy is drawn as more of a group or a text in it arrives',
+  async () => {
+    // A percentage has the drawing read from a copy, and a chunk that ends
+    // inside a group of it leaves the root's last child as it was. A chunk
+    // that ends inside a text leaves even the last node as it was: the
+    // next one's text goes on the end of it.
+    const doc = (source: string) =>
+      h(
+        'box',
+        { style: { width: 300, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}svg{display:block}</style>' +
+            '<svg width="200" height="24"><g>' +
+            '<rect width="5%" height="4" fill="#0000ff"/>' +
+            source,
+        }),
+      );
+    const result = await renderX11(doc(''), {
+      width: 340,
+      height: 200,
+      fonts: FONTS!,
+    });
+    await expectPixel(result.ctx, 5, 2, '#0000ff', { message: 'its first' });
+    await expectPixel(result.ctx, 105, 2, '#ffffff', { message: 'no more' });
+    const second = '<rect x="50%" width="5%" height="4" fill="#0000ff"/>';
+    await act(() => result.rerender(doc(second)));
+    await expectPixel(result.ctx, 105, 2, '#0000ff', { message: 'its second' });
+    // one letter, and then ten more of the same text
+    const text = second + '<text y="22" font-size="16" fill="#ff0000">M';
+    const red = async (x: number, width: number) => {
+      const data = await pixelsIn(result.ctx, { x, y: 6, width, height: 18 });
+      let n = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] > 200 && data[i + 1] < 80 && data[i + 2] < 80) n += 1;
+      }
+      return n;
+    };
+    await act(() => result.rerender(doc(text)));
+    assert.ok((await red(0, 60)) > 0, 'the letter');
+    assert.strictEqual(await red(60, 140), 0, 'and nothing past it');
+    await act(() => result.rerender(doc(text + 'MMMMMMMMMM')));
+    assert.ok((await red(60, 140)) > 0, 'the rest of the text');
   },
 );
 

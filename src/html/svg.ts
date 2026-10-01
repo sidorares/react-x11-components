@@ -258,12 +258,14 @@ export class SvgDrawing {
   readonly intrinsics: IntrinsicSize;
   private readonly _root: Element;
   private _view: SvgViewLike | null = null;
-  /** What the view was last handed the tree for: the root's child count
-   *  and last child — a streamed document grows an inline drawing after its
-   *  first paint — and, for a drawing with percentages in it, the viewport
-   *  they were resolved against. */
+  /** What the view was last handed the tree for: the root's child count,
+   *  and where the root and each element outside it a `<use>` drew ended —
+   *  a streamed document grows an inline drawing after its first paint,
+   *  and a sprite's symbol after the first icon drawn from it — and, for a
+   *  drawing with percentages in it, the viewport they were resolved
+   *  against. */
   private _seen = -1;
-  private _seenLast: ChildNode | null = null;
+  private _seenEnds: End[] = [];
   private _seenViewport = '';
   /** The `fill` and `stroke` the view's tree was last given its root's,
    *  and what the document's rules gave the elements in it. */
@@ -524,12 +526,14 @@ export class SvgDrawing {
   ): SvgViewLike | null {
     const root = this._root;
     const count = root.children.length;
-    const last = root.lastChild;
-    // more of the document has arrived since a `<use>` found nothing
+    // more of the document has arrived since a `<use>` found nothing, or
+    // more of what the tree was read from: the drawing, a group in it, or
+    // a symbol outside it that a chunk ended halfway through
     const arrived =
-      this._missingAt !== undefined &&
-      lastNode(documentOf(root)) !== this._missingAt;
-    const grown = count !== this._seen || last !== this._seenLast || arrived;
+      (this._missingAt !== undefined &&
+        lastNode(documentOf(root)) !== this._missingAt) ||
+      this._seenEnds.some(moved);
+    const grown = count !== this._seen || arrived;
     if (grown || this._percent === null) {
       this._percent = hasPercent(root);
       this._uses = needsExpanding(root);
@@ -552,16 +556,20 @@ export class SvgDrawing {
     }
     try {
       const view = this._view ?? new View(null);
-      const missing = { any: false };
+      const reached: Reached = { missing: false, outside: new Set() };
       const tree =
         sized || shapes || root.name.includes(':')
-          ? copyTree(root, sized ? [width, height] : null, missing, shapes)
+          ? copyTree(root, sized ? [width, height] : null, reached, shapes)
           : root;
       view.setSvgDom(paint ? withPaint(tree, paint) : tree);
-      this._missingAt = missing.any ? lastNode(documentOf(root)) : undefined;
+      this._missingAt = reached.missing
+        ? lastNode(documentOf(root))
+        : undefined;
+      const ends = [endOf(root)];
+      for (const el of reached.outside) ends.push(endOf(el));
       this._view = view;
       this._seen = count;
-      this._seenLast = last;
+      this._seenEnds = ends;
       this._seenViewport = viewport;
       this._seenPaint = painted;
       return view;
@@ -806,6 +814,29 @@ function lastNode(top: ParentNode): ChildNode | null {
   return last;
 }
 
+/** Where a part of a document ends: its last node, and the length of that
+ *  node's text where it is text, since a chunk's text goes on the end of
+ *  the text before it (domhandler's `ontext`) and leaves the node as it
+ *  was. What a document that is still arriving appends to the part moves
+ *  it, and what it appends after the part does not. */
+interface End {
+  top: ParentNode;
+  last: ChildNode | null;
+  text: number;
+}
+
+function endOf(top: ParentNode): End {
+  const last = lastNode(top);
+  return { top, last, text: last?.type === 'text' ? last.data.length : -1 };
+}
+
+/** Whether more of a part has arrived since its `End` was taken. */
+function moved(end: End): boolean {
+  const last = lastNode(end.top);
+  if (last !== end.last) return true;
+  return last?.type === 'text' && last.data.length !== end.text;
+}
+
 /** The first element of a document with an id, in its order. */
 function elementById(top: ParentNode, id: string): Element | null {
   const stack: ChildNode[] = [...top.children].reverse();
@@ -906,6 +937,13 @@ function symbolOwn(symbol: Element): Record<string, string> | null {
   return kept;
 }
 
+/** What a copy of a drawing reached outside its root: whether a `<use>`
+ *  in it found nothing, and the elements one was drawn from. */
+interface Reached {
+  missing: boolean;
+  outside: Set<Element>;
+}
+
 /**
  * The tree `SvgView` reads, where the document's own will not do: with
  * local names — `SvgView` knows `rect`, not `svg:rect`, and a prefix is
@@ -915,8 +953,9 @@ function symbolOwn(symbol: Element): Record<string, string> | null {
  * group of what it refers to (SVG 2, 5.5): the element, from wherever in
  * the document it is, or a symbol's children, its `viewBox` fitted to the
  * viewport the `<use>` gives it — its `width` and `height`, and all of the
- * drawing's where it has none. `missing.any` is set where one refers to an
- * element the document does not have.
+ * drawing's where it has none. `reached` is told where one refers to an
+ * element the document does not have, and of each element outside the root
+ * that one was drawn from.
  *
  * And with what the document's rules give each element (`shapes`), where
  * `SvgView` reads an element's own: at the end of its `style`, over its
@@ -932,7 +971,7 @@ function symbolOwn(symbol: Element): Record<string, string> | null {
 function copyTree(
   root: Element,
   viewport: [number, number] | null,
-  missing?: { any: boolean },
+  reached?: Reached,
   shapes: ShapeStyles | null = null,
 ): Element {
   const colon = root.name.indexOf(':');
@@ -957,9 +996,10 @@ function copyTree(
     const inside = ids.get(id);
     const target = inside ?? elementById(documentOf(root), id);
     if (!target) {
-      if (missing) missing.any = true;
+      if (reached) reached.missing = true;
       return null;
     }
+    if (!inside) reached?.outside.add(target);
     const symbol = localName(target.name) === 'symbol';
     const box = symbol ? viewBoxOf(target) : null;
     const kept = symbol ? symbolOwn(target) : null;
