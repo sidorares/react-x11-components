@@ -736,6 +736,9 @@ function ancestorKeys(selector: string): string[] {
   return keys;
 }
 
+/** A drawing none of whose own elements a rule reaches. */
+const NO_SHAPES: ReadonlyMap<Element, ShapeStyle> = new Map();
+
 /** What the rules matched in the copy a `<use>` makes of an element: each
  *  element they reach, with its place in the copy and its rules in cascade
  *  order; how many elements the copy has; and the `<use>`s in it. */
@@ -750,13 +753,21 @@ interface CopyMatch {
  * boxes (`BoxTree.shapeCopies`): the document's elements by their ids, and
  * what the rules matched in the copy of each element a `<use>` names —
  * the same whichever `<use>` makes it, so a page of hundreds of icons from
- * one sprite matches each symbol once. A build is made again whenever the
- * document or its style sheets change, and a pointer move changes nothing
- * a copy is matched by: nothing in one is under the pointer.
+ * one sprite matches each symbol once — and what that comes to for a
+ * drawing of each style. A build is made again whenever the document, its
+ * style sheets or a viewport a value reads change, and a pointer move
+ * changes nothing a copy is matched by: nothing in one is under the
+ * pointer, and a drawing whose style it changes has another style.
  */
 export class ShapeCopies {
   /** @internal */
   readonly matched = new Map<Element, CopyMatch>();
+  /** @internal What each copy comes to for a drawing of a style, and the
+   *  key that names it. */
+  readonly resolved = new WeakMap<
+    ComputedStyle,
+    Map<Element, { into: Map<Element, ShapeStyle> | null; key: string }>
+  >();
   constructor(readonly byId: (id: string) => Element | null) {}
 }
 
@@ -2061,16 +2072,10 @@ export class Cascade {
     // an element's place in the walks is what the key names it by
     let key = '';
     let place = -1;
-    const keep = (
-      into: Map<Element, ShapeStyle>,
-      el: Element,
-      own: Record<string, string>,
-      at: number,
-    ): void => {
-      into.set(el, own);
-      key += `${at}{`;
-      for (const prop in own) key += `${prop}:${own[prop]};`;
-      key += '}';
+    const named = (own: Record<string, string>, at: number): string => {
+      let part = `${at}{`;
+      for (const prop in own) part += `${prop}:${own[prop]};`;
+      return `${part}}`;
     };
 
     // (made as they are first needed: most drawings need none of them)
@@ -2087,7 +2092,9 @@ export class Cascade {
         if (id && !ids?.has(id)) (ids ??= new Map()).set(id, el);
       }
       const own = candidates && resolve(candidates, el === root);
-      if (own) keep((of ??= new Map()), el, own, place);
+      if (!own) return;
+      (of ??= new Map()).set(el, own);
+      key += named(own, place);
     });
     if (!uses) return of ? { of, used: null, key } : null;
 
@@ -2098,9 +2105,15 @@ export class Cascade {
     // drawing, and kept for the build (`ShapeCopies`); what it comes to is
     // the drawing's, since every property the copy inherits is the
     // `<use>`'s, and its custom properties and its colour are the
-    // drawing's, as they are for the rest of it.
+    // drawing's, as they are for the rest of it — kept too, for each
+    // style a drawing has, which the icons of a page mostly share.
     const byId = copies?.byId ?? ((id: string) => elementById(root, id));
     const matched = copies?.matched ?? new Map<Element, CopyMatch>();
+    let styled = copies?.resolved.get(style);
+    if (!styled) {
+      styled = new Map();
+      copies?.resolved.set(style, styled);
+    }
     const match = (target: Element): CopyMatch => {
       let copy = matched.get(target);
       if (copy) return copy;
@@ -2123,29 +2136,37 @@ export class Cascade {
       return copy;
     };
     let used: Map<Element, ReadonlyMap<Element, ShapeStyle>> | null = null;
-    const made = new Map<Element, Map<Element, ShapeStyle> | null>();
+    let made: Set<Element> | null = null;
     for (let i = 0; i < uses.length; i += 1) {
       const use = uses[i];
       const id = useHref(use);
       if (id === null) continue;
       const target = ids?.get(id) ?? byId(id);
       if (!target) continue;
-      let into = made.get(target);
-      if (into === undefined) {
-        made.set(target, null);
-        const copy = match(target);
-        for (const next of copy.uses) uses.push(next);
-        into = null;
+      const copy = match(target);
+      let done = styled.get(target);
+      if (!done) {
+        let into: Map<Element, ShapeStyle> | null = null;
+        let part = '';
         for (const { el, at, candidates } of copy.rules) {
           const own = resolve(candidates, false);
-          if (own) keep((into ??= new Map()), el, own, place + 1 + at);
+          if (!own) continue;
+          (into ??= new Map()).set(el, own);
+          part += named(own, at);
         }
-        place += copy.size;
-        made.set(target, into);
+        done = { into, key: part };
+        styled.set(target, done);
       }
-      if (into) (used ??= new Map()).set(use, into);
+      if (!made?.has(target)) {
+        (made ??= new Set()).add(target);
+        for (const next of copy.uses) uses.push(next);
+        // its place in the key is after what came before it
+        if (done.key) key += `@${place + 1}:${done.key}`;
+        place += copy.size;
+      }
+      if (done.into) (used ??= new Map()).set(use, done.into);
     }
-    return of || used ? { of: of ?? new Map(), used, key } : null;
+    return of || used ? { of: of ?? NO_SHAPES, used, key } : null;
   }
 
   /** `ShapeNeeds`, and each such rule's own (`IndexedRule.needs`). */
