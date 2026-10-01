@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.16.0](https://github.com/sidorares/react-x11-components/compare/v0.15.0...v0.16.0) (2026-10-01)
+
+
+### Features
+
+* **html:** a quotation's marks are its language's, where every language had English's ([#564](https://github.com/sidorares/react-x11-components/issues/564)) ([b438110](https://github.com/sidorares/react-x11-components/commit/b43811094301c1377faea859ca4e6ca87b168a36))
+
+
+### Bug Fixes
+
+* **html:** a ::marker content ending in a no-break space stands where the default marker does, where it stood a space further out ([#568](https://github.com/sidorares/react-x11-components/issues/568)) ([7772a44](https://github.com/sidorares/react-x11-components/commit/7772a445fdf1714effed52587be543835c0a5985))
+* **html:** a background painted through text shows through its descendants' text, where it stopped at the block the text was in ([#560](https://github.com/sidorares/react-x11-components/issues/560)) ([05f681b](https://github.com/sidorares/react-x11-components/commit/05f681bd72cf070cc0d32f83bc7d5e2ce587600e))
+* **html:** a box sized to its content takes a percentage padding of its containing block, where the padding was left inside the content ([#559](https://github.com/sidorares/react-x11-components/issues/559)) ([c81028e](https://github.com/sidorares/react-x11-components/commit/c81028ed324b298c4e17121ec083ed949b39557b))
+* **html:** a control keeps its look where the appearance that wins is not none, where any none of the page's took it off ([#565](https://github.com/sidorares/react-x11-components/issues/565)) ([3e3e455](https://github.com/sidorares/react-x11-components/commit/3e3e455886bb59afaefabfbe0233244413d91f59))
+* **html:** a pseudo-class that takes selectors is as specific as Selectors 4 counts it, where every one counted a class ([#563](https://github.com/sidorares/react-x11-components/issues/563)) ([2d6feb8](https://github.com/sidorares/react-x11-components/commit/2d6feb8f6385f0ff168d1e76fecba8916a5daddf))
+* **html:** a replaced element's aspect-ratio is of its border box under box-sizing: border-box, where it was always of its content ([#566](https://github.com/sidorares/react-x11-components/issues/566)) ([797fa74](https://github.com/sidorares/react-x11-components/commit/797fa74c601f6699ec1a35e57362e5823855a8ce))
+* **html:** a wrapping column's items are laid out again at the width the box is, where master no longer built ([#562](https://github.com/sidorares/react-x11-components/issues/562)) ([dd9135f](https://github.com/sidorares/react-x11-components/commit/dd9135f98c993352814b3c19df559b486b455ccf))
+* **html:** an item across a row that wraps takes the room its auto margins ask for, and keeps its own margins where the lines wrap in reverse, where Yoga stretched it to its line or swapped its top and bottom margins ([#570](https://github.com/sidorares/react-x11-components/issues/570)) ([8a6314f](https://github.com/sidorares/react-x11-components/commit/8a6314f18a33cc4509f827ac0ce51f746eafb195))
+* **html:** an item stretched across a line align-content spaces out is as tall as the line, where Yoga made it taller by the room after the line ([#572](https://github.com/sidorares/react-x11-components/issues/572)) ([58c6596](https://github.com/sidorares/react-x11-components/commit/58c65967677856275ae9cffbb7596e0df489efc0))
+* **html:** an SVG image with no viewBox is stretched to its box from its own size, where it was drawn at its own size in a corner ([#567](https://github.com/sidorares/react-x11-components/issues/567)) ([64c6e98](https://github.com/sidorares/react-x11-components/commit/64c6e9857bc312cb5a3ae30d202a2d593e6df348))
+
 ## [0.15.0](https://github.com/sidorares/react-x11-components/compare/v0.14.1...v0.15.0) (2026-10-01)
 
 
