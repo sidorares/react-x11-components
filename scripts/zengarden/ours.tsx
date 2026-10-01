@@ -449,6 +449,8 @@ export async function capture(
                 charset: page.charset,
                 partial: false,
                 selectable: false,
+                // Chrome is captured with every animation at rest
+                animate: false,
                 fontSize: 16,
                 fontFamily: 'serif',
                 monoFamily: 'monospace',

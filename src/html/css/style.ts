@@ -5671,6 +5671,23 @@ const INHERITED_NAMES = new Set<string>([
   'widows',
 ]);
 
+/**
+ * The fields of a computed style a property sets, for an animation to
+ * interpolate between two frames (`Cascade._animatedDeclarations`); null
+ * for one this cannot say that of — a logical property, a custom property,
+ * a mask's or an animation's lists — whose value goes over half-way as its
+ * declaration.
+ */
+export function animatedFields(
+  name: string,
+): readonly (keyof ComputedStyle)[] | null {
+  const prop = PREFIXED_ALIASES[name] ?? name;
+  if (MASK_LISTS[prop] || ANIMATION_LONGHANDS[prop]) return null;
+  const color = COLOR_PROPS[prop];
+  if (color) return [color];
+  return INHERIT_TARGETS[prop] ?? null;
+}
+
 export function isInherited(name: string): boolean {
   return INHERITED_NAMES.has(name);
 }

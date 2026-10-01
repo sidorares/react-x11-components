@@ -44,12 +44,17 @@ export function view(node: DrawnNode): HtmlViewNode {
   return (node as unknown as { children: HtmlViewNode[] }).children[0];
 }
 
-export async function render(source: string, width = 400) {
+export async function render(
+  source: string,
+  width = 400,
+  /** More of `<Html>`'s props: `animate`, say. */
+  props: Record<string, unknown> = {},
+) {
   const result = await renderX11(
     h(
       'box',
       { style: { width, flexDirection: 'column' } },
-      h(Html, { source, partial: false, 'data-testname': 'doc' }),
+      h(Html, { source, partial: false, 'data-testname': 'doc', ...props }),
     ),
     FONTS
       ? { width: width + 40, height: 600, fonts: FONTS }

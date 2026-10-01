@@ -1,19 +1,25 @@
 // `animation` and its longhands (CSS Animations 1, 4), read into the lists
-// an element's animations are, and what those animations leave on its
-// style.
+// an element's animations are; how far through its frames an animation is
+// at a time (Web Animations 1, 4); and what an animation leaves on a style
+// where none runs.
 //
-// Nothing here runs an animation: a document is drawn as it stands once
-// each of its animations has run one iteration at no length. One that
-// fills forwards then holds the frame it ended on, and any other leaves
-// the style it started from. That is the moment the Zen Garden bench holds
-// Chrome at (`scripts/zengarden/chrome.ts`), and the one a page that fades
-// its panels in and holds them is meant to be seen at: drawn as it starts,
-// a panel that animates in from nothing is never there. So the cascade asks
-// `restingFrames` for the declarations of each such frame and applies them
-// above the author's own, as the animation origin is (CSS Cascade 5, 6.1).
+// An animation runs on the document's timeline (`css/timeline.ts`), which
+// the cascade asks for each animated element's progress through each of
+// its animations as it styles it, and interpolates between the frames
+// around it (`Cascade._computeStyle`, `css/interpolate.ts`). An
+// application can have none run (`<Html animate={false}>`): a document is
+// then drawn as it stands once each animation has run one iteration at no
+// length. One that fills forwards holds the frame it ended on, and any
+// other leaves the style it started from. That is the moment the Zen
+// Garden bench holds Chrome at (`scripts/zengarden/chrome.ts`), and the one
+// a page that fades its panels in and holds them is meant to be seen at:
+// drawn as it starts, a panel that animates in from nothing is never
+// there. So the cascade asks `restingFrames` for the declarations of each
+// such frame and applies them above the author's own, as the animation
+// origin is (CSS Cascade 5, 6.1).
 
 import { parseMath } from './calc.js';
-import type { Declaration, KeyframesRule } from './parse.js';
+import type { Declaration, Keyframe, KeyframesRule } from './parse.js';
 import { parseNumber, splitCommas, splitValue } from './values.js';
 
 /**
@@ -464,3 +470,264 @@ const END_FRAMES = new WeakMap<
   KeyframesRule,
   [Declaration[] | null, Declaration[] | null]
 >();
+
+// --- time ---------------------------------------------------------------------
+
+/** Where an easing function takes an input progress, 0 to 1 (CSS Easing
+ *  2): the same for the identity, a cubic Bézier's curve, the step it is
+ *  on, or a `linear()`'s line between the points around it. */
+export function ease(easing: Easing, t: number): number {
+  switch (easing.type) {
+    case 'linear':
+      return t;
+    case 'cubic':
+      return bezier(easing, t);
+    case 'steps':
+      return steps(easing.count, easing.position, t);
+    case 'points':
+      return pointsAt(easing.points, t);
+  }
+}
+
+/** A cubic Bézier from (0, 0) to (1, 1): the y where its x is `t`, the
+ *  curve's parameter found by Newton's method, and by halving where that
+ *  does not settle. */
+function bezier(
+  { x1, y1, x2, y2 }: { x1: number; y1: number; x2: number; y2: number },
+  t: number,
+): number {
+  if (t <= 0 || t >= 1) return t <= 0 ? 0 : 1;
+  const cx = 3 * x1;
+  const bx = 3 * (x2 - x1) - cx;
+  const ax = 1 - cx - bx;
+  const cy = 3 * y1;
+  const by = 3 * (y2 - y1) - cy;
+  const ay = 1 - cy - by;
+  const xAt = (s: number) => ((ax * s + bx) * s + cx) * s;
+  const yAt = (s: number) => ((ay * s + by) * s + cy) * s;
+  let s = t;
+  for (let i = 0; i < 8; i += 1) {
+    const x = xAt(s) - t;
+    if (Math.abs(x) < 1e-7) return yAt(s);
+    const slope = (3 * ax * s + 2 * bx) * s + cx;
+    if (Math.abs(slope) < 1e-6) break;
+    s -= x / slope;
+  }
+  let lo = 0;
+  let hi = 1;
+  s = t;
+  for (let i = 0; i < 40; i += 1) {
+    const x = xAt(s);
+    if (Math.abs(x - t) < 1e-7) break;
+    if (t > x) lo = s;
+    else hi = s;
+    s = (lo + hi) / 2;
+  }
+  return yAt(s);
+}
+
+/** The step `t` is on, as a fraction of the way (CSS Easing 2, 3.1). */
+function steps(count: number, position: StepPosition, t: number): number {
+  let step = Math.floor(t * count);
+  if (position === 'jump-start' || position === 'jump-both') step += 1;
+  const jumps =
+    position === 'jump-both'
+      ? count + 1
+      : position === 'jump-none'
+        ? count - 1
+        : count;
+  if (t >= 0 && step < 0) step = 0;
+  if (t <= 1 && step > jumps) step = jumps;
+  return step / jumps;
+}
+
+/** A `linear()`'s output at `t`: on the line between the points around it,
+ *  the last of several at one input from that input on. */
+function pointsAt(
+  points: readonly { input: number; output: number }[],
+  t: number,
+): number {
+  if (t <= points[0].input) return points[0].output;
+  for (let i = points.length - 1; i >= 0; i -= 1) {
+    const a = points[i];
+    if (a.input > t) continue;
+    const b = points[i + 1];
+    if (!b) return a.output;
+    if (b.input === a.input) return b.output;
+    return (
+      a.output + ((b.output - a.output) * (t - a.input)) / (b.input - a.input)
+    );
+  }
+  return points[points.length - 1].output;
+}
+
+/** One animation's timing, from its longhands. */
+export interface Timing {
+  /** Milliseconds an iteration takes. */
+  duration: number;
+  /** Milliseconds before the first starts; less than none starts it part
+   *  of the way through. */
+  delay: number;
+  /** How many iterations: `Infinity` for ever, and a fraction ends part of
+   *  the way through one. */
+  iterations: number;
+  direction: AnimationDirection;
+  fill: FillMode;
+}
+
+/** The timing of the animation at `index` in an element's lists, a shorter
+ *  list repeating as it does (CSS Animations 1, 4). */
+export function timingAt(animations: Animations, index: number): Timing {
+  const at = <T>(list: readonly T[]): T => list[index % list.length];
+  return {
+    duration: at(animations.durations),
+    delay: at(animations.delays),
+    iterations: at(animations.iterations),
+    direction: at(animations.directions),
+    fill: at(animations.fillModes),
+  };
+}
+
+/** Whether an animation has yet to start, is under way, or is over. */
+export type Phase = 'before' | 'active' | 'after';
+
+/**
+ * How far through the frames of its current iteration an animation is,
+ * `time` milliseconds after it started — 0 at its `from`, 1 at its `to` —
+ * and its phase (Web Animations 1, 4.8 to 4.10). The progress is null
+ * where the animation has no effect: before its delay unless it fills
+ * backwards, and after its end unless it fills forwards. An iteration that
+ * ends where the next begins is at 1, so an animation that fills forwards
+ * holds its `to` and not its `from`; and one that alternates plays its odd
+ * iterations backwards.
+ */
+export function progressAt(
+  timing: Timing,
+  time: number,
+): { progress: number | null; phase: Phase } {
+  const { duration, delay, iterations, direction, fill } = timing;
+  const active = duration === 0 || iterations === 0 ? 0 : duration * iterations;
+  const end = Math.max(delay + active, 0);
+  const beforeActive = Math.max(Math.min(delay, end), 0);
+  const activeAfter = Math.max(Math.min(delay + active, end), 0);
+  const phase: Phase =
+    time < beforeActive ? 'before' : time >= activeAfter ? 'after' : 'active';
+  let activeTime: number | null;
+  if (phase === 'before') {
+    activeTime =
+      fill === 'backwards' || fill === 'both'
+        ? Math.max(time - delay, 0)
+        : null;
+  } else if (phase === 'active') {
+    activeTime = time - delay;
+  } else {
+    activeTime =
+      fill === 'forwards' || fill === 'both'
+        ? Math.max(Math.min(time - delay, active), 0)
+        : null;
+  }
+  if (activeTime === null) return { progress: null, phase };
+  const overall =
+    duration === 0
+      ? phase === 'before'
+        ? 0
+        : iterations
+      : activeTime / duration;
+  let simple = overall === Infinity ? 0 : overall % 1;
+  if (
+    simple === 0 &&
+    phase !== 'before' &&
+    activeTime === active &&
+    iterations !== 0
+  ) {
+    simple = 1;
+  }
+  let iteration: number;
+  if (phase === 'after' && iterations === Infinity) iteration = Infinity;
+  else if (simple === 1) iteration = Math.floor(overall) - 1;
+  else iteration = Math.floor(overall);
+  let forwards = direction === 'normal' || direction === 'alternate';
+  if (direction === 'alternate' || direction === 'alternate-reverse') {
+    const turn = direction === 'alternate-reverse' ? iteration + 1 : iteration;
+    forwards = turn === Infinity || turn % 2 === 0;
+  }
+  return { progress: forwards ? simple : 1 - simple, phase };
+}
+
+/** One frame of a property's: where it is, the declaration it gives the
+ *  property, the frame that is in — whose other declarations it is
+ *  computed among — and the easing to the next frame of the property's. */
+export interface TrackFrame {
+  offset: number;
+  declaration: Declaration;
+  frame: Keyframe;
+  easing: Easing | null;
+}
+
+/**
+ * A `@keyframes` by property: for each property its frames set, those
+ * frames in order of offset, one at an offset — a later frame's
+ * declaration over an earlier one's there (CSS Animations 1, 3). Kept by
+ * the rule.
+ */
+export function tracksOf(
+  rule: KeyframesRule,
+): ReadonlyMap<string, readonly TrackFrame[]> {
+  const known = TRACKS.get(rule);
+  if (known) return known;
+  const byProp = new Map<string, Map<number, TrackFrame>>();
+  for (const frame of rule.frames) {
+    const easing = frame.easing === null ? null : parseEasing(frame.easing);
+    for (const offset of frame.offsets) {
+      for (const declaration of frame.declarations) {
+        let at = byProp.get(declaration.prop);
+        if (!at) byProp.set(declaration.prop, (at = new Map()));
+        at.set(offset, { offset, declaration, frame, easing });
+      }
+    }
+  }
+  const tracks = new Map<string, readonly TrackFrame[]>();
+  for (const [prop, at] of byProp) {
+    tracks.set(
+      prop,
+      [...at.values()].sort((a, b) => a.offset - b.offset),
+    );
+  }
+  TRACKS.set(rule, tracks);
+  return tracks;
+}
+
+const TRACKS = new WeakMap<
+  KeyframesRule,
+  ReadonlyMap<string, readonly TrackFrame[]>
+>();
+
+/**
+ * Where a property is between its frames at an iteration's progress: the
+ * frame before and the frame after — null for the element's own value,
+ * where no frame is at 0 or at 1 and one is made of it (CSS Animations 1,
+ * 3) — and how far between them it is, eased by the earlier frame's
+ * easing, or the animation's.
+ */
+export function spanAt(
+  frames: readonly TrackFrame[],
+  progress: number,
+  easing: Easing,
+): { from: TrackFrame | null; to: TrackFrame | null; q: number } {
+  const points: { offset: number; frame: TrackFrame | null }[] = [];
+  if (frames[0].offset > 0) points.push({ offset: 0, frame: null });
+  for (const frame of frames) points.push({ offset: frame.offset, frame });
+  if (frames[frames.length - 1].offset < 1) {
+    points.push({ offset: 1, frame: null });
+  }
+  let at = 0;
+  for (let i = 1; i < points.length - 1; i += 1) {
+    if (points[i].offset <= progress) at = i;
+  }
+  const a = points[at];
+  const b = points[at + 1];
+  const width = b.offset - a.offset;
+  const local = width > 0 ? (progress - a.offset) / width : 1;
+  const t = local < 0 ? 0 : local > 1 ? 1 : local;
+  return { from: a.frame, to: b.frame, q: ease(a.frame?.easing ?? easing, t) };
+}

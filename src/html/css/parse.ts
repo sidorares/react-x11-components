@@ -27,6 +27,10 @@ export interface Declaration {
   custom?: true;
   /** The value has a `var()` to replace before it is read. */
   vars?: true;
+  /** The computed fields the declaration sets, in place of reading its
+   *  value: what an animation comes to between two frames, which no value
+   *  written in CSS need be (`Cascade._animatedDeclarations`). */
+  computed?: Readonly<Record<string, unknown>>;
 }
 
 export interface StyleRule {
