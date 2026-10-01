@@ -613,6 +613,8 @@ metric(
       symbol('j', '<use href="#inner"/>') +
       symbol('k', sq('fill="#00aa00"') + sq('class="hd" fill="#ff0000"')) +
       symbol('l', sq()) +
+      symbol('o', sq('fill="#ff0000"'), 'class="dn"') +
+      symbol('p', sq('fill="#ff0000"'), 'class="vh"') +
       '</svg>';
     const rows: [string, string, string][] = [
       [use('a'), '#00aa00', 'a rule that names the symbol above it'],
@@ -635,6 +637,8 @@ metric(
       [use('j'), '#00aa00', 'a <use> in the copy, and its copy'],
       [use('k'), '#00aa00', 'display: none in the copy'],
       [use('l'), '#000000', 'and no rule'],
+      [use('o'), '#ffffff', 'a symbol a rule gives display: none'],
+      [use('p'), '#ffffff', 'and one it hides'],
       // one of the drawing's own: its copy is not where it stands
       [
         '<svg class="x" width="10" height="10"><defs>' +
@@ -657,7 +661,8 @@ metric(
         '.host .ho{fill:#ff0000} #d{fill:#00aa00} .k rect{fill:#00aa00}' +
         '.sprite{--c:#ff0000} .hv{--c:#00aa00} .v{fill:var(--c)}' +
         '.cc{fill:currentColor} symbol:first-child .fc{fill:#00aa00}' +
-        '.in{fill:#00aa00} .hd{display:none}' +
+        '.in{fill:#00aa00} .hd{display:none} .dn{display:none}' +
+        '.vh{visibility:hidden}' +
         '.x rect{fill:#ff0000} .y use{fill:#00aa00}</style>' +
         sprite +
         rows.map(([markup]) => markup).join(''),

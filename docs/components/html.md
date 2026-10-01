@@ -982,7 +982,9 @@ the copy inherits is the `<use>`'s: its `fill` and `stroke`, the `color` a
 `currentColor` is, its custom properties — and so what a hover changes of
 it, `a:hover use { fill: red }` or a link's `color`. A copy of one of the
 drawing's own elements is styled the same way, and so may be drawn
-otherwise than the element where it stands.
+otherwise than the element where it stands. A symbol a rule gives
+`display: none` is still found by a `<use>`, which draws nothing of it, as
+Chrome has it.
 
 An SVG root's `width` and `height` are CSS lengths, a percentage one too;
 its intrinsic size is what of them is absolute, and its ratio comes from them or from its `viewBox`,
