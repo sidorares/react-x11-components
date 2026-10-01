@@ -1867,6 +1867,61 @@ test('an item across a column is no narrower than its content at its narrowest',
   assert.deepStrictEqual(at('e'), [100, 50], 'fitted to the column');
 });
 
+test('an item a column that wraps stretches across its line is as tall as the line made it, whatever its margins', async () => {
+  // Stretching an item across its line does not change its size down it
+  // (CSS Flexbox 9.4, step 11). Yoga lays each such item out again as it
+  // aligns the lines of a column that wraps, at its height plus its side
+  // margins less its top and bottom ones: `margin: 0 5px` was 28 tall
+  // where Chrome's is 18, `margin: 4px 0 2px` on two lines 12, and a
+  // `flex-grow` item 10 taller than the room it grew into, on a line as
+  // wide as the column or wider. The item after each was where the right
+  // height puts it, and the column's height was the wrong one's.
+  const block = '<i style="display:block;height:18px"></i>';
+  const column = (style: string, items: string) =>
+    '<div style="display:flex;flex-direction:column;flex-wrap:wrap;' +
+    `width:300px;${style}">${items}</div>`;
+  const item = (id: string, style: string) =>
+    `<div id="${id}" style="${style}">${block}</div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      column(
+        '',
+        item('a', 'margin:0 5px') +
+          item('b', 'margin:4px 5px 2px') +
+          item('c', 'margin:0 9px;padding:3px;min-height:30px'),
+      ) +
+      // two lines, and nothing to hold an item to its content
+      column(
+        'height:60px',
+        item('d', 'margin:4px 0 2px;min-height:0') +
+          item('e', 'margin:4px 0 2px;min-height:0') +
+          item('f', 'margin:4px 0 2px;min-height:0'),
+      ) +
+      column(
+        'height:100px',
+        item('g', 'margin:0 5px;flex-grow:1') + item('h', 'margin:4px 5px 2px'),
+      ) +
+      // on a line wider than the column, as wide as its widest item
+      column(
+        'width:50px',
+        '<div><div style="width:201px;height:13px"></div></div>' +
+          item('i', 'margin:0 5px'),
+      ),
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).y, boxOf(el, id).height];
+  assert.deepStrictEqual(at('a'), [0, 18], 'side margins');
+  assert.deepStrictEqual(at('b'), [22, 18], 'side, top and bottom margins');
+  assert.deepStrictEqual(at('c'), [42, 36], 'at its minimum, padded');
+  assert.deepStrictEqual(at('d'), [82, 18], 'top and bottom margins, wrapped');
+  assert.deepStrictEqual(at('e'), [106, 18]);
+  assert.deepStrictEqual(at('f'), [82, 18], 'on the second line');
+  assert.deepStrictEqual(at('g'), [138, 76], 'grown into the room');
+  assert.deepStrictEqual(at('h'), [218, 18]);
+  assert.deepStrictEqual(at('i'), [251, 18], 'on a line wider than the box');
+  assert.strictEqual(boxOf(el, 'i').width, 191);
+});
+
 test("a replaced item across a column is its natural width, and the column's where it has none", async () => {
   // its content at its narrowest is its natural width; one with only a
   // ratio has none, and is fitted to the column (css-flexbox
