@@ -424,11 +424,28 @@ test('a document of the scheme the palette is not is drawn on that scheme’s ca
   assert.deepStrictEqual(light.canvas, []);
   assert.notStrictEqual(light.text, both.text, 'the light palette’s text');
   // and a dark page under it is a browser's dark
-  assert.deepStrictEqual(await show(page('dark'), 'light'), {
-    canvas: ['#121212'],
-    text: '#ffffff',
-    link: '#9e9eff',
-  });
+  const DARK_PAGE = { canvas: ['#121212'], text: '#ffffff', link: '#9e9eff' };
+  assert.deepStrictEqual(await show(page('dark'), 'light'), DARK_PAGE);
+  // a `<meta name="color-scheme">` says it as well, where no rule sets the
+  // root's (HTML 4.2.5.4), in a fragment and in a whole document
+  const meta = (content: string, more = '') =>
+    `<meta name="color-scheme" content="${content}">` +
+    `<style>body{margin:0}${more}</style>` +
+    '<p id="p">x <a id="a" href="#">y</a></p>';
+  assert.deepStrictEqual(await show(meta('dark'), 'light'), DARK_PAGE);
+  assert.deepStrictEqual(
+    await show(
+      '<!doctype html><html><head><meta name="color-scheme" ' +
+        'content="only dark"><style>body{margin:0}</style></head><body>' +
+        '<p id="p">x <a id="a" href="#">y</a></p></body></html>',
+      'light',
+    ),
+    DARK_PAGE,
+  );
+  // a rule over it, and a content that is no scheme
+  const ruled = await show(meta('dark', ':root{color-scheme:light}'), 'light');
+  assert.deepStrictEqual(ruled.canvas, []);
+  assert.deepStrictEqual((await show(meta('only'), 'light')).canvas, []);
   // the page's own colours are over the scheme's: its background over
   // the canvas, its text where it sets one
   assert.deepStrictEqual(
