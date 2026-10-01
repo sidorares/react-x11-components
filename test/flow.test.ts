@@ -76,6 +76,7 @@ import {
 } from '../src/flow/paths.js';
 import { flowClock } from '../src/flow/node.js';
 import { FRAME_MS, holdClock } from './held-clock.js';
+import type { HeldClock } from './held-clock.js';
 
 const h = React.createElement;
 
@@ -4058,24 +4059,26 @@ test('a drag step re-renders the card that moved and no other', async () => {
 });
 
 /**
- * Real time until `ready()` holds, or `ms` has gone by. A dash tick waits
- * out twice what the pane's frames have been costing (`_tickCost`), so a
- * slow machine — a CI runner painting through the in-process server — ticks
- * later than a fast one, and a fixed wait for "two ticks" is a flake there:
- * it failed on Node 20 and 24 runners that passed on Node 22.
+ * Frames of the pane's clock, held from the mount, until the dashes have
+ * ticked twice by `ticks()`. A tick waits out twice what the pane's frames
+ * have been costing (`_tickCost`), and a paint works that out from the
+ * server's answer to the frame before, which is the wall's: so it is held
+ * too, at nothing, and the two ticks come on the timer's first two rounds,
+ * the eighth frame, whatever the machine's load. On the real clock this
+ * waited three seconds of the wall for them, and a machine at a load of
+ * 140 fit fewer in. The bound is for a tick that never comes.
  */
-async function until(ready: () => boolean, ms = 3000): Promise<void> {
-  const end = Date.now() + ms;
-  while (!ready() && Date.now() < end) {
-    await new Promise((r) => setTimeout(r, 20));
-  }
+async function twoTicks(clock: HeldClock, ticks: () => number): Promise<void> {
+  Object.defineProperty(pane(), '_tickCost', { get: () => 0, set() {} });
+  for (let frame = 0; ticks() < 2 && frame < 100; frame++) await clock.frame();
 }
 
-test('a dash tick repaints neither the minimap nor the controls', async () => {
+test('a dash tick repaints neither the minimap nor the controls', async (t) => {
   // The panels draw no dashes. Asked to repaint on every change to the
   // pane, dash ticks included, an idle pane with one animated edge kept
   // painting both canvases 17 times a second — and a tick landing in a pan
   // frame put a claim inside the band the pan was about to move.
+  const clock = holdClock(t, flowClock);
   await mount({
     nodes: [...threeBodies().slice(0, 2)],
     edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
@@ -4101,16 +4104,17 @@ test('a dash tick repaints neither the minimap nor the controls', async () => {
     own(...a);
   };
   reasons.length = 0;
-  await until(() => ticks.length >= 2);
+  await twoTicks(clock, () => ticks.length);
   assert.ok(ticks.length >= 2, 'the dash moved');
   assert.deepStrictEqual(reasons, [], 'and the panels were left alone');
 });
 
-test('a dash tick claims only what the pane shows of its edges', async () => {
+test('a dash tick claims only what the pane shows of its edges', async (t) => {
   // The box a tick repaints is the drawn edges', and an animated edge on
   // its way out of the pane takes that box past the pane's sides — here
   // two thousand pixels past. Claimed whole, a tick repainted everything
   // the window has beside the graph, sixteen times a second.
+  const clock = holdClock(t, flowClock);
   await mount({
     nodes: [
       { id: 'a', position: { x: 100, y: 100 }, data: { label: 'a' } },
@@ -4129,7 +4133,7 @@ test('a dash tick claims only what the pane shows of its edges', async () => {
     if (a[2] === 'animation') claims.push(a[1] as (typeof claims)[number]);
     own(...a);
   };
-  await until(() => claims.length >= 2);
+  await twoTicks(clock, () => claims.length);
   assert.ok(claims.length >= 2, 'the dash moved');
   const box = node.contentBox();
   for (const claim of claims) {
