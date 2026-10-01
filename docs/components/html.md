@@ -843,8 +843,12 @@ whatever draws it — so the invisible `<select>` a page lays over a picker
 it draws, `position: absolute; inset: 0`, covers all of it and takes the
 press anywhere on it; an image keeps its own size (CSS 2.1 10.3.8), and a
 table is as wide as its columns and as tall as its rows, which its `auto`
-margins place, as Chrome has it. A box
-is painted with each edge on the pixel it falls nearest, as browsers snap
+margins place, as Chrome has it. An absolute box with no offsets that
+was inline-level before it was positioned — a `<span>`, or a `<div>` the
+page made `display: inline` — and stands among blocks is where it would
+have been on a line of its own: beside the floats there, at the point
+`text-align` puts it, its right edge there in a right-to-left block. A
+box is painted with each edge on the pixel it falls nearest, as browsers snap
 one, so a rule `1pt` wide is a pixel and boxes that meet at a fraction of a
 pixel share the column between them. A corner's radius is a length or a
 percentage — of the box's width across and its height down, so `50%` is a

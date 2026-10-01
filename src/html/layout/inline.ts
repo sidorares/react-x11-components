@@ -5333,6 +5333,22 @@ function alignShift(
   }
 }
 
+/**
+ * Where an empty line in `style`'s block sets the point it holds, between
+ * `left` and `right`: an absolutely positioned box that was inline-level
+ * before it was made a block has its static position there, as though it
+ * were all its line held (CSS 2.1 10.3.7, as browsers place it). Such a
+ * line is its block's last, which `text-align-last` sets.
+ */
+export function emptyLinePoint(
+  style: ComputedStyle,
+  left: number,
+  right: number,
+): number {
+  const shift = alignShift(lastAlignOf(style), style.direction === 'rtl');
+  return left + (right - left) * shift;
+}
+
 /** How far a line of a layout moves to where it belongs in its box. */
 type LinePlacer = (line: { x: number; width: number }) => number;
 

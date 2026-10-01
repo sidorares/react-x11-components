@@ -112,6 +112,42 @@ metric(
 );
 
 metric(
+  'an absolute box that was inline-level is on a line of its own among blocks',
+  async () => {
+    // Among block siblings, a box that was `display: inline` before it was
+    // positioned would have been in a line of its own: beside the floats
+    // there, where the line's alignment and direction put it (CSS 2.1
+    // 10.3.7, as browsers place it). It went at the block's start, under
+    // the float, as a block-level one does.
+    const row = (dir: string, align: string, side: string, id: string) =>
+      `<div id="${id}c" style="position:relative;width:100px;direction:${dir};` +
+      `text-align:${align}"><div style="height:10px"></div>` +
+      `<div style="float:${side};width:40px;height:10px"></div>` +
+      `<div id="${id}" style="display:inline;position:absolute;` +
+      'width:10px;height:10px"></div></div>';
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        row('ltr', 'left', 'left', 'a') +
+        row('ltr', 'center', 'left', 'b') +
+        row('rtl', 'start', 'right', 'c') +
+        row('ltr', 'right', 'right', 'd') +
+        '<div id="ec" style="position:relative;width:100px"><div style="float:left;' +
+        'width:40px;height:10px"></div><div id="e" style="position:absolute;' +
+        'width:10px;height:10px"></div></div>',
+    );
+    const el = view(node);
+    const x = (id: string) => boxOf(el, id).x - boxOf(el, `${id}c`).x;
+    assert.strictEqual(x('a'), 40, 'after a left float');
+    assert.strictEqual(x('b'), 70, 'from the middle of the room');
+    // right to left, the box's right edge is at the point
+    assert.strictEqual(x('c'), 50, 'before a right float, from the right');
+    assert.strictEqual(x('d'), 60, 'the end of the room');
+    assert.strictEqual(x('e'), 0, 'a block-level one at the start');
+    assert.strictEqual(boxOf(el, 'a').y - boxOf(el, 'ac').y, 10, 'under');
+  },
+);
+
+metric(
   "an inline box's border before an absolute box is its line's content",
   async () => {
     // CSS 2.1 9.4.2: a line with nothing on it but white space is no line,
