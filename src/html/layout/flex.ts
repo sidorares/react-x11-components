@@ -252,6 +252,11 @@ export function layoutFlex(
   const direction =
     box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR;
   const row = box.style.flexDirection.startsWith('row');
+  // Yoga aligns the lines of a box that wraps, or aligns by baselines, in
+  // one pass of its own, which drops a margin (`lineMarginFix`)
+  let baselines =
+    box.style.alignItems === 'baseline' ||
+    items.some(({ box: child }) => child.style.alignSelf === 'baseline');
   // An `auto` margin across a row that wraps takes the room its line has
   // past the item (CSS Flexbox 8.1, 9.6), where Yoga's pass that sets the
   // items across their lines reads an item's alignment and not its
@@ -263,6 +268,36 @@ export function layoutFlex(
     for (const { box: child, node } of items) {
       const aligned = autoAcross(child.style, reverse);
       if (aligned) node.setAlignSelf(ALIGN[aligned]);
+    }
+  } else if (row && baselines) {
+    // Yoga takes a row that does not wrap through that pass as well, and
+    // sets its line there as tall as its items and not the row, and an
+    // item with an `auto` margin by its baseline: at the top, where the
+    // margin puts it at the bottom, and every item beside it as far down
+    // as its height reached. That item takes no part in aligning the line
+    // by baselines (9.4 step 8), and Yoga is told the alignment its
+    // margins come to. With fewer than two items left that do take part,
+    // they come to their line's start, which Yoga is told as well: then
+    // nothing in the row is aligned by its baseline, Yoga takes no such
+    // pass, and the line is the row. Two or more are lined up by their
+    // baselines once those are known (`baselineLines`).
+    const auto = items.filter(({ box: child }) =>
+      autoAcross(child.style, false),
+    );
+    if (auto.length > 0) {
+      for (const { box: child, node } of auto) {
+        node.setAlignSelf(ALIGN[autoAcross(child.style, false)!]);
+      }
+      const aligned = items.filter(({ box: child }) =>
+        byBaseline(box.style, child.style),
+      );
+      if (aligned.length < 2) {
+        for (const { node } of aligned) node.setAlignSelf(Y.ALIGN_FLEX_START);
+        if (box.style.alignItems === 'baseline') {
+          root.setAlignItems(Y.ALIGN_FLEX_START);
+        }
+        baselines = false;
+      }
     }
   }
   // frozen at its least size on the one line of a box that does not
@@ -409,11 +444,6 @@ export function layoutFlex(
     }
   }
 
-  // Yoga aligns the lines of a box that wraps, or aligns by baselines, in
-  // one pass of its own, which drops a margin (`lineMarginFix`)
-  const baselines =
-    box.style.alignItems === 'baseline' ||
-    items.some(({ box: child }) => child.style.alignSelf === 'baseline');
   let bottom = placeItems(
     box,
     ctx,
@@ -2858,20 +2888,24 @@ function baselineLines<T extends { box: Box }>(
       line = [];
     }
     last = box.x;
-    const own = box.style;
-    const aligned = own.alignSelf === AUTO ? style.alignItems : own.alignSelf;
-    // an `auto` margin across the line takes it over alignment
-    if (
-      aligned === 'baseline' &&
-      own.marginTop !== AUTO &&
-      own.marginBottom !== AUTO
-    ) {
-      line.push(item);
-    }
+    if (byBaseline(style, box.style)) line.push(item);
   }
   close();
   // one alone on its line is at its start already
   return several ? out : null;
+}
+
+/** Whether an item takes part in aligning its line by baselines (CSS
+ *  Flexbox 8.3, 9.4 step 8): aligned by its baseline, with no `auto`
+ *  margin across the line, which takes it over its alignment. */
+function byBaseline(container: ComputedStyle, item: ComputedStyle): boolean {
+  const aligned =
+    item.alignSelf === AUTO ? container.alignItems : item.alignSelf;
+  return (
+    aligned === 'baseline' &&
+    item.marginTop !== AUTO &&
+    item.marginBottom !== AUTO
+  );
 }
 
 /**
@@ -2999,7 +3033,8 @@ function autoAcross(
  * top one; and one centred, half the difference. A column's, whose cross
  * axis runs right to left, or that wraps in reverse, is left as Yoga has
  * it, and so is an item an `auto` margin aligns in a row that does not
- * wrap.
+ * wrap: where Yoga still takes that pass for such a row, its items are
+ * laid out again without it, aligned by their baselines (`layoutFlex`).
  */
 function lineMarginFix(
   container: ComputedStyle,
