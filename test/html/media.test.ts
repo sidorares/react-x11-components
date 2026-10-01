@@ -461,6 +461,50 @@ test('a document of the scheme the palette is not is drawn on that scheme’s ca
   );
 });
 
+test("a system colour is the palette's in its scheme, and Chrome's in the other", async () => {
+  // CSS Color 4, 6.2: `Canvas`, `CanvasText`, `ButtonBorder` and the rest
+  // name the platform's colours, and the palette is this renderer's
+  // platform. The deprecated ones are the same as one of them (6.3), and
+  // a name a system colour has is no colour where a property takes none.
+  const source =
+    '<style>body{margin:0}p{margin:0}' +
+    '#a,#d{background-color:Canvas;color:CanvasText;' +
+    'border:1px solid ButtonBorder}' +
+    '#b{background-color:Window;color:WindowText;' +
+    'border:1px solid ThreeDShadow}' +
+    '.dark{color-scheme:only dark}#e{font-family:Mark, serif}</style>' +
+    '<p id="a">a</p><p id="b">b</p>' +
+    '<div class="dark"><p id="d">d</p></div><p id="e">e</p>';
+  await renderX11(
+    h(
+      'window',
+      { width: 340, height: 200 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { colorScheme: 'light' },
+        h(
+          'box',
+          { style: { width: 300, flexDirection: 'column' } },
+          h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        ),
+      ),
+    ),
+    FONTS ? { fonts: FONTS, wrap: false } : { backend: 'mock', wrap: false },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+  const look = (id: string) => {
+    const s = style(id);
+    return [s.backgroundColor, s.color, s.borderTopColor];
+  };
+  // the light palette's ground, ink and border
+  assert.deepStrictEqual(look('a'), ['white', '#2d3436', '#b2bec3']);
+  assert.deepStrictEqual(look('b'), look('a'));
+  assert.deepStrictEqual(look('d'), ['#121212', '#ffffff', '#6b6b6b']);
+  assert.match(style('e').fontFamily, /Mark/);
+});
+
 test("a media range is a width's bounds", () => {
   // Media Queries 4: Tailwind 4 writes its breakpoints so
   assert.deepStrictEqual(parseMediaQuery('(width >= 48rem)'), [{ min: 768 }]);

@@ -13,7 +13,7 @@
 // (`svg.ts`). A `ComputedStyle` per `<path>` would be a few hundred
 // properties for the dozen a shape has, on a page of hundreds of icons.
 import type { Element } from 'domhandler';
-import { LIGHT_DARK, lightDark } from './color.js';
+import { LIGHT_DARK, SYSTEM_COLOR, lightDark, systemColors } from './color.js';
 import { inkColor, parseAlpha, parseColor, parseLength } from './values.js';
 import type { UnitContext } from './values.js';
 
@@ -171,6 +171,9 @@ const LINE_JOINS: Record<string, string> = {
   arcs: 'miter',
 };
 
+/** The properties of a shape that a colour is written in. */
+const SHAPE_COLORS = new Set(['fill', 'stroke', 'color', 'stop-color']);
+
 /**
  * One declaration's value as a drawing reads it, or null for a value the
  * property does not take, which leaves the declaration out of the cascade
@@ -192,6 +195,9 @@ export function shapeValue(
   }
   if (wide === 'unset' || wide === 'revert' || wide === 'revert-layer') {
     return PROPS[prop] ? 'inherit' : INITIAL[prop];
+  }
+  if (SHAPE_COLORS.has(prop) && SYSTEM_COLOR.test(value)) {
+    value = systemColors(value, ctx.units.systemColors);
   }
   if (LIGHT_DARK.test(value)) {
     const picked = lightDark(value, ctx.scheme);

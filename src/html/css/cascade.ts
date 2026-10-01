@@ -22,7 +22,7 @@ import { Element as DomElement, isTag } from 'domhandler';
 import type { Element } from 'domhandler';
 
 import { attr, tagOf } from '../dom.js';
-import { usedColorScheme } from './color.js';
+import { systemColorTable, usedColorScheme } from './color.js';
 import {
   asciiLower,
   escapeEnd,
@@ -1135,6 +1135,10 @@ export class Cascade {
    *  as it takes a presentational attribute: under any rule that sets its
    *  `color-scheme`. Set by the box builder from the document. */
   pageColorScheme: string | null = null;
+  /** Each system colour as the `light-dark()` it is: the palette's where
+   *  the element's scheme is the palette's, and Chrome's in an SVG image,
+   *  which has none. */
+  private _systemColors: Map<string, string>;
 
   constructor(
     sheets: Stylesheet[],
@@ -1174,6 +1178,7 @@ export class Cascade {
       ? (list: string) => families.map(list)
       : undefined;
     this.look = look;
+    this._systemColors = systemColorTable(documentElement ? null : look);
     this.initial = initialStyle(look, scale);
     this.viewportWidth = viewportWidth;
     this.viewportHeight = viewportHeight;
@@ -1873,6 +1878,7 @@ export class Cascade {
       lh: () => this._lineHeightOf(parentStyle),
       rlh: () => this._lineHeightOf(rootStyle),
       focusRing: this.look.focusRing,
+      systemColors: this._systemColors,
     };
     // The family, the weight and the slant go with the size: together they
     // pick the face an `ex`, a `ch` or an `lh` in any declaration is
@@ -2227,6 +2233,7 @@ export class Cascade {
           vh: this.viewportHeight,
           scale: this.scale,
           initial: this.initial,
+          systemColors: this._systemColors,
         },
       };
       let own: Record<string, string> | null = null;

@@ -129,6 +129,9 @@ export interface UnitContext {
   initial?: ComputedStyle;
   /** The palette's focus ring, which `-webkit-focus-ring-color` is. */
   focusRing?: string;
+  /** Each system colour as the `light-dark()` it is, the palette's in the
+   *  palette's scheme (`systemColorTable`); Chrome's where it is missing. */
+  systemColors?: Map<string, string>;
 }
 
 /** A CSS number (CSS Syntax 3 4.3.12): a sign, digits with at most one

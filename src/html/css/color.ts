@@ -1050,6 +1050,139 @@ export const SCHEME_COLORS = {
   dark: { canvas: '#121212', text: '#ffffff', link: '#9e9eff' },
 } as const;
 
+// --- system colours (CSS Color 4, 6.2) -------------------------------------
+
+/**
+ * The system colours, in light and in dark, as Chrome has them where the
+ * platform says nothing (Blink's `LayoutTheme::DefaultSystemColor`): the
+ * colours of a browser's own page and controls, which a page names to
+ * look like one and which follow its colour scheme.
+ */
+const SYSTEM_COLORS: Record<string, readonly [string, string]> = {
+  accentcolor: ['#0075ff', '#0075ff'],
+  accentcolortext: ['#ffffff', '#ffffff'],
+  activetext: ['#ff0000', '#ff0000'],
+  buttonborder: ['#767676', '#6b6b6b'],
+  buttonface: ['#efefef', '#6b6b6b'],
+  buttontext: ['#000000', '#ffffff'],
+  canvas: ['#ffffff', '#121212'],
+  canvastext: ['#000000', '#ffffff'],
+  field: ['#ffffff', '#3b3b3b'],
+  fieldtext: ['#000000', '#ffffff'],
+  graytext: ['#808080', '#808080'],
+  highlight: ['#b3d7ff', '#99c8ff'],
+  highlighttext: ['#000000', '#000000'],
+  linktext: ['#0000ee', '#9e9eff'],
+  mark: ['#ffff00', '#ffff00'],
+  marktext: ['#000000', '#000000'],
+  selecteditem: ['#b3d7ff', '#99c8ff'],
+  selecteditemtext: ['#000000', '#3b3b3b'],
+  visitedtext: ['#551a8b', '#d0adf0'],
+};
+
+/** The deprecated system colours, each the same as one of the rest
+ *  (CSS Color 4, 6.3). */
+const DEPRECATED_COLORS: Record<string, string> = {
+  activeborder: 'buttonborder',
+  inactiveborder: 'buttonborder',
+  threeddarkshadow: 'buttonborder',
+  threedhighlight: 'buttonborder',
+  threedlightshadow: 'buttonborder',
+  threedshadow: 'buttonborder',
+  windowframe: 'buttonborder',
+  buttonhighlight: 'buttonface',
+  buttonshadow: 'buttonface',
+  threedface: 'buttonface',
+  activecaption: 'canvas',
+  appworkspace: 'canvas',
+  background: 'canvas',
+  inactivecaption: 'canvas',
+  infobackground: 'canvas',
+  menu: 'canvas',
+  scrollbar: 'canvas',
+  window: 'canvas',
+  captiontext: 'canvastext',
+  infotext: 'canvastext',
+  menutext: 'canvastext',
+  windowtext: 'canvastext',
+  inactivecaptiontext: 'graytext',
+};
+
+/** The palette's colours a system colour is, in the palette's scheme. */
+export interface PaletteColors {
+  color: string;
+  background: string;
+  linkColor: string;
+  surface: string;
+  borderColor: string;
+  mutedColor: string;
+  colorScheme: 'light' | 'dark';
+}
+
+/** Which of the palette's colours each system colour is: the window's
+ *  ground and ink, its links and accent, its controls'. */
+const FROM_PALETTE: Record<string, keyof PaletteColors> = {
+  accentcolor: 'linkColor',
+  buttonborder: 'borderColor',
+  buttonface: 'surface',
+  buttontext: 'color',
+  canvas: 'background',
+  canvastext: 'color',
+  field: 'background',
+  fieldtext: 'color',
+  graytext: 'mutedColor',
+  linktext: 'linkColor',
+};
+
+/**
+ * Each system colour's name, lower-cased, and the `light-dark()` it is.
+ * The palette is this renderer's platform, so in the palette's scheme the
+ * colours it has are its own: `Canvas` is the window's ground and
+ * `CanvasText` its text, as an unstyled document is drawn. In the other
+ * scheme, and in an SVG image, which has no palette, they are Chrome's.
+ */
+export function systemColorTable(
+  palette: PaletteColors | null,
+): Map<string, string> {
+  const table = new Map<string, string>();
+  const own = palette?.colorScheme === 'dark' ? 1 : 0;
+  const pairOf = (name: string): string => {
+    const pair = [...SYSTEM_COLORS[name]];
+    const token = palette && FROM_PALETTE[name];
+    if (token) pair[own] = palette[token] as string;
+    return `light-dark(${pair[0]}, ${pair[1]})`;
+  };
+  for (const name of Object.keys(SYSTEM_COLORS)) table.set(name, pairOf(name));
+  for (const [name, same] of Object.entries(DEPRECATED_COLORS)) {
+    table.set(name, table.get(same)!);
+  }
+  return table;
+}
+
+/** Chrome's own, for a cascade with no palette. */
+let CHROME_TABLE: Map<string, string> | null = null;
+
+/** Whether a value names a system colour: a word of its own, not a part
+ *  of a name, a path or a string. Written out, as a pattern built from the
+ *  tables would be a call at load. */
+export const SYSTEM_COLOR =
+  /(?<![\w.#/'"-])(?:inactivecaptiontext|threedlightshadow|selecteditemtext|threeddarkshadow|accentcolortext|threedhighlight|buttonhighlight|inactivecaption|inactiveborder|infobackground|highlighttext|activecaption|buttonborder|selecteditem|activeborder|threedshadow|buttonshadow|appworkspace|accentcolor|visitedtext|windowframe|captiontext|activetext|buttonface|buttontext|canvastext|threedface|background|windowtext|fieldtext|highlight|scrollbar|graytext|linktext|marktext|infotext|menutext|canvas|window|field|mark|menu)(?![\w.(/'"-])/i;
+const SYSTEM_COLOR_AT =
+  /(?<![\w.#/'"-])(?:inactivecaptiontext|threedlightshadow|selecteditemtext|threeddarkshadow|accentcolortext|threedhighlight|buttonhighlight|inactivecaption|inactiveborder|infobackground|highlighttext|activecaption|buttonborder|selecteditem|activeborder|threedshadow|buttonshadow|appworkspace|accentcolor|visitedtext|windowframe|captiontext|activetext|buttonface|buttontext|canvastext|threedface|background|windowtext|fieldtext|highlight|scrollbar|graytext|linktext|marktext|infotext|menutext|canvas|window|field|mark|menu)(?![\w.(/'"-])/gi;
+
+/** A value with each system colour in it replaced by the `light-dark()` it
+ *  is, which the element's scheme then picks a branch of. */
+export function systemColors(
+  value: string,
+  table: Map<string, string> | undefined,
+): string {
+  const colors = table ?? (CHROME_TABLE ??= systemColorTable(null));
+  return value.replace(
+    SYSTEM_COLOR_AT,
+    (word) => colors.get(word.toLowerCase()) ?? word,
+  );
+}
+
 const SCHEME_IDENT = /^-?(?:[a-z_]|--)[\w-]*$/;
 /** What a scheme's name cannot be: the keywords the grammar has, and the
  *  CSS-wide ones, which reach here only in a list. */
