@@ -505,14 +505,20 @@ An image is its natural width, and one with only a ratio, such as an SVG
 with only a `viewBox`, the column's. An item with something in it that
 takes a percentage of a height is fitted to the column, though: it is
 measured before the flex layout makes that height definite, where Chrome
-measures it at that height. In a column that wraps, a stretched item is as
-wide as its line, and the line is as wide as its widest item at that width
-(9.4, steps 7 and 8): past the box where an item's content at its narrowest
-is wider, starting at its right edge where the lines run right to left, as
-in Chrome, where Yoga, which lays the box out, held the line to the box's
-width. A line short of the box that `align-content` centres, ends or spaces
-out is the box's width still where an item on it is stretched, Yoga's
-reading and not the specification's. An item, and a grid's,
+measures it at that height. In a column that wraps, each line is as wide
+as its widest item, every item `fit-content` (9.4, steps 7 and 8), and is
+placed across the box by this engine, Yoga laying out only what goes down
+it: `align-content` centres, ends or spaces the lines out in what the box
+has past them, or stretches them to it, and a line wider than the box runs
+past both its sides where it is centred, or past its start where it is
+ended, starting at its right edge where the lines run right to left. A
+stretched item is as wide as its line, within its limits, and as tall as
+its content makes it at the width it had before it was stretched, as the
+specification has it where a column wraps (9.8) and as Chrome does: an
+item holding only a box of `width: 100%` and a ratio is none wide before it
+is stretched, so none tall, and the box runs out of it. An `auto` margin
+takes the room the line has past the item, and `align-self` sets it in its
+line. An item, and a grid's,
 is a formatting context of its own: the margins of what it holds stay
 inside it, and the one under its last block makes it that much taller. An
 `auto` margin takes

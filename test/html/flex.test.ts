@@ -1889,6 +1889,155 @@ test('a column that wraps keeps the height of an item it stretches', async () =>
   assert.deepStrictEqual(size('d'), [201, 5]);
 });
 
+test('a column that wraps sets its lines where align-content says, each as wide as its widest item', async () => {
+  // A line is as wide as its widest item, `fit-content` across the box
+  // (CSS Flexbox 9.4, steps 7 and 8), and `align-content` sets the lines
+  // in what the box has past them (9.6, step 16). Yoga stretched the
+  // items to the box wherever the column had room for all of them down
+  // it, so the line was the box and had no room to be centred or ended in.
+  const column = (id: string, style: string) =>
+    '<div style="display:flex;flex-direction:column;flex-wrap:wrap;' +
+    `width:300px;${style}"><div id="${id}a">` +
+    '<div style="width:150px;height:10px"></div></div>' +
+    `<div id="${id}b" style="height:5px"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      column('c', 'align-content:center') +
+      column('e', 'align-content:flex-end') +
+      column('a', 'align-content:space-around') +
+      column('v', 'align-content:space-evenly') +
+      column('s', 'align-content:space-between') +
+      column('l', 'align-content:flex-start;direction:rtl'),
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  assert.deepStrictEqual(at('ca'), [75, 150], 'centred');
+  assert.deepStrictEqual(at('cb'), [75, 150], 'stretched to its line');
+  assert.deepStrictEqual(at('ea'), [150, 150], 'at the end');
+  assert.deepStrictEqual(at('eb'), [150, 150]);
+  assert.deepStrictEqual(at('aa'), [75, 150], 'space around one line');
+  assert.deepStrictEqual(at('va'), [75, 150], 'space evenly');
+  assert.deepStrictEqual(at('sa'), [0, 150], 'space between one line');
+  assert.deepStrictEqual(at('la'), [150, 150], 'from the right, rtl');
+  assert.deepStrictEqual(at('lb'), [150, 150]);
+});
+
+test('a column that wraps is as wide as its items at their narrowest where they are wider, whatever align-content says', async () => {
+  // Each item is `fit-content` across the box, no narrower than its
+  // content at its narrowest (9.4, step 7). Where `align-content` does not
+  // stretch the lines, Yoga lays a stretched item out again as wide as its
+  // content at its widest. A line wider than the box is centred on it, or
+  // ended at its start; the spacing values set it at the start.
+  const words =
+    '<span style="display:inline-block;width:100px;height:10px"></span> ' +
+    '<span style="display:inline-block;width:60px;height:10px"></span>';
+  const column = (id: string, style: string) =>
+    '<div style="display:flex;flex-direction:column;flex-wrap:wrap;' +
+    `width:50px;${style}"><div id="${id}a">${words}</div>` +
+    `<div id="${id}b" style="height:5px"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      column('s', 'align-content:flex-start') +
+      column('c', 'align-content:center') +
+      column('e', 'align-content:flex-end') +
+      column('a', 'align-content:space-around') +
+      column('r', 'align-content:flex-start;flex-wrap:wrap-reverse'),
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  assert.deepStrictEqual(at('sa'), [0, 100], 'at its narrowest');
+  assert.deepStrictEqual(at('sb'), [0, 100], 'stretched to its line');
+  assert.deepStrictEqual(at('ca'), [-25, 100], 'centred past both sides');
+  assert.deepStrictEqual(at('ea'), [-50, 100], 'ended past the start');
+  assert.deepStrictEqual(at('aa'), [0, 100], 'no room to space');
+  assert.deepStrictEqual(at('ra'), [-50, 100], 'from the right, in reverse');
+});
+
+test('a column that wraps into lines spaces them, and keeps the sizes of the items it stretches', async () => {
+  // The room past the lines goes between them, or to each of them alike
+  // for `stretch` (9.4, step 9), and a stretched item is as wide as its
+  // line less its margins (step 11) and as tall as the column made it.
+  // Yoga added what `space-between` puts between two lines to the width of
+  // each stretched item, and laid each out again at its height less its
+  // top and bottom margins and plus its side ones.
+  const column = (prefix: string, style: string) =>
+    '<div style="display:flex;flex-direction:column;flex-wrap:wrap;' +
+    `width:300px;height:40px;${style}">` +
+    `<div id="${prefix}a" style="margin:0 7px">` +
+    '<div style="width:150px;height:18px"></div></div>' +
+    `<div id="${prefix}b" style="height:18px"></div>` +
+    `<div id="${prefix}c" style="margin:3px 5px">` +
+    '<div style="width:30px;height:18px"></div></div></div>';
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      column('s', 'align-content:space-between') +
+      column('t', 'align-content:stretch;column-gap:10px'),
+  );
+  const el = view(node);
+  const box = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.width, b.height];
+  };
+  // lines 164 and 40 wide, the second at the end of the box
+  assert.deepStrictEqual(box('sa'), [7, 150, 18]);
+  assert.deepStrictEqual(box('sb'), [0, 164, 18]);
+  assert.deepStrictEqual(box('sc'), [265, 30, 18]);
+  // and 43 more each, 10 apart
+  assert.deepStrictEqual(box('ta'), [7, 193, 18]);
+  assert.deepStrictEqual(box('tb'), [0, 207, 18]);
+  assert.deepStrictEqual(box('tc'), [222, 73, 18]);
+});
+
+test('an item across a line of a column that wraps is where its margins and its alignment put it', async () => {
+  // An `auto` margin takes the room the line has past the item on its side
+  // (CSS Flexbox 8.1), a stretched item is held to its limits, and the
+  // rest are set as `align-self` says, in the line and not in the box: Yoga
+  // set an item at the line's start whatever its `auto` margins said.
+  const block = (width: number) =>
+    `<div style="width:${width}px;height:10px"></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;flex-direction:column;flex-wrap:wrap;' +
+      'width:300px;align-content:center">' +
+      `<div id="a" style="margin-left:auto">${block(40)}</div>` +
+      `<div id="b">${block(150)}</div>` +
+      `<div id="c" style="margin:0 auto">${block(20)}</div>` +
+      '<div id="d" style="max-width:80px;height:5px"></div>' +
+      '<div id="e" style="min-width:200px;height:5px"></div>' +
+      `<div id="f" style="align-self:flex-end">${block(30)}</div>` +
+      `<div id="g" style="align-self:center">${block(30)}</div></div>`,
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  // a line as wide as `e`'s minimum, centred
+  assert.deepStrictEqual(at('a'), [210, 40], "to the line's end");
+  assert.deepStrictEqual(at('b'), [50, 200], 'stretched');
+  assert.deepStrictEqual(at('c'), [140, 20], 'centred in the line');
+  assert.deepStrictEqual(at('d'), [50, 80], 'held to its maximum');
+  assert.deepStrictEqual(at('e'), [50, 200]);
+  assert.deepStrictEqual(at('f'), [220, 30], "at the line's end");
+  assert.deepStrictEqual(at('g'), [135, 30], 'centred in the line');
+});
+
+test('a column that wraps measures each item down it at its width before it is stretched', async () => {
+  // A stretched item is as wide as its line only where the column does not
+  // wrap (CSS Flexbox 9.8): in one that does, its height is its content's
+  // at its `fit-content` width, and stretched, its content runs past it.
+  // Yoga measured it at the box's width, as Chrome does not.
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="box" style="display:flex;flex-direction:column;' +
+      'flex-wrap:wrap;width:300px"><div style="height:18px"></div>' +
+      '<div id="a"><div id="r" style="width:100%;aspect-ratio:2"></div>' +
+      '</div></div>',
+  );
+  const el = view(node);
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('a'), [300, 0], 'none wide, so none tall');
+  assert.deepStrictEqual(size('r'), [300, 150], 'running past it');
+  assert.deepStrictEqual(size('box'), [300, 18]);
+});
+
 test('a flex item stretched across a column is as tall as its ratio makes it', async () => {
   // a replaced item was measured at the width it was given and answered
   // its natural height, along a column as it did along a row before
