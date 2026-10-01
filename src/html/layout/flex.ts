@@ -1938,6 +1938,10 @@ function betweenOf(
  *   200px; max-width: 110.992px` beside `200px` within `62.706px`, each
  *   with a `min-width`, in a row of 50 were 76.67 and 43.31, where 9.7
  *   shrinks both from 200 and has them at their minimums;
+ * - and with no limit at work, it weighs that share by the flex base size,
+ *   its border box's, where 9.7 weighs it by the inner flex base size, its
+ *   content box's (step 4c), so an item gives up more the more padding
+ *   and borders it has (`weighsPadding`);
  * - a limit that is more than the flex base size stops the item before
  *   any sharing out, and Yoga shares out from there: `flex: 1;
  *   min-width: 200px` beside a `flex: 1` in a row of 600 was 400 and
@@ -1950,9 +1954,10 @@ function betweenOf(
  * Which is why a line is looked at only where Yoga's answer shows one of
  * these could be at work (`unshared`), and else left as it is: a line
  * none of whose items is stopped, that has been shared out, whose items'
- * limits do not clamp their flex base sizes, and whose shrink factors come
- * to 1 or more is shared out by Yoga as by 9.7, but for the weight of an
- * item's padding in a shortfall, which 9.7 leaves out and Yoga does not.
+ * limits do not clamp their flex base sizes, whose shrink factors come to
+ * 1 or more, and which is not short of room with padding and borders more
+ * of one item's flex base size than of another's is shared out by Yoga as
+ * by 9.7.
  *
  * Each item's flex base size is what its style says it is, or its
  * content's size as the measure function found it (`Laid.sized`), and
@@ -2112,8 +2117,58 @@ function unshared(
   return (
     (growable && grows >= 1) ||
     (!under && shrinks > 0 && shrinks < 1) ||
-    (!over && grows > 0 && grows < 1)
+    (!over && grows > 0 && grows < 1) ||
+    (!under && weighsPadding(items, row, room, probe))
   );
+}
+
+/**
+ * Whether Yoga may have shared out what a line is short of by its items'
+ * padding and borders, where 9.7 leaves them out: Yoga weighs an item's
+ * share by its flex shrink factor times its flex base size, its border
+ * box's, and 9.7 by the factor times its inner flex base size, its content
+ * box's (step 4c). The two are the same shares where padding and borders
+ * are the same part of the flex base size of every item that shrinks —
+ * none of it, most often — and else Yoga takes more from an item the more
+ * of them it has: `width: 100px; padding-left: 50px` beside `width: 100px`
+ * in a row of 150 was 90 and 60 wide, where each gives up 50 of its
+ * content and is 100 and 50. Where an item's flex base size is not known,
+ * its padding may be any part of it, and the line is looked at.
+ */
+function weighsPadding(
+  items: readonly { box: Box; laid: Laid }[],
+  row: boolean,
+  /** The room for the items' border boxes. */
+  room: number,
+  probe: boolean,
+): boolean {
+  let sum = 0;
+  let shrinking = 0;
+  let padded = false;
+  let unknown = false;
+  // the part of the first flex base size that shrinks that is padding and
+  // borders, and whether that of another is not the same
+  let part = NaN;
+  let uneven = false;
+  for (const { box, laid } of items) {
+    if (!Number.isNaN(laid.held)) {
+      sum += laid.held;
+      continue;
+    }
+    const base = baseOf(box, laid, row, probe);
+    if (Number.isNaN(base)) unknown = true;
+    else sum += base;
+    if (!(box.style.flexShrink > 0)) continue;
+    shrinking += 1;
+    const extra = row ? box.horizontalExtra : box.verticalExtra;
+    if (extra > 0) padded = true;
+    if (Number.isNaN(base)) continue;
+    const of = base > 0 ? extra / base : 0;
+    if (Number.isNaN(part)) part = of;
+    else if (Math.abs(of - part) > 1e-9) uneven = true;
+  }
+  if (shrinking < 2 || !padded) return false;
+  return unknown || (uneven && sum > room + NEAR);
 }
 
 /** How near two sizes along the main axis are the same, as Yoga's float32s
