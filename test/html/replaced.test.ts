@@ -694,6 +694,47 @@ metric(
 );
 
 metric(
+  'an SVG image with no viewBox is stretched from its own size to its box',
+  async () => {
+    // Blink gives one a `viewBox` of its own size, fitted with
+    // `preserveAspectRatio: none`, an axis at a time: an icon of
+    // `width="20" height="20"` shown 60 wide was a third of its box, and
+    // one with no height is laid out down the box's
+    const sq = (attrs: string, shape: string) =>
+      svgBytes(`<svg ${SVG_NS} ${attrs}>${shape}</svg>`);
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0} img{display:block;width:60px;height:20px}' +
+        '</style><img src="wh.svg"><img src="w.svg"><img src="vb.svg">',
+      {
+        'wh.svg': sq(
+          'width="20" height="20"',
+          '<rect width="20" height="20" fill="#00aa00"/>',
+        ),
+        'w.svg': sq(
+          'width="20"',
+          '<rect width="20" height="10" fill="#0000ff"/>',
+        ),
+        // with one, it is fitted as before, and keeps its shape
+        'vb.svg': sq(
+          'width="20" height="20" viewBox="0 0 20 20"',
+          '<rect width="20" height="20" fill="#ff00ff"/>',
+        ),
+      },
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 55, 10, '#00aa00', { message: 'stretched across' });
+    await expectPixel(ctx, 55, 25, '#0000ff', {
+      message: 'across, at its height',
+    });
+    await expectPixel(ctx, 55, 35, '#ffffff', { message: 'and not down' });
+    await expectPixel(ctx, 30, 50, '#ff00ff', {
+      message: 'fitted, in the middle',
+    });
+    await expectPixel(ctx, 5, 50, '#ffffff', { message: 'and not stretched' });
+  },
+);
+
+metric(
   'a shape a <use> draws is styled where its copy is, from a sprite outside the drawing too',
   async () => {
     // A `<use>` draws a copy of what it names, in a tree of the copy's own
