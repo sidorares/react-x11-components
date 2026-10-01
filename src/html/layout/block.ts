@@ -30,6 +30,7 @@ import {
   CONTAIN_LAYOUT,
   CONTAIN_PAINT,
   CONTAIN_SIZE,
+  INLINE_BEFORE_ABSOLUTE,
   scrolls,
 } from '../css/style.js';
 import { about, linearOf, matrixOf, transformed } from '../css/transform.js';
@@ -71,6 +72,7 @@ import type {
 } from './boxes.js';
 import { FloatContext } from './floats.js';
 import {
+  emptyLinePoint,
   faceExtentOf,
   isButton,
   joinsBefore,
@@ -844,13 +846,19 @@ function layoutChildren(
       marked = null;
     }
     if (child.outOfFlow) {
-      placeStatic(
-        child,
-        box,
-        contentLeft,
-        contentWidth,
-        y + marginOf(pendingMargin),
-      );
+      const top = y + marginOf(pendingMargin);
+      if (INLINE_BEFORE_ABSOLUTE.has(child.style)) {
+        // one that was inline-level is on a line of its own, beside the
+        // floats there, where the line's alignment puts what it holds
+        const band = floats.bandAt(
+          top,
+          1,
+          contentLeft,
+          contentLeft + contentWidth,
+        );
+        const at = emptyLinePoint(box.style, band.left, band.right);
+        placeStatic(child, box, at, 0, top);
+      } else placeStatic(child, box, contentLeft, contentWidth, top);
       ctx.positioned.push({
         box: child,
         containing: containingBlockFor(child) ?? box,
