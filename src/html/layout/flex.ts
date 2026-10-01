@@ -184,6 +184,7 @@ export function layoutFlex(
       main: NaN,
       least: NaN,
       most: NaN,
+      narrowest: NaN,
       held: NaN,
       auto: false,
       across: false,
@@ -791,6 +792,7 @@ function applyItem(
   const row = box.parent?.style.flexDirection.startsWith('row') ?? true;
   laid.least = row ? leastWidth : leastHeight;
   laid.most = row ? mostWidth : mostHeight;
+  laid.narrowest = leastWidth;
   // A table is as wide as the flex layout makes it, as any item is: the
   // size its line flexed it to along a row (9.7), and across a column's
   // line the line's, stretched (9.4, step 11) — where in a block's flow it
@@ -929,15 +931,38 @@ function applyItem(
     const flexed = box.kind === 'replaced' || !laid.auto;
     const through =
       widthThrough && given && !exact && flexed ? widthThrough(h) : null;
-    // along a row, a replaced element is its own width wherever there is
-    // room for less — its flex base size is not fitted to the room (9.2)
-    // — and across a column it is fitted, as any item is
-    const inner =
+    // Along a row, an item's flex base size is its content at its widest,
+    // whatever the room (CSS Flexbox 9.2.3 E, `content` as `max-content`),
+    // which Yoga asks for as at most the row's width: a replaced element's,
+    // and that of one that may not shrink, which is as wide as that (9.7).
+    // Fitted to the room, a `shrink-0` item of words was held to its
+    // content at its narrowest, and wrapped where it overflows the row.
+    // One that may shrink is fitted, as any item is across a column — and
+    // so is every item of a row laid out in no room, which is the flex box
+    // measured for its content at its narrowest (`MIN_CONTENT_PROBE`): that
+    // is the sum of its items' content at their narrowest, whatever they
+    // may shrink by, as Chrome and the css-flexbox suite have it
+    // (`intrinsic-size/row-001`, `gap-015`), and not their bases.
+    const widest = alongRow && !exact;
+    const fitted =
       through !== null
         ? through
-        : box.kind === 'replaced' && alongRow && !exact
+        : widest &&
+            (box.kind === 'replaced' ||
+              (style.flexShrink === 0 && containingWidth !== MIN_CONTENT_PROBE))
           ? content()
           : innerWidth(width, wm, content);
+    // And no narrower than its minimum: Yoga holds the item to that only
+    // after it has the answer, which it keeps for the width that makes of
+    // it, so an item measured at the room and held to a wider minimum was
+    // as tall as its content wrapped at the room — `min-w-max` in a narrow
+    // row, or down a column narrower than it, one line of words two lines
+    // tall, and an item held to its longest word in a row that wraps
+    // (`holdAt`) a line taller than that makes it. Stretched across a
+    // column, it is asked at the column's width.
+    const inner = Number.isNaN(laid.narrowest)
+      ? fitted
+      : Math.max(fitted, laid.narrowest - extra);
     if (
       box.kind === 'replaced' &&
       exact &&
@@ -984,6 +1009,10 @@ interface Laid {
   /** The most it may be along the main axis, where its own style says: the
    *  maximum this engine set on its node, or NaN. */
   most: number;
+  /** The least border-box width its node was given, along a row or across
+   *  a column: its own minimum, or along a row the automatic one it is
+   *  held to (`holdAt`), or NaN. It is measured at no narrower. */
+  narrowest: number;
   /** The size along the main axis it is frozen at, inflexible (`freezeAt`),
    *  or NaN. */
   held: number;
@@ -1642,8 +1671,10 @@ function holdAt(
   least: number,
   hold: Hold,
 ): void {
-  if (row) node.setMinWidth(least);
-  else node.setMinHeight(least);
+  if (row) {
+    node.setMinWidth(least);
+    laid.narrowest = least;
+  } else node.setMinHeight(least);
   if (!hold.frozen) return;
   laid.auto = true;
   freezeAt(node, laid, row, least, hold);
