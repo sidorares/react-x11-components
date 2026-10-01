@@ -1008,7 +1008,8 @@ content. And
 `fit-content()` of a length or a percentage, which fits the content in the
 room its argument makes: no wider than the content at its widest, nor
 narrower than its longest word. The sizes are the content's, whatever
-`width` the box has beside them. A height of one is its content's, which
+`width` the box has beside them, with the box's padding and border round
+them, a percentage of either of its containing block's width. A height of one is its content's, which
 is `auto`. `stretch` — and `-webkit-fill-available` and `-moz-available`,
 as pages still write it — is what the box's margins leave of its
 containing block, in `width`, `height` and their limits: a float, an
