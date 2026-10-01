@@ -208,6 +208,7 @@ export function layoutFlex(
       minimum: NaN,
       auto: false,
       across: false,
+      unstretched: NaN,
     };
     applyItem(
       node,
@@ -262,12 +263,22 @@ export function layoutFlex(
     frozen: box.style.flexWrap === 'nowrap',
     basis: row ? bounded : height !== null,
   };
-  const ask = (): void =>
+  const layout = (): void =>
     root.calculateLayout(
       bounded ? contentWidth : Number.NaN,
       height ?? Number.NaN,
       direction,
     );
+  // Down a column that wraps, the items Yoga stretches across their lines
+  // come out of its layout at another height than it sized them at, where
+  // their side margins are not their top and bottom ones (`unstretch`):
+  // laid out so that each has the height it was sized at
+  const restretched = row || hold.frozen ? [] : stretchedDown(root, items);
+  const sized = bounded && !fitLines ? contentWidth : null;
+  const ask =
+    restretched.length > 0
+      ? (): void => unstretch(items, restretched, sized, layout)
+      : layout;
   // The one line of a box that does not wrap is shared out by CSS
   // Flexbox 9.7 where Yoga's answer for it may not be what that makes of
   // it (`resolveLine`): along a row of a width, or down a column of a
@@ -293,7 +304,7 @@ export function layoutFlex(
   // each item's size along the main axis, read the once a layout (`Laid`)
   const read = (): void => {
     for (const { node, laid } of items) {
-      laid.main = row ? node.getComputedWidth() : node.getComputedHeight();
+      laid.main = row ? node.getComputedWidth() : heightOf(node, laid);
     }
   };
   const calculate = (): void => {
@@ -1278,6 +1289,10 @@ interface Laid {
    *  row, stretched across a column's line — which it is laid out at as its
    *  own (`STRETCHED_ACROSS`, `layoutAt`). */
   across: boolean;
+  /** Its border box's height down a column that wraps, as Yoga sized it
+   *  before its line stretched it across (`unstretch`), or NaN where that
+   *  is the height Yoga has for it. */
+  unstretched: number;
 }
 
 /**
@@ -2553,8 +2568,8 @@ function cappedLines(
   }
   ask();
   // each item its hypothetical size, on every line
-  const hypothetical = items.map(({ node }) =>
-    row ? node.getComputedWidth() : node.getComputedHeight(),
+  const hypothetical = items.map(({ node, laid }) =>
+    row ? node.getComputedWidth() : heightOf(node, laid),
   );
   const frozen = new Set<Box>();
   for (const line of linesOf(items, hypothetical, row, breaks, gap)) {
@@ -2833,6 +2848,124 @@ function itemBaseline(item: Box): number {
     if (found !== null) return Math.min(found - item.y, item.height);
   }
   return item.height;
+}
+
+/**
+ * The items of a column that wraps that Yoga (3.2.1) lays out at another
+ * height than it sized them at, as it stretches them across their lines:
+ * each it aligns `stretch`, with no width of its own, whose left and right
+ * margins come to another sum than its top and bottom ones.
+ *
+ * Yoga aligns the lines of a box that wraps in a pass of its own, after it
+ * has sized and placed every item down them, and lays each item it
+ * stretches out again there at its line's width — and at its height plus
+ * the margins across the line, where it means the ones down it
+ * (CalculateLayout.cpp's multi-line `Align::Stretch`, still so on Yoga's
+ * main). A leaf laid out at a width and a height is that size, so the item
+ * came out its side margins taller and its top and bottom ones shorter
+ * than the height its line was shared out to, which its place and the
+ * next item's had been worked out from. The pass lays an item out again
+ * wherever its side margins are not nothing, or its line is another width
+ * than the one it was measured at, so `margin: 0 5px` on a line of words
+ * was 28 tall where Chrome's is 18, and `margin: 4px 0 2px` in a column
+ * with two lines 6 short; where the two sums are the same, the pass gives
+ * the height back unchanged.
+ */
+function stretchedDown(
+  root: YogaNode,
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+): { box: Box; node: YogaNode; laid: Laid }[] {
+  const lines = root.getAlignItems();
+  return items.filter(({ box, node }) => {
+    const own = node.getAlignSelf();
+    if ((own === Y.ALIGN_AUTO ? lines : own) !== Y.ALIGN_STRETCH) return false;
+    const width = node.getWidth().unit;
+    if (width !== Y.UNIT_AUTO && width !== Y.UNIT_UNDEFINED) return false;
+    // as Yoga adds them up, an `auto` margin as nothing
+    const style = box.style;
+    const of = (len: unknown, px: number) => (len === AUTO ? 0 : px);
+    const across =
+      of(style.marginLeft, box.marginLeft) +
+      of(style.marginRight, box.marginRight);
+    const down =
+      of(style.marginTop, box.marginTop) +
+      of(style.marginBottom, box.marginBottom);
+    return Math.abs(across - down) >= 0.0001;
+  });
+}
+
+/**
+ * Lay a column that wraps out, keeping for each item Yoga stretches across
+ * its line the height it sized it at (`stretchedDown`, `Laid.unstretched`).
+ *
+ * Yoga is asked again with each such item set at its line's start, which
+ * its multi-line pass does not lay out again: each is as tall as its line
+ * made it. Its flex base size has to come out the same for that, so its
+ * lines break and share out the same — and where Yoga hands the column's
+ * width over as a size, it measures an item it stretches at that width, and
+ * one it does not at its content's, so there the item is handed the width
+ * as its own too. Then Yoga is asked once more as it was, so the lines and
+ * the widths are its own, and only the heights are taken from the second
+ * layout. Where an item's place down its line moved between the two, a
+ * base moved too, and Yoga's height is kept, as it was.
+ */
+function unstretch(
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  stretched: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  /** The column's content width, where Yoga is handed it as a size, and
+   *  else null. */
+  width: number | null,
+  layout: () => void,
+): void {
+  layout();
+  const tops = items.map(({ node }) => node.getComputedTop());
+  const aligned = stretched.map(({ box, node }) => {
+    const own = node.getAlignSelf();
+    node.setAlignSelf(Y.ALIGN_FLEX_START);
+    if (width !== null) node.setWidth(measuredAcross(box, node, width));
+    return own;
+  });
+  layout();
+  const kept = items.every(
+    ({ node }, i) => Math.abs(node.getComputedTop() - tops[i]) < 0.01,
+  );
+  const heights = stretched.map(({ node }) => node.getComputedHeight());
+  stretched.forEach(({ node }, i) => {
+    node.setAlignSelf(aligned[i]);
+    if (width !== null) node.setWidthAuto();
+  });
+  layout();
+  stretched.forEach(({ laid }, i) => {
+    laid.unstretched = kept ? heights[i] : NaN;
+  });
+}
+
+/** The border-box width Yoga measures a column's item at for its flex base
+ *  size where it stretches it across a column of a width: the column's,
+ *  less its margins across, within its maximum. */
+function measuredAcross(box: Box, node: YogaNode, width: number): number {
+  const style = box.style;
+  const of = (len: unknown, px: number) => (len === AUTO ? 0 : px);
+  const across =
+    of(style.marginLeft, box.marginLeft) +
+    of(style.marginRight, box.marginRight);
+  const most = node.getMaxWidth();
+  const limit =
+    most.unit === Y.UNIT_POINT
+      ? most.value
+      : most.unit === Y.UNIT_PERCENT
+        ? (most.value / 100) * width
+        : Infinity;
+  return Math.min(width - across, limit);
+}
+
+/** An item's border-box height down a column, as Yoga sized it: the one it
+ *  had before its line stretched it, where that laid it out at another
+ *  (`unstretch`). */
+function heightOf(node: YogaNode, laid: Laid): number {
+  return Number.isNaN(laid.unstretched)
+    ? node.getComputedHeight()
+    : laid.unstretched;
 }
 
 /** Whether an item is stretched across its line: `stretch`, its own or its

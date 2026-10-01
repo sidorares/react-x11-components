@@ -570,7 +570,13 @@ height is `auto` and a percentage flex basis is `content`, the content's
 height whatever height the item has of its own. An item with a ratio is as wide, down a column, as the height
 it was flexed to makes it, and an image grown along a row is as tall. A
 `flex-basis` holds down a column with no height of its own, where Yoga
-would read the item's height in its place. An item stretched across its
+would read the item's height in its place. Down a column that wraps, an
+item stretched across its line is as tall as the line made it, whatever its
+margins, as in Chrome: Yoga lays each such item out again as it stretches
+the lines, at its height plus its left and right margins less its top and
+bottom ones, so `margin: 0 5px` around a line of text came out 10 pixels
+taller than Chrome's. Such an item takes the height Yoga gave it before
+that pass. An item stretched across its
 row, or flexed along a column of a height of its own, has the height it was
 given — no taller for what it holds — for what it holds to take a
 percentage of, so an `h-full` list in a sidebar fills the sidebar. An item
