@@ -1385,6 +1385,31 @@ with the rest — they add up across passes — so nothing may read an inline
 box's rect: `computePaintBounds` read it as the box's reach and measured a
 card grid three times its height.
 
+**A level of nesting costs every frame on the way down, and an interpreted
+frame is whole.** A table in a cell is measured and laid out from inside
+its table's layout, and a box is painted from inside its parent's paint,
+so a document nested deep holds every level's frames at once — and V8's
+interpreter, which runs code until it is hot, gives a function a frame
+with a register for every local it has, whichever branch it is in.
+No one change did it: as table fixes added locals to `layoutTable`, its
+frame grew to a kilobyte, and a level of nested tables to 4 KB, until 254
+of them ran out of the 984 KB V8 gives the main thread and the document
+came out blank. So a function that recurses into what it holds is its
+phases and the few values passed between them, with the arithmetic before
+and after the recursion in functions of its own (`layoutTable`, its frame
+a sixth of what it was). And `MAX_DEPTH` in the box builder bounds boxes, not
+elements: the anonymous boxes the fix-up will add count as they are built
+(`wrappersAround`), since painting a box takes some 800 bytes of stack
+whoever made it.
+
+Measure it under a test runner. On macOS, importing `react-x11` outside
+one relaunches the process onto a worker with a 4 MB stack (core's
+`src/cocoa/relaunch.js`), so a probe script has four times the room the
+suite has; `NODE_ENV=test` keeps it on the main thread, as Linux, CI and
+an X11 app are. A binary search over `--stack-size` says what a document
+needs, and `node --print-bytecode --print-bytecode-filter=<name>` a
+function's frame.
+
 **A context lent to code that is not ours comes back as it was lent.** The
 window's 2D context outlives the frame: core keeps one per window, and a
 save a paint leaves open keeps its clip and its transform on it for every

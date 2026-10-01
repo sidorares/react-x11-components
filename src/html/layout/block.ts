@@ -1671,7 +1671,10 @@ export function measureIntrinsicWidth(
   available: number,
   content = false,
 ): number {
-  ctx.layoutSubtree(box, available);
+  // not through `ctx.layoutSubtree`, which is this and one frame more on
+  // the stack for every level of a document that measures what it holds
+  // (`layoutTable`)
+  layoutSubtree(box, ctx, available);
   const specified = box.style.width;
   if (!content && specified !== AUTO && Number.isFinite(box.width)) {
     return box.width;
@@ -1684,11 +1687,11 @@ export function measureIntrinsicWidth(
 
 /**
  * Lay a box and everything under it out at a width, at the origin — what
- * `LayoutContext.layoutSubtree` hands to `flex.ts` and `table.ts`, and what
- * the shrink-to-fit probe uses. A replaced box is sized rather than laid out,
- * because there is nothing inside it to lay out.
+ * `LayoutContext.layoutSubtree` hands to `flex.ts` and `css-grid.ts`, and
+ * what the shrink-to-fit probe and a table's cells use. A replaced box is
+ * sized rather than laid out, because there is nothing inside it to lay out.
  */
-function layoutSubtree(
+export function layoutSubtree(
   box: Box,
   ctx: LayoutContext,
   width: number,

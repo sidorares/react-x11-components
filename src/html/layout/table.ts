@@ -25,6 +25,7 @@ import {
   cyclicWidth,
   exactMinContent,
   layoutBlockIn,
+  layoutSubtree,
   measureIntrinsicWidth,
   moveContent,
   moveTo,
@@ -33,16 +34,31 @@ import {
 import type { LayoutContext } from './block.js';
 import { firstBaselineIn } from './inline.js';
 import { tableGrid } from './grid.js';
-import type { Cell } from './grid.js';
+import type { Cell, TableGrid } from './grid.js';
 
-/** Lay out a table's insides. Returns the content height. */
+/**
+ * Lay out a table's insides. Returns the content height.
+ *
+ * A table in a cell is measured and laid out from inside the layout of the
+ * table around it, so nested tables hold every level's frames on the stack
+ * at once. So this is the phases and nothing else, and what waits on the
+ * stack while a cell's content is measured (`measureCell`) and laid out
+ * (`layoutCells`) is the few values passed between them; the columns'
+ * arithmetic (`sizeColumns`, `autoColumns`) and the rows' (`placeRows`)
+ * are done before or after, in frames of their own. As one function, every
+ * local of every phase in the one frame the interpreter keeps whole, a
+ * level of nested tables took 4 KB of the stack where it takes 2.8, and
+ * `display: table-cell` boxes 254 deep, as deep as the parser lets a
+ * document go, ran out of the 984 KB V8 gives the main thread: the
+ * document came out blank. (The box builder stops them at 128 now, for
+ * paint's sake, `MAX_DEPTH`.)
+ */
 export function layoutTable(
   table: Box,
   ctx: LayoutContext,
   contentWidth: number,
 ): number {
-  const { rows, captions, cells, columnCount, columnBoxes, columnGroups } =
-    tableGrid(table);
+  const grid = tableGrid(table);
   table.captionTop = 0;
   table.captionBottom = 0;
   // a percentage of a width that is not known is `auto`: the table is as
@@ -52,41 +68,10 @@ export function layoutTable(
   // — and one a grid stretches across its area is as wide as that, as a
   // table with a width of its own is (`STRETCHED_ACROSS`)
   const auto = own && !STRETCHED_ACROSS.has(table);
-  if (!columnCount) {
-    // With no columns, an auto table is as wide as its widest caption can
-    // be and its `min-width` asks, as one with columns is at the least
-    // (17.5.2), rather than as the room on offer: a caption over no cells
-    // was centred in the width of the page.
-    if (auto) {
-      let inner = captions.length
-        ? captionMinimum(captions, ctx) - table.horizontalExtra
-        : 0;
-      const min = resolveOrNull(table.style.minWidth, contentWidth);
-      if (min !== null) {
-        inner = Math.max(
-          inner,
-          table.style.boxSizing === 'border-box'
-            ? min - table.horizontalExtra
-            : min,
-        );
-      }
-      table.width = Math.max(0, inner) + table.horizontalExtra;
-    }
-    layoutCaptions(captions, ctx, table);
-    TABLE_CONTENT.set(
-      table,
-      table.captionTop + table.captionBottom + table.verticalExtra,
-    );
+  if (!grid.columnCount) {
+    layoutColumnless(table, grid.captions, ctx, contentWidth, auto);
     return 0;
   }
-
-  const style = table.style;
-  // between the columns, and between the rows (CSS 2.1 17.6.1)
-  const apart = style.borderCollapse !== 'collapse';
-  const spacing = apart ? style.borderSpacing : 0;
-  const rowSpacing = apart ? style.borderSpacingY : 0;
-  const gaps = spacing * (columnCount + 1);
-  const available = Math.max(0, contentWidth - gaps);
 
   // While the columns are sized, a percentage in a cell's padding is of
   // nothing: the width it is of is the one the columns are being sized to
@@ -95,11 +80,87 @@ export function layoutTable(
   // widths, below. Taken of the table's width here, and of the cell's own
   // where the cell was laid out, a padded cell's column was wider than
   // its share and its padding narrower.
-  for (const cell of cells) resolveEdges(cell.box, 0);
+  for (const cell of grid.cells) resolveEdges(cell.box, 0);
 
   // a fixed layout needs a width to be fixed to; with `auto` a table is laid
   // out by its contents after all (CSS 2.1 17.5.2.1), stretched or not
-  const fixed = style.tableLayout === 'fixed' && !own;
+  const fixed = table.style.tableLayout === 'fixed' && !own;
+  if (!fixed) for (const cell of grid.cells) measureCell(cell.box, ctx);
+  const columns = sizeColumns(table, grid, contentWidth, fixed, auto, ctx);
+  layoutCaptions(grid.captions, ctx, table);
+  const natural = layoutCells(grid.cells, columns, ctx);
+  return placeRows(table, grid, columns, natural);
+}
+
+/** A table with no columns, and its captions. */
+function layoutColumnless(
+  table: Box,
+  captions: Box[],
+  ctx: LayoutContext,
+  contentWidth: number,
+  auto: boolean,
+): void {
+  // With no columns, an auto table is as wide as its widest caption can
+  // be and its `min-width` asks, as one with columns is at the least
+  // (17.5.2), rather than as the room on offer: a caption over no cells
+  // was centred in the width of the page.
+  if (auto) {
+    let inner = captions.length
+      ? captionMinimum(captions, ctx) - table.horizontalExtra
+      : 0;
+    const min = resolveOrNull(table.style.minWidth, contentWidth);
+    if (min !== null) {
+      inner = Math.max(
+        inner,
+        table.style.boxSizing === 'border-box'
+          ? min - table.horizontalExtra
+          : min,
+      );
+    }
+    table.width = Math.max(0, inner) + table.horizontalExtra;
+  }
+  layoutCaptions(captions, ctx, table);
+  TABLE_CONTENT.set(
+    table,
+    table.captionTop + table.captionBottom + table.verticalExtra,
+  );
+}
+
+/** Where a table's columns are (`sizeColumns`). */
+interface Columns {
+  widths: number[];
+  /** Each column's left edge. */
+  columnX: number[];
+  /** Whether `visibility: collapse` takes each column out, and any. */
+  gone: boolean[];
+  anyGone: boolean;
+  /** Where the columns end: past the last one left in, and the spacing
+   *  after it. */
+  end: number;
+  /** Between the columns, and between the rows (CSS 2.1 17.6.1). */
+  spacing: number;
+  rowSpacing: number;
+}
+
+/** A table's columns sized and placed, and the table as wide as they
+ *  make it. Its cells are measured already (`measureCell`). */
+function sizeColumns(
+  table: Box,
+  grid: TableGrid,
+  contentWidth: number,
+  fixed: boolean,
+  auto: boolean,
+  ctx: LayoutContext,
+): Columns {
+  const { cells, captions, columnCount, columnBoxes, columnGroups } = grid;
+  const style = table.style;
+  // between the columns, and between the rows (CSS 2.1 17.6.1)
+  const apart = style.borderCollapse !== 'collapse';
+  const spacing = apart ? style.borderSpacing : 0;
+  const rowSpacing = apart ? style.borderSpacingY : 0;
+  const gaps = spacing * (columnCount + 1);
+  const available = Math.max(0, contentWidth - gaps);
+
   // An auto table is at least as wide as its widest caption can be (CSS 2.1
   // 17.5.2), and as its `min-width` asks; the columns share what that adds
   // as they share a width of the table's own (`autoColumns`).
@@ -138,7 +199,6 @@ export function layoutTable(
         columnPercents(columnBoxes, columnGroups),
         columnCount,
         available,
-        ctx,
         !auto,
         spacing,
         room,
@@ -181,33 +241,39 @@ export function layoutTable(
     tableContentWidth = used;
     table.width = used + table.horizontalExtra;
   }
-  layoutCaptions(captions, ctx, table);
+  return { widths, columnX, gone, anyGone, end: x, spacing, rowSpacing };
+}
 
-  const top = table.contentY + table.captionTop;
-  let y = top;
-  const rowTop: number[] = new Array<number>(rows.length);
-  const rowHeight: number[] = new Array<number>(rows.length).fill(0);
-  y += rowSpacing;
-
-  // Size every cell at its column width first, so a row's height is the
-  // tallest cell in it rather than the first one that was measured. What
-  // its content came to is kept apart from a height the cell sets: it is
-  // that content `vertical-align` moves in the cell.
-  //
-  // A percentage in a cell's padding is of the width of its row: the
-  // columns and the spacing between them, without the spacing either side
-  // and the table's own padding. CSS 2.1 8.4 has it of the containing
-  // block's width and names none for a cell; the row's is what browsers
-  // take, and what the table's content box is wherever there is no
-  // spacing. Every column counts, one `visibility: collapse` takes out
-  // too, so that taking it out changes no row's height.
-  let rowWidth = spacing * Math.max(0, columnCount - 1);
+/**
+ * Every cell laid out at its columns' width, all of them before a row is
+ * sized, so a row's height is the tallest cell in it rather than the first
+ * one that was measured. What its content came to is kept apart from a
+ * height the cell sets: it is that content `vertical-align` moves in the
+ * cell.
+ *
+ * A percentage in a cell's padding is of the width of its row: the
+ * columns and the spacing between them, without the spacing either side
+ * and the table's own padding. CSS 2.1 8.4 has it of the containing
+ * block's width and names none for a cell; the row's is what browsers
+ * take, and what the table's content box is wherever there is no
+ * spacing. Every column counts, one `visibility: collapse` takes out
+ * too, so that taking it out changes no row's height.
+ *
+ * Returns what each cell's content came to.
+ */
+function layoutCells(
+  cells: Cell[],
+  columns: Columns,
+  ctx: LayoutContext,
+): number[] {
+  const { widths, spacing } = columns;
+  let rowWidth = spacing * Math.max(0, widths.length - 1);
   for (const columnWidth of widths) rowWidth += columnWidth;
   const natural: number[] = new Array<number>(cells.length);
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i];
     const width = spannedWidth(widths, cell, spacing);
-    ctx.layoutSubtree(cell.box, width, rowWidth);
+    layoutSubtree(cell.box, ctx, width, rowWidth);
     natural[i] = CELL_CONTENT.get(cell.box) ?? cell.box.height;
     // A height a cell sets is a least one: its content is laid out as a
     // block's, which keeps a height it sets and lets the content run out of
@@ -235,6 +301,28 @@ export function layoutTable(
       );
     }
   }
+  return natural;
+}
+
+/** The rows' heights, and the rows and the cells placed, once every cell
+ *  is laid out at its columns' width (`layoutCells`) and its content came
+ *  to `natural`. Returns the rows' height. */
+function placeRows(
+  table: Box,
+  grid: TableGrid,
+  columns: Columns,
+  natural: number[],
+): number {
+  const { rows, cells } = grid;
+  const { widths, columnX, gone, anyGone, spacing, rowSpacing } = columns;
+  const columnCount = widths.length;
+  const style = table.style;
+  const top = table.contentY + table.captionTop;
+  let y = top;
+  const rowTop: number[] = new Array<number>(rows.length);
+  const rowHeight: number[] = new Array<number>(rows.length).fill(0);
+  y += rowSpacing;
+
   // A cell aligned on the baseline — every value but `top`, `middle` and
   // `bottom` — hangs its first line on its first row's baseline, the lowest
   // of theirs from the row's top (CSS 2.1 17.5.3), and the row is as tall as
@@ -455,7 +543,7 @@ export function layoutTable(
   // left edge to the last one's right, the spacing around them outside it
   // (CSS 2.1 17.5.1), as it is above and below.
   const gridX = table.contentX + spacing;
-  const gridWidth = Math.max(0, x - spacing - gridX);
+  const gridWidth = Math.max(0, columns.end - spacing - gridX);
   for (let r = 0; r < rows.length; r += 1) {
     const row = rows[r];
     row.x = gridX;
@@ -734,6 +822,31 @@ function fixedColumns(
 }
 
 /**
+ * A cell's max-content and min-content widths, for `autoColumns`: two probe
+ * layouts, unconstrained for max-content, and at no width for min-content
+ * (`MIN_CONTENT_PROBE`) — which the line breaker answers by breaking at
+ * every opportunity, so the widest line is the longest unbreakable word.
+ *
+ * Cached on the box, because intrinsic widths are width-independent by
+ * definition — measuring them per layout pass made a *resize* of a 500-row
+ * table cost as much as its first layout (223ms of re-probing measured
+ * against 10ms with the cache). The cache's invalidation rule is the box's
+ * lifetime: any DOM or style change rebuilds the tree.
+ *
+ * Every cell is measured before the columns are sized, and not in the loop
+ * that sizes them, so that the frame a table in the cell is measured under
+ * is this small one and not `autoColumns`'s (`layoutTable`).
+ */
+function measureCell(box: Box, ctx: LayoutContext): void {
+  if (box.intrinsicMaxContent >= 0) return;
+  box.intrinsicMaxContent = measureIntrinsicWidth(box, ctx, Infinity);
+  // where its words say it exactly, read from the layout just made
+  box.intrinsicMinContent =
+    (ctx.fonts && exactMinContent(box, ctx.fonts)) ??
+    measureIntrinsicWidth(box, ctx, MIN_CONTENT_PROBE, true);
+}
+
+/**
  * The auto algorithm: measure every cell's max-content and min-content
  * width, gather them into columns, and share the table's width out over
  * them, as CSS Tables 3 has it (3.9.3, "width distribution") and Blink
@@ -780,7 +893,6 @@ function autoColumns(
   columnPercents: (number | null)[],
   columnCount: number,
   available: number,
-  ctx: LayoutContext,
   fill: boolean,
   spacing: number,
   room: number,
@@ -798,27 +910,7 @@ function autoColumns(
   const asks = new Map<Cell, { min: number; max: number }>();
 
   for (const cell of cells) {
-    // Two probe layouts per cell: unconstrained for max-content, and at no
-    // width for min-content (`MIN_CONTENT_PROBE`) — which the line breaker
-    // answers by breaking at every opportunity, so the widest line is the
-    // longest unbreakable word.
-    //
-    // Cached on the box, because intrinsic widths are width-independent by
-    // definition — measuring them per layout pass made a *resize* of a
-    // 500-row table cost as much as its first layout (223ms of re-probing
-    // measured against 10ms with the cache). The cache's invalidation rule
-    // is the box's lifetime: any DOM or style change rebuilds the tree.
-    if (cell.box.intrinsicMaxContent < 0) {
-      cell.box.intrinsicMaxContent = measureIntrinsicWidth(
-        cell.box,
-        ctx,
-        Infinity,
-      );
-      // where its words say it exactly, read from the layout just made
-      cell.box.intrinsicMinContent =
-        (ctx.fonts && exactMinContent(cell.box, ctx.fonts)) ??
-        measureIntrinsicWidth(cell.box, ctx, MIN_CONTENT_PROBE, true);
-    }
+    // what its content asks, measured before (`measureCell`)
     const { floor, cap } = cellLimits(cell.box);
     const low = Math.min(Math.max(cell.box.intrinsicMinContent, floor), cap);
     const ask = {

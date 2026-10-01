@@ -480,12 +480,22 @@ test('a table asked for again at the same width is not laid out again', async ()
 });
 
 test('a thousand nested table cells render', async () => {
-  // each a table of its own, so every level is four boxes and a table's
-  // layout: the stack ran out, where now the document stops at 256
+  // Each a table of its own, so every level is four boxes — a table, a row
+  // group, a row and the cell — and a table's layout. The stack ran out,
+  // in layout and then in paint, where now the anonymous boxes count
+  // against the builder's bound as an element's box does, and the
+  // document stops 512 boxes deep: 128 cells, where the parser keeps 254.
   const node = await render(
     nested('<div style="display:table-cell">', '</div>', 1000),
   );
   assert.ok(node._tree, 'laid out');
+  let deepest = 0;
+  const walk: [Laid, number][] = [[node._tree.root, 0]];
+  for (let at = walk.pop(); at; at = walk.pop()) {
+    deepest = Math.max(deepest, at[1]);
+    for (const child of at[0].children) walk.push([child, at[1] + 1]);
+  }
+  assert.strictEqual(deepest, 512, 'as deep as the bound, and no deeper');
 });
 
 test('a document that cannot be laid out is left blank, not thrown', async () => {
