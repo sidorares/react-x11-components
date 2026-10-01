@@ -512,11 +512,23 @@ export function clipsAround(ops: PaintOp[], color: string): PaintOp[][] {
  *  as the line it bends along. */
 export type Outline = [number, number][];
 
+/** A fill `pathsOf` saw: its outlines, by its rule, in the clips then in
+ *  force, each by the non-zero rule. */
+export interface PathFill {
+  style: unknown;
+  rule: string;
+  outlines: Outline[];
+  clips: Outline[][];
+  shadow?: Fill['shadow'];
+}
+
 /** What a paint of the part of the document `damage` names fills and clips
  *  to, in order, each path as the outlines it is made of — so that where a
  *  shape reaches can be asked of any point (`windingAt`), whatever mix of
- *  rectangles, rounded rectangles and curves drew it. An image is drawn as
- *  nothing, so `backgroundImageFor` is there for the clip it is drawn in. */
+ *  rectangles, rounded rectangles and curves drew it. A fill carries the
+ *  clips it was made in and the context's shadow, where it had a blur. An
+ *  image is drawn as nothing, so `backgroundImageFor` is there for the clip
+ *  it is drawn in. */
 export async function pathsOf(
   el: HtmlViewNode,
   damage: { x: number; y: number; width: number; height: number },
@@ -527,13 +539,16 @@ export async function pathsOf(
     ratio: number;
   } | null,
 ): Promise<{
-  fills: { style: unknown; rule: string; outlines: Outline[] }[];
+  fills: PathFill[];
   clips: Outline[][];
 }> {
   const { paintDocument } = await import('../../src/html/paint.js');
-  const fills: { style: unknown; rule: string; outlines: Outline[] }[] = [];
+  const fills: PathFill[] = [];
   const clips: Outline[][] = [];
   let outlines: Outline[] = [];
+  // the clips in force, and what a save keeps of them and of the shadow
+  let clipped: Outline[][] = [];
+  const saved: [Outline[][], string, number, number, number][] = [];
   let at: [number, number] = [0, 0];
   const last = (): Outline => outlines[outlines.length - 1];
   /** A quarter ellipse about its centre, from `from` a quarter turn on. */
@@ -550,10 +565,51 @@ export async function pathsOf(
       out.push([cx + rx * Math.sin(a), cy - ry * Math.cos(a)]);
     }
   };
+  const fill = (rule: string, filled: Outline[]): void => {
+    fills.push({
+      style: ctx.fillStyle,
+      rule,
+      outlines: filled,
+      clips: clipped,
+      ...(ctx.shadowBlur > 0
+        ? {
+            shadow: {
+              color: ctx.shadowColor,
+              blur: ctx.shadowBlur,
+              x: ctx.shadowOffsetX,
+              y: ctx.shadowOffsetY,
+            },
+          }
+        : null),
+    });
+  };
   const ctx = {
     fillStyle: null as unknown,
-    save() {},
-    restore() {},
+    shadowColor: 'rgba(0, 0, 0, 0)',
+    shadowBlur: 0,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    save() {
+      saved.push([
+        clipped,
+        ctx.shadowColor,
+        ctx.shadowBlur,
+        ctx.shadowOffsetX,
+        ctx.shadowOffsetY,
+      ]);
+    },
+    restore() {
+      const state = saved.pop();
+      if (state) {
+        [
+          clipped,
+          ctx.shadowColor,
+          ctx.shadowBlur,
+          ctx.shadowOffsetX,
+          ctx.shadowOffsetY,
+        ] = state;
+      }
+    },
     fillRect(x: number, y: number, w: number, h: number) {
       const rect: Outline = [
         [x, y],
@@ -561,7 +617,7 @@ export async function pathsOf(
         [x + w, y + h],
         [x, y + h],
       ];
-      fills.push({ style: ctx.fillStyle, rule: 'nonzero', outlines: [rect] });
+      fill('nonzero', [rect]);
     },
     beginPath() {
       outlines = [];
@@ -620,11 +676,12 @@ export async function pathsOf(
     },
     closePath() {},
     fill(rule?: string) {
-      fills.push({ style: ctx.fillStyle, rule: rule ?? 'nonzero', outlines });
+      fill(rule ?? 'nonzero', outlines);
       outlines = [];
     },
     clip() {
       clips.push(outlines);
+      clipped = [...clipped, outlines];
       outlines = [];
     },
     drawImage() {},

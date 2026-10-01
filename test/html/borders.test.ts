@@ -18,7 +18,7 @@ import {
   view,
   windingAt,
 } from './harness.js';
-import type { Fill, LaidBox, PaintOp } from './harness.js';
+import type { Fill, LaidBox, PaintOp, PathFill } from './harness.js';
 
 afterEach(cleanup);
 
@@ -162,6 +162,170 @@ test('a shadow down a box far off the window is cut to what the paint reaches', 
       assert.ok(Math.abs(v) < 32768, `${f.x},${f.y} ${f.w}x${f.h}`);
     }
   }
+});
+
+test('a rounded shadow cut to what the paint reaches keeps its shape', async () => {
+  // A shadow is cut, as a background is, to what the paint reaches and as
+  // far again as its blur, and the cut was drawn with the shape's own
+  // corners: a corner left on a cut edge curves into it as far as its
+  // radius, which is outside what is painted while that is no more than 64
+  // pixels. A circle's is more, and a strip repainted across one's curve
+  // was another shape — the ring of a spread, a hard shadow under the box,
+  // the box clipped out of a shadow and the hole an inset one is cast
+  // round. The hole was also made from the cut padding box, so a spread
+  // wider than the margin left none, and a strip repainted in the middle
+  // of a box was all shadow.
+  const ink = parseColor('#00ff00');
+  const disc = (cx: number, cy: number, r: number) => (x: number, y: number) =>
+    Math.hypot(x - cx, y - cy) < r;
+  const square = (from: number, to: number) => (x: number, y: number) =>
+    x > from && x < to && y > from && y < to;
+  // a circle 400 across, or a square
+  const circle = disc(240, 240, 200);
+  const box = square(40, 440);
+  /** Whether a point is clear of every curve, which the recorder bends in
+   *  straight lines, and of every edge, which the snapping may move. */
+  const clear = (x: number, y: number) =>
+    [
+      [240, 240, 200],
+      [240, 240, 180],
+      [240, 240, 220],
+      [260, 260, 200],
+      [240, 250, 220],
+    ].every(([cx, cy, r]) => Math.abs(Math.hypot(x - cx, y - cy) - r) > 1) &&
+    [40, 140, 340, 440].every(
+      (e) => Math.abs(x - e) > 1 && Math.abs(y - e) > 1,
+    );
+  const ringed = (x: number, y: number) =>
+    disc(240, 240, 220)(x, y) && !circle(x, y);
+  const offset = (x: number, y: number) =>
+    disc(260, 260, 200)(x, y) && !circle(x, y);
+  // [the box's style, where the shadow shows] for a shadow with no blur:
+  // the box's own colour is over what falls under it
+  const hard = [
+    ['border-radius:50%;box-shadow:0 0 0 20px #00ff00', ringed],
+    [
+      'border-radius:50%;background:#ffcc00;box-shadow:0 0 0 20px #00ff00',
+      ringed,
+    ],
+    [
+      'border-radius:50%;background:#ffcc00;box-shadow:20px 20px 0 #00ff00',
+      offset,
+    ],
+    ['border-radius:50%;box-shadow:20px 20px 0 #00ff00', offset],
+    [
+      'border-radius:50%;box-shadow:inset 0 0 0 20px #00ff00',
+      (x: number, y: number) => circle(x, y) && !disc(240, 240, 180)(x, y),
+    ],
+    [
+      'border-radius:50%;box-shadow:inset 20px 20px 0 #00ff00',
+      (x: number, y: number) => circle(x, y) && !disc(260, 260, 200)(x, y),
+    ],
+    [
+      'box-shadow:inset 0 0 0 100px #00ff00',
+      (x: number, y: number) => box(x, y) && !square(140, 340)(x, y),
+    ],
+  ] as const;
+  // [the box's style, the shape whose shadow is cast, what it is clipped
+  // to] for a blurred one, the shape asked as far round what is painted
+  // as the blur reaches
+  const blurred = [
+    [
+      'border-radius:50%;box-shadow:0 0 30px #00ff00',
+      circle,
+      (x: number, y: number) => !circle(x, y),
+    ],
+    [
+      'border-radius:50%;background:#ffcc00;box-shadow:0 10px 30px 20px #00ff00',
+      disc(240, 250, 220),
+      () => true,
+    ],
+    [
+      'border-radius:50%;box-shadow:inset 0 0 30px #00ff00',
+      (x: number, y: number) => !circle(x, y),
+      circle,
+    ],
+    [
+      'box-shadow:inset 0 0 20px 100px #00ff00',
+      (x: number, y: number) => !square(140, 340)(x, y),
+      box,
+    ],
+  ] as const;
+  // across the curve, by its top, its left and two of its corners, and in
+  // the middle of the box
+  const strips = [
+    { x: 150, y: 30, width: 20, height: 20 },
+    { x: 40, y: 190, width: 20, height: 20 },
+    { x: 100, y: 60, width: 20, height: 20 },
+    { x: 370, y: 60, width: 20, height: 20 },
+    { x: 230, y: 230, width: 20, height: 20 },
+  ];
+  const inside = ({ rule, outlines }: PathFill, x: number, y: number) => {
+    const winding = windingAt(outlines, x, y);
+    return rule === 'evenodd' ? winding % 2 !== 0 : winding !== 0;
+  };
+  const within = (f: PathFill, x: number, y: number) =>
+    f.clips.every((clip) => windingAt(clip, x, y) !== 0);
+  const wrong: string[] = [];
+  for (const [style, shows] of hard) {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        `<div style="margin:40px;width:400px;height:400px;${style}"></div>`,
+    );
+    for (const damage of strips) {
+      const { fills } = await pathsOf(view(node), damage);
+      for (let y = damage.y; y < damage.y + damage.height; y += 1) {
+        for (let x = damage.x; x < damage.x + damage.width; x += 1) {
+          const [px, py] = [x + 0.5, y + 0.5];
+          if (!clear(px, py)) continue;
+          // the colour of the last fill to reach the point
+          let shown = false;
+          for (const f of fills) {
+            if (inside(f, px, py) && within(f, px, py)) shown = f.style === ink;
+          }
+          if (shown !== shows(px, py)) {
+            wrong.push(`${style}, at ${damage.x},${damage.y}: ${x},${y}`);
+          }
+        }
+      }
+    }
+  }
+  for (const [style, casts, clip] of blurred) {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        `<div style="margin:40px;width:400px;height:400px;${style}"></div>`,
+    );
+    for (const damage of strips) {
+      const { fills } = await pathsOf(view(node), damage);
+      const shadow = fills.find((f) => f.shadow?.color === '#00ff00');
+      assert.ok(shadow, `${style}: a shadow, at ${damage.x},${damage.y}`);
+      const { x: dx, y: dy, blur } = shadow.shadow!;
+      // as far round what is painted as the blur reaches, and no further
+      // from the box, past which an inset one's frame is not drawn
+      const reach = Math.ceil(blur * 1.5);
+      const from = (at: number) => Math.max(40 - reach, at - reach);
+      const to = (at: number) => Math.min(440 + reach, at + 20 + reach);
+      for (let y = from(damage.y); y < to(damage.y); y += 2) {
+        for (let x = from(damage.x); x < to(damage.x); x += 2) {
+          const [px, py] = [x + 0.5, y + 0.5];
+          if (!clear(px, py)) continue;
+          const at = `${style}, at ${damage.x},${damage.y}`;
+          if (inside(shadow, px - dx, py - dy) !== casts(px, py)) {
+            wrong.push(`${at}: casts ${x},${y}`);
+          }
+          const painted =
+            x >= damage.x &&
+            x < damage.x + 20 &&
+            y >= damage.y &&
+            y < damage.y + 20;
+          if (painted && within(shadow, px, py) !== clip(px, py)) {
+            wrong.push(`${at}: clip ${x},${y}`);
+          }
+        }
+      }
+    }
+  }
+  assert.deepStrictEqual(wrong.slice(0, 4), [], `${wrong.length} wrong`);
 });
 
 test("a rounded box's border is a ring that follows its corners", async () => {
