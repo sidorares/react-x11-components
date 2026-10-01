@@ -463,8 +463,10 @@ An outside marker that reaches
 higher above its baseline than the item's first line does makes room as
 Blink does: the line grows where it is the item's own, and where it is in a
 block inside the item — a paragraph, a link set `display: block` — the
-block goes lower by the difference and keeps its height. A `::marker` rule sets its colour and its font, and a
-`content` sets it as that, counters and all. A list item counts with the
+block goes lower by the difference and keeps its height. A `::marker`
+rule sets its colour and its font, and a `content` sets it as that,
+counters and all, its white space kept: `counter(list-item) ".\a0"` is
+where the default marker is. A list item counts with the
 `list-item` counter, which `<ol>`, `<ul>` and `<menu>` reset, and which
 `start`, `value`, `reversed` and `type` set as HTML has them: an
 `<ol reversed>` counts down to 1. A `list-style-type` is any counter style

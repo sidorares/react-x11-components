@@ -515,6 +515,27 @@ metric(
 );
 
 metric(
+  'a ::marker content ending in a no-break space stands where the default marker does',
+  async () => {
+    // `content: "1.\a0"` is how a page writes the default marker's `1. `:
+    // the line keeps the no-break space, and it had the gap a stripped
+    // space is given as well, so the number stood a space further out
+    const { node } = await render(
+      '<style>ol{margin:0} .c li::marker{content:counter(list-item) ".\\a0"}' +
+        '.s li::marker{content:counter(list-item) ". "}</style>' +
+        '<ol><li id="a">x</li></ol><ol class="c"><li id="b">x</li></ol>' +
+        '<ol class="s"><li id="c">x</li></ol>',
+    );
+    const el = view(node);
+    type Marked = LaidBox & { marker: { x: number } | null };
+    const x = (id: string) => (boxOf(el, id) as Marked).marker!.x;
+    assert.ok(Math.abs(x('b') - x('a')) < 0.5, `${x('b')} by ${x('a')}`);
+    // and one ending in a space, which the line strips, has it back
+    assert.ok(Math.abs(x('c') - x('a')) < 0.5, `${x('c')} by ${x('a')}`);
+  },
+);
+
+metric(
   'a relatively positioned ::before moves, in a document where nothing else does',
   async () => {
     // the pass that moves relative boxes runs only where the build found
