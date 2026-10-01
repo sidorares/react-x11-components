@@ -484,7 +484,18 @@ one a `min-width` of its own holds wider than the room it is offered, as
 row that wraps, is as tall as its content at that width. A table among them
 is as wide as the flex layout makes it, as Chrome has it — the size its
 line flexed it to along a row, and stretched across a column as any item
-is — where in a block's flow it is as wide as its columns. An item, and a grid's,
+is — where in a block's flow it is as wide as its columns. Across a column,
+an item that is not stretched — `items-start`, `items-center`, an
+`align-self` of its own — is `fit-content` wide (CSS Flexbox 9.4): as wide
+as its content in the room the column has, and no narrower than its content
+at its narrowest, so a word or a box wider than the column runs out past
+it, past both sides where it is centred, as in Chrome. `min-width: 0`
+changes nothing there, an automatic minimum being the main axis's alone.
+An image is its natural width, and one with only a ratio, such as an SVG
+with only a `viewBox`, the column's. An item with something in it that
+takes a percentage of a height is fitted to the column, though: it is
+measured before the flex layout makes that height definite, where Chrome
+measures it at that height. An item, and a grid's,
 is a formatting context of its own: the margins of what it holds stay
 inside it, and the one under its last block makes it that much taller. An
 `auto` margin takes

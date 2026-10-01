@@ -1038,7 +1038,27 @@ function applyItem(
     // is the sum of its items' content at their narrowest, whatever they
     // may shrink by, as Chrome and the css-flexbox suite have it
     // (`intrinsic-size/row-001`, `gap-015`), and not their bases.
+    // Across a column, the item is `fit-content` wide where it is not
+    // stretched (9.4, step 7): fitted to the column, but no narrower than
+    // its content at its narrowest, past the column where that is wider,
+    // as a centred one is on both sides. Its `min-width` has no say in
+    // that: an automatic minimum is the main axis's (4.5), so `auto` is 0
+    // across a column, the same as the `min-width: 0` that lets an item
+    // shrink along a row. Fitted to the column, a word wider than it ran
+    // out of the item, and a centred item started at the column's start.
+    // A replaced element's narrowest is its natural width, or one through
+    // its ratio, and none where it has neither: an SVG with only a
+    // `viewBox` is as wide as the column. And an item with something in
+    // it that takes a percentage of a height is fitted to the column still:
+    // the flex layout makes its height definite only after this, and
+    // measured without it, an image `height: 100%` is its natural width.
     const widest = alongRow && !exact;
+    const narrowest =
+      alongRow || percentHeightsIn(box)
+        ? undefined
+        : box.kind === 'replaced'
+          ? () => (replacedMinimum(box, containingWidth) ?? extra) - extra
+          : () => minContentOf(box, ctx, laid) - extra;
     const fitted =
       through !== null
         ? through
@@ -1046,7 +1066,13 @@ function applyItem(
             (box.kind === 'replaced' ||
               (style.flexShrink === 0 && containingWidth !== MIN_CONTENT_PROBE))
           ? content()
-          : innerWidth(width, wm, content);
+          : innerWidth(width, wm, content, narrowest);
+    // Across a column, no wider than its maximum: Yoga hands the measure
+    // a room within it, but holds the answer's width to it only after,
+    // and keeps the height measured at the wider — an image `max-width:
+    // 100%` its natural width at its narrowest was as tall as that made it
+    const capped =
+      !alongRow && fitted > mostWidth - extra ? mostWidth - extra : fitted;
     // And no narrower than its minimum: Yoga holds the item to that only
     // after it has the answer, which it keeps for the width that makes of
     // it, so an item measured at the room and held to a wider minimum was
@@ -1056,8 +1082,8 @@ function applyItem(
     // (`holdAt`) a line taller than that makes it. Stretched across a
     // column, it is asked at the column's width.
     const inner = Number.isNaN(laid.narrowest)
-      ? fitted
-      : Math.max(fitted, laid.narrowest - extra);
+      ? capped
+      : Math.max(capped, laid.narrowest - extra);
     let answer: { width: number; height: number } | undefined;
     if (
       box.kind === 'replaced' &&
@@ -1499,11 +1525,13 @@ function readsPercentBase(box: Box): boolean {
 
 /** The width an item's content is measured at: the width Yoga gives it
  *  exactly, or its max-content width, no wider than any it may take up to
- *  (CSS Flexbox 9.2). */
+ *  (CSS Flexbox 9.2) — and, given its min-content width, no narrower than
+ *  that either. */
 function innerWidth(
   width: number,
   mode: number,
   maxContent: () => number,
+  minContent?: () => number,
 ): number {
   if (mode === Y.MEASURE_MODE_EXACTLY && Number.isFinite(width)) {
     return Math.max(0, width);
@@ -1513,9 +1541,9 @@ function innerWidth(
     return content;
   }
   // a room exactly as wide as the content, as Yoga holds it, is room for it
-  return content <= width || nearly(content, width)
-    ? content
-    : Math.max(0, width);
+  if (content <= width || nearly(content, width)) return content;
+  const room = Math.max(0, width);
+  return minContent ? Math.min(content, Math.max(room, minContent())) : room;
 }
 
 /**
