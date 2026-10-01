@@ -1679,6 +1679,95 @@ test('a row that wraps centres or ends its line by its items’ height', async (
   assert.deepStrictEqual(at('i'), [-3, 13], 'the end, past the top');
 });
 
+test('an item with an auto margin across a row that wraps takes the room its line has past it', async () => {
+  // An `auto` margin across the line takes what the line has past the
+  // item, which is not stretched (CSS Flexbox 8.1, 9.4 step 11). Yoga sets
+  // the items of a row that wraps across their lines in a pass of its own
+  // that reads their alignment and not their margins, and stretched each of
+  // these to its line, or set it at its line's start.
+  const tall = '<div style="width:30px;height:13px"></div>';
+  const short = '<div style="width:30px;height:5px"></div>';
+  const fixed = 'width:20px;height:10px';
+  const row = (style: string, items: string) =>
+    '<div style="display:flex;flex-wrap:wrap;width:100px;' +
+    `${style}">${items}</div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      row(
+        'height:10px',
+        `<div id="a" style="margin-top:auto">${short}</div><div>${tall}</div>`,
+      ) +
+      row(
+        'height:80px;align-content:flex-end',
+        '<div id="b" style="width:20px;height:46px;margin:5px 0 2px;' +
+          'margin-top:auto"></div>' +
+          '<div style="width:30px;height:60px"></div>',
+      ) +
+      row(
+        'height:80px;align-content:center',
+        `<div id="c" style="${fixed};margin:auto 0"></div>` +
+          `<div id="d" style="margin-bottom:auto;margin-top:4px">${short}` +
+          '</div><div style="width:30px;height:60px"></div>',
+      ) +
+      // where the lines run bottom to top, the margins are where they are
+      row(
+        'height:75px;flex-wrap:wrap-reverse',
+        `<div id="e" style="${fixed};margin-top:auto;margin-bottom:3px">` +
+          `</div><div id="f" style="${fixed};margin-bottom:auto;` +
+          `margin-top:4px"></div><div id="g" style="${fixed};margin:auto 0">` +
+          '</div><div style="width:20px;height:40px"></div>',
+      ),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.y - item.parent.y, item.height];
+  };
+  assert.deepStrictEqual(at('a'), [8, 5], 'at the end of its line');
+  assert.deepStrictEqual(at('b'), [32, 46], 'within its bottom margin');
+  assert.deepStrictEqual(at('c'), [35, 10], 'centred');
+  assert.deepStrictEqual(at('d'), [14, 5], 'at the start, not stretched');
+  assert.deepStrictEqual(at('e'), [62, 10], 'at the bottom, in reverse');
+  assert.deepStrictEqual(at('f'), [4, 10], 'at the top, in reverse');
+  assert.deepStrictEqual(at('g'), [32.5, 10], 'centred, in reverse');
+});
+
+test('an item across a row that wraps in reverse is within its own margins', async () => {
+  // Where the lines run bottom to top, an item's cross-start margin is its
+  // bottom one (CSS Flexbox 9.4, step 11; 9.6). Yoga lays the lines out
+  // top to bottom and turns every item over across the box, so that each
+  // stood its bottom margin from where its top one should have been: a
+  // stretched item 2px high, one at its line's end 3px low.
+  const fixed = 'width:20px;height:10px';
+  const row = (style: string, items: string) =>
+    '<div style="display:flex;flex-wrap:wrap-reverse;width:120px;' +
+    `${style}">${items}<div style="width:20px;height:40px"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      row(
+        'height:75px;align-content:center;row-gap:2px',
+        '<div id="a" style="margin:5px 2px 3px">' +
+          '<div style="width:30px;height:32px"></div></div>',
+      ) +
+      row(
+        'height:75px',
+        `<div id="b" style="${fixed};align-self:flex-end;margin:0 4px 3px">` +
+          `</div><div id="c" style="${fixed};align-self:flex-start;` +
+          `margin:4px 4px 3px"></div><div id="d" style="${fixed};` +
+          'align-self:center;margin:6px 4px 1px"></div>',
+      ),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.y - item.parent.y, item.height];
+  };
+  assert.deepStrictEqual(at('a'), [22.5, 32], 'stretched, within them');
+  assert.deepStrictEqual(at('b'), [0, 10], 'its end at the top');
+  assert.deepStrictEqual(at('c'), [62, 10], 'its start at the bottom');
+  assert.deepStrictEqual(at('d'), [35, 10], 'centred within them');
+});
+
 test('last baseline is its fallback alignment, the end', async () => {
   // CSS Box Alignment 3, 4.2: where a box cannot be aligned by its last
   // baseline it is aligned to the end, and nothing here aligns by one. The

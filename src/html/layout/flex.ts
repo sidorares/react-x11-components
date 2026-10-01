@@ -252,6 +252,19 @@ export function layoutFlex(
   const direction =
     box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR;
   const row = box.style.flexDirection.startsWith('row');
+  // An `auto` margin across a row that wraps takes the room its line has
+  // past the item (CSS Flexbox 8.1, 9.6), where Yoga's pass that sets the
+  // items across their lines reads an item's alignment and not its
+  // margins: it stretched one with `margin-top: auto` to its line, and set
+  // one with a height at its line's start. So Yoga is told the alignment
+  // the margins come to (`autoAcross`), which it then places it by.
+  if (row && box.style.flexWrap !== 'nowrap') {
+    const reverse = box.style.flexWrap === 'wrap-reverse';
+    for (const { box: child, node } of items) {
+      const aligned = autoAcross(child.style, reverse);
+      if (aligned) node.setAlignSelf(ALIGN[aligned]);
+    }
+  }
   // frozen at its least size on the one line of a box that does not
   // wrap, by a basis where Yoga takes one along the main axis
   // (`applyItem`'s `setBasis`)
@@ -394,7 +407,7 @@ export function layoutFlex(
     items,
     row,
     own,
-    box.style.flexWrap === 'wrap' || baselines,
+    box.style.flexWrap !== 'nowrap' || baselines,
     contentWidth,
     undefined,
     crossed ? crossLines(box.style, items, contentWidth, columnGap) : undefined,
@@ -431,7 +444,7 @@ export function layoutFlex(
       items,
       row,
       own,
-      box.style.flexWrap === 'wrap',
+      box.style.flexWrap !== 'nowrap',
       contentWidth,
       started,
     );
@@ -459,7 +472,7 @@ export function layoutFlex(
       items,
       row,
       own,
-      box.style.flexWrap === 'wrap' || baselines,
+      box.style.flexWrap !== 'nowrap' || baselines,
       contentWidth,
     );
   }
@@ -2916,6 +2929,29 @@ function naturalAcross(
 }
 
 /**
+ * The alignment an item with an `auto` margin across a row that wraps comes
+ * to in its line (CSS Flexbox 8.1, 9.6 step 13), as Yoga is told it
+ * (`layoutFlex`): at the end where the margin at the line's cross start is
+ * `auto`, at the start where the one at its end is, and centred where both
+ * are; null where neither is. Its line's cross start is the box's bottom
+ * where its lines wrap in reverse.
+ *
+ * The line is as tall as its tallest item, margins and all, so the item
+ * comes to no more than it, and the margins take a share of no less than
+ * nothing: the alignment puts it where they would.
+ */
+function autoAcross(
+  item: ComputedStyle,
+  reverse: boolean,
+): 'flex-start' | 'flex-end' | 'center' | null {
+  const top = item.marginTop === AUTO;
+  const bottom = item.marginBottom === AUTO;
+  if (top && bottom) return 'center';
+  if (!top && !bottom) return null;
+  return top !== reverse ? 'flex-end' : 'flex-start';
+}
+
+/**
  * How far an item is from where it belongs across its line, where Yoga
  * (3.2.1) aligned the lines in the pass it takes for a box that wraps or
  * aligns by baselines: it sets an item aligned to its line's start there
@@ -2923,9 +2959,17 @@ function naturalAcross(
  * none at either — `items-start` in a wrapping row put every card's top
  * margin under it. By the margin at the start of the line's cross axis, and
  * by half what it exceeds the one at the end by, as Yoga holds them: for an
- * item set at its line's start (`started`), its baseline's. A column's,
- * whose cross axis runs right to left, and a box that wraps in reverse are
- * left as Yoga has them.
+ * item set at its line's start (`started`), its baseline's.
+ *
+ * A row whose lines wrap in reverse Yoga lays out as though they wrapped
+ * forward, and then turns each item over across the box, its margins with
+ * it: each is where the other margin would have put it. One at its line's
+ * start, the bottom, stands on nothing; one at its end, the top, or
+ * stretched, is its bottom margin down from its line's top where it is its
+ * top one; and one centred, half the difference. A column's, whose cross
+ * axis runs right to left, or that wraps in reverse, is left as Yoga has
+ * it, and so is an item an `auto` margin aligns in a row that does not
+ * wrap.
  */
 function lineMarginFix(
   container: ComputedStyle,
@@ -2934,23 +2978,35 @@ function lineMarginFix(
   row: boolean,
   started = false,
 ): number {
-  if (container.flexWrap === 'wrap-reverse') return 0;
-  if (!row && container.direction === 'rtl') return 0;
+  const reverse = container.flexWrap === 'wrap-reverse';
+  if (!row && (reverse || container.direction === 'rtl')) return 0;
   const style = item.style;
-  // a margin that is `auto` takes the item over its alignment
+  // a margin that is `auto` takes the item over its alignment, which Yoga
+  // is told it comes to in a row that wraps (`autoAcross`)
   const lead = row ? style.marginTop : style.marginLeft;
   const trail = row ? style.marginBottom : style.marginRight;
-  if (lead === AUTO || trail === AUTO) return 0;
-  const align = started
-    ? 'flex-start'
-    : style.alignSelf === AUTO
-      ? container.alignItems
-      : style.alignSelf;
-  if (align !== 'flex-start' && align !== 'center') return 0;
+  let align: string | null;
+  if (started) align = 'flex-start';
+  else if (lead === AUTO || trail === AUTO) {
+    align =
+      row && container.flexWrap !== 'nowrap'
+        ? autoAcross(style, reverse)
+        : null;
+  } else {
+    align = style.alignSelf === AUTO ? container.alignItems : style.alignSelf;
+  }
   const leading = node.getComputedMargin(row ? Y.EDGE_TOP : Y.EDGE_LEFT);
-  if (align === 'flex-start') return leading;
   const trailing = node.getComputedMargin(row ? Y.EDGE_BOTTOM : Y.EDGE_RIGHT);
-  return (leading - trailing) / 2;
+  switch (align) {
+    case 'flex-start':
+      return reverse ? -trailing : leading;
+    case 'center':
+      return (leading - trailing) / 2;
+    case 'flex-end':
+    case 'stretch':
+      return reverse ? leading - trailing : 0;
+  }
+  return 0;
 }
 
 /** An item's first baseline, down from its border edge: its content's
