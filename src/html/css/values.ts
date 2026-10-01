@@ -127,6 +127,8 @@ export interface UnitContext {
   rlh?: () => number;
   /** Every property at its initial value, which `initial` sets one to. */
   initial?: ComputedStyle;
+  /** The palette's focus ring, which `-webkit-focus-ring-color` is. */
+  focusRing?: string;
 }
 
 /** A CSS number (CSS Syntax 3 4.3.12): a sign, digits with at most one

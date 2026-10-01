@@ -238,6 +238,13 @@ function deriveLook(
     // `medium` and the face it reads pages in
     controlFontSize: Number(theme.fontSize ?? 14),
     controlFontFamily: String(theme.fontFamily ?? 'sans-serif'),
+    ...(typeof theme.focusRing === 'string' && { focusRing: theme.focusRing }),
+    ...(typeof theme.focusRingWidth === 'number' && {
+      focusRingWidth: theme.focusRingWidth,
+    }),
+    ...(typeof theme.focusRingOffset === 'number' && {
+      focusRingOffset: theme.focusRingOffset,
+    }),
   };
 }
 

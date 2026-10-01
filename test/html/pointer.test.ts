@@ -758,6 +758,33 @@ test('a :hover inside :is(), :where() or :not() names the element it tests', asy
   assert.strictEqual(found('li:nth-child(2 of :hover)').nested, true);
 });
 
+test('the focus names the elements it can restyle the way the pointer does', async () => {
+  const { FOCUS_STATE, pointerCompounds } =
+    await import('../../src/html/css/cascade.js');
+  const focus = (selector: string) => pointerCompounds(selector, FOCUS_STATE);
+  // Primer's field, whose `:focus` and `:focus-visible` are one compound's
+  assert.deepStrictEqual(
+    focus('.form-control:focus:not(:focus-visible)').compounds,
+    ['.form-control'],
+  );
+  // Wikipedia's skip link, shown while it has the focus
+  assert.deepStrictEqual(focus('.mw-jump-link:not(:focus)').compounds, [
+    '.mw-jump-link',
+  ]);
+  assert.deepStrictEqual(focus('.row:focus-within td').compounds, ['.row']);
+  assert.deepStrictEqual(focus('form:has(input:focus) label').has, [
+    { anchor: 'form', siblings: false },
+  ]);
+  // either state's pseudo-classes leave a compound, so what is left
+  // matches in any state — the hover's no longer asking for a focus it
+  // could not see
+  assert.deepStrictEqual(focus('a:focus:hover').compounds, ['a']);
+  assert.deepStrictEqual(pointerCompounds('a:focus:hover').compounds, ['a']);
+  // and neither state is the other's
+  assert.deepStrictEqual(focus('a:hover').compounds, []);
+  assert.deepStrictEqual(pointerCompounds('a:focus').compounds, []);
+});
+
 /** The colour an element's box has. */
 const colourOf = (el: HtmlViewNode, id: string) =>
   (boxOf(el, id) as unknown as { style: { color: string } }).style.color;

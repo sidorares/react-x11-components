@@ -1103,8 +1103,14 @@ of the outline's width, style and colour round the border box grown by
 the offset, taking no room and drawn over the box's content, with the
 box's rounded corners grown along with it — a focus ring, an avatar's
 ring, and Tailwind UI's `-outline-offset-1` hairline over an image's
-edge. An inline box's is drawn round each of its fragments; `auto` is
-drawn solid and `invert` in the text's colour.
+edge. An inline box's is drawn round each of its fragments; `invert` is
+drawn in the text's colour. `auto` is the platform's own ring (CSS UI 4,
+5.3), which is the palette's here: its `focusRing` colour where the
+outline's is the text's, its `focusRingWidth` whatever width was given,
+and its `focusRingOffset` outside the `outline-offset` — drawn solid, as
+the window's own widgets draw theirs. `-webkit-focus-ring-color` is the
+palette's ring colour, so normalize.css's `outline: 5px auto
+-webkit-focus-ring-color` is read rather than dropped.
 
 **HTML's own attributes:** the presentational ones mail and generated
 documents are written in are read as the styles they stand for, below
@@ -1334,8 +1340,10 @@ would drop it.
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
 from this renderer's own pointer state. `:focus`, `:focus-visible` and
-`:focus-within` match nothing: no element of the document takes the focus,
-a control's widget does, beside it. So `:not(:focus)` holds, and
+`:focus-within` are answered from which element's widget holds the focus:
+no element of the document takes it itself, a control's widget does,
+beside it, and a text field's says so (see [Forms](#forms)). Nothing else in
+a document is focused, so `:not(:focus)` holds everywhere else, and
 Wikipedia's skip link, hidden with it, stays hidden. Escapes are read wherever they stand,
 so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A group
 with a selector in it that is not one — an unknown pseudo-class, a name that
@@ -1489,6 +1497,28 @@ the corners a `round` gives it do not round a widget.
 A `<select>` shows the option it has selected, its first where none is
 marked, and nothing where it has no options — not the "Select…" core's
 `<Select>` prompts an application's user with.
+
+**A text field's focus is its element's.** An `<input>` or a `<textarea>`
+whose widget takes the focus — from a press, Tab, its label or
+`autofocus` — is `:focus` and `:focus-visible` (a text field always shows
+its ring, in a browser as in core), and every element around it
+`:focus-within`, until the focus goes. So a page's focus styles show:
+github.com's login field takes Primer's accent border and inset shadow,
+where it kept its grey border. The field's ring is its element's
+`outline`, which the document draws round the border box — the UA sheet's
+`input:focus-visible, textarea:focus-visible { outline: auto 1px
+-webkit-focus-ring-color }`, Chrome's, which is the palette's ring — and
+the widget draws none of its own, so a page's `outline: none` takes it
+away and a ring of the page's own takes its place. Core's ring, round a
+widget that is only the content box of a field the page drew, stood inside
+the page's border. A field the palette draws is rounded as its frame is, so
+its ring is too. A caret in a field the page drew is the page's text
+colour, as `caret-color: auto` is in a browser; `caret-color` itself is
+not read. The other controls are core's components, which keep their focus
+to themselves and draw their own ring: a `<select>`, a checkbox, a radio or
+a submit button is never `:focus`. Focus moving restyles what it reaches
+where it is, as a hover does ([Performance](#performance)) — a click into a search field is no
+restyle of the article around it.
 
 A control with a negative `tabindex` takes the focus — from a press, from
 its label, from `autofocus` — and is no Tab stop, as HTML has it (6.6.3).
