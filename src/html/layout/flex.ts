@@ -134,18 +134,22 @@ export function layoutFlex(
   const definite = percentBaseInside(box);
   const own = Number.isFinite(definite);
   const height = USED_HEIGHT.get(box) ?? (own ? definite : null);
-  // whether its content may come to more than it is tall
-  let capped = height !== null;
+  // the limits on its content box's height where it has none of its own
+  let floor = 0;
+  let ceiling = Infinity;
   if (height !== null) root.setHeight(height);
   else {
     root.setHeightAuto();
     const extra = box.verticalExtra;
     const min = clampHeight(box, extra) - extra;
-    if (min > 0) root.setMinHeight(min);
+    if (min > 0) {
+      floor = min;
+      root.setMinHeight(min);
+    }
     const max = clampHeight(box, Infinity) - extra;
     if (Number.isFinite(max)) {
-      root.setMaxHeight(Math.max(0, max));
-      capped = true;
+      ceiling = Math.max(0, max);
+      root.setMaxHeight(ceiling);
     }
   }
 
@@ -184,12 +188,26 @@ export function layoutFlex(
       main: NaN,
       least: NaN,
       most: NaN,
+      basis: NaN,
+      sized: false,
+      content: NaN,
+      fitted: NaN,
+      base: NaN,
       narrowest: NaN,
       held: NaN,
+      minimum: NaN,
       auto: false,
       across: false,
     };
-    applyItem(node, child, ctx, contentWidth, laid, height !== null, own);
+    applyItem(
+      node,
+      child,
+      ctx,
+      contentWidth,
+      laid,
+      height !== null,
+      own ? definite : NaN,
+    );
     root.insertChild(node, items.length);
     items.push({ box: child, node, laid });
   }
@@ -210,22 +228,28 @@ export function layoutFlex(
       height ?? Number.NaN,
       direction,
     );
-  // the one line of a box that does not wrap may be short of room, where
-  // the box has a size along it that its items do not make: and Yoga's
-  // answer for a line every item of which its minimum stops is put right
-  // (`stoppedLine`)
-  const short = hold.frozen && (row ? bounded : capped);
-  // and any line may have room left over, where a row has a width to have
-  // it in: Yoga's answer for one every item of which that may grow its
-  // maximum stops is put right too (`cappedLines`) — broken into lines as
-  // Yoga breaks them, at the box's size along them where a box that wraps
-  // has one, and in one line where it does not
-  const roomy = row ? bounded : true;
-  const breaks = hold.frozen
-    ? Infinity
-    : row
-      ? contentWidth
-      : (height ?? Infinity);
+  // The one line of a box that does not wrap is shared out by CSS
+  // Flexbox 9.7 where Yoga's answer for it may not be what that makes of
+  // it (`resolveLine`): along a row of a width, or down a column of a
+  // height or of limits on one, where a line may have room to share out
+  const line: FlexLine | null =
+    hold.frozen &&
+    (row ? bounded : height !== null || floor > 0 || ceiling < Infinity)
+      ? {
+          resolved: false,
+          size: row ? contentWidth : (height ?? NaN),
+          floor,
+          ceiling,
+          between: betweenOf(items, row, row ? columnGap : rowGap),
+          probe: row && contentWidth === MIN_CONTENT_PROBE,
+        }
+      : null;
+  // and the lines of a box that wraps may have room left over, where a
+  // row has a width to have it in: Yoga's answer for one every item of
+  // which that may grow its maximum stops is put right (`cappedLines`) —
+  // broken into lines as Yoga breaks them, at the box's size along them
+  const roomy = !hold.frozen && (row ? bounded : true);
+  const breaks = row ? contentWidth : (height ?? Infinity);
   // each item's size along the main axis, read the once a layout (`Laid`)
   const read = (): void => {
     for (const { node, laid } of items) {
@@ -233,14 +257,20 @@ export function layoutFlex(
     }
   };
   const calculate = (): void => {
+    // a line shared out here is again, before Yoga places it: an item
+    // since held at its content's size is frozen there (`autoMinimums`)
+    if (line?.resolved) shareOut(items, row, line, hold);
     ask();
     read();
-    if (!short && !roomy) return;
-    const room = row ? contentWidth : (height ?? root.getComputedHeight());
-    const gap = row ? columnGap : rowGap;
-    if (short && stoppedLine(items, row, room, gap, hold, ask)) read();
-    if (roomy && cappedLines(items, row, room, breaks, gap, hold, ask)) {
-      read();
+    if (line && !line.resolved) {
+      const room = Number.isNaN(line.size)
+        ? root.getComputedHeight()
+        : line.size;
+      if (resolveLine(items, row, line, room, hold, ask)) read();
+    } else if (roomy) {
+      const room = row ? contentWidth : (height ?? root.getComputedHeight());
+      const gap = row ? columnGap : rowGap;
+      if (cappedLines(items, row, room, breaks, gap, hold, ask)) read();
     }
   };
   ctx.flexDepth = depth + 1;
@@ -367,6 +397,10 @@ function keepRatios(
         box.verticalExtra;
     if (Math.abs(basis - laid.main) < 0.5) continue;
     node.setFlexBasis(basis);
+    // and is shared out from it where its line is here (`shareOut`)
+    laid.basis = basis;
+    laid.sized = false;
+    laid.base = basis;
     // one held at its least size (`holdAt`) flexes from the new basis, no
     // further down than that
     if (!Number.isNaN(laid.held)) {
@@ -699,11 +733,13 @@ function applyItem(
   laid: Laid,
   /** Whether the flex box has a height its items are laid out in. */
   tall: boolean,
-  /** Whether that height is definite, and a percentage may be of it: one a
-   *  column flexed the box to is not (`USED_HEIGHT`). */
-  own: boolean,
+  /** That height where it is definite, and a percentage may be of it, and
+   *  else NaN: one a column flexed the box to is not (`USED_HEIGHT`). */
+  definite: number,
 ): void {
   const style = box.style;
+  const own = Number.isFinite(definite);
+  const row = box.parent?.style.flexDirection.startsWith('row') ?? true;
   laid.stretch = containingWidth - box.marginLeft - box.marginRight;
   // an `auto` margin takes the free space on its side, which is how
   // `margin-left: auto` puts an item at the end of its row (CSS Flexbox
@@ -729,10 +765,26 @@ function applyItem(
   if (style.width !== AUTO) {
     laid.set = setLength(node, true, style.width, containingWidth, across);
   }
+  // Down a column, a basis of the content's — `content`, or a percentage
+  // of a height that is not definite (CSS Flexbox 7.2.3) — is its content's
+  // height, whatever height it has of its own (9.2.3, E), and Yoga takes
+  // the height of its own for a basis where it has one. So that is kept
+  // from Yoga, and the measure function answers with the content's.
+  const contentColumn =
+    !row && (style.flexBasis === 'content' || (isPct(style.flexBasis) && !own));
   // a percentage of a height that is not definite is `auto` (CSS 2.1 10.5),
-  // which Yoga makes of one where the flex box has no height at all
-  if (style.height !== AUTO && (own || !tall || !isPct(style.height))) {
-    setLength(node, false, style.height, NaN, down);
+  // and is not handed to Yoga, which makes one of the height of a flex box
+  // with none of its own but limits on one — and the height set on its
+  // node, where that is a length, and whether one is
+  let height = NaN;
+  let heightSet = false;
+  if (
+    style.height !== AUTO &&
+    (own || !isPct(style.height)) &&
+    !contentColumn
+  ) {
+    height = setLength(node, false, style.height, definite, down);
+    heightSet = true;
   }
   // the least it may be along each axis, its border box's, as Yoga is
   // told it
@@ -776,20 +828,32 @@ function applyItem(
       node.setMaxWidth(mostWidth);
     }
   }
-  const minHeight = resolveOrNull(style.minHeight, NaN);
+  // a percentage of a definite height, which a limit on a flex item's
+  // height is where its flex box has one
+  const minHeight = resolveOrNull(style.minHeight, definite);
   if (minHeight !== null) {
     leastHeight = minHeight + down;
     node.setMinHeight(leastHeight);
   }
   if (style.maxHeight !== 'none') {
-    const maxHeight = resolveOrNull(style.maxHeight, NaN);
+    const maxHeight = resolveOrNull(style.maxHeight, definite);
     if (maxHeight !== null) {
       mostHeight = maxHeight + down;
       node.setMaxHeight(mostHeight);
     }
   }
 
-  const row = box.parent?.style.flexDirection.startsWith('row') ?? true;
+  // a maximum under the minimum is the minimum (CSS 2.1 10.4, 10.7), where
+  // Yoga holds an item that comes to more than both at the maximum
+  if (mostWidth < leastWidth) {
+    mostWidth = leastWidth;
+    node.setMaxWidth(mostWidth);
+  }
+  if (mostHeight < leastHeight) {
+    mostHeight = leastHeight;
+    node.setMaxHeight(mostHeight);
+  }
+
   laid.least = row ? leastWidth : leastHeight;
   laid.most = row ? mostWidth : mostHeight;
   laid.narrowest = leastWidth;
@@ -811,8 +875,21 @@ function applyItem(
   // its content's. There the basis is handed over as that height, which is
   // what the item's own is to a basis anyway — no more than its start
   const setBasis = (px: number): void => {
+    laid.basis = px;
     if (row || tall) node.setFlexBasis(px);
     else node.setHeight(px);
+  };
+  // Where Yoga takes the item's own size along the main axis for its
+  // basis, that size as a length, or its content's (`Laid.sized`) — and
+  // its content's, whatever size it has, for a basis that says so, which
+  // Yoga reads as its size down a column
+  const ownSize = (content = false): void => {
+    if (
+      content ||
+      (row ? style.width === AUTO && !style.widthKeyword : !heightSet)
+    ) {
+      laid.sized = true;
+    } else laid.basis = row ? laid.set : height;
   };
   // down a column, an item with a ratio and a width is as tall as that
   // makes it, for a basis of its content or of its own `auto` height (CSS
@@ -829,24 +906,36 @@ function applyItem(
     // the content's size along a row, whatever the item's own width says
     // (CSS Flexbox 7.2.3), which Yoga reads as `auto` and takes the width
     // for; along a column, Yoga's measure is the content's
-    node.setFlexBasis(contentBasis(box, ctx, containingWidth));
+    laid.basis = contentBasis(box, ctx, containingWidth);
+    node.setFlexBasis(laid.basis);
   } else if (columnBasis !== null) {
     // but a height of its own hides it from Yoga, and an item with a ratio
     // and a width is as tall as that makes it
     setBasis(columnBasis);
   } else if (style.flexBasis === 'content' || style.flexBasis === AUTO) {
     // Yoga's own
-  } else if (isPct(style.flexBasis) && !row && tall && !own) {
+    ownSize(style.flexBasis === 'content');
+  } else if (isPct(style.flexBasis) && !row && !own) {
     // a percentage of a main size that is not definite is `content` (CSS
     // Flexbox 7.2.3): Yoga's own, down a column
+    ownSize(true);
   } else if (isPct(style.flexBasis)) {
-    // a percentage of the main size, which is known across a row
+    // a percentage of the main size, which is known across a row and down
+    // a column of a definite height: of a content box's size, as a width
+    // is, where the item's padding and border go on top of it
     const basis = style.flexBasis;
-    if (!basis.px && !basis.of) node.setFlexBasisPercent(basis.pct);
-    else if (row && Number.isFinite(containingWidth)) {
-      node.setFlexBasis(resolve(basis, containingWidth));
-    } else if (basis.of) node.setFlexBasisAuto();
-    else node.setFlexBasisPercent(basis.pct);
+    const extra = row ? across : down;
+    const known = row ? Number.isFinite(containingWidth) : own;
+    if (known) {
+      laid.basis = resolve(basis, row ? containingWidth : definite) + extra;
+    }
+    if (!basis.px && !basis.of && !(known && extra)) {
+      node.setFlexBasisPercent(basis.pct);
+    } else if (known) node.setFlexBasis(laid.basis);
+    else if (basis.of) {
+      node.setFlexBasisAuto();
+      ownSize();
+    } else node.setFlexBasisPercent(basis.pct);
   } else setBasis(style.flexBasis + (row ? across : down));
 
   // The item's padding and border belong to Yoga so it can size the item,
@@ -868,8 +957,14 @@ function applyItem(
   // table cell's is: taken per layout of the container, a flex box in a
   // flex box in a flex box laid its innermost out three times a level,
   // and twelve levels took two seconds.
-  const alongRow = box.parent?.style.flexDirection.startsWith('row') ?? true;
+  const alongRow = row;
   const content = (): number => {
+    const width = maxContent();
+    // its flex base size, where that is its content's (`Laid.sized`)
+    if (alongRow) laid.content = width + box.horizontalExtra;
+    return width;
+  };
+  function maxContent(): number {
     // a replaced element's is the width it has with no limit — its
     // natural one, or what its ratio makes of a height of its own — which
     // its image, loading, may change, so it is not kept; taken as its
@@ -894,7 +989,7 @@ function applyItem(
     // its ratio: its size before it is flexed, and not after
     const extra = box.horizontalExtra;
     return Math.max(0, transferredWidth(box, width + extra) - extra);
-  };
+  }
   // An item with a ratio is as wide, across a column, as the height it
   // was given makes it through the ratio, where its width is its own to
   // find (CSS Flexbox 9.4, its hypothetical cross size from its used main
@@ -963,18 +1058,45 @@ function applyItem(
     const inner = Number.isNaN(laid.narrowest)
       ? fitted
       : Math.max(fitted, laid.narrowest - extra);
+    let answer: { width: number; height: number } | undefined;
     if (
       box.kind === 'replaced' &&
       exact &&
       ratio > 0 &&
       style.height === AUTO
     ) {
-      return { width: inner, height: inner / ratio };
+      answer = { width: inner, height: inner / ratio };
+    } else {
+      answer = answers.get(inner);
+      if (answer === undefined) {
+        answer = measureBox(box, ctx, inner, containingWidth, laid);
+        answers.set(inner, answer);
+      }
     }
-    let answer = answers.get(inner);
-    if (answer === undefined) {
-      answer = measureBox(box, ctx, inner, containingWidth, laid);
-      answers.set(inner, answer);
+    // along a row, the width it answered where it might choose one
+    if (alongRow && wm !== Y.MEASURE_MODE_EXACTLY) {
+      laid.fitted = answer.width + box.horizontalExtra;
+    }
+    // down a column, its content's height where nothing held it to one:
+    // its flex base size, where that is its content's (`Laid.sized`) — for
+    // a basis that says so, what a height of its own has no say in
+    if (!alongRow && !given) {
+      if (contentColumn && style.height !== AUTO && box.kind !== 'replaced') {
+        const width = inner + box.horizontalExtra;
+        const kept = keptNatural(box, ctx, width, containingWidth);
+        let content = kept?.content ?? NaN;
+        if (Number.isNaN(content)) {
+          if (kept === null || kept.serial !== box.layoutSerial) {
+            layoutNaturally(box, ctx, width, containingWidth, laid);
+          }
+          content = columnContent(box, ctx, laid, width, containingWidth);
+        }
+        answer = {
+          width: answer.width,
+          height: Math.max(0, content - box.verticalExtra),
+        };
+      }
+      laid.content = answer.height + box.verticalExtra;
     }
     return answer;
   });
@@ -1009,6 +1131,26 @@ interface Laid {
   /** The most it may be along the main axis, where its own style says: the
    *  maximum this engine set on its node, or NaN. */
   most: number;
+  /** Its flex base size (CSS Flexbox 9.2, step 3), its border box's, where
+   *  its style says what that is — a basis or a size along the main axis
+   *  that is a length — or NaN where its content does (`content`) or Yoga
+   *  resolves it. */
+  basis: number;
+  /** Whether its flex base size is its content's size along the main axis,
+   *  which the measure function notes (`content`). */
+  sized: boolean;
+  /** Its content's size along the main axis, its border box's, as the
+   *  measure function last found it with nothing holding it to a size
+   *  there: its max-content width along a row, its height at its width
+   *  down a column. NaN until measured so. */
+  content: number;
+  /** The border-box width the measure function last answered along a row
+   *  where Yoga asked for one it might choose, its content's fitted to the
+   *  room: the flex base size Yoga takes for it (`FlexLine.probe`). */
+  fitted: number;
+  /** The flex base size its line was shared out from where this engine
+   *  shared it (`resolveLine`), or NaN. */
+  base: number;
   /** The least border-box width its node was given, along a row or across
    *  a column: its own minimum, or along a row the automatic one it is
    *  held to (`holdAt`), or NaN. It is measured at no narrower. */
@@ -1016,8 +1158,11 @@ interface Laid {
   /** The size along the main axis it is frozen at, inflexible (`freezeAt`),
    *  or NaN. */
   held: number;
+  /** Its automatic minimum along the main axis (CSS Flexbox 4.5), where it
+   *  is held to it (`holdAt`), or NaN. */
+  minimum: number;
   /** Whether that is its automatic minimum (`holdAt`), its content's size,
-   *  and not a minimum the line stopped at (`stoppedLine`). */
+   *  and not a size its line was shared out to (`resolveLine`). */
   auto: boolean;
   /** Whether it is a table the flex layout gives its width — flexed along a
    *  row, stretched across a column's line — which it is laid out at as its
@@ -1558,26 +1703,9 @@ function autoMinimums(
     } else {
       // its height, or where it has one of its own and its content comes to
       // less, its content's: the lesser of the two (4.5)
-      let content = read;
-      if (!Number.isNaN(content)) {
-        // read before
-      } else if (box.kind === 'replaced') content = laid.height;
-      else if (style.height !== AUTO && percentHeightsIn(box)) {
-        // what its content comes to where it has no height to take
-        // percentages of, as an intrinsic size is measured: laid out so
-        // apart, and the final pass lays it out again
-        FLEXED_HEIGHT.set(box, NaN);
-        try {
-          ctx.layoutSubtree(box, width, containingWidth);
-        } finally {
-          FLEXED_HEIGHT.delete(box);
-        }
-        content = ratioContent(box, contentBottom(box) + box.verticalExtra);
-        laid.width = NaN;
-      } else {
-        content = ratioContent(box, contentBottom(box) + box.verticalExtra);
-        remember(box, ctx, width, containingWidth, 'content', content);
-      }
+      let content = Number.isNaN(read)
+        ? columnContent(box, ctx, laid, width, containingWidth)
+        : read;
       // within what the ratio makes of its least and greatest widths
       if (box.kind !== 'replaced') {
         content = transferredHeight(box, content, containingWidth);
@@ -1594,6 +1722,39 @@ function autoMinimums(
     changed = true;
   }
   return changed;
+}
+
+/**
+ * How far down a column item's content comes at a border-box width, its
+ * border box's, from the layout its content's own height makes of it
+ * there (`layoutNaturally`), which it has: what a height of its own has no
+ * say in, which its automatic minimum reads (CSS Flexbox 4.5), and a flex
+ * basis of `content` (9.2.3, E).
+ */
+function columnContent(
+  box: Box,
+  ctx: LayoutContext,
+  laid: Laid,
+  width: number,
+  containingWidth: number,
+): number {
+  if (box.kind === 'replaced') return laid.height;
+  if (box.style.height !== AUTO && percentHeightsIn(box)) {
+    // what its content comes to where it has no height to take
+    // percentages of, as an intrinsic size is measured: laid out so
+    // apart, and the final pass lays it out again
+    FLEXED_HEIGHT.set(box, NaN);
+    try {
+      ctx.layoutSubtree(box, width, containingWidth);
+    } finally {
+      FLEXED_HEIGHT.delete(box);
+    }
+    laid.width = NaN;
+    return ratioContent(box, contentBottom(box) + box.verticalExtra);
+  }
+  const content = ratioContent(box, contentBottom(box) + box.verticalExtra);
+  remember(box, ctx, width, containingWidth, 'content', content);
+  return content;
 }
 
 /** A table item's rows and captions at a border-box width, its border box's
@@ -1677,6 +1838,7 @@ function holdAt(
   } else node.setMinHeight(least);
   if (!hold.frozen) return;
   laid.auto = true;
+  laid.minimum = least;
   freezeAt(node, laid, row, least, hold);
 }
 
@@ -1697,67 +1859,46 @@ function freezeAt(
   else node.setHeight(size);
 }
 
-/**
- * Put right the one line of a box that does not wrap, where every item of
- * it that may shrink is stopped by its minimum and Yoga made them wider for
- * it; whether Yoga was asked again. The line is laid out with each of them
- * frozen at its minimum, which is where CSS Flexbox leaves them (9.7, step
- * 4): the line is short of room with every one of them as small as it
- * goes.
- *
- * Yoga shares what a line is short of in two passes. The first takes each
- * item a minimum stops out of the sum of the scaled shrink factors, one
- * subtraction an item, and the second divides what the line is still short
- * of by what is left of the sum. With every item stopped that is nothing:
- * `(a + b) - a - b`, in float32s, which is 0 for some sizes and a rounding
- * either side of it for others, 2^-18 for sizes about a hundred. Yoga
- * 3.2.1 tests for 0, and the guard it has had since, a sum under 1e-6, is
- * under that rounding (react/yoga#1665, #1974). A negative rounding sends
- * every item under its minimum, which stops it, and a positive one makes
- * each of them wider by billions of pixels: `width: 110.992px; min-width:
- * 110.992px` beside `62.705625px` of the same, in a row 50 wide, were
- * 3599091712 and 2033329408 wide, where 100 and 60 were as they are. So
- * were two items with no minimum but their padding, and two with
- * `min-width: 0` beside one that does not shrink and is wider than the row
- * alone.
- *
- * A minimum of the item's own is Yoga's to hold it to, so this looks at
- * its answer, for a line that is two things at once. It is short of room
- * with every item that may shrink at its minimum — where 9.7 leaves each
- * of them at that, whatever their sizes. And one of them is wider than its
- * hypothetical size (9.7, step 2), which no sharing out of what a line is
- * short of makes an item: Yoga is asked for the line with nothing
- * shrinking, where each item is that size. Any other line is put back as
- * it was, the two layouts that took being the cost of one that is short of
- * room at its minimums and was not shared out to them; a line with room
- * for its minimums, or one whose every item sits at its own, has cost the
- * sum of its sizes.
- *
- * An automatic minimum is no part of it: an item held at one is frozen
- * already (`holdAt`), and one not yet held has no minimum to Yoga but its
- * padding and border, where this leaves it for `autoMinimums` to find
- * short of its content.
- */
-function stoppedLine(
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+/** The one line of a flex box that does not wrap, as it is shared out here
+ *  (`resolveLine`). */
+interface FlexLine {
+  /** Whether its items are frozen at the sizes 9.7 shares it out to. */
+  resolved: boolean;
+  /** Its size along the main axis, where the box has one: its content
+   *  box's width along a row, its height down a column of a height. NaN
+   *  down a column that is as tall as its items make it, within limits. */
+  size: number;
+  /** Those limits, the least and the most its content box may be tall. */
+  floor: number;
+  ceiling: number;
+  /** What is between the items' border boxes along it: the gaps, and
+   *  their margins, an `auto` one none (8.1). */
+  between: number;
+  /**
+   * Whether it is a row laid out in no room at all — how the box's
+   * min-content width is measured (`MIN_CONTENT_PROBE`), where what an
+   * item contributes to that is its min-content width and not a share of
+   * a line. An item whose flex base size is its content's is taken there
+   * at the size Yoga took, its content fitted to no room, and not at its
+   * max-content width (`Laid.fitted`): a `flex: none` box of two floats
+   * counted at its widest made a `width: min-content` flex box half as
+   * wide again as Chrome has it. A row that is truly as wide as nothing is
+   * taken the same way, and is laid out as Yoga has it.
+   */
+  probe: boolean;
+}
+
+/** What is between the border boxes of a line's items along the main
+ *  axis: the gaps, and their margins, an `auto` one none — which is what
+ *  it is while the line is shared out (CSS Flexbox 9.7, 8.1). */
+function betweenOf(
+  items: readonly { box: Box }[],
   row: boolean,
-  /** The flex box's size along the main axis. */
-  room: number,
-  /** The gap between two items. */
   gap: number,
-  hold: Hold,
-  /** Lay the flex box out, as its nodes now are. */
-  ask: () => void,
-): boolean {
-  // what is between the items' border boxes: the gaps, and their margins
-  let between = gap * (items.length - 1);
-  // the line's size with each item that may shrink at its minimum
-  let least = 0;
-  let shrinking = 0;
-  let over = false;
-  for (const { box, laid } of items) {
+): number {
+  let between = gap * Math.max(0, items.length - 1);
+  for (const { box } of items) {
     const style = box.style;
-    // an `auto` margin is none on a line with no room (8.1)
     if (row) {
       if (style.marginLeft !== AUTO) between += box.marginLeft;
       if (style.marginRight !== AUTO) between += box.marginRight;
@@ -1765,59 +1906,377 @@ function stoppedLine(
       if (style.marginTop !== AUTO) between += box.marginTop;
       if (style.marginBottom !== AUTO) between += box.marginBottom;
     }
-    if (!shrinks(box, laid)) least += laid.main;
-    else {
-      const min = leastOf(box, laid, row);
-      shrinking += 1;
-      least += min;
-      if (laid.main > min + 0.01) over = true;
-    }
   }
-  // two at the least: what is left of a sum of one, less it, is 0 exactly.
-  // A line within a thousandth of a pixel of room is short of it: what
-  // Yoga makes of that is as far out, and the minimums are that near
-  if (shrinking < 2 || !over || !(between + least > room - SHORT)) {
-    return false;
-  }
+  return between;
+}
 
-  const stopped = items.filter(({ box, laid }) => shrinks(box, laid));
-  for (const { node } of stopped) node.setFlexShrink(0);
-  ask();
-  // each item its hypothetical size, which one that does not shrink is on
-  // a line short of room — where Yoga may have grown it, on a line it took
-  // for having some
-  let wider = false;
-  least = 0;
-  for (const { box, node, laid } of items) {
-    const hypothetical = row
-      ? node.getComputedWidth()
-      : node.getComputedHeight();
-    if (!shrinks(box, laid)) least += hypothetical;
-    else {
-      least += leastOf(box, laid, row);
-      if (laid.main > hypothetical && !nearly(laid.main, hypothetical)) {
-        wider = true;
-      }
-    }
+/**
+ * Share out the one line of a box that does not wrap as CSS Flexbox 9.7
+ * does, where Yoga's answer for it may not be that, and freeze every item
+ * at the size it comes to; whether Yoga was asked again.
+ *
+ * Yoga 3.2.1 shares a line out in two passes where 9.7 goes round until
+ * no item's limit stops it, and each pass has its own way of coming out
+ * elsewhere:
+ *
+ * - the first takes each item a limit stops out of the sum of the flex
+ *   factors as it goes, and divides what the line is short of by that
+ *   running sum, but takes the item's size off what the line is short of
+ *   only once it has been round them all (react/yoga#2006, put right on
+ *   Yoga's `main` behind an errata bit and in no release). Every item
+ *   after the first one stopped is shrunk too far for it, and may be
+ *   stopped too: `width: 100px` three times with `min-width` 95px, 45px
+ *   and 0 in a row of 150 was 100, 100 and 100 wide, and overflowed it,
+ *   where 9.7 has 95, 45 and 10 — with every item stopped, the line was
+ *   left no shorter than it started, and the second pass shared out
+ *   nothing. Where what is left of the sum is a float's rounding of
+ *   nothing, the second pass divided by that, and each item came out
+ *   billions of pixels wide, or none;
+ * - it weighs an item's share of a shortfall by its flex base size where
+ *   the item is stopped by a limit before it is shrunk, and adds it to the
+ *   sum at its size within the limit, or the other way round: `width:
+ *   200px; max-width: 110.992px` beside `200px` within `62.706px`, each
+ *   with a `min-width`, in a row of 50 were 76.67 and 43.31, where 9.7
+ *   shrinks both from 200 and has them at their minimums;
+ * - a limit that is more than the flex base size stops the item before
+ *   any sharing out, and Yoga shares out from there: `flex: 1;
+ *   min-width: 200px` beside a `flex: 1` in a row of 600 was 400 and
+ *   200, where each grows from 0 and is 300;
+ * - where the shrink factors come to less than 1, the line keeps that
+ *   part of what it is short of (9.7, step 4b), and Yoga shares all of it
+ *   out: a `flex-shrink: 0.5` alone was as wide as its row, where it
+ *   keeps half of what it overflows by.
+ *
+ * Which is why a line is looked at only where Yoga's answer shows one of
+ * these could be at work (`unshared`), and else left as it is: a line
+ * none of whose items is stopped, that has been shared out, whose items'
+ * limits do not clamp their flex base sizes, and whose shrink factors come
+ * to 1 or more is shared out by Yoga as by 9.7, but for the weight of an
+ * item's padding in a shortfall, which 9.7 leaves out and Yoga does not.
+ *
+ * Each item's flex base size is what its style says it is, or its
+ * content's size as the measure function found it (`Laid.sized`), and
+ * where neither is known, Yoga is asked for the line with no limits and
+ * nothing flexing, where each item is that size (`askBases`). An item held
+ * at its automatic minimum is frozen there already (`holdAt`), and the
+ * rest are shared out around it.
+ */
+function resolveLine(
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  row: boolean,
+  line: FlexLine,
+  /** The size along the main axis Yoga laid the line out in. */
+  room: number,
+  hold: Hold,
+  /** Lay the flex box out, as its nodes now are. */
+  ask: () => void,
+): boolean {
+  if (!unshared(items, row, room - line.between, line.probe)) return false;
+  let unknown = false;
+  for (const { box, laid } of items) {
+    laid.base = baseOf(box, laid, row, line.probe);
+    if (Number.isNaN(laid.base) && Number.isNaN(laid.held)) unknown = true;
   }
-  const freeze = wider && between + least > room - SHORT;
-  for (const { box, node, laid } of stopped) {
-    if (freeze) freezeAt(node, laid, row, leastOf(box, laid, row), hold);
-    else node.setFlexShrink(box.style.flexShrink);
+  if (unknown) askBases(items, row, ask);
+  const sizes = shareLine(items, row, line);
+  if (items.every(({ laid }, i) => Math.abs(sizes[i] - laid.main) <= NEAR)) {
+    // Yoga's answer, which asking for the bases has to be put back to
+    if (unknown) ask();
+    return unknown;
   }
+  line.resolved = true;
+  freezeLine(items, row, sizes, hold);
   ask();
   return true;
 }
 
-/** Whether Yoga may shrink an item: it has a shrink factor, and is not
- *  frozen (`freezeAt`). */
-function shrinks(box: Box, laid: Laid): boolean {
-  return box.style.flexShrink > 0 && Number.isNaN(laid.held);
+/** Freeze each item of a line at the size it was shared out to, but for
+ *  one held at its automatic minimum whose flex base size is not known,
+ *  which is frozen there already. */
+function freezeLine(
+  items: readonly { node: YogaNode; laid: Laid }[],
+  row: boolean,
+  sizes: readonly number[],
+  hold: Hold,
+): void {
+  items.forEach(({ node, laid }, i) => {
+    if (Number.isNaN(laid.base)) return;
+    freezeAt(node, laid, row, sizes[i], hold);
+    // its content's size, where that is what it came to (`Laid.auto`)
+    laid.auto = sizes[i] <= laid.minimum + NEAR;
+  });
 }
 
-/** How near to its room a line may be and be short of it (`stoppedLine`),
- *  or have room to spare (`cappedLines`). */
+/** How near to its room a line may be and have room to spare
+ *  (`cappedLines`). */
 const SHORT = 0.001;
+
+/** Share a line this engine has shared out again from its items' flex base
+ *  sizes, and freeze each item at its size: where one is since held at its
+ *  content's size, the rest of the line is shared out around it. */
+function shareOut(
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  row: boolean,
+  line: FlexLine,
+  hold: Hold,
+): void {
+  const sizes = shareLine(items, row, line);
+  freezeLine(items, row, sizes, hold);
+}
+
+/** Each item's size along the main axis as 9.7 shares the line out from
+ *  their flex base sizes (`Laid.base`); one held at its automatic minimum
+ *  is frozen there. */
+function shareLine(
+  items: readonly { box: Box; laid: Laid }[],
+  row: boolean,
+  line: FlexLine,
+): number[] {
+  const flexing: Flexing[] = items.map(({ box, laid }) => {
+    // an automatic minimum it is held to is its minimum, which 9.7 freezes
+    // it at where the line shares out less to it — and not before, which
+    // would leave it out of the free space the line started with (4b)
+    let least = leastOf(box, laid, row);
+    if (!Number.isNaN(laid.minimum)) least = Math.max(least, laid.minimum);
+    return {
+      base: laid.base,
+      least,
+      most: Math.max(mostOf(box, laid, row), least),
+      extra: row ? box.horizontalExtra : box.verticalExtra,
+      grow: box.style.flexGrow,
+      shrink: box.style.flexShrink,
+      frozen: Number.isNaN(laid.base) ? laid.held : NaN,
+    };
+  });
+  let room = line.size;
+  if (Number.isNaN(room)) {
+    // down a column that is as tall as its items, within its limits: the
+    // sum of their hypothetical sizes (9.9.1)
+    room = line.between;
+    for (const item of flexing) room += hypotheticalOf(item);
+    room = Math.max(line.floor, Math.min(line.ceiling, room));
+  }
+  return resolveLengths(flexing, room - line.between);
+}
+
+/**
+ * Whether Yoga's answer for the one line of a box that does not wrap may
+ * not be what CSS Flexbox 9.7 makes of it (`resolveLine`): where an item
+ * has a limit of its own along the main axis, which 9.7 is then asked —
+ * sums of numbers, where each item's flex base size is known — and where
+ * none has, what shows in Yoga's answer: an item a limit stopped as the
+ * line was shared out, which with none of its own is its padding and
+ * borders, a line not shared out while an item may yet flex the way it is
+ * out, or flex factors that come to less than 1, which Yoga shares out as
+ * though they came to 1 — or, for one item that may grow and shrink, from
+ * a flex basis of nothing.
+ */
+function unshared(
+  items: readonly { box: Box; laid: Laid }[],
+  row: boolean,
+  /** The room for the items' border boxes. */
+  room: number,
+  /** Whether the line is a min-content probe's (`FlexLine.probe`). */
+  probe: boolean,
+): boolean {
+  let sum = 0;
+  for (const { laid } of items) sum += laid.main;
+  const over = sum > room + NEAR;
+  const under = sum < room - NEAR;
+  let grows = 0;
+  let shrinks = 0;
+  let growable = false;
+  for (const { box, laid } of items) {
+    // held at its content's size, and frozen (`holdAt`)
+    if (!Number.isNaN(laid.held)) continue;
+    if (!Number.isNaN(laid.least) || !Number.isNaN(laid.most)) return true;
+    const { flexGrow: grow, flexShrink: shrink } = box.style;
+    const least = leastOf(box, laid, row);
+    const base = baseOf(box, laid, row, probe);
+    const size = laid.main;
+    grows += grow;
+    shrinks += shrink;
+    // stopped by its padding where it was shrunk to it, and not where it
+    // is that size unflexed
+    if (
+      shrink > 0 &&
+      !under &&
+      size <= least + NEAR &&
+      !(base <= size + NEAR)
+    ) {
+      return true;
+    }
+    if (over && shrink > 0 && size > least + NEAR) return true;
+    if (under && grow > 0) growable = true;
+  }
+  return (
+    (growable && grows >= 1) ||
+    (!under && shrinks > 0 && shrinks < 1) ||
+    (!over && grows > 0 && grows < 1)
+  );
+}
+
+/** How near two sizes along the main axis are the same, as Yoga's float32s
+ *  have them. */
+const NEAR = 0.01;
+
+/** An item's flex base size, its border box's, where this engine knows it:
+ *  what its style says, or its content's size as last measured — fitted
+ *  to no room, in a min-content probe (`FlexLine.probe`) — and no less than
+ *  its padding and borders, as Yoga has it. Else NaN. */
+function baseOf(box: Box, laid: Laid, row: boolean, probe: boolean): number {
+  const extra = row ? box.horizontalExtra : box.verticalExtra;
+  const content = probe ? laid.fitted : laid.content;
+  return Math.max(laid.sized ? content : laid.basis, extra);
+}
+
+/**
+ * Give each item that is not frozen the flex base size Yoga makes of it,
+ * where this engine does not know it (`baseOf`): the line laid out with no
+ * limit on any of them along the main axis and none of them flexing, where
+ * each is that size. Their limits and flex factors are put back after.
+ */
+function askBases(
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  row: boolean,
+  ask: () => void,
+): void {
+  const open = items.filter(({ laid }) => Number.isNaN(laid.held));
+  for (const { node } of open) {
+    if (row) {
+      node.setMinWidth(Number.NaN);
+      node.setMaxWidth(Number.NaN);
+    } else {
+      node.setMinHeight(Number.NaN);
+      node.setMaxHeight(Number.NaN);
+    }
+    node.setFlexGrow(0);
+    node.setFlexShrink(0);
+  }
+  ask();
+  for (const { box, node, laid } of open) {
+    if (Number.isNaN(laid.base)) {
+      laid.base = row ? node.getComputedWidth() : node.getComputedHeight();
+    }
+    if (!Number.isNaN(laid.least)) {
+      if (row) node.setMinWidth(laid.least);
+      else node.setMinHeight(laid.least);
+    }
+    if (!Number.isNaN(laid.most)) {
+      if (row) node.setMaxWidth(laid.most);
+      else node.setMaxHeight(laid.most);
+    }
+    node.setFlexGrow(box.style.flexGrow);
+    node.setFlexShrink(box.style.flexShrink);
+  }
+}
+
+/** An item as its line is shared out (`resolveLengths`), each size its
+ *  border box's along the main axis. */
+interface Flexing {
+  base: number;
+  /** Its least size, no less than `extra`, and its most, no less than
+   *  that. */
+  least: number;
+  most: number;
+  /** Its padding and borders. */
+  extra: number;
+  grow: number;
+  shrink: number;
+  /** The size it is frozen at from the start, or NaN. */
+  frozen: number;
+}
+
+/** An item's hypothetical main size: its flex base size within its limits
+ *  (CSS Flexbox 9.2, step 3), or where it is frozen, that size. */
+function hypotheticalOf(item: Flexing): number {
+  return Number.isNaN(item.frozen)
+    ? Math.max(item.least, Math.min(item.most, item.base))
+    : item.frozen;
+}
+
+/**
+ * Resolve the flexible lengths of a line (CSS Flexbox 9.7): each item's
+ * size along the main axis, sharing out the room its border boxes have
+ * from their flex base sizes, and going round again with each item a limit
+ * stops frozen at it until none is — the minimums where the line is short
+ * of more than the maximums give back, and the other way round.
+ */
+function resolveLengths(line: readonly Flexing[], room: number): number[] {
+  const count = line.length;
+  const size = line.map(hypotheticalOf);
+  let sum = 0;
+  for (const s of size) sum += s;
+  // step 1: grow where the line has room at the items' hypothetical sizes
+  const grow = sum < room;
+  // step 2: an item that does not flex, or would flex away from its limit,
+  // is frozen at its hypothetical size — a flex base size Yoga worked out
+  // being as near to that as its float32s come, and no further
+  const frozen = line.map(
+    (item, i) =>
+      !Number.isNaN(item.frozen) ||
+      (grow ? item.grow : item.shrink) === 0 ||
+      (grow ? item.base > size[i] + NEAR : item.base < size[i] - NEAR),
+  );
+  const free = (): number => {
+    let left = room;
+    for (let i = 0; i < count; i++) left -= frozen[i] ? size[i] : line[i].base;
+    return left;
+  };
+  // step 3
+  const initial = free();
+  const off = new Array<number>(count).fill(0);
+  for (;;) {
+    // step 4a
+    let factors = 0;
+    let open = false;
+    for (let i = 0; i < count; i++) {
+      if (frozen[i]) continue;
+      open = true;
+      factors += grow ? line[i].grow : line[i].shrink;
+    }
+    if (!open) break;
+    // 4b: flex factors that come to less than 1 share out that part of the
+    // free space the line started with
+    let left = free();
+    if (factors < 1) {
+      const part = initial * factors;
+      if (Math.abs(part) < Math.abs(left)) left = part;
+    }
+    // 4c: shared by the grow factors, or by the shrink factors each times
+    // the item's inner flex base size
+    let scaled = 0;
+    if (!grow) {
+      for (let i = 0; i < count; i++) {
+        if (!frozen[i])
+          scaled += line[i].shrink * (line[i].base - line[i].extra);
+      }
+    }
+    // 4d: each within its limits, and how far that took it
+    let violation = 0;
+    for (let i = 0; i < count; i++) {
+      if (frozen[i]) continue;
+      const item = line[i];
+      let target = item.base;
+      if (grow) target += (left * item.grow) / factors;
+      else if (scaled > 0) {
+        target -=
+          (Math.abs(left) * item.shrink * (item.base - item.extra)) / scaled;
+      }
+      size[i] = Math.max(item.least, Math.min(item.most, target));
+      off[i] = size[i] - target;
+      violation += off[i];
+    }
+    // 4e: freeze those stopped the way most of them were, or all of them
+    for (let i = 0; i < count; i++) {
+      if (frozen[i]) continue;
+      if (violation === 0 || (violation > 0 ? off[i] > 0 : off[i] < 0)) {
+        frozen[i] = true;
+      }
+    }
+  }
+  return size;
+}
 
 /** The least an item may be along the main axis, its border box: the
  *  minimum of its own, and no less than its padding and borders. */
@@ -1827,15 +2286,17 @@ function leastOf(box: Box, laid: Laid, row: boolean): number {
 }
 
 /**
- * Put right the lines of a flex box on which every item that may grow is
- * stopped by its maximum and Yoga made them smaller for it; whether Yoga
- * was asked again. Each such line is laid out with every item of it that
+ * Put right the lines of a flex box that wraps on which every item that
+ * may grow is stopped by its maximum and Yoga made them smaller for it;
+ * whether Yoga was asked again. The one line of a box that does not wrap
+ * is shared out by 9.7 here where Yoga's answer may not be its
+ * (`resolveLine`), which puts right this and more. Each such line is laid out with every item of it that
  * may grow frozen at its maximum, which is where CSS Flexbox leaves them
  * (9.7, step 4): the line has room left over with every one of them as
  * large as it goes. It is also where Yoga leaves them itself, where its
  * rounding is not below 0.
  *
- * It is `stoppedLine`'s rounding the other way. Yoga's first pass takes
+ * It is a float's rounding of nothing. Yoga's first pass takes
  * each item its maximum stops out of the sum of the grow factors, and the
  * second divides the room still left by what is left of the sum: with
  * every item stopped, `(a + b + c) - a - b - c` in float32s. Where that is
@@ -1847,8 +2308,8 @@ function leastOf(box: Box, laid: Laid, row: boolean): number {
  * halves and quarters of them, are exact, so a box whose factors are those
  * is not looked at (`exactSums`).
  *
- * What makes a line one to put right is Yoga's answer, looked at as
- * `stoppedLine` looks at its. Every item of the line that may grow has a
+ * What makes a line one to put right is Yoga's answer. Every item of
+ * the line that may grow has a
  * maximum, and the line has room to spare with each of them at it. And
  * one of them came out short of its maximum and no larger than its
  * hypothetical size (9.7, step 2), which Yoga, sharing out room, makes no

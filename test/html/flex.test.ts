@@ -1012,6 +1012,221 @@ test('a flex line every item of which its own maximum stops is laid out at those
   near(box('c6').width, 80, 'and one with an item of no maximum grows it');
 });
 
+test('a flex line is shared out as CSS Flexbox 9.7 has it where Yoga comes out elsewhere', async () => {
+  // Yoga 3.2.1 shares a line out in two passes where 9.7 goes round until
+  // no item's limit stops it. Its first divides by the sum of the flex
+  // factors as it takes stopped items out of it, and takes their sizes off
+  // what the line is short of only after (react/yoga#2006); it weighs an
+  // item by its size within its limits; it shares out the whole of what a
+  // line is short of whatever the factors come to; and it starts the one
+  // item that may grow and shrink from nothing. Each line here is laid
+  // out as Chrome lays it out
+  const row = (box: string, ...items: string[]) =>
+    `<div style="display:flex;${box}">` +
+    items.map((s) => `<div ${s}></div>`).join('') +
+    '</div>';
+  const column = (box: string, ...items: string[]) =>
+    `<div style="display:flex;flex-direction:column;width:30px;${box}">` +
+    items.map((s) => `<div ${s}></div>`).join('') +
+    '</div><div style="height:200px"></div>';
+  const content = (width: number) =>
+    `><div style="width:${width}px;height:6px"></div`;
+  const { node } = await render(
+    '<style>body{margin:0} .r>div>div{height:6px} .c>div>div{width:6px}</style>' +
+      '<div class="r">' +
+      // each item after the first one a minimum stops was shrunk too far,
+      // and stopped too, and with all of them stopped the line was left as
+      // wide as it started: 100, 100 and 100
+      row(
+        'width:150px',
+        'id="a1" style="width:100px;min-width:95px"',
+        'id="a2" style="width:100px;min-width:45px"',
+        'id="a3" style="width:100px;min-width:0"',
+      ) +
+      // shrunk from 200, each, to its minimum: Yoga shrank them from their
+      // maximums, weighed by 200, to 76.67 and 43.31
+      row(
+        'width:50px',
+        'id="b1" style="width:200px;max-width:110.992px;min-width:40.1px"',
+        'id="b2" style="width:200px;max-width:62.705625px;min-width:30.3px"',
+      ) +
+      // grown from 0, each, to a half: Yoga grew the first from its
+      // minimum, to 400 and 200
+      row(
+        'width:600px',
+        'id="c1" style="flex:1;min-width:200px"',
+        'id="c2" style="flex:1"',
+      ) +
+      row(
+        'width:300px',
+        'id="d1" style="flex:1 1 0;min-width:120px"',
+        'id="d2" style="flex:1 1 0;min-width:130px"',
+        'id="d3" style="flex:1 1 0"',
+      ) +
+      // a shrink factor of a half shares out half of what the line is
+      // short of, and a grow factor of 0.085 that much of its room: Yoga
+      // shared out all of the one, and grew the other from nothing
+      row('width:100px', 'id="e1" style="width:200px;flex-shrink:0.5"') +
+      row(
+        'width:364px',
+        `id="f1" style="flex-basis:248px;flex-grow:0.085;margin-right:15px"${content(29)}`,
+      ) +
+      row(
+        'width:400px',
+        'id="g1" style="flex:0.3 1 0;max-width:50px"',
+        'id="g2" style="flex:0.3 1 0"',
+      ) +
+      // its content's width is its flex base size, more than its maximum,
+      // and it shrinks from that
+      row(
+        'width:200px',
+        `id="h1" style="max-width:150px;min-width:0"${content(300)}`,
+        'id="h2" style="width:150px"',
+      ) +
+      // as wide as the row, and each item short of its limits: and still
+      // not what 9.7 makes of it
+      row(
+        'width:145px',
+        `id="i1" style="width:22px;flex-grow:1.811;flex-shrink:0"${content(145.765)}`,
+        'id="i2" style="width:222px;min-width:0;flex-shrink:3.259"',
+        `id="i3" style="min-width:0;flex-grow:3.236"${content(214)}`,
+      ) +
+      // a flex base size as small as the item's padding, as near as Yoga's
+      // float32s come to it, is not under it
+      row(
+        'width:48px',
+        `id="j1" style="min-width:13px;max-width:51px;flex-shrink:0.238;padding:0 9px 0 0.698px;margin-right:6.471px"${content(192.371)}`,
+        `id="j2" style="width:63.276%;padding:0 26.991px 0 24px;border-left:6px solid;box-sizing:border-box"${content(20)}`,
+      ) +
+      '</div><div class="c">' +
+      // and down a column
+      column(
+        'height:150px',
+        'id="k1" style="height:100px;min-height:95px"',
+        'id="k2" style="height:100px;min-height:45px"',
+        'id="k3" style="height:100px;min-height:0"',
+      ) +
+      column(
+        'max-height:50px',
+        'id="l1" style="height:51.605px;min-height:46.602px"',
+        'id="l2" style="height:111.78px;min-height:12.148px;flex-shrink:0.5;flex-grow:1"',
+      ) +
+      '</div>',
+    700,
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  const near = (id: string, expected: number, message: string) => {
+    const b = box(id);
+    // `k` and `l` are down a column
+    const actual = /^[kl]/.test(id) ? b.height : b.width;
+    assert.ok(
+      Math.abs(actual - expected) < 0.01,
+      `${message} (#${id}): ${actual}, not ${expected}`,
+    );
+  };
+  near('a1', 95, 'stopped by its minimum');
+  near('a2', 45, 'and the next, by its own');
+  near('a3', 10, 'and the last has what is left');
+  near('b1', 40.1, 'shrunk from a flex base size over its maximum');
+  near('b2', 30.3, 'and the other');
+  near('c1', 300, 'grown from 0, past its minimum');
+  near('c2', 300, 'beside one grown as far');
+  near('d1', 120, 'a third of the row is under its minimum');
+  near('d2', 130, 'and so is the next');
+  near('d3', 50, 'and the last has what is left');
+  near('e1', 150, 'shrunk by half of what the row is short of');
+  near('f1', 256.585, 'grown by 0.085 of the room left');
+  near('g1', 50, 'grown to its maximum');
+  near('g2', 120, 'and 0.3 of what was free');
+  near('h1', 133.333, 'shrunk from its content, past its maximum');
+  near('h2', 66.667, 'beside one that shrinks by a third as much');
+  near('i1', 22, 'an item that does not shrink');
+  near('i2', 0, 'one shrunk to nothing');
+  near('i3', 123, 'and one with the rest');
+  near('j1', 22.698, 'at its minimum');
+  near('j2', 56.991, 'beside one as wide as its padding');
+  near('k1', 95, 'down a column, stopped by its minimum');
+  near('k2', 45, 'and the next, by its own');
+  near('k3', 10, 'and the last has what is left');
+  near('l1', 46.602, 'at its minimum, in a column with a maximum');
+  near('l2', 55.088, 'and one shrunk by half of what is left');
+});
+
+test("a flex item's limits and flex basis are the ones its style says", async () => {
+  // what reaches the line is what CSS says each of these is, where Yoga was
+  // told otherwise
+  const column = (box: string, ...items: string[]) =>
+    `<div style="display:flex;flex-direction:column;width:30px;${box}">` +
+    items.map((s) => `<div ${s}></div>`).join('') +
+    '</div><div style="height:250px"></div>';
+  const { node } = await render(
+    '<style>body{margin:0} .c>div>div{width:6px}</style><div class="c">' +
+      // a minimum more than a maximum is the minimum (CSS 2.1 10.7): Yoga
+      // held the item at its maximum
+      column(
+        'height:100px',
+        'id="a1" style="min-height:12px;max-height:5px"',
+        'id="a2" style="height:20px"',
+      ) +
+      // a percentage of a column's definite height, which was not one
+      column(
+        'height:200px',
+        'id="b1" style="flex-basis:90px;min-height:75%;flex-shrink:2"',
+        'id="b2" style="height:100px"',
+      ) +
+      // a percentage flex basis of a column of no definite height is
+      // `content`, whatever height the item has (CSS Flexbox 7.2.3, 9.2.3):
+      // Yoga took 81% of the column's maximum
+      column(
+        'max-height:54px',
+        'id="c1" style="height:198px;flex-basis:81%;flex-shrink:0;padding-top:29px;box-sizing:border-box"',
+      ) +
+      '</div>' +
+      // and a percentage of a row's width is a content box's, which the
+      // item's padding goes on top of
+      '<div style="display:flex;width:300px">' +
+      '<div id="d1" style="height:6px;flex:0 0 50%;padding-left:20px"></div>' +
+      '<div id="d2" style="height:6px;flex:1"></div></div>',
+  );
+  const el = view(node);
+  const box = (id: string) => boxOf(el, id);
+  assert.deepStrictEqual(
+    [box('a1').height, box('a2').height],
+    [12, 20],
+    'a minimum over a maximum',
+  );
+  assert.deepStrictEqual(
+    [box('b1').height, box('b2').height],
+    [150, 50],
+    'a percentage minimum of a definite height',
+  );
+  assert.strictEqual(box('c1').height, 29, 'its content, and its padding');
+  assert.deepStrictEqual(
+    [box('d1').width, box('d2').width],
+    [170, 130],
+    'half the row and its padding',
+  );
+});
+
+test('a flex box measured for its min-content width counts each item at its own', async () => {
+  // A box's min-content width is measured by laying it out in no room, and
+  // what a flex item gives it there is its min-content width (CSS Flexbox
+  // 9.9.1), not a share of a line: an item that does not shrink, its flex
+  // base size its content's widest, two floats side by side, made this box
+  // 90 wide where Chrome has 60 — the floats one above the other, the gap
+  // and the 10 beside them
+  const { node } = await render(
+    '<style>body{margin:0} .f{float:left;width:30px;height:10px}</style>' +
+      '<div id="g" style="display:flex;width:min-content;column-gap:20px">' +
+      '<div id="h" style="flex:0 0 auto"><div class="f"></div>' +
+      '<div class="f"></div></div><div style="width:10px"></div></div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'g').width, 60, 'its min-content width');
+  assert.strictEqual(boxOf(el, 'h').width, 60, 'and the item its widest in it');
+});
+
 test("a flex box is no narrower than its items' widths make it", async () => {
   // What an item with a width of its own gives the size of its flex box is
   // that width (CSS Flexbox 9.9.3), and a percentage `max-width` on a box
