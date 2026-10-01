@@ -3059,6 +3059,10 @@ const PREFERRED = new WeakMap<Box, number>();
  * or is indented, a block with widths of its own.
  */
 export function exactMinContent(box: Box, fonts: FontsLike): number | null {
+  // a flex row's is its items' side by side, a grid's its columns', and a
+  // replaced element has no words: read as its widest word, a row of two
+  // in a flex column's item was as narrow as the wider of them
+  if (box.kind !== 'block' && box.kind !== 'table-cell') return null;
   if (hasWidths(box.style) || contained(box, CONTAIN_WIDTH)) return null;
   const inner = exactWords(box, fonts);
   return inner === null ? null : inner + box.horizontalExtra;
