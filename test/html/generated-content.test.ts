@@ -197,6 +197,31 @@ test('a <q> is in quotation marks, and a nested one in the next pair', async () 
   assert.strictEqual(text.trim(), '\u201csay \u2018hi\u2019\u201d');
 });
 
+test("a <q>'s marks are its language's", async () => {
+  // `quotes: auto`, the initial value (CSS Content 3, 2.1): the marks of
+  // the element's language, from CLDR as Chrome has them, a region's
+  // where they differ from its language's, and English's for one with
+  // none of its own
+  const marks = async (markup: string) => (await documentText(markup)).trim();
+  const nested = '<q>a <q>b</q></q>';
+  assert.strictEqual(await marks(`<p lang="fr">${nested}</p>`), '«a «b»»');
+  assert.strictEqual(await marks(`<p lang="fr-CH">${nested}</p>`), '«a ‹b›»');
+  assert.strictEqual(await marks(`<p lang="de">${nested}</p>`), '„a ‚b‘“');
+  assert.strictEqual(await marks(`<p lang="ja">${nested}</p>`), '「a 『b』」');
+  assert.strictEqual(await marks(`<p lang="en-GB">${nested}</p>`), '“a ‘b’”');
+  // the page's own language, and a pair a rule sets over it
+  assert.strictEqual(
+    await marks(
+      '<meta http-equiv="content-language" content="ru"><p>' + nested + '</p>',
+    ),
+    '«a „b“»',
+  );
+  assert.strictEqual(
+    await marks(`<style>p{quotes:"<" ">"}</style><p lang="fr">${nested}</p>`),
+    '<a <b>>',
+  );
+});
+
 test('::before and ::after hold their content, around the element', async () => {
   assert.strictEqual(
     await documentText(

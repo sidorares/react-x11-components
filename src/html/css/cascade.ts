@@ -2666,27 +2666,31 @@ const PSEUDOS = {
       .map((range) => range.trim().replace(/^['"]|['"]$/g, ''))
       .filter((range) => range.length > 0)
       .map((range) => asciiLower(range).split('-'));
-    let root = el;
-    for (let node: Element | null = el; node;) {
-      const value = node.attribs['xml:lang'] ?? node.attribs.lang;
-      if (value != null) {
-        if (!value) return ranges.some((range) => range[0] === '');
-        const tag = asciiLower(value).split('-');
-        return ranges.some((range) => langRangeMatches(tag, range));
-      }
-      root = node;
-      const parent: Element['parent'] = node.parent;
-      node = parent && isTag(parent as Element) ? (parent as Element) : null;
-    }
-    // with no element saying, the document's, as its `<meta>` sets it —
-    // searched from the document, where a fragment's `<meta>` is a
-    // sibling of what it covers
-    const pragma = pragmaLanguage(root.parent ?? root);
-    if (!pragma) return ranges.some((range) => range[0] === '');
-    const tag = asciiLower(pragma).split('-');
+    const value = languageOf(el);
+    if (!value) return ranges.some((range) => range[0] === '');
+    const tag = asciiLower(value).split('-');
     return ranges.some((range) => langRangeMatches(tag, range));
   },
 };
+
+/**
+ * An element's language: the `lang` or `xml:lang` of the nearest element
+ * from it up that says one, or with none saying, the document's, as its
+ * `<meta http-equiv="content-language">` sets it — searched from the
+ * document, where a fragment's `<meta>` is a sibling of what it covers.
+ * '' where none does, or the nearest says ''.
+ */
+export function languageOf(el: Element): string {
+  let root = el;
+  for (let node: Element | null = el; node;) {
+    const value = node.attribs['xml:lang'] ?? node.attribs.lang;
+    if (value != null) return value;
+    root = node;
+    const parent: Element['parent'] = node.parent;
+    node = parent && isTag(parent as Element) ? (parent as Element) : null;
+  }
+  return pragmaLanguage(root.parent ?? root);
+}
 
 /** A length in a unit of the viewport: a number, then the unit, and no
  *  more of a name after it. */

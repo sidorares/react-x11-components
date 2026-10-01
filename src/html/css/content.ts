@@ -35,9 +35,166 @@ export interface CounterChange {
   counted?: true;
 }
 
-/** English's quotation marks, outer pair first: `quotes`' initial value,
- *  which CSS 2.1 leaves to the user agent. */
+/** English's quotation marks, outer pair first: what `quotes: auto` is for
+ *  a language with none of its own, and for none. */
 export const DEFAULT_QUOTES: readonly string[] = ['“', '”', '‘', '’'];
+
+/**
+ * Each language's quotation marks, outer pair then inner, where they are
+ * not its parent's — `fr-ch`'s where they are not `fr`'s, `fr`'s where
+ * they are not English's — from CLDR's delimiters, which Chrome reads
+ * through ICU. What `quotes: auto` makes of the element's language (CSS
+ * Content 3, 2.1): `<q>` in a French page is «un ‹deux› trois».
+ */
+const QUOTES_BY_LANGUAGE: Record<string, string> = {
+  agq: '„”‚’',
+  am: '«»‹›',
+  ar: '”“’‘',
+  ast: '«»“”',
+  'az-arab': '«»‹›',
+  'az-cyrl': '«»‹›',
+  bas: '«»„“',
+  be: '«»„“',
+  bg: '„“„“',
+  blo: '«»“”',
+  bm: '«»“”',
+  'bm-nkoo': '“”‘’',
+  br: '«»“”',
+  bs: '„”‘’',
+  'bs-cyrl': '„“‚‘',
+  bua: '«»„“',
+  ca: '«»“”',
+  cs: '„“‚‘',
+  cv: '«»“”',
+  de: '„“‚‘',
+  dsb: '„“‚‘',
+  dua: '«»‘’',
+  dyo: '«»“”',
+  el: '«»“”',
+  'el-polyton': '«»‘’',
+  eo: '“”«»',
+  'es-us': '«»“”',
+  et: '„“‚‘',
+  eu: '«»“”',
+  ewo: '«»“”',
+  fa: '«»‹›',
+  ff: '„”‚’',
+  'ff-adlm': '“”‘’',
+  fi: '””’’',
+  fr: '«»«»',
+  'fr-ca': '«»”“',
+  'fr-ch': '«»‹›',
+  fur: '‘’“”',
+  gsw: '«»‹›',
+  he: '””’’',
+  hr: '„“‚‘',
+  hsb: '„“‚‘',
+  ht: '«»«»',
+  hu: '„”»«',
+  hy: '«»«»',
+  ia: '‘’“”',
+  ie: '«»“”',
+  is: '„“‚‘',
+  it: '«»“”',
+  ja: '「」『』',
+  jgo: '«»‹›',
+  ka: '„“«»',
+  kab: '«»“”',
+  kk: '«»“”',
+  'kk-arab': '»«›‹',
+  kkj: '«»‹›',
+  ksf: '«»‘’',
+  ksh: '„“‚‘',
+  ky: '«»„“',
+  lag: '””’’',
+  lb: '„“‚‘',
+  lij: '«»“”',
+  lld: '”“’‘',
+  lt: '„“„“',
+  luy: '„“‚‘',
+  mg: '«»“”',
+  mk: '„“‚‘',
+  'ms-arab': '”“’‘',
+  mua: '«»“”',
+  mzn: '«»‹›',
+  nb: '«»‘’',
+  nds: '„“‚‘',
+  nl: '‘’‘’',
+  nmg: '„”«»',
+  nn: '«»‘’',
+  nnh: '«»“”',
+  no: '«»‘’',
+  oc: '«»«»',
+  os: '«»„“',
+  pl: '„”«»',
+  pms: '«»“”',
+  prg: '„“„“',
+  'pt-ao': '«»“”',
+  'pt-ch': '«»“”',
+  'pt-cv': '«»“”',
+  'pt-gq': '«»“”',
+  'pt-gw': '«»“”',
+  'pt-lu': '«»“”',
+  'pt-mo': '«»“”',
+  'pt-mz': '«»“”',
+  'pt-pt': '«»“”',
+  'pt-st': '«»“”',
+  'pt-tl': '«»“”',
+  rm: '«»‹›',
+  rn: '””’’',
+  ro: '„”«»',
+  ru: '«»„“',
+  rw: '«»‘’',
+  sah: '«»„“',
+  sc: '«»“”',
+  sdh: '«»‹›',
+  se: '””’’',
+  sg: '«»“”',
+  sgs: '„“„“',
+  shi: '«»„”',
+  sk: '„“‚‘',
+  sl: '„“‚‘',
+  sn: '””’’',
+  sr: '„”’’',
+  st: '“’“”',
+  sv: '””’’',
+  syr: '”“’‘',
+  szl: '„”»«',
+  ti: '«»“”',
+  'ti-er': '‘’“”',
+  tk: '“”“”',
+  tn: '‘’“”',
+  tyv: '«»„“',
+  ug: '»«›‹',
+  uk: '«»„“',
+  ur: '”“’‘',
+  uz: '“”’‘',
+  'uz-arab': '“”‘’',
+  'uz-cyrl': '“”‘’',
+  wae: '«»‹›',
+  yav: '«»«»',
+  yi: '””’’',
+  yue: '「」『』',
+  zgh: '«»„”',
+  'zh-hk': '「」『』',
+  'zh-hant': '「」『』',
+  'zh-mo': '「」『』',
+  'zh-tw': '「」『』',
+};
+
+/** The marks `quotes: auto` gives an element of a language: its tag's, or
+ *  the nearest of the tags it narrows, or English's. */
+export function languageQuotes(lang: string): readonly string[] {
+  let tag = lang.trim().toLowerCase().replace(/_/g, '-');
+  while (tag) {
+    if (Object.hasOwn(QUOTES_BY_LANGUAGE, tag)) {
+      return [...QUOTES_BY_LANGUAGE[tag]];
+    }
+    const cut = tag.lastIndexOf('-');
+    tag = cut < 0 ? '' : tag.slice(0, cut);
+  }
+  return DEFAULT_QUOTES;
+}
 
 export type Token =
   | { kind: 'string'; text: string }
@@ -227,17 +384,14 @@ export function parseListStyleType(value: string): string | null {
   return lower === 'none' ? 'none' : counterStyleName(token.name);
 }
 
-/** `quotes`: `none`, or pairs of strings, outermost first. Null when the
- *  value cannot be read — an odd number of strings among them. */
-export function parseQuotes(value: string): string[] | 'none' | null {
+/** `quotes`: `none`, `auto`, or pairs of strings, outermost first. Null
+ *  when the value cannot be read — an odd number of strings among them. */
+export function parseQuotes(value: string): string[] | 'none' | 'auto' | null {
   const tokens = tokenize(value);
   if (!tokens?.length) return null;
-  if (
-    tokens.length === 1 &&
-    tokens[0].kind === 'ident' &&
-    tokens[0].name.toLowerCase() === 'none'
-  ) {
-    return 'none';
+  if (tokens.length === 1 && tokens[0].kind === 'ident') {
+    const name = tokens[0].name.toLowerCase();
+    return name === 'none' || name === 'auto' ? name : null;
   }
   if (tokens.length % 2 !== 0) return null;
   const out: string[] = [];
@@ -251,13 +405,17 @@ export function parseQuotes(value: string): string[] | 'none' | null {
 /** The mark an `open-quote` (side 0) or `close-quote` (side 1) at a nesting
  *  depth writes: the pair for that depth, or the innermost pair past it. */
 export function quoteAt(
-  quotes: readonly string[] | 'none',
+  quotes: readonly string[] | 'none' | 'auto',
   depth: number,
   side: 0 | 1,
+  /** The element's language, for `auto`. */
+  lang = '',
 ): string {
-  if (quotes === 'none' || quotes.length < 2) return '';
-  const pair = Math.min(depth, quotes.length / 2 - 1);
-  return quotes[pair * 2 + side];
+  if (quotes === 'none') return '';
+  const marks = quotes === 'auto' ? languageQuotes(lang) : quotes;
+  if (marks.length < 2) return '';
+  const pair = Math.min(depth, marks.length / 2 - 1);
+  return marks[pair * 2 + side];
 }
 
 // --- counter styles -----------------------------------------------------------
