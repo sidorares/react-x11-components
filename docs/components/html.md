@@ -1401,8 +1401,12 @@ ends there with it.
 **Generated content:** `::before` and `::after`, and CSS 2's `:before` and
 `:after`, as boxes of their own `display` holding what `content` comes to:
 strings with their escapes, images, `attr()`, `counter()` and `counters()` in
-any counter style, and `open-quote`/`close-quote` over `quotes`. An
-image is asked for through `onResource`, as a background image is, and is
+any counter style, and `open-quote`/`close-quote` over `quotes`, whose
+initial `auto` is the marks of the element's language, from its `lang` or
+the page's `content-language`, as CLDR has them and Chrome sets them: a
+`<q>` in a French page is «un ‹deux› trois» in Switzerland and «un «deux»
+trois» in France, and English's marks are for any language with none of
+its own. An image is asked for through `onResource`, as a background image is, and is
 an inline image in the pseudo-element's line, of its own size once it
 arrives and of none before.
 `counter-reset`, `counter-increment` and `counter-set` are scoped as CSS

@@ -28,7 +28,7 @@ import {
   NON_RENDERED,
   tagOf,
 } from '../dom.js';
-import { ShapeCopies, metaColorScheme } from '../css/cascade.js';
+import { ShapeCopies, languageOf, metaColorScheme } from '../css/cascade.js';
 import type {
   Cascade,
   FirstLetterRules,
@@ -1825,14 +1825,14 @@ class Builder {
             .join(item.separator);
           break;
         case 'open-quote':
-          text += quoteAt(style.quotes, this._quoteDepth, 0);
+          text += quoteAt(style.quotes, this._quoteDepth, 0, languageOf(el));
           this._quoteDepth += 1;
           break;
         case 'close-quote':
           // a close with nothing open writes nothing and closes nothing
           if (this._quoteDepth > 0) {
             this._quoteDepth -= 1;
-            text += quoteAt(style.quotes, this._quoteDepth, 1);
+            text += quoteAt(style.quotes, this._quoteDepth, 1, languageOf(el));
           }
           break;
         case 'no-open-quote':

@@ -32,7 +32,6 @@ import {
 import type { Len, Pct, UnitContext } from './values.js';
 import { parseUrl, readIdent, startsIdent } from './parse.js';
 import {
-  DEFAULT_QUOTES,
   parseContent,
   parseCounterList,
   parseListStyleType,
@@ -463,7 +462,7 @@ export interface ComputedStyle {
    *  `text-align` on a `<table>` to behave. */
   tableTextAlignSet: boolean;
   /** The marks `open-quote` and `close-quote` write, pairs outermost first. */
-  quotes: readonly string[] | 'none';
+  quotes: readonly string[] | 'none' | 'auto';
   /** Custom properties, `--name`, with their `var()`s replaced (`vars.ts`);
    *  null where none is set. Inherited as the same map. */
   custom: CustomProps | null;
@@ -1034,7 +1033,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     captionSide: 'top',
     emptyCells: 'show',
     tableTextAlignSet: false,
-    quotes: DEFAULT_QUOTES,
+    quotes: 'auto',
     custom: null,
 
     display: 'inline',
