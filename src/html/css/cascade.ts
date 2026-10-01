@@ -36,8 +36,12 @@ import type {
   StyleRule,
   Stylesheet,
 } from './parse.js';
-import { NO_ANIMATIONS, restingFrames } from './animation.js';
+import { NO_ANIMATIONS, restingFrames, spanAt, tracksOf } from './animation.js';
+import type { Keyframe } from './parse.js';
+import { discrete, interpolateField } from './interpolate.js';
+import type { AnimationTimeline, Sample } from './timeline.js';
 import {
+  animatedFields,
   applyDeclaration,
   blockify,
   settleAlign,
@@ -1106,6 +1110,10 @@ export class Cascade {
   /** The `@keyframes` rules, by name, in document order: which one a name
    *  finds turns on the media in force (`keyframes`). */
   private _keyframes = new Map<string, KeyframesRule[]>();
+  /** The document's timeline, where its animations run, and the time on
+   *  it the styles are computed at; null where none runs, and a document
+   *  is drawn as it stands once each has run (`restingFrames`). */
+  timeline: AnimationTimeline | null = null;
 
   /** A face's x-height, for `ex`, where the fonts can say. */
   private _xHeightOf: FaceMetric | null;
@@ -1632,10 +1640,11 @@ export class Cascade {
             inFlexContainer,
             candidates,
             true,
+            '',
           ),
           key: this._nextShareKey++,
         };
-        this._sharedByMatch.set(key, shared);
+        if (!this._running(shared.style)) this._sharedByMatch.set(key, shared);
       }
       return shared;
     }
@@ -1645,9 +1654,15 @@ export class Cascade {
         style: this.styleFor(el, parentStyle, inFlexContainer),
         key: this._nextShareKey++,
       };
-      this._shared.set(key, shared);
+      if (!this._running(shared.style)) this._shared.set(key, shared);
     }
     return shared;
+  }
+
+  /** Whether a style is an element's alone: one its animations run in is
+   *  as far through them as its own started, and no other element's. */
+  private _running(style: ComputedStyle): boolean {
+    return this.timeline !== null && style.animations !== NO_ANIMATIONS;
   }
 
   /** Whether no rule `UNSHAREABLE` names could reach this element: the same
@@ -1682,6 +1697,9 @@ export class Cascade {
     el: Element,
     parentStyle: ComputedStyle,
     inFlexContainer: boolean,
+    /** Whether the element is one of the document's, whose animations run
+     *  on its timeline: not one `rootStyle` made up. */
+    inDocument = true,
   ): ComputedStyle {
     return this._computeStyle(
       el,
@@ -1689,6 +1707,7 @@ export class Cascade {
       inFlexContainer,
       this._candidates(el),
       true,
+      inDocument ? '' : null,
     );
   }
 
@@ -1721,6 +1740,8 @@ export class Cascade {
       elementStyle,
       elementStyle.display === 'flex' || elementStyle.display === 'inline-flex',
       candidates,
+      false,
+      which,
     );
     return style.content === 'normal' || style.content === 'none'
       ? null
@@ -1901,11 +1922,13 @@ export class Cascade {
 
   /**
    * `styleFor`, from the rules and hints already gathered for `el`, and
-   * what its animations leave on it (`restingFrames`). Which animations an
-   * element has is the cascade's answer, so an element with one that
-   * leaves a frame is styled twice: the second time with the frame's
-   * declarations among the rest, at the animation origin, over the
-   * author's normal ones and under their `!important` ones.
+   * what its animations make of it. Which animations an element has is the
+   * cascade's answer, so an animated element is styled again with what they
+   * come to among its declarations, at the animation origin: over the
+   * author's normal ones and under their `!important` ones. Where its
+   * animations run (`timeline`), that is the values they pass through now
+   * (`_animatedDeclarations`); where none runs, the frame each that fills
+   * forwards ends on (`restingFrames`).
    */
   private _computeStyle(
     el: Element,
@@ -1915,6 +1938,11 @@ export class Cascade {
     /** Whether the style is the element's own, and not that of one of its
      *  pseudo-elements. */
     own = false,
+    /** Which of the element's animations run: its own (''), a `::before`'s
+     *  or an `::after`'s. Null for a style whose animations do not run, and
+     *  are drawn at rest: a marker's, a first letter's or line's, and an
+     *  element's that `rootStyle` made up. */
+    target: string | null = null,
   ): ComputedStyle {
     let style = this._cascadeStyle(
       el,
@@ -1923,7 +1951,39 @@ export class Cascade {
       candidates,
       own,
     );
-    if (style.animations !== NO_ANIMATIONS && this._keyframes.size) {
+    const timeline = target === null ? null : this.timeline;
+    if (
+      style.animations === NO_ANIMATIONS ||
+      !this._keyframes.size ||
+      // one not displayed runs none (CSS Animations 1, 3)
+      (timeline && style.display === 'none')
+    ) {
+      if (timeline && !timeline.empty) timeline.drop(el, target!);
+    } else if (timeline) {
+      const samples = timeline.sample(el, target!, style.animations, (name) =>
+        this.keyframes(name),
+      );
+      if (samples) {
+        style = this._cascadeStyle(
+          el,
+          parentStyle,
+          inFlexContainer,
+          withAnimations(
+            candidates,
+            this._animatedDeclarations(
+              el,
+              parentStyle,
+              inFlexContainer,
+              candidates,
+              own,
+              style,
+              samples,
+            ),
+          ),
+          own,
+        );
+      }
+    } else {
       const frames = restingFrames(style.animations, (name) =>
         this.keyframes(name),
       );
@@ -1941,6 +2001,83 @@ export class Cascade {
     // slant ask for — known only now, with all three computed
     this._families?.note(style);
     return style;
+  }
+
+  /**
+   * What an element's animations come to at the timeline's time: for each
+   * animation, a declaration of each property its frames set, holding the
+   * computed value between the two frames around its progress (`spanAt`),
+   * interpolated field by field (`interpolateField`) — or, for a property
+   * whose values cannot be, the nearer one's (`discrete`). A frame's value
+   * is computed as the frame's declarations would be at the animation
+   * origin, so its `em`, its `var()` and its percentages are the element's;
+   * a frame the animation makes of the element's own value is `base`.
+   */
+  private _animatedDeclarations(
+    el: Element,
+    parentStyle: ComputedStyle,
+    inFlexContainer: boolean,
+    candidates: Candidate[],
+    own: boolean,
+    base: ComputedStyle,
+    samples: readonly Sample[],
+  ): Declaration[][] {
+    const styles = new Map<Keyframe, ComputedStyle>();
+    const styleAt = (frame: Keyframe | null): ComputedStyle => {
+      if (!frame) return base;
+      let style = styles.get(frame);
+      if (!style) {
+        style = this._cascadeStyle(
+          el,
+          parentStyle,
+          inFlexContainer,
+          withAnimations(candidates, [frame.declarations]),
+          own,
+        );
+        styles.set(frame, style);
+      }
+      return style;
+    };
+    const out: Declaration[][] = [];
+    for (const { rule, progress, easing } of samples) {
+      const declarations: Declaration[] = [];
+      for (const [prop, frames] of tracksOf(rule)) {
+        const { from, to, q } = spanAt(frames, progress, easing);
+        const fields = animatedFields(prop);
+        if (!fields) {
+          // a property whose values this cannot read goes over half-way,
+          // as its declaration: the element's own, where that end is it
+          const at = discrete(from, to, q);
+          if (at) declarations.push(at.declaration);
+          continue;
+        }
+        const a = styleAt(from?.frame ?? null) as unknown as Record<
+          string,
+          unknown
+        >;
+        const b = styleAt(to?.frame ?? null) as unknown as Record<
+          string,
+          unknown
+        >;
+        const computed: Record<string, unknown> = {};
+        let flips = false;
+        for (const key of fields) {
+          const value = interpolateField(key, a[key], b[key], q);
+          if (value === undefined) {
+            flips = true;
+            break;
+          }
+          computed[key] = value;
+        }
+        if (flips) {
+          const at = discrete(a, b, q);
+          for (const key of fields) computed[key] = at[key];
+        }
+        declarations.push({ prop, value: '', important: false, computed });
+      }
+      if (declarations.length) out.push(declarations);
+    }
+    return out;
   }
 
   /** The style the candidates come to, in their order. */
@@ -2117,6 +2254,11 @@ export class Cascade {
     d: Declaration,
     ctx: UnitContext,
   ): void {
+    // an animation's value, computed already (`_animatedDeclarations`)
+    if (d.computed) {
+      Object.assign(style, d.computed);
+      return;
+    }
     if (!d.vars) {
       applyDeclaration(style, parentStyle, d.prop, d.value, ctx);
       return;
@@ -2170,13 +2312,16 @@ export class Cascade {
     if (!hasHtml) {
       const element = new DomElement('html', {}, hasBody ? [] : [synthetic]);
       synthetic.parent = element;
-      parent = this.styleFor(element, style, false);
+      parent = this.styleFor(element, style, false, false);
       if (hasBody) return { style: asRoot(parent), html: null };
       html = parent;
     }
     // Only the box the body would have drawn is taken, not its layout role:
     // the root is still the initial containing block.
-    return { style: asRoot(this.styleFor(synthetic, parent, false)), html };
+    return {
+      style: asRoot(this.styleFor(synthetic, parent, false, false)),
+      html,
+    };
   }
 
   /** Whether any rule could style a shape in a drawing: a document with

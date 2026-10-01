@@ -53,6 +53,7 @@ import type { Document } from './dom.js';
 import {
   Cascade,
   HOVER_FOLLOWED,
+  HOVER_PSEUDO_GENERATED,
   HOVER_PSEUDO_NONE,
   HOVER_PSEUDO_OTHER,
   HOVER_UNTOUCHED,
@@ -63,12 +64,12 @@ import type {
   HoverTouch,
   KeptStyles,
   MetricFace,
-  PointerState,
 } from './css/cascade.js';
 import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { MediaCondition, Stylesheet } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
+import { AnimationTimeline } from './css/timeline.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
 import {
   BOX_RAISES,
@@ -188,6 +189,8 @@ export interface HtmlViewProps {
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
   domRevision?: number;
+  /** Whether the document's CSS animations run. Default true. */
+  animate?: boolean;
   style?: Style | Style[];
 }
 
@@ -306,6 +309,12 @@ export class HtmlViewNode extends Node {
    *  the timer, and when the content last moved (`_holdHover`). */
   private _heldHover: unknown = null;
   private _heldSince = 0;
+  /** The document's timeline: when each element's animations started
+   *  (`css/timeline.ts`). It outlives the cascades and the box trees. */
+  private _timeline = new AnimationTimeline();
+  /** The timer for the next frame of an animation, and when it is due. */
+  private _frameTimer: unknown = null;
+  private _frameAt = Infinity;
   /**
    * The elements the build of the boxes that is due has to style again,
    * where every change asking for it said which (`_invalidate`), and null
@@ -1038,9 +1047,13 @@ export class HtmlViewNode extends Node {
       // one the first found a reason for — a face, an image's size.
       let kept: KeptStyles | null =
         restyleOnly && this._tree && this._styledWith === cascade
-          ? { styles: this._tree.styles, restyle: restyleOnly }
+          ? {
+              styles: this._tree.styles,
+              restyle: this._withAnimated(restyleOnly, this._tree),
+            }
           : null;
-      const build = () =>
+      const timeline = this._clockIn(cascade);
+      const boxes = () =>
         buildBoxes(this._source.document, {
           cascade,
           kept,
@@ -1058,6 +1071,14 @@ export class HtmlViewNode extends Node {
           controlSize: (el, kind, style) =>
             measureControl(el, kind, style, this._fonts(), look),
         });
+      // a build that styles every element ends the animations of the ones
+      // it does not reach: under `display: none`, or out of the document
+      const build = () => {
+        timeline?.beginPass(!kept);
+        const tree = boxes();
+        timeline?.endPass();
+        return tree;
+      };
       this._tree = build();
       kept = null;
       this._styledWith = cascade;
@@ -1114,6 +1135,7 @@ export class HtmlViewNode extends Node {
     ) {
       this.invalidateMeasure('content');
     }
+    this._scheduleFrame();
   }
 
   /** Whether the document as laid out reads its viewport's height. */
@@ -1237,6 +1259,10 @@ export class HtmlViewNode extends Node {
       next.charset !== prev.charset
     ) {
       this._invalidate(Stale.Style);
+    } else if ((next.animate ?? true) !== (prev.animate ?? true)) {
+      // animations let run again start again
+      this._timeline = new AnimationTimeline();
+      this._invalidate(Stale.Boxes);
     }
     if (next.source !== prev.source || next.complete !== prev.complete) {
       this._read();
@@ -1251,6 +1277,7 @@ export class HtmlViewNode extends Node {
 
   override destroySubtree(): void {
     this._dropHeldHover();
+    this._disarmFrame();
     this._resources.destroy();
     this._webFonts.destroy();
     this._source.destroy();
@@ -1568,7 +1595,16 @@ export class HtmlViewNode extends Node {
     if (reach !== null && cascade) {
       if (!reach.size) return;
       const before = { hovered: new Set(was), active: EMPTY_SET };
-      if (this._hoverInPlace(reach, before, this._focus, cascade.hoverPseudo)) {
+      const focus = this._focus;
+      if (
+        this._restyleInPlace(
+          reach,
+          (el) => cascade.pointerChanged(el, before, focus),
+          cascade.hoverPseudo,
+        )
+      ) {
+        // an animation the move started, or let go of, wants its frames
+        this._scheduleFrame();
         return;
       }
     }
@@ -1624,7 +1660,14 @@ export class HtmlViewNode extends Node {
     if (reach !== null) {
       if (!reach.size) return true;
       const pointer = { hovered: new Set(this._hovered), active: EMPTY_SET };
-      if (this._hoverInPlace(reach, pointer, was, cascade.focusPseudo)) {
+      if (
+        this._restyleInPlace(
+          reach,
+          (el) => cascade.pointerChanged(el, pointer, was),
+          cascade.focusPseudo,
+        )
+      ) {
+        this._scheduleFrame();
         return true;
       }
     }
@@ -1751,14 +1794,16 @@ export class HtmlViewNode extends Node {
    * restyled here, or had nothing to restyle; false where the boxes have to
    * be built again.
    *
-   * A focus change is answered the same way (`setFocus`): `before` and
-   * `beforeFocus` are the states the change was from, and `pseudoRules`
-   * which pseudo-elements' rules test the state that changed.
+   * A focus change is answered the same way (`setFocus`), and so is a
+   * frame of an animation (`_frame`). `ownChanged` says of an element in
+   * `reach` whether its own style may have: whether the rules that test
+   * the pointer or the focus answer differently for it than they did, or
+   * whether its animations run. `pseudoRules` is which pseudo-elements'
+   * rules test the state that changed.
    */
-  private _hoverInPlace(
+  private _restyleInPlace(
     reach: ReadonlySet<Element>,
-    before: PointerState,
-    beforeFocus: FocusState,
+    ownChanged: (el: Element) => boolean,
     pseudoRules: 0 | 1 | 2,
   ): boolean {
     const cascade = this._cascade;
@@ -1769,14 +1814,14 @@ export class HtmlViewNode extends Node {
     if (reach.size > HOVER_RESTYLE_LIMIT) return false;
     // a first line's, a first letter's and a marker's styles are layout's
     if (pseudoRules === HOVER_PSEUDO_OTHER) return false;
+    // what an animation restyled comes to at this moment's time
+    this._clockIn(cascade);
 
-    // whether the rules that test the pointer or the focus answer
-    // differently for an element than they did before the change
     const flips = new Map<Element, boolean>();
     const flipped = (el: Element): boolean => {
       let flip = flips.get(el);
       if (flip === undefined) {
-        flip = cascade.pointerChanged(el, before, beforeFocus);
+        flip = ownChanged(el);
         flips.set(el, flip);
       }
       return flip;
@@ -1794,6 +1839,9 @@ export class HtmlViewNode extends Node {
     let reaches = false;
     let reorders = false;
     const moving = new Set<Element>();
+    /** The elements whose opacity changed, which an inline box's cannot
+     *  here where blocks broke it: they took it (`FADED_BLOCKS`). */
+    const fading = new Set<Element>();
     /** Whether a control's box was restyled: its widget is told. */
     let widgets = false;
     const styleOf = (el: Element): ComputedStyle | null => {
@@ -1823,6 +1871,7 @@ export class HtmlViewNode extends Node {
           if (diff.reach) reaches = true;
           if (diff.order) reorders = true;
           if (diff.move) moving.add(el);
+          if (diff.fade) fading.add(el);
         }
       }
       fresh.set(el, style);
@@ -1928,6 +1977,7 @@ export class HtmlViewNode extends Node {
         if (diff === false) return false;
         if (!diff) continue;
         if (diff.reach || diff.order || diff.move) return false;
+        if (diff.fade && holdsBlocks(box)) return false;
         style = made;
         ink = diff.ink;
       } else if (box.pseudo) {
@@ -1954,6 +2004,7 @@ export class HtmlViewNode extends Node {
           widgets = true;
         }
         if (moving.has(el) && !movable(box, kept, style)) return false;
+        if (fading.has(el) && holdsBlocks(box)) return false;
         ink = !quiet.has(el);
       } else if (above) {
         // An anonymous box takes what its parent's style passes on
@@ -2160,6 +2211,218 @@ export class HtmlViewNode extends Node {
       return;
     }
     for (const r of inks) this.invalidate(false, place(r), 'props');
+  }
+
+  // --- animations ----------------------------------------------------------
+  //
+  // An animation is a style that changes as time passes, so a frame of one
+  // is a restyle of the elements it runs on, at the timeline's time — in
+  // place where all it changed is what a hover may change there, which an
+  // opacity, a colour, a visibility and a transform are (`hoverChange`), and
+  // otherwise with the boxes built again around the other elements' kept
+  // styles. Nothing ticks while nothing changes: the timeline says when the
+  // next frame is due (`nextFrame`) — a frame away while one is under way,
+  // the end of a delay before one starts, and never once each is over or
+  // paused — and a timer waits for it.
+
+  /** Whether the document's animations run (`animate`). */
+  private _animating(): boolean {
+    return this._props().animate !== false;
+  }
+
+  /** The cascade's styles computed at this moment on the timeline, or at
+   *  rest where no animation runs; the timeline where one does. */
+  private _clockIn(cascade: Cascade): AnimationTimeline | null {
+    if (!this._animating()) {
+      cascade.timeline = null;
+      return null;
+    }
+    const timeline = this._timeline;
+    timeline.now = animationClock.now();
+    cascade.timeline = timeline;
+    return timeline;
+  }
+
+  /**
+   * The elements a frame of the document's animations restyles: each with
+   * one under way, and what it holds where a property it animates is
+   * inherited; and whether one is a `::before`'s or an `::after`'s, whose
+   * box is restyled with its element's though the element's own style is
+   * what it was. One whose style the tree does not hold — it is under
+   * `display: none` now — has no animation.
+   */
+  private _animationReach(tree: BoxTree): {
+    reach: Set<Element>;
+    generated: boolean;
+  } {
+    const reach = new Set<Element>();
+    let generated = false;
+    if (!this._animating()) return { reach, generated };
+    for (const { el, inherits, generated: pseudo } of this._timeline.live()) {
+      const element = el as Element;
+      if (!tree.styles.has(element)) {
+        this._timeline.drop(element, '');
+        this._timeline.drop(element, 'before');
+        this._timeline.drop(element, 'after');
+        continue;
+      }
+      generated ||= pseudo;
+      const stack: Element[] = [element];
+      while (stack.length) {
+        const at = stack.pop()!;
+        if (reach.has(at)) continue;
+        reach.add(at);
+        if (!inherits) continue;
+        for (const child of at.children)
+          if (isElement(child)) stack.push(child);
+      }
+    }
+    return { reach, generated };
+  }
+
+  /** The elements a build that keeps styles styles again, and every one an
+   *  animation is under way on: a kept style is one at a time gone by. */
+  private _withAnimated(
+    restyle: ReadonlySet<Element>,
+    tree: BoxTree,
+  ): ReadonlySet<Element> {
+    const animated = this._animationReach(tree).reach;
+    if (!animated.size) return restyle;
+    for (const el of restyle) animated.add(el);
+    return animated;
+  }
+
+  /** A timer for the next frame an animation wants, where one does and no
+   *  timer already waits for it. */
+  private _scheduleFrame(): void {
+    if (this.destroyed) return;
+    const next = this._animating() ? this._timeline.nextFrame() : null;
+    if (next === null) {
+      this._disarmFrame();
+      return;
+    }
+    if (this._frameTimer !== null && this._frameAt <= next) return;
+    this._disarmFrame();
+    this._frameAt = next;
+    this._frameTimer = animationClock.arm(
+      this._frame,
+      Math.max(1, next - animationClock.now()),
+    );
+  }
+
+  private _disarmFrame(): void {
+    if (this._frameTimer === null) return;
+    animationClock.disarm(this._frameTimer);
+    this._frameTimer = null;
+    this._frameAt = Infinity;
+  }
+
+  /** A frame of the document's animations. */
+  private readonly _frame = (): void => {
+    this._frameTimer = null;
+    this._frameAt = Infinity;
+    if (this.destroyed || !this._animating()) return;
+    const tree = this._tree;
+    // a build is coming, and styles every animated element at its time
+    if (!this._cascade || !tree || this._stale !== Stale.Nothing) return;
+    const { reach, generated } = this._animationReach(tree);
+    if (
+      reach.size &&
+      !this._restyleInPlace(
+        reach,
+        (el) => this._timeline.isLive(el),
+        generated ? HOVER_PSEUDO_GENERATED : HOVER_PSEUDO_NONE,
+      )
+    ) {
+      this._rebuildFrame(reach);
+    }
+    this._scheduleFrame();
+  };
+
+  /**
+   * A frame that changed what layout reads: the boxes built again around
+   * every other element's kept style and the document laid out, at once.
+   * Where each element whose style changed is positioned out of the flow —
+   * absolutely or fixed, before and after — or is inside one that is, it
+   * is laid out apart from everything around it (CSS 2.1 9.6); and where
+   * no other element's box moved and the document is the size it was,
+   * what the frame changed is what those boxes drew before and draw now.
+   * That is repainted, and anything else repaints the whole element. Zen
+   * Garden 219's marquees and panels are all positioned so.
+   */
+  private _rebuildFrame(reach: ReadonlySet<Element>): void {
+    const before = this._tree!;
+    const width = this._laidOutWidth;
+    const size = [this._documentWidth, this._documentHeight];
+    const beforeBoxes = this._firstBoxesOf(before);
+    this._stale = Stale.Boxes;
+    this._restyleOnly = new Set(reach);
+    this._prepare(width);
+    const after = this._tree;
+    const inks =
+      after &&
+      this._laidOutWidth === width &&
+      this._documentWidth === size[0] &&
+      this._documentHeight === size[1]
+        ? this._changedOutOfFlow(before, beforeBoxes, after)
+        : null;
+    if (inks) {
+      this._repaintInk(inks);
+      return;
+    }
+    this.invalidateMeasure('content');
+    this.invalidate(true, this, 'props');
+  }
+
+  /**
+   * What a tree built again changed, where all it changed is positioned out
+   * of the flow: the ink of each element out of the flow whose style
+   * changed, before and after. Null where an element in the flow changed,
+   * or a box of one that did not moved.
+   */
+  private _changedOutOfFlow(
+    before: BoxTree,
+    beforeBoxes: ReadonlyMap<Element, Box>,
+    after: BoxTree,
+  ): Rect[] | null {
+    if (before.styles.size !== after.styles.size) return null;
+    const changed: Element[] = [];
+    const roots: Element[] = [];
+    for (const [el, now] of after.styles) {
+      const was = before.styles.get(el);
+      if (!was) return null;
+      if (was.style === now.style || sameValue(was.style, now.style)) continue;
+      changed.push(el);
+      if (outOfFlow(was.style) && outOfFlow(now.style)) roots.push(el);
+    }
+    // what is laid out with the roots, and moves with them
+    const apart = new Set<Element>();
+    for (const root of roots) {
+      const stack: Element[] = [root];
+      while (stack.length) {
+        const at = stack.pop()!;
+        if (apart.has(at)) continue;
+        apart.add(at);
+        for (const child of at.children) {
+          if (isElement(child)) stack.push(child);
+        }
+      }
+    }
+    for (const el of changed) if (!apart.has(el)) return null;
+    const afterBoxes = this._firstBoxesOf(after);
+    for (const [el, box] of afterBoxes) {
+      if (apart.has(el)) continue;
+      const was = beforeBoxes.get(el);
+      if (!was || !sameGeometry(was, box)) return null;
+    }
+    const inks: Rect[] = [];
+    for (const root of roots) {
+      for (const box of [beforeBoxes.get(root), afterBoxes.get(root)]) {
+        const ink = box && inkOf(box);
+        if (ink) inks.push(ink);
+      }
+    }
+    return inks;
   }
 
   /** The document, for an application that wants to read or change it. */
@@ -3388,6 +3651,24 @@ export const hoverClock = {
 };
 
 /**
+ * The clock the document's animations run on, as `hoverClock` is a held
+ * hover's: through `globalThis`, unref'd, and exported for a test to hold.
+ */
+export const animationClock = {
+  now(): number {
+    return Date.now();
+  },
+  arm(step: () => void, ms: number): unknown {
+    const handle = timers.setTimeout?.(step, ms) ?? null;
+    (handle as { unref?(): void } | null)?.unref?.();
+    return handle;
+  },
+  disarm(handle: unknown): void {
+    timers.clearTimeout?.(handle);
+  },
+};
+
+/**
  * The computed properties a pointer move may change in place: ink, which
  * moves nothing. A background colour is drawn inside the box it colours
  * and a border's colour on the border it has; `box-shadow`, `text-shadow`
@@ -3455,6 +3736,9 @@ interface HoverChange {
   reach: boolean;
   order: boolean;
   move: boolean;
+  /** Whether the opacity changed, and the box stays a group to fade or
+   *  stays none (`stacksLayers`). */
+  fade: boolean;
 }
 
 /** An element's `::before` and `::after`, each with its bit in the set
@@ -3497,10 +3781,10 @@ const TRANSFORM_FIELDS = new Set([
 /**
  * How two styles of one element differ, for a restyle in place: null where
  * they do not, a `HoverChange` where every difference is ink, how far ink
- * reaches, a `z-index` that stays a stacking context's, or a transform —
- * none of which moves anything but the box and what it holds (CSS
- * Transforms 1: a transform does not affect layout) — and false where
- * anything else differs.
+ * reaches, a `z-index` that stays a stacking context's, an opacity or a
+ * visibility, or a transform — none of which moves anything but the box
+ * and what it holds (CSS Transforms 1: a transform does not affect layout)
+ * — and false where anything else differs.
  */
 function hoverChange(
   was: ComputedStyle,
@@ -3514,7 +3798,13 @@ function hoverChange(
     // object where they are the same
     if (key === 'custom') {
       if (a[key] !== b[key]) {
-        change ??= { ink: false, reach: false, order: false, move: false };
+        change ??= {
+          ink: false,
+          reach: false,
+          order: false,
+          move: false,
+          fade: false,
+        };
       }
       continue;
     }
@@ -3522,14 +3812,39 @@ function hoverChange(
     // (`Cascade._computeStyle`); the lists themselves draw nothing
     if (key === 'animations') {
       if (!sameValue(a[key], b[key])) {
-        change ??= { ink: false, reach: false, order: false, move: false };
+        change ??= {
+          ink: false,
+          reach: false,
+          order: false,
+          move: false,
+          fade: false,
+        };
       }
       continue;
     }
     if (sameValue(a[key], b[key])) continue;
-    change ??= { ink: true, reach: false, order: false, move: false };
+    change ??= {
+      ink: true,
+      reach: false,
+      order: false,
+      move: false,
+      fade: false,
+    };
     change.ink = true;
     if (PAINT_ONLY.has(key)) continue;
+    if (key === 'opacity') {
+      // a group to fade before and after, or none either time: the order
+      // its layers paint in is the same (`stacksLayers`)
+      if ((a[key] as number) < 1 !== (b[key] as number) < 1) return false;
+      change.fade = true;
+      continue;
+    }
+    // drawn or not, and under the pointer or not, where it was laid out —
+    // but for a row or a column of a table, which `collapse` takes out
+    if (key === 'visibility') {
+      if (a[key] === 'collapse' || b[key] === 'collapse') return false;
+      continue;
+    }
     if (INK_REACH.has(key)) {
       change.reach = true;
       continue;
@@ -3575,6 +3890,36 @@ function movable(box: Box, was: ComputedStyle, now: ComputedStyle): boolean {
     for (const child of at.children) stack.push(child);
   }
   return true;
+}
+
+/** Whether a style takes its box out of the flow, to be laid out apart
+ *  from everything around it. */
+function outOfFlow(style: ComputedStyle): boolean {
+  return style.position === 'absolute' || style.position === 'fixed';
+}
+
+/** Whether a box is laid out where it was and as large: one that has a
+ *  rect of its own — an inline box's text is its block's. How far it
+ *  draws is no part of it, since that takes in what it holds, and a box
+ *  out of the flow it holds moved. */
+function sameGeometry(a: Box, b: Box): boolean {
+  if (!hasRect(a) || !hasRect(b)) return hasRect(a) === hasRect(b);
+  return (
+    a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
+  );
+}
+
+/** Whether an inline box holds a block, which broke it in pieces and took
+ *  its opacity when the boxes were built (`FADED_BLOCKS`). */
+function holdsBlocks(box: Box): boolean {
+  if (box.kind !== 'inline') return false;
+  const stack = [...box.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at.kind === 'inline') stack.push(...at.children);
+    else if (at.kind !== 'text' && at.kind !== 'break') return true;
+  }
+  return false;
 }
 
 /** Where a box draws, in document coordinates: its ink bounds, or for an

@@ -49,7 +49,8 @@ type Styled = LaidBox & {
     translate: unknown;
     rotate: unknown;
     scale: unknown;
-    transform: ({ by: unknown } | { matrix: Matrix })[] | null;
+    transform:
+      ({ by: unknown } | { matrix: Matrix; fn?: { kind: string } })[] | null;
     transformOrigin: unknown;
   };
   boundsX: number;
@@ -123,16 +124,29 @@ test('a transform is read as its functions, in the order written', async () => {
     assert.ok('matrix' in fn, `#${id}'s function ${at} is a matrix`);
     return [...fn.matrix];
   };
+  // what a run of the functions that are numbers alone comes to: each is
+  // kept, with what it was, for an animation to interpolate
+  const product = (id: string, from = 0): number[] => {
+    let m: Matrix = [1, 0, 0, 1, 0, 0];
+    for (const fn of list(id)!.slice(from)) {
+      assert.ok('matrix' in fn, `#${id} is matrices from ${from}`);
+      m = multiply(m, fn.matrix);
+    }
+    return [...m];
+  };
   assert.deepStrictEqual(matrix('a'), [0, 1, -1, 0, 0, 0]);
   assert.deepStrictEqual(list('b'), [{ by: [{ pct: -50 }, { pct: -50 }] }]);
-  // Tailwind 3's list: the translation, and the rest multiplied to nothing
-  assert.strictEqual(list('c')!.length, 2);
+  // Tailwind 3's list: the translation, and the rest coming to nothing
+  assert.strictEqual(list('c')!.length, 6);
   assert.deepStrictEqual(list('c')![0], { by: [10, 5] });
-  assert.ok(near(matrix('c', 1), [1, 0, 0, 1, 0, 0]), `${matrix('c', 1)}`);
-  // a run of numbers is one matrix: half as wide, then turned, then twice
-  // the size
-  assert.strictEqual(list('d')!.length, 1);
-  assert.ok(near(matrix('d'), [0, 1, -2, 0, 0, 0]), `${matrix('d')}`);
+  assert.ok(near(product('c', 1), [1, 0, 0, 1, 0, 0]), `${product('c', 1)}`);
+  assert.deepStrictEqual(
+    list('c')!.map((fn) => ('by' in fn ? 'by' : fn.fn?.kind)),
+    ['by', 'rotate', 'skew', 'skew', 'scale', 'scale'],
+  );
+  // half as wide, then turned, then twice the size
+  assert.strictEqual(list('d')!.length, 3);
+  assert.ok(near(product('d'), [0, 1, -2, 0, 0, 0]), `${product('d')}`);
   assert.deepStrictEqual(matrix('e'), [1, 2, 3, 4, 5, 6]);
   assert.deepStrictEqual(
     list('f'),
@@ -140,7 +154,7 @@ test('a transform is read as its functions, in the order written', async () => {
     'a transform, and nothing in the plane',
   );
   // out of the plane is left out; about the axis out of the page is a turn
-  assert.ok(near(matrix('g'), [0, 2, -3, 0, 0, 0]), `${matrix('g')}`);
+  assert.ok(near(product('g'), [0, 2, -3, 0, 0, 0]), `${product('g')}`);
   assert.deepStrictEqual(matrix('h'), [0, 1, -1, 0, 0, 0], 'no angle: dropped');
   assert.strictEqual(list('i'), null);
   assert.ok(near(matrix('j'), [1, 0, 1, 1, 0, 0]), `${matrix('j')}`);

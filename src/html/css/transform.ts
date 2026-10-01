@@ -15,6 +15,10 @@
 // The functions out of the plane — `rotateX()`, `translateZ()`,
 // `perspective()` — are read and are no part of the matrix: a declaration
 // that names one is kept, and drawn as the rest of its list.
+//
+// Each function keeps what it was as well as its matrix (`Primitive`): an
+// animation from `rotate(0)` to `rotate(360deg)` turns once, where the
+// matrices at its ends are the same one (`css/interpolate.ts`).
 
 import { parseMath } from './calc.js';
 import {
@@ -34,8 +38,39 @@ export type Matrix = readonly [number, number, number, number, number, number];
 
 /** One function of a `transform` list: a translation by lengths, a
  *  percentage of the box's own width across and its height down, or a
- *  matrix — a run of the functions that are numbers alone, multiplied. */
-export type TransformFunction = { by: [Len, Len] } | { matrix: Matrix };
+ *  matrix, with the function it was where that is one an animation
+ *  interpolates by its arguments. */
+export type TransformFunction =
+  { by: [Len, Len] } | { matrix: Matrix; fn?: Primitive };
+
+/** A function of the plane that is numbers alone, as its arguments: a
+ *  scale across and down, a turn in degrees, a skew in degrees across and
+ *  down. `matrix()` is none of them. */
+export type Primitive =
+  | { kind: 'scale'; x: number; y: number }
+  | { kind: 'rotate'; angle: number }
+  | { kind: 'skew'; x: number; y: number };
+
+/** The matrix a primitive is. */
+export function primitiveMatrix(fn: Primitive): Matrix {
+  switch (fn.kind) {
+    case 'scale':
+      return [fn.x, 0, 0, fn.y, 0, 0];
+    case 'rotate':
+      return rotation(fn.angle);
+    case 'skew':
+      return [1, tanDegrees(fn.y), tanDegrees(fn.x), 1, 0, 0];
+  }
+}
+
+function tanDegrees(degrees: number): number {
+  return Math.tan((degrees * Math.PI) / 180);
+}
+
+/** A function of a list as its primitive: the matrix and what made it. */
+export function primitive(fn: Primitive): TransformFunction {
+  return { matrix: primitiveMatrix(fn), fn };
+}
 
 export const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 
@@ -182,11 +217,7 @@ export function parseTransform(
     const args = splitCommas(m[2]).map((a) => a.trim());
     const fn = functionOf(m[1].toLowerCase(), args, ctx);
     if (fn === undefined) return undefined;
-    if (fn === null) continue;
-    const last = out[out.length - 1];
-    if ('matrix' in fn && last && 'matrix' in last) {
-      out[out.length - 1] = { matrix: multiply(last.matrix, fn.matrix) };
-    } else out.push(fn);
+    if (fn !== null) out.push(fn);
   }
   return out;
 }
@@ -207,7 +238,6 @@ function functionOf(
     const out = args.map(parseFactor);
     return out.some((n) => n === null) ? null : (out as number[]);
   };
-  const tan = (degrees: number): number => Math.tan((degrees * Math.PI) / 180);
   switch (name) {
     case 'translate': {
       if (count < 1 || count > 2) return undefined;
@@ -237,27 +267,30 @@ function functionOf(
         : undefined;
     case 'scale': {
       const f = count >= 1 && count <= 2 ? factors() : null;
-      return f ? { matrix: [f[0], 0, 0, f[1] ?? f[0], 0, 0] } : undefined;
+      return f
+        ? primitive({ kind: 'scale', x: f[0], y: f[1] ?? f[0] })
+        : undefined;
     }
     case 'scale3d': {
       const f = count === 3 ? factors() : null;
-      return f ? { matrix: [f[0], 0, 0, f[1], 0, 0] } : undefined;
+      return f ? primitive({ kind: 'scale', x: f[0], y: f[1] }) : undefined;
     }
     case 'scalex':
     case 'scaley': {
       const f = count === 1 ? factors() : null;
       if (!f) return undefined;
-      return {
-        matrix:
-          name === 'scalex' ? [f[0], 0, 0, 1, 0, 0] : [1, 0, 0, f[0], 0, 0],
-      };
+      return primitive(
+        name === 'scalex'
+          ? { kind: 'scale', x: f[0], y: 1 }
+          : { kind: 'scale', x: 1, y: f[0] },
+      );
     }
     case 'scalez':
       return count === 1 && factors() ? null : undefined;
     case 'rotate':
     case 'rotatez': {
       const a = count === 1 ? angles() : null;
-      return a ? { matrix: rotation(a[0]) } : undefined;
+      return a ? primitive({ kind: 'rotate', angle: a[0] }) : undefined;
     }
     case 'rotatex':
     case 'rotatey':
@@ -271,20 +304,17 @@ function functionOf(
     }
     case 'skew': {
       const a = count >= 1 && count <= 2 ? angles() : null;
-      return a
-        ? { matrix: [1, tan(a[1] ?? 0), tan(a[0]), 1, 0, 0] }
-        : undefined;
+      return a ? primitive({ kind: 'skew', x: a[0], y: a[1] ?? 0 }) : undefined;
     }
     case 'skewx':
     case 'skewy': {
       const a = count === 1 ? angles() : null;
       if (!a) return undefined;
-      return {
-        matrix:
-          name === 'skewx'
-            ? [1, 0, tan(a[0]), 1, 0, 0]
-            : [1, tan(a[0]), 0, 1, 0, 0],
-      };
+      return primitive(
+        name === 'skewx'
+          ? { kind: 'skew', x: a[0], y: 0 }
+          : { kind: 'skew', x: 0, y: a[0] },
+      );
     }
     case 'matrix':
     case 'matrix3d': {
@@ -317,7 +347,7 @@ function functionOf(
 function axisRotation(axis: number[], angle: number): TransformFunction | null {
   const [x, y, z] = axis;
   if (x !== 0 || y !== 0 || z === 0) return null;
-  return { matrix: rotation(z > 0 ? angle : -angle) };
+  return primitive({ kind: 'rotate', angle: z > 0 ? angle : -angle });
 }
 
 /**

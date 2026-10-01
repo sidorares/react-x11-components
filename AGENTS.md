@@ -1521,6 +1521,31 @@ goes on `drawnAsPaths`' list**, and the stress that found this is worth
 rerunning after: hostile values (`scale(1e30)`, `skewX(90deg)`), and an
 image far across a window wider than any test's.
 
+**An animation is a style that changes as time passes, and runs as one.**
+`css/timeline.ts` keeps when each element's animations started — by
+element, so a document built again finds them — and the cascade asks it
+for each animation's progress as it styles the element, interpolates the
+computed values between the frames around it (`css/interpolate.ts`) and
+applies them at the animation origin, as declarations that carry their
+computed fields (`Declaration.computed`). Three things are load-bearing. A
+style an animation runs in is that element's alone, since its animations
+started when it did, so `sharedStyleFor` shares none. A frame restyles
+the animated elements through the hover's path (`_restyleInPlace`) — which
+is why an opacity and a visibility are changes it makes in place — and
+builds the boxes again around kept styles where layout reads what changed;
+`test/html/animations.test.ts` holds a frame made in place to the pixels a
+build of the whole document draws, which is how the `::before` a frame
+never reached was found. And a transform keeps what each of its functions
+was (`Primitive`): a matrix cannot tell a full turn from none. Layout's
+per-box caches assume a box's style never changes, so a frame that changes
+a length builds boxes rather than restyling them and laying out again — at
+once, so that where everything it changed is positioned out of the flow
+and no other box moved, it repaints only those boxes' ink
+(`_rebuildFrame`). Compare where a box is laid out there, not how far it
+draws: an ancestor's ink bounds take in the marquee scrolling inside it.
+`animate={false}` draws each animation at rest, which is how the Zen
+Garden bench runs `<Html>`.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

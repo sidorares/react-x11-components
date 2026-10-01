@@ -30,6 +30,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `source`          | `string`                                         | The HTML. Required.                                                                                                                                                          |
 | `partial`         | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming). |
 | `selectable`      | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                     |
+| `animate`         | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                   |
 | `stylesheet`      | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                   |
 | `charset`         | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.        |
 | `baseUrl`         | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.        |
@@ -1089,18 +1090,51 @@ still fixed, where CSS has it scroll.
 
 **Animations:** `@keyframes`, and `@-webkit-keyframes`, which never takes
 the place of an `@keyframes` of the same name, as in Chrome; `animation`
-and its eight longhands, under their `-webkit-` names too. Nothing runs: a
-document is drawn as it stands once each of its animations has run one
-iteration at no length. One that fills forwards (`forwards` or `both`)
-then holds the frame it ends on — its `to`, or its `from` where it plays in
-reverse — over the author's declarations and under their `!important`
-ones, as the animation origin is (CSS Cascade 5, 6.1); any other leaves the
-element's own style. So a page that fades its panels in and holds them
-shows them, and one that cycles hidden panels through `visibility` shows
-none — what Chrome draws with every animation set to no length, which is
-how the Zen Garden bench holds it. The iteration count, the duration and
-the delay are read and not used, so an animation of two `alternate`
-iterations, or of half of one, is drawn as it ends its first.
+and its eight longhands, under their `-webkit-` names too. They run on the
+document's timeline. An element's animation starts when its style first
+names it, and keeps its time for as long as its style goes on naming it —
+through a hover, a stylesheet arriving, a document built again — and one
+the style stops naming is over, and named again starts again. Its delay,
+iteration count, direction and fill are as Web Animations has them, and a
+paused one holds its time until it plays again. At each frame the values
+between the two frames around its progress are interpolated as computed
+values: a number, a length — a percentage at one end and pixels at the
+other mix — a colour, in premultiplied sRGB, a `visibility`, visible all
+the way between a visible end and another, and `transform` lists, function
+by function where their functions are alike, so `rotate(0)` to
+`rotate(360deg)` turns once, and as matrices taken apart into a
+translation, a turn, a scale and a skew where they are not. What none of
+that reads goes over half-way, as CSS has a discrete value go; so does a
+shorthand any of whose longhands does, a custom property and a logical
+one. A frame's `animation-timing-function` eases to the next frame, and
+the animation's own where it gives none. The values sit at the animation
+origin, over the author's normal declarations and under their
+`!important` ones (CSS Cascade 5, 6.1). A `::before`'s and an `::after`'s
+animations run; a marker's, a first letter's and a first line's are drawn
+at rest, as below.
+
+A frame restyles the elements an animation is under way on, and what they
+hold where it animates an inherited property. Where all it changes is
+what a hover may change in place — a colour, an opacity, a visibility, a
+transform, a `z-index` — it repaints their ink and nothing else. Anything
+else, a length that moves something, builds the boxes again around every
+other element's kept style and lays the document out; where each element
+that changed is positioned absolutely or fixed, or inside one that is, as
+a marquee or a slideshow's panel is, nothing around it moved, and only
+what those boxes drew before and draw now is repainted. Nothing ticks while
+nothing changes: a frame is asked for while an animation is under way, at
+the end of a delay, and not at all once each is over or paused.
+
+`animate={false}` runs none, and a document is drawn as it stands once
+each of its animations has run one iteration at no length. One that fills
+forwards then holds the frame it ends on — its `to`, or its `from` where it
+plays in reverse — and any other leaves the element's own style. So a page
+that fades its panels in and holds them shows them, and one that cycles
+hidden panels through `visibility` shows none — what Chrome draws with
+every animation set to no length, which is how the Zen Garden bench holds
+Chrome, and how it runs `<Html>`. The iteration count, the duration and the delay are
+not used there, so an animation of two `alternate` iterations, or of half
+of one, is drawn as it ends its first. Transitions are not run either way.
 
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
@@ -1610,9 +1644,9 @@ whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms out of the
-plane of the page, animations that run and transitions, a multicol
-container's `column-rule`, `column-span` on a box further in than its
-children, forced breaks, and a table in one broken
+plane of the page, transitions, a multicol container's `column-rule`,
+`column-span` on a box further in than its children, forced breaks, and
+a table in one broken
 between its rows — it goes to the next column whole, and a box a break
 falls inside casts no shadow — conic and repeating
 gradients, a sticky box that follows the viewport as it scrolls, and the font

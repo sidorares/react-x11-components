@@ -91,6 +91,13 @@ export interface HtmlProps {
   partial?: boolean;
   /** Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true. */
   selectable?: boolean;
+  /**
+   * Whether the document's CSS animations run. Default true. False draws
+   * each as it stands once it has run one iteration at no length — the
+   * frame it ends on where it fills forwards — which is what a capture
+   * that has to come out the same every time wants.
+   */
+  animate?: boolean;
   /** Extra author stylesheets, applied after the document's own. */
   stylesheet?: string | string[];
   /**
@@ -292,6 +299,7 @@ export function Html(props: HtmlProps): ReactElement {
     source,
     partial = true,
     selectable = true,
+    animate = true,
     stylesheet,
     charset,
     baseUrl,
@@ -373,6 +381,7 @@ export function Html(props: HtmlProps): ReactElement {
     onDocument: handleDocument,
     onControls: handleControls,
     domRevision,
+    animate,
     ref: viewRef as React.Ref<unknown>,
     // grown with the component, where an application grows it: the root's
     // background covers the whole of it, as a page's covers the window

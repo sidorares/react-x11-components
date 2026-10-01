@@ -396,7 +396,8 @@ metric(
   async () => {
     // Zen Garden 219 pauses its marquees under the pointer: the lists of an
     // element's animations draw nothing, and what an animation leaves is in
-    // the rest of its style
+    // the rest of its style. At rest, where the time is no part of it; the
+    // same pause with the animations running is `animations.test.ts`'s
     const { node } = await render(
       '<style>body{margin:0} @keyframes in { to { opacity: .5 } }' +
         ' #m { animation: in 9s infinite linear }' +
@@ -404,6 +405,7 @@ metric(
         ' #f:hover { animation: in 1s forwards }</style>' +
         '<p id="m">marquee</p><p id="f">fade</p>',
       300,
+      { animate: false },
     );
     const el = view(node);
     const style = (id: string) =>
