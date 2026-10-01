@@ -453,6 +453,12 @@ own, an SVG with only a `viewBox`, is fitted into a square half its face's
 ascent across, which is Blink's: CSS Lists 3 says 1em, and both engines
 find that too large
 ([w3c/csswg-drafts#4207](https://github.com/w3c/csswg-drafts/issues/4207)).
+An image is 7px from the content, Blink's distance, where CSS 2.1 leaves
+it to the user agent: between the image and the content's edge outside the
+item, and after the image inside it, where the content's own space after
+it is kept, as after any image. Blink's 7 is unzoomed, and at a device
+scale of 2 Chrome's is 7 device pixels; this one is 7 CSS pixels at any
+scale, so that a page at 2x is the page at 1x doubled.
 An outside marker that reaches
 higher above its baseline than the item's first line does makes room as
 Blink does: the line grows where it is the item's own, and where it is in a
