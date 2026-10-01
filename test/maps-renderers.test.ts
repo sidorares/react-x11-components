@@ -409,9 +409,22 @@ for (const renderer of RENDERERS) {
     await frame();
     await waitFor(() => assert.ok(seen.length > 0, 'the failure was reported'));
     assert.match(seen[0], /bad 4\/\d+\/\d+ Error: unauthorized/);
-    await frame();
-    const stats = handle.stats();
-    assert.ok(stats && stats.errors > 0, 'and counted in the frame stats');
+    // A frame counts the tiles that failed and are waiting on a retry, and
+    // the first retry is due half a second after the failure: a frame drawn
+    // later than that asks for the tiles again before it counts, and finds
+    // them loading. A runner slow enough to spend the half second between
+    // two `await`s drew that frame, so frames are drawn until one counts
+    // the failure — each retry that fails waits twice as long as the last,
+    // so one does, and the timeout leaves room for a few.
+    const stats = await waitFor(
+      async () => {
+        await frame();
+        const stats = handle.stats();
+        assert.ok(stats && stats.errors > 0, 'and counted in the frame stats');
+        return stats;
+      },
+      { timeout: 5000 },
+    );
     assert.strictEqual(stats.renderer, renderer);
   });
 }
