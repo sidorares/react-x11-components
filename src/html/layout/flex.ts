@@ -51,6 +51,7 @@ import {
   transferredHeight,
   transferredWidth,
   heightFromWidth,
+  heightThroughRatio,
   widthFromHeight,
   resolveEdges,
 } from './block.js';
@@ -328,6 +329,52 @@ export function layoutFlex(
     }
   } finally {
     ctx.flexDepth = depth;
+  }
+
+  // The lines of a row that wraps are as tall as their tallest items, each
+  // as tall as its content across (CSS Flexbox 9.4, steps 7 and 8), and
+  // `align-content` stretches lines short of the box to it, or centres
+  // them, or ends them, past its edges where they are taller (step 9).
+  // Handed the box's height as a size, Yoga measures a stretched item at it
+  // wherever the row has room along it for every item, and so its line is
+  // the box's height: an item taller than the box was squashed to it, and a
+  // line `align-content` centres stayed at the box's top. Where that is so
+  // (`heldLine`), the box is held to its height from both sides instead,
+  // and laid out again: Yoga measures each item as at most that tall, which
+  // its content passes where it is taller — the maximum a percentage, as a
+  // minimum and a maximum that are the same are a size to Yoga. Only there,
+  // and not for a line `align-content` spaces out: Yoga stretches an item
+  // on one by the room it puts beside the line as well, and puts none
+  // beside a line the box's height. Nor where the row is measured for its
+  // widest, which is laid out for its width alone.
+  if (
+    row &&
+    bounded &&
+    height !== null &&
+    box.style.flexWrap !== 'nowrap' &&
+    heldLine(box, ctx, items, height, contentWidth, columnGap)
+  ) {
+    root.setHeightAuto();
+    root.setMinHeight(height);
+    root.setMaxHeightPercent(100);
+    // and a percentage height resolved: Yoga takes one inside a box it
+    // does not hold to a size for none, and measured `h-1/2` as tall as
+    // its content
+    if (own) {
+      for (const { box: child, node } of items) {
+        const set = child.style.height;
+        if (!isPct(set)) continue;
+        const down =
+          child.style.boxSizing === 'border-box' ? 0 : child.verticalExtra;
+        node.setHeight(resolve(set, definite) + down);
+      }
+    }
+    ctx.flexDepth = depth + 1;
+    try {
+      calculate();
+    } finally {
+      ctx.flexDepth = depth;
+    }
   }
 
   // Yoga aligns the lines of a box that wraps, or aligns by baselines, in
@@ -761,7 +808,7 @@ function applyContainer(node: YogaNode, style: ComputedStyle): void {
   if (justify !== Y.JUSTIFY_FLEX_START) node.setJustifyContent(justify);
   const items = ALIGN[style.alignItems] ?? Y.ALIGN_STRETCH;
   if (items !== Y.ALIGN_STRETCH) node.setAlignItems(items);
-  const lines = ALIGN[style.alignContent] ?? Y.ALIGN_STRETCH;
+  const lines = ALIGN[crossContent(style)] ?? Y.ALIGN_STRETCH;
   if (lines !== Y.ALIGN_FLEX_START) node.setAlignContent(lines);
 }
 
@@ -2787,6 +2834,82 @@ function baselineLines<T extends { box: Box }>(
 }
 
 /**
+ * Whether Yoga made a line of a row that wraps the row's height, where its
+ * items make it another (CSS Flexbox 9.4, steps 7 and 8; `layoutFlex`).
+ * Where `align-content` stretches the lines, that is an item stretched
+ * across one that is shorter than its content at the width it was given:
+ * its line is as tall as that, past the box. Where it centres them or ends
+ * them, it is the one line of the row not as tall as the row, which moves
+ * it from the row's start. Lines it starts at the row's start are there in
+ * Yoga's layout as well, and lines it spaces out are left as Yoga has them.
+ */
+function heldLine(
+  container: Box,
+  ctx: LayoutContext,
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  /** The row's content height. */
+  height: number,
+  /** The row's content width, the items' containing block's. */
+  width: number,
+  /** The gap between two items along the row. */
+  gap: number,
+): boolean {
+  const style = container.style;
+  const lines = crossContent(style);
+  if (lines !== 'stretch' && lines !== 'center' && lines !== 'flex-end') {
+    return false;
+  }
+  const stretched = items.filter(({ box }) => stretches(box, style));
+  if (stretched.length === 0) return false;
+  if (lines === 'stretch') {
+    return stretched.some(
+      ({ box, node, laid }) =>
+        naturalAcross(box, ctx, laid, width) > node.getComputedHeight() + 0.01,
+    );
+  }
+  // one line, which the items come to no more than the row's width along:
+  // Yoga made a line each of them only where they come to more
+  let along = gap * (items.length - 1);
+  for (const { box, laid } of items) along += laid.main + marginsOf(box, true);
+  if (along > width + 0.01) return false;
+  // as tall as its tallest item, as Yoga has them: it lays them out at
+  // their content's height where `align-content` does not stretch lines
+  let line = 0;
+  for (const { box, node } of items) {
+    line = Math.max(line, node.getComputedHeight() + marginsOf(box, false));
+  }
+  return Math.abs(line - height) > 0.01;
+}
+
+/**
+ * A row item's border-box height as its content makes it at the width the
+ * flex layout gave it, within its limits: the layout `placeItems` gives it
+ * there, made now where it has none (`layoutItemAt`), and a replaced one's
+ * through its ratio or its natural height.
+ */
+function naturalAcross(
+  box: Box,
+  ctx: LayoutContext,
+  laid: Laid,
+  /** The flex box's content width, the item's containing block's. */
+  containing: number,
+): number {
+  const width = meant(laid.main, laid.set, laid.stretch, laid.width, laid.held);
+  if (box.kind === 'replaced') {
+    const own = box.intrinsic;
+    const natural =
+      heightThroughRatio(box, width) ??
+      (own && !(own.missing & 2) ? own.height + box.verticalExtra : null);
+    return natural === null ? 0 : clampHeight(box, natural);
+  }
+  if (box.kind === 'text' || box.kind === 'break') return 0;
+  const kept = naturalHeight(box, ctx, width, containing, laid);
+  if (!Number.isNaN(kept)) return kept;
+  layoutNaturally(box, ctx, width, containing, laid);
+  return box.height;
+}
+
+/**
  * How far an item is from where it belongs across its line, where Yoga
  * (3.2.1) aligned the lines in the pass it takes for a box that wraps or
  * aligns by baselines: it sets an item aligned to its line's start there
@@ -2975,6 +3098,20 @@ function mainJustify(style: ComputedStyle): string {
   else if (!row) start = true;
   else start = (justify === 'left') === (style.direction !== 'rtl');
   return start !== reverse ? 'flex-start' : 'flex-end';
+}
+
+/**
+ * An `align-content` as the cross axis takes it (CSS Box Alignment 3,
+ * 5.1): `start` and `end` are the box's own edges, which are its lines'
+ * cross ends turned round where the box wraps in reverse — `end` in a row
+ * `wrap-reverse` is the bottom, where its lines start.
+ */
+function crossContent(style: ComputedStyle): string {
+  const lines = style.alignContent;
+  if (lines !== 'start' && lines !== 'end') return lines;
+  return (lines === 'start') === (style.flexWrap !== 'wrap-reverse')
+    ? 'flex-start'
+    : 'flex-end';
 }
 
 const JUSTIFY: Record<string, number> = {

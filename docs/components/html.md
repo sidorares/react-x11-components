@@ -580,7 +580,22 @@ a card in a row of cards has its `margin-top: auto` button at its bottom,
 its `flex: 1` takes what the others leave, and what it centres is centred
 in the whole of it. That holds along a column with no height of its own
 too — `min-h-screen flex flex-col` around a `flex-1 flex items-center` —
-though nothing takes a percentage of such a height, as in a browser. Items go in `order`, and in the document's where two have the
+though nothing takes a percentage of such a height, as in a browser. In a
+row that wraps, each line is as tall as its tallest item at its content's
+height, and an item stretched across it as tall as the line (CSS Flexbox
+9.4, steps 7 and 8): past the bottom of a row with a `height` its items
+outgrow, or past its top where the lines run in reverse, as in Chrome,
+where Yoga, which lays the box out, measured a stretched item at the row's
+height wherever the row had room along it for every item, and squashed a
+taller one to it. `align-content: center` and `flex-end` move such a line
+by its own height, past both edges or the far one where it is taller than
+the row, and `start` and `end` are the row's top and bottom, which a row
+that wraps in reverse has at its lines' ends. The one line of a row
+`space-around` spaces out stays at the row's start where an item on it is
+stretched, and an item
+stretched across a line `space-between` or `space-around` spaces out is
+taller than the line by the room put between lines — Yoga's reading, not
+the specification's. Items go in `order`, and in the document's where two have the
 same, and are painted so; one with a `z-index` is a stacking context
 whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines, their
 line as tall as that makes it — `last baseline` is taken as the end of the

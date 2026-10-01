@@ -781,9 +781,13 @@ export interface ComputedStyle {
     | 'center'
     | 'stretch'
     | 'baseline';
+  /** `start` and `end` are kept: a flex box that wraps in reverse puts
+   *  them at the other ends of its lines from `flex-start` and `flex-end`. */
   alignContent:
     | 'flex-start'
     | 'flex-end'
+    | 'start'
+    | 'end'
     | 'center'
     | 'stretch'
     | 'space-between'
@@ -2996,11 +3000,15 @@ export function applyDeclaration(
     }
     case 'align-content': {
       // `normal` is `stretch` in a flex and a grid container, the only
-      // boxes it moves anything in (CSS Box Alignment 3, 5.1)
+      // boxes it moves anything in (CSS Box Alignment 3, 5.1); `start` and
+      // `end` are the box's own edges, and stay those
+      const plain = overflowAligned(value);
       const v =
         value.trim().toLowerCase() === 'normal'
           ? 'stretch'
-          : alignKeyword(value);
+          : plain === 'start' || plain === 'end'
+            ? plain
+            : alignKeyword(value);
       if (v) style.alignContent = v as ComputedStyle['alignContent'];
       return;
     }
