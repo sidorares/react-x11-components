@@ -1094,7 +1094,9 @@ well, as HTML maps them.
 that height is one a percentage inside resolves against. A box grows past
 it to hold its content, as CSS Sizing 4 has it, unless it clips or has a
 `min-height` of its own; a replaced element takes it over its own ratio,
-or, written `auto 16 / 9`, only where it has none. The ratio runs the other
+or, written `auto 16 / 9`, only where it has none — then of its content
+box, as its own ratio is, and of the box `box-sizing` names otherwise. The
+ratio runs the other
 way too: a box with a height and an `auto` width, or one of its content's,
 is as wide as the height makes it, and a least or greatest height is a
 least or greatest width through it.
