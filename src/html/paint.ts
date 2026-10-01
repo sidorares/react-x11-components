@@ -101,7 +101,7 @@ import {
 } from './layout/inline.js';
 import { tableGrid } from './layout/grid.js';
 import type { Cell } from './layout/grid.js';
-import { SvgDrawing, inlineDrawing } from './svg.js';
+import { SvgDrawing, concreteSize, inlineDrawing } from './svg.js';
 import type { IntrinsicSize } from './svg.js';
 import type { CollapsedBorder } from './layout/collapse.js';
 
@@ -4355,7 +4355,7 @@ function roundedTile(
 
 /**
  * A background tile's size (CSS Backgrounds 3, 3.9, over CSS Images' sizing
- * of an object): `auto` is the image's own, as `tileSize` has it; `cover`
+ * of an object): `auto` is the image's own, as `concreteSize` has it; `cover`
  * and `contain` scale it to fill the positioning area or to fit inside it,
  * keeping its ratio, and one with no ratio is the size of the area; and a
  * width or a height alone takes the other from the ratio, or else from the
@@ -4368,7 +4368,8 @@ function sizedTile(
   area: Rect,
   scale: number,
 ): [number, number] {
-  if (size === 'auto') return tileSize(image, area, scale);
+  if (size === 'auto')
+    return concreteSize(image, area.width, area.height, scale);
   const { ratio } = image;
   if (size === 'cover' || size === 'contain') {
     if (!(ratio > 0 && area.height > 0)) return [area.width, area.height];
@@ -4389,34 +4390,7 @@ function sizedTile(
     if (ratio > 0) return [h * ratio, h];
     return [image.width === null ? area.width : image.width * scale, h];
   }
-  return tileSize(image, area, scale);
-}
-
-/**
- * A background image's size, in device pixels, where nothing sets it — CSS
- * 2.1 has no `background-size` — which is CSS Images' default sizing: an
- * image's own size where it has one; the dimension it lacks from its ratio,
- * or else from the positioning area; and one with a ratio alone as large as
- * fits in the area. An SVG may be any of these, and a raster image is the
- * first.
- */
-function tileSize(
-  size: IntrinsicSize,
-  area: Rect,
-  scale: number,
-): [number, number] {
-  const { ratio } = size;
-  const width = size.width === null ? null : size.width * scale;
-  const height = size.height === null ? null : size.height * scale;
-  if (width !== null && height !== null) return [width, height];
-  if (width !== null) return [width, ratio > 0 ? width / ratio : area.height];
-  if (height !== null) return [ratio > 0 ? height * ratio : area.width, height];
-  if (ratio > 0) {
-    return area.width / area.height > ratio
-      ? [area.height * ratio, area.height]
-      : [area.width, area.width / ratio];
-  }
-  return [area.width, area.height];
+  return concreteSize(image, area.width, area.height, scale);
 }
 
 /**
@@ -4712,9 +4686,7 @@ function paintBorderImage(
   // the image's size, CSS Images' default sizing in the area: a drawing
   // with no size of its own is as large as it fits there, and a gradient,
   // which has none, is the area's
-  const [cw, ch] = loaded
-    ? tileSize(loaded, { x: 0, y: 0, width: aw, height: ah }, scale)
-    : [aw, ah];
+  const [cw, ch] = loaded ? concreteSize(loaded, aw, ah, scale) : [aw, ah];
   const iw = cw / scale;
   const ih = ch / scale;
   if (!(iw > 0 && ih > 0)) return false;

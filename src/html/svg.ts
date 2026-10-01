@@ -122,6 +122,36 @@ export function svgIntrinsics(el: Element, fontSize = 16): IntrinsicSize {
   return { width, height, ratio };
 }
 
+/**
+ * An image's size, in device pixels, where nothing sets it: CSS Images 3's
+ * default sizing algorithm (5.3.3), against a default object size of
+ * `width` by `height` device pixels — a background's positioning area, a
+ * list marker's square. Its own size where it has one; the dimension it
+ * lacks from its ratio, or else from the default; and one with a ratio
+ * alone as large as fits in the default. An SVG may be any of these, and a
+ * raster image is the first. `scale` is device pixels per CSS pixel, which
+ * the image's own size is in.
+ */
+export function concreteSize(
+  size: IntrinsicSize,
+  width: number,
+  height: number,
+  scale: number,
+): [number, number] {
+  const { ratio } = size;
+  const w = size.width === null ? null : size.width * scale;
+  const h = size.height === null ? null : size.height * scale;
+  if (w !== null && h !== null) return [w, h];
+  if (w !== null) return [w, ratio > 0 ? w / ratio : height];
+  if (h !== null) return [ratio > 0 ? h * ratio : width, h];
+  if (ratio > 0) {
+    return width / height > ratio
+      ? [height * ratio, height]
+      : [width, width / ratio];
+  }
+  return [width, height];
+}
+
 /** The slice of ntk's `SvgView` this draws with. */
 interface SvgViewLike {
   naturalWidth: number;
