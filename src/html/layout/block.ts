@@ -2119,12 +2119,12 @@ function layoutMarker(box: Box, marker: Marker, ctx: LayoutContext): void {
   const style = box.style;
   if (marker.image) {
     // an image: its bottom on the first line's baseline, as an inline
-    // image's is, and the gap a bullet has before the content
+    // image's is, and its own gap before the content (`MARKER_IMAGE_GAP`)
     const first = firstLineIn(box);
     marker.y = first
       ? first.y + first.baseline - marker.image.height
       : box.contentY;
-    const gap = Math.round(style.fontSize * 0.4);
+    const { gap } = marker.image;
     // at the start of the line, which is its right in a right-to-left item
     marker.x =
       style.direction === 'rtl'
