@@ -678,7 +678,29 @@ for those and for no `<col>`, as Blink does. A percentage `width`, a
 cell's or a column's, is of the table's width less its `border-spacing` in
 either layout — CSS Tables 3's assignable table width, the spacing either
 side of every column out — as Blink takes it, so a `width: 50%` cell in a
-table of 300 spaced 2 is 147. A percentage in a cell's padding is of the
+table of 300 spaced 2 is 147. Laid out by its content, a table keeps the
+percentage a percentage until its width is known, and the percentages
+help decide it: an auto table is wide enough that each column's content
+is no more than its percentage of the table, and that the columns with
+none are what the percentages leave, as Blink widens it
+(`ComputeGridInlineMinMax`) where CSS Tables 3 says only that a percentage
+is a constraint to try to satisfy (3.9.2). So a 20% column beside one set
+to 100px is a table of 125, where the room allows it, and two 30% columns
+over 10px of content one of 33.33. A table measured for what it asks of a
+table cell, a flex box or a grid around it, or set `width: max-content`,
+asks for its content alone, and laid out in that, shares it; one measured
+for a float or an inline block asks for its percentages too, as in Chrome.
+The percentages come to no more than 100%, the columns' in order, the one
+that would take them past it having what is left; a spanning cell's
+percentage goes to the columns it spans that have none, in proportion to
+their content; and a `<col>` with a percentage takes its group's length
+beside it. The table's width — its own, the room it has, or what its
+captions or its `min-width` hold it to — is shared out over the columns as
+CSS Tables 3 shares it (3.9.3): every column at its least, then the
+percentages grown towards theirs, then the columns set to a length towards
+it, then the rest towards their widest content; and what is left over goes
+to the columns set to nothing, or else to those set to a length, or else
+to the percentages, by them. A percentage in a cell's padding is of the
 width of its row — the columns and the spacing between them — as browsers
 take it, and of nothing while the columns are sized, so a padded cell's
 column is as wide as its content asks. A cell's `min-width` and
