@@ -1379,6 +1379,50 @@ test('a border-area clip is the border wherever the paint is cut', async () => {
   }
 });
 
+test("a border-area clip is a dashed or dotted side's pattern wherever the paint is cut", async () => {
+  // The clip is made of the rectangles the border's dashes and dots are
+  // painted as, and those were measured from the side cut to 64 pixels
+  // round what is repainted: a 500px side in a strip 20 across had dashes
+  // 296 long every 444, where they are 1000 long every 1500, so the
+  // background showed in the gaps of a pattern the border did not have
+  const cases = [
+    [
+      'a dashed left side',
+      'border-left:500px dashed #888888',
+      { x: 240, y: 700, width: 20, height: 1000 },
+      (x: number, y: number) => x < 500 && y % 1500 < 1000,
+    ],
+    [
+      'a dotted top',
+      'border-top:500px dotted #888888',
+      { x: 300, y: 240, width: 1000, height: 20 },
+      (x: number, y: number) => y < 500 && x % 1000 < 500,
+    ],
+  ] as const;
+  for (const [name, style, damage, inside] of cases) {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        `<div style="width:3000px;height:3000px;${style};` +
+        'background:#ff0000;background-clip:border-area"></div>',
+    );
+    const { clips } = await pathsOf(view(node), damage);
+    assert.ok(clips.length <= 1, `one clip, or none: ${name}`);
+    const wrong: string[] = [];
+    for (let y = damage.y; y < damage.y + damage.height; y += 1) {
+      for (let x = damage.x; x < damage.x + damage.width; x += 1) {
+        const [px, py] = [x + 0.5, y + 0.5];
+        const clipped = clips.length === 1 && windingAt(clips[0], px, py) !== 0;
+        if (clipped !== inside(px, py)) wrong.push(`${x},${y}`);
+      }
+    }
+    assert.deepStrictEqual(
+      wrong.slice(0, 4),
+      [],
+      `the side's own pattern, ${name}: ${wrong.length} wrong`,
+    );
+  }
+});
+
 metric(
   'an inline box whose background is an image or a gradient alone is painted',
   async () => {

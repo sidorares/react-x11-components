@@ -5764,10 +5764,9 @@ function paintCollapsedBorders(
   );
   for (const s of segments) {
     if (isTransparent(s.border.color)) continue;
-    const rect = clampRect(options, s.x, s.y, s.w, s.h);
-    if (!rect) continue;
+    if (!clampRect(options, s.x, s.y, s.w, s.h)) continue;
     ctx.fillStyle = s.border.color;
-    fillEdge(ctx, rect, s.horizontal ? s.x : s.y, s.border.style, s.horizontal);
+    fillEdge(ctx, options, s.x, s.y, s.w, s.h, s.border.style, s.horizontal);
   }
 }
 
@@ -5829,12 +5828,8 @@ function fillSide(
   }
   const ex = at === 1 ? x + w - r : x;
   const ey = at === 0 ? y : at === 2 ? y + h - b : y + t;
-  const rect = horizontal
-    ? clampRect(options, ex, ey, w, width)
-    : clampRect(options, ex, ey, width, h - t - b);
-  // The un-clamped start is the dash phase's origin, so the pattern does
-  // not crawl as the viewport moves along a long edge.
-  if (rect) fillEdge(ctx, rect, horizontal ? ex : ey, style, horizontal);
+  if (horizontal) fillEdge(ctx, options, ex, ey, w, width, style, true);
+  else fillEdge(ctx, options, ex, ey, width, h - t - b, style, false);
 }
 
 /**
@@ -5876,45 +5871,67 @@ function doubleBand(thickness: number): number {
   return Math.max(1, Math.floor(thickness / 3));
 }
 
+/**
+ * A side at `x, y`, `w` by `h`, running across when `horizontal`, as the
+ * rectangles its style makes, each cut to what the paint reaches. The
+ * dashes, the dots and a double side's lines are measured from the side
+ * and cut after: measured from the cut, a side wider than `CLAMP_PAD` had
+ * dashes as long and as far apart as the cut was wide, starting wherever
+ * it started, and a strip repainted down one dash was striped across it.
+ */
 function fillEdge(
   ctx: Pick<FillContext, 'fillRect'>,
-  rect: { x: number; y: number; w: number; h: number },
-  phaseOrigin: number,
+  options: PaintOptions,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
   style: ComputedStyle['borderTopStyle'],
   horizontal: boolean,
 ): void {
-  const { x, y, w, h } = rect;
   const length = horizontal ? w : h;
   const thickness = horizontal ? h : w;
-  if (length <= 0 || thickness <= 0) return;
+  if (!(length > 0 && thickness > 0)) return;
+  const fill = (fx: number, fy: number, fw: number, fh: number): void => {
+    const rect = clampRect(options, fx, fy, fw, fh);
+    if (rect) ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  };
   if (style === 'dashed' || style === 'dotted') {
+    // what of the side the paint reaches, so that a side far longer than
+    // that is not walked from its start
+    const cut = clampRect(options, x, y, w, h);
+    if (!cut) return;
     const period = style === 'dotted' ? thickness * 2 : thickness * 3;
     const on = style === 'dotted' ? thickness : thickness * 2;
-    const from = horizontal ? x : y;
-    // Start on the pattern boundary at or before the clamped start, so the
-    // dash the viewport cuts into is the same dash it always was.
-    let i = Math.floor((from - phaseOrigin) / period) * period + phaseOrigin;
-    for (; i < from + length; i += period) {
-      const start = Math.max(i, from);
-      const run = Math.min(i + on, from + length) - start;
-      if (run <= 0) continue;
-      if (horizontal) ctx.fillRect(start, y, run, thickness);
-      else ctx.fillRect(x, start, thickness, run);
+    const start = horizontal ? x : y;
+    const end = start + length;
+    const from = horizontal ? cut.x : cut.y;
+    const to = from + (horizontal ? cut.w : cut.h);
+    // from the side's start, so the dash the paint cuts into is the one it
+    // always was
+    for (
+      let i = start + Math.floor((from - start) / period) * period;
+      i < to;
+      i += period
+    ) {
+      const run = Math.min(i + on, end) - i;
+      if (horizontal) fill(i, y, run, thickness);
+      else fill(x, i, thickness, run);
     }
     return;
   }
   if (style === 'double' && thickness >= 3) {
     const band = doubleBand(thickness);
     if (horizontal) {
-      ctx.fillRect(x, y, length, band);
-      ctx.fillRect(x, y + thickness - band, length, band);
+      fill(x, y, length, band);
+      fill(x, y + thickness - band, length, band);
     } else {
-      ctx.fillRect(x, y, band, length);
-      ctx.fillRect(x + thickness - band, y, band, length);
+      fill(x, y, band, length);
+      fill(x + thickness - band, y, band, length);
     }
     return;
   }
-  ctx.fillRect(x, y, w, h);
+  fill(x, y, w, h);
 }
 
 /** A list item's bullet or number, in the margin. */

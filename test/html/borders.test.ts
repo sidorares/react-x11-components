@@ -663,6 +663,70 @@ test('a rounded border cut to what the paint reaches keeps its hole', async () =
   }
 });
 
+test('a dashed or dotted side cut to what the paint reaches keeps its pattern', async () => {
+  // A side was cut to 64 pixels round what the paint repaints before its
+  // dashes were measured, and they were measured from the cut: a 500px
+  // dashed side repainted in a strip 20 across was a cut 148 across, and
+  // drew dashes 296 long every 444 where they are 1000 long every 1500.
+  // So a strip down the middle of one dash was striped across it, and one
+  // across a table's collapsed border the same.
+  const ink = parseColor('#0000ff');
+  const cases = [
+    [
+      'a dashed left side',
+      '<div style="width:3000px;height:3000px;border-left:500px dashed #0000ff">' +
+        '</div>',
+      { x: 240, y: 700, width: 20, height: 1000 },
+      // dashes twice as long as the side is wide, a gap of one width, from
+      // the side's top
+      (x: number, y: number) => x < 500 && y % 1500 < 1000,
+    ],
+    [
+      'a dotted top',
+      '<div style="width:3000px;height:3000px;border-top:500px dotted #0000ff">' +
+        '</div>',
+      { x: 300, y: 240, width: 1000, height: 20 },
+      // dots as long as the side is wide, and a gap as long, from its left
+      (x: number, y: number) => y < 500 && x % 1000 < 500,
+    ],
+    [
+      "a collapsed table's dashed left side",
+      '<table style="border-collapse:collapse;border-left:500px dashed #0000ff">' +
+        '<tr><td style="padding:0;width:100px;height:3000px"></td></tr></table>',
+      { x: 240, y: 700, width: 20, height: 1000 },
+      (x: number, y: number) => x < 500 && y % 1500 < 1000,
+    ],
+    [
+      "a collapsed table's double left side",
+      '<table style="border-collapse:collapse;border-left:500px double #0000ff">' +
+        '<tr><td style="padding:0;width:100px;height:3000px"></td></tr></table>',
+      { x: 150, y: 700, width: 20, height: 1000 },
+      // two lines a third of the side wide, at its two edges
+      (x: number) => x < 166 || (x >= 334 && x < 500),
+    ],
+  ] as const;
+  for (const [name, source, damage, inside] of cases) {
+    const { node } = await render(`<style>body{margin:0}</style>${source}`);
+    const { fills } = await pathsOf(view(node), damage);
+    const sides = fills.filter((f) => f.style === ink);
+    const wrong: string[] = [];
+    for (let y = damage.y; y < damage.y + damage.height; y += 1) {
+      for (let x = damage.x; x < damage.x + damage.width; x += 1) {
+        const [px, py] = [x + 0.5, y + 0.5];
+        const filled = sides.some(({ outlines }) =>
+          windingAt(outlines, px, py),
+        );
+        if (filled !== inside(px, py)) wrong.push(`${x},${y}`);
+      }
+    }
+    assert.deepStrictEqual(
+      wrong.slice(0, 4),
+      [],
+      `the side's own pattern, ${name}: ${wrong.length} wrong`,
+    );
+  }
+});
+
 test("a percentage radius is of the box's width across and its height down", async () => {
   // `50%` was read as no radius, so an avatar was a square: a circle on a
   // square box, and an ellipse on any other, drawn as four curves
