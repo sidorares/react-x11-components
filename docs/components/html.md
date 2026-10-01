@@ -1192,7 +1192,10 @@ box — Tailwind's `bg-clip-text text-transparent` headline, with
 `-webkit-text-fill-color` read as the glyphs' own fill — as the text laid
 out again with no ink of its own and filled with the gradient, which both
 text engines do natively; an elliptical gradient fills it as a picture of
-itself, drawn once. `background-clip: border-area` (CSS Backgrounds 4)
+itself, drawn once. The text is the element's and its descendants' in flow
+and floating, a heading's inside a `<div>`, an inline-block's or a flex
+item's, and not an absolutely positioned descendant's, as CSS Backgrounds
+4 has it. `background-clip: border-area` (CSS Backgrounds 4)
 paints a layer where the border paints: its widths and styles and not its
 colour, so a transparent border shows the layer through a double border's
 two lines, a dotted one's dots or a rounded one's ring, the shapes the

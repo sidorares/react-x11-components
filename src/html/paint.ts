@@ -6479,7 +6479,7 @@ function paintClippedText(
         ) +
         2;
       for (const run of natural.runs) {
-        const clip = clipBoxOf(text.spans.boxAt?.(run.start) ?? null, block);
+        const clip = clipBoxOf(text.spans.boxAt?.(run.start) ?? null);
         if (!clip) continue;
         let byLayout = parts.get(clip);
         if (!byLayout) parts.set(clip, (byLayout = new Map()));
@@ -6501,7 +6501,7 @@ function paintClippedText(
     const list = [...byLayout.values()];
     const style = clip.style;
     let area: Rect;
-    if (clip === block) area = paddingBox(block, options);
+    if (clip.kind !== 'inline') area = paddingBox(clip, options);
     else {
       // an inline box: its runs, and its padding round them
       let x0 = Infinity;

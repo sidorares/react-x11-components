@@ -980,6 +980,9 @@ class Builder {
       hasHtml(root),
     );
     const rootBox = new Box('block', null, rootStyle);
+    // the root standing in for a `<body>` has its background clipped to
+    // the document's text as the body's would be
+    if (rootStyle.backgroundClipText) this._clipText = true;
     // a fragment's root stands in for a `<body>`, counters and all
     this._scopes.open();
     this._counterChanges(rootStyle, {
