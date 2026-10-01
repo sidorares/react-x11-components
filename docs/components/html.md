@@ -505,7 +505,14 @@ An image is its natural width, and one with only a ratio, such as an SVG
 with only a `viewBox`, the column's. An item with something in it that
 takes a percentage of a height is fitted to the column, though: it is
 measured before the flex layout makes that height definite, where Chrome
-measures it at that height. An item, and a grid's,
+measures it at that height. In a column that wraps, a stretched item is as
+wide as its line, and the line is as wide as its widest item at that width
+(9.4, steps 7 and 8): past the box where an item's content at its narrowest
+is wider, starting at its right edge where the lines run right to left, as
+in Chrome, where Yoga, which lays the box out, held the line to the box's
+width. A line short of the box that `align-content` centres, ends or spaces
+out is the box's width still where an item on it is stretched, Yoga's
+reading and not the specification's. An item, and a grid's,
 is a formatting context of its own: the margins of what it holds stay
 inside it, and the one under its last block makes it that much taller. An
 `auto` margin takes

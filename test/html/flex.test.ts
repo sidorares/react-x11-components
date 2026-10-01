@@ -1819,6 +1819,76 @@ metric(
   },
 );
 
+test('a column that wraps stretches its items to its line, as wide as its widest item at its narrowest', async () => {
+  // The lines of a column that wraps are as wide as their widest items,
+  // each `fit-content` across (CSS Flexbox 9.4, steps 7 and 8), and one
+  // wider than the box runs past it; a stretched item is as wide as its
+  // line (step 11). Yoga stretched them to the box, wherever the column
+  // had room for them all down it — with no height, always — and the 201px
+  // block ran out of its item. Where the lines run right to left, the line
+  // starts at the box's right edge and runs past its left one. A
+  // percentage width is of the box still: Yoga takes one of a box it does
+  // not hold to a size for none, and measured `p` as wide as its content.
+  const block = '<div style="width:201px;height:13px"></div>';
+  const column = (id: string, style: string) =>
+    '<div style="display:flex;flex-direction:column;flex-wrap:wrap;' +
+    `width:50px;${style}"><div id="${id}a">${block}</div>` +
+    `<div id="${id}b" style="height:5px"></div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      column('n', '') +
+      column('h', 'height:60px') +
+      column('r', 'flex-wrap:wrap-reverse') +
+      column('l', 'direction:rtl') +
+      '<div style="display:flex;flex-direction:column;flex-wrap:wrap;' +
+      `width:50px"><div id="p" style="width:50%;height:5px"></div>` +
+      `<div id="q">${block}</div></div>`,
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).width];
+  assert.deepStrictEqual(at('na'), [0, 201], 'as wide as its block');
+  assert.deepStrictEqual(at('nb'), [0, 201], 'stretched to the line');
+  assert.deepStrictEqual(at('ha'), [0, 201], 'with room down the column');
+  assert.deepStrictEqual(at('hb'), [0, 201]);
+  assert.deepStrictEqual(at('ra'), [-151, 201], 'from the right, in reverse');
+  assert.deepStrictEqual(at('rb'), [-151, 201]);
+  assert.deepStrictEqual(at('la'), [-151, 201], 'from the right, rtl');
+  assert.deepStrictEqual(at('lb'), [-151, 201]);
+  assert.deepStrictEqual(at('p'), [0, 25], 'half the box');
+  assert.deepStrictEqual(at('q'), [0, 201]);
+});
+
+test('a column that wraps keeps the height of an item it stretches', async () => {
+  // Stretching a line short of the box to it, Yoga lays each stretched
+  // item out again at its height less its top and bottom margins, and with
+  // nothing to hold it to its content, the item was shorter by them; so
+  // the box is handed to Yoga as a size where the line is the box's
+  const block = '<div style="width:201px;height:13px"></div>';
+  const column = (width: number, items: string) =>
+    '<div style="display:flex;flex-direction:column;flex-wrap:wrap;' +
+    `width:${width}px">${items}</div>`;
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      column(
+        300,
+        '<div id="a" style="margin:5px 0;min-height:0">' +
+          '<div style="width:100px;height:13px"></div></div>' +
+          '<div id="b" style="height:5px;margin:2px 0;overflow:hidden"></div>',
+      ) +
+      column(
+        50,
+        `<div id="c" style="margin:5px 0;min-height:0">${block}</div>` +
+          '<div id="d" style="height:5px;margin:2px 0;overflow:hidden"></div>',
+      ),
+  );
+  const el = view(node);
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('a'), [300, 13], "the box's line");
+  assert.deepStrictEqual(size('b'), [300, 5]);
+  assert.deepStrictEqual(size('c'), [201, 13], 'a line wider than the box');
+  assert.deepStrictEqual(size('d'), [201, 5]);
+});
+
 test('a flex item stretched across a column is as tall as its ratio makes it', async () => {
   // a replaced item was measured at the width it was given and answered
   // its natural height, along a column as it did along a row before
