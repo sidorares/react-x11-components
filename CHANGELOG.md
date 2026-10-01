@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.16.1](https://github.com/sidorares/react-x11-components/compare/v0.16.0...v0.16.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **html:** a column that wraps sets its lines at the box's own start or end for align-content start and end, where end set them at its start ([#571](https://github.com/sidorares/react-x11-components/issues/571)) ([9ecda22](https://github.com/sidorares/react-x11-components/commit/9ecda2246380677e4a37ae9c8b14c8f20ccbd6a2))
+* **html:** a flex item whose first line hangs out of it sits on that line, and only a scroll container holds a baseline to its border box, where every item was held to its height ([#577](https://github.com/sidorares/react-x11-components/issues/577)) ([4ca7323](https://github.com/sidorares/react-x11-components/commit/4ca7323c0c3b40c322082b3a8e7f6aa57fafdf86))
+* **html:** a form control has Chrome's margins and sits on its line's baseline, where it had margins of its own and was set middle ([#578](https://github.com/sidorares/react-x11-components/issues/578)) ([b5e1b9b](https://github.com/sidorares/react-x11-components/commit/b5e1b9bd43a5c92d550c370149ad5ff3bf7b8413))
+* **html:** a row aligned by the baseline of one item or of none is a line as tall as the row, where Yoga set its items in a line as tall as they are, and a column aligned by baselines keeps each margin across it once ([#579](https://github.com/sidorares/react-x11-components/issues/579)) ([2875870](https://github.com/sidorares/react-x11-components/commit/2875870ec204a24de783a49335063980c4fed77b))
+* **html:** an item whose height is a percentage of a height its row does not have is as tall as its content, where Yoga stretched it across its line ([#575](https://github.com/sidorares/react-x11-components/issues/575)) ([a47bc29](https://github.com/sidorares/react-x11-components/commit/a47bc298ebb1bf00635c3f81093c71a20f097447))
+* **html:** an item with an auto margin across a row that does not wrap and is aligned by baselines takes the room its line has past it, where Yoga set it by its baseline in a line as tall as the items ([#573](https://github.com/sidorares/react-x11-components/issues/573)) ([70cff04](https://github.com/sidorares/react-x11-components/commit/70cff041cbdaf31d13eb14f63f97158713e9156c))
+* **html:** lines that wrap in reverse and are too big for their box start at its start for align-content space-around and space-evenly, where they ran out past it ([#576](https://github.com/sidorares/react-x11-components/issues/576)) ([a192d6c](https://github.com/sidorares/react-x11-components/commit/a192d6cb830ba708e3785acd6845e734265b5987))
+
 ## [0.16.0](https://github.com/sidorares/react-x11-components/compare/v0.15.0...v0.16.0) (2026-10-01)
 
 
