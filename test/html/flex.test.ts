@@ -607,6 +607,128 @@ test('a flex item with a width is held to the lesser of it and its content', asy
   );
 });
 
+metric(
+  'a flex item is as tall as its content at the width its minimum gives it',
+  async () => {
+    // Yoga measures an item at no more than the room it offers it, and only
+    // then holds it to its minimum: an answer is kept for the width Yoga
+    // makes of it, so the item was that minimum wide and as tall as its
+    // content wrapped at the room. `min-w-max` in a row of 50px was its
+    // words' width with its words on one line, and the height of two
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex;width:50px;line-height:20px}' +
+        '.c{display:flex;flex-direction:column;width:50px;line-height:20px}' +
+        '.w{width:max-content}</style>' +
+        '<div class="w" id="w">Documentation pages</div>' +
+        '<div class="r" id="ra"><div id="a" style="min-width:max-content">' +
+        'Documentation pages</div></div>' +
+        // with padding and a border, which Yoga holds and the measure does not
+        '<div class="r"><div id="b" style="min-width:max-content;' +
+        'padding:0 5px;border:2px solid">Documentation pages</div></div>' +
+        // and across a column, stretched or not
+        '<div class="c"><div id="c" style="min-width:max-content">' +
+        'Documentation pages</div></div>' +
+        '<div class="c" style="align-items:flex-start"><div id="d" ' +
+        'style="min-width:max-content">Documentation pages</div></div>' +
+        // and held to its content at its narrowest, in a row that wraps
+        '<div style="width:min-content;line-height:20px" id="n">' +
+        'Learn more Documentation</div>' +
+        '<div class="r" style="flex-wrap:wrap"><div id="e">' +
+        'Learn more Documentation</div></div>',
+    );
+    const el = view(node);
+    const box = (id: string) => boxOf(el, id);
+    const words = box('w').width;
+    const near = (actual: number, expected: number, message: string) =>
+      assert.ok(
+        Math.abs(actual - expected) < 0.01,
+        `${message}: ${actual}, not ${expected}`,
+      );
+    assert.ok(words > 50, 'the words are wider than the row');
+    near(box('a').width, words, 'as wide as its words');
+    assert.strictEqual(box('a').height, 20, 'and one line tall');
+    assert.strictEqual(box('ra').height, 20, 'and so is its row');
+    near(box('b').width, words + 14, 'its padding and border outside them');
+    assert.strictEqual(box('b').height, 24, 'one line, and its border');
+    for (const id of ['c', 'd']) {
+      near(box(id).width, words, `a column item (${id}) is as wide`);
+      assert.strictEqual(box(id).height, 20, `and one line tall (${id})`);
+    }
+    near(box('e').width, box('n').width, 'as wide as its longest word');
+    assert.strictEqual(
+      box('e').height,
+      box('n').height,
+      'and as many lines as that makes it',
+    );
+  },
+);
+
+metric(
+  'a flex item that may not shrink is its content at its widest along a row, whatever the room',
+  async () => {
+    // An item's flex base size is its size with its content at its widest
+    // (CSS Flexbox 9.2.3 E: `content`, which `auto` is, as `max-content`),
+    // and one that may not shrink is that (9.7). It was measured at no more
+    // than the room the row offered, which Yoga asks, and so was held to
+    // its content at its narrowest instead: `shrink-0` beside `shrink-0`
+    // in a row too narrow for them wrapped, where they overflow it
+    const { node } = await render(
+      '<style>body{margin:0} .r{display:flex;width:50px;line-height:20px}' +
+        '.w{width:max-content}</style>' +
+        '<div class="w" id="w1">Documentation pages</div>' +
+        '<div class="w" id="w2">Pricing</div>' +
+        '<div class="r"><div id="a" style="flex-shrink:0">Documentation ' +
+        'pages</div><div id="b" style="flex-shrink:0">Pricing</div></div>' +
+        '<div class="r"><div id="c" style="flex:none;padding:0 5px">' +
+        'Documentation pages</div></div>' +
+        // a flex box in one, sized by what it holds
+        '<div class="r"><div id="d" style="flex:none"><div style="display:flex">' +
+        '<div>Documentation pages</div></div></div></div>' +
+        // wider than a minimum that is wider than the row
+        '<div class="r" style="width:80px"><div id="e" ' +
+        'style="flex-shrink:0;min-width:106.64px">' +
+        '<div style="width:161px;height:10px"></div></div></div>' +
+        // and one that may shrink is shrunk to the room, and no further than
+        // its words at their narrowest
+        '<div class="r"><div id="f">Documentation pages</div></div>' +
+        // A flex box's own content at its narrowest is its items' at
+        // theirs, whatever they may shrink by, as Chrome has it: this is
+        // 30 + 20 + 10 wide, and the item in it 60, running out of it
+        '<div id="g" style="display:flex;width:min-content;column-gap:20px">' +
+        '<div id="h" style="flex:0 0 auto">' +
+        '<div style="float:left;width:30px;height:10px"></div>' +
+        '<div style="float:left;width:30px;height:10px"></div></div>' +
+        '<div style="width:10px"></div></div>',
+    );
+    const el = view(node);
+    const box = (id: string) => boxOf(el, id);
+    const near = (actual: number, expected: number, message: string) =>
+      assert.ok(
+        Math.abs(actual - expected) < 0.01,
+        `${message}: ${actual}, not ${expected}`,
+      );
+    const words = box('w1').width;
+    near(box('a').width, words, 'as wide as its words');
+    assert.strictEqual(box('a').height, 20, 'on one line');
+    near(box('b').x, box('a').x + words, 'the next beside it');
+    near(box('b').width, box('w2').width, 'as wide as its word');
+    near(box('c').width, words + 10, 'with its padding outside them');
+    assert.strictEqual(box('c').height, 20, 'on one line');
+    near(box('d').width, words, 'a flex box in one');
+    assert.strictEqual(box('d').height, 20, 'on one line');
+    assert.strictEqual(box('e').width, 161, 'as wide as what it holds');
+    assert.ok(
+      box('f').width < words && box('f').height === 40,
+      'one that may shrink wraps',
+    );
+    assert.deepStrictEqual(
+      [box('g').width, box('h').width],
+      [60, 60],
+      'a flex box at its narrowest, and an item that may not shrink in it',
+    );
+  },
+);
+
 test("a flex item's percentages are of the flex box's width, not of its own", async () => {
   // CSS 2.1 8.3, 8.4 and 10.4: a percentage in a margin, a padding or a
   // width limit is of the containing block's width, and a flex item's

@@ -471,7 +471,12 @@ A flex container is laid out by Yoga, the engine react-x11 lays itself out
 with, and each item by this one: an item of `width: auto` is as wide as its
 content, its max-content width, before the row grows or shrinks it, its
 padding and border counted once, and a width, height or basis of its own is
-its content box's unless `box-sizing` says otherwise. An item, and a grid's,
+its content box's unless `box-sizing` says otherwise. One that may not
+shrink stays that wide in a row too narrow for it — `shrink-0` beside
+`shrink-0` runs out of the row on one line each rather than wrapping — and
+one a `min-width` of its own holds wider than the room it is offered, as
+`min-w-max` in a narrow row or column does, or its longest word holds in a
+row that wraps, is as tall as its content at that width. An item, and a grid's,
 is a formatting context of its own: the margins of what it holds stay
 inside it, and the one under its last block makes it that much taller. An
 `auto` margin takes
