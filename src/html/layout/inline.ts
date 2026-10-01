@@ -3468,14 +3468,14 @@ function tableBaseline(table: Box): number | null {
  * chevron, and the line it was on came out shorter than a browser's.
  */
 function lastBaselineIn(box: Box): number | null {
-  if (box.kind === 'flex') return flexBaseline(box);
+  if (box.kind === 'flex') return heldIn(box, flexBaseline(box));
   if (box.lines?.length) {
     const line = box.lines[box.lines.length - 1];
-    return line.y + line.baseline;
+    return heldIn(box, line.y + line.baseline);
   }
   for (let i = box.children.length - 1; i >= 0; i -= 1) {
     const found = childBaseline(box.children[i], lastBaselineIn);
-    if (found !== null) return found;
+    if (found !== null) return heldIn(box, found);
   }
   return null;
 }
@@ -3483,13 +3483,30 @@ function lastBaselineIn(box: Box): number | null {
 /** The same, from the first line box or child: a table's baseline is its
  *  first row's, and so is a table cell's. */
 export function firstBaselineIn(box: Box): number | null {
-  if (box.kind === 'flex') return flexBaseline(box);
-  if (box.lines?.length) return box.lines[0].y + box.lines[0].baseline;
+  if (box.kind === 'flex') return heldIn(box, flexBaseline(box));
+  if (box.lines?.length) {
+    return heldIn(box, box.lines[0].y + box.lines[0].baseline);
+  }
   for (const child of box.children) {
     const found = childBaseline(child, firstBaselineIn);
-    if (found !== null) return found;
+    if (found !== null) return heldIn(box, found);
   }
   return null;
+}
+
+/**
+ * A box's baseline as its content gives it, held to its border box where
+ * the box is a scroll container (CSS Box Alignment 3, 9.1), at either edge
+ * — and only there: a box whose text overflows it otherwise, or clips it
+ * (`overflow: clip` is no scroll container), has the baseline its text
+ * has, as Chrome has it. Held at every box, so a scroll container deep in
+ * an item, or in an inline block, holds the baseline it gives to its box.
+ * The flex layout held every item to its height, and an item shorter
+ * than its text sat its text's descent below the items beside it.
+ */
+function heldIn(box: Box, found: number | null): number | null {
+  if (found === null || !scrolls(box.style)) return found;
+  return Math.min(Math.max(found, box.y), box.y + box.height);
 }
 
 function childBaseline(
@@ -3502,9 +3519,9 @@ function childBaseline(
   // a table is passed over for a block's last baseline (`lastBaselineIn`)
   if (inside === lastBaselineIn && child.kind === 'table') return null;
   // the legacy rule is a block container's last baseline alone (CSS Box
-  // Alignment 3, 9.2): its first is its first line's, clipped or not —
-  // and a button that clips keeps its label's, here as on a line of its
-  // own (`atomicBaseline`)
+  // Alignment 3, 9.2): its first is its first line's, clipped or not, held
+  // to its border box (`heldIn`) — and a button that clips keeps its
+  // label's, here as on a line of its own (`atomicBaseline`)
   if (
     inside === lastBaselineIn &&
     child.kind !== 'flex' &&

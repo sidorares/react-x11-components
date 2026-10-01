@@ -3076,11 +3076,14 @@ function lineMarginFix(
 
 /** An item's first baseline, down from its border edge: its content's
  *  first line's, or where it has none, or is replaced, one synthesized
- *  from its border box — its bottom edge. */
+ *  from its border box — its bottom edge. Past that edge where the line
+ *  is: only a scroll container's is held to its box (`firstBaselineIn`),
+ *  and an item shorter than its text, or whose padding puts the text
+ *  under it, sits on its text where it had sat on its bottom. */
 function itemBaseline(item: Box): number {
   if (item.kind !== 'replaced') {
     const found = firstBaselineIn(item);
-    if (found !== null) return Math.min(found - item.y, item.height);
+    if (found !== null) return found - item.y;
   }
   return item.height;
 }
