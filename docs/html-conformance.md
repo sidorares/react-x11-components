@@ -3937,6 +3937,179 @@ css-color went from 236 to 252 of 296 on X11, the sixteen
 css-variables or css-backgrounds. The CSS 2.1 suite has no colour of this
 kind in it.
 
+### A sweep against round 130
+
+Before rounds 131 to 143, the whole of this loop's set was run on master and
+on round 130's tree (#499): the CSS 2.1 suite and 45 more of WPT's `css/`
+directories, 20,028 reftests. Fifty-odd `<Html>` fixes had landed between,
+and master passed 53 more: css-flexbox 36, css-grid 9, css-transforms 4,
+css-backgrounds 3, and a few each elsewhere. Of what it lost, two were a
+choice: the CSS 2.1 suite's `max-width-applies-to-005` and `006`, which a
+column's `max-width` decides and Chrome ignores (#523). Two were accidents
+reversed, which had passed while the rules of a page never reached the
+inside of an inline SVG: `svg-g-no-size-container`, whose red comes from
+`@supports not (container-type: size)`, true of a renderer with no
+container queries, and a grid-lanes subgrid. Two were real, and rounds 132
+and 133 are them. A run of the whole set takes about ten minutes on X11.
+
+### Round 132
+
+337. **An SVG image's fragment was no `:target`.** Since #509 an SVG
+     image's own style sheets apply, and a sprite sheet hides every icon
+     but the one its URL names: `g { display: none }` and
+     `g:target { display: inline }`. css-select has no `:target`, and threw
+     on a selector with one, so the rule was dropped and `sprite.svg#check`
+     drew nothing. `:target` is the element with the fragment's id in an
+     SVG image, and none in a document, which is drawn at no fragment; a
+     `:not(:target)` matches.
+
+css-masking's `mask-image-url-image-hash` passes again.
+
+### Round 133
+
+338. **A page's `<meta name="color-scheme">` was not read.** HTML makes it
+     the root element's `color-scheme` where no rule sets one, and a page
+     that says it is dark that way was drawn in the palette's scheme. It
+     is read as a presentational attribute is, under any rule, at the top
+     of a fragment and in the `<html>` and its `<head>`.
+
+mediaqueries' `prefers-color-scheme-svg-image-normal-with-meta-dark` passes.
+It had passed or failed by the order the runner drew tests in, on both
+trees.
+
+### Round 134
+
+339. **No system colour was read**: `Canvas`, `CanvasText`, `ButtonFace`,
+     `ButtonBorder`, `Field`, `LinkText`, `GrayText`, `Mark`, `Highlight`
+     and the rest, and the deprecated ones CSS Color 4 makes the same as
+     them. The palette is this renderer's platform, so where an element's
+     scheme is the palette's, the colours it has are its own — its ground,
+     its text, its accent, its controls', its muted text — and in the other
+     scheme, in an SVG image and for the rest, Chrome's defaults (Blink's
+     `LayoutTheme::DefaultSystemColor`). A system colour is a
+     `light-dark()` pair that the element's scheme picks from, in a
+     property that takes a colour alone: `menu` is a font in `font`.
+
+css-color went from 252 to 275 of 296 on X11, the 23 `deprecated-sameas`
+tests. css-text-decor lost `text-decoration-color`, whose reference's
+`LinkText` underline was dropped before: Chrome strokes a decoration with
+`-webkit-text-stroke`, which is not drawn here.
+
+### Round 135
+
+340. **An absolute box that was inline-level went at its block's start
+     among blocks.** Its static position is where it would have been on a
+     line of its own (CSS 2.1 10.3.7, as browsers place it): beside the
+     floats there, at the point the line's alignment puts what it holds,
+     its right edge there in a right-to-left block.
+
+css-position went from 58 to 68 of 123, ten of the
+`inline-level-absolute-in-block-level-context` tests.
+
+### Round 136
+
+341. **A box sized to its content kept a percentage padding inside it.**
+     `width: max-content`, `min-content` and `fit-content` are kept once in
+     a box's life, measured with its edges resolved against nothing; what a
+     percentage edge comes to against the containing block goes on top of
+     them now, so `width: max-content; padding-left: 10%` in a 200px parent
+     is 20px wider than its content, as in Chrome. No reftest moves.
+     `intrinsic-percent-replaced-012` still fails: a vertical percentage
+     padding changes the height the content's own percentages see, which
+     the kept sizes cannot follow.
+
+### Round 137
+
+342. **A background painted through text stopped at the block the text was
+     in.** CSS Backgrounds 4 clips it to the text of the box and of its
+     descendants in flow and floating, so `bg-clip-text` on a `<div>` round
+     a heading drew nothing. A run looks for the box it shows from all the
+     way up, to an absolutely positioned box, whose text is its own; and a
+     document's root standing in for its `<body>` takes the clip as the
+     body's own box would.
+
+css-backgrounds went from 533 to 540 of 598, seven `clip-text` tests.
+
+### Round 138
+
+343. **Every pseudo-class that takes selectors counted one class.**
+     Selectors 4 counts `:where()` as nothing, `:is()`, `:not()` and
+     `:has()` as the most specific selector in their list, and
+     `:nth-child(An+B of S)` as a class and the most specific in S. A
+     typography plugin writes `.prose :where(p)` to be one class that a
+     page's `.intro p` beats; counted two, it beat the page.
+
+selectors went from 82 to 90 of 114, the eight `nth-child-specificity` and
+`nth-last-child-specificity` tests.
+
+### Round 139
+
+344. **Every language's quotation marks were English's.** `quotes` starts
+     at `auto` (CSS Content 3): the marks of the element's language, from
+     its `lang` or the page's `content-language`, as CLDR has them and
+     Chrome reads them through ICU. The table keeps the 130 locales whose
+     marks are not their parent's. `:lang()` and the quotes read an
+     element's language with the one function.
+
+css-content went from 29 to 42 of 52, thirteen `quotes` tests.
+
+### Round 140
+
+345. **Any `appearance: none` of the page's took a control's look off.**
+     Blink drops a control's native look for a background or a border of
+     the page's, or an `appearance` of `none`; here any author declaration
+     of it did, even one a later declaration took back, so
+     `appearance: none; appearance: auto` — a reset a page undoes for some
+     of its controls — left them reset. It is the value that wins that
+     counts now.
+
+css-ui went from 67 to 91 of 112, the `appearance-*-001` and
+`-webkit-appearance-*-001` tests, which set `none` and then the keyword
+under test.
+
+### Round 141
+
+346. **A replaced element's `aspect-ratio` was of its content box under
+     `box-sizing: border-box`.** CSS Sizing 4 makes a ratio of the page's
+     a ratio of the box `box-sizing` names; an image, a canvas or a frame
+     with a border went through its content box, and came out short. One
+     axis's content size goes to the other's through the border box now,
+     where the ratio is written without `auto`; with it, the ratio is of
+     the content box either way, as the element's own is.
+
+css-sizing went from 412 to 416 of 524, `aspect-ratio/replaced-element-031`
+to `034`.
+
+### Round 142
+
+347. **An SVG image with no `viewBox` was drawn at its own size in a
+     corner of its box.** Blink gives one a `viewBox` of its own size,
+     fitted with `preserveAspectRatio: none`, an axis at a time: stretched
+     from the size it has along an axis to the box's, as a raster image
+     is, and laid out down the box's along an axis it has none on.
+
+css-masking went from 109 to 113 of 283, four `mask-size` tests whose masks
+are such images.
+
+### Round 143
+
+348. **A `::marker` content ending in a no-break space stood a space
+     further out.** A marker is set off by a space's width, given back
+     where the engine strips the space a marker's text ends in. A content
+     of `counter(list-item) ".\a0"`, the default marker written out, keeps
+     its no-break space, and had the gap as well. Only the spaces the
+     engine strips are given back.
+
+css-pseudo went from 58 to 61 of 107, `marker-content-001`, `001b` and
+`001c`.
+
+Between rounds 137 and 138, master did not build for an hour: two flexbox
+fixes from another session merged one after the other, and the second read
+a name the first had taken out. #562 is the one line. Run with `tsx`, which
+does not type-check, every flex box with a width threw from its layout, so
+a conformance run on such a tree loses most of css-flexbox at once —
+diff against a master that builds.
+
 ## What `<Html>` supports
 
 From the pass rates of the tests that use each feature, at the fixes above,
@@ -4060,7 +4233,8 @@ directories and caniemail's feature list:
    Tailwind's output is written in them — and `@font-face` through
    `onResource`. CSS Color 4's functions were done in round 19, read in
    this package rather than by ntk's colour parser, `color-mix()` in
-   round 22 and relative colours in round 131. `calc()`, `min()`, `max()` and
+   round 22, relative colours in round 131 and the system colours in
+   round 134. `calc()`, `min()`, `max()` and
    `clamp()` were done in round 20, custom properties in round 21, and the
    logical properties Tailwind 4 writes its spacing in, with `inset`, in
    round 33. Linear gradients were done in round 39, `box-shadow` in
