@@ -1293,6 +1293,75 @@ test('a flex box measured for its min-content width counts each item at its own'
   assert.strictEqual(boxOf(el, 'h').width, 60, 'and the item its widest in it');
 });
 
+test('a flex box that wraps is as narrow as its widest item at its min-content width', async () => {
+  // A row that may wrap may put each item on a line of its own, so its
+  // min-content width is the largest of its items' min-content
+  // contributions, and not their sum, which is a row that does not wrap's
+  // (CSS Flexbox 9.9.1). Summed, a `width: min-content` box around three
+  // 30px items was 90 wide with them side by side, where Chrome has 30,
+  // one under another; its max-content width is still their sum
+  const { node } = await render(
+    '<style>body{margin:0} .i{width:30px;height:6px}' +
+      '.w{display:flex;flex-wrap:wrap}</style>' +
+      '<div id="a" style="width:min-content"><div class="w">' +
+      '<div id="a1" class="i"></div><div id="a2" class="i"></div>' +
+      '<div class="i"></div></div></div>' +
+      // the gaps between items on a line are none, and the widest decides
+      '<div id="b" style="width:min-content"><div class="w" ' +
+      'style="column-gap:20px"><div class="i"></div><div class="i"></div>' +
+      '<div class="i" style="width:40px"></div></div></div>' +
+      // `wrap-reverse` wraps too
+      '<div id="c" style="width:min-content"><div class="w" ' +
+      'style="flex-wrap:wrap-reverse"><div class="i"></div>' +
+      '<div class="i"></div><div class="i"></div></div></div>' +
+      // a least width of its own holds two items to a line
+      '<div id="d" style="width:min-content"><div class="w" ' +
+      'style="min-width:70px"><div class="i"></div><div class="i"></div>' +
+      '<div class="i"></div></div></div>' +
+      // an item's `min-width: min-content` around one, in a row too narrow
+      // for it: its padding and the widest item
+      '<div style="display:flex;width:40px"><div id="e" ' +
+      'style="min-width:min-content;padding-left:22px"><div class="w">' +
+      '<div class="i"></div><div class="i"></div><div class="i"></div>' +
+      '</div></div></div>' +
+      // as an item of a row that does not wrap, which sums it with the rest
+      '<div id="f" style="width:min-content"><div style="display:flex">' +
+      '<div class="w"><div class="i"></div><div class="i"></div>' +
+      '<div class="i"></div></div><div class="i"></div></div></div>' +
+      // and a row that does not wrap sums its items and its gaps
+      '<div id="g" style="width:min-content"><div style="display:flex;' +
+      'column-gap:20px"><div class="i"></div><div class="i"></div>' +
+      '<div class="i"></div></div></div>' +
+      // at its widest, side by side, and within a greatest width there
+      '<div id="h" style="width:max-content"><div class="w" ' +
+      'style="column-gap:20px"><div class="i"></div><div class="i"></div>' +
+      '<div class="i"></div></div></div>' +
+      '<div id="k" style="width:max-content"><div class="w" ' +
+      'style="max-width:70px"><div class="i"></div><div class="i"></div>' +
+      '<div class="i"></div></div></div>',
+  );
+  const el = view(node);
+  const size = (id: string): [number, number] => {
+    const box = boxOf(el, id);
+    return [box.width, box.height];
+  };
+  assert.deepStrictEqual(size('a'), [30, 18], 'one item to a line');
+  const [a1, a2] = [boxOf(el, 'a1'), boxOf(el, 'a2')];
+  assert.deepStrictEqual(
+    [a2.x - a1.x, a2.y - a1.y],
+    [0, 6],
+    'the next under the first',
+  );
+  assert.deepStrictEqual(size('b'), [40, 18], 'the widest, and no gap');
+  assert.deepStrictEqual(size('c'), [30, 18], 'wrap-reverse');
+  assert.deepStrictEqual(size('d'), [70, 12], 'its least width');
+  assert.deepStrictEqual(size('e'), [52, 18], 'an item held to it');
+  assert.deepStrictEqual(size('f'), [60, 18], 'beside an item');
+  assert.deepStrictEqual(size('g'), [130, 6], 'a row that does not wrap');
+  assert.deepStrictEqual(size('h'), [130, 6], 'its max-content width');
+  assert.deepStrictEqual(size('k'), [70, 12], 'within its greatest width');
+});
+
 test("a flex box is no narrower than its items' widths make it", async () => {
   // What an item with a width of its own gives the size of its flex box is
   // that width (CSS Flexbox 9.9.3), and a percentage `max-width` on a box
