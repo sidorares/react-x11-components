@@ -1399,6 +1399,274 @@ test('a table with a width of its own fills it with its columns', async () => {
   assert.ok(d.width < 50 && u.width === d.width, 'a table of `auto` shrinks');
 });
 
+/** Each box's [x, width], each to the sixty-fourth of a pixel Chrome
+ *  lays out in. */
+const placed = (el: ReturnType<typeof view>, ids: string[]): number[][] =>
+  ids.map((id) => {
+    const box = boxOf(el, id);
+    return [box.x, box.width].map((n) => Math.round(n * 64) / 64);
+  });
+
+const PERCENT_SHEET =
+  '<style>body{margin:0} table{border-spacing:0} td{padding:0;height:6px}' +
+  '.d{width:10px;height:6px}</style>';
+const TEN = '<div class="d"></div>';
+const WIDE = (px: number) => `<div style="width:${px}px;height:6px"></div>`;
+
+test('an auto table is as wide as its percentage columns need (CSS Tables 3, 3.9.2)', async () => {
+  // A percentage is of the table's width, which it helps decide: the
+  // table is wide enough that a column's content is no more than its
+  // percentage of it, and that the columns with none are the rest of it,
+  // as Blink's `ComputeGridInlineMinMax` has it. Resolved against the
+  // room on offer and held as a length, a 20% column beside one set to
+  // 100px made a table of 180 in 400 of room, where the 100 is the other
+  // 80% of a table of 125. Each number here is Chrome's.
+  const { node } = await render(
+    PERCENT_SHEET +
+      // 100 is 80% of 125
+      '<table id="a"><col style="width:20%"><col style="width:100px"><tr>' +
+      `<td id="a1">${TEN}</td><td id="a2"></td></tr></table>` +
+      '<table id="b"><tr><td id="b1" style="width:20%">' +
+      `${TEN}</td><td id="b2" style="width:100px"></td></tr></table>` +
+      // 10 is 30% of 33.33
+      '<table id="c"><col style="width:30%"><col style="width:30%"><tr>' +
+      `<td id="c1">${TEN}</td><td id="c2">${TEN}</td></tr></table>` +
+      // 100 is 10% of 1000, which is more than the room
+      `<table id="d"><tr><td id="d1" style="width:10%">${WIDE(100)}</td>` +
+      `<td id="d2">${TEN}</td></tr></table>` +
+      // the widest of 50 as 20%, 10 as 30% and 40 as half: 250, where the
+      // column set to nothing takes what the percentages leave
+      `<table id="e"><tr><td id="e1" style="width:20%">${WIDE(50)}</td>` +
+      `<td id="e2" style="width:30%">${TEN}</td>` +
+      `<td id="e3">${WIDE(40)}</td></tr></table>` +
+      // of the table less its spacing
+      '<table id="f" style="border-spacing:10px"><col style="width:20%">' +
+      `<col style="width:100px"><tr><td id="f1">${TEN}</td><td id="f2">` +
+      '</td></tr></table>' +
+      // a group's length is a percentage column's length too, so 100 is a
+      // fifth of the table: more than the room
+      '<table id="g"><colgroup style="width:100px"><col style="width:20%">' +
+      `<col></colgroup><tr><td id="g1">${TEN}</td><td id="g2">${TEN}</td>` +
+      '</tr></table>' +
+      // and a column the percentage leaves no less than its content
+      '<div style="width:100px"><table id="h"><col style="width:20%">' +
+      `<col style="width:100px"><tr><td id="h1">${WIDE(30)}</td>` +
+      `<td id="h2">${WIDE(30)}</td></tr></table></div>`,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(placed(el, ['a', 'a1', 'a2']), [
+    [0, 125],
+    [0, 25],
+    [25, 100],
+  ]);
+  assert.deepStrictEqual(placed(el, ['b', 'b1', 'b2']), [
+    [0, 125],
+    [0, 25],
+    [25, 100],
+  ]);
+  assert.deepStrictEqual(placed(el, ['c1', 'c2']), [
+    [0, 16.671875],
+    [16.671875, 16.671875],
+  ]);
+  assert.deepStrictEqual(placed(el, ['d', 'd1', 'd2']), [
+    [0, 400],
+    [0, 100],
+    [100, 300],
+  ]);
+  assert.deepStrictEqual(placed(el, ['e', 'e1', 'e2', 'e3']), [
+    [0, 250],
+    [0, 50],
+    [50, 75],
+    [125, 125],
+  ]);
+  assert.deepStrictEqual(placed(el, ['f', 'f1', 'f2']), [
+    [0, 155],
+    [10, 25],
+    [45, 100],
+  ]);
+  assert.deepStrictEqual(placed(el, ['g', 'g1', 'g2']), [
+    [0, 400],
+    [0, 80],
+    [80, 320],
+  ]);
+  assert.deepStrictEqual(placed(el, ['h', 'h1', 'h2']), [
+    [0, 100],
+    [0, 30],
+    [30, 70],
+  ]);
+});
+
+test("a table's percentages come to no more than 100, the columns' in order", async () => {
+  // CSS Tables 3 leaves it to the user agent; Blink gives a column that
+  // would take the total past 100% what is left (`ApplyCellConstraints
+  // ToColumnConstraints`), which may be nothing: such a column holds its
+  // content, and a column set to nothing beside 100% makes the table as
+  // wide as the room. Each number here is Chrome's.
+  const { node } = await render(
+    PERCENT_SHEET +
+      // 60% and 40%: 10 is 40% of 25
+      '<table id="a"><col style="width:60%"><col style="width:60%"><tr>' +
+      `<td id="a1">${TEN}</td><td id="a2">${TEN}</td></tr></table>` +
+      // 70%, 30% and nothing, in the whole of the room
+      `<table id="b"><tr><td id="b1" style="width:70%">${TEN}</td>` +
+      `<td id="b2" style="width:50%">${TEN}</td>` +
+      `<td id="b3" style="width:50%">${TEN}</td>` +
+      `<td id="b4">${TEN}</td></tr></table>` +
+      // and in a table with a width of its own
+      '<table style="width:300px"><tr>' +
+      `<td id="c1" style="width:60%">${TEN}</td>` +
+      `<td id="c2" style="width:60%">${TEN}</td></tr></table>`,
+  );
+  const el = view(node);
+  assert.deepStrictEqual(placed(el, ['a', 'a1', 'a2']), [
+    [0, 25],
+    [0, 15],
+    [15, 10],
+  ]);
+  assert.deepStrictEqual(placed(el, ['b', 'b1', 'b2', 'b3', 'b4']), [
+    [0, 400],
+    [0, 265.796875],
+    [265.796875, 114.203125],
+    [380, 10],
+    [390, 10],
+  ]);
+  assert.deepStrictEqual(placed(el, ['c1', 'c2']), [
+    [0, 180],
+    [180, 120],
+  ]);
+});
+
+test("a spanning cell's percentage goes to the columns it spans", async () => {
+  // Blink's `DistributeColspanCellToColumnsAuto`: what a spanning cell's
+  // percentage has more than its columns' goes to those with none, in
+  // proportion to their content, and a column with one is that much of
+  // what the cell asks. Each number here is Chrome's.
+  const { node } = await render(
+    PERCENT_SHEET +
+      // 25% each: 10 is a quarter of 40
+      '<table id="a"><tr><td colspan="2" style="width:50%">' +
+      `${TEN}</td></tr><tr><td id="a1">${TEN}</td><td id="a2">${TEN}</td>` +
+      '</tr></table>' +
+      // 10% under it, so the second column has 30%: 10 is a tenth of 100
+      '<table id="b"><tr><td colspan="2" style="width:40%">' +
+      `${TEN}</td><td>${TEN}</td></tr><tr><td id="b1" style="width:10%">` +
+      `${TEN}</td><td id="b2">${TEN}</td><td id="b3">${TEN}</td></tr>` +
+      '</table>' +
+      // 100 over a 50% column and one set to nothing: half each
+      `<table id="c"><tr><td colspan="2">${WIDE(100)}</td></tr><tr>` +
+      `<td id="c1" style="width:50%">${TEN}</td><td id="c2">${TEN}</td>` +
+      '</tr></table>',
+  );
+  const el = view(node);
+  assert.deepStrictEqual(placed(el, ['a', 'a1', 'a2']), [
+    [0, 40],
+    [0, 20],
+    [20, 20],
+  ]);
+  assert.deepStrictEqual(placed(el, ['b', 'b1', 'b2', 'b3']), [
+    [0, 100],
+    [0, 10],
+    [10, 30],
+    [40, 60],
+  ]);
+  assert.deepStrictEqual(placed(el, ['c', 'c1', 'c2']), [
+    [0, 100],
+    [0, 50],
+    [50, 50],
+  ]);
+});
+
+test("a table's width, its captions and its min-width are shared out as its own", async () => {
+  // What a table has over its columns goes to those set to nothing; where
+  // there are none, to those set to a length; and where every column has
+  // a percentage, to those, by it (CSS Tables 3, 3.9.3, as Blink's
+  // `DistributeInlineSizeToComputedInlineSizeAuto`). A caption or a
+  // `min-width` that widens an auto table is shared out the same way:
+  // added on in proportion, a caption over a column of 50 and one set to
+  // 50 made them 100 each. Each number here is Chrome's.
+  const { node } = await render(
+    PERCENT_SHEET +
+      '<table style="width:300px"><col style="width:20%">' +
+      `<col style="width:100px"><tr><td id="a1">${TEN}</td><td id="a2">` +
+      '</td></tr></table>' +
+      '<table style="width:300px"><tr>' +
+      `<td id="b1" style="width:20%">${TEN}</td>` +
+      `<td id="b2" style="width:50px">${TEN}</td></tr></table>` +
+      '<table style="width:300px"><tr>' +
+      `<td id="c1" style="width:20%">${TEN}</td>` +
+      `<td id="c2" style="width:30%">${TEN}</td></tr></table>` +
+      `<table><caption>${WIDE(200)}</caption><tr><td id="d1">${WIDE(50)}` +
+      '</td><td id="d2" style="width:50px"></td></tr></table>' +
+      `<table style="min-width:200px"><tr><td id="e1">${WIDE(50)}</td>` +
+      '<td id="e2" style="width:50px"></td></tr></table>' +
+      `<table><caption>${WIDE(200)}</caption><col style="width:20%">` +
+      `<col style="width:100px"><tr><td id="f1">${TEN}</td><td id="f2">` +
+      '</td></tr></table>',
+  );
+  const el = view(node);
+  const pairs = (a: string, b: string) => placed(el, [a, b]);
+  assert.deepStrictEqual(pairs('a1', 'a2'), [
+    [0, 60],
+    [60, 240],
+  ]);
+  assert.deepStrictEqual(pairs('b1', 'b2'), [
+    [0, 60],
+    [60, 240],
+  ]);
+  assert.deepStrictEqual(pairs('c1', 'c2'), [
+    [0, 120],
+    [120, 180],
+  ]);
+  assert.deepStrictEqual(pairs('d1', 'd2'), [
+    [0, 150],
+    [150, 50],
+  ]);
+  assert.deepStrictEqual(pairs('e1', 'e2'), [
+    [0, 150],
+    [150, 50],
+  ]);
+  assert.deepStrictEqual(pairs('f1', 'f2'), [
+    [0, 40],
+    [40, 160],
+  ]);
+});
+
+test('a table asks for its percentages of a float or an inline block, and not of a cell, a flex box or a grid', async () => {
+  // Blink's `AllowColumnPercentages`: a table measured for what it asks
+  // of a table cell, a flex box or a grid around it asks for its content
+  // alone, and so does one `width: max-content`; laid out in what it
+  // asked, its percentages share that. Each number here is Chrome's.
+  const table = (id: string, style = '') =>
+    `<table id="${id}" style="${style}"><col style="width:20%">` +
+    `<col style="width:100px"><tr><td id="${id}1">${TEN}</td>` +
+    `<td id="${id}2"></td></tr></table>`;
+  const { node } = await render(
+    PERCENT_SHEET +
+      `<div style="float:left">${table('a')}</div>` +
+      '<div style="clear:both"></div>' +
+      `<div style="display:inline-block">${table('b')}</div>` +
+      `<table><tr><td>${table('c')}</td></tr></table>` +
+      `<div style="display:flex">${table('d')}</div>` +
+      `<div style="display:grid;justify-content:start">${table('e')}</div>` +
+      table('f', 'width:max-content'),
+  );
+  const el = view(node);
+  for (const id of ['a', 'b']) {
+    assert.deepStrictEqual(
+      placed(el, [id, `${id}1`, `${id}2`]).map(([, w]) => w),
+      [125, 25, 100],
+      id,
+    );
+  }
+  for (const id of ['c', 'd', 'e', 'f']) {
+    assert.deepStrictEqual(
+      placed(el, [id, `${id}1`, `${id}2`]).map(([, w]) => w),
+      [110, 22, 88],
+      id,
+    );
+  }
+});
+
 test("a table gives up its cells' set widths before its words", async () => {
   // CSS 2.1 17.5.2.2: a table is never narrower than what its content asks,
   // and a width a cell was set to gives way first. Clamped to the room, a
