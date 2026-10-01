@@ -1,4 +1,5 @@
 import * as ntk from 'react-x11/ntk';
+import { parseMathNumber } from './calc.js';
 import { closingParen, topLevelComma } from './vars.js';
 
 // CSS Color 4's functional colours: read here, and written back in the one
@@ -151,9 +152,7 @@ function readRgbaFunction(value: string): Rgba | null {
   // `rgb(0, 128, 0` as a sheet's last words is green
   if (body.endsWith(')')) body = body.slice(0, -1);
   if (name === 'color-mix') return mix(body);
-  // `calc()`, `var()`, a relative colour's channel keywords: not read here,
-  // and a declaration this cannot read is dropped
-  if (body.includes('(') || body.includes(')')) return null;
+  if (RELATIVE.test(body)) return relative(name, body);
 
   let channels: Component[];
   let alpha: Component | null = null;
@@ -161,13 +160,13 @@ function readRgbaFunction(value: string): Rgba | null {
   if (body.includes(',')) {
     // the legacy comma form, which only these four have
     if (!LEGACY.has(name)) return null;
-    const parts = body.split(',');
+    const parts = topLevelParts(body, ',');
     if (parts.length !== 3 && parts.length !== 4) return null;
     const read: Component[] = [];
     for (const part of parts) {
       const token = part.trim();
-      if (!token || /\s/.test(token)) return null;
-      const c = component(token);
+      if (!token || topLevelParts(token, ' ').length > 1) return null;
+      const c = channel(token);
       if (!c || c.unit === 'none') return null;
       read.push(c);
     }
@@ -182,22 +181,22 @@ function readRgbaFunction(value: string): Rgba | null {
       return null;
     }
   } else {
-    const slash = body.split('/');
+    const slash = topLevelParts(body, '/');
     if (slash.length > 2) return null;
-    const tokens = slash[0].trim().split(/\s+/);
+    const tokens = words(slash[0]);
     if (name === 'color') space = (tokens.shift() ?? '').toLowerCase();
     if (tokens.length !== 3) return null;
     const read: Component[] = [];
     for (const token of tokens) {
-      const c = component(token);
+      const c = channel(token);
       if (!c) return null;
       read.push(c);
     }
     channels = read;
     if (slash.length === 2) {
-      const token = slash[1].trim();
-      if (!token || /\s/.test(token)) return null;
-      alpha = component(token);
+      const token = words(slash[1]);
+      if (token.length !== 1) return null;
+      alpha = channel(token[0]);
       if (!alpha) return null;
     }
   }
@@ -214,6 +213,158 @@ function readRgbaFunction(value: string): Rgba | null {
 }
 
 const LEGACY = new Set(['rgb', 'rgba', 'hsl', 'hsla']);
+
+/** A space-separated list's items, a function's arguments kept whole. */
+function words(text: string): string[] {
+  return topLevelParts(text.trim(), ' ').filter(Boolean);
+}
+
+/** A channel: a number, a percentage, an angle or `none`, or a math
+ *  function standing for a number — `rgb(calc(255 / 2) 0 0)`. */
+function channel(token: string): Component | null {
+  if (!token.includes('(')) return component(token);
+  const n = parseMathNumber(token);
+  return n === null ? null : { value: n, unit: '' };
+}
+
+// --- relative colours (CSS Color 5, 4) -------------------------------------
+
+const RELATIVE = /^\s*from\s/i;
+
+/**
+ * A relative colour, `rgb(from <colour> r g b / alpha)` and its kind in
+ * each function: the origin colour taken into the function's space, and
+ * each channel a number, a keyword that is one of the origin's channels,
+ * or a calculation with them in it. The keywords are numbers in the
+ * function's own range (`r` from 0 to 255, `s` and `l` from 0 to 100, an
+ * angle's degrees), and an alpha left out is the origin's, not 1. The
+ * origin is any colour but `currentColor`, which `parseColor` keeps the
+ * colour to be resolved where it is used.
+ */
+function relative(name: string, body: string): Rgba | null {
+  const slash = topLevelParts(body, '/');
+  if (slash.length > 2) return null;
+  const tokens = words(slash[0]);
+  if (tokens.length < 2 || tokens[0].toLowerCase() !== 'from') return null;
+  const origin = readRgba(tokens[1]);
+  if (!origin) return null;
+  const rest = tokens.slice(2);
+  const space = name === 'color' ? (rest.shift() ?? '').toLowerCase() : '';
+  if (rest.length !== 3) return null;
+  const coords = originIn(name, space, origin.rgb);
+  const keys = CHANNEL_NAMES[name] ?? (XYZ_SPACES.has(space) ? 'xyz' : 'rgb');
+  if (!coords) return null;
+  const known = new Map<string, number>([['alpha', origin.a]]);
+  for (let i = 0; i < 3; i += 1) {
+    // a hue a grey has none of is `none`, which is 0
+    known.set(keys[i], Number.isNaN(coords[i]) ? 0 : coords[i]);
+  }
+  const channels: Component[] = [];
+  for (const token of rest) {
+    const c = relativeChannel(token, known);
+    if (!c) return null;
+    channels.push(c);
+  }
+  let a = origin.a;
+  if (slash.length === 2) {
+    const token = words(slash[1]);
+    if (token.length !== 1) return null;
+    const alpha = relativeChannel(token[0], known);
+    if (!alpha || alpha.unit === 'deg' || alpha.unit === 'grad') return null;
+    if (alpha.unit === 'rad' || alpha.unit === 'turn') return null;
+    a = clamp01(alpha.unit === '%' ? alpha.value / 100 : alpha.value);
+  }
+  const rgb = toSrgb(name, space, channels);
+  return rgb ? { rgb, a } : null;
+}
+
+/** Each function's channel keywords, in order. */
+const CHANNEL_NAMES: Record<string, string> = {
+  rgb: 'rgb',
+  rgba: 'rgb',
+  hsl: 'hsl',
+  hsla: 'hsl',
+  hwb: 'hwb',
+  lab: 'lab',
+  lch: 'lch',
+  oklab: 'lab',
+  oklch: 'lch',
+};
+
+const XYZ_SPACES = new Set(['xyz', 'xyz-d50', 'xyz-d65']);
+
+/** A channel of a relative colour: a keyword is the origin's channel, and
+ *  a calculation is worked out with the keywords' values put in. */
+function relativeChannel(
+  token: string,
+  known: Map<string, number>,
+): Component | null {
+  const value = known.get(token.toLowerCase());
+  if (value !== undefined) return { value, unit: '' };
+  if (!token.includes('(')) return component(token);
+  let unknown = false;
+  const text = token.replace(KEYWORD, (word) => {
+    const v = known.get(word.toLowerCase());
+    // a function's name, `pi`, `e`, `infinity`: the calculation's own
+    if (v === undefined) {
+      if (!/^(?:pi|e|-?infinity|nan)$/i.test(word)) unknown = true;
+      return word;
+    }
+    return `(${v})`;
+  });
+  if (unknown) return null;
+  return channel(text);
+}
+
+/** A word in a calculation that is not a function's name. */
+const KEYWORD = /(?<![\w.-])-?[a-z][\w-]*(?![\w(-])/gi;
+
+/** The origin colour's channels in a relative colour's function, in the
+ *  ranges its keywords take. */
+function originIn(name: string, space: string, rgb: Triple): Triple | null {
+  switch (name) {
+    case 'rgb':
+    case 'rgba':
+      return scaled(rgb, 255);
+    case 'hsl':
+    case 'hsla':
+      return srgbToHsl(rgb);
+    case 'hwb':
+    case 'lab':
+    case 'lch':
+    case 'oklab':
+    case 'oklch':
+      return toSpace(name, rgb);
+    case 'color':
+      return toSpace(space, rgb) ?? toPredefined(space, rgb);
+    default:
+      return null;
+  }
+}
+
+/** Gamma-encoded sRGB in one of `color()`'s RGB spaces, as `predefined`
+ *  reads them back. */
+function toPredefined(space: string, rgb: Triple): Triple | null {
+  const xyz = multiply(LINEAR_SRGB_TO_XYZ, linearize(rgb));
+  switch (space) {
+    case 'display-p3':
+      return multiply(XYZ_TO_P3, xyz).map(srgbEncode) as Triple;
+    case 'display-p3-linear':
+      return multiply(XYZ_TO_P3, xyz);
+    case 'a98-rgb':
+      return multiply(XYZ_TO_A98, xyz).map(
+        (x) => Math.sign(x) * Math.abs(x) ** (256 / 563),
+      ) as Triple;
+    case 'prophoto-rgb':
+      return multiply(XYZ_D50_TO_PROPHOTO, multiply(D65_TO_D50, xyz)).map(
+        prophotoEncode,
+      ) as Triple;
+    case 'rec2020':
+      return multiply(XYZ_TO_REC2020, xyz).map(rec2020Encode) as Triple;
+    default:
+      return null;
+  }
+}
 
 /** A channel as a number, or null where its unit is not one it takes:
  *  `pct` is what 100% means for it. */
@@ -674,17 +825,33 @@ function srgbLinear(x: number): number {
 }
 
 function gamma(rgb: Triple): Triple {
-  return rgb.map((x) => {
-    const abs = Math.abs(x);
-    return abs > 0.0031308
-      ? Math.sign(x) * (1.055 * abs ** (1 / 2.4) - 0.055)
-      : 12.92 * x;
-  }) as Triple;
+  return rgb.map(srgbEncode) as Triple;
+}
+
+function srgbEncode(x: number): number {
+  const abs = Math.abs(x);
+  return abs > 0.0031308
+    ? Math.sign(x) * (1.055 * abs ** (1 / 2.4) - 0.055)
+    : 12.92 * x;
 }
 
 function prophotoLinear(x: number): number {
   const abs = Math.abs(x);
   return abs <= 16 / 512 ? x / 16 : Math.sign(x) * abs ** 1.8;
+}
+
+function prophotoEncode(x: number): number {
+  const abs = Math.abs(x);
+  return abs < 1 / 512 ? x * 16 : Math.sign(x) * abs ** (1 / 1.8);
+}
+
+function rec2020Encode(x: number): number {
+  const alpha = 1.09929682680944;
+  const beta = 0.018053968510807;
+  const abs = Math.abs(x);
+  return abs < beta
+    ? x * 4.5
+    : Math.sign(x) * (alpha * abs ** 0.45 - (alpha - 1));
 }
 
 function rec2020Linear(x: number): number {
@@ -753,6 +920,33 @@ const REC2020_TO_XYZ: readonly Triple[] = [
   [63426534 / 99577255, 20160776 / 139408157, 47086771 / 278816314],
   [26158966 / 99577255, 472592308 / 697040785, 8267143 / 139408157],
   [0, 19567812 / 697040785, 295819943 / 278816314],
+];
+
+// The way back from XYZ to each RGB space, which a relative colour's origin
+// is taken into.
+
+const XYZ_TO_P3: readonly Triple[] = [
+  [446124 / 178915, -333277 / 357830, -72051 / 178915],
+  [-14852 / 17905, 63121 / 35810, 423 / 17905],
+  [11844 / 330415, -50337 / 660830, 316169 / 330415],
+];
+
+const XYZ_TO_A98: readonly Triple[] = [
+  [1829569 / 896150, -506331 / 896150, -308931 / 896150],
+  [-851781 / 878810, 1648619 / 878810, 36519 / 878810],
+  [16779 / 1248040, -147721 / 1248040, 1266979 / 1248040],
+];
+
+const XYZ_D50_TO_PROPHOTO: readonly Triple[] = [
+  [1.3457868816471583, -0.25557208737979464, -0.05110186497554526],
+  [-0.5446307051249019, 1.5082477428451468, 0.02052744743642139],
+  [0, 0, 1.2119675456389452],
+];
+
+const XYZ_TO_REC2020: readonly Triple[] = [
+  [30757411 / 17917100, -6372589 / 17917100, -4539589 / 17917100],
+  [-19765991 / 29648200, 47925759 / 29648200, 467509 / 29648200],
+  [792561 / 44930125, -1921689 / 44930125, 42328811 / 44930125],
 ];
 
 // --- colour schemes ---------------------------------------------------------

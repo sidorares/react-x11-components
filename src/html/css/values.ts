@@ -350,9 +350,10 @@ export function fourSides<T>(parts: T[]): [T, T, T, T] {
  *  element's own ink, everything else passed through. */
 export function inkColor(color: string, current: string): string {
   if (color === 'currentColor') return current;
-  // a `color-mix()` with `currentColor` in it waits for the colour too;
-  // every other functional colour was read when it was parsed
-  if (color.charCodeAt(0) === 99 && color.startsWith('color-mix(')) {
+  // a `color-mix()` or a relative colour with `currentColor` in it waits
+  // for the colour too; every other functional colour was read when it was
+  // parsed, to `#rrggbb` or `rgba()` with no letters in it
+  if (color.charCodeAt(color.length - 1) === 41 && HAS_CURRENT.test(color)) {
     return functionalColor(color.replace(CURRENT, current)) ?? current;
   }
   return color;
@@ -360,6 +361,7 @@ export function inkColor(color: string, current: string): string {
 
 const CURRENT = /currentcolor/gi;
 const HAS_CURRENT = /currentcolor/i;
+const RELATIVE_COLOR = /^[a-z]+\(\s*from\s/i;
 
 /** Whether a colour paints anything at all. Two string tests rather than a
  *  parse, for the reason at the top of the file. */
@@ -412,12 +414,19 @@ export function parseColor(value: string): string | null {
   // five or seven, and a typo'd `#ff000` took the application down
   if (v.startsWith('#')) return HEX_COLOR.test(v) ? v : null;
   if (/^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\(/i.test(v)) {
-    // a mix with `currentColor` in it is kept to be mixed where it is used
-    // (`inkColor`), once it is known to be one
-    if (HAS_CURRENT.test(v) && /^color-mix\(/i.test(v)) {
-      return functionalColor(v.replace(CURRENT, '#000')) === null
-        ? null
-        : `color-mix(${v.slice(v.indexOf('(') + 1)}`;
+    // a mix or a relative colour with `currentColor` in it is kept to be
+    // worked out where it is used (`inkColor`), once it is known to be one
+    if (HAS_CURRENT.test(v)) {
+      if (/^color-mix\(/i.test(v)) {
+        return functionalColor(v.replace(CURRENT, '#000')) === null
+          ? null
+          : `color-mix(${v.slice(v.indexOf('(') + 1)}`;
+      }
+      if (RELATIVE_COLOR.test(v)) {
+        return functionalColor(v.replace(CURRENT, '#000')) === null
+          ? null
+          : `${v.slice(0, v.indexOf('(')).toLowerCase()}${v.slice(v.indexOf('('))}`;
+      }
     }
     return functionalColor(v);
   }
