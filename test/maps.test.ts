@@ -2914,6 +2914,13 @@ function readWindow(ctx: unknown): Promise<Uint8ClampedArray> {
     .then((image) => image.data);
 }
 
+/** A step `afterFrame` holds until its frame: `frame` is null until then. */
+interface FrameStep {
+  when: (stats: MapFrameStats, index: number) => boolean;
+  run: () => void;
+  frame: number | null;
+}
+
 /**
  * A map over {@link quadrantTile}s in the old look, settled, with a
  * `restyle` that switches it and a record of every frame after that.
@@ -2950,6 +2957,7 @@ async function mountLooks(
   let ctx: unknown = null;
   let watching = false;
   let midway: (() => void) | null = null;
+  const steps: FrameStep[] = [];
   const onFrame = (stats: MapFrameStats): void => {
     frames.push({ ...stats });
     if (watching && ctx) {
@@ -2958,6 +2966,12 @@ async function mountLooks(
     if (midway && stats.restyling && stats.pending < frames[0].pending) {
       queueMicrotask(midway);
       midway = null;
+    }
+    for (const step of steps) {
+      if (step.frame === null && step.when(stats, frames.length - 1)) {
+        step.frame = frames.length;
+        queueMicrotask(step.run);
+      }
     }
   };
   const sources: MapSource[] = [
@@ -3037,6 +3051,25 @@ async function mountLooks(
      */
     midSwitch(move: () => void): void {
       midway = move;
+    },
+    /**
+     * Take `run` after the first frame from here on that `when` holds of,
+     * given the frame and its index in `frames`, and before the frame after
+     * it, as `midSwitch` takes its move. `frame` is then the index of the
+     * first frame after it.
+     *
+     * For a step that has to come at a frame of the switch's own: a round
+     * of `settleFrames` runs as many frames as its round trips let through,
+     * so a loop that stepped until it saw one of the redraw's one-pixel
+     * frames could step past every one of them.
+     */
+    afterFrame(
+      when: FrameStep['when'],
+      run: () => void,
+    ): { readonly frame: number | null } {
+      const step: FrameStep = { when, run, frame: null };
+      steps.push(step);
+      return step;
     },
     /** Frames until one shows the new style: the swap, however long a
      *  runner takes to paint the frames before it. */
@@ -3478,13 +3511,21 @@ test('eviction never takes the picture a style switch is holding up', async () =
   assertNewLook(await map.read());
 });
 
-test('eviction never takes a piece covering a hole while a style switch holds it up', async () => {
+test('eviction never takes a piece covering a hole while a style switch holds it up', async (t) => {
   // After a zoom the old style is on screen as the level before, scaled:
   // pieces of other tiles, covering this level's holes. They are as much
   // in use as a tile's own picture, but a piece was only marked used by a
   // frame that drew it — and the redraw's one-pixel frames drew the one
   // under that pixel, so a tight budget evicted the rest, and the next
   // frame to repaint the pane showed holes.
+  //
+  // The bound's clock is held and the zoom made partway through the
+  // switch, for the reasons the pan above gives. And the last tile lands
+  // after a frame the test picks: stepped to, the one-pixel frames could
+  // all go by in one step, and the tile landed after the swap — which the
+  // test passed, on the zoom's own repaint, without looking at the frame
+  // it is about.
+  t.mock.method(restyleClock, 'now', () => 0);
   let land: (() => void) | null = null;
   const map = await mountLooks({
     surfaceBudget: 1,
@@ -3495,27 +3536,41 @@ test('eviction never takes a piece covering a hole while a style switch holds it
           })
         : undefined,
   });
+  const zoom: { frame: number | null } = { frame: null };
+  map.midSwitch(() => {
+    zoom.frame = map.frames.length;
+    (map.ref.current as MapHandle).zoomTo(4);
+  });
+  // In the redraw's one-pixel frames, past the zoom's own repaint, the
+  // last tile lands, and its landing repaints the pane while the old style
+  // is still held.
+  const landing = map.afterFrame(
+    (f, i) =>
+      zoom.frame !== null &&
+      i >= zoom.frame &&
+      land !== null &&
+      f.restyling &&
+      f.rasterMs > 0 &&
+      !repainted(f),
+    () => (land as () => void)(),
+  );
   await map.restyle();
-  (map.ref.current as MapHandle).zoomTo(4);
-  // Into the redraw's one-pixel frames, past the zoom's own repaint.
-  for (let i = 0; i < 100; i++) {
-    await settleFrames(1);
-    const last = map.frames[map.frames.length - 1];
-    if (last && last.restyling && last.rasterMs > 0 && !repainted(last)) break;
-  }
-  assert.ok(land, 'the last tile is still loading');
-  // Its landing repaints the pane while the old style is still held.
-  (land as () => void)();
-  await settleFrames(40);
-  const frames = await map.seen();
-  const landing = frames.filter(
-    (f) => f.stats.restyling && repainted(f.stats) && f.stats.tiles === 4,
-  );
+  await map.swapped();
   assert.ok(
-    landing.length > 0,
-    'a frame repainted the pane while the old style was held',
+    landing.frame !== null,
+    'the last tile landed in a one-pixel frame at the new level',
   );
-  for (const frame of landing) {
+  const frames = await map.seen();
+  const repaints = frames
+    .slice(landing.frame)
+    .filter(
+      (f) => f.stats.restyling && repainted(f.stats) && f.stats.tiles === 4,
+    );
+  assert.ok(
+    repaints.length > 0,
+    'a frame repainted the pane after the landing, while the old style was held',
+  );
+  for (const frame of repaints) {
     assert.ok(
       frame.stats.fromAncestor === 3 &&
         frame.old.background <= (PANE * PANE) / 4,
