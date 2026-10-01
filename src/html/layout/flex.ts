@@ -226,32 +226,27 @@ export function layoutFlex(
 
   // A column that wraps is as wide as its content box, but each of its
   // lines is as wide as its widest item, every item `fit-content` across
-  // (CSS Flexbox 9.4, steps 7 and 8), and `align-content` stretches lines
-  // short of the box to it (step 9). Handed the box's width as a size, Yoga
-  // measures a stretched item at it wherever the column has room for every
-  // item down it, and so a line is never wider: an item wider than the box
-  // at its narrowest ran out of its line, and stretched across it, the
-  // others were the box's width. Where an item outgrows the box, so, the
-  // box is held to its width from both sides instead, and Yoga measures
-  // each item as at most that wide, which `innerWidth` makes `fit-content`
-  // — the maximum a percentage, as a minimum and a maximum that are the
-  // same are a size to Yoga. Only there: held so, Yoga stretches a line
-  // short of the box to it and lays each stretched item out again at its
-  // height less its top and bottom margins (its multi-line pass adds the
-  // margins across a column where it means the ones down it), and leaves
-  // lines past the box that `align-content` centres or ends at its start.
-  // Neither can happen where an item outgrows the box and `align-content`
-  // stretches its lines.
-  const fitLines =
-    wrapsColumn(box.style, contentWidth) &&
-    box.style.alignContent === 'stretch' &&
-    items.some(({ box: child, laid }) =>
-      outgrows(child, box.style, ctx, laid, contentWidth),
-    );
-  if (fitLines) {
-    root.setMinWidth(contentWidth);
-    root.setMaxWidthPercent(100);
-  } else if (bounded) root.setWidth(contentWidth);
+  // (CSS Flexbox 9.4, steps 7 and 8), and so is placed across here and not
+  // by Yoga (`crossLines`). Yoga stretched an item to the box wherever the
+  // column had room for every item down it — with no height, always — so a
+  // line was the box's width, an item wider at its narrowest ran out of
+  // it, and `align-content` had no room to centre or end a line in. And
+  // stretching a line, it laid each stretched item out again at its height
+  // less its top and bottom margins and plus its side ones (its multi-line
+  // pass adds the margins across a column where it means the ones down
+  // it), and added what `space-around` puts between lines to its width. So
+  // Yoga lays the box out with every item at its line's start, where it
+  // measures each `fit-content` (`innerWidth`) and down the column as wide
+  // as that, as the specification measures a line's items (9.2, step 3),
+  // and the lines one more pixel apart than they are, so that each line
+  // starts where the last does not and says which items are on it.
+  const crossed = wrapsColumn(box.style, contentWidth);
+  if (crossed) {
+    root.setAlignContent(Y.ALIGN_FLEX_START);
+    root.setGap(Y.GUTTER_COLUMN, columnGap + 1);
+    for (const { node } of items) node.setAlignSelf(Y.ALIGN_FLEX_START);
+  }
+  if (bounded) root.setWidth(contentWidth);
 
   const direction =
     box.style.direction === 'rtl' ? Y.DIRECTION_RTL : Y.DIRECTION_LTR;
@@ -390,6 +385,8 @@ export function layoutFlex(
     own,
     box.style.flexWrap === 'wrap' || baselines,
     contentWidth,
+    undefined,
+    crossed ? crossLines(box.style, items, contentWidth, columnGap) : undefined,
   );
   // Items aligned by their baselines, which Yoga cannot see, are aligned
   // with their baselines known (`baselineLines`)
@@ -636,21 +633,29 @@ function placeItems(
   /** The flex box's content width: its items' containing block's. */
   contentWidth: number,
   started?: ReadonlySet<Box>,
+  /** Where each item is across a column that wraps (`crossLines`). */
+  crossed?: ReadonlyMap<Box, Across>,
 ): number {
   let bottom = 0;
   for (const { box: child, node, laid } of items) {
-    const across = lined
-      ? lineMarginFix(box.style, child, node, row, started?.has(child))
-      : 0;
-    const left = box.contentX + node.getComputedLeft() + (row ? 0 : across);
+    const placed = crossed?.get(child);
+    const across =
+      lined && !placed
+        ? lineMarginFix(box.style, child, node, row, started?.has(child))
+        : 0;
+    const left =
+      box.contentX +
+      (placed ? placed.x : node.getComputedLeft() + (row ? 0 : across));
     const top = box.contentY + node.getComputedTop() + (row ? across : 0);
-    const width = meant(
-      row ? laid.main : node.getComputedWidth(),
-      laid.set,
-      laid.stretch,
-      laid.width,
-      row ? laid.held : NaN,
-    );
+    const width = placed
+      ? placed.width
+      : meant(
+          row ? laid.main : node.getComputedWidth(),
+          laid.set,
+          laid.stretch,
+          laid.width,
+          row ? laid.held : NaN,
+        );
     const itemHeight = row ? node.getComputedHeight() : laid.main;
     // The item is laid out again at the width the flex pass settled on: the
     // measure function answered a question, and the answer is not a layout —
@@ -853,19 +858,7 @@ function applyItem(
   const across = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
   const down = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
   if (style.width !== AUTO) {
-    // a percentage of a column that wraps resolved here: Yoga takes one of
-    // a box it does not hold to a size for no width, and measured a `w-1/2`
-    // item as wide as its content
-    const here =
-      box.parent !== null && wrapsColumn(box.parent.style, containingWidth);
-    laid.set = setLength(
-      node,
-      true,
-      style.width,
-      containingWidth,
-      across,
-      here,
-    );
+    laid.set = setLength(node, true, style.width, containingWidth, across);
   }
   // Down a column, a basis of the content's — `content`, or a percentage
   // of a height that is not definite (CSS Flexbox 7.2.3) — is its content's
@@ -1360,8 +1353,6 @@ function setLength(
   base: number,
   /** Padding and border a `content-box` length goes without. */
   extra: number,
-  /** Whether a percentage is resolved here wherever its base is known. */
-  resolved = false,
 ): number {
   const px = (v: number) => {
     if (across) node.setWidth(v);
@@ -1378,7 +1369,7 @@ function setLength(
     // Yoga takes a percentage or points, not both: `calc(100% - 20px)`
     // resolves here where its base is known, and so does a percentage with
     // padding to add, and a percentage is kept alone where it is not
-    if (!len.px && !len.of && !extra && !resolved) return percent(len.pct);
+    if (!len.px && !len.of && !extra) return percent(len.pct);
     if (Number.isFinite(base)) return px(resolve(len, base) + extra);
     if (len.of) return NaN;
     return percent(len.pct);
@@ -2981,7 +2972,8 @@ function stretches(
 }
 
 /** Whether a flex box laid out at a width is a column that wraps, whose
- *  lines are as wide as their items and not as the box (`layoutFlex`). */
+ *  lines are as wide as their items and not as the box, and are placed
+ *  across it here (`crossLines`). */
 function wrapsColumn(style: ComputedStyle, width: number): boolean {
   return (
     Number.isFinite(width) &&
@@ -2990,52 +2982,144 @@ function wrapsColumn(style: ComputedStyle, width: number): boolean {
   );
 }
 
+/** Where an item is across a column that wraps (`crossLines`): its border
+ *  box's left edge from the flex box's content box's, and its width. */
+interface Across {
+  x: number;
+  width: number;
+}
+
 /**
- * Whether an item a column that wraps stretches across its line is, at its
- * narrowest, wider than the column: its line is then wider than the box
- * (CSS Flexbox 9.4, step 8), which an item that is not stretched makes it
- * in Yoga already. Its narrowest is what the measure holds it to across a
- * column (`applyItem`): its min-content width, a replaced element's natural
- * one, within its maximum — and none for one with something in it that
- * takes a percentage of a height, which is fitted to the column.
+ * Place a column that wraps across: its lines across the box, and each
+ * item across its line (CSS Flexbox 9.4, steps 8 to 11, and 9.6, steps 13
+ * to 16). From the layout Yoga made of it with every item at its line's
+ * start (`layoutFlex`), in which each item is as wide as it is before it is
+ * stretched, `fit-content` or its own width within its limits, and each
+ * line starts its gap and a pixel past the one before, which is how the
+ * items of one line are told from the next one's.
+ *
+ * A line is as wide as its widest item, margins and all. `align-content`
+ * shares out what the box has past its lines: `stretch` to each line alike,
+ * where they are short of the box; `center` and `flex-end` whether they are
+ * or not, so that lines wider than the box run past both its sides, or its
+ * start; and the spacing values only where there is room, setting the lines
+ * at the box's start where there is none (CSS Box Alignment 3, 4.3:
+ * `space-between` falls back to `flex-start`, `space-around` and
+ * `space-evenly` to `safe center`, the start where the lines overflow). An
+ * item with an `auto` margin across its line takes the room the line has
+ * past it on that side (8.1), and none where there is none; a stretched
+ * item is as wide as its line less its margins, within its limits (9.4,
+ * step 11), and as tall as the column made it; and the rest are where
+ * `align-self` says, a baseline at the line's start, as a column has none
+ * across it to align by.
  */
-function outgrows(
-  box: Box,
-  container: ComputedStyle,
-  ctx: LayoutContext,
-  laid: Laid,
-  /** The column's content width. */
+function crossLines(
+  style: ComputedStyle,
+  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  /** The flex box's content width. */
   width: number,
-): boolean {
-  if (box.style.widthKeyword || !stretches(box, container, false)) return false;
-  if (percentHeightsIn(box)) return false;
-  const room = width - box.marginLeft - box.marginRight;
-  const over = (size: number): boolean => size > room && !nearly(size, room);
-  let least: number;
-  if (box.kind === 'replaced') least = replacedMinimum(box, width) ?? 0;
-  else {
-    // At its widest first, as the measure takes it (`applyItem`): no wider
-    // than the room, it is no wider at its narrowest; and laid out for it,
-    // the box has the words its narrowest is read from (`minContentOf`).
-    let widest = MAX_CONTENT.get(box);
-    if (widest === undefined) {
-      widest = measureIntrinsicWidth(box, ctx, Infinity) - box.horizontalExtra;
-      MAX_CONTENT.set(box, widest);
-      // a probe lays the box out where the kept layout was
-      laid.width = NaN;
-    }
-    if (!over(widest + box.horizontalExtra)) return false;
-    least = minContentOf(box, ctx, laid);
+  /** The gap between two lines. */
+  gap: number,
+): Map<Box, Across> {
+  // the lines start at the right where the box runs right to left, or
+  // where they wrap in reverse, and at the left where both are so
+  const fromRight =
+    (style.direction === 'rtl') !== (style.flexWrap === 'wrap-reverse');
+  const lines: number[][] = [];
+  const sizes: number[] = [];
+  // each item's margins across, from its line's start, an `auto` one none
+  const lead: number[] = [];
+  const trail: number[] = [];
+  let last = NaN;
+  items.forEach(({ box, node, laid }, i) => {
+    const yoga = node.getComputedWidth();
+    const left = node.getComputedLeft();
+    const start = fromRight ? width - left - yoga : left;
+    if (!(Math.abs(start - last) < 0.5)) lines.push([]);
+    last = start;
+    lines[lines.length - 1].push(i);
+    sizes.push(meant(yoga, laid.set, laid.stretch, laid.width));
+    const own = box.style;
+    const l = own.marginLeft === AUTO ? 0 : box.marginLeft;
+    const r = own.marginRight === AUTO ? 0 : box.marginRight;
+    lead.push(fromRight ? r : l);
+    trail.push(fromRight ? l : r);
+  });
+  const across = lines.map((line) =>
+    line.reduce((most, i) => Math.max(most, sizes[i] + lead[i] + trail[i]), 0),
+  );
+  const count = lines.length;
+  let room = width - gap * (count - 1);
+  for (const size of across) room -= size;
+  let at = 0;
+  let between = gap;
+  switch (style.alignContent as string) {
+    case 'flex-end':
+      at = room;
+      break;
+    case 'center':
+      at = room / 2;
+      break;
+    case 'stretch':
+      if (room > 0) across.forEach((_, k) => (across[k] += room / count));
+      break;
+    case 'space-between':
+      if (room > 0 && count > 1) between += room / (count - 1);
+      break;
+    case 'space-around':
+      if (room > 0) {
+        at = room / count / 2;
+        between += room / count;
+      }
+      break;
+    case 'space-evenly':
+      if (room > 0) {
+        at = room / (count + 1);
+        between += room / (count + 1);
+      }
+      break;
   }
-  if (box.style.maxWidth !== 'none') {
-    const most = resolveOrNull(box.style.maxWidth, width);
-    const extra =
-      box.style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
-    if (most !== null) {
-      least = Math.min(least, Math.max(most + extra, box.horizontalExtra));
+  const placed = new Map<Box, Across>();
+  lines.forEach((line, k) => {
+    const size = across[k];
+    for (const i of line) {
+      const { box, node } = items[i];
+      const own = box.style;
+      let itemWidth = sizes[i];
+      let offset = lead[i];
+      const free = size - itemWidth - lead[i] - trail[i];
+      const before = fromRight ? own.marginRight : own.marginLeft;
+      const after = fromRight ? own.marginLeft : own.marginRight;
+      if (before === AUTO || after === AUTO) {
+        if (free > 0 && before === AUTO) {
+          offset += after === AUTO ? free / 2 : free;
+        }
+      } else if (stretches(box, style, false) && !own.widthKeyword) {
+        const most = pointsOf(node.getMaxWidth());
+        const least = pointsOf(node.getMinWidth());
+        itemWidth = size - lead[i] - trail[i];
+        if (itemWidth > most) itemWidth = most;
+        if (itemWidth < least) itemWidth = least;
+        itemWidth = Math.max(itemWidth, box.horizontalExtra);
+      } else {
+        const align = own.alignSelf === AUTO ? style.alignItems : own.alignSelf;
+        if (align === 'center') offset += free / 2;
+        else if (align === 'flex-end') offset += free;
+      }
+      const start = at + offset;
+      placed.set(box, {
+        x: fromRight ? width - start - itemWidth : start,
+        width: itemWidth,
+      });
     }
-  }
-  return over(least);
+    at += size + between;
+  });
+  return placed;
+}
+
+/** A length Yoga holds in points, or NaN where it holds none. */
+function pointsOf(value: { unit: number; value: number }): number {
+  return value.unit === Y.UNIT_POINT ? value.value : NaN;
 }
 
 /** How deep flex boxes are laid out by Yoga, one inside another's measure
