@@ -45,6 +45,7 @@ import { inkColor, isTransparent, resolve } from '../css/values.js';
 import { tagOf } from '../dom.js';
 import {
   BOX_RAISES,
+  CONTROL_BASELINES,
   GRID_TRACKS,
   LINE_BOX_RAISES,
   PADDED_FACES,
@@ -3329,6 +3330,22 @@ function atomicRaise(
  */
 function atomicBaseline(box: Box): number {
   const margin = box.height + box.marginTop + box.marginBottom;
+  // a control on its text's baseline, or on its border box's bottom,
+  // where layout containment does not keep its baseline in
+  const control =
+    box.style.contain & CONTAIN_LAYOUT ? undefined : CONTROL_BASELINES.get(box);
+  if (control === 'border') return box.marginTop + box.height;
+  if (control) {
+    const content = box.height - box.verticalExtra;
+    const text = control.ascent + control.descent;
+    return (
+      box.marginTop +
+      box.borderTop +
+      box.padTop +
+      (content - text) / 2 +
+      control.ascent
+    );
+  }
   const button = isButton(box);
   // A `<button>` with no line in it sits on the bottom of its content box,
   // not of its margin box: where its label would have sat. No specification

@@ -33,36 +33,53 @@ import type { LaidBox } from './harness.js';
 
 afterEach(cleanup);
 
-metric('form controls carry default margins from the UA sheet', async () => {
-  const { node } = await render('<p>a <input size="4"> b</p>');
-  const tree = (
-    view(node) as unknown as {
-      _tree: {
-        root: {
-          children: {
-            children: {
-              replaced: string;
-              marginTop: number;
-              marginLeft: number;
-            }[];
-          }[];
-        };
+metric(
+  "form controls take Chrome's margins and sit on the baseline",
+  async () => {
+    // Chrome's UA sheet: no margin round a field, a select or a text area,
+    // its own round the checkables and a range, and each on its line's
+    // baseline — a field by the text it shows, a checkbox by its border
+    // box's bottom, a meter a fifth of an em under it. This had its own
+    // margins and set every control `middle`.
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;font-size:16px}</style>' +
+        '<p id="p">a <input id="f" size="4"> b <input id="c" type="checkbox">' +
+        '<input id="r" type="radio"><input id="g" type="range">' +
+        '<meter id="m" value="0.5"></meter></p>',
+    );
+    const el = view(node);
+    const margins = (id: string) => {
+      const box = boxOf(el, id) as unknown as {
+        marginTop: number;
+        marginRight: number;
+        marginBottom: number;
+        marginLeft: number;
       };
-    }
-  )._tree;
-  const input = tree.root.children[0].children.find(
-    (c) => c.replaced === 'input',
-  );
-  assert.ok(input, 'the input box exists');
-  assert.ok(
-    input.marginTop >= 2,
-    `vertical breathing room (${input.marginTop})`,
-  );
-  assert.ok(
-    input.marginLeft >= 1,
-    `horizontal breathing room (${input.marginLeft})`,
-  );
-});
+      return [box.marginTop, box.marginRight, box.marginBottom, box.marginLeft];
+    };
+    assert.deepStrictEqual(margins('f'), [0, 0, 0, 0], 'none round a field');
+    assert.deepStrictEqual(margins('c'), [3, 3, 3, 4], "a checkbox's");
+    assert.deepStrictEqual(margins('r'), [3, 3, 0, 5], "a radio button's");
+    assert.deepStrictEqual(margins('g'), [2, 2, 2, 2], "a range's");
+    const [line] = linesOf(el, 'p');
+    const baseline = line.y + line.baseline;
+    const bottom = (id: string) => boxOf(el, id).y + boxOf(el, id).height;
+    const field = boxOf(el, 'f');
+    assert.ok(
+      field.y < baseline && bottom('f') > baseline + 2,
+      `the field's text on the baseline: ${field.y}..${bottom('f')} by ${baseline}`,
+    );
+    assert.ok(
+      Math.abs(bottom('c') - baseline) < 0.5,
+      'a checkbox on its bottom',
+    );
+    assert.ok(Math.abs(bottom('r') - baseline) < 0.5, 'a radio button too');
+    assert.ok(
+      Math.abs(bottom('m') - (baseline + 3.2)) < 0.5,
+      `a meter a fifth of an em under it: ${bottom('m')} by ${baseline}`,
+    );
+  },
+);
 
 metric(
   'a text field the author gave a box is drawn by the document',

@@ -1669,6 +1669,17 @@ page's font is core's drawn control on every backend, since a native bezel
 sets its title at AppKit's size whatever it is handed. A `<meter>` and a
 `<progress>` keep their parent's font, as they do in Chrome.
 
+**A control sits on its line as Chrome's does.** A field, a select, a
+button and a text area have no margin, a checkbox `3px 3px 3px 4px`, a
+radio button `3px 3px 0 5px` and a range `2px`, and each is on its line's
+baseline: a field, a select or an input button by the text it shows, its
+face's line centred in its content box, so the label beside it reads on
+one line with what is typed; a checkbox, a radio button and a range by
+their border box's bottom, their bottom margin hanging under the line; a
+text area, which scrolls, by its bottom edge; and a meter or a progress bar
+a fifth of an em under it. A page that spaces its form itself sees the
+spacing it wrote, and one that spaced nothing sees a browser's.
+
 A widget is drawn at the opacity its element and every ancestor come to,
 and at 0 not at all while it still takes a press, as the element does in a
 browser: a CSS-only dropdown lays an invisible checkbox over its label, and

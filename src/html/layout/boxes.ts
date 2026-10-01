@@ -562,6 +562,40 @@ export type ReplacedKind =
   /** An inline `<svg>`: a drawing, sized by what it says of its size. */
   | 'svg';
 
+/**
+ * Where a control sits on the line, as Chrome sets it: a field, a select
+ * or an input button on the baseline of the text it shows, its line in its
+ * face centred in its content box — that face's ascent and descent — and a
+ * checkbox, a radio button or a range on its border box's bottom, its
+ * bottom margin under the line. A `<textarea>` is none of these, and sits
+ * on its bottom margin edge as a box that scrolls does.
+ */
+export const CONTROL_BASELINES = new WeakMap<
+  Box,
+  InlineDecoration | 'border'
+>();
+
+function controlBaseline(
+  el: Element,
+  kind: ReplacedKind,
+  style: ComputedStyle,
+  options: BuildOptions,
+): InlineDecoration | 'border' | null {
+  if (kind === 'checkbox' || kind === 'radio') return 'border';
+  if (kind === 'input' && (attr(el, 'type') ?? '').toLowerCase() === 'range') {
+    return 'border';
+  }
+  if (kind !== 'input' && kind !== 'select' && kind !== 'button') return null;
+  // a list box shows rows, and sits on its bottom edge
+  if (kind === 'select' && Number(attr(el, 'size') ?? 1) > 1) return null;
+  return (
+    options.faceExtent?.(style) ?? {
+      ascent: style.fontSize * 0.8,
+      descent: style.fontSize * 0.2,
+    }
+  );
+}
+
 /** A replaced box's intrinsic dimensions, in device pixels. */
 export interface Intrinsic {
   /** Its size — or, on an axis `missing` names, the default object size of
@@ -853,6 +887,10 @@ export interface BuildOptions {
    *  pixels: what a list marker's image with no size of its own is sized
    *  by (`_markerImageSize`). Where it is not known, 0.8em. */
   faceAscent?(style: ComputedStyle): number | undefined;
+  /** How far a style's first face reaches above and below its baseline,
+   *  in device pixels: where a control sets its text, which is where its
+   *  baseline is (`CONTROL_BASELINES`). */
+  faceExtent?(style: ComputedStyle): InlineDecoration | undefined;
   /** The size a real widget wants, so the box in the flow is the size the
    *  control will be drawn at. */
   controlSize(
@@ -1486,6 +1524,8 @@ class Builder {
       ratio: 0,
     };
     this._controls.push(box);
+    const baseline = controlBaseline(el, replaced, style, this._options);
+    if (baseline) CONTROL_BASELINES.set(box, baseline);
     // A control's value is the widget's, not the document's: putting it in
     // the selection index would make Ctrl+A copy the contents of every text
     // field, which no document viewer does.

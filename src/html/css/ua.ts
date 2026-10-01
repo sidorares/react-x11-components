@@ -211,12 +211,16 @@ col { display: table-column; }
 /* The form controls are real widgets rather than drawn boxes, so what the
    UA sheet owes them is a *box* of about the right size in the flow — the
    widget is painted into it by the component above. 'inline-block' is what
-   makes a label and its input share a line. */
+   makes a label and its input share a line. Chrome's margins and alignment:
+   none round a field, a select, a button or a text area, each on its line's
+   baseline — a field's text on the text beside it (\`CONTROL_BASELINES\`) —
+   and a meter or a progress bar a fifth of an em under it. */
 input, button, select, textarea, meter, progress {
   display: inline-block;
-  vertical-align: middle;
-  margin: 3px 2px;
+  vertical-align: baseline;
+  margin: 0;
 }
+meter, progress { vertical-align: -0.2em; }
 /* A control's text is a system font's, not its parent's: Chrome gives these
    four \`font: -webkit-small-control\`, Arial at the default size less 2pt
    (13.33px) whatever the text around it is set in, and Gecko \`-moz-field\`
@@ -231,8 +235,6 @@ input, button, select, textarea {
   font-size: ${look.controlFontSize ?? look.fontSize}px;
 }
 textarea { font-family: ${mono}; }
-/* Chrome's own UA margins for the checkables, near enough: they are the
-   controls that sit hard against their label text otherwise. */
 /* HTML's rendering section (15.3.10): a control's text keeps none of the
    spacing, the line height, the case or the indent of the text around it.
    A button in a paragraph of 'line-height: 1.5' is its own font's line
@@ -258,8 +260,11 @@ input:focus-visible, textarea:focus-visible {
   outline: auto 1px -webkit-focus-ring-color;
   outline-offset: 0;
 }
-input[type=checkbox] { margin: 3px 4px 3px 4px; }
-input[type=radio] { margin: 3px 4px 3px 5px; }
+/* Chrome's own margins for the checkables and a range, which sit on their
+   border box's bottom edge, the margin under the line */
+input[type=checkbox] { margin: 3px 3px 3px 4px; }
+input[type=radio] { margin: 3px 3px 0 5px; }
+input[type=range] { margin: 2px; }
 input[type=hidden] { display: none; }
 /* A <button> is drawn rather than mounted: its content is the document's —
    an icon, a label in spans, a pill of the page's own design, which is what
@@ -280,7 +285,6 @@ button {
   cursor: pointer;
 }
 button[disabled] { color: ${look.mutedColor}; cursor: default; }
-textarea { vertical-align: top; }
 fieldset { margin: 0 2px; padding: 0.35em 0.75em 0.6em; border: 1px solid ${look.borderColor}; }
 legend { display: block; padding: 0 2px; }
 label { cursor: pointer; }
