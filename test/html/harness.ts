@@ -515,10 +515,17 @@ export type Outline = [number, number][];
 /** What a paint of the part of the document `damage` names fills and clips
  *  to, in order, each path as the outlines it is made of — so that where a
  *  shape reaches can be asked of any point (`windingAt`), whatever mix of
- *  rectangles, rounded rectangles and curves drew it. */
+ *  rectangles, rounded rectangles and curves drew it. An image is drawn as
+ *  nothing, so `backgroundImageFor` is there for the clip it is drawn in. */
 export async function pathsOf(
   el: HtmlViewNode,
   damage: { x: number; y: number; width: number; height: number },
+  backgroundImageFor?: (url: string) => {
+    image: unknown;
+    width: number | null;
+    height: number | null;
+    ratio: number;
+  } | null,
 ): Promise<{
   fills: { style: unknown; rule: string; outlines: Outline[] }[];
   clips: Outline[][];
@@ -620,6 +627,7 @@ export async function pathsOf(
       clips.push(outlines);
       outlines = [];
     },
+    drawImage() {},
   };
   paintDocument(ctx as never, (el as unknown as { _tree: never })._tree, {
     originX: 0,
@@ -628,6 +636,7 @@ export async function pathsOf(
     selection: null,
     selectionColor: null,
     imageFor: () => null,
+    backgroundImageFor,
   });
   return { fills, clips };
 }
