@@ -982,10 +982,15 @@ test('at scale 2 measured heights land in the index as logical pixels', async ()
   );
 });
 
-test('a catch-up shows the fast-scroll pill, and settling hides it', async () => {
-  // Observed through the seam rather than the painted tree — the catch-up
-  // can complete within a single act under the test clock, so the painted
-  // pill's lifetime is a race; the decision to show is not.
+test('a catch-up shows the fast-scroll pill, and settling hides it', async (t) => {
+  // The window's clock is held from the mount, as the same test in
+  // table.test.ts holds it: on the real clock `scrollTo` arms the window's
+  // idle tick itself, and a runner that stalled past it before React's
+  // scheduler rendered the scroll ran the tick first — the render found a
+  // jump with no scroll in flight, and there was no catch-up to show the
+  // pill for. Held, the catch-up lasts until the test ends it, so the
+  // painted pill is looked at as well as the seam.
+  const clock = holdClock(t, windowClock);
   const seen: number[] = [];
   const items: TreeItem[] = Array.from({ length: 400 }, (_, i) => ({
     id: i,
@@ -1010,18 +1015,22 @@ test('a catch-up shows the fast-scroll pill, and settling hides it', async () =>
     { height: 700 },
   );
   await settle();
-  await idle(300);
+  // the band it grows while nothing scrolls, on the window's time
+  await clock.finish();
   assert.strictEqual(seen.length, 0, 'the hint fired with nothing to catch up');
+  const painted = (): number =>
+    screen.all(
+      (n) =>
+        retained(n).kind === 'text' &&
+        /^at \d+$/.test(String(retained(n).props.children)),
+    ).length;
   treePane().scrollTo({ y: 6000 });
   await settle();
-  await idle(300);
   assert.ok(seen.length > 0 && seen[0] > 200, `the hint saw from=${seen[0]}`);
-  const painted = screen.all(
-    (n) =>
-      retained(n).kind === 'text' &&
-      /^at \d+$/.test(String(retained(n).props.children)),
-  ).length;
-  assert.strictEqual(painted, 0, 'the pill should go when the view is whole');
+  assert.strictEqual(painted(), 1, 'the pill is not on screen mid catch-up');
+  // the catch-up, on the window's time
+  await clock.finish();
+  assert.strictEqual(painted(), 0, 'the pill should go when the view is whole');
 });
 
 test('the idle band grows past the overscan while the tree sits still', async () => {

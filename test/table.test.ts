@@ -1015,10 +1015,17 @@ test('a scrollbar scrub keeps the slice a slice', async () => {
   }
 });
 
-test('a catch-up shows the fast-scroll pill, and the view going whole hides it', async () => {
-  // Observed through the seam rather than the painted tree: the catch-up
-  // can complete within a single act under the test clock, so the painted
-  // pill's lifetime is a race — the *decision* to show is not.
+test('a catch-up shows the fast-scroll pill, and the view going whole hides it', async (t) => {
+  // The window's clock is held from the mount, so the scroll is still in
+  // flight when the test looks, however long the runner takes over it. On
+  // the real clock `scrollTo` arms the window's idle tick itself, and the
+  // render that would show the pill waits for React's scheduler: a runner
+  // that stalled past the idle wait in between ran the tick first, the
+  // render found a jump with no scroll in flight — no flood, so nothing to
+  // catch up — and the pill never showed ("the hint never showed during the
+  // catch-up", under the full suite's load). Held, the catch-up lasts until
+  // the test ends it, so the painted pill is looked at as well as the seam.
+  const clock = holdClock(t, windowClock);
   const seen: Array<{
     from: number;
     count: number;
@@ -1048,27 +1055,38 @@ test('a catch-up shows the fast-scroll pill, and the view going whole hides it',
     640,
   );
   await settle();
-  await idle(300);
+  // the band it grows while nothing scrolls, on the window's time
+  await clock.finish();
   assert.strictEqual(seen.length, 0, 'the hint fired with nothing to catch up');
 
+  const pills = (): number =>
+    screen.all(
+      (n) =>
+        retained(n).kind === 'text' &&
+        / \/ 400$/.test(String(retained(n).props.children)),
+    ).length;
   bodyPane().scrollTo({ y: 6000 });
   await settle();
-  await idle(300);
   assert.ok(seen.length > 0, 'the hint never showed during the catch-up');
   assert.ok(
     seen[0].count === 400 && seen[0].from > 200 && seen[0].since > 0,
     `the hint saw ${JSON.stringify(seen[0])}`,
   );
-  // and nothing is painted once the view is whole
-  const pill = screen.all(
-    (n) =>
-      retained(n).kind === 'text' &&
-      / \/ 400$/.test(String(retained(n).props.children)),
-  ).length;
-  assert.strictEqual(pill, 0, 'the pill should go when the view is whole');
+  assert.strictEqual(pills(), 1, 'the pill is not on screen mid catch-up');
+  // the catch-up, on the window's time — and nothing is painted once the
+  // view is whole
+  await clock.finish();
+  assert.strictEqual(pills(), 0, 'the pill should go when the view is whole');
 });
 
-test('renderScrollHint replaces the pill, and returning null disables it', async () => {
+test('renderScrollHint replaces the pill, and returning null disables it', async (t) => {
+  // The window's clock held from the mount, for the reason the test above
+  // gives: on the real clock a stall between the scroll and the render it
+  // causes ran the idle tick first, and there was no catch-up to hint at
+  // ("hint saw from=undefined"). Both halves look while it is still going,
+  // which is also what makes the second one worth asserting: once the view
+  // is whole there is no pill to disable, whatever null did.
+  const clock = holdClock(t, windowClock);
   const seen: number[] = [];
   await mount(
     {
@@ -1084,32 +1102,47 @@ test('renderScrollHint replaces the pill, and returning null disables it', async
     640,
   );
   await settle();
+  await clock.finish();
+  const texts = (pattern: RegExp): number =>
+    screen.all(
+      (n) =>
+        retained(n).kind === 'text' &&
+        pattern.test(String(retained(n).props.children)),
+    ).length;
   bodyPane().scrollTo({ y: 6000 });
   await settle();
-  await idle(300);
   assert.ok(seen.length > 0 && seen[0] > 200, `hint saw from=${seen[0]}`);
+  assert.strictEqual(
+    texts(new RegExp(`^near row ${seen[seen.length - 1]}$`)),
+    1,
+    'the custom hint is not on screen mid catch-up',
+  );
+  assert.strictEqual(texts(/ \/ 400$/), 0, 'the pill showed beside it');
+  await clock.finish();
 
   await cleanup();
+  const asked: number[] = [];
   await mount(
     {
       rows: many(400),
       rowHeight: 24,
       scrollHintDelay: 0,
-      renderScrollHint: () => null,
+      renderScrollHint: (state: { from: number }) => {
+        asked.push(state.from);
+        return null;
+      },
     },
     400,
     640,
   );
   await settle();
+  await clock.finish();
   bodyPane().scrollTo({ y: 6000 });
   await act();
   await settle();
-  const texts = screen.all(
-    (n) =>
-      retained(n).kind === 'text' &&
-      / \/ 400$/.test(String(retained(n).props.children)),
-  );
-  assert.strictEqual(texts.length, 0, 'null should disable the overlay');
+  assert.ok(asked.length > 0, 'the catch-up never asked for a hint');
+  assert.strictEqual(texts(/ \/ 400$/), 0, 'null should disable the overlay');
+  await clock.finish();
 });
 
 test('the idle band grows without moving what is on screen', async () => {
