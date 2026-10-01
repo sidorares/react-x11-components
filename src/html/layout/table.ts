@@ -122,7 +122,15 @@ export function layoutTable(
   // helps decide it (`autoColumns`).
   const set = columnWidths(columnBoxes, columnGroups, available, fixed);
   const widths = fixed
-    ? fixedColumns(cells, set, columnCount, available, spacing)
+    ? fixedColumns(
+        cells,
+        set,
+        columnPercents(columnBoxes, columnGroups),
+        columnLeast(columnBoxes, columnGroups),
+        columnCount,
+        available,
+        spacing,
+      )
     : autoColumns(
         cells,
         set,
@@ -563,71 +571,163 @@ function spannedWidth(widths: number[], cell: Cell, spacing: number): number {
 /**
  * `table-layout: fixed`: the columns and the first row decide, and the rest
  * of the table is not measured at all, which is the whole point of it (CSS
- * 2.1 17.5.2.1). A column with a `width` sets its own; failing that, a cell
- * of the first row with one sets the columns it spans, by its border box and
- * less the spacing between them; the columns left share what remains, and
- * where nothing remains, what is left of a table wider than its columns is
- * shared among all of them.
+ * 2.1 17.5.2.1). Each column is set to a length, to a percentage of the
+ * table's width less its spacing, or to neither. A `<col>` set to a length
+ * has it whatever its cells say; otherwise a cell of the first row sets
+ * the column it is in, its percentage over the `<col>`'s where it is the
+ * larger. A cell spanning columns gives each that has no length an even
+ * share of its border box less the spacing between them, and each that
+ * has neither an even share of its percentage: `<td colspan=2
+ * style="width:60%">` sets two columns to 30%, and one 200 wide over a
+ * `<col>` of 50 and a column of nothing makes that 99, where it was the
+ * 148 the `<col>` left. All of this is Blink's, which CSS 2.1 leaves to
+ * the browser.
+ *
+ * The table's width is shared out as Blink shares it too
+ * (`SynchronizeAssignableTableInlineSizeAndColumnsFixed`): the lengths
+ * first, then the percentages, then what is left to the columns set to
+ * neither. Percentages that come to more than 100% are scaled until they
+ * come to that, and percentages that come to more than the lengths leave
+ * are scaled down to it. Where no column is set to neither, what is left
+ * goes to the lengths, or failing those to the percentages. Only a column's
+ * least widens the table: its length, or a `<col>`'s `min-width`. Taken
+ * as lengths, two cells of 60% made a table of 300 one of 359, where each
+ * is 147 and the table 300; and a length of 100 beside a 60% column
+ * shared what the two left with it, 106.4 and 187.6, where the length
+ * takes it all, 117.6 and 176.4.
  */
 function fixedColumns(
   cells: Cell[],
   columnWidths: (number | null)[],
+  columnPercents: (number | null)[],
+  columnLeast: (number | null)[],
   columnCount: number,
   available: number,
   spacing: number,
 ): number[] {
-  const widths: number[] = new Array<number>(columnCount).fill(0);
-  const set: boolean[] = new Array<boolean>(columnCount).fill(false);
-  for (let c = 0; c < columnCount; c += 1) {
-    const px = columnWidths[c];
-    if (px === null) continue;
-    widths[c] = px;
-    set[c] = true;
-  }
+  // each column's length, its percentage, and what a cell with the
+  // percentage adds to it where its padding and borders are not in it
+  const length = columnWidths.map((px, c) =>
+    columnPercents[c] === null ? px : null,
+  );
+  const percent = columnPercents.slice();
+  const added: number[] = new Array<number>(columnCount).fill(0);
   for (const cell of cells) {
     if (cell.row > 0) break;
-    const px = ownWidth(cell.box.style, available);
-    if (px === null) continue;
     const box = cell.box;
+    const first = cell.column;
+    const last = Math.min(columnCount, first + cell.colSpan);
+    const span = last - first;
+    const share = ownPercent(box.style);
+    if (share !== null) {
+      for (let c = first; c < last; c += 1) {
+        if (length[c] !== null) continue;
+        if (span > 1) {
+          if (percent[c] === null) percent[c] = share / span;
+        } else if (percent[c] === null || share > (percent[c] as number)) {
+          percent[c] = share;
+          added[c] =
+            box.style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
+        }
+      }
+      continue;
+    }
+    const px = ownWidth(box.style, available);
+    if (px === null) continue;
     // A length within a length `max-width`, which a `min-width` raises
     // and does nothing else to: a fixed table does not measure its cells'
     // content, so a least width has nothing to hold up (CSS Tables 3,
-    // 3.8.2 and 3.8.3, as Blink reads them). A percentage is held by a
-    // percentage limit only (`ownWidth`). Unheld, a cell `width: 300px;
+    // 3.8.2 and 3.8.3, as Blink reads them). Unheld, a cell `width: 300px;
     // max-width: 100px` took 300 of the table.
-    const outer = isPct(box.style.width)
-      ? outerWidth(box, px)
-      : Math.min(outerWidth(box, px), cellLimits(box).cap);
-    const last = Math.min(columnCount, cell.column + cell.colSpan);
-    let taken = spacing * (last - cell.column - 1);
-    let open = 0;
-    for (let c = cell.column; c < last; c += 1) {
-      if (set[c]) taken += widths[c];
-      else open += 1;
-    }
-    if (!open) continue;
-    const each = Math.max(0, outer - taken) / open;
-    for (let c = cell.column; c < last; c += 1) {
-      if (set[c]) continue;
-      widths[c] = each;
-      set[c] = true;
+    const outer = Math.min(outerWidth(box, px), cellLimits(box).cap);
+    const each = Math.max(0, outer - spacing * (span - 1)) / span;
+    for (let c = first; c < last; c += 1) {
+      if (length[c] === null) length[c] = each;
     }
   }
-  let used = 0;
-  let unset = 0;
+
+  // The table is as wide as the least its columns come to, which is what
+  // widens it past its own width: the lengths, and the `min-width` of each
+  // `<col>` set to anything else.
+  let least = 0;
+  let total = 0;
   for (let c = 0; c < columnCount; c += 1) {
-    if (set[c]) used += widths[c];
-    else unset += 1;
-  }
-  const remaining = Math.max(0, available - used);
-  if (unset) {
-    for (let c = 0; c < columnCount; c += 1) {
-      if (!set[c]) widths[c] = remaining / unset;
+    const floor = columnLeast[c] ?? 0;
+    const px = length[c];
+    if (percent[c] === null && px !== null) {
+      length[c] = Math.max(px, floor);
+      least += length[c] as number;
+    } else {
+      least += floor;
     }
-  } else if (remaining > 0 && columnCount) {
+    if (percent[c] !== null) total += percent[c] as number;
+  }
+  const target = Math.max(available, least);
+  const scale = total > 100 ? 100 / total : 1;
+  const ofTarget: number[] = new Array<number>(columnCount).fill(0);
+  let lengths = 0;
+  let percents = 0;
+  let percentCount = 0;
+  let autoCount = 0;
+  let zeroCount = 0;
+  for (let c = 0; c < columnCount; c += 1) {
+    const share = percent[c];
+    const px = length[c];
+    if (share !== null) {
+      ofTarget[c] = Math.max(
+        columnLeast[c] ?? 0,
+        ((share * scale) / 100) * target + added[c],
+      );
+      percents += ofTarget[c];
+      percentCount += 1;
+    } else if (px === null) {
+      autoCount += 1;
+    } else if (px > 0) {
+      lengths += px;
+    } else {
+      zeroCount += 1;
+    }
+  }
+
+  const widths: number[] = new Array<number>(columnCount).fill(0);
+  let assigned = 0;
+  // the lengths fit, since they widen the table; they grow into what the
+  // percentages leave where no column is set to neither
+  if (lengths > 0) {
+    const room = Math.max(0, target - percents);
+    const grow = !autoCount && lengths < room ? room / lengths : 1;
     for (let c = 0; c < columnCount; c += 1) {
-      widths[c] +=
-        used > 0 ? (widths[c] / used) * remaining : remaining / columnCount;
+      const px = length[c];
+      if (percent[c] !== null || px === null || !(px > 0)) continue;
+      widths[c] = px * grow;
+      assigned += widths[c];
+    }
+  }
+  if (assigned >= target) return widths;
+  // the percentages are scaled down to what the lengths leave, and up to
+  // it where no column is set to neither
+  if (percentCount) {
+    const room = target - assigned;
+    const toRoom = percents > room || (!autoCount && percents < room);
+    for (let c = 0; c < columnCount; c += 1) {
+      if (percent[c] === null) continue;
+      widths[c] = !toRoom
+        ? ofTarget[c]
+        : percents > 0
+          ? (ofTarget[c] * room) / percents
+          : room / percentCount;
+      assigned += widths[c];
+    }
+  }
+  // The columns set to neither share what is left. One set to 0 is set to
+  // a length that gets nothing, unless every column is set to 0.
+  const rest = target - assigned;
+  const all = zeroCount === columnCount;
+  if (!all && !autoCount) return widths;
+  for (let c = 0; c < columnCount; c += 1) {
+    if (percent[c] !== null) continue;
+    if (all || length[c] === null) {
+      widths[c] = rest / (all ? zeroCount : autoCount);
     }
   }
   return widths;
@@ -1096,11 +1196,11 @@ function columnWidths(
   });
 }
 
-/** The percentage each column of an auto table is set to, or null: its
- *  `<col>`'s, or its group's where the group stands for it with no
- *  `<col>`. A group's percentage is no default for the `<col>`s in it,
- *  and a column set to 0% has none, as Blink has both
- *  (`ColumnConstraintsBuilder`, `CreateColumn`). */
+/** The percentage each column is set to, or null: its `<col>`'s, or its
+ *  group's where the group stands for it with no `<col>`. A group's
+ *  percentage is no default for the `<col>`s in it, and a column set to
+ *  0% has none, as Blink has both (`ColumnConstraintsBuilder`,
+ *  `CreateColumn`). */
 function columnPercents(
   columnBoxes: (Box | null)[],
   columnGroups: (Box | null)[],
@@ -1143,9 +1243,10 @@ function partWidth(box: Box, base: number): number | null {
 
 /** The least a column or a column group is, where a length `min-width`
  *  says: what its cells ask is held up to it, and it sets no width of its
- *  own, which a fixed table's columns have nothing but (`fixedColumns`).
- *  Read as a width, `<col style="min-width:100px">` held a column of
- *  prose to 100 in an auto table, where it is as wide as the prose is. */
+ *  own. A fixed table's columns ask nothing, so there it is only the least
+ *  the table is (`fixedColumns`). Read as a width, `<col
+ *  style="min-width:100px">` held a column of prose to 100 in an auto
+ *  table, where it is as wide as the prose is. */
 function partLeast(box: Box): number | null {
   const min = box.style.minWidth;
   return typeof min === 'number' && min > 0 ? min : null;
@@ -1166,16 +1267,18 @@ function cellWidth(cell: Cell): number | null {
   return Math.min(outerWidth(box, width), cellLimits(box).cap);
 }
 
-/** A cell's, a column's or a column group's percentage `width` in an auto
- *  table, or null where it is none: no more than a percentage `max-width`
- *  (CSS Tables 3, 3.8.2, as `ownWidth`), and not a `calc()` that adds a
- *  length to it, which is `auto` (`tableWidth`). It is a share of the
+/** A cell's, a column's or a column group's percentage `width`, or null
+ *  where it is none: no more than a percentage `max-width` (CSS Tables 3,
+ *  3.8.2, as `ownWidth`), and not a `calc()` that adds a length to it,
+ *  which is `auto` (`tableWidth`). In an auto table it is a share of the
  *  table that the cell's padding and borders are part of, as browsers
  *  read it: added on, a 90% cell and a 10% one came to more than the
- *  table, which then took it back from both. A length `max-width` does not
- *  hold it: `width: 50%; max-width: 100px` is half the table, as in Blink,
- *  which keeps a percentage apart from the lengths that cap what a cell's
- *  content asks. */
+ *  table, which then took it back from both. In a fixed one a
+ *  `content-box` cell's are added to it, as Blink's
+ *  `percent_border_padding` has them (`fixedColumns`). A length
+ *  `max-width` does not hold it: `width: 50%; max-width: 100px` is half
+ *  the table, as in Blink, which keeps a percentage apart from the lengths
+ *  that cap what a cell's content asks. */
 function ownPercent(style: ComputedStyle): number | null {
   const width = style.width;
   if (!isPct(width) || width.px || width.of) return null;

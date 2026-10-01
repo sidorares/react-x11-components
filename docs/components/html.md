@@ -667,9 +667,19 @@ spanning rows asks its first row for its baseline and the rows for its
 content and height alone, as Chrome does, so content the baseline moved
 down can hang out of it. A fixed table takes its columns' widths from its
 `<col>`s, then from its first row's cells, border box and
-all, and shares what is left among the rest (CSS 2.1 17.5.2.1); with
-`width: auto` it is laid out by its content, as the section says, where a
-column's `width` counts as its cells' do (17.5.2.2). A column group's
+all (CSS 2.1 17.5.2.1), and shares its width out as Blink does: the
+lengths first, then the percentages in what the lengths leave, scaled down
+to it, then the columns set to neither. Percentages that come to more than
+100% are scaled until they come to that, and a content-box cell's padding
+and borders go on its share, so two cells of 60% in a table of 300 are 147
+each and the table stays 300 wide. Where no column is set to neither, what
+is left goes to the lengths, or failing those to the percentages. Only the
+lengths, and a `<col>`'s `min-width`, widen the table. A cell spanning
+columns gives each it spans with no length an even share of its width less
+the spacing between them, and each with neither an even share of its
+percentage. With `width: auto` it is laid out by its content, as the
+section says, where a column's `width` counts as its cells' do
+(17.5.2.2). A column group's
 `width` is the default of each `<col>` in it that sets none, and each takes
 the whole of it, not a share: the width specified for a column is its own,
 or else its group's (CSS Tables 3, 3.8.3), as in Chrome, where CSS 2.1
@@ -691,8 +701,9 @@ over 10px of content one of 33.33. A table measured for what it asks of a
 table cell, a flex box or a grid around it, or set `width: max-content`,
 asks for its content alone, and laid out in that, shares it; one measured
 for a float or an inline block asks for its percentages too, as in Chrome.
-The percentages come to no more than 100%, the columns' in order, the one
-that would take them past it having what is left; a spanning cell's
+An auto table's percentages come to no more than 100%, the columns' in
+order, the one that would take them past it having what is left; a
+spanning cell's
 percentage goes to the columns it spans that have none, in proportion to
 their content; and a `<col>` with a percentage takes its group's length
 beside it. The table's width — its own, the room it has, or what its
