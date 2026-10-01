@@ -1728,8 +1728,9 @@ icon, a label in spans, a pill of the page's own design — most of the
 buttons on the web — which a widget's text label drew as "Button". It is
 laid out and drawn like any box, in the palette's control look where the
 page leaves it alone. A background or a border of the page's, a radius
-among them, or `appearance: none`, takes that look off, as each takes a
-button's native look off in Blink, and what is left are Chrome's UA edges:
+among them, or an `appearance` of `none` where that is the value that
+wins, takes that look off, as each takes a button's native look off in
+Blink, and what is left are Chrome's UA edges:
 1px above and below the label and 6px beside it, a 2px outset border,
 square corners and a border box. That is what a page that styles its
 buttons builds on — Codex sets the side padding of Wikipedia's search
