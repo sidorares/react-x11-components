@@ -991,8 +991,9 @@ on an inline box takes its room back from the line), `padding`,
 rounded down, and a hairline one), `box-sizing` (a `border-box` size or
 limit under the padding and borders leaves the content box none wide, so
 the box is as big as them, as in Chrome), `overflow`, `clip`,
-`opacity` — an element under 1 is a stacking context painted whole in its
-place, the positioned boxes in it with it, at 0 not at all and between
+`opacity` — an element under 1 is a stacking context, painted whole, the
+positioned boxes in it with it, among the positioned boxes (see
+`z-index`), at 0 not at all and between
 faded as the group it is (CSS Color 4, 3.2): on X11 and Wayland, where two
 things it draws can overlap — a background under its text, a badge over a
 header — it is painted on a surface of its own and the surface faded, so
@@ -1009,19 +1010,28 @@ drew a surface under an alpha at more
 cost than drawing again what was on it. A box fixed to the viewport inside
 one fades each thing too. A block inside an inline element is faded with
 it, and the inline element's own text is not — `isolation` — `isolate`
-makes a box a stacking context, positioned or not, painted whole in its
-place as one under full opacity is, so a box in it with a negative
-`z-index` goes over its background and under its text (CSS Compositing 1,
-3.2) — `visibility` — a
+makes a box a stacking context, positioned or not, painted whole among
+the positioned boxes as one under full opacity is, so a box in it with a
+negative `z-index` goes over its background and under its text (CSS
+Compositing 1, 3.2) — `visibility` — a
 hidden element keeps its room and draws nothing, its text included, and a
 visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
 `z-index`: a positioned box with a negative
 `z-index` is painted under the flow of its stacking context, the root
 element or a positioned box with a `z-index` of its own, and over that
-context's background (CSS 2.1 Appendix E). An absolute box with both
-offsets on an axis fills what they leave, or, with a width, shares it
-between its `auto` margins, which is how `margin: auto` centres one. A form
+context's background (CSS 2.1 Appendix E). A box that is a stacking
+context without being positioned — under full opacity, transformed,
+masked, cut by a `clip-path`, with layout or paint containment or
+`isolation: isolate`; a float
+or a flex item as much as a block — is painted with the positioned boxes
+whose `z-index` is 0, in the document's order among them (Appendix E,
+step 8), as Chrome, Firefox and Safari paint it: over the text of a block
+after it that a negative margin draws up under it, and over a relative
+box before it. An inline-block that is one is painted by its line. An
+absolute box with both offsets on an axis fills what they leave, or, with
+a width, shares it between its `auto` margins, which is how `margin: auto`
+centres one. A form
 control fills it too, as it does in Chrome — it is an inline block to CSS,
 whatever draws it — so the invisible `<select>` a page lays over a picker
 it draws, `position: absolute; inset: 0`, covers all of it and takes the
@@ -1110,8 +1120,9 @@ are all on a line leaves nothing. The `evenodd` rule is the X11 and Wayland cont
 macOS and Windows clip by `nonzero`, which only a polygon that crosses
 itself can tell apart. `round`, which Chrome alone reads in a polygon, is
 not read, as Firefox and Safari read none. The element is a stacking
-context painted whole in its place, as one under full opacity is, and its
-scrollable overflow is what it was, as a browser has it: a box hidden by a
+context, painted whole among the positioned boxes as one under full
+opacity is, and its scrollable overflow is what it was, as a browser has
+it: a box hidden by a
 path alone still makes the page as long as it reaches. `circle()`,
 `ellipse()`, `path()`, `shape()` and a `url()` naming an SVG `<clipPath>`
 are read and cut nothing, and an inline box that is not atomic is not
@@ -2182,8 +2193,13 @@ the Zen Garden's archive links are absolute items in an `overflow: hidden`
 list that has no height of its own. What a `clip` or a `clip-path` cuts
 away of a box is not drawn, and is not under the pointer either, though the
 point is inside the box. Where two boxes overlap, the answer
-follows CSS paint order, `z-index` included. An infobox floated out of
-one section and hanging over the next keeps its links, and the next
+follows CSS paint order, `z-index` included. A box painted with the
+positioned ones is ordered among those of its stacking context however
+deep it is, as paint orders it: a `z-index` on a box in a relative box
+with none is the page's, a stacking context that is not positioned is
+found where it is drawn over the box after it, and what a stacking
+context sets below its flow is over the context's own box. An infobox
+floated out of one section and hanging over the next keeps its links, and the next
 section's box does not take them. A box that is not visible is not under
 the pointer, and nor is one with `pointer-events: none`: the pointer
 passes through it to what is, and a box inside it that sets either back

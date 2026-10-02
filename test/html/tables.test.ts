@@ -7,6 +7,7 @@ import { parseColor } from '../../src/html/css/values.js';
 import {
   RED_PNG,
   boxOf,
+  clipsAround,
   fillsOf,
   linesOf,
   metric,
@@ -14,7 +15,7 @@ import {
   renderWithBytes,
   view,
 } from './harness.js';
-import type { LaidBox } from './harness.js';
+import type { LaidBox, PaintOp } from './harness.js';
 
 afterEach(cleanup);
 
@@ -2040,6 +2041,30 @@ metric(
     // the caption is drawn, and the cell's block does not reach up over it
     await expectPixel(ctx, 10, 15, '#0000ff', { message: 'the caption' });
     await expectPixel(ctx, 10, 25, '#ff0000', { message: 'in the table box' });
+  },
+);
+
+metric(
+  'a caption painted with the positioned boxes is painted once, outside the table box that clips',
+  async () => {
+    // A translucent caption is a stacking context, painted after the flow
+    // with the positioned boxes, and a relative one is one of them: each
+    // was painted before the table's clip, as a caption is, and again
+    // after the flow inside the clip, which cut all of it away.
+    for (const caption of ['opacity:.5', 'position:relative']) {
+      const { node } = await render(
+        '<style>body{margin:0}table{overflow:hidden;border-spacing:0}' +
+          `caption{height:20px;background:#0000ff;${caption}}</style>` +
+          '<table><caption></caption><tr><td>x</td></tr></table>',
+      );
+      const ops: PaintOp[] = [];
+      await fillsOf(view(node), ops);
+      assert.deepStrictEqual(
+        clipsAround(ops, '#0000ff'),
+        [[]],
+        `${caption}: once, and not cut`,
+      );
+    }
   },
 );
 
