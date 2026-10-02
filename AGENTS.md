@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.30.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.30.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.32.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.32.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -602,6 +602,15 @@ it up. **The floor is a running one and moves often** — every move since
   two seconds to none on a real Mac. A core that takes no `clip` would show
   the layer uncut, so the floor moves with the feature rather than after
   it.
+- `^2.32.0` — `decodeImageBytes` on `react-x11/ntk` (react-x11#834), the
+  decoder ladder `<image>` reads bytes with since 2.31.0 (#832): WebP
+  everywhere, and under Bun every format `Bun.Image` reads, off the
+  JavaScript thread. 2.31.0 alone changed nothing here, because `<Html>`
+  draws its own images and decoded them with ntk's `decodeImage`, PNG and
+  JPEG, and the ladder was off core's exports map. `<Html>` decodes
+  through it now, so an image shows in a document exactly where it would
+  show in an `<image>`, and the browser example asks for WebP and passes
+  it on.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

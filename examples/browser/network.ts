@@ -52,9 +52,10 @@ export const USER_AGENT =
 
 const ACCEPT = {
   document: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  // no WebP or AVIF: nothing here decodes them, and a server that
-  // negotiates sends PNG or JPEG to a client that does not ask
-  image: 'image/png,image/jpeg,image/gif,image/svg+xml,image/*;q=0.5,*/*;q=0.1',
+  // no AVIF: under Node nothing here decodes it, and a server that
+  // negotiates sends WebP, PNG or JPEG to a client that does not ask
+  image:
+    'image/webp,image/png,image/jpeg,image/gif,image/svg+xml,image/*;q=0.5,*/*;q=0.1',
   stylesheet: 'text/css,*/*;q=0.1',
   font: 'font/woff2,font/woff,font/ttf,font/otf,*/*;q=0.5',
 } as const;
@@ -450,9 +451,10 @@ function transient(error: unknown): boolean {
 /**
  * A fetched subresource as `<Html>` takes it back from `onResource`: a
  * stylesheet's bytes with the charset the server named, a font's bytes, an
- * image's. WebP and AVIF are declined — nothing here decodes them, and a
- * declined image keeps its box. The page's and the Zen Garden bench's
- * (`scripts/zengarden/`) one conversion.
+ * image's, whatever its format — `<Html>` decodes what core's `<image>`
+ * does, and an image it cannot read keeps its box as a declined one does.
+ * The page's and the Zen Garden bench's (`scripts/zengarden/`) one
+ * conversion.
  */
 export function resourceResult(
   fetched: Fetched,
@@ -467,13 +469,7 @@ export function resourceResult(
     };
   }
   if (kind === 'font') return { kind: 'font', bytes: fetched.bytes };
-  const b = fetched.bytes;
-  const webp =
-    b.length > 12 &&
-    String.fromCharCode(b[0], b[1], b[2], b[3], b[8], b[9], b[10], b[11]) ===
-      'RIFFWEBP';
-  if (webp || fetched.type === 'image/avif') return null;
-  return { kind: 'image', bytes: b };
+  return { kind: 'image', bytes: fetched.bytes };
 }
 
 /**

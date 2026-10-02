@@ -45,8 +45,9 @@ export interface ResourceRequest {
  * CSS says to — with `charset`, the encoding the protocol named, if it named
  * one (`css/decode.ts`) — and may say the URL it finally came from, after
  * redirects, which is what the relative URLs in it resolve against. An image
- * is bytes, which this decodes — PNG, JPEG, GIF or SVG — or an
- * already-decoded ntk `Image` for a host with its own cache. A font is the
+ * is bytes, which this decodes — PNG, JPEG, WebP, GIF or SVG, and under Bun
+ * whatever else `Bun.Image` reads — or an already-decoded ntk `Image` for a
+ * host with its own cache. A font is the
  * file's bytes: TrueType, OpenType, WOFF or WOFF2 (see `fonts.ts`).
  */
 export type ResourceResult =
@@ -75,12 +76,6 @@ interface Entry {
 interface ImageLike {
   width: number;
   height: number;
-}
-
-interface ImageConstructor {
-  fromBuffer?(bytes: Uint8Array): ImageLike | Promise<ImageLike>;
-  decode?(bytes: Uint8Array): ImageLike | Promise<ImageLike>;
-  new (...args: unknown[]): ImageLike;
 }
 
 /**
@@ -288,37 +283,28 @@ function isPromise<T>(value: unknown): value is Promise<T> {
 }
 
 /**
- * Decode image bytes through ntk — PNG and JPEG — or, for a GIF, here: its
- * first frame (`gif.ts`), handed to ntk's `Image` as the RGBA it takes.
+ * Decode image bytes: a GIF here, its first frame (`gif.ts`) handed to
+ * ntk's `Image` as the RGBA it takes; anything else through
+ * `decodeImageBytes`, core's decoder ladder, the one `<image>` reads bytes
+ * with. So an image shows in a document exactly when it would show in an
+ * `<image>`: PNG and JPEG, WebP, and under Bun every format `Bun.Image`
+ * reads, decoded off the JavaScript thread. A WebP, and under Bun
+ * everything, lands a moment later as a promise, which `_settle` waits for
+ * as it waits for a host's. Bytes no decoder here reads throw, or reject,
+ * and the image is a failed one, framed as a declined image is.
  *
- * `decodeImage` is ntk's own front door — the one its `HtmlView` used. It is
- * a **named** export of `react-x11/ntk`, which re-exports ntk with
- * `export *`, and it is not in that subpath's declarations, so it is read off
- * the module namespace and probed at run time; a version that dropped it
- * falls back to the `Image` constructor shapes. It is not a property of the
- * default export: this read it there, found nothing, and every image a host
- * handed over as bytes drew as an empty frame. A host that would rather
- * decode images itself hands back `{ image, width, height }` and never
- * reaches this.
+ * ntk's own `decodeImage`, which this used before core had the ladder, is
+ * PNG and JPEG alone. A host that would rather decode images itself hands
+ * back `{ image, width, height }` and never reaches this.
  */
 function decodeImage(bytes: Uint8Array): ImageLike | Promise<ImageLike> | null {
   try {
     const gif = decodeGif(bytes);
     if (gif) {
-      const ctor = ntk.Image as unknown as ImageConstructor | undefined;
-      return ctor ? new ctor(gif) : null;
+      const Image = ntk.Image as unknown as new (rgba: unknown) => ImageLike;
+      return new Image(gif);
     }
-    const decode = (ntk as unknown as Record<string, unknown>).decodeImage;
-    if (typeof decode === 'function') {
-      return (decode as (b: Uint8Array) => ImageLike | Promise<ImageLike>)(
-        bytes,
-      );
-    }
-    const ctor = ntk.Image as unknown as ImageConstructor | undefined;
-    if (!ctor) return null;
-    if (typeof ctor.fromBuffer === 'function') return ctor.fromBuffer(bytes);
-    if (typeof ctor.decode === 'function') return ctor.decode(bytes);
-    return new ctor(bytes);
+    return ntk.decodeImageBytes(bytes);
   } catch {
     return null;
   }

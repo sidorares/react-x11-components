@@ -94,10 +94,16 @@ onResource={async (request) => {
 }}
 ```
 
-Image bytes may be PNG, JPEG, GIF — its first frame — or SVG; nothing names
-the type, so each is told apart by its bytes. Return
-`{ kind: 'image', image, width, height }` instead to hand over an image the
-host decoded itself. A declined or absent resource is an ordinary state:
+Image bytes may be PNG, JPEG, WebP, GIF — its first frame — or SVG, and
+under Bun whatever else `Bun.Image` reads; nothing names the type, so each
+is told apart by its bytes. Everything but GIF and SVG is decoded by the
+decoder core's `<image>` uses (react-x11's `decodeImageBytes`), so an
+image shows in a document exactly where it would show in an `<image>`: a
+WebP lands a moment after the first frame under Node, where its decoder is
+loaded on the first one, and every format does under Bun, decoded off the
+JavaScript thread. Bytes nothing decodes are drawn as a declined image is.
+Return `{ kind: 'image', image, width, height }` instead to hand over an
+image the host decoded itself. A declined or absent resource is an ordinary state:
 images draw as a frame at their attribute size, an `<object>` shows its
 fallback content, linked stylesheets are skipped and text is set in the
 fonts the system has. A resource may arrive whenever it arrives: a
