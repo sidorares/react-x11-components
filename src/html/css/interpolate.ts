@@ -164,7 +164,9 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 /** Whether two values are the same, member by member. */
-function same(a: unknown, b: unknown): boolean {
+/** Structural equality for a computed value: a number, a string, or the
+ *  plain objects and arrays a length or a transform list is. */
+export function same(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a === 'number' && typeof b === 'number') {
     return Number.isNaN(a) && Number.isNaN(b);

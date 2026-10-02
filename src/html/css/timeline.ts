@@ -16,10 +16,19 @@
 // left them. What it says the element (`HtmlViewNode`) needs a frame for is
 // what it restyles on the next one (`live`, `nextFrame`).
 
-import { progressAt, timingAt, tracksOf } from './animation.js';
-import type { Animations, Easing } from './animation.js';
+import { ease, progressAt, timingAt, tracksOf } from './animation.js';
+import type { Animations, Easing, Transitions } from './animation.js';
+import { discrete, interpolateField, same } from './interpolate.js';
 import type { KeyframesRule } from './parse.js';
-import { isInherited, willChangeOf } from './style.js';
+import {
+  INHERITED,
+  animatedFields,
+  copyStyle,
+  isInherited,
+  transitionableFields,
+  willChangeOf,
+} from './style.js';
+import type { ComputedStyle } from './style.js';
 
 /** How long a frame is: what an animation under way waits for its next. */
 export const FRAME_MS = 16;
@@ -65,16 +74,34 @@ export class AnimationTimeline {
   private _targets = new Map<object, Map<string, Target>>();
   /** The targets a pass that styles the whole document has styled. */
   private _seen: Set<Target> | null = null;
+  /** Each element's transitions, and each pseudo-element's (''
+   *  for the element's own), where one runs or has run to its end. */
+  private _transitions = new Map<object, Map<string, Transiting>>();
+  /** The transitions a pass that styles the whole document has styled. */
+  private _seenTransits: Set<Transiting> | null = null;
 
   /** A pass begins: where `whole`, it styles every element displayed, and
    *  ends every animation it does not reach (`endPass`). */
   beginPass(whole: boolean): void {
     this._seen = whole ? new Set() : null;
+    this._seenTransits = whole ? new Set() : null;
   }
 
   endPass(): void {
     const seen = this._seen;
     this._seen = null;
+    const transits = this._seenTransits;
+    this._seenTransits = null;
+    if (transits) {
+      // an element no longer styled is out of the document, or under
+      // `display: none`: its transitions are over
+      for (const [el, states] of this._transitions) {
+        for (const [pseudo, state] of states) {
+          if (!transits.has(state)) states.delete(pseudo);
+        }
+        if (!states.size) this._transitions.delete(el);
+      }
+    }
     if (!seen) return;
     for (const [el, targets] of this._targets) {
       for (const [pseudo, target] of targets) {
@@ -205,6 +232,18 @@ export class AnimationTimeline {
       }
       fork._targets.set(el, copy);
     }
+    const transits = this._transitions.get(el);
+    if (transits) {
+      const copy = new Map<string, Transiting>();
+      for (const [pseudo, state] of transits) {
+        copy.set(pseudo, {
+          ...state,
+          running: new Map(state.running),
+          completed: new Map(state.completed),
+        });
+      }
+      fork._transitions.set(el, copy);
+    }
     return fork;
   }
 
@@ -217,14 +256,14 @@ export class AnimationTimeline {
    *  changes as time passes — of `pseudo`'s alone where it is given, ''
    *  for the element's own. */
   isLive(el: object, pseudo?: string): boolean {
-    const targets = this._targets.get(el);
-    if (!targets) return false;
-    if (pseudo !== undefined) {
-      const target = targets.get(pseudo);
-      return target !== undefined && target.next !== Infinity;
-    }
-    for (const target of targets.values()) {
-      if (target.next !== Infinity) return true;
+    for (const all of [this._targets.get(el), this._transitions.get(el)]) {
+      if (!all) continue;
+      if (pseudo !== undefined) {
+        const one = all.get(pseudo);
+        if (one !== undefined && one.next !== Infinity) return true;
+        continue;
+      }
+      for (const one of all.values()) if (one.next !== Infinity) return true;
     }
     return false;
   }
@@ -246,18 +285,26 @@ export class AnimationTimeline {
       generated: boolean;
       targets: string[];
     }[] = [];
-    for (const [el, targets] of this._targets) {
-      let live: string[] | null = null;
-      let inherits = false;
-      let generated = false;
-      for (const [pseudo, target] of targets) {
-        if (target.next === Infinity) continue;
-        if (skip?.(el, pseudo)) continue;
-        (live ??= []).push(pseudo);
-        inherits ||= target.inherits;
-        generated ||= pseudo !== '';
+    const byEl = new Map<
+      object,
+      { el: object; inherits: boolean; generated: boolean; targets: string[] }
+    >();
+    for (const all of [this._targets, this._transitions]) {
+      for (const [el, targets] of all) {
+        for (const [pseudo, target] of targets) {
+          if (target.next === Infinity) continue;
+          if (skip?.(el, pseudo)) continue;
+          let entry = byEl.get(el);
+          if (!entry) {
+            entry = { el, inherits: false, generated: false, targets: [] };
+            byEl.set(el, entry);
+            out.push(entry);
+          }
+          if (!entry.targets.includes(pseudo)) entry.targets.push(pseudo);
+          entry.inherits ||= target.inherits;
+          entry.generated ||= pseudo !== '';
+        }
       }
-      if (live) out.push({ el, inherits, generated, targets: live });
     }
     return out;
   }
@@ -269,13 +316,180 @@ export class AnimationTimeline {
     skip: ((el: object, pseudo: string) => boolean) | null = null,
   ): number | null {
     let next = Infinity;
-    for (const [el, targets] of this._targets) {
-      for (const [pseudo, target] of targets) {
-        if (target.next >= next || skip?.(el, pseudo)) continue;
-        next = target.next;
+    for (const all of [this._targets, this._transitions]) {
+      for (const [el, targets] of all) {
+        for (const [pseudo, target] of targets) {
+          if (target.next >= next || skip?.(el, pseudo)) continue;
+          next = target.next;
+        }
       }
     }
     return next === Infinity ? null : next;
+  }
+
+  /**
+   * `after` — the style an element comes to now, with no transition: its
+   * after-change style — with what its transitions make of it (CSS
+   * Transitions 1, 3), or a pseudo-element's (`pseudo`, '' for the
+   * element's own). A property the style's transitions name, whose value
+   * the change from `before` — its style as the document has it, null
+   * where it has none, which is no change to transition from — moves, and
+   * whose two values interpolate, starts a transition from one to the
+   * other; through its delay it holds where it starts. One under way whose
+   * end the style no longer has turns back the way it came where that is
+   * where it started, shortened to as much of it as it had come, and
+   * otherwise runs from where it is to the new end; one whose property
+   * the list no longer names is cancelled, and the property is at its value
+   * after the change at once. `after` itself where
+   * none runs, and a copy of it otherwise, each field a transition runs on
+   * at its value at the timeline's time.
+   */
+  transition(
+    el: object,
+    pseudo: string,
+    after: ComputedStyle,
+    before: () => ComputedStyle | null,
+  ): ComputedStyle {
+    const fields = transitionFields(after.transitions);
+    let states = this._transitions.get(el);
+    let state = states?.get(pseudo);
+    if (!state && !fields.size) return after;
+    const now = this.now;
+    const list = after.transitions;
+    const a = after as unknown as Record<string, unknown>;
+    const running = state?.running ?? new Map<string, Transit>();
+    const completed = state?.completed ?? new Map<string, unknown>();
+    // one run to its end and left there: a change from a frame a little
+    // short of its end, as the document drew it last, is none
+    for (const [field, end] of completed) {
+      if (!same(end, a[field])) completed.delete(field);
+    }
+    let was: Record<string, unknown> | null | undefined;
+    for (const [field, index] of fields) {
+      if (running.has(field) || completed.has(field)) continue;
+      was ??= before() as unknown as Record<string, unknown> | null;
+      if (!was) break;
+      const from = was[field];
+      const to = a[field];
+      if (same(from, to)) continue;
+      if (interpolateField(field, from, to, 0.5) === undefined) continue;
+      running.set(field, {
+        start: now + item(list.delays, index),
+        duration: Math.max(0, item(list.durations, index)),
+        easing: item(list.easings, index),
+        from,
+        to,
+        back: from,
+        shortening: 1,
+      });
+    }
+    for (const [field, run] of running) {
+      const index = fields.get(field);
+      // no longer named, or of no length: cancelled, at its new value
+      if (index === undefined) {
+        running.delete(field);
+        continue;
+      }
+      const to = a[field];
+      if (same(run.to, to)) continue;
+      const current = transitValue(field, run, now);
+      const delay = item(list.delays, index);
+      const duration = Math.max(0, item(list.durations, index));
+      const easing = item(list.easings, index);
+      if (
+        same(current, to) ||
+        interpolateField(field, current, to, 0.5) === undefined
+      ) {
+        running.delete(field);
+        continue;
+      }
+      if (same(run.back, to)) {
+        // back where it came from: as much of a whole one as it had come
+        const done = ease(
+          run.easing,
+          run.duration > 0
+            ? Math.min(1, Math.max(0, (now - run.start) / run.duration))
+            : 1,
+        );
+        const shortening = Math.min(
+          1,
+          Math.max(0, Math.abs(done * run.shortening + 1 - run.shortening)),
+        );
+        running.set(field, {
+          start: now + (delay < 0 ? delay * shortening : delay),
+          duration: duration * shortening,
+          easing,
+          from: current,
+          to,
+          back: run.to,
+          shortening,
+        });
+      } else {
+        running.set(field, {
+          start: now + delay,
+          duration,
+          easing,
+          from: current,
+          to,
+          back: current,
+          shortening: 1,
+        });
+      }
+    }
+    let out: ComputedStyle | null = null;
+    let next = Infinity;
+    let inherits = false;
+    let willChange = 0;
+    for (const [field, run] of running) {
+      if (now >= run.start + run.duration) {
+        running.delete(field);
+        completed.set(field, run.to);
+        continue;
+      }
+      out ??= copyStyle(after);
+      (out as unknown as Record<string, unknown>)[field] = transitValue(
+        field,
+        run,
+        now,
+      );
+      next = Math.min(next, now < run.start ? run.start : now + FRAME_MS);
+      inherits ||= INHERITED_FIELDS.has(field);
+      willChange |= willChangeOf(field);
+    }
+    if (!running.size && !completed.size) {
+      if (state) {
+        states!.delete(pseudo);
+        if (!states!.size) this._transitions.delete(el);
+      }
+      return after;
+    }
+    if (!state) {
+      state = { running, completed, next, inherits };
+      if (!states) this._transitions.set(el, (states = new Map()));
+      states.set(pseudo, state);
+    } else {
+      state.next = next;
+      state.inherits = inherits;
+    }
+    this._seenTransits?.add(state);
+    // a transition is an animation, and what it runs acts as `will-change`
+    // names it (Web Animations 1, 5.6)
+    if (out) out.willChange |= willChange;
+    return out ?? after;
+  }
+
+  /** Whether an element has a transition under way, or one run out, of its
+   *  own or of a pseudo-element's: its style is its own. */
+  transiting(el: object): boolean {
+    return this._transitions.has(el);
+  }
+
+  /** An element's transitions, or a pseudo-element's, are over: it is not
+   *  displayed. */
+  dropTransitions(el: object, pseudo: string): void {
+    const states = this._transitions.get(el);
+    if (!states?.delete(pseudo)) return;
+    if (!states.size) this._transitions.delete(el);
   }
 }
 
@@ -297,6 +511,98 @@ function animatesInherited(rule: KeyframesRule): boolean {
 }
 
 const INHERITS = new WeakMap<KeyframesRule, boolean>();
+
+/** A property's transition under way (CSS Transitions 1, 3), on one field
+ *  of the computed style. */
+interface Transit {
+  /** When it starts, its delay out, on the timeline. */
+  start: number;
+  /** From its start to its end, in milliseconds. */
+  duration: number;
+  easing: Easing;
+  from: unknown;
+  to: unknown;
+  /** Its reversing-adjusted start value: where one that turns back the way
+   *  it came is going. */
+  back: unknown;
+  /** Its reversing shortening factor: how much of a whole one that turned
+   *  back runs. */
+  shortening: number;
+}
+
+/** An element's transitions, or a pseudo-element's, by field. */
+interface Transiting {
+  running: Map<string, Transit>;
+  /** The end of each that ran out, while the style is still at it. */
+  completed: Map<string, unknown>;
+  /** When it next changes: a frame from now while one runs, the end of a
+   *  delay before one starts, never where none runs. */
+  next: number;
+  /** Whether one runs on an inherited property, which reaches what the
+   *  element holds. */
+  inherits: boolean;
+}
+
+const INHERITED_FIELDS = new Set<string>(INHERITED);
+
+/** A list's entry for a transition at `index`, the list repeated to the
+ *  length of `transition-property` (CSS Transitions 1, 2). */
+function item<T>(list: readonly T[], index: number): T {
+  return list[index % list.length];
+}
+
+/**
+ * The fields a style's transitions run on, each with the index of the
+ * transition in its lists: those of each property `transition-property`
+ * names, every one for `all` (`transitionableFields`), the last naming of
+ * a property winning (CSS Transitions 1, 2.1). A field whose transition
+ * has no length — no duration and a delay that is none or negative — is
+ * none. Kept by the list.
+ */
+function transitionFields(list: Transitions): ReadonlyMap<string, number> {
+  let fields = TRANSITION_FIELDS.get(list);
+  if (fields) return fields;
+  // and by what the lists say, for the longhands each element's cascade
+  // puts together again
+  const key = `${list.properties.join(',')}|${list.durations.join(',')}|${list.delays.join(',')}`;
+  fields = FIELDS_BY_KEY.get(key);
+  if (fields) {
+    TRANSITION_FIELDS.set(list, fields);
+    return fields;
+  }
+  const out = new Map<string, number>();
+  list.properties.forEach((name, index) => {
+    const length =
+      Math.max(0, item(list.durations, index)) + item(list.delays, index);
+    const names =
+      name === 'all' ? transitionableFields() : (animatedFields(name) ?? []);
+    for (const field of names) {
+      if (length > 0) out.set(field, index);
+      else out.delete(field);
+    }
+  });
+  TRANSITION_FIELDS.set(list, out);
+  if (FIELDS_BY_KEY.size >= 256) FIELDS_BY_KEY.clear();
+  FIELDS_BY_KEY.set(key, out);
+  return out;
+}
+
+const TRANSITION_FIELDS = new WeakMap<Transitions, Map<string, number>>();
+const FIELDS_BY_KEY = new Map<string, Map<string, number>>();
+
+/** A transition's value at `t`: where it starts through its delay — a
+ *  transition fills backwards (CSS Transitions 1, 3) — and eased between
+ *  its two ends after. */
+function transitValue(field: string, run: Transit, t: number): unknown {
+  if (t < run.start) return run.from;
+  const p = run.duration > 0 ? (t - run.start) / run.duration : 1;
+  if (p >= 1) return run.to;
+  const q = ease(run.easing, p);
+  return (
+    interpolateField(field, run.from, run.to, q) ??
+    discrete(run.from, run.to, q)
+  );
+}
 
 /**
  * What the properties a `@keyframes` sets make of the element it runs on,

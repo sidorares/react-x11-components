@@ -606,7 +606,10 @@ before step 5:
   viewport — is asked each frame (step 3). Whether a long scroll should
   demote it instead and promote it again when the page settles, the way
   hover is held (`hoverClock`), is not measured.
-- **Transitions.** Not run yet (#584, "not in this PR"). When they are, a
-  transition on `opacity` or `transform` is the same sprite with a basic
-  animation, and the retargeting rule is core's additive one (animation.md
-  §4.2). Nothing here closes the door; nothing opens it either.
+- **Transitions.** They run on the document's timeline
+  (`AnimationTimeline.transition`), from the style the document draws to
+  the one a change makes, as CSS Transitions 1, 3 has them start, turn
+  back and stop. They are not yet lifted: a transition on `opacity` or
+  `transform` is the same sprite as an animation of it, its frames sampled
+  from its own two ends, and one turned back is a new animation on the
+  layer from where the old one had come to.

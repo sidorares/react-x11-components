@@ -1114,6 +1114,13 @@ export class Cascade {
   /** The `@keyframes` rules, by name, in document order: which one a name
    *  finds turns on the media in force (`keyframes`). */
   private _keyframes = new Map<string, KeyframesRule[]>();
+  /** The style an element has in the document as it is drawn, or a
+   *  pseudo-element's (`pseudo`, '' for the element's own): what a
+   *  transition starts from (`AnimationTimeline.transition`). Null where it
+   *  has none, which starts none. */
+  previous: ((el: Element, pseudo: string) => ComputedStyle | null) | null =
+    null;
+
   /** The document's timeline, where its animations run, and the time on
    *  it the styles are computed at; null where none runs, and a document
    *  is drawn as it stands once each has run (`restingFrames`). */
@@ -1648,7 +1655,9 @@ export class Cascade {
           ),
           key: this._nextShareKey++,
         };
-        if (!this._running(shared.style)) this._sharedByMatch.set(key, shared);
+        if (!this._running(shared.style, el)) {
+          this._sharedByMatch.set(key, shared);
+        }
       }
       return shared;
     }
@@ -1658,15 +1667,18 @@ export class Cascade {
         style: this.styleFor(el, parentStyle, inFlexContainer),
         key: this._nextShareKey++,
       };
-      if (!this._running(shared.style)) this._shared.set(key, shared);
+      if (!this._running(shared.style, el)) this._shared.set(key, shared);
     }
     return shared;
   }
 
   /** Whether a style is an element's alone: one its animations run in is
-   *  as far through them as its own started, and no other element's. */
-  private _running(style: ComputedStyle): boolean {
-    return this.timeline !== null && style.animations !== NO_ANIMATIONS;
+   *  as far through them as its own started, and no other element's, and
+   *  one its transitions run in is where its own are. */
+  private _running(style: ComputedStyle, el: Element): boolean {
+    const timeline = this.timeline;
+    if (timeline === null) return false;
+    return style.animations !== NO_ANIMATIONS || timeline.transiting(el);
   }
 
   /** Whether no rule `UNSHAREABLE` names could reach this element: the same
@@ -2008,6 +2020,20 @@ export class Cascade {
       style.willChange |= restingWillChange(style.animations, (name) =>
         this.keyframes(name),
       );
+    }
+    // and what its transitions make of it, from the style the document has
+    // for it now (CSS Transitions 1, 3): none for one not displayed
+    if (timeline) {
+      const pseudo = target!;
+      if (style.display === 'none') timeline.dropTransitions(el, pseudo);
+      else {
+        style = timeline.transition(
+          el,
+          pseudo,
+          style,
+          () => this.previous?.(el, pseudo) ?? null,
+        );
+      }
     }
     // which faces of the document's own families this family, weight and
     // slant ask for — known only now, with all three computed
