@@ -26,7 +26,7 @@ import { absoluteUrls, parseStylesheet } from '../src/html/css/parse.js';
 import type { FontFaceRule } from '../src/html/css/parse.js';
 import { bestFace, refusal } from '../src/html/fonts.js';
 import { decodeGif } from '../src/html/gif.js';
-import { weightAxes } from '../src/html/layout/axes.js';
+import { fontAxes } from '../src/html/layout/axes.js';
 import type { FontsLike } from '../src/html/layout/inline.js';
 import { isWoff2, woff2ToSfnt } from '../src/html/woff2.js';
 import { resolveUrl } from '../src/html/url.js';
@@ -80,6 +80,32 @@ const WEDGE =
   '4cw2eY9AcDTxeX382pTzEzzcVMrcJC7TMbIEggsuxItKFZcCAJC3d38RkyqBrAiQAADQYI6BUEOA' +
   'pFFNQNCgTRalWWjRo5p0GCiDNuPz/+VkVkY2NYyNgtBC8l3HS6gKqbmSOWIZAA==';
 const wedge = (): Uint8Array => new Uint8Array(Buffer.from(WEDGE, 'base64'));
+
+// The same and a `wdth` axis besides, 50 to 200 from 100: an `x`, and a
+// `0` in the same glyph, 500 units wide at the defaults, 250 wider at the
+// heaviest and 200 narrower at the lightest, and twice as wide at the
+// widest and half at the narrowest, linear either side of each default
+// (`spreadX`).
+const SPREAD =
+  'd09GMgABAAAAAAGoAAwAAAAAA5wAAAFdAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAARC84Chg4' +
+  'MHIBNgIkAwwLCAAEIAWBLgcoG+ECAJ4FztmHVlGCRvCCF7hd8Tzvfuh9SQoIbmPNRhMJ28qNbYWd' +
+  'UcCyxm58PMFXt01DMXVT1PAoh5//YBC5oRcTx+A/lxSlp27qj23/Tds2AWBMDDANLADpPNE4oAQS' +
+  'CETSHbJjiiKmrzt7oppH2dOjiSCAp++Fdbt1vUNdtw8AWAcFFdOqYFpzFP36Faw7areb+s3u7Z8A' +
+  'CMYVxTSGd8wTAtmj3oPYuZ6OjutgHxJQQS+Chh5AA5CWnpHmxdcXQFDAsgqWAQduNduGbzkDSN84' +
+  'nDl6w+2zvt+3zvi3H7bf6aiOn6/5uuTrTnegdwjC+8curXbiW3+tX+DTh8+XcSJfywtUBYT7r/lK' +
+  'VQPsa77iN8gGVUsocNfT76YCohcBRZ9egdBrRCDRY0qVNiCGzeu0GLVdCMOObzHolLNW65HVeFjV' +
+  '729fANNxKSYGZZ6NXUQF4xIJIrlqzDWncw==';
+const spread = (): Uint8Array => new Uint8Array(Buffer.from(SPREAD, 'base64'));
+
+/** How wide the spread's `x` is at a width and a weight, in its em's
+ *  thousandths. */
+function spreadX(wdth: number, wght = 400): number {
+  const width =
+    wdth < 100 ? (-250 * (100 - wdth)) / 50 : (500 * (wdth - 100)) / 100;
+  const weight =
+    wght < 400 ? (-200 * (400 - wght)) / 300 : (250 * (wght - 400)) / 500;
+  return 500 + width + weight;
+}
 
 // A font with each thing a WOFF2 stores another way, and the TrueType it
 // was made from: a box whose contour overlaps itself, an instructed glyph
@@ -370,10 +396,12 @@ test('@font-face rules are read, descriptor by descriptor', () => {
             url('os.woff') format(woff), url(os.eot?#iefix) format("embedded-opentype");
        font-weight: 300 800;
        font-style: oblique 10deg;
+       font-stretch: 100% 75%;
        unicode-range: U+0000-00FF, U+0131, U+4??;
      }
      @font-face { font-family: Icons Two; src: url(i.ttf); font-weight: bold;
-                  font-family: not, a list; unicode-range: nonsense }
+                  font-family: not, a list; unicode-range: nonsense;
+                  font-stretch: condensed; font-stretch: -10% }
      @font-face { font-family: sans-serif; src: url(hijack.ttf) }
      @font-face { font-family: "Only Local";
                   src: local(Gentium Bold), local("Gentium-Bold") }
@@ -405,6 +433,7 @@ test('@font-face rules are read, descriptor by descriptor', () => {
     ],
     weight: [300, 800],
     style: 'italic',
+    stretch: [75, 100],
     unicodeRange: [
       [0, 0xff],
       [0x131, 0x131],
@@ -415,6 +444,12 @@ test('@font-face rules are read, descriptor by descriptor', () => {
   assert.strictEqual(icons.family, 'Icons Two', 'a list is no family');
   assert.deepStrictEqual(icons.weight, [700, 700]);
   assert.strictEqual(icons.unicodeRange, null, 'nonsense is dropped');
+  assert.deepStrictEqual(
+    icons.stretch,
+    [75, 75],
+    'a keyword is its width, and a width below nothing is dropped',
+  );
+  assert.strictEqual(local.stretch, null, 'and none is `auto`');
   // A family of `local()`s alone is a family the document declares, and its
   // rule is kept: dropped, the name went to the system as any other would.
   assert.deepStrictEqual(
@@ -431,12 +466,14 @@ test('a face is matched as CSS Fonts 4 matches one', () => {
     lo: number,
     hi = lo,
     style: 'normal' | 'italic' = 'normal',
+    stretch: [number, number] | null = null,
   ) => ({
     rule: {
       family: 'F',
       sources: [],
       weight: [lo, hi] as [number, number],
       style,
+      stretch,
       unicodeRange: null,
       media: null,
     },
@@ -458,6 +495,30 @@ test('a face is matched as CSS Fonts 4 matches one', () => {
     pick([face(400), face(700, 700, 'italic')], 400, true),
     700,
     'the slant before the weight',
+  );
+  // and the width before both: at or under normal the nearest narrower,
+  // then the nearest wider, and over it the other way round
+  const widths = [
+    face(400, 400, 'normal', null),
+    face(500, 500, 'normal', [75, 75]),
+    face(600, 600, 'normal', [125, 150]),
+  ];
+  const width = (w: number) => bestFace(widths, 400, false, w)?.rule.weight[0];
+  assert.strictEqual(width(100), 400, '`auto` is the normal width');
+  assert.strictEqual(width(80), 500, 'narrower first');
+  assert.strictEqual(width(50), 500, 'then wider');
+  assert.strictEqual(width(110), 600, 'over normal, wider first');
+  assert.strictEqual(width(140), 600, 'inside a range');
+  assert.strictEqual(width(300), 600, 'then narrower');
+  assert.strictEqual(
+    bestFace(
+      [face(400, 400, 'italic'), face(400, 400, 'normal', [75, 75])],
+      400,
+      true,
+      75,
+    )?.rule.style,
+    'normal',
+    'the width before the slant',
   );
 });
 
@@ -1172,9 +1233,14 @@ test('a face is asked for the instance a layout will ask it for', () => {
   );
   assert.strictEqual(refusal(ntk, face({}), 'serif'), null, 'a static face');
   assert.strictEqual(
-    refusal(ntk, face({ wdth: axis(75, 100, 125) }), 'serif'),
+    refusal(ntk, face({ slnt: axis(-10, 0, 0) }), 'serif'),
     null,
     'an axis no style moves is never cut',
+  );
+  assert.strictEqual(
+    refusal(ntk, face({ wdth: axis(75, 100, 125) }), 'serif'),
+    'no instance',
+    'and the width is one a style moves',
   );
   assert.strictEqual(
     refusal(ntk, face({ wght: axis(400, 400, 400) }), 'serif'),
@@ -1368,9 +1434,9 @@ withFonts(
   },
 );
 
-// --- the weight axis ----------------------------------------------------------
+// --- the weight and width axes -----------------------------------------------
 
-test('a run is handed on with the axis value its family has for it', () => {
+test('a run is handed on with the family and the axis values it has', () => {
   const seen: Array<{ content: unknown; style: unknown }> = [];
   const engine = {
     layout(content: unknown, style: unknown) {
@@ -1383,27 +1449,34 @@ test('a run is handed on with the axis value its family has for it', () => {
     },
   } as unknown as FontsLike & { prewarm(): boolean };
   const asked: string[] = [];
-  const axes = {
-    variable: true,
-    wght(list: string, weight: number, italic: boolean) {
-      asked.push(`${list}|${weight}|${italic}`);
-      return list.startsWith('web') ? { wght: Math.min(weight, 500) } : null;
+  const faces = {
+    active: true,
+    setting(list: string, weight: number, italic: boolean, stretch: number) {
+      asked.push(`${list}|${weight}|${italic}|${stretch}`);
+      if (!list.startsWith('web')) return null;
+      return {
+        // the faces of another width are under a name of their own
+        family: stretch < 100 ? 'narrow, web, serif' : list,
+        variations: { wght: Math.min(weight, 500) },
+      };
     },
   };
-  const fonts = weightAxes(engine, axes) as typeof engine;
+  const fonts = fontAxes(engine, faces) as typeof engine;
   const base = { family: 'web, serif', weight: 400, style: 'normal' };
   const runs = [
     { text: 'a' },
     { text: 'b', weight: 700 },
     { text: 'c', family: 'serif', weight: 700 },
     { text: 'd', weight: 'bold' as const, style: 'italic' as const },
+    { text: 'e', stretch: 75 },
   ];
   assert.strictEqual(fonts.layout(runs, base, {}), 'laid out');
   assert.deepStrictEqual(asked, [
-    'web, serif|400|false',
-    'web, serif|700|false',
-    'serif|700|false',
-    'web, serif|700|true',
+    'web, serif|400|false|100',
+    'web, serif|700|false|100',
+    'serif|700|false|100',
+    'web, serif|700|true|100',
+    'web, serif|400|false|75',
   ]);
   const handed = seen[0].content as Array<Record<string, unknown>>;
   assert.deepStrictEqual(handed, [
@@ -1411,6 +1484,12 @@ test('a run is handed on with the axis value its family has for it', () => {
     { text: 'b', weight: 700, variations: { wght: 500 } },
     { text: 'c', family: 'serif', weight: 700 },
     { text: 'd', weight: 'bold', style: 'italic', variations: { wght: 500 } },
+    {
+      text: 'e',
+      stretch: 75,
+      family: 'narrow, web, serif',
+      variations: { wght: 400 },
+    },
   ]);
   assert.ok(handed[2] === runs[2], 'a run in another family is the run given');
   assert.ok(seen[0].style === base, 'and the paragraph carries no axis');
@@ -1420,8 +1499,8 @@ test('a run is handed on with the axis value its family has for it', () => {
     'the caller’s runs are its own',
   );
 
-  // a document with no variable face: the engine as it is
-  axes.variable = false;
+  // a document with no face to set: the engine as it is
+  faces.active = false;
   asked.length = 0;
   fonts.layout(runs, base, {});
   assert.ok(seen[1].content === runs, 'the runs given');
@@ -1525,6 +1604,184 @@ withFonts(
     assert.strictEqual(axis('o7', 700), undefined, 'a rule with no range');
     assert.strictEqual(axis('m7', 700), undefined, 'a family of the system’s');
     assert.ok(handed.has('monospace 700'), 'which the engine was handed');
+  },
+);
+
+withFonts(
+  'a variable face is set at the width its rule has for a style’s',
+  async (t) => {
+    // CSS Fonts 4 (7.2): a style's `font-stretch`, clamped to the range the
+    // face's `@font-face` declares, is where on its `wdth` axis the text is
+    // set — bun.sh's Archivo, `font-stretch: 62% 125%`, under headings at
+    // 62% — and a rule's `auto` clamps it to the file's own range alone
+    // (4.4). No engine moves the axis by itself.
+    const source =
+      '<style>@font-face { font-family: Doc; font-weight: 100 900;' +
+      '  font-stretch: 62% 125%; src: url(doc.woff2) format("woff2") }' +
+      '@font-face { font-family: Auto; font-weight: 100 900;' +
+      '  src: url(auto.woff2) format("woff2") }' +
+      'p { font-family: Doc, monospace; margin: 0; font-size: 40px }' +
+      '.auto { font-family: Auto, monospace }</style>' +
+      '<p><span id="d100">x</span>' +
+      '<span id="d75" style="font-stretch: condensed">x</span>' +
+      '<span id="d62" style="font-stretch: 62%">x</span>' +
+      '<span id="d50" style="font-stretch: 50%">x</span>' +
+      '<span id="d150" style="font-stretch: calc(100% + 50%)">x</span>' +
+      '<span id="d9" style="font-weight: 900; font-stretch: 62%">x</span>' +
+      '<span id="dx" style="font: extra-condensed 40px Doc">x</span></p>' +
+      '<p class="auto"><span id="a50" style="font-stretch: 50%">x</span>' +
+      '<span id="a300" style="font-stretch: 300%">x</span></p>' +
+      '<p style="font-stretch: 62%"><span id="ch"' +
+      ' style="display: inline-block; width: 10ch; height: 1px"></span>' +
+      '<span id="ch100" style="display: inline-block; width: 10ch;' +
+      ' height: 1px; font-stretch: normal"></span></p>';
+    const host: Answer = (r) =>
+      r.kind === 'font' ? { kind: 'font', bytes: spread() } : null;
+    const { result } = await mount('<p>x</p>', host, {}, true);
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const layout = fonts.layout.bind(fonts);
+    const handed = new Map<string, unknown>();
+    fonts.layout = (content, style, options) => {
+      for (const run of content as Array<{
+        family?: string;
+        weight?: unknown;
+        stretch?: number;
+        variations?: unknown;
+      }>) {
+        const weight = run.weight ?? style.weight;
+        handed.set(
+          `${run.family ?? style.family} ${weight} ${run.stretch}`,
+          run.variations,
+        );
+      }
+      return layout(content, style, options);
+    };
+    t.after(() => {
+      fonts.layout = layout;
+    });
+    await act(() =>
+      result.rerender(
+        h(
+          'box',
+          { style: { width: 400, flexDirection: 'column' } },
+          h(Html, {
+            source,
+            partial: false,
+            onResource: host,
+            'data-testname': 'doc',
+          }),
+        ),
+      ),
+    );
+    const node = view(screen.getByTestName('doc') as DrawnNode);
+    await settle(node, 8);
+    assert.match(boxOf(node, 'd62').style.fontFamily, /^html webfont/);
+    const axes = (id: string, weight: number, stretch: number) =>
+      handed.get(`${boxOf(node, id).style.fontFamily} ${weight} ${stretch}`);
+    assert.deepStrictEqual(
+      [
+        axes('d100', 400, 100),
+        axes('d75', 400, 75),
+        axes('d62', 400, 62),
+        axes('d9', 900, 62),
+        axes('dx', 400, 62.5),
+      ],
+      [
+        { wght: 400 },
+        { wght: 400, wdth: 75 },
+        { wght: 400, wdth: 62 },
+        { wght: 900, wdth: 62 },
+        { wght: 400, wdth: 62.5 },
+      ],
+      'inside the range a rule declares, the width asked for',
+    );
+    assert.deepStrictEqual(
+      [axes('d50', 400, 50), axes('d150', 400, 150)],
+      [
+        { wght: 400, wdth: 62 },
+        { wght: 400, wdth: 125 },
+      ],
+      'outside it, its nearest end',
+    );
+    assert.deepStrictEqual(
+      [axes('a50', 400, 50), axes('a300', 400, 300)],
+      [
+        { wght: 400, wdth: 50 },
+        { wght: 400, wdth: 200 },
+      ],
+      'and under `auto`, the nearest the file has',
+    );
+    const width = (id: string) =>
+      node.elementRect(boxOf(node, id).el as never)!.width;
+    const near = (id: string, units: number) => {
+      const want = (40 * units) / 1000;
+      assert.ok(
+        Math.abs(width(id) - want) < 0.1,
+        `#${id} is ${width(id)} wide, where it is drawn ${want}`,
+      );
+    };
+    near('d100', spreadX(100));
+    near('d75', spreadX(75));
+    near('d62', spreadX(62));
+    near('d50', spreadX(62));
+    near('d150', spreadX(125));
+    near('d9', spreadX(62, 900));
+    near('dx', spreadX(62.5));
+    near('a50', spreadX(50));
+    near('a300', spreadX(200));
+    // a `ch` is the advance of the "0" in the face at its width
+    assert.ok(
+      Math.abs(width('ch') - (10 * 40 * spreadX(62)) / 1000) < 1,
+      `10ch at 62% is ${width('ch')}`,
+    );
+    assert.ok(
+      Math.abs(width('ch100') - (10 * 40 * spreadX(100)) / 1000) < 1,
+      `10ch at 100% is ${width('ch100')}`,
+    );
+  },
+);
+
+withFonts(
+  'a family of faces of several widths is matched by the width first',
+  async () => {
+    // CSS Fonts 4 (5.2): the width first, then the slant, then the weight.
+    // `Wide` is KaTeX's regular declared at the normal width and its bold
+    // declared condensed: text at 80% is set in the condensed face, whose
+    // weight is not the text's, and so is text at 50%, narrower than any
+    // face — at or under normal, the narrower widths are tried and then
+    // the wider — while text at 110% is set in the normal face, the wider
+    // having none. The font manager picks among one name's faces by weight
+    // and slant alone, so the widths are two names.
+    const asked: string[] = [];
+    const { node } = await mount(
+      '<style>' +
+        '@font-face { font-family: Wide; src: url(r.woff2) }' +
+        '@font-face { font-family: Wide; font-stretch: condensed;' +
+        '  src: url(b.woff2) }' +
+        '@font-face { font-family: Plain; src: url(r.woff2) }' +
+        '@font-face { font-family: Heavy; src: url(b.woff2) }' +
+        'p { font-family: Wide, monospace; margin: 0; font-size: 40px }' +
+        '</style>' +
+        '<p><span id="n">mm</span> <span id="c" style="font-stretch: 80%">' +
+        'mm</span> <span id="u" style="font-stretch: 50%">mm</span>' +
+        ' <span id="e" style="font-stretch: 110%">mm</span></p>' +
+        '<p style="font-family: Plain"><span id="r">mm</span></p>' +
+        '<p style="font-family: Heavy"><span id="b">mm</span></p>',
+      fontHost(asked),
+      {},
+      true,
+    );
+    await settle(node);
+    const width = (id: string) =>
+      node.elementRect(boxOf(node, id).el as never)!.width;
+    // where a span ends less where it starts, which can be a bit off
+    const same = (id: string, face: string, message: string) =>
+      assert.ok(Math.abs(width(id) - width(face)) < 0.01, message);
+    assert.ok(width('b') > width('r') + 1, 'the bold is the wider face');
+    same('n', 'r', 'normal is the normal face');
+    same('c', 'b', '80% is the condensed face');
+    same('u', 'b', 'and so is 50%');
+    same('e', 'r', '110% is the normal face');
   },
 );
 

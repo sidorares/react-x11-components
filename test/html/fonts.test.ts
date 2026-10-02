@@ -130,6 +130,31 @@ test('the font shorthand resets what it does not name', async () => {
   assert.deepStrictEqual(style('inherits'), inherited);
 });
 
+test('font-stretch is a percentage, inherited, and the font shorthand sets its keywords', async () => {
+  // CSS Fonts 4, 2.3 and 2.7: a keyword or a percentage not below 0%,
+  // computed as the percentage; `font` takes the keywords alone, and sets
+  // the width back to normal where it names none
+  const { node } = await render(
+    '<div style="font-stretch: 62%">' +
+      '<p id="inherits">a</p>' +
+      '<p id="keyword" style="font-stretch: semi-expanded">b</p>' +
+      '<p id="calc" style="font-stretch: calc(50% + 25%)">c</p>' +
+      '<p id="negative" style="font-stretch: 75%; font-stretch: -10%">d</p>' +
+      '<p id="number" style="font-stretch: 75">e</p>' +
+      '<p id="shorthand" style="font: condensed bold 14px sans-serif">f</p>' +
+      '<p id="reset" style="font: 14px sans-serif">g</p></div>',
+  );
+  const stretch = (id: string) =>
+    (boxOf(view(node), id) as unknown as { style: { fontStretch: number } })
+      .style.fontStretch;
+  assert.deepStrictEqual(
+    ['inherits', 'keyword', 'calc', 'negative', 'number'].map(stretch),
+    [62, 112.5, 75, 75, 62],
+    'a value that is none is dropped',
+  );
+  assert.deepStrictEqual(['shorthand', 'reset'].map(stretch), [75, 100]);
+});
+
 test('a line height below nought is none, alone or in the font shorthand', async () => {
   // the declaration goes (CSS 2.1 10.8.1): `font: 4em/-2em serif` set the
   // text at 4em, and `line-height: -2` stood its lines on one another

@@ -23,11 +23,11 @@
 // Fonts sheet declares a family seven times over, once per script, and a
 // self-hosted family often declares every weight it has. The cascade reports
 // each computed style (`note`), and after the boxes are built a face is asked
-// for only if some style wants its family at its weight and slant and some
-// character of the document falls in its `unicode-range` (`request`). The
-// matching is CSS Fonts 4's (5.2): the slant first, then the nearest weight
-// in the direction the spec prefers, and a face that fails to load is passed
-// over for the next.
+// for only if some style wants its family at its width, weight and slant
+// and some character of the document falls in its `unicode-range`
+// (`request`). The matching is CSS Fonts 4's (5.2): the width first, then
+// the slant, then the nearest weight in the direction the spec prefers, and
+// a face that fails to load is passed over for the next.
 //
 // **Until a face has loaded, its family is not in the list.** The text is set
 // in the next family the author named, as `font-display: swap` has it, and
@@ -58,14 +58,25 @@
 // offered in its place (`_register`); only a font refused both ways is a
 // source that did not load. Nothing asks which engine it is.
 //
-// **A variable face is set at the weight its rule has for a style's.** The
-// weight a style asks for is a place on the face's `wght` axis, clamped to
-// the range its `@font-face` declares (CSS Fonts 4, 7.2), and the rule is
-// the document's: the value is said here (`wght`) and handed to the engine
-// with the run (`layout/axes.ts`). Left alone, ntk moves the axis to the
-// style's weight whatever the rule declared, and CoreText, for a face
+// **A variable face is set at the weight and the width its rule has for a
+// style's.** The weight a style asks for is a place on the face's `wght`
+// axis and its `font-stretch` one on its `wdth` axis, each clamped to the
+// range its `@font-face` declares (CSS Fonts 4, 7.2), and the rule is the
+// document's: the values are said here (`setting`) and handed to the engine
+// with the run (`layout/axes.ts`). Left alone, ntk moves the weight axis to
+// the style's weight whatever the rule declared, and CoreText, for a face
 // react-x11 registered, does not move it — every weight of Geist was its
-// regular on macOS.
+// regular on macOS. Neither engine has a width at all: bun.sh's headings,
+// in Archivo at 62%, were set at its normal width, half again as wide as a
+// browser sets them.
+//
+// **A family's faces of several widths are a name for each width.** The
+// font manager picks among one name's faces by weight and slant, and CSS
+// picks the width first, so a family that declares a condensed face beside
+// its normal one registers the two under names of their own, and the run
+// is handed the list with its width's name first (`setting`). `map` puts
+// the name nearest the normal width first, which is what a list with no
+// width to say is set in.
 //
 // A family split by `unicode-range` is registered a name per range, since the
 // font manager picks among one name's faces by weight and slant alone, and
@@ -151,13 +162,27 @@ interface Face {
    *  the list names in place of the group's; null for a face registered
    *  from a file. */
   local: string | null;
+  /** The name the face is registered under: its group's, or where the
+   *  group's faces are of more than one width, its width's. */
+  name: string;
   /** The range of the `wght` axis a `ready` face's file has, or null for a
    *  file with none: a static face, or the system's. */
   wght: [number, number] | null;
+  /** The `wdth` axis a `ready` face's file has — its least, default and
+   *  greatest — or null for a file with none. */
+  wdth: [number, number, number] | null;
 }
 
-/** A family's faces for one unicode range: one registered name, among whose
- *  faces the font manager picks by weight and slant. */
+/** The axes a registered face's file has that a style moves. */
+interface FileAxes {
+  wght: [number, number] | null;
+  wdth: [number, number, number] | null;
+}
+
+/** A family's faces for one unicode range, which CSS matches as one face
+ *  (CSS Fonts 4, 5.2): one registered name, among whose faces the font
+ *  manager picks by weight and slant — or one for each width its faces
+ *  declare, where they declare more than one. */
 interface Group {
   name: string;
   ranges: [number, number][] | null;
@@ -169,7 +194,8 @@ interface Group {
 
 interface Family {
   groups: Group[];
-  /** `weight|italic`s the styles asked for, and the ones already asked. */
+  /** `weight|italic|width`s the styles asked for, and the ones already
+   *  asked. */
   wants: Set<string>;
   asked: Set<string>;
 }
@@ -184,9 +210,9 @@ interface Registry {
   /** The ones among them that are the system's (`local()`), and registered
    *  under no name: the family each came to. */
   locals: Map<string, string>;
-  /** The ones whose file is a variable font with a `wght` axis, and the
-   *  axis's range. */
-  axes: Map<string, [number, number]>;
+  /** The ones whose file is a variable font with a `wght` or a `wdth`
+   *  axis, and the axes. */
+  axes: Map<string, FileAxes>;
   /** Faces being loaded, by `faceKey`, so a second document waits for the
    *  first document's request rather than making its own. */
   pending: Map<string, Promise<boolean>>;
@@ -241,14 +267,18 @@ export class WebFonts implements FontFamilies {
    *  lists that come to one string share an entry, which can ask for a face
    *  a little early; never for one nothing wants. */
   private _sources = new Map<string, Family[]>();
-  /** The groups by the names they are registered under, which is how a
-   *  list the engine is handed names one (`wght`). */
+  /** The groups by the names they are registered under, each of a group's
+   *  names where it has one for each width, which is how a list the engine
+   *  is handed names one (`setting`). */
   private _groups = new Map<string, Group>();
-  /** Lists → weight and slant → the axis value text in them is set at. */
-  private _axes = new Map<string, Map<number, WeightAxis | null>>();
-  /** Whether any loaded face has a weight axis to set; null for not yet
-   *  asked since the faces changed. */
-  private _variable: boolean | null = null;
+  /** Lists → weight and slant → width → how text in them is set. */
+  private _settings = new Map<
+    string,
+    Map<number, Map<number, FaceSetting | null>>
+  >();
+  /** Whether any loaded face has an axis to set, or a family faces of more
+   *  than one width; null for not yet asked since the faces changed. */
+  private _active: boolean | null = null;
   /** The document's characters, as the last `request` saw them. */
   private _text: string | null = null;
   private _seen = new Set<number>();
@@ -330,6 +360,27 @@ export class WebFonts implements FontFamilies {
           coverage: members[0].rule.unicodeRange ? 0 : Infinity,
           order: order++,
         };
+        // a name for each width where there is more than one, the first
+        // width's the group's: the engine picks among a name's faces by
+        // weight and slant alone
+        const widths = new Map<string, string>();
+        for (const m of members) widths.set(widthKey(m.rule), name);
+        if (widths.size > 1) {
+          let first = true;
+          for (const width of widths.keys()) {
+            if (first) {
+              first = false;
+              continue;
+            }
+            const signature = `${groupSignature}\u0003${width}`;
+            let named = registry?.names.get(signature);
+            if (!named) {
+              named = `html webfont ${letters(registry ? registry.next++ : order++)}`;
+              registry?.names.set(signature, named);
+            }
+            widths.set(width, named);
+          }
+        }
         for (const m of members) {
           const face: Face = {
             rule: m.rule,
@@ -338,9 +389,11 @@ export class WebFonts implements FontFamilies {
             family,
             state: 'idle',
             local: null,
+            name: widths.get(widthKey(m.rule))!,
             wght: null,
+            wdth: null,
           };
-          if (registry?.ready.has(faceKey(name, m.rule)))
+          if (registry?.ready.has(faceKey(face.name, m.rule)))
             arrive(face, registry);
           group.faces.push(face);
           made.set(m, face);
@@ -352,7 +405,9 @@ export class WebFonts implements FontFamilies {
     this._families = families;
     this._groups.clear();
     for (const family of families.values()) {
-      for (const group of family.groups) this._groups.set(group.name, group);
+      for (const group of family.groups) {
+        for (const face of group.faces) this._groups.set(face.name, group);
+      }
     }
     this._faces = declared.map((d) => made.get(d)!);
     // the ranges are new, and so is what they cover
@@ -376,10 +431,10 @@ export class WebFonts implements FontFamilies {
       }
       used.push(family);
       for (const group of orderedGroups(family)) {
-        // the name its files are registered under, then the families its
-        // `local()`s came to
+        // the names its files are registered under, the width nearest the
+        // normal one first, then the families its `local()`s came to
         const ready = group.faces.filter((f) => f.state === 'ready');
-        if (ready.some((f) => f.local === null)) out.push(group.name);
+        for (const name of namesOf(ready)) out.push(name);
         for (const face of ready) {
           if (face.local !== null && !out.includes(face.local)) {
             out.push(face.local);
@@ -410,66 +465,92 @@ export class WebFonts implements FontFamilies {
   note(style: ComputedStyle): void {
     const families = this._sources.get(style.fontFamily);
     if (!families) return;
-    const want = `${style.fontWeight}|${style.fontStyle !== 'normal' ? 1 : 0}`;
+    const want = `${style.fontWeight}|${style.fontStyle !== 'normal' ? 1 : 0}|${style.fontStretch}`;
     for (const family of families) family.wants.add(want);
   }
 
-  /** Whether any face the document has loaded is a variable font whose rule
-   *  declares a range of weights: whether `wght` has anything to say. */
-  get variable(): boolean {
-    if (this._variable === null) {
-      this._variable = false;
+  /** Whether any face the document has loaded has an axis a style moves —
+   *  a weight axis its rule declares a range of, or a width axis — or is
+   *  one of a family's faces of several widths: whether `setting` has
+   *  anything to say. */
+  get active(): boolean {
+    if (this._active === null) {
+      this._active = false;
       for (const group of this._groups.values()) {
-        if (group.faces.some((f) => ranged(f) !== null)) this._variable = true;
+        for (const face of group.faces) {
+          if (face.state !== 'ready' || face.local !== null) continue;
+          if (ranged(face) || face.wdth || face.name !== group.name) {
+            this._active = true;
+          }
+        }
       }
     }
-    return this._variable;
+    return this._active;
   }
 
   /**
-   * Where on its weight axis text in a family list — one `map` made — is
-   * set at a weight and slant, or null where no axis is this document's to
-   * set.
+   * How text in a family list — one `map` made — is set at a weight, slant
+   * and width: in which list, and where on its face's axes. Null where
+   * none of it is this document's to say, and the run is set as it is.
    *
-   * CSS has the weight a style asks for applied to a variable face's `wght`
-   * axis, clamped to the range its `@font-face` rule declares (CSS Fonts 4,
-   * 7.2): `font-weight: 100 900` is every weight the file has, and
-   * under `font-weight: 400 700` text at 900 is set at 700. The rule is the
-   * document's, so the value is said here and handed to the engine with the
-   * run (`layout/axes.ts`). An engine left to itself either moves the axis
-   * to the style's weight, past what the rule declared — ntk — or not at
-   * all: a face react-x11 registers with CoreText is drawn at its file's
-   * default, and every weight of Geist on macOS was the regular.
+   * The face is the one CSS matches (CSS Fonts 4, 5.2), among the faces
+   * registered under the list's first family, which is the one text is set
+   * in: the width first, then the slant, then the weight. Where it is of
+   * another width than the faces under that name, its own name leads the
+   * list, since the engine picks among a name's faces by weight and slant.
    *
-   * Only the list's first family is asked, the one text is set in, and only
-   * a face whose rule declares a range: one declared at a single weight is
-   * left as the engine sets it.
+   * CSS has the weight and the width a style asks for applied to a
+   * variable face's `wght` and `wdth` axes, clamped to the ranges its
+   * `@font-face` rule declares (CSS Fonts 4, 7.2): `font-weight: 100 900`
+   * is every weight the file has, and under `font-weight: 400 700` text at
+   * 900 is set at 700. The rule is the document's, so the values are said
+   * here and handed to the engine with the run (`layout/axes.ts`). An
+   * engine left to itself either moves the weight axis to the style's
+   * weight, past what the rule declared — ntk — or not at all: a face
+   * react-x11 registers with CoreText is drawn at its file's default, and
+   * every weight of Geist on macOS was the regular. The width axis neither
+   * moves.
+   *
+   * The weight is said only for a face whose rule declares a range of
+   * them: one declared at a single weight is left as the engine sets it.
+   * The width is said wherever the file has the axis and the value is not
+   * its default, since no engine moves it: a rule's `auto` clamps it to
+   * nothing narrower than the file's own range, as `auto` has it (4.4).
    */
-  wght(list: string, weight: number, italic: boolean): WeightAxis | null {
-    if (!this.variable) return null;
-    let byFace = this._axes.get(list);
-    if (!byFace) this._axes.set(list, (byFace = new Map()));
-    const key = italic ? -weight : weight;
-    let axis = byFace.get(key);
-    if (axis === undefined) {
-      axis = null;
+  setting(
+    list: string,
+    weight: number,
+    italic: boolean,
+    stretch: number,
+  ): FaceSetting | null {
+    if (!this.active) return null;
+    let byFace = this._settings.get(list);
+    if (!byFace) this._settings.set(list, (byFace = new Map()));
+    const slanted = italic ? -weight : weight;
+    let byWidth = byFace.get(slanted);
+    if (!byWidth) byFace.set(slanted, (byWidth = new Map()));
+    let setting = byWidth.get(stretch);
+    if (setting === undefined) {
+      setting = null;
       const comma = list.indexOf(',');
       const first = (comma < 0 ? list : list.slice(0, comma)).trim();
       const face = bestFace(
-        // the faces registered under the name, which the engine picks among
+        // the faces registered under the name, or the group's other widths
         this._groups
           .get(first)
           ?.faces.filter((f) => f.state === 'ready' && f.local === null) ?? [],
         weight,
         italic,
+        stretch,
       );
-      const range = face && ranged(face);
-      if (range) {
-        axis = weightAxis(Math.max(range[0], Math.min(weight, range[1])));
+      if (face) {
+        const family = face.name === first ? list : leading(face.name, list);
+        const variations = variationsOf(face, weight, stretch);
+        if (family !== list || variations) setting = { family, variations };
       }
-      byFace.set(key, axis);
+      byWidth.set(stretch, setting);
     }
-    return axis;
+    return setting;
   }
 
   /**
@@ -487,10 +568,14 @@ export class WebFonts implements FontFamilies {
       for (const want of family.wants) {
         if (family.asked.has(want)) continue;
         family.asked.add(want);
-        const [weight, italic] = want.split('|');
+        const [weight, italic, stretch] = want.split('|');
         for (const group of family.groups) {
           if (group.coverage <= 0) continue;
-          if (this._pick(group, Number(weight), italic === '1')) stale = true;
+          if (
+            this._pick(group, Number(weight), italic === '1', Number(stretch))
+          ) {
+            stale = true;
+          }
         }
       }
     }
@@ -510,21 +595,27 @@ export class WebFonts implements FontFamilies {
   private _forget(): void {
     this._memo.clear();
     this._sources.clear();
-    this._axes.clear();
-    this._variable = null;
+    this._settings.clear();
+    this._active = null;
   }
 
   /**
-   * Load the face in a group that best matches a weight and slant, passing
-   * over the ones that failed. True when one registered before this
-   * returned.
+   * Load the face in a group that best matches a weight, slant and width,
+   * passing over the ones that failed. True when one registered before
+   * this returned.
    */
-  private _pick(group: Group, weight: number, italic: boolean): boolean {
+  private _pick(
+    group: Group,
+    weight: number,
+    italic: boolean,
+    stretch: number,
+  ): boolean {
     for (;;) {
       const face = bestFace(
         group.faces.filter((f) => f.state !== 'failed'),
         weight,
         italic,
+        stretch,
       );
       if (!face || face.state !== 'idle') return false;
       const outcome = this._load(face);
@@ -602,7 +693,7 @@ export class WebFonts implements FontFamilies {
       return 'failed';
     }
     const registry = registryOf(app);
-    const key = faceKey(face.group.name, face.rule);
+    const key = faceKey(face.name, face.rule);
     if (registry.ready.has(key)) {
       arrive(face, registry);
       return 'ready';
@@ -697,7 +788,7 @@ export class WebFonts implements FontFamilies {
   }
 
   /**
-   * Register a face's bytes under its group's name. False when the host
+   * Register a face's bytes under its name. False when the host
    * declined, or the font manager could not read them — a file that is not
    * a font — or read them and cannot set text in them (`refusal`), and the
    * next source is tried.
@@ -725,7 +816,7 @@ export class WebFonts implements FontFamilies {
     });
   }
 
-  /** Hand a font file to the font manager, under a face's group's name.
+  /** Hand a font file to the font manager, under a face's name.
    *  Null when it registered; otherwise why the engine cannot set text in
    *  it (`refusal`), or `''` for bytes it could not read at all. */
   private _set(face: Face, bytes: Uint8Array): string | null {
@@ -737,17 +828,24 @@ export class WebFonts implements FontFamilies {
       const refused = refusal(app, opened, this._fallback);
       if (refused !== null) return refused;
       loadFont(app, bytes, {
-        family: face.group.name,
+        family: face.name,
         // a range is registered at the weight nearest regular in it: the
         // font manager picks among a group's faces by distance from one
         // weight, and a variable face is then set at the weight asked for
         weight: Math.max(weight[0], Math.min(400, weight[1])),
         style,
       });
-      const axis = opened.variationAxes?.wght;
-      if (axis && axis.min < axis.max) {
-        const key = faceKey(face.group.name, face.rule);
-        registryOf(this._app!).axes.set(key, [axis.min, axis.max]);
+      const wght = opened.variationAxes?.wght;
+      const wdth = opened.variationAxes?.wdth;
+      const axes: FileAxes = {
+        wght: wght && wght.min < wght.max ? [wght.min, wght.max] : null,
+        wdth:
+          wdth && wdth.min < wdth.max
+            ? [wdth.min, wdth.default, wdth.max]
+            : null,
+      };
+      if (axes.wght || axes.wdth) {
+        registryOf(this._app!).axes.set(faceKey(face.name, face.rule), axes);
       }
       return null;
     } catch {
@@ -775,29 +873,98 @@ export class WebFonts implements FontFamilies {
 }
 
 /** A registered face is the document's to use: what the connection knows
- *  of it — the family a `local()` came to, the axis its file has — is the
+ *  of it — the family a `local()` came to, the axes its file has — is the
  *  face's. */
 function arrive(face: Face, registry: Registry): void {
-  const key = faceKey(face.group.name, face.rule);
+  const key = faceKey(face.name, face.rule);
+  const axes = registry.axes.get(key);
   face.state = 'ready';
   face.local = registry.locals.get(key) ?? null;
-  face.wght = registry.axes.get(key) ?? null;
+  face.wght = axes?.wght ?? null;
+  face.wdth = axes?.wdth ?? null;
 }
 
-/** A point on the weight axis, as an engine takes one with a run: its
- *  `variations`. */
-export interface WeightAxis {
-  wght: number;
+/** How text in a family list is set (`WebFonts.setting`): the list it is
+ *  handed to the engine as, and the point on its face's axes, as an engine
+ *  takes one with a run — its `variations` — or null for none. */
+export interface FaceSetting {
+  family: string;
+  variations: Variations | null;
 }
 
-/** One object a value: ntk tells two runs' variations apart by identity,
+/** A point on a face's weight and width axes. */
+export type Variations = Readonly<{ wght?: number; wdth?: number }>;
+
+/** One object a point: ntk tells two runs' variations apart by identity,
  *  and would set two runs at one weight as two. */
-const WEIGHTS = new Map<number, WeightAxis>();
+const POINTS = new Map<string, Variations>();
 
-function weightAxis(wght: number): WeightAxis {
-  let axis = WEIGHTS.get(wght);
-  if (!axis) WEIGHTS.set(wght, (axis = { wght }));
-  return axis;
+/** Where on its axes a face is set at a weight and a width, or null where
+ *  neither axis is the document's to move. */
+function variationsOf(
+  face: Face,
+  weight: number,
+  stretch: number,
+): Variations | null {
+  const range = ranged(face);
+  const wght = range
+    ? Math.max(range[0], Math.min(weight, range[1]))
+    : undefined;
+  let wdth: number | undefined;
+  if (face.wdth) {
+    const [least, initial, most] = face.wdth;
+    const [lo, hi] = face.rule.stretch ?? [least, most];
+    const value = Math.max(
+      least,
+      Math.min(Math.max(lo, Math.min(stretch, hi)), most),
+    );
+    if (value !== initial) wdth = value;
+  }
+  if (wght === undefined && wdth === undefined) return null;
+  const key = `${wght}|${wdth}`;
+  let point = POINTS.get(key);
+  if (!point) {
+    point =
+      wdth === undefined
+        ? { wght }
+        : wght === undefined
+          ? { wdth }
+          : { wght, wdth };
+    POINTS.set(key, point);
+  }
+  return point;
+}
+
+/** A family list with `name` first, and the rest of it as it was. */
+function leading(name: string, list: string): string {
+  const rest = list
+    .split(',')
+    .map((n) => n.trim())
+    .filter((n) => n && n !== name);
+  return [name, ...rest].join(', ');
+}
+
+/** The names a group's ready faces are registered under, the width nearest
+ *  the normal one first (`bestFace`), and none of the system's. */
+function namesOf(ready: Face[]): string[] {
+  const names: string[] = [];
+  const own = ready.filter((f) => f.local === null);
+  for (;;) {
+    const face = bestFace(
+      own.filter((f) => !names.includes(f.name)),
+      400,
+      false,
+      100,
+    );
+    if (!face) return names;
+    names.push(face.name);
+  }
+}
+
+/** What tells a face's width from another's in a group, as written: the
+ *  faces of one key are registered under one name. */
+function widthKey(rule: FontFaceRule): string {
+  return rule.stretch ? rule.stretch.join('-') : 'auto';
 }
 
 /** The weights a loaded face's axis is set within: the range its rule
@@ -819,10 +986,11 @@ interface OpenedFace {
 }
 
 /** The axes a style moves without naming one: ntk sets `wght` from the
- *  weight and `opsz` from the size (its `docs/fonts.md`), and nothing here
- *  hands it a `font-variation-settings`. A face with neither is set as its
- *  file has it, whatever else varies in it. */
-const DRIVEN_AXES = ['wght', 'opsz'];
+ *  weight and `opsz` from the size (its `docs/fonts.md`), the document sets
+ *  `wdth` from the width (`setting`), and nothing here hands it a
+ *  `font-variation-settings`. A face with none of them is set as its file
+ *  has it, whatever else varies in it. */
+const DRIVEN_AXES = ['wght', 'wdth', 'opsz'];
 
 /**
  * Why the text engine cannot set text in an opened face, or null when it
@@ -905,7 +1073,7 @@ function faceSignature(rule: FontFaceRule): string {
   const sources = rule.sources.map((s) =>
     'local' in s ? `local(${s.local})` : s.url,
   );
-  return `${sources.join(' ')}@${rule.weight.join('-')}${rule.style}#${range}`;
+  return `${sources.join(' ')}@${rule.weight.join('-')}${rule.style}~${widthKey(rule)}#${range}`;
 }
 
 /** What is asked of a font manager to find a `local()`: a match, and the
@@ -978,28 +1146,54 @@ function orderedGroups(family: Family): Group[] {
 }
 
 /**
- * The face CSS Fonts 4 (5.2) matches a weight and slant with: the slant
- * first, then a weight inside the face's range, then the nearest outside it
- * in the direction the spec prefers — lighter below 400, heavier above 500,
- * and between them up to 500 before down.
+ * The face CSS Fonts 4 (5.2) matches a width, weight and slant with: the
+ * width first, inside the face's range or the nearest outside it in the
+ * direction the spec prefers — narrower at or below normal, wider above it
+ * — then the slant, then a weight inside the face's range, then the
+ * nearest outside it in the direction the spec prefers — lighter below
+ * 400, heavier above 500, and between them up to 500 before down. A face
+ * whose width is `auto` is matched as a normal one (4.4).
  */
 export function bestFace<T extends { rule: FontFaceRule }>(
   faces: T[],
   weight: number,
   italic: boolean,
+  stretch = 100,
 ): T | null {
   let best: T | null = null;
+  let bestWidth: [number, number] = [Infinity, Infinity];
   let bestScore = Infinity;
   for (const face of faces) {
+    const width = widthDistance(stretch, face.rule.stretch ?? NORMAL);
+    const nearer = width[0] - bestWidth[0] || width[1] - bestWidth[1];
+    if (nearer > 0) continue;
     const score =
       weightDistance(weight, face.rule.weight) +
       ((face.rule.style === 'italic') === italic ? 0 : 10000);
-    if (score < bestScore) {
+    if (nearer < 0 || score < bestScore) {
       best = face;
+      bestWidth = width;
       bestScore = score;
     }
   }
   return best;
+}
+
+const NORMAL: [number, number] = [100, 100];
+
+/** How far a width is from a face's range, as the order CSS tries widths
+ *  in: inside it, then the preferred direction by distance, then the other
+ *  (CSS Fonts 4, 5.2). Two numbers, compared in turn, since a width has no
+ *  greatest value to put the other direction past. */
+function widthDistance(
+  want: number,
+  [lo, hi]: [number, number],
+): [number, number] {
+  if (want >= lo && want <= hi) return [0, 0];
+  const narrower = hi < want;
+  return want <= 100 === narrower
+    ? [1, narrower ? want - hi : lo - want]
+    : [2, narrower ? want - hi : lo - want];
 }
 
 function weightDistance(want: number, [lo, hi]: [number, number]): number {

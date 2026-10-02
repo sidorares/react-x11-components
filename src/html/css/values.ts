@@ -502,6 +502,45 @@ export function parseWeight(value: string, inherited: number): number {
   }
 }
 
+/** `font-stretch`'s keywords, as the percentages they are (CSS Fonts 4,
+ *  2.3). */
+const STRETCHES: Readonly<Record<string, number>> = {
+  'ultra-condensed': 50,
+  'extra-condensed': 62.5,
+  condensed: 75,
+  'semi-condensed': 87.5,
+  normal: 100,
+  'semi-expanded': 112.5,
+  expanded: 125,
+  'extra-expanded': 150,
+  'ultra-expanded': 200,
+};
+
+/**
+ * `font-stretch` (CSS Fonts 4, 2.3), the width text is set at as a
+ * percentage of its face's normal width: a keyword, or a percentage that is
+ * not below 0%. Null for anything else, and the declaration is dropped.
+ * `keywordsOnly` is the `font` shorthand's case, which takes the keywords
+ * alone: there `75%` would be read as a size.
+ */
+export function parseStretch(
+  value: string,
+  keywordsOnly = false,
+): number | null {
+  const v = value.trim().toLowerCase();
+  if (Object.hasOwn(STRETCHES, v)) return STRETCHES[v];
+  if (keywordsOnly) return null;
+  let pct: number | null = null;
+  if (v.endsWith('%') && NUMBER_RE.test(v.slice(0, -1))) {
+    pct = Number(v.slice(0, -1));
+  } else if (MATH.test(v)) {
+    // `calc(50% + 25%)`, which comes to a percentage and nothing more
+    const len = parseMath(v, () => null);
+    if (len !== null && isPct(len) && !len.of && !len.px) pct = len.pct;
+  }
+  return pct !== null && Number.isFinite(pct) && pct >= 0 ? pct : null;
+}
+
 /** Absolute and relative `font-size` keywords, against the CSS scale. */
 export function keywordFontSize(
   value: string,

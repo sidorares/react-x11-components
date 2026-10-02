@@ -176,9 +176,9 @@ An `@font-face` is read, and its family is the document's to use:
 A source is asked for as `{ kind: 'font', url }`, and handed back as the
 file's bytes, `{ kind: 'font', bytes }` — TrueType, OpenType, WOFF or WOFF2.
 What decides whether one is asked for at all is the page, as it is in a
-browser: a face loads when a computed style wants its family at its weight
-and slant, the nearest face to them as CSS Fonts 4 matches one, and when a
-character of the document falls in its `unicode-range`. A Google Fonts sheet
+browser: a face loads when a computed style wants its family at its width,
+weight and slant, the nearest face to them as CSS Fonts 4 matches one, and
+when a character of the document falls in its `unicode-range`. A Google Fonts sheet
 declares a family once per script and a self-hosted family often declares
 every weight it has; a page that uses two weights of the Latin half asks for
 two files. The sources are tried in order: one whose `format()` is not a
@@ -270,6 +270,54 @@ nothing about an axis, and its face is set as the engine sets it. A browser
 also emboldens a face asked for a weight past its range — the 900 above —
 and that is not done: the text is the 500. A form control's text is its
 widget's, which is handed the family and the weight and no axis.
+
+**And at the width.** `font-stretch` — a keyword or a percentage — is a
+place on a variable font's `wdth` axis, clamped the same way to the range
+the face's rule declares, and where it declares none (`auto`) to nothing but
+the file's own range (CSS Fonts 4, 4.4):
+
+```css
+@font-face {
+  font-family: Archivo;
+  src: url(archivo.var.woff2);
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+}
+.display-x {
+  font-family: Archivo;
+  font-weight: 900;
+  font-stretch: 62%; /* wght 900, wdth 62 */
+}
+```
+
+No text engine knows a width, so this one is the component's whichever
+engine draws: a run whose list leads with such a face carries it in its
+`variations` beside the weight, wherever it is not the file's default — a
+page whose variable fonts are only ever set at their normal width hands the
+engine what it did before. bun.sh's headings, in Archivo at 62% and 75%,
+were set at its normal width, half as wide again as a browser sets them,
+and wrapped onto lines Chrome does not have. A `ch` is the advance of the
+`0` at the text's width. The `font` shorthand takes a width as a keyword
+(`condensed`), not a percentage, and sets it back to normal where it names
+none.
+
+**A family's faces of several widths are matched by the width first.** CSS
+Fonts 4 (5.2) narrows a family's faces by width, then slant, then weight: at
+or under normal width the nearest narrower face, then the nearest wider;
+over it the other way round. A family that declares a condensed face beside
+its regular sets text at 80% in the condensed one, whatever its weight, and
+asks for that file only when there is such text. The font manager picks
+among one name's faces by weight and slant alone, so the faces of each width
+are registered under a name of their own, and each run is handed the list
+with its width's name first. A family the system has is the engine's to
+match, and neither engine matches by width: `font-family: "Helvetica Neue";
+font-stretch: condensed` is set at the family's normal width.
+
+Two `@font-face` values are read as the spec has them, as Firefox reads
+them, where Chrome does not: a range with a keyword in it (`font-stretch:
+condensed expanded`), which Chrome and Safari drop, and `font-stretch:
+normal`, which Chrome reads as `auto`. `font-width`, the property's newer
+name, is not read: of the three browsers only Safari does.
 
 **A face the text engine cannot set costs its family, not the document.**
 A variable font is drawn by cutting an instance out of it, and ntk, the

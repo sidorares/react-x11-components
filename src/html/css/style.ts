@@ -24,6 +24,7 @@ import {
   isPct,
   parseLength,
   parseNumber,
+  parseStretch,
   parseWeight,
   resolve,
   splitCommas,
@@ -437,6 +438,11 @@ export interface ComputedStyle {
   fontSize: number;
   fontWeight: number;
   fontStyle: 'normal' | 'italic' | 'oblique';
+  /** `font-stretch`: how wide the text is set, as a percentage of its
+   *  face's normal width (CSS Fonts 4, 2.3). A variable face is set at it
+   *  on its `wdth` axis, and a family the document declares faces of
+   *  several widths in is matched by it before anything else (`fonts.ts`). */
+  fontStretch: number;
   /** A multiplier, or a px number when the author wrote a length. `normal`
    *  is the font's own, which only the inline layout can know. */
   lineHeight: number | 'normal';
@@ -926,6 +932,7 @@ export const INHERITED = [
   'fontSize',
   'fontWeight',
   'fontStyle',
+  'fontStretch',
   'lineHeight',
   'lineHeightIsLength',
   'textAlign',
@@ -1071,6 +1078,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     fontSize: look.fontSize,
     fontWeight: 400,
     fontStyle: 'normal',
+    fontStretch: 100,
     lineHeight: 'normal',
     lineHeightIsLength: false,
     textAlign: 'start',
@@ -1346,6 +1354,7 @@ export function inherit(
   out.fontSize = parent.fontSize;
   out.fontWeight = parent.fontWeight;
   out.fontStyle = parent.fontStyle;
+  out.fontStretch = parent.fontStretch;
   out.lineHeight = parent.lineHeight;
   out.lineHeightIsLength = parent.lineHeightIsLength;
   out.textAlign = parent.textAlign;
@@ -1419,6 +1428,7 @@ export const FIRST_LINE_INHERITED = [
   'fontSize',
   'fontWeight',
   'fontStyle',
+  'fontStretch',
   'lineHeight',
   'lineHeightIsLength',
   'textTransform',
@@ -2619,6 +2629,11 @@ export function applyDeclaration(
       const v = value.toLowerCase();
       if (v === 'italic' || v === 'oblique' || v === 'normal')
         style.fontStyle = v;
+      return;
+    }
+    case 'font-stretch': {
+      const stretch = parseStretch(value);
+      if (stretch !== null) style.fontStretch = stretch;
       return;
     }
     case 'line-height': {
@@ -4893,6 +4908,7 @@ function applyFontShorthand(
   let fontStyle: ComputedStyle['fontStyle'] = 'normal';
   let weight: string | null = null;
   let smallCaps = false;
+  let stretch = 100;
   let i = 0;
   for (; i < parts.length; i += 1) {
     const v = parts[i].toLowerCase();
@@ -4906,7 +4922,13 @@ function applyFontShorthand(
       weight = v;
     } else if (v === 'small-caps') smallCaps = true;
     else if (v === 'normal') continue;
-    else break;
+    else {
+      // a width by its keyword alone: `condensed`, never `75%` (CSS Fonts
+      // 4, 2.7's `<font-width-css3>`)
+      const width = parseStretch(v, true);
+      if (width === null) break;
+      stretch = width;
+    }
   }
   // `12px/1.5`, or the same with space round the slash
   let [sizeText, lineText] = (parts[i] ?? '').split('/');
@@ -4932,6 +4954,7 @@ function applyFontShorthand(
   // inside a document set at `20px/1em` has lines of normal height, not 20px.
   style.fontStyle = fontStyle;
   style.fontWeight = weight ? parseWeight(weight, parent.fontWeight) : 400;
+  style.fontStretch = stretch;
   // the variants too, save the small capitals it may name; not the
   // features `font-feature-settings` sets, which the shorthand leaves
   style.fontVariantNumeric = '';
@@ -5713,6 +5736,7 @@ const INHERITED_NAMES = new Set<string>([
   'font-size',
   'font-weight',
   'font-style',
+  'font-stretch',
   'line-height',
   'text-align',
   'text-align-last',
@@ -5883,6 +5907,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'font-size': ['fontSize'],
   'font-weight': ['fontWeight'],
   'font-style': ['fontStyle'],
+  'font-stretch': ['fontStretch'],
   // the unit travels with the height: a length inherited as a bare number
   // would be read as a multiple of the font size
   font: [
@@ -5890,6 +5915,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
     'fontSize',
     'fontWeight',
     'fontStyle',
+    'fontStretch',
     'lineHeight',
     'lineHeightIsLength',
     'fontVariantNumeric',

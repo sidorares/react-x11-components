@@ -99,7 +99,7 @@ import type {
 import { layoutDocument, placedMatrix, retranslate } from './layout/block.js';
 import { invert, mapPoint, mapRect, transformed } from './css/transform.js';
 import { TextLayoutCache } from './layout/cache.js';
-import { weightAxes } from './layout/axes.js';
+import { fontAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
 import { SpriteStore, SurfaceCache, newSurface } from './surfaces.js';
 import type { SurfaceLike } from './surfaces.js';
@@ -952,9 +952,9 @@ export class HtmlViewNode extends Node {
     // document (`shaping.ts`)
     const safe = shapingSafe(fonts);
     if (this._engine?.over !== safe) {
-      // and a variable face of the document's is set at the weight its
-      // rule has for a style's (`axes.ts`)
-      this._engine = { over: safe, fonts: weightAxes(safe, this._webFonts) };
+      // and a face of the document's is set at the weight and the width
+      // its rule has for a style's (`axes.ts`)
+      this._engine = { over: safe, fonts: fontAxes(safe, this._webFonts) };
     }
     return this._engine.fonts;
   }
@@ -4401,11 +4401,11 @@ export type {
 /** The advance of a face's "0", laid out: null where the engine cannot
  *  lay it out. */
 function zeroWidthOf(fonts: FontsLike, face: MetricFace): number | null {
-  const { family, size, weight } = face;
+  const { family, size, weight, stretch } = face;
   // a run is upright or slanted, as `inline.ts` sets one
   const style = face.style === 'normal' ? 'normal' : 'italic';
   try {
-    const run = { family, size, weight, style } as const;
+    const run = { family, size, weight, style, stretch } as const;
     return fonts.layout([{ text: '0', ...run }], run, {}).width;
   } catch {
     return null;

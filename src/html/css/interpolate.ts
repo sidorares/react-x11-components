@@ -81,6 +81,7 @@ const INTEGERS = new Set([
  *  an easing that overshoots stops at nothing. */
 const NOT_NEGATIVE = new Set([
   'fontSize',
+  'fontStretch',
   'lineHeight',
   'width',
   'height',
