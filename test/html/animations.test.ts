@@ -28,7 +28,16 @@ import type { HtmlViewNode } from '../../src/html/node.js';
 import { SpriteStore } from '../../src/html/surfaces.js';
 import { Html } from '../../src/index.js';
 import { holdClock } from '../held-clock.js';
-import { boxOf, h, metric, render, render2x, view } from './harness.js';
+import {
+  boxOf,
+  h,
+  metric,
+  render,
+  render2x,
+  snapshot,
+  treeOf,
+  view,
+} from './harness.js';
 import type { LaidBox } from './harness.js';
 
 afterEach(cleanup);
@@ -646,6 +655,32 @@ metric(
     );
     const { repainted } = await framesAgainstBuilds(doc, [48, 96]);
     assert.ok(repainted.includes(doc.el), 'the document was repainted');
+  },
+);
+
+metric(
+  "a frame of an inline element's fade fades its text, in place, to the pixels a build draws",
+  async (t) => {
+    // a prompt's cursor that blinks by its opacity: its text is in its
+    // paragraph's glyphs, drawn in the ink the frame's fade gives them, and
+    // its background on the line beside them
+    const doc = await running(
+      t,
+      '<style>body { margin: 0; font: 14px sans-serif }' +
+        '@keyframes blink { from { opacity: .9 } to { opacity: .1 } }' +
+        '#c { color: #aa0000; background: #ffff00;' +
+        ' animation: blink 160ms linear infinite }</style>' +
+        '<p>a prompt <span id="c">_ </span>blinking</p>',
+      300,
+    );
+    const tree = treeOf(doc.el);
+    await doc.at(32);
+    assert.ok(treeOf(doc.el) === tree, 'the document was built again');
+    const { frames } = await framesAgainstBuilds(doc, [64, 112]);
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[1][i]),
+      'it faded',
+    );
   },
 );
 
@@ -1292,32 +1327,6 @@ test('fields between: lengths, integers, a visibility, what cannot be', () => {
   );
 });
 
-/** The element's pixels, as the server has them. */
-async function snapshot(
-  result: Awaited<ReturnType<typeof render>>['result'],
-  el: HtmlViewNode,
-): Promise<Uint8ClampedArray> {
-  const { abs } = el as unknown as {
-    abs: { x: number; y: number; width: number; height: number };
-  };
-  await act();
-  return new Promise((ok, fail) =>
-    (
-      result.ctx as unknown as {
-        getImageData(
-          x: number,
-          y: number,
-          w: number,
-          h: number,
-          cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
-        ): void;
-      }
-    ).getImageData(abs.x, abs.y, abs.width, abs.height, (e, d) =>
-      e ? fail(e) : ok(d.data),
-    ),
-  );
-}
-
 /** A number to the precision a test says it in. */
 const round = (n: number) => Math.round(n * 1e9) / 1e9;
 
@@ -1337,10 +1346,6 @@ function product(list: readonly { matrix?: readonly number[] }[]): number[] {
   }
   return m;
 }
-
-/** The box tree, to tell a restyle in place from a document built again. */
-const treeOf = (el: HtmlViewNode) =>
-  (el as unknown as { _tree: unknown })._tree;
 
 /** The element with `id` in the document. */
 function findElement(

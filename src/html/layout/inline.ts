@@ -35,7 +35,8 @@ import type { Bidi } from 'bidi-js';
 
 import { codePointAtOffset, codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
-import type { ComputedStyle } from '../css/style.js';
+import { fadeColor } from '../css/color.js';
+import type { BoxShadow, ComputedStyle } from '../css/style.js';
 import {
   CONTAIN_LAYOUT,
   INLINE_BEFORE_ABSOLUTE,
@@ -54,6 +55,7 @@ import {
   SHADOWED_TEXT,
   SHIFTED_LINES,
   TEXT_RAISES,
+  textFade,
   transformInPlace,
 } from './boxes.js';
 import type {
@@ -508,14 +510,15 @@ function linesOf(
   // tab, which only a `white-space` that keeps it leaves — so no text is
   // searched for one where it cannot be
   let tabbed = false;
-  let shadowed = false;
+  // each list of shadows, which the styles that cast it share
+  let shadowed: Set<BoxShadow[]> | null = null;
   // and text that keeps its spaces where its lines wrap, whose spaces a
   // line may end on (`hangPreserved`)
   let keepsSpaces = false;
   for (const item of items) {
     if (item.kind !== 'text' || item.control) continue;
     const style = item.box.style;
-    if (style.textShadow) shadowed = true;
+    if (style.textShadow) (shadowed ??= new Set()).add(style.textShadow);
     if (style.whiteSpace === 'pre-wrap') keepsSpaces = true;
     if (
       !tabbed &&
@@ -525,7 +528,8 @@ function linesOf(
       tabbed = true;
     }
   }
-  if (shadowed) SHADOWED_TEXT.add(block);
+  if (shadowed) SHADOWED_TEXT.set(block, [...shadowed]);
+  else SHADOWED_TEXT.delete(block);
   if (tabbed) {
     setTabs(items, fonts, block.style, blockIndent(block, options.width));
   }
@@ -3700,6 +3704,8 @@ function collect(
   /** Whether the text is an inline box's that has a margin, border or
    *  padding at a side, which parts it from the text beside it. */
   apart = false,
+  /** How much the inline boxes the text is in fade it (`inlineFade`). */
+  fade = 1,
 ): number {
   let floated = 0;
   for (const child of box.children) {
@@ -3717,7 +3723,7 @@ function collect(
     switch (child.kind) {
       case 'text':
         if (child.text) {
-          const run = runFor(heldText(child), child.style);
+          const run = fadeRun(runFor(heldText(child), child.style), fade);
           // shaping is broken across the edge (CSS Text 3, 7.3), and the
           // engine shapes a word that runs across spans shaped alike as one:
           // its text is shaped on its own. At both of its sides, the one
@@ -3783,6 +3789,8 @@ function collect(
         if (edged) {
           out.push({ kind: 'edge', box: child, side: 'start', width: start });
         }
+        // what it holds is faded with it, and with the boxes around it
+        const inner = fade * child.style.opacity;
         // `unicode-bidi` as the controls it stands for, inside the box's
         // edges and around its text, where it has any
         const controls =
@@ -3791,7 +3799,7 @@ function collect(
             ? bidiControls(child.style, false)
             : null;
         if (controls) {
-          pushControls(out, controls[0], child, child.subtreeTextStart);
+          pushControls(out, controls[0], child, child.subtreeTextStart, inner);
         }
         floated += collect(
           child,
@@ -3802,9 +3810,10 @@ function collect(
           floats,
           statics,
           start !== 0 || end !== 0,
+          inner,
         );
         if (controls) {
-          pushControls(out, controls[1], child, child.subtreeTextEnd);
+          pushControls(out, controls[1], child, child.subtreeTextEnd, inner);
         }
         if (edged) {
           out.push({ kind: 'edge', box: child, side: 'end', width: end });
@@ -3943,11 +3952,13 @@ function pushControls(
   controls: string,
   box: Box,
   start: number,
+  /** How much the inline boxes they are in fade them (`textFade`). */
+  fade = 1,
 ): void {
   for (const control of controls) {
     out.push({
       kind: 'text',
-      run: runFor(control, box.style),
+      run: fadeRun(runFor(control, box.style), fade),
       box,
       length: 1,
       start,
@@ -4176,7 +4187,7 @@ function firstLineSetting(
     if (item.kind !== 'text') return item;
     const own = item.box.style;
     const on = of(item.box);
-    let run = restyledRun(item.run, own, on);
+    let run = restyledRun(item.run, own, on, item.box);
     const transform = on.textTransform;
     if (
       !item.control &&
@@ -4259,15 +4270,22 @@ const RUN_STYLE = [
 /**
  * A run of text in `style` rather than `own`, the style it was made in:
  * what it has of neither — the room a tab or `word-spacing` adds to its
- * letter spacing, a `nowrap` group, where its shaping is broken — kept.
+ * letter spacing, a `nowrap` group, where its shaping is broken — kept, and
+ * the fade of the inline boxes around it (`textFade`), which no style of
+ * its own says.
  */
 function restyledRun(
   run: TextRun,
   own: ComputedStyle,
   style: ComputedStyle,
+  /** Whose text the run is. */
+  box: Box,
 ): TextRun {
   if (style === own) return run;
-  const fresh = runFor(run.text, style) as unknown as Record<string, unknown>;
+  const fresh = fadeRun(
+    runFor(run.text, style),
+    textFade(box),
+  ) as unknown as Record<string, unknown>;
   const out = { ...run } as unknown as Record<string, unknown>;
   for (const name of RUN_STYLE) {
     if (fresh[name] === undefined) delete out[name];
@@ -4283,7 +4301,8 @@ function restyledRun(
  * line's end whose colour is the block's own, the one that ends past it cut
  * there. A run in a colour of its own — a link's — keeps it, as an element
  * inside the pseudo-element does. Colour moves no glyph, so the lines break
- * where they did.
+ * where they did. Each is as faded as the inline boxes around it fade it
+ * (`textFade`), in either colour.
  */
 function firstLineColour(
   items: Item[],
@@ -4295,7 +4314,9 @@ function firstLineColour(
     // past the line: a run in a colour of its own may have been the one
     // across its end, so this is where the walk stops, not at the cut
     if (item.start >= firstLine.end) break;
-    if (item.run.color !== firstLine.from) continue;
+    const fade = textFade(item.box);
+    if (item.run.color !== fadeColor(firstLine.from, fade)) continue;
+    const color = fadeColor(firstLine.color, fade);
     const cut = firstLine.end - item.start;
     if (cut < item.length) {
       items.splice(i + 1, 0, {
@@ -4306,16 +4327,12 @@ function firstLineColour(
       });
       items[i] = {
         ...item,
-        run: {
-          ...item.run,
-          text: item.run.text.slice(0, cut),
-          color: firstLine.color,
-        },
+        run: { ...item.run, text: item.run.text.slice(0, cut), color },
         length: cut,
       };
       break;
     }
-    items[i] = { ...item, run: { ...item.run, color: firstLine.color } };
+    items[i] = { ...item, run: { ...item.run, color } };
   }
 }
 
@@ -4867,6 +4884,24 @@ export function runFor(text: string, style: ComputedStyle): DocumentRun {
         ? Math.round(band)
         : Math.floor(band);
   }
+  return run;
+}
+
+/**
+ * A run `runFor` just made, faded by the inline boxes around its text
+ * (`textFade`): its glyphs' colour and its rules', with their alpha
+ * multiplied. An inline box under full opacity is a group to fade (CSS
+ * Color 4, 3.2), but its text is drawn in its paragraph's one glyph batch,
+ * which no context fades a part of, so the fade goes into the colours its
+ * runs are set in. That is the group's fade wherever a glyph or a rule
+ * does not fall on another one. A run under no such box is the one
+ * `runFor` made: nothing a layout is found by changes for it.
+ */
+export function fadeRun(run: TextRun, fade: number): TextRun {
+  if (!(fade < 1)) return run;
+  if (run.color !== undefined) run.color = fadeColor(run.color, fade);
+  if (run.underline) run.underline = fadeColor(run.underline, fade);
+  if (run.strike) run.strike = fadeColor(run.strike, fade);
   return run;
 }
 

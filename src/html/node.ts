@@ -87,6 +87,7 @@ import {
   SHIFTED_LINES,
   TEXT_SHIFTS,
   columned,
+  textFade,
 } from './layout/boxes.js';
 import type {
   Box,
@@ -103,7 +104,12 @@ import { fontAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
 import { SpriteStore, SurfaceCache, newSurface } from './surfaces.js';
 import type { SurfaceLike } from './surfaces.js';
-import { faceExtentOf, inlineDecoration, runFor } from './layout/inline.js';
+import {
+  faceExtentOf,
+  fadeRun,
+  inlineDecoration,
+  runFor,
+} from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
 import type { TextRun } from '../richtext/index.js';
 // Through the inline module rather than a second cache: the offsets table for
@@ -120,6 +126,7 @@ import {
   containingBlockOf,
   FIXED_BOXES,
   fixedToViewport,
+  forgetCasts,
   forgetDecoratedAncestors,
   hasRect,
   hoistNegative,
@@ -2103,6 +2110,9 @@ export class HtmlViewNode extends Node {
     const next = new Map<Box, ComputedStyle>();
     /** The restyled boxes whose ink changed, to repaint. */
     const inked = new Set<Box>();
+    /** Whether an inline box's opacity changed, which fades the text in it
+     *  whoever's that text is (`textFade`). */
+    let refaded = false;
     /** The `::before` and `::after` boxes found, by element: 1 and 2. */
     const generated = new Map<Element, number>();
     const redecorated: [Box, Box['decoration']][] = [];
@@ -2149,7 +2159,7 @@ export class HtmlViewNode extends Node {
         if (diff === false) return false;
         if (!diff) continue;
         if (diff.reach || diff.order || diff.move) return false;
-        if (diff.fade && holdsBlocks(box)) return false;
+        if (diff.fade && brokenAround(box)) return false;
         style = made;
         ink = diff.ink;
       } else if (box.pseudo) {
@@ -2176,7 +2186,7 @@ export class HtmlViewNode extends Node {
           widgets = true;
         }
         if (moving.has(el) && !movable(box, kept, style)) return false;
-        if (fading.has(el) && holdsBlocks(box)) return false;
+        if (fading.has(el) && brokenAround(box)) return false;
         ink = !quiet.has(el);
       } else if (above) {
         // An anonymous box takes what its parent's style passes on
@@ -2192,6 +2202,7 @@ export class HtmlViewNode extends Node {
       restyled.push([box, style]);
       if (ink) inked.add(box);
       if (box.kind === 'inline') {
+        if (style.opacity !== box.style.opacity) refaded = true;
         const decoration = inlineDecoration(fonts, box, style);
         if ((decoration === null) !== (box.decoration === null)) {
           // a rounded box with a background is laid out with its edges
@@ -2233,7 +2244,7 @@ export class HtmlViewNode extends Node {
         for (const text of line.texts) {
           texts.push(text);
           if (relaid.has(text.layout)) continue;
-          const again = reinked(text, layouts, next);
+          const again = reinked(text, layouts, next, refaded);
           if (again === false) return false;
           relaid.set(text.layout, again);
         }
@@ -2269,6 +2280,9 @@ export class HtmlViewNode extends Node {
     for (const text of texts) {
       const again = relaid.get(text.layout);
       if (again) text.layout = again;
+      // its runs' boxes may cast other shadows now, in another colour or
+      // faded otherwise
+      forgetCasts(text.spans);
     }
     for (const [el, style] of changed) {
       tree.styles.set(el, { style, inFlex: tree.styles.get(el)!.inFlex });
@@ -4226,17 +4240,17 @@ function sameGeometry(a: Box, b: Box): boolean {
   );
 }
 
-/** Whether an inline box holds a block, which broke it in pieces and took
- *  its opacity when the boxes were built (`FADED_BLOCKS`). */
-function holdsBlocks(box: Box): boolean {
-  if (box.kind !== 'inline') return false;
-  const stack = [...box.children];
-  while (stack.length) {
-    const at = stack.pop()!;
-    if (at.kind === 'inline') stack.push(...at.children);
-    else if (at.kind !== 'text' && at.kind !== 'break') return true;
-  }
-  return false;
+/**
+ * Whether an inline box is a piece of one the blocks in it broke apart,
+ * which took its opacity when the boxes were built (`FADED_BLOCKS`). They
+ * are its parent's children now and none of its own, which is why it is
+ * asked by its `cut`. Everything else in an inline box is faded by what
+ * its style says when it is painted: its text and what is on its lines
+ * by the inline boxes around them (`inlineFade`, `reinked`), its floats
+ * and its positioned boxes in its own paint.
+ */
+function brokenAround(box: Box): boolean {
+  return box.kind === 'inline' && box.cut !== 0;
 }
 
 /** Where a box draws, in document coordinates: its ink bounds, or for an
@@ -4282,15 +4296,19 @@ function sameValue(x: unknown, y: unknown): boolean {
 /**
  * `text`'s layout made again with the ink of the boxes a pointer move
  * restyled: from the runs it was made from, each of a restyled text box's
- * given the ink its new style makes (`runFor`) and nothing else. Null where
- * none of its runs is theirs; false where that cannot be told — a run this
- * cannot place in the document, one some other pass inked (a first line's),
- * or a layout that comes out another shape.
+ * given the ink its new style makes (`runFor`) and nothing else — faded,
+ * as the layout fades it, by the inline boxes around it (`fadeRun`), which
+ * fade a run whose own box is not restyled where `refaded` says an inline
+ * box's opacity changed. Null where none of its runs is theirs; false
+ * where that cannot be told — a run this cannot place in the document, one
+ * some other pass inked (a first line's), or a layout that comes out
+ * another shape.
  */
 function reinked(
   text: LineText,
   layouts: TextLayoutCache,
   next: ReadonlyMap<Box, ComputedStyle>,
+  refaded: boolean,
 ): TextLayoutLike | null | false {
   const spans = text.spans;
   const inputs = layouts.inputsOf(text.layout);
@@ -4299,7 +4317,11 @@ function reinked(
     for (const line of text.layout.lines) {
       for (const run of line.runs) {
         const box = spans.boxAt?.(run.start);
-        if (!spans.boxAt || (box && next.has(box))) return false;
+        if (!spans.boxAt) return false;
+        if (box && next.has(box)) return false;
+        if (box && refaded && textFade(box) !== textFade(box, next)) {
+          return false;
+        }
       }
     }
     return null;
@@ -4312,10 +4334,13 @@ function reinked(
     const length = run.text.length;
     const box = length ? spans.boxAt(offset) : null;
     const style = box ? next.get(box) : undefined;
-    if (box && style) {
+    // the fade it was set at, and the one it is set at now
+    const faded = box && (style || refaded) ? textFade(box) : 1;
+    const fades = box && refaded ? textFade(box, next) : faded;
+    if (box && (style || fades !== faded)) {
       if (spans.boxAt(offset + length - 1) !== box) return false;
-      const was = runFor(run.text, box.style);
-      const now = runFor(run.text, style);
+      const was = fadeRun(runFor(run.text, box.style), faded);
+      const now = fadeRun(runFor(run.text, style ?? box.style), fades);
       for (const f of FACE_FIELDS) if (!sameValue(was[f], now[f])) return false;
       let inked: Record<string, unknown> | null = null;
       for (const f of INK_FIELDS) {

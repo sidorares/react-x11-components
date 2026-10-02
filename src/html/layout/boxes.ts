@@ -52,7 +52,7 @@ import { AUTO } from '../css/values.js';
 import { focusableElement } from '../focus.js';
 import { concreteSize, svgIntrinsics } from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
-import type { ComputedStyle } from '../css/style.js';
+import type { BoxShadow, ComputedStyle } from '../css/style.js';
 import type { GridLines } from './grid-lines.js';
 
 export type BoxKind =
@@ -658,9 +658,11 @@ export const MOVED_OFF_LINES = new WeakMap<LineBox[], Set<LineBox>>();
  *  among `SHIFTED_LINES` too, as its text is off the line's baseline. */
 export const TEXT_RAISES = new WeakMap<LineText, number>();
 
-/** The blocks some of whose text casts a shadow (`text-shadow`), which the
- *  paint pass looks for in them and in no other. */
-export const SHADOWED_TEXT = new WeakSet<Box>();
+/** The blocks some of whose text casts a shadow (`text-shadow`), and each
+ *  list of shadows it casts: the paint pass looks for them in these blocks
+ *  and in no other, and their ink reaches as far past the text as the
+ *  shadows fall (`computePaintBounds`). */
+export const SHADOWED_TEXT = new WeakMap<Box, readonly BoxShadow[][]>();
 export const BOX_RAISES = new WeakMap<Box, number>();
 
 /** And the raise, on one line, of each inline box a `top` or `bottom` box
@@ -787,6 +789,43 @@ export const GENERATED_FROM = new WeakMap<Box, Element>();
  *  content, which its opacity fades as a group: a green square in a
  *  `<span style="opacity: .5">` was drawn at full strength. */
 export const FADED_BLOCKS = new WeakMap<Box, number>();
+
+/**
+ * How much the inline boxes from `box` out to their block fade what is in
+ * them, their opacities multiplied: 1 where none is under full opacity, as
+ * nearly none is. What an inline box holds is drawn on its block's lines —
+ * its text, its background and borders, the inline-blocks and images on
+ * them — and not in its own paint, which no group of its could hold, so
+ * each of those is drawn faded by the boxes around it. In the styles
+ * `styles` has for the boxes it names: a restyle's, before it is made.
+ */
+export function inlineFade(
+  box: Box | null,
+  styles?: ReadonlyMap<Box, ComputedStyle>,
+): number {
+  if (box?.kind !== 'inline') return 1;
+  // the outermost first, as the layout multiplies them going in
+  // (`collect`): a product taken in another order may differ in its last
+  // bit, and the colour rounded from it with it, which a run's colour is
+  // compared by
+  return (
+    inlineFade(box.parent, styles) * (styles?.get(box) ?? box.style).opacity
+  );
+}
+
+/** How much the inline boxes around a run of text fade it (`inlineFade`),
+ *  where `box` is whose the run is: the ones a text box is in, or a bidi
+ *  control's own, which an inline box's text is wrapped in — and none for
+ *  a block's, which is no inline box's content but its own. */
+export function textFade(
+  box: Box,
+  styles?: ReadonlyMap<Box, ComputedStyle>,
+): number {
+  return inlineFade(
+    box.kind === 'text' || box.kind === 'break' ? box.parent : box,
+    styles,
+  );
+}
 
 /** What the builder produced, plus the document-wide text it indexed. */
 export interface BoxTree {

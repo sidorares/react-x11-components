@@ -1643,6 +1643,19 @@ flip, the interpolation — was wrong too: measure a new surface on macOS,
 in a benchmark that varies one thing at a time, before taking a composite
 for the cheap side or a cause for the cost.
 
+**An inline element's opacity is in the colours its text is set in.**
+What an inline box holds is drawn on its block's lines, and a paragraph's
+text is one batch of glyphs, so the fade of the inline boxes around a run
+goes into the run's colours where the run is made (`collect`, `fadeRun`).
+**Anything that makes a run again folds the fade in again** —
+`restyledRun` and `firstLineColour` for a first line, `reinked` for a
+restyle in place, which compares a run with what its style makes, fade
+and all, and re-inks every run under an inline box whose opacity changed
+— or that text is drawn at full strength with nothing failing. What else
+is on the lines is faded where it is painted (`inlineFade`), and none of
+it may be text faded through the context's alpha, which ntk's glyphs do
+not take (`fadesGlyphs`).
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would
