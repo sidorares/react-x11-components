@@ -1539,8 +1539,11 @@ compositor:
   `overflow` other than `visible`, a `clip` — cuts its layer to the same
   rectangle, so a carousel's slide or a marquee goes on a layer cut where
   the document cuts it; one with rounded corners cuts nothing so long as
-  the element keeps clear of them while it runs, and keeps it in the
-  document where it does not, since a layer is cut to a rectangle;
+  the element keeps clear of them while it runs, and where it does not,
+  cuts the layer with its corners, as a shimmer in a card is: where they
+  are one circle's, the same radius at all four, and no other box that
+  clips cuts it again. An ellipse, corners of different sizes and two
+  rounded boxes keep the element in the document;
 - and nothing the document paints after it falls anywhere it can be while
   it runs: a box positioned after it or with a higher `z-index`, the
   outline of the stacking context it is in. What is painted before it is

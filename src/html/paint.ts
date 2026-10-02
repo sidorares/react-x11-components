@@ -3699,16 +3699,18 @@ export function clipsOverflow(box: Box): boolean {
  * not one an out-of-flow box on the way escapes by having its containing
  * block outside it (`containingBlockOf`), nor a table's for its caption —
  * and a `clip` on `box` or one of them, up to the root, whose overflow is
- * the viewport's. A rounded edge cuts no rectangle, so it has to keep clear
- * of `extent`, everywhere `box` can be, and then does not cut it at all.
+ * the viewport's. A rounded edge that `extent`, everywhere `box` can be,
+ * keeps clear of does not cut it at all; one it reaches cuts it to a
+ * rectangle with round corners (`radius`), where its corners are one
+ * circle's and every other clip holds it, as a layer's box can be cut.
  * Undefined where nothing cuts `box`; null where something cuts it in a way
- * a rectangle cannot.
+ * neither can.
  */
 export function clipFor(
   box: Box,
   extent: Rect,
   scale: number,
-): Rect | null | undefined {
+): { rect: Rect; radius: number } | null | undefined {
   const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
   let clip: Rect | undefined;
   const cut = (r: { x: number; y: number; w: number; h: number }): void => {
@@ -3724,6 +3726,9 @@ export function clipFor(
     };
   };
   if (box.outOfFlow && box.style.clip) cut(clipOf(box, space));
+  // the one with round corners that reaches it, if any does
+  let rounded: { x: number; y: number; w: number; h: number } | null = null;
+  let radius = 0;
   // the out-of-flow boxes on the way up, each clipped only by the boxes
   // that hold its containing block
   const escaping: Box[] = box.outOfFlow ? [box] : [];
@@ -3744,7 +3749,12 @@ export function clipFor(
             extent.y >= rect.y + r &&
             extent.x + extent.width <= rect.x + rect.w - r &&
             extent.y + extent.height <= rect.y + rect.h - r;
-          if (!clear) return null;
+          if (!clear) {
+            const circle = circleOf(radii);
+            if (circle === null || rounded) return null;
+            rounded = rect;
+            radius = circle;
+          }
         } else {
           cut(rect);
         }
@@ -3753,7 +3763,38 @@ export function clipFor(
     }
     if (at.outOfFlow) escaping.push(at);
   }
-  return clip;
+  if (rounded) {
+    // the rounded box is the clip, which every other clip has to hold
+    const c = clip as Rect | undefined;
+    if (
+      c &&
+      !(
+        c.x <= rounded.x &&
+        c.y <= rounded.y &&
+        c.x + c.width >= rounded.x + rounded.w &&
+        c.y + c.height >= rounded.y + rounded.h
+      )
+    ) {
+      return null;
+    }
+    return {
+      rect: { x: rounded.x, y: rounded.y, width: rounded.w, height: rounded.h },
+      radius,
+    };
+  }
+  return clip && { rect: clip, radius: 0 };
+}
+
+/** The radius of corners that are all one circle's, or null where they
+ *  are not: ellipses, or of more than one size. */
+function circleOf(c: Corners): number | null {
+  const r = c.x[0];
+  for (let i = 0; i < 4; i += 1) {
+    if (Math.abs(c.x[i] - r) > 1e-3 || Math.abs(c.y[i] - r) > 1e-3) {
+      return null;
+    }
+  }
+  return r;
 }
 
 /** A box's `clip` region, in window coordinates. */

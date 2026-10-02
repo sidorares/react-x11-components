@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.32.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.32.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.33.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.33.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -611,6 +611,17 @@ it up. **The floor is a running one and moves often** — every move since
   through it now, so an image shows in a document exactly where it would
   show in an `<image>`, and the browser example asks for WebP and passes
   it on.
+- `^2.33.0` — a sprite's clip with round corners (react-x11#838): core
+  rounds the box a part's layer is cut in by `clipRadius`, where a clip was
+  a rectangle and a rounded clipping box had to keep clear of everywhere
+  the part could be. `<Html>` hands over the corners of a rounded box an
+  element reaches, where they are one circle's and no other clip cuts it
+  again (`clipFor`), so a shimmer sliding through a card with a radius
+  went from 117 frames in two seconds to none on a real Mac. A core that
+  reads no `clipRadius` would cut the layer square and show the corners the
+  document cuts away, so the floor moves with the feature. The same
+  release sets text on a Retina display at its point size (#840) and adds
+  `<video>` (#836, #837), neither of which needed a change here.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1787,10 +1798,13 @@ things are load-bearing.
   layer is placed from the viewport's corner (`Part.atViewport`) and
   painted there (`paintLiftedBox`), the fixed boxes painted after it are
   asked about once, where it is, and everything else painted after it
-  over the whole document a pane scrolls under it. The boxes that clip the element cut
-  its layer to a rectangle (`clipFor`, the sprite's `clip`,
-  react-x11#827), and what shows through it is all any of this is asked
-  of. **Anything new that clips a box joins `clipFor`**, or a layer shows
+  over the whole document a pane scrolls under it. The boxes that clip
+  the element cut its layer to a rectangle (`clipFor`, the sprite's
+  `clip`, react-x11#827), or to one with round corners where the element
+  reaches a rounded box's (`clipRadius`, react-x11#838) — one circle's at
+  all four corners, held by every other clip, since one box takes one
+  shape — and what shows through it is all any of this is asked of.
+  **Anything new that clips a box joins `clipFor`**, or a layer shows
   what the document cuts away.
 
 **A transition is lifted as an animation is.** Its frames are sampled
