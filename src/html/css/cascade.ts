@@ -57,6 +57,7 @@ import {
   settleClamp,
   copyStyle,
   decorate,
+  familyList,
   inherit,
   initialOne,
   initialStyle,
@@ -69,7 +70,7 @@ import { CounterStyles, counterStyleRule } from './counter-styles.js';
 import type { CounterStyleRule } from './counter-styles.js';
 import { PALETTE_CHROME } from './ua.js';
 import type { UnitContext } from './values.js';
-import { viewportUnit } from './values.js';
+import { FIXED_SIZE, keywordFontSize, viewportUnit } from './values.js';
 import { customProperties, hasVar, substituteIn, validVars } from './vars.js';
 import type { CustomProps } from './vars.js';
 import {
@@ -1174,6 +1175,8 @@ export class Cascade {
    *  the element's scheme is the palette's, and Chrome's in an SVG image,
    *  which has none. */
   private _systemColors: Map<string, string>;
+  /** The host's code face as a computed list (`UnitContext.codeFamily`). */
+  private _codeFamily: string | null;
 
   constructor(
     sheets: Stylesheet[],
@@ -1213,6 +1216,7 @@ export class Cascade {
       ? (list: string) => families.map(list)
       : undefined;
     this.look = look;
+    this._codeFamily = familyList(look.monoFamily);
     this._systemColors = systemColorTable(documentElement ? null : look);
     this.initial = initialStyle(look, scale);
     this.viewportWidth = viewportWidth;
@@ -2155,6 +2159,7 @@ export class Cascade {
       rem: rootStyle.fontSize,
       initial: this.initial,
       fallbackFamily: () => (authored ? this.initial.fontFamily : null),
+      codeFamily: () => (authored ? null : this._codeFamily),
       vw: this.viewportWidth,
       vh: this.viewportHeight,
       scale: this.scale,
@@ -2173,8 +2178,6 @@ export class Cascade {
     // measured in the family's regular face. The colour scheme goes ahead of
     // the rest for the same reason: every `light-dark()` among them is read
     // by it.
-    let sized = false;
-    let keyword = false;
     for (const c of candidates) {
       authored = c.origin !== Origin.UserAgent;
       for (const d of pick(c)) {
@@ -2183,35 +2186,38 @@ export class Cascade {
           d.prop === 'font-weight' ||
           d.prop === 'font-style' ||
           d.prop === 'font-stretch' ||
-          d.prop === 'color-scheme'
+          d.prop === 'color-scheme' ||
+          d.prop === 'font-size' ||
+          d.prop === 'font'
         ) {
           this._apply(style, parentStyle, d, ctxParent);
-        } else if (d.prop === 'font-size' || d.prop === 'font') {
-          // NaN until a size is set, so one the declaration did not take
-          // leaves the size where it was, and says nothing of it
-          const was = style.fontSize;
-          style.fontSize = NaN;
-          this._apply(style, parentStyle, d, ctxParent);
-          if (Number.isNaN(style.fontSize)) {
-            style.fontSize = was;
-          } else {
-            sized = true;
-            keyword = !d.vars && sizeKeyword(d.prop, d.value);
-          }
         }
       }
     }
-    // The generic `monospace` on its own has a smaller size than the rest,
-    // 13 pixels to their 16 (the "fixed" font size every browser keeps):
-    // an element whose family becomes it, or stops being it, scales the
-    // size it inherits by that, and a keyword size is read from the
-    // smaller scale — the size it sets itself stays its own. Blink's
-    // CheckForGenericFamilyChange, and why a `<pre>` in a browser is 13px.
-    const mono = monospaceOnly(style.fontFamily);
-    if (
-      sized ? keyword && mono : mono !== monospaceOnly(parentStyle.fontFamily)
-    ) {
-      style.fontSize *= mono ? FIXED_SIZE : 1 / FIXED_SIZE;
+    // The generic `monospace` alone is set smaller than any other family:
+    // 13px where the rest are 16, the fixed-width default every browser
+    // keeps beside its standard one, and why a `<pre>` is 13px. A size
+    // that is a keyword is read from that family's row of the table, and
+    // one relative to a keyword's — an `em` or a percentage of one, all
+    // the way up to the root's `medium` — is scaled by 13/16 where the
+    // family becomes the generic and back where it stops being it, set on
+    // the element or not; a length of its own, or a size under one, is
+    // what it says in any family. Blink's CheckForGenericFamilyChange,
+    // which WebKit shares; Gecko scales only a size that comes of a
+    // keyword, and reads an `em` of one from the keyword's row as well.
+    const basis = style.fontSizeBasis;
+    const mono = style.genericMonospace;
+    if (basis !== 'absolute' && (mono || parentStyle.genericMonospace)) {
+      if (basis !== 'relative') {
+        style.fontSize = keywordFontSize(
+          basis,
+          parentStyle.fontSize,
+          this.initial.fontSize,
+          mono,
+        )!;
+      } else if (mono !== parentStyle.genericMonospace) {
+        style.fontSize *= mono ? FIXED_SIZE : 1 / FIXED_SIZE;
+      }
     }
     // The face as the first pass settled it. The second applies every
     // declaration again in cascade order, the font's among them, so the
@@ -2271,6 +2277,7 @@ export class Cascade {
     // `.b > span { font-size: 3.75em }` was 15px, its `em`s 3.75 of its
     // parent's.
     style.fontSize = settled;
+    style.fontSizeBasis = basis;
 
     // A table never keeps HTML's alignment, `-webkit-center` and its kin:
     // the `<td align="center">` every mail centres its body table in
@@ -3780,39 +3787,6 @@ function closestTable(el: Element): Element | null {
   }
   return null;
 }
-
-/** The generic fixed-width family's size to everyone else's: 13 to 16. */
-const FIXED_SIZE = 13 / 16;
-
-/** Whether a family list is the generic `monospace` and nothing else,
- *  which has the smaller size; a list with a fallback after it does not,
- *  so `monospace, monospace` keeps the size it had. */
-function monospaceOnly(family: string): boolean {
-  return family.length === 9 && family.toLowerCase() === 'monospace';
-}
-
-/** Whether a `font-size`, or the size in a `font`, is an absolute-size
- *  keyword, or `initial`, which is `medium`. */
-function sizeKeyword(prop: string, value: string): boolean {
-  const words = value.trim().toLowerCase();
-  if (prop === 'font-size') return ABSOLUTE_SIZES.has(words);
-  for (const word of words.split(/[\s/]+/)) {
-    if (ABSOLUTE_SIZES.has(word)) return true;
-  }
-  return false;
-}
-
-const ABSOLUTE_SIZES = new Set([
-  'xx-small',
-  'x-small',
-  'small',
-  'medium',
-  'large',
-  'x-large',
-  'xx-large',
-  'xxx-large',
-  'initial',
-]);
 
 /** Whether an element is the document's root: its parent the document, or
  *  none, as the `<html>` the cascade supplies where the markup has none. */

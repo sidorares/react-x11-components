@@ -15,6 +15,7 @@
 import {
   AUTO,
   alphaOf,
+  fontSizeBasis,
   fourSides,
   inkColor,
   isTransparent,
@@ -30,7 +31,7 @@ import {
   splitCommas,
   splitValue,
 } from './values.js';
-import type { Len, Pct, UnitContext } from './values.js';
+import type { FontSizeBasis, Len, Pct, UnitContext } from './values.js';
 import { parseUrl, readIdent, startsIdent } from './parse.js';
 import {
   parseContent,
@@ -440,6 +441,16 @@ export interface ComputedStyle {
   colorScheme: 'light' | 'dark';
   fontFamily: string;
   fontSize: number;
+  /** What `fontSize` is worked out from — an absolute-size keyword, a size
+   *  relative to such a keyword's, or a length that is its own — which
+   *  Blink keeps beside the size: what the generic `monospace`'s smaller
+   *  size is taken from (`Cascade._cascadeStyle`). The root's is `medium`. */
+  fontSizeBasis: FontSizeBasis;
+  /** Whether the family is the generic `monospace` and nothing else: an
+   *  author's `font-family: monospace`, or the code face the UA sheet
+   *  names for it (`UnitContext.codeFamily`). Not `monospace, monospace`,
+   *  nor a list with a family before it. */
+  genericMonospace: boolean;
   fontWeight: number;
   fontStyle: 'normal' | 'italic' | 'oblique';
   /** `font-stretch`: how wide the text is set, as a percentage of its
@@ -950,6 +961,8 @@ export const INHERITED = [
   'textFillColor',
   'fontFamily',
   'fontSize',
+  'fontSizeBasis',
+  'genericMonospace',
   'fontWeight',
   'fontStyle',
   'fontStretch',
@@ -1096,6 +1109,9 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     colorScheme: look.colorScheme,
     fontFamily: look.fontFamily,
     fontSize: look.fontSize,
+    // the host's font is a browser's standard font, which is no generic
+    fontSizeBasis: 'medium',
+    genericMonospace: false,
     fontWeight: 400,
     fontStyle: 'normal',
     fontStretch: 100,
@@ -1375,6 +1391,8 @@ export function inherit(
   out.textFillColor = parent.textFillColor;
   out.fontFamily = parent.fontFamily;
   out.fontSize = parent.fontSize;
+  out.fontSizeBasis = parent.fontSizeBasis;
+  out.genericMonospace = parent.genericMonospace;
   out.fontWeight = parent.fontWeight;
   out.fontStyle = parent.fontStyle;
   out.fontStretch = parent.fontStretch;
@@ -1449,6 +1467,8 @@ export const FIRST_LINE_INHERITED = [
   'textFillColor',
   'fontFamily',
   'fontSize',
+  'fontSizeBasis',
+  'genericMonospace',
   'fontWeight',
   'fontStyle',
   'fontStretch',
@@ -2617,17 +2637,7 @@ export function applyDeclaration(
       // `test!foo, Ahem` is no list, and set Ahem.
       const names = splitCommas(value);
       if (!names.every(isFamilyName)) return;
-      // and an unquoted name is its identifiers joined by one space each,
-      // however they were spaced: `Courier   New` over two lines is
-      // `Courier New`, and was a name no font has
-      const list = names
-        .map((f) =>
-          /^['"]/.test(f)
-            ? f.replace(/^['"]|['"]$/g, '')
-            : f.trim().replace(/[ \t\n\r\f]+/g, ' '),
-        )
-        .filter(Boolean)
-        .join(', ');
+      const list = joinFamilies(names);
       // A list that ends in no generic family ends in the document's own
       // font: where no face in the list matches, the text is set in the
       // user agent's default (CSS Fonts 4, 5.1), which for a browser is its
@@ -2642,6 +2652,12 @@ export function applyDeclaration(
       const fallback = generic ? null : (ctx.fallbackFamily?.() ?? null);
       const full = fallback ? `${list}, ${fallback}` : list;
       style.fontFamily = ctx.families ? ctx.families(full) : full;
+      // the generic `monospace` alone — a browser's IsMonospace, which a
+      // quoted 'monospace' is not — or the host's code face where the UA
+      // sheet names it, which stands for that generic
+      style.genericMonospace =
+        (generic && names.length === 1 && last.toLowerCase() === 'monospace') ||
+        list === ctx.codeFamily?.();
       return;
     }
     case 'font-size': {
@@ -2656,6 +2672,7 @@ export function applyDeclaration(
       );
       if (kw !== null) {
         style.fontSize = Math.min(kw, most);
+        style.fontSizeBasis = fontSizeBasis(value, parent.fontSizeBasis);
         return;
       }
       // `em` in a `font-size` is relative to the *parent's* size, not this
@@ -2664,11 +2681,15 @@ export function applyDeclaration(
       // inline-blocks sets to lose the spaces between them — and a negative
       // one is no size at all, so the declaration goes
       const len = parseLength(value, { ...ctx, em: parent.fontSize });
-      if (typeof len === 'number') {
-        if (len >= 0) style.fontSize = Math.min(len, most);
-      } else if (len && typeof len === 'object') {
-        const size = resolve(len, parent.fontSize);
-        if (size >= 0) style.fontSize = Math.min(size, most);
+      const size =
+        typeof len === 'number'
+          ? len
+          : len && typeof len === 'object'
+            ? resolve(len, parent.fontSize)
+            : -1;
+      if (size >= 0) {
+        style.fontSize = Math.min(size, most);
+        style.fontSizeBasis = fontSizeBasis(value, parent.fontSizeBasis);
       }
       return;
     }
@@ -4469,6 +4490,28 @@ function applyBorderShorthand(
   }
 }
 
+/** A `font-family` value as the list a style holds, or null where a name
+ *  in it is none. */
+export function familyList(value: string): string | null {
+  const names = splitCommas(value);
+  return names.every(isFamilyName) ? joinFamilies(names) : null;
+}
+
+/** Family names as a list: a quoted name without its quotes, and an
+ *  unquoted one its identifiers joined by one space each, however they
+ *  were spaced — `Courier   New` over two lines is `Courier New`, and was a
+ *  name no font has. */
+function joinFamilies(names: string[]): string {
+  return names
+    .map((f) =>
+      /^['"]/.test(f)
+        ? f.replace(/^['"]|['"]$/g, '')
+        : f.trim().replace(/[ \t\n\r\f]+/g, ' '),
+    )
+    .filter(Boolean)
+    .join(', ');
+}
+
 /** A font family name: quoted, or a sequence of identifiers. */
 function isFamilyName(name: string): boolean {
   const n = name.trim();
@@ -6112,8 +6155,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'border-image-width': ['borderImage'],
   'border-image-outset': ['borderImage'],
   'border-image-repeat': ['borderImage'],
-  'font-family': ['fontFamily'],
-  'font-size': ['fontSize'],
+  'font-family': ['fontFamily', 'genericMonospace'],
+  'font-size': ['fontSize', 'fontSizeBasis'],
   'font-weight': ['fontWeight'],
   'font-style': ['fontStyle'],
   'font-stretch': ['fontStretch'],
@@ -6121,7 +6164,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   // would be read as a multiple of the font size
   font: [
     'fontFamily',
+    'genericMonospace',
     'fontSize',
+    'fontSizeBasis',
     'fontWeight',
     'fontStyle',
     'fontStretch',

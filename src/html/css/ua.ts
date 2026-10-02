@@ -141,17 +141,18 @@ blockquote {
   color: ${look.mutedColor};
 }
 
-pre {
+/* HTML's rendering section (15.3.3, 15.3.4) and nothing more: no padding,
+   no scroll and no size of the sheet's own, which no browser has and so no
+   page that frames its code takes away. The code face stands for the
+   generic \`monospace\`, at the smaller size the cascade gives that generic
+   (\`genericMonospace\`), as a browser's fixed-width font does */
+listing, plaintext, pre, xmp {
   display: block;
   font-family: ${mono};
-  font-size: 0.9em;
   white-space: pre;
   margin: 1em 0;
-  padding: 0.7em 0.9em;
-  overflow-x: auto;
 }
-code, kbd, samp, tt { font-family: ${mono}; font-size: 0.9em; }
-pre code { font-size: 1em; padding: 0; background: transparent; }
+code, kbd, samp, tt { font-family: ${mono}; }
 
 b, strong { font-weight: bold; }
 i, em, cite, var, dfn, address { font-style: italic; }

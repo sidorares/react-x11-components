@@ -82,6 +82,47 @@ test("a list, a definition and a figure are indented the HTML standard's 40px, w
   assert.strictEqual(boxOf(el, 'f').x, 40, 'a figure');
 });
 
+test("a pre and its code are HTML's: no padding, no scroll, no size of their own", async () => {
+  // HTML 15.3.3 and 15.3.4 give a `<pre>` its margins, `white-space: pre`
+  // and the generic monospace, and code, kbd, samp and tt the family alone.
+  // The sheet framed every pre in 0.7em 0.9em of padding and a scroll, and
+  // set it and its code at 0.9em: joshwcomeau.com's code blocks, which no
+  // browser pads, were 20px taller than Chrome's and their code a tenth
+  // smaller. The code face is the generic's, at its size
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<pre id="p">pre</pre>' +
+      '<div id="d" style="font-family:monospace;white-space:pre">pre</div>' +
+      '<pre><code id="c" style="font-family:Menlo, Courier">code</code></pre>' +
+      '<p>a <code id="i">code</code> <kbd id="k">kbd</kbd></p>' +
+      '<div style="font-size:15px"><pre id="r">pre</pre></div>',
+    400,
+    { fontSize: 16 },
+  );
+  const el = view(node);
+  const box = (id: string) =>
+    boxOf(el, id) as LaidBox & {
+      style: {
+        fontSize: number;
+        paddingTop: unknown;
+        paddingLeft: unknown;
+        marginTop: unknown;
+        overflowX: string;
+      };
+    };
+  const pre = box('p');
+  assert.strictEqual(pre.style.fontSize, 13, "the generic's medium");
+  assert.strictEqual(pre.style.paddingTop, 0);
+  assert.strictEqual(pre.style.paddingLeft, 0);
+  assert.strictEqual(pre.style.overflowX, 'visible');
+  assert.strictEqual(pre.style.marginTop, 13, 'an em of its own size');
+  assert.strictEqual(pre.height, box('d').height, 'its line, and no more');
+  assert.strictEqual(box('c').style.fontSize, 16, 'a family of its own');
+  assert.strictEqual(box('i').style.fontSize, 13);
+  assert.strictEqual(box('k').style.fontSize, 13);
+  assert.strictEqual(box('r').style.fontSize, 15, 'under a length, the length');
+});
+
 test('a closed details shows its summary, and an open one all of it', async () => {
   // a closed `<details>` showed everything in it: an FAQ of them was every
   // answer at once
