@@ -2720,7 +2720,7 @@ export class HtmlViewNode extends Node {
         if (!offers) this._spriteOffers.set(element, (offers = {}));
         let offer = offers[pseudo];
         if (offer?.stamp !== made) {
-          offer = { stamp: made, part: partOf(host, lift) };
+          offer = { stamp: made, part: partOf(host, lift, offer?.part) };
           offers[pseudo] = offer;
         }
         if (!offer.part) continue;

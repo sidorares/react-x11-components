@@ -1736,6 +1736,32 @@ test('a lifted element a hover draws otherwise asks for the frame that paints it
   assert.notStrictEqual(again.version, sprite.version, 'painted again');
 });
 
+test('an element that animates inside a lifted one paints the lifted one’s layer again at each of its frames, and samples none of the lifted one’s frames again', async (t) => {
+  // a spinner in a card that pulses: the card's frames are sampled from
+  // its own style and its animation, which the spinner's frames leave as
+  // they were
+  const doc = await running(
+    t,
+    '<style>@keyframes pulse { from { opacity: 1 } to { opacity: .6 } }' +
+      '@keyframes spin { to { transform: rotate(360deg) } }' +
+      'body { margin: 0 } #card { width: 200px; height: 80px;' +
+      ' background: blue; animation: pulse 1s infinite alternate }' +
+      '#spin { width: 20px; height: 20px; background: white;' +
+      ' animation: spin 1s linear infinite }</style>' +
+      '<div id="card"><div id="spin"></div></div>',
+  );
+  const [sprite] = doc.el.sprites()!;
+  doc.el.spritesLifted(new Set([sprite.key]));
+  await doc.at(32);
+  const [again] = doc.el.sprites()!;
+  assert.strictEqual(again.key, sprite.key);
+  assert.notStrictEqual(again.version, sprite.version, 'painted again');
+  assert.ok(
+    again.animations[0].values === sprite.animations[0].values,
+    'not sampled again',
+  );
+});
+
 test('the frames the document runs for what is not lifted restyle nothing that is', async (t) => {
   const doc = await running(
     t,

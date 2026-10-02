@@ -2654,8 +2654,10 @@ a bridge that takes a matrix: two seconds of both painted 113 window frames
 and 113 paints of the document on the clock, and none of either lifted, the
 render server's opacity and turn moving under them. Sampling a part's frames
 is the cost instead, once: a style computed per frame of a cycle, sixty for
-a second's animation, kept for as long as the document draws and lays the
-element out as it did. A card that fades and lifts over 700 ms under the
+a second's animation, kept for as long as the element's style, the style it
+inherits from and its animations are what they were. A box inside it that
+changes — a spinner turning in a card that pulses — paints its layer again
+and samples none of its frames. A card that fades and lifts over 700 ms under the
 pointer painted 40 to 43 window frames and as many paints of the document
 on the clock, each way; lifted, it takes 4 to 6 frames and 3 or 4 paints,
 the change that starts it and the one that hands it back.

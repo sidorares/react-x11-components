@@ -1737,6 +1737,11 @@ things are load-bearing.
   bumps `_spriteGen` and asks for a frame (`spritesChanged()`)**, as a
   restyle in place inside one does: a lifted box's hole claims no damage, so
   nothing else would bring the frame in which its layer is painted again.
+  The part is made again then, and its frames are kept apart, by the box,
+  its style, the style it inherits from and its animations (`Sampled`): a
+  spinner turning in a lifted card paints the card's layer again at each
+  of its frames, and sampled the card's whole cycle at each as well until
+  the frames were kept so.
 - **A point is hit where the layer has the element.** A lifted element's
   style stops at the lift, so every hit test first restyles the lifted
   elements whose animation moves them to now (`_followLifted`). That
