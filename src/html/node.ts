@@ -134,7 +134,8 @@ import {
   holdsAbsolute,
   inClip,
   inClipPath,
-  onLine,
+  layered,
+  layerOf,
   ownBounds,
   paintDocument,
   pathClips,
@@ -3600,7 +3601,10 @@ function collectBands(
 }
 
 /** The layers of a hit test, in the order CSS paints them within a
- *  context (`deepestAt`). */
+ *  context (`deepestAt`): a stacking context's own box under the boxes it
+ *  paints below its flow, which are over its background (CSS 2.1 Appendix
+ *  E, steps 1 to 3). */
+const HIT_CONTEXT = -2;
 const HIT_NEGATIVE = -1;
 const HIT_BLOCK = 0;
 const HIT_FLOAT = 1;
@@ -3675,20 +3679,25 @@ function deepestAt(
   // hidden` list with no height of its own, and not one of them could be
   // hovered or pressed.
   let atViewport = false;
+  // how many boxes painted whole in their turn the walk has entered —
+  // floats, and the ones painted with the positioned boxes — which is
+  // their order in the document (`gatherLayers`)
+  let order = 0;
   const enter = (
     child: Box,
     context: readonly number[],
+    stack: readonly number[],
     clipped: readonly Box[],
   ): void => {
     if (!fixedShift || atViewport || !fixedToViewport(child)) {
-      enterAt(child, context, clipped);
+      enterAt(child, context, stack, clipped);
       return;
     }
     x -= fixedShift.x;
     y -= fixedShift.y;
     atViewport = true;
     try {
-      enterAt(child, context, clipped);
+      enterAt(child, context, stack, clipped);
     } finally {
       x += fixedShift.x;
       y += fixedShift.y;
@@ -3704,11 +3713,12 @@ function deepestAt(
   const enterAt = (
     child: Box,
     context: readonly number[],
+    stack: readonly number[],
     clipped: readonly Box[],
   ): void => {
     const matrix = placedMatrix(child);
     if (!matrix) {
-      enterIn(child, context, clipped, null);
+      enterIn(child, context, stack, clipped, null);
       return;
     }
     if (
@@ -3725,7 +3735,7 @@ function deepestAt(
     const py = y;
     [x, y] = mapPoint(back, px, py);
     try {
-      enterIn(child, context, clipped, ownBounds(child));
+      enterIn(child, context, stack, clipped, ownBounds(child));
     } finally {
       x = px;
       y = py;
@@ -3734,6 +3744,9 @@ function deepestAt(
   const enterIn = (
     child: Box,
     context: readonly number[],
+    /** The layers of the stacking context the box is in, which orders
+     *  the positioned boxes in it however deep (`stackLayers`). */
+    stack: readonly number[],
     clipped: readonly Box[],
     /** What the box draws in its own coordinates, where those are not the
      *  ones its bounds are in: a box painted through a matrix. */
@@ -3760,23 +3773,36 @@ function deepestAt(
     // alone under `clip: rect(0, 0, 0, 0)` took the hover and the press of
     // the link drawn where it lay.
     let cut = !inClip(child, x, y);
-    if (cut && stacksLayers(child)) return;
-    if (
-      style.position !== 'static' ||
-      (child.parent?.kind === 'flex' && typeof style.zIndex === 'number')
-    ) {
-      // a flex item with a `z-index` is layered unpositioned (`layered`)
-      const z = style.zIndex === 'auto' ? 0 : style.zIndex;
-      context = [...context, z < 0 ? HIT_NEGATIVE : HIT_POSITIONED, z];
-    } else if (
-      transformed(style) &&
-      child.kind !== 'inline' &&
-      child.parent &&
-      !onLine(child.parent, child)
-    ) {
-      // a transformed box is painted with the positioned ones (`layered`)
-      context = [...context, HIT_POSITIONED, 0];
-    } else if (style.float !== 'none') context = [...context, HIT_FLOAT];
+    const stacks = stacksLayers(child);
+    if (cut && stacks) return;
+    // A box painted with the positioned ones (`layered`) — positioned, a
+    // flex item with a `z-index`, or a stacking context unpositioned:
+    // transformed, translucent, contained, isolated, a float or a flex item
+    // too — is
+    // among the ones its stacking context paints, ordered by `z-index` and
+    // then by the document (`gatherLayers`). Keyed in the layers of the box
+    // around it instead, a box after one a negative margin drew up under
+    // it took the pointer where the first was drawn over it, as did a
+    // positioned box in one that is no stacking context over a positioned
+    // box after it. One on a line, which its line paints, is in the line's.
+    const lifted = child.parent !== null && layered(child.parent, child);
+    if (lifted || style.position !== 'static') {
+      const z = layerOf(child);
+      context = [
+        ...(lifted ? stack : context),
+        z < 0 ? HIT_NEGATIVE : HIT_POSITIONED,
+        z,
+        (order += 1),
+      ];
+    } else if (style.float !== 'none') {
+      // and a float after another over all of the first, its text too
+      context = [...context, HIT_FLOAT, (order += 1)];
+    }
+    // what is in a stacking context is ordered in its layers, the root
+    // element's too (`hoistNegative`), over its own box
+    const ground =
+      stacks || (child.parent === tree.root && child.el?.name === 'html');
+    if (ground) stack = context;
     if (clipped.length !== 0 && child.outOfFlow) {
       const containing = containingBlockOf(child);
       clipped = containing
@@ -3822,13 +3848,19 @@ function deepestAt(
       clipped = [...clipped, child];
     }
     if (own && child.el && clipped.length === 0) {
-      take(child.el, style, [...context, HIT_BLOCK], false);
+      take(
+        child.el,
+        style,
+        [...context, ground ? HIT_CONTEXT : HIT_BLOCK],
+        false,
+      );
     }
-    visit(child, context, clipped);
+    visit(child, context, stack, clipped);
   };
   const visit = (
     node: Box,
     context: readonly number[],
+    stack: readonly number[],
     clipped: readonly Box[],
   ): void => {
     // The paint index answers a point query too — the wide level of a flat
@@ -3839,17 +3871,17 @@ function deepestAt(
       : node.children;
     for (const child of candidates) {
       if (child.kind === 'text' || child.kind === 'break') continue;
-      enter(child, context, clipped);
+      enter(child, context, stack, clipped);
     }
     if (node.paintIndex && node.positionedPaint) {
       for (const child of node.positionedPaint) {
-        enter(child, context, clipped);
+        enter(child, context, stack, clipped);
       }
     }
     if (node.lines) {
       for (const line of node.lines) {
         for (const placed of line.atomics) {
-          enter(placed.box, [...context, HIT_INLINE], clipped);
+          enter(placed.box, [...context, HIT_INLINE], stack, clipped);
         }
         // An inline box has no box of its own — its extent is the runs on
         // this line — so the element under a point inside a paragraph is
@@ -3878,7 +3910,7 @@ function deepestAt(
       }
     }
   };
-  visit(box, [], []);
+  visit(box, [], [], []);
   if (hit) hit.text = viaText;
   return found;
 }

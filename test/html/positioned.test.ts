@@ -244,6 +244,154 @@ metric(
 );
 
 metric(
+  'a stacking context that is not positioned is painted and hit with the positioned boxes',
+  async () => {
+    // CSS 2.1 Appendix E, step 8, and CSS Color 4, 3.2: a box made a
+    // stacking context by anything but a position is painted in the layer
+    // of the positioned boxes with a `z-index` of 0, in the document's
+    // order among them — a block, a float and a flex item alike, as
+    // Chrome, Firefox and Safari paint and hit-test it. Painted whole in
+    // its place instead, it went under the text of a block after it that
+    // a negative margin drew up over it, and under a relative box before
+    // it; and the hit test, which took it for a plain block of the flow,
+    // found the box after it under the pointer where it was drawn.
+    const doc = (makes: string) =>
+      '<style>body{margin:0}section{height:60px}' +
+      `.a{height:40px;background:#ff0000;${makes}}` +
+      '.s{background:#00ff00}.r{position:relative;height:40px;' +
+      'background:#0000ff}.f{display:flex}.f>div{flex:none;width:100px;' +
+      'height:40px}</style>' +
+      // the text of a block after it
+      '<section><div class="a" id="a1"></div><div style="margin-top:-20px">' +
+      '<span class="s" id="s1">xxxx</span></div></section>' +
+      // a relative box before it
+      '<section><div class="r" id="r2"></div>' +
+      '<div class="a" id="a2" style="margin-top:-20px"></div></section>' +
+      // a float, over the text beside it
+      '<section><div class="a" id="a3" style="float:left;width:100px;' +
+      'margin-right:-100px"></div><div><span class="s" id="s3">xxxx</span>' +
+      '</div></section>' +
+      // a flex item, over the one after it
+      '<section class="f"><div class="a" id="a4" style="margin-right:-50px">' +
+      '</div><div id="b4" style="background:#0000ff"></div></section>';
+    const points: [number, number, string, string][] = [
+      [10, 30, 'a1', 's1'],
+      [50, 90, 'a2', 'r2'],
+      [10, 130, 'a3', 's3'],
+      [75, 200, 'a4', 'b4'],
+    ];
+    for (const makes of [
+      'opacity:.99',
+      'contain:paint',
+      'isolation:isolate',
+      'clip-path:inset(0)',
+      'mask-image:linear-gradient(#000,#000)',
+      'transform:translateX(0)',
+      '',
+    ]) {
+      const { node, result } = await render(doc(makes));
+      const el = view(node);
+      const { abs } = el as unknown as { abs: { x: number; y: number } };
+      for (const [x, y, over, under] of points) {
+        const want = makes ? over : under;
+        const [r, g, b] = await pixelAt(result.ctx, abs.x + x, abs.y + y);
+        assert.strictEqual(
+          r > 200 && g < 100 && b < 100,
+          want === over,
+          `${makes || 'none'}: ${over} drawn at ${x},${y}: ${r},${g},${b}`,
+        );
+        assert.strictEqual(
+          el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id,
+          want,
+          `${makes || 'none'}: under the pointer at ${x},${y}`,
+        );
+      }
+    }
+  },
+);
+
+metric(
+  'a box painted with the positioned ones is hit among its stacking context’s, in their order',
+  async () => {
+    // What is under a point is what was painted there last, and a box
+    // painted with the positioned ones is painted by its stacking context,
+    // ordered by `z-index` and then the document, however deep it is in a
+    // box that is no stacking context (`gatherLayers`) — each of these
+    // found the other box, where paint drew this one over it. And a
+    // stacking context's own box is under what it paints below its flow.
+    const { node } = await render(
+      // a whole document, whose root element is a box of its own
+      '<html><head><style>html{height:400px}body{margin:0}' +
+        'section{height:60px}' +
+        '.r{position:relative;height:40px;background:#ff0000}' +
+        '.q{position:relative;height:40px;width:60px;background:#ffff00}' +
+        '.m{position:relative;height:40px;margin-top:-20px;' +
+        'background:#0000ff}</style></head><body>' +
+        // a z-index of 5 in a relative box with none, over a 3 after it
+        '<section><div class="r"><div class="q" id="q1" style="z-index:5">' +
+        '</div></div><div class="m" id="m1" style="z-index:3"></div>' +
+        '</section>' +
+        // and with none, under a relative box after it
+        '<section><div class="r"><div class="q" id="q2"></div></div>' +
+        '<div class="m" id="m2"></div></section>' +
+        // a relative box in a float, over the text beside the float
+        '<section><div style="float:left;width:100px;margin-right:-100px">' +
+        '<div class="q" id="q3"></div></div><div>' +
+        '<span style="background:#00ff00">xxxx</span></div></section>' +
+        // in a translucent box: its box set below its flow over it, and
+        // under the block in its flow
+        '<section><div id="a4" style="opacity:.99;height:40px;' +
+        'background:#ff0000"><div id="n4" style="position:relative;' +
+        'z-index:-1;width:80px;height:40px;margin-bottom:-40px;' +
+        'background:#00ff00"></div><div id="c4" style="width:40px;' +
+        'height:20px;background:#0000ff"></div></div></section>' +
+        // a float over the text of the float before it
+        '<section><div style="float:left;width:100px;height:40px">' +
+        '<span style="background:#00ff00">xxxx</span></div>' +
+        '<div id="f5" style="float:left;width:100px;height:40px;' +
+        'margin-left:-90px;background:#0000ff"></div></section>' +
+        // below the body, a box set below the root's flow over the root
+        '<div id="n6" style="position:absolute;top:320px;left:0;' +
+        'z-index:-1;width:50px;height:30px;background:#00ff00"></div>' +
+        '</body></html>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as { abs: { x: number; y: number } };
+    const at = (x: number, y: number) =>
+      el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id;
+    assert.strictEqual(at(30, 30), 'q1', 'its z-index is the page’s');
+    assert.strictEqual(at(30, 90), 'm2', 'and the document’s order');
+    assert.strictEqual(at(10, 130), 'q3', 'over the text');
+    assert.strictEqual(at(60, 190), 'n4', 'over its stacking context');
+    assert.strictEqual(at(20, 190), 'c4', 'under the flow');
+    assert.strictEqual(at(20, 250), 'f5', 'the later float');
+    assert.strictEqual(at(10, 330), 'n6', 'over the root element');
+  },
+);
+
+metric(
+  'the root element paints the boxes below its flow, over its own background',
+  async () => {
+    // CSS 2.1 Appendix E: the root element makes the root stacking
+    // context, and a box with a negative `z-index` in it is painted over
+    // its background and borders. It paints them itself (`hoistNegative`),
+    // so it is painted whole and never as a plain block of the flow above
+    // it, whose background and lines go with that flow's: taken for one,
+    // the body set below the flow was never painted at all.
+    const { node } = await render(
+      '<html style="width:0;height:0;border:20px solid #ff0000">' +
+        '<body style="border:20px solid #00ff00;margin:-20px;' +
+        'position:relative;z-index:-1"></body></html>',
+    );
+    const fills = await fillsOf(view(node));
+    const at = (color: string) =>
+      fills.findIndex((f) => f.style === parseColor(color));
+    assert.ok(at('#ff0000') >= 0, 'the root element’s border');
+    assert.ok(at('#ff0000') < at('#00ff00'), 'and the body over it');
+  },
+);
+
+metric(
   'a fixed box is a stacking context, and a box below its flow is not drawn over it',
   async () => {
     // CSS Positioned Layout 3: a fixed box is a stacking context with no

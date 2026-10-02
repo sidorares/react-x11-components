@@ -338,8 +338,10 @@ test('overflow-clip-margin moves the edge overflow: clip cuts at', async () => {
     [
       [-15, top('a') - 15, 160, 110],
       [17, top('b') + 17, 96, 46],
-      [5, top('c') + 5, 120, 70],
       [0, -30000, 130, 60000],
+      // paint containment makes `c` a stacking context, painted after the
+      // flow with the positioned boxes
+      [5, top('c') + 5, 120, 70],
     ],
   );
 });

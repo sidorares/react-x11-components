@@ -1129,8 +1129,8 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   ) {
     return;
   }
-  // An element under full opacity is painted whole in its place, as the
-  // group it is (it is a stacking context, CSS Color 4 3.2; `inFlow`): at
+  // An element under full opacity is painted whole, as the group it is
+  // (it is a stacking context, CSS Color 4 3.2; `layered`): at
   // 0 not at all — the control a page keeps invisible until its row is
   // hovered — and between on a surface of its own, faded as it is drawn
   // (`paintGroup`). Where there is no surface, or nothing it draws can
@@ -2076,7 +2076,8 @@ function paintContent(
   // before it does
   if (clips && box.kind === 'table') {
     for (const child of box.children) {
-      if (child.kind === 'table-caption') paintBox(ctx, child, options);
+      if (child.kind !== 'table-caption' || layered(box, child)) continue;
+      paintBox(ctx, child, options);
     }
   }
   if (clips) {
@@ -2107,7 +2108,9 @@ function paintContent(
   // shaded paragraph beside a floated image hid the image — and a block's
   // text by the next one's background where a negative margin overlapped
   // them. A child that is no plain block of the flow — a table, a flex box,
-  // a box that clips, a replaced element — is painted whole in its place.
+  // a box that clips, a replaced element — is painted whole in its place;
+  // one that is a stacking context is painted whole with the positioned
+  // boxes (`layered`).
   const floats: Box[] = [];
   paintFlowBackgrounds(ctx, box, options, floats);
   for (const float of floats) paintBox(ctx, float, options);
@@ -2730,25 +2733,16 @@ function paintedChildren(box: Box, options: PaintOptions): readonly Box[] {
 
 /** Whether a child is a plain block of its parent's flow, whose background
  *  goes with the flow's and whose lines with its lines: an in-flow block
- *  that clips nothing, is fully opaque and is no stacking context holding
- *  a negative `z-index`, in a parent that is no flex box, where an item is
- *  painted whole (CSS Flexbox 5.4). */
+ *  that clips nothing, in a parent that is no flex box, where an item is
+ *  painted whole (CSS Flexbox 5.4), and that is not the root element
+ *  holding boxes below its flow, which it paints itself (`hoistNegative`).
+ *  One that is a stacking context is painted with the positioned boxes,
+ *  and is not asked (`layered`). */
 function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
   if (child.kind !== 'block' || parent.kind === 'flex') return false;
   if (options.negative && NEGATIVE.has(child)) return false;
   const style = child.style;
-  return (
-    style.overflowX === 'visible' &&
-    style.overflowY === 'visible' &&
-    opacityOf(child) >= 1 &&
-    !masked(style) &&
-    // cut to a path with all it holds, as one group
-    !style.clipPath &&
-    // containment makes it a stacking context, painted whole, and so does
-    // isolation
-    !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT) &&
-    style.isolation !== 'isolate'
-  );
+  return style.overflowX === 'visible' && style.overflowY === 'visible';
 }
 
 /** How opaque a box is drawn: its own `opacity`, and the one it takes from
@@ -2759,25 +2753,18 @@ function opacityOf(box: Box): number {
 }
 
 /** Whether a child is a flex box of its parent's flow — or a grid — that
- *  clips nothing and is no stacking context holding a negative `z-index`:
- *  its background and borders go with the flow's backgrounds, in the
- *  document's order, and its items with the flow's lines, each painted
- *  whole as an inline block is (CSS 2.1 Appendix E, CSS Flexbox 5.4).
- *  Painted whole in its place, its background covered a block after it
- *  that a negative margin drew up over it. */
+ *  clips nothing: its background and borders go with the flow's
+ *  backgrounds, in the document's order, and its items with the flow's
+ *  lines, each painted whole as an inline block is (CSS 2.1 Appendix E,
+ *  CSS Flexbox 5.4). Painted whole in its place, its background covered a
+ *  block after it that a negative margin drew up over it. One that is a
+ *  stacking context is painted with the positioned boxes (`layered`). */
 function flowFlex(parent: Box, child: Box, options: PaintOptions): boolean {
   if (child.kind !== 'flex' || parent.kind === 'flex') return false;
+  // the root element holding boxes below its flow paints them itself
   if (options.negative && NEGATIVE.has(child)) return false;
   const style = child.style;
-  return (
-    style.overflowX === 'visible' &&
-    style.overflowY === 'visible' &&
-    !(child.outOfFlow && style.clip) &&
-    !masked(style) &&
-    !style.clipPath &&
-    !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT) &&
-    style.isolation !== 'isolate'
-  );
+  return style.overflowX === 'visible' && style.overflowY === 'visible';
 }
 
 /**
@@ -3778,10 +3765,19 @@ function pushClip(
  * Whether a child is painted with the positioned boxes, after the flow
  * rather than in it: an absolutely positioned box, and a relatively
  * positioned block, which CSS paints among them in document order (CSS 2.1
- * Appendix E) — a relative box after an absolute one covers it. An inline
- * or an inline-block is painted by its line.
+ * Appendix E) — a relative box after an absolute one covers it. And a box
+ * that is a stacking context unpositioned — under full opacity,
+ * transformed, masked, cut to a path, contained, isolated — which is
+ * painted in the
+ * layer of the positioned boxes with a `z-index` of 0, in the document's
+ * order among them (Appendix E, step 8; CSS Color 4, 3.2), as Chrome,
+ * Firefox and Safari paint and hit-test it, block, float and flex item
+ * alike: painted whole in its place in the flow, a translucent box went
+ * under the text of a block after it that a negative margin drew up over
+ * it, and under a relative box before it. An inline or an inline-block is
+ * painted by its line.
  */
-function layered(parent: Box, child: Box): boolean {
+export function layered(parent: Box, child: Box): boolean {
   if (child.outOfFlow) return true;
   const style = child.style;
   // a flex item with a `z-index` is a stacking context, positioned or not
@@ -3790,7 +3786,7 @@ function layered(parent: Box, child: Box): boolean {
   if (
     style.position !== 'relative' &&
     style.position !== 'sticky' &&
-    !transformed(style)
+    !stacksLayers(child)
   ) {
     return false;
   }
@@ -3888,7 +3884,7 @@ function settleLayers(box: Box, list: Box[]): void {
 export function stacksLayers(box: Box): boolean {
   const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
-  if (style.opacity < 1 || FADED_BLOCKS.has(box)) return true;
+  if (style.opacity < 1) return true;
   // and so does a mask, which is applied to the group (CSS Masking 1, 7),
   // and a clip path, which cuts it (5.1)
   if (masked(style) || pathClips(box)) return true;
@@ -3900,8 +3896,16 @@ export function stacksLayers(box: Box): boolean {
   // holds is painted with it, through its matrix, and not by a context
   // outside it
   if (transformed(style) && box.kind !== 'inline') return true;
-  if (typeof style.zIndex !== 'number') return false;
-  return style.position !== 'static' || flexItem(box);
+  if (
+    typeof style.zIndex === 'number' &&
+    (style.position !== 'static' || flexItem(box))
+  ) {
+    return true;
+  }
+  // the opacity taken from an inline box, asked last: `layered` asks this
+  // of every box in the flow at every paint, and a map lookup is the one
+  // question here that is not a field read
+  return FADED_BLOCKS.has(box);
 }
 
 /** Whether a box is an item of a flex box — or a grid, to the box tree the
@@ -3919,6 +3923,10 @@ function flexItem(box: Box): boolean {
  */
 export function clipsFor(box: Box, context: Box): Box[] {
   let from: Box | null = box.parent;
+  // a caption is outside the table box that clips (`paintContent`)
+  if (box.kind === 'table-caption' && from && from !== context) {
+    from = from.parent;
+  }
   if (box.outOfFlow) {
     const fixed = box.style.position === 'fixed';
     while (from && from !== context) {
@@ -3954,23 +3962,40 @@ function paintStacked(
     paintPositioned(ctx, box, options);
     return;
   }
-  let pushed = 0;
+  // each clip pushed, and the level of one that clips an overflow
+  const pushed: (ClipLevel | null)[] = [];
   let empty = false;
   for (const clipper of between) {
     if (clipper.outOfFlow && clipper.style.clip) {
       const rect = clipOf(clipper, options);
       if (rect.w <= 0 || rect.h <= 0) empty = true;
-      else if (pushClip(ctx, rect, null)) pushed += 1;
+      else if (pushClip(ctx, rect, null)) pushed.push(null);
     }
     if (!empty && clipsOverflow(clipper)) {
+      // A level, as `paintContent` makes one: an absolute box the box
+      // paints whose containing block is outside the clip is put off until
+      // the clip ends (`paintPositioned`) — one in a translucent box under
+      // it, a stacking context and no containing block, which was cut off
+      // with the box once the box was painted here rather than in its
+      // place. And a clip of no area is pushed where that may be so.
       const { rect, radii } = clipEdge(clipper, options);
-      if (rect.w <= 0 || rect.h <= 0) empty = true;
-      else if (pushClip(ctx, rect, radii)) pushed += 1;
+      if ((rect.w <= 0 || rect.h <= 0) && !holdsAbsolute(box)) empty = true;
+      else if (pushClip(ctx, rect, radii)) {
+        const level: ClipLevel = { box: clipper, deferred: [] };
+        (options.clips ??= []).push(level);
+        pushed.push(level);
+      }
     }
     if (empty) break;
   }
   if (!empty) paintPositioned(ctx, box, options);
-  for (let i = 0; i < pushed; i += 1) ctx.restore();
+  for (let i = pushed.length - 1; i >= 0; i -= 1) {
+    ctx.restore();
+    const level = pushed[i];
+    if (!level) continue;
+    options.clips!.pop();
+    for (const child of level.deferred) paintPositioned(ctx, child, options);
+  }
 }
 
 /** Per stacking context, its descendants with a negative `z-index`, in
@@ -4025,9 +4050,10 @@ function byZIndex(a: Box, b: Box): number {
 /** The `z-index` a box is ordered by among its stacking context's layers:
  *  its own where one applies — to a positioned box, and to a flex or a grid
  *  item (CSS 2.1 9.9.1, CSS Flexbox 5.4) — and none for a box that is
- *  among them for its transform alone, which is painted in the document's
- *  order whatever `z-index` it was given. */
-function layerOf(box: Box): number {
+ *  among them for being a stacking context alone, a transform's or an
+ *  opacity's, which is painted in the document's order whatever `z-index`
+ *  it was given. */
+export function layerOf(box: Box): number {
   const style = box.style;
   const z = style.zIndex;
   if (z === 'auto') return 0;
