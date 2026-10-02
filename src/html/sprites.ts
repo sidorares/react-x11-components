@@ -4,9 +4,9 @@
 // each with its frames sampled from the document's own interpolation.
 //
 // What is eligible is what a browser hands its compositor
-// (docs/prd-html-animations.md §3): an element whose one animation sets
-// only `opacity` and the transform properties, running now, drawn in a box
-// of its own, inside nothing that fades, turns, clips, masks or is fixed,
+// (docs/prd-html-animations.md §3): an element whose animations set only
+// `opacity` and the transform properties, one animation a property, each
+// running now, drawn in a box of its own, inside nothing that fades, turns, clips, masks or is fixed,
 // and that nothing the document paints after it draws within reach of
 // while it runs. The last is the document's to answer — core's presenter
 // cannot see inside the element — and it is answered in the order the
@@ -105,10 +105,9 @@ export interface SpriteHost {
   ended(el: Element, id: string): boolean;
 }
 
-/** An element's one animation, where it is one a sprite can carry. */
-export interface Lift {
-  el: Element;
-  box: Box;
+/** One of an element's animations a sprite carries: what it sets that a
+ *  layer can carry, and when it runs. */
+export interface Track {
   name: string;
   run: Readonly<Running>;
   timing: Timing;
@@ -123,67 +122,94 @@ export interface Lift {
   transform: boolean;
 }
 
+/** An element's animations, where a sprite can carry them: one track a
+ *  property, each its own animation on the layer. */
+export interface Lift {
+  el: Element;
+  box: Box;
+  tracks: Track[];
+  /** Every track's: what the part is made from, but for the document. */
+  id: string;
+  /** Whether a track moves it, which a point is hit against where the
+   *  layer has it (`HtmlViewNode._followLifted`). */
+  moves: boolean;
+}
+
 /**
- * The animation of `el` a sprite can carry, or null: exactly one named
- * animation with frames, playing, in its active phase, setting only what a
- * layer carries — and not one the render server already ran to its end.
- * Cheap, and asked every frame: the frames are sampled once (`partOf`).
+ * The animations of `el` a sprite can carry, or null: each named animation
+ * with frames, playing, in its active phase, setting only what a layer
+ * carries — and no two setting one property, since a layer runs one
+ * animation of each and the later of two is the cascade's to choose, not
+ * the layer's. Not one the render server already ran to its end. Cheap,
+ * and asked every frame: the frames are sampled once (`partOf`).
  */
 export function liftOf(host: SpriteHost, el: Element): Lift | null {
   const style = host.tree.styles.get(el)?.style;
   const box = host.boxes.get(el);
   if (!style || !box || box.el !== el) return null;
   const animations = style.animations;
-  let index = -1;
-  for (let i = 0; i < animations.names.length; i += 1) {
-    if (animations.names[i] === null) continue;
-    if (index >= 0) return null;
-    index = i;
-  }
-  if (index < 0) return null;
-  const name = animations.names[index]!;
-  const rule = host.cascade.keyframes(name);
-  if (!rule) return null;
+  const runs = host.timeline.runsOf(el);
   const plays = animations.playStates;
-  if (plays[index % plays.length] === 'paused') return null;
+  const tracks: Track[] = [];
   let opacity = false;
   let transform = false;
-  for (const prop of tracksOf(rule).keys()) {
-    if (!LIFTABLE.has(prop)) return null;
-    if (prop === 'opacity') opacity = true;
-    else transform = true;
+  for (let index = 0; index < animations.names.length; index += 1) {
+    const name = animations.names[index];
+    if (name === null) continue;
+    // a name no `@keyframes` has runs nothing (CSS Animations 1, 3)
+    const rule = host.cascade.keyframes(name);
+    if (!rule) continue;
+    if (plays[index % plays.length] === 'paused') return null;
+    let sets = false;
+    let moves = false;
+    for (const prop of tracksOf(rule).keys()) {
+      if (!LIFTABLE.has(prop)) return null;
+      if (prop === 'opacity') sets = true;
+      else moves = true;
+    }
+    if ((sets && opacity) || (moves && transform)) return null;
+    opacity ||= sets;
+    transform ||= moves;
+    const run = runs?.[index];
+    if (!run || run.name !== name || run.hold !== null) return null;
+    const timing = timingAt(animations, index);
+    if (!(timing.duration > 0) || !(timing.iterations > 0)) return null;
+    if (progressAt(timing, host.now - run.start).phase !== 'active') {
+      return null;
+    }
+    const alternates =
+      timing.direction === 'alternate' ||
+      timing.direction === 'alternate-reverse';
+    const id = [
+      name,
+      run.start,
+      timing.duration,
+      timing.delay,
+      timing.iterations,
+      timing.direction,
+      timing.fill,
+      box.width,
+      box.height,
+    ].join('|');
+    if (host.ended(el, id)) return null;
+    tracks.push({
+      name,
+      run,
+      timing,
+      begin: run.start + timing.delay,
+      cycle: alternates ? 2 * timing.duration : timing.duration,
+      id,
+      opacity: sets,
+      transform: moves,
+    });
   }
-  const run = host.timeline.runsOf(el)?.find((r) => r?.name === name);
-  if (!run || run.hold !== null) return null;
-  const timing = timingAt(animations, index);
-  if (!(timing.duration > 0) || !(timing.iterations > 0)) return null;
-  if (progressAt(timing, host.now - run.start).phase !== 'active') return null;
-  const alternates =
-    timing.direction === 'alternate' ||
-    timing.direction === 'alternate-reverse';
-  const id = [
-    name,
-    run.start,
-    timing.duration,
-    timing.delay,
-    timing.iterations,
-    timing.direction,
-    timing.fill,
-    box.width,
-    box.height,
-  ].join('|');
-  if (host.ended(el, id)) return null;
+  if (!tracks.length) return null;
   return {
     el,
     box,
-    name,
-    run,
-    timing,
-    begin: run.start + timing.delay,
-    cycle: alternates ? 2 * timing.duration : timing.duration,
-    id,
-    opacity,
-    transform,
+    tracks,
+    id: tracks.map((t) => t.id).join('+'),
+    moves: transform,
   };
 }
 
@@ -295,14 +321,19 @@ function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
   return false;
 }
 
-/** The frames of one cycle, sampled from the element's style on a fork of
- *  the document's timeline, and the style the animation leaves at rest. */
+/** Each track's frames through one cycle of it, sampled from the
+ *  element's style on a fork of the document's timeline — its opacities
+ *  where it sets the opacity, its matrices where it moves — and the style
+ *  the animations leave at rest. */
 function sample(
   host: SpriteHost,
   parentStyle: ComputedStyle,
   inFlex: boolean,
   lift: Lift,
-): { opacities: number[]; matrices: SpriteMatrix[]; rest: ComputedStyle } {
+): {
+  frames: { opacities: number[]; matrices: SpriteMatrix[] }[];
+  rest: ComputedStyle;
+} {
   const { el, box } = lift;
   const cascade = host.cascade;
   const fork = host.timeline.fork(el);
@@ -311,32 +342,42 @@ function sample(
     fork.now = time;
     return cascade.styleFor(el, parentStyle, inFlex);
   };
-  const opacities: number[] = [];
-  const matrices: SpriteMatrix[] = [];
-  const n = Math.max(
-    2,
-    Math.min(MAX_SAMPLES, Math.round(lift.cycle / SAMPLE_MS)),
-  );
   cascade.timeline = fork;
   try {
-    for (let k = 0; k <= n; k += 1) {
-      // the last frame a breath short of the cycle's end, which is the
-      // next one's start
-      const u = k === n ? lift.cycle - 1e-3 : (k / n) * lift.cycle;
-      const style = at(lift.begin + u);
-      opacities.push(Math.min(1, Math.max(0, style.opacity)));
-      matrices.push([
-        ...matrixOf(style, box.width, box.height),
-      ] as SpriteMatrix);
+    // a track's property is its alone (`liftOf`), so the style at a time
+    // in its cycle says what it is there, whatever the others are at
+    const frames = lift.tracks.map((track) => {
+      const opacities: number[] = [];
+      const matrices: SpriteMatrix[] = [];
+      const n = Math.max(
+        2,
+        Math.min(MAX_SAMPLES, Math.round(track.cycle / SAMPLE_MS)),
+      );
+      for (let k = 0; k <= n; k += 1) {
+        // the last frame a breath short of the cycle's end, which is the
+        // next one's start
+        const u = k === n ? track.cycle - 1e-3 : (k / n) * track.cycle;
+        const style = at(track.begin + u);
+        if (track.opacity) {
+          opacities.push(Math.min(1, Math.max(0, style.opacity)));
+        }
+        if (track.transform) {
+          matrices.push([
+            ...matrixOf(style, box.width, box.height),
+          ] as SpriteMatrix);
+        }
+      }
+      return { opacities, matrices };
+    });
+    // past the last end, as each fill mode leaves its property; a loop
+    // never gets there, and its property rests wherever it is
+    let end = -Infinity;
+    for (const { begin, timing } of lift.tracks) {
+      if (timing.iterations === Infinity) continue;
+      end = Math.max(end, begin + timing.iterations * timing.duration);
     }
-    const { iterations, duration } = lift.timing;
-    // past the end, as the fill mode leaves it; a loop never gets there,
-    // and rests where it is
-    const rest =
-      iterations === Infinity
-        ? box.style
-        : at(lift.begin + iterations * duration + 1);
-    return { opacities, matrices, rest };
+    const rest = end === -Infinity ? box.style : at(end + 1);
+    return { frames, rest };
   } finally {
     cascade.timeline = was;
   }
@@ -361,6 +402,9 @@ export interface Part {
   opacity: number;
   transform: SpriteMatrix;
   animations: DocumentSpriteAnimation[];
+  /** When each of `animations` began its active phase, on the document's
+   *  clock: its delay, made each frame from now (`describe`). */
+  begins: number[];
   /** Everywhere it can be while it runs, in the document's coordinates. */
   extent: Rect;
   /** The boxes fixed to the viewport, which a scroll moves over the
@@ -397,19 +441,14 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
     height: own.height,
   };
   if (reach.width > MAX_SIDE || reach.height > MAX_SIDE) return null;
-  const { opacities, matrices, rest } = sample(
-    host,
-    parentStyle,
-    kept.inFlex,
-    lift,
-  );
+  const { frames, rest } = sample(host, parentStyle, kept.inFlex, lift);
   const origin = box.style.transformOrigin;
   const ox = bx + resolve(origin[0], box.width, 0);
   const oy = by + resolve(origin[1], box.height, 0);
   const transform = [...matrixOf(rest, box.width, box.height)] as SpriteMatrix;
   // everywhere it can be: its reach where it rests, and through every frame
   let extent = mapRect(reach, transform, ox, oy);
-  if (lift.transform) {
+  for (const { matrices } of frames) {
     for (const m of matrices) {
       extent = unionRect(extent, mapRect(reach, m, ox, oy));
     }
@@ -417,29 +456,35 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
   // what is painted before it is under the layer as it is under it, and
   // what is painted after it must not be
   if (paintedAfter(box, extent) ?? crowded(tree, box, extent)) return null;
-  const { iterations, duration } = lift.timing;
-  const repeat = lift.cycle === duration ? iterations : iterations / 2;
   const animations: DocumentSpriteAnimation[] = [];
-  if (lift.opacity) {
-    animations.push({
-      id: `${lift.id}|opacity`,
-      property: 'opacity',
-      values: opacities,
-      duration: lift.cycle,
-      delay: 0,
-      repeat,
-    });
-  }
-  if (lift.transform) {
-    animations.push({
-      id: `${lift.id}|transform`,
-      property: 'transform',
-      values: matrices,
-      duration: lift.cycle,
-      delay: 0,
-      repeat,
-    });
-  }
+  const begins: number[] = [];
+  lift.tracks.forEach((track, i) => {
+    const { iterations, duration } = track.timing;
+    const repeat = track.cycle === duration ? iterations : iterations / 2;
+    const { opacities, matrices } = frames[i];
+    if (track.opacity) {
+      animations.push({
+        id: `${track.id}|opacity`,
+        property: 'opacity',
+        values: opacities,
+        duration: track.cycle,
+        delay: 0,
+        repeat,
+      });
+      begins.push(track.begin);
+    }
+    if (track.transform) {
+      animations.push({
+        id: `${track.id}|transform`,
+        property: 'transform',
+        values: matrices,
+        duration: track.cycle,
+        delay: 0,
+        repeat,
+      });
+      begins.push(track.begin);
+    }
+  });
   return {
     lift,
     rect: { x: bx, y: by, width: box.width, height: box.height },
@@ -449,6 +494,7 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
     opacity: Math.min(1, Math.max(0, rest.opacity)),
     transform,
     animations,
+    begins,
     extent,
     fixed: FIXED_BOXES.get(tree) ?? NO_BOXES,
   };
@@ -477,7 +523,6 @@ export function describe(
     width: r.width,
     height: r.height,
   });
-  const delay = part.lift.begin - now;
   const [tx, ty] = part.translation;
   const box = part.lift.box;
   return {
@@ -499,6 +544,9 @@ export function describe(
     opacity: part.opacity,
     transform: part.transform,
     origin: { x: part.origin.x + originX, y: part.origin.y + originY },
-    animations: part.animations.map((a) => ({ ...a, delay })),
+    animations: part.animations.map((a, i) => ({
+      ...a,
+      delay: part.begins[i] - now,
+    })),
   };
 }

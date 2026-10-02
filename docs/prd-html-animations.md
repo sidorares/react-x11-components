@@ -542,8 +542,8 @@ In order, each step useful on its own and measured before the next:
      and a negative delay as a begin time in the past: a `timeOffset` would
      wrap a one-shot animation joined half way round to its start before
      its end.
-   - **`<Html>`** offers each element whose one animation sets only opacity
-     and the transform properties, in a box of its own, inside nothing that
+   - **`<Html>`** offers each element whose animations set only opacity
+     and the transform properties, one animation a property, in a box of its own, inside nothing that
      fades, turns, clips or animates, with no ink but its own and its
      ancestors' within reach while it runs (`src/html/sprites.ts`). Its
      frames are sampled, opacity as well as transform, so every easing and

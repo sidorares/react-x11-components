@@ -1366,7 +1366,52 @@ test('a turn is offered as matrices about the transform origin, a whole turn tur
   });
 });
 
-test('what a layer cannot carry stays on the document’s clock: a colour, two animations, a paused one, a clip around it, a fade around it, and ink beside it', async (t) => {
+test('a fade and a turn on one element go over as two animations on its layer, each with its own cycle and delay; a name with no frames is none', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+      '@keyframes spin { to { transform: rotate(360deg) } }' +
+      '#a { animation: fade 160ms linear infinite, spin 256ms 32ms linear' +
+      ' infinite, nothing 1s; width: 10px; height: 10px; background: red }' +
+      '</style><div id="a"></div>',
+  );
+  // before the turn's delay is out, it is not yet under way
+  assert.strictEqual(doc.el.sprites(), null);
+  await doc.at(48);
+  const [sprite] = doc.el.sprites()!;
+  const [fade, turn] = sprite.animations;
+  assert.deepStrictEqual(
+    [fade.property, fade.duration, fade.repeat, fade.delay],
+    ['opacity', 160, Infinity, -48],
+  );
+  assert.deepStrictEqual(
+    [turn.property, turn.duration, turn.repeat, turn.delay],
+    ['transform', 256, Infinity, -16],
+  );
+  // each sampled through its own cycle: the fade's opacities rise, and
+  // the turn turns once
+  const opacities = fade.values as number[];
+  assert.ok(near(opacities[0], 0.2) && opacities.at(-1)! > 0.99);
+  const matrices = turn.values as number[][];
+  const n = matrices.length - 1;
+  matrices.forEach((m, k) => {
+    const angle = (2 * Math.PI * Math.min(k, n - 1e-6)) / n;
+    assert.ok(
+      near(m[0], Math.cos(angle), 1e-3) && near(m[1], Math.sin(angle), 1e-3),
+      `frame ${k} of ${n}: ${m}`,
+    );
+  });
+  // and both of one property are the cascade's to choose between: not lifted
+  const both = await running(
+    t,
+    '<style>@keyframes fade { to { opacity: .2 } }' +
+      '#b { animation: fade 1s infinite, fade 2s infinite; width: 10px;' +
+      ' height: 10px }</style><div id="b"></div>',
+  );
+  assert.strictEqual(both.el.sprites(), null);
+});
+
+test('what a layer cannot carry stays on the document’s clock: a colour, two animations of one property, a paused one, a clip around it, a fade around it, and ink beside it', async (t) => {
   const doc = await running(
     t,
     '<style>@keyframes fade { to { opacity: .2 } }' +
