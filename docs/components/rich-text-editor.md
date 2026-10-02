@@ -28,7 +28,9 @@ It **registers two host elements** at its module scope: `<richeditor>`
 (`RICH_EDITOR_ELEMENT`), the root — focus, keys, composition, and the one text
 a screen reader reads — and `<richeditortext>` (`RICH_EDITOR_TEXT_ELEMENT`),
 one per textblock: [`<richtext>`](richtext.md) plus a caret and a selection
-band the view sets directly, so a blink or a drag re-renders nothing.
+band the view sets directly, so a blink or a drag re-renders nothing. The
+caret blinks at the desktop's rate, or not at all where the desktop asks for
+a still caret (`useDesktopSettings()`), as core's `<textinput>` does.
 
 **Imported from its subpath only.** Every other component is also exported
 from `@react-x11/components`; this one is not, because ProseMirror's

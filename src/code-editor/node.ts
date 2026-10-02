@@ -225,6 +225,11 @@ export interface CodeEditorProps {
   gutterBackground?: string;
   activeLineColor?: string;
   matchingBracketColor?: string;
+  /** Whether the caret blinks, and how long it stays in each state:
+   *  `<CodeEditor>` hands down the desktop's (`useDesktopSettings()`), and
+   *  false — the desktop asking for a still caret — draws it solid. */
+  caretBlink?: boolean;
+  caretBlinkMs?: number;
   style?: Style | Style[];
 }
 
@@ -2847,15 +2852,32 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
   handleFocus(): void {
     this._focused = true;
     this._caretOn = true;
-    if (this._blinkTimer == null) {
-      const blink = (): void => {
-        this._blinkTimer = blinkClock.arm(blink, CARET_BLINK_MS);
-        this._caretOn = !this._caretOn;
-        this._claimCaretRow();
-      };
-      this._blinkTimer = blinkClock.arm(blink, CARET_BLINK_MS);
-    }
+    if (this._blinkTimer == null) this._armBlink();
     this._repaint();
+  }
+
+  /**
+   * The caret's blink, at the desktop's rate — or none, drawn solid, where
+   * the desktop asks for a still caret, which is an accessibility setting
+   * and not a taste (`caretBlink`). `<CodeEditor>` hands both down from
+   * `useDesktopSettings()`, as core's `<textinput>` reads them.
+   */
+  private _armBlink(): void {
+    blinkClock.disarm(this._blinkTimer);
+    this._blinkTimer = null;
+    const props = this.props as unknown as CodeEditorProps;
+    if (!this._focused || props.caretBlink === false) {
+      this._caretOn = true;
+      return;
+    }
+    const rate = props.caretBlinkMs;
+    const ms = typeof rate === 'number' && rate > 0 ? rate : CARET_BLINK_MS;
+    const blink = (): void => {
+      this._blinkTimer = blinkClock.arm(blink, ms);
+      this._caretOn = !this._caretOn;
+      this._claimCaretRow();
+    };
+    this._blinkTimer = blinkClock.arm(blink, ms);
   }
 
   /** A blink changes the caret and nothing else: claim the text row it
@@ -2913,6 +2935,15 @@ export class CodeEditorNode extends Node implements CodeEditorHandle {
       this._repaint();
     }
     if (nextProps.rows !== before.rows) this.invalidateMeasure('props');
+    if (
+      nextProps.caretBlink !== before.caretBlink ||
+      nextProps.caretBlinkMs !== before.caretBlinkMs
+    ) {
+      // a caret held solid is drawn at once, and the row it is on with it
+      const wasOn = this._caretOn;
+      this._armBlink();
+      if (this._caretOn !== wasOn) this._claimCaretRow();
+    }
     if (
       !sameTokenStyles(
         nextProps.tokenStyles as TokenStyles | undefined,

@@ -33,6 +33,7 @@ import {
 import type { RenderX11Options, RenderX11Result } from 'react-x11/test';
 import { editMenuOpen, screenRect } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
+import { CARET_BLINK_MS } from 'react-x11/node';
 import type { A11yTextState } from 'react-x11/node';
 import { undo } from 'prosemirror-history';
 import { EditorState, Plugin, Selection } from 'prosemirror-state';
@@ -53,6 +54,7 @@ import type {
   RichTextEditorProps,
 } from '../src/rich-text-editor/index.js';
 import type { EditorTextNode } from '../src/rich-text-editor/nodes.js';
+import type { ViewConfig } from '../src/rich-text-editor/view.js';
 
 const h = React.createElement;
 
@@ -250,6 +252,40 @@ test('markdown in: a text element per textblock, lists and quotes drawn around t
 });
 
 // --- typing --------------------------------------------------------------------------
+
+test('the caret blinks at the desktop rate, and holds still where the desktop asks for it', async (t) => {
+  // The view takes `useDesktopSettings()`'s `caretBlink` and
+  // `caretBlinkMs` through `configure`, every render. No settings daemon
+  // answers here, so the rate is the renderer's default, and the still
+  // caret is said to the view the way the component says it.
+  const intervals: unknown[] = [];
+  const real = globalThis.setInterval;
+  t.mock.method(
+    globalThis,
+    'setInterval',
+    (fn: () => void, ms?: number): ReturnType<typeof setInterval> => {
+      intervals.push(ms);
+      return real(fn, ms);
+    },
+  );
+  const { editor } = await mount({ defaultValue: 'Hello' });
+  await focusAtEnd();
+  assert.ok(intervals.includes(CARET_BLINK_MS), 'blinking at the desktop rate');
+  const view = editor.view as unknown as {
+    config: ViewConfig;
+    configure(config: ViewConfig): void;
+    blinkTimer: unknown;
+  };
+  const caret = blocks()[0] as unknown as { editorCaretOn: boolean };
+
+  view.configure({ ...view.config, caretBlink: false });
+  assert.equal(view.blinkTimer, null, 'no blink waits');
+  assert.equal(caret.editorCaretOn, true, 'the caret drawn solid');
+
+  view.configure({ ...view.config, caretBlink: true, caretBlinkMs: 300 });
+  assert.ok(view.blinkTimer != null, 'blinking again');
+  assert.equal(intervals.at(-1), 300, 'at the rate the desktop says');
+});
 
 test('typing edits the document, and onChange reports markdown once per change', async () => {
   const values: string[] = [];

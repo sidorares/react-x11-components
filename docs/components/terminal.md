@@ -93,7 +93,7 @@ because a prop that silently does nothing is the worst shape a prop has.
 | Prop                  | Type                              | Notes                                                                                                                                         |
 | --------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cursorStyle`         | `'block' \| 'underline' \| 'bar'` | Default `'block'`.                                                                                                                            |
-| `cursorBlink`         | `boolean`                         | Default true.                                                                                                                                 |
+| `cursorBlink`         | `boolean`                         | Default: the desktop's (`useDesktopSettings().caretBlink`), at its rate — a VTE terminal's "system" mode.                                     |
 | `bell`                | `'none' \| 'visual'`              | Default `'none'`; `'visual'` flashes the pane.                                                                                                |
 | `onBell`              | `() => void`                      |                                                                                                                                               |
 | `allowClipboardWrite` | `boolean`                         | Honour OSC 52 clipboard **writes** — how `tmux` and `vim` copy out of an ssh session. Default true. Reads are never answered, at any setting. |

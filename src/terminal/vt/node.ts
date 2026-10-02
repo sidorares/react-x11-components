@@ -110,6 +110,9 @@ export interface VtTermProps {
   colors?: TerminalColors;
   cursorStyle?: 'block' | 'underline' | 'bar';
   cursorBlink?: boolean;
+  /** How long the cursor stays in each state while it blinks: the desktop's
+   *  rate, which `<Terminal>` hands down (`useDesktopSettings()`). */
+  cursorBlinkMs?: number;
   /** OSC 52 writes to CLIPBOARD. Reads are never answered — see `_onOsc52`. */
   allowClipboardWrite?: boolean;
   /** The visual bell, mid-flash: the palette runs inverted for a moment.
@@ -224,7 +227,10 @@ export class VtTermNode extends Node {
       this.invalidateMeasure('measure');
       this._repaintAll('props');
     }
-    if (props.cursorBlink !== (prev.cursorBlink as boolean | undefined)) {
+    if (
+      props.cursorBlink !== (prev.cursorBlink as boolean | undefined) ||
+      props.cursorBlinkMs !== (prev.cursorBlinkMs as number | undefined)
+    ) {
       this._syncBlink();
     }
   }
@@ -816,11 +822,14 @@ export class VtTermNode extends Node {
       this._cursorOn = true;
       return;
     }
-    // Core's own interval, so two carets on one screen are in step.
-    this._blink = startInterval(() => {
-      this._cursorOn = !this._cursorOn;
-      this._repaint();
-    }, CARET_BLINK_MS);
+    const ms = this._props().cursorBlinkMs;
+    this._blink = startInterval(
+      () => {
+        this._cursorOn = !this._cursorOn;
+        this._repaint();
+      },
+      typeof ms === 'number' && ms > 0 ? ms : CARET_BLINK_MS,
+    );
   }
 
   // --- input: keyboard -----------------------------------------------------

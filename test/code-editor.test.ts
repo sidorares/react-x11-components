@@ -1012,6 +1012,49 @@ test("a caret blink repaints the caret's row, not the editor", async (t) => {
   }
 });
 
+test('the caret holds still where the desktop asks for it, and blinks at the rate it says', async (t) => {
+  // `<CodeEditor>` hands down `useDesktopSettings()`'s `caretBlink` and
+  // `caretBlinkMs`, as core's `<textinput>` reads them; the bare element
+  // takes them as props, which is how this says what a settings daemon
+  // would. A still caret is an accessibility setting, not a taste.
+  const clock = holdClock(t, blinkClock);
+  const editor = (props: Record<string, unknown>) =>
+    h('codeeditor', {
+      defaultValue: 'one\ntwo',
+      style: { width: 200, height: 80 },
+      ...props,
+    });
+  const { rerender } = await renderX11(editor({ caretBlink: false }), {
+    width: 240,
+    height: 120,
+  });
+  // structural: the class keeps `_caretOn` private
+  const node = editorNode() as unknown as {
+    focus(): void;
+    _caretOn: boolean;
+  };
+  node.focus();
+  await act();
+  assert.equal(clock.pending, false, 'no blink waits');
+  for (let i = 0; i < 60; i++) await clock.frame();
+  assert.equal(node._caretOn, true, 'drawn solid, a second on');
+
+  // the desktop turns the blink back on, at a rate of its own
+  await rerender(editor({ caretBlink: true, caretBlinkMs: 320 }));
+  assert.ok(clock.pending, 'a blink waits');
+  const armed = (
+    blinkClock.arm as unknown as { mock: { calls: { arguments: unknown[] }[] } }
+  ).mock.calls.map((c) => c.arguments[1]);
+  assert.deepStrictEqual([...new Set(armed)], [320], 'at the desktop rate');
+  for (let i = 0; i < Math.ceil(320 / FRAME_MS); i++) await clock.frame();
+  assert.equal(node._caretOn, false, 'and it turns');
+
+  // …and off again, mid-blink: shown, and nothing waits
+  await rerender(editor({ caretBlink: false, caretBlinkMs: 320 }));
+  assert.equal(node._caretOn, true);
+  assert.equal(clock.pending, false);
+});
+
 test('an edit repaints the rows it changed, and paints what a full repaint would', async (t) => {
   // A keystroke used to claim the whole editor: forty lines, the gutter and
   // the thumbs for one character. It claims its rows now — the edited ones,

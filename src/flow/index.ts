@@ -22,8 +22,16 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import type { Dispatch, ReactElement, SetStateAction } from 'react';
-import { Renderer, useApp, useScale, useSupports, useTheme } from 'react-x11';
+import type { Dispatch, ReactElement, RefObject, SetStateAction } from 'react';
+import {
+  Renderer,
+  useApp,
+  useDesktopSettings,
+  useScale,
+  useSupports,
+  useTheme,
+  useWindowState,
+} from 'react-x11';
 import { registerElement, registeredElements } from 'react-x11/host';
 import { createStyles, flattenStyle } from 'react-x11/style';
 // Loads the module the JSX augmentation at the bottom targets: nothing in
@@ -492,6 +500,29 @@ const FlowBodyCard = React.memo(function FlowBodyCard(
  * Leave `nodes`/`edges` out and pass `defaultNodes`/`defaultEdges` for the
  * uncontrolled form, where the pane owns the arrays.
  */
+/**
+ * Whether the dashes on animated edges may march: where the pane's window
+ * is showing and the desktop has not asked for less motion
+ * (`FlowGraphNode.setMarching`). A component of its own that draws
+ * nothing, so a change in the window's state — its focus is part of it —
+ * re-renders this and not the graph.
+ */
+function MarchingEdges({
+  pane,
+}: {
+  pane: RefObject<FlowGraphNode | null>;
+}): null {
+  const { visible } = useWindowState();
+  // `animations` is the reduced-motion half, read at run time: react-x11
+  // answers it on every backend and its declarations leave it out
+  const { animations } = useDesktopSettings() as { animations?: boolean };
+  const marching = visible !== false && animations !== false;
+  useLayoutEffect(() => {
+    pane.current?.setMarching(marching);
+  }, [pane, marching]);
+  return null;
+}
+
 export function Flow<N = FlowNodeData, E = unknown>(
   props: FlowProps<N, E>,
 ): ReactElement {
@@ -1110,6 +1141,7 @@ export function Flow<N = FlowNodeData, E = unknown>(
           layer,
         ),
     drawsGl ? null : panelLayer,
+    React.createElement(MarchingEdges, { key: 'marching', pane }),
   );
 }
 

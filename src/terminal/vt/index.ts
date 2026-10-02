@@ -22,6 +22,7 @@ import React, {
 } from 'react';
 import type { ReactElement, Ref } from 'react';
 import { registerElement, registeredElements } from 'react-x11/host';
+import { useDesktopSettings } from 'react-x11';
 import type { WheelEvent } from 'react-x11';
 import type { Style } from 'react-x11/style';
 
@@ -132,6 +133,7 @@ export function VtTerminal(props: VtTerminalProps): ReactElement {
     bell = 'none',
   } = props;
 
+  const desktop = useDesktopSettings();
   const [term, setTerm] = useState<XtermTerminal | null>(null);
   const [status, setStatus] = useState<EmbedStatus>('idle');
   const [inverted, setInverted] = useState(false);
@@ -408,7 +410,11 @@ export function VtTerminal(props: VtTerminalProps): ReactElement {
     onSelectionChange: props.onSelectionChange,
     colors: props.colors,
     cursorStyle: props.cursorStyle,
-    cursorBlink: props.cursorBlink,
+    // The desktop's, unless the app says: off where it asks for a still
+    // caret, which is an accessibility setting, and at its rate — a VTE
+    // terminal's "system" blink mode, its default
+    cursorBlink: props.cursorBlink ?? desktop.caretBlink,
+    cursorBlinkMs: desktop.caretBlinkMs,
     allowClipboardWrite: props.allowClipboardWrite,
     inverted: bell === 'visual' && inverted,
     focusable: props.focusable ?? true,

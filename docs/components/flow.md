@@ -81,7 +81,12 @@ edge you cannot read a direction off is a line; `null` opts out. `style` takes
 `stroke`, `strokeWidth`, `dash`, `labelColor`, `labelBackground`.
 
 `animated` marches the dash along the edge. It costs a repaint timer while an
-animated edge is **on screen**, and nothing when none is.
+animated edge is **on screen**, and nothing when none is. The dashes hold
+still, where they were, while the window is minimized, unmapped or buried
+(`useWindowState().visible`) and while the desktop asks for less motion
+(`useDesktopSettings().animations`) — the two things react-x11 stops its own
+loops for — and march on from there when that changes. A bare `<flowgraph>`
+is told by `setMarching()`, which is what `<Flow>` calls.
 
 `defaultEdgeOptions` is merged under every edge — where `type` and `markerEnd`
 for a whole graph belong.

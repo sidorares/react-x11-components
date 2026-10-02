@@ -650,6 +650,11 @@ export class FlowGraphNode extends Node implements FlowInstance {
   /** Whether a marching edge is in the world, or in the lifted layer. */
   private _worldAnimated = false;
   private _liftedAnimated = false;
+  /** Whether the 2D scene last painted has an animated edge in it — the
+   *  GL renderer's answer is the two above. */
+  private _sceneAnimated = false;
+  /** Whether the dashes may march at all (`setMarching`). */
+  private _marching = true;
   /** The last nodes commit changed lifted nodes and nothing else. */
   private _liftOnly = false;
   /** The overscan the GL world was culled to, in its own pinned
@@ -3244,8 +3249,29 @@ export class FlowGraphNode extends Node implements FlowInstance {
     super.destroySubtree();
   }
 
+  /**
+   * Whether the dashes on animated edges march, from the `<Flow>` above
+   * (`MarchingEdges` in index.ts): held still while the window is hidden,
+   * minimized or buried and while the desktop asks for less motion — the
+   * two things core stops its own loops for (react-x11's docs/styling.md,
+   * "Loops"). A tick is a repaint of the dashes' box, sixteen a second, and
+   * nobody saw any of them. Held, they keep their phase and go on from it.
+   */
+  setMarching(marching: boolean): void {
+    if (this._marching === marching) return;
+    this._marching = marching;
+    if (!marching) this._stopAnimation();
+    else if (
+      this._gl
+        ? this._worldAnimated || this._liftedAnimated
+        : this._sceneAnimated
+    ) {
+      this._startAnimation();
+    }
+  }
+
   private _startAnimation(): void {
-    if (this._animTimer != null) return;
+    if (this._animTimer != null || !this._marching) return;
     const tick = (): void => {
       // A step at a time rather than an interval, so that a test can hold
       // the timer (`flowClock`), and armed again before anything else,
@@ -3549,6 +3575,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
     }
 
     // The timer exists only while something on screen needs it.
+    this._sceneAnimated = scene.animated;
     if (scene.animated) this._startAnimation();
     else this._stopAnimation();
 

@@ -32,6 +32,7 @@ import {
 } from 'react-x11/test';
 import type { RenderX11Options } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
+import { CARET_BLINK_MS } from 'react-x11/node';
 import {
   XK_BACKSPACE,
   XK_DELETE,
@@ -795,6 +796,56 @@ async function mountVt(
   await waitFor(() => assert.ok(pty.last, 'the pty was opened'));
   return { pty, ref };
 }
+
+test('the cursor blinks as the desktop says while the terminal has focus, and an app that says otherwise is heard', async (t) => {
+  // `<Terminal>` hands the vt element `useDesktopSettings()`'s caret:
+  // whether it blinks, unless `cursorBlink` says, and at what rate — a VTE
+  // terminal's "system" blink mode. No settings daemon answers here, so
+  // the rate is the renderer's default.
+  const intervals: unknown[] = [];
+  const real = globalThis.setInterval;
+  t.mock.method(
+    globalThis,
+    'setInterval',
+    (fn: () => void, ms?: number): ReturnType<typeof setInterval> => {
+      intervals.push(ms);
+      return real(fn, ms);
+    },
+  );
+  await mountVt();
+  // structural: the class keeps `_blink` private
+  const node = vtNode() as unknown as {
+    focus(): void;
+    props: Record<string, unknown>;
+    _blink: unknown;
+    applyProps(
+      next: Record<string, unknown>,
+      prev: Record<string, unknown>,
+    ): void;
+  };
+  node.focus();
+  await act(async () => {});
+  assert.ok(node._blink != null, 'blinking while focused');
+  assert.equal(intervals.at(-1), CARET_BLINK_MS, 'at the desktop rate');
+  assert.equal(
+    (node.props as { cursorBlinkMs?: number }).cursorBlinkMs,
+    CARET_BLINK_MS,
+    'handed down from the desktop',
+  );
+
+  // a desktop rate of its own
+  const props = node.props as Record<string, unknown>;
+  node.applyProps({ ...props, cursorBlinkMs: 300 }, props);
+  assert.equal(intervals.at(-1), 300);
+
+  // …and an app that says no blink
+  await cleanup();
+  await mountVt({ cursorBlink: false });
+  const still = vtNode() as unknown as { _blink: unknown };
+  vtNode().focus();
+  await act(async () => {});
+  assert.equal(still._blink, null, 'no blink at all');
+});
 
 test('the shell runs on the pty, with TERM set to what we are', async () => {
   const { pty } = await mountVt({ command: ['bash', '-lc', 'npm test'] });

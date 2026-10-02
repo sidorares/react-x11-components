@@ -224,7 +224,9 @@ export interface TerminalProps {
 
   /** Default `'block'`. */
   cursorStyle?: 'block' | 'underline' | 'bar';
-  /** Default true. */
+  /** Default: the desktop's caret (`useDesktopSettings().caretBlink`), at
+   *  the desktop's rate — off where it asks for a still caret, which is an
+   *  accessibility setting. */
   cursorBlink?: boolean;
   /** The program rang the bell. */
   onBell?: () => void;
