@@ -8,10 +8,11 @@
 // (docs/prd-html-animations.md §3): an element whose animations and
 // transitions set only `opacity` and the transform properties, one of them
 // a property, each running now, drawn in a box of its own, inside nothing
-// that fades, turns or masks — a box that clips it cuts its layer, and one
+// that fades, turns or masks — a box that clips it cuts its layer, one
 // fixed to the viewport, or in one, has its layer stay where the viewport
-// is — and that nothing the document paints after it draws within reach of
-// while it runs. The last is the document's to answer — core's
+// is, and one inside another element on a layer goes in that one's layer
+// (`partOf`'s `parent`) — and that nothing the document paints after it
+// draws within reach of while it runs. The last is the document's to answer — core's
 // presenter cannot see inside the element — and it is answered in the
 // order the document paints (`paintedAfter`): the layer is over all of the
 // document, which is right for what is painted before the element and
@@ -71,7 +72,7 @@ export interface DocumentSpriteAnimation extends SpriteAnimation {
  *  among it, since nothing a document offers is a source that shows
  *  itself (`contents`). */
 export interface DocumentSprite extends Sprite {
-  paint(ctx: Context2D): void;
+  paint(ctx: Context2D, children?: ReadonlySet<string>): void;
   reach: Rect;
   version: string;
   opacity: number;
@@ -299,9 +300,14 @@ export function liftOf(
  * the layer instead (`clipFor`) — and inside no element whose own
  * animation runs, which may turn into any of those. One fixed to the
  * viewport, or in one that is, goes on a layer that stays where the
- * viewport is (`Part.atViewport`).
+ * viewport is (`Part.atViewport`). `within` is the box of a part whose
+ * layer this one's would go in: it and what is above it are that part's.
  */
-function liftableBox(host: SpriteHost, box: Box): boolean {
+function liftableBox(
+  host: SpriteHost,
+  box: Box,
+  within: Box | null = null,
+): boolean {
   if (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break') {
     return false;
   }
@@ -317,7 +323,9 @@ function liftableBox(host: SpriteHost, box: Box): boolean {
       if (holds(box, fixed)) return false;
     }
   }
-  for (let at: Box | null = box.parent; at; at = at.parent) {
+  // up to the box whose layer its own goes in, which carries its fade, its
+  // turn and its animation, and was asked about the rest
+  for (let at: Box | null = box.parent; at && at !== within; at = at.parent) {
     const style = at.style;
     if (style.opacity < 1 || transformed(style)) return false;
     // a box that clips it cuts its layer to a rectangle (`clipFor`), which a
@@ -497,8 +505,10 @@ export interface Part {
   rect: Rect;
   reach: Rect;
   origin: { x: number; y: number };
-  /** The translation layout moved the box by: undone when it is painted on
-   *  its layer, whose matrix carries each frame's. */
+  /** The translation layout moved the box by, and the boxes of the parts
+   *  whose layers its own is in: undone when it is painted on its layer,
+   *  whose matrix carries each frame's of its own, and its parents' theirs.
+   *  The space its `rect`, `origin` and `clip` are in. */
   translation: [number, number];
   opacity: number;
   transform: SpriteMatrix;
@@ -547,36 +557,47 @@ interface Sampled {
  * layer cannot draw (`liftableBox`), too large, or within reach of what
  * the document paints after it (`paintedAfter`) — where that cannot be
  * told, of any ink but its own and its ancestors' (`crowded`). Its frames
- * are `was`'s where they were sampled from what they would be now.
+ * are `was`'s where they were sampled from what they would be now. Inside
+ * `parent`, where it is given: its layer goes in that part's, so the boxes
+ * from its own up to the parent's are all that is asked about, and it is
+ * placed with the parent untransformed.
  */
 export function partOf(
   host: SpriteHost,
   lift: Lift,
   was: Part | null = null,
+  parent: Part | null = null,
 ): Part | null {
   const { el, box } = lift;
   const tree = host.tree;
   const kept = tree.styles.get(el);
-  if (!kept || !liftableBox(host, box)) return null;
-  const parent = isElement(el.parent) ? el.parent : null;
+  const within = parent?.lift.box ?? null;
+  if (!kept || !liftableBox(host, box, within)) return null;
+  // in a layer that stays where the viewport is, or not, as its parent is
+  const atViewport = drawnAtViewport(box);
+  if (parent && parent.atViewport !== atViewport) return null;
+  // the space its parent's raster is drawn in, the document's where it has
+  // none: layout moved the boxes inside a part by the part's translation
+  const [px, py] = parent?.translation ?? [0, 0];
+  const up = isElement(el.parent) ? el.parent : null;
   // what its style is made from at another time: a pseudo-element's from
   // its element's, an element's from its parent's
   const parentStyle = lift.pseudo
     ? kept.style
-    : parent
-      ? tree.styles.get(parent)?.style
+    : up
+      ? tree.styles.get(up)?.style
       : tree.root.style;
   if (!parentStyle) return null;
   // Where the box would be with no transform: layout moved it by the
   // translation its style has now (`applyRelativeOffsets`), and a layer's
   // matrix carries every frame's.
   const now = matrixOf(box.style, box.width, box.height);
-  const bx = box.x - now[4];
-  const by = box.y - now[5];
+  const bx = box.x - now[4] - px;
+  const by = box.y - now[5] - py;
   const own = ownBounds(box);
   const reach = {
-    x: own.x - now[4],
-    y: own.y - now[5],
+    x: own.x - now[4] - px,
+    y: own.y - now[5] - py,
     width: own.width,
     height: own.height,
   };
@@ -608,22 +629,37 @@ export function partOf(
       extent = unionRect(extent, mapRect(reach, m, ox, oy));
     }
   }
-  // the boxes that clip it cut its layer, and what shows of it is all that
-  // anything painted after it could cover
-  const cut = clipFor(box, extent, host.scale);
+  // the boxes that clip it cut its layer — up to its parent's, which cut
+  // that part's — and what shows of it is all that anything painted after
+  // it could cover. The document's own boxes are where layout put them,
+  // its parents' translations and all.
+  const toDocument = (r: Rect): Rect => ({
+    x: r.x + px,
+    y: r.y + py,
+    width: r.width,
+    height: r.height,
+  });
+  const cut = clipFor(box, toDocument(extent), host.scale, within);
   if (cut === null) return null;
-  const clip = cut?.rect;
+  const clip = cut && {
+    x: cut.rect.x - px,
+    y: cut.rect.y - py,
+    width: cut.rect.width,
+    height: cut.rect.height,
+  };
   const shows = clip ? meet(extent, clip) : extent;
   if (!shows) return null;
   // What is painted before it is under the layer as it is under it, and
   // what is painted after it must not be. One at the viewport keeps its
   // place against what is fixed there, and the scroll takes it anywhere
   // over the rest of the document.
-  const atViewport = drawnAtViewport(box);
+  const showsHere = toDocument(shows);
   const over =
-    atViewport && host.scrolls ? unionRect(shows, inkOf(tree.root)) : shows;
+    atViewport && host.scrolls
+      ? unionRect(showsHere, inkOf(tree.root))
+      : showsHere;
   if (
-    paintedAfter(box, over, atViewport ? shows : null) ??
+    paintedAfter(box, over, atViewport ? showsHere : null) ??
     crowded(tree, box, over)
   ) {
     return null;
@@ -661,7 +697,7 @@ export function partOf(
     rect: { x: bx, y: by, width: box.width, height: box.height },
     reach,
     origin: { x: ox, y: oy },
-    translation: [now[4], now[5]],
+    translation: [now[4] + px, now[5] + py],
     opacity: Math.min(1, Math.max(0, rest.opacity)),
     transform,
     animations,
@@ -669,7 +705,9 @@ export function partOf(
     clip: clip ?? null,
     clipRadius: cut?.radius ?? 0,
     extent: shows,
-    fixed: FIXED_BOXES.get(tree) ?? NO_BOXES,
+    // asked of a part in the document's layer alone: one inside another's
+    // goes where the other does
+    fixed: parent ? NO_BOXES : (FIXED_BOXES.get(tree) ?? NO_BOXES),
     atViewport,
     sampled,
   };
@@ -691,7 +729,10 @@ const NO_BOXES: readonly Box[] = [];
  * The sprite a part is this frame: in the window's coordinates, with the
  * document's origin at (`originX`, `originY`), its animations' delays
  * counted from `now` — what the presenter reads when it attaches one — and
- * painted by `paint`, which draws a box as the document would.
+ * painted by `paint`, which draws a box as the document would, but for the
+ * parts the presenter lifted inside it (`children`, their keys). `parent`
+ * is the key of the part whose layer this one's goes in, where it is in
+ * one (`partOf`).
  */
 export function describe(
   part: Part,
@@ -700,7 +741,8 @@ export function describe(
   originX: number,
   originY: number,
   now: number,
-  paint: (ctx: Context2D, box: Box) => void,
+  paint: (ctx: Context2D, box: Box, children?: ReadonlySet<string>) => void,
+  parent: string | null = null,
 ): DocumentSprite {
   const shift = (r: Rect): Rect => ({
     x: r.x + originX,
@@ -712,16 +754,17 @@ export function describe(
   const box = part.lift.box;
   return {
     key,
+    ...(parent !== null ? { parent } : null),
     rect: shift(part.rect),
     reach: shift(part.reach),
     version,
-    paint(ctx: Context2D) {
+    paint(ctx: Context2D, children?: ReadonlySet<string>) {
       ctx.save();
       try {
         // drawn where it would be with no transform: the layer's matrix
-        // puts it where each frame has it
+        // puts it where each frame has it, and its parents' theirs
         ctx.translate(-tx, -ty);
-        paint(ctx, box);
+        paint(ctx, box, children);
       } finally {
         ctx.restore();
       }

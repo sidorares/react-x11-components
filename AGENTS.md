@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.33.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.33.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.34.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.34.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -628,6 +628,17 @@ it up. **The floor is a running one and moves often** — every move since
   (`src/html/media.ts`), where a video had been its poster. A sprite
   part's `paint` is optional from this release, since a part may show a
   source instead.
+- `^2.34.0` — a sprite inside another (react-x11#842): a part names the
+  one it is inside as its `parent`, its layer goes in that one's, and the
+  presenter paints the parent's raster without it, handing the parent's
+  `paint` the keys it lifted inside it. `<Html>` offers an element
+  animating inside a lifted one so, where it had to keep it on the
+  document's clock: a spinner turning in a card that pulses painted the
+  card's layer again at every frame of the spinner's, 117 window frames
+  and 117 uploads in two seconds on a real Mac, and none with both lifted.
+  A core that reads no `parent` would lift the spinner on a layer of its
+  own over the card's raster, which still holds it, unfaded with the
+  card, so the floor moves with the feature.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1211,12 +1222,19 @@ and on `bidi-js` for its text layout, and ntk is react-x11's dependency — so
 every app that can use this package has all five installed already.
 Declaring them adds no packages to an install; it makes the resolution
 correct under pnpm's strict layout instead of relying on npm hoisting.
-**Check that this is still true before adding a sixth.** If ntk drops the
+**Check that this is still true before adding another.** If ntk drops the
 first four when the document widgets go, the closure argument goes with
 them and they become this package's to justify alone. `bidi-js` is the
 UAX #9 ntk's own layout resolves with, which is why it is the one `<Html>`
 resolves a paragraph's levels with where a line is laid out a piece at a
 time: the two have to agree about every letter the engine orders.
+`linebreak` is the sixth, on the same footing: ntk breaks every line with
+it, and react-x11 depends on it directly to find a CoreText paragraph's
+least width. `text-wrap: pretty` reads the places a line may break from it
+(`layout/pretty.ts`), which is the engines' opinion and no third one. It
+decodes its tables as it is imported, which no bundler can drop, so only
+`<Html>`'s layout imports it, and this package's `sideEffects: false` drops
+it with that layout from an app that renders no `<Html>`.
 
 What is still written out, and why the line falls there: the **CSS parser**
 (postcss is a tooling parser — positions, comments and raws, none of which
@@ -1297,6 +1315,34 @@ down with the content. Anything else that moves what a box holds inside it
 goes through it too, or an absolute box with no offsets is left where the
 flow used to be.
 
+**`text-wrap: pretty` is Blink's score line breaker, and asks the engine
+for its breaks with a character.** The scoring is `layout/pretty.ts`, pure:
+the last four lines of a paragraph, only where they end on a short word
+alone, Minikin's penalties, and Blink's gates — a line that overflowed or
+was cut, a `::first-line`, an inline box with `box-decoration-break:
+clone`. Its tests hold it to Chrome's lines over the same text. Neither
+engine takes break positions, so a break is asked for by making the space a
+line ends on U+2028, as long as the space, so every offset holds. Three
+things are load-bearing:
+
+- **A line separator is no forced break.** `justifiedRuns` and the
+  line-at-a-time loop's `forced` read a line feed alone as one, so a line a
+  separator ends is justified and aligned as the rest are. Everything that
+  asks where a line may break after white space (`SPACE`, `BREAKS_AFTER`,
+  `unbreakableAfter`, …) counts U+2028 with it, and `breakBefore(…, true)`
+  ends a segment's line at one: without them, a separator straight after
+  an inline box's text glued the next word to the box's last, and the line
+  broke a word early or not at all.
+- **Lines made a piece at a time are made twice.** The loop knows nothing
+  of scores. `prettyAgain` lays the paragraph out once as `layoutSpaced`
+  would, scores that where its lines start where the loop's did, and
+  `layoutLines` makes the lines again with the separators in the items,
+  keeping them only where the engine broke at every one.
+- **A break with no space to take cannot be asked for.** After a hyphen,
+  between two ideographs: a paragraph whose best breaks include one keeps
+  its greedy lines. An engine option for break positions would lift this,
+  and `balance` could use it too.
+
 **Nothing is fetched and nothing is executed, by construction.**
 `onResource` is the only way anything loads and `onScript` never runs
 anything. Both are the same call the desktop calendar makes about
@@ -1323,6 +1369,29 @@ cache laid it out three times a frame. That is sound because the size a
 width comes to is the same whichever candidate it holds — a `w` one is as
 wide as `sizes` says, an `x` one its pixels over its density — and an
 arrival, which can change it, clears the cache as it always has.
+
+Two more things a choice decides, and each has a rule. **The `<source>` it
+took sizes the `<img>`** where it has a `width` or a `height` (HTML's
+dimension attribute source), so the cascade asks for it
+(`Cascade.dimensionSource`), and an `<img>`'s presentational hints are no
+longer a function of its own attributes. That is why the style-sharing key
+carries the source's two attributes, and why a choice that takes another
+source hands its `<img>` to the build to restyle (`SourceChanges.restyle`)
+rather than keeping its style: two images written alike in two pictures
+shared one style, and a resize across a `media` kept the old one. Anything
+else that makes a hint read past its element joins the key the same way.
+**An image whose `sizes` is `auto` is picked after layout**, from its
+content width (`chooseLaidOut`), and where that changes what it draws, the
+boxes are built and laid out once more, in the same `_update`. That
+terminates only because HTML's UA sheet gives such an image `contain: size
+!important`, so its width is no candidate's to change. That is also why the
+cascade has a UA `!important` origin over the author's
+(`Origin.UserAgentImportant`): a page's `img { contain: none }` would let
+the second layout move the width the pick was made for. And it is why
+layout reads a replaced box's own size through `ownIntrinsic` alone, which
+answers the contained one: the flex item's basis and cross size read
+`box.intrinsic`, and an auto image in a flex row took its height from the
+candidate's ratio.
 
 **An `image-set()` is chosen as the style is computed, and a choice at
 another density is not a string.** A cascade is made for one scale, and
@@ -1826,6 +1895,19 @@ things are load-bearing.
   shape — and what shows through it is all any of this is asked of.
   **Anything new that clips a box joins `clipFor`**, or a layer shows
   what the document cuts away.
+
+**A part inside another's box goes in that part's layer** (`parent`,
+react-x11#842). `sprites()` offers the lifts an ancestor's first, and a
+lift whose box is inside an offered part's is offered inside it: `partOf`
+asks only about the boxes between the two (`liftableBox` and `clipFor`
+stop at the parent's box), and places it in the space the parent's
+raster is drawn in — layout moved every box inside a part by the part's
+translation, so a part's `translation` is its own and its parents', and
+a child's `rect` and `clip` are the document's less its parent's. The
+presenter hands a parent's paint the keys of the parts it lifted inside
+it, which it leaves out (`_holesOf`), and paints it again when they
+change; the element hears which are lifted only after that paint, so
+the knowledge has to be the presenter's.
 
 **A transition is lifted as an animation is.** Its frames are sampled
 from its start to its end, a track for the opacity and one for the

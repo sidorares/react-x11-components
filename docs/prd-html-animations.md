@@ -589,6 +589,15 @@ In order, each step useful on its own and measured before the next:
    card with a radius went from 117 window frames and 104 paints of the
    document in two seconds to none.
 
+   **And what animates inside what is lifted.** A part may be inside
+   another (react-x11#842's `parent`): its layer goes in the other's,
+   which fades, turns and cuts it, the presenter paints the other's raster
+   without it, and it is asked about nothing but the boxes between the two.
+   A spinner turning in a card that pulses had the card lifted and the
+   spinner on the document's clock, every frame of it painting the card's
+   layer again: 117 window frames and 117 uploads in two seconds, and none
+   of either with both lifted.
+
 6. **§5.3's Linux rung** only if step 1's measurements on Xorg say the
    resample is the cost.
 

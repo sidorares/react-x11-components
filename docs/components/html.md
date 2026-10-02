@@ -230,11 +230,49 @@ a lighter one: Chrome's choice, where Firefox asks for the lighter one and
 Safari keeps the old density too. A chosen image that is declined is a
 declined image, and its `src` is not asked for in its place.
 
-Two parts are not done. `sizes="auto"` is the laid-out width of a lazily
-loaded image, which is not known when the source is chosen, so it is
-passed over for the entries after it — which is what WordPress writes
-them for. And a chosen `<source>`'s `width` and `height`, which a browser
-gives the `<img>` in place of its own, are not read: the `<img>`'s are.
+**A chosen `<source>` with a `width` or a `height` sizes the `<img>`**,
+in place of the `<img>`'s own: HTML's "dimension attribute source", which
+Chrome 90, Safari 15 and Firefox 108 have, and which lets an art-directed
+picture reserve another shape at each breakpoint. A resize that takes
+another source restyles the image. The three browsers map the attributes
+the same way, and so does this:
+
+- a source with a `width` alone leaves the height to the image's ratio,
+  and a `height` alone the width; the `<img>`'s attribute for the other
+  side is not read;
+- a source's attribute that is no length, `width="wide"`, leaves the
+  `<img>`'s for that side. One that makes no ratio, such as a percentage,
+  leaves the `<img>`'s ratio;
+- a source that is not chosen sizes nothing, whatever it says.
+
+**`sizes="auto"` is the image's laid-out width**, the width of its content
+box in CSS pixels, in an `<img loading="lazy">` whose `sizes` is `auto` or
+starts with `auto,`. WordPress 6.7 writes `sizes="auto, …"` on every lazy
+image. A `<source>` with no `sizes` before such an image counts as `auto`
+too. Such an image's source is chosen with the rest, and its candidate
+once it is laid out, again whenever its width moves. Nothing is asked for
+until then, neither the size the entries after `auto` give nor the
+`src`.
+
+HTML's UA sheet gives every image whose `sizes` starts with `auto`, lazy
+or not, `contain: size !important` and `contain-intrinsic-size: 300px
+150px`. It is laid out as though it had no image: at its attributes, its
+style, or 300 by 150. So the candidate its
+width picks cannot change that width, and no rule of the page can take the
+containment back. A pick after layout that changes what the image draws
+builds the boxes again for the size it now holds, which `object-fit:
+none` draws. That second layout leaves every width as it was, so picking
+stops there.
+
+An image without `loading="lazy"` has no `auto`, and neither does a
+`sizes` with a space before `auto` or with `auto` after another entry. In
+those, `auto` is passed over for the entries after it. That is how Firefox
+and WebKit read it, and how HTML says. Chrome 154 takes `auto` after a
+space or after another entry, and `100vw` for the whole list in an image
+that is not lazy. An image that is
+`display: none` is not laid out, so `auto` is the width it last had, or is
+passed over. Unlike a browser, which lazily loads only what nears the
+viewport, `<Html>` asks for every image, a lazy one included.
 
 ### Image sets
 
@@ -1670,7 +1708,12 @@ compositor:
   across lines — and is not masked, cut by a `clip-path` or drawn against
   the viewport, and holds nothing fixed to it unless it is fixed itself;
 - nothing it is inside fades, turns, masks, is cut by a `clip-path`, or
-  runs an animation of its own. A box that clips it — an
+  runs an animation of its own — but for an element that goes on a layer
+  itself: an element animating inside it goes on a layer inside that
+  one's, fading, turning and cut with it, so a spinner in a card that
+  pulses is two layers and no frame of the document's. Then only the boxes
+  between the two are asked about, and the inner one is kept to everywhere
+  the outer one's layer was asked about. A box that clips it — an
   `overflow` other than `visible`, a `clip` — cuts its layer to the same
   rectangle, so a carousel's slide or a marquee goes on a layer cut where
   the document cuts it; one with rounded corners cuts nothing so long as
@@ -2014,7 +2057,9 @@ start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
 of it, `white-space-collapse` and `text-wrap-mode`, `text-wrap` (Tailwind
 4's `text-nowrap`, and `text-balance`: a heading of up to six lines broken
 at the narrowest width that keeps as many of them, and set in its whole
-width, as Chrome does it; `pretty` wraps as `auto` does), `line-clamp`
+width, as Chrome does it; and `text-pretty`, a paragraph's last word kept
+off a line of its own where Chrome keeps it off — see
+[the decisions](#the-decisions)), `line-clamp`
 (CSS Overflow 4: a line-clamp container shows the first lines of its
 formatting context, counted through the blocks in it, and is as tall as
 they are; what comes after them is invisible and takes no room, and the
@@ -2782,6 +2827,31 @@ passes through it to what is, and a box inside it that sets either back
 is still found. A closed menu laid over a page, hidden until it opens,
 takes nothing from the page under it.
 
+**`text-wrap: pretty` breaks lines where Chrome breaks them.** CSS Text 4
+asks for better lines than the greedy ones and leaves how to the user agent,
+so this follows Blink's score line breaker. Where a paragraph's lines end on
+one short word — under a third of the line, with no place to break inside
+it — its last four lines, and none before them, are broken again where
+Minikin's scoring puts them: each line's slack squared, against a heavy
+penalty for the word left alone. It keeps as many lines as there were, or
+the lines stand. A paragraph is a block's text, or the part of it a `<br>`
+ends, and most end on a longer line and cost one comparison a line. As in
+Blink, a paragraph keeps its lines where one of them overflowed or had a
+word cut to fit it, and a block does where it has a `::first-line` style or
+an inline box with `box-decoration-break: clone` — the inline `<code>` many
+a blog clones its padding onto, which Blink's line breaker turns the scoring
+off for. The places a line may break are UAX #14's, from the `linebreak`
+package ntk breaks every line with, less those Blink's own table for two
+ASCII characters leaves out: `and/or` breaks at no slash. A break is asked
+of the text engine by making the space a line ends on a line separator, as
+long as the space, so every offset in the text holds. A place to break with
+no space to make one of — after a hyphen, between two ideographs — cannot
+be asked for, and a paragraph whose best breaks include one keeps its lines
+where Chrome would break it there; so do lines beside a float or around an
+image or an inline-block. An inline box in a font or a line height of its
+own, or a `text-indent`, has its lines made a piece at a time, and they are
+scored and made again with the breaks asked for.
+
 **Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
 Everything from the cascade to paint recurses on tree depth, so a
 degenerately nested document — a few hundred unclosed `<div>`s, a runaway
@@ -3010,7 +3080,10 @@ pointer painted 40 to 43 window frames and as many paints of the document
 on the clock, each way; lifted, it takes 4 to 6 frames and 3 or 4 paints,
 the change that starts it and the one that hands it back. A toast fixed to
 the viewport and fading in a pane that scrolls the page painted 116 to 118
-window frames in two seconds, still or scrolled; lifted, none.
+window frames in two seconds, still or scrolled; lifted, none. A spinner
+turning in a card that pulses, the card lifted and the spinner not, painted
+117 window frames in two seconds and uploaded the card's layer again at
+each; with the spinner on a layer inside the card's, none of either.
 
 ## Types
 

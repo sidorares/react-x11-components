@@ -70,6 +70,8 @@ import type {
 } from './boxes.js';
 import type { FloatContext } from './floats.js';
 import { tableGrid } from './grid.js';
+import { endsShort, prettyBreaks, shortLine, spacedWords } from './pretty.js';
+import type { PrettySetting } from './pretty.js';
 
 /** How a paragraph's lines are fitted to their width, and measured: as a
  *  browser fits them (`FontsLike`'s `fit`). */
@@ -251,8 +253,9 @@ function breaksOnlyAtSpace(c: number): boolean {
   // Latin-1 but the soft hyphen and the acute accent, which a break may
   // precede; Latin Extended, the combining marks, Greek and Cyrillic
   if (c >= 0xa0 && c < 0x530) return c !== 0xad && c !== 0xb4 && c !== 0x2c8;
-  // the curly quotes
-  return c >= 0x2018 && c <= 0x201f;
+  // the curly quotes, and the line separator `text-wrap: pretty` makes of
+  // a space
+  return (c >= 0x2018 && c <= 0x201f) || c === 0x2028;
 }
 
 const LONGEST_WORD = new WeakMap<TextLayoutLike, number>();
@@ -277,8 +280,15 @@ function longestWord(layout: TextLayoutLike): number {
     const text = run.text;
     for (let i = 0; i < text.length; i += 1) {
       const c = text.charCodeAt(i);
-      if (c === 0x20 || c === 0x09 || c === 0x0a || c === 0x200b) word = 0;
-      else if (c < 0xdc00 || c > 0xdfff) {
+      if (
+        c === 0x20 ||
+        c === 0x09 ||
+        c === 0x0a ||
+        c === 0x200b ||
+        c === 0x2028
+      ) {
+        word = 0;
+      } else if (c < 0xdc00 || c > 0xdfff) {
         // a surrogate pair is one character
         word += per;
         if (word > longest) longest = word;
@@ -352,6 +362,18 @@ export interface InlineOptions {
   floats: FloatContext | null;
   /** The block's content-box left edge, in the float context's space. */
   originX: number;
+  /** Device pixels to a CSS pixel, the unit every length here is in: what
+   *  `text-wrap: pretty` scales its scores by, as Blink scales them by its
+   *  zoom, so that the same breaks win at any display scale. 1 if absent. */
+  scale?: number;
+  /** Whether a `::first-line` style applies to the block, which keeps
+   *  `text-wrap: pretty` off its lines as Blink keeps it off (a block with
+   *  one is no block its score line breaker takes). */
+  firstLined?: boolean;
+  /** Where `text-wrap: pretty` has the lines break, for lines made a piece
+   *  at a time: the document index of each space a line is to end on,
+   *  which is made a line separator (`prettyAgain`). */
+  prettyAt?: readonly number[];
   /** A `::first-line` colour, for the text before `end` — the first line's
    *  end, in the document index — whose colour is `from`, the block's. */
   firstLine?: { color: string; from: string; end: number };
@@ -467,6 +489,14 @@ function layoutLines(block: Box, options: InlineOptions): InlineResult {
     statics,
   );
   const result = linesOf(block, options, items, floatCount);
+  // lines made a piece at a time that `text-wrap: pretty` would break
+  // otherwise, made again with its breaks asked for — and kept where the
+  // engine broke where it was asked to
+  const again = PRETTY_AGAIN.get(result);
+  if (again) {
+    const better = layoutLines(block, { ...options, prettyAt: again });
+    if (brokenAt(better.lines, result.lines.length, again)) return better;
+  }
   // whichever way the lines were made, one pass over them
   if (statics.length) {
     staticPositions(statics, items, result.lines, block, options);
@@ -552,12 +582,22 @@ function linesOf(
     }
   }
   if (options.firstLine) firstLineColour(items, options.firstLine);
+  if (options.prettyAt) separateAt(items, options.prettyAt);
 
   const style = block.style;
   const wrapWords = overflowWrapOf(style, items);
   // a line may break between any two letters, an edge between them or not
   const breaksAnywhere =
     style.wordBreak === 'break-all' || style.lineBreakAnywhere;
+  const pretty = options.prettyAt
+    ? null
+    : prettySetting(
+        block,
+        items,
+        options,
+        keepsSpaces || breaksAnywhere,
+        wrapWords,
+      );
   const base = {
     family: style.fontFamily,
     size: style.fontSize,
@@ -641,6 +681,7 @@ function linesOf(
       align,
       fonts,
       keepsSpaces,
+      pretty,
     );
     if (laid && !shortOfStrut(laid.lines, strut, firstStrut)) return laid;
     if (laid) strutted = true;
@@ -700,6 +741,7 @@ function linesOf(
         fonts,
         CHUNKS,
         keepsSpaces,
+        pretty,
       );
       if (!shortOfStrut(chunked.lines, strut, firstStrut)) return chunked;
       strutted = true;
@@ -797,6 +839,19 @@ function linesOf(
         LAYOUT_RUNS.set(layout, runs);
         balanced = true;
       }
+    }
+    // `text-wrap: pretty`: a paragraph's last word kept off a line of its
+    // own, where Blink keeps it off
+    if (pretty && !cut) {
+      const better = prettyLayout(
+        fonts,
+        runs,
+        base,
+        layoutOptions,
+        layout,
+        pretty,
+      );
+      if (better) ({ layout, runs } = better);
     }
     layout = justifiedLayout(
       fonts,
@@ -1252,11 +1307,12 @@ function linesOf(
     // the same of its line ends instead: it wrapped if anything but
     // whitespace follows the first line. Read as "fitted", a cut fragment
     // advanced past the whole segment, and a paragraph beside a float lost
-    // every line after its first. And a line that ends at a `<br>` is over
+    // every line after its first. And a line that ends at a `<br>`, or at
+    // the line separator `text-wrap: pretty` asks for a break with, is over
     // whether or not anything followed it in this segment: what comes next
     // — an atomic, an element's edge — is the next line's.
     let wrapped =
-      breakBefore(segment.runs, first.end) ||
+      breakBefore(segment.runs, first.end, true) ||
       (fragment.truncated ?? inkBeyond(segment.runs, first.end));
     // An inline box's edge is no place to break a line (CSS Text 3, 5.1):
     // where the segment runs to its end on this line, its last word runs on
@@ -1487,7 +1543,17 @@ function linesOf(
   }
   placeDeferred();
 
-  if (!floatsPlaced.length) return { lines, height: y, width: widest };
+  if (!floatsPlaced.length) {
+    const result = { lines, height: y, width: widest };
+    // the breaks `text-wrap: pretty` would make instead, which the lines
+    // are made again with (`layoutLines`): a line's room is the band's
+    // here, and no float narrows it
+    if (pretty && !hasAtomics && !floated && fonts) {
+      const at = prettyAgain(items, lines, fonts, base, style, pretty, indent);
+      if (at) PRETTY_AGAIN.set(result, at);
+    }
+    return result;
+  }
   const floatRow = besideLines(
     Number.isFinite(options.width) ? [] : lines,
     floatsPlaced,
@@ -1655,6 +1721,7 @@ function layoutSpaced(
   align: string,
   fonts: FontsLike,
   keepsSpaces: boolean,
+  pretty: PrettySetting | null,
 ): InlineResult | null {
   const wrapWords = overflowWrapOf(style, items);
   let runs: TextRun[] = [];
@@ -1699,6 +1766,18 @@ function layoutSpaced(
     runs = held;
     layout = fonts.layout(runs, base, layoutOptions);
     LAYOUT_RUNS.set(layout, runs);
+  }
+  // an edge is a no-break space to the breaker, and takes no part
+  if (pretty) {
+    const better = prettyLayout(
+      fonts,
+      runs,
+      base,
+      layoutOptions,
+      layout,
+      pretty,
+    );
+    if (better) ({ layout, runs } = better);
   }
   // justified with its spacers in it, which are edges and not spaces
   layout = justifiedLayout(
@@ -1895,6 +1974,7 @@ function layoutChunked(
   fonts: FontsLike,
   chunking: Chunking = CHUNKS,
   keepsSpaces = false,
+  pretty: PrettySetting | null = null,
 ): InlineResult {
   const wrapWords = overflowWrapOf(style, items);
   const lines: LineBox[] = [];
@@ -1935,6 +2015,18 @@ function layoutChunked(
       chunkRuns = held;
       layout = fonts.layout(chunkRuns, base, chunkOptions);
       LAYOUT_RUNS.set(layout, chunkRuns);
+    }
+    // a chunk ends where a paragraph does, so it is scored whole
+    if (pretty && !cut) {
+      const better = prettyLayout(
+        fonts,
+        chunkRuns,
+        base,
+        chunkOptions,
+        layout,
+        pretty,
+      );
+      if (better) ({ layout, runs: chunkRuns } = better);
     }
     // a chunk ends at a forced break or at the paragraph's end, which is
     // where `justifiedRuns` takes a chunk's last line to end
@@ -2219,8 +2311,9 @@ function breaksBetween(
  *  `MIN_CONTENT_PROBE`). */
 const MIN_CONTENT_WIDTH = 0;
 
-/** White space a line breaks after. */
-const SPACE = /^[ \t\n]$/;
+/** White space a line breaks after — the line separator `text-wrap:
+ *  pretty` asks for a break with among it (`LINE_SEPARATOR`). */
+const SPACE = /^[ \t\n\u2028]$/;
 
 /** Letters and digits of the Latin, Greek and Cyrillic alphabets, and the
  *  marks on them: no line breaks between two of these (UAX #14, LB9, LB23,
@@ -2261,6 +2354,7 @@ function lastSpace(runs: readonly TextRun[], end: number): number {
       text.lastIndexOf(' '),
       text.lastIndexOf('\t'),
       text.lastIndexOf('\n'),
+      text.lastIndexOf('\u2028'),
     );
     if (at >= 0) found = from + at;
     from += run.text.length;
@@ -2272,7 +2366,7 @@ function lastSpace(runs: readonly TextRun[], end: number): number {
 function firstSpace(runs: readonly TextRun[]): number {
   let from = 0;
   for (const run of runs) {
-    const at = run.text.search(/[ \t\n]/);
+    const at = run.text.search(/[ \t\n\u2028]/);
     if (at >= 0) return from + at;
     from += run.text.length;
   }
@@ -2300,7 +2394,7 @@ function textAfterEdges(
     if (item.kind === 'edge' || item.kind === 'float') continue;
     if (item.kind === 'atomic') break;
     const text = item.run.text;
-    const stop = text.search(/[ \t\n]/);
+    const stop = text.search(/[ \t\n\u2028]/);
     if (stop < 0) {
       runs.push(item.run);
       continue;
@@ -2328,7 +2422,7 @@ function unbreakableBound(items: readonly Item[], from: number): number {
     }
     if (item.kind === 'atomic') break;
     const run = item.run;
-    const stop = run.text.search(/[ \t\n]/);
+    const stop = run.text.search(/[ \t\n\u2028]/);
     const per = (run.size ?? 16) * 1.5 + Math.max(0, run.letterSpacing ?? 0);
     width += (stop < 0 ? run.text.length : stop) * per;
     if (stop >= 0) break;
@@ -2387,7 +2481,7 @@ function unbreakableAfter(
       continue;
     }
     const text = item.run.text;
-    const stop = wrapping ? text.search(/[ \t\n]/) : text.indexOf('\n');
+    const stop = wrapping ? text.search(/[ \t\n\u2028]/) : text.indexOf('\n');
     if (stop < 0) {
       runs.push(item.run);
       continue;
@@ -5037,7 +5131,7 @@ function segmentFrom(items: Item[], index: number, offset: number): Segment {
 
 /** A text a line may break after where its block wraps: one that ends in
  *  white space, which a no-break space a `nowrap` element holds is not. */
-const BREAKS_AFTER = /[ \t\n]$/;
+const BREAKS_AFTER = /[ \t\n\u2028]$/;
 
 /** Move `(index, offset)` forward by `consumed` code units of text. */
 function advance(
@@ -5097,11 +5191,19 @@ function spaceAdvance(fonts: FontsLike, run: DocumentRun): number {
 
 /** Whether the runs' joined text has a forced break just before a
  *  code-unit offset — a line's end, which an engine counts the break in. */
-function breakBefore(runs: TextRun[], offset: number): boolean {
+function breakBefore(
+  runs: TextRun[],
+  offset: number,
+  /** a line separator too, which ends a line and no paragraph */
+  separated = false,
+): boolean {
   let at = 0;
   for (const run of runs) {
     const next = at + run.text.length;
-    if (offset - 1 < next) return run.text.charCodeAt(offset - 1 - at) === 10;
+    if (offset - 1 < next) {
+      const c = run.text.charCodeAt(offset - 1 - at);
+      return c === 10 || (separated && c === 0x2028);
+    }
     at = next;
   }
   return false;
@@ -5273,15 +5375,26 @@ function holdAtBreaks(
   }
   if (!held) return null;
   held.sort((a, b) => a - b);
+  return replacedAt(runs, starts, held, '\u00a0');
+}
+
+/** The runs with the code unit at each of `offsets` — ascending, in their
+ *  joined text — made `char`: as long, so every offset holds. */
+function replacedAt(
+  runs: TextRun[],
+  starts: number[],
+  offsets: number[],
+  char: string,
+): TextRun[] {
   const out = runs.slice();
   let next = 0;
-  for (let k = 0; k < runs.length && next < held.length; k += 1) {
+  for (let k = 0; k < runs.length && next < offsets.length; k += 1) {
     const start = starts[k];
     const end = start + runs[k].text.length;
-    if (held[next] >= end) continue;
+    if (offsets[next] >= end) continue;
     const chars = runs[k].text.split('');
-    while (next < held.length && held[next] < end) {
-      chars[held[next] - start] = '\u00a0';
+    while (next < offsets.length && offsets[next] < end) {
+      chars[offsets[next] - start] = char;
       next += 1;
     }
     out[k] = { ...runs[k], text: chars.join('') };
@@ -5568,6 +5681,288 @@ function balancedWidth(
     else lo = mid;
   }
   return Math.ceil(hi);
+}
+
+/**
+ * What `text-wrap: pretty` scores a block's lines with, or null where it
+ * keeps the lines `auto` makes — as Blink keeps them for a block its score
+ * line breaker does not take: one whose lines do not wrap, or keep their
+ * spaces (a space a line ends on is how a break is asked for, below, and a
+ * kept one is the text's), or break where UAX #14 does not say (`break-all`,
+ * `line-break: anywhere`, `keep-all`); a clamped one, whose lines the
+ * clamp cuts; one with a `::first-line` style; and one with an inline box
+ * in it that draws its decorations whole on every line it is on
+ * (`box-decoration-break: clone`, which Blink's line breaker turns the
+ * score off for wherever it meets one — the inline `<code>` of many a
+ * blog). Lines beside a float, or around an image or an inline-block,
+ * wrap as `auto` does too.
+ */
+function prettySetting(
+  block: Box,
+  items: readonly Item[],
+  options: InlineOptions,
+  breaksElsewhere: boolean,
+  wrapWords: 'normal' | 'break-word',
+): PrettySetting | null {
+  const style = block.style;
+  if (style.textWrapStyle !== 'pretty' || !wraps(style)) return null;
+  if (breaksElsewhere || style.wordBreak === 'keep-all') return null;
+  if (options.clamp || options.firstLined) return null;
+  for (const item of items) {
+    if (item.kind !== 'text' && item.kind !== 'edge') continue;
+    const from = item.kind === 'edge' ? item.box : item.box.parent;
+    for (let box = from; box && box !== block; box = box.parent) {
+      if (box.style.boxDecorationBreak === 'clone') return null;
+    }
+  }
+  const width = options.width;
+  if (!(width > 0) || !Number.isFinite(width)) return null;
+  return {
+    width,
+    fontSize: style.fontSize,
+    justified: style.textAlign === 'justify',
+    zoom: options.scale ?? 1,
+    cuts: wrapWords !== 'normal',
+  };
+}
+
+/** What asks for a break where `text-wrap: pretty` wants one: a line
+ *  separator, which ends a line and no paragraph, so the line is still
+ *  justified where its paragraph is (`justifiedRuns` reads a line feed as
+ *  the end of one); and which both engines break at and draw nothing for. */
+const LINE_SEPARATOR = '\u2028';
+
+/**
+ * A layout's lines broken again as `text-wrap: pretty` breaks them
+ * (`layout/pretty.ts`), or null where they break where they did. The
+ * breaks are asked for by making the space a line ends on a line
+ * separator, as long as it, so every offset into the text holds; and the
+ * engine is held to them — a line it would not fit where it was asked to
+ * end, or broke anywhere else, and the lines it made at first stand.
+ */
+function prettyLayout(
+  fonts: FontsLike,
+  runs: TextRun[],
+  base: Record<string, unknown>,
+  options: Parameters<FontsLike['layout']>[2],
+  layout: TextLayoutLike,
+  setting: PrettySetting,
+): { layout: TextLayoutLike; runs: TextRun[] } | null {
+  const lines = layout.lines;
+  if (!endsShort(lines, setting.width)) return null;
+  const text = runs.map((run) => run.text).join('');
+  const separators = prettyBreaks(text, runs, lines, setting, (offsets) =>
+    positionsAlong(fonts, runs, base, options.direction, offsets),
+  );
+  if (!separators) return null;
+  const out = replacedAt(runs, runStarts(runs), separators, LINE_SEPARATOR);
+  const laid = fonts.layout(out, base, options);
+  if (laid.lines.length !== lines.length) return null;
+  let next = 0;
+  for (const line of laid.lines) {
+    if (next < separators.length && line.start === separators[next] + 1) {
+      next += 1;
+    }
+  }
+  if (next < separators.length) return null;
+  LAYOUT_RUNS.set(laid, out);
+  return { layout: laid, runs: out };
+}
+
+/** The breaks `text-wrap: pretty` asks lines made a piece at a time to be
+ *  made again with, by the result of making them (`prettyAgain`). */
+const PRETTY_AGAIN = new WeakMap<InlineResult, readonly number[]>();
+
+/**
+ * Where `text-wrap: pretty` would break lines made a piece at a time — an
+ * inline box with a font or a line height of its own on them, a
+ * `text-indent` — as the document indices of the spaces they are to end
+ * on, or null where it would break them where they are. Scored over the
+ * paragraph as one layout makes it, the edges and the indent spacers in
+ * it, as `layoutSpaced` lays them out: only where that layout's lines
+ * start where these do, or what is scored is not what was made.
+ */
+function prettyAgain(
+  items: Item[],
+  lines: LineBox[],
+  fonts: FontsLike,
+  base: Record<string, unknown>,
+  style: ComputedStyle,
+  setting: PrettySetting,
+  indent: number,
+): number[] | null {
+  // an indent that takes room back is a negative width, which Blink's
+  // candidates do not take either
+  if (indent < 0 || !endsShort(lines, setting.width)) return null;
+  // One paragraph, whose last line is the only one scored: where it has
+  // a place to break in it, as most short ones have, nothing is laid out
+  // to find out more
+  if (!items.some((item) => isText(item) && item.run.text.includes('\n'))) {
+    const last = lines[lines.length - 1];
+    if (!shortLine(last.width, setting.width)) return null;
+    const words = textBetween(items, last.textStart, last.textEnd);
+    if (spacedWords(words, 0, words.length)) return null;
+  }
+  const runs: TextRun[] = [];
+  const spans = new SpanMap();
+  let doc = 0;
+  for (const item of items) {
+    if (item.kind === 'text') {
+      doc = item.start;
+      break;
+    }
+  }
+  if (indent > 0) {
+    spans.add(doc, 1, null);
+    runs.push(spacerRun(fonts, style, indent));
+  }
+  for (const item of items) {
+    if (item.kind === 'edge') {
+      if (item.width < 0) return null;
+      spans.add(doc, 1, null);
+      runs.push(spacerRun(fonts, style, item.width));
+    } else if (item.kind === 'text') {
+      spans.add(
+        item.start,
+        item.run.text.length,
+        item.control ? null : item.box,
+      );
+      runs.push(item.run);
+      if (!item.control) doc = item.start + item.run.text.length;
+    } else return null;
+  }
+  const shadow = fonts.layout(runs, base, {
+    maxWidth: setting.width,
+    direction: style.direction,
+    overflowWrap: overflowWrapOf(style, items),
+    fit: PARAGRAPH_FIT,
+  });
+  if (shadow.lines.length !== lines.length) return null;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (spans.documentAt(shadow.lines[i].start) !== lines[i].textStart) {
+      return null;
+    }
+  }
+  const separators = prettyBreaks(
+    runs.map((run) => run.text).join(''),
+    runs,
+    shadow.lines,
+    setting,
+    (offsets) => positionsAlong(fonts, runs, base, style.direction, offsets),
+  );
+  return separators && separators.map((at) => spans.documentAt(at));
+}
+
+/** The text of the items from one document index to another. */
+function textBetween(items: Item[], from: number, to: number): string {
+  let out = '';
+  for (const item of items) {
+    if (item.kind !== 'text' || item.control) continue;
+    const a = Math.max(from, item.start);
+    const b = Math.min(to, item.start + item.length);
+    if (b > a) out += item.run.text.slice(a - item.start, b - item.start);
+  }
+  return out;
+}
+
+/** The text items with the space at each of `at` — document indices,
+ *  ascending — a line separator, which a line made a piece at a time
+ *  breaks at and goes on from as from any wrap (`breakBefore` reads a line
+ *  feed alone as a forced break). */
+function separateAt(items: Item[], at: readonly number[]): void {
+  let next = 0;
+  for (const item of items) {
+    if (next >= at.length) return;
+    if (item.kind !== 'text' || item.control) continue;
+    const end = item.start + item.length;
+    while (next < at.length && at[next] < item.start) next += 1;
+    if (next >= at.length || at[next] >= end) continue;
+    const chars = item.run.text.split('');
+    while (next < at.length && at[next] < end) {
+      chars[at[next] - item.start] = LINE_SEPARATOR;
+      next += 1;
+    }
+    item.run = { ...item.run, text: chars.join('') };
+  }
+}
+
+/** Whether lines made again with `text-wrap: pretty`'s breaks asked for
+ *  are as many as they were, and break at every one. */
+function brokenAt(
+  lines: LineBox[],
+  count: number,
+  at: readonly number[],
+): boolean {
+  if (lines.length !== count) return false;
+  let next = 0;
+  for (const line of lines) {
+    if (next < at.length && line.textStart === at[next] + 1) next += 1;
+  }
+  return next === at.length;
+}
+
+/**
+ * How far along one line the text is at each of `offsets` (ascending, the
+ * first where the line starts and the last where it ends), from the first:
+ * the text between the two laid out once with no width to wrap in, and
+ * cut into a span at each offset, which the engine places on its own and
+ * kerns with its neighbours as it does any two spans shaped alike. Read
+ * off where each piece is put rather than added up from the widths, which
+ * leave out the kerning across their ends — Arial pairs a space with the
+ * `T` after it — and summed in logical order, a piece's advance to where
+ * the next starts where the two run the same way, its width where they do
+ * not. Null where the engine made the text more than one line.
+ */
+function positionsAlong(
+  fonts: FontsLike,
+  runs: TextRun[],
+  base: Record<string, unknown>,
+  direction: string | undefined,
+  offsets: readonly number[],
+): number[] | null {
+  const from = offsets[0];
+  const to = offsets[offsets.length - 1];
+  const pieces: TextRun[] = [];
+  let at = 0;
+  let k = 1;
+  for (const run of runs) {
+    const next = at + run.text.length;
+    let a = Math.max(at, from);
+    const b = Math.min(next, to);
+    while (a < b) {
+      while (offsets[k] <= a) k += 1;
+      const stop = Math.min(b, offsets[k]);
+      pieces.push({ ...run, text: run.text.slice(a - at, stop - at) });
+      a = stop;
+    }
+    at = next;
+    if (at >= to) break;
+  }
+  const laid = fonts.layout(pieces, base, { direction });
+  if (laid.lines.length !== 1) return null;
+  const placed = laid.lines[0].runs.slice().sort((p, q) => p.start - q.start);
+  const along = new Map<number, number>();
+  let pen = 0;
+  for (let i = 0; i < placed.length; i += 1) {
+    const p = placed[i];
+    const q = placed[i + 1];
+    if (!along.has(p.start)) along.set(p.start, pen);
+    const rtl = p.run?.direction === 'rtl';
+    pen +=
+      q && (q.run?.direction === 'rtl') === rtl
+        ? rtl
+          ? p.x + p.width - (q.x + q.width)
+          : q.x - p.x
+        : p.width;
+  }
+  along.set(to - from, pen);
+  const out: number[] = [];
+  for (const offset of offsets) {
+    const found = along.get(offset - from);
+    if (found === undefined) return null;
+    out.push(found);
+  }
+  return out;
 }
 
 /**

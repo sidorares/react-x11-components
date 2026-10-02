@@ -550,8 +550,10 @@ export interface ComputedStyle {
    *  its line runs out; the other values are the engine's own breaking. */
   lineBreakAnywhere: boolean;
   /** `text-wrap-style` (CSS Text 4, 6.2): `balance` evens a short
-   *  paragraph's lines out; `pretty` and `stable` wrap as `auto` does. */
-  textWrapStyle: 'auto' | 'balance';
+   *  paragraph's lines out, `pretty` keeps its last word off a line of its
+   *  own as Chrome does (`layout/pretty.ts`); `stable` wraps as `auto`
+   *  does, which is all it asks of a text that is not being edited. */
+  textWrapStyle: 'auto' | 'balance' | 'pretty';
   direction: 'ltr' | 'rtl';
   /** How an element's text takes part in the bidi algorithm: not
    *  inherited, and carried out as the control characters it stands for
@@ -3007,29 +3009,29 @@ export function applyDeclaration(
       // `text-wrap` is both, and resets the one it leaves out: Tailwind 4
       // writes `text-nowrap` and `text-balance` in it
       let wrap: boolean | null = null;
-      let balance: boolean | null = null;
+      let kind: ComputedStyle['textWrapStyle'] | null = null;
       for (const word of splitValue(value.toLowerCase())) {
         const mode = word === 'wrap' || word === 'nowrap';
-        const kind =
+        const styled =
           word === 'auto' ||
           word === 'balance' ||
           word === 'pretty' ||
           word === 'stable';
         if (mode && wrap === null && name !== 'text-wrap-style') {
           wrap = word === 'wrap';
-        } else if (kind && balance === null && name !== 'text-wrap-mode') {
-          balance = word === 'balance';
+        } else if (styled && kind === null && name !== 'text-wrap-mode') {
+          kind = word === 'balance' || word === 'pretty' ? word : 'auto';
         } else return;
       }
-      if (wrap === null && balance === null) return;
+      if (wrap === null && kind === null) return;
       if (name === 'text-wrap') {
         wrap ??= true;
-        balance ??= false;
+        kind ??= 'auto';
       }
       if (wrap !== null) {
         style.whiteSpace = whiteSpaceOf(COLLAPSE_OF[style.whiteSpace], wrap);
       }
-      if (balance !== null) style.textWrapStyle = balance ? 'balance' : 'auto';
+      if (kind !== null) style.textWrapStyle = kind;
       return;
     }
     case 'direction': {
