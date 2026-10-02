@@ -1118,8 +1118,12 @@ spinner, `border-radius: 50%` with one side of another colour, is a ring
 with a quarter of it in that colour. A side with no width gives the whole
 of its corners to the sides beside it, and an opaque share is drawn over a
 little of the one next to it, so the page does not show through where the
-two meet. A dotted, dashed or double side on a rounded box has its border
-drawn straight. Two solid
+two meet. An `inset` or an `outset` side on a rounded box takes its share
+in its shade, as a solid side takes it in its colour, so a field or a
+button the page gave only a radius, its UA border `2px inset` or `outset`,
+is a ring of two shades that change on the same line. A dotted, dashed,
+double, groove or ridge side on a rounded box has its border drawn
+straight. Two solid
 sides of different colours share their corner on its diagonal, from its
 outer point to its inner one (CSS Backgrounds 3, 4.4), so each is a
 trapezoid — and a triangle on a box with nothing inside its borders, which
@@ -2251,11 +2255,13 @@ border or background properties of an `<input>`, a `<textarea>` or a
 paints that box, as a browser drops a field's native look for the author's;
 the widget is mounted bare inside its content box, with no frame or fill,
 and writes in the element's own colour and font, which the author chose to
-go on that background. Its size is then its text's, and the border and
-padding around it are the author's. It is the page setting them that
-counts, not what it set them to, as CSS UI 4 has it (7.2.1) and Chrome,
-Firefox and Safari do: `border: none; background: transparent` is a page
-taking the frame off to draw the field in a box of its own, as
+go on that background. Its size is then its text's, a line as tall as its
+`line-height` makes it — at `normal`, its font's own, as a browser's text
+field is — and the border and padding around it are the author's, or the
+web's where the author set only some of them. It is the page setting them
+that counts, not what it set them to, as CSS UI 4 has it (7.2.1) and
+Chrome, Firefox and Safari do: `border: none; background: transparent` is
+a page taking the frame off to draw the field in a box of its own, as
 joshwcomeau.com's newsletter form does in a white pill, and read as values
 it was a field left alone, the palette's frame mounted inside the pill. The
 answer is the one that takes the palette's look off a button, above. A
@@ -2269,6 +2275,19 @@ AppKit's drawn over it. `appearance: none` is how a design system writes
 every field it has, often with neither a border nor a background. A field
 the page set none of them on keeps the theme's frame, and so does every
 `<input type=submit>`: core's `<Button>` draws its own label.
+
+The web's edges are Chrome's, as a button's are: a text field's 2px inset
+border round 1px of padding above and below and 2px beside, a text area's
+1px solid border round 2px, and a select's 1px solid border, square, with
+none, each on the palette's ground and in its border colour. A page that
+sets one border property builds on the rest. The commonest focus style
+there is, `input:focus { outline: none; border-color: … }` on a field
+otherwise left alone, is a 2px inset border in that colour while the field
+has the focus, as it is in Chrome, and a field given only a radius is that
+border rounded. The checkables, a range, a file, an image and an input
+button have none, as in Blink's sheet. A field the page left alone has
+none either: its box is the palette's widget, frame and all, which the
+widget draws.
 
 **The application scrolls it, and height does not frighten it.** The element
 sizes to its content; put it in a `<box overflow="scroll">`, the same shape
