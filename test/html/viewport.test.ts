@@ -340,6 +340,106 @@ test('the element the root box stands in for is drawn inside its margins', async
   );
 });
 
+test('the element the root box stands in for is as wide as its width and margins say', async () => {
+  // Where the markup writes no element for it, the root box is the box of
+  // the one it stands in for: a fragment's body, or the `<html>` implied
+  // around a `<body>`. It was the window wide whatever that element said,
+  // its `auto` margins none, so a body set `max-width: 100px; margin: 0
+  // auto` stood at the window's left edge, 200 wide, where Chrome centres
+  // it, as it does the same body written in an `<html>`. Each case has
+  // Chrome's x and width at 200 × 120, for the element and the paragraph
+  // in it; the heights are the same page's written with an `<html>`.
+  const rootOf = (el: unknown): LaidBox =>
+    (el as { _tree: { root: LaidBox } })._tree.root;
+  const written = (css: string): string =>
+    `<!DOCTYPE html><html><head><style>${css}</style></head>` +
+    `<body id="body"><p id="p">hi</p></body></html>`;
+  const fragment = (css: string): string =>
+    `<!DOCTYPE html><style>${css}</style><p id="p">hi</p>`;
+  const bodies: [string, number[] | null, number[] | null][] = [
+    ['body{max-width:100px;margin:0 auto}', [50, 100], [50, 100]],
+    ['body{max-width:50%;margin:0 auto}', [50, 100], [50, 100]],
+    [
+      'body{width:120px;margin:0 auto;padding:0 10px;border:5px solid}',
+      [25, 150],
+      [40, 120],
+    ],
+    ['body{width:50%;margin:0 10px 0 auto}', [90, 100], [90, 100]],
+    [
+      'body{box-sizing:border-box;width:100px;padding:0 10px;' +
+        'margin-left:auto;margin-right:0}',
+      [100, 100],
+      [110, 80],
+    ],
+    // a width the margins over-constrain leaves the room to the margin at
+    // the end, which is the left one where the `<html>` around the body
+    // is right-to-left
+    ['body{width:100px;margin:8px}', [8, 100], [8, 100]],
+    ['html{direction:rtl}body{width:100px;margin:0}', [100, 100], [100, 100]],
+    // the least width wins over the room
+    ['body{min-width:300px;margin:0}', [0, 300], [0, 300]],
+    // and a width the content gives it is centred too: Chrome's is the
+    // width of "hi" in its own font
+    ['body{width:fit-content;margin:0 auto}', null, null],
+  ];
+  for (const [css, body, p] of bodies) {
+    const ours = await renderScrolled(fragment(css), 120, 200);
+    const theirs = await renderScrolled(written(css), 120, 200);
+    const box = rootOf(ours.el);
+    const q = boxOf(ours.el, 'p');
+    if (body && p) {
+      assert.deepStrictEqual([box.x, box.width], body, css);
+      assert.deepStrictEqual([q.x, q.width], p, `${css}: the paragraph`);
+    } else {
+      assert.ok(box.width < 100, `${css}: ${box.width} wide`);
+      assert.ok(
+        Math.abs(box.x * 2 + box.width - 200) < 1e-6,
+        `${css}: centred at ${box.x}`,
+      );
+    }
+    const b = boxOf(theirs.el, 'body');
+    assert.deepStrictEqual(
+      [box.x, box.y, box.width, box.height],
+      [b.x, b.y, b.width, b.height],
+      `${css}: as the body written in an html`,
+    );
+    const r = boxOf(theirs.el, 'p');
+    assert.deepStrictEqual([q.x, q.width], [r.x, r.width], css);
+    assert.strictEqual(ours.el.abs.height, theirs.el.abs.height, css);
+  }
+  // and the `<html>` implied around a `<body>`, a block in the initial
+  // containing block, whose direction is the root element's (CSS 2.1 10.1)
+  const htmls: [string, number[], number[]][] = [
+    ['html{max-width:100px;margin:0 auto}body{margin:0}', [50, 100], [50, 100]],
+    [
+      'html{width:100px;margin:0 auto;border:5px solid}body{margin:0}',
+      [45, 110],
+      [50, 100],
+    ],
+    [
+      'html{width:120px;margin-left:auto;margin-right:auto}body{margin:0}',
+      [40, 120],
+      [40, 120],
+    ],
+    [
+      'html{direction:rtl;width:100px;margin:0}body{margin:0}',
+      [100, 100],
+      [100, 100],
+    ],
+  ];
+  for (const [css, html, p] of htmls) {
+    const { el } = await renderScrolled(
+      bare(css, '<p id="p">hi</p>'),
+      120,
+      200,
+    );
+    const box = rootOf(el);
+    assert.deepStrictEqual([box.x, box.width], html, css);
+    const q = boxOf(el, 'p');
+    assert.deepStrictEqual([q.x, q.width], p, `${css}: the paragraph`);
+  }
+});
+
 metric(
   'a fixed box is drawn where the viewport is, however far the pane has scrolled the document',
   async () => {
