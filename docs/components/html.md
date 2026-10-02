@@ -978,12 +978,21 @@ the box the value names, the border box unless it says; or that box alone,
 rounded as the element is. Insets that meet or pass each other leave
 nothing, which is how Tailwind 4's `.sr-only` hides a label with
 `inset(50%)`. An edge is on the pixel it falls nearest, where a browser
-antialiases it. The element is a stacking context painted whole in its
-place, as one under full opacity is, and its scrollable overflow is what it
-was, as a browser has it: a box hidden by a path alone still makes the
-page as long as it reaches. `circle()`, `ellipse()`, `polygon()`, `path()`,
-`shape()` and a `url()` naming an SVG `<clipPath>` are read and cut
-nothing, and an inline box that is not atomic is not cut. Inline elements
+antialiases it. And `polygon()`, its vertices lengths or percentages of
+the box's width and height, inside by its fill rule — the way bun.sh cuts
+a corner off every button — where they fall in the box, itself on the
+pixels its background is drawn on, so a slanted edge is antialiased as a
+browser draws it and one along the box's edge is not; one whose vertices
+are all on a line leaves nothing. The `evenodd` rule is the X11 and Wayland contexts';
+macOS and Windows clip by `nonzero`, which only a polygon that crosses
+itself can tell apart. `round`, which Chrome alone reads in a polygon, is
+not read, as Firefox and Safari read none. The element is a stacking
+context painted whole in its place, as one under full opacity is, and its
+scrollable overflow is what it was, as a browser has it: a box hidden by a
+path alone still makes the page as long as it reaches. `circle()`,
+`ellipse()`, `path()`, `shape()` and a `url()` naming an SVG `<clipPath>`
+are read and cut nothing, and an inline box that is not atomic is not
+cut. Inline elements
 have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on
@@ -1807,8 +1816,9 @@ text field cuts its own text and is left alone, and a widget nothing cuts
 is not clipped at all, so its focus ring shows around it. A `clip-path`
 cuts a widget as it cuts the element, its own and every one around it,
 whatever the control is positioned from: one under Tailwind 4's `.sr-only`,
-`clip-path: inset(50%)`, shows nothing. It is cut to the path's rectangle;
-the corners a `round` gives it do not round a widget.
+`clip-path: inset(50%)`, shows nothing. It is cut to the path's rectangle,
+or to the one around a polygon; the corners a `round` gives it do not round
+a widget, nor does a polygon slant one.
 
 A `<select>` shows the option it has selected, its first where none is
 marked, and nothing where it has no options — not the "Select…" core's

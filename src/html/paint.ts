@@ -39,6 +39,7 @@ import type {
   BackgroundClip,
   BackgroundRepeat,
   BoxShadow,
+  ClipPath,
   ComputedStyle,
   Gradient,
   GradientStop,
@@ -160,7 +161,7 @@ export interface PaintContext extends FillContext {
     e: number,
     f: number,
   ): void;
-  clip?(): void;
+  clip?(rule?: 'nonzero' | 'evenodd'): void;
   /** Canvas shadows: ntk bakes and caches the blur, CoreGraphics draws it. */
   shadowColor?: string;
   shadowBlur?: number;
@@ -1809,8 +1810,28 @@ function pushOwnClips(
   if (path && !(path.rect.w > 0 && path.rect.h > 0)) return -1;
   let pushed = 0;
   if (clip && pushClip(ctx, clip, null)) pushed += 1;
-  if (path && pushClip(ctx, path.rect, path.radii)) pushed += 1;
+  if (path && pushPathClip(ctx, path)) pushed += 1;
   return pushed;
+}
+
+/** Cut what follows to a `clip-path`: its polygon, where it is one and the
+ *  context draws one, and its rectangle elsewhere. */
+function pushPathClip(ctx: PaintContext, path: PathClip): boolean {
+  const points = path.polygon;
+  if (!points || !ctx.moveTo || !ctx.lineTo) {
+    return pushClip(ctx, path.rect, path.radii);
+  }
+  if (!ctx.beginPath || !ctx.clip) return false;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(points[0], points[1]);
+  for (let i = 2; i < points.length; i += 2) {
+    ctx.lineTo(points[i], points[i + 1]);
+  }
+  ctx.closePath?.();
+  if (path.rule === 'evenodd') ctx.clip('evenodd');
+  else ctx.clip();
+  return true;
 }
 
 /** Whether a box is cut to a `clip-path`: one with a rectangle of its own
@@ -3144,15 +3165,12 @@ const DOCUMENT: ClipSpace = { originX: 0, originY: 0, scale: 1, damage: null };
  * area where the shape leaves none of the box to show. Measured in the box
  * the path names, the border box unless it says: `inset()` in from its
  * edges, `rect()` and `xywh()` from its top left, and the box itself, with
- * the element's own corners, where no shape is written.
+ * the element's own corners, where no shape is written. A `polygon()` is
+ * its vertices, where they fall, and the whole pixels around them as its
+ * rectangle — of no area where they are all on a line, which leaves
+ * nothing to show.
  */
-function clipPathOf(
-  box: Box,
-  options: ClipSpace,
-): {
-  rect: { x: number; y: number; w: number; h: number };
-  radii: Corners | null;
-} {
+function clipPathOf(box: Box, options: ClipSpace): PathClip {
   const path = box.style.clipPath!;
   // the box it is measured in, in from the border box — or out from it
   const within = path.box;
@@ -3201,6 +3219,9 @@ function clipPathOf(
   }
   const x0 = box.x + options.originX + il;
   const y0 = frameY(box) + options.originY + it;
+  if (path.shape === 'polygon') {
+    return polygonClip(path, x0, y0, width, height);
+  }
   const x = Math.round(x0 + left);
   const y = Math.round(y0 + top);
   const rect = {
@@ -3232,7 +3253,79 @@ function clipPathOf(
     // to the rectangle they round
     radii = cornersFor(path.radii, path.radiiY, width, height, rect.w, rect.h);
   }
-  return { rect, radii };
+  return { rect, radii, polygon: null, rule: 'nonzero' };
+}
+
+/** What a `clip-path` cuts to, in window coordinates (`clipPathOf`). */
+interface PathClip {
+  /** The rectangle, or the one around a polygon. */
+  rect: { x: number; y: number; w: number; h: number };
+  radii: Corners | null;
+  /** A polygon's vertices, `x, y` by turns; null for a rectangle. */
+  polygon: number[] | null;
+  rule: 'nonzero' | 'evenodd';
+}
+
+/**
+ * A `polygon()` placed in the box at `x0, y0` it is measured in: each
+ * vertex a length, or a percentage of the box's width or height, from its
+ * top left. The box is on the pixels its background is drawn on, each edge
+ * the one it falls nearest, and the vertices are where they fall in it: a
+ * polygon along the edges of a box laid out a fraction of a pixel down
+ * drew a row of half coverage above and below the background it cut.
+ */
+function polygonClip(
+  path: ClipPath,
+  boxX: number,
+  boxY: number,
+  boxWidth: number,
+  boxHeight: number,
+): PathClip {
+  const x0 = Math.round(boxX);
+  const y0 = Math.round(boxY);
+  const width = Math.round(boxX + boxWidth) - x0;
+  const height = Math.round(boxY + boxHeight) - y0;
+  const points = path.points!;
+  const polygon: number[] = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i + 1 < points.length; i += 2) {
+    const px = x0 + resolve(points[i], width);
+    const py = y0 + resolve(points[i + 1], height);
+    polygon.push(px, py);
+    minX = Math.min(minX, px);
+    minY = Math.min(minY, py);
+    maxX = Math.max(maxX, px);
+    maxY = Math.max(maxY, py);
+  }
+  const x = Math.floor(minX);
+  const y = Math.floor(minY);
+  const rect = encloses(polygon)
+    ? { x, y, w: Math.ceil(maxX) - x, h: Math.ceil(maxY) - y }
+    : { x, y, w: 0, h: 0 };
+  return { rect, radii: null, polygon, rule: path.fillRule };
+}
+
+/** Whether a polygon encloses anything: not where every vertex is on one
+ *  line, one vertex or two among them. Its area is no test, since a bow
+ *  tie's two halves wind opposite ways and come to none. */
+function encloses(points: readonly number[]): boolean {
+  const [x0, y0] = points;
+  let dx = 0;
+  let dy = 0;
+  for (let i = 2; i + 1 < points.length; i += 2) {
+    const ex = points[i] - x0;
+    const ey = points[i + 1] - y0;
+    if (dx === 0 && dy === 0) {
+      dx = ex;
+      dy = ey;
+    } else if (Math.abs(dx * ey - dy * ex) > 1e-9 * (dx * dx + dy * dy)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Corners, or null where every one of them is square. */
@@ -3247,10 +3340,11 @@ function roundedOf(c: Corners): Corners | null {
  * or of anything in it — is under a pointer (`deepestAt`).
  */
 export function inClipPath(box: Box, x: number, y: number): boolean {
-  const { rect, radii } = clipPathOf(box, DOCUMENT);
+  const { rect, radii, polygon, rule } = clipPathOf(box, DOCUMENT);
   const right = rect.x + rect.w;
   const bottom = rect.y + rect.h;
   if (x < rect.x || x >= right || y < rect.y || y >= bottom) return false;
+  if (polygon) return inPolygon(polygon, rule, x, y);
   if (!radii) return true;
   // inside the rectangle, and past a corner's curve: each corner is a
   // quarter of an ellipse about a centre its radii in from the two edges
@@ -3268,6 +3362,34 @@ export function inClipPath(box: Box, x: number, y: number): boolean {
     if (dx * dx + dy * dy > 1) return false;
   }
   return true;
+}
+
+/**
+ * Whether a point is inside a polygon, its vertices `x, y` by turns: where
+ * a ray from it to the right crosses the edges a number of times other than
+ * none — counting each by the way it crosses, under `nonzero`, and each
+ * once, under `evenodd`. An edge's bottom end is in it and its top end not,
+ * so a ray through a vertex counts the two edges there once.
+ */
+function inPolygon(
+  points: readonly number[],
+  rule: 'nonzero' | 'evenodd',
+  x: number,
+  y: number,
+): boolean {
+  let winding = 0;
+  const n = points.length;
+  for (let i = 0; i < n; i += 2) {
+    const ax = points[i];
+    const ay = points[i + 1];
+    const bx = points[(i + 2) % n];
+    const by = points[(i + 3) % n];
+    if (ay <= y === by <= y) continue;
+    // where the edge is at the point's height, and the point left of it
+    const at = ax + ((y - ay) / (by - ay)) * (bx - ax);
+    if (x < at) winding += by > ay ? 1 : -1;
+  }
+  return rule === 'evenodd' ? winding % 2 !== 0 : winding !== 0;
 }
 
 /**
