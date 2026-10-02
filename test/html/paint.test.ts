@@ -543,20 +543,48 @@ metric(
 );
 
 metric(
-  'an element under full opacity that draws one thing is faded without a surface',
+  'an element under full opacity that draws one thing is faded without a surface, but for text on X11',
   async (t) => {
-    // a background alone — the backdrop a dialog dims a page with — text
-    // alone, or an image alone is the same faded either way
-    const { result, node } = await render(
+    // a background alone — the backdrop a dialog dims a page with — or an
+    // image alone is the same faded either way
+    const backdrop = await render(
       '<style>body{margin:0}html{background:#ffffff}</style>' +
-        '<div style="opacity:.5;height:40px;background:#ff0000"></div>' +
-        '<p style="opacity:.5;margin:0">muted text, and more of it</p>',
+        '<div style="opacity:.5;height:40px;background:#ff0000"></div>',
     );
-    await expectPixel(result.ctx, 10, 20, '#ff8080', {
+    await expectPixel(backdrop.result.ctx, 10, 20, '#ff8080', {
       tolerance: 3,
       message: 'the backdrop, half over the page',
     });
-    assert.strictEqual(await surfacesOfRepaint(t, node), 0, 'and no surface');
+    assert.strictEqual(
+      await surfacesOfRepaint(t, backdrop.node),
+      0,
+      'and no surface',
+    );
+    // ntk's glyphs take no alpha of the context's, and drew a paragraph at
+    // `opacity: .5` at full strength: text there is a group, which the
+    // composite fades
+    const text = await render(
+      '<style>body{margin:0}html{background:#ffffff}</style>' +
+        '<p style="margin:0;font:bold 48px sans-serif;opacity:.5;color:#000000">MWM</p>',
+    );
+    const pixels = await pixelsIn(text.result.ctx, {
+      x: 0,
+      y: 0,
+      width: 120,
+      height: 50,
+    });
+    let darkest = 255;
+    for (let i = 0; i < pixels.length; i += 4) {
+      darkest = Math.min(darkest, pixels[i]);
+    }
+    assert.ok(
+      darkest >= 120 && darkest <= 136,
+      `black text at half over white: ${darkest}`,
+    );
+    assert.ok(
+      (await surfacesOfRepaint(t, text.node)) > 0,
+      'faded on a surface',
+    );
   },
 );
 

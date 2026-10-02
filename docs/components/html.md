@@ -949,12 +949,15 @@ faded as the group it is (CSS Color 4, 3.2): on X11 and Wayland, where two
 things it draws can overlap — a background under its text, a badge over a
 header — it is painted on a surface of its own and the surface faded, so
 neither shows through the other, and where it draws one thing, a
-background or text alone, that thing is faded. On macOS it is a group
-too where react-x11 says a surface drawn faded costs about what it costs
-opaque (`fadesSurfacesCheaply`, over an @windowkit/appkit that scales the
-surface's pixels by the alpha). On Windows, and on macOS before that, each
-thing drawn is faded on its own, so where two of its boxes overlap the
-lower shows through: CoreGraphics drew a surface under an alpha at more
+background alone, that thing is faded. Text is a group there too: ntk
+draws a text layout's glyphs in their runs' colours whatever alpha the
+context holds, and a paragraph at `opacity: .5` drew at full strength. On
+macOS it is a group too where react-x11 says a surface drawn faded costs
+about what it costs opaque (`fadesSurfacesCheaply`, over an
+@windowkit/appkit that scales the surface's pixels by the alpha). On
+Windows, and on macOS before that, each thing drawn is faded on its own,
+so where two of its boxes overlap the lower shows through: CoreGraphics
+drew a surface under an alpha at more
 cost than drawing again what was on it. A box fixed to the viewport inside
 one fades each thing too. An inline element under 1 fades what it holds:
 its text, with the decorations, shadows and selection drawn with it, its
@@ -2338,7 +2341,9 @@ pixels — is kept as well, so a repaint of 24 turned cards went from 40.3
 to 30.0 ms. Being a group costs what drawing the surface does: a repaint
 of 24 faded cards went from 13.9 to 18.0 ms there, where it drew each
 thing faded and showed each through the other. An element that draws one
-thing is faded as it was, and a page that fades nothing paints as it did.
+thing is faded as it was, but for text on X11 and Wayland, which is faded
+now where it was drawn at full strength, and a page that fades nothing
+paints as it did.
 The macOS context drew a faded card's group in twice the time it took to
 draw the card again — 3.4 ms a frame of a fade, where it had been 1.7 —
 because CoreGraphics draws an image under an alpha at some fifteen times
