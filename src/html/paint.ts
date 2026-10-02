@@ -82,6 +82,7 @@ import {
   TEXT_SHIFTS,
 } from './layout/boxes.js';
 import type {
+  AtomicPlacement,
   BoxTree,
   ColumnPiece,
   EdgePlacement,
@@ -3717,8 +3718,11 @@ function pushClip(
  * Firefox and Safari paint and hit-test it, block, float and flex item
  * alike: painted whole in its place in the flow, a translucent box went
  * under the text of a block after it that a negative margin drew up over
- * it, and under a relative box before it. An inline or an inline-block is
- * painted by its line.
+ * it, and under a relative box before it. An inline-block or an image is
+ * one of them as much as a block is, the three engines agreeing again:
+ * painted by its line, it went under the text a negative margin drew over
+ * it, of its line and of a block after it, and under a positioned box
+ * before it. An inline box is painted by its lines, a fragment at a time.
  */
 export function layered(parent: Box, child: Box): boolean {
   if (child.outOfFlow) return true;
@@ -3733,7 +3737,7 @@ export function layered(parent: Box, child: Box): boolean {
   ) {
     return false;
   }
-  return child.kind !== 'inline' && !onLine(parent, child);
+  return child.kind !== 'inline';
 }
 
 /**
@@ -6857,16 +6861,9 @@ const COORD_LIMIT = 30000;
 function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const lines = box.lines;
   if (!lines) return;
-  const dx = options.originX;
   const dy = options.originY;
   const damage = options.damage;
 
-  // Three passes over the visible lines, not one: ntk draws a whole layout
-  // in one glyph batch, so a multi-line paragraph's ink all lands on the
-  // first line that references it — and anything painted "under the ink" on
-  // a later line would land *over* it. Everything under the glyphs is
-  // painted for every line first, then the ink once per layout, then the
-  // rules over it.
   const visible: LineBox[] = [];
   if (damage) {
     // Lines are built top to bottom, so `y` is monotone; a line's *bottom*
@@ -6916,18 +6913,58 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     visible.push(...lines);
   }
   if (!visible.length) return;
+  // A line's atomics are painted in their turn among its text (CSS 2.1
+  // Appendix E, 7.2.1), and so is all of a line before a later one: drawn
+  // after it all, an inline-block a negative margin had a word after it
+  // drawn over went over the word, and over the text of the next line it
+  // hung into. They are painted after their stretch of the lines' text,
+  // which is that order wherever nothing after one in the document is
+  // under it, so the lines are painted in parts only where something is
+  // (`lineParts`): text after an atomic it covers starts a part of its
+  // own. It is never inside a layout: an atomic ends the text before it.
+  const parts = lineParts(lines, visible);
+  if (!parts) paintLinePart(ctx, box, lines, visible, options, null);
+  else {
+    for (const part of parts) {
+      paintLinePart(ctx, box, lines, part.lines, options, part);
+    }
+  }
+}
 
+/** What of a block's visible lines `paintLines` paints, a part of them at
+ *  a time (`LinePart`), or all of them in one where `part` is null. */
+function paintLinePart(
+  ctx: PaintContext,
+  box: Box,
+  lines: LineBox[],
+  visible: LineBox[],
+  options: PaintOptions,
+  part: LinePart | null,
+): void {
+  const dx = options.originX;
+  const dy = options.originY;
+  const skip = part?.skip;
+  // Three passes over the visible lines, not one: ntk draws a whole layout
+  // in one glyph batch, so a multi-line paragraph's ink all lands on the
+  // first line that references it — and anything painted "under the ink" on
+  // a later line would land *over* it. Everything under the glyphs is
+  // painted for every line first, then the ink once per layout, then the
+  // rules over it.
   const bleeds: Bleed[] = [];
   for (const line of visible) {
-    if (line.background) paintLineBackground(ctx, line, options);
+    if (line.background && (!part || startsIn(part, line))) {
+      paintLineBackground(ctx, line, options);
+    }
     paintInlineBoxes(
       ctx,
       line,
       lines,
       options,
       line === lines[0] ? null : bleeds,
+      part,
     );
     for (const text of line.texts) {
+      if (skip?.has(text)) continue;
       const natural = text.layout.lines[text.layoutLine];
       if (!natural) continue;
       for (const laid of [natural, trailOf(text, natural)]) {
@@ -6941,16 +6978,18 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
         );
       }
     }
-    paintSelection(ctx, line, options);
+    paintSelection(ctx, line, options, skip);
   }
 
-  if (SHADOWED_TEXT.has(box)) paintTextShadows(ctx, visible, options);
+  if (SHADOWED_TEXT.has(box)) paintTextShadows(ctx, visible, options, skip);
 
   // an underline goes under the glyphs, a line through over them (CSS 2.1
   // Appendix E): a descender crosses its own underline
-  paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'under');
+  paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'under', skip);
 
-  if (CLIPPED_TEXT.has(box)) paintClippedText(ctx, box, visible, options);
+  if (CLIPPED_TEXT.has(box)) {
+    paintClippedText(ctx, box, visible, options, skip);
+  }
 
   // One `draw` per layout: a paragraph is a single glyph composite, and
   // drawing it once per line would be one X request per line for the same
@@ -6958,10 +6997,11 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const drawn = new Set<unknown>();
   // text a `::selection` colours is drawn in that colour where selected
   const recolored = options.selectionStyler
-    ? recoloredBands(visible, options)
+    ? recoloredBands(visible, options, skip)
     : null;
   for (const line of visible) {
     for (const text of line.texts) {
+      if (skip?.has(text)) continue;
       // once for each column its lines are in, where they are in several
       const rows = columned.any ? COLUMN_ROWS.get(text) : undefined;
       if (drawn.has(rows ?? text.layout)) continue;
@@ -6985,19 +7025,182 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     }
   }
 
-  paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'over');
+  paintRules(ctx, visible, dx, dy, options.scale ?? 1, 'over', skip);
   if (bleeds.length) paintBleeds(ctx, bleeds, options);
-  // an atomic set below the flow with a negative `z-index` is its
-  // stacking context's to paint, there (`hoistNegative`): painted by its
-  // line as well, it came back over the box it was under
-  const hoisted = options.negative;
+  // One painted with the positioned boxes is its stacking context's to
+  // paint, there (`layered`) — one set below the flow with a negative
+  // `z-index` among them (`hoistNegative`): painted by its line as well,
+  // it came back over the box it was under.
   for (const line of visible) {
     for (const placed of line.atomics) {
-      if (hoisted && HOISTED.has(placed.box)) continue;
-      if (turns(placed.box)) paintTransformed(ctx, placed.box, options);
-      else paintBox(ctx, placed.box, options);
+      if (skip?.has(placed) || liftedOff(placed.box)) continue;
+      paintBox(ctx, placed.box, options);
     }
   }
+}
+
+/** Whether an atomic on a line is painted with the positioned boxes, and
+ *  not by its line (`layered`). */
+function liftedOff(box: Box): boolean {
+  return box.parent !== null && layered(box.parent, box);
+}
+
+/**
+ * A stretch of a block's visible lines, in the document's order, that
+ * `paintLines` paints before the next: an atomic and what is before it, or
+ * what is after one, up to the next atomic that covers what is after it.
+ * The items of its lines that another part paints are in `skip`, and only
+ * its first and last lines have any; how far its inline boxes' fragments
+ * and a `::first-line` background on those go with it, its places there
+ * say (`placesOn`).
+ */
+interface LinePart {
+  lines: LineBox[];
+  skip: Set<LineText | AtomicPlacement>;
+  /** Its first item's place on its first line, and the place on its last
+   *  line of the first item it does not paint: Infinity where it paints
+   *  all of it. */
+  from: number;
+  to: number;
+}
+
+/** Whether a part of a block's lines paints what is at the start of one of
+ *  its lines. */
+function startsIn(part: LinePart, line: LineBox): boolean {
+  return line !== part.lines[0] || part.from === 0;
+}
+
+/**
+ * Each text and atomic on a line, with its place among them all in the
+ * document's order (`AtomicPlacement.before`): `line.texts` and
+ * `line.atomics` are each in that order, and apart.
+ */
+function placesOn(
+  line: LineBox,
+  each: (item: LineText | AtomicPlacement, place: number) => void,
+): void {
+  const texts = line.texts;
+  const atomics = line.atomics;
+  let j = 0;
+  for (let i = 0; i <= texts.length; i += 1) {
+    while (j < atomics.length && atomics[j].before <= i) {
+      each(atomics[j], i + j);
+      j += 1;
+    }
+    if (i < texts.length) each(texts[i], i + j);
+  }
+}
+
+/**
+ * Where `paintLines` has to paint a block's visible lines in parts, so that
+ * an atomic is painted in its turn among their text: after an atomic that
+ * what is after it in the document is drawn over. Null where nothing is,
+ * which is nearly every block, painted in one part as it always was.
+ */
+function lineParts(lines: LineBox[], visible: LineBox[]): LinePart[] | null {
+  // the lines columns took apart are in no order down the page
+  const apart = columned.any && COLUMN_LINES.has(lines);
+  const above = LINE_INK.get(lines)?.above ?? 0;
+  let cuts: [number, number][] | null = null;
+  for (let i = 0; i < visible.length; i += 1) {
+    const atomics = visible[i].atomics;
+    for (let j = 0; j < atomics.length; j += 1) {
+      const placed = atomics[j];
+      if (liftedOff(placed.box)) continue;
+      if (!coversLater(visible, i, placed, above, apart)) continue;
+      // after it: its place, and one
+      (cuts ??= []).push([i, placed.before + j + 1]);
+    }
+  }
+  if (!cuts) return null;
+  const parts: LinePart[] = [];
+  let first = 0;
+  let from = 0;
+  cuts.push([visible.length - 1, Infinity]);
+  for (const [last, to] of cuts) {
+    const skip = new Set<LineText | AtomicPlacement>();
+    placesOn(visible[first], (item, place) => {
+      if (place < from) skip.add(item);
+    });
+    placesOn(visible[last], (item, place) => {
+      if (place >= to) skip.add(item);
+    });
+    parts.push({ lines: visible.slice(first, last + 1), skip, from, to });
+    // and the next from there, or from the next line where that is the
+    // end of this one
+    const line = visible[last];
+    if (to >= line.texts.length + line.atomics.length) {
+      first = last + 1;
+      from = 0;
+    } else {
+      first = last;
+      from = to;
+    }
+    if (first >= visible.length) break;
+  }
+  return parts;
+}
+
+/**
+ * Whether what an atomic draws reaches text after it in the document, which
+ * is painted over it: on its line after it, or on a line after its line.
+ */
+function coversLater(
+  visible: LineBox[],
+  at: number,
+  placed: AtomicPlacement,
+  /** How far a line's glyphs reach above it (`LINE_INK`). */
+  above: number,
+  apart: boolean,
+): boolean {
+  const box = placed.box;
+  const known = Number.isFinite(box.boundsY);
+  const x1 = known ? box.boundsX : box.x;
+  const y1 = known ? box.boundsY : box.y;
+  const x2 = x1 + (known ? box.boundsWidth : box.width);
+  const y2 = y1 + (known ? box.boundsHeight : box.height);
+  if (!(x2 > x1 && y2 > y1)) return false;
+  const line = visible[at];
+  for (let i = placed.before; i < line.texts.length; i += 1) {
+    if (textMeets(line.texts[i], x1, y1, x2, y2)) return true;
+  }
+  for (let k = at + 1; k < visible.length; k += 1) {
+    const next = visible[k];
+    if (next.y - above >= y2) {
+      if (apart) continue;
+      break;
+    }
+    for (const text of next.texts) {
+      if (textMeets(text, x1, y1, x2, y2)) return true;
+    }
+  }
+  return false;
+}
+
+/** Whether a text on a line, where its glyphs reach from ascent to descent
+ *  and across its run of the line, meets a rectangle. */
+function textMeets(
+  text: LineText,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): boolean {
+  const natural = text.layout.lines[text.layoutLine];
+  if (!natural) return false;
+  const left = text.drawX + natural.x;
+  const right = left + natural.width + (text.trail ?? 0);
+  if (right <= x1 || left >= x2) return false;
+  const baseline = text.drawY + natural.baseline;
+  const top = Math.min(
+    text.drawY + natural.y,
+    baseline - (natural.ascent ?? 0),
+  );
+  const bottom = Math.max(
+    text.drawY + natural.y + natural.height,
+    baseline + (natural.descent ?? 0),
+  );
+  return top < y2 && bottom > y1;
 }
 
 /** Whether any of the lines moved content was taken off, and the damage
@@ -7094,6 +7297,8 @@ function paintClippedText(
   block: Box,
   lines: LineBox[],
   options: PaintOptions,
+  /** What of the lines another part of them paints (`LinePart`). */
+  skip?: ReadonlySet<unknown>,
 ): void {
   if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip)
     return;
@@ -7110,6 +7315,7 @@ function paintClippedText(
   const parts = new Map<Box, Map<object, Part>>();
   for (const line of lines) {
     for (const text of line.texts) {
+      if (skip?.has(text)) continue;
       const natural = text.layout.lines[text.layoutLine];
       if (!natural) continue;
       const x = text.drawX + dx;
@@ -7279,6 +7485,8 @@ function paintTextShadows(
   ctx: PaintContext,
   lines: LineBox[],
   options: PaintOptions,
+  /** What of the lines another part of them paints (`LinePart`). */
+  skip?: ReadonlySet<unknown>,
 ): void {
   if (!('shadowBlur' in ctx) || !ctx.save || !ctx.restore) return;
   const dx = options.originX;
@@ -7286,6 +7494,7 @@ function paintTextShadows(
   const whole = new Set<unknown>();
   for (const line of lines) {
     for (const text of line.texts) {
+      if (skip?.has(text)) continue;
       const layout = text.layout;
       const top = text.drawY + dy;
       if (top < -COORD_LIMIT || top + layout.height > COORD_LIMIT) continue;
@@ -7438,10 +7647,13 @@ function paintRules(
   dy: number,
   scale: number,
   rules: 'under' | 'over',
+  /** What of the lines another part of them paints (`LinePart`). */
+  skip?: ReadonlySet<unknown>,
 ): void {
   for (const line of lines) {
     const shifted = SHIFTED_LINES.has(line);
     for (const text of line.texts) {
+      if (skip?.has(text)) continue;
       const natural = text.layout.lines[text.layoutLine];
       if (!natural) continue;
       for (const laid of [natural, trailOf(text, natural)]) {
@@ -7576,7 +7788,12 @@ function paintLineBackground(
  * between them — a space it hangs, a box of its own inside it — so a line
  * that reads one way has one fragment of each box, as it always had.
  */
-function fragmentsOn(line: LineBox): Map<Box, InlineFragment[]> | null {
+function fragmentsOn(
+  line: LineBox,
+  /** Whether to say where in the line's order each fragment starts
+   *  (`InlineFragment.first`). */
+  places = false,
+): Map<Box, InlineFragment[]> | null {
   /** What is on the line, where, and which decorated boxes it is in. */
   const marks: {
     left: number;
@@ -7584,11 +7801,20 @@ function fragmentsOn(line: LineBox): Map<Box, InlineFragment[]> | null {
     boxes: readonly Box[];
     /** An edge's own box, whose fragment it opens or closes. */
     edge?: EdgePlacement;
+    /** Its text's or atomic's place on the line (`placesOn`). */
+    place?: number;
   }[] = [];
   const shifted = SHIFTED_LINES.has(line);
-  for (const text of line.texts) {
+  const atomics = line.atomics;
+  let before = 0;
+  for (let i = 0; i < line.texts.length; i += 1) {
+    const text = line.texts[i];
     const natural = text.layout.lines[text.layoutLine];
     const boxAt = text.spans.boxAt;
+    if (places)
+      while (before < atomics.length && atomics[before].before <= i)
+        before += 1;
+    const place = places ? i + before : undefined;
     if (!natural || !boxAt) continue;
     const shift = shifted ? TEXT_SHIFTS.get(text) : undefined;
     const x = text.drawX - (shift?.x ?? 0) + natural.x;
@@ -7600,7 +7826,7 @@ function fragmentsOn(line: LineBox): Map<Box, InlineFragment[]> | null {
       const left = Math.max(x, x + run.x);
       const right = Math.min(x + natural.width, x + run.x + run.width);
       if (right <= left) continue;
-      marks.push({ left, right, boxes: decoratedAncestors(owner) });
+      marks.push({ left, right, boxes: decoratedAncestors(owner), place });
     }
     // and the spaces `pre-wrap` keeps that the line ends on, which hang
     // past it and are their box's all the same (`LineText.hung`)
@@ -7612,15 +7838,18 @@ function fragmentsOn(line: LineBox): Map<Box, InlineFragment[]> | null {
         left,
         right: left + space.width,
         boxes: decoratedAncestors(owner),
+        place,
       });
     }
   }
-  for (const placed of line.atomics) {
+  for (let j = 0; j < atomics.length; j += 1) {
+    const placed = atomics[j];
     const atomic = placed.box;
     marks.push({
       left: placed.x - atomic.marginLeft,
       right: placed.x + atomic.width + atomic.marginRight,
       boxes: decoratedAncestors(atomic),
+      place: places ? placed.before + j : undefined,
     });
   }
   for (const edge of line.edges ?? []) {
@@ -7677,6 +7906,9 @@ function fragmentsOn(line: LineBox): Map<Box, InlineFragment[]> | null {
         if (own.side === 'start') open.start = true;
         else open.end = true;
       }
+      if (mark.place !== undefined) {
+        open.first = Math.min(open.first ?? Infinity, mark.place);
+      }
     }
     (fragments ??= new Map()).set(box, out);
   }
@@ -7715,8 +7947,17 @@ function paintInlineBoxes(
   /** Where a fragment that reaches up over the lines before goes, to be
    *  drawn again over their text; null for a block's first line. */
   bleeds: Bleed[] | null = null,
+  /** The part of the lines being painted, whose fragments are the ones
+   *  that start in it: one is painted before what it is around, and over
+   *  an atomic before it (`LinePart`). */
+  part: LinePart | null = null,
 ): void {
-  const fragments = fragmentsOn(line);
+  // where the part starts and ends on this line, in places
+  const from = part && line === part.lines[0] ? part.from : 0;
+  const to =
+    part && line === part.lines[part.lines.length - 1] ? part.to : Infinity;
+  const whole = from === 0 && to === Infinity;
+  const fragments = fragmentsOn(line, !whole);
   if (!fragments) return;
   // Every text on a line is drawn on one baseline (`finishLine`), and an
   // engine's is from the top of its layout rather than of the line. Taken
@@ -7735,6 +7976,10 @@ function paintInlineBoxes(
   for (const box of boxes) {
     if (box.style.visibility !== 'visible') continue;
     for (const f of fragments.get(box)!) {
+      if (!whole) {
+        const first = f.first ?? 0;
+        if (first < from || first >= to) continue;
+      }
       paintInlineFragment(ctx, line, lines, options, bleeds, box, f, baseline);
     }
   }
@@ -7950,6 +8195,10 @@ interface InlineFragment {
   /** Whether the box opens or closes on this line. */
   start: boolean;
   end: boolean;
+  /** The place on the line of the first text or atomic it is around
+   *  (`placesOn`), where that was asked; none for one around nothing but
+   *  its edges, which goes with the line's start. */
+  first?: number;
 }
 
 /** The inline boxes around a box, within its line's block, that paint a
@@ -7993,8 +8242,10 @@ function paintSelection(
   ctx: PaintContext,
   line: LineBox,
   options: PaintOptions,
+  /** What of the line another part of its lines paints (`LinePart`). */
+  skip?: ReadonlySet<unknown>,
 ): void {
-  for (const band of selectedBands(line, options)) {
+  for (const band of selectedBands(line, options, skip)) {
     const fill = band.style ? band.style.background : options.selectionColor;
     if (!fill || isTransparent(fill)) continue;
     ctx.fillStyle = fill;
@@ -8018,7 +8269,11 @@ const NO_BANDS: SelectedBand[] = [];
  * filled — rounded, so a band's text is drawn to its edges and no further
  * (`drawRecolored`).
  */
-function selectedBands(line: LineBox, options: PaintOptions): SelectedBand[] {
+function selectedBands(
+  line: LineBox,
+  options: PaintOptions,
+  skip?: ReadonlySet<unknown>,
+): SelectedBand[] {
   const range = options.selection;
   if (!range || range.end <= range.start) return NO_BANDS;
   if (line.textEnd <= range.start || line.textStart >= range.end) {
@@ -8027,6 +8282,7 @@ function selectedBands(line: LineBox, options: PaintOptions): SelectedBand[] {
   const styler = options.selectionStyler;
   const out: SelectedBand[] = [];
   for (const text of line.texts) {
+    if (skip?.has(text)) continue;
     const natural = text.layout.lines[text.layoutLine];
     if (!natural) continue;
     const from = Math.max(range.start, text.textStart);
@@ -8114,10 +8370,11 @@ function stylePieces(
 function recoloredBands(
   lines: LineBox[],
   options: PaintOptions,
+  skip?: ReadonlySet<unknown>,
 ): Map<unknown, SelectedBand[]> | null {
   let out: Map<unknown, SelectedBand[]> | null = null;
   for (const line of lines) {
-    for (const band of selectedBands(line, options)) {
+    for (const band of selectedBands(line, options, skip)) {
       if (!band.style?.color || !(band.width > 0)) continue;
       out ??= new Map();
       const list = out.get(band.layout);

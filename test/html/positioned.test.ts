@@ -249,12 +249,13 @@ metric(
     // CSS 2.1 Appendix E, step 8, and CSS Color 4, 3.2: a box made a
     // stacking context by anything but a position is painted in the layer
     // of the positioned boxes with a `z-index` of 0, in the document's
-    // order among them — a block, a float and a flex item alike, as
-    // Chrome, Firefox and Safari paint and hit-test it. Painted whole in
-    // its place instead, it went under the text of a block after it that
-    // a negative margin drew up over it, and under a relative box before
-    // it; and the hit test, which took it for a plain block of the flow,
-    // found the box after it under the pointer where it was drawn.
+    // order among them — a block, a float, a flex item and an inline-block
+    // alike, as Chrome, Firefox and Safari paint and hit-test it. Painted
+    // whole in its place instead, it went under the text of a block after
+    // it that a negative margin drew up over it, and under a relative box
+    // before it; and the hit test, which took it for a plain block of the
+    // flow, found the box after it under the pointer where it was drawn.
+    // Painted by its line, an inline-block went under the text after it.
     const doc = (makes: string) =>
       '<style>body{margin:0}section{height:60px}' +
       `.a{height:40px;background:#ff0000;${makes}}` +
@@ -273,12 +274,23 @@ metric(
       '</div></section>' +
       // a flex item, over the one after it
       '<section class="f"><div class="a" id="a4" style="margin-right:-50px">' +
-      '</div><div id="b4" style="background:#0000ff"></div></section>';
+      '</div><div id="b4" style="background:#0000ff"></div></section>' +
+      // an inline-block, over the text after it on its line
+      '<section><span class="a" id="a5" style="display:inline-block;' +
+      'vertical-align:top;width:100px;margin-right:-100px"></span>' +
+      '<span class="s" id="s5">xxxx</span></section>' +
+      // and over the text of a block after it
+      '<section><div><span class="a" id="a6" style="display:inline-block;' +
+      'vertical-align:top;width:100px"></span></div>' +
+      '<div style="margin-top:-20px"><span class="s" id="s6">xxxx</span>' +
+      '</div></section>';
     const points: [number, number, string, string][] = [
       [10, 30, 'a1', 's1'],
       [50, 90, 'a2', 'r2'],
       [10, 130, 'a3', 's3'],
       [75, 200, 'a4', 'b4'],
+      [10, 250, 'a5', 's5'],
+      [10, 330, 'a6', 's6'],
     ];
     for (const makes of [
       'opacity:.99',
@@ -306,6 +318,70 @@ metric(
           `${makes || 'none'}: under the pointer at ${x},${y}`,
         );
       }
+    }
+  },
+);
+
+metric(
+  'a positioned inline-block is painted and hit with the positioned boxes',
+  async () => {
+    // CSS 2.1 Appendix E, step 8: a positioned box is painted after the
+    // flow, by its stacking context, in `z-index` order and then the
+    // document's — an inline-block as much as a block, as Chrome, Firefox
+    // and Safari paint and hit-test it. Painted by its line, it went under
+    // the text after it, under a relative box before it, and the hit test
+    // found one set below its block's background over it.
+    const { node, result } = await render(
+      '<style>body{margin:0;font:20px/20px monospace}section{height:60px}' +
+        '.a{display:inline-block;vertical-align:top;width:100px;' +
+        'height:20px;position:relative;background:#ff0000}' +
+        '.s{background:#00ff00;color:transparent}' +
+        '.b{background:#0000ff;height:20px}</style>' +
+        // the text after it on its line
+        '<section><span class="a" id="a1" style="margin-right:-100px">' +
+        '</span><span class="s" id="s1">xxxx</span></section>' +
+        // a relative box before it
+        '<section><div class="b" id="r2" style="position:relative"></div>' +
+        '<div><span class="a" id="a2" style="margin-top:-10px"></span>' +
+        '</div></section>' +
+        // its block's background, which one set below the flow is under
+        '<section><div class="b" id="b3" style="height:40px">' +
+        '<span class="a" id="a3" style="z-index:-1"></span></div></section>' +
+        // a z-index of 2, over a box after it with 1
+        '<section><div><span class="a" id="a4" style="z-index:2;' +
+        'height:40px"></span></div><div class="b" id="b4" style="' +
+        'position:relative;z-index:1;margin-top:-20px"></div></section>' +
+        // in a float, over the text beside the float
+        '<section><div style="float:left;width:100px;margin-right:-100px">' +
+        '<span class="a" id="a5"></span></div><div>' +
+        '<span class="s" id="s5">xxxx</span></div></section>' +
+        // in an inline box with a z-index, which paints it, over the text
+        // after it there
+        '<section><span style="position:relative;z-index:1">' +
+        '<span class="a" id="a6" style="margin-right:-100px"></span>' +
+        '<span class="s" id="s6">xxxx</span></span></section>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as { abs: { x: number; y: number } };
+    for (const [x, y, want] of [
+      [10, 10, 'a1'],
+      [10, 75, 'a2'],
+      [10, 130, 'b3'],
+      [10, 210, 'a4'],
+      [10, 250, 'a5'],
+      [10, 310, 'a6'],
+    ] as const) {
+      const [r, g, b] = await pixelAt(result.ctx, abs.x + x, abs.y + y);
+      assert.strictEqual(
+        r > 200 && g < 100 && b < 100,
+        want.startsWith('a'),
+        `drawn at ${x},${y}: ${r},${g},${b}`,
+      );
+      assert.strictEqual(
+        el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id,
+        want,
+        `under the pointer at ${x},${y}`,
+      );
     }
   },
 );

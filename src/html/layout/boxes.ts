@@ -252,6 +252,11 @@ export interface AtomicPlacement {
    *  worked out as it joined the line; absent for none, and for `top` and
    *  `bottom`, which the line box's edges place instead. */
   raise?: number;
+  /** How many of its line's texts are before it in the document — its
+   *  place among them, which paint and the hit test order it by (CSS 2.1
+   *  Appendix E, 7.2.1): `line.texts` and `line.atomics` are each in the
+   *  document's order, and apart. */
+  before: number;
 }
 
 /**

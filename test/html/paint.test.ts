@@ -33,7 +33,7 @@ import {
   svgBytes,
   view,
 } from './harness.js';
-import type { LaidBox } from './harness.js';
+import type { LaidBox, PaintOp } from './harness.js';
 
 afterEach(cleanup);
 
@@ -48,6 +48,87 @@ test('an inline-block on a line is painted once', async () => {
   const fills = await fillsOf(view(node));
   assert.strictEqual(fills.filter((f) => f.w === 13 && f.h === 11).length, 1);
 });
+
+metric(
+  'an inline-block is painted in its turn among the text of its lines',
+  async () => {
+    // CSS 2.1 Appendix E, 7.2.1: a line's atomics are painted in the
+    // document's order among its text, as one line is before the next —
+    // as Chrome, Firefox and Safari paint them. Painted after all of the
+    // block's text, an inline-block a negative margin had a word after it
+    // drawn over went over the word, and over the next line it hung into.
+    const css =
+      '<style>body{margin:0;font:20px/20px monospace}section{height:60px}' +
+      '.a{display:inline-block;vertical-align:top;width:100px;height:20px;' +
+      'background:#ff0000}.s{background:#0000ff;color:transparent}</style>';
+    const { node, result } = await render(
+      css +
+        // a span after it on its line, its background and all
+        '<section><span class="a" style="margin-right:-100px"></span>' +
+        '<span class="s">xxxx</span></section>' +
+        // the next line, which it hangs into
+        '<section><span class="a" style="height:40px;margin-bottom:-20px">' +
+        '</span><br><span class="s">xxxx</span></section>' +
+        // and the text before it, under it
+        '<section><span class="s">xxxx</span>' +
+        '<span class="a" style="margin-left:-40px"></span></section>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as { abs: { x: number; y: number } };
+    for (const [x, y, red] of [
+      [10, 10, false],
+      [10, 90, false],
+      [20, 130, true],
+    ] as const) {
+      const [r, g, b] = await pixelAt(result.ctx, abs.x + x, abs.y + y);
+      assert.strictEqual(
+        r > 200 && g < 100 && b < 100,
+        red,
+        `the inline-block at ${x},${y}: ${r},${g},${b}`,
+      );
+    }
+
+    // Two of them on a line, each between the texts around it: the text
+    // after the first is drawn over it and under the second, and each
+    // layout is drawn once.
+    const ops: PaintOp[] = [];
+    const { node: two } = await render(
+      css +
+        '<div><span class="a" style="margin-right:-100px"></span>xxxx' +
+        '<span class="a" style="margin-left:-20px;margin-right:-80px;' +
+        'background:#ffff00"></span>yyyy</div>',
+    );
+    await fillsOf(view(two), ops);
+    const order = ops.flatMap((op) =>
+      op.op === 'text'
+        ? [`text ${Math.round(op.x)}`]
+        : op.op === 'fill' && op.style === parseColor('#ff0000')
+          ? ['red']
+          : op.op === 'fill' && op.style === parseColor('#ffff00')
+            ? ['yellow']
+            : [],
+    );
+    assert.deepStrictEqual(order, ['red', 'text 0', 'yellow', 'text 48']);
+
+    // and where none is over anything after it, the lines are painted in
+    // one part, their text and then their atomics, as they always were
+    const plain: PaintOp[] = [];
+    const { node: one } = await render(
+      css + '<div><span class="a"></span>xxxx<span class="a"></span></div>',
+    );
+    await fillsOf(view(one), plain);
+    assert.deepStrictEqual(
+      plain.flatMap((op) =>
+        op.op === 'text'
+          ? ['text']
+          : op.op === 'fill' && op.style === parseColor('#ff0000')
+            ? ['red']
+            : [],
+      ),
+      ['text', 'red', 'red'],
+    );
+  },
+);
 
 metric(
   'run backgrounds paint under the ink on every line, not just the first',
