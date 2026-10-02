@@ -596,7 +596,10 @@ In order, each step useful on its own and measured before the next:
    A spinner turning in a card that pulses had the card lifted and the
    spinner on the document's clock, every frame of it painting the card's
    layer again: 117 window frames and 117 uploads in two seconds, and none
-   of either with both lifted.
+   of either with both lifted. An element's own `::before` goes in its
+   layer the same way, where the two had gone one at a time: a button that
+   pulses with a spinner in its `::before` went from 107 window frames and
+   107 paints of the document in two seconds to none.
 
 6. **§5.3's Linux rung** only if step 1's measurements on Xorg say the
    resample is the cost.

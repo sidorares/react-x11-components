@@ -3158,14 +3158,10 @@ export class HtmlViewNode extends Node {
       const element = el as Element;
       for (const name of targets) {
         if (name !== '' && name !== 'before' && name !== 'after') continue;
-        const pseudo: Pseudo = name;
-        // an element or its pseudo-elements, one at a time: an element's
-        // raster holds what its pseudo-elements draw, and a pseudo-element
-        // is styled again with its element at each frame of the element's
-        if (pseudo === '' ? targets.length > 1 : targets.includes('')) {
-          continue;
-        }
-        const lift = liftOf(host, element, pseudo);
+        // an element's and its pseudo-elements' alike: a `::before` is in
+        // its element's box, so where both are offered it goes in the
+        // element's layer, and its element's raster leaves it out
+        const lift = liftOf(host, element, name);
         if (lift) lifts.push(lift);
       }
     }

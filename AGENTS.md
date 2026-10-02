@@ -1907,7 +1907,11 @@ a child's `rect` and `clip` are the document's less its parent's. The
 presenter hands a parent's paint the keys of the parts it lifted inside
 it, which it leaves out (`_holesOf`), and paints it again when they
 change; the element hears which are lifted only after that paint, so
-the knowledge has to be the presenter's.
+the knowledge has to be the presenter's. An element and its `::before`
+are two lifts like any others: the pseudo-element's box is in the
+element's, so it goes in the element's layer, where the two had gone one
+at a time and a button that pulsed with a spinner in its `::before` kept
+both on the document's clock.
 
 **A transition is lifted as an animation is.** Its frames are sampled
 from its start to its end, a track for the opacity and one for the
