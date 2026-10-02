@@ -741,6 +741,36 @@ metric(
 );
 
 metric(
+  'a frame that takes an opacity off 1, or back to it, fades a block or an inline element in place, to the pixels a build draws',
+  async (t) => {
+    // named in will-change for as long as the animation runs, the opacity
+    // makes the element a layer of its context at 1 as well, and the order
+    // the document paints in is the same on both sides of 1
+    const doc = await running(
+      t,
+      '<style>body { margin: 0; font: 14px sans-serif }' +
+        '@keyframes out { from { opacity: 1 } to { opacity: .2 } }' +
+        '#c { color: #aa0000; background: #ffff00;' +
+        ' animation: out 160ms linear infinite }' +
+        '#b { width: 60px; padding: 4px; background: #0000aa;' +
+        ' color: #ffffff; animation: out 160ms linear infinite }</style>' +
+        '<p>a prompt <span id="c">_ </span>blinking</p>' +
+        '<div id="b">a block</div>',
+      300,
+    );
+    const tree = treeOf(doc.el);
+    await doc.at(16);
+    assert.ok(treeOf(doc.el) === tree, 'the document was built again');
+    // off 1, back at 1 as an iteration begins, and off it again
+    const { frames } = await framesAgainstBuilds(doc, [32, 160, 176]);
+    assert.ok(
+      frames[1].some((v, i) => v !== frames[2][i]),
+      'it faded',
+    );
+  },
+);
+
+metric(
   'a hover that pauses a running animation holds it, in place',
   async (t) => {
     // Zen Garden 219's marquees stop under the pointer

@@ -1402,7 +1402,9 @@ starts on it, however the animation changes it — the style before a
 change has the animations brought up to the time of the change (CSS
 Transitions 1, 3) — nor where an animation starts or stops setting it, as
 in Chrome; one already under way on it runs on beneath the animation,
-whose value is over it (CSS Transitions 2, 4.1).
+whose value is over it (CSS Transitions 2, 4.1). On macOS a transition
+of the opacity or the transform runs in the render server, as an
+animation of them does (below).
 
 Every frame runs in JavaScript, on either backend. Where a box is drawn on
 a surface of its own — on X11 one that turns and holds text, an image, a
@@ -1430,10 +1432,13 @@ sidorares/react-x11#819, with `@windowkit/appkit` 0.19), and the document
 offers each element whose animation is one a browser would hand its
 compositor:
 
-- its animations set only `opacity`, `transform`, `translate`, `rotate`
-  and `scale`, no two of them the opacity or the transform, and each plays
-  and is past its delay — a fade and a turn on one element go over as two
-  animations on its layer, each with its own timing. An element and its
+- its animations and its transitions under way set only `opacity`,
+  `transform`, `translate`, `rotate` and `scale`, no two of them the
+  opacity or the transform, and each animation plays and is past its
+  delay — a transition goes over in its delay as well, its layer holding
+  where it starts, as the transition does — so a fade and a turn on one
+  element go over as two animations on its layer, each with its own
+  timing. An element and its
   pseudo-elements go one at a time: an element whose `::before` animates
   draws it in what goes on its layer, and a pseudo-element is styled again
   with its element at every frame of the element's;
@@ -1468,12 +1473,13 @@ inline box that is a stacking context — no ink but its own and its
 ancestors' may be within its reach, painted before it or after. The frames
 go over as the document runs them:
 the element's style is sampled through a cycle of its animation — two
-iterations where it alternates — at a display's rate, so every easing,
+iterations where it alternates, a transition from its start to its end —
+at a display's rate, so every easing,
 `steps()` among them, a frame made of the element's own value, a whole turn
 and a mixed transform list come out as `<Html>` draws them, and the render
 server plays straight lines between. At rest the layer shows what the
 animation leaves: the frame it ends on where it fills forwards, the
-element's own style where it does not.
+element's own style where it does not, and a transition's end.
 
 A lifted element is a hole in the document's paint, and its animation is
 no frame of the document's: a fading panel and a turning card cost no frame
@@ -1486,7 +1492,9 @@ back to be drawn as it ended. A point is hit against a lifted element where
 its animation has it at that moment: one that moves is restyled to then
 before the hit is worked out, which repaints nothing, since its pixels are
 its layer's. A hover that draws a lifted element otherwise — a colour, a
-border — paints its layer again in the next frame. Everywhere else — X11,
+border — paints its layer again in the next frame, and one that turns a
+lifted transition back hands its layer a new animation, from where the
+transition had come to. Everywhere else — X11,
 Wayland, Windows, a macOS window drawn without layer promotion — nothing
 asks, and every animation runs on the document's clock as above.
 
@@ -2647,7 +2655,10 @@ and 113 paints of the document on the clock, and none of either lifted, the
 render server's opacity and turn moving under them. Sampling a part's frames
 is the cost instead, once: a style computed per frame of a cycle, sixty for
 a second's animation, kept for as long as the document draws and lays the
-element out as it did.
+element out as it did. A card that fades and lifts over 700 ms under the
+pointer painted 40 to 43 window frames and as many paints of the document
+on the clock, each way; lifted, it takes 4 to 6 frames and 3 or 4 paints,
+the change that starts it and the one that hands it back.
 
 ## Types
 

@@ -562,6 +562,17 @@ In order, each step useful on its own and measured before the next:
    a quarter turn turns clockwise about the box's centre, and a layer at
    half opacity reads half-faded.
 
+   **Transitions too.** They run on the document's timeline
+   (`AnimationTimeline.transition`), and one of the opacity or the
+   transform is the same sprite as an animation of it: one iteration
+   sampled from its start to its end, offered in its delay as well, since
+   the bridge fills a delayed animation backwards. One turned back is a
+   new animation on the layer from where the old one had come to, and the
+   restyle that turns it is in place. A card that fades and lifts over
+   700 ms under the pointer went from 40–43 window frames and as many
+   paints of the document, each way, to 4–6 frames and 3 or 4 paints: the
+   change that starts it, and the one that hands it back.
+
 6. **§5.3's Linux rung** only if step 1's measurements on Xorg say the
    resample is the cost.
 
@@ -606,10 +617,3 @@ before step 5:
   viewport — is asked each frame (step 3). Whether a long scroll should
   demote it instead and promote it again when the page settles, the way
   hover is held (`hoverClock`), is not measured.
-- **Transitions.** They run on the document's timeline
-  (`AnimationTimeline.transition`), from the style the document draws to
-  the one a change makes, as CSS Transitions 1, 3 has them start, turn
-  back and stop. They are not yet lifted: a transition on `opacity` or
-  `transform` is the same sprite as an animation of it, its frames sampled
-  from its own two ends, and one turned back is a new animation on the
-  layer from where the old one had come to.

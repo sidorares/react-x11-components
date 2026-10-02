@@ -1649,9 +1649,11 @@ too — before, it changed its place in the paint order each time it got
 there — and a transform holds what is fixed in it through its delay. A
 phase that changes the bits, an animation starting or ending, changes
 `willChange`, which `hoverChange` does not take in place: the boxes are
-built again, as they are for the frame an opacity first leaves 1. **The
-bits are what makes an animated element one of its context's layers on
-every frame**, which the sprites' paint-order test below stands on.
+built again. The frame an opacity first leaves 1 is not one more, since
+the bits name the opacity on both sides of it, and the paint order is
+what it was. **The bits are what makes an animated element one of its
+context's layers on every frame**, which the sprites' paint-order test
+below stands on.
 
 **A transition runs on the same timeline, from the style the document
 draws.** `AnimationTimeline.transition` is asked of every style the cascade
@@ -1762,6 +1764,18 @@ things are load-bearing.
   react-x11#827), and what shows through it is all any of this is asked
   of. **Anything new that clips a box joins `clipFor`**, or a layer shows
   what the document cuts away.
+
+**A transition is lifted as an animation is.** Its frames are sampled
+from its start to its end, a track for the opacity and one for the
+transform's fields (`liftOf`), each on a fork of its own: a fork runs a
+transition to its end and keeps it there, so a track that began earlier
+would find it over. It is offered in its delay too, since the bridge fills
+a delayed animation backwards and the layer holds where it starts, as the
+transition does. A transition is never changed but replaced, and its
+`serial` is the track's id, so one turned back is a new animation on the
+layer from where the old one had come to. The restyle that turns it back
+is in place: the opacity is named in `will-change` on both sides of 1, and
+the paint order is what it was (`hoverChange`).
 
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's
