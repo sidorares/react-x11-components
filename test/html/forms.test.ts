@@ -194,6 +194,52 @@ test("a field set to appearance: none is the page's to draw", async () => {
   assert.ok(!plain.bare, "a field left alone keeps the theme's frame");
 });
 
+test("a field is the page's to draw once it sets its border or background, to anything", async () => {
+  // A browser drops a field's native look where the page declares any of
+  // its border or background properties, whatever the value (CSS UI 4
+  // 7.2.1): Chrome, Firefox and Safari alike. joshwcomeau.com's newsletter
+  // form is a white pill holding a field set to `border: none; background:
+  // transparent` and a 36px button, and Chrome draws the field bare in the
+  // pill, stretched to the button, the pill 44px tall. Those values read as
+  // a field left alone, and the palette's framed field was mounted in the
+  // pill, which stood 64px tall.
+  const { node } = await render(
+    '<style>body{margin:0}' +
+      '.pill{display:flex;gap:8px;background:#fff;border-radius:8px;' +
+      'padding:4px;width:344px}' +
+      '.pill input{flex:1 1;background:transparent;border:none;' +
+      'outline:none;font-size:16px;padding:4px 8px}' +
+      '.pill button{width:36px;height:36px;padding:0;border:none}' +
+      // Tailwind's preflight: every border 0 wide, a control's ground
+      // transparent
+      '.reset{border:0 solid;background-color:transparent}</style>' +
+      '<div class="pill" id="pill"><input id="field" type="email">' +
+      '<button>Go</button></div>' +
+      '<input id="reset" class="reset"><input id="plain">',
+  );
+  const el = view(node);
+  const rects = (
+    el as unknown as {
+      _controls: {
+        element: { attribs: Record<string, string> };
+        bare?: { height: number } | null;
+      }[];
+    }
+  )._controls;
+  const rectOf = (id: string) =>
+    rects.find((r) => r.element.attribs.id === id)!;
+  const field = rectOf('field');
+  assert.ok(field.bare, 'mounted bare');
+  assert.strictEqual(boxOf(el, 'field').height, 36, 'stretched to the button');
+  assert.strictEqual(field.bare.height, 28, 'inside its padding');
+  assert.strictEqual(boxOf(el, 'pill').height, 44, "the pill is Chrome's");
+  assert.ok(rectOf('reset').bare, "a reset's edges and ground count too");
+  assert.ok(
+    !rectOf('plain').bare,
+    "a field left alone keeps the theme's frame",
+  );
+});
+
 metric("a select the page styled is the page's to draw", async () => {
   // A `<select>` was the palette's framed dropdown whatever the page did to
   // it, inside the page's padding: melbcss.com's, a background and 8px of

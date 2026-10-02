@@ -2290,6 +2290,17 @@ export class Cascade {
     // after the containment, which keeps a body's `overflow` its own
     if (own && el.name.length === 4) propagateOverflow(el, style, parentStyle);
     blockify(style, inFlexContainer);
+    // the answer that took the palette's chrome from the control, if it
+    // had any (`_candidates`), for what draws its box (`styledField`)
+    if (
+      own &&
+      el.name.length >= 5 &&
+      el.name.length <= 8 &&
+      CONTROL_TAGS.has(tagOf(el)) &&
+      stylesControl(candidates)
+    ) {
+      style.styledControl = true;
+    }
     // a button is laid out as one, whatever `display` it was given
     if (own && el.name.length === 6 && tagOf(el) === 'button') {
       settleButton(style);
@@ -2938,12 +2949,10 @@ export class Cascade {
 
 /**
  * Takes the palette's control chrome (`PALETTE_CHROME`) out of an element's
- * candidates where the page styles its background or border, so what shows
- * through is the web's UA values the page was written against. The rule is
- * Blink's (`LayoutTheme::IsControlStyled`): a background or border longhand
- * set by the page, radius included, drops the control's native appearance;
- * so does `appearance: none`. `out` is in cascade order, so the UA's
- * candidates are the ones before the first of any other origin.
+ * candidates where the page styles the control (`stylesControl`), so what
+ * shows through is the web's UA values the page was written against. `out`
+ * is in cascade order, so the UA's candidates are the ones before the first
+ * of any other origin.
  */
 function dropPaletteChrome(out: Candidate[]): void {
   let chrome = false;
@@ -2951,21 +2960,7 @@ function dropPaletteChrome(out: Candidate[]): void {
   for (; i < out.length && out[i].origin === Origin.UserAgent; i += 1) {
     if (PALETTE_CHROME.has(out[i].declarations)) chrome = true;
   }
-  if (!chrome) return;
-  let styled = false;
-  // `appearance` by the value that wins: `appearance: none; appearance:
-  // auto` keeps the control's look, as a reset a page takes back does
-  let appearance = '';
-  for (let j = i; j < out.length && !styled; j += 1) {
-    for (const d of pick(out[j])) {
-      if (d.prop === 'appearance' || d.prop === '-webkit-appearance') {
-        const v = d.value.trim().toLowerCase();
-        if (/^[a-z-]+$/.test(v)) appearance = v;
-      } else if (stylesChrome(d)) styled = true;
-    }
-  }
-  if (appearance === 'none') styled = true;
-  if (!styled) return;
+  if (!chrome || !stylesControl(out)) return;
   let kept = 0;
   for (const c of out) {
     if (c.origin === Origin.UserAgent && PALETTE_CHROME.has(c.declarations)) {
@@ -2976,10 +2971,44 @@ function dropPaletteChrome(out: Candidate[]): void {
   out.length = kept;
 }
 
+/** The elements whose look is a control's own until the page styles it
+ *  (`stylesControl`): the fields a widget is mounted for, and a button. */
+const CONTROL_TAGS = new Set(['input', 'textarea', 'select', 'button']);
+
+/**
+ * Whether the page styles a control: declares one of its background or
+ * border properties, a radius among them, or an `appearance` of `none`.
+ * Who declared them decides, not what to: CSS UI 4 devolves a widget for
+ * any of them declared in the author origin (7.2.1), and Blink
+ * (`LayoutTheme::IsControlStyled`, over the author's declarations its
+ * cascade applies), Gecko and WebKit all do, so `border: none; background:
+ * transparent` takes the native look off as a red border does. The
+ * palette's chrome goes on this answer (`dropPaletteChrome`), and the
+ * document draws a field on it (`ComputedStyle.styledControl`). An
+ * animation's values are not the page's declarations, and do not count.
+ */
+function stylesControl(candidates: readonly Candidate[]): boolean {
+  // `appearance` by the value that wins: `appearance: none; appearance:
+  // auto` keeps the control's look, as a reset a page takes back does
+  let appearance = '';
+  for (const c of candidates) {
+    if (c.origin === Origin.UserAgent || c.origin === Origin.Animation) {
+      continue;
+    }
+    for (const d of pick(c)) {
+      if (d.prop === 'appearance' || d.prop === '-webkit-appearance') {
+        const v = d.value.trim().toLowerCase();
+        if (/^[a-z-]+$/.test(v)) appearance = v;
+      } else if (stylesChrome(d)) return true;
+    }
+  }
+  return appearance === 'none';
+}
+
 /** Whether a declaration styles what a control's native look draws: Blink's
  *  `is_background` and `is_border` properties and their shorthands. An
  *  `appearance` of `none` does too, where it is the one that wins
- *  (`dropPaletteChrome`). */
+ *  (`stylesControl`). */
 function stylesChrome(d: Declaration): boolean {
   const prop = d.prop;
   if (prop.startsWith('background')) {

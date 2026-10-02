@@ -2232,13 +2232,20 @@ An `<input type=image>` is drawn the same way, as its image, and submits
 the point it was pressed at; until its image arrives, or where it is
 declined, it is a button saying its `alt`, so it can be pressed either way.
 
-**A text field the page styled is the page's to draw.** Give an `<input>`, a
-`<textarea>` or a `<select>` a border or a background of its own, or
-`appearance: none`, and the document paints that box, as a browser drops a
-field's native look for the author's; the widget is mounted bare inside its
-content box, with no frame or fill, and writes in the element's own colour
-and font, which the author chose to go on that background. Its size is then
-its text's, and the border and padding around it are the author's. A
+**A text field the page styled is the page's to draw.** Set any of the
+border or background properties of an `<input>`, a `<textarea>` or a
+`<select>`, a radius among them, or `appearance: none`, and the document
+paints that box, as a browser drops a field's native look for the author's;
+the widget is mounted bare inside its content box, with no frame or fill,
+and writes in the element's own colour and font, which the author chose to
+go on that background. Its size is then its text's, and the border and
+padding around it are the author's. It is the page setting them that
+counts, not what it set them to, as CSS UI 4 has it (7.2.1) and Chrome,
+Firefox and Safari do: `border: none; background: transparent` is a page
+taking the frame off to draw the field in a box of its own, as
+joshwcomeau.com's newsletter form does in a white pill, and read as values
+it was a field left alone, the palette's frame mounted inside the pill. The
+answer is the one that takes the palette's look off a button, above. A
 `<select>` keeps its arrow, in that colour, as a browser keeps one on a
 select the page gave a border or a background, and loses it at
 `appearance: none`, where the page draws its own — as a background image,
@@ -2247,7 +2254,7 @@ most often. Its widget is core's `<Select>` restyled through its
 on every backend: under a native popup bezel the page's box would have
 AppKit's drawn over it. `appearance: none` is how a design system writes
 every field it has, often with neither a border nor a background. A field
-with none of the three keeps the theme's frame, and so does every
+the page set none of them on keeps the theme's frame, and so does every
 `<input type=submit>`: core's `<Button>` draws its own label.
 
 **The application scrolls it, and height does not frighten it.** The element
