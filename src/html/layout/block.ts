@@ -104,6 +104,9 @@ import {
 
 export interface LayoutContext {
   fonts: FontsLike | null;
+  /** Device pixels to a CSS pixel, the unit every length here is in: what
+   *  `text-wrap: pretty` scales its scores by (`InlineOptions.scale`). */
+  scale?: number;
   /** Whether any block has a `::first-line` (`BoxTree.firstLine`). */
   firstLine?: boolean;
   /** Each box's style on a first line (`BoxTree.firstLineStyler`). */
@@ -193,9 +196,11 @@ export function layoutDocument(
   fonts: FontsLike | null,
   viewportWidth: number,
   viewportHeight: number,
+  scale = 1,
 ): LayoutResult {
   const ctx: LayoutContext = {
     fonts,
+    scale,
     viewportWidth,
     viewportHeight,
     positioned: [],
@@ -1231,12 +1236,15 @@ function layoutInlineContent(
   // Atomics have to be sized before the line breaker can place them.
   sizeAtomics(box, ctx, contentWidth);
 
+  const firstLine = ctx.firstLine ? firstLineOf(box) : null;
   const options = {
     fonts: ctx.fonts,
     width: contentWidth,
     startY: contentTop,
     floats,
     originX: contentLeft,
+    scale: ctx.scale,
+    firstLined: firstLine !== null,
     clipText: ctx.clipText,
     firstStrut: MARKER_ROOM.get(box),
     floatBoxes: floated
@@ -1256,7 +1264,6 @@ function layoutInlineContent(
           }
         : undefined,
   };
-  const firstLine = ctx.firstLine ? firstLineOf(box) : null;
   // A `::first-line` that sets the line's fonts moves where it breaks, so
   // the line is found in them (`InlineOptions.firstLineStyle`); its text
   // takes the pseudo-element's colour there too

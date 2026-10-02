@@ -1205,12 +1205,19 @@ and on `bidi-js` for its text layout, and ntk is react-x11's dependency — so
 every app that can use this package has all five installed already.
 Declaring them adds no packages to an install; it makes the resolution
 correct under pnpm's strict layout instead of relying on npm hoisting.
-**Check that this is still true before adding a sixth.** If ntk drops the
+**Check that this is still true before adding another.** If ntk drops the
 first four when the document widgets go, the closure argument goes with
 them and they become this package's to justify alone. `bidi-js` is the
 UAX #9 ntk's own layout resolves with, which is why it is the one `<Html>`
 resolves a paragraph's levels with where a line is laid out a piece at a
 time: the two have to agree about every letter the engine orders.
+`linebreak` is the sixth, on the same footing: ntk breaks every line with
+it, and react-x11 depends on it directly to find a CoreText paragraph's
+least width. `text-wrap: pretty` reads the places a line may break from it
+(`layout/pretty.ts`), which is the engines' opinion and no third one. It
+decodes its tables as it is imported, which no bundler can drop, so only
+`<Html>`'s layout imports it, and this package's `sideEffects: false` drops
+it with that layout from an app that renders no `<Html>`.
 
 What is still written out, and why the line falls there: the **CSS parser**
 (postcss is a tooling parser — positions, comments and raws, none of which
@@ -1290,6 +1297,34 @@ the box, as a cell's `vertical-align` does, and both go through
 down with the content. Anything else that moves what a box holds inside it
 goes through it too, or an absolute box with no offsets is left where the
 flow used to be.
+
+**`text-wrap: pretty` is Blink's score line breaker, and asks the engine
+for its breaks with a character.** The scoring is `layout/pretty.ts`, pure:
+the last four lines of a paragraph, only where they end on a short word
+alone, Minikin's penalties, and Blink's gates — a line that overflowed or
+was cut, a `::first-line`, an inline box with `box-decoration-break:
+clone`. Its tests hold it to Chrome's lines over the same text. Neither
+engine takes break positions, so a break is asked for by making the space a
+line ends on U+2028, as long as the space, so every offset holds. Three
+things are load-bearing:
+
+- **A line separator is no forced break.** `justifiedRuns` and the
+  line-at-a-time loop's `forced` read a line feed alone as one, so a line a
+  separator ends is justified and aligned as the rest are. Everything that
+  asks where a line may break after white space (`SPACE`, `BREAKS_AFTER`,
+  `unbreakableAfter`, …) counts U+2028 with it, and `breakBefore(…, true)`
+  ends a segment's line at one: without them, a separator straight after
+  an inline box's text glued the next word to the box's last, and the line
+  broke a word early or not at all.
+- **Lines made a piece at a time are made twice.** The loop knows nothing
+  of scores. `prettyAgain` lays the paragraph out once as `layoutSpaced`
+  would, scores that where its lines start where the loop's did, and
+  `layoutLines` makes the lines again with the separators in the items,
+  keeping them only where the engine broke at every one.
+- **A break with no space to take cannot be asked for.** After a hyphen,
+  between two ideographs: a paragraph whose best breaks include one keeps
+  its greedy lines. An engine option for break positions would lift this,
+  and `balance` could use it too.
 
 **Nothing is fetched and nothing is executed, by construction.**
 `onResource` is the only way anything loads and `onScript` never runs

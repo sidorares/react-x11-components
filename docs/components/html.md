@@ -1892,7 +1892,9 @@ start tag is dropped, as HTML's parser drops it) and CSS Text 4's halves
 of it, `white-space-collapse` and `text-wrap-mode`, `text-wrap` (Tailwind
 4's `text-nowrap`, and `text-balance`: a heading of up to six lines broken
 at the narrowest width that keeps as many of them, and set in its whole
-width, as Chrome does it; `pretty` wraps as `auto` does), `line-clamp`
+width, as Chrome does it; and `text-pretty`, a paragraph's last word kept
+off a line of its own where Chrome keeps it off — see
+[the decisions](#the-decisions)), `line-clamp`
 (CSS Overflow 4: a line-clamp container shows the first lines of its
 formatting context, counted through the blocks in it, and is as tall as
 they are; what comes after them is invisible and takes no room, and the
@@ -2659,6 +2661,31 @@ the pointer, and nor is one with `pointer-events: none`: the pointer
 passes through it to what is, and a box inside it that sets either back
 is still found. A closed menu laid over a page, hidden until it opens,
 takes nothing from the page under it.
+
+**`text-wrap: pretty` breaks lines where Chrome breaks them.** CSS Text 4
+asks for better lines than the greedy ones and leaves how to the user agent,
+so this follows Blink's score line breaker. Where a paragraph's lines end on
+one short word — under a third of the line, with no place to break inside
+it — its last four lines, and none before them, are broken again where
+Minikin's scoring puts them: each line's slack squared, against a heavy
+penalty for the word left alone. It keeps as many lines as there were, or
+the lines stand. A paragraph is a block's text, or the part of it a `<br>`
+ends, and most end on a longer line and cost one comparison a line. As in
+Blink, a paragraph keeps its lines where one of them overflowed or had a
+word cut to fit it, and a block does where it has a `::first-line` style or
+an inline box with `box-decoration-break: clone` — the inline `<code>` many
+a blog clones its padding onto, which Blink's line breaker turns the scoring
+off for. The places a line may break are UAX #14's, from the `linebreak`
+package ntk breaks every line with, less those Blink's own table for two
+ASCII characters leaves out: `and/or` breaks at no slash. A break is asked
+of the text engine by making the space a line ends on a line separator, as
+long as the space, so every offset in the text holds. A place to break with
+no space to make one of — after a hyphen, between two ideographs — cannot
+be asked for, and a paragraph whose best breaks include one keeps its lines
+where Chrome would break it there; so do lines beside a float or around an
+image or an inline-block. An inline box in a font or a line height of its
+own, or a `text-indent`, has its lines made a piece at a time, and they are
+scored and made again with the breaks asked for.
 
 **Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
 Everything from the cascade to paint recurses on tree depth, so a
