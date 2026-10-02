@@ -66,6 +66,21 @@ test("a document's language is its meta's, where no element says", async () => {
   assert.strictEqual(color('b'), '#0000ff', "an element's own wins");
 });
 
+test("a meta inside a <template> does not set the document's language", async () => {
+  // the last pragma would win, but a <template>'s content is no part of
+  // the document
+  const { node } = await render(
+    '<meta http-equiv="content-language" content="fr">' +
+      '<template><meta http-equiv="content-language" content="de"></template>' +
+      '<style>:lang(fr) { color: #00ff00 } :lang(de) { color: #0000ff }</style>' +
+      '<p id="a">a</p>',
+  );
+  const el = view(node);
+  const color = (boxOf(el, 'a') as LaidBox & { style: { color: string } }).style
+    .color;
+  assert.strictEqual(color, '#00ff00');
+});
+
 test('an attribute operator needs a value, and an empty word is none', async () => {
   // `[title~=]` is no selector, and takes its group (CSS 2.1 4.1.7); and
   // `[title~=""]` represents nothing (Selectors 3, 6.3.1), where it was

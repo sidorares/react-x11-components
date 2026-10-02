@@ -24,6 +24,7 @@ import type { Element } from '../src/html/dom.js';
 import {
   FormState,
   firstInvalid,
+  formOwner,
   formSubmission,
   implicitSubmission,
   labeledControl,
@@ -35,7 +36,8 @@ const h = React.createElement;
 
 afterEach(cleanup);
 
-/** A parsed document, and its elements by id. */
+/** A parsed document, and its elements by id — as getElementById finds
+ *  them, so never one inside a <template>. */
 function parse(html: string): (id: string) => Element {
   const source = new HtmlSource();
   source.setSource(html, true);
@@ -47,7 +49,7 @@ function parse(html: string): (id: string) => Element {
       if (node.type !== 'tag') continue;
       const el = node as Element;
       if (el.attribs.id === id) return el;
-      stack.unshift(...el.children);
+      if (el.name !== 'template') stack.unshift(...el.children);
     }
     throw new Error(`no #${id}`);
   };
@@ -210,6 +212,17 @@ test('a form owns the controls that name it, and not those that name another', (
   ]);
 });
 
+test('a form attribute names its form by an id outside a <template>', () => {
+  // a <template>'s content is no part of the document, so getElementById
+  // never finds an element in it: the first `f` below is the form's
+  const html =
+    '<template><div id="f"></div></template>' +
+    '<form id="f" method="post"></form>' +
+    '<input id="in" name="a" value="1" form="f">';
+  assert.deepStrictEqual(submit(html, null).entries, [['a', '1']]);
+  assert.strictEqual(formOwner(parse(html)('in'))?.name, 'form');
+});
+
 test('only the button that submitted goes, and its form* attributes win over the form', () => {
   const html =
     '<base target="named">' +
@@ -239,6 +252,15 @@ test('only the button that submitted goes, and its form* attributes win over the
   assert.strictEqual(two.body, 'q=x\r\ngo=two\r\n');
   assert.strictEqual(two.contentType, 'text/plain;charset=UTF-8');
   assert.strictEqual(two.target, '_blank');
+});
+
+test("a <base target> inside a <template> is not the document's", () => {
+  const s = submit(
+    '<template><base target="inert"></template><base target="named">' +
+      '<form id="f" action="/a"><input name="q" value="x"></form>',
+    null,
+  );
+  assert.strictEqual(s.target, 'named');
 });
 
 test('an image button is the point it was pressed at', () => {
@@ -408,6 +430,21 @@ test("a radio's group is its name in its form, or in no form", () => {
   assert.deepStrictEqual(radioGroup(byId('d')), [byId('e')]);
 });
 
+test('a radio inside a <template> is in no group of the document', () => {
+  const byId = parse(
+    '<input id="a" type="radio" name="r">' +
+      '<template><input id="t" type="radio" name="r"></template>' +
+      '<input id="b" type="radio" name="r">' +
+      '<form id="f"><input id="c" type="radio" name="s">' +
+      '<template><input id="u" type="radio" name="s"></template>' +
+      '<input id="d" type="radio" name="s"></form>',
+  );
+  const ids = (radio: string) =>
+    radioGroup(byId(radio)).map((el) => el.attribs.id);
+  assert.deepStrictEqual(ids('a'), ['b'], 'in no form');
+  assert.deepStrictEqual(ids('c'), ['d'], 'in a form');
+});
+
 // --- labels and validation --------------------------------------------------------
 
 test('a label is for the control its `for` names, or else the first inside it', () => {
@@ -425,6 +462,19 @@ test('a label is for the control its `for` names, or else the first inside it', 
   assert.strictEqual(labeledControl(byId('l4')), null, 'not a control');
   assert.strictEqual(labeledControl(byId('l5')), null);
   assert.strictEqual(labeledControl(byId('l6')), byId('t'), '`for` wins');
+});
+
+test('a label is never for a control inside a <template>', () => {
+  // neither the one its `for` would name nor one inside it: a template's
+  // content is no part of the document, and no descendant of the label
+  const byId = parse(
+    '<template><input id="t" name="inert"></template>' +
+      '<label id="l1" for="t">Name</label><input id="t" name="named">' +
+      '<label id="l2">Agree <template><input type="checkbox" name="inert">' +
+      '</template><input type="checkbox" name="inside"></label>',
+  );
+  assert.strictEqual(labeledControl(byId('l1'))?.attribs.name, 'named');
+  assert.strictEqual(labeledControl(byId('l2'))?.attribs.name, 'inside');
 });
 
 test("the constraints a document states, in a browser's words", () => {

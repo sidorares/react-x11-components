@@ -21,7 +21,7 @@ import * as DomUtils from 'domutils';
 import { Element as DomElement, isTag } from 'domhandler';
 import type { Element } from 'domhandler';
 
-import { attr, tagOf } from '../dom.js';
+import { NON_RENDERED, attr, tagOf } from '../dom.js';
 import { systemColorTable, usedColorScheme } from './color.js';
 import {
   asciiLower,
@@ -3002,10 +3002,11 @@ function pragmaLanguage(root: { children: unknown[] }): string {
         if (candidate) lang = candidate;
       }
     }
-    // in document order: the last one pushed is taken first
+    // in document order: the last one pushed is taken first; and not into
+    // a <template>, whose content is no part of the document
     for (let i = node.children.length - 1; i >= 0; i -= 1) {
-      const child = node.children[i];
-      if (isTag(child as Element)) stack.push(child as Element);
+      const child = node.children[i] as Element;
+      if (isTag(child) && !NON_RENDERED.has(child.name)) stack.push(child);
     }
   }
   PRAGMA_LANGUAGE.set(root, lang);
