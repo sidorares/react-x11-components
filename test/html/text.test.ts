@@ -969,6 +969,33 @@ metric('text casts its shadows under it, the last first', async () => {
   );
 });
 
+metric(
+  'a repaint of the rows a text shadow falls in below its line draws the shadow',
+  async () => {
+    // A text's shadow is ink past the text, as a box's is past the box: a
+    // repaint of the rows it falls in — a strip a scroll exposes, a hover
+    // that fades it in place — has to reach the paragraph that casts it.
+    // Counted no further than the glyphs, those rows were not repainted,
+    // and a shadow faded in place kept the opacity it had there.
+    const { node } = await render(
+      '<style>body{margin:0}' +
+        'p{margin:0;font-size:20px;line-height:20px}</style>' +
+        '<p id="h" style="text-shadow:0 30px 0 #0000ff">Title</p>',
+    );
+    const el = view(node);
+    const p = boxOf(el, 'h');
+    const ops: PaintOp[] = [];
+    // rows the shadow alone falls in, under the line and its glyphs
+    await fillsOf(el, ops, {
+      damage: { x: 0, y: p.y + p.height + 12, width: 300, height: 10 },
+    });
+    assert.ok(
+      ops.some((op) => op.op === 'text' && op.shadow?.color === '#0000ff'),
+      'the shadow was not drawn',
+    );
+  },
+);
+
 test('tab-size is a number of spaces, or a length', async () => {
   const { node } = await render(
     '<pre id="a" style="tab-size:4">a</pre>' +

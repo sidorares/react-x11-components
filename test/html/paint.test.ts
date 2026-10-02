@@ -415,14 +415,15 @@ metric(
     // `<b>`), and a link in a faded element whose colour changes (#l) —
     // and its shadow, its background and an inline-block on its line. A
     // paragraph all of whose text casts one shadow keeps what it casts
-    // (#t), and is asked again.
+    // (#t), and is asked again, and its shadow falls below its line, which
+    // the repaint reaches.
     const { result, node } = await render(
       '<style>body{margin:0;font:20px sans-serif;background:#ffffff}' +
         '#s{opacity:.5;color:#ff0000;background:#ffff00;' +
         'text-shadow:2px 2px 0 #00ffff}#s:hover{opacity:.25}' +
         '#o{opacity:.8}#o:hover{opacity:.4}' +
         '#q{opacity:.5}#l{color:#0000ee}#l:hover{color:#00aa00}' +
-        '#t{opacity:.5;text-shadow:2px 2px 0 #00ffff}' +
+        '#t{opacity:.5;text-shadow:0 16px 0 #00ffff}' +
         '#t:hover{opacity:.25}</style>' +
         '<p>text with <span id="s">a span <span style="display:' +
         'inline-block;width:20px;height:10px;background:#0000ff"></span>' +

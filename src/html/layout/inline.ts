@@ -36,7 +36,7 @@ import type { Bidi } from 'bidi-js';
 import { codePointAtOffset, codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import { fadeColor } from '../css/color.js';
-import type { ComputedStyle } from '../css/style.js';
+import type { BoxShadow, ComputedStyle } from '../css/style.js';
 import {
   CONTAIN_LAYOUT,
   INLINE_BEFORE_ABSOLUTE,
@@ -497,14 +497,15 @@ function linesOf(
   // tab, which only a `white-space` that keeps it leaves — so no text is
   // searched for one where it cannot be
   let tabbed = false;
-  let shadowed = false;
+  // each list of shadows, which the styles that cast it share
+  let shadowed: Set<BoxShadow[]> | null = null;
   // and text that keeps its spaces where its lines wrap, whose spaces a
   // line may end on (`hangPreserved`)
   let keepsSpaces = false;
   for (const item of items) {
     if (item.kind !== 'text' || item.control) continue;
     const style = item.box.style;
-    if (style.textShadow) shadowed = true;
+    if (style.textShadow) (shadowed ??= new Set()).add(style.textShadow);
     if (style.whiteSpace === 'pre-wrap') keepsSpaces = true;
     if (
       !tabbed &&
@@ -514,7 +515,8 @@ function linesOf(
       tabbed = true;
     }
   }
-  if (shadowed) SHADOWED_TEXT.add(block);
+  if (shadowed) SHADOWED_TEXT.set(block, [...shadowed]);
+  else SHADOWED_TEXT.delete(block);
   if (tabbed) {
     setTabs(items, fonts, block.style, blockIndent(block, options.width));
   }

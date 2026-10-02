@@ -51,7 +51,7 @@ import {
 import { AUTO } from '../css/values.js';
 import { concreteSize, svgIntrinsics } from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
-import type { ComputedStyle } from '../css/style.js';
+import type { BoxShadow, ComputedStyle } from '../css/style.js';
 import type { GridLines } from './grid-lines.js';
 
 export type BoxKind =
@@ -657,9 +657,11 @@ export const MOVED_OFF_LINES = new WeakMap<LineBox[], Set<LineBox>>();
  *  among `SHIFTED_LINES` too, as its text is off the line's baseline. */
 export const TEXT_RAISES = new WeakMap<LineText, number>();
 
-/** The blocks some of whose text casts a shadow (`text-shadow`), which the
- *  paint pass looks for in them and in no other. */
-export const SHADOWED_TEXT = new WeakSet<Box>();
+/** The blocks some of whose text casts a shadow (`text-shadow`), and each
+ *  list of shadows it casts: the paint pass looks for them in these blocks
+ *  and in no other, and their ink reaches as far past the text as the
+ *  shadows fall (`computePaintBounds`). */
+export const SHADOWED_TEXT = new WeakMap<Box, readonly BoxShadow[][]>();
 export const BOX_RAISES = new WeakMap<Box, number>();
 
 /** And the raise, on one line, of each inline box a `top` or `bottom` box

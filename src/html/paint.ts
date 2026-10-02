@@ -402,12 +402,16 @@ export function computePaintBounds(box: Box, moved = false): number {
     }
   }
   const lines = box.lines;
+  // and the shadows its text casts, as far past the text as they fall: an
+  // expose of the strip they fall in, or a hover that fades them, has to
+  // reach them
+  const cast = lines ? textShadowReach(box) : null;
   if (lines) {
     let tallest = 0;
     for (const line of lines) {
-      x1 = Math.min(x1, line.x);
+      x1 = Math.min(x1, line.x - (cast?.left ?? 0));
       y1 = Math.min(y1, line.y);
-      x2 = Math.max(x2, line.x + line.width);
+      x2 = Math.max(x2, line.x + line.width + (cast?.right ?? 0));
       y2 = Math.max(y2, line.y + line.height);
       tallest = Math.max(tallest, line.height);
       if (moved && SHIFTED_LINES.has(line)) {
@@ -497,8 +501,14 @@ export function computePaintBounds(box: Box, moved = false): number {
         const natural = text.layout.lines[text.layoutLine];
         if (!natural) continue;
         const baseline = text.drawY + natural.baseline;
-        top = Math.min(top, baseline - (natural.ascent ?? 0));
-        bottom = Math.max(bottom, baseline + (natural.descent ?? 0));
+        top = Math.min(
+          top,
+          baseline - (natural.ascent ?? 0) - (cast?.top ?? 0),
+        );
+        bottom = Math.max(
+          bottom,
+          baseline + (natural.descent ?? 0) + (cast?.bottom ?? 0),
+        );
       }
       if (top < line.y) {
         y1 = Math.min(y1, top);
@@ -644,6 +654,29 @@ function inlineFragmentsReach(
     );
   }
   return x1 === Infinity ? null : { x1, y1, x2, y2 };
+}
+
+/** How far past a block's text the shadows it casts fall on each side, at
+ *  most (`SHADOWED_TEXT`); null where its text casts none. */
+function textShadowReach(
+  box: Box,
+): { left: number; top: number; right: number; bottom: number } | null {
+  const casts = SHADOWED_TEXT.get(box);
+  if (!casts) return null;
+  let left = 0;
+  let top = 0;
+  let right = 0;
+  let bottom = 0;
+  for (const shadows of casts) {
+    for (const s of shadows) {
+      const reach = shadowReach(s.blur);
+      left = Math.max(left, reach - s.x);
+      right = Math.max(right, reach + s.x);
+      top = Math.max(top, reach - s.y);
+      bottom = Math.max(bottom, reach + s.y);
+    }
+  }
+  return { left, top, right, bottom };
 }
 
 /** Children lists past this size get the sorted viewport index; below it a
@@ -6759,8 +6792,11 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     // is not (heights vary), which is what the tallest-line slack is for.
     // Start at the first line that could reach the damage, stop at the
     // first one past it: the cost is the visible lines, not the box's.
-    const top = damage.y - dy;
-    const bottom = top + damage.height;
+    // And the lines whose text casts a shadow that falls in it, from as far
+    // above or below as the shadows fall (`textShadowReach`)
+    const cast = textShadowReach(box);
+    const top = damage.y - dy - (cast?.bottom ?? 0);
+    const bottom = damage.y - dy + damage.height + (cast?.top ?? 0);
     let lo = 0;
     let hi = lines.length;
     // and a line whose glyphs, or an atomic on it, reach past it
