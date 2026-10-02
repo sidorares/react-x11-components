@@ -120,7 +120,13 @@ import { TextLayoutCache } from './layout/cache.js';
 import { fontAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
 import { describe, liftOf, partOf } from './sprites.js';
-import type { DocumentSprite, Part, Pseudo, SpriteHost } from './sprites.js';
+import type {
+  DocumentSprite,
+  Lift,
+  Part,
+  Pseudo,
+  SpriteHost,
+} from './sprites.js';
 import { SpriteStore, SurfaceCache, newSurface } from './surfaces.js';
 import type { SurfaceLike } from './surfaces.js';
 import {
@@ -2993,9 +2999,10 @@ export class HtmlViewNode extends Node {
       range ? `${range.start}-${range.end}` : '',
       viewport ? 'scrolled' : '',
     ].join(':');
-    let options: PaintOptions | null = null;
-    let out: DocumentSprite[] | null = null;
-    let shift: { x: number; y: number } | null | undefined;
+    // the lifts, an ancestor's ahead of its descendants': a part inside
+    // another's box goes in that part's layer, and the presenter takes a
+    // parent before the parts in it
+    const lifts: Lift[] = [];
     for (const { el, targets } of live) {
       const element = el as Element;
       for (const name of targets) {
@@ -3008,42 +3015,79 @@ export class HtmlViewNode extends Node {
           continue;
         }
         const lift = liftOf(host, element, pseudo);
-        if (!lift) continue;
-        const made = `${stamp}|${lift.id}`;
-        let offers = this._spriteOffers.get(element);
-        if (!offers) this._spriteOffers.set(element, (offers = {}));
-        let offer = offers[pseudo];
-        if (offer?.stamp !== made) {
-          offer = { stamp: made, part: partOf(host, lift, offer?.part) };
-          offers[pseudo] = offer;
-        }
-        if (!offer.part) continue;
-        // a box fixed to the viewport the scroll has brought within its
-        // reach: the document draws it this frame, under that box or over
-        // it, as their order has it. One at the viewport keeps its place
-        // against them, and was asked about them once (`partOf`).
-        if (offer.part.fixed.length && !offer.part.atViewport) {
-          if (shift === undefined) shift = this._fixedShift();
-          if (fixedWithin(offer.part, shift)) continue;
-        }
-        const key = this._spriteKeyOf(element, pseudo);
-        this._offered.set(key, { el: element, pseudo });
-        const painted = (options ??= this._paintOptions(range, null));
-        // from the viewport's corner, for one the document draws there
-        const origin = offer.part.atViewport && viewport ? viewport : this.abs;
-        (out ??= []).push(
-          describe(
-            offer.part,
-            key,
-            `${serialOf(lift.box)}:${stamp}`,
-            origin.x,
-            origin.y,
-            now,
-            (ctx, box) =>
-              paintLiftedBox(ctx as PaintContext, tree, box, painted),
-          ),
-        );
+        if (lift) lifts.push(lift);
       }
+    }
+    if (lifts.length > 1) {
+      const depths = new Map<Box, number>();
+      for (const { box } of lifts) {
+        let depth = 0;
+        for (let at = box.parent; at; at = at.parent) depth += 1;
+        depths.set(box, depth);
+      }
+      lifts.sort((a, b) => depths.get(a.box)! - depths.get(b.box)!);
+    }
+    // the parts offered so far, by their boxes
+    const offeredBoxes = new Map<Box, { key: string; part: Part }>();
+    let options: PaintOptions | null = null;
+    let out: DocumentSprite[] | null = null;
+    let shift: { x: number; y: number } | null | undefined;
+    for (const lift of lifts) {
+      const { el: element, pseudo } = lift;
+      // the nearest box around it that is a part's: its layer goes in that
+      // one's, and the boxes between are all it is asked about
+      let parent: { key: string; part: Part } | null = null;
+      for (let at = lift.box.parent; at && !parent; at = at.parent) {
+        parent = offeredBoxes.get(at) ?? null;
+      }
+      const made =
+        `${stamp}|${lift.id}` +
+        (parent ? `|${parent.key}:${serialOf(parent.part)}` : '');
+      let offers = this._spriteOffers.get(element);
+      if (!offers) this._spriteOffers.set(element, (offers = {}));
+      let offer = offers[pseudo];
+      if (offer?.stamp !== made) {
+        offer = {
+          stamp: made,
+          part: partOf(host, lift, offer?.part, parent?.part ?? null),
+        };
+        offers[pseudo] = offer;
+      }
+      if (!offer.part) continue;
+      // a box fixed to the viewport the scroll has brought within its
+      // reach: the document draws it this frame, under that box or over
+      // it, as their order has it. One at the viewport keeps its place
+      // against them, and was asked about them once (`partOf`), and one
+      // inside another part goes where that part does.
+      if (offer.part.fixed.length && !offer.part.atViewport) {
+        if (shift === undefined) shift = this._fixedShift();
+        if (fixedWithin(offer.part, shift)) continue;
+      }
+      const key = this._spriteKeyOf(element, pseudo);
+      this._offered.set(key, { el: element, pseudo });
+      offeredBoxes.set(lift.box, { key, part: offer.part });
+      const painted = (options ??= this._paintOptions(range, null));
+      // from the viewport's corner, for one the document draws there
+      const origin = offer.part.atViewport && viewport ? viewport : this.abs;
+      (out ??= []).push(
+        describe(
+          offer.part,
+          key,
+          `${serialOf(lift.box)}:${stamp}`,
+          origin.x,
+          origin.y,
+          now,
+          (ctx, box, children) =>
+            paintLiftedBox(
+              ctx as PaintContext,
+              tree,
+              box,
+              painted,
+              this._holesOf(tree, children),
+            ),
+          parent?.key ?? null,
+        ),
+      );
     }
     return out;
   }
@@ -3174,6 +3218,26 @@ export class HtmlViewNode extends Node {
       if (lifted.has(at)) return true;
     }
     return false;
+  }
+
+  /** The boxes of the parts whose keys a presenter hands a part's paint,
+   *  lifted inside it: holes in its raster. */
+  private _holesOf(
+    tree: BoxTree,
+    keys: ReadonlySet<string> | undefined,
+  ): ReadonlySet<Box> | null {
+    if (!keys?.size) return null;
+    const holes = new Set<Box>();
+    const first = this._firstBoxesOf(tree);
+    for (const key of keys) {
+      const target = this._offered.get(key) ?? this._lifted.get(key);
+      if (!target) continue;
+      const box = target.pseudo
+        ? this._pseudoBoxOf(tree, target.el, target.pseudo)
+        : first.get(target.el);
+      if (box) holes.add(box);
+    }
+    return holes;
   }
 
   /** The lifted boxes in `tree`, for the paint to leave out: each lifted

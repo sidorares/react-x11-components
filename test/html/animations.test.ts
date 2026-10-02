@@ -1926,6 +1926,79 @@ test('an element that animates inside a lifted one paints the lifted one’s lay
   );
 });
 
+test('an element animating inside one that goes on a layer is offered inside it: in its layer, placed as though it did not move, and left out of its raster where the presenter lifts it', async (t) => {
+  // a card that pulses, moved 20px across, and a spinner in it
+  const doc = await running(
+    t,
+    '<style>@keyframes pulse { from { opacity: 1 } to { opacity: .6 } }' +
+      '@keyframes spin { to { transform: rotate(360deg) } }' +
+      'body { margin: 0 } #card { width: 200px; height: 80px;' +
+      ' background: blue; transform: translateX(20px);' +
+      ' animation: pulse 1s infinite alternate }' +
+      '#spin { margin: 10px; width: 20px; height: 20px; background: white;' +
+      ' animation: spin 1s linear infinite }</style>' +
+      '<div id="card"><div id="spin"></div></div>',
+  );
+  const sprites = doc.el.sprites()! as DocumentSprite[];
+  assert.strictEqual(sprites.length, 2);
+  const [card, spin] = sprites;
+  assert.strictEqual(card.parent, undefined);
+  assert.strictEqual(spin.parent, card.key, 'the card is its parent');
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const box = boxOf(doc.el, 'spin');
+  // layout moved the spinner with the card; in the card's raster it is
+  // where it would be with the card where it was laid out
+  assert.deepStrictEqual(
+    [spin.rect.x, spin.rect.y],
+    [abs.x + box.x - 20, abs.y + box.y],
+  );
+  // the card's raster has the spinner in it, but for where the presenter
+  // hands it its key
+  const own = (fills: ReturnType<typeof recorder>['fills']) =>
+    fills.filter((f) => f.w === 20 && f.h === 20).length;
+  const whole = recorder();
+  card.paint(whole.ctx as never);
+  assert.strictEqual(own(whole.fills), 1, 'drawn in the card');
+  const holed = recorder();
+  card.paint(holed.ctx as never, new Set([spin.key]));
+  assert.strictEqual(own(holed.fills), 0, 'a hole where it is lifted');
+  // lifted together, neither is a frame of the document's
+  doc.el.spritesLifted(new Set([card.key, spin.key]));
+  assert.strictEqual(doc.clock.pending, false);
+});
+
+test('what is between a part and one inside it is asked about as for any part: a fade or a turn keeps the inner one in the document, and a box that clips cuts its layer in the outer one’s', async (t) => {
+  // the card in a box that clips it narrower than what is between: that
+  // box cuts the card's layer, and the part inside it is cut no more
+  const page = (between: string) =>
+    '<style>@keyframes pulse { from { opacity: 1 } to { opacity: .6 } }' +
+    '@keyframes slide { to { transform: translateX(30px) } }' +
+    'body { margin: 0 } #outer { width: 100px; overflow: hidden }' +
+    '#card { width: 200px; height: 80px;' +
+    ' background: blue; animation: pulse 1s infinite alternate }' +
+    `#between { width: 120px; height: 60px; ${between} }` +
+    '#move { width: 20px; height: 20px; background: white;' +
+    ' animation: slide 1s linear infinite }</style>' +
+    '<div id="outer"><div id="card"><div id="between"><div id="move">' +
+    '</div></div></div></div>';
+  const faded = await running(t, page('opacity: .5'));
+  assert.strictEqual(faded.el.sprites()!.length, 1, 'the card alone');
+  const turned = await running(t, page('transform: rotate(5deg)'));
+  assert.strictEqual(turned.el.sprites()!.length, 1, 'the card alone');
+  const clipped = await running(t, page('overflow: hidden'));
+  const sprites = clipped.el.sprites()! as DocumentSprite[];
+  assert.strictEqual(sprites.length, 2);
+  const abs = (clipped.el as unknown as DrawnNode).abs;
+  const between = boxOf(clipped.el, 'between');
+  assert.strictEqual(sprites[1].parent, sprites[0].key);
+  assert.deepStrictEqual(sprites[1].clip, {
+    x: abs.x + between.x,
+    y: abs.y + between.y,
+    width: 120,
+    height: 60,
+  });
+});
+
 test('the frames the document runs for what is not lifted restyle nothing that is', async (t) => {
   const doc = await running(
     t,

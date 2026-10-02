@@ -1397,6 +1397,9 @@ export function paintLiftedBox(
   tree: BoxTree,
   box: Box,
   options: PaintOptions,
+  /** The boxes lifted inside it, on layers of their own in its: holes in
+   *  it, as it is one in the document. */
+  holes: ReadonlySet<Box> | null = null,
 ): void {
   if (!canFill(ctx)) return;
   // where the document draws it: at the viewport, for one fixed to it or in
@@ -1411,7 +1414,7 @@ export function paintLiftedBox(
     ...placed,
     damage: null,
     clips: [],
-    lifted: null,
+    lifted: holes,
     sprites: null,
     matrix: undefined,
     canvasSource: canvasBackground(tree)?.source,
@@ -3706,12 +3709,14 @@ export function clipsOverflow(box: Box): boolean {
  * rectangle with round corners (`radius`), where its corners are one
  * circle's and every other clip holds it, as a layer's box can be cut.
  * Undefined where nothing cuts `box`; null where something cuts it in a way
- * neither can.
+ * neither can. Up to `within` and no further, where it is given: the box
+ * whose layer `box`'s goes in, which the clips above it cut already.
  */
 export function clipFor(
   box: Box,
   extent: Rect,
   scale: number,
+  within: Box | null = null,
 ): { rect: Rect; radius: number } | null | undefined {
   const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
   let clip: Rect | undefined;
@@ -3763,6 +3768,7 @@ export function clipFor(
       }
       if (at.outOfFlow && at.style.clip) cut(clipOf(at, space));
     }
+    if (at === within) break;
     if (at.outOfFlow) escaping.push(at);
   }
   if (rounded) {

@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.33.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.33.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.34.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.34.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -622,6 +622,17 @@ it up. **The floor is a running one and moves often** — every move since
   document cuts away, so the floor moves with the feature. The same
   release sets text on a Retina display at its point size (#840) and adds
   `<video>` (#836, #837), neither of which needed a change here.
+- `^2.34.0` — a sprite inside another (react-x11#842): a part names the
+  one it is inside as its `parent`, its layer goes in that one's, and the
+  presenter paints the parent's raster without it, handing the parent's
+  `paint` the keys it lifted inside it. `<Html>` offers an element
+  animating inside a lifted one so, where it had to keep it on the
+  document's clock: a spinner turning in a card that pulses painted the
+  card's layer again at every frame of the spinner's, 117 window frames
+  and 117 uploads in two seconds on a real Mac, and none with both lifted.
+  A core that reads no `parent` would lift the spinner on a layer of its
+  own over the card's raster, which still holds it, unfaded with the
+  card, so the floor moves with the feature.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1843,6 +1854,19 @@ things are load-bearing.
   shape — and what shows through it is all any of this is asked of.
   **Anything new that clips a box joins `clipFor`**, or a layer shows
   what the document cuts away.
+
+**A part inside another's box goes in that part's layer** (`parent`,
+react-x11#842). `sprites()` offers the lifts an ancestor's first, and a
+lift whose box is inside an offered part's is offered inside it: `partOf`
+asks only about the boxes between the two (`liftableBox` and `clipFor`
+stop at the parent's box), and places it in the space the parent's
+raster is drawn in — layout moved every box inside a part by the part's
+translation, so a part's `translation` is its own and its parents', and
+a child's `rect` and `clip` are the document's less its parent's. The
+presenter hands a parent's paint the keys of the parts it lifted inside
+it, which it leaves out (`_holesOf`), and paints it again when they
+change; the element hears which are lifted only after that paint, so
+the knowledge has to be the presenter's.
 
 **A transition is lifted as an animation is.** Its frames are sampled
 from its start to its end, a track for the opacity and one for the
