@@ -1785,7 +1785,17 @@ content. So `html, body { height: 100% }` is a viewport tall and `bottom: 0`
 with nothing positioned around it is the viewport's bottom, as in a browser;
 the document is as tall as what overflows its root, so nothing longer than
 the viewport is cut off — an inline element's padding and border below its
-line among it, as a browser counts them, where nothing clips them. A document that reads the viewport's height — a
+line among it, as a browser counts them, where nothing clips them. The
+root's `overflow` is the viewport's, and so is the `<body>`'s where the
+root's is `visible`, and the element it came from is `visible` itself
+(CSS Overflow 3, 3.3): `html { height: 100%; overflow-y: scroll }` is a
+viewport tall and holds nothing in, and `body { overflow: hidden }` cuts
+nothing off and is no formatting context, so its first child's margin
+collapses through it. A body under a root that gave the viewport its own,
+or with containment on either, keeps its `overflow` and clips. What the
+viewport does with the value is the host's: the element is as tall as
+its content whatever it says, and a `hidden` there does not stop the box
+around it scrolling. A document that reads the viewport's height — a
 `vh`, a percentage height on the root, a box placed against the initial
 containing block — follows it when the window is resized, a frame behind
 the scroll box it is measured by; one that reads none is not laid out again

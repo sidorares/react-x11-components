@@ -566,17 +566,11 @@ export function computePaintBounds(box: Box, moved = false): number {
   // link in it reach a document's height below its end.
   if (!own) return bottom;
   // whether the box clips only matters where its content reaches past it,
-  // and its style is one more object a walk of every box would read
+  // and its style is one more object a walk of every box would read. The
+  // same answer as the clip it is painted under (`clipsOverflow`), so paint
+  // containment, which clips as `overflow: clip` does, ends the reach too
   const end = empty ? -Infinity : box.y + box.height;
-  let reach = end;
-  if (bottom > end) {
-    const style = box.style;
-    reach =
-      box.parent &&
-      (style.overflowX !== 'visible' || style.overflowY !== 'visible')
-        ? end
-        : bottom;
-  }
+  const reach = bottom > end && !clipsOverflow(box) ? bottom : end;
   // the scrollable overflow of a transformed box is where its transform
   // puts it (CSS Overflow 3, 2.2)
   if (!matrix || reach === -Infinity) return reach;
@@ -3110,9 +3104,10 @@ export function holds(outer: Box, inner: Box | null): boolean {
 /**
  * Whether a box clips its content: `overflow` other than `visible`, on a
  * block container (CSS 2.1 11.1.1) — not a table, a row or a row group.
- * The root element's `overflow` is the viewport's, and so is the
- * `<body>`'s where the root's is `visible`, an `<html>` the markup left out
- * among them; the viewport here is the element, which clips anyway.
+ * The root element's `overflow` and the `<body>`'s it gives the viewport
+ * are `visible` by the time they are read here (`propagateOverflow`), so a
+ * root clips only under paint containment, as Chrome has it, and a body
+ * only where it kept its `overflow`.
  */
 export function clipsOverflow(box: Box): boolean {
   if (CLIPPED_CELLS.has(box)) return true;
@@ -3126,8 +3121,8 @@ export function clipsOverflow(box: Box): boolean {
   ) {
     return false;
   }
-  const parent = box.parent;
-  if (!parent) return false;
+  // the root box is the initial containing block, which clips nothing
+  if (!box.parent) return false;
   switch (box.kind) {
     case 'block':
     case 'table-cell':
@@ -3135,25 +3130,10 @@ export function clipsOverflow(box: Box): boolean {
     case 'flex':
     // the table box, its captions outside it (the CSS 2.1 errata, 11.1.1)
     case 'table':
-      break;
+      return true;
     default:
       return false;
   }
-  const name = box.el?.name;
-  if (name === 'html') return false;
-  if (name === 'body') {
-    if (parent.el?.name !== 'html') return !!parent.parent;
-    // where the root's `overflow` is `visible`, the body's is the
-    // viewport's — but not where either has any containment (CSS
-    // Containment 2), which keeps it the body's own
-    return (
-      parent.style.overflowX !== 'visible' ||
-      parent.style.overflowY !== 'visible' ||
-      !!parent.style.contain ||
-      !!box.style.contain
-    );
-  }
-  return true;
 }
 
 /** A box's `clip` region, in window coordinates. */
