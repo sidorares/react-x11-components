@@ -1390,11 +1390,13 @@ The presenter decides again every frame, and an element it gives back —
 something now drawn over it, a scroll that takes it under a clip — is
 restyled at once to where its animation has got to, drawn, and run on the
 document's clock from there. One the render server runs to its end is given
-back to be drawn as it ended. While an element is lifted its style is the
-one it had when it was lifted, so a pointer is hit against where a moving
-element was then, not where it is. Everywhere else — X11, Wayland, Windows,
-a core or a bridge that predates the seam — nothing asks, and every
-animation runs on the document's clock as above.
+back to be drawn as it ended. A point is hit against a lifted element where
+its animation has it at that moment: one that moves is restyled to then
+before the hit is worked out, which repaints nothing, since its pixels are
+its layer's. A hover that draws a lifted element otherwise — a colour, a
+border — paints its layer again in the next frame. Everywhere else — X11,
+Wayland, Windows, a core or a bridge that predates the seam — nothing asks,
+and every animation runs on the document's clock as above.
 
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`

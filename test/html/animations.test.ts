@@ -1377,6 +1377,63 @@ test('a lifted element is a hole in the document, and its animation is no frame 
   assert.strictEqual(own(after.fills), 1, 'drawn again');
 });
 
+test('a lifted element that moves is hit where its animation has it, with nothing repainted and nothing sampled again', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes slide { from { transform: translateX(0) }' +
+      ' to { transform: translateX(200px) } }' +
+      'body { margin: 0 }' +
+      '#a { animation: slide 320ms linear; width: 40px; height: 20px;' +
+      ' background: red }</style><div id="a"></div>',
+  );
+  await doc.at(32);
+  const [sprite] = doc.el.sprites()!;
+  doc.el.spritesLifted(new Set([sprite.key]));
+  // time passes with nothing of the document's waiting on it
+  const step = animationClock.arm(() => {}, 1000);
+  t.after(() => animationClock.disarm(step));
+  await doc.at(160);
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const idAt = (dx: number) =>
+    doc.el.elementAtPoint(abs.x + dx, abs.y + 10)?.attribs.id ?? null;
+  const claims = t.mock.method(doc.el, 'invalidate');
+  // lifted 20px across, and half way through it is 100px across
+  assert.strictEqual(idAt(120), 'a', 'where its layer has it now');
+  assert.notStrictEqual(idAt(30), 'a', 'not where it was lifted');
+  assert.strictEqual(claims.mock.callCount(), 0, 'nothing repainted');
+  const [again] = doc.el.sprites()!;
+  assert.ok(
+    again.animations[0].values === sprite.animations[0].values,
+    'not sampled again',
+  );
+});
+
+test('a lifted element a hover draws otherwise asks for the frame that paints its layer again, and repaints no hole', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+      'body { margin: 0 }' +
+      '#a { animation: fade 320ms linear infinite; width: 40px;' +
+      ' height: 20px; background: red }' +
+      '#a:hover { background: blue }</style><div id="a"></div>',
+  );
+  const [sprite] = doc.el.sprites()!;
+  doc.el.spritesLifted(new Set([sprite.key]));
+  // a core that has the seam answers this; the floor this suite runs on
+  // may predate it
+  let asked = 0;
+  (doc.el as unknown as { spritesChanged(): void }).spritesChanged = () => {
+    asked += 1;
+  };
+  const claims = t.mock.method(doc.el, 'invalidate');
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  doc.el.setHover(abs.x + 10, abs.y + 10);
+  assert.strictEqual(asked, 1, 'a frame asked for');
+  assert.strictEqual(claims.mock.callCount(), 0, 'no hole repainted');
+  const [again] = doc.el.sprites()!;
+  assert.notStrictEqual(again.version, sprite.version, 'painted again');
+});
+
 test('the frames the document runs for what is not lifted restyle nothing that is', async (t) => {
   const doc = await running(
     t,

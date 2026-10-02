@@ -339,6 +339,10 @@ export class HtmlViewNode extends Node {
   private _spriteGen = 0;
   /** The animations the render server ran to their end, by element. */
   private _endedSprites = new WeakMap<Element, Set<string>>();
+  /** Whether a restyle in place is only bringing lifted elements up to
+   *  where their animations have them (`_followLifted`): what they draw is
+   *  what it was, and their layers already show them there. */
+  private _followingLifted = false;
   /** The lifted elements' boxes, for the paint, as of a tree and a set. */
   private _liftedBoxCache: {
     tree: BoxTree;
@@ -1520,6 +1524,7 @@ export class HtmlViewNode extends Node {
   }
 
   override textIndexAt(x: number, y: number): number {
+    this._followLifted();
     const tree = this._tree;
     if (!tree) return 0;
     // Core's contract: a device-pixel point, the same space the two rect
@@ -1720,6 +1725,7 @@ export class HtmlViewNode extends Node {
 
   /** The deepest element whose box contains a logical window point. */
   elementAtPoint(x: number, y: number): Element | null {
+    this._followLifted();
     const tree = this._tree;
     if (!tree) return null;
     const local = this._toDocument(x, y);
@@ -1747,6 +1753,7 @@ export class HtmlViewNode extends Node {
    * I-beam on a selectable surface, and every `<Html>` is one.
    */
   override cursorAt(x: number, y: number): string | null {
+    this._followLifted();
     const tree = this._tree;
     if (!tree) return null;
     const hit = { text: false };
@@ -2236,7 +2243,10 @@ export class HtmlViewNode extends Node {
       if (!style) continue;
       next.set(box, style);
       restyled.push([box, style]);
-      if (ink) inked.add(box);
+      // a lifted box's pixels are its layer's: its hole needs no repaint
+      if (ink && !(this._liftedSet.size && this._insideLifted(box))) {
+        inked.add(box);
+      }
       if (box.kind === 'inline') {
         if (style.opacity !== box.style.opacity) refaded = true;
         const decoration = inlineDecoration(fonts, box, style);
@@ -2297,12 +2307,21 @@ export class HtmlViewNode extends Node {
     // and only now, all of it
     const moved: [Box, ComputedStyle][] = [];
     const sprites = this._sprites?.size ? this._sprites : null;
+    let reoffer = false;
     for (const [box, style] of restyled) {
       const was = box.style;
       box.style = style;
       if (sprites) this._restyledSprites(sprites, box, was, style);
-      // what a lifted box shows is its layer's to know: offered again
-      if (this._liftedSet.size && this._insideLifted(box)) this._spriteGen += 1;
+      // what a lifted box shows is its layer's to know: offered again, and
+      // painted there, in a frame asked for since its hole claims none
+      if (
+        !this._followingLifted &&
+        this._liftedSet.size &&
+        this._insideLifted(box)
+      ) {
+        this._spriteGen += 1;
+        reoffer = true;
+      }
       if (box.el && moving.has(box.el) && box.kind !== 'text') {
         moved.push([box, was]);
       }
@@ -2352,7 +2371,10 @@ export class HtmlViewNode extends Node {
     if (moved.length || widgets) this._reportControls();
     // which areas are visible, and where the watched ones are
     this._reportStops();
-    if (relayout) {
+    if (reoffer) this._askSprites();
+    // A lifted element only followed to where its layer has it changes no
+    // height a reader sees: its own restyle, when it is given back, does.
+    if (relayout && !this._followingLifted) {
       this._invalidate(Stale.Layout);
       return true;
     }
@@ -2727,7 +2749,38 @@ export class HtmlViewNode extends Node {
     if (!ended) this._endedSprites.set(el, (ended = new Set()));
     ended.add(own);
     // the frame that asks again; a core that predates the seam has none
+    this._askSprites();
+  }
+
+  /** The frame in which a presenter asks for the sprites again — one a core
+   *  that predates the seam has no way to ask for. */
+  private _askSprites(): void {
     (this as { spritesChanged?(): void }).spritesChanged?.();
+  }
+
+  /**
+   * The lifted elements a point is about to be hit against, restyled to
+   * where their animations have them now: their layers moved them, and the
+   * document's own style of them stopped at the lift. Only those whose
+   * animation moves them — a fade is hit where it is — and nothing is
+   * repainted or offered again: their pixels are their layers', which
+   * already show them there.
+   */
+  private _followLifted(): void {
+    if (!this._liftedSet.size || this._followingLifted) return;
+    let moving: Set<Element> | null = null;
+    for (const el of this._liftedSet) {
+      if (this._spriteOffers.get(el)?.part?.lift.transform) {
+        (moving ??= new Set()).add(el);
+      }
+    }
+    if (!moving) return;
+    this._followingLifted = true;
+    try {
+      this._restyleInPlace(moving, () => true, HOVER_PSEUDO_NONE);
+    } finally {
+      this._followingLifted = false;
+    }
   }
 
   private _spriteKeyOf(el: Element): string {
