@@ -1735,8 +1735,18 @@ function importConditions(prelude: string): MediaCondition[] | null | false {
     /^\s*(?:url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)|"[^"]*"|'[^']*')(.*)$/s.exec(
       prelude,
     );
-  const list = m?.[1].trim();
-  if (!list) return null;
+  return sheetConditions(m?.[1] ?? '');
+}
+
+/**
+ * A media query list a whole sheet is under — an `@import`'s, or a
+ * `<style>`'s or a `<link>`'s `media` attribute — as the conditions to
+ * parse it under (`parseStylesheet`'s `under`): null where the list is
+ * empty or one of its queries always holds, and false where none of them
+ * can ever hold here, `print`, which leaves the sheet out and unasked for.
+ */
+export function sheetConditions(list: string): MediaCondition[] | null | false {
+  if (!list.trim()) return null;
   const conditions = parseMediaQuery(list);
   if (!conditions.some((c) => c.staticPass !== false)) return false;
   // one that always holds is no condition

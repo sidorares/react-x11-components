@@ -27,6 +27,8 @@
 import { Parser } from 'htmlparser2';
 import { DomHandler, Element, Text } from 'domhandler';
 import type { AnyNode, ChildNode, Document, ParentNode } from 'domhandler';
+import { sheetConditions } from './css/parse.js';
+import type { MediaCondition } from './css/parse.js';
 
 export type { AnyNode, ChildNode, Document, ParentNode } from 'domhandler';
 export { Element, Text, Comment } from 'domhandler';
@@ -242,9 +244,15 @@ export interface DocumentFacts {
   base: string | null;
 }
 
-export type SheetRef =
+export type SheetRef = (
   | { kind: 'inline'; text: string; element: Element }
-  | { kind: 'link'; href: string; element: Element };
+  | { kind: 'link'; href: string; element: Element }
+) & {
+  /** The conditions its `media` attribute puts the whole sheet under, as
+   *  an `@import`'s media queries do: null where it has none, or one that
+   *  always holds. */
+  media: MediaCondition[] | null;
+};
 
 /**
  * A document being parsed. Feed it source; read `document` at any time.
@@ -355,23 +363,28 @@ export class HtmlSource {
     for (const el of elementsIn(this.document, NON_RENDERED)) {
       const tag = tagOf(el);
       if (tag === 'style') {
-        const media = attr(el, 'media');
-        // A media query this renderer cannot evaluate is not a licence to
-        // apply the sheet anyway: `media="print"` is meant not to show.
-        if (!media || appliesToScreen(media)) {
+        // A sheet whose `media` can hold nowhere here, `print`, is left
+        // out; any other is under it, as though an `@media` block of it
+        // were around all of it (HTML 4.2.6, 4.2.4).
+        const media = sheetConditions(attr(el, 'media') ?? '');
+        if (media !== false) {
           facts.sheets.push({
             kind: 'inline',
             text: rawTextOf(el),
             element: el,
+            media,
           });
         }
       } else if (tag === 'link') {
         const rel = (attr(el, 'rel') ?? '').toLowerCase();
         const href = attr(el, 'href');
         if (href && rel.split(/\s+/).includes('stylesheet')) {
-          const media = attr(el, 'media');
-          if (!media || appliesToScreen(media)) {
-            facts.sheets.push({ kind: 'link', href, element: el });
+          // One left out is not asked for either. One under a width,
+          // `(max-width: 600px)`, is, whatever the width: as a browser asks
+          // for it, and as an `@import` under one is asked for.
+          const media = sheetConditions(attr(el, 'media') ?? '');
+          if (media !== false) {
+            facts.sheets.push({ kind: 'link', href, element: el, media });
             facts.resources.push(el);
           }
         }
@@ -657,24 +670,6 @@ class DocumentParser extends Parser {
       this._acknowledging = false;
     }
   }
-}
-
-/**
- * Whether a `media` attribute is one a screen honours. Deliberately not a
- * media-query engine: `screen`, `all` and an empty list apply, `print` and
- * anything else with a type this is not does not, and a query with features
- * in it (`(min-width: …)`) applies — a responsive sheet written for a real
- * browser is closer to right applied than dropped.
- */
-function appliesToScreen(media: string): boolean {
-  for (const query of media.split(',')) {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    if (q === 'all' || q === 'screen') return true;
-    if (q.startsWith('screen ') || q.startsWith('(')) return true;
-    if (q.startsWith('only screen')) return true;
-  }
-  return false;
 }
 
 // --- mutation ---------------------------------------------------------------
