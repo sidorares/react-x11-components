@@ -17,8 +17,11 @@
 > and step 5 is built: core's sprite seam (react-x11#819) and the bridge's
 > matrices (windowkit/appkit#97), with `<Html>` offering what a layer can
 > carry, at no JavaScript frame on macOS — released in react-x11 2.29.0 and
-> appkit 0.19.0. Steps 2, 3 and 6 are not built. The reference for what
-> runs today is `docs/components/html.md`, "Animations".
+> appkit 0.19.0. Step 3 is built: `will-change` for what it means to
+> layout and paint, an animation acting as though it named what it sets,
+> and what a layer may cover decided in the order the document paints.
+> Steps 2 and 6 are not built. The reference for what runs today is
+> `docs/components/html.md`, "Animations".
 
 ## 1. What `<Html>` does today
 
@@ -184,9 +187,14 @@ change or a scroll can undo any of them:
 
 `will-change: transform` and `will-change: opacity` are the author's
 statement that an element will be animated this way (CSS Will Change 1).
-`<Html>` does not parse the property today. It should, as a hint: an
-element declaring it is given its sprite before the animation starts,
-which is what the property exists for.
+`<Html>` reads the property for what it means to layout and paint — the
+stacking context, and the containing block of the absolute or the fixed
+boxes, a value of each property it names would make — and an animation
+acts as though it named what it sets (Web Animations 1, 5.6). It is no
+hint for a sprite. Lifting an element before its animation starts saves
+nothing here: the style change that starts the animation makes its part
+again, and its layer is painted again with it. And it would hold a layer
+for every element a page names, which pages do freely.
 
 ## 4. Running eligible animations on Core Animation
 
@@ -469,6 +477,27 @@ In order, each step useful on its own and measured before the next:
 3. **`will-change`** parsed as the eligibility hint, and the eligibility
    test of §3 written once, in the paint order's terms, for every route to
    share.
+
+   **Built, but for the hint**, which §3 says why. Naming a property makes
+   what a value of it would on the boxes it applies to: WPT's
+   `css-will-change` reftests went from 7 of 42 passing to all 42, and
+   `css-contain` gained the one that names it. An animation acts as though
+   it named what it sets, from its delay to its end, or for good where it
+   fills forwards, as Chrome 152 has it — so a fade is one stacking
+   context at every frame, where it changed its place in the paint order
+   each time its opacity reached 1. That makes an element whose animation
+   a layer can carry one of its context's layers on every frame, and the
+   test is in the order `paintContent` paints in (`paintedAfter`): the
+   layers after it in its context's list, the context's outline, and the
+   same up to the root. What is painted before it is under its layer as it
+   is under it, where the test had been that no ink but its own and its
+   ancestors' was within its reach. A box fixed to the viewport is asked
+   about every frame, where the scroll has it. On a real Mac, a toast
+   fading over text and a block rising over the paragraph after it went
+   from 117 window frames and 117 paints of the document in two seconds,
+   neither lifted, to none. The other route that will need the test is
+   step 2's copy, and it is a function of `paint.ts` for that.
+
 4. **§4.1 as a spike**, a fade only, to confirm on a real Mac that
    promotion holds a sprite above an `<Html>` node, before the seam is
    designed against it.
@@ -524,8 +553,9 @@ In order, each step useful on its own and measured before the next:
 
    A CSS fade and a CSS turn on a page went from 113 window frames and 113
    paints of the document in two seconds to none. The gate is met on a
-   real window over unreleased builds of both. Pixels were not checked:
-   window capture answered blank on that machine at the time.
+   real window, and on the released builds the pixels are the document's:
+   a quarter turn turns clockwise about the box's centre, and a layer at
+   half opacity reads half-faded.
 
 6. **§5.3's Linux rung** only if step 1's measurements on Xorg say the
    resample is the cost.
@@ -565,10 +595,12 @@ before step 5:
   starting point; an iteration of ten seconds at sixty a second is six
   hundred matrices, and a keyframe animation that long may deserve a
   coarser list with the bridge's `cubic` calculation mode.
-- **A sprite under a scrolling document.** The sprite's rectangle moves
-  with the scroll; a promoted layer has to be moved each frame of the
-  scroll, or demoted while the document scrolls and promoted again when
-  it settles, the way hover is held (`hoverClock`).
+- **A sprite under a scrolling document.** The sprite's rectangle is made
+  each frame from where the document is, so a layer moves with a scroll,
+  and what a scroll changes about what may cover it — a box fixed to the
+  viewport — is asked each frame (step 3). Whether a long scroll should
+  demote it instead and promote it again when the page settles, the way
+  hover is held (`hoverClock`), is not measured.
 - **Transitions.** Not run yet (#584, "not in this PR"). When they are, a
   transition on `opacity` or `transform` is the same sprite with a basic
   animation, and the retargeting rule is core's additive one (animation.md

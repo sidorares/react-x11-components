@@ -5,7 +5,7 @@ import { afterEach, test } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert';
 import type { DrawnNode } from 'react-x11';
-import { act, cleanup } from 'react-x11/test';
+import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import { parseStylesheet } from '../../src/html/css/parse.js';
 import {
   NO_ANIMATIONS,
@@ -25,11 +25,14 @@ import {
 import { parseTransform } from '../../src/html/css/transform.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
+import { fixedToViewport, stacksLayers } from '../../src/html/paint.js';
+import type { Box } from '../../src/html/layout/boxes.js';
 import type { HtmlViewNode } from '../../src/html/node.js';
 import { SpriteStore } from '../../src/html/surfaces.js';
 import { Html } from '../../src/index.js';
 import { holdClock } from '../held-clock.js';
 import {
+  FONTS,
   boxOf,
   h,
   metric,
@@ -383,6 +386,24 @@ async function running(
   };
 }
 
+/** `render`, in a pane 200px tall that scrolls the document. */
+async function inPane(source: string, width = 400) {
+  const result = await renderX11(
+    h(
+      'box',
+      {
+        'data-testname': 'pane',
+        style: { width, height: 200, overflow: 'scroll' },
+      },
+      h(Html, { source, partial: false, 'data-testname': 'doc' }),
+    ),
+    FONTS
+      ? { width: width + 40, height: 300, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  return { result, node: screen.getByTestName('doc') as DrawnNode };
+}
+
 test('an animation runs its frames as time passes, and is over at its end', async (t) => {
   const doc = await running(
     t,
@@ -429,6 +450,40 @@ test('a delay, a fill, iterations and a direction', async (t) => {
   await doc.at(320);
   assert.strictEqual(left('alt'), 0);
   assert.strictEqual(left('back'), 7);
+});
+
+test('an animation acts as though will-change named what it sets: a stacking context from its delay to its end, at an opacity of 1 as well, and for good where it fills forwards; a transform holds what is fixed in it as long', async (t) => {
+  // Web Animations 1, 5.6: every property an animation that is current or
+  // in effect sets, as though `will-change` named it
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { from { opacity: 1 } to { opacity: .5 } }' +
+      '@keyframes rise { from { opacity: .5 } to { opacity: 1 } }' +
+      '@keyframes slide { to { transform: translateX(10px) } }' +
+      'div { width: 20px; height: 20px }' +
+      '#late { animation: fade 160ms 64ms linear }' +
+      '#first { animation: fade 160ms linear }' +
+      '#held { animation: rise 160ms linear forwards }' +
+      '#moved { animation: slide 160ms 64ms linear }' +
+      '#pinned { position: fixed; top: 0 }</style>' +
+      '<div id="late"></div><div id="first"></div><div id="held"></div>' +
+      '<div id="moved"><div id="pinned"></div></div>',
+  );
+  const stacks = (id: string) =>
+    stacksLayers(boxOf(doc.el, id) as unknown as Box);
+  const pinned = () =>
+    fixedToViewport(boxOf(doc.el, 'pinned') as unknown as Box);
+  assert.strictEqual(doc.style('late').opacity, 1);
+  assert.strictEqual(stacks('late'), true, 'in its delay');
+  assert.strictEqual(doc.style('first').opacity, 1);
+  assert.strictEqual(stacks('first'), true, 'at an opacity of 1');
+  assert.strictEqual(pinned(), false, "held by a transform's delay");
+  await doc.at(240);
+  assert.strictEqual(stacks('late'), false, 'over');
+  assert.strictEqual(stacks('first'), false, 'over');
+  assert.strictEqual(doc.style('held').opacity, 1);
+  assert.strictEqual(stacks('held'), true, 'filling forwards');
+  assert.strictEqual(pinned(), true, 'fixed to the viewport once it is over');
 });
 
 test('a turn is interpolated by its angle, a whole one included', async (t) => {
@@ -1340,6 +1395,71 @@ test('what a layer cannot carry stays on the document’s clock: a colour, two a
     [abs.y + free.y],
     'only the one nothing is near',
   );
+});
+
+test('what the document paints before an element is under its layer, as it is under the element: a toast over the text before it, a block that slides over the flow after it', async (t) => {
+  // a stacking context is painted with the positioned boxes, after the flow
+  // it is in, the flow after it among it
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+      '@keyframes rise { from { transform: translateY(20px) }' +
+      ' to { transform: none } }' +
+      'body { margin: 0 }' +
+      'p { margin: 0; height: 20px; background: #eee }' +
+      '#toast { position: absolute; top: 0; left: 0; width: 40px;' +
+      ' height: 20px; background: red; animation: fade 1s infinite }' +
+      '#rise { height: 20px; background: blue; animation: rise 1s infinite }' +
+      '</style><p>under the toast</p><div id="rise"></div><p>after it</p>' +
+      '<div id="toast"></div>',
+  );
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const ys = (doc.el.sprites() ?? []).map((p) => p.rect.y - abs.y);
+  // the rise where it is with no transform, and the toast at the top
+  assert.deepStrictEqual(ys, [20, 0]);
+});
+
+test('the outline of the stacking context an element is in keeps it in the document where the ring is within its reach, and not where the element is inside the ring', async (t) => {
+  // a stacking context paints its outline over all it holds
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { to { opacity: .2 } }' +
+      'body { margin: 0 }' +
+      'section { position: relative; z-index: 0; padding: 10px;' +
+      ' outline: 2px solid green }' +
+      'div { width: 20px; height: 20px; background: red;' +
+      ' animation: fade 1s infinite }' +
+      '#tight { outline-offset: -12px }</style>' +
+      '<section><div></div></section><section id="tight"><div></div></section>',
+  );
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const ys = (doc.el.sprites() ?? []).map((p) => p.rect.y - abs.y);
+  assert.deepStrictEqual(ys, [10], 'inside the first ring, under the second');
+});
+
+test('a box fixed to the viewport keeps an element in the document while the scroll has it within the element’s reach', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { to { opacity: .2 } }' +
+      'body { margin: 0 }' +
+      '#bar { position: fixed; top: 0; left: 0; right: 0; height: 20px;' +
+      ' background: navy; z-index: 1 }' +
+      '#fade { margin-top: 100px; width: 20px; height: 20px;' +
+      ' background: red; animation: fade 1s infinite }' +
+      '#tall { height: 1000px }</style>' +
+      '<div id="bar"></div><div id="fade"></div><div id="tall"></div>',
+    400,
+    inPane,
+  );
+  const pane = screen.getByTestName('pane') as DrawnNode & {
+    scrollTo(y: number): void;
+  };
+  const offered = () => (doc.el.sprites() ?? []).length;
+  assert.strictEqual(offered(), 1, 'clear of it');
+  await act(async () => pane.scrollTo(90));
+  assert.strictEqual(offered(), 0, 'under it');
+  await act(async () => pane.scrollTo(200));
+  assert.strictEqual(offered(), 1, 'past it');
 });
 
 test('a lifted element is a hole in the document, and its animation is no frame of the document’s; given back, it is drawn where its animation has got to', async (t) => {

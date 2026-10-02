@@ -71,6 +71,7 @@ import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
+import { WILL_HOLD_FIXED_BOX, WILL_STACK_BOX } from './css/style.js';
 import {
   BOX_RAISES,
   buildBoxes,
@@ -2670,6 +2671,7 @@ export class HtmlViewNode extends Node {
     ].join(':');
     let options: PaintOptions | null = null;
     let out: DocumentSprite[] | null = null;
+    let shift: { x: number; y: number } | null | undefined;
     for (const { el, generated } of live) {
       // a `::before`'s or an `::after`'s animation is its element's box's
       // drawing: left to the document's clock
@@ -2684,6 +2686,13 @@ export class HtmlViewNode extends Node {
         this._spriteOffers.set(element, offer);
       }
       if (!offer.part) continue;
+      // a box fixed to the viewport the scroll has brought within its reach:
+      // the document draws it this frame, under that box or over it, as
+      // their order has it
+      if (offer.part.fixed.length) {
+        if (shift === undefined) shift = this._fixedShift();
+        if (fixedWithin(offer.part, shift)) continue;
+      }
       const key = this._spriteKeyOf(element);
       this._offeredEls.set(key, element);
       const painted = (options ??= this._paintOptions(range, null));
@@ -4546,12 +4555,20 @@ function hoverChange(
  * rather than an inline one, whose text is what moves; and the same
  * containing block and stacking context for what is in it, which a
  * transform makes a box (CSS Transforms 1, 2) — so either transformed
- * before and after, or already positioned with a `z-index`, and holding
- * nothing fixed, which only a transform takes in.
+ * before and after, or naming a transform in `will-change` before and
+ * after, which a running animation of one does (Web Animations 1, 5.6), or
+ * already positioned with a `z-index`, and holding nothing fixed, which
+ * only a transform takes in.
  */
 function movable(box: Box, was: ComputedStyle, now: ComputedStyle): boolean {
   if (box.kind === 'inline') return false;
   if (transformed(was) === transformed(now)) return true;
+  if (
+    (was.willChange & TRANSFORM_WILL) === TRANSFORM_WILL &&
+    (now.willChange & TRANSFORM_WILL) === TRANSFORM_WILL
+  ) {
+    return true;
+  }
   if (was.position === 'static') return false;
   if (typeof was.zIndex !== 'number' || typeof now.zIndex !== 'number') {
     return false;
@@ -4564,6 +4581,37 @@ function movable(box: Box, was: ComputedStyle, now: ComputedStyle): boolean {
   }
   return true;
 }
+
+/** Whether one of the boxes fixed to the viewport is within a part's reach
+ *  where it is drawn now, `shift` from where it was laid out
+ *  (`_fixedShift`), or where it was laid out where nothing scrolls the
+ *  element. */
+function fixedWithin(
+  part: Part,
+  shift: { x: number; y: number } | null,
+): boolean {
+  const e = part.extent;
+  const dx = shift?.x ?? 0;
+  const dy = shift?.y ?? 0;
+  for (const box of part.fixed) {
+    if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
+    const x = box.boundsX + dx;
+    const y = box.boundsY + dy;
+    if (
+      x < e.x + e.width &&
+      e.x < x + box.boundsWidth &&
+      y < e.y + e.height &&
+      e.y < y + box.boundsHeight
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** What naming a transform in `will-change` makes of a box that is not
+ *  inline: what a transform does, but for moving it. */
+const TRANSFORM_WILL = WILL_STACK_BOX | WILL_HOLD_FIXED_BOX;
 
 /** Whether a style takes its box out of the flow, to be laid out apart
  *  from everything around it. */

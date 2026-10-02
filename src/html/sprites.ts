@@ -7,14 +7,14 @@
 // (docs/prd-html-animations.md §3): an element whose one animation sets
 // only `opacity` and the transform properties, running now, drawn in a box
 // of its own, inside nothing that fades, turns, clips, masks or is fixed,
-// and that nothing else in the document draws within reach of while it
-// runs. The last is the document's to answer — core's presenter cannot see
-// inside the element — and it is answered conservatively: no box but the
-// element's own ancestors and descendants may put ink anywhere the element
-// can be over its animation, whether it is painted before the element or
-// after it. A badge over a card it does not belong to stays on the
-// document's clock; a toast, a fading panel, a spinner and a turning card
-// on its own pass.
+// and that nothing the document paints after it draws within reach of
+// while it runs. The last is the document's to answer — core's presenter
+// cannot see inside the element — and it is answered in the order the
+// document paints (`paintedAfter`): the layer is over all of the
+// document, which is right for what is painted before the element and
+// wrong for anything painted after it. A badge painted over a card it does
+// not belong to keeps the card on the document's clock; a toast over the
+// page, a panel fading in over text, a spinner and a turning card pass.
 //
 // The frames go over as values the document computed: the element's style
 // is sampled at times through one cycle of its animation — two iterations
@@ -35,7 +35,13 @@ import type { AnimationTimeline, Running } from './css/timeline.js';
 import { matrixOf, transformed } from './css/transform.js';
 import { resolve } from './css/values.js';
 import type { Box, BoxTree } from './layout/boxes.js';
-import { drawsAgainstViewport, ownBounds } from './paint.js';
+import {
+  FIXED_BOXES,
+  drawsAgainstViewport,
+  holds,
+  ownBounds,
+  paintedAfter,
+} from './paint.js';
 import type { Element } from 'domhandler';
 import type { Rect } from 'react-x11';
 import type {
@@ -196,6 +202,11 @@ function liftableBox(host: SpriteHost, box: Box): boolean {
     return false;
   }
   if (box.style.clipPath || box.style.clip || masked(box.style)) return false;
+  // one fixed to the viewport in it is drawn where the viewport is, which
+  // the layer does not follow
+  for (const fixed of FIXED_BOXES.get(host.tree) ?? NO_BOXES) {
+    if (holds(box, fixed)) return false;
+  }
   for (let at: Box | null = box.parent; at; at = at.parent) {
     const style = at.style;
     if (style.opacity < 1 || transformed(style)) return false;
@@ -255,8 +266,9 @@ const overlaps = (a: Rect, b: Rect): boolean =>
 /**
  * Whether anything in the document but `box`'s ancestors and descendants
  * puts ink within `extent`, in the document's coordinates — or an ancestor
- * draws an outline, which goes over what it holds. A subtree whose ink
- * misses the extent is passed over whole.
+ * draws an outline, which goes over what it holds: painted before the box
+ * or after it, for a box whose place in the paint order `paintedAfter`
+ * cannot tell. A subtree whose ink misses the extent is passed over whole.
  */
 function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
   const path = new Set<Box>();
@@ -349,12 +361,19 @@ export interface Part {
   opacity: number;
   transform: SpriteMatrix;
   animations: DocumentSpriteAnimation[];
+  /** Everywhere it can be while it runs, in the document's coordinates. */
+  extent: Rect;
+  /** The boxes fixed to the viewport, which a scroll moves over the
+   *  document: one within `extent` where the viewport has it now covers
+   *  the element there, or ought to (`HtmlViewNode.sprites`). */
+  fixed: readonly Box[];
 }
 
 /**
  * The part `lift` is, or null where the element cannot be one: in a box a
- * layer cannot draw (`liftableBox`), too large, or within reach of any ink
- * but its own and its ancestors' (`crowded`).
+ * layer cannot draw (`liftableBox`), too large, or within reach of what
+ * the document paints after it (`paintedAfter`) — where that cannot be
+ * told, of any ink but its own and its ancestors' (`crowded`).
  */
 export function partOf(host: SpriteHost, lift: Lift): Part | null {
   const { el, box } = lift;
@@ -395,7 +414,9 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
       extent = unionRect(extent, mapRect(reach, m, ox, oy));
     }
   }
-  if (crowded(tree, box, extent)) return null;
+  // what is painted before it is under the layer as it is under it, and
+  // what is painted after it must not be
+  if (paintedAfter(box, extent) ?? crowded(tree, box, extent)) return null;
   const { iterations, duration } = lift.timing;
   const repeat = lift.cycle === duration ? iterations : iterations / 2;
   const animations: DocumentSpriteAnimation[] = [];
@@ -428,8 +449,12 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
     opacity: Math.min(1, Math.max(0, rest.opacity)),
     transform,
     animations,
+    extent,
+    fixed: FIXED_BOXES.get(tree) ?? NO_BOXES,
   };
 }
+
+const NO_BOXES: readonly Box[] = [];
 
 /**
  * The sprite a part is this frame: in the window's coordinates, with the
