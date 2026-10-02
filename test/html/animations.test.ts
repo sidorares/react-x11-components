@@ -1788,7 +1788,7 @@ test('a lifted element is a hole in the document, and its animation is no frame 
   assert.strictEqual(own(after.fills), 1, 'drawn again');
 });
 
-test('a `::before` or an `::after` whose animation a layer can carry is a sprite of its own, a hole in the document and no frame of its clock once lifted; an element and its pseudo-element are lifted one at a time', async (t) => {
+test('a `::before` or an `::after` whose animation a layer can carry is a sprite of its own, a hole in the document and no frame of its clock once lifted; one whose element is on a layer too goes in its element’s layer', async (t) => {
   const doc = await running(
     t,
     '<style>@keyframes spin { to { transform: rotate(360deg) } }' +
@@ -1803,12 +1803,14 @@ test('a `::before` or an `::after` whose animation a layer can carry is a sprite
       ' height: 10px; background: blue; animation: spin 1s linear infinite }' +
       '</style><div id="a"></div><div id="b"></div>',
   );
-  // #b runs an animation and so does its `::before`: neither is lifted
-  const sprites = doc.el.sprites()!;
-  assert.strictEqual(sprites.length, 1);
-  const [spin] = sprites;
+  const sprites = doc.el.sprites()! as DocumentSprite[];
+  assert.strictEqual(sprites.length, 3);
   const abs = (doc.el as unknown as DrawnNode).abs;
   const a = boxOf(doc.el, 'a');
+  const b = boxOf(doc.el, 'b');
+  const at = (x: number, y: number) =>
+    sprites.find((p) => p.rect.x === abs.x + x && p.rect.y === abs.y + y)!;
+  const spin = at(a.x + 10, a.y + 10);
   assert.deepStrictEqual(spin.rect, {
     x: abs.x + a.x + 10,
     y: abs.y + a.y + 10,
@@ -1819,7 +1821,25 @@ test('a `::before` or an `::after` whose animation a layer can carry is a sprite
     [spin.animations[0].property, spin.animations[0].duration],
     ['transform', 320],
   );
-  // it draws the pseudo-element, and once lifted the document does not
+  // #b fades and its `::before` turns: the `::before` in #b's layer
+  const fade = sprites.find(
+    (p) => p.rect.width === 40 && p.rect.height === 20,
+  )!;
+  assert.deepStrictEqual(
+    [fade.rect.x, fade.rect.y],
+    [abs.x + b.x, abs.y + b.y],
+  );
+  const turn = sprites.find((p) => p.rect.width === 10)!;
+  assert.strictEqual(turn.parent, fade.key, 'inside its element’s');
+  const small = (fills: ReturnType<typeof recorder>['fills']) =>
+    fills.filter((f) => f.w === 10 && f.h === 10).length;
+  const whole = recorder();
+  fade.paint(whole.ctx as never);
+  assert.strictEqual(small(whole.fills), 1, 'its element draws it');
+  const holed = recorder();
+  fade.paint(holed.ctx as never, new Set([turn.key]));
+  assert.strictEqual(small(holed.fills), 0, 'but where it is lifted');
+  // the `::after` draws itself, and once lifted the document does not
   const own = (fills: ReturnType<typeof recorder>['fills']) =>
     fills.filter((f) => f.w === 20 && f.h === 20).length;
   const drawn = recorder();
@@ -1830,22 +1850,31 @@ test('a `::before` or an `::after` whose animation a layer can carry is a sprite
   doc.el.paint(hole.ctx as never);
   assert.strictEqual(own(hole.fills), 0, 'a hole in the document');
   // #b's frames are the clock's still, and the `::after`'s are not
-  const live = (
-    doc.el as unknown as {
-      _timeline: { live(skip: unknown): { el: unknown; targets: string[] }[] };
-      _skipLifted: unknown;
-    }
-  )._timeline.live((doc.el as unknown as { _skipLifted: unknown })._skipLifted);
+  const live = () =>
+    (
+      doc.el as unknown as {
+        _timeline: {
+          live(skip: unknown): { el: unknown; targets: string[] }[];
+        };
+        _skipLifted: unknown;
+      }
+    )._timeline.live(
+      (doc.el as unknown as { _skipLifted: unknown })._skipLifted,
+    );
   assert.deepStrictEqual(
-    live.map((l) => l.targets),
+    live().map((l) => l.targets),
     [['', 'before']],
     'only #b and its own',
   );
-  // given back, the document draws it again
+  // #b and its `::before` lifted too: nothing is the clock's
+  doc.el.spritesLifted(new Set([spin.key, fade.key, turn.key]));
+  assert.deepStrictEqual(live(), []);
+  // given back, the document draws them again
   doc.el.spritesLifted(new Set());
   const back = recorder();
   doc.el.paint(back.ctx as never);
   assert.strictEqual(own(back.fills), 1, 'drawn again');
+  assert.strictEqual(small(back.fills), 1, 'and the `::before`');
 });
 
 test('a lifted element that moves is hit where its animation has it, with nothing repainted and nothing sampled again', async (t) => {

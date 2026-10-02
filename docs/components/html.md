@@ -1617,10 +1617,10 @@ compositor:
   delay — a transition goes over in its delay as well, its layer holding
   where it starts, as the transition does — so a fade and a turn on one
   element go over as two animations on its layer, each with its own
-  timing. An element and its
-  pseudo-elements go one at a time: an element whose `::before` animates
-  draws it in what goes on its layer, and a pseudo-element is styled again
-  with its element at every frame of the element's;
+  timing. An element and its pseudo-elements each go on a layer of their
+  own, a `::before`'s or an `::after`'s inside its element's where both
+  animate: a button that pulses with a spinner drawn by its `::before` is
+  two layers;
 - it is a box of its own — an element's, or its `::before`'s or
   `::after`'s, as a spinner drawn by one is, but not an inline split
   across lines — and is not masked, cut by a `clip-path` or drawn against
@@ -3001,7 +3001,11 @@ the viewport and fading in a pane that scrolls the page painted 116 to 118
 window frames in two seconds, still or scrolled; lifted, none. A spinner
 turning in a card that pulses, the card lifted and the spinner not, painted
 117 window frames in two seconds and uploaded the card's layer again at
-each; with the spinner on a layer inside the card's, none of either.
+each; with the spinner on a layer inside the card's, none of either. A
+button that pulses with a spinner drawn by its `::before`, when an element
+and its pseudo-element went on layers one at a time, kept both on the
+clock: 107 window frames and paints in two seconds, and none once the
+`::before` went in the button's layer.
 
 ## Types
 
