@@ -20,7 +20,14 @@
 // back.
 import type { AnyNode, Element } from 'domhandler';
 
-import { attr, childrenOf, elementsIn, isElement, tagOf } from './dom.js';
+import {
+  NON_RENDERED,
+  attr,
+  childrenOf,
+  elementsIn,
+  isElement,
+  tagOf,
+} from './dom.js';
 import { resolveUrl } from './url.js';
 
 export type FormMethod = 'get' | 'post';
@@ -190,8 +197,13 @@ function ownerOf(
   return null;
 }
 
+/** The first element in the document with an id, as `getElementById`
+ *  finds it: never one inside a `<template>`, whose content is no part of
+ *  the document. */
 function elementById(root: AnyNode, id: string): Element | null {
-  for (const el of elementsIn(root)) if (attr(el, 'id') === id) return el;
+  for (const el of elementsIn(root, NON_RENDERED)) {
+    if (attr(el, 'id') === id) return el;
+  }
   return null;
 }
 
@@ -204,12 +216,12 @@ export function controlsOf(form: Element): Element[] {
   const root = rootOf(form);
   let byId: Map<string, Element> | null = null;
   const out: Element[] = [];
-  for (const el of elementsIn(root)) {
+  for (const el of elementsIn(root, NON_RENDERED)) {
     if (!SUBMITTABLE.has(tagOf(el))) continue;
     // one walk for every id, and only when something asks by one
     if (attr(el, 'form') !== undefined && !byId) {
       byId = new Map();
-      for (const any of elementsIn(root)) {
+      for (const any of elementsIn(root, NON_RENDERED)) {
         const id = attr(any, 'id');
         if (id !== undefined && !byId.has(id)) byId.set(id, any);
       }
@@ -540,7 +552,7 @@ function enctypeOf(raw: string | undefined): FormEnctype {
 
 /** The first `<base target>` in the document, or empty. */
 function baseTarget(root: AnyNode): string {
-  for (const el of elementsIn(root)) {
+  for (const el of elementsIn(root, NON_RENDERED)) {
     if (tagOf(el) === 'base' && attr(el, 'target') !== undefined) {
       return attr(el, 'target') ?? '';
     }
@@ -667,7 +679,9 @@ export function labeledControl(label: Element): Element | null {
     const named = elementById(rootOf(label), id);
     return named && labelable(named) ? named : null;
   }
-  for (const el of elementsIn(label)) if (labelable(el)) return el;
+  for (const el of elementsIn(label, NON_RENDERED)) {
+    if (labelable(el)) return el;
+  }
   return null;
 }
 
@@ -946,7 +960,7 @@ export function radioGroup(radio: Element): Element[] {
   const root = rootOf(radio);
   const form = formOwner(radio, root);
   const out: Element[] = [];
-  const candidates = form ? controlsOf(form) : elementsIn(root);
+  const candidates = form ? controlsOf(form) : elementsIn(root, NON_RENDERED);
   for (const el of candidates) {
     if (
       el !== radio &&
