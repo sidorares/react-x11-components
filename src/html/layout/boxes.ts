@@ -906,6 +906,10 @@ export interface BoxTree {
    *  (`Cascade.rootStyle`), whose background is the canvas's; null where
    *  the document has either. */
   impliedHtml: ComputedStyle | null;
+  /** Whether the root box stands in for the `<html>` a document with a
+   *  `<body>` and no `<html>` implies around it (`Cascade.rootStyle`): it
+   *  is the root element then, as well as the initial containing block. */
+  impliedRoot: boolean;
   /** The scheme the palette is, which the element the document is drawn
    *  in is of: where the root element's is the other, the canvas is that
    *  scheme's and opaque (`paintDocument`). */
@@ -1058,9 +1062,11 @@ class Builder {
     const cascade = this._options.cascade;
     cascade.beginSharing(this._options.kept ?? null);
     cascade.pageColorScheme = metaColorScheme(root);
+    const body = hasBody(root);
+    const html = hasHtml(root);
     const { style: rootStyle, html: impliedHtml } = cascade.rootStyle(
-      hasBody(root),
-      hasHtml(root),
+      body,
+      html,
     );
     const rootBox = new Box('block', null, rootStyle);
     // the root standing in for a `<body>` has its background clipped to
@@ -1107,6 +1113,7 @@ class Builder {
       movedInline: this._movedInline,
       clipText: this._clipText,
       impliedHtml,
+      impliedRoot: body && !html,
       paletteScheme: cascade.initial.colorScheme,
     };
   }

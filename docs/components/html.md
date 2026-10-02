@@ -1103,7 +1103,21 @@ one. `overflow-clip-margin` moves the edge `clip` and paint containment
 cut at: out from the box it names by its length, or in where the length is
 negative, the rounded corners moving out as a browser's do. A box that
 scrolls cuts at its padding box whatever the margin says. A table clips to its table box, with its
-captions outside the clip. `clip` shows the part of an absolutely positioned
+captions outside the clip. A box that clips is no stacking context, and
+is painted in the passes of the flow around it as a block is (CSS 2.1
+Appendix E), as Chrome, Firefox and Safari paint it. Its own background
+goes with the other blocks' backgrounds. What it holds goes in the same
+passes under its clip: the backgrounds of the blocks in it with the
+backgrounds, its floats with the floats, and its lines and its outside
+marker with the lines. So a block after it that a negative margin draws
+up over it covers its background and the backgrounds in it, and a float
+after it covers a block in it. A table is painted the same way, whether
+it clips or not. Its background, its parts', its cells' and their borders
+go with the blocks' backgrounds, and its collapsed borders over them;
+what its cells hold goes in the later passes, so a cell's text is drawn
+over a collapsed border. A flex box or a grid that clips is painted
+likewise, its background with the backgrounds and its items, each whole,
+with the lines under its clip. `clip` shows the part of an absolutely positioned
 box it names, and of what the box holds, and nothing it cuts away is under
 the pointer (CSS 2.1 11.1.2): a label hidden for a screen reader alone with
 `clip: rect(0, 0, 0, 0)` takes no hover and no press from the link it lies
@@ -1849,9 +1863,12 @@ The initial containing block is the viewport: the box that scrolls the
 element, where one does — a browser's page area, under its tabs and its
 toolbar — and the window where nothing does, since the element sizes to its
 content. So `html, body { height: 100% }` is a viewport tall and `bottom: 0`
-with nothing positioned around it is the viewport's bottom, as in a browser;
-the document is as tall as what overflows its root, so nothing longer than
-the viewport is cut off — an inline element's padding and border below its
+with nothing positioned around it is the viewport's bottom, as in a browser
+— and in a page that writes a `<body>` and no `<html>`, as most begin
+`<!DOCTYPE html><title>`, where the root element is the `<html>` HTML
+implies around the body and its percentage height is of the viewport as a
+written one's is. The document is as tall as what overflows its root, so
+nothing longer than the viewport is cut off — an inline element's padding and border below its
 line among it, as a browser counts them, where nothing clips them. The
 root's `overflow` is the viewport's, and so is the `<body>`'s where the
 root's is `visible`, and the element it came from is `visible` itself
