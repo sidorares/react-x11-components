@@ -36,6 +36,7 @@ import {
   MIN_CONTENT_PROBE,
   STRETCHED_ACROSS,
   USED_HEIGHT,
+  boxRatio,
   centreButton,
   clampHeight,
   clampWidth,
@@ -210,6 +211,7 @@ export function layoutFlex(
       auto: false,
       across: false,
       unstretched: NaN,
+      refit: null,
     };
     applyItem(
       node,
@@ -1347,6 +1349,46 @@ function applyItem(
     }
     return answer;
   });
+
+  // Across a column, the width it comes to in a room other than the
+  // column's (`Laid.refit`), as the measure function fits it into the
+  // column and Yoga then holds it to its limits: `fit-content` where its
+  // width is `auto` — whether it is stretched instead is its alignment's
+  // to say, which is asked where this is (`crossLines`) — or the
+  // keyword's. Not where its width comes from its height through a ratio,
+  // which no room changes, and not for a replaced element, whose natural
+  // width is its own: Chrome fits neither again (csswg-drafts#11784).
+  const keyword = style.widthKeyword;
+  const fits =
+    keyword === null
+      ? style.width === AUTO
+      : keyword === 'fit-content' || keyword === 'stretch';
+  if (
+    !alongRow &&
+    fits &&
+    box.kind !== 'replaced' &&
+    box.kind !== 'text' &&
+    box.kind !== 'break' &&
+    boxRatio(box) === null
+  ) {
+    laid.refit = (room: number): number => {
+      const extra = box.horizontalExtra;
+      let width: number;
+      if (keyword === null) {
+        const narrowest = percentHeightsIn(box)
+          ? undefined
+          : () => minContentOf(box, ctx, laid) - extra;
+        width =
+          innerWidth(room - extra, Y.MEASURE_MODE_AT_MOST, content, narrowest) +
+          extra;
+      } else {
+        width = contentSizedWidth(box, ctx, keyword, room, containingWidth);
+      }
+      if (width > mostWidth) width = mostWidth;
+      if (width < leastWidth) width = leastWidth;
+      return Math.max(width, extra);
+    };
+  }
 }
 
 /** How wide an item's content is as the box is laid out: its max-content
@@ -1420,6 +1462,12 @@ interface Laid {
    *  or across a row whose lines are spaced out (`unspace`). NaN where that
    *  is the height Yoga has for it. */
   unstretched: number;
+  /** Across a column, its border-box width fitted into a room, where its
+   *  width is the room's to decide (`applyItem`): an `auto` one where it
+   *  is not stretched, `fit-content`, and `stretch` — and null where it is
+   *  not, a length's or its content's or its ratio's. A column that wraps
+   *  fits it again into its line's width less its margins (`crossLines`). */
+  refit: ((room: number) => number) | null;
 }
 
 /**
@@ -3585,25 +3633,42 @@ function crossLines(
   lines.forEach((line, k) => {
     const size = across[k];
     for (const i of line) {
-      const { box, node } = items[i];
+      const { box, node, laid } = items[i];
       const own = box.style;
       let itemWidth = sizes[i];
       let offset = lead[i];
-      const free = size - itemWidth - lead[i] - trail[i];
       const before = fromRight ? own.marginRight : own.marginLeft;
       const after = fromRight ? own.marginLeft : own.marginRight;
-      if (before === AUTO || after === AUTO) {
-        if (free > 0 && before === AUTO) {
-          offset += after === AUTO ? free / 2 : free;
-        }
-      } else if (stretches(box, style, false) && !own.widthKeyword) {
+      const auto = before === AUTO || after === AUTO;
+      const stretched =
+        !auto && stretches(box, style, false) && !own.widthKeyword;
+      if (stretched) {
         const most = pointsOf(node.getMaxWidth());
         const least = pointsOf(node.getMinWidth());
         itemWidth = size - lead[i] - trail[i];
         if (itemWidth > most) itemWidth = most;
         if (itemWidth < least) itemWidth = least;
         itemWidth = Math.max(itemWidth, box.horizontalExtra);
+      } else if (laid.refit && size - lead[i] - trail[i] > itemWidth + 0.01) {
+        // And one whose width the room decides is fitted again into its
+        // line, less its margins (9.4 step 11, which csswg-drafts#11784
+        // made say so; Chrome does, Firefox and Safari not yet): where the
+        // line is wider than the box, `fit-content` has more room than the
+        // box gave it. Its height is the one the column gave it (the note
+        // under the step), which `placeItems` keeps. The line is as wide
+        // as its margin box at least, and no room makes it narrower.
+        itemWidth = Math.max(itemWidth, laid.refit(size - lead[i] - trail[i]));
+      }
+      const free = size - itemWidth - lead[i] - trail[i];
+      if (auto) {
+        if (free > 0 && before === AUTO) {
+          offset += after === AUTO ? free / 2 : free;
+        }
       } else if (byBaseline(style, own, false)) {
+        // at the left edge the line's items share, where the widths they
+        // had before any was fitted again set it (`reach`), from either
+        // side: one fitted again runs on past its line's end, or from
+        // the right past its start, as Chrome sets it
         offset = reach[k] - (fromRight ? itemWidth : 0);
       } else {
         const align = own.alignSelf === AUTO ? style.alignItems : own.alignSelf;
