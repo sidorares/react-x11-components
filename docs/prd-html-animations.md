@@ -16,9 +16,9 @@
 > background, 1c, is deferred on its measurement. Step 4's spike is done,
 > and step 5 is built: core's sprite seam (react-x11#819) and the bridge's
 > matrices (windowkit/appkit#97), with `<Html>` offering what a layer can
-> carry, at no JavaScript frame on macOS once both are released. Steps 2,
-> 3 and 6 are not built. The reference for what runs today is
-> `docs/components/html.md`, "Animations".
+> carry, at no JavaScript frame on macOS — released in react-x11 2.29.0 and
+> appkit 0.19.0. Steps 2, 3 and 6 are not built. The reference for what
+> runs today is `docs/components/html.md`, "Animations".
 
 ## 1. What `<Html>` does today
 

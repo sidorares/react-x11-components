@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.27.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.27.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.29.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.29.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -579,6 +579,19 @@ it up. **The floor is a running one and moves often** — every move since
   takes: 8.18.0 cuts a self-crossing fill at its crossings (ntk#505), and
   `<Flow>`'s folded edge, drawn in two runs by a pass that cuts its turn,
   no longer matches the edge drawn whole (`test/flow.test.ts`).
+- `^2.29.0` — the sprite seam (react-x11#821, over #819): an element hands
+  the macOS surface presenter parts of its drawing, each lifted onto a
+  layer of its own and run there by the render server, and `<Html>` offers
+  each element whose CSS animation a layer can carry (`src/html/sprites.ts`)
+  — a page with a fade and a turn on it went from 113 frames painted in two
+  seconds to none. A lift needs @windowkit/appkit 0.19.0's matrices and its
+  delays in the past (windowkit/appkit#97, react-x11#823), and the same
+  bridge colour-manages the window on a wide-gamut display (#820). 2.28.0
+  under it runs an opacity in the render server on a promoted box that
+  fades as one group (#818), which a lift's own checks stand on, and stops
+  a focus moving inside a scroll pane repainting the pane's whole viewport
+  (#815): every Tab through an `<Html>` in its pane did (react-x11#813),
+  and `test/html/focus.test.ts` holds one to the rows of its two links.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1296,9 +1309,10 @@ things are load-bearing:
   so it does not flip after the first render — each of the three was a
   whole repaint of the document, at load or on every Tab. The stop report
   runs after every restyle in place, a hover's included, so it compares
-  without allocating. Core claims a scroll pane's whole viewport whenever
-  it scrolls a focused node into view, scrolled or not; that one is core's
-  (react-x11#813).
+  without allocating. Core claimed a scroll pane's whole viewport whenever
+  it scrolled a focused node into view, scrolled or not, until 2.28.0
+  (react-x11#813): a Tab between two links in view repaints their rows
+  now, and a test holds it there.
 - **A focused stop is not the selection's surface.** Core runs Ctrl+A and
   Ctrl+C on the focused node only, so a stop forwards them to the root's
   `selectAll()` and `selectedText()`.
@@ -1658,8 +1672,8 @@ things are load-bearing.
   frames are sampled on a fork of the timeline (`AnimationTimeline.fork`),
   which leaves the document's as it was, sixty styles a second of cycle.
   **Anything new that changes what a lifted box draws without a build
-  bumps `_spriteGen` and asks for a frame (`_askSprites`)**, as a restyle
-  in place inside one does: a lifted box's hole claims no damage, so
+  bumps `_spriteGen` and asks for a frame (`spritesChanged()`)**, as a
+  restyle in place inside one does: a lifted box's hole claims no damage, so
   nothing else would bring the frame in which its layer is painted again.
 - **A point is hit where the layer has the element.** A lifted element's
   style stops at the lift, so every hit test first restyles the lifted
@@ -1671,10 +1685,6 @@ things are load-bearing.
 - **What is handed over is made fresh every frame from the kept part.**
   Core reads an animation's `delay` when it attaches it, counted from that
   frame, and a document that scrolled has moved every rect.
-
-The methods carry no `override` while the floor's declarations have no
-`sprites()`. The floor move that brings them adds it (`noImplicitOverride`),
-and can swap the types this side writes out for core's.
 
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's

@@ -12,7 +12,8 @@ import {
   userEvent,
 } from 'react-x11/test';
 import { Button } from 'react-x11';
-import type { DrawnNode, MouseEvent as X11MouseEvent } from 'react-x11';
+import type { DrawnNode, MouseEvent as X11MouseEvent, Rect } from 'react-x11';
+import type { Context2D } from 'react-x11/node';
 import { XK_RETURN, XK_SPACE } from 'react-x11/keysyms';
 import { Html } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
@@ -423,6 +424,53 @@ metric('the link Tab reaches is scrolled into view', async () => {
     `l29 at ${box.y}..${box.y + box.height} in ${pane.scrollY}..${pane.scrollY + 200}`,
   );
 });
+
+metric(
+  "a Tab between two links in view repaints their rows, not the pane's viewport",
+  async (t) => {
+    const links = Array.from(
+      { length: 60 },
+      (_, i) =>
+        `<p style="margin:0;height:30px"><a id="l${i}" href="#">${i}</a></p>`,
+    ).join('');
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 400, height: 200, overflow: 'scroll' } },
+        h(Html, { source: links, partial: false, 'data-testname': 'doc' }),
+      ),
+      { width: 440, height: 300, fonts: FONTS! },
+    );
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    // the pane, then l0 and l1
+    for (let i = 0; i < 3; i += 1) await userEvent.tab();
+    await act();
+    assert.strictEqual(el.focusedElement?.attribs.id, 'l1');
+    const from = el.elementRect(el.focusedElement!)!;
+    const damages: (Rect | null)[] = [];
+    const paint = el.paint.bind(el);
+    t.mock.method(el, 'paint', (ctx: Context2D) => {
+      damages.push(el.paintDamage());
+      paint(ctx);
+    });
+    await userEvent.tab();
+    await act();
+    assert.strictEqual(el.focusedElement?.attribs.id, 'l2');
+    const to = el.elementRect(el.focusedElement!)!;
+    // the rows the two rings are drawn in, each link at the top of its own:
+    // core repainted the whole viewport of a pane a focus moved inside
+    // until react-x11#813
+    const top = (el as unknown as DrawnNode).abs.y;
+    assert.ok(damages.length > 0, 'the rings repainted');
+    for (const d of damages) {
+      assert.ok(
+        d && d.y >= top + from.y - 1 && d.y + d.height <= top + to.y + 31,
+        `${JSON.stringify(d)} past the rows at ${from.y} and ${to.y}`,
+      );
+    }
+  },
+);
 
 metric(
   'Tab after a press in the document goes on from where it landed',
