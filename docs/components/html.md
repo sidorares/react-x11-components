@@ -1094,7 +1094,9 @@ to a thirtieth of its size far across a wide window, or flatter than can be
 seen — is not drawn there. On every backend a box's corner is snapped to
 the pixel it is drawn from before its transform, as a browser snaps it, so
 a quarter turn of a box a fraction of a pixel down the page stays on the
-grid.
+grid. A box drawn through its matrix casts its shadows through it too, and
+its text its text shadows: turned, scaled and offset with the box, their
+blur scaled as it is, as a browser casts them as part of the box.
 
 What is out of the plane is read and not drawn: `rotateX()`, `rotateY()`,
 `translateZ()`, `perspective()` and the depth of a `matrix3d()` or a

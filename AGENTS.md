@@ -1519,7 +1519,15 @@ a box that is paths and flat colour is drawn through the matrix
 matrix (`paintRaster`). **Anything new a box can draw that is not a path
 goes on `drawnAsPaths`' list**, and the stress that found this is worth
 rerunning after: hostile values (`scale(1e30)`, `skewX(90deg)`), and an
-image far across a window wider than any test's.
+image far across a window wider than any test's. **A shadow cast from a
+drawing moved clear of the window is moved by `aside`**: a context takes a
+shadow's offset and blur in the window's coordinates whatever matrix it
+draws through, so a shape moved `dx` aside in the box's own coordinates and
+offset back by `dx` in the window's lands `(a − 1)·dx` off — the Zen
+Garden's design list, a card hovered to `scale(1.01)`, cast its glow 20px
+left of itself on macOS, where every box is drawn through its matrix.
+`PaintOptions.matrix` is the matrix the context draws through, and a box
+painted on a surface as it was laid out (`onSurface`) has none.
 
 **An animation is a style that changes as time passes, and runs as one.**
 `css/timeline.ts` keeps when each element's animations started — by
