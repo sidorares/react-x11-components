@@ -1611,7 +1611,10 @@ ntk's, and a native one that says a faded surface is cheap
 1 at some fifteen times its cost at 1, so on macOS a faded card's group
 cost twice what drawing the card again did, until react-x11 drew a surface
 there from its pixels scaled by the alpha (react-x11#810). A native context
-that does not say so fades each thing an element draws. Which side of a
+that does not say so fades each thing an element draws. And ntk's glyphs
+take no alpha of the context's — a text layout is drawn in its runs'
+colours — so on X11 and Wayland text is grouped even alone (`fadesGlyphs`):
+nothing on ntk fades text through `globalAlpha`. Which side of a
 trade like that is cheap differs by backend and was the opposite of the
 in-process server's here, and the first guess at why — the image path, a
 flip, the interpolation — was wrong too: measure a new surface on macOS,
