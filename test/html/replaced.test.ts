@@ -1740,6 +1740,106 @@ metric('a drawing restores none of what it did not save', async (t) => {
   });
 });
 
+/** What `SvgView.draw` was handed, each time a drawing was drawn. */
+interface DrawCall {
+  /** The context's transform as the drawing began. */
+  matrix: { a: number; b: number; c: number; d: number };
+  opts: {
+    surface?: (w: number, h: number) => { destroy?(): void } | null;
+    font?: unknown;
+  };
+}
+
+function recordDraws(t: { mock: { method: typeof test.mock.method } }) {
+  const SvgView = (
+    ntk as unknown as {
+      SvgView: { prototype: { draw(...args: unknown[]): void } };
+    }
+  ).SvgView;
+  const calls: DrawCall[] = [];
+  t.mock.method(
+    SvgView.prototype,
+    'draw',
+    (ctx: { getTransform(): DrawCall['matrix'] }, ...rest: unknown[]) => {
+      calls.push({
+        matrix: ctx.getTransform(),
+        opts: (rest[4] ?? {}) as DrawCall['opts'],
+      });
+    },
+  );
+  return calls;
+}
+
+metric(
+  "an inline drawing's text is set in its box's font, and a mask in it is drawn on the document's surfaces",
+  async (t) => {
+    // bun.sh's badge names its family as `var(--font-sans)`, which only
+    // the page around it can answer, and a browser sets a drawing's text
+    // in the page's font where it names none; at 2x the size is still the
+    // CSS pixels a user unit is
+    const calls = recordDraws(t);
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 200, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0;font:italic 600 20px "Font Awesome 6 Free", serif}</style>' +
+            '<svg width="40" height="20"><text y="15">x</text></svg>',
+          partial: false,
+        }),
+      ),
+      { width: 240, height: 100, fonts: FONTS!, scale: 2 },
+    );
+    await waitFor(() => assert.ok(calls.length > 0, 'drawn'));
+    const { opts } = calls[calls.length - 1];
+    assert.deepStrictEqual(opts.font, {
+      // quoted, or a context's parser drops the whole shorthand at the 6
+      family: '"Font Awesome 6 Free", serif',
+      size: 20,
+      weight: 600,
+      style: 'italic',
+    });
+    // what a masked element in the drawing is drawn on: the document's
+    // own, since a macOS context has no surface of ntk's to make
+    assert.strictEqual(typeof opts.surface, 'function');
+    const surface = opts.surface!(4, 4);
+    assert.ok(surface, 'a surface');
+    surface.destroy?.();
+  },
+);
+
+metric(
+  'a turned drawing with text in it is drawn level on a surface where the context turns no glyphs',
+  async (t) => {
+    // ntk sets a glyph as it was shaped, where the matrix puts it: drawn
+    // through the matrix, bun.sh's rotated badge kept its words level.
+    // A drawing of paths alone is still drawn through it.
+    const calls = recordDraws(t);
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 200, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}svg{display:block;transform:rotate(30deg)}</style>' +
+            '<svg width="40" height="20"><text y="15">x</text></svg>' +
+            '<svg width="40" height="20"><path d="M0 0h40v20z"/></svg>',
+          partial: false,
+        }),
+      ),
+      { width: 240, height: 100, fonts: FONTS! },
+    );
+    await waitFor(() => assert.ok(calls.length >= 2, 'both drawn'));
+    const [text, paths] = calls.slice(-2);
+    assert.strictEqual(text.matrix.b, 0, 'the text drawn level, on a surface');
+    assert.ok(
+      Math.abs(paths.matrix.b - 0.5) < 1e-6,
+      'the paths through the turn',
+    );
+  },
+);
+
 test('an area the author gives a display is drawn, in its map', async () => {
   // <map> is inline (HTML 15.3.1); hidden, it took its areas with it
   const { node } = await render(

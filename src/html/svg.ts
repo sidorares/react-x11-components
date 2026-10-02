@@ -167,6 +167,19 @@ export function concreteSize(
   return [width, height];
 }
 
+/** What makes an offscreen surface for a masked element in a drawing, or
+ *  null where there is none (`PaintOptions.surface`). */
+export type SurfaceMaker = (width: number, height: number) => unknown;
+
+/** The font an inline drawing's text inherits from the box it is drawn
+ *  in, the size in CSS pixels: what `SvgView` reads as `opts.font`. */
+export interface DrawingFont {
+  family: string;
+  size: number;
+  weight: number;
+  style: string;
+}
+
 /** The slice of ntk's `SvgView` this draws with. */
 interface SvgViewLike {
   naturalWidth: number;
@@ -178,7 +191,7 @@ interface SvgViewLike {
     y: number,
     w: number,
     h: number,
-    opts?: { color?: string },
+    opts?: { color?: string; surface?: SurfaceMaker; font?: DrawingFont },
   ): void;
 }
 
@@ -315,6 +328,11 @@ export class SvgDrawing {
     { cascade: Cascade; own: Map<string, ImagePaint | null> }
   >();
 
+  /** Whether the drawing has a `<text>` in it, and where the drawing
+   *  ended when that was asked (`hasText`). */
+  private _text: boolean | null = null;
+  private _textEnd: End | null = null;
+
   /** The element an SVG image's URL names by its fragment, its own
    *  `:target`: a sprite sheet shows the icon `image.svg#icon` names. */
   private readonly _target: Element | null;
@@ -341,6 +359,12 @@ export class SvgDrawing {
    * the presentation attribute, and what is in the drawing inherits them
    * from its root. `shapes` is what the rules give the elements inside it,
    * the same way, where they give any.
+   *
+   * `surface` makes what a masked element in it is drawn on, as the
+   * document's own masks are (`PaintOptions.surface`): a context that is
+   * not ntk's, react-x11's on macOS, has no other way to one. And `font`
+   * is what its text inherits — the box's, for an inline drawing, as a
+   * browser has it; an image's text starts from its own initial font.
    */
   draw(
     ctx: ClipContext,
@@ -353,6 +377,8 @@ export class SvgDrawing {
     fill: string | null = null,
     stroke: string | null = null,
     shapes: ShapeStyles | null = null,
+    surface: SurfaceMaker | null = null,
+    font: DrawingFont | null = null,
   ): void {
     if (this._failed || !(w > 0 && h > 0)) return;
     // the mock backend has no path API, and SvgView draws paths
@@ -418,7 +444,14 @@ export class SvgDrawing {
       ctx.beginPath();
       ctx.rect(x, y, w, h);
       ctx.clip();
-      const opts = color ? { color } : undefined;
+      const opts: {
+        color?: string;
+        surface?: SurfaceMaker;
+        font?: DrawingFont;
+      } = {};
+      if (color) opts.color = color;
+      if (surface) opts.surface = surface;
+      if (font) opts.font = font;
       if (!box) {
         view.draw(
           lent.ctx,
@@ -467,6 +500,20 @@ export class SvgDrawing {
   }
 
   /**
+   * Whether the drawing sets text: glyphs, which a context that does not
+   * scale text with its transform — ntk's — sets level whatever turns the
+   * box the drawing is in. Asked again once more of a streamed drawing has
+   * arrived.
+   */
+  hasText(): boolean {
+    if (this._text === null || !this._textEnd || moved(this._textEnd)) {
+      this._text = holdsText(this._root);
+      this._textEnd = endOf(this._root);
+    }
+    return this._text;
+  }
+
+  /**
    * Draw an SVG image — an `<img>`'s, a background's, a list marker's — as
    * `draw` does, painted as its own style sheets say. An image is a
    * document of its own: no rule of the page's reaches into it, and its
@@ -484,6 +531,7 @@ export class SvgDrawing {
     h: number,
     scale: number,
     scheme: 'light' | 'dark' = 'light',
+    surface: SurfaceMaker | null = null,
   ): void {
     if (this._failed || !(w > 0 && h > 0)) return;
     const own = this._ownPaint(w, h, scale, scheme);
@@ -498,6 +546,7 @@ export class SvgDrawing {
       own?.fill ?? null,
       own?.stroke ?? null,
       own?.shapes ?? null,
+      surface,
     );
   }
 
@@ -742,6 +791,44 @@ function imageLook(scheme: 'light' | 'dark', scale: number): RootLook {
   };
 }
 
+/** The generic families, which a font list names without quotes. */
+const GENERIC_FAMILIES = new Set([
+  'serif',
+  'sans-serif',
+  'monospace',
+  'cursive',
+  'fantasy',
+  'system-ui',
+  'ui-serif',
+  'ui-sans-serif',
+  'ui-monospace',
+  'ui-rounded',
+  'emoji',
+  'math',
+  'fangsong',
+]);
+
+/**
+ * A style's family list as a `font` shorthand names it, for `SvgView` to
+ * set its text in: each family quoted but the generic ones. The list a
+ * style holds has its quotes taken off (`familyList`), and a name that is
+ * not identifiers — `Font Awesome 6 Free` — makes a shorthand that a
+ * context's parser drops whole, and the text is set in whatever font the
+ * context had last.
+ */
+export function quotedFamilies(list: string): string {
+  return list
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .map((name) =>
+      GENERIC_FAMILIES.has(name.toLowerCase())
+        ? name
+        : `"${name.replace(/["\\]/g, '\\$&')}"`,
+    )
+    .join(', ');
+}
+
 /** Drawings of inline `<svg>` elements, per element: the element is the
  *  document's, and outlives the box trees built over it. */
 const INLINE = new WeakMap<Element, SvgDrawing>();
@@ -804,6 +891,19 @@ function hasPercent(root: Element): boolean {
     return false;
   };
   return walk(root);
+}
+
+/** Whether an element under a root is a `<text>`. */
+function holdsText(root: Element): boolean {
+  const stack: Element[] = [root];
+  for (let el = stack.pop(); el; el = stack.pop()) {
+    for (const child of el.children) {
+      if (child.type !== 'tag') continue;
+      if (localName((child as Element).name) === 'text') return true;
+      stack.push(child as Element);
+    }
+  }
+  return false;
 }
 
 /** The elements under a root by their ids, the first of each. */

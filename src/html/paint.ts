@@ -118,8 +118,14 @@ import {
 } from './layout/inline.js';
 import { tableGrid } from './layout/grid.js';
 import type { Cell } from './layout/grid.js';
-import { SvgDrawing, atDensity, concreteSize, inlineDrawing } from './svg.js';
-import type { IntrinsicSize } from './svg.js';
+import {
+  SvgDrawing,
+  atDensity,
+  concreteSize,
+  inlineDrawing,
+  quotedFamilies,
+} from './svg.js';
+import type { IntrinsicSize, SurfaceMaker } from './svg.js';
 import type { CollapsedBorder } from './layout/collapse.js';
 
 export interface Rect {
@@ -1439,10 +1445,10 @@ function paintUnfaded(
 
 /**
  * Whether all a box and what it holds draw is paths and flat colour:
- * backgrounds, borders, outlines and inline drawings — no text and no list
- * marker, whose glyphs a context may not turn, and no image, gradient,
- * shadow or mask, which one draws through a picture's transform
- * (`paintTransformed`).
+ * backgrounds, borders, outlines and inline drawings with no text in them
+ * — no text and no list marker, whose glyphs a context may not turn, and
+ * no image, gradient, shadow or mask, which one draws through a picture's
+ * transform (`paintTransformed`).
  */
 function drawnAsPaths(box: Box): boolean {
   if (box.subtreeTextEnd > box.subtreeTextStart) return false;
@@ -1450,6 +1456,11 @@ function drawnAsPaths(box: Box): boolean {
   while (stack.length) {
     const at = stack.pop()!;
     if (at.marker || at.replaced === 'image') return false;
+    // a drawing's text is glyphs too: bun.sh's badge turned and its
+    // words stayed level
+    if (at.replaced === 'svg' && at.el && inlineDrawing(at.el).hasText()) {
+      return false;
+    }
     const style = at.style;
     if (
       style.backgroundImage !== null ||
@@ -5781,11 +5792,21 @@ function paintBackgroundImage(
             ih,
             scale,
             style.colorScheme,
+            surfaceMaker(options),
           );
         }
       }
     } else {
-      svg.drawImage(ctx, x0, y0, iw, ih, scale, style.colorScheme);
+      svg.drawImage(
+        ctx,
+        x0,
+        y0,
+        iw,
+        ih,
+        scale,
+        style.colorScheme,
+        surfaceMaker(options),
+      );
     }
   } else if (
     tiles > 1 &&
@@ -6248,8 +6269,9 @@ function paintBorderImage(
       w,
       h,
       (sctx) => {
-        if (svg) svg.drawImage(sctx, 0, 0, w, h, scale, scheme);
-        else if (gradient) {
+        if (svg) {
+          svg.drawImage(sctx, 0, 0, w, h, scale, scheme, surfaceMaker(options));
+        } else if (gradient) {
           const paint = gradientFill(
             sctx,
             gradient,
@@ -7547,6 +7569,7 @@ function paintMarker(
         height,
         options.scale ?? 1,
         scheme,
+        surfaceMaker(options),
       );
     } else ctx.drawImage?.(loaded.image, x, y, width, height);
     return;
@@ -7587,6 +7610,7 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
         at.h,
         options.scale ?? 1,
         box.style.colorScheme,
+        surfaceMaker(options),
       );
     } else ctx.drawImage!(image, at.x, at.y, at.w, at.h);
     if (clipped) ctx.restore();
@@ -7691,18 +7715,35 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
     value === null || value === 'currentColor' || value === 'none'
       ? value
       : inkColor(value, style.color);
+  const scale = options.scale ?? 1;
   inlineDrawing(box.el).draw(
     ctx,
     x,
     y,
     w,
     h,
-    options.scale ?? 1,
+    scale,
     style.color,
     paint(style.fill),
     paint(style.stroke),
     options.shapeStyler?.(box) ?? null,
+    surfaceMaker(options),
+    // its text is set in the box's font where it names none, as a
+    // browser sets it: a size is a CSS pixel, which is a user unit
+    {
+      family: quotedFamilies(style.fontFamily),
+      size: style.fontSize / scale,
+      weight: style.fontWeight,
+      style: style.fontStyle,
+    },
   );
+}
+
+/** What makes the surface a masked element inside a drawing is drawn on:
+ *  the one the document's own masks are drawn on. */
+function surfaceMaker(options: PaintOptions): SurfaceMaker | null {
+  const make = options.surface;
+  return make ? (width, height) => make(width, height) : null;
 }
 
 /**
