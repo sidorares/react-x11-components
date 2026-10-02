@@ -1397,9 +1397,13 @@ compositor:
 - its animations set only `opacity`, `transform`, `translate`, `rotate`
   and `scale`, no two of them the opacity or the transform, and each plays
   and is past its delay — a fade and a turn on one element go over as two
-  animations on its layer, each with its own timing;
-- it is a box of its own — not an inline split across lines, not a
-  `::before` or an `::after` — and is not fixed, clipped, masked or drawn
+  animations on its layer, each with its own timing. An element and its
+  pseudo-elements go one at a time: an element whose `::before` animates
+  draws it in what goes on its layer, and a pseudo-element is styled again
+  with its element at every frame of the element's;
+- it is a box of its own — an element's, or its `::before`'s or
+  `::after`'s, as a spinner drawn by one is, but not an inline split
+  across lines — and is not fixed, clipped, masked or drawn
   against the viewport, and holds nothing fixed to it;
 - nothing it is inside fades, turns, clips, masks, is fixed, or runs an
   animation of its own;

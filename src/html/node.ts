@@ -105,7 +105,7 @@ import { TextLayoutCache } from './layout/cache.js';
 import { fontAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
 import { describe, liftOf, partOf } from './sprites.js';
-import type { DocumentSprite, Part, SpriteHost } from './sprites.js';
+import type { DocumentSprite, Part, Pseudo, SpriteHost } from './sprites.js';
 import { SpriteStore, SurfaceCache, newSurface } from './surfaces.js';
 import type { SurfaceLike } from './surfaces.js';
 import {
@@ -319,21 +319,24 @@ export class HtmlViewNode extends Node {
       ),
   };
   // --- sprites (`sprites()`, src/html/sprites.ts) ---
-  /** The elements a presenter has on layers of their own, by sprite key,
-   *  as it said last (`spritesLifted`): a hole in the document each, and an
-   *  animation the document's clock leaves alone. */
-  private _liftedEls = new Map<string, Element>();
-  private _liftedSet = new Set<Element>();
+  /** What a presenter has on layers of their own, by sprite key, as it
+   *  said last (`spritesLifted`): an element or a pseudo-element of one
+   *  each, a hole in the document, and an animation the document's clock
+   *  leaves alone. */
+  private _lifted = new Map<string, SpriteTarget>();
+  /** The same by element: which of its own ('') and its pseudo-elements'
+   *  are lifted. */
+  private _liftedTargets = new Map<Element, Set<Pseudo>>();
   /** This frame's offers, by key: what a key the presenter names is. */
-  private _offeredEls = new Map<string, Element>();
-  /** Each element's sprite key, the same for as long as it lives. */
-  private _spriteKeys = new WeakMap<Element, string>();
+  private _offered = new Map<string, SpriteTarget>();
+  /** Each sprite's key, the same for as long as its element lives. */
+  private _spriteKeys = new WeakMap<Element, Partial<Record<Pseudo, string>>>();
   private _spriteSeq = 0;
-  /** What each element was last offered as, and what that was made from:
-   *  making one samples its frames, and a frame asks every time. */
+  /** What each was last offered as, and what that was made from: making
+   *  one samples its frames, and a frame asks every time. */
   private _spriteOffers = new WeakMap<
     Element,
-    { stamp: string; part: Part | null }
+    Partial<Record<Pseudo, { stamp: string; part: Part | null }>>
   >();
   /** Moves whenever what a lifted box draws may have changed without a
    *  build — a restyle of it, or of a box in it. */
@@ -344,15 +347,16 @@ export class HtmlViewNode extends Node {
    *  where their animations have them (`_followLifted`): what they draw is
    *  what it was, and their layers already show them there. */
   private _followingLifted = false;
-  /** The lifted elements' boxes, for the paint, as of a tree and a set. */
+  /** The lifted boxes, for the paint, as of a tree and a set. */
   private _liftedBoxCache: {
     tree: BoxTree;
-    lifted: ReadonlyMap<string, Element>;
+    lifted: ReadonlyMap<string, SpriteTarget>;
     boxes: ReadonlySet<Box>;
   } | null = null;
-  /** The elements whose animation is not the document's clock's to run. */
-  private readonly _skipLifted = (el: object): boolean =>
-    this._liftedSet.has(el as Element);
+  /** The animations that are not the document's clock's to run: an
+   *  element's own, or a pseudo-element's, on a layer of its own. */
+  private readonly _skipLifted = (el: object, pseudo: string): boolean =>
+    this._liftedTargets.get(el as Element)?.has(pseudo as Pseudo) ?? false;
   private _cascade: Cascade | null = null;
   private _tree: BoxTree | null = null;
   /** The faces `_warmFaces` has asked the font matcher for, and of which
@@ -1461,9 +1465,9 @@ export class HtmlViewNode extends Node {
     this._shadowCache = null;
     this._sprites?.clear();
     this._sprites = null;
-    this._liftedEls.clear();
-    this._liftedSet.clear();
-    this._offeredEls.clear();
+    this._lifted.clear();
+    this._liftedTargets.clear();
+    this._offered.clear();
     this._sheetsRead = null;
     this._tree = null;
     this._cascade = null;
@@ -2245,7 +2249,7 @@ export class HtmlViewNode extends Node {
       next.set(box, style);
       restyled.push([box, style]);
       // a lifted box's pixels are its layer's: its hole needs no repaint
-      if (ink && !(this._liftedSet.size && this._insideLifted(box))) {
+      if (ink && !(this._lifted.size && this._insideLifted(box))) {
         inked.add(box);
       }
       if (box.kind === 'inline') {
@@ -2317,7 +2321,7 @@ export class HtmlViewNode extends Node {
       // painted there, in a frame asked for since its hole claims none
       if (
         !this._followingLifted &&
-        this._liftedSet.size &&
+        this._lifted.size &&
         this._insideLifted(box)
       ) {
         this._spriteGen += 1;
@@ -2635,14 +2639,15 @@ export class HtmlViewNode extends Node {
 
   /**
    * The elements whose CSS animation a presenter may run on a layer of its
-   * own, as react-x11's `Node.sprites()` takes them. Asked every frame,
+   * own, and the `::before`s and `::after`s, as react-x11's
+   * `Node.sprites()` takes them. Asked every frame,
    * after layout, by the presenter that lifts them. A part's frames are
    * sampled once and kept for as long as the document draws and lays it
    * out as it did; what is made each frame is where it is and the delay
    * from now.
    */
   override sprites(): DocumentSprite[] | null {
-    this._offeredEls.clear();
+    this._offered.clear();
     if (this.destroyed || !this._animating()) return null;
     // this frame paints after the presenter: a build it owes is built now,
     // so that the boxes offered are the ones it paints
@@ -2659,6 +2664,7 @@ export class HtmlViewNode extends Node {
       timeline: this._timeline,
       now,
       boxes: this._firstBoxesOf(tree),
+      pseudoBox: (el, which) => this._pseudoBoxOf(tree, el, which),
       ended: (el, id) => this._endedSprites.get(el)?.has(id) ?? false,
     };
     const range = this.selectionRange;
@@ -2672,41 +2678,51 @@ export class HtmlViewNode extends Node {
     let options: PaintOptions | null = null;
     let out: DocumentSprite[] | null = null;
     let shift: { x: number; y: number } | null | undefined;
-    for (const { el, generated } of live) {
-      // a `::before`'s or an `::after`'s animation is its element's box's
-      // drawing: left to the document's clock
-      if (generated) continue;
+    for (const { el, targets } of live) {
       const element = el as Element;
-      const lift = liftOf(host, element);
-      if (!lift) continue;
-      const made = `${stamp}|${lift.id}`;
-      let offer = this._spriteOffers.get(element);
-      if (offer?.stamp !== made) {
-        offer = { stamp: made, part: partOf(host, lift) };
-        this._spriteOffers.set(element, offer);
+      for (const name of targets) {
+        if (name !== '' && name !== 'before' && name !== 'after') continue;
+        const pseudo: Pseudo = name;
+        // an element or its pseudo-elements, one at a time: an element's
+        // raster holds what its pseudo-elements draw, and a pseudo-element
+        // is styled again with its element at each frame of the element's
+        if (pseudo === '' ? targets.length > 1 : targets.includes('')) {
+          continue;
+        }
+        const lift = liftOf(host, element, pseudo);
+        if (!lift) continue;
+        const made = `${stamp}|${lift.id}`;
+        let offers = this._spriteOffers.get(element);
+        if (!offers) this._spriteOffers.set(element, (offers = {}));
+        let offer = offers[pseudo];
+        if (offer?.stamp !== made) {
+          offer = { stamp: made, part: partOf(host, lift) };
+          offers[pseudo] = offer;
+        }
+        if (!offer.part) continue;
+        // a box fixed to the viewport the scroll has brought within its
+        // reach: the document draws it this frame, under that box or over
+        // it, as their order has it
+        if (offer.part.fixed.length) {
+          if (shift === undefined) shift = this._fixedShift();
+          if (fixedWithin(offer.part, shift)) continue;
+        }
+        const key = this._spriteKeyOf(element, pseudo);
+        this._offered.set(key, { el: element, pseudo });
+        const painted = (options ??= this._paintOptions(range, null));
+        (out ??= []).push(
+          describe(
+            offer.part,
+            key,
+            `${serialOf(lift.box)}:${stamp}`,
+            this.abs.x,
+            this.abs.y,
+            now,
+            (ctx, box) =>
+              paintLiftedBox(ctx as PaintContext, tree, box, painted),
+          ),
+        );
       }
-      if (!offer.part) continue;
-      // a box fixed to the viewport the scroll has brought within its reach:
-      // the document draws it this frame, under that box or over it, as
-      // their order has it
-      if (offer.part.fixed.length) {
-        if (shift === undefined) shift = this._fixedShift();
-        if (fixedWithin(offer.part, shift)) continue;
-      }
-      const key = this._spriteKeyOf(element);
-      this._offeredEls.set(key, element);
-      const painted = (options ??= this._paintOptions(range, null));
-      (out ??= []).push(
-        describe(
-          offer.part,
-          key,
-          `${serialOf(lift.box)}:${stamp}`,
-          this.abs.x,
-          this.abs.y,
-          now,
-          (ctx, box) => paintLiftedBox(ctx as PaintContext, tree, box, painted),
-        ),
-      );
     }
     return out;
   }
@@ -2719,17 +2735,22 @@ export class HtmlViewNode extends Node {
    * to, and back on the clock, in this frame.
    */
   override spritesLifted(keys: ReadonlySet<string>): void {
-    const next = new Map<string, Element>();
+    const next = new Map<string, SpriteTarget>();
     for (const key of keys) {
-      const el = this._liftedEls.get(key) ?? this._offeredEls.get(key);
-      if (el) next.set(key, el);
+      const target = this._lifted.get(key) ?? this._offered.get(key);
+      if (target) next.set(key, target);
     }
     let dropped = false;
-    for (const key of this._liftedEls.keys()) {
+    for (const key of this._lifted.keys()) {
       if (!next.has(key)) dropped = true;
     }
-    this._liftedEls = next;
-    this._liftedSet = new Set(next.values());
+    this._lifted = next;
+    this._liftedTargets = new Map();
+    for (const { el, pseudo } of next.values()) {
+      let lifted = this._liftedTargets.get(el);
+      if (!lifted) this._liftedTargets.set(el, (lifted = new Set()));
+      lifted.add(pseudo);
+    }
     this._liftedBoxCache = null;
     if (dropped) {
       this._disarmFrame();
@@ -2753,7 +2774,7 @@ export class HtmlViewNode extends Node {
     finished: boolean,
   ): void {
     if (!finished) return;
-    const el = this._liftedEls.get(key) ?? this._offeredEls.get(key);
+    const el = (this._lifted.get(key) ?? this._offered.get(key))?.el;
     if (!el) return;
     // `<the animation's id>|<property>`: the first is what `liftOf` asks
     const cut = id.lastIndexOf('|');
@@ -2774,53 +2795,78 @@ export class HtmlViewNode extends Node {
    * already show them there.
    */
   private _followLifted(): void {
-    if (!this._liftedSet.size || this._followingLifted) return;
+    if (!this._lifted.size || this._followingLifted) return;
     let moving: Set<Element> | null = null;
-    for (const el of this._liftedSet) {
-      if (this._spriteOffers.get(el)?.part?.lift.moves) {
-        (moving ??= new Set()).add(el);
-      }
+    let generated = false;
+    for (const { el, pseudo } of this._lifted.values()) {
+      if (!this._spriteOffers.get(el)?.[pseudo]?.part?.lift.moves) continue;
+      (moving ??= new Set()).add(el);
+      generated ||= pseudo !== '';
     }
     if (!moving) return;
     this._followingLifted = true;
     try {
-      this._restyleInPlace(moving, () => true, HOVER_PSEUDO_NONE);
+      // a pseudo-element's box is restyled with its element's
+      this._restyleInPlace(
+        moving,
+        () => true,
+        generated ? HOVER_PSEUDO_GENERATED : HOVER_PSEUDO_NONE,
+      );
     } finally {
       this._followingLifted = false;
     }
   }
 
-  private _spriteKeyOf(el: Element): string {
-    let key = this._spriteKeys.get(el);
-    if (!key) {
-      key = `html:${++this._spriteSeq}`;
-      this._spriteKeys.set(el, key);
-    }
-    return key;
+  private _spriteKeyOf(el: Element, pseudo: Pseudo): string {
+    let keys = this._spriteKeys.get(el);
+    if (!keys) this._spriteKeys.set(el, (keys = {}));
+    return (keys[pseudo] ??= `html:${++this._spriteSeq}`);
   }
 
-  /** Whether a box is a lifted element's, or inside one. */
+  /** An element's `::before` or `::after` box: a child of the element's
+   *  first box, or of an anonymous box the fix-up made in it. */
+  private _pseudoBoxOf(
+    tree: BoxTree,
+    el: Element,
+    which: 'before' | 'after',
+  ): Box | null {
+    const box = this._firstBoxesOf(tree).get(el);
+    if (!box || box.el !== el) return null;
+    const stack = [...box.children];
+    while (stack.length) {
+      const at = stack.pop()!;
+      if (at.pseudo === which && GENERATED_FROM.get(at) === el) return at;
+      if (!at.el && !at.pseudo) stack.push(...at.children);
+    }
+    return null;
+  }
+
+  /** Whether a box is a lifted one, or inside one. */
   private _insideLifted(box: Box): boolean {
+    const tree = this._tree;
+    const lifted = tree && this._liftedBoxes(tree);
+    if (!lifted) return false;
     for (let at: Box | null = box; at; at = at.parent) {
-      if (at.el && this._liftedSet.has(at.el)) return true;
+      if (lifted.has(at)) return true;
     }
     return false;
   }
 
-  /** The lifted elements' boxes in `tree`, for the paint to leave out. */
+  /** The lifted boxes in `tree`, for the paint to leave out: each lifted
+   *  element's, and each lifted pseudo-element's. */
   private _liftedBoxes(tree: BoxTree): ReadonlySet<Box> | null {
-    if (!this._liftedEls.size) return null;
+    if (!this._lifted.size) return null;
     const cache = this._liftedBoxCache;
-    if (cache?.tree === tree && cache.lifted === this._liftedEls) {
+    if (cache?.tree === tree && cache.lifted === this._lifted) {
       return cache.boxes;
     }
     const first = this._firstBoxesOf(tree);
     const boxes = new Set<Box>();
-    for (const el of this._liftedEls.values()) {
-      const box = first.get(el);
+    for (const { el, pseudo } of this._lifted.values()) {
+      const box = pseudo ? this._pseudoBoxOf(tree, el, pseudo) : first.get(el);
       if (box) boxes.add(box);
     }
-    this._liftedBoxCache = { tree, lifted: this._liftedEls, boxes };
+    this._liftedBoxCache = { tree, lifted: this._lifted, boxes };
     return boxes;
   }
 
@@ -4580,6 +4626,12 @@ function movable(box: Box, was: ComputedStyle, now: ComputedStyle): boolean {
     for (const child of at.children) stack.push(child);
   }
   return true;
+}
+
+/** What a sprite is of: an element, or a pseudo-element of one. */
+interface SpriteTarget {
+  el: Element;
+  pseudo: Pseudo;
 }
 
 /** Whether one of the boxes fixed to the viewport is within a part's reach

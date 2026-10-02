@@ -1542,6 +1542,66 @@ test('a lifted element is a hole in the document, and its animation is no frame 
   assert.strictEqual(own(after.fills), 1, 'drawn again');
 });
 
+test('a `::before` or an `::after` whose animation a layer can carry is a sprite of its own, a hole in the document and no frame of its clock once lifted; an element and its pseudo-element are lifted one at a time', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes spin { to { transform: rotate(360deg) } }' +
+      '@keyframes fade { to { opacity: .2 } }' +
+      'body { margin: 0; background: white }' +
+      '#a { position: relative; width: 40px; height: 40px }' +
+      '#a::after { content: ""; position: absolute; left: 10px; top: 10px;' +
+      ' width: 20px; height: 20px; background: red;' +
+      ' animation: spin 320ms linear infinite }' +
+      '#b { width: 40px; height: 20px; animation: fade 1s infinite }' +
+      '#b::before { content: ""; display: block; width: 10px;' +
+      ' height: 10px; background: blue; animation: spin 1s linear infinite }' +
+      '</style><div id="a"></div><div id="b"></div>',
+  );
+  // #b runs an animation and so does its `::before`: neither is lifted
+  const sprites = doc.el.sprites()!;
+  assert.strictEqual(sprites.length, 1);
+  const [spin] = sprites;
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const a = boxOf(doc.el, 'a');
+  assert.deepStrictEqual(spin.rect, {
+    x: abs.x + a.x + 10,
+    y: abs.y + a.y + 10,
+    width: 20,
+    height: 20,
+  });
+  assert.deepStrictEqual(
+    [spin.animations[0].property, spin.animations[0].duration],
+    ['transform', 320],
+  );
+  // it draws the pseudo-element, and once lifted the document does not
+  const own = (fills: ReturnType<typeof recorder>['fills']) =>
+    fills.filter((f) => f.w === 20 && f.h === 20).length;
+  const drawn = recorder();
+  spin.paint(drawn.ctx as never);
+  assert.strictEqual(own(drawn.fills), 1, 'by its own paint');
+  doc.el.spritesLifted(new Set([spin.key]));
+  const hole = recorder();
+  doc.el.paint(hole.ctx as never);
+  assert.strictEqual(own(hole.fills), 0, 'a hole in the document');
+  // #b's frames are the clock's still, and the `::after`'s are not
+  const live = (
+    doc.el as unknown as {
+      _timeline: { live(skip: unknown): { el: unknown; targets: string[] }[] };
+      _skipLifted: unknown;
+    }
+  )._timeline.live((doc.el as unknown as { _skipLifted: unknown })._skipLifted);
+  assert.deepStrictEqual(
+    live.map((l) => l.targets),
+    [['', 'before']],
+    'only #b and its own',
+  );
+  // given back, the document draws it again
+  doc.el.spritesLifted(new Set());
+  const back = recorder();
+  doc.el.paint(back.ctx as never);
+  assert.strictEqual(own(back.fills), 1, 'drawn again');
+});
+
 test('a lifted element that moves is hit where its animation has it, with nothing repainted and nothing sampled again', async (t) => {
   const doc = await running(
     t,
