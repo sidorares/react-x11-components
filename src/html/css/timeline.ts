@@ -33,7 +33,7 @@ export interface Sample {
   easing: Easing;
 }
 
-interface Running {
+export interface Running {
   name: string;
   /** When it started, on the timeline. */
   start: number;
@@ -160,6 +160,30 @@ export class AnimationTimeline {
     if (!targets.size) this._targets.delete(el);
   }
 
+  /** The runs of an element's own animations, by its `animation-name`
+   *  list as it was last styled — when each started, and the time a paused
+   *  one holds — or null where it has none. */
+  runsOf(el: object): readonly (Readonly<Running> | null)[] | null {
+    return this._targets.get(el)?.get('')?.running ?? null;
+  }
+
+  /**
+   * A timeline holding one element's own animations as this one has them:
+   * what its style at another time is computed against, `now` set to that
+   * time, leaving this one as it was. A sprite's frames are sampled so
+   * (`src/html/sprites.ts`).
+   */
+  fork(el: object): AnimationTimeline {
+    const fork = new AnimationTimeline();
+    fork.now = this.now;
+    const target = this._targets.get(el)?.get('');
+    if (target) {
+      const running = target.running.map((run) => run && { ...run });
+      fork._targets.set(el, new Map([['', { ...target, running }]]));
+    }
+    return fork;
+  }
+
   /** Whether the timeline knows of no animation at all. */
   get empty(): boolean {
     return this._targets.size === 0;
@@ -178,10 +202,15 @@ export class AnimationTimeline {
 
   /** The elements with an animation that changes as time passes, and for
    *  each whether what it holds inherits what changes, and whether it is
-   *  one of a pseudo-element's. */
-  live(): { el: object; inherits: boolean; generated: boolean }[] {
+   *  one of a pseudo-element's — but those `skip` says the frames of are
+   *  not this timeline's to run: one whose animation the render server
+   *  runs on a layer of its own. */
+  live(
+    skip: ((el: object) => boolean) | null = null,
+  ): { el: object; inherits: boolean; generated: boolean }[] {
     const out: { el: object; inherits: boolean; generated: boolean }[] = [];
     for (const [el, targets] of this._targets) {
+      if (skip?.(el)) continue;
       let live = false;
       let inherits = false;
       let generated = false;
@@ -197,10 +226,12 @@ export class AnimationTimeline {
   }
 
   /** When an animation next changes, on the timeline; null where none
-   *  will without a style change. */
-  nextFrame(): number | null {
+   *  will without a style change. One `skip` names is not counted
+   *  (`live`). */
+  nextFrame(skip: ((el: object) => boolean) | null = null): number | null {
     let next = Infinity;
-    for (const targets of this._targets.values()) {
+    for (const [el, targets] of this._targets) {
+      if (skip?.(el)) continue;
       for (const target of targets.values()) {
         if (target.next < next) next = target.next;
       }

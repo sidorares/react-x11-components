@@ -275,6 +275,10 @@ export interface PaintOptions {
    *  transform is animating (`paintSprite`). Absent, each paint draws such
    *  a box again. */
   sprites?: SpriteSource | null;
+  /** The boxes a presenter has on layers of their own (`src/html/sprites.ts`):
+   *  each is a hole in the document, it and all it holds, where the layer
+   *  shows through. */
+  lifted?: ReadonlySet<Box> | null;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
   /** @internal The boxes clipping what is being painted, outermost first. */
@@ -1155,6 +1159,7 @@ function frameHeight(box: Frame): number {
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (
+    options.lifted?.has(box) ||
     !intersects(box, options) ||
     COLLAPSED_CELLS.has(box) ||
     CLAMPED.has(box)
@@ -1240,6 +1245,7 @@ function paintTransformed(
     return;
   }
   if (
+    options.lifted?.has(box) ||
     !intersects(box, options) ||
     COLLAPSED_CELLS.has(box) ||
     CLAMPED.has(box)
@@ -1334,6 +1340,34 @@ function paintPlaced(ctx: PaintContext, box: Box, options: PaintOptions): void {
 
 /** `paintPlaced` at full opacity: a box drawn on a surface of its own, which
  *  is faded as it is composited (`paintRaster`). */
+/**
+ * A box on a layer of its own (`src/html/sprites.ts`): it and all it holds,
+ * as laid out, at full opacity and through no matrix — the layer carries
+ * both — on a context in the window's coordinates, as the document's are.
+ * Nothing culls it: the layer holds the whole of it.
+ */
+export function paintLiftedBox(
+  ctx: PaintContext,
+  tree: BoxTree,
+  box: Box,
+  options: PaintOptions,
+): void {
+  if (!canFill(ctx)) return;
+  paintUnfaded(ctx, box, {
+    ...options,
+    damage: null,
+    clips: [],
+    lifted: null,
+    sprites: null,
+    matrix: undefined,
+    canvasSource: canvasBackground(tree)?.source,
+    negative: tree.negative,
+    fixed: FIXED_BOXES.get(tree) ?? null,
+    selectionStyler: options.selection ? tree.selectionStyler : null,
+    shapeStyler: tree.shapeStyler,
+  });
+}
+
 function paintUnfaded(
   ctx: PaintContext,
   box: Box,
@@ -1522,7 +1556,7 @@ function spriteKey(
 
 /** Whether a box or anything in it draws a background fixed to the
  *  viewport, which a scroll moves under it. */
-function drawsAgainstViewport(box: Box): boolean {
+export function drawsAgainstViewport(box: Box): boolean {
   const stack: Box[] = [box];
   while (stack.length) {
     const at = stack.pop()!;
