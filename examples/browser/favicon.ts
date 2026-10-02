@@ -5,8 +5,8 @@
 // the rest — then an `apple-touch-icon`, then `/favicon.ico` at the site's
 // root, which is where browsers have looked since before anyone named one.
 //
-// What it is: PNG and JPEG go to core's `<image>` as they came, and an SVG
-// to its `<svg>`. An `.ico` is a directory of images, each a PNG or a
+// What it is: PNG, JPEG and WebP go to core's `<image>` as they came, and
+// an SVG to its `<svg>`. An `.ico` is a directory of images, each a PNG or a
 // Windows bitmap; the entry nearest 32 pixels is taken, a PNG as it is and a
 // bitmap decoded here to the RGBA `<image>` also takes — nothing else in
 // this stack reads BMP, and the format is a header, a palette and two
@@ -91,16 +91,17 @@ function typeScore(link: Element, url: string): number {
   const path = url.split(/[?#]/)[0].toLowerCase();
   if (type.includes('svg') || path.endsWith('.svg')) return 0;
   if (type.includes('png') || path.endsWith('.png')) return 1;
+  if (type.includes('webp') || path.endsWith('.webp')) return 1;
   if (type.includes('icon') || path.endsWith('.ico')) return 5;
-  // WebP and the rest: nothing here decodes them
-  if (type.includes('webp') || path.endsWith('.webp')) return 5000;
   return 10;
 }
 
 /** An icon's bytes as something a tab can draw, or null for a format
  *  nothing here reads. */
 export function decodeIcon(bytes: Uint8Array, key: string): TabIcon | null {
-  if (isPng(bytes) || isJpeg(bytes)) return { kind: 'image', key, src: bytes };
+  if (isPng(bytes) || isJpeg(bytes) || isWebp(bytes)) {
+    return { kind: 'image', key, src: bytes };
+  }
   const ico = decodeIco(bytes);
   if (ico) return { kind: 'image', key, src: ico };
   const text = new TextDecoder().decode(bytes.subarray(0, 4096));
@@ -118,6 +119,10 @@ const isPng = (b: Uint8Array) =>
   b[3] === 0x47;
 const isJpeg = (b: Uint8Array) =>
   b.length > 3 && b[0] === 0xff && b[1] === 0xd8;
+const isWebp = (b: Uint8Array) =>
+  b.length > 12 &&
+  String.fromCharCode(b[0], b[1], b[2], b[3], b[8], b[9], b[10], b[11]) ===
+    'RIFFWEBP';
 
 const u16 = (b: Uint8Array, at: number) => b[at] | (b[at + 1] << 8);
 const u32 = (b: Uint8Array, at: number) =>

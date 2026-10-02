@@ -2,7 +2,14 @@
 // it asks its host for.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup, expectPixel, renderX11, screen } from 'react-x11/test';
+import {
+  act,
+  cleanup,
+  expectPixel,
+  renderX11,
+  screen,
+  waitForPixel,
+} from 'react-x11/test';
 import { drawnKinds, registeredElements } from 'react-x11/host';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
@@ -317,6 +324,36 @@ test('an image handed over as bytes is decoded and drawn', async (t) => {
   // the body's 8px margin, and the middle of the square
   await expectPixel(result.ctx, 13, 13, '#ff0000', {
     message: 'the decoded image is drawn',
+  });
+});
+
+test('a WebP handed over as bytes lands after the first frame and is drawn', async (t) => {
+  // core's decoder ladder, `decodeImageBytes` off react-x11/ntk, the one
+  // `<image>` decodes bytes with; ntk's own `decodeImage`, which this read
+  // before, is PNG and JPEG alone, and a WebP drew as an empty frame. Under
+  // Node the WebP decoder loads on the first WebP, so the image lands a
+  // moment after the first frame rather than in it.
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // a 10x10 lossless WebP, solid #ff0000
+  const bytes = new Uint8Array(
+    Buffer.from('UklGRhwAAABXRUJQVlA4TA8AAAAvCUACAAcQ/Y/+ByKi/wEA', 'base64'),
+  );
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 200, flexDirection: 'column' } },
+      h(Html, {
+        source: '<img src="red.webp" style="display: block">',
+        partial: false,
+        onResource: (r: { kind: string }) =>
+          r.kind === 'image' ? { kind: 'image' as const, bytes } : null,
+      }),
+    ),
+    { width: 240, height: 100, fonts: FONTS },
+  );
+  // the body's 8px margin, and the middle of the square
+  await waitForPixel(result.ctx, 13, 13, '#ff0000', {
+    message: 'the decoded WebP is drawn',
   });
 });
 
