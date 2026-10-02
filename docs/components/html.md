@@ -2178,7 +2178,12 @@ body's own top margin, as with an `<html>` written in the markup. Either
 way the root box is laid out inside the margins of the element it stands
 in for, so a border on it, its background where it keeps its own, and a
 background image the canvas places against it are drawn where that
-element is, inset by its margins, and not at the window's edge. A box
+element is, inset by its margins, and not at the window's edge. Its
+`auto` height is what it holds within its `min-height` and `max-height`,
+as that element's is: a percentage of either is of the viewport for the
+implied `<html>`, and of the `<html>`'s height, where it has one, for a
+fragment's body, so `html { min-height: 100% }` is a window tall however
+little the page holds. A box
 positioned against the initial containing block still takes the
 viewport, from the document's top left. A fragment's root box is a body
 in the `<html>` around it, and lays out as the same body does in an
