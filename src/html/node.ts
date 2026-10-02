@@ -145,6 +145,8 @@ import {
 } from './paint.js';
 import type { PaintContext, SpriteSource } from './paint.js';
 import { controlRectsOf, measureControl, styledField } from './controls.js';
+import { isInert, isTabbable } from './focus.js';
+import type { FocusStop } from './focus.js';
 import type { BareField, ControlRect } from './controls.js';
 import { ResourceStore } from './resources.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
@@ -192,6 +194,17 @@ export interface HtmlViewProps {
   /** Where the real widgets go, in the element's own coordinates and in
    *  logical pixels — the unit the style that mounts each one is in. */
   onControls?: (rects: ControlRect[]) => void;
+  /**
+   * The document's focusable areas, in the order Tab reaches them
+   * (`focus.ts`): reported after a layout or a restyle that changed which
+   * they are, or moved one `watchStops` names — a new array each time, so
+   * a component holding it as state renders again and reads where the
+   * watched ones are now (`stopRect`).
+   */
+  onFocusStops?: (stops: readonly FocusStop[]) => void;
+  /** The stops whose rectangles `onFocusStops` keeps watch on: the few a
+   *  component mounts a box over (`stops.ts`). */
+  watchStops?: readonly Element[];
   /** The parsed document, once per parse — the DOM handle. */
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
@@ -216,6 +229,9 @@ export function registerHtmlView(): void {
       'complete',
       'baseUrl',
     ],
+    // what the component watches is no part of the picture: a new window of
+    // stops after each Tab is no repaint of the document
+    selfDamagedProps: ['watchStops'],
     childrenAllowed: false,
   });
 }
@@ -353,6 +369,12 @@ export class HtmlViewNode extends Node {
   private _restyleOnly: Set<Element> | null = null;
   private _scriptsSeen = new WeakSet<Element>();
   private _controls: ControlRect[] = [];
+  /** The focusable areas last reported (`_reportStops`), and where the
+   *  watched ones were. */
+  private _stops: readonly FocusStop[] = [];
+  private _watchedRects = new Map<Element, Rect | null>();
+  private _widgets: ReadonlySet<Element> = new Set();
+  private _widgetsOf: ControlRect[] | null = null;
   private _reportedDomRevision = -1;
 
   constructor(props: Record<string, unknown>, app: NtkApp) {
@@ -1162,6 +1184,7 @@ export class HtmlViewNode extends Node {
         this._sizes.delete(this._sizes.keys().next().value!);
       }
       this._reportControls();
+      this._reportStops();
     }
     this._stale = Stale.Nothing;
     // Read after core's layout pass — the viewport is the box around this
@@ -1225,6 +1248,69 @@ export class HtmlViewNode extends Node {
     if (sameRects(rects, this._controls)) return;
     this._controls = rects;
     report(rects);
+  }
+
+  /**
+   * The focusable areas, and where the watched ones are, to `onFocusStops`
+   * where either changed: an element with a box that is visible, not
+   * `inert`, and — for a control — with a widget mounted for it, since the
+   * widget is what takes the focus.
+   */
+  private _reportStops(): void {
+    const tree = this._tree;
+    const report = this._props().onFocusStops;
+    if (!tree || !report) return;
+    const { stops: all, boxes } = focusCandidates(tree);
+    const widgets = this._widgetElements();
+    // Asked after every restyle in place, a pointer's included, and the
+    // answer is nearly always the last: compared as it is found, and a new
+    // list made only where it is not.
+    const was = this._stops;
+    let stops: FocusStop[] | null = null;
+    let n = 0;
+    for (let i = 0; i < all.length; i += 1) {
+      const stop = all[i];
+      // a hidden element is no focusable area, as it takes no press
+      if (boxes[i].style.visibility !== 'visible') continue;
+      // a control whose widget is not mounted — no room, scaled to nothing
+      // — has nothing to take the focus
+      if (stop.widget && !widgets.has(stop.element)) continue;
+      if (!stops) {
+        const same = was[n];
+        if (
+          same?.element === stop.element &&
+          same.tabbable === stop.tabbable &&
+          same.widget === stop.widget
+        ) {
+          n += 1;
+          continue;
+        }
+        stops = was.slice(0, n);
+      }
+      stops.push(stop);
+      n += 1;
+    }
+    let changed = false;
+    if (stops || n !== was.length) {
+      this._stops = stops ?? was.slice(0, n);
+      changed = true;
+    }
+    for (const el of this._props().watchStops ?? []) {
+      const rect = this._rectOf(el);
+      if (!sameRect(rect, this._watchedRects.get(el) ?? null)) changed = true;
+      this._watchedRects.set(el, rect);
+    }
+    if (changed) report([...this._stops]);
+  }
+
+  /** The elements whose widgets are mounted, as last reported. */
+  private _widgetElements(): ReadonlySet<Element> {
+    const controls = this._controls;
+    if (this._widgetsOf !== controls) {
+      this._widgetsOf = controls;
+      this._widgets = new Set(controls.map((rect) => rect.element));
+    }
+    return this._widgets;
   }
 
   // --- core's questions -----------------------------------------------------
@@ -1312,6 +1398,15 @@ export class HtmlViewNode extends Node {
       // the same document somewhere else: every URL in it is another one
       this._updateBase();
       this._sweep();
+    }
+    if (next.watchStops !== prev.watchStops) {
+      // the rectangles watched from now on are the ones as they stand
+      this._watchedRects = new Map(
+        (next.watchStops ?? []).map((el) => [
+          el,
+          this._watchedRects.get(el) ?? this._rectOf(el),
+        ]),
+      );
     }
   }
 
@@ -1437,10 +1532,8 @@ export class HtmlViewNode extends Node {
     const el = this.elementAtPoint(x, y);
     let node: Element | null = el;
     while (node) {
-      const href = attr(node, 'href');
-      if (href && (tagOf(node) === 'a' || tagOf(node) === 'area')) {
-        return this._urls.resolve(href);
-      }
+      const href = this.hrefOf(node);
+      if (href !== null) return href;
       node = isElement(node.parent) ? node.parent : null;
     }
     return null;
@@ -1466,9 +1559,51 @@ export class HtmlViewNode extends Node {
    */
   elementRect(element: Element): Rect | null {
     this._prepare(this.abs.width || 1);
+    return this._rectOf(element);
+  }
+
+  /**
+   * Where a focusable area is as the document was last laid out, as
+   * `elementRect` measures it, without laying it out again: what a render
+   * reads to place the box that takes the focus for it (`stops.ts`), which
+   * `onFocusStops` renders again when the layout moves it.
+   */
+  stopRect(element: Element): Rect | null {
+    return this._rectOf(element);
+  }
+
+  /** The link an element is — its `href`, resolved as a click on it is
+   *  (`hrefAtPoint`) — or null where it is no link. */
+  hrefOf(element: Element): string | null {
+    const href = attr(element, 'href');
+    const tag = tagOf(element);
+    return href && (tag === 'a' || tag === 'area')
+      ? this._urls.resolve(href)
+      : null;
+  }
+
+  /**
+   * A point on an element, in `elementRect`'s coordinates: the middle of
+   * its first fragment — of the first line an inline element is on, where
+   * the middle of its rectangle can be on no line of it — or of its box.
+   * Where a click on it lands when the keyboard activates it (`stops.ts`),
+   * so that a handler asking what is under the click finds it.
+   */
+  focusPoint(element: Element): { x: number; y: number } | null {
+    const rect = this._rectOf(element, true);
+    return rect
+      ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
+      : null;
+  }
+
+  /** `elementRect`, in the layout there is — or its first fragment's. */
+  private _rectOf(element: Element, first = false): Rect | null {
     const tree = this._tree;
     if (!tree) return null;
-    const box = boxFor(tree.root, element);
+    // a focusable area's without a walk of the tree
+    const box =
+      CANDIDATES.get(tree)?.byElement.get(element) ??
+      boxFor(tree.root, element);
     if (!box) return null;
     let rect: Rect | null = null;
     if (box.kind !== 'inline' && box.kind !== 'text') {
@@ -1501,7 +1636,8 @@ export class HtmlViewNode extends Node {
           height: block.y + block.height - top,
         });
       }
-      for (const band of bands) rect = rect ? unionRect(rect, band) : band;
+      if (first && bands.length) rect = bands[0];
+      else for (const band of bands) rect = rect ? unionRect(rect, band) : band;
       if (!rect) {
         // on no line, where its block has none: text set at no size takes
         // no room and gets no box, and CSS puts it on lines of no height
@@ -2176,6 +2312,8 @@ export class HtmlViewNode extends Node {
       }
     }
     if (moved.length || widgets) this._reportControls();
+    // which areas are visible, and where the watched ones are
+    this._reportStops();
     if (relayout) {
       this._invalidate(Stale.Layout);
       return true;
@@ -2904,6 +3042,47 @@ function sameChain(a: Element[], b: Element[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
   return true;
+}
+
+/**
+ * Each tree's focusable areas that can be stops at all — an element's first
+ * box, of one that is not `inert` — each as the stop it is where it is
+ * shown, with its box, and the box by element (`_reportStops`). What a
+ * restyle in place can change — visibility, a widget's room — is asked of
+ * these each time; what only a build can, here, once a tree.
+ */
+interface Candidates {
+  stops: FocusStop[];
+  boxes: Box[];
+  byElement: Map<Element, Box>;
+}
+
+const CANDIDATES = new WeakMap<BoxTree, Candidates>();
+
+function focusCandidates(tree: BoxTree): Candidates {
+  let found = CANDIDATES.get(tree);
+  if (found) return found;
+  found = { stops: [], boxes: [], byElement: new Map() };
+  for (const box of tree.focusables) {
+    const el = box.el;
+    if (!el || found.byElement.has(el) || isInert(el)) continue;
+    found.byElement.set(el, box);
+    found.boxes.push(box);
+    found.stops.push({
+      element: el,
+      tabbable: isTabbable(el),
+      widget: box.kind === 'replaced' && WIDGETS.has(box.replaced),
+    });
+  }
+  CANDIDATES.set(tree, found);
+  return found;
+}
+
+function sameRect(a: Rect | null, b: Rect | null): boolean {
+  if (!a || !b) return a === b;
+  return (
+    a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
+  );
 }
 
 function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
@@ -4236,7 +4415,13 @@ function ownerOf(boxes: readonly Box[], index: number): Element | null {
   return box && index >= box.textStart && index < box.textEnd ? box.el : null;
 }
 
-export type { ControlRect, ReplacedKind, ResourceRequest, ResourceResult };
+export type {
+  ControlRect,
+  FocusStop,
+  ReplacedKind,
+  ResourceRequest,
+  ResourceResult,
+};
 
 /** The advance of a face's "0", laid out: null where the engine cannot
  *  lay it out. */

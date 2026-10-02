@@ -829,9 +829,15 @@ metric('an image button submits the point it was pressed at', async () => {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
-  assert.strictEqual(
-    screen.queryAllByRole('button').length,
-    0,
+  // No widget: it is drawn. The one button an assistive technology finds
+  // is the box that takes the keyboard's focus for it, which draws nothing.
+  const buttons = screen.queryAllByRole('button') as unknown as {
+    props: Record<string, unknown>;
+    children: unknown[];
+  }[];
+  assert.deepStrictEqual(
+    buttons.map((b) => [b.props['aria-label'], b.children.length]),
+    [['Map', 0]],
     'no widget: it is drawn',
   );
   await pressOn(doc, 'map', { x: 12, y: 7 });

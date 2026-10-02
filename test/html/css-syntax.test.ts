@@ -452,6 +452,54 @@ test('a comment ends the token before it in a declaration, and not in a selector
   );
 });
 
+test("a function ends its component value: a minified sheet's next one follows its ) straight", async () => {
+  // what a minifier writes, and what bun.sh's sheet has: Tailwind 3's
+  // transform list, a shadow's `inset` and a background's repeat after a
+  // function with no space, each dropped whole when read as one word
+  const { node } = await render(
+    '<style>' +
+      '#a { --x: 2px; transform: translate(var(--x),0)rotate(90deg)scaleX(1) }' +
+      '#b { box-shadow: 0 0 0 1px rgb(1 2 3)inset }' +
+      '#c { background: url(c.png)no-repeat }' +
+      // a comma or a slash after one is still where its caller finds it
+      '#d { box-shadow: 0 0 1px rgb(1 2 3),0 0 2px red }' +
+      // and a grid's track list, which has a reader of its own
+      '#e { display: grid; grid-template-columns: minmax(0,1.25fr)minmax(0,1fr)[end] }' +
+      '</style>' +
+      '<div id="a"></div><div id="b"></div><div id="c"></div>' +
+      '<div id="d"></div><div id="e"></div>',
+  );
+  const el = view(node);
+  const style = (id: string) =>
+    (
+      boxOf(el, id) as unknown as {
+        style: {
+          transform: ({ by: unknown } | { fn?: { kind: string } })[] | null;
+          boxShadow: { spread: number; color: string; inset: boolean }[];
+          backgroundImage: string | null;
+          backgroundRepeat: string[];
+          gridColumns: { tracks: unknown[]; names: string[][] } | null;
+        };
+      }
+    ).style;
+  assert.deepStrictEqual(
+    style('a').transform?.map((fn) => ('by' in fn ? fn.by : fn.fn?.kind)),
+    [[2, 0], 'rotate', 'scale'],
+  );
+  assert.deepStrictEqual(
+    style('b').boxShadow.map((s) => [s.spread, s.color, s.inset]),
+    [[1, '#010203', true]],
+  );
+  assert.strictEqual(style('c').backgroundImage, 'c.png');
+  assert.deepStrictEqual(style('c').backgroundRepeat, [
+    'no-repeat',
+    'no-repeat',
+  ]);
+  assert.strictEqual(style('d').boxShadow.length, 2);
+  assert.strictEqual(style('e').gridColumns?.tracks.length, 2);
+  assert.deepStrictEqual(style('e').gridColumns?.names, [[], [], ['end']]);
+});
+
 test("a number is CSS's: an exponent, a sign, and a digit after any point", () => {
   const ctx = { em: 20, rem: 16, vw: 1000, vh: 500, scale: 1 };
   assert.strictEqual(parseLength('1e1px', ctx), 10);

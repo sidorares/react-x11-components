@@ -1,7 +1,7 @@
 // <Html> — positioned boxes, stacking and translation.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { cleanup } from 'react-x11/test';
+import { cleanup, pixelAt } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
 import {
   boxOf,
@@ -9,9 +9,11 @@ import {
   fillsOf,
   linesOf,
   metric,
+  pathsOf,
   render,
   render2x,
   view,
+  windingAt,
 } from './harness.js';
 import type { LaidBox, PaintOp } from './harness.js';
 
@@ -268,6 +270,39 @@ metric(
 );
 
 metric(
+  'isolation makes a stacking context, and a box below its flow goes over its background',
+  async () => {
+    // CSS Compositing 1, 3.2: `isolation: isolate` makes one, positioned or
+    // not, so a box in it set to -1 is over its background and under its
+    // text — bun.sh fills the inside of an outline button's frame so — where
+    // it went behind the page and the button was its frame's colour
+    // throughout. `auto` makes none.
+    const { node } = await render(
+      '<a style="position:relative;isolation:isolate;display:inline-block;' +
+        'padding:4px;background:#ff0000">x<span style="position:absolute;' +
+        'inset:2px;z-index:-1;background:#00ff00"></span></a>' +
+        '<div style="isolation:isolate;height:20px;background:#0000ff">' +
+        '<div style="position:absolute;z-index:-1;width:10px;height:10px;' +
+        'background:#ffff00"></div></div>' +
+        '<div style="isolation:auto;height:20px;background:#00ffff">' +
+        '<div style="position:absolute;z-index:-1;width:10px;height:10px;' +
+        'background:#ff00ff"></div></div>',
+    );
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops);
+    const at = (color: string) =>
+      ops.findIndex((op) => op.op === 'fill' && op.style === parseColor(color));
+    const text = ops.findIndex((op) => op.op === 'text');
+    assert.ok(
+      at('#ff0000') < at('#00ff00') && at('#00ff00') < text,
+      'over the positioned box, under its text',
+    );
+    assert.ok(at('#0000ff') < at('#ffff00'), 'over the block in the flow');
+    assert.ok(at('#ff00ff') < at('#00ffff'), 'auto: under the block');
+  },
+);
+
+metric(
   'a positioned box its stacking context paints is clipped where it is',
   async () => {
     // painted after the flow, apart from the boxes around it, an absolute
@@ -418,8 +453,9 @@ test('clip-path is read: a rectangle in a box, a box alone, and a shape not draw
   // CSS Masking 1, 5.1: a basic shape, a `<geometry-box>`, or both in
   // either order. The rectangles of CSS Shapes 1, 3.1 are read as they are
   // written, a percentage among their lengths having no pixels yet; a
-  // shape that is no rectangle is a value, which sets the property, and
-  // clips nothing; and anything else leaves the value before it standing.
+  // shape that is neither a rectangle nor a polygon is a value, which sets
+  // the property, and clips nothing; and anything else leaves the value
+  // before it standing.
   const { node } = await render(
     '<style>p { clip-path: inset(1px) } #kept { clip-path: inset(1px 2px 3px 4px 5px) }' +
       ' #none { clip-path: none } #circle { -webkit-clip-path: circle(40%) }</style>' +
@@ -438,7 +474,12 @@ test('clip-path is read: a rectangle in a box, a box alone, and a shape not draw
   const path = (id: string) =>
     (boxOf(el, id) as unknown as { style: { clipPath: unknown } }).style
       .clipPath;
-  const square = { radii: null, radiiY: null };
+  const square = {
+    radii: null,
+    radiiY: null,
+    points: null,
+    fillRule: 'nonzero',
+  };
   assert.deepStrictEqual(path('one'), {
     box: 'border-box',
     shape: 'inset',
@@ -458,6 +499,8 @@ test('clip-path is read: a rectangle in a box, a box alone, and a shape not draw
       lengths: [0, 0, 0, 0],
       radii: [4, 8, 4, 8],
       radiiY: [{ pct: 50 }, { pct: 50 }, { pct: 50 }, { pct: 50 }],
+      points: null,
+      fillRule: 'nonzero',
     },
     'round takes what border-radius takes',
   );
@@ -473,6 +516,8 @@ test('clip-path is read: a rectangle in a box, a box alone, and a shape not draw
     lengths: [1, 2, { pct: 30 }, 4],
     radii: [5, 5, 5, 5],
     radiiY: null,
+    points: null,
+    fillRule: 'nonzero',
   });
   assert.deepStrictEqual(
     path('box'),
@@ -492,6 +537,210 @@ test('clip-path is read: a rectangle in a box, a box alone, and a shape not draw
   assert.strictEqual(path('none'), null);
   assert.strictEqual(path('circle'), null, 'a circle is a value, not drawn');
 });
+
+test('clip-path: polygon() is read as its fill rule and its vertices', async () => {
+  // CSS Shapes 1, 3.1: a fill rule and a comma, or neither, then one
+  // vertex or more, each two lengths or percentages. What Firefox and
+  // Safari read no polygon in leaves the value before it — `round`, which
+  // Chrome alone reads, among it.
+  const { node } = await render(
+    '<style>p { clip-path: inset(1px) }</style>' +
+      '<p id="cut" style="clip-path:polygon(0 0, 100% 0, 50% 4px)"></p>' +
+      '<p id="odd" style="clip-path:polygon(evenodd, 1px 2px) content-box"></p>' +
+      '<p id="first" style="clip-path:margin-box polygon(nonzero,0 0,1px 1px)">' +
+      '</p>' +
+      '<p id="empty" style="clip-path:polygon()"></p>' +
+      '<p id="half" style="clip-path:polygon(0 0, 1px)"></p>' +
+      '<p id="three" style="clip-path:polygon(0 0 0, 1px 1px)"></p>' +
+      '<p id="trailing" style="clip-path:polygon(0 0, 1px 1px,)"></p>' +
+      '<p id="joined" style="clip-path:polygon(evenodd 0 0, 1px 1px)"></p>' +
+      '<p id="auto" style="clip-path:polygon(auto 0, 1px 1px)"></p>' +
+      '<p id="round" style="clip-path:polygon(round 2px, 0 0, 1px 1px)"></p>',
+  );
+  const el = view(node);
+  const path = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { clipPath: unknown } }).style
+      .clipPath;
+  const polygon = {
+    shape: 'polygon',
+    lengths: [0, 0, 0, 0],
+    radii: null,
+    radiiY: null,
+  };
+  assert.deepStrictEqual(path('cut'), {
+    box: 'border-box',
+    ...polygon,
+    points: [0, 0, { pct: 100 }, 0, { pct: 50 }, 4],
+    fillRule: 'nonzero',
+  });
+  assert.deepStrictEqual(
+    path('odd'),
+    { box: 'content-box', ...polygon, points: [1, 2], fillRule: 'evenodd' },
+    'one vertex is a polygon, of no area',
+  );
+  assert.deepStrictEqual(path('first'), {
+    box: 'margin-box',
+    ...polygon,
+    points: [0, 0, 1, 1],
+    fillRule: 'nonzero',
+  });
+  const inherited = {
+    box: 'border-box',
+    shape: 'inset',
+    lengths: [1, 1, 1, 1],
+    radii: null,
+    radiiY: null,
+    points: null,
+    fillRule: 'nonzero',
+  };
+  for (const id of [
+    'empty',
+    'half',
+    'three',
+    'trailing',
+    'joined',
+    'auto',
+    'round',
+  ]) {
+    assert.deepStrictEqual(path(id), inherited, `#${id} is no polygon`);
+  }
+});
+
+metric(
+  'clip-path: polygon() cuts a box and all it holds to its vertices, in the box it names',
+  async () => {
+    // CSS Masking 1, 5.1, CSS Shapes 1, 3.1: bun.sh's buttons cut a corner
+    // off with `polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 0
+    // 100%)`, and a percentage is of the reference box's width across and
+    // its height down. It cut nothing, and every button was square.
+    const { node } = await render(
+      '<style>body{margin:0}div{width:100px;height:60px}</style>' +
+        '<div id="a" style="background:#ff0000;clip-path:polygon(0 0, ' +
+        'calc(100% - 20px) 0, 100% 20px, 100% 100%, 0 100%)">' +
+        '<div style="position:absolute;top:0;left:0;width:300px;' +
+        'height:300px;background:#0000ff"></div></div>' +
+        '<div id="b" style="padding:10px;border:5px solid;background:#00ff00;' +
+        'clip-path:polygon(0 0, 100% 0, 0 100%) content-box"></div>' +
+        '<div style="background:#800000;clip-path:polygon(10px 10px)"></div>' +
+        '<div style="background:#008000;clip-path:polygon(0 0, 100% 100%)">' +
+        '</div>',
+    );
+    const el = view(node);
+    const [a, b] = ['a', 'b'].map((id) => boxOf(el, id));
+    const { fills } = await pathsOf(el, {
+      x: 0,
+      y: 0,
+      width: 400,
+      height: 600,
+    });
+    const clipOf = (color: string) => {
+      const fill = fills.find((f) => f.style === parseColor(color));
+      assert.ok(fill, `${color} is drawn`);
+      return fill.clips[fill.clips.length - 1];
+    };
+    const inside = (color: string, x: number, y: number) =>
+      windingAt(clipOf(color), x, y) !== 0;
+    assert.ok(inside('#ff0000', a.x + 50, a.y + 30), 'inside the polygon');
+    assert.ok(inside('#ff0000', a.x + 75, a.y + 2), 'left of the cut');
+    assert.ok(!inside('#ff0000', a.x + 97, a.y + 3), 'the corner cut off');
+    assert.ok(inside('#ff0000', a.x + 97, a.y + 30), 'below the cut');
+    assert.ok(
+      !inside('#0000ff', a.x + 97, a.y + 3) &&
+        !inside('#0000ff', a.x + 150, a.y + 30),
+      'and what it holds with it, positioned from outside or not',
+    );
+    // the content box is 100 by 60, 15px in from the border box
+    assert.ok(inside('#00ff00', b.x + 20, b.y + 20), 'in the content box');
+    assert.ok(!inside('#00ff00', b.x + 10, b.y + 20), 'not in its padding');
+    assert.ok(!inside('#00ff00', b.x + 100, b.y + 60), 'past the diagonal');
+    assert.ok(inside('#00ff00', b.x + 60, b.y + 40), 'before it');
+    for (const [color, why] of [
+      ['#800000', 'one vertex leaves nothing'],
+      ['#008000', 'nor do two'],
+    ]) {
+      assert.ok(!fills.some((f) => f.style === parseColor(color)), why);
+    }
+  },
+);
+
+metric('a polygon is placed on the pixels its box is drawn on', async () => {
+  // A box laid out a fraction of a pixel down draws its background from
+  // the row it falls nearest; a polygon along its edges is measured from
+  // there too, or it cut a row of half coverage off the top and the
+  // bottom of what it was meant to leave whole (WPT clip-path-polygon-001
+  // to 013).
+  const { node } = await render(
+    '<style>body{margin:0}</style><div style="height:10.4px"></div>' +
+      '<div id="a" style="width:100.6px;height:50px;background:#ff0000;' +
+      'clip-path:polygon(0 0, 100% 0, 100% 100%, 0 100%)"></div>',
+  );
+  const el = view(node);
+  const a = boxOf(el, 'a');
+  assert.ok(a.y % 1 !== 0, `laid out a fraction down: ${a.y}`);
+  const { fills } = await pathsOf(el, {
+    x: 0,
+    y: 0,
+    width: 400,
+    height: 600,
+  });
+  const red = fills.find((f) => f.style === parseColor('#ff0000'))!;
+  const edges = (outline: [number, number][]) => [
+    Math.min(...outline.map(([x]) => x)),
+    Math.min(...outline.map(([, y]) => y)),
+    Math.max(...outline.map(([x]) => x)),
+    Math.max(...outline.map(([, y]) => y)),
+  ];
+  const clip = red.clips[red.clips.length - 1][0];
+  assert.deepStrictEqual(edges(clip), edges(red.outlines[0]));
+  assert.ok(
+    edges(clip).every((v) => Number.isInteger(v)),
+    `${edges(clip)}`,
+  );
+});
+
+metric(
+  'what a polygon cuts away is not under the pointer, and its fill rule says what is inside',
+  async () => {
+    // a star, its five points joined every second one: its middle is
+    // wound round twice, inside by `nonzero` and outside by `evenodd`
+    const star = '50px 0, 79px 90px, 2px 34px, 98px 34px, 21px 90px';
+    const { result, node } = await render(
+      '<style>body{margin:0} b{position:absolute;top:0;width:100px;' +
+        'height:100px;display:block}</style>' +
+        '<a id="under" href="#u" style="display:block;width:300px;' +
+        'height:100px;background:#0000ff"></a>' +
+        `<b id="cut" style="left:0;background:#ff0000;clip-path:polygon(0 0, ` +
+        'calc(100% - 20px) 0, 100% 20px, 100% 100%, 0 100%)"></b>' +
+        `<b id="nonzero" style="left:100px;background:#00ff00;` +
+        `clip-path:polygon(${star})"></b>` +
+        `<b id="evenodd" style="left:200px;background:#00ff00;` +
+        `clip-path:polygon(evenodd, ${star})"></b>`,
+    );
+    const el = view(node);
+    const { abs } = el as unknown as { abs: { x: number; y: number } };
+    const at = (x: number, y: number) =>
+      el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id;
+    assert.strictEqual(at(50, 50), 'cut');
+    assert.strictEqual(at(97, 3), 'under', 'the corner cut off');
+    assert.strictEqual(at(150, 50), 'nonzero', 'nonzero: the middle is in');
+    assert.strictEqual(at(250, 50), 'under', 'evenodd: the middle is out');
+    assert.strictEqual(at(250, 20), 'evenodd', 'and a point of the star in');
+    // and drawn so: the fill rule reaches the context
+    const pixel = async (x: number, y: number) => {
+      const [r, g, b] = await pixelAt(
+        result.ctx,
+        Math.round(abs.x + x),
+        Math.round(abs.y + y),
+      );
+      return r > 200 ? 'red' : g > 200 ? 'green' : b > 200 ? 'blue' : 'other';
+    };
+    assert.strictEqual(await pixel(97, 3), 'blue', 'the corner shows the link');
+    assert.strictEqual(await pixel(50, 50), 'red');
+    assert.strictEqual(await pixel(150, 50), 'green');
+    assert.strictEqual(await pixel(250, 50), 'blue');
+    assert.strictEqual(await pixel(250, 20), 'green');
+  },
+);
 
 metric(
   'clip-path shows the part of a box its shape names, and of all the box holds',
@@ -621,7 +870,10 @@ metric(
     const { node } = await render2x(
       '<style>body{margin:0}</style>' +
         '<div id="a" style="width:100px;height:40px;background:#ff0000;' +
-        'clip-path:inset(0 0 10px 50px)"></div>',
+        'clip-path:inset(0 0 10px 50px)"></div>' +
+        '<div id="p" style="width:100px;height:40px;background:#00ff00;' +
+        'clip-path:polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, ' +
+        '0 100%)"></div>',
     );
     const el = view(node);
     const a = boxOf(el, 'a');
@@ -639,6 +891,11 @@ metric(
     assert.strictEqual(at(60, 20), 'a', 'inside the path');
     assert.notStrictEqual(at(40, 20), 'a', 'left of it');
     assert.notStrictEqual(at(60, 35), 'a', 'and under it');
+    // a polygon's vertices are lengths too: its cut is 20 of its own
+    // pixels from the corner, forty device ones
+    assert.strictEqual(at(75, 42), 'p', 'left of the cut');
+    assert.notStrictEqual(at(85, 43), 'p', 'the corner cut off');
+    assert.strictEqual(at(97, 70), 'p', 'below the cut');
   },
 );
 

@@ -224,10 +224,11 @@ export type ClipBox =
 
 /**
  * `clip-path` (CSS Masking 1, 5.1): a rectangle in a box of the element's,
- * its corners rounded or not — a `<basic-shape-rect>` (CSS Shapes 1, 3.1),
- * kept as the function it was written as, since each measures its four
- * lengths its own way and a percentage among them has no pixels before
- * layout. The element shows through it, and everything in it does.
+ * its corners rounded or not — a `<basic-shape-rect>` (CSS Shapes 1, 3.1)
+ * — or a polygon, kept as the function it was written as, since each
+ * measures its lengths its own way and a percentage among them has no
+ * pixels before layout. The element shows through it, and everything in
+ * it does.
  */
 export interface ClipPath {
   box: ClipBox;
@@ -237,8 +238,14 @@ export interface ClipPath {
    *  and top from the box's, and its width and height. Null for a box
    *  named alone, which is the shape: the whole of it, rounded as the
    *  element's corners are. */
-  shape: 'inset' | 'rect' | 'xywh' | null;
+  shape: 'inset' | 'rect' | 'xywh' | 'polygon' | null;
   lengths: readonly [Len, Len, Len, Len];
+  /** `polygon()`'s vertices, across and down from the box's top left by
+   *  turns, a percentage of its width or its height; null for any other
+   *  shape. */
+  points: readonly Len[] | null;
+  /** Which of a polygon's points are inside where its edges cross. */
+  fillRule: 'nonzero' | 'evenodd';
   /** `round`: the corners' radii across, and down where they differ, as
    *  `border-radius` has them — a percentage is of the box, and not of the
    *  rectangle in it. Null for square corners. */
@@ -258,9 +265,10 @@ const CLIP_BOXES: Record<string, ClipBox> = {
   'view-box': 'border-box',
 };
 
-/** The shapes that are no rectangle, and a reference to a `<clipPath>`
- *  element: a value, which sets the property, and none this draws. */
-const UNDRAWN_CLIPS = /^(circle|ellipse|polygon|path|shape|url)\(/i;
+/** The shapes that are neither a rectangle nor a polygon, and a reference
+ *  to a `<clipPath>` element: a value, which sets the property, and none
+ *  this draws. */
+const UNDRAWN_CLIPS = /^(circle|ellipse|path|shape|url)\(/i;
 
 const NO_LENGTHS = [0, 0, 0, 0] as const;
 
@@ -286,13 +294,62 @@ function parseClipPath(
     }
     if (shape !== undefined) return undefined;
     if (UNDRAWN_CLIPS.test(part) && part.endsWith(')')) shape = null;
+    else if (/^polygon\(/i.test(part)) shape = polygonShape(part, ctx);
     else shape = rectShape(part, ctx);
     if (shape === undefined) return undefined;
   }
   if (shape === null) return null;
   if (shape) return { box: box ?? 'border-box', ...shape };
   if (!box) return undefined;
-  return { box, shape: null, lengths: NO_LENGTHS, radii: null, radiiY: null };
+  return {
+    box,
+    shape: null,
+    lengths: NO_LENGTHS,
+    radii: null,
+    radiiY: null,
+    points: null,
+    fillRule: 'nonzero',
+  };
+}
+
+/**
+ * `polygon()` (CSS Shapes 1, 3.1): a fill rule and a comma, or neither,
+ * then one vertex or more, each a pair of lengths or percentages; undefined
+ * for anything else. `round`, which Chrome alone reads, is not read, as
+ * Firefox and Safari read none.
+ */
+function polygonShape(
+  text: string,
+  ctx: UnitContext,
+): Omit<ClipPath, 'box'> | undefined {
+  const m = /^polygon\((.*)\)$/is.exec(text);
+  if (!m) return undefined;
+  const args = splitCommas(m[1]).map((arg) => arg.trim());
+  let fillRule: ClipPath['fillRule'] = 'nonzero';
+  const rule = args[0]?.toLowerCase();
+  if (rule === 'nonzero' || rule === 'evenodd') {
+    fillRule = rule;
+    args.shift();
+  }
+  if (!args.length) return undefined;
+  const points: Len[] = [];
+  for (const arg of args) {
+    const pair = splitValue(arg);
+    if (pair.length !== 2) return undefined;
+    for (const part of pair) {
+      const len = parseLength(part, ctx);
+      if (len === null || len === AUTO) return undefined;
+      points.push(len);
+    }
+  }
+  return {
+    shape: 'polygon',
+    lengths: NO_LENGTHS,
+    radii: null,
+    radiiY: null,
+    points,
+    fillRule,
+  };
 }
 
 /** `inset()`, `rect()` or `xywh()`, with the corners it rounds; undefined
@@ -329,7 +386,14 @@ function rectShape(
     if (shape === 'xywh' && i > 1 && !notNegative(len)) return undefined;
     lengths.push(len);
   }
-  return { shape, lengths: fourSides(lengths), radii, radiiY };
+  return {
+    shape,
+    lengths: fourSides(lengths),
+    radii,
+    radiiY,
+    points: null,
+    fillRule: 'nonzero',
+  };
 }
 
 export type BorderStyle =
@@ -575,11 +639,15 @@ export interface ComputedStyle {
    *  its edges measured from the border box's top left, a null edge the
    *  border box's own (CSS 2.1 11.1.2). Null for `auto`. */
   clip: ClipRect | null;
-  /** `clip-path`: the rectangle the element and all it holds show through
-   *  (CSS Masking 1, 5.1); null for `none`, and for a shape this does not
-   *  draw. */
+  /** `clip-path`: the rectangle or the polygon the element and all it
+   *  holds show through (CSS Masking 1, 5.1); null for `none`, and for a
+   *  shape this does not draw. */
   clipPath: ClipPath | null;
   opacity: number;
+  /** `isolation: isolate` makes the element a stacking context (CSS
+   *  Compositing 1, 3.2): what it holds with a `z-index` is ordered inside
+   *  it, a negative one over its own background. */
+  isolation: 'auto' | 'isolate';
   /** Where `translate` moves the box after layout (CSS Transforms 2): a
    *  length or a percentage of its own border box across and down; null
    *  for `none`. */
@@ -1091,6 +1159,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     clip: null,
     clipPath: null,
     opacity: 1,
+    isolation: 'auto',
     translate: null,
     rotate: null,
     scale: null,
@@ -1926,6 +1995,11 @@ export function applyDeclaration(
     case 'opacity': {
       const a = parseAlpha(value);
       if (a !== null) style.opacity = a;
+      return;
+    }
+    case 'isolation': {
+      const v = value.trim().toLowerCase();
+      if (v === 'auto' || v === 'isolate') style.isolation = v;
       return;
     }
     case 'animation': {
@@ -4967,8 +5041,10 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
 /**
  * A track list's parts: a bracketed group of line names as one part, a
  * quoted string as one, and a size or a function as one — a group of two
- * names was two parts, and the second was no size. Undefined where a
- * bracket or a quote is not closed.
+ * names was two parts, and the second was no size. A function ends at its
+ * closing paren, as `splitValue`'s parts do: Tailwind writes
+ * `minmax(0,1.25fr)minmax(0,1fr)`, which was one part and no track list.
+ * Undefined where a bracket or a quote is not closed.
  */
 function trackParts(value: string): string[] | undefined {
   const out: string[] = [];
@@ -4993,8 +5069,10 @@ function trackParts(value: string): string[] | undefined {
     for (; j < text.length; j += 1) {
       const c = text[j];
       if (c === '(') depth += 1;
-      else if (c === ')') depth -= 1;
-      else if (depth === 0 && /[\s["']/.test(c)) break;
+      else if (c === ')' && --depth === 0) {
+        j += 1;
+        break;
+      } else if (depth === 0 && /[\s["']/.test(c)) break;
     }
     out.push(text.slice(i, j));
     i = j;
@@ -6059,6 +6137,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'overflow-x': ['overflowX'],
   'overflow-y': ['overflowY'],
   opacity: ['opacity'],
+  isolation: ['isolation'],
   translate: ['translate'],
   rotate: ['rotate'],
   scale: ['scale'],
