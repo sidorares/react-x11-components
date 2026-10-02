@@ -56,6 +56,12 @@ export function interpolateField(
       return mix(a ?? 0, b ?? 0, q);
     case 'scale':
       return mix(a ?? [1, 1], b ?? [1, 1], q);
+    case 'fontSizeBasis':
+      // a size part of the way between two is the length it comes to,
+      // which no family scales, as Blink has an animated size; and the
+      // size runs between its ends whatever they were worked out from,
+      // where a field that did not mix would hold the whole property
+      return 'absolute';
   }
   const value = mix(a, b, q);
   if (typeof value !== 'number') return value;

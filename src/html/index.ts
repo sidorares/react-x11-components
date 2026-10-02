@@ -169,7 +169,10 @@ export interface HtmlProps {
   /** Base text style. Defaults: theme `fontSize` (14), `sans-serif`. */
   fontSize?: number;
   fontFamily?: string;
-  /** Code font. Default `'monospace'` — there is no theme token for it. */
+  /** Code font: the face the UA sheet sets code in, which stands for the
+   *  generic `monospace` there as a browser's fixed-width font does, at
+   *  that generic's smaller size. Default `'monospace'` — there is no theme
+   *  token for it. */
   monoFamily?: string;
   /** Selection band fill. Default: theme accent at 35% opacity. */
   selectionColor?: string;

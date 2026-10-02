@@ -443,13 +443,14 @@ export class WebFonts implements FontFamilies {
       }
     }
     let mapped = out.length ? out.join(', ') : this._fallback;
-    // The generic `monospace` as the whole of a list is set smaller than any
-    // other list (the cascade's `FIXED_SIZE`), and the author's list, with a
-    // family of the document's in it, is not that list. Left as `monospace`
-    // while its family loads, `"Courier Prime", monospace` was set at 13/16
-    // and jumped to its size when the face arrived; `monospace, monospace`
-    // is the same face at the size the author's list has — normalize.css's
-    // spelling of it.
+    // A list with a family of the document's in it stands apart from the
+    // generic `monospace` alone while that family loads, though both come to
+    // the same face: `note` finds the families a style wants by the list it
+    // came to, and the bare generic, the UA sheet's code as often as not, is
+    // no reason to load a face of the document's. `monospace, monospace` is
+    // that face, normalize.css's spelling of it. The size the generic alone
+    // is set at goes by the list as written (`genericMonospace`), so it does
+    // not change as the family arrives.
     if (used.length && /^monospace$/i.test(mapped)) {
       mapped = 'monospace, monospace';
     }
