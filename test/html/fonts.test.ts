@@ -46,33 +46,72 @@ metric(
   },
 );
 
-test('the generic monospace on its own is smaller, as in a browser', async () => {
-  // 13 to 16: an element whose family becomes `monospace` scales the size
-  // it inherits, and one that leaves it scales it back; a keyword reads the
-  // smaller scale; a size an element sets is its own, and a list with a
-  // fallback in it keeps the size it had
+test('the generic monospace alone is set smaller, as in a browser', async () => {
+  // A browser keeps two default sizes, 16px and a fixed-width 13px, and the
+  // generic `monospace` alone takes the smaller: a keyword is read from its
+  // row of the table, and a size relative to a keyword's is scaled by 13/16
+  // where the family becomes it, set on the element or not, and back where
+  // it stops being it. A length is its own in any family, and so is a size
+  // under one. Every number is Chrome's, Firefox's and WebKit's but `h`'s,
+  // an em of a keyword's size, which Firefox reads from the keyword's row,
+  // 32. The rule here scaled a size under a length too, so a `<pre>` in a
+  // 15px article was 12.2px where every browser sets it at 15
   const { node } = await render(
-    '<div style="font-size:16px">' +
-      '<p id="a" style="font-family:monospace">a</p>' +
+    '<p id="a" style="font-family:monospace">a</p>' +
       '<p id="b" style="font-family:monospace, monospace">b</p>' +
-      '<p id="c" style="font-family:monospace;font-size:20px">c</p>' +
-      '<p id="m" style="font-size:medium">m</p>' +
+      `<p id="q" style="font-family:'monospace'">q</p>` +
+      '<p id="c" style="font-family:monospace;font-size:large">c</p>' +
+      '<p id="d" style="font-family:monospace;font-size:1em">d</p>' +
       '<div style="font-family:monospace">' +
-      '<p id="d" style="font-family:serif">d</p>' +
-      '<p id="e" style="font-size:medium">e</p>' +
-      '<p id="f" style="font:italic medium monospace">f</p>' +
-      '<p id="g" style="font-size:2em">g</p></div></div>',
+      '<p id="e" style="font-family:serif">e</p>' +
+      '<p id="f" style="font:italic xx-large monospace">f</p>' +
+      '<p id="g" style="font-size:2em">g</p></div>' +
+      '<div style="font-size:large"><div style="font-size:2em">' +
+      '<p id="h" style="font-family:monospace">h</p></div></div>' +
+      '<div style="font-size:15px">' +
+      '<p id="i" style="font-family:monospace">i</p>' +
+      '<p id="j" style="font-family:monospace;font-size:2em">j</p></div>' +
+      '<p id="k" style="font-family:monospace;font-size:1rem">k</p>' +
+      '<p id="l" style="font-family:monospace;font-size:calc(1em)">l</p>',
+    400,
+    { fontSize: 16 },
   );
   const el = view(node);
   const size = (id: string) =>
     (boxOf(el, id) as LaidBox & { style: { fontSize: number } }).style.fontSize;
-  assert.strictEqual(size('a'), 13, 'inherited, scaled');
+  assert.strictEqual(size('a'), 13, 'medium, smaller');
   assert.strictEqual(size('b'), 16, 'a fallback: no');
-  assert.strictEqual(size('c'), 20, 'set: its own');
-  assert.strictEqual(size('d'), 16, 'and back');
-  assert.strictEqual(size('e'), size('m') * (13 / 16), 'medium, smaller');
-  assert.strictEqual(size('f'), size('m') * (13 / 16), 'through `font` too');
-  assert.strictEqual(size('g'), 26, "an em of the parent's");
+  assert.strictEqual(size('q'), 16, 'a family called monospace: no');
+  assert.strictEqual(size('c'), 16, "large, from the generic's row");
+  assert.strictEqual(size('d'), 13, 'an em set on the element, scaled');
+  assert.strictEqual(size('e'), 16, 'and back');
+  assert.strictEqual(size('f'), 26, 'through `font` too');
+  assert.strictEqual(size('g'), 26, "an em of the generic's own size");
+  assert.strictEqual(size('h'), 36 * (13 / 16), 'an em of a keyword, scaled');
+  assert.strictEqual(size('i'), 15, 'under a length, the length');
+  assert.strictEqual(size('j'), 30, 'and an em of it');
+  assert.strictEqual(size('k'), 16, 'a rem is a length');
+  assert.strictEqual(size('l'), 16, 'and so is a calc()');
+});
+
+test("the host's code face is the generic monospace where the UA sheet names it", async () => {
+  // `monoFamily` is a browser's fixed-width font, the face it sets the
+  // generic in, so the UA sheet's code is at the generic's size whatever
+  // the face is called; an author's list naming the same face is that list
+  const { node } = await render(
+    '<pre id="p">pre</pre><p><code id="c">code</code></p>' +
+      `<p id="a" style='font-family:"Code Face", monospace'>a</p>` +
+      '<pre><span id="s" style="font-family:serif">s</span></pre>',
+    400,
+    { fontSize: 16, monoFamily: '"Code Face", monospace' },
+  );
+  const el = view(node);
+  const size = (id: string) =>
+    (boxOf(el, id) as LaidBox & { style: { fontSize: number } }).style.fontSize;
+  assert.strictEqual(size('p'), 13);
+  assert.strictEqual(size('c'), 13);
+  assert.strictEqual(size('a'), 16, "an author's list is its own");
+  assert.strictEqual(size('s'), 16, 'and back out of it');
 });
 
 test('the font shorthand resets what it does not name', async () => {

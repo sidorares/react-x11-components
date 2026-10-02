@@ -42,7 +42,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `onSubmit`        | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                            |
 | `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                         |
 | `fontFamily`      | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                   |
-| `monoFamily`      | `string`                                         | Code font, and a `<textarea>`'s. Default `'monospace'` — there is no theme token for it.                                                                                     |
+| `monoFamily`      | `string`                                         | Code font, and a `<textarea>`'s: the generic `monospace` where the UA sheet names it — see [Fonts](#fonts). Default `'monospace'` — there is no theme token for it.          |
 | `selectionColor`  | `string`                                         | Selection band fill where no `::selection` rule reaches the text. Default: theme accent at 35% opacity.                                                                      |
 | `style`           | `Style \| Style[]`                               | The root `<box>`'s style.                                                                                                                                                    |
 
@@ -368,6 +368,33 @@ engine picks for a name it has never heard of, which under fontconfig is
 its own default. A list that ends in a generic falls back through that, and
 the UA sheet's own families, the palette's face a control is set in and
 `monoFamily`, are the host's and stay as they are given.
+
+**The generic `monospace` alone is set smaller, and the code face is that
+generic.** A browser keeps two default sizes, its standard 16px and a
+fixed-width 13px, and sets the generic `monospace` at the second where it is
+the whole of a family list: why a `<pre>` is 13px, and why normalize.css
+writes `monospace, monospace`, which is not the generic alone. A keyword size
+is read from that family's row of the table (`large` is 16px, not 18), and a
+size relative to a keyword's — an `em`, a percentage, `smaller` or `larger`
+of one, all the way up to the root's `medium` — is scaled by 13/16 where the
+family becomes the generic and back where it stops being it, whether the
+element sets the size or inherits it: in a document left at `medium`, a
+`<pre>` is 13px and a `<code>` in it in a family of its own 16px again. A
+length is what it says in any family, and so is any size under one: a
+`<pre>` in an article set at `font-size: 15px` or `1rem` is 15px or 16px,
+and so is its code. That is Blink's rule, which WebKit shares; Gecko scales
+only a size that comes of a keyword, and reads an `em` of one from the
+keyword's row as well. Here `medium` is the `fontSize` prop, and the
+fixed-width face is `monoFamily`: the UA sheet sets `<pre>`, `<code>`,
+`<kbd>`, `<samp>`, `<tt>` and a `<textarea>` in it, and where the sheet
+names it, it is the generic, as a browser's fixed-width font is, whatever
+it is called — while an author's list is the generic only where it says
+`monospace` and nothing more. A `<textarea>`'s size is the theme's, a
+length, as Chrome's is a system font's. The sheet gives a `<pre>` nothing
+more than HTML's rendering section does (15.3.3, 15.3.4): no padding, no
+scroll and no size of its own, which no browser has either. With them, every
+code block on joshwcomeau.com, which frames its own, was 20px taller than
+Chrome's and its code a tenth smaller.
 
 **A family is registered under a name nothing else has.** Fonts go to
 react-x11's font manager, which is the application's, so the component
@@ -1750,8 +1777,8 @@ auto margins is centred once it has shrunk to its columns, so a mail's
 button, a one-cell `<table align="center">`, stands in the middle.
 
 **Text:** `font` and its longhands (the generic `monospace`, as the whole
-of a family list, at 13/16 of the size the others take, as in a
-browser), the families a document brings with `@font-face`
+of a family list, at the smaller size a browser sets it at: see
+[Fonts](#fonts)), the families a document brings with `@font-face`
 ([Fonts](#fonts)), the `font-variant` longhands,
 `font-kerning` and `font-feature-settings` (the font's own OpenType
 features: small capitals where the font has them, none synthesized),

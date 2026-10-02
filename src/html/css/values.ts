@@ -121,6 +121,12 @@ export interface UnitContext {
    *  goes on to: the document's own, for a list an author wrote, and none
    *  for the UA sheet's, which names the host's faces. */
   fallbackFamily?: () => string | null;
+  /** The list the UA sheet names the host's code face by (`monoFamily`),
+   *  which stands for the generic `monospace` there — the face a browser
+   *  sets that generic in is its own, a setting a reader can change — and
+   *  null for a list an author wrote, which is that generic only where it
+   *  says `monospace`. */
+  codeFamily?: () => string | null;
   /** The element's line height and the root's, for `lh` and `rlh`, asked
    *  only for a length in them; 1.2em where they are missing. */
   lh?: () => number;
@@ -541,32 +547,79 @@ export function parseStretch(
   return pct !== null && Number.isFinite(pct) && pct >= 0 ? pct : null;
 }
 
-/** Absolute and relative `font-size` keywords, against the CSS scale. */
+/** The generic fixed-width family's size to everyone else's: 13 to 16, the
+ *  two default sizes every browser keeps. */
+export const FIXED_SIZE = 13 / 16;
+
+/**
+ * The absolute-size keywords as fractions of `medium`: a browser's table
+ * for its 16px default, 9, 10, 13, 16, 18, 24 and 32 pixels, and the row
+ * for its 13px fixed-width default the generic `monospace` is read from,
+ * 9, 10, 12, 13, 16, 20 and 26 — a `<pre>` at `large` is 16px in Blink,
+ * Gecko and WebKit alike.
+ */
+const KEYWORD_SIZES = new Map<string, readonly [number, number]>([
+  ['xx-small', [9 / 16, 9 / 16]],
+  ['x-small', [10 / 16, 10 / 16]],
+  ['small', [13 / 16, 12 / 16]],
+  ['medium', [1, FIXED_SIZE]],
+  ['large', [18 / 16, 1]],
+  ['x-large', [24 / 16, 20 / 16]],
+  ['xx-large', [2, 26 / 16]],
+]);
+
+/** Absolute and relative `font-size` keywords, against the CSS scale, or
+ *  the generic `monospace`'s where `fixed`. */
 export function keywordFontSize(
   value: string,
   parentSize: number,
   rootSize: number,
+  fixed = false,
 ): number | null {
-  switch (value.trim().toLowerCase()) {
-    case 'xx-small':
-      return rootSize * 0.5625;
-    case 'x-small':
-      return rootSize * 0.625;
-    case 'small':
-      return rootSize * 0.8125;
-    case 'medium':
-      return rootSize;
-    case 'large':
-      return rootSize * 1.125;
-    case 'x-large':
-      return rootSize * 1.5;
-    case 'xx-large':
-      return rootSize * 2;
-    case 'smaller':
-      return parentSize / 1.2;
-    case 'larger':
-      return parentSize * 1.2;
-    default:
-      return null;
-  }
+  const v = value.trim().toLowerCase();
+  const sizes = KEYWORD_SIZES.get(v);
+  if (sizes) return rootSize * sizes[fixed ? 1 : 0];
+  if (v === 'smaller') return parentSize / 1.2;
+  if (v === 'larger') return parentSize * 1.2;
+  return null;
 }
+
+/**
+ * What a font size is worked out from (`ComputedStyle.fontSizeBasis`): an
+ * absolute-size keyword; `relative`, a length in a unit of the font's, a
+ * percentage, `smaller` or `larger` of a size that is a keyword or relative
+ * itself, all the way up to the root's `medium`; or `absolute`, any other
+ * length or a size under one.
+ */
+export type FontSizeBasis =
+  | 'absolute'
+  | 'relative'
+  | 'xx-small'
+  | 'x-small'
+  | 'small'
+  | 'medium'
+  | 'large'
+  | 'x-large'
+  | 'xx-large';
+
+/**
+ * The basis of a `font-size` an element sets itself, under a parent's
+ * size of `parent`'s basis. Blink's `ConvertFontSize`: a length in a unit
+ * of the font's, `em`, `ex`, `ch`, `lh` and `rlh` but not `rem`, and a
+ * percentage, `smaller` and `larger` are relative where the parent's size
+ * is, and any other length is absolute, as is a `calc()` whatever is in
+ * it. WebKit has the same rule, but takes an `rlh` as a length.
+ */
+export function fontSizeBasis(
+  value: string,
+  parent: FontSizeBasis,
+): FontSizeBasis {
+  const v = value.trim().toLowerCase();
+  if (KEYWORD_SIZES.has(v)) return v as FontSizeBasis;
+  if (v !== 'smaller' && v !== 'larger' && !RELATIVE_SIZE.test(v)) {
+    return 'absolute';
+  }
+  return parent === 'absolute' ? 'absolute' : 'relative';
+}
+
+const RELATIVE_SIZE = new RegExp(`^${NUMBER_SRC}(?:em|ex|ch|r?lh|%)$`);
