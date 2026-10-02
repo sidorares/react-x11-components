@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.34.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.34.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.35.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.35.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -639,6 +639,17 @@ it up. **The floor is a running one and moves often** — every move since
   A core that reads no `parent` would lift the spinner on a layer of its
   own over the card's raster, which still holds it, unfaded with the
   card, so the floor moves with the feature.
+- `^2.35.0` — `@windowkit/appkit` ^0.22.0 (react-x11#845), where core's
+  range admitted 0.19 alone: a `<video src>` is played by AVFoundation,
+  so `useSupports('mediaPlayback')` is true on a Mac and a `<video>` in
+  a document plays the source its host answers with a `src`, where every
+  one showed its poster. The player had been written as
+  windowkit/appkit#104, merged into its parent's branch after the parent
+  merged, and reached a release only as #107 in 0.22.0. The same range
+  lifts a `VideoFrames` sink onto a layer, sets text on a Retina display
+  at its point size and drops AppKit's own menu for a select; and the
+  same release keeps a sprite none of which shows on its layer (#844),
+  which `<Html>`'s parts needed no change for.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
