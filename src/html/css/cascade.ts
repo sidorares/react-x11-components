@@ -40,7 +40,11 @@ import { NO_ANIMATIONS, restingFrames, spanAt, tracksOf } from './animation.js';
 import type { Keyframe } from './parse.js';
 import { discrete, interpolateField } from './interpolate.js';
 import type { AnimationTimeline, Sample } from './timeline.js';
-import { animatedWillChange } from './timeline.js';
+import {
+  animatedWillChange,
+  fieldsAnimatedBy,
+  noteAnimated,
+} from './timeline.js';
 import {
   animatedFields,
   applyDeclaration,
@@ -1968,6 +1972,8 @@ export class Cascade {
       own,
     );
     const timeline = target === null ? null : this.timeline;
+    // the fields its animations set now, which no transition starts on
+    let animated: ReadonlySet<string> | null = null;
     if (
       style.animations === NO_ANIMATIONS ||
       !this._keyframes.size ||
@@ -1979,6 +1985,7 @@ export class Cascade {
       const samples = timeline.sample(el, target!, style.animations, (name) =>
         this.keyframes(name),
       );
+      animated = fieldsAnimatedBy(samples);
       if (samples) {
         style = this._cascadeStyle(
           el,
@@ -2022,7 +2029,8 @@ export class Cascade {
       );
     }
     // and what its transitions make of it, from the style the document has
-    // for it now (CSS Transitions 1, 3): none for one not displayed
+    // for it now (CSS Transitions 1, 3): none for one not displayed, and
+    // none on what its animations set, now or in the style before
     if (timeline) {
       const pseudo = target!;
       if (style.display === 'none') timeline.dropTransitions(el, pseudo);
@@ -2032,7 +2040,9 @@ export class Cascade {
           pseudo,
           style,
           () => this.previous?.(el, pseudo) ?? null,
+          animated,
         );
+        if (animated) noteAnimated(style, animated);
       }
     }
     // which faces of the document's own families this family, weight and

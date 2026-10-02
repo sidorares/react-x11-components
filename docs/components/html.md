@@ -1386,7 +1386,12 @@ stylesheet before it draws — nor in a document that runs no animation
 (`animate={false}`), which takes each new value at once. A transition is
 an animation, so what it runs makes the stacking context an animation of
 it would, from its delay to its end, an opacity at 1 still waiting to fall
-among it.
+among it. A property an animation sets is the animation's: no transition
+starts on it, however the animation changes it — the style before a
+change has the animations brought up to the time of the change (CSS
+Transitions 1, 3) — nor where an animation starts or stops setting it, as
+in Chrome; one already under way on it runs on beneath the animation,
+whose value is over it (CSS Transitions 2, 4.1).
 
 Every frame runs in JavaScript, on either backend. Where a box is drawn on
 a surface of its own — on X11 one that turns and holds text, an image, a

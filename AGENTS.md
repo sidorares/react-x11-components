@@ -1659,7 +1659,12 @@ element's alone** (`_running` asks `transiting(el)`), or a sibling under
 the same key takes it and never starts its own. **The lists draw
 nothing**, as the animation lists do (`hoverChange`, `spriteChange`). And
 a transition starting or ending changes `willChange`, as an animation
-does, so its first frame is a build. Transitions are not lifted onto
+does, so its first frame is a build. **A field an animation sets is the
+animation's**: the drawn style holds the frame before, and compared with
+this frame's it started a transition every frame, so the fields the
+element's animations set now (`fieldsAnimatedBy`), and those its drawn
+style's set (`noteAnimated`, by the style), start none and turn none
+back, and one under way on them runs on beneath. Transitions are not lifted onto
 layers yet.
 
 **A box drawn on a surface of its own keeps the surface, keyed on its

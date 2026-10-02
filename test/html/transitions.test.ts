@@ -9,7 +9,10 @@ import {
   NO_TRANSITIONS,
   parseTransition,
 } from '../../src/html/css/animation.js';
-import { AnimationTimeline } from '../../src/html/css/timeline.js';
+import {
+  AnimationTimeline,
+  noteAnimated,
+} from '../../src/html/css/timeline.js';
 import { copyStyle, initialStyle } from '../../src/html/css/style.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
@@ -263,6 +266,73 @@ test('one under way: turned back, it runs back as far as it came; given a new en
   // its property no longer named: the new value at once
   const none = parseTransition('none')!;
   assert.strictEqual(step(210, at(0.25, none)), 0.25);
+  assert.strictEqual(tl.isLive(el), false);
+});
+
+test('a property an animation sets starts no transition, though the animation changes it every frame, nor where an animation starts or stops setting it', async (t) => {
+  // CSS Transitions 1, 3: the style before a change has the animations
+  // brought up to the time of the change, so what they change is none
+  const doc = await holding(
+    t,
+    '<style>@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      'div { width: 40px; height: 20px; transition: opacity 160ms linear }' +
+      '#a { animation: fade 320ms linear infinite }' +
+      '#b { opacity: .5; animation: fade 320ms linear infinite }' +
+      '#b:hover { animation: none }' +
+      '#c { opacity: .5 } #c:hover { animation: fade 320ms linear infinite }' +
+      '</style><div id="a"></div><div id="b"></div><div id="c"></div>',
+  );
+  const transiting = (id: string) =>
+    (
+      doc.el as unknown as { _timeline: AnimationTimeline }
+    )._timeline.transiting(boxOf(doc.el, id).el!);
+  await doc.at(48);
+  assert.ok(near(doc.style('a').opacity, 0.15), `${doc.style('a').opacity}`);
+  await doc.at(96);
+  assert.ok(near(doc.style('a').opacity, 0.3), `${doc.style('a').opacity}`);
+  assert.strictEqual(transiting('a'), false, 'the animation’s frames are none');
+  // an animation that stops setting it leaves its own value, at once
+  doc.hover('b');
+  await act();
+  assert.strictEqual(doc.style('b').opacity, 0.5);
+  assert.strictEqual(transiting('b'), false);
+  // and one that starts setting it, its first frame
+  doc.hover('c');
+  await act();
+  assert.strictEqual(doc.style('c').opacity, 0);
+  assert.strictEqual(transiting('c'), false);
+});
+
+test('a transition under way that an animation starts on runs on beneath it, the animation’s value over it, and is where it has got to once the animation stops', () => {
+  const base = initialStyle(LOOK, 1);
+  base.transitions = parseTransition('opacity 100ms linear')!;
+  const at = (opacity: number) => {
+    const s = copyStyle(base);
+    s.opacity = opacity;
+    return s;
+  };
+  const tl = new AnimationTimeline();
+  const el = {};
+  const fading = new Set(['opacity']);
+  let drawn = at(1);
+  const step = (now: number, after: ComputedStyle, animated = false) => {
+    tl.now = now;
+    const was = drawn;
+    drawn = tl.transition(el, '', after, () => was, animated ? fading : null);
+    if (animated) noteAnimated(drawn, fading);
+    return drawn.opacity;
+  };
+  assert.strictEqual(step(0, at(0)), 1);
+  assert.ok(near(step(40, at(0)), 0.6));
+  // an animation of the opacity starts: its value is the element's
+  assert.strictEqual(step(50, at(0.9), true), 0.9);
+  assert.strictEqual(step(60, at(0.8), true), 0.8, 'its frames, as written');
+  // and stops: the transition has run on, to where it is at 70ms of 100
+  assert.ok(near(step(70, at(0)), 0.3), `${drawn.opacity}`);
+  assert.strictEqual(step(100, at(0)), 0);
+  // what an animation leaves as it stops is no change to run from
+  step(110, at(0.4), true);
+  assert.strictEqual(step(120, at(0)), 0, 'at once');
   assert.strictEqual(tl.isLive(el), false);
 });
 
