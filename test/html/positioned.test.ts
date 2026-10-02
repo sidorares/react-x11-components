@@ -268,6 +268,39 @@ metric(
 );
 
 metric(
+  'isolation makes a stacking context, and a box below its flow goes over its background',
+  async () => {
+    // CSS Compositing 1, 3.2: `isolation: isolate` makes one, positioned or
+    // not, so a box in it set to -1 is over its background and under its
+    // text — bun.sh fills the inside of an outline button's frame so — where
+    // it went behind the page and the button was its frame's colour
+    // throughout. `auto` makes none.
+    const { node } = await render(
+      '<a style="position:relative;isolation:isolate;display:inline-block;' +
+        'padding:4px;background:#ff0000">x<span style="position:absolute;' +
+        'inset:2px;z-index:-1;background:#00ff00"></span></a>' +
+        '<div style="isolation:isolate;height:20px;background:#0000ff">' +
+        '<div style="position:absolute;z-index:-1;width:10px;height:10px;' +
+        'background:#ffff00"></div></div>' +
+        '<div style="isolation:auto;height:20px;background:#00ffff">' +
+        '<div style="position:absolute;z-index:-1;width:10px;height:10px;' +
+        'background:#ff00ff"></div></div>',
+    );
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops);
+    const at = (color: string) =>
+      ops.findIndex((op) => op.op === 'fill' && op.style === parseColor(color));
+    const text = ops.findIndex((op) => op.op === 'text');
+    assert.ok(
+      at('#ff0000') < at('#00ff00') && at('#00ff00') < text,
+      'over the positioned box, under its text',
+    );
+    assert.ok(at('#0000ff') < at('#ffff00'), 'over the block in the flow');
+    assert.ok(at('#ff00ff') < at('#00ffff'), 'auto: under the block');
+  },
+);
+
+metric(
   'a positioned box its stacking context paints is clipped where it is',
   async () => {
     // painted after the flow, apart from the boxes around it, an absolute
