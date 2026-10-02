@@ -1433,6 +1433,7 @@ export class HtmlViewNode extends Node {
           this._layoutFonts(),
           target,
           viewport,
+          this._scale,
         );
         // The same boxes, somewhere else and another size — but for the
         // layout a restyle in place asks for where what it moved reached the

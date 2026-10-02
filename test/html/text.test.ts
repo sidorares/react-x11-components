@@ -4,6 +4,11 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, pixelAt, waitFor } from 'react-x11/test';
 import type { FontsLike } from '../../src/html/layout/inline.js';
+import { prettyBreaks } from '../../src/html/layout/pretty.js';
+import type {
+  PrettyLine,
+  PrettySetting,
+} from '../../src/html/layout/pretty.js';
 import type { TextRun } from '../../src/richtext/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import {
@@ -15,6 +20,7 @@ import {
   linesOf,
   metric,
   render,
+  render2x,
   textRunsOf,
   view,
 } from './harness.js';
@@ -1136,7 +1142,10 @@ test('text-wrap and white-space-collapse change their halves of white-space', as
       '<div id="g" style="white-space:pre;white-space-collapse:collapse"></div>' +
       '<div id="h" style="white-space:break-spaces"></div>' +
       '<div id="i" style="text-wrap:nowrap;text-wrap:nowrap wrap"></div>' +
-      '<div style="text-wrap:balance"><p id="j"></p></div>',
+      '<div style="text-wrap:balance"><p id="j"></p></div>' +
+      '<div id="k" style="text-wrap:pretty"></div>' +
+      '<div id="l" style="white-space:nowrap;text-wrap-style:pretty"></div>' +
+      '<div id="m" style="text-wrap:pretty;text-wrap-style:stable"></div>',
   );
   const el = view(node);
   const style = (id: string) =>
@@ -1168,6 +1177,9 @@ test('text-wrap and white-space-collapse change their halves of white-space', as
   assert.deepStrictEqual(seen('h'), ['pre-wrap', 'auto']);
   assert.deepStrictEqual(seen('i'), ['nowrap', 'auto'], 'two modes is none');
   assert.deepStrictEqual(seen('j'), ['normal', 'balance'], 'inherited');
+  assert.deepStrictEqual(seen('k'), ['normal', 'pretty']);
+  assert.deepStrictEqual(seen('l'), ['nowrap', 'pretty']);
+  assert.deepStrictEqual(seen('m'), ['normal', 'auto'], 'stable wraps as auto');
 });
 
 metric(
@@ -1218,6 +1230,398 @@ metric('a paragraph of more than six lines is not balanced', async () => {
     );
   assert.ok(widths('a').length > 6);
   assert.deepStrictEqual(widths('b'), widths('a'));
+});
+
+// `text-wrap: pretty` is Chrome's: its score line breaker, over a
+// paragraph's last four lines, where they end on a short word alone. Each
+// paragraph below is set in a box as wide as all but its last word on one
+// line, so that word ends `auto`'s lines alone in whatever face the
+// harness has; every one was checked against Chrome in Arial.
+const PRETTY_HEAD = 'Quiet rivers carry small boats past the old mill';
+
+/** How wide a text is set on one line, to the pixel above. */
+async function oneLineWidth(head: string, style = ''): Promise<number> {
+  const probe = await render(
+    `<p id="m" style="margin:0;white-space:nowrap;${style}">${head}</p>`,
+    900,
+  );
+  const [line] = linesOf(view(probe.node), 'm');
+  const width = Math.ceil(line.x + line.width);
+  await probe.result.unmount();
+  return width;
+}
+
+const trimmed = (lines: string[]): string[] => lines.map((line) => line.trim());
+
+metric(
+  "text-wrap: pretty draws a paragraph's last word back off a line of its own",
+  async () => {
+    const width = await oneLineWidth(PRETTY_HEAD);
+    const p = (id: string, style: string, tail = ' today.') =>
+      `<p id="${id}" style="width:${width}px;${style}">${PRETTY_HEAD}${tail}</p>`;
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0}</style>' +
+        p('auto', '') +
+        p('pretty', 'text-wrap:pretty') +
+        p('longhand', 'text-wrap-style:pretty') +
+        // a last line of two words has a place to break in it: left
+        p('two', 'text-wrap:pretty', ' at dawn.'),
+      width + 20,
+    );
+    const el = view(node);
+    assert.deepStrictEqual(trimmed(lineTextsOf(el, 'auto')), [
+      PRETTY_HEAD,
+      'today.',
+    ]);
+    const pretty = [
+      'Quiet rivers carry small boats past the old',
+      'mill today.',
+    ];
+    assert.deepStrictEqual(trimmed(lineTextsOf(el, 'pretty')), pretty);
+    assert.deepStrictEqual(trimmed(lineTextsOf(el, 'longhand')), pretty);
+    assert.deepStrictEqual(trimmed(lineTextsOf(el, 'two')), [
+      PRETTY_HEAD,
+      'at dawn.',
+    ]);
+    for (const line of linesOf(el, 'pretty')) assert.ok(line.width <= width);
+    // the line separator the break is asked for with is in the layout's
+    // text, and in none of the document's
+    assert.ok(!el.textContent().includes('\u2028'));
+  },
+);
+
+metric(
+  'text-wrap: pretty breaks lines made a piece at a time, with edges, justified and after a <br>',
+  async () => {
+    // the break asked for straight after it, where the line has to know it
+    // may break between the box's text and the text after
+    const em =
+      'Quiet rivers carry small boats past the <em style="font-size:20px;line-height:30px">old</em> mill';
+    const span =
+      'Quiet rivers carry <span style="padding:0 6px;background:#eee">small boats</span> past the old mill';
+    const cases: [string, string, string, string][] = [
+      // an inline box in a font and a line height of its own: a line at a
+      // time, laid out again with the breaks asked for
+      ['em', em, '', ' today.'],
+      // the edges of an inline box, as spacers in one layout
+      ['span', span, '', ' today.'],
+      // a first line that is not as wide as the rest
+      ['indent', PRETTY_HEAD, 'text-indent:24px;', ' today.'],
+      // still justified, a line separator being no forced break
+      ['justify', PRETTY_HEAD, 'text-align:justify;', ' today.'],
+    ];
+    let source = '<style>body{margin:0}p{margin:0}</style>';
+    const widths = new Map<string, number>();
+    for (const [id, head, style, tail] of cases) {
+      const width = await oneLineWidth(head, style);
+      widths.set(id, width);
+      source +=
+        `<p id="${id}" style="width:${width}px;${style}text-wrap:pretty">` +
+        `${head}${tail}</p>`;
+    }
+    const brWidth = await oneLineWidth(PRETTY_HEAD);
+    source +=
+      `<p id="br" style="width:${brWidth}px;text-wrap:pretty">` +
+      `Before the turn<br>${PRETTY_HEAD} today.</p>`;
+    const { node } = await render(source, 420);
+    const el = view(node);
+    for (const [id] of cases) {
+      assert.deepStrictEqual(
+        trimmed(lineTextsOf(el, id)),
+        ['Quiet rivers carry small boats past the old', 'mill today.'],
+        id,
+      );
+    }
+    const [first] = linesOf(el, 'justify');
+    assert.ok(
+      Math.abs(first.width - widths.get('justify')!) < 1,
+      `the first line fills its box: ${first.width}`,
+    );
+    assert.deepStrictEqual(trimmed(lineTextsOf(el, 'br')), [
+      'Before the turn',
+      'Quiet rivers carry small boats past the old',
+      'mill today.',
+    ]);
+  },
+);
+
+metric(
+  'text-wrap: pretty breaks lines made a piece at a time where it breaks them made in one layout',
+  async () => {
+    // An inline box with a line height of its own has its lines made a
+    // piece at a time and made again with the breaks asked for; it moves
+    // no break, so each paragraph breaks as it does without it. Eighty of
+    // them, so that some ask for a break at the box's either end, where a
+    // line made a piece at a time has to know that a line separator ends
+    // it, and that the text after one is no part of the box's last word.
+    const words =
+      'the quick brown fox jumps over a lazy dog while seven wizards quietly hex every jovial bank clerk and nobody notices because the river keeps running'.split(
+        ' ',
+      );
+    let seed = 7;
+    const next = (): number =>
+      (seed = (seed * 48271) % 2147483647) / 2147483647;
+    const cases: { text: string[]; at: number; width: number }[] = [];
+    for (let i = 0; i < 80; i += 1) {
+      const n = 10 + Math.floor(next() * 30);
+      const text = Array.from(
+        { length: n },
+        () => words[Math.floor(next() * words.length)],
+      );
+      cases.push({
+        text,
+        at: 2 + Math.floor(next() * (n - 4)),
+        width: 150 + Math.floor(next() * 200),
+      });
+    }
+    const source = (style: string): string =>
+      '<style>body{margin:0}p{margin:0;text-wrap:pretty}em{font-style:normal}</style>' +
+      cases
+        .map(
+          ({ text, at, width }, i) =>
+            `<p id="p${i}" style="width:${width}px">` +
+            `${text.slice(0, at).join(' ')} <em style="${style}">` +
+            `${text[at]}</em> ${text.slice(at + 1).join(' ')}.</p>`,
+        )
+        .join('');
+    const lines = async (style: string): Promise<string[][]> => {
+      const { node, result } = await render(source(style), 400);
+      const el = view(node);
+      const out = cases.map((_, i) => trimmed(lineTextsOf(el, `p${i}`)));
+      await result.unmount();
+      return out;
+    };
+    const oneLayout = await lines('');
+    const pieceAtATime = await lines('line-height:30px');
+    oneLayout.forEach((expected, i) =>
+      assert.deepStrictEqual(pieceAtATime[i], expected, `p${i}`),
+    );
+  },
+);
+
+metric(
+  'text-wrap: pretty leaves a paragraph with a box that clones its decorations, or a ::first-line',
+  async () => {
+    // Blink's line breaker turns the score off where it meets a box that
+    // clones (the inline `<code>` of many a blog), and a block with a
+    // first line styled apart is none it scores
+    const clone =
+      'Quiet rivers carry <code style="font:inherit;padding:0 6px;box-decoration-break:clone">small boats</code> past the old mill';
+    const cloneWidth = await oneLineWidth(clone);
+    const width = await oneLineWidth(PRETTY_HEAD);
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0;text-wrap:pretty}' +
+        '#first::first-line{color:red}</style>' +
+        `<p id="clone" style="width:${cloneWidth}px">${clone} today.</p>` +
+        `<p id="first" style="width:${width}px">${PRETTY_HEAD} today.</p>`,
+      Math.max(cloneWidth, width) + 20,
+    );
+    for (const id of ['clone', 'first']) {
+      assert.deepStrictEqual(
+        trimmed(lineTextsOf(view(node), id)),
+        [PRETTY_HEAD, 'today.'],
+        id,
+      );
+    }
+  },
+);
+
+metric('text-wrap: pretty breaks alike at any display scale', async () => {
+  // The lengths are device pixels, and Blink's scores are in proportion to
+  // its zoom, so the same breaks win at any scale. A word as wide as this
+  // one moved off the first line leaves it short by about as much as an
+  // orphan costs: left in device pixels at 2x, the move costs four times
+  // that, and the orphan stays.
+  const head = 'Quiet rivers carry incomprehensibilities';
+  const width = await oneLineWidth(head);
+  const { node } = await render2x(
+    `<p id="p" style="margin:0;width:${width}px;text-wrap:pretty">` +
+      `${head} today.</p>`,
+    width + 20,
+  );
+  assert.deepStrictEqual(trimmed(lineTextsOf(view(node), 'p')), [
+    'Quiet rivers carry',
+    'incomprehensibilities today.',
+  ]);
+});
+
+/** The scoring alone, over text set ten pixels a character and broken at
+ *  its spaces: greedy lines, the separators `text-wrap: pretty` asks for,
+ *  and the lines those make. */
+const CHAR = 10;
+
+function greedyLines(text: string, width: number): PrettyLine[] {
+  const lines: PrettyLine[] = [];
+  let start = 0;
+  let end = 0;
+  for (let at = 0; at <= text.length; at += 1) {
+    const c = text[at];
+    if (at < text.length && c !== ' ' && c !== '\n' && c !== '\u2028') {
+      continue;
+    }
+    // a word ends at `at`: on this line, or the next
+    if ((at - start) * CHAR > width && end > start) {
+      lines.push({ start, end: end + 1, width: (end - start) * CHAR });
+      start = end + 1;
+    }
+    end = at;
+    if (at < text.length && c !== ' ') {
+      lines.push({ start, end: at + 1, width: (at - start) * CHAR });
+      start = end = at + 1;
+    }
+  }
+  if (start < text.length) {
+    lines.push({
+      start,
+      end: text.length,
+      width: (text.length - start) * CHAR,
+    });
+  }
+  return lines;
+}
+
+function prettyText(
+  text: string,
+  width: number,
+  setting: Partial<PrettySetting> = {},
+  runs = [{ text }],
+): { separators: number[] | null; lines: string[] } {
+  const scale = setting.zoom ?? 1;
+  const separators = prettyBreaks(
+    text,
+    runs,
+    greedyLines(text, width).map((line) => ({
+      ...line,
+      width: line.width * scale,
+    })),
+    {
+      width: width * scale,
+      fontSize: 16 * scale,
+      justified: false,
+      zoom: 1,
+      cuts: false,
+      ...setting,
+    },
+    (offsets) => offsets.map((at) => (at - offsets[0]) * CHAR * scale),
+  );
+  const chars = text.split('');
+  for (const at of separators ?? []) chars[at] = '\u2028';
+  const broken = chars.join('');
+  return {
+    separators,
+    lines: greedyLines(broken, width).map((line) =>
+      broken.slice(line.start, line.end).replace(/[ \n\u2028]$/, ''),
+    ),
+  };
+}
+
+test("text-wrap: pretty's scoring takes a short last word's place in the lines before", () => {
+  // 'aaaa bbbb cccc dddd' is 190: the greedy lines end on 'ee' alone, and
+  // the line before it 50 short costs less than the orphan
+  assert.deepStrictEqual(prettyText('aaaa bbbb cccc dddd ee', 190).lines, [
+    'aaaa bbbb cccc',
+    'dddd ee',
+  ]);
+  // a last line with a place to break in it, or as long as a third of
+  // the line, is left
+  assert.strictEqual(
+    prettyText('aaaa bbbb cccc dddd e f', 190).separators,
+    null,
+  );
+  assert.strictEqual(
+    prettyText('aaaa bbbb cccc dddd gggggggg', 190).separators,
+    null,
+  );
+  // fewer than three places to break in the lines: nothing to choose
+  assert.strictEqual(
+    prettyText('aaaaaaaa bbbbbbbbbb cc', 190).separators,
+    null,
+  );
+  // each paragraph a forced break ends is scored on its own
+  assert.deepStrictEqual(
+    prettyText('aaaa bbbb cccc dddd ee\naaaa bbbb cccc dddd ee', 190).lines,
+    ['aaaa bbbb cccc', 'dddd ee', 'aaaa bbbb cccc', 'dddd ee'],
+  );
+  // and the same breaks win at twice the size, the scores scaled by zoom:
+  // a line left 190 short costs less than the orphan, and at 2x, unzoomed,
+  // it would cost more
+  const wide = 'aaaa bbbb cccccccccccccccccc ee';
+  assert.deepStrictEqual(prettyText(wide, 280).lines, [
+    'aaaa bbbb',
+    'cccccccccccccccccc ee',
+  ]);
+  assert.deepStrictEqual(
+    prettyText(wide, 280, { zoom: 2 }).separators,
+    prettyText(wide, 280).separators,
+  );
+});
+
+test('text-wrap: pretty reconsiders the last four lines of a paragraph, and no more', () => {
+  // six lines whose breaks would all move, scored whole: the first two
+  // are out of reach, and keep theirs
+  const text =
+    'aaaa b cc dd eeee f ggggg hhhh iiiii jjjjjj k l mmmmmmm nnnn zz';
+  const greedy = greedyLines(text, 130);
+  assert.strictEqual(greedy.length, 6);
+  const { separators, lines } = prettyText(text, 130);
+  assert.ok(separators);
+  for (const at of separators) {
+    assert.ok(at >= greedy[2].start, `${at} is in the last four lines`);
+  }
+  assert.strictEqual(lines.length, 6, 'as many lines');
+  assert.deepStrictEqual(lines.slice(0, 2), ['aaaa b cc dd', 'eeee f ggggg']);
+  assert.notStrictEqual(lines[5], 'zz');
+});
+
+test('text-wrap: pretty breaks where Chrome would, and asks for no break it cannot make', () => {
+  // Blink's table keeps the two sides of a slash between letters
+  // together, where UAX #14 breaks after it: the slash is no candidate,
+  // and the break goes before the word
+  assert.deepStrictEqual(prettyText('aaaa bbbb cccc/dddd ee', 190).lines, [
+    'aaaa bbbb',
+    'cccc/dddd ee',
+  ]);
+  // after a hyphen it may break, and that is where the lines score best —
+  // but a break is asked for with a separator in place of a space, and a
+  // hyphen has none: the greedy lines stand
+  assert.strictEqual(
+    prettyText('aaaa bbbb cccc-dddd ee', 190).separators,
+    null,
+  );
+  // where the hyphen is a `nowrap` element's, it is no place to break,
+  // as ntk breaks there none, and the element goes down whole
+  const text = 'aaaa bbbb cccc-dddd ee';
+  const runs = [
+    { text: 'aaaa bbbb ' },
+    { text: 'cccc-dddd', nowrap: {} },
+    { text: ' ee' },
+  ];
+  assert.deepStrictEqual(prettyText(text, 190, {}, runs).lines, [
+    'aaaa bbbb',
+    'cccc-dddd ee',
+  ]);
+});
+
+test('text-wrap: pretty leaves a paragraph a word was cut to fit a line of', () => {
+  // seven lines, the first of them cut inside a word where `overflow-wrap`
+  // let it be: Blink scores none of a paragraph a line overflowed in,
+  // however far from its end
+  const text = 'aaaa bbbb cccc dddd '.repeat(6) + 'ee';
+  const lines = greedyLines(text, 190);
+  lines[0] = { ...lines[0], end: 17, width: 170 };
+  lines[1] = { ...lines[1], start: 17 };
+  const score = (cuts: boolean) =>
+    prettyBreaks(
+      text,
+      [{ text }],
+      lines,
+      { width: 190, fontSize: 16, justified: false, zoom: 1, cuts },
+      (offsets) => offsets.map((at) => (at - offsets[0]) * CHAR),
+    );
+  assert.strictEqual(score(true), null);
+  // where no word may be cut, a line ending inside one is out of sight
+  // of the last four
+  assert.ok(score(false));
 });
 
 test('line-clamp and text-overflow are read', async () => {
