@@ -392,6 +392,7 @@ export class AnimationTimeline {
       if (same(from, to)) continue;
       if (interpolateField(field, from, to, 0.5) === undefined) continue;
       running.set(field, {
+        serial: ++transitSeq,
         start: now + item(list.delays, index),
         duration: Math.max(0, item(list.durations, index)),
         easing: item(list.easings, index),
@@ -436,6 +437,7 @@ export class AnimationTimeline {
           Math.max(0, Math.abs(done * run.shortening + 1 - run.shortening)),
         );
         running.set(field, {
+          serial: ++transitSeq,
           start: now + (delay < 0 ? delay * shortening : delay),
           duration: duration * shortening,
           easing,
@@ -446,6 +448,7 @@ export class AnimationTimeline {
         });
       } else {
         running.set(field, {
+          serial: ++transitSeq,
           start: now + delay,
           duration,
           easing,
@@ -506,6 +509,18 @@ export class AnimationTimeline {
     return this._transitions.has(el);
   }
 
+  /** The transitions of an element's own, or of its `pseudo`'s, by the
+   *  field each runs on, as of the last time it was styled — one past its
+   *  end among them, where nothing has styled it since — or null where it
+   *  has none under way. */
+  transitsOf(
+    el: object,
+    pseudo = '',
+  ): ReadonlyMap<string, Readonly<Transit>> | null {
+    const running = this._transitions.get(el)?.get(pseudo)?.running;
+    return running?.size ? running : null;
+  }
+
   /** An element's transitions, or a pseudo-element's, are over: it is not
    *  displayed. */
   dropTransitions(el: object, pseudo: string): void {
@@ -535,8 +550,11 @@ function animatesInherited(rule: KeyframesRule): boolean {
 const INHERITS = new WeakMap<KeyframesRule, boolean>();
 
 /** A property's transition under way (CSS Transitions 1, 3), on one field
- *  of the computed style. */
-interface Transit {
+ *  of the computed style. Never changed once made: a change to one under
+ *  way makes another. */
+export interface Transit {
+  /** Which it is, the same in a fork: no other transition has it. */
+  serial: number;
   /** When it starts, its delay out, on the timeline. */
   start: number;
   /** From its start to its end, in milliseconds. */
@@ -551,6 +569,8 @@ interface Transit {
    *  back runs. */
   shortening: number;
 }
+
+let transitSeq = 0;
 
 /** An element's transitions, or a pseudo-element's, by field. */
 interface Transiting {

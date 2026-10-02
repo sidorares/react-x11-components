@@ -1,16 +1,18 @@
 // <Html>'s half of react-x11's sprite seam (sidorares/react-x11#819): the
-// elements whose CSS animation the render server can run, offered to the
-// presenter as parts of the document's drawing (`HtmlViewNode.sprites()`),
-// each with its frames sampled from the document's own interpolation.
+// elements whose CSS animation or transition the render server can run,
+// offered to the presenter as parts of the document's drawing
+// (`HtmlViewNode.sprites()`), each with its frames sampled from the
+// document's own interpolation.
 //
 // What is eligible is what a browser hands its compositor
-// (docs/prd-html-animations.md §3): an element whose animations set only
-// `opacity` and the transform properties, one animation a property, each
-// running now, drawn in a box of its own, inside nothing that fades, turns, clips, masks or is fixed,
-// and that nothing the document paints after it draws within reach of
-// while it runs. The last is the document's to answer — core's presenter
-// cannot see inside the element — and it is answered in the order the
-// document paints (`paintedAfter`): the layer is over all of the
+// (docs/prd-html-animations.md §3): an element whose animations and
+// transitions set only `opacity` and the transform properties, one of them
+// a property, each running now, drawn in a box of its own, inside nothing
+// that fades, turns, masks or is fixed — a box that clips it cuts its
+// layer — and that nothing the document paints after it draws within
+// reach of while it runs. The last is the document's to answer — core's
+// presenter cannot see inside the element — and it is answered in the
+// order the document paints (`paintedAfter`): the layer is over all of the
 // document, which is right for what is painted before the element and
 // wrong for anything painted after it. A badge painted over a card it does
 // not belong to keeps the card on the document's clock; a toast over the
@@ -18,20 +20,20 @@
 //
 // The frames go over as values the document computed: the element's style
 // is sampled at times through one cycle of its animation — two iterations
-// where it alternates — on a timeline forked from the document's, so
-// `cubic-bezier()`, `steps()`, a keyframe's own timing function, a frame
-// the animation makes of the element's own value, a turn of a whole circle
-// and a mixed transform list all come out as `<Html>` draws them, and the
-// render server plays straight lines between them. What the layer shows at
-// rest is the style after the animation's end, as its fill mode leaves it:
-// the end frame it holds, or the element's own value.
+// where it alternates, a transition from its start to its end — on a
+// timeline forked from the document's, so `cubic-bezier()`, `steps()`, a
+// keyframe's own timing function, a frame the animation makes of the
+// element's own value, a turn of a whole circle and a mixed transform list
+// all come out as `<Html>` draws them, and the render server plays
+// straight lines between them. What the layer shows at rest is the style
+// after the animation's end, as its fill mode leaves it — the end frame it
+// holds, or the element's own value — and after a transition's, its end.
 
 import { progressAt, timingAt, tracksOf } from './css/animation.js';
-import type { Timing } from './css/animation.js';
 import type { Cascade } from './css/cascade.js';
 import { masked } from './css/style.js';
 import type { ComputedStyle } from './css/style.js';
-import type { AnimationTimeline, Running } from './css/timeline.js';
+import type { AnimationTimeline, Transit } from './css/timeline.js';
 import { matrixOf, transformed } from './css/transform.js';
 import { resolve } from './css/values.js';
 import type { Box, BoxTree } from './layout/boxes.js';
@@ -114,25 +116,29 @@ export interface SpriteHost {
   ended(el: Element, id: string): boolean;
 }
 
-/** One of an element's animations a sprite carries: what it sets that a
- *  layer can carry, and when it runs. */
+/** One animation a sprite carries: one of the element's, or its
+ *  transitions under way of one of the two properties a layer has — what
+ *  it sets, and when it runs. */
 export interface Track {
-  name: string;
-  run: Readonly<Running>;
-  timing: Timing;
-  /** When its active phase began, on the document's clock. */
-  begin: number;
-  /** One cycle, in milliseconds: an iteration, or two where it alternates. */
-  cycle: number;
-  /** What its frames are sampled from: the animation, and the box whose
-   *  size its percentages are of. */
+  /** What its frames are sampled from: the animation or the transitions,
+   *  and the box whose size their percentages are of. */
   id: string;
+  /** When it begins, on the document's clock: an animation's active phase,
+   *  or the first of its transitions to start. */
+  begin: number;
+  /** One cycle, in milliseconds: an iteration, two where it alternates,
+   *  or from its transitions' first start to their last end. */
+  cycle: number;
+  /** How many cycles it runs. */
+  repeat: number;
+  /** When it is over, on the document's clock: never, for a loop. */
+  end: number;
   opacity: boolean;
   transform: boolean;
 }
 
-/** An element's animations, where a sprite can carry them: one track a
- *  property, each its own animation on the layer. */
+/** An element's animations and transitions, where a sprite can carry
+ *  them: one track a property, each its own animation on the layer. */
 export interface Lift {
   el: Element;
   /** Whose: the element's own, or a pseudo-element's of it. */
@@ -149,11 +155,12 @@ export interface Lift {
 /**
  * The animations of `el` a sprite can carry, or of its `pseudo`, or null:
  * each named animation with frames, playing, in its active phase, setting
- * only what a layer carries — and no two setting one property, since a
- * layer runs one animation of each and the later of two is the cascade's
- * to choose, not the layer's. Not one the render server already ran to its
- * end. Cheap, and asked every frame: the frames are sampled once
- * (`partOf`).
+ * only what a layer carries, and each transition under way, in its delay
+ * or after it, on what a layer carries — and no two setting one property,
+ * since a layer runs one animation of each and which of two wins is the
+ * cascade's to choose, not the layer's. Not one the render server already
+ * ran to its end. Cheap, and asked every frame: the frames are sampled
+ * once (`partOf`).
  */
 export function liftOf(
   host: SpriteHost,
@@ -209,16 +216,61 @@ export function liftOf(
       pseudo,
     ].join('|');
     if (host.ended(el, id)) return null;
+    const begin = run.start + timing.delay;
     tracks.push({
-      name,
-      run,
-      timing,
-      begin: run.start + timing.delay,
-      cycle: alternates ? 2 * timing.duration : timing.duration,
       id,
+      begin,
+      cycle: alternates ? 2 * timing.duration : timing.duration,
+      repeat: alternates ? timing.iterations / 2 : timing.iterations,
+      end: begin + timing.iterations * timing.duration,
       opacity: sets,
       transform: moves,
     });
+  }
+  // A transition is one iteration from where it starts to where it ends,
+  // holding its start through its delay, as the layer does while it waits
+  // to begin. The transform's fields go over as one matrix, as an
+  // animation's do. One past its end on the document's clock rests there.
+  const transits = host.timeline.transitsOf(el, pseudo);
+  if (transits) {
+    let fade: Readonly<Transit>[] | null = null;
+    let turn: Readonly<Transit>[] | null = null;
+    for (const [field, run] of transits) {
+      if (host.now >= run.start + run.duration) continue;
+      // a jump at the end of a delay has no frames to run
+      if (!LIFTABLE.has(field) || !(run.duration > 0)) return null;
+      if (field === 'opacity') (fade ??= []).push(run);
+      else (turn ??= []).push(run);
+    }
+    if ((fade && opacity) || (turn && transform)) return null;
+    for (const runs of [fade, turn]) {
+      if (!runs) continue;
+      let begin = Infinity;
+      let end = -Infinity;
+      for (const run of runs) {
+        begin = Math.min(begin, run.start);
+        end = Math.max(end, run.start + run.duration);
+      }
+      const id = [
+        'transition',
+        ...runs.map((run) => run.serial),
+        box.width,
+        box.height,
+        pseudo,
+      ].join('|');
+      if (host.ended(el, id)) return null;
+      tracks.push({
+        id,
+        begin,
+        cycle: end - begin,
+        repeat: 1,
+        end,
+        opacity: runs === fade,
+        transform: runs === turn,
+      });
+    }
+    opacity ||= fade !== null;
+    transform ||= turn !== null;
   }
   if (!tracks.length) return null;
   return {
@@ -365,22 +417,26 @@ function sample(
 } {
   const { el, box } = lift;
   const cascade = host.cascade;
-  const fork = host.timeline.fork(el);
   const was = cascade.timeline;
   const pseudo = lift.pseudo;
-  const at = (time: number): ComputedStyle => {
+  // On a fork of the document's timeline for each track, asked in the
+  // order of its times: a transition a fork has run to its end is over
+  // there from then on, as it is on the document's, and a track that
+  // begins before that end would find it over.
+  const at = (fork: AnimationTimeline, time: number): ComputedStyle => {
     fork.now = time;
+    cascade.timeline = fork;
     // a pseudo-element's inherits from its element's, which `parentStyle`
     // is for one
     return pseudo
       ? (cascade.pseudoStyleFor(el, pseudo, parentStyle) ?? box.style)
       : cascade.styleFor(el, parentStyle, inFlex);
   };
-  cascade.timeline = fork;
   try {
     // a track's property is its alone (`liftOf`), so the style at a time
     // in its cycle says what it is there, whatever the others are at
     const frames = lift.tracks.map((track) => {
+      const fork = host.timeline.fork(el);
       const opacities: number[] = [];
       const matrices: SpriteMatrix[] = [];
       const n = Math.max(
@@ -391,7 +447,7 @@ function sample(
         // the last frame a breath short of the cycle's end, which is the
         // next one's start
         const u = k === n ? track.cycle - 1e-3 : (k / n) * track.cycle;
-        const style = at(track.begin + u);
+        const style = at(fork, track.begin + u);
         if (track.opacity) {
           opacities.push(Math.min(1, Math.max(0, style.opacity)));
         }
@@ -403,14 +459,15 @@ function sample(
       }
       return { opacities, matrices };
     });
-    // past the last end, as each fill mode leaves its property; a loop
-    // never gets there, and its property rests wherever it is
+    // past the last end, as each fill mode leaves its property and each
+    // transition its end; a loop never gets there, and its property rests
+    // wherever it is
     let end = -Infinity;
-    for (const { begin, timing } of lift.tracks) {
-      if (timing.iterations === Infinity) continue;
-      end = Math.max(end, begin + timing.iterations * timing.duration);
+    for (const track of lift.tracks) {
+      if (track.end !== Infinity) end = Math.max(end, track.end);
     }
-    const rest = end === -Infinity ? box.style : at(end + 1);
+    const rest =
+      end === -Infinity ? box.style : at(host.timeline.fork(el), end + 1);
     return { frames, rest };
   } finally {
     cascade.timeline = was;
@@ -509,8 +566,7 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
   const animations: DocumentSpriteAnimation[] = [];
   const begins: number[] = [];
   lift.tracks.forEach((track, i) => {
-    const { iterations, duration } = track.timing;
-    const repeat = track.cycle === duration ? iterations : iterations / 2;
+    const repeat = track.repeat;
     const { opacities, matrices } = frames[i];
     if (track.opacity) {
       animations.push({

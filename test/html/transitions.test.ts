@@ -336,6 +336,166 @@ test('a transition under way that an animation starts on runs on beneath it, the
   assert.strictEqual(tl.isLive(el), false);
 });
 
+/** A document whose `#a` fades to .2 on a hover, linearly or as `timing`
+ *  says. */
+const FADE = (timing = '160ms linear') =>
+  '<style>body { margin: 0 } #a { width: 40px; height: 20px;' +
+  ` background: red; transition: opacity ${timing} }` +
+  ' #a:hover { opacity: .2 }</style><div id="a"></div>';
+
+test('the frame that takes an opacity in transition off 1 restyles it in place: named in will-change on both sides of it, it is a layer of its context either way', async (t) => {
+  const doc = await holding(t, FADE());
+  doc.hover('a');
+  // the change that starts it names the opacity, and builds
+  await act();
+  const tree = () => (doc.el as unknown as { _tree: unknown })._tree;
+  const built = tree();
+  await doc.at(16);
+  assert.ok(doc.style('a').opacity < 1, `${doc.style('a').opacity}`);
+  assert.ok(tree() === built, 'not built again');
+});
+
+// --- on a layer of its own ------------------------------------------------------
+//
+// react-x11's surface presenter on macOS asks for the parts of the document
+// it may lift onto layers of their own (`Node.sprites()`), and runs their
+// animations in the render server. Nothing asks in this suite: these ask as
+// it would and answer as it would, as test/html/animations.test.ts does for
+// an animation.
+
+test('a transition a layer can carry is offered as a sprite: from where it starts to where it ends, in its duration, as the document runs it, resting at its end', async (t) => {
+  const doc = await holding(t, FADE());
+  assert.strictEqual(doc.el.sprites(), null, 'nothing runs yet');
+  doc.hover('a');
+  await act();
+  const sprites = doc.el.sprites();
+  assert.strictEqual(sprites?.length, 1);
+  const [sprite] = sprites!;
+  const [fade] = sprite.animations;
+  assert.deepStrictEqual(
+    [fade.property, fade.duration, fade.repeat, fade.delay],
+    ['opacity', 160, 1, 0],
+  );
+  // a display's frames, from 1 through half way at half time to a breath
+  // short of .2
+  const values = fade.values as number[];
+  assert.strictEqual(values.length, 11);
+  assert.strictEqual(values[0], 1);
+  assert.ok(near(values[5], 0.6));
+  assert.ok(values[10] > 0.2 && values[10] < 0.21, `${values[10]}`);
+  assert.strictEqual(sprite.opacity, 0.2, 'at rest, its end');
+  // eased as it runs: ease-in is slow to leave
+  const eased = await holding(t, FADE('160ms ease-in'));
+  eased.hover('a');
+  await act();
+  const curve = eased.el.sprites()![0].animations[0].values as number[];
+  assert.ok(curve[5] > 0.7, `${curve[5]}`);
+});
+
+test('a transition in its delay is offered already, its delay ahead, the layer holding where it starts until then as the document does', async (t) => {
+  const doc = await holding(t, FADE('160ms linear 64ms'));
+  doc.hover('a');
+  await act();
+  const [sprite] = doc.el.sprites()!;
+  const [fade] = sprite.animations;
+  assert.strictEqual(fade.delay, 64);
+  assert.strictEqual((fade.values as number[])[0], 1);
+  await doc.at(32);
+  const [again] = doc.el.sprites()!;
+  assert.ok(again.animations[0].values === fade.values, 'not sampled again');
+  assert.strictEqual(again.animations[0].delay, 32, 'from the new now');
+});
+
+test('a lifted transition is no frame of the document’s; given back, it is drawn where it has got to', async (t) => {
+  const doc = await holding(t, FADE());
+  doc.hover('a');
+  await act();
+  const [sprite] = doc.el.sprites()!;
+  assert.strictEqual(doc.clock.pending, true, 'its frames are the clock’s');
+  doc.el.spritesLifted(new Set([sprite.key]));
+  assert.strictEqual(doc.clock.pending, false, 'and not now it is lifted');
+  // a timer of our own, so that time can pass with nothing of the
+  // document's waiting on it
+  const step = animationClock.arm(() => {}, 1000);
+  t.after(() => animationClock.disarm(step));
+  await doc.at(80);
+  assert.strictEqual(doc.style('a').opacity, 1, 'not restyled while lifted');
+  doc.el.spritesLifted(new Set());
+  assert.ok(near(doc.style('a').opacity, 0.6), `${doc.style('a').opacity}`);
+});
+
+test('a lifted transition turned back asks for the frame that hands its layer the way back: a new animation, from where it had come to, in as much of its duration', async (t) => {
+  const doc = await holding(t, FADE());
+  doc.hover('a');
+  await act();
+  const [sprite] = doc.el.sprites()!;
+  doc.el.spritesLifted(new Set([sprite.key]));
+  const step = animationClock.arm(() => {}, 1000);
+  t.after(() => animationClock.disarm(step));
+  await doc.at(80);
+  const asked = t.mock.method(doc.el, 'spritesChanged');
+  doc.hover(null);
+  await act();
+  assert.ok(asked.mock.callCount() > 0, 'a frame asked for');
+  const [back] = doc.el.sprites()!;
+  assert.strictEqual(back.key, sprite.key, 'the same layer');
+  const [fade] = back.animations;
+  assert.notStrictEqual(fade.id, sprite.animations[0].id, 'a new animation');
+  assert.deepStrictEqual([fade.duration, fade.delay], [80, 0]);
+  const values = fade.values as number[];
+  assert.ok(near(values[0], 0.6), `${values[0]}`);
+  assert.ok(values.at(-1)! > 0.99 && values.at(-1)! < 1);
+  assert.strictEqual(back.opacity, 1);
+});
+
+test('a transition the render server ran to its end is not offered again', async (t) => {
+  const doc = await holding(t, FADE());
+  doc.hover('a');
+  await act();
+  const [sprite] = doc.el.sprites()!;
+  doc.el.spritesLifted(new Set([sprite.key]));
+  doc.el.spriteAnimationEnded(sprite.key, sprite.animations[0].id, true);
+  assert.strictEqual(doc.el.sprites(), null);
+});
+
+test('a transform in transition is offered as matrices, and goes on one layer with an animation of the opacity; what a layer cannot carry stays on the document’s clock: a colour, a jump at the end of a delay', async (t) => {
+  const doc = await holding(
+    t,
+    '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+      'body { margin: 0 } div { width: 40px; height: 20px; background: red }' +
+      '#a { animation: fade 1s infinite; transition: transform 160ms linear }' +
+      '#a:hover { transform: translateX(80px) }' +
+      '#b { margin-top: 40px; transition: background-color 160ms }' +
+      '#b:hover { background-color: blue }' +
+      '#c { margin-top: 40px; transition: opacity 0s 64ms }' +
+      '#c:hover { opacity: .2 }</style>' +
+      '<div id="a"></div><div id="b"></div><div id="c"></div>',
+  );
+  doc.hover('a');
+  await act();
+  const [sprite] = doc.el.sprites()!;
+  const [fade, slide] = sprite.animations;
+  assert.deepStrictEqual(
+    [fade.property, fade.repeat, slide.property, slide.duration, slide.repeat],
+    ['opacity', Infinity, 'transform', 160, 1],
+  );
+  const matrices = slide.values as number[][];
+  assert.deepStrictEqual(matrices[0], [1, 0, 0, 1, 0, 0]);
+  assert.ok(near(matrices[5][4], 40, 1e-6), `${matrices[5]}`);
+  assert.strictEqual(sprite.transform[4], 80, 'at rest, its end');
+  for (const id of ['b', 'c']) {
+    doc.hover(id);
+    await act();
+    const ys = (doc.el.sprites() ?? []).map((p) => p.rect.y);
+    assert.ok(
+      !ys.includes(
+        (doc.el as unknown as DrawnNode).abs.y + boxOf(doc.el, id).y,
+      ),
+      `#${id} not offered`,
+    );
+  }
+});
+
 /** A palette to make an initial style from, every colour its own. */
 const LOOK = {
   color: '#010101',

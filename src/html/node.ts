@@ -71,7 +71,11 @@ import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
-import { WILL_HOLD_FIXED_BOX, WILL_STACK_BOX } from './css/style.js';
+import {
+  WILL_HOLD_FIXED_BOX,
+  WILL_STACK,
+  WILL_STACK_BOX,
+} from './css/style.js';
 import {
   BOX_RAISES,
   buildBoxes,
@@ -2802,6 +2806,9 @@ export class HtmlViewNode extends Node {
     let ended = this._endedSprites.get(el);
     if (!ended) this._endedSprites.set(el, (ended = new Set()));
     ended.add(own);
+    // asked only until the document's clock passes the same end, so the
+    // oldest can go: a button hovered all day ends a transition each time
+    if (ended.size > MAX_ENDED) ended.delete(ended.values().next().value!);
     // the frame that asks again
     this.spritesChanged();
   }
@@ -4584,8 +4591,15 @@ function hoverChange(
     if (PAINT_ONLY.has(key)) continue;
     if (key === 'opacity') {
       // a group to fade before and after, or none either time: the order
-      // its layers paint in is the same (`stacksLayers`)
-      if ((a[key] as number) < 1 !== (b[key] as number) < 1) return false;
+      // its layers paint in is the same (`stacksLayers`) — as it is where
+      // the opacity is named in `will-change` both times, which one in
+      // transition or animated is, a layer of its context at 1 as well
+      if (
+        (a[key] as number) < 1 !== (b[key] as number) < 1 &&
+        !(was.willChange & now.willChange & WILL_STACK)
+      ) {
+        return false;
+      }
       change.fade = true;
       continue;
     }
@@ -4655,6 +4669,10 @@ interface SpriteTarget {
   el: Element;
   pseudo: Pseudo;
 }
+
+/** How many of an element's animations the render server ran to their end
+ *  are remembered (`spriteAnimationEnded`). */
+const MAX_ENDED = 32;
 
 /** Whether one of the boxes fixed to the viewport is within a part's reach
  *  where it is drawn now, `shift` from where it was laid out
