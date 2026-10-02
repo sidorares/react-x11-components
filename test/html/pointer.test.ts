@@ -23,11 +23,16 @@ import { holdClock } from '../held-clock.js';
 import {
   FONTS,
   boxOf,
+  bytesApart,
   findById,
   h,
   metric,
+  pointIn,
+  rebuilt,
   render,
   render2x,
+  snapshot,
+  treeOf,
   view,
 } from './harness.js';
 import type { LaidBox } from './harness.js';
@@ -221,42 +226,6 @@ metric(
   },
 );
 
-/** The element's pixels, as the server has them. */
-async function snapshot(
-  result: Awaited<ReturnType<typeof render>>['result'],
-  el: HtmlViewNode,
-): Promise<Uint8ClampedArray> {
-  const { abs } = el as unknown as DrawnNode;
-  await act();
-  return new Promise((ok, fail) =>
-    (
-      result.ctx as unknown as {
-        getImageData(
-          x: number,
-          y: number,
-          w: number,
-          h: number,
-          cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
-        ): void;
-      }
-    ).getImageData(abs.x, abs.y, abs.width, abs.height, (e, d) =>
-      e ? fail(e) : ok(d.data),
-    ),
-  );
-}
-
-/** A logical window point inside an element of the document. */
-function pointIn(el: HtmlViewNode, id: string): [number, number] {
-  const target = findById(el.document, id)!;
-  const rect = el.elementRect(target)!;
-  const { abs } = el as unknown as DrawnNode;
-  return [abs.x + rect.x + rect.width / 2, abs.y + rect.y + rect.height / 2];
-}
-
-/** The box tree, to tell a restyle in place from a document built again. */
-const treeOf = (el: HtmlViewNode) =>
-  (el as unknown as { _tree: unknown })._tree;
-
 metric(
   'the pointer passes through a box that is hidden, or takes no pointer events',
   async () => {
@@ -298,15 +267,6 @@ metric(
     assert.strictEqual(at(100, 140), 'op', 'a transparent box is a target');
   },
 );
-
-/** What a document built again from its sheets makes of the same hover. */
-async function rebuilt(
-  result: Awaited<ReturnType<typeof render>>['result'],
-  el: HtmlViewNode,
-): Promise<Uint8ClampedArray> {
-  (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
-  return snapshot(result, el);
-}
 
 const HOVER_PAGE =
   '<style>body{margin:0} a{color:#0000ee;text-decoration:none}' +
@@ -495,16 +455,6 @@ const CARD_PAGE =
   '<div class="o" id="o"></div>' +
   '<div class="s" id="s"><span id="u">plain</span></div>' +
   '<p id="away">away from all of them</p>';
-
-/** How many bytes two snapshots differ in. An assertion on the arrays
- *  themselves diffs them when it fails, and a page of pixels diffed runs
- *  the test process out of memory before it says anything. */
-function bytesApart(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
-  let n = Math.abs(a.length - b.length);
-  const end = Math.min(a.length, b.length);
-  for (let i = 0; i < end; i += 1) if (a[i] !== b[i]) n += 1;
-  return n;
-}
 
 metric(
   'a hovered card takes its shadow, its z-index and its lift in place, to the pixels a rebuild draws',

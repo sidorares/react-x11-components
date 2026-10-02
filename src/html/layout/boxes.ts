@@ -787,6 +787,43 @@ export const GENERATED_FROM = new WeakMap<Box, Element>();
  *  `<span style="opacity: .5">` was drawn at full strength. */
 export const FADED_BLOCKS = new WeakMap<Box, number>();
 
+/**
+ * How much the inline boxes from `box` out to their block fade what is in
+ * them, their opacities multiplied: 1 where none is under full opacity, as
+ * nearly none is. What an inline box holds is drawn on its block's lines —
+ * its text, its background and borders, the inline-blocks and images on
+ * them — and not in its own paint, which no group of its could hold, so
+ * each of those is drawn faded by the boxes around it. In the styles
+ * `styles` has for the boxes it names: a restyle's, before it is made.
+ */
+export function inlineFade(
+  box: Box | null,
+  styles?: ReadonlyMap<Box, ComputedStyle>,
+): number {
+  if (box?.kind !== 'inline') return 1;
+  // the outermost first, as the layout multiplies them going in
+  // (`collect`): a product taken in another order may differ in its last
+  // bit, and the colour rounded from it with it, which a run's colour is
+  // compared by
+  return (
+    inlineFade(box.parent, styles) * (styles?.get(box) ?? box.style).opacity
+  );
+}
+
+/** How much the inline boxes around a run of text fade it (`inlineFade`),
+ *  where `box` is whose the run is: the ones a text box is in, or a bidi
+ *  control's own, which an inline box's text is wrapped in — and none for
+ *  a block's, which is no inline box's content but its own. */
+export function textFade(
+  box: Box,
+  styles?: ReadonlyMap<Box, ComputedStyle>,
+): number {
+  return inlineFade(
+    box.kind === 'text' || box.kind === 'break' ? box.parent : box,
+    styles,
+  );
+}
+
 /** What the builder produced, plus the document-wide text it indexed. */
 export interface BoxTree {
   root: Box;

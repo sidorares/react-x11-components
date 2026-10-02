@@ -33,7 +33,7 @@ import {
   isTransparent,
   resolve,
 } from './css/values.js';
-import { SCHEME_COLORS, blend, borderShades } from './css/color.js';
+import { SCHEME_COLORS, blend, borderShades, fadeColor } from './css/color.js';
 import type { Len } from './css/values.js';
 import type {
   BackgroundClip,
@@ -79,6 +79,8 @@ import {
   SHIFTED_LINES,
   TEXT_RAISES,
   TEXT_SHIFTS,
+  inlineFade,
+  textFade,
 } from './layout/boxes.js';
 import type {
   BoxTree,
@@ -1644,23 +1646,31 @@ const OVERLAP_PROBE = 64;
  * dialog dims a page with — is faded the same either way, and needs no
  * surface. A box with more than `OVERLAP_PROBE` in it is taken for one
  * that does.
+ *
+ * An inline box's text, its background and borders, and what is on its
+ * lines are drawn on its block's lines, each faded there (`inlineFade`),
+ * and none of it in its own paint: what that draws, and a group of its
+ * would hold, is the floats and the positioned boxes in it (`paintedApart`).
  */
 function drawsOverItself(box: Box, options: PaintOptions): boolean {
-  // the text is one thing, and the selection under it another
   let things = 0;
-  if (box.subtreeTextEnd > box.subtreeTextStart) {
-    things += 1;
-    const range = options.selection;
-    if (
-      range &&
-      range.start < box.subtreeTextEnd &&
-      range.end > box.subtreeTextStart
-    ) {
+  let looked = 0;
+  const stack: Box[] = box.kind === 'inline' ? paintedApart(box) : [box];
+  for (const at of stack) {
+    // the text is one thing, and the selection under it another
+    if (at.subtreeTextEnd > at.subtreeTextStart) {
       things += 1;
+      const range = options.selection;
+      if (
+        range &&
+        range.start < at.subtreeTextEnd &&
+        range.end > at.subtreeTextStart
+      ) {
+        things += 1;
+      }
     }
   }
-  let looked = 0;
-  const stack: Box[] = [box];
+  if (things > 1) return true;
   while (stack.length) {
     const at = stack.pop()!;
     looked += 1;
@@ -1670,6 +1680,20 @@ function drawsOverItself(box: Box, options: PaintOptions): boolean {
     for (const child of at.children) stack.push(child);
   }
   return false;
+}
+
+/** What an inline box's own paint draws (`paintContent`): the floats in it,
+ *  through the inline boxes in it, and the positioned boxes it paints as
+ *  the stacking context its opacity makes it (`stackLayers`). */
+function paintedApart(box: Box): Box[] {
+  const out = [...(NEGATIVE.get(box) ?? []), ...(STACKED.get(box) ?? [])];
+  const stack = [...box.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at.isFloat) out.push(at);
+    else if (at.kind === 'inline') stack.push(...at.children);
+  }
+  return out;
 }
 
 /** What a box draws of its own, for `drawsOverItself`: borders twice, which
@@ -5413,6 +5437,23 @@ function paintBorderImage(
 
 const GRADIENT_KEYS = new WeakMap<Gradient, string>();
 
+/** A gradient with each of its stops faded by `fade`, `currentColor` among
+ *  them the colour it is: the gradient faded, as each stop is faded alike. */
+function fadedGradient(
+  gradient: Gradient,
+  fade: number,
+  currentColor: string,
+): Gradient {
+  if (!(fade < 1)) return gradient;
+  return {
+    ...gradient,
+    stops: gradient.stops.map((stop) => ({
+      ...stop,
+      color: fadeColor(inkColor(stop.color, currentColor), fade),
+    })),
+  };
+}
+
 /** A gradient as a key for what is drawn of it: its angle and stops, and
  *  the colour `currentColor` among them is. */
 function gradientKey(gradient: Gradient, color: string): string {
@@ -6838,9 +6879,20 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const hoisted = options.negative;
   for (const line of visible) {
     for (const placed of line.atomics) {
-      if (hoisted && HOISTED.has(placed.box)) continue;
-      if (turns(placed.box)) paintTransformed(ctx, placed.box, options);
-      else paintBox(ctx, placed.box, options);
+      const atomic = placed.box;
+      if (hoisted && HOISTED.has(atomic)) continue;
+      // drawn on its line rather than in the inline boxes it is in, which
+      // fade it here (`inlineFade`)
+      const fade = inlineFade(atomic.parent);
+      if (fade <= 0) continue;
+      const faded = fade < 1 && typeof ctx.globalAlpha === 'number';
+      if (faded) {
+        ctx.save();
+        ctx.globalAlpha = ctx.globalAlpha! * fade;
+      }
+      if (turns(atomic)) paintTransformed(ctx, atomic, options);
+      else paintBox(ctx, atomic, options);
+      if (faded) ctx.restore();
     }
   }
 }
@@ -6888,10 +6940,12 @@ function inkInto(line: LineBox, top: number, bottom: number): boolean {
 }
 
 /** An inline box's fragment whose padding or border reaches up over the
- *  lines before its own, and where its own line starts. */
+ *  lines before its own, where its own line starts, and how faded the box
+ *  is drawn (`inlineFade`). */
 interface Bleed {
   fragment: Frame;
   lineTop: number;
+  fade: number;
 }
 
 /**
@@ -6909,12 +6963,15 @@ function paintBleeds(
 ): void {
   if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip)
     return;
-  for (const { fragment, lineTop } of bleeds) {
+  for (const { fragment, lineTop, fade } of bleeds) {
     const left = Math.floor(fragment.x + options.originX) - 1;
     const top = Math.floor(fragment.y + options.originY) - 1;
     const bottom = Math.round(lineTop + options.originY);
     if (bottom <= top) continue;
     ctx.save();
+    if (fade < 1 && typeof ctx.globalAlpha === 'number') {
+      ctx.globalAlpha *= fade;
+    }
     ctx.beginPath();
     ctx.rect(left, top, Math.ceil(fragment.width) + 2, bottom - top);
     ctx.clip();
@@ -6989,6 +7046,11 @@ function paintClippedText(
     }
   }
   for (const [clip, byLayout] of parts) {
+    // an inline box's background, faded with it and the inline boxes
+    // around it (`inlineFade`) — in its colours, since ntk draws glyphs at
+    // full strength whatever the context's alpha is
+    const fade = inlineFade(clip);
+    if (fade <= 0) continue;
     const list = [...byLayout.values()];
     const style = clip.style;
     let area: Rect;
@@ -7014,13 +7076,14 @@ function paintClippedText(
         height: y1 - y0 + clip.padTop + clip.padBottom,
       };
     }
-    const gradient =
+    const found =
       style.backgroundGradient ??
       (style.backgroundImages?.find(
         (image): image is Gradient =>
           image !== null && typeof image !== 'string',
       ) ||
         null);
+    const gradient = found && fadedGradient(found, fade, style.color);
     let fill: unknown = null;
     // where the fill is a picture of the gradient, the corner it starts at
     let origin: { x: number; y: number } | null = null;
@@ -7083,7 +7146,10 @@ function paintClippedText(
       } else if (paint) fill = paint.style;
     }
     if (fill === null && !isTransparent(style.backgroundColor)) {
-      fill = inkColor(style.backgroundColor as string, style.color);
+      fill = fadeColor(
+        inkColor(style.backgroundColor as string, style.color),
+        fade,
+      );
     }
     if (fill === null) continue;
     for (const part of list) {
@@ -7104,11 +7170,13 @@ function paintClippedText(
   }
 }
 
-/** The shadows one stretch of a layout's text casts, and the colour its
- *  `currentColor` is. */
+/** The shadows one stretch of a layout's text casts, the colour its
+ *  `currentColor` is, and how much the inline boxes around the text fade
+ *  them (`textFade`). */
 interface Cast {
   shadows: BoxShadow[];
   color: string;
+  fade: number;
 }
 
 /**
@@ -7164,14 +7232,22 @@ function paintTextShadows(
 }
 
 /** A layout whose runs do not all cast the same shadows. */
-const MIXED: Cast = { shadows: [], color: '' };
+const MIXED: Cast = { shadows: [], color: '', fade: 1 };
 
 /** What a layout's runs cast: null for none, the one cast of all of them,
  *  or `MIXED`. Kept by the map of its runs to their boxes, which is its
  *  paragraph's own — not by the layout, which another paragraph of the same
  *  runs may share, casting other shadows or none, since a shadow is no
- *  field of a run. */
+ *  field of a run — until a restyle in place changes what its boxes cast
+ *  (`forgetCasts`). */
 const CASTS = new WeakMap<object, Cast | null>();
+
+/** A restyle in place (a `:hover`, a frame of an animation) has given the
+ *  boxes of a layout's runs new styles, which may cast other shadows, in
+ *  another colour or faded otherwise: the layout's cast is asked again. */
+export function forgetCasts(spans: object): void {
+  CASTS.delete(spans);
+}
 
 function castOf(text: LineText): Cast | null {
   const layout = text.layout;
@@ -7181,10 +7257,12 @@ function castOf(text: LineText): Cast | null {
   for (const natural of layout.lines) {
     for (const run of natural.runs) {
       // a spacer, or a bidi control, is no one's text and draws nothing
-      const style = boxAt?.call(text.spans, run.start)?.style;
-      if (!style) continue;
-      const shadows = style.textShadow;
-      const next = shadows ? { shadows, color: style.color } : null;
+      const box = boxAt?.call(text.spans, run.start);
+      if (!box) continue;
+      const shadows = box.style.textShadow;
+      const next = shadows
+        ? { shadows, color: box.style.color, fade: textFade(box) }
+        : null;
       if (cast === undefined) cast = next;
       else if (!sameCast(cast, next)) cast = MIXED;
       if (cast === MIXED) break;
@@ -7197,7 +7275,12 @@ function castOf(text: LineText): Cast | null {
 
 function sameCast(a: Cast | null, b: Cast | null): boolean {
   return (
-    a === b || (!!a && !!b && a.shadows === b.shadows && a.color === b.color)
+    a === b ||
+    (!!a &&
+      !!b &&
+      a.shadows === b.shadows &&
+      a.color === b.color &&
+      a.fade === b.fade)
   );
 }
 
@@ -7209,15 +7292,33 @@ function stretchesOf(
 ): [Cast, number, number][] {
   const out: [Cast, number, number][] = [];
   for (const run of natural.runs) {
-    const style = text.spans.boxAt!.call(text.spans, run.start)?.style;
-    if (!style?.textShadow) continue;
-    const cast = { shadows: style.textShadow, color: style.color };
+    const box = text.spans.boxAt!.call(text.spans, run.start);
+    if (!box?.style.textShadow) continue;
+    const cast = {
+      shadows: box.style.textShadow,
+      color: box.style.color,
+      fade: textFade(box),
+    };
     const last = out[out.length - 1];
     if (last && sameCast(last[0], cast) && Math.abs(last[2] - run.x) < 0.5) {
       last[2] = Math.max(last[2], run.x + run.width);
     } else out.push([cast, run.x, run.x + run.width]);
   }
   return out;
+}
+
+/**
+ * Whether a context casts a shadow from what it draws, its colour's alpha
+ * and all, rather than from the coverage alone, as ntk's does and a
+ * browser casts a text's — so that `color: transparent` with a
+ * `text-shadow` is blurred text there. The native contexts (`scalesText`)
+ * are the first: on macOS, text in a transparent colour casts no shadow,
+ * and a run faded by the inline boxes around it (`fadeRun`) casts one
+ * faded as much already. Windows' is taken to cast as macOS's does, and
+ * has not been tried.
+ */
+function castsFromInk(ctx: PaintContext): boolean {
+  return ctx.scalesText === true;
 }
 
 /** A layout's shadows, drawn where `left` and `top` put it, each clipped to
@@ -7231,6 +7332,10 @@ function castShadows(
   cast: Cast,
   stretch: { x: number; y: number; width: number; height: number } | null,
 ): void {
+  if (cast.fade <= 0) return;
+  // faded by the inline boxes around the text, as its glyphs are — which
+  // a context that casts from what it draws has done already
+  const fade = castsFromInk(ctx) ? 1 : cast.fade;
   const layout = text.layout;
   // clear of the window: the far end of its furthest line, which a line
   // `text-align` moves in from the layout's left reaches past its width,
@@ -7254,7 +7359,7 @@ function castShadows(
       );
       ctx.clip();
     }
-    ctx.shadowColor = inkColor(s.color, cast.color);
+    ctx.shadowColor = fadeColor(inkColor(s.color, cast.color), fade);
     // CoreGraphics casts no shadow with no blur at all: a hard one is one
     // blurred too little to see
     const move = aside(
@@ -7579,8 +7684,22 @@ function paintInlineBoxes(
   const boxes = [...fragments.keys()].sort((a, b) => depthOf(a) - depthOf(b));
   for (const box of boxes) {
     if (box.style.visibility !== 'visible') continue;
+    // faded by its own opacity and the inline boxes' around it, each
+    // fragment on its own (`inlineFade`)
+    const fade = inlineFade(box);
+    if (fade <= 0) continue;
     for (const f of fragments.get(box)!) {
-      paintInlineFragment(ctx, line, lines, options, bleeds, box, f, baseline);
+      paintInlineFragment(
+        ctx,
+        line,
+        lines,
+        options,
+        bleeds,
+        box,
+        f,
+        baseline,
+        fade,
+      );
     }
   }
 }
@@ -7595,6 +7714,7 @@ function paintInlineFragment(
   box: Box,
   f: InlineFragment,
   baseline: number,
+  fade: number,
 ): void {
   const shifted = SHIFTED_LINES.has(line);
   {
@@ -7639,11 +7759,17 @@ function paintInlineFragment(
       const strip = stripFor(lines, line, box, fragment);
       if (strip) fragment.strip = strip;
     }
+    const faded = fade < 1 && typeof ctx.globalAlpha === 'number';
+    if (faded) {
+      ctx.save();
+      ctx.globalAlpha = ctx.globalAlpha! * fade;
+    }
     paintLayers(ctx, fragment, options, frameImages(ctx, fragment, options));
     paintBorders(ctx, fragment, options);
     if (box.style.outlineStyle !== 'none') paintOutline(ctx, fragment, options);
+    if (faded) ctx.restore();
     if (bleeds && fragment.y < line.y - 0.5) {
-      bleeds.push({ fragment, lineTop: line.y + (moved?.y ?? 0) });
+      bleeds.push({ fragment, lineTop: line.y + (moved?.y ?? 0), fade });
     }
   }
 }
@@ -7841,8 +7967,8 @@ function paintSelection(
 ): void {
   for (const band of selectedBands(line, options)) {
     const fill = band.style ? band.style.background : options.selectionColor;
-    if (!fill || isTransparent(fill)) continue;
-    ctx.fillStyle = fill;
+    if (!fill || isTransparent(fill) || band.fade <= 0) continue;
+    ctx.fillStyle = fadeColor(fill, band.fade);
     ctx.fillRect(band.x, band.y, band.width, band.height);
   }
 }
@@ -7851,6 +7977,9 @@ function paintSelection(
  *  `::selection` of the element it is in: null for the palette's. */
 interface SelectedBand extends Rect {
   style: SelectionStyle | null;
+  /** How much the inline boxes around its text fade it (`textFade`), whose
+   *  highlight is drawn as a part of what they hold. */
+  fade: number;
   /** The layout whose text it is. */
   layout: unknown;
 }
@@ -7883,9 +8012,13 @@ function selectedBands(line: LineBox, options: PaintOptions): SelectedBand[] {
     const rows = selectionRows(line, text, natural);
     const y = Math.round(rows.y + options.originY);
     const height = Math.ceil(rows.height);
-    const pieces = styler
-      ? stylePieces(text, natural, layoutFrom, layoutTo, styler)
-      : [{ from: layoutFrom, to: layoutTo, style: null }];
+    const pieces = selectionPieces(
+      text,
+      natural,
+      layoutFrom,
+      layoutTo,
+      styler ?? null,
+    ) ?? [{ from: layoutFrom, to: layoutTo, style: null, fade: 1 }];
     for (const piece of pieces) {
       for (const band of lineBands(
         text.layout,
@@ -7900,6 +8033,7 @@ function selectedBands(line: LineBox, options: PaintOptions): SelectedBand[] {
           width: Math.ceil(band.width),
           height,
           style: piece.style,
+          fade: piece.fade,
           layout: text.layout,
         });
       }
@@ -7908,43 +8042,67 @@ function selectedBands(line: LineBox, options: PaintOptions): SelectedBand[] {
   return out;
 }
 
+/** A stretch of a line's selected text, in the layout's offsets, that one
+ *  `::selection` styles and the inline boxes around it fade alike. */
+interface SelectionPiece {
+  from: number;
+  to: number;
+  style: SelectionStyle | null;
+  fade: number;
+}
+
 /**
  * A line's selected text, `from` to `to` in the layout's offsets, cut where
- * the `::selection` over it changes: a run's is its element's, and a run of
- * no element's — an inline box's edge, laid out as a spacer — the one
- * beside it, so a styled band has no palette-coloured gap at a `<span>`.
+ * the `::selection` over it changes, or how much the inline boxes around it
+ * fade it (`textFade`): a run's are its element's, and a run of no
+ * element's — an inline box's edge, laid out as a spacer — the one beside
+ * it, so a styled band has no palette-coloured gap at a `<span>`. Null
+ * where no rule styles a selection and no box around the text fades it,
+ * which is one piece.
  */
-function stylePieces(
+function selectionPieces(
   text: LineText,
   natural: LineText['layout']['lines'][number],
   from: number,
   to: number,
-  styler: SelectionStyler,
-): { from: number; to: number; style: SelectionStyle | null }[] {
+  styler: SelectionStyler | null,
+): SelectionPiece[] | null {
   const runs = natural.runs
     .filter((run) => run.end > from && run.start < to)
     .sort((a, b) => a.start - b.start);
   const boxAt = text.spans.boxAt;
-  const styles: (SelectionStyle | null | undefined)[] = runs.map((run) => {
+  const styles: (SelectionStyle | null | undefined)[] = [];
+  const fades: (number | undefined)[] = [];
+  let faded = false;
+  for (const run of runs) {
     const box = boxAt?.call(text.spans, run.start) ?? null;
-    return box ? styler(box) : undefined;
-  });
-  for (let i = 1; i < styles.length; i += 1) {
+    styles.push(box ? (styler?.(box) ?? null) : undefined);
+    const fade = box ? textFade(box) : undefined;
+    if (fade !== undefined && fade < 1) faded = true;
+    fades.push(fade);
+  }
+  if (!styler && !faded) return null;
+  for (let i = 1; i < runs.length; i += 1) {
     if (styles[i] === undefined) styles[i] = styles[i - 1];
+    if (fades[i] === undefined) fades[i] = fades[i - 1];
   }
-  for (let i = styles.length - 2; i >= 0; i -= 1) {
+  for (let i = runs.length - 2; i >= 0; i -= 1) {
     if (styles[i] === undefined) styles[i] = styles[i + 1];
+    if (fades[i] === undefined) fades[i] = fades[i + 1];
   }
-  const out: { from: number; to: number; style: SelectionStyle | null }[] = [];
+  const out: SelectionPiece[] = [];
   runs.forEach((run, i) => {
     const style = styles[i] ?? null;
+    const fade = fades[i] ?? 1;
     const last = out[out.length - 1];
-    if (last && last.style === style) last.to = Math.min(to, run.end);
-    else {
+    if (last && last.style === style && last.fade === fade) {
+      last.to = Math.min(to, run.end);
+    } else {
       out.push({
         from: Math.max(from, run.start),
         to: Math.min(to, run.end),
         style,
+        fade,
       });
     }
   });
@@ -7981,7 +8139,9 @@ function recoloredBands(
  * text shadow, since a layout draws in its runs' own colours. Drawn over
  * rather than in place of the text, the old glyphs' edges showed round the
  * new ones. Where the context cannot clip or cast, the text keeps its own
- * colours.
+ * colours. A band's colour is faded as the inline boxes around its text
+ * fade it, as the glyphs it replaces were (`fadeRun`) — but by a context
+ * that casts from what it draws, which casts from those faded glyphs.
  */
 function drawRecolored(
   ctx: PaintContext,
@@ -8023,8 +8183,11 @@ function drawRecolored(
     0.01,
   );
   const colors = new Map<string, SelectedBand[]>();
+  const inked = castsFromInk(ctx);
   for (const band of bands) {
-    const color = band.style!.color!;
+    const color = inked
+      ? band.style!.color!
+      : fadeColor(band.style!.color!, band.fade);
     const group = colors.get(color);
     if (group) group.push(band);
     else colors.set(color, [band]);

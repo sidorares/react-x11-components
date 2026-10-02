@@ -101,6 +101,20 @@ export function blend(a: string, b: string, t: number): string | null {
   return serialize(rgb, alpha);
 }
 
+/**
+ * A colour with its alpha multiplied by `by`: what the opacity of an
+ * element around a thing fades it to, where it is drawn on its own rather
+ * than in its element's group (CSS Color 4, 3.2). The colour as it was
+ * where this cannot read it.
+ */
+export function fadeColor(color: string, by: number): string {
+  if (!(by < 1)) return color;
+  const read = readRgba(color);
+  if (!read) return color;
+  const alpha = read.a * Math.max(0, by);
+  return alpha > 0 ? serialize(read.rgb, alpha) : 'transparent';
+}
+
 function scaled(c: Triple, k: number): Triple {
   return [c[0] * k, c[1] * k, c[2] * k];
 }

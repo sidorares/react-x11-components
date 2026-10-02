@@ -1583,6 +1583,19 @@ until core gives them a group of their own (`docs/prd-html-animations.md`
 the opposite of the in-process server's here: measure a new surface on
 macOS before taking a composite for the cheap side.
 
+**An inline element's opacity is in the colours its text is set in.**
+What an inline box holds is drawn on its block's lines, and a paragraph's
+text is one batch of glyphs, so the fade of the inline boxes around a run
+goes into the run's colours where the run is made (`collect`, `fadeRun`).
+**Anything that makes a run again folds the fade in again** —
+`restyledRun` and `firstLineColour` for a first line, `reinked` for a
+restyle in place, which compares a run with what its style makes, fade
+and all, and re-inks every run under an inline box whose opacity changed
+— or that text is drawn at full strength with nothing failing. What else
+is on the lines is faded where it is painted (`inlineFade`). Do not fade
+text through the context's alpha: ntk's glyphs do not take it, so text an
+element fades that way is drawn at full strength on X11 and Wayland.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

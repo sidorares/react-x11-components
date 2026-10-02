@@ -954,6 +954,62 @@ export async function fillsIn(source: string, color: string): Promise<Fill[]> {
   return (await fillsOf(view(node))).filter((f) => f.style === ink);
 }
 
+/** The element's pixels, as the server has them. */
+export async function snapshot(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+): Promise<Uint8ClampedArray> {
+  const { abs } = el as unknown as DrawnNode;
+  await act();
+  return new Promise((ok, fail) =>
+    (
+      result.ctx as unknown as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+          cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+        ): void;
+      }
+    ).getImageData(abs.x, abs.y, abs.width, abs.height, (e, d) =>
+      e ? fail(e) : ok(d.data),
+    ),
+  );
+}
+
+/** What a document built again from its sheets draws: what a change made
+ *  in place has to come to. */
+export async function rebuilt(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+): Promise<Uint8ClampedArray> {
+  (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
+  return snapshot(result, el);
+}
+
+/** How many bytes two snapshots differ in. An assertion on the arrays
+ *  themselves diffs them when it fails, and a page of pixels diffed runs
+ *  the test process out of memory before it says anything. */
+export function bytesApart(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+  let n = Math.abs(a.length - b.length);
+  const end = Math.min(a.length, b.length);
+  for (let i = 0; i < end; i += 1) if (a[i] !== b[i]) n += 1;
+  return n;
+}
+
+/** The box tree, to tell a restyle in place from a document built again. */
+export const treeOf = (el: HtmlViewNode) =>
+  (el as unknown as { _tree: unknown })._tree;
+
+/** A logical window point inside an element of the document. */
+export function pointIn(el: HtmlViewNode, id: string): [number, number] {
+  const target = findById(el.document, id)!;
+  const rect = el.elementRect(target)!;
+  const { abs } = el as unknown as DrawnNode;
+  return [abs.x + rect.x + rect.width / 2, abs.y + rect.y + rect.height / 2];
+}
+
 type DocElement = Parameters<HtmlViewNode['elementRect']>[0];
 
 export function findById(node: unknown, id: string): DocElement | null {

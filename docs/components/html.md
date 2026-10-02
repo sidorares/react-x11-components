@@ -888,8 +888,16 @@ thing drawn is faded on its own, so where two of its boxes overlap the
 lower shows through: those contexts draw a surface at more cost than
 drawing what is on it again, and fade a group well only once they can draw
 one themselves. A box fixed to the viewport inside one fades each thing
-too. A block inside an inline element is faded with it, and the inline
-element's own text is not — `visibility` — a
+too. An inline element under 1 fades what it holds: its text, with the
+decorations, shadows and selection drawn with it, its background, borders
+and outline, the inline-blocks and images on its lines, and a block inside
+it. All but the block are drawn on its block's lines, where a paragraph's
+text is one batch of glyphs that no context fades a part of, so each is
+faded on its own, the text in the colours it is set in, and its background
+shows through its text where a browser's group would not let it. The
+floats and positioned boxes in it are faded as an element's are, and a
+hover or an animation that changes its opacity sets its text again in the
+new colours where it is, as a change of colour does — `visibility` — a
 hidden element keeps its room and draws nothing, its text included, and a
 visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
