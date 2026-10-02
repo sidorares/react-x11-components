@@ -178,10 +178,16 @@ import type { FocusStop } from './focus.js';
 import type { BareField, ControlRect } from './controls.js';
 import { decodesImageType } from './image-types.js';
 import { ResourceStore } from './resources.js';
-import type { ResourceRequest, ResourceResult } from './resources.js';
+import type {
+  ResourceRequest,
+  ResourceResult,
+  VideoSource,
+} from './resources.js';
 import { ImageSources } from './srcset.js';
 import type { SourceChanges } from './srcset.js';
 import { atDensity } from './svg.js';
+import { cutByFixed, mediaRectsOf, videoCandidates } from './media.js';
+import type { MediaRect } from './media.js';
 import type { IntrinsicSize } from './svg.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace } from './fonts.js';
@@ -227,6 +233,14 @@ export interface HtmlViewProps {
   /** Where the real widgets go, in the element's own coordinates and in
    *  logical pixels — the unit the style that mounts each one is in. */
   onControls?: (rects: ControlRect[]) => void;
+  /**
+   * Where a `<video>`'s player goes and what it plays (`media.ts`), in the
+   * same space as `onControls`: reported after a layout that moved one, a
+   * source the host answered or the player failed on, and a scroll that
+   * brought a box fixed to the viewport over one. Absent, no video source
+   * is asked for, and every video is its poster.
+   */
+  onMedia?: (rects: MediaRect[]) => void;
   /**
    * The document's focusable areas, in the order Tab reaches them
    * (`focus.ts`): reported after a layout or a restyle that changed which
@@ -471,6 +485,16 @@ export class HtmlViewNode extends Node {
   private _restyleOnly: Set<Element> | null = null;
   private _scriptsSeen = new WeakSet<Element>();
   private _controls: ControlRect[] = [];
+  /** The players mounted over the document (`media.ts`): where layout put
+   *  each, in device pixels, before the boxes fixed to the viewport cut
+   *  them; what `onMedia` was last told; and the elements they are over,
+   *  for the paint. */
+  private _mediaLaid: MediaRect[] = [];
+  private _media: MediaRect[] = [];
+  private _mounted: ReadonlySet<Element> = new Set();
+  /** Each video's size once its player knows it, in CSS pixels: its
+   *  intrinsic size from then on, where its poster's was (HTML 4.8.11.6). */
+  private _videoSizes = new WeakMap<Element, IntrinsicSize>();
   /** The focusable areas last reported (`_reportStops`), and where the
    *  watched ones were. */
   private _stops: readonly FocusStop[] = [];
@@ -491,7 +515,10 @@ export class HtmlViewNode extends Node {
         // the box tree is what has to be rebuilt — not merely repainted.
         // Either arriving after first paint is the ordinary case, not an
         // error path: a host on a network answers every request that way.
-        this._invalidate(what === 'stylesheet' ? Stale.Style : Stale.Boxes);
+        // A video's source changes no box: a player goes over one.
+        if (what === 'video') this._reportMedia();
+        else
+          this._invalidate(what === 'stylesheet' ? Stale.Style : Stale.Boxes);
       },
       this._urls,
     );
@@ -1387,7 +1414,7 @@ export class HtmlViewNode extends Node {
             cascade,
             kept,
             scale: this._scale,
-            imageSize: (el) => this._imageSize(el),
+            imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
             urlSize: (url) => this._resources.imageSize(url),
             faceAscent: (style) => {
               const fonts = this._fonts();
@@ -1462,6 +1489,7 @@ export class HtmlViewNode extends Node {
           this._sizes.delete(this._sizes.keys().next().value!);
         }
         this._reportControls();
+        this._reportMedia();
         this._reportStops();
       }
       if (
@@ -1615,6 +1643,112 @@ export class HtmlViewNode extends Node {
     if (sameRects(rects, this._controls)) return;
     this._controls = rects;
     report(rects);
+  }
+
+  /**
+   * The players a laid-out document mounts, to `onMedia` where they changed:
+   * each `<video>` a sibling over the document can show, with the source
+   * the host answered for it (`media.ts`).
+   */
+  private _reportMedia(): void {
+    const tree = this._tree;
+    if (!tree || !this._props().onMedia) return;
+    this._mediaLaid = tree.media.length
+      ? mediaRectsOf(tree, this._scale, (el) => this._videoOf(el))
+      : [];
+    const mounted = new Set(this._mediaLaid.map((r) => r.element));
+    if (!sameElements(mounted, this._mounted)) {
+      // the frame a video with no poster is drawn in goes, or comes back
+      this._mounted = mounted;
+      this.invalidate(false, this, 'content');
+    }
+    this._publishMedia();
+  }
+
+  /**
+   * The players as they are now, to `onMedia` where they changed: cut by
+   * the boxes fixed to the viewport where the scroll has them, and in
+   * logical pixels. Asked again at each paint of a document that has both,
+   * since a scroll moves one over the other and lays nothing out.
+   */
+  private _publishMedia(): void {
+    const tree = this._tree;
+    const report = this._props().onMedia;
+    if (!tree || !report) return;
+    const fixed = FIXED_BOXES.get(tree);
+    const shift = fixed ? this._fixedShift() : null;
+    const s = this._scale;
+    const rects = this._mediaLaid.map((laid) => {
+      let r = laid;
+      if (fixed) {
+        const shows = laid.clip ?? laid;
+        const cut = cutByFixed(shows, fixed, shift);
+        if (cut === 'hidden') r = { ...laid, hidden: true };
+        else if (!sameClip(cut, shows)) r = { ...laid, clip: cut };
+      }
+      if (s === 1) return r;
+      return {
+        ...r,
+        x: r.x / s,
+        y: r.y / s,
+        width: r.width / s,
+        height: r.height / s,
+        ...(r.radius !== undefined && { radius: r.radius / s }),
+        ...(r.clipRadius !== undefined && { clipRadius: r.clipRadius / s }),
+        ...(r.clip && {
+          clip: {
+            x: r.clip.x / s,
+            y: r.clip.y / s,
+            width: r.clip.width / s,
+            height: r.clip.height / s,
+          },
+        }),
+      };
+    });
+    if (sameMedia(rects, this._media)) return;
+    this._media = rects;
+    report(rects);
+  }
+
+  /** The source a `<video>` plays: the first of its sources the host
+   *  answered and no player has failed on, each asked for in turn. Null
+   *  while one ahead of it is still being answered, and where none is
+   *  left. */
+  private _videoOf(el: Element): { source: VideoSource; url: string } | null {
+    for (const { url, type } of videoCandidates(el)) {
+      if (this._resources.video(url) === undefined) {
+        this._resources.requestVideo(url, type, el);
+      }
+      const answer = this._resources.video(url);
+      if (answer === 'pending') return null;
+      if (answer === undefined || answer === 'failed') continue;
+      return { source: answer, url };
+    }
+    return null;
+  }
+
+  /**
+   * A player knows the size of what it plays (`onLoadedMetadata`), in CSS
+   * pixels: the video's intrinsic size from now on, as HTML has it, so a
+   * box that sets neither side takes the video's and one that sets a side
+   * takes its ratio.
+   */
+  mediaLoaded(element: Element, width: number, height: number): void {
+    if (!(width > 0 && height > 0)) return;
+    const was = this._videoSizes.get(element);
+    if (was?.width === width && was.height === height) return;
+    this._videoSizes.set(element, { width, height, ratio: width / height });
+    this._invalidate(Stale.Boxes, EMPTY_SET);
+  }
+
+  /** A player could not play the source it was handed — a format it has no
+   *  decoder for, a URL that did not answer, a display with no player: the
+   *  next source's turn, and the poster where there is none. */
+  mediaFailed(element: Element, url: string): void {
+    this._resources.failVideo(url);
+    if (this._videoSizes.delete(element))
+      this._invalidate(Stale.Boxes, EMPTY_SET);
+    else this._reportMedia();
   }
 
   /**
@@ -2707,6 +2841,8 @@ export class HtmlViewNode extends Node {
       }
     }
     if (moved.length || widgets) this._reportControls();
+    // a player over what moved, faded or came over it
+    if (tree.media.length) this._reportMedia();
     // which areas are visible, and where the watched ones are
     this._reportStops();
     if (reoffer) this.spritesChanged();
@@ -3482,6 +3618,9 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
     if (!tree) return;
+    // a scroll moves the boxes fixed to the viewport over the players and
+    // lays nothing out: where they are is asked as it is painted
+    if (this._mediaLaid.length && FIXED_BOXES.has(tree)) this._publishMedia();
     const range = this.selectionRange;
     // Culling against the damage is what makes an expose of a strip cost the
     // strip rather than the document. `paintDamage()` is null when the whole
@@ -3549,6 +3688,7 @@ export class HtmlViewNode extends Node {
         const url = box.el ? this._imageUrl(box.el) : CONTENT_IMAGES.get(box);
         return url === undefined ? null : this._resources.image(url);
       },
+      mounted: this._mounted,
       backgroundImageFor: (url) => {
         const image = this._resources.image(url);
         const size = image ? this._resources.imageSize(url) : null;
@@ -3854,6 +3994,46 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       return false;
     }
   }
+  return true;
+}
+
+function sameMedia(a: MediaRect[], b: MediaRect[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const p = a[i];
+    const q = b[i];
+    if (
+      p.element !== q.element ||
+      p.source !== q.source ||
+      p.url !== q.url ||
+      p.x !== q.x ||
+      p.y !== q.y ||
+      p.width !== q.width ||
+      p.height !== q.height ||
+      p.fit !== q.fit ||
+      p.radius !== q.radius ||
+      p.clipRadius !== q.clipRadius ||
+      p.opacity !== q.opacity ||
+      p.hidden !== q.hidden ||
+      p.autoPlay !== q.autoPlay ||
+      p.loop !== q.loop ||
+      p.muted !== q.muted ||
+      p.controls !== q.controls ||
+      p.label !== q.label ||
+      !sameClip(p.clip, q.clip)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameElements(
+  a: ReadonlySet<Element>,
+  b: ReadonlySet<Element>,
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const el of a) if (!b.has(el)) return false;
   return true;
 }
 

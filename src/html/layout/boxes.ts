@@ -854,6 +854,9 @@ export interface BoxTree {
   styles: Map<Element, { style: ComputedStyle; inFlex: boolean }>;
   /** Every replaced box that needs a real widget, in document order. */
   controls: Box[];
+  /** Every `<video>`'s box, in document order: what a player may be
+   *  mounted over (`media.ts`). */
+  media: Box[];
   /** Every box carrying an `href`, for click and hover. */
   links: Box[];
   /** Every box of an element whose markup makes it focusable — a link, a
@@ -1032,6 +1035,7 @@ class Builder {
    *  most text boxes repeat it and add nothing to `_textStyles`. */
   private _lastTextStyle: ComputedStyle | null = null;
   private _controls: Box[] = [];
+  private _media: Box[] = [];
   private _links: Box[] = [];
   private _focusables: Box[] = [];
   private _backgrounds: Box[] = [];
@@ -1110,6 +1114,7 @@ class Builder {
       textStyles: this._textStyles,
       styles: this._styles,
       controls: this._controls,
+      media: this._media,
       links: this._links,
       focusables: this._focusables,
       backgrounds: this._backgrounds,
@@ -1515,6 +1520,7 @@ class Builder {
     const box = new Box('replaced', el, style);
     box.replaced = replaced;
     into.append(box);
+    if (tag === 'video') this._media.push(box);
     if (focusableElement(el, tag)) this._focusables.push(box);
     if (namesImages(style)) this._backgrounds.push(box);
     if (style.position === 'absolute' || style.position === 'fixed')

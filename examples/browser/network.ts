@@ -474,7 +474,7 @@ export function resourceResult(
 
 /**
  * What a secure page may ask an insecure origin for (W3C Mixed Content,
- * Level 2): the URL to ask for, or null for nothing. An image is
+ * Level 2): the URL to ask for, or null for nothing. An image or a video is
  * upgradeable, asked for over `https:` instead, as Chrome does; a
  * stylesheet or a font is blockable, and not asked for at all. So a page
  * served over `https:` that imports Google Fonts over `http:`, as the Zen
@@ -484,7 +484,7 @@ export function resourceResult(
  */
 export function mixedContent(
   url: string,
-  kind: ResourceKind,
+  kind: ResourceKind | 'video',
   page: string,
 ): string | null {
   if (schemeOf(page) !== 'https' || schemeOf(url) !== 'http') return url;
@@ -501,7 +501,40 @@ export function mixedContent(
   } catch {
     return null;
   }
-  return kind === 'image' ? `https:${url.slice('http:'.length)}` : null;
+  return kind === 'image' || kind === 'video'
+    ? `https:${url.slice('http:'.length)}`
+    : null;
+}
+
+/**
+ * Containers the platform's player has no reader for — AVFoundation opens
+ * MP4 and QuickTime, and neither WebM nor Ogg — so a `<source>` of one is
+ * declined and the next asked for, rather than handed to a player that
+ * fails on it.
+ */
+const UNPLAYABLE = new Set(['video/webm', 'video/ogg', 'application/ogg']);
+
+/**
+ * What a page's `<video>` plays, where the platform has a player (core's
+ * `useSupports('mediaPlayback')`): the URL itself, for the player to open —
+ * nothing here fetches it — under the rules a subresource is: upgraded on a
+ * secure page, `file:` only for a `file:` page, and no other scheme. Null
+ * where none of that holds, or its `<source type>` is a container the
+ * player does not read, which leaves the video to its next source or its
+ * poster.
+ */
+export function videoSource(
+  url: string,
+  type: string | undefined,
+  page: string,
+): string | null {
+  const media = (type ?? '').split(';')[0].trim().toLowerCase();
+  if (UNPLAYABLE.has(media)) return null;
+  const allowed = mixedContent(url, 'video', page);
+  if (allowed === null) return null;
+  const scheme = schemeOf(allowed);
+  if (scheme === 'file') return schemeOf(page) === 'file' ? allowed : null;
+  return scheme === 'http' || scheme === 'https' ? allowed : null;
 }
 
 /**

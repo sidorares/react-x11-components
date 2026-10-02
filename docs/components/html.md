@@ -25,27 +25,27 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 
 ## Props
 
-| Prop              | Type                                             | What it does                                                                                                                                                                 |
-| ----------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `source`          | `string`                                         | The HTML. Required.                                                                                                                                                          |
-| `partial`         | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming). |
-| `selectable`      | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                     |
-| `animate`         | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                   |
-| `reducedMotion`   | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).         |
-| `stylesheet`      | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                   |
-| `charset`         | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.        |
-| `baseUrl`         | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.        |
-| `onResource`      | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading. May return a promise. **Absent, nothing loads.**                                  |
-| `onScript`        | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                |
-| `onLink`          | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.          |
-| `onDocument`      | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                   |
-| `onControlChange` | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                    |
-| `onSubmit`        | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                            |
-| `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                         |
-| `fontFamily`      | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                   |
-| `monoFamily`      | `string`                                         | Code font, and a `<textarea>`'s: the generic `monospace` where the UA sheet names it — see [Fonts](#fonts). Default `'monospace'` — there is no theme token for it.          |
-| `selectionColor`  | `string`                                         | Selection band fill where no `::selection` rule reaches the text. Default: theme accent at 35% opacity.                                                                      |
-| `style`           | `Style \| Style[]`                               | The root `<box>`'s style.                                                                                                                                                    |
+| Prop              | Type                                             | What it does                                                                                                                                                                              |
+| ----------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `source`          | `string`                                         | The HTML. Required.                                                                                                                                                                       |
+| `partial`         | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming).              |
+| `selectable`      | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                  |
+| `animate`         | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                                |
+| `reducedMotion`   | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                      |
+| `stylesheet`      | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                                |
+| `charset`         | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                     |
+| `baseUrl`         | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                     |
+| `onResource`      | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.** |
+| `onScript`        | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                             |
+| `onLink`          | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.                       |
+| `onDocument`      | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                |
+| `onControlChange` | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                 |
+| `onSubmit`        | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                         |
+| `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                                      |
+| `fontFamily`      | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                                |
+| `monoFamily`      | `string`                                         | Code font, and a `<textarea>`'s: the generic `monospace` where the UA sheet names it — see [Fonts](#fonts). Default `'monospace'` — there is no theme token for it.                       |
+| `selectionColor`  | `string`                                         | Selection band fill where no `::selection` rule reaches the text. Default: theme accent at 35% opacity.                                                                                   |
+| `style`           | `Style \| Style[]`                               | The root `<box>`'s style.                                                                                                                                                                 |
 
 ## The handle
 
@@ -631,6 +631,87 @@ also written to its `value` attribute, as it always was, for a handler that
 reads it off the element. A checkbox, a radio and a `<select>` do keep what
 they hold in the DOM — `checked` and `selected` — because `:checked` is a
 selector documents really use.
+
+## Video
+
+```jsx
+const plays = useSupports('mediaPlayback');
+<Html
+  source={page}
+  baseUrl={url}
+  onResource={(r) =>
+    r.kind === 'video'
+      ? plays && allowed(r.url)
+        ? { kind: 'video', src: r.url }
+        : null
+      : load(r)
+  }
+/>;
+```
+
+**A `<video>` is core's `<video>`, mounted over the box layout gave it**
+(react-x11 2.33.0, its `docs/architecture/video.md`, 8.2). A drawn video
+would be a picture of a video, as a drawn control would be a picture of a
+control, and core's element already does everything a player has to: it
+plays a file or a URL with the platform's player where there is one —
+AVFoundation on macOS — shows frames an application decodes on every
+backend, goes on a layer of its own on macOS when nothing is over it, and
+is drawn into the window when something is. So the document lays the
+video's box out and paints what it always did, its background, its border
+and its poster, and the player goes over the poster: transparent until it
+has a frame, and the picture from then on.
+
+**What it plays is the host's to answer**, through `onResource`, because
+nothing is fetched here: each source is asked for as `kind: 'video'` — the
+`src`, or else each `<source>` in turn with the `type` it gives — and the
+answer is one of
+
+| answer                      | what plays                                                                                                                                                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{ kind: 'video', src }`    | `src`, a path or a URL, opened by the platform's player itself. Ask `useSupports('mediaPlayback')` first: false on X11 and Wayland, where core refuses a `src` — and the document goes on to its next source, and then to its poster. |
+| `{ kind: 'video', frames }` | A `VideoFrames` sink (core's `useVideoFrames`, `createVideoFrames`) the host decodes the video into, an `ffmpeg` pipe or a decoder of its own. Shows on every backend.                                                                |
+| `null`                      | Nothing: the next `<source>` is asked for, and with none left the video is its poster.                                                                                                                                                |
+
+A `src` the player then fails on — a container it has no reader for, a URL
+that does not answer — is the next source's turn too, as HTML's `<source>`
+list goes. Handing over a `src` is the host letting the player make the
+request: the player fetches it, not this component, and with whatever
+policy the platform's player has.
+
+`autoplay`, `loop` and `muted` are handed to the player as the markup has
+them. **The video takes its stream's size** once the player knows it, as
+HTML has it: a box that sets neither side is the video's size, and one that
+sets a side takes its ratio, where it was its poster's, or 300×150.
+
+**A player is only mounted where one can stand for the video**, and the
+rest keep their posters:
+
+- **Nothing the document paints after the video may reach its picture.** A
+  player is over the whole document, so a caption laid across a video, a
+  play button over it or a gradient over a hero would be hidden under it.
+  The test is the one a [lifted animation](#what-renders)'s layer is held
+  to. A page that lays text over an autoplaying background video keeps that
+  video's poster.
+- **A box fixed to the viewport is asked about as the pane scrolls**: a
+  header that comes over a playing video cuts the player where it reaches
+  it, and one that reaches into its middle hides it for as long as it is
+  there, the poster showing in its place and the video playing on.
+- **What a rectangle cannot follow** — a transform that turns or scales the
+  video or a box around it, a `clip-path` or a mask, a video fixed to the
+  viewport, or corners of its own, or of a box around it that cuts it, that
+  are not all one circle — keeps the poster. A box that clips it cuts the
+  player, a card with round corners rounding it, and corners of its own
+  that are one circle round it.
+
+The picture is fitted by the video's `object-fit` — `contain`, from HTML's
+style sheet — and centred whatever `object-position` says. The opacity the
+document fades it by fades the player.
+
+**There are no `controls` drawn.** A press on a video with `controls` plays
+and pauses it, as one in a browser does; a press on one without goes to the
+document, so a drag across it selects the text around it. A transport bar
+is an application's to draw, around the document. `<audio>` is not a
+video, and plays nothing.
 
 ## Focus and the keyboard
 
@@ -1419,10 +1500,11 @@ by its lengths even when it is stretched; what falls past the box is cut.
 An `<object>` whose `data` is an image shows it, and its fallback content
 until then or when it is not one; an `<embed>` whose `src` is an image
 shows it, and a `<video>` its `poster`, contained in its box as HTML's
-style sheet has it. `<iframe>`, and a `<video>` or an `<embed>` with no
-image, are boxes of their `width` and `height` — 300×150 without them, as
-HTML sizes them — with nothing in them, because nothing is loaded or
-played.
+style sheet has it, and core's `<video>` over it where the host gives it
+something to play — see [Video](#video). `<iframe>`, and a `<video>` or an
+`<embed>` with no image, are boxes of their `width` and `height` — 300×150
+without them, as HTML sizes them — with nothing in them, because nothing is
+loaded.
 
 **Intrinsic sizes:** `width`, `min-width` and `max-width` take
 `fit-content`, `max-content` and `min-content` — Tailwind's `w-fit`, `w-max`
@@ -3062,8 +3144,10 @@ In the pane an `<Html>` is given the page's URL as `baseUrl`, and
 requests go to — the page streamed in as it arrives, then every stylesheet,
 image and `@font-face` font through `onResource`, a few requests a host at a
 time, and none of a secure page's stylesheets or fonts over an insecure
-connection, which a browser blocks as mixed content (its images are asked
-for over a secure one instead). A form's submission through `onSubmit` is a
+connection, which a browser blocks as mixed content (its images and videos
+are asked for over a secure one instead). On macOS a page's `<video>` is
+handed to AVFoundation by its URL, a WebM or an Ogg `<source>` passed over
+for the next. A form's submission through `onSubmit` is a
 navigation like a link's: a GET goes to the URL it wrote, and a POST sends
 its body, with the `Origin` and `Referer` of the page it was on, and becomes
 a step of the history that Reload sends again. A tab shows the page's

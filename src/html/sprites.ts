@@ -395,7 +395,7 @@ const overlaps = (a: Rect, b: Rect): boolean =>
  * or after it, for a box whose place in the paint order `paintedAfter`
  * cannot tell. A subtree whose ink misses the extent is passed over whole.
  */
-function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
+export function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
   const path = new Set<Box>();
   for (let at = box.parent; at; at = at.parent) path.add(at);
   const stack: Box[] = [tree.root];

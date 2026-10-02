@@ -54,8 +54,14 @@ import { decodeIcon, iconCandidates } from './favicon.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
-import { Network, NetworkError, resourceResult, schemeOf } from './network.js';
-import type { DocumentResponse, PostData } from './network.js';
+import {
+  Network,
+  NetworkError,
+  resourceResult,
+  schemeOf,
+  videoSource,
+} from './network.js';
+import type { DocumentResponse, PostData, ResourceKind } from './network.js';
 import {
   BLANK,
   HOME,
@@ -137,6 +143,8 @@ interface Doc {
 export default function Page(props: PageProps): ReactElement {
   const { entryId, doc, url, loadSeq, zoom } = props;
   const cocoa = useSupports('nativeControls');
+  // whether a page's `<video>` is handed to the platform's player
+  const plays = useSupports('mediaPlayback');
   const [docs, setDocs] = useState<ReadonlyMap<number, Doc>>(new Map());
   const page = docs.get(doc) ?? null;
   const handle = useHtmlHandle();
@@ -239,14 +247,22 @@ export default function Page(props: PageProps): ReactElement {
   const inFlight = useRef(0);
   const onResource = useCallback(
     (request: ResourceRequest) => {
+      // a video is the player's to open, and nothing is fetched here
+      if (request.kind === 'video') {
+        const src = plays && videoSource(request.url, request.type, pageUrl);
+        return src ? { kind: 'video' as const, src } : null;
+      }
+      const kind = request.kind;
       inFlight.current += 1;
       setPending(inFlight.current);
-      return resource(request, pageUrl, requests.signal).finally(() => {
-        inFlight.current -= 1;
-        setPending(inFlight.current);
-      });
+      return resource(request.url, kind, pageUrl, requests.signal).finally(
+        () => {
+          inFlight.current -= 1;
+          setPending(inFlight.current);
+        },
+      );
     },
-    [pageUrl, requests],
+    [pageUrl, requests, plays],
   );
 
   // the title as the document states it, and its icon once its head is in
@@ -670,17 +686,13 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
 
 /** The subresource a page asked for, as `<Html>` takes it back. */
 async function resource(
-  request: ResourceRequest,
+  url: string,
+  kind: ResourceKind,
   page: string,
   signal: AbortSignal,
 ): Promise<ResourceResult | null> {
-  const fetched = await network.resource(
-    request.url,
-    request.kind,
-    page,
-    signal,
-  );
-  return fetched ? resourceResult(fetched, request.kind) : null;
+  const fetched = await network.resource(url, kind, page, signal);
+  return fetched ? resourceResult(fetched, kind) : null;
 }
 
 /** Decoded icons by URL, for every document this process shows: a site's

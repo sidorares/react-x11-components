@@ -1567,7 +1567,7 @@ test('a toast fixed to the viewport goes on a layer that stays where the viewpor
   const own = (fills: ReturnType<typeof recorder>['fills']) =>
     fills.filter((f) => f.w === 120 && f.h === 30);
   const drawn = recorder();
-  again.paint(drawn.ctx as never);
+  again.paint!(drawn.ctx as never);
   assert.deepStrictEqual(
     own(drawn.fills).map((f) => [f.x, f.y]),
     [[at.x, at.y]],
@@ -1823,7 +1823,7 @@ test('a `::before` or an `::after` whose animation a layer can carry is a sprite
   const own = (fills: ReturnType<typeof recorder>['fills']) =>
     fills.filter((f) => f.w === 20 && f.h === 20).length;
   const drawn = recorder();
-  spin.paint(drawn.ctx as never);
+  spin.paint!(drawn.ctx as never);
   assert.strictEqual(own(drawn.fills), 1, 'by its own paint');
   doc.el.spritesLifted(new Set([spin.key]));
   const hole = recorder();
@@ -2036,7 +2036,7 @@ test('a sprite paints its element as the document would, at full opacity and whe
   // every frame's
   assert.strictEqual(sprite.rect.x, abs.x);
   const { ctx, fills } = recorder();
-  sprite.paint(ctx as never);
+  sprite.paint!(ctx as never);
   const own = fills.filter((f) => f.w === 40 && f.h === 20);
   assert.strictEqual(own.length, 1, JSON.stringify(fills));
   assert.strictEqual(own[0].x, abs.x, 'drawn untranslated');

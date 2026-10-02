@@ -214,7 +214,7 @@ export function between(a: Rect, b: Rect): Rect {
 }
 
 /** Whether a clip leaves a rectangle whole. */
-function covers(clip: Rect, rect: Rect): boolean {
+export function covers(clip: Rect, rect: Rect): boolean {
   return (
     clip.x <= rect.x &&
     clip.y <= rect.y &&

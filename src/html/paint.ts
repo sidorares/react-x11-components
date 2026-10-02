@@ -108,6 +108,7 @@ import type {
   ShapeStyler,
 } from './layout/boxes.js';
 import type { SelectionStyle } from './css/cascade.js';
+import type { Element } from './dom.js';
 import {
   CLIPPED_TEXT,
   clipBoxOf,
@@ -263,6 +264,10 @@ export interface PaintOptions {
   selectionColor: string | null;
   /** A decoded image for an element, when the host has one. */
   imageFor(box: Box): unknown | null;
+  /** The `<video>`s a player is mounted over (`media.ts`), which draw no
+   *  frame where they have no poster: the player's picture is what goes
+   *  there. */
+  mounted?: ReadonlySet<Element>;
   /** A decoded `background-image`, with its size in CSS pixels, once it has
    *  arrived. An SVG may lack either dimension. */
   backgroundImageFor?(url: string): ({ image: unknown } & IntrinsicSize) | null;
@@ -4180,7 +4185,7 @@ function innerRadii(box: Box): Corners | null {
 
 /** The corners of a box's content edge, inside its borders and padding;
  *  null where every one of them is square. */
-function contentCorners(box: Box): Corners | null {
+export function contentCorners(box: Box): Corners | null {
   const corners = cornersOf(box.style, box.width, frameHeight(box));
   if (!corners) return null;
   const inner = insetCorners(
@@ -4198,7 +4203,7 @@ function contentCorners(box: Box): Corners | null {
 
 /** A box's corners in pixels: each one's horizontal and vertical radius,
  *  from the top left. */
-interface Corners {
+export interface Corners {
   x: [number, number, number, number];
   y: [number, number, number, number];
 }
@@ -7618,7 +7623,9 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   }
   // No image yet, or no image at all: a faint frame where it will be, so a
   // document with blocked resources still reads as a document with pictures
-  // in it rather than as one with holes.
+  // in it rather than as one with holes — but for a video a player shows,
+  // which is no hole.
+  if (box.el && options.mounted?.has(box.el)) return;
   if (!box.style.backgroundColor) {
     ctx.fillStyle = box.style.color;
     const t = 1;
