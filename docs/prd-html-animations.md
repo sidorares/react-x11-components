@@ -573,6 +573,14 @@ In order, each step useful on its own and measured before the next:
    paints of the document, each way, to 4–6 frames and 3 or 4 paints: the
    change that starts it, and the one that hands it back.
 
+   **And what is fixed to the viewport.** A toast, a banner or a modal
+   fixed to the viewport, or something in one, goes on a layer placed from
+   the viewport's corner, which stays there as the pane scrolls the
+   document under it. What is painted after it is asked about over the
+   whole document, since a scroll can take it anywhere over that, and what
+   is fixed after it where it is. A fading toast in a scrolling pane went
+   from 116–118 window frames in two seconds, still or scrolled, to none.
+
 6. **§5.3's Linux rung** only if step 1's measurements on Xorg say the
    resample is the cost.
 

@@ -2681,12 +2681,16 @@ export class HtmlViewNode extends Node {
     const live = this._timeline.live();
     if (!live.length) return null;
     const now = animationClock.now();
+    // the pane that scrolls the element, whose viewport a box fixed to it
+    // is drawn at
+    const viewport = this._viewport();
     const host: SpriteHost = {
       tree,
       cascade,
       timeline: this._timeline,
       now,
       scale: this.scale,
+      scrolls: viewport !== null,
       boxes: this._firstBoxesOf(tree),
       pseudoBox: (el, which) => this._pseudoBoxOf(tree, el, which),
       ended: (el, id) => this._endedSprites.get(el)?.has(id) ?? false,
@@ -2698,6 +2702,7 @@ export class HtmlViewNode extends Node {
       this._spriteGen,
       this._laidOutWidth,
       range ? `${range.start}-${range.end}` : '',
+      viewport ? 'scrolled' : '',
     ].join(':');
     let options: PaintOptions | null = null;
     let out: DocumentSprite[] | null = null;
@@ -2726,21 +2731,24 @@ export class HtmlViewNode extends Node {
         if (!offer.part) continue;
         // a box fixed to the viewport the scroll has brought within its
         // reach: the document draws it this frame, under that box or over
-        // it, as their order has it
-        if (offer.part.fixed.length) {
+        // it, as their order has it. One at the viewport keeps its place
+        // against them, and was asked about them once (`partOf`).
+        if (offer.part.fixed.length && !offer.part.atViewport) {
           if (shift === undefined) shift = this._fixedShift();
           if (fixedWithin(offer.part, shift)) continue;
         }
         const key = this._spriteKeyOf(element, pseudo);
         this._offered.set(key, { el: element, pseudo });
         const painted = (options ??= this._paintOptions(range, null));
+        // from the viewport's corner, for one the document draws there
+        const origin = offer.part.atViewport && viewport ? viewport : this.abs;
         (out ??= []).push(
           describe(
             offer.part,
             key,
             `${serialOf(lift.box)}:${stamp}`,
-            this.abs.x,
-            this.abs.y,
+            origin.x,
+            origin.y,
             now,
             (ctx, box) =>
               paintLiftedBox(ctx as PaintContext, tree, box, painted),

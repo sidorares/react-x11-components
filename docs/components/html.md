@@ -1444,10 +1444,10 @@ compositor:
   with its element at every frame of the element's;
 - it is a box of its own — an element's, or its `::before`'s or
   `::after`'s, as a spinner drawn by one is, but not an inline split
-  across lines — and is not fixed, masked, cut by a `clip-path` or drawn
-  against the viewport, and holds nothing fixed to it;
-- nothing it is inside fades, turns, masks, is cut by a `clip-path`, is
-  fixed, or runs an animation of its own. A box that clips it — an
+  across lines — and is not masked, cut by a `clip-path` or drawn against
+  the viewport, and holds nothing fixed to it unless it is fixed itself;
+- nothing it is inside fades, turns, masks, is cut by a `clip-path`, or
+  runs an animation of its own. A box that clips it — an
   `overflow` other than `visible`, a `clip` — cuts its layer to the same
   rectangle, so a carousel's slide or a marquee goes on a layer cut where
   the document cuts it; one with rounded corners cuts nothing so long as
@@ -1458,7 +1458,7 @@ compositor:
   outline of the stacking context it is in. What is painted before it is
   under its layer as it is under it.
 
-So a toast over the page, a panel fading in over text, a block that slides
+So a toast over the page, fixed or not, a panel fading in over text, a block that slides
 up over the paragraph after it, a spinner and a card turning pass, and a
 badge painted over a card it does not belong to leaves the card to the
 document. What is painted after it is asked about only where the element
@@ -1467,7 +1467,12 @@ animation makes a stacking context is painted with the positioned boxes,
 after the flow it is in (see `z-index`). A box fixed to the viewport is
 asked about every frame, since a scroll moves it over the document: while
 it is anywhere the element can be, the element is drawn in the document,
-over it or under it as their order has it. Where the element is not one of
+over it or under it as their order has it. An element fixed to the
+viewport itself — a toast, a banner, a modal that fades in — or inside
+one goes on a layer that stays where the viewport is while the pane
+scrolls the document under it; what the document paints after it is asked
+about over the whole document, where a scroll can take it, and what is
+fixed after it where it is. Where the element is not one of
 its stacking context's layers — one with a negative `z-index`, or in an
 inline box that is a stacking context — no ink but its own and its
 ancestors' may be within its reach, painted before it or after. The frames
@@ -2660,7 +2665,9 @@ changes — a spinner turning in a card that pulses — paints its layer again
 and samples none of its frames. A card that fades and lifts over 700 ms under the
 pointer painted 40 to 43 window frames and as many paints of the document
 on the clock, each way; lifted, it takes 4 to 6 frames and 3 or 4 paints,
-the change that starts it and the one that hands it back.
+the change that starts it and the one that hands it back. A toast fixed to
+the viewport and fading in a pane that scrolls the page painted 116 to 118
+window frames in two seconds, still or scrolled; lifted, none.
 
 ## Types
 

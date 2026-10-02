@@ -8,9 +8,10 @@
 // (docs/prd-html-animations.md §3): an element whose animations and
 // transitions set only `opacity` and the transform properties, one of them
 // a property, each running now, drawn in a box of its own, inside nothing
-// that fades, turns, masks or is fixed — a box that clips it cuts its
-// layer — and that nothing the document paints after it draws within
-// reach of while it runs. The last is the document's to answer — core's
+// that fades, turns or masks — a box that clips it cuts its layer, and one
+// fixed to the viewport, or in one, has its layer stay where the viewport
+// is — and that nothing the document paints after it draws within reach of
+// while it runs. The last is the document's to answer — core's
 // presenter cannot see inside the element — and it is answered in the
 // order the document paints (`paintedAfter`): the layer is over all of the
 // document, which is right for what is painted before the element and
@@ -40,6 +41,7 @@ import type { Box, BoxTree } from './layout/boxes.js';
 import {
   FIXED_BOXES,
   clipFor,
+  drawnAtViewport,
   drawsAgainstViewport,
   holds,
   ownBounds,
@@ -108,6 +110,9 @@ export interface SpriteHost {
   now: number;
   /** Device pixels to a CSS pixel. */
   scale: number;
+  /** Whether a pane scrolls the element, moving the document under what
+   *  is drawn at the viewport (`drawnAtViewport`). */
+  scrolls: boolean;
   /** Each element's first box (`HtmlViewNode._firstBoxesOf`). */
   boxes: ReadonlyMap<Element, Box>;
   /** An element's `::before` or `::after` box, where it has one. */
@@ -284,11 +289,13 @@ export function liftOf(
 }
 
 /**
- * Whether `box` can be drawn by a layer at all: a box of its own, not
- * fixed, drawing nothing against the viewport, inside nothing whose group,
- * matrix, clip path or mask would have to take the layer in — a box that
- * clips it cuts the layer instead (`clipFor`) — and inside no element whose
- * own animation runs, which may turn into any of those.
+ * Whether `box` can be drawn by a layer at all: a box of its own, drawing
+ * nothing against the viewport, inside nothing whose group, matrix, clip
+ * path or mask would have to take the layer in — a box that clips it cuts
+ * the layer instead (`clipFor`) — and inside no element whose own
+ * animation runs, which may turn into any of those. One fixed to the
+ * viewport, or in one that is, goes on a layer that stays where the
+ * viewport is (`Part.atViewport`).
  */
 function liftableBox(host: SpriteHost, box: Box): boolean {
   if (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break') {
@@ -297,19 +304,18 @@ function liftableBox(host: SpriteHost, box: Box): boolean {
   // a first letter is its element's text, and a pseudo-element of the
   // others is a box of its own
   if (box.pseudo === 'first-letter' || !box.parent) return false;
-  if (box.style.position === 'fixed' || drawsAgainstViewport(box)) {
-    return false;
-  }
+  if (drawsAgainstViewport(box)) return false;
   if (box.style.clipPath || masked(box.style)) return false;
   // one fixed to the viewport in it is drawn where the viewport is, which
-  // the layer does not follow
-  for (const fixed of FIXED_BOXES.get(host.tree) ?? NO_BOXES) {
-    if (holds(box, fixed)) return false;
+  // a layer the document scrolls does not follow
+  if (!drawnAtViewport(box)) {
+    for (const fixed of FIXED_BOXES.get(host.tree) ?? NO_BOXES) {
+      if (holds(box, fixed)) return false;
+    }
   }
   for (let at: Box | null = box.parent; at; at = at.parent) {
     const style = at.style;
     if (style.opacity < 1 || transformed(style)) return false;
-    if (style.position === 'fixed') return false;
     // a box that clips it cuts its layer to a rectangle (`clipFor`), which a
     // path or a mask is not
     if (style.clipPath || masked(style)) return false;
@@ -506,6 +512,10 @@ export interface Part {
    *  document: one within `extent` where the viewport has it now covers
    *  the element there, or ought to (`HtmlViewNode.sprites`). */
   fixed: readonly Box[];
+  /** Whether it is drawn where the viewport is (`drawnAtViewport`), as a
+   *  toast or a banner fixed to it is: its layer stays there as the pane
+   *  scrolls the document under it, from the viewport's corner. */
+  atViewport: boolean;
   /** Its frames as sampled, kept by what they are sampled from. */
   sampled: Sampled;
 }
@@ -597,9 +607,19 @@ export function partOf(
   if (clip === null) return null;
   const shows = clip ? meet(extent, clip) : extent;
   if (!shows) return null;
-  // what is painted before it is under the layer as it is under it, and
-  // what is painted after it must not be
-  if (paintedAfter(box, shows) ?? crowded(tree, box, shows)) return null;
+  // What is painted before it is under the layer as it is under it, and
+  // what is painted after it must not be. One at the viewport keeps its
+  // place against what is fixed there, and the scroll takes it anywhere
+  // over the rest of the document.
+  const atViewport = drawnAtViewport(box);
+  const over =
+    atViewport && host.scrolls ? unionRect(shows, inkOf(tree.root)) : shows;
+  if (
+    paintedAfter(box, over, atViewport ? shows : null) ??
+    crowded(tree, box, over)
+  ) {
+    return null;
+  }
   const animations: DocumentSpriteAnimation[] = [];
   const begins: number[] = [];
   lift.tracks.forEach((track, i) => {
@@ -641,7 +661,18 @@ export function partOf(
     clip: clip ?? null,
     extent: shows,
     fixed: FIXED_BOXES.get(tree) ?? NO_BOXES,
+    atViewport,
     sampled,
+  };
+}
+
+/** Everywhere a box and what it holds put ink. */
+function inkOf(box: Box): Rect {
+  return {
+    x: box.boundsX,
+    y: box.boundsY,
+    width: box.boundsWidth,
+    height: box.boundsHeight,
   };
 }
 

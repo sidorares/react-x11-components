@@ -1347,8 +1347,6 @@ function paintPlaced(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (fade) ctx.restore();
 }
 
-/** `paintPlaced` at full opacity: a box drawn on a surface of its own, which
- *  is faded as it is composited (`paintRaster`). */
 /**
  * A box on a layer of its own (`src/html/sprites.ts`): it and all it holds,
  * as laid out, at full opacity and through no matrix — the layer carries
@@ -1362,8 +1360,16 @@ export function paintLiftedBox(
   options: PaintOptions,
 ): void {
   if (!canFill(ctx)) return;
+  // where the document draws it: at the viewport, for one fixed to it or in
+  // one that is (`atViewport`)
+  const viewport = options.viewport;
+  const placed =
+    viewport && !options.atViewport && drawnAtViewport(box)
+      ? { originX: viewport.x, originY: viewport.y, atViewport: true }
+      : null;
   paintUnfaded(ctx, box, {
     ...options,
+    ...placed,
     damage: null,
     clips: [],
     lifted: null,
@@ -1377,6 +1383,8 @@ export function paintLiftedBox(
   });
 }
 
+/** `paintPlaced` at full opacity: a box drawn on a surface of its own, which
+ *  is faded as it is composited (`paintRaster`). */
 function paintUnfaded(
   ctx: PaintContext,
   box: Box,
@@ -3448,6 +3456,16 @@ export function fixedToViewport(box: Box): boolean {
   return true;
 }
 
+/** Whether a box is drawn where the viewport is (`atViewport`): fixed to
+ *  it, or in a box that is. Such a box keeps its place on the screen as
+ *  the pane scrolls the document under it. */
+export function drawnAtViewport(box: Box): boolean {
+  for (let at: Box | null = box; at?.parent; at = at.parent) {
+    if (at.style.position === 'fixed' && fixedToViewport(at)) return true;
+  }
+  return false;
+}
+
 /** Whether a box is the containing block of the fixed boxes in it: a
  *  transformed box, one with layout or paint containment, or one that
  *  names either in `will-change` (`willHold`). */
@@ -4311,7 +4329,11 @@ function gatherLayers(box: Box, context: Box, into: Box[]): void {
  * (`NEGATIVE`), one an inline box paints on its lines — and the caller has
  * to ask of every box instead.
  */
-export function paintedAfter(box: Box, extent: Rect): boolean | null {
+export function paintedAfter(
+  box: Box,
+  extent: Rect,
+  fixedExtent: Rect | null = null,
+): boolean | null {
   let item = box;
   while (item.parent) {
     // its context: the nearest box that paints layers, which has it among
@@ -4323,7 +4345,11 @@ export function paintedAfter(box: Box, extent: Rect): boolean | null {
     if (!context || index < 0) return null;
     for (let k = index + 1; k < list!.length; k += 1) {
       const later = list![k];
-      if (fixedToViewport(later)) continue;
+      // one fixed to the viewport is asked about at every frame, where the
+      // scroll has it (`fixedWithin`), but by a box at the viewport too,
+      // which it keeps its place against
+      const fixed = fixedToViewport(later);
+      if (fixed && !fixedExtent) continue;
       if (!(later.boundsWidth > 0 && later.boundsHeight > 0)) continue;
       const ink = {
         x: later.boundsX,
@@ -4331,7 +4357,7 @@ export function paintedAfter(box: Box, extent: Rect): boolean | null {
         width: later.boundsWidth,
         height: later.boundsHeight,
       };
-      if (meets(ink, extent)) return true;
+      if (meets(ink, fixed ? fixedExtent! : extent)) return true;
     }
     if (outlineMeets(context, extent)) return true;
     item = context;

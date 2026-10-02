@@ -1534,6 +1534,122 @@ test('a box fixed to the viewport keeps an element in the document while the scr
   assert.strictEqual(offered(), 1, 'past it');
 });
 
+test('a toast fixed to the viewport goes on a layer that stays where the viewport is as the pane scrolls the document under it, and is a hole where the document draws it', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+      'body { margin: 0 } #tall { height: 1000px }' +
+      '#toast { position: fixed; bottom: 10px; left: 10px; width: 120px;' +
+      ' height: 30px; background: navy; z-index: 10;' +
+      ' animation: fade 1s infinite }</style>' +
+      '<div id="tall"></div><div id="toast"></div>',
+    400,
+    inPane,
+  );
+  const pane = screen.getByTestName('pane') as DrawnNode & {
+    scrollTo(y: number): void;
+  };
+  const toast = boxOf(doc.el, 'toast');
+  const at = {
+    x: pane.abs.x + toast.x,
+    y: pane.abs.y + toast.y,
+    width: 120,
+    height: 30,
+  };
+  const [sprite] = doc.el.sprites()!;
+  assert.deepStrictEqual(sprite.rect, at, 'at the viewport');
+  // and still there after a scroll, which moves the document under it
+  await act(async () => pane.scrollTo(300));
+  const [again] = doc.el.sprites()!;
+  assert.deepStrictEqual(again.rect, at, 'where the viewport is');
+  // drawn there by its own paint
+  const own = (fills: ReturnType<typeof recorder>['fills']) =>
+    fills.filter((f) => f.w === 120 && f.h === 30);
+  const drawn = recorder();
+  again.paint(drawn.ctx as never);
+  assert.deepStrictEqual(
+    own(drawn.fills).map((f) => [f.x, f.y]),
+    [[at.x, at.y]],
+  );
+  doc.el.spritesLifted(new Set([again.key]));
+  const hole = recorder();
+  doc.el.paint(hole.ctx as never);
+  assert.strictEqual(own(hole.fills).length, 0, 'a hole in the document');
+});
+
+test('what is painted after a part at the viewport is asked of everywhere the scroll can take it over the document, and what is fixed after it of where it is', async (t) => {
+  const page = (after: string) =>
+    '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+    'body { margin: 0 } #tall { height: 1000px }' +
+    '#toast { position: fixed; top: 10px; left: 10px; width: 120px;' +
+    ' height: 30px; background: navy; z-index: 10;' +
+    ' animation: fade 1s infinite }' +
+    `#after { width: 40px; height: 20px; background: red; ${after} }` +
+    '</style><div id="tall"></div><div id="toast"></div><div id="after"></div>';
+  const offered = async (after: string, how = inPane) => {
+    const doc = await running(t, page(after), 400, how);
+    return (doc.el.sprites() ?? []).length;
+  };
+  // a box over it in the paint order, far down the document: a scroll
+  // brings it under the toast
+  assert.strictEqual(
+    await offered('position: absolute; top: 700px; left: 20px; z-index: 20'),
+    0,
+    'scrolled under it',
+  );
+  // under it in the paint order, wherever the scroll takes it
+  assert.strictEqual(
+    await offered('position: absolute; top: 700px; left: 20px; z-index: 5'),
+    1,
+    'under it',
+  );
+  // fixed over it, clear of it and on it
+  assert.strictEqual(
+    await offered('position: fixed; top: 100px; left: 20px; z-index: 20'),
+    1,
+    'fixed clear of it',
+  );
+  assert.strictEqual(
+    await offered('position: fixed; top: 20px; left: 20px; z-index: 20'),
+    0,
+    'fixed on it',
+  );
+  // where nothing scrolls the element, the box far down is only that
+  assert.strictEqual(
+    await offered(
+      'position: absolute; top: 700px; left: 20px; z-index: 20',
+      render,
+    ),
+    1,
+    'no pane',
+  );
+});
+
+test('an element inside a box fixed to the viewport goes on a layer at the viewport too', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes spin { to { transform: rotate(360deg) } }' +
+      'body { margin: 0 } #tall { height: 1000px }' +
+      '#toast { position: fixed; bottom: 10px; left: 10px; width: 120px;' +
+      ' height: 30px; background: navy; z-index: 10 }' +
+      '#spin { margin: 5px; width: 20px; height: 20px; background: white;' +
+      ' animation: spin 1s linear infinite }</style>' +
+      '<div id="tall"></div><div id="toast"><div id="spin"></div></div>',
+    400,
+    inPane,
+  );
+  const pane = screen.getByTestName('pane') as DrawnNode & {
+    scrollTo(y: number): void;
+  };
+  await act(async () => pane.scrollTo(300));
+  const spin = boxOf(doc.el, 'spin');
+  const [sprite] = doc.el.sprites()!;
+  assert.deepStrictEqual(
+    [sprite.rect.x, sprite.rect.y],
+    [pane.abs.x + spin.x, pane.abs.y + spin.y],
+  );
+});
+
 test('a box that clips an element cuts its layer: the sprite is offered with the clip, and what is painted after it outside the clip keeps nothing from it', async (t) => {
   const page = (overflow: string) =>
     '<style>@keyframes slide { from { transform: translateX(-40px) }' +
