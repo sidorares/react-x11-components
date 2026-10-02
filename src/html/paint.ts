@@ -6400,8 +6400,10 @@ function edgeRun(
  * side did not follow the corner. The inner radius is the outer less the
  * wider border at that corner (CSS Backgrounds 3, 5.2). Sides of one colour
  * are one fill; sides of more are each given their share of the ring
- * (`ringSides`). False where the border is not such a one, and it is drawn
- * a side at a time.
+ * (`ringSides`). An `inset` or an `outset` side is a solid one in its shade
+ * (`sculptedInk`), so a field the page rounded, its 2px inset border the
+ * UA's, is rounded as a browser rounds it. False where the border is not
+ * such a one, and it is drawn a side at a time.
  */
 function roundedRing(
   ctx: PaintContext,
@@ -6416,7 +6418,7 @@ function roundedRing(
   if (!ctx.fill || !ctx.beginPath) return false;
   const corners = cornersOf(s, w, h);
   if (!corners) return false;
-  const sides: [number, string, string][] = [
+  const sides: [number, string, ComputedStyle['borderTopStyle']][] = [
     [box.borderTop, s.borderTopColor, s.borderTopStyle],
     [box.borderRight, s.borderRightColor, s.borderRightStyle],
     [box.borderBottom, s.borderBottomColor, s.borderBottomStyle],
@@ -6426,7 +6428,9 @@ function roundedRing(
   let mixed = false;
   for (const [width, ink, style] of sides) {
     if (!width) continue;
-    if (style !== 'solid') return false;
+    if (!ringed(style)) return false;
+    // two shades, a side's share each
+    if (style !== 'solid') mixed = true;
     if (color !== null && ink !== color) mixed = true;
     color = ink;
   }
@@ -6537,12 +6541,21 @@ function ringSides(
     s.borderBottomColor,
     s.borderLeftColor,
   ];
+  const styles = [
+    s.borderTopStyle,
+    s.borderRightStyle,
+    s.borderBottomStyle,
+    s.borderLeftStyle,
+  ];
   // what each side is painted in, null where it paints nothing
-  const inks = widths.map((width, i) =>
-    width > 0 && !isTransparent(colors[i])
-      ? inkColor(colors[i], s.color)
-      : null,
-  );
+  const inks = widths.map((width, i) => {
+    if (!(width > 0) || isTransparent(colors[i])) return null;
+    const ink = inkColor(colors[i], s.color);
+    const style = styles[i];
+    return style === 'inset' || style === 'outset'
+      ? sculptedInk(ink, i, style === 'inset')
+      : ink;
+  });
   // Corners from the top left, clockwise. Corner i is where side i - 1
   // ends and side i begins: the top left ends the left and begins the top.
   // Two sides of one colour are joined across their corner.
@@ -6973,18 +6986,18 @@ function sameRounded(a: Rounded, b: Rounded): boolean {
  * not its colour — a transparent border still has an area, which is what
  * the value is for. The shapes are the border painter's own, so that the
  * background shows exactly where that border would: the ring `roundedRing`
- * fills where a rounded border is solid, the ring the trapezoids of a 3D
- * style make, and otherwise the rectangles `fillSide` fills a side at a
- * time — the dots, the dashes, the two lines of a double border joined as
- * they are painted, by the sides' colours though neither is drawn. All of
- * them run clockwise and a ring's inside the other way, so the clip is the
- * union by the non-zero rule, the one every context's `clip` takes. Each
- * is placed from the box's edges and then cut to the painted area: placed
- * from the cut, a border wider than `CLAMP_PAD` put its bands and its
- * ring's hole a border's width in from wherever the paint was cut, and
- * the background was painted over the content of a box repainted in part.
- * False where the border paints nothing in the painted area or the context
- * cannot clip, and nothing is pushed.
+ * fills where a rounded border is solid, inset or outset, the ring the
+ * trapezoids of a 3D style make, and otherwise the rectangles `fillSide`
+ * fills a side at a time — the dots, the dashes, the two lines of a double
+ * border joined as they are painted, by the sides' colours though neither
+ * is drawn. All of them run clockwise and a ring's inside the other way, so
+ * the clip is the union by the non-zero rule, the one every context's
+ * `clip` takes. Each is placed from the box's edges and then cut to the
+ * painted area: placed from the cut, a border wider than `CLAMP_PAD` put
+ * its bands and its ring's hole a border's width in from wherever the paint
+ * was cut, and the background was painted over the content of a box
+ * repainted in part. False where the border paints nothing in the painted
+ * area or the context cannot clip, and nothing is pushed.
  */
 function pushBorderArea(
   ctx: PaintContext,
@@ -7065,20 +7078,36 @@ function pushBorderArea(
   return true;
 }
 
-/** Whether every side a box has a border on is solid, which a rounded box
- *  draws as one ring (`roundedRing`). */
+/** Whether every side a box has a border on is solid, or inset or outset,
+ *  which a rounded box draws as one ring (`roundedRing`). */
 function solidBorder(box: Frame): boolean {
   const s = box.style;
   return (
-    (!box.borderTop || s.borderTopStyle === 'solid') &&
-    (!box.borderRight || s.borderRightStyle === 'solid') &&
-    (!box.borderBottom || s.borderBottomStyle === 'solid') &&
-    (!box.borderLeft || s.borderLeftStyle === 'solid')
+    (!box.borderTop || ringed(s.borderTopStyle)) &&
+    (!box.borderRight || ringed(s.borderRightStyle)) &&
+    (!box.borderBottom || ringed(s.borderBottomStyle)) &&
+    (!box.borderLeft || ringed(s.borderLeftStyle))
   );
+}
+
+/** Whether a side of a rounded box is its share of the ring: a solid one in
+ *  its colour, an inset or an outset one in its shade (`sculptedInk`). */
+function ringed(style: ComputedStyle['borderTopStyle']): boolean {
+  return style === 'solid' || style === 'inset' || style === 'outset';
 }
 
 /** The border styles drawn in two shades, as though lit from the top left. */
 const SCULPTED = new Set(['groove', 'ridge', 'inset', 'outset']);
+
+/** The shade a side of a 3D border is painted in, the top first and
+ *  clockwise: a sunk one's top and left, which face the light, in the
+ *  colour's shadow and its bottom and right lit, and a raised one's the
+ *  other way round (`borderShades`). */
+function sculptedInk(color: string, side: number, sunk: boolean): string {
+  const shades = borderShades(color) ?? { lit: color, shadowed: color };
+  const facing = side === 0 || side === 3;
+  return sunk === facing ? shades.shadowed : shades.lit;
+}
 
 function sculpted(s: ComputedStyle): boolean {
   return (
@@ -7157,11 +7186,7 @@ function paintSculpted(
       band(side, 0, 1, color);
       continue;
     }
-    const shades = borderShades(color) ?? { lit: color, shadowed: color };
-    // the top and the left face the light
-    const lit = side === 0 || side === 3;
-    const shade = (sunk: boolean) =>
-      sunk === lit ? shades.shadowed : shades.lit;
+    const shade = (sunk: boolean) => sculptedInk(color, side, sunk);
     if (style === 'inset' || style === 'outset') {
       band(side, 0, 1, shade(style === 'inset'));
     } else {

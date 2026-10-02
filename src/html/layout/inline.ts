@@ -6339,7 +6339,7 @@ function tallerStrut(
 }
 
 /** A style's line height in pixels. */
-function lineHeightOf(fonts: FontsLike, style: ComputedStyle): number {
+export function lineHeightOf(fonts: FontsLike, style: ComputedStyle): number {
   if (style.lineHeight === 'normal') return naturalLineHeight(fonts, style);
   return style.lineHeightIsLength
     ? (style.lineHeight as number)

@@ -240,6 +240,188 @@ test("a field is the page's to draw once it sets its border or background, to an
   );
 });
 
+metric(
+  "a field the page only rounded or recoloured takes Chrome's edges",
+  async () => {
+    // What a browser draws a field in once its native look is off is its UA
+    // sheet's edges, and a page that sets one border property builds on the
+    // rest: Chrome's text field is a 2px inset border round 1px of padding
+    // above and below and 2px beside, on the field's ground, 21px tall round
+    // a 15px line of Arial at 13.33px; a text area's border is 1px and solid
+    // round 2px, and a select's 1px with none. Those were the palette
+    // frame's to draw, and a field with only a radius or only a border
+    // colour was bare text on the page, with no frame at all. The checkables
+    // have none of them, styled or not.
+    const { result, node } = await render(
+      '<style>html{background:#00ff00} body{margin:0} div{margin:0 0 4px}' +
+        ' .f{font-family:sans-serif;font-size:16px}</style>' +
+        '<div class="f" id="line">x</div><div id="ground" ' +
+        'style="background-color:Field;height:4px"></div>' +
+        '<div><input class="f" id="radius" style="border-radius:6px"></div>' +
+        '<div><input class="f" id="red" style="border-color:#ff0000"></div>' +
+        '<div><textarea class="f" id="area" style="border-radius:6px">' +
+        '</textarea></div>' +
+        '<div><select class="f" id="pick" style="border-radius:6px">' +
+        '<option>One</option></select></div>' +
+        '<div><input type="checkbox" id="check" style="border-radius:6px">' +
+        '<input type="radio" id="radio" style="border-radius:6px">' +
+        '<input type="checkbox" id="check0"><input type="radio" id="radio0">' +
+        '</div>',
+    );
+    const el = view(node);
+    const rects = (
+      el as unknown as {
+        _controls: {
+          element: { attribs: Record<string, string> };
+          bare?: { height: number } | null;
+        }[];
+      }
+    )._controls;
+    const rectOf = (id: string) =>
+      rects.find((r) => r.element.attribs.id === id)!;
+    type Edged = {
+      padTop: number;
+      padLeft: number;
+      borderTop: number;
+      borderLeft: number;
+      style: {
+        borderTopStyle: string;
+        borderTopColor: string;
+        backgroundColor: string;
+        borderRadius: number[];
+      };
+    };
+    const edges = (id: string) => {
+      const box = boxOf(el, id) as unknown as Edged;
+      return [
+        box.borderTop,
+        box.borderLeft,
+        box.style.borderTopStyle,
+        box.padTop,
+        box.padLeft,
+        box.style.backgroundColor,
+        box.style.borderRadius[0],
+      ];
+    };
+    const field = (boxOf(el, 'ground') as unknown as Edged).style
+      .backgroundColor;
+    for (const id of ['radius', 'red']) {
+      assert.ok(rectOf(id).bare, `${id}: bare`);
+    }
+    assert.deepStrictEqual(edges('radius'), [2, 2, 'inset', 1, 2, field, 6]);
+    assert.deepStrictEqual(edges('red'), [2, 2, 'inset', 1, 2, field, 0]);
+    assert.strictEqual(
+      (boxOf(el, 'red') as unknown as Edged).style.borderTopColor,
+      '#ff0000',
+    );
+    // its line of text, as tall as the text's own line beside it
+    const line = Math.round(boxOf(el, 'line').height);
+    assert.strictEqual(
+      boxOf(el, 'radius').height,
+      line + 6,
+      'a line and edges',
+    );
+    assert.strictEqual(rectOf('radius').bare!.height, line, 'and inside them');
+    assert.ok(rectOf('area').bare, 'a text area: bare');
+    assert.deepStrictEqual(edges('area'), [1, 1, 'solid', 2, 2, field, 6]);
+    assert.ok(rectOf('pick').bare, 'a select: bare');
+    assert.deepStrictEqual(edges('pick'), [1, 1, 'solid', 0, 0, field, 6]);
+    for (const [id, plain] of [
+      ['check', 'check0'],
+      ['radio', 'radio0'],
+    ]) {
+      assert.ok(!rectOf(id).bare, `${id}: the widget's`);
+      assert.deepStrictEqual(
+        edges(id).slice(0, 2).concat(edges(id).slice(3, 5)),
+        [0, 0, 0, 0],
+        `${id}: no edges`,
+      );
+      assert.strictEqual(boxOf(el, id).width, boxOf(el, plain).width, id);
+      assert.strictEqual(boxOf(el, id).height, boxOf(el, plain).height, id);
+    }
+    // the rounded field's corner is the page, past its border's curve, and
+    // its sides are the border, the top and the left in the shadow of the
+    // bottom and the right
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    const box = boxOf(el, 'radius');
+    const px = (x: number, y: number) =>
+      pixelAt(result.ctx, at.x + box.x + x, at.y + box.y + y);
+    await waitFor(async () => {
+      const [r, g, b] = await px(0, 0);
+      assert.ok(
+        g > 200 && r < 60 && b < 60,
+        `the page in the corner: ${r},${g},${b}`,
+      );
+      const left = await px(1, box.height / 2);
+      const right = await px(box.width - 2, box.height / 2);
+      const grey = (p: number[]) =>
+        Math.abs(p[0] - p[1]) < 30 && Math.abs(p[1] - p[2]) < 30;
+      assert.ok(grey(left) && grey(right), `the border: ${left}, ${right}`);
+      assert.ok(left[1] < right[1], `in shadow: ${left} by ${right}`);
+    });
+  },
+);
+
+metric(
+  'a field that takes a border colour on focus keeps a border, in it',
+  async () => {
+    // `input:focus { outline: none; border-color: … }` on a field the page
+    // otherwise left alone is the commonest focus style there is. The
+    // colour takes the native look off while the field is focused, and in
+    // Chrome what shows is its 2px inset border in that colour. The
+    // palette's frame went with the look and nothing came in its place, so
+    // the field lost its frame as it took the focus.
+    const { result, node } = await render(
+      '<style>body{margin:0;background:#ffffff}' +
+        ' .q:focus{outline:none;border-color:#0000ff}</style>' +
+        '<input class="q" id="q" placeholder="q">',
+    );
+    const el = view(node);
+    const rects = () =>
+      (
+        el as unknown as {
+          _controls: {
+            element: { attribs: Record<string, string> };
+            bare?: object | null;
+          }[];
+        }
+      )._controls;
+    assert.ok(!rects()[0].bare, "the palette's field until it is focused");
+    const input = screen.getByPlaceholder('q') as DrawnNode;
+    await act(async () => {
+      input.focus();
+    });
+    assert.strictEqual(el.focusedElement, findById(el.document, 'q'));
+    assert.ok(rects()[0].bare, "the page's once it is");
+    const at = (node as unknown as { abs: { x: number; y: number } }).abs;
+    const box = boxOf(el, 'q');
+    assert.strictEqual(
+      (box as unknown as { borderLeft: number }).borderLeft,
+      2,
+      'a 2px border',
+    );
+    await waitFor(async () => {
+      for (const [x, y] of [
+        [0, box.height / 2],
+        [box.width - 1, box.height / 2],
+        [box.width / 2, 0],
+        [box.width / 2, box.height - 1],
+      ]) {
+        const [r, g, b] = await pixelAt(
+          result.ctx,
+          at.x + box.x + x,
+          at.y + box.y + y,
+        );
+        assert.ok(
+          b > 120 && r < 60 && g < 60,
+          `blue at ${x},${y}: ${r},${g},${b}`,
+        );
+      }
+    });
+    assert.strictEqual(el.focusedElement, findById(el.document, 'q'), 'kept');
+  },
+);
+
 metric("a select the page styled is the page's to draw", async () => {
   // A `<select>` was the palette's framed dropdown whatever the page did to
   // it, inside the page's padding: melbcss.com's, a background and 8px of

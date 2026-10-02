@@ -269,6 +269,44 @@ input[type=checkbox] { margin: 3px 3px 3px 4px; }
 input[type=radio] { margin: 3px 3px 0 5px; }
 input[type=range] { margin: 2px; }
 input[type=hidden] { display: none; }
+/* A field's own edges are Chrome's too: the box a browser draws a field in
+   once the page has set any of its borders or its background, to anything
+   (CSS UI 4 7.2.1), and what that page builds on. A focus rule that sets
+   only a border colour is a 2px inset border in it, and a radius alone
+   rounds one. A text field's border is 2px and inset round 1px of padding
+   above and below and 2px beside; a text area's 1px and solid round 2px; a
+   select's 1px and solid, square, with none. Each is on the field's ground,
+   and a colour well on a button's. The checkables, a range, a file and an
+   image have none, as in Blink's sheet, and neither has an input button,
+   which is the palette's button whatever the page does. A field the page
+   left alone is the palette's widget, framed by itself (\`chromeText\`). */
+input {
+  padding-block: 1px;
+  padding-inline: 2px;
+  border: 2px inset ${look.borderColor};
+  background-color: ${look.background};
+}
+input[type=checkbox], input[type=radio], input[type=range], input[type=file],
+input[type=image], input[type=button], input[type=submit], input[type=reset] {
+  padding: initial;
+  border: initial;
+  background-color: initial;
+}
+input[type=color] {
+  padding: 1px 2px;
+  border: 1px solid ${look.borderColor};
+  background-color: ${look.surface};
+}
+textarea {
+  padding: 2px;
+  border: 1px solid ${look.borderColor};
+  background-color: ${look.background};
+}
+select {
+  border: 1px solid ${look.borderColor};
+  border-radius: 0;
+  background-color: ${look.background};
+}
 /* A <button> is drawn rather than mounted: its content is the document's —
    an icon, a label in spans, a pill of the page's own design, which is what
    most buttons on the web are — and the page restyles it as it restyles
@@ -303,16 +341,21 @@ details[open] > summary:first-of-type { list-style-type: disclosure-open; }
 }
 
 /**
- * The palette's control, for a `<button>` whose page left its background and
- * border alone: the chrome a mounted widget has, so a form in a document is
- * the size of the window's own. The rules land in `PALETTE_CHROME`, and a
- * page that styles either loses all of them — Blink counts every background
- * and border longhand, radius included — along with the native look it
- * would lose in a browser. Nothing stays half the palette's and half the
- * page's.
+ * The palette's controls, for a `<button>` or a field whose page left its
+ * background and border alone: the chrome a mounted widget has, so a form
+ * in a document is the size of the window's own. The rules land in
+ * `PALETTE_CHROME`, and a page that styles either loses all of them — every
+ * background and border longhand counts, radius included, whatever its
+ * value — along with the native look it would lose in a browser, and the
+ * web's edges above show through. Nothing stays half the palette's and
+ * half the page's.
  *
- * A field's frame is its widget's, but its corners are the element's too:
- * the focus ring the document draws round it is rounded as the frame is.
+ * A field's frame is its widget's: the element's box has none of the web's
+ * edges or ground, which the widget would be drawn inside, and is the size
+ * the widget's frame and text take (`measureControl`). Its corners are the
+ * element's too: the focus ring the document draws round it is rounded as
+ * the frame is. `input[type]` is as specific as the sheet's rules for a
+ * type, which these come after.
  */
 function chromeText(look: RootLook): string {
   return `
@@ -320,6 +363,11 @@ button {
   padding: ${look.controlPadY}px 0.75em;
   border: ${look.controlBorder}px solid ${look.borderColor};
   border-radius: ${look.controlRadius}px;
+}
+input, input[type], textarea, select {
+  padding: 0;
+  border: 0;
+  background-color: transparent;
 }
 input, textarea { border-radius: ${look.controlRadius}px; }
 `;

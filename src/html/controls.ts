@@ -32,6 +32,7 @@ import type { ComputedStyle } from './css/style.js';
 import { invert } from './css/transform.js';
 import { placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
+import { lineHeightOf } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
 import { clipAround } from './paint.js';
 
@@ -313,14 +314,15 @@ export function measureControl(
       };
     }
     // a field the author drew the box of is its text and no more, as a
-    // browser's is: the room around it is the author's border and padding
+    // browser's is: the room around it is the author's border and padding,
+    // and its lines are as tall as its `line-height` makes them
     case 'textarea': {
       const cols = numberAttr(el, 'cols') ?? 30;
       const rows = numberAttr(el, 'rows') ?? 3;
       if (styledField(kind, style)) {
         return {
           width: Math.round(ch * cols),
-          height: Math.round(lineHeight * rows),
+          height: Math.round(fieldLine(style, fonts) * rows),
         };
       }
       return {
@@ -331,7 +333,10 @@ export function measureControl(
     case 'input': {
       const size = numberAttr(el, 'size') ?? 20;
       if (styledField(kind, style)) {
-        return { width: Math.round(ch * size), height: lineHeight };
+        return {
+          width: Math.round(ch * size),
+          height: Math.round(fieldLine(style, fonts)),
+        };
       }
       return {
         width: Math.round(ch * size + padding * 2 + chrome),
@@ -341,6 +346,20 @@ export function measureControl(
     default:
       return { width: 0, height: 0 };
   }
+}
+
+/**
+ * The line a field the page draws sets its text on: its `line-height`, and
+ * at `normal` its face's own, as a browser's text field is a line box of
+ * its font (Blink's inner editor). The widget's frame is measured round a
+ * line of its own, which the palette's field keeps.
+ */
+function fieldLine(style: ComputedStyle, fonts: FontsLike | null): number {
+  if (fonts) return lineHeightOf(fonts, style);
+  if (style.lineHeight === 'normal') return style.fontSize * 1.2;
+  return style.lineHeightIsLength
+    ? style.lineHeight
+    : style.lineHeight * style.fontSize;
 }
 
 /** The label a `<button>` or an `<input type=submit>` shows. */
