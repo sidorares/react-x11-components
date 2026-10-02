@@ -33,6 +33,10 @@ import {
 } from './values.js';
 import type { FontSizeBasis, Len, Pct, UnitContext } from './values.js';
 import { parseUrl, readIdent, startsIdent } from './parse.js';
+import { decodesImageType } from '../image-types.js';
+import { pick } from '../srcset.js';
+import type { ImageSource } from '../srcset.js';
+import { closingParen } from './vars.js';
 import {
   parseContent,
   parseCounterList,
@@ -414,8 +418,43 @@ export type BorderStyle =
   | 'inset'
   | 'outset';
 
-/** A background layer's image: a url, a gradient, or none. */
-export type BackgroundImage = string | Gradient | null;
+/** A background layer's image: a url, a url at a pixel density other than
+ *  1x — the option an `image-set()` chose (`imageSetOf`) — a gradient, or
+ *  none. */
+export type BackgroundImage = string | ImageSource | Gradient | null;
+
+/** An image a url names: the url, or the url and its density where that
+ *  is not 1x, which is its size (`atDensity`). A 1x choice is the url
+ *  alone, as `url()` writes it. */
+export type UrlImage = string | ImageSource;
+
+/** A layer image's url, where it names one. */
+export function urlOf(image: BackgroundImage): string | null {
+  if (typeof image === 'string') return image;
+  return image !== null && 'url' in image ? image.url : null;
+}
+
+/** A layer image's pixel density: the resolution of the `image-set()`
+ *  option it was chosen from, and 1 for anything else. */
+export function densityOf(image: BackgroundImage): number {
+  return image !== null && typeof image !== 'string' && 'url' in image
+    ? image.density
+    : 1;
+}
+
+/** A layer image as a url's, where it is one. */
+export function urlImageOf(image: BackgroundImage): UrlImage | null {
+  return typeof image === 'string' || (image !== null && 'url' in image)
+    ? image
+    : null;
+}
+
+/** A layer image's gradient, where it is one. */
+export function gradientOf(image: BackgroundImage): Gradient | null {
+  return image !== null && typeof image !== 'string' && 'kind' in image
+    ? image
+    : null;
+}
 
 /** An intrinsic size: `min-content`, `max-content` or `fit-content`, and
  *  `fit-content()`, whose argument stands in for the room (`fit`). */
@@ -531,7 +570,7 @@ export interface ComputedStyle {
   listStylePosition: 'inside' | 'outside';
   /** `list-style-image`: an image a list item's marker is, where it loads,
    *  in place of its `list-style-type`'s; null for `none`. */
-  listStyleImage: string | null;
+  listStyleImage: UrlImage | null;
   cursor: string | null;
   /** `pointer-events`: `none` for an element the pointer passes through,
    *  to what is under it (CSS UI 4, 5.2). Its SVG values are `auto`. */
@@ -790,7 +829,9 @@ export interface ComputedStyle {
   left: Len;
 
   backgroundColor: string | null;
-  backgroundImage: string | null;
+  /** The first layer's url, at the density an `image-set()` chose it at
+   *  where that is not 1x. */
+  backgroundImage: UrlImage | null;
   /** A background drawn rather than fetched: the first layer's linear
    *  gradient, where it is one. */
   backgroundGradient: Gradient | null;
@@ -2425,8 +2466,8 @@ export function applyDeclaration(
       }
       if (!images.length) return;
       const [first] = images;
-      style.backgroundImage = typeof first === 'string' ? first : null;
-      style.backgroundGradient = typeof first === 'string' ? null : first;
+      style.backgroundImage = urlImageOf(first);
+      style.backgroundGradient = gradientOf(first);
       style.backgroundImages = images.length > 1 ? images : null;
       return;
     }
@@ -2602,7 +2643,12 @@ export function applyDeclaration(
 
     // --- generated content --------------------------------------------------
     case 'content': {
-      const parsed = parseContent(value);
+      const parsed = parseContent(value, (text) => {
+        const image = imageSetOf(text, ctx);
+        if (image === undefined) return undefined;
+        const url = urlOf(image);
+        return url === null ? null : { url, density: densityOf(image) };
+      });
       if (parsed !== null) style.content = parsed;
       return;
     }
@@ -3097,7 +3143,7 @@ export function applyDeclaration(
       // nothing and makes the declaration invalid
       let type: string | null = null;
       let position: ComputedStyle['listStylePosition'] | null = null;
-      let image: string | null | undefined;
+      let image: UrlImage | null | undefined;
       let nones = 0;
       for (const part of splitValue(value)) {
         const v = part.toLowerCase();
@@ -3105,7 +3151,13 @@ export function applyDeclaration(
           if (position) return;
           position = v;
         } else if (v === 'none') nones += 1;
-        else if (v.startsWith('url(') || IMAGE_FUNCTION.test(v)) {
+        else if (IMAGE_SET.test(v)) {
+          // what it chose, where that is a url's image: a gradient is one
+          // this draws no marker as
+          const set = imageSetOf(part, ctx);
+          if (image !== undefined || set === undefined) return;
+          image = urlImageOf(set);
+        } else if (v.startsWith('url(') || IMAGE_FUNCTION.test(v)) {
           if (image !== undefined) return;
           image = v.startsWith('url(') ? (parseUrl(part) ?? null) : null;
         } else {
@@ -3133,7 +3185,10 @@ export function applyDeclaration(
     case 'list-style-image': {
       const v = value.trim();
       if (v.toLowerCase() === 'none') style.listStyleImage = null;
-      else if (IMAGE_FUNCTION.test(v.toLowerCase())) {
+      else if (IMAGE_SET.test(v)) {
+        const set = imageSetOf(v, ctx);
+        if (set !== undefined) style.listStyleImage = urlImageOf(set);
+      } else if (IMAGE_FUNCTION.test(v.toLowerCase())) {
         // a gradient is an image this draws no marker as
         style.listStyleImage = null;
       } else if (/^url\(/i.test(v)) {
@@ -4568,16 +4623,137 @@ function applyBackgroundShorthand(
     : null;
 }
 
-/** One layer's `background-image`: a url, a gradient — none where it is
- *  one this does not draw, as though there were none — or none; undefined
- *  where it is not an image at all. */
+/** One layer's `background-image`: a url, a gradient, what an
+ *  `image-set()` chose — none where it is one this does not draw, as though
+ *  there were none — or none; undefined where it is not an image at all. */
 function backgroundImageOf(
   text: string,
   ctx: UnitContext,
 ): BackgroundImage | undefined {
   const v = text.trim();
+  if (IMAGE_SET.test(v)) return imageSetOf(v, ctx);
   if (IMAGE_FUNCTION.test(v.toLowerCase())) return parseGradient(v, ctx);
   return parseUrl(v);
+}
+
+/** `image-set()`, and `-webkit-image-set()`, which every engine reads as
+ *  the same function. */
+const IMAGE_SET = /^(?:-webkit-)?image-set\(/i;
+
+/** An option's `<resolution>`: a number at or above 0, and its unit. */
+const RESOLUTION =
+  /^\+?(\d+(?:\.\d+)?(?:e[+-]?\d+)?|\.\d+(?:e[+-]?\d+)?)(x|dppx|dpi|dpcm)$/i;
+
+/** Dots per CSS pixel in each unit (CSS Values 4, 7.4). */
+const DPPX: Record<string, number> = {
+  x: 1,
+  dppx: 1,
+  dpi: 1 / 96,
+  dpcm: 2.54 / 96,
+};
+
+const QUOTED = /^("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(.*)$/s;
+const TYPE = /^type\(\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\)$/is;
+
+/** One of an `image-set()`'s options: what it draws, its resolution in
+ *  dppx, and its `type()`, as `pick` takes it. */
+interface ImageSetOption extends ImageSource {
+  image: string | Gradient | null;
+  type: string | null;
+}
+
+/**
+ * An `image-set()` (CSS Images 4, 2.4): the option this display shows, as
+ * the image it is. Of its options — each a `url()`, a string that is one,
+ * or a gradient, with a resolution, `1x` where it has none, and a
+ * `type()` — those whose type does not decode here are passed over, and of
+ * the rest the least dense at or above the scale is chosen, else the
+ * densest; of two at one density, the first. That is `<img srcset>`'s
+ * choice (`pick`), and Chrome, Firefox and WebKit all make it.
+ *
+ * A url chosen at a density other than 1x is a url and its density, which
+ * is its size: a `2x` image is half its pixels across, as a background at
+ * `background-size: auto`, a list marker or generated content. A drawing
+ * the same (Firefox and WebKit; Chrome leaves an SVG at its own size).
+ *
+ * The scale is the element's: a cascade is made for one, so a style
+ * computed for one display is computed again for another, and what an
+ * `image-set()` chose goes with the lengths. Undefined where it is not an
+ * `image-set()` — no options, an option that is none, two resolutions, a
+ * nested one — which drops the declaration; null where it has no option
+ * this decodes, an invalid image that is drawn as nothing, and the
+ * declaration stands.
+ */
+function imageSetOf(
+  text: string,
+  ctx: UnitContext,
+): BackgroundImage | undefined {
+  const open = text.indexOf('(');
+  const end = closingParen(text, open + 1);
+  if (end < 0 || end < text.length - 1) return undefined;
+  const options: ImageSetOption[] = [];
+  for (const part of splitCommas(text.slice(open + 1, end))) {
+    const option = imageSetOption(part, ctx);
+    if (!option) return undefined;
+    if (option.type === null || setTypeDecodes(option.type)) {
+      options.push(option);
+    }
+  }
+  const chosen = pick(options, ctx.scale);
+  if (!chosen) return null;
+  const { image, density } = chosen;
+  return typeof image === 'string' && density !== 1
+    ? { url: image, density }
+    : image;
+}
+
+/** An `image-set()` option, `[ <image> | <string> ] [ <resolution> ||
+ *  type(<string>) ]?`; null where it is none. */
+function imageSetOption(text: string, ctx: UnitContext): ImageSetOption | null {
+  // a string ends at its quote, whatever follows it: `"a.png"2x`
+  const quoted = QUOTED.exec(text);
+  const [first, ...rest] = quoted
+    ? [quoted[1], ...splitValue(quoted[2])]
+    : splitValue(text);
+  if (!first || rest.length > 2) return null;
+  let image: string | Gradient | null;
+  const lower = first.toLowerCase();
+  if (quoted || lower.startsWith('url(')) {
+    const url = parseUrl(first);
+    if (url === undefined) return null;
+    image = url;
+  } else if (IMAGE_SET.test(first) || !IMAGE_FUNCTION.test(lower)) {
+    // nor is one nested in another
+    return null;
+  } else image = parseGradient(first, ctx);
+  let density: number | null = null;
+  let type: string | null = null;
+  for (const word of rest) {
+    const resolution = RESOLUTION.exec(word);
+    if (resolution) {
+      if (density !== null) return null;
+      density = Number(resolution[1]) * DPPX[resolution[2].toLowerCase()];
+      continue;
+    }
+    const named = TYPE.exec(word);
+    if (!named || type !== null) return null;
+    type = parseUrl(named[1]) ?? '';
+  }
+  return {
+    url: typeof image === 'string' ? image : '',
+    density: density ?? 1,
+    image,
+    type,
+  };
+}
+
+/** Whether an `image-set()` option's `type()` names one this decodes
+ *  (`decodesImageType`). The string is the type as written: one with a
+ *  parameter, white space round it, or nothing at all is a type no engine
+ *  has — Chrome, Firefox and WebKit alike — where a `<source type>` is read
+ *  for its essence. */
+function setTypeDecodes(type: string): boolean {
+  return /^[^\s;]+$/.test(type) && decodesImageType(type);
 }
 
 /** A background property's values, one a comma-separated layer, each read
@@ -4597,7 +4773,7 @@ function layerValues<T>(
 
 interface BackgroundLayer {
   color: string | null;
-  image: string | null;
+  image: UrlImage | null;
   gradient: Gradient | null;
   repeat: ComputedStyle['backgroundRepeat'];
   size: ComputedStyle['backgroundSize'];
@@ -4645,11 +4821,12 @@ function readBackgroundLayer(
     const v = part.toLowerCase();
     if (v === 'none' || v.startsWith('url(') || IMAGE_FUNCTION.test(v)) {
       if (!once(1)) return null;
-      if (v.startsWith('url(')) {
-        const url = parseUrl(part);
-        if (url === undefined) return null;
-        layer.image = url;
-      } else if (v !== 'none') layer.gradient = parseGradient(part, ctx);
+      if (v !== 'none') {
+        const image = backgroundImageOf(part, ctx);
+        if (image === undefined) return null;
+        layer.image = urlImageOf(image);
+        layer.gradient = gradientOf(image);
+      }
       i += 1;
     } else if (v === 'repeat-x' || v === 'repeat-y' || REPEATS.has(v)) {
       if (!once(2)) return null;

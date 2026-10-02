@@ -26,12 +26,15 @@ import {
   metric,
   pixelsIn,
   render,
+  renderAsking,
   renderWithBytes,
   renderWithImages,
+  solidPng,
   svgBytes,
   view,
 } from './harness.js';
 import type { LaidBox } from './harness.js';
+import type { HtmlViewNode } from '../../src/html/index.js';
 
 afterEach(cleanup);
 
@@ -786,6 +789,72 @@ test('content: url() is an item of the value, and a bad url is no value', async 
     { kind: 'url', url: 'a b.png' },
   ]);
   assert.strictEqual(parseContent('url(a b.png)'), null);
+});
+
+const SMALL = solidPng(20, 10, [255, 0, 0]);
+const LARGE = solidPng(40, 20, [0, 0, 255]);
+
+test("generated content's image-set() is the option the scale chooses, as large as its density makes it", async () => {
+  // `content: image-set(…)` dropped the declaration, and the ::before had
+  // no image (CSS Images 4, 2.4)
+  const source =
+    `<style>#a::before{content:image-set('small.png' 1x, 'large.png' 2x)}` +
+    '#b::before{content:-webkit-image-set(url(large.png) 2x)}' +
+    // no option this decodes: an image that draws nothing and takes no
+    // room, and the declaration stands, as in Chrome, Firefox and WebKit
+    "#c::before{content:'xxxx'}" +
+    `#c::before{content:image-set('a.jxl' type('image/jxl'))}` +
+    '</style><span id="a"></span><span id="b"></span><span id="c"></span>';
+  const images = { 'small.png': SMALL, 'large.png': LARGE };
+  // what each ::before holds: an image's size, or text
+  const held = (el: HtmlViewNode) =>
+    ['a', 'b', 'c'].map((id) => {
+      const out: unknown[] = [];
+      const walk = (box: LaidBox & { kind?: string; text?: string }) => {
+        if (box.kind === 'replaced') out.push([box.width, box.height]);
+        else if (box.kind === 'text') out.push(box.text);
+        for (const child of box.children) walk(child);
+      };
+      walk(boxOf(el, id));
+      return out;
+    });
+  const at1 = await renderAsking(source, images);
+  assert.deepStrictEqual(at1.asked, ['small.png', 'large.png']);
+  assert.deepStrictEqual(held(at1.el), [[[20, 10]], [[20, 10]], []]);
+  cleanup();
+  const at2 = await renderAsking(source, images, 2);
+  assert.deepStrictEqual(at2.asked, ['large.png']);
+  // device pixels: 20 by 10 CSS pixels each
+  assert.deepStrictEqual(held(at2.el), [[[40, 20]], [[40, 20]], []]);
+});
+
+test('a list-style-image image-set() is the option the scale chooses, its marker as large as its density makes it', async () => {
+  const source =
+    `<ul><li id="a" style="list-style-image:image-set('small.png' 1x, 'large.png' 2x)">a</li>` +
+    '<li id="b" style="list-style:-webkit-image-set(url(large.png) 2x)">b</li>' +
+    '</ul>';
+  const images = { 'small.png': SMALL, 'large.png': LARGE };
+  type Marked = LaidBox & {
+    marker: { image?: { width: number; height: number } } | null;
+  };
+  const markers = (el: HtmlViewNode) =>
+    ['a', 'b'].map((id) => {
+      const image = (boxOf(el, id) as Marked).marker?.image;
+      return image && [image.width, image.height];
+    });
+  const at1 = await renderAsking(source, images);
+  assert.deepStrictEqual(at1.asked, ['small.png', 'large.png']);
+  assert.deepStrictEqual(markers(at1.el), [
+    [20, 10],
+    [20, 10],
+  ]);
+  cleanup();
+  const at2 = await renderAsking(source, images, 2);
+  assert.deepStrictEqual(at2.asked, ['large.png']);
+  assert.deepStrictEqual(markers(at2.el), [
+    [40, 20],
+    [40, 20],
+  ]);
 });
 
 test('list-style-image and the list-style shorthand are read', async () => {

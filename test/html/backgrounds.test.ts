@@ -23,13 +23,17 @@ import {
   pathsOf,
   render,
   render2x,
+  renderAsking,
   renderWithBytes,
   renderWithImages,
+  solidPng,
   svgBytes,
   view,
   windingAt,
 } from './harness.js';
 import type { Fill, PaintOp } from './harness.js';
+import type { DrawnNode } from 'react-x11';
+import type { HtmlViewNode } from '../../src/html/index.js';
 
 afterEach(cleanup);
 
@@ -807,6 +811,160 @@ test('a background is drawn at the size background-size gives it', async () => {
   const tiles = at(300);
   assert.ok(tiles.length >= 25, `${tiles.length} tiles`);
   assert.ok(tiles.every((op) => op.w === 20 && op.h === 20));
+});
+
+// `image-set()`: recognised as an image and never resolved, so a layer that
+// named one drew nothing and asked for nothing (CSS Images 4, 2.4). Every
+// answer below is Chrome's, Firefox's and WebKit's alike, at a device
+// scale factor of 1 and of 2.
+
+const SMALL = solidPng(20, 10, [255, 0, 0]);
+const LARGE = solidPng(40, 20, [0, 0, 255]);
+
+/** What a box's first background layer is: its url's image, or the kind
+ *  of its gradient. */
+function layerOf(el: HtmlViewNode, id: string): unknown {
+  const style = (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+  return style.backgroundGradient?.kind ?? style.backgroundImage;
+}
+
+test("an image-set() is the option the display's scale chooses, and that alone is asked for", async () => {
+  const source =
+    '<style>div{width:60px;height:30px}</style>' +
+    `<div id="a" style="background-image:image-set('small.png' 1x, 'large.png' 2x)"></div>` +
+    '<div id="b" style="background:#fff -webkit-image-set(url(small.png) 1x,' +
+    ' url(large.png) 2x) no-repeat"></div>' +
+    `<div id="c" style="border:10px solid;border-image:image-set('small.png' 1x, 'large.png' 2x) 10"></div>` +
+    `<div id="d" style="mask-image:image-set('small.png' 1x, 'large.png' 2x)"></div>`;
+  const images = { 'small.png': SMALL, 'large.png': LARGE };
+  const at1 = await renderAsking(source, images);
+  assert.deepStrictEqual(at1.asked, ['small.png']);
+  assert.strictEqual(layerOf(at1.el, 'a'), 'small.png', 'a 1x is its url');
+  assert.strictEqual(layerOf(at1.el, 'b'), 'small.png', 'in the shorthand');
+  cleanup();
+  const at2 = await renderAsking(source, images, 2);
+  assert.deepStrictEqual(at2.asked, ['large.png']);
+  const large = { url: 'large.png', density: 2 };
+  assert.deepStrictEqual(layerOf(at2.el, 'a'), large, 'a 2x is its density');
+  assert.deepStrictEqual(layerOf(at2.el, 'b'), large);
+});
+
+test('an image-set() takes the least dense option at or above the scale, else the densest, of those whose type decodes', async () => {
+  const set = (id: string, value: string) =>
+    `<div id="${id}" style="background-image:url(before.png);` +
+    `background-image:${value}"></div>`;
+  const source =
+    set('a', `image-set('y.png' 0.5x, 'b.png' 1.5x)`) +
+    // the units of a <resolution>, and options in any order
+    set('b', `image-set('b.png' 2dppx, 'r.png' 96dpi)`) +
+    set('c', `image-set('r.png' 1x, 'b.png' 75.6dpcm)`) +
+    // a type this cannot decode is passed over, whatever its density
+    set('d', `image-set('g.jxl' type('image/jxl') 2x, 'r.png' 1x)`) +
+    set(
+      'e',
+      `image-set('b.png' type('IMAGE/PNG') 2x, 'r.png' type('image/png'))`,
+    ) +
+    // of two at one density, the first
+    set('f', `image-set('b.png' 1x, 'r.png' 1x, 'g.png')`) +
+    // a string between the quotes is the type as written, which no engine
+    // has with a parameter, white space round it, or nothing in it: an
+    // image-set() with no option left is an image that draws nothing, and
+    // the declaration stands
+    set('g', `image-set('b.png' type('image/png; q=1'))`) +
+    set('h', `image-set('b.png' type(' image/png'), 'r.png' type(''))`) +
+    // a gradient is an option as a url is
+    set('i', `image-set(linear-gradient(#f00, #00f) 1x, 'b.png' 2x)`) +
+    set('j', `image-set('b.png'2x)`) +
+    // none of these is an image-set(), and the url before it stands
+    set('k', 'image-set()') +
+    set('l', `image-set('b.png' -1x)`) +
+    set('m', `image-set('b.png' 1x 2x)`) +
+    set('n', `image-set(image-set('b.png' 2x) 1x)`) +
+    set('o', `image-set('b.png' type(image/png))`) +
+    set('p', `image-set('b.png' x)`) +
+    set('q', `image-set('b.png' 2x,)`) +
+    set('r', `image-set(none 1x)`);
+  const at = (density: number, url: string) =>
+    density === 1 ? url : { url, density };
+  const want: Record<string, [unknown, unknown]> = {
+    a: [at(1.5, 'b.png'), at(1.5, 'b.png')],
+    b: ['r.png', at(2, 'b.png')],
+    // a hair over 2x
+    c: ['r.png', at(75.6 * (2.54 / 96), 'b.png')],
+    d: ['r.png', 'r.png'],
+    e: ['r.png', at(2, 'b.png')],
+    f: ['b.png', 'b.png'],
+    g: [null, null],
+    h: [null, null],
+    i: ['linear', at(2, 'b.png')],
+    j: [at(2, 'b.png'), at(2, 'b.png')],
+  };
+  for (const id of 'klmnopqr') want[id] = ['before.png', 'before.png'];
+  for (const [i, scale] of [1, 2].entries()) {
+    const { node } = await (scale === 1 ? render(source) : render2x(source));
+    const el = view(node);
+    for (const [id, layer] of Object.entries(want)) {
+      assert.deepStrictEqual(layerOf(el, id), layer[i], `#${id} at ${scale}x`);
+    }
+    cleanup();
+  }
+});
+
+test('an image-set() option is as large as its pixels over its density', async () => {
+  // a 40 by 20 image: at 2x it is 20 CSS pixels across, whatever the
+  // display's scale, and `background-size` reads that size
+  const source =
+    '<style>body{margin:0}div{width:100px;height:100px;' +
+    `background:image-set('i.png' 2x) no-repeat}</style>` +
+    '<div></div>' +
+    '<div style="background-size:30px auto"></div>' +
+    `<div style="background-image:image-set('i.png' 1.25x)"></div>`;
+  const backgroundImageFor = () => ({
+    image: {},
+    width: 40,
+    height: 20,
+    ratio: 2,
+  });
+  const sizes = async (node: DrawnNode, scale: number) => {
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops, { scale, backgroundImageFor });
+    return ops.flatMap((op) => (op.op === 'image' ? [[op.w, op.h]] : []));
+  };
+  assert.deepStrictEqual(await sizes((await render(source)).node, 1), [
+    [20, 10],
+    [30, 15],
+    [32, 16],
+  ]);
+  cleanup();
+  // device pixels: a 2x image at 2x is drawn a pixel a pixel
+  assert.deepStrictEqual(await sizes((await render2x(source)).node, 2), [
+    [40, 20],
+    [60, 30],
+    [64, 32],
+  ]);
+});
+
+test('a border image an image-set() chose is sliced in its own pixels over its density', async () => {
+  // `border-image-slice: 10` is ten of the image's CSS pixels, which at 2x
+  // are twenty of its pixels, as Chrome, Firefox and WebKit slice it
+  const { node } = await render(
+    '<style>body{margin:0}div{width:40px;height:40px;' +
+      'border:20px solid #000}</style>' +
+      '<div style="border-image:url(i.png) 10"></div>' +
+      `<div style="border-image:image-set('i.png' 2x) 10"></div>`,
+  );
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, {
+    backgroundImageFor: () => ({ image: {}, width: 40, height: 40, ratio: 1 }),
+  });
+  // each top left corner, the piece of the image it is
+  const corners = ops.flatMap((op) =>
+    op.op === 'image' && op.src?.[0] === 0 && op.src[1] === 0 ? [op.src] : [],
+  );
+  assert.deepStrictEqual(corners, [
+    [0, 0, 10, 10],
+    [0, 0, 20, 20],
+  ]);
 });
 
 test('a gradient is tiled at the size background-size gives it', async () => {

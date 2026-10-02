@@ -291,7 +291,8 @@ export function normalize(set: Candidate[], size: number): ImageSource[] {
  * first written. Chrome, Firefox and Safari all choose this way — Chrome
  * once took a candidate below the scale where the scale fell short of the
  * geometric mean of the two around it, and no longer does (Chrome 154: `1x,
- * 5x` at 1.5 is `5x`).
+ * 5x` at 1.5 is `5x`). An `image-set()` chooses among its options the
+ * same way (`style.ts`), and its `T` carries what each option draws.
  *
  * `held` names a URL this document has already asked for, and a denser
  * candidate held is taken over a lighter one asked for anew: Chrome's
@@ -299,16 +300,16 @@ export function normalize(set: Candidate[], size: number): ImageSource[] {
  * that narrows keeps the image it has, at the new density, where Firefox
  * fetches the lighter one.
  */
-export function pick(
-  sources: ImageSource[],
+export function pick<T extends ImageSource>(
+  sources: readonly T[],
   scale: number,
   held?: (url: string) => boolean,
-): ImageSource | null {
+): T | null {
   if (!sources.length) return null;
   const sorted = sources
     .map((source, order) => ({ source, order }))
     .sort((a, b) => a.source.density - b.source.density || a.order - b.order);
-  const unique: ImageSource[] = [];
+  const unique: T[] = [];
   for (const { source } of sorted) {
     const last = unique[unique.length - 1];
     if (!last || last.density !== source.density) unique.push(source);
