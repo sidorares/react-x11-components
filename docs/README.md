@@ -69,6 +69,12 @@ parts.
   `<Html>`, why the element draws a document rather than composing one, the
   resource and script seams, the isolated-process mode, and the audit of
   exposing the seams as a Chrome DevTools Protocol surface.
+- [`<Html>` animations off the JavaScript clock](prd-html-animations.md) —
+  investigation: what Core Animation, react-x11's two presenters and the
+  X11 and Wayland backends can run of a CSS animation, which animations
+  are eligible, how an animated transform stops re-rasterizing its subtree
+  (a retained sprite, a translate fast path, and where an offscreen GL
+  renderer does and does not help), and the sprite seam to file in core.
 - [`<Html>` against the CSS 2.1 test suite](html-conformance.md) — the
   web-platform-tests reftests run through `<Html>` on X11 and Cocoa: what it
   supports, the hangs and crashes the suite found, what was fixed, and what

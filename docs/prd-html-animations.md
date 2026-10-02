@@ -1,0 +1,440 @@
+# PRD: `<Html>` animations off the JavaScript clock, and transforms that do not re-rasterize
+
+> **Status: investigation; nothing here is built.** `<Html>` runs CSS
+> animations since
+> [#584](https://github.com/sidorares/react-x11-components/pull/584), on a
+> timer of its own, restyling and repainting in JavaScript. This document
+> answers two questions the PR left open: whether the animation primitives
+> the platforms provide can run any of it, and how an animated transform
+> can stop re-rasterizing its subtree on every frame. §7 is the
+> recommendation and the order to build it in; §8 is what has to be filed
+> upstream first. The reference for what runs today is
+> `docs/components/html.md`, "Animations".
+
+## 1. What `<Html>` does today
+
+A frame of an animation is a restyle of the elements it runs on, at the
+timeline's time. `src/html/css/timeline.ts` keeps when each element's
+animations started; the cascade asks it for each animation's progress and
+interpolates the computed values between the frames around it
+(`css/interpolate.ts`). A 16 ms timer (`animationClock`, `src/html/node.ts`)
+asks for the next frame while an animation is under way.
+
+What a frame costs depends on what the animation changes:
+
+- **An opacity, a colour, a visibility, a transform, a `z-index`** are
+  changes a hover may make in place (`hoverChange`, the `fade` and `move`
+  classes). The element's boxes keep their identity and take the new
+  style; the frame claims the ink the element drew before and draws now,
+  and the window repaints that. A transform's translation moves the box
+  (`applyRelativeOffsets`); what is left of it, a turn, a scale or a skew,
+  is painted through `paintTransformed`.
+- **Anything layout reads** — Zen Garden 219's marquees animate
+  `text-indent` — builds the boxes again around every other element's kept
+  style and lays the document out: about 5 ms a frame for 219. Where all
+  that changed is positioned out of the flow, only those boxes' old and new
+  ink is repainted.
+
+Two costs inside the first class are the subject of this document:
+
+**A transform paints its subtree again every frame.** On the Cocoa backend
+the context scales text (`scalesText`), so the subtree is painted through
+the context's matrix, and the cost is the paint. On X11 ntk draws a glyph as
+it was shaped, upright, where the matrix puts its origin, so a box with
+text in it goes through `paintRaster`: a fresh ntk `Surface` the size of
+the box's ink, the whole subtree painted into it, one composite through
+`SetPictureTransform`, and the surface destroyed in a `finally`. A card
+turning for a second pays sixty full rasterizations of its contents, for
+pixels that did not change.
+
+**The frame runs on the JavaScript thread, whatever the platform could
+do.** On macOS the frame's claim re-rasters that part of the `<Html>` node's
+bitmap, from JavaScript, through the bridge. A document whose script host
+is busy, a long layout elsewhere in the app, or a garbage collection pause
+stalls every animation on the page, where a CSS animation in a browser runs
+on the compositor thread and does not notice.
+
+And one bug in the same class, recorded because the fix below fixes it:
+**group opacity is not a group.** `paintBox` multiplies `globalAlpha` into
+each thing the element draws rather than compositing the element once at
+that alpha, so where two of its own boxes overlap the lower shows through
+the upper. The comment at the site says so. CSS Color 4 §3.2 makes the
+element a group; so does react-x11's own `Node._paintGroup`, which draws the
+subtree once into a retained surface and composites it.
+
+## 2. What the platforms provide
+
+### 2.1 Core Animation, through `@windowkit/appkit`
+
+The bridge's animation vocabulary is complete for this purpose
+([README, "Animations"](https://github.com/windowkit/appkit#animations)).
+A layer takes a `CABasicAnimation` (`from`, `to`, `duration`), a
+`CAKeyframeAnimation` (`values`, `keyTimes`, per-segment `timings`,
+`calculationMode`) or a `CASpringAnimation`; every one takes `timing` as a
+curve name or cubic-bezier control points, `repeat` up to `Infinity`,
+`autoreverse`, `additive`, `delay`, `speed`, `timeOffset`, `hold` and an
+`id` that reports `animation-end`. `presentationValue(layer, keyPath)`
+reads back what the render server is showing. All of it runs in the render
+server: the bridge's own words are that the pump's cadence and a busy JS
+thread do not touch it.
+
+### 2.2 How react-x11 uses it
+
+Core's design is `docs/architecture/animation.md` in react-x11, and the
+rule it sets is the one this document inherits: **the node model is the
+source of truth for what is animating and when it ends; a presenter may
+take the pixels.** The seam is `presenter.animate(node, prop, entry)`,
+driven from a node's `transition` or `animation` style, and an entry the
+presenter declines runs on the window's frame clock as it always did
+(`src/nodes/animation.js`, `_offload`).
+
+Two presenters answer it on macOS, and which one is in use matters here:
+
+- **The surface presenter is the default**, one bitmap for the window,
+  with **layer promotion** on by default (`src/cocoa/promotion.js`,
+  react-x11#483). A node that animates a property a layer can express is
+  given a CALayer of its own above the window's bitmap for as long as it
+  animates and a second after, and the paint walk leaves a hole where it
+  was (`Node._promoted`). Promotion is deliberately narrow: the node must
+  be a plain `<box>` with the base paint, nothing painted after it in the
+  walk may reach into its bounds, and every clipping ancestor must hold
+  the whole of it, because the layer would not be clipped. Declining is
+  always safe.
+- **The layer presenter** (`cocoa: { presenter: 'layers' }`,
+  `src/cocoa/presenter.js`) keeps a CALayer per drawn node, and is opt-in
+  while core's measure-first gate is open. A plain box is a PropBox, its
+  background, border and radius as layer properties; everything else is a
+  Raster visual, its own paint replayed into a bitmap layer, children in
+  visuals of their own. **Every registered element is a Raster visual**,
+  `<Html>` included. The key paths the presenter animates today are
+  `backgroundColor`, `borderColor`, `borderWidth` and `cornerRadius`
+  (`ANIMATED_KEY_PATHS`); `opacity` is sent as a layer property.
+
+Core's vocabulary is behind `<Html>`'s. The `animation` style in react-x11
+2.26.3 is a loop per property, `from`/`to`/`duration`/`alternate`/`delay`
+and one of four named easings; the finite timelines, keyframes, bezier
+easing and the six paint-only properties (`opacity`, `translateX`,
+`translateY`, `rotate`, `scaleX`, `scaleY`) in animation.md §3 are pending
+there as of its 2026-09-06 status. `<Html>` already has every CSS
+Animations semantic in `css/timeline.ts`. And `docs/macos.md` names the seam
+this document needs and says it is unbuilt: `registerElement({ visual })`,
+an element supplying layer-aware visuals in place of its raster.
+
+### 2.3 X11 and Wayland
+
+Nothing. XRender has no timeline and no animation request; a compositor
+redirects top-level windows and animates nothing inside one. The Wayland
+protocol core speaks has no compositor-side animation either. On both, the
+JavaScript frame clock _is_ the platform, and the only gains are cheaper
+frames: pixels kept rather than drawn again, composited at an alpha and
+through a transform the server applies, with as little of the document
+repainted around them as possible.
+
+### 2.4 The GL surfaces
+
+A `<glarea>` is a real child window on X11, above everything 2D in its
+window; on the Cocoa backend it is a layer at the top of the stack; on
+XQuartz every GL surface composites above the window's content
+(`useSupports('glOverlay')` is false there). Its children are drawn into
+panes above it (`src/gloverlay.js`), opaque on X11 because a child window
+blends with nothing. ntk's direct GLES context renders to dma-bufs and
+presents them with DRI3 and Present; the swapchain imports each buffer as a
+pixmap with `DRI3.PixmapFromBuffer` (`lib/glswapchain.js`). That import is
+the one fact about GL this document uses.
+
+## 3. What is eligible
+
+Only a part of what runs is a candidate for the platform or for a cheap
+frame, and it is the same part a browser hands its compositor: **an
+animation whose every keyframe sets only `opacity` and `transform`** (with
+`translate`, `rotate` and `scale`), on an element that is a stacking
+context — which an opacity below 1 or any transform makes it (CSS Color 4
+§3.2, CSS Transforms 1 §3). Such an element's pixels are the same on every
+frame; only where they are drawn, and how opaque, changes.
+
+Everything else re-rasterizes by definition — a colour on text, a
+`text-indent`, a width, a shadow's blur — and stays on the JavaScript clock
+on every platform, as it does in a browser. This document changes nothing
+about it.
+
+Three more conditions, each checked per element per frame, since a style
+change or a scroll can undo any of them:
+
+- **Bounded ink.** The element's subtree ink, with the transform's reach
+  over the animation, fits a surface (`RASTER_LIMIT`, `RASTER_SIDE`, and
+  the 16.16 fixed-point limit a picture transform is sent in).
+- **Its place in the paint order.** A sprite composited after the document
+  is right only where nothing painted after the element reaches into its
+  bounds: a later sibling, a fixed header, a scrollbar, a parent's outline.
+  `<Html>` has its paint order and its stacking contexts, so it can answer
+  this where core's promotion cannot see inside it.
+- **Its clips.** Every `overflow: hidden`, `clip-path` and `clip` ancestor
+  either holds the whole of the element's reach or is applied to the
+  sprite's composite. A platform layer cannot take the document's clip.
+
+`will-change: transform` and `will-change: opacity` are the author's
+statement that an element will be animated this way (CSS Will Change 1).
+`<Html>` does not parse the property today. It should, as a hint: an
+element declaring it is given its sprite before the animation starts,
+which is what the property exists for.
+
+## 4. Running eligible animations on Core Animation
+
+Three routes, in the order they could ship.
+
+### 4.1 Compose sprites through core's own elements — no core change
+
+The pattern `<Flow>` uses for node bodies. `<Html>` renders a `<box>`
+around its pane and mounts, as absolutely positioned siblings above it, one
+`<box>` per eligible element, holding a `<canvas>` whose `onDraw` draws the
+element's subtree from a retained surface. The document paints a hole where
+the element is. Core's `animation` style on the box drives its `opacity`;
+promotion lifts it onto a CALayer; Core Animation runs it, and `<Html>`
+schedules no frame.
+
+This works today for a fade, and it is the right spike: it answers on a
+real Mac whether promotion holds a sprite over an `<Html>` node before
+anything is built on it. It is not the design. Core's loop is `from`/`to`
+with four easings, not a keyframe list; transforms wait on core's §3.4
+vocabulary; a promoted layer is above every 2D pixel in the window, so the
+element must be top-most where it is and unclipped, a test `<Html>` has to
+run itself (§3); and every sprite is a React element, so each eligible
+animation costs a render and a commit to start and to stop.
+
+### 4.2 A sprite seam in core — the end state
+
+The `registerElement({ visual })` extension `docs/macos.md` names, shaped
+by what a document needs. An element answers the presenter with a list of
+sprites, each:
+
+- a rectangle in the element's device pixels, and a paint callback the
+  presenter rasterizes into the sprite's layer, or a surface it has drawn
+  already;
+- an `opacity`, a transform and a transform origin;
+- its animations as keyframes: the property, `values`, `keyTimes`,
+  per-segment `timings`, `delay`, `repeat`, `autoreverse`, `hold`, and an
+  `id`.
+
+On the layer presenter the sprites are sublayers of the element's raster
+visual, so the document's own clip is theirs. On the surface presenter they
+are promoted layers, with promotion's own z-order test asked of the element
+rather than of the walk. Either way the element's bitmap leaves a hole, and
+`animation-end` comes back to the element, which tells its timeline the
+animation is over.
+
+CSS maps onto a `CAKeyframeAnimation` nearly one to one, and the bridge
+already has every row:
+
+| CSS                                    | Core Animation                                 |
+| -------------------------------------- | ---------------------------------------------- |
+| `cubic-bezier(x1, y1, x2, y2)`         | `timing: [x1, y1, x2, y2]`                     |
+| `animation-timing-function` on a frame | `timings[i]`, per segment                      |
+| `animation-iteration-count`            | `repeat`                                       |
+| `animation-direction: alternate`       | `autoreverse`                                  |
+| `animation-delay`                      | `delay` (`beginTime`, `fillMode: backwards`)   |
+| `animation-fill-mode: forwards`        | `hold`                                         |
+| `animation-play-state: paused`         | `speed: 0` and `timeOffset` at the held time   |
+| `transform-origin`                     | `anchorPoint`, and the position moved to match |
+| the animation ending                   | `animation-end` with its `id`                  |
+
+Two mismatches, each with a clean answer:
+
+- **`steps()`** has no Core Animation curve. `calculationMode: 'discrete'`
+  is `steps(n, jump-end)` and nothing else. A stepped animation stays on
+  the JavaScript clock, which is where the timeline already runs it.
+- **Transform lists.** CSS interpolates a list function by function where
+  the lists match, and through matrices taken apart into translation,
+  turn, scale and skew where they do not — which is what #584's
+  `Primitive` and `css/interpolate.ts` do, and why a full turn turns.
+  Core Animation interpolates `CATransform3D` values by its own
+  decomposition, which differs for mixed lists, and cannot tell a full
+  turn from none. The answer is to **pre-sample**: JavaScript evaluates the
+  interpolation it already has at N points over the iteration once, sends
+  the matrices as a linear keyframe animation's `values`, and the render
+  server plays them. Any interpolation `<Html>` can compute is reproduced
+  server-side, at the cost of N sixteen-number values a sprite, once. Sixty
+  a second of iteration is more than a display shows.
+
+The seam is a core change and is filed as such (§8). It is not only
+`<Html>`'s: a `<vtterm>` cursor blink, a `<Flow>` edge dash and a chart's
+tooltip fade are the same shape.
+
+### 4.3 Nothing to offload to, on X11 and Wayland
+
+§2.3. The routes above are macOS-only by the nature of the platforms, which
+is the posture `docs/macos.md` and AGENTS.md's "Two backends" already take
+for this package: the component runs on both, and says in its page which
+backend runs what where. On X11 and Wayland the frame runs in JavaScript,
+and §5 is what makes it cheap.
+
+## 5. Transforms that do not re-rasterize
+
+Four options, measured against §1's cost. The first is the fallback every
+other needs and is built first whichever is chosen after it.
+
+### 5.1 A retained sprite surface, composited through the matrix
+
+`paintRaster`'s surface becomes a sprite kept per eligible element across
+frames, keyed by the element as `Node._groupSurface` is kept per node, and
+repainted only when the element's own ink changes — a hover inside it, a
+style change, text that re-laid-out. A frame of the animation is then one
+`drawImage` through the matrix at `globalAlpha`, which both contexts do
+server-side: XRender's `SetPictureTransform` with bilinear filtering, and
+`CGContextDrawImage` through the CTM on Cocoa. Hit-testing already maps
+through the inverse (`deepestAt`, `nearestText`); the frame's damage is
+already the union of the old and new ink; the fixed-point and size limits
+stay as they are.
+
+The sprite is painted once at opacity 1 and composited at the element's
+opacity, so **group opacity is a group**, and §1's double-blend goes with
+no further work. A fade with no transform takes the same path, as
+`Node._paintGroup` does.
+
+Two refinements, the second the one that matters:
+
+- **Scale with the sprite.** A sprite rasterized at the element's laid-out
+  size and scaled up by a transform is blurred. A transform whose scale
+  runs over the animation is rasterized at its largest scale, within the
+  limits, and composited down; the pre-sampling §4.2 does gives the range.
+- **A retained background.** The sprite's composite is cheap; what is
+  expensive is the document under it, repainted through every box the
+  damage reaches to fill the rectangle the sprite left. A document with a
+  sprite animating keeps a surface of itself without its sprites, clipped
+  to the sprites' reach, and a frame is a blit of the exposed part of that
+  plus the sprite's composite. That is a two-layer compositor in
+  JavaScript, the shape a browser's is, and it is what makes a transform
+  cost a composite rather than a paint. Its budget is the shadow cache's
+  (`SurfaceCache`, `src/html/surfaces.ts`), and it is dropped when the
+  last sprite ends.
+
+### 5.2 Translation without a surface
+
+Most transforms in the wild are translations: a slide-in, an entrance, a
+marquee, a drawer. None of them needs a sprite. The subtree is painted
+through `ctx.translate`, the fast path animation.md §5 names for core, on
+either backend, with the old and new ink claimed. On X11 there is a cheaper
+frame still: a translation of an opaque sprite by whole pixels is a copy,
+which `scrollContents` with `pinned` rects already does for `<CodeEditor>`'s
+caret reveal and `<Flow>`'s pan — one `CopyArea` and the exposed strips
+repainted. A marquee on the in-process test server, where compositing is
+most of the frame, is the case this is for.
+
+### 5.3 An offscreen GL renderer, composited back
+
+The suggestion the question came with, and the one to assess per platform,
+because the answer differs on each.
+
+- **On the Cocoa backend it is strictly worse than a layer.** A `<glarea>`
+  is a layer at the top of the stack. Drawing a textured quad through a
+  matrix is what a CALayer's `transform` does already, in the render
+  server, with no GL context, no swapchain and no JavaScript frame. §4.2 is
+  the GL answer on macOS.
+- **On XQuartz the same, with no way round it.** Every GL surface
+  composites above the window.
+- **On X11 with direct rendering there is one coherent design.** The
+  sprite is rendered, transformed, into a dma-buf the size of its
+  destination rectangle; the buffer is imported as a pixmap with
+  `DRI3.PixmapFromBuffer`, as the swapchain imports its frames; the pixmap
+  is a `Surface` to the 2D context, and the frame composites it into the
+  window with a plain `Composite`, no transform and no readback. The GPU
+  resamples instead of XRender's software, which is where a large sprite's
+  frame goes on Xorg. This needs an ntk seam, a `Surface` backed by a GL
+  framebuffer, and a GL context per `<Html>` with sprites. It helps on a
+  Linux desktop with a GPU and nowhere else: not the in-process server the
+  suite runs on, not XQuartz, not the Cocoa backend. A variant that reads
+  the GL frame back to put it in the window cancels its own gain.
+- **Rendering the whole document in GL** is a different project, a text
+  renderer and a path rasterizer away, and `<Html>`'s cost is not where it
+  would help.
+
+The verdict: a Linux-only rung after §5.1 exists and is measured on real
+documents, if XRender's resample is what measures slow. Not the primary
+path, and not first.
+
+### 5.4 Core's own transform properties
+
+When react-x11 ships `translateX`, `rotate` and `scaleX` (animation.md §3.4)
+and its X11 group path, §4.1's composed sprites can animate transforms as
+well as opacity through core, and on X11 core's `Node._paintGroup` and its
+translate fast path do the compositing. It is worth having for the spike
+and for any component here composed of core boxes. It does not change the
+recommendation: a document's sprites are a list the element knows, not
+React elements, and the per-sprite render and commit is the cost §4.2
+removes.
+
+## 6. What does not change
+
+- **The timeline stays the source of truth.** `css/timeline.ts` says what
+  is animating, at what progress and when it ends, on every platform. A
+  presenter that takes a sprite takes its pixels, and reports the end; it
+  never decides whether an animation runs. That is core's rule (§2.2) and
+  it holds here.
+- **Every sprite has the JavaScript frame as its fallback.** A presenter
+  that declines, a sprite that stops being eligible mid-animation (an
+  element scrolled under a fixed header, a later sibling that moved over
+  it, a hover that changed its text), a platform with nothing to offload
+  to: the timeline's next frame restyles and repaints as #584 does today.
+  No animation is ever lost to the optimisation, which is what lets the
+  eligibility test be strict.
+- **Hit-testing, selection and accessibility stay in layout space**, as
+  they are for transforms today. A sprite changes pixels and nothing else.
+- **`animate={false}`** is unchanged: no timeline, no sprites, the
+  at-rest drawing the Zen Garden bench holds Chrome with.
+
+## 7. Recommendation and sequencing
+
+In order, each step useful on its own and measured before the next:
+
+1. **§5.1, the retained sprite** with group opacity, both backends, keyed
+   per element, with `test/html/animations.test.ts`'s pixel checks holding
+   a frame drawn from a sprite to a frame drawn whole. Then the retained
+   background. Measure a turning card and a fading panel on the in-process
+   server and on Cocoa, frame time before and after.
+2. **§5.2, translation without a surface**, and the `scrollContents` copy
+   for a whole-pixel translation of an opaque sprite on X11.
+3. **`will-change`** parsed as the eligibility hint, and the eligibility
+   test of §3 written once, in the paint order's terms, for every route to
+   share.
+4. **§4.1 as a spike**, a fade only, to confirm on a real Mac that
+   promotion holds a sprite above an `<Html>` node, before the seam is
+   designed against it.
+5. **§4.2, the sprite seam in core**, with pre-sampled transform
+   keyframes, `<Html>` as its first consumer. Zero JavaScript frames for an
+   eligible animation on macOS is the gate: the presenter bench's
+   frames-per-120 ms row, 0 against 8.
+6. **§5.3's Linux rung** only if step 1's measurements on Xorg say the
+   resample is the cost.
+
+## 8. Upstream
+
+Three things to file before step 5, each in the repository it belongs to:
+
+- **react-x11: the sprite visual seam** (§4.2) — `registerElement({ visual
+})` or an element method the presenter asks per frame, for the layer
+  presenter and for promotion, with `animation-end` routed back to the
+  element. Reference `docs/macos.md`'s "Custom drawing on a layer tree" and
+  animation.md §4.
+- **react-x11: §3.4's vocabulary**, which is on its roadmap already;
+  §4.1 and §5.4 wait on it. No new request, a dependency to note.
+- **ntk: a `Surface` backed by a GL framebuffer** (§5.3), a dma-buf the 2D
+  context composites as a pixmap, over the import `glswapchain.js` already
+  does. Filed when and if step 6 is reached, with step 1's numbers.
+
+## 9. Open questions
+
+- **How many sprites is too many.** A page of a hundred spinners is a
+  hundred layers on macOS and a hundred surfaces on X11. Promotion's
+  per-raster `MAX_DIRTY_RECTS` and the shadow cache's pixel budget are the
+  precedents; the number is measured, not chosen.
+- **Pre-sampling density** (§4.2). Sixty values an iteration is the
+  starting point; an iteration of ten seconds at sixty a second is six
+  hundred matrices, and a keyframe animation that long may deserve a
+  coarser list with the bridge's `cubic` calculation mode.
+- **A sprite under a scrolling document.** The sprite's rectangle moves
+  with the scroll; a promoted layer has to be moved each frame of the
+  scroll, or demoted while the document scrolls and promoted again when
+  it settles, the way hover is held (`hoverClock`).
+- **Transitions.** Not run yet (#584, "not in this PR"). When they are, a
+  transition on `opacity` or `transform` is the same sprite with a basic
+  animation, and the retargeting rule is core's additive one (animation.md
+  §4.2). Nothing here closes the door; nothing opens it either.
