@@ -1513,7 +1513,7 @@ function paintGroup(
   opacity: number,
 ): boolean {
   if (!options.surface || !groupsOnSurfaces(ctx)) return false;
-  if (!drawsOverItself(box, options) || holdsViewportFixed(box, options)) {
+  if (!drawsOverItself(ctx, box, options) || holdsViewportFixed(box, options)) {
     return false;
   }
   if (options.sprites && paintSprite(ctx, box, options, null, opacity)) {
@@ -1565,7 +1565,7 @@ function paintGroupThrough(
   opacity: number,
 ): boolean {
   if (!options.surface || !groupsOnSurfaces(ctx)) return false;
-  if (!drawsOverItself(box, options)) return false;
+  if (!drawsOverItself(ctx, box, options)) return false;
   // a box that turns has its own ink bounds where it is drawn
   let x0 = Math.floor(box.boundsX + options.originX);
   let y0 = Math.floor(box.boundsY + options.originY);
@@ -1652,11 +1652,16 @@ const OVERLAP_PROBE = 64;
  * surface. A box with more than `OVERLAP_PROBE` in it is taken for one
  * that does.
  */
-function drawsOverItself(box: Box, options: PaintOptions): boolean {
-  // the text is one thing, and the selection under it another
+function drawsOverItself(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): boolean {
+  // the text is one thing, and the selection under it another — and the
+  // text is a group of its own where the context does not fade glyphs
   let things = 0;
   if (box.subtreeTextEnd > box.subtreeTextStart) {
-    things += 1;
+    things += fadesGlyphs(ctx) ? 1 : 2;
     const range = options.selection;
     if (
       range &&
@@ -1677,6 +1682,17 @@ function drawsOverItself(box: Box, options: PaintOptions): boolean {
     for (const child of at.children) stack.push(child);
   }
   return false;
+}
+
+/**
+ * Whether a context draws glyphs at its `globalAlpha`: the native ones do
+ * (`scalesText`). ntk's draws a text layout's glyphs in its runs' colours
+ * whatever alpha the context holds, so on X11 and Wayland text in a faded
+ * element is faded only by the composite of the group it is drawn in, and
+ * a paragraph at `opacity: .5` drew at full strength.
+ */
+function fadesGlyphs(ctx: PaintContext): boolean {
+  return ctx.scalesText === true;
 }
 
 /** What a box draws of its own, for `drawsOverItself`: borders twice, which
