@@ -886,9 +886,9 @@ export interface BoxTree {
    *  tree is built, since most builds are never selected in. */
   selectionStyler: SelectionStyler | null;
   /** What the rules give the elements in each inline `<svg>`
-   *  (`ShapeStyler`), which have no boxes and no styles, where any rule
-   *  could reach one: worked out as a drawing is first painted, since a
-   *  page of icons shows few of them at once. */
+   *  (`ShapeStyler`), which have no boxes and no styles, and what the
+   *  `var()`s in their attributes come to: worked out as a drawing is
+   *  first painted, since a page of icons shows few of them at once. */
   shapeStyler: ShapeStyler | null;
   /** What the drawings of this build share in `Cascade.shapeStyles`: the
    *  document's elements by their ids, indexed when first asked, where a
@@ -1094,7 +1094,10 @@ class Builder {
     const anonymous = anonymousStyles(cascade.initial);
     fixUp(rootBox, anonymous);
     assignSubtreeRanges(rootBox);
-    const copies = cascade.stylesShapes ? new ShapeCopies(idIndex(root)) : null;
+    // every build has one: a drawing may want its attributes' `var()`s
+    // read where no rule reaches it (`Cascade.shapeStyles`), and the index
+    // of ids is made only if a `<use>` asks it
+    const copies = new ShapeCopies(idIndex(root));
     return {
       root: rootBox,
       anonymous,
@@ -1112,7 +1115,7 @@ class Builder {
       firstLine: this._firstLine,
       firstLineStyler: this._firstLine ? this._firstLineStyler() : null,
       selectionStyler: cascade.hasSelection ? this._selectionStyler() : null,
-      shapeStyler: copies ? this._shapeStyler(copies) : null,
+      shapeStyler: this._shapeStyler(copies),
       shapeCopies: copies,
       nestedOutOfLine: this._nestedOutOfLine,
       movedInline: this._movedInline,

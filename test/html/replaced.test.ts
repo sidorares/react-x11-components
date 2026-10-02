@@ -487,6 +487,12 @@ metric(
     const rows: [string, string, string, number?][] = [
       [svg(rect('class="g"')), '#00aa00', 'a rule that names the shape'],
       [
+        svg(rect('class="g" fill="var(--brand)"')),
+        '#00aa00',
+        'over an attribute with a variable',
+      ],
+      [svg(rect('fill="var(--brand)"')), '#ff00ff', 'and the attribute'],
+      [
         svg(rect('class="f"'), 'fill="none" stroke="currentColor"'),
         '#00aa00',
         "over what it inherits from its root's attribute",
@@ -581,6 +587,72 @@ metric(
 );
 
 metric(
+  'a var() in a presentation attribute is the custom property it names',
+  async () => {
+    // A presentation attribute is a declaration (SVG 2, 6.2), and its
+    // value is CSS, `var()` and all, as Chrome, Firefox and WebKit read
+    // it. `SvgView` reads the attribute as written, and a `var()` is no
+    // colour: a callout's corner, `fill="var(--color-page-background)"`,
+    // was drawn black on macOS and not at all on X11, and so were the
+    // clouds of the page it is on. This document has no rule that reaches
+    // a shape, which is where the attributes were never looked at.
+    const rect = (attrs = '') => `<rect width="10" height="10" ${attrs}/>`;
+    const svg = (inside: string, attrs = '') =>
+      `<svg width="10" height="10" ${attrs}>${inside}</svg>`;
+    const rows: [string, string, string, number?][] = [
+      [svg(rect('fill="var(--g)"')), '#00aa00', 'a variable'],
+      [
+        svg(`<g fill="#0000ff">${rect('fill="var(--none)"')}</g>`),
+        '#0000ff',
+        'one that names none is as though unset',
+      ],
+      [
+        svg(`<g fill="#0000ff">${rect('fill="var(--wide)"')}</g>`),
+        '#0000ff',
+        'and so is one that is no colour',
+      ],
+      [svg(rect('fill="var(--none, #ff00ff)"')), '#ff00ff', 'a fallback'],
+      [
+        svg(rect('style="fill:var(--g)" fill="#ff0000"')),
+        '#00aa00',
+        'in a style, over the attribute',
+      ],
+      [
+        svg(`<g style="--b:#0000ff">${rect('fill="var(--b)"')}</g>`),
+        '#0000ff',
+        'a custom property set in the drawing',
+      ],
+      [
+        svg(rect('fill="none" stroke="var(--g)" stroke-width="var(--w, 4)"')),
+        '#00aa00',
+        'a stroke and its width',
+        1,
+      ],
+      [
+        svg(rect('fill="none" stroke="var(--g)" stroke-width="var(--w, 4)"')),
+        '#ffffff',
+        'and no fill',
+      ],
+      [svg(rect(), 'fill="var(--g)"'), '#00aa00', "the root's"],
+      [svg(rect(), 'fill="var(--none)"'), '#000000', 'and one unset'],
+      [svg('<use href="#sym"/>'), '#00aa00', 'what a <use> draws'],
+    ];
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0} svg{display:block}' +
+        ':root{--g:#00aa00;--wide:10px}</style>' +
+        '<svg width="0" height="0" style="position:absolute">' +
+        `<symbol id="sym">${rect('fill="var(--g)"')}</symbol></svg>` +
+        rows.map(([markup]) => markup).join(''),
+      {},
+    );
+    const ctx = result.ctx;
+    for (const [i, [, colour, message, x = 5]] of rows.entries()) {
+      await expectPixel(ctx, x, i * 10 + 5, colour, { message });
+    }
+  },
+);
+
+metric(
   'an SVG image is painted as its own style sheets say, and the page’s rules stay out of it',
   async () => {
     // An SVG image is a document of its own, and its `<style>` elements are
@@ -633,6 +705,14 @@ metric(
         '',
         rect(0, 'class="st0" fill="#00aa00"') + rect(10, 'fill="#0000ff"'),
       ),
+      // a `var()` in an attribute, and no sheet: its fallback, and what a
+      // `style` in the image sets — the page's `--c` stays out of it
+      'vars.svg': svg(
+        '',
+        rect(0, 'fill="var(--none, #00aa00)"') +
+          `<g style="--c:#0000ff">${rect(10, 'fill="var(--c)"')}</g>` +
+          `<g fill="#00aa00">${rect(20, 'fill="var(--c)"')}</g>`,
+      ),
     };
     // the element an image's URL names by its fragment is its `:target`,
     // which a sprite sheet shows its icons with
@@ -661,6 +741,11 @@ metric(
       ['<img src="media.svg">', ['#0000ff', '#0000ff'], 'its viewport, wide'],
       ['<img class="n" src="media.svg">', ['#00aa00'], 'and narrow'],
       ['<img src="bare.svg">', ['#00aa00', '#0000ff'], 'no sheet of its own'],
+      [
+        '<img src="vars.svg">',
+        ['#00aa00', '#0000ff', '#00aa00'],
+        'a variable in an attribute',
+      ],
       [
         '<img src="target.svg#on">',
         ['#00aa00', '#0000ff', '#ff00ff'],

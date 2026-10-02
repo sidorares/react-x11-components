@@ -1528,6 +1528,20 @@ no others: a rule's `transform`, font or dash pattern is not. What is in
 a drawing has no box, so the pointer is over the drawing and never over a
 shape: `a:hover svg path` follows it, and `path:hover` matches nothing.
 
+A presentation attribute of those properties is a declaration as well, and
+its value is CSS: `fill="var(--color-primary)"` is the custom property it
+names, as Chrome, Firefox and WebKit read it, whether or not any rule
+reaches the drawing. It is under every rule and the `style` attribute; a
+`var()` that names nothing, with no fallback, or that comes to something
+the property does not take, leaves the property as though `unset`, so a
+`fill` is inherited. The custom properties are the drawing's, and those a
+`style` inside it sets on the way down — `<g style="--c: red">` — but not
+those a rule sets on an element inside it; what a `<use>` draws has the
+drawing's. A decoration drawn in the page's own colours, a callout's
+corner in `var(--color-page-background)` or a cloud in its palette's, is
+drawn in them, and an SVG image's attributes are read the same way, with
+the custom properties its own `style`s set.
+
 An SVG _image_ — an `<img>`'s, a background's, a list marker's, a
 `content` image's — is a document of its own, and its `<style>` elements
 are its style sheets, and the only ones. They give its elements those
@@ -1578,9 +1592,10 @@ and nothing is fetched for a `<use>` of another document's. An SVG image's
 root `background-color`, in its `style`, covers the whole image, as a
 browser paints it over the canvas. XHTML's `<svg:svg>`, under a prefix
 declared for the SVG namespace, is the same element. A drawing `SvgView`
-cannot read — a colour it does not know, such as a `var()` in a
-presentation attribute or a root's own `color: currentColor` — is left
-undrawn, an empty box, and the rest of the document is drawn.
+cannot read — a colour it does not know, such as a root's own
+`color: currentColor`, or a `var()` in an attribute of a property not
+among those above — is left undrawn, an empty box, and the rest of the
+document is drawn.
 
 **Backgrounds:** `background-color`, and `background-image` — through
 `onResource`, like an `<img>` — with `background-repeat`, `space` and

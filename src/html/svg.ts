@@ -17,7 +17,7 @@ import { Element, Text } from 'domhandler';
 import type { ChildNode, ParentNode } from 'domhandler';
 import * as ntk from 'react-x11/ntk';
 import { isSvgRoot, rawTextOf } from './dom.js';
-import { Cascade } from './css/cascade.js';
+import { Cascade, drawingVars } from './css/cascade.js';
 import { parseMediaQuery, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
 import { useHref } from './css/shapes.js';
@@ -289,6 +289,9 @@ export class SvgDrawing {
   /** An SVG image's own style sheets, its `<style>` elements': read at its
    *  first draw, and none for most images. */
   private _sheets: Stylesheet[] | null = null;
+  /** Whether an image with none has a `var()` to read all the same
+   *  (`drawingVars`); null until it is first drawn. */
+  private _vars: boolean | null = null;
   /** A cascade over them for each colour scheme and scale the image is
    *  drawn at, and what each gave it: by the viewport it was asked at where
    *  a sheet reads the viewport, and under one key where none does. */
@@ -492,7 +495,15 @@ export class SvgDrawing {
     scheme: 'light' | 'dark',
   ): ImagePaint | null {
     const sheets = (this._sheets ??= ownSheets(this._root));
-    if (!sheets.length) return null;
+    // with no sheets of its own, a `var()` in its attributes can only be
+    // one a `style` in it sets, or has a fallback, and is still read here
+    if (!sheets.length) {
+      const root = this._root;
+      this._vars ??= drawingVars(root, (id) =>
+        elementById(documentOf(root), id),
+      );
+      if (!this._vars) return null;
+    }
     const made = `${scheme}|${scale}`;
     let entry = this._cascades.get(made);
     if (!entry) {
