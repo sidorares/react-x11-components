@@ -641,6 +641,11 @@ export interface ComputedStyle {
   /** A form control's own look (`auto`), or `none`: the page draws it,
    *  with its own background, borders and padding (`ControlFace`). */
   appearance: 'auto' | 'none';
+  /** Whether the page styled a form control's box: set a background or a
+   *  border property on it, whatever to, or `appearance: none`. Its look
+   *  is the page's then and not the palette's (`Cascade`'s
+   *  `stylesControl`, `styledField`). Not inherited. */
+  styledControl: boolean;
   objectPositionX: Len;
   objectPositionY: Len;
   overflowX: 'visible' | 'hidden' | 'scroll' | 'auto' | 'clip';
@@ -1175,6 +1180,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     aspectRatio: null,
     objectFit: 'fill',
     appearance: 'auto',
+    styledControl: false,
     objectPositionX: { pct: 50 },
     objectPositionY: { pct: 50 },
     overflowX: 'visible',

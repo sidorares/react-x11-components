@@ -30,7 +30,6 @@ import {
 } from './form.js';
 import type { ComputedStyle } from './css/style.js';
 import { invert } from './css/transform.js';
-import { isTransparent } from './css/values.js';
 import { placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import type { FontsLike } from './layout/inline.js';
@@ -224,14 +223,20 @@ function covers(clip: Rect, rect: Rect): boolean {
 }
 
 /**
- * Whether a field's box is the author's to draw: one given a border or a
- * background of its own, which the UA sheet gives no control, or set to
- * `appearance: none`, which says so outright. A browser drops a field's
- * native look for the author's then (CSS UI 4 7.1, `appearance`), and so
- * does this: the widget's frame and fill would hide the author's, and what
- * they would draw is the theme's rather than the page's. `appearance: none`
- * is how a design system writes every field it has — meetup.com's search
- * pill holds two with no background, only one of them with a border.
+ * Whether a field's box is the author's to draw: one whose border or
+ * background the page set, to anything, or set to `appearance: none`,
+ * which says so outright (`ComputedStyle.styledControl`). A browser drops a
+ * field's native look for the author's then (CSS UI 4 7.2.1), and so does
+ * this: the widget's frame and fill would hide the author's, and what they
+ * would draw is the theme's rather than the page's.
+ *
+ * Who set them, not what to. `border: none; background: transparent` is a
+ * page taking the frame off to draw the field in a box of its own — the
+ * pill of joshwcomeau.com's newsletter form, a search bar's — and read as
+ * values it was a field left alone, the palette's frame drawn inside the
+ * page's box. And `appearance: none` is how a design system writes every
+ * field it has — meetup.com's search pill holds two with no background,
+ * only one of them with a border.
  *
  * A `<select>` is one too. A browser keeps its arrow when the page gave it a
  * border or a background (Blink's `menulist-button`), and leaves that out
@@ -241,21 +246,7 @@ export function styledField(kind: ReplacedKind, style: ComputedStyle): boolean {
   if (kind !== 'input' && kind !== 'textarea' && kind !== 'select') {
     return false;
   }
-  return (
-    style.appearance === 'none' ||
-    !isTransparent(style.backgroundColor) ||
-    !!style.backgroundImage ||
-    !!style.backgroundGradient ||
-    !!style.backgroundImages ||
-    edged(style.borderTopStyle, style.borderTopWidth) ||
-    edged(style.borderRightStyle, style.borderRightWidth) ||
-    edged(style.borderBottomStyle, style.borderBottomWidth) ||
-    edged(style.borderLeftStyle, style.borderLeftWidth)
-  );
-}
-
-function edged(style: ComputedStyle['borderTopStyle'], width: number): boolean {
-  return style !== 'none' && style !== 'hidden' && width > 0;
+  return style.styledControl;
 }
 
 /**
