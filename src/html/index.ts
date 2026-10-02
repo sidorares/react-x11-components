@@ -31,6 +31,7 @@ import type { RootLook } from './css/style.js';
 import type { ControlRect } from './controls.js';
 import type { FormSubmission } from './form.js';
 import { useForms } from './widgets.js';
+import { useVideos } from './videos.js';
 import { useFocusStops, useFocusableMarkup } from './stops.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
@@ -40,8 +41,13 @@ export {
   registerHtmlView,
 } from './node.js';
 export type { HtmlViewProps, ScriptRequest } from './node.js';
-export type { ResourceRequest, ResourceResult } from './resources.js';
+export type {
+  ResourceRequest,
+  ResourceResult,
+  VideoSource,
+} from './resources.js';
 export type { BareField, ControlRect } from './controls.js';
+export type { MediaRect } from './media.js';
 export type {
   FormEnctype,
   FormMethod,
@@ -134,10 +140,19 @@ export interface HtmlProps {
    * `charset` the protocol named, if the host passes it on, and its `url`,
    * if the host passes that, is where it came from after redirects.
    *
+   * A `<video>`'s source is asked for as `kind: 'video'`, with the `type`
+   * its `<source>` gives: answer `{ kind: 'video', src }` for core's
+   * `<video>` to play with the platform's player — where
+   * `useSupports('mediaPlayback')` says there is one — or `{ kind: 'video',
+   * frames }` with a `VideoFrames` sink the host decodes it into. Declined,
+   * the next `<source>` is asked for, and with none left the video is its
+   * poster.
+   *
    * **Absent, nothing loads.** This component has no network and no
    * filesystem of its own; images render as a frame, linked stylesheets are
-   * skipped and text is set in the fonts the system has. The host is the one
-   * that knows its cache, its proxy and whether this document is trusted.
+   * skipped, videos show their posters and text is set in the fonts the
+   * system has. The host is the one that knows its cache, its proxy and
+   * whether this document is trusted.
    */
   onResource?: (
     request: ResourceRequest,
@@ -370,6 +385,9 @@ export function Html(props: HtmlProps): ReactElement {
     onLink,
   });
   const mayHaveStops = useFocusableMarkup(source);
+  // core's `<video>` over each video the document can show one over
+  // (`videos.ts`)
+  const videos = useVideos(viewNode);
 
   const handleDocument = React.useCallback(
     (doc: Document) => {
@@ -402,6 +420,7 @@ export function Html(props: HtmlProps): ReactElement {
     onScript,
     onDocument: handleDocument,
     onControls: handleControls,
+    onMedia: videos.onMedia,
     onFocusStops: stops.onFocusStops,
     watchStops: stops.watch,
     domRevision,
@@ -414,6 +433,9 @@ export function Html(props: HtmlProps): ReactElement {
 
   const children: ReactNode[] = [
     h(ELEMENT, { key: 'view', ...viewProps } as Record<string, unknown>),
+    // over the document and under its widgets: a video a control is drawn
+    // over is no video a player is mounted for
+    ...videos.render(),
   ];
   // The widgets and the stops in the document's order, which is the order
   // core's Tab goes through a subtree in where the document hands it on:

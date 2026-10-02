@@ -620,8 +620,14 @@ it up. **The floor is a running one and moves often** — every move since
   went from 117 frames in two seconds to none on a real Mac. A core that
   reads no `clipRadius` would cut the layer square and show the corners the
   document cuts away, so the floor moves with the feature. The same
-  release sets text on a Retina display at its point size (#840) and adds
-  `<video>` (#836, #837), neither of which needed a change here.
+  release sets text on a Retina display at its point size (#840), which
+  needed no change here, and adds `<video>` (#836, #837): frames an
+  application decodes into a `VideoFrames` sink on every backend, and a
+  `src` AVFoundation plays on macOS. `<Html>` mounts one over each
+  `<video>` it can, playing what the host answers `kind: 'video'` with
+  (`src/html/media.ts`), where a video had been its poster. A sprite
+  part's `paint` is optional from this release, since a part may show a
+  source instead.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1871,6 +1877,25 @@ place asks, so one that tests the pointer or the focus builds the boxes
 again on a change of it (`Cascade._noteEdge`); and they are compiled as the
 sheets are read, so the cascade's css-select adapter exists before the
 first sheet does.
+
+**A video is core's `<video>`, mounted over the box, and never drawn
+here** (`media.ts`, `videos.ts`; core's `docs/architecture/video.md`, 8.2).
+The control rule again — a drawn video is a picture of a video — and the
+same seam a host answers everything else through: `onResource` is asked
+for each source as `kind: 'video'`, and answers with a `src` the platform's
+player opens or a `VideoFrames` sink it feeds. The document lays the box
+out and paints its poster as before, and the player, transparent until it
+has a frame, goes over it, so nothing in the paint changes but the frame a
+mounted video with no poster is not drawn in. Two things are
+load-bearing. **A player is mounted only where nothing the document paints
+after the video reaches its picture**, the sprite test (`paintedAfter`,
+`crowded`), because a sibling over the document hides what is drawn over
+the video — so a page's overlay keeps the poster, by design. And **a
+mounted player is one React element for its element and source**, cut,
+rounded and faded by the boxes around it (`renderVideo`'s three boxes): a
+new element is a new player, and the video starts again. The boxes fixed to
+the viewport are asked about at each paint (`_publishMedia`), since a scroll
+brings a header over a player and lays nothing out.
 
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,

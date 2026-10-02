@@ -13,6 +13,7 @@
 // these requests", which an application cannot audit and a user did not ask
 // for. The host already knows its proxy, its cache, its offline policy and
 // whether this document is trusted; this does not.
+import type { VideoFrames } from 'react-x11';
 import * as ntk from 'react-x11/ntk';
 import { decodeStylesheet } from './css/decode.js';
 import type { DecodedStylesheet } from './css/decode.js';
@@ -35,8 +36,15 @@ export interface ResourceRequest {
    */
   url: string;
   /** An `<img>`, an `<object>`, a background or a list marker; a
-   *  `<link rel=stylesheet>` or an `@import`; an `@font-face` source. */
-  kind: 'image' | 'stylesheet' | 'font';
+   *  `<link rel=stylesheet>` or an `@import`; an `@font-face` source; a
+   *  `<video>`'s `src`, or one of its `<source>`s. */
+  kind: 'image' | 'stylesheet' | 'font' | 'video';
+  /**
+   * A video's: the type its `<source>` says it is (`video/mp4`, and maybe
+   * its `codecs`), for a host that knows what its player plays. Absent
+   * where the markup says none, and for every other kind.
+   */
+  type?: string;
   /** The element that referred to it, for a host that wants the context:
    *  for a font, the `<style>` or `<link>` whose sheet declared it. */
   element: Element;
@@ -51,13 +59,29 @@ export interface ResourceRequest {
  * whatever else `Bun.Image` reads — or an already-decoded ntk `Image` for a
  * host with its own cache. A font is the
  * file's bytes: TrueType, OpenType, WOFF or WOFF2 (see `fonts.ts`).
+ *
+ * A video is nothing this decodes. It is what core's `<video>` plays: a
+ * `src`, a path or URL the platform's player opens itself — where
+ * `useSupports('mediaPlayback')` says this display has one — or `frames`,
+ * a `VideoFrames` sink the host decodes the video into, which shows on
+ * every backend. Handing over a `src` is the host letting the player make
+ * the request, since the player, not this component, is what fetches it.
  */
 export type ResourceResult =
   | { kind: 'stylesheet'; text: string; url?: string }
   | { kind: 'stylesheet'; bytes: Uint8Array; charset?: string; url?: string }
   | { kind: 'image'; bytes: Uint8Array }
   | { kind: 'image'; image: unknown; width: number; height: number }
-  | { kind: 'font'; bytes: Uint8Array };
+  | { kind: 'font'; bytes: Uint8Array }
+  | VideoSource;
+
+/** What a `<video>` plays: a host's answer to `kind: 'video'`. */
+export type VideoSource =
+  { kind: 'video'; src: string } | { kind: 'video'; frames: VideoFrames };
+
+/** Where a video request is: answered with what plays, still being
+ *  answered, or declined — by the host, or by the player it was handed to. */
+export type VideoAnswer = VideoSource | 'pending' | 'failed';
 
 interface Entry {
   state: 'pending' | 'ready' | 'failed';
@@ -91,21 +115,24 @@ export class ResourceStore {
   private _ask: (
     request: ResourceRequest,
   ) => Promise<ResourceResult | null> | ResourceResult | null;
-  private _changed: (what: 'stylesheet' | 'image') => void;
+  private _changed: (what: 'stylesheet' | 'image' | 'video') => void;
   private _urls: UrlResolver | null;
   private _destroyed = false;
+  /** What each video URL plays, kept apart from the other resources: a
+   *  `src` that is also some image's is two questions for the host. */
+  private _videos = new Map<string, VideoAnswer>();
 
   /**
    * `changed` is told when a resource arrives after the request that asked
-   * for it returned, and which kind: a stylesheet changes the cascade and an
-   * image the boxes, and a host answering over a network answers every one
-   * of them later.
+   * for it returned, and which kind: a stylesheet changes the cascade, an
+   * image the boxes and a video what is mounted over them, and a host
+   * answering over a network answers every one of them later.
    */
   constructor(
     ask: (
       request: ResourceRequest,
     ) => Promise<ResourceResult | null> | ResourceResult | null,
-    changed: (what: 'stylesheet' | 'image') => void,
+    changed: (what: 'stylesheet' | 'image' | 'video') => void,
     urls: UrlResolver | null = null,
   ) {
     this._ask = ask;
@@ -155,8 +182,9 @@ export class ResourceStore {
     synchronous = false,
   ): void {
     if (this._destroyed) return;
-    // a font is `fonts.ts`'s to ask for, and never comes through here
-    if (!result || result.kind === 'font') {
+    // a font is `fonts.ts`'s to ask for, and never comes through here; a
+    // video is `requestVideo`'s, and no answer for anything else
+    if (!result || result.kind === 'font' || result.kind === 'video') {
       entry.state = 'failed';
       return;
     }
@@ -272,9 +300,62 @@ export class ResourceStore {
     return this._entries.get(this._key(url))?.state ?? null;
   }
 
+  /**
+   * Ask what a `<video>`'s source plays, once per URL: what `video`
+   * answers from then on. An answer that is not a video, a throw and a
+   * rejection are each the host declining.
+   */
+  requestVideo(url: string, type: string | undefined, element: Element): void {
+    if (this._destroyed || !url) return;
+    const key = this._key(url);
+    if (this._videos.has(key)) return;
+    this._videos.set(key, 'pending');
+    const settle = (result: ResourceResult | null, late: boolean) => {
+      if (this._destroyed || this._videos.get(key) !== 'pending') return;
+      this._videos.set(key, playable(result) ? result : 'failed');
+      if (late) this._changed('video');
+    };
+    let answer: Promise<ResourceResult | null> | ResourceResult | null;
+    try {
+      answer = this._ask({
+        url: key,
+        kind: 'video',
+        ...(type && { type }),
+        element,
+      });
+    } catch {
+      settle(null, false);
+      return;
+    }
+    if (isPromise(answer)) {
+      answer.then(
+        (result) => settle(result, true),
+        () => settle(null, true),
+      );
+      return;
+    }
+    settle(answer, false);
+  }
+
+  /** What a video URL plays, where it was asked about: what the host
+   *  answered, `'pending'` until it has, `'failed'` where it declined or
+   *  the player it was handed to could not play it. */
+  video(url: string): VideoAnswer | undefined {
+    if (!url) return undefined;
+    return this._videos.get(this._key(url));
+  }
+
+  /** A video the player could not play — a format it has no decoder for,
+   *  a URL that did not answer: the element goes on to its next source. */
+  failVideo(url: string): void {
+    const key = this._key(url);
+    if (this._videos.has(key)) this._videos.set(key, 'failed');
+  }
+
   destroy(): void {
     this._destroyed = true;
     this._entries.clear();
+    this._videos.clear();
   }
 }
 
@@ -285,6 +366,13 @@ function rasterSize(width: number, height: number): IntrinsicSize {
     height,
     ratio: width > 0 && height > 0 ? width / height : 0,
   };
+}
+
+/** Whether a host's answer is something a `<video>` plays. */
+function playable(result: ResourceResult | null): result is VideoSource {
+  if (result?.kind !== 'video') return false;
+  if ('frames' in result) return result.frames != null;
+  return typeof result.src === 'string' && result.src !== '';
 }
 
 function isPromise<T>(value: unknown): value is Promise<T> {

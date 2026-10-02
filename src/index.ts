@@ -398,10 +398,12 @@ export type {
   FormSubmission as HtmlFormSubmission,
   HtmlHandle,
   HtmlProps,
+  MediaRect as HtmlMediaRect,
   ResourceRequest as HtmlResourceRequest,
   ResourceResult as HtmlResourceResult,
   ScriptRequest as HtmlScriptRequest,
   ShadowRoot as HtmlShadowRoot,
+  VideoSource as HtmlVideoSource,
 } from './html/index.js';
 
 // Styled text that a document selects across. The selection itself is

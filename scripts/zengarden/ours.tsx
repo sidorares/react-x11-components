@@ -407,12 +407,13 @@ export async function capture(
   const onResource = (
     request: ResourceRequest,
   ): Promise<ResourceResult | null> => {
+    // no design plays a video, and a bench would not
+    if (request.kind === 'video') return Promise.resolve(null);
+    const kind = request.kind;
     pending += 1;
     return network
-      .resource(request.url, request.kind, page.url)
-      .then((fetched) =>
-        fetched ? resourceResult(fetched, request.kind) : null,
-      )
+      .resource(request.url, kind, page.url)
+      .then((fetched) => (fetched ? resourceResult(fetched, kind) : null))
       .finally(() => {
         pending -= 1;
         lastSettled = Date.now();
