@@ -531,7 +531,15 @@ specification has it where a column wraps (9.8) and as Chrome does: an
 item holding only a box of `width: 100%` and a ratio is none wide before it
 is stretched, so none tall, and the box runs out of it. An `auto` margin
 takes the room the line has past the item, and `align-self` sets it in its
-line. An item, and a grid's,
+line. An item that is not stretched and whose width the room decides — an
+`auto` one, `fit-content` or `stretch` — is fitted again into its line,
+less its margins, where the line is wider than the box: a paragraph after
+an item 130 wide in a column of 100 is 130 wide, as tall as the column made
+it at 100 (CSS Flexbox 9.4 step 11, as csswg-drafts#11784 has it, and as
+Chrome lays it out; Firefox and Safari still fit it to the box). Those
+aligned by baselines keep the left edge they share and run past the line's
+end. An image keeps its width, and so does an item whose width its ratio
+makes of its height. An item, and a grid's,
 is a formatting context of its own: the margins of what it holds stay
 inside it, and the one under its last block makes it that much taller. An
 `auto` margin takes

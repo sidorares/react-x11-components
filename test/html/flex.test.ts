@@ -849,6 +849,75 @@ test('a column that wraps lines up the left edges of each line’s items aligned
   assert.deepStrictEqual(xs('d'), [140, 140, 140, 46, 46], 'right to left');
 });
 
+test('a column that wraps fits an item to its line again where the line is wider than the column', async () => {
+  // An item whose width depends on the room across the column, the
+  // `fit-content` of one not stretched, is sized again once its line's
+  // width is known, with the line's width less its margins as the room
+  // (CSS Flexbox 9.4 step 11, as csswg-drafts#11784 has it), and its
+  // height is the one the column gave it (the note under the step). Two
+  // floats 50 wide are 50 at their narrowest and 100 at their widest: in
+  // the 60 of the column they are one over the other, 20 tall, and on a
+  // line 100 wide side by side, in an item still 20 tall.
+  const item = (id: string, style = '') =>
+    `<div id="${id}" style="${style}">` +
+    `<div id="${id}1" style="float:left;width:50px;height:10px"></div>` +
+    `<div id="${id}2" style="float:left;width:50px;height:10px"></div></div>`;
+  const wide = '<div style="width:100px;height:5px"></div>';
+  const column = (style: string, items: string) =>
+    `<div class="c" style="${style}">${items}</div>`;
+  const by = '<div style="width:20px;height:5px;margin-left:10px"></div>';
+  const { node } = await render(
+    '<style>body{margin:0} .c{display:flex;flex-flow:column wrap;' +
+      'width:60px;align-items:flex-start}</style>' +
+      column('', wide + item('a')) +
+      column('align-items:center', wide + item('b')) +
+      column('align-items:flex-end', wide + item('c')) +
+      column('direction:rtl', wide + item('d')) +
+      column('flex-wrap:wrap-reverse', wide + item('e')) +
+      column('align-items:center', wide + item('f', 'max-width:80px')) +
+      column('', wide + item('g', 'margin-right:5px')) +
+      column('', wide + item('h', 'margin-left:auto')) +
+      column('', wide + item('i', 'width:fit-content')) +
+      column('', wide + item('j', 'width:stretch;margin-left:3px')) +
+      column('flex-wrap:nowrap', wide + item('l')) +
+      column('height:25px', wide + item('m') + item('k')) +
+      // those aligned by baselines keep the left edge their first width
+      // gave them, and run past the line's end
+      column('align-items:baseline', by + item('n')) +
+      column('align-items:baseline;direction:rtl', by + item('o')) +
+      column('align-items:baseline', by + item('p', 'margin-right:5px')),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const box = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [box.x - box.parent.x, box.width, box.height];
+  };
+  // where its second float is in it
+  const second = (id: string) => {
+    const box = boxOf(el, id);
+    const float = boxOf(el, `${id}2`);
+    return [float.x - box.x, float.y - box.y];
+  };
+  assert.deepStrictEqual(at('a'), [0, 100, 20], 'as wide as its line');
+  assert.deepStrictEqual(second('a'), [50, 0], 'the floats side by side');
+  assert.deepStrictEqual(at('b'), [0, 100, 20], 'centred in nothing');
+  assert.deepStrictEqual(at('c'), [0, 100, 20], 'at an end it reaches');
+  assert.deepStrictEqual(at('d'), [-40, 100, 20], 'from the right');
+  assert.deepStrictEqual(at('e'), [-40, 100, 20], 'in reverse');
+  assert.deepStrictEqual(at('f'), [10, 80, 20], 'within its maximum');
+  assert.deepStrictEqual(second('f'), [0, 10], 'the floats still stacked');
+  assert.deepStrictEqual(at('g'), [0, 95, 20], 'less its margin');
+  assert.deepStrictEqual(at('h'), [0, 100, 20], 'an auto margin none');
+  assert.deepStrictEqual(at('i'), [0, 100, 20], 'fit-content');
+  assert.deepStrictEqual(at('j'), [3, 97, 20], 'stretch');
+  assert.deepStrictEqual(at('l'), [0, 60, 20], 'one line, the column');
+  assert.deepStrictEqual(at('m'), [0, 100, 20], 'on a line 100 wide');
+  assert.deepStrictEqual(at('k'), [100, 60, 20], 'on one the column’s');
+  assert.deepStrictEqual(at('n'), [10, 70, 20], 'on a line 70 wide');
+  assert.deepStrictEqual(at('o'), [0, 70, 20], 'its left edge kept');
+  assert.deepStrictEqual(at('p'), [10, 65, 20], 'less its margin');
+});
+
 test('a row aligned by baselines laid out again for a ratio keeps each margin across it once', async () => {
   // An image stretched across a row of a height takes its width from that
   // through its ratio, and the row is laid out again for it; with its
