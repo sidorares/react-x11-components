@@ -1,6 +1,7 @@
 # PRD: `<Html>` animations off the JavaScript clock, and transforms that do not re-rasterize
 
-> **Status: the first part of step 1 is built.** `<Html>` runs CSS
+> **Status: step 1 is built but for 1c, which measured as not worth
+> building.** `<Html>` runs CSS
 > animations since
 > [#584](https://github.com/sidorares/react-x11-components/pull/584), on a
 > timer of its own, restyling and repainting in JavaScript. This document
@@ -10,10 +11,11 @@
 > recommendation and the order to build it in; §8 is what has to be filed
 > upstream first. The retained sprite of §5.1 is built for the boxes X11
 > draws on a surface through their matrix — the kept surface, §7's step 1a
-> — and group opacity on X11 and Wayland, with a fade drawn from its kept
-> group, step 1b. The retained background and everything after it are not.
-> The reference for what runs today is `docs/components/html.md`,
-> "Animations".
+> — and group opacity, with a fade drawn from its kept group, step 1b: on
+> X11 and Wayland, and on macOS over react-x11 2.27.0. The retained
+> background, 1c, is deferred on its measurement, and the steps after it
+> are not built. The reference for what runs today is
+> `docs/components/html.md`, "Animations".
 
 ## 1. What `<Html>` does today
 
@@ -443,7 +445,21 @@ In order, each step useful on its own and measured before the next:
    native context that says so. On macOS over both, grouped against faded
    a thing at a time on the same build: 24 faded cards 3.7–5.5 → 2.4–4.4
    ms, a fade's frame 0.65–1.2 → 0.39–0.73. Windows, unmeasured, fades
-   each thing. The retained background is the rest of step 1.
+   each thing.
+
+   **1c, measured and deferred: the retained background.** It would keep
+   the document under a moving sprite, so a frame stops painting it again.
+   That is only worth a two-layer compositor where the painting under the
+   sprite is what a frame costs, and it was not. On the in-process server,
+   with 1a's kept surface, a card turning over sixty paragraphs of text
+   cost a frame what it cost turning over an empty page — 11.5–15 ms
+   against 11.7–14.4, under a load that widened both — and a profile of
+   the frame put 35% of it in the server's XRender, the kept surface
+   resampled through its turn in JavaScript, and under 2% in `<Html>`. A
+   real X server resamples in C or on the GPU. So 1c waits for a document
+   whose frames show the painting under a sprite is their cost, and the
+   next step is the one no faster X server gives: §4.1's spike, towards no
+   JavaScript frame at all on macOS (step 4, below).
 
 2. **§5.2, translation without a surface**, and the `scrollContents` copy
    for a whole-pixel translation of an opaque sprite on X11.
@@ -453,6 +469,24 @@ In order, each step useful on its own and measured before the next:
 4. **§4.1 as a spike**, a fade only, to confirm on a real Mac that
    promotion holds a sprite above an `<Html>` node, before the seam is
    designed against it.
+
+   **Done, and half of it holds.** A `<box>` mounted after an `<Html>`
+   node, a `<canvas>` in it drawing the sprite, is promoted onto a layer
+   of its own over the page — with a background colour looping on it,
+   two seconds of the loop cost no window frame, no paint of `<Html>` and
+   no draw of the canvas: the render server runs it. A fade does not:
+   promotion declines a box whose opacity is below 1 or animating
+   (`fadesAsGroup`, react-x11's `src/cocoa/promotion.js`), because the
+   bitmap fades such a box and all it holds as one group
+   (`NodePaint._paintGroup`) and the layer would fade them one over the
+   other, while the frame clock goes on owning the opacity. The fading
+   sprite ran on the clock at 75 frames a second, and each frame painted
+   the `<Html>` under it again and drew the canvas again. So the seam of
+   step 5 has to carry opacity as a group — a layer whose sublayers
+   composite with it as one, which Core Animation has as
+   `allowsGroupOpacity` — and hand the opacity loop to the render server,
+   and promotion's own fade is the same change.
+
 5. **§4.2, the sprite seam in core**, with pre-sampled transform
    keyframes, `<Html>` as its first consumer. Zero JavaScript frames for an
    eligible animation on macOS is the gate: the presenter bench's
@@ -469,7 +503,10 @@ before step 5:
 })` or an element method the presenter asks per frame, for the layer
   presenter and for promotion, with `animation-end` routed back to the
   element. Reference `docs/macos.md`'s "Custom drawing on a layer tree" and
-  animation.md §4.
+  animation.md §4. Step 4's spike adds what it must carry first: an
+  opacity composited as a group (`allowsGroupOpacity`) and run by the
+  render server, which promotion declines today (`fadesAsGroup`) — the same
+  change lets core's own `<box>` fade off the clock.
 - **react-x11: §3.4's vocabulary**, which is on its roadmap already;
   §4.1 and §5.4 wait on it. No new request, a dependency to note.
 - **ntk: a `Surface` backed by a GL framebuffer** (§5.3), a dma-buf the 2D
