@@ -642,6 +642,12 @@ function renderControl(
         // a `<select>` with nothing selected has no options, and shows
         // none: core's "Select…" is an application's prompt, not a page's
         placeholder: '',
+        // The platform's own menu, where the backend drops one (macOS), for
+        // every select, styled or not: a page restyles a select's box, and
+        // its list is still the menu Safari and Chrome drop there. Core's
+        // default would keep a drawn menu under the drawn trigger a styled
+        // select gets.
+        nativeMenu: true,
         disabled,
         ...order,
         style: rect.bare
