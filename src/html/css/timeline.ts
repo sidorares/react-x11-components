@@ -343,12 +343,22 @@ export class AnimationTimeline {
    * after the change at once. `after` itself where
    * none runs, and a copy of it otherwise, each field a transition runs on
    * at its value at the timeline's time.
+   *
+   * A field an animation sets — in `after` (`animated`, the fields its
+   * animations with an effect set: `fieldsAnimatedBy`) or in the style
+   * before it (`noteAnimated`) — starts none: what changed it is the
+   * animation, and a transition does not start when the computed value
+   * changes as a result of one (CSS Transitions 1, 3). One under way on it
+   * runs on beneath the animation to the end it had, and the animation's
+   * value is the field's: a transition is composited before an animation
+   * (CSS Transitions 2, 4.1).
    */
   transition(
     el: object,
     pseudo: string,
     after: ComputedStyle,
     before: () => ComputedStyle | null,
+    animated: ReadonlySet<string> | null = null,
   ): ComputedStyle {
     const fields = transitionFields(after.transitions);
     let states = this._transitions.get(el);
@@ -364,11 +374,19 @@ export class AnimationTimeline {
     for (const [field, end] of completed) {
       if (!same(end, a[field])) completed.delete(field);
     }
-    let was: Record<string, unknown> | null | undefined;
+    let wasStyle: ComputedStyle | null | undefined;
+    let was: Record<string, unknown> | null = null;
+    let wasAnimated: ReadonlySet<string> | undefined;
     for (const [field, index] of fields) {
       if (running.has(field) || completed.has(field)) continue;
-      was ??= before() as unknown as Record<string, unknown> | null;
+      if (animated?.has(field)) continue;
+      if (wasStyle === undefined) {
+        wasStyle = before();
+        was = wasStyle as unknown as Record<string, unknown> | null;
+        if (wasStyle) wasAnimated = ANIMATED_FIELDS.get(wasStyle);
+      }
       if (!was) break;
+      if (wasAnimated?.has(field)) continue;
       const from = was[field];
       const to = a[field];
       if (same(from, to)) continue;
@@ -390,6 +408,8 @@ export class AnimationTimeline {
         running.delete(field);
         continue;
       }
+      // beneath an animation, to the end it had
+      if (animated?.has(field)) continue;
       const to = a[field];
       if (same(run.to, to)) continue;
       const current = transitValue(field, run, now);
@@ -446,6 +466,8 @@ export class AnimationTimeline {
         completed.set(field, run.to);
         continue;
       }
+      // the animation's value is over it, and asks for its own frames
+      if (animated?.has(field)) continue;
       out ??= copyStyle(after);
       (out as unknown as Record<string, unknown>)[field] = transitValue(
         field,
@@ -625,3 +647,44 @@ export function animatedWillChange(rule: KeyframesRule): number {
 }
 
 const WILL_CHANGES = new WeakMap<KeyframesRule, number>();
+
+/** The fields of the computed style the properties a `@keyframes` sets
+ *  decide. Kept by the rule. */
+function fieldsOf(rule: KeyframesRule): ReadonlySet<string> {
+  let fields = FIELDS_OF.get(rule);
+  if (!fields) {
+    const out = new Set<string>();
+    for (const prop of tracksOf(rule).keys()) {
+      for (const field of animatedFields(prop) ?? []) out.add(field);
+    }
+    FIELDS_OF.set(rule, (fields = out));
+  }
+  return fields;
+}
+
+const FIELDS_OF = new WeakMap<KeyframesRule, ReadonlySet<string>>();
+
+/** The fields the animations `samples` are of set — each with an effect at
+ *  the timeline's time — or null where there are none. */
+export function fieldsAnimatedBy(
+  samples: readonly Sample[] | null,
+): ReadonlySet<string> | null {
+  if (!samples?.length) return null;
+  if (samples.length === 1) return fieldsOf(samples[0].rule);
+  const out = new Set<string>();
+  for (const { rule } of samples) for (const f of fieldsOf(rule)) out.add(f);
+  return out;
+}
+
+/** The fields of a computed style its animations set, by the style: what a
+ *  transition, comparing it as the style before a change, takes for no
+ *  change of the element's (`AnimationTimeline.transition`). */
+const ANIMATED_FIELDS = new WeakMap<ComputedStyle, ReadonlySet<string>>();
+
+/** That `style` is one in which its animations set `fields`. */
+export function noteAnimated(
+  style: ComputedStyle,
+  fields: ReadonlySet<string>,
+): void {
+  ANIMATED_FIELDS.set(style, fields);
+}
