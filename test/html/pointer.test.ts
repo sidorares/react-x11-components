@@ -569,6 +569,39 @@ metric(
 );
 
 metric(
+  'a link whose hover takes its shadow away is repainted where the shadow fell, in place',
+  async () => {
+    // joshwcomeau.com's links lose the shadow that underlines them under
+    // the pointer. It falls past the link's line, which is no taller than
+    // its text, and the repaint reaches it there; leaving puts it back.
+    const { result, node } = await render(
+      '<style>html{background:#ffffff}body{margin:0;font:20px/20px ' +
+        'sans-serif}p{margin:0 0 20px}a{color:#000000;text-decoration:' +
+        'none;box-shadow:0 6px 0 #ff0000}a:hover{box-shadow:none}</style>' +
+        '<p>a <a id="a" href="#">link</a> here</p><p id="away">away</p>',
+      300,
+    );
+    const el = view(node);
+    const quiet = await snapshot(result, el);
+    const tree = treeOf(el);
+    el.setHover(...pointIn(el, 'a'));
+    const hovered = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'the document was built again');
+    assert.ok(bytesApart(hovered, quiet) > 0, 'the hover drew nothing');
+    assert.strictEqual(
+      bytesApart(hovered, await rebuilt(result, el)),
+      0,
+      'not as a rebuild draws it',
+    );
+    const again = treeOf(el);
+    el.setHover(...pointIn(el, 'away'));
+    const left = await snapshot(result, el);
+    assert.ok(treeOf(el) === again, 'built again to leave it');
+    assert.strictEqual(bytesApart(left, quiet), 0, 'not as it was');
+  },
+);
+
+metric(
   'a box that a transform would make a containing block is built again',
   async () => {
     const { result, node } = await render(CARD_PAGE, 300);

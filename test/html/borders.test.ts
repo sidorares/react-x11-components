@@ -15,6 +15,7 @@ import {
   pathsOf,
   pixelsIn,
   render,
+  render2x,
   view,
   windingAt,
 } from './harness.js';
@@ -1470,10 +1471,14 @@ test('a blurred shadow is the shadow of a shape drawn clear of the window', asyn
 });
 
 test('a shadow is not drawn under a box that shows what is behind it', async () => {
-  // a hard shadow under a box with no background, clipped out of the box
+  // a hard shadow under a box with no background: a square one is the part
+  // of it outside the box, which needs no clip, and a rounded one is
+  // clipped out of the box
   const { node } = await render(
     '<style>body{margin:0}</style><div style="width:90px;height:40px;' +
-      'margin:10px;box-shadow:5px 5px 0 #0c0c0c"></div>',
+      'margin:10px;box-shadow:0 5px 0 #0c0c0c"></div>' +
+      '<div style="width:90px;height:40px;margin:10px;border-radius:8px;' +
+      'box-shadow:5px 5px 0 #0b0b0b"></div>',
   );
   const ops: PaintOp[] = [];
   await fillsOf(view(node), ops);
@@ -1482,13 +1487,53 @@ test('a shadow is not drawn under a box that shows what is behind it', async () 
   );
   assert.ok(at > 0, 'the shadow is filled');
   const fill = ops[at] as Fill;
-  assert.deepStrictEqual([fill.x, fill.y, fill.w, fill.h], [15, 15, 90, 40]);
+  assert.deepStrictEqual(
+    [fill.x, fill.y, fill.w, fill.h],
+    [10, 50, 90, 5],
+    'the band below the box',
+  );
+  assert.ok(!ops.slice(0, at).some((op) => op.op === 'clip'), 'and no clip');
+  const round = ops.findIndex(
+    (op) => op.op === 'fill' && op.style === parseColor('#0b0b0b'),
+  );
+  assert.ok(round > at, 'the rounded one is filled');
   const clip = ops
-    .slice(0, at)
+    .slice(at, round)
     .reverse()
     .find((op) => op.op === 'clip');
   assert.ok(clip, 'a clip around it');
 });
+
+metric(
+  'a hard shadow round a box with no background is drawn beside it and not under it, off the pixel grid too',
+  async () => {
+    // The part outside the box, as bands beside it: drawn as the shadow's
+    // rectangle with the box's as an even-odd hole, a shadow offset 1.5px
+    // shared the box's top and left edges off the pixel grid, and ntk drew
+    // a hairline along each, inside the box
+    const { result } = await render(
+      '<style>body{margin:0;background:#ffffff}div{width:90px;' +
+        'height:40px;margin:10px}</style>' +
+        '<div style="box-shadow:5px 5px 0 #0000ff"></div>' +
+        '<div style="box-shadow:1.5px 1.5px 0 #0000ff"></div>',
+    );
+    const at = (x: number, y: number, color: string, message: string) =>
+      expectPixel(result.ctx, x, y, color, { message, tolerance: 8 });
+    // the first box is 10 to 100 across and 10 to 50 down
+    await at(50, 52, '#0000ff', 'the band below the box');
+    await at(102, 30, '#0000ff', 'the band beside it');
+    await at(102, 52, '#0000ff', 'and the corner they share');
+    await at(102, 12, '#ffffff', 'not above the shadow');
+    await at(12, 52, '#ffffff', 'nor before it');
+    await at(50, 30, '#ffffff', 'and none under the box');
+    await at(97, 47, '#ffffff', 'up to its edges');
+    // the second, 60 to 100 down: a pixel of it, and a half
+    await at(50, 100, '#0000ff', 'the whole pixel below the box');
+    await at(100, 80, '#0000ff', 'and beside it');
+    await at(50, 61, '#ffffff', 'no line inside its top');
+    await at(11, 80, '#ffffff', 'nor inside its left');
+  },
+);
 
 test("a shadow's reach is ink: a repaint beside the box reaches it", async () => {
   const { node } = await render(
@@ -1508,6 +1553,149 @@ test("a shadow's reach is ink: a repaint beside the box reaches it", async () =>
     [-10, 30],
   );
 });
+
+metric(
+  'an inline box casts its shadow round each fragment, none where it breaks unless it is cloned',
+  async () => {
+    // CSS Backgrounds 3, 7.1, and CSS Fragmentation 3, 5.4: a sliced box is
+    // drawn as though it had not broken and cut where it does, so a ring
+    // round a wrapped span is open at the end of its first line and the
+    // start of its second, and `clone` rings each fragment as a box of its
+    // own. Chrome, Firefox and Safari draw both so. <Html> drew no shadow
+    // on an inline box at all.
+    const { result, node } = await render(
+      '<style>body{margin:10px;background:#ffffff;font:20px/44px ' +
+        'sans-serif}p{margin:0;width:130px}span{background:#ffff00;' +
+        'box-shadow:0 0 0 4px #00ff00}#c{box-decoration-break:clone}' +
+        '</style><p>xx <span>aaaa bbbb cc</span> z</p>' +
+        '<p>xx <span id="c">aaaa bbbb cc</span> z</p>',
+    );
+    const fragments = (await fillsOf(view(node))).filter(
+      (f) => f.style === parseColor('#ffff00'),
+    );
+    assert.strictEqual(fragments.length, 4, 'each span on two lines');
+    const at = (x: number, y: number, color: string, message: string) =>
+      expectPixel(result.ctx, x, y, color, { message, tolerance: 8 });
+    for (const [i, f] of fragments.entries()) {
+      const cloned = i >= 2;
+      const opens = i % 2 === 0;
+      const name = `${cloned ? 'cloned' : 'sliced'} fragment ${(i % 2) + 1}`;
+      const left = Math.floor(f.x);
+      const right = Math.ceil(f.x + f.w);
+      const across = Math.round(f.x + f.w / 2);
+      const down = Math.round(f.y + f.h / 2);
+      await at(across, Math.floor(f.y) - 2, '#00ff00', `above the ${name}`);
+      await at(across, Math.ceil(f.y + f.h) + 1, '#00ff00', `below it`);
+      await at(
+        left - 2,
+        down,
+        opens || cloned ? '#00ff00' : '#ffffff',
+        `the left of the ${name}`,
+      );
+      await at(
+        right + 1,
+        down,
+        !opens || cloned ? '#00ff00' : '#ffffff',
+        `the right of the ${name}`,
+      );
+    }
+  },
+);
+
+metric(
+  'a link a shadow underlines has the line under each of its fragments',
+  async () => {
+    // joshwcomeau.com underlines its links with `box-shadow: 0 1.5px 0`
+    // and no `text-decoration`, which drew nothing. Under a box that shows
+    // what is behind it, the line is the part of the shadow below the box:
+    // under the fragment on each line, cut where the link breaks, and 3
+    // device pixels at 2x
+    const source =
+      '<style>body{margin:10px;background:#ffffff;font:20px/44px ' +
+      'sans-serif}p{margin:0;width:130px}a{background:rgb(255 255 0 / ' +
+      '0.5);box-shadow:0 1.5px 0 #ff0000}</style>' +
+      '<p>xx <a href="#">aaaa bbbb cc</a> z</p>';
+    const pale = parseColor('rgb(255 255 0 / 0.5)');
+    const { result, node } = await render(source);
+    const fragments = (await fillsOf(view(node))).filter(
+      (f) => f.style === pale,
+    );
+    assert.strictEqual(fragments.length, 2, 'the link on two lines');
+    const at = (x: number, y: number, color: string, message: string) =>
+      expectPixel(result.ctx, x, y, color, { message, tolerance: 8 });
+    for (const [i, f] of fragments.entries()) {
+      const top = Math.round(f.y);
+      const bottom = Math.round(f.y + f.h);
+      const left = Math.round(f.x);
+      const right = Math.round(f.x + f.w);
+      const line = `line ${i + 1}`;
+      await at(left + 1, bottom, '#ff0000', `under ${line}'s start`);
+      await at(right - 2, bottom, '#ff0000', `and its end`);
+      await at(left + 1, bottom + 2, '#ffffff', `a pixel and a half of it`);
+      await at(left - 1, bottom, '#ffffff', `none before ${line}`);
+      await at(right + 1, bottom, '#ffffff', `nor after it`);
+      await at(left + 4, top + 1, '#ffff80', `nor inside its top`);
+    }
+    const { node: doubled } = await render2x(source);
+    const fills = await fillsOf(view(doubled));
+    const boxes = fills.filter((f) => f.style === pale);
+    const lines = fills.filter((f) => f.style === parseColor('#ff0000'));
+    assert.strictEqual(lines.length, 2, 'a line under each fragment at 2x');
+    for (const [i, line] of lines.entries()) {
+      assert.deepStrictEqual(
+        [line.y, line.h],
+        [boxes[i].y + boxes[i].h, 3],
+        `line ${i + 1} from the box's bottom down`,
+      );
+    }
+  },
+);
+
+metric(
+  "an inline box's shadow is ink: a repaint of the strip under its line reaches it",
+  async () => {
+    // A shadow falls past the line where the line is no taller than the
+    // text, and the paint culls a block's lines by where they draw: a
+    // strip exposed under the line, a scroll's or a hover's, has to find
+    // the line that casts into it. It is no overflow: the document is as
+    // tall as it was.
+    const page = (shadow: string) =>
+      '<style>body{margin:0;font:20px/20px sans-serif}p{margin:0}' +
+      `a{box-shadow:${shadow}}</style>` +
+      '<p id="p">a <a href="#">link</a> here</p>';
+    const { node } = await render(page('0 8px 0 #0d0d0d'));
+    const el = view(node);
+    const [line] = (await fillsOf(el)).filter(
+      (f) => f.style === parseColor('#0d0d0d'),
+    );
+    assert.ok(line, 'the line under the link');
+    const end = line.y + line.h;
+    assert.ok(end > 25, `below the line and its glyphs: ${end}`);
+    const p = boxOf(el, 'p') as unknown as LaidBox & {
+      boundsY: number;
+      boundsHeight: number;
+    };
+    assert.ok(
+      p.boundsY + p.boundsHeight >= end,
+      `the paragraph's ink reaches it: ${p.boundsY + p.boundsHeight}`,
+    );
+    const strip = { x: 0, y: Math.floor(end) - 3, width: 400, height: 3 };
+    const repainted = (await fillsOf(el, undefined, { damage: strip })).filter(
+      (f) => f.style === parseColor('#0d0d0d'),
+    );
+    assert.strictEqual(repainted.length, 1, 'the strip repaints it');
+    const height = (source: string) =>
+      render(source).then(
+        ({ node }) =>
+          (view(node) as unknown as { _documentHeight: number })
+            ._documentHeight,
+      );
+    assert.strictEqual(
+      await height(page('0 8px 0 #0d0d0d')),
+      await height(page('none')),
+    );
+  },
+);
 
 test('a blurred shadow is a shadowed fill of a shape the context draws from a tile', async () => {
   // <Html> baked each shadow on a surface of its own, keyed on the part of

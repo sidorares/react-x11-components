@@ -382,14 +382,11 @@ export function computePaintBounds(box: Box, moved = false): number {
   // under a card has to reach the card, and the document is no taller.
   const shadows = own ? box.style.boxShadow : null;
   if (shadows) {
-    for (const shadow of shadows) {
-      if (shadow.inset) continue;
-      const reach = shadow.spread + shadowReach(shadow.blur);
-      x1 = Math.min(x1, box.x + shadow.x - reach);
-      y1 = Math.min(y1, box.y + shadow.y - reach);
-      x2 = Math.max(x2, box.x + box.width + shadow.x + reach);
-      y2 = Math.max(y2, box.y + box.height + shadow.y + reach);
-    }
+    const out = shadowOutsets(shadows);
+    x1 -= out.left;
+    y1 -= out.top;
+    x2 += out.right;
+    y2 += out.bottom;
   }
   // and so is an outline
   if (own && box.style.outlineStyle !== 'none') {
@@ -406,21 +403,31 @@ export function computePaintBounds(box: Box, moved = false): number {
   // (`ScrollableOverflowCalculator::AddItemsInternal`). Design 150's footer
   // links, 50px of padding under their text, made Chrome's page 19px
   // taller than the box they end. Only a box with padding or a border
-  // above or below its text can reach past its lines.
-  if (
-    box.kind === 'inline' &&
-    box.padTop + box.padBottom + box.borderTop + box.borderBottom > 0
-  ) {
-    const reach = inlineFragmentsReach(box);
+  // above or below its text can reach past its lines. And the shadows its
+  // fragments cast are ink past them, as a block's are, and no overflow:
+  // a repaint of the strip under a link's has to reach it, and so does
+  // the cull of the lines it is under (`LINE_CASTS`).
+  if (box.kind === 'inline') {
+    const padded =
+      box.padTop + box.padBottom + box.borderTop + box.borderBottom > 0;
+    const shadows = box.style.boxShadow;
+    const out = shadows ? shadowOutsets(shadows) : null;
+    const reach = padded || out ? inlineFragmentsReach(box, out) : null;
     if (reach) {
-      x1 = Math.min(x1, reach.x1);
-      y1 = Math.min(y1, reach.y1);
-      x2 = Math.max(x2, reach.x2);
-      y2 = Math.max(y2, reach.y2);
-      bottom = Math.max(bottom, reach.y2);
+      x1 = Math.min(x1, reach.x1 - (out?.left ?? 0));
+      y1 = Math.min(y1, reach.y1 - (out?.top ?? 0));
+      x2 = Math.max(x2, reach.x2 + (out?.right ?? 0));
+      y2 = Math.max(y2, reach.y2 + (out?.bottom ?? 0));
+      if (padded) bottom = Math.max(bottom, reach.y2);
     }
   }
   const lines = box.lines;
+  // what the inline boxes on its lines cast past them, which they say
+  // again as they are walked below
+  if (lines && CAST_LINES.has(lines)) {
+    CAST_LINES.delete(lines);
+    for (const line of lines) LINE_CASTS.delete(line);
+  }
   // and the shadows its text casts, as far past the text as they fall: an
   // expose of the strip they fall in, or a hover that fades them, has to
   // reach them
@@ -512,6 +519,12 @@ export function computePaintBounds(box: Box, moved = false): number {
         y2 = Math.max(y2, atomic.boundsY + atomic.boundsHeight);
         top = Math.min(top, atomic.boundsY);
         bottom = Math.max(bottom, atomic.boundsY + atomic.boundsHeight);
+      }
+      // and the shadows its inline boxes cast past it
+      const casts = LINE_CASTS.get(line);
+      if (casts) {
+        top = Math.min(top, casts.top);
+        bottom = Math.max(bottom, casts.bottom);
       }
       // what `position: relative` moved off a line the cull finds on its
       // own (`reachedOff`), wherever it went
@@ -625,10 +638,12 @@ export function hasRect(box: Box): boolean {
  * in that hold its text: from its face's ascent and its top padding and
  * border above each line's baseline to its descent and its bottom ones
  * below, as `paintInlineBoxes` draws them. Null for a box with no text or
- * no face.
+ * no face. Where it casts shadows `out` past them, each line notes how far
+ * above and below it they fall (`LINE_CASTS`).
  */
 function inlineFragmentsReach(
   box: Box,
+  out: Outsets | null,
 ): { x1: number; y1: number; x2: number; y2: number } | null {
   const face = box.decoration ?? PADDED_FACES.get(box);
   if (!face || box.subtreeTextEnd <= box.subtreeTextStart) return null;
@@ -658,16 +673,36 @@ function inlineFragmentsReach(
       ? (LINE_BOX_RAISES.get(line)?.get(box) ?? BOX_RAISES.get(box) ?? 0)
       : 0;
     const baseline = line.y + line.baseline - raise + (moved?.y ?? 0);
+    const top = baseline - face.ascent - box.padTop - box.borderTop;
+    const bottom = baseline + face.descent + box.padBottom + box.borderBottom;
     x1 = Math.min(x1, line.x);
     x2 = Math.max(x2, line.x + line.width);
-    y1 = Math.min(y1, baseline - face.ascent - box.padTop - box.borderTop);
-    y2 = Math.max(
-      y2,
-      baseline + face.descent + box.padBottom + box.borderBottom,
-    );
+    y1 = Math.min(y1, top);
+    y2 = Math.max(y2, bottom);
+    // only where they fall past the line, which a link's underline does
+    // where the line is no taller than its text
+    if (
+      out &&
+      (top - out.top < line.y || bottom + out.bottom > line.y + line.height)
+    ) {
+      const was = LINE_CASTS.get(line);
+      LINE_CASTS.set(line, {
+        top: Math.min(top - out.top, was?.top ?? Infinity),
+        bottom: Math.max(bottom + out.bottom, was?.bottom ?? -Infinity),
+      });
+      CAST_LINES.add(lines);
+    }
   }
   return x1 === Infinity ? null : { x1, y1, x2, y2 };
 }
+
+/** How far above and below a line the shadows of the inline boxes on it
+ *  fall, in the document's coordinates (`inlineFragmentsReach`): a line
+ *  the damage misses is painted where they reach into it (`inkInto`). Said
+ *  again each time the boxes' bounds are, for the lines of a block in
+ *  `CAST_LINES`, which the block forgets first. */
+const LINE_CASTS = new WeakMap<LineBox, { top: number; bottom: number }>();
+const CAST_LINES = new WeakSet<readonly LineBox[]>();
 
 /** How far past a block's text the shadows it casts fall on each side, at
  *  most (`SHADOWED_TEXT`); null where its text casts none. */
@@ -2335,6 +2370,33 @@ function shadowReach(blur: number): number {
   return blur > 0 ? Math.ceil(blur * 1.5) : 0;
 }
 
+/** How far past its border box a box's outer shadows fall on each side, at
+ *  most: by their offset, spread and blur. Made once a list. */
+interface Outsets {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+const OUTSETS = new WeakMap<readonly BoxShadow[], Outsets>();
+
+function shadowOutsets(shadows: readonly BoxShadow[]): Outsets {
+  let out = OUTSETS.get(shadows);
+  if (out) return out;
+  out = { left: 0, top: 0, right: 0, bottom: 0 };
+  for (const s of shadows) {
+    if (s.inset) continue;
+    const reach = s.spread + shadowReach(s.blur);
+    out.left = Math.max(out.left, reach - s.x);
+    out.right = Math.max(out.right, reach + s.x);
+    out.top = Math.max(out.top, reach - s.y);
+    out.bottom = Math.max(out.bottom, reach + s.y);
+  }
+  OUTSETS.set(shadows, out);
+  return out;
+}
+
 const SQUARE: Corners = { x: [0, 0, 0, 0], y: [0, 0, 0, 0] };
 
 /** A rectangle with no area, where a ring has no inside. */
@@ -2372,13 +2434,16 @@ function spreadRadius(radius: number, by: number, coverage: number): number {
  * A blurred one is the context's shadow of a shape drawn clear of the
  * window, so only the shadow lands: ntk bakes and caches the blur, and
  * CoreGraphics draws it. An outer shadow is not drawn under its box, which
- * the box's own opaque colour usually sees to; where it does not, the
- * shadow is clipped out of the box, a clip the size of the window on X11.
- * An inset one is clipped to the padding box.
+ * the box's own opaque colour usually sees to; where it does not, a hard
+ * one with square corners is drawn as the bands of it beside the box, and
+ * any other is clipped out of the box, a clip the size of the window on
+ * X11. An inset one is clipped to the padding box. The box is a block's,
+ * or the one an inline box's fragment casts its shadows from
+ * (`paintFragmentShadows`).
  */
 function paintShadows(
   ctx: PaintContext,
-  box: Box,
+  box: Frame,
   options: PaintOptions,
   inset: boolean,
 ): void {
@@ -2459,6 +2524,20 @@ function paintShadows(
         fillShadow(ctx, options, s, color, () => {
           roundedRect(ctx, x, y, width, height, cut.corners);
         });
+        continue;
+      }
+      if (
+        !(s.blur > 0) &&
+        squareCorners(cut.corners) &&
+        (!own || squareCorners(own.corners))
+      ) {
+        // A hard shadow with square corners, under a box that shows what
+        // is behind it: the shape less the part of the box over it, which
+        // needs no clip either. The line a link's `0 2px 0` draws under
+        // each of its fragments is one, and clipped out of the box, each
+        // was a mask the size of the window on X11.
+        ctx.fillStyle = color;
+        fillOutside(ctx, cut.rect, own ? overlapOf(cut.rect, own.rect) : null);
         continue;
       }
       // what of the shadow falls under the box is not drawn
@@ -2718,6 +2797,56 @@ function shadowShape(
   const corner = (i: number) =>
     c.x[i] === c.y[i] ? c.x[i] : { x: c.x[i], y: c.y[i] };
   ctx.roundRect!(x, y, w, h, [corner(0), corner(1), corner(2), corner(3)]);
+}
+
+/** Whether no corner is rounded: none has a radius both across and down. */
+function squareCorners(c: Corners): boolean {
+  for (let i = 0; i < 4; i += 1) if (c.x[i] > 0 && c.y[i] > 0) return false;
+  return true;
+}
+
+/** Where two rectangles overlap: null where they do not. */
+function overlapOf(a: Rect, b: Rect): Rect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const width = Math.min(a.x + a.width, b.x + b.width) - x;
+  const height = Math.min(a.y + a.height, b.y + b.height) - y;
+  return width > 0 && height > 0 ? { x, y, width, height } : null;
+}
+
+/**
+ * A rectangle less a hole in it, in the colour already set: the bands
+ * above, below and to either side of the hole, side by side in one path.
+ * Not a rectangle and its hole filled even-odd, which is a ring's
+ * (`fillRing`): where the hole shares an edge with the rectangle off the
+ * pixel grid, as a shadow offset 1.5px shares the box's sides, ntk covers
+ * the pixels along it once for each and draws them full, a hairline down
+ * the side.
+ */
+function fillOutside(ctx: PaintContext, outer: Rect, hole: Rect | null): void {
+  ctx.beginPath!();
+  if (!hole) {
+    ctx.rect!(outer.x, outer.y, outer.width, outer.height);
+    ctx.fill!();
+    return;
+  }
+  const right = outer.x + outer.width;
+  const bottom = outer.y + outer.height;
+  const holeRight = hole.x + hole.width;
+  const holeBottom = hole.y + hole.height;
+  if (hole.y > outer.y) {
+    ctx.rect!(outer.x, outer.y, outer.width, hole.y - outer.y);
+  }
+  if (holeBottom < bottom) {
+    ctx.rect!(outer.x, holeBottom, outer.width, bottom - holeBottom);
+  }
+  if (hole.x > outer.x) {
+    ctx.rect!(outer.x, hole.y, hole.x - outer.x, hole.height);
+  }
+  if (holeRight < right) {
+    ctx.rect!(holeRight, hole.y, right - holeRight, hole.height);
+  }
+  ctx.fill!();
 }
 
 /**
@@ -7843,10 +7972,13 @@ function reachedOff(
 }
 
 /** Whether what a line draws — its inline-blocks and images, where their
- *  ink is, and its texts, where they are drawn, their glyphs from ascent to
- *  descent — reaches the rows between `top` and `bottom`: what was moved off
- *  it, and what hangs past it. */
+ *  ink is, its texts, where they are drawn, their glyphs from ascent to
+ *  descent, and the shadows its inline boxes cast — reaches the rows
+ *  between `top` and `bottom`: what was moved off it, and what hangs past
+ *  it. */
 function inkInto(line: LineBox, top: number, bottom: number): boolean {
+  const casts = LINE_CASTS.get(line);
+  if (casts && casts.top < bottom && casts.bottom > top) return true;
   for (const placed of line.atomics) {
     const box = placed.box;
     if (box.boundsY < bottom && box.boundsY + box.boundsHeight > top) {
@@ -7870,11 +8002,13 @@ function inkInto(line: LineBox, top: number, bottom: number): boolean {
   return false;
 }
 
-/** An inline box's fragment whose padding or border reaches up over the
- *  lines before its own, where its own line starts, and how faded the box
- *  is drawn (`inlineFade`). */
+/** An inline box's fragment whose padding, border or shadow reaches up
+ *  over the lines before its own, the box its shadows are cast from
+ *  (`paintFragmentShadows`), where its own line starts, and how faded the
+ *  box is drawn (`inlineFade`). */
 interface Bleed {
   fragment: Frame;
+  caster: Frame;
   lineTop: number;
   fade: number;
 }
@@ -7883,9 +8017,10 @@ interface Bleed {
  * The part of each such fragment above its line, drawn again over the
  * text there. CSS 2.1 Appendix E paints a block's inline content a line at
  * a time, backgrounds before text, so a box on the second line with
- * padding enough to reach the first is drawn over the first line's text;
- * the ink here goes on in one batch after every line's backgrounds
- * (`paintLines`), which left that text over it.
+ * padding enough to reach the first is drawn over the first line's text,
+ * and so is a shadow it casts that far; the ink here goes on in one batch
+ * after every line's backgrounds (`paintLines`), which left that text over
+ * it.
  */
 function paintBleeds(
   ctx: PaintContext,
@@ -7894,9 +8029,14 @@ function paintBleeds(
 ): void {
   if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip)
     return;
-  for (const { fragment, lineTop, fade } of bleeds) {
-    const left = Math.floor(fragment.x + options.originX) - 1;
-    const top = Math.floor(fragment.y + options.originY) - 1;
+  for (const { fragment, caster, lineTop, fade } of bleeds) {
+    const shadows = fragment.style.boxShadow;
+    const out = shadows ? shadowOutsets(shadows) : null;
+    const left =
+      Math.floor(fragment.x - (out?.left ?? 0) + options.originX) - 1;
+    const top = Math.floor(fragment.y - (out?.top ?? 0) + options.originY) - 1;
+    const width =
+      Math.ceil(fragment.width + (out ? out.left + out.right : 0)) + 2;
     const bottom = Math.round(lineTop + options.originY);
     if (bottom <= top) continue;
     ctx.save();
@@ -7904,9 +8044,11 @@ function paintBleeds(
       ctx.globalAlpha *= fade;
     }
     ctx.beginPath();
-    ctx.rect(left, top, Math.ceil(fragment.width) + 2, bottom - top);
+    ctx.rect(left, top, width, bottom - top);
     ctx.clip();
+    if (shadows) paintFragmentShadows(ctx, fragment, caster, options, false);
     paintLayers(ctx, fragment, options, frameImages(ctx, fragment, options));
+    if (shadows) paintFragmentShadows(ctx, fragment, caster, options, true);
     paintBorders(ctx, fragment, options);
     ctx.restore();
   }
@@ -8725,26 +8867,98 @@ function paintInlineFragment(
       style,
     };
     if (fragment.width <= 0) return;
-    // its images and gradients from the strip its fragments make, where it
-    // goes on to another line, and from its own padding box where it is
-    // on this one alone or `clone` says each fragment is its own
-    if (!(f.start && f.end) && sliced(box.style)) {
+    // Its images and gradients placed along the strip its fragments make,
+    // where it goes on to another line, and its shadows cast by it, cut
+    // where this fragment is: a sliced box is drawn as though it had not
+    // broken (CSS Fragmentation 3, 5.4). From its own box where it is on
+    // this line alone, or `clone` says each fragment is its own.
+    const shadows = style.boxShadow;
+    let caster: Frame = fragment;
+    if (
+      !(f.start && f.end) &&
+      box.style.boxDecorationBreak === 'slice' &&
+      (shadows !== null || sliced(box.style))
+    ) {
       const strip = stripFor(lines, line, box, fragment);
-      if (strip) fragment.strip = strip;
+      if (strip && sliced(box.style)) fragment.strip = strip;
+      if (strip && shadows) caster = strip;
     }
     const faded = fade < 1 && typeof ctx.globalAlpha === 'number';
     if (faded) {
       ctx.save();
       ctx.globalAlpha = ctx.globalAlpha! * fade;
     }
+    // the outer shadows under the background, the inset ones over it and
+    // under the border, as a block's (CSS Backgrounds 3, 7.1)
+    if (shadows) paintFragmentShadows(ctx, fragment, caster, options, false);
     paintLayers(ctx, fragment, options, frameImages(ctx, fragment, options));
+    if (shadows) paintFragmentShadows(ctx, fragment, caster, options, true);
     paintBorders(ctx, fragment, options);
     if (box.style.outlineStyle !== 'none') paintOutline(ctx, fragment, options);
     if (faded) ctx.restore();
-    if (bleeds && fragment.y < line.y - 0.5) {
-      bleeds.push({ fragment, lineTop: line.y + (moved?.y ?? 0), fade });
+    const reach = shadows ? shadowOutsets(shadows).top : 0;
+    if (bleeds && fragment.y - reach < line.y - 0.5) {
+      bleeds.push({
+        fragment,
+        caster,
+        lineTop: line.y + (moved?.y ?? 0),
+        fade,
+      });
     }
   }
+}
+
+/**
+ * The shadows of one kind an inline box's fragment casts, from `caster`:
+ * the fragment itself, or the strip its fragments make laid end to end
+ * (`stripFor`), cut at each edge of the fragment's that the strip goes on
+ * past. So a sliced box casts no shadow at an edge where it breaks, and one
+ * that runs along it — a ring's top and bottom, the line a link's `0 2px 0`
+ * draws under it — runs on to the cut (CSS Fragmentation 3, 5.4), as
+ * Chrome, Firefox and Safari draw them. Where a shadow is offset along the
+ * line by more than the fragments past the break reach, they part: Chrome
+ * casts it from the fragment run on past the break without end, Firefox
+ * and Safari from the fragment alone, and this from the unbroken box, as
+ * the spec has it.
+ */
+function paintFragmentShadows(
+  ctx: PaintContext,
+  fragment: Frame,
+  caster: Frame,
+  options: PaintOptions,
+  inset: boolean,
+): void {
+  const shadows = fragment.style.boxShadow!;
+  if (!shadows.some((s) => s.inset === inset)) return;
+  if (caster === fragment) {
+    paintShadows(ctx, fragment, options, inset);
+    return;
+  }
+  if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip)
+    return;
+  // cut on the pixel the fragment's background is cut on, and on a side the
+  // box ends on, as far out as the shadows fall
+  const out = shadowOutsets(shadows);
+  const dx = options.originX;
+  const dy = options.originY;
+  const right = fragment.x + fragment.width;
+  const left =
+    caster.x < fragment.x - 0.01
+      ? Math.round(fragment.x + dx)
+      : Math.floor(fragment.x - out.left + dx) - 1;
+  const end =
+    caster.x + caster.width > right + 0.01
+      ? Math.round(right + dx)
+      : Math.ceil(right + out.right + dx) + 1;
+  const top = Math.floor(fragment.y - out.top + dy) - 1;
+  const bottom = Math.ceil(fragment.y + fragment.height + out.bottom + dy) + 1;
+  if (!(end > left)) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(left, top, end - left, bottom - top);
+  ctx.clip();
+  paintShadows(ctx, caster, options, inset);
+  ctx.restore();
 }
 
 /** Whether an inline box places background images or gradients, which
@@ -8767,12 +8981,12 @@ interface Strip {
   before: Map<LineBox, number>;
 }
 
-/** Of a block's lines, by the array they are, the strip of each inline box
- *  on them that `sliced` says places images across its fragments: made
- *  once a layout, as `MOVED_OFF_LINES` is, so a repaint of one line reads
- *  the lines before it without going over them again. What `sliced` reads
- *  is never restyled in place (`HtmlViewNode`), which lays the lines out
- *  again instead. */
+/** Of a block's lines, by the array they are, the strip of each decorated
+ *  inline box on them, which its images are placed along and its shadows
+ *  cast from (`sliced`, `paintFragmentShadows`): made once a layout, as
+ *  `MOVED_OFF_LINES` is, so a repaint of one line reads the lines before it
+ *  without going over them again. A restyle in place that decorates a box
+ *  or stops decorating one forgets them (`forgetDecoratedAncestors`). */
 const STRIPS = new WeakMap<readonly LineBox[], Map<Box, Strip>>();
 
 function stripsOf(lines: readonly LineBox[]): Map<Box, Strip> {
@@ -8781,7 +8995,6 @@ function stripsOf(lines: readonly LineBox[]): Map<Box, Strip> {
     const fragments = fragmentsOn(line);
     if (!fragments) continue;
     for (const [box, list] of fragments) {
-      if (!sliced(box.style)) continue;
       let strip = strips.get(box);
       if (!strip) {
         strip = { width: 0, lines: 0, before: new Map() };
@@ -8918,8 +9131,9 @@ function decoratedAncestors(box: Box): Box[] {
 /** A restyle in place (a `:hover`) gave an inline box a decoration where it
  *  had none, or took it away, and the lists kept above do not know: every
  *  box whose list could name it — inside it, through the inline boxes the
- *  walk above climbs — looks again. A document built again has new boxes,
- *  and so no lists. */
+ *  walk above climbs — looks again. So do the strips of its block's lines,
+ *  which are of the boxes decorated (`STRIPS`). A document built again has
+ *  new boxes, and so no lists. */
 export function forgetDecoratedAncestors(box: Box): void {
   const stack = [...box.children];
   while (stack.length) {
@@ -8927,6 +9141,9 @@ export function forgetDecoratedAncestors(box: Box): void {
     DECORATED.delete(at);
     if (at.kind === 'inline') stack.push(...at.children);
   }
+  let block = box.parent;
+  while (block?.kind === 'inline') block = block.parent;
+  if (block?.lines) STRIPS.delete(block.lines);
 }
 
 /**

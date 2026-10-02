@@ -4028,9 +4028,9 @@ function wordSpaced(
  * An inline box's margin, border and padding, resolved onto it — percentages
  * of the containing block's width, as a block's are — and the widths of its
  * two edges on the line: the start side's before its first fragment, the
- * end side's after its last. One with a background or a border to paint
- * also notes its face's ascent and descent, the height CSS paints them over
- * (10.6.1, the content area), so paint needs no font.
+ * end side's after its last. One with a background, a border or a shadow
+ * to paint also notes its face's ascent and descent, the height CSS paints
+ * them over (10.6.1, the content area), so paint needs no font.
  */
 function inlineEdges(
   box: Box,
@@ -4069,9 +4069,10 @@ function inlineEdges(
 
 /**
  * What an inline box draws around its text, in `s`: the extent of its face
- * where it has a background, a border or an outline, and null where it
- * draws none. Its borders are the ones `inlineEdges` just used. Shared with
- * a pointer move that gives a link a background (`HtmlViewNode`).
+ * where it has a background, a border, an outline or a shadow, and null
+ * where it draws none. Its borders are the ones `inlineEdges` just used.
+ * Shared with a pointer move that gives a link a background
+ * (`HtmlViewNode`).
  */
 export function inlineDecoration(
   fonts: FontsLike | null,
@@ -4079,14 +4080,17 @@ export function inlineDecoration(
   s: ComputedStyle,
 ): InlineDecoration | null {
   // a background is a colour, a gradient or an image: a span a gradient
-  // underlines, a highlighter's, was painted only where it had a border
+  // underlines, a highlighter's, was painted only where it had a border.
+  // And a shadow is cast by the fragments' boxes, as theirs is: a link a
+  // shadow underlines, joshwcomeau.com's, drew none
   const decorated =
     !isTransparent(s.backgroundColor) ||
     s.backgroundGradient !== null ||
     s.backgroundImage !== null ||
     s.backgroundImages !== null ||
     box.borderTop + box.borderRight + box.borderBottom + box.borderLeft > 0 ||
-    s.outlineStyle !== 'none';
+    s.outlineStyle !== 'none' ||
+    s.boxShadow !== null;
   return !decorated ? null : fonts ? faceExtent(fonts, s) : NO_EXTENT;
 }
 
