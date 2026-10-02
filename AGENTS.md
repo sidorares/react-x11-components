@@ -1546,12 +1546,15 @@ draws: an ancestor's ink bounds take in the marquee scrolling inside it.
 `animate={false}` draws each animation at rest, which is how the Zen
 Garden bench runs `<Html>`.
 
-**A box whose transform animates keeps the surface it is drawn on, keyed
-on its `Box`.** X11 draws a turned box with text in it on a surface
-(`paintRaster`), and while its transform or opacity animates the surface
-is kept (`SpriteStore`) and drawn through each frame's matrix — the
-Box-keyed cache the hover paragraph warns of, so it is forgotten wherever
-what a box draws can change. A build clears the store, and so does a
+**A box drawn on a surface of its own keeps the surface, keyed on its
+`Box`.** X11 draws a turned box with text in it on a surface
+(`paintRaster`), and X11 and Wayland draw an element an opacity fades as a
+group on one (`paintGroup`). The surface is kept (`SpriteStore`) while the
+box animates, or while it is no larger than a card's, and each paint draws
+it through the matrix and at the opacity it has then — the Box-keyed
+cache the hover paragraph warns of, on a still page as much as a moving
+one, so it is forgotten wherever what a box draws can change. A build
+clears the store, and so does a
 layout at another width or under another viewport; `_restyleInPlace` drops
 the surface of every box around one that draws something else now
 (`_restyledSprites`), and leaves a box its own where only its transform,
@@ -1562,6 +1565,15 @@ surfaces around it** (`_dropSprites`), as the shapes a hover recolours in
 a drawing do. Every frame in `test/html/animations.test.ts` is held to a
 build and to a surface made for that paint alone: a frame and a build can
 both be wrong the same way, and only the second check sees it.
+
+**A group goes only to a context where it pays** (`groupsOnSurfaces`).
+The macOS context draws a surface through a `CGImage` of its bitmap at
+about 12 ns a pixel, which cost a faded card's group twice what drawing the
+card again did, so the native contexts fade each thing an element draws
+until core gives them a group of their own (`docs/prd-html-animations.md`
+§8). Which side of a trade like that is cheap differs by backend and was
+the opposite of the in-process server's here: measure a new surface on
+macOS before taking a composite for the cheap side.
 
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,

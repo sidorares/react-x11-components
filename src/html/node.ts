@@ -271,19 +271,21 @@ export class HtmlViewNode extends Node {
    *  they were laid out and styled, so a build or a layout forgets them
    *  all, and a restyle in place the ones it reaches (`_restyledSprites`). */
   private _sprites: SpriteStore | null = null;
-  /** What the painter asks for a box's kept surface: only one whose
-   *  element an animation is under way on keeps one. A pseudo-element's box
-   *  is drawn each paint, as every box was. */
+  /** What the painter asks for a box's kept surface. A box whose element an
+   *  animation is under way on keeps one however large it is, until the
+   *  animation is over; a pseudo-element's box is one only the painter's
+   *  size limit lets keep one. */
   private readonly _spriteSource: SpriteSource = {
     kept: (box, width, height, key) =>
       this._sprites?.get(box, width, height, key) ?? null,
-    keeps: (box) => !!box.el && !box.pseudo && this._timeline.isLive(box.el),
-    keep: (box, width, height, key) =>
+    animates: (box) => !!box.el && !box.pseudo && this._timeline.isLive(box.el),
+    keep: (box, width, height, key, animated) =>
       (this._sprites ??= new SpriteStore(this.app)).make(
         box,
         width,
         height,
         key,
+        animated,
       ),
   };
   private _cascade: Cascade | null = null;
@@ -2374,8 +2376,8 @@ export class HtmlViewNode extends Node {
    *  timer already waits for it. */
   private _scheduleFrame(): void {
     if (this.destroyed) return;
-    // the surfaces of boxes whose animations are over: drawn each paint as
-    // any box is, from now on
+    // the surfaces kept for an animation that is over: a box drawn on one
+    // keeps one from now on only where it is small enough to keep still
     this._sprites?.sweep((box) => {
       const el = (box as Box).el;
       return !!el && this._timeline.isLive(el);

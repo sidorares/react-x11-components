@@ -206,12 +206,19 @@ export interface Offscreen {
 export interface SpriteSource {
   /** The surface kept for `box`, drawn at this size under `key`, or null. */
   kept(box: Box, width: number, height: number, key: string): Offscreen | null;
-  /** Whether `box` may keep a surface: its transform is animating. */
-  keeps(box: Box): boolean;
+  /** Whether an animation is under way on `box`'s element. */
+  animates(box: Box): boolean;
   /** A transparent surface to keep for `box` from now on, to be drawn under
-   *  `key`: null where the surface would not fit, and the box is drawn for
-   *  this paint alone. */
-  keep(box: Box, width: number, height: number, key: string): Offscreen | null;
+   *  `key` — while it animates, where `animated`, and otherwise until what
+   *  it draws changes: null where the surface would not fit, and the box is
+   *  drawn for this paint alone. */
+  keep(
+    box: Box,
+    width: number,
+    height: number,
+    key: string,
+    animated: boolean,
+  ): Offscreen | null;
 }
 
 export interface PaintOptions {
@@ -266,6 +273,8 @@ export interface PaintOptions {
   clips?: ClipLevel[];
   /** @internal Whether the tree has a layer below the flow (`hoistNegative`). */
   negative?: boolean;
+  /** @internal The tree's boxes fixed to the viewport (`FIXED_BOXES`). */
+  fixed?: readonly Box[] | null;
   /** @internal Each box's `::selection`, where a rule styles one
    *  (`BoxTree.selectionStyler`). */
   selectionStyler?: SelectionStyler | null;
@@ -729,6 +738,7 @@ export function paintDocument(
     ...options,
     canvasSource: canvas?.source,
     negative: tree.negative,
+    fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
   });
@@ -1082,12 +1092,13 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // An element under full opacity is painted whole in its place, as the
   // group it is (it is a stacking context, CSS Color 4 3.2; `inFlow`): at
   // 0 not at all — the control a page keeps invisible until its row is
-  // hovered — and between through the context's alpha. That multiplies
-  // each thing drawn rather than the group they make, so where two of its
-  // own boxes overlap the lower shows through the upper, as a browser's
-  // group does not let it.
+  // hovered — and between on a surface of its own, faded as it is drawn
+  // (`paintGroup`). Where there is no surface, or nothing it draws can
+  // fall on anything else it draws, through the context's alpha, which
+  // multiplies each thing drawn rather than the group they make.
   const opacity = opacityOf(box);
   if (opacity <= 0) return;
+  if (opacity < 1 && paintGroup(ctx, box, options, opacity)) return;
   const fade = opacity < 1 && typeof ctx.globalAlpha === 'number';
   if (fade) {
     ctx.save();
@@ -1114,6 +1125,11 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
  *  worth of pixels twice over, and no side longer than a pixmap's may be. */
 const RASTER_LIMIT = 16 * 1024 * 1024;
 const RASTER_SIDE = 16384;
+
+/** How large a surface a box drawn on one keeps while nothing animates it
+ *  (`paintSprite`): a card's, a button's, a badge's. A larger one is drawn
+ *  again where each paint reaches it, as a panel's is. */
+const KEPT_STILL = 128 * 1024;
 
 /** What XRender carries a picture's transform in is 16.16 fixed point: a
  *  number past this does not fit, and is thrown out of the request's
@@ -1195,6 +1211,14 @@ function paintTransformed(
     ctx.scalesText !== true &&
     !drawnAsPaths(box) &&
     paintRaster(ctx, box, inside, through)
+  ) {
+    return;
+  }
+  const opacity = opacityOf(box);
+  if (opacity <= 0) return;
+  if (
+    opacity < 1 &&
+    paintGroupThrough(ctx, box, options, inside, through, opacity)
   ) {
     return;
   }
@@ -1337,10 +1361,11 @@ function paintRaster(
 }
 
 /**
- * A transformed box drawn from the surface it keeps from one paint to the
- * next (`PaintOptions.sprites`), where it keeps one — its transform is
- * animating: the whole box painted on it once, and each frame after it only
- * drawn through the matrix the frame has. A turn, a scale and an opacity
+ * A box drawn from the surface it keeps from one paint to the next
+ * (`PaintOptions.sprites`), where it keeps one — its transform or its
+ * opacity is animating: the whole box painted on it once, and each frame
+ * after it only drawn through the matrix the frame has (`paintRaster`), or
+ * at the opacity it has (`paintGroup`). A turn, a scale and an opacity
  * leave what is on the surface as it was. True where the box is drawn so;
  * false where it keeps no surface, and it is painted for this paint alone.
  *
@@ -1349,19 +1374,28 @@ function paintRaster(
  * by — under the document selection's part in its text, and nothing else:
  * that is its key. Everything else that changes what it draws is a change
  * of its boxes, which the element forgets the surface for. The root's box
- * and the canvas's are not kept, nor one with a background fixed to the
- * viewport inside it, all of which draw what a scroll moves.
+ * and the canvas's are not kept, nor one that draws against the viewport
+ * inside it (`drawsAgainstViewport`), all of which draw what a scroll moves.
  */
 function paintSprite(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
-  through: Matrix,
+  through: Matrix | null,
   opacity: number,
 ): boolean {
   const sprites = options.sprites!;
   if (!box.parent || box === options.canvasSource) return false;
-  const own = ownBounds(box);
+  // in its own coordinates where it is drawn through a matrix, and where it
+  // is drawn otherwise — its ink, all of it
+  const own = through
+    ? ownBounds(box)
+    : {
+        x: box.boundsX,
+        y: box.boundsY,
+        width: box.boundsWidth,
+        height: box.boundsHeight,
+      };
   const left = own.x + options.originX;
   const top = own.y + options.originY;
   const x0 = Math.floor(left);
@@ -1370,29 +1404,35 @@ function paintSprite(
   const h = Math.ceil(top + own.height) - y0;
   if (!(w > 0 && h > 0)) return false;
   if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return false;
-  if (!fitsFixedPoint(through, x0, y0)) return false;
-  const key = spriteKey(box, options, left - x0, top - y0);
+  if (through && !fitsFixedPoint(through, x0, y0)) return false;
+  const key = spriteKey(box, options, through, left - x0, top - y0);
   let surface = sprites.kept(box, w, h, key);
   if (!surface) {
-    if (!sprites.keeps(box) || drawsAgainstViewport(box)) return false;
-    surface = sprites.keep(box, w, h, key);
+    const animated = sprites.animates(box);
+    if (!animated && w * h > KEPT_STILL) return false;
+    if (drawsAgainstViewport(box)) return false;
+    surface = sprites.keep(box, w, h, key, animated);
     if (!surface) return false;
     paintUnfaded(
       surface.getContext('2d') as PaintContext,
       box,
-      onSurface(options, x0, y0, w, h),
+      through
+        ? onSurface(options, x0, y0, w, h)
+        : inGroup(options, x0, y0, w, h),
     );
   }
   drawThrough(ctx, surface, through, x0, y0, opacity);
   return true;
 }
 
-/** What a kept surface's drawing depends on beyond its box's: where its
- *  corner falls within a pixel, the display's scale, and the part of the
- *  box's text the selection covers, and in what colour. */
+/** What a kept surface's drawing depends on beyond its box's: whether it
+ *  is drawn through a matrix, where its corner falls within a pixel, the
+ *  display's scale, and the part of the box's text the selection covers,
+ *  and in what colour. */
 function spriteKey(
   box: Box,
   options: PaintOptions,
+  through: Matrix | null,
   fractionX: number,
   fractionY: number,
 ): string {
@@ -1403,7 +1443,8 @@ function spriteKey(
     const to = Math.min(range.end, box.subtreeTextEnd);
     if (to > from) selected = `${from}-${to} ${options.selectionColor}`;
   }
-  return `${fractionX} ${fractionY} ${options.scale ?? 1} ${selected}`;
+  const kind = through ? 'turned' : 'group';
+  return `${kind} ${fractionX} ${fractionY} ${options.scale ?? 1} ${selected}`;
 }
 
 /** Whether a box or anything in it draws a background fixed to the
@@ -1422,6 +1463,233 @@ function drawsAgainstViewport(box: Box): boolean {
     for (const child of at.children) stack.push(child);
   }
   return false;
+}
+
+/** Whether a box holds one fixed to the viewport, which is drawn where the
+ *  viewport is now — past the ink the box was laid out with, once the
+ *  document scrolls — and so is no part of a surface the size of that ink.
+ *  A transform holds the fixed boxes in it, and an opacity does not. */
+function holdsViewportFixed(box: Box, options: PaintOptions): boolean {
+  if (!options.fixed) return false;
+  for (const fixed of options.fixed) {
+    for (let at = fixed.parent; at; at = at.parent) if (at === box) return true;
+  }
+  return false;
+}
+
+/**
+ * A box under full opacity painted whole on a surface of its own, and the
+ * surface drawn at its opacity: the group CSS Color 4 (3.2) makes it, where
+ * fading each thing it draws on its own showed the one under it through it —
+ * a card's background through its text, a header through the badge over
+ * it. The surface is the part of the box's ink the damage reaches; while
+ * the box's opacity animates, all of it, kept from one frame to the next
+ * (`paintSprite`), so a frame of a fade draws the surface at another
+ * opacity and paints nothing. A positioned box in it that escapes a clip
+ * around it is painted where that clip ends, outside the group, as it was.
+ * True where the box is drawn so; false where there is no surface to be
+ * had — the headless mock — or a part too large for one, where nothing
+ * it draws can fall on anything else it draws (`drawsOverItself`), which
+ * fading each thing does as well, where it holds a box fixed to the
+ * viewport (`holdsViewportFixed`), or where the context is a native one
+ * (`groupsOnSurfaces`), and the caller fades each.
+ */
+function paintGroup(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  opacity: number,
+): boolean {
+  if (!options.surface || !groupsOnSurfaces(ctx)) return false;
+  if (!drawsOverItself(box, options) || holdsViewportFixed(box, options)) {
+    return false;
+  }
+  if (options.sprites && paintSprite(ctx, box, options, null, opacity)) {
+    return true;
+  }
+  let x0 = Math.floor(box.boundsX + options.originX);
+  let y0 = Math.floor(box.boundsY + options.originY);
+  let x1 = Math.ceil(box.boundsX + box.boundsWidth + options.originX);
+  let y1 = Math.ceil(box.boundsY + box.boundsHeight + options.originY);
+  const damage = options.damage;
+  if (damage) {
+    x0 = Math.max(x0, Math.floor(damage.x));
+    y0 = Math.max(y0, Math.floor(damage.y));
+    x1 = Math.min(x1, Math.ceil(damage.x + damage.width));
+    y1 = Math.min(y1, Math.ceil(damage.y + damage.height));
+  }
+  const w = x1 - x0;
+  const h = y1 - y0;
+  if (!(w > 0 && h > 0)) return true;
+  if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return false;
+  const surface = options.surface(w, h);
+  if (!surface) return false;
+  try {
+    paintUnfaded(
+      surface.getContext('2d') as PaintContext,
+      box,
+      inGroup(options, x0, y0, w, h),
+    );
+    drawThrough(ctx, surface, null, x0, y0, opacity);
+    return true;
+  } finally {
+    surface.destroy?.();
+  }
+}
+
+/**
+ * `paintGroup` for a box drawn through its matrix by the context itself
+ * (`paintTransformed`): drawn through the matrix onto a surface the size of
+ * the part of where it lands that the damage reaches, as the window would
+ * have it, and the surface drawn at the box's opacity. Its text is turned
+ * as the context turns text, and nothing is resampled.
+ */
+function paintGroupThrough(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  inside: PaintOptions,
+  through: Matrix,
+  opacity: number,
+): boolean {
+  if (!options.surface || !groupsOnSurfaces(ctx)) return false;
+  if (!drawsOverItself(box, options)) return false;
+  // a box that turns has its own ink bounds where it is drawn
+  let x0 = Math.floor(box.boundsX + options.originX);
+  let y0 = Math.floor(box.boundsY + options.originY);
+  let x1 = Math.ceil(box.boundsX + box.boundsWidth + options.originX);
+  let y1 = Math.ceil(box.boundsY + box.boundsHeight + options.originY);
+  const damage = options.damage;
+  if (damage) {
+    x0 = Math.max(x0, Math.floor(damage.x));
+    y0 = Math.max(y0, Math.floor(damage.y));
+    x1 = Math.min(x1, Math.ceil(damage.x + damage.width));
+    y1 = Math.min(y1, Math.ceil(damage.y + damage.height));
+  }
+  const w = x1 - x0;
+  const h = y1 - y0;
+  if (!(w > 0 && h > 0)) return true;
+  if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return false;
+  const surface = options.surface(w, h);
+  if (!surface) return false;
+  try {
+    // A surface's context may be its one state for good (the Cocoa one
+    // is): the matrix is put back as it was.
+    const on = surface.getContext('2d') as PaintContext;
+    on.save();
+    on.translate!(-x0, -y0);
+    on.transform!(
+      through[0],
+      through[1],
+      through[2],
+      through[3],
+      through[4],
+      through[5],
+    );
+    paintUnfaded(on, box, inside);
+    on.restore();
+    drawThrough(ctx, surface, null, x0, y0, opacity);
+    return true;
+  } finally {
+    surface.destroy?.();
+  }
+}
+
+/**
+ * Whether a context fades a group on a surface of its own (`paintGroup`):
+ * ntk's, which X11 and Wayland draw with, whose server composites a surface
+ * in a request and sets a box's glyphs again from scratch. The native
+ * contexts on macOS and Windows (`scalesText`) draw a surface through an
+ * image of it, and on macOS that cost a faded card twice what drawing it
+ * again did — a fade's frame 3.4 ms where it had been 1.7 — so they fade
+ * each thing a box draws, as every context did, until they can draw a
+ * group of their own: a CoreGraphics transparency layer, a Direct2D layer.
+ */
+function groupsOnSurfaces(ctx: PaintContext): boolean {
+  return !!ctx.drawImage && ctx.scalesText !== true;
+}
+
+/** `onSurface` for a group: what escapes a clip around the box is painted
+ *  where that clip ends, by the box painting the clip, as it was. */
+function inGroup(
+  options: PaintOptions,
+  x0: number,
+  y0: number,
+  width: number,
+  height: number,
+): PaintOptions {
+  return { ...onSurface(options, x0, y0, width, height), clips: options.clips };
+}
+
+/** How many boxes `drawsOverItself` looks through before it takes the box
+ *  for one that does. */
+const OVERLAP_PROBE = 64;
+
+/**
+ * Whether two things a box draws can fall on one pixel — a background under
+ * its text, borders round a background, a child over its parent — where
+ * fading each thing on its own shows the one under it through it. One thing
+ * drawn — a background alone, text alone, an image alone, the backdrop a
+ * dialog dims a page with — is faded the same either way, and needs no
+ * surface. A box with more than `OVERLAP_PROBE` in it is taken for one
+ * that does.
+ */
+function drawsOverItself(box: Box, options: PaintOptions): boolean {
+  // the text is one thing, and the selection under it another
+  let things = 0;
+  if (box.subtreeTextEnd > box.subtreeTextStart) {
+    things += 1;
+    const range = options.selection;
+    if (
+      range &&
+      range.start < box.subtreeTextEnd &&
+      range.end > box.subtreeTextStart
+    ) {
+      things += 1;
+    }
+  }
+  let looked = 0;
+  const stack: Box[] = [box];
+  while (stack.length) {
+    const at = stack.pop()!;
+    looked += 1;
+    if (looked > OVERLAP_PROBE) return true;
+    things += thingsDrawn(at);
+    if (things > 1) return true;
+    for (const child of at.children) stack.push(child);
+  }
+  return false;
+}
+
+/** What a box draws of its own, for `drawsOverItself`: borders twice, which
+ *  meet at the corners, and a replaced element other than an image twice —
+ *  a drawing's shapes, a control's parts. Text takes the style of the box
+ *  it is set in, whose background and borders it does not draw. */
+function thingsDrawn(box: Box): number {
+  if (box.kind === 'text' || box.kind === 'break') return 0;
+  const style = box.style;
+  if (style.visibility !== 'visible') return 0;
+  let things = 0;
+  if (
+    !isTransparent(style.backgroundColor) ||
+    style.backgroundImage !== null ||
+    style.backgroundImages !== null ||
+    style.backgroundGradient !== null
+  ) {
+    things += 1;
+  }
+  if (box.borderTop || box.borderRight || box.borderBottom || box.borderLeft) {
+    things += 2;
+  }
+  if (box.collapsed) things += 2;
+  if (style.boxShadow !== null) things += 1;
+  if (style.outlineStyle !== 'none' && style.outlineWidth > 0) things += 1;
+  if (style.textShadow !== null || style.textDecorationLine !== 'none') {
+    things += 1;
+  }
+  if (box.marker) things += 1;
+  if (box.replaced !== 'none') things += box.replaced === 'image' ? 1 : 2;
+  return things;
 }
 
 /** The options a box is painted with on a surface `width` by `height`
@@ -1468,25 +1736,27 @@ function fitsFixedPoint(through: Matrix, x0: number, y0: number): boolean {
   return !!placed && !placed.some((n) => Math.abs(n) > FIXED_LIMIT);
 }
 
-/** A surface with its corner at (`x0`, `y0`) drawn through `through`, at
- *  `opacity` times the context's. */
+/** A surface with its corner at (`x0`, `y0`) drawn through `through`, where
+ *  there is one, at `opacity` times the context's. */
 function drawThrough(
   ctx: PaintContext,
   surface: Offscreen,
-  through: Matrix,
+  through: Matrix | null,
   x0: number,
   y0: number,
   opacity: number,
 ): void {
   ctx.save();
-  ctx.transform!(
-    through[0],
-    through[1],
-    through[2],
-    through[3],
-    through[4],
-    through[5],
-  );
+  if (through) {
+    ctx.transform!(
+      through[0],
+      through[1],
+      through[2],
+      through[3],
+      through[4],
+      through[5],
+    );
+  }
   if (opacity < 1 && typeof ctx.globalAlpha === 'number') {
     ctx.globalAlpha *= opacity;
   }

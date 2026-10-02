@@ -804,6 +804,36 @@ metric(
 );
 
 metric(
+  'a fading box keeps the surface its group is drawn on, to the pixels a build draws',
+  async (t) => {
+    // a frame of a fade draws the group at another opacity and paints
+    // nothing, on any backend with a surface to keep
+    const made = surfacesMade(t);
+    const doc = await running(
+      t,
+      CARD +
+        '<style>@keyframes f { from { opacity: .2 } to { opacity: .9 } }' +
+        '#card { animation: f 640ms linear }</style>' +
+        `<div id="card">${CARD_TEXT}</div>`,
+      300,
+    );
+    await doc.at(16);
+    assert.strictEqual(made(), 1, 'drawn on a surface once');
+    await doc.at(160);
+    assert.strictEqual(made(), 1, 'and not drawn again as it faded');
+    const { frames } = await framesAgainstBuilds(doc, [176, 320]);
+    assert.ok(moved(frames), 'it faded');
+    await doc.at(336);
+    const drawn = await snapshot(doc.result, doc.el);
+    const alone = await drawnAlone(t, doc);
+    assert.ok(
+      drawn.every((v, i) => v === alone[i]),
+      'what a surface made for the paint alone draws',
+    );
+  },
+);
+
+metric(
   'what changes inside a turning box, or with its turn, draws its surface again',
   async (t) => {
     // a colour animating inside it, a box inside it turning on its own, and
@@ -923,10 +953,12 @@ metric(
 metric(
   'a turning box keeps no surface once its animation is over',
   async (t) => {
+    // back unturned at its end, it draws on no surface: the one kept for
+    // the animation is given up
     const doc = await running(
       t,
       CARD +
-        '<style>#card { animation: r 160ms linear forwards }</style>' +
+        '<style>#card { animation: r 160ms linear }</style>' +
         `<div id="card">${CARD_TEXT}</div>`,
       300,
     );
@@ -935,8 +967,91 @@ metric(
     await doc.at(176);
     assert.strictEqual(doc.clock.pending, false, 'over');
     assert.strictEqual(kept(doc.el), 0, 'and given up');
-    // held at its last frame, a quarter turn, as any turned box is drawn
     await framesAgainstBuilds(doc, [192]);
+  },
+);
+
+metric(
+  'a still box drawn on a surface keeps a small one, and draws a large one where each paint reaches it',
+  async (t) => {
+    // a faded card, and a turned one, are composited from what they drew
+    // the paint before; a panel past the size kept still is drawn again
+    const made = surfacesMade(t);
+    const { result, node } = await render(
+      '<style>body { margin: 0; font: 14px sans-serif }' +
+        '.c { width: 120px; margin: 30px; padding: 8px; background: #ddeeff;' +
+        ' border: 2px solid #335577; box-shadow: 0 2px 6px #00000066 }' +
+        '#faded:hover b { color: #ff0000 }</style>' +
+        `<div id="faded" class="c" style="opacity:.6">${CARD_TEXT}</div>` +
+        `<div class="c" style="transform:rotate(5deg)">${CARD_TEXT}</div>` +
+        '<div class="c" style="opacity:.6;width:600px;height:300px">' +
+        `${CARD_TEXT}</div>`,
+      700,
+    );
+    const el = view(node);
+    const invalidate = (stale: number) =>
+      (el as unknown as { _invalidate(stale: number): void })._invalidate(
+        stale,
+      );
+    assert.strictEqual(made(), 2, 'the card and the turned card');
+    const drawn = await snapshot(result, el);
+    invalidate(0);
+    const again = await snapshot(result, el);
+    assert.strictEqual(made(), 2, 'and nothing made again to paint them');
+    assert.ok(
+      drawn.every((v, i) => v === again[i]),
+      'what they drew before',
+    );
+    // a hover in the faded card draws its group again, to what a build of
+    // the document under the pointer draws
+    const rect = el.elementRect(findElement(el, 'faded') as never)!;
+    const { abs } = el as unknown as { abs: { x: number; y: number } };
+    el.setHover(abs.x + rect.x + 10, abs.y + rect.y + rect.height / 2);
+    const hovered = await snapshot(result, el);
+    assert.ok(made() > 2, 'drawn again under the pointer');
+    invalidate(2);
+    const built = await snapshot(result, el);
+    assert.ok(
+      hovered.every((v, i) => v === built[i]),
+      'what a build under the pointer draws',
+    );
+    assert.ok(
+      hovered.some((v, i) => v !== again[i]),
+      'the hover changed it',
+    );
+    el.clearHover();
+    await act();
+    const alone = await drawnAlone(t, {
+      el,
+      result,
+    } as unknown as Awaited<ReturnType<typeof running>>);
+    assert.ok(
+      drawn.every((v, i) => v === alone[i]),
+      'what a surface made for the paint alone draws',
+    );
+  },
+);
+
+metric(
+  'a still box keeps its surface while something else on the page animates',
+  async (t) => {
+    // the frames give up only what was kept for an animation of their own
+    const made = surfacesMade(t);
+    const doc = await running(
+      t,
+      CARD +
+        '<style>@keyframes c { from { color: #ff0000 } to { color: #0000ff } }' +
+        '#x { animation: c 640ms linear }</style>' +
+        '<p id="x">a colour that changes</p>' +
+        `<div id="card" style="opacity:.6">${CARD_TEXT}</div>`,
+      300,
+    );
+    assert.strictEqual(made(), 1, 'the faded card');
+    await doc.at(160);
+    const el = doc.el as unknown as { _invalidate(stale: number): void };
+    el._invalidate(0);
+    await act();
+    assert.strictEqual(made(), 1, 'kept through ten frames of another');
   },
 );
 
