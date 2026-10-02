@@ -66,7 +66,7 @@ import type { CounterStyleRule } from './counter-styles.js';
 import { PALETTE_CHROME } from './ua.js';
 import type { UnitContext } from './values.js';
 import { viewportUnit } from './values.js';
-import { customProperties, substituteIn } from './vars.js';
+import { customProperties, hasVar, substituteIn, validVars } from './vars.js';
 import type { CustomProps } from './vars.js';
 import {
   ROOT_BOX_PROPS,
@@ -2367,12 +2367,6 @@ export class Cascade {
     };
   }
 
-  /** Whether any rule could style a shape in a drawing: a document with
-   *  none asks nothing of its drawings (`shapeStyles`). */
-  get stylesShapes(): boolean {
-    return this._shapes.size > 0;
-  }
-
   /** Whether a pointer move can change what a rule gives a shape in a
    *  drawing. */
   get shapesFollowPointer(): boolean {
@@ -2401,10 +2395,17 @@ export class Cascade {
    * outside the drawing in a hidden `<svg>` of them, is styled that way,
    * and so is one of the drawing's own.
    *
+   * A presentation attribute with a `var()` in it is a declaration of the
+   * element's under all of those (`Origin.Presentation`), substituted
+   * against the custom properties the element has: the root's, and those
+   * a `style` in the drawing sets on the way down to it. What a `<use>`
+   * draws has the root's.
+   *
    * Asked as a drawing is first painted (`BoxTree.shapeStyler`), of the
    * rules in `_shapes` alone: a page of hundreds of icons pays for the ones
    * it shows, a look in the buckets for each of their elements where no
-   * rule reaches them, and a document with no such rule nothing.
+   * rule reaches them, and a document with no such rule a look at the
+   * attributes of the shapes' properties (`drawingVars`).
    */
   shapeStyles(
     root: Element,
@@ -2412,7 +2413,14 @@ export class Cascade {
     copies: ShapeCopies | null = null,
   ): ShapeStyles | null {
     const index = this._shapes;
-    if (!index.size) return null;
+    const byId = copies?.byId ?? ((id: string) => elementById(root, id));
+    // A presentation attribute is a declaration too (SVG 2, 6.2), and one
+    // with a `var()` in it is read here, where the drawing's custom
+    // properties are: `SvgView` reads the attribute as it is written, and
+    // `var(--color-primary)` is no colour it can paint with. So a drawing
+    // with one is asked of whether a rule reaches it or not.
+    const vars = !index.size ? drawingVars(root, byId) : true;
+    if (!vars) return null;
     // The rules kept by a class or an id are asked of the elements with
     // that name. The rest — `.dark .logo path`, `.menu [aria-hidden]` — are
     // asked of every `<path>`, or of every element, and nearly all of them
@@ -2481,21 +2489,40 @@ export class Cascade {
         const asked = found.size
           ? index.universal.length > 0 || index.byTag.has(tag)
           : needs.universal || needs.tags.has(tag);
-        if (!asked && !index.names(el)) {
+        const ruled = index.size > 0 && (asked || index.names(el));
+        // its attributes with a `var()` in them, and whether its `style`
+        // has one, where the drawing has any (`drawingVars`)
+        const presented = vars ? attributeVars(el) : null;
+        const inline = attr(el, 'style');
+        const inlineVars = !!inline && hasVar(inline);
+        if (!ruled && !presented && !inlineVars) {
           each(el, null);
           continue;
         }
         const candidates: Candidate[] = [];
-        this._matchInto(
-          index,
-          el,
-          candidates,
-          undefined,
-          el === root && !inCopy ? liveForRoot : live,
-          inCopy,
-        );
-        if (candidates.length) {
-          const inline = attr(el, 'style');
+        if (ruled) {
+          this._matchInto(
+            index,
+            el,
+            candidates,
+            undefined,
+            el === root && !inCopy ? liveForRoot : live,
+            inCopy,
+          );
+        }
+        if (presented) {
+          // under every rule, as an HTML element's presentational
+          // attributes are (`presentationHints`)
+          candidates.push({
+            origin: Origin.Presentation,
+            layer: null,
+            specificity: 0,
+            order: 0,
+            declarations: presented,
+            only: -1,
+          });
+        }
+        if (candidates.length || inlineVars) {
           if (inline) pushInlineShapes(candidates, inline);
           candidates.sort(byCascade);
         }
@@ -2504,10 +2531,12 @@ export class Cascade {
     };
 
     let ctx: ShapeContext | null = null;
-    /** What an element's rules come to, against the drawing's style. */
+    /** What an element's rules come to, against the drawing's style and
+     *  the custom properties the element has. */
     const resolve = (
       candidates: Candidate[],
       isRoot: boolean,
+      custom: CustomProps | null = style.custom,
     ): Record<string, string> | null => {
       ctx ??= {
         color: style.color,
@@ -2526,14 +2555,25 @@ export class Cascade {
       for (const c of candidates) {
         for (const d of pick(c)) {
           if (!isShapeProp(d.prop)) continue;
-          if (isRoot && ROOT_BOX_PROPS.has(d.prop)) continue;
-          // a `var()` with nothing to stand for it is invalid at
+          if (isRoot && ROOT_BOX_PROPS.has(d.prop)) {
+            // the box has it, from the same attribute (`presentationHints`),
+            // and hands it over (`SvgDrawing.draw`): the attribute, as
+            // written, is taken away from under it
+            if (c.origin === Origin.Presentation) {
+              (own ??= {})[d.prop] = 'inherit';
+            }
+            continue;
+          }
+          // a `var()` with nothing to stand for it, or that stands for
+          // something the property does not take, is invalid at
           // computed-value time, and the property as though `unset`
-          const value = shapeValue(
-            d.prop,
-            d.vars ? (substituteIn(d.value, style.custom) ?? 'unset') : d.value,
-            ctx,
-          );
+          let value: string | null;
+          if (d.vars) {
+            const raw = substituteIn(d.value, custom);
+            value =
+              (raw === null ? null : shapeValue(d.prop, raw, ctx)) ??
+              shapeValue(d.prop, 'unset', ctx);
+          } else value = shapeValue(d.prop, d.value, ctx);
           if (value !== null) (own ??= {})[d.prop] = value;
         }
       }
@@ -2554,14 +2594,35 @@ export class Cascade {
     // one looks in first
     let uses = null as Element[] | null;
     let ids = null as Map<string, Element> | null;
+    // The custom properties a `style` in the drawing sets, by the element
+    // that sets them, over its parent's: the root's are its box's, and an
+    // element's parent is walked before it.
+    let customs: Map<Element, CustomProps | null> | null = null;
+    const customOf = (el: Element): CustomProps | null => {
+      let at: Element | null = customs ? el : null;
+      while (at && at !== root) {
+        const found = customs!.get(at);
+        if (found !== undefined) return found;
+        at = at.parent && isTag(at.parent) ? (at.parent as Element) : null;
+      }
+      return style.custom;
+    };
     walk(root, false, (el, candidates) => {
       place += 1;
       if (isUse(el)) (uses ??= []).push(el);
       if (el !== root) {
         const id = el.attribs.id;
         if (id && !ids?.has(id)) (ids ??= new Map()).set(id, el);
+        const set = vars ? ownCustoms(el) : null;
+        if (set) {
+          const parent = el.parent && isTag(el.parent) ? el.parent : root;
+          (customs ??= new Map()).set(
+            el,
+            customProperties(set, customOf(parent as Element)),
+          );
+        }
       }
-      const own = candidates && resolve(candidates, el === root);
+      const own = candidates && resolve(candidates, el === root, customOf(el));
       if (!own) return;
       (of ??= new Map()).set(el, own);
       key += named(own, place);
@@ -2577,7 +2638,6 @@ export class Cascade {
     // `<use>`'s, and its custom properties and its colour are the
     // drawing's, as they are for the rest of it — kept too, for each
     // style a drawing has, which the icons of a page mostly share.
-    const byId = copies?.byId ?? ((id: string) => elementById(root, id));
     const matched = copies?.matched ?? new Map<Element, CopyMatch>();
     let styled = copies?.resolved.get(style);
     if (!styled) {
@@ -3123,6 +3183,76 @@ function elementById(from: Element, id: string): Element | null {
   return null;
 }
 
+/**
+ * Whether a drawing has a `var()` in a presentation attribute of a shape's
+ * properties or in a `style`, or sets a custom property in a `style` —
+ * in it, or in what a `<use>` in it draws — for `shapeStyles` to read where
+ * no rule reaches the drawing. Only the attributes by those names are
+ * looked at: a path's `d` may be thousands of characters long, and is no
+ * declaration.
+ */
+export function drawingVars(
+  root: Element,
+  byId: (id: string) => Element | null,
+): boolean {
+  const stack: Element[] = [root];
+  let targets: Set<Element> | null = null;
+  for (let el = stack.pop(); el; el = stack.pop()) {
+    if (attributeVars(el)) return true;
+    // the root's own custom properties are its box's already
+    const style = el.attribs.style;
+    if (style && (hasVar(style) || (el !== root && style.includes('--')))) {
+      return true;
+    }
+    if (isUse(el)) {
+      const id = useHref(el);
+      const target = id === null ? null : byId(id);
+      if (target && !(targets ??= new Set()).has(target)) {
+        targets.add(target);
+        stack.push(target);
+      }
+    }
+    const children = el.children;
+    for (let i = children.length - 1; i >= 0; i -= 1) {
+      if (children[i].type === 'tag') stack.push(children[i] as Element);
+    }
+  }
+  return false;
+}
+
+/** An element's presentation attributes of a shape's properties that have
+ *  a `var()` in them, as declarations to substitute, or null for none. One
+ *  whose `var()` is no `var()` is invalid as it is parsed, and left out as
+ *  an invalid declaration is. Kept by the element, whose attributes do not
+ *  change. */
+function attributeVars(el: Element): Declaration[] | null {
+  let found = ATTRIBUTE_VARS.get(el);
+  if (found !== undefined) return found;
+  found = null;
+  const attribs = el.attribs;
+  for (const name in attribs) {
+    if (!isShapeProp(name) || !hasVar(attribs[name])) continue;
+    for (const d of parseDeclarations(`${name}:${attribs[name]}`)) {
+      if (d.prop === name && d.vars && !d.important) (found ??= []).push(d);
+    }
+  }
+  ATTRIBUTE_VARS.set(el, found);
+  return found;
+}
+const ATTRIBUTE_VARS = new WeakMap<Element, Declaration[] | null>();
+
+/** The custom properties an element's `style` sets, in order, or null for
+ *  none. */
+function ownCustoms(el: Element): Map<string, string> | null {
+  const style = el.attribs.style;
+  if (!style || !style.includes('--')) return null;
+  let out: Map<string, string> | null = null;
+  for (const d of parseDeclarations(style)) {
+    if (d.custom) (out ??= new Map()).set(d.prop, d.value);
+  }
+  return out;
+}
+
 /** Whether declarations set a property a shape in a drawing has. */
 function declaresShape(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) if (isShapeProp(d.prop)) return true;
@@ -3399,10 +3529,16 @@ function presentationHints(el: Element): Declaration[] {
     if (h) push('height', h);
     // and its paint is its `fill` and `stroke` properties' (13.2), which a
     // rule of the document's then sets over the attribute
-    const fill = attr(el, 'fill');
-    if (fill) push('fill', fill);
-    const stroke = attr(el, 'stroke');
-    if (stroke) push('stroke', stroke);
+    // — a `var()` in either among it, which the cascade substitutes as it
+    // does one in a rule
+    for (const prop of ['fill', 'stroke']) {
+      const value = attr(el, prop);
+      if (!value) continue;
+      if (!hasVar(value)) push(prop, value);
+      else if (validVars(value)) {
+        out.push({ prop, value, important: false, vars: true });
+      }
+    }
   }
 
   if (tag === 'table') {
