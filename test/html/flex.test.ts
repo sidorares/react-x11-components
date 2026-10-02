@@ -2206,6 +2206,63 @@ test('a flex item that is a flex or grid container lays its items out in the hei
   assert.deepStrictEqual(at('g2'), [70, 30]);
 });
 
+test('an absolute flex box between two offsets lays its items out in the height they leave', async () => {
+  // CSS 2.1 10.6.4: with `top` and `bottom` and no height, the box is as
+  // tall as they leave of its containing block, and that height is
+  // definite (CSS Sizing 3, 2.1: a stretch-fit size against a containing
+  // block that always is), as the height of a box that sets one is (CSS
+  // Flexbox 9.2, 9.8). The box was laid out at its content's height and
+  // stretched after, so an overlay's `justify-content: center` or
+  // `align-items: center` left what it centres at the top, and a `flex: 1`
+  // was no height at all. Each number is Chrome's, Firefox's and Safari's.
+  const cell = (id: string, style: string, items: string) =>
+    `<div class="w"><div id="${id}" class="a" style="${style}">${items}` +
+    '</div></div>';
+  const column = 'flex-direction:column';
+  const { node } = await render(
+    '<style>body{margin:0}.w{position:relative;width:60px;height:60px}' +
+      '.a{position:absolute;inset:4px;display:flex}' +
+      '.i{width:20px;height:20px}</style>' +
+      cell(
+        'a',
+        `${column};justify-content:center`,
+        '<div id="a1" class="i"></div>',
+      ) +
+      cell('b', 'align-items:center', '<div id="b1" class="i"></div>') +
+      cell(
+        'c',
+        column,
+        '<div class="i"></div><div id="c2" class="i" style="flex:1"></div>',
+      ) +
+      // a limit makes it a height like one set
+      cell(
+        'd',
+        `${column};justify-content:center;max-height:30px`,
+        '<div id="d1" class="i"></div>',
+      ) +
+      // and with one offset, it is as tall as what it holds
+      cell(
+        'e',
+        `${column};justify-content:center;top:auto`,
+        '<div id="e1" class="i"></div>',
+      ),
+  );
+  const el = view(node);
+  /** How far down its flex box an item is, and how tall. */
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.y - item.parent.y, item.height];
+  };
+  assert.strictEqual(boxOf(el, 'a').height, 52);
+  assert.deepStrictEqual(at('a1'), [16, 20], 'justify-content: center');
+  assert.deepStrictEqual(at('b1'), [16, 20], 'align-items: center');
+  assert.deepStrictEqual(at('c2'), [20, 32], 'flex: 1 takes the rest');
+  assert.strictEqual(boxOf(el, 'd').height, 30);
+  assert.deepStrictEqual(at('d1'), [5, 20], 'centred in what it is held to');
+  assert.strictEqual(boxOf(el, 'e').height, 20);
+  assert.deepStrictEqual(at('e1'), [0, 20]);
+});
+
 test('a row that wraps stretches its items to a line as tall as its tallest item, past the box', async () => {
   // The lines of a row that wraps are as tall as their tallest items, each
   // as tall as its content (CSS Flexbox 9.4, steps 7 and 8), and one taller
