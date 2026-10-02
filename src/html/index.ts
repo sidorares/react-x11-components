@@ -56,14 +56,18 @@ export type {
   Document,
   Element,
   ParentNode,
+  ShadowRoot,
+  ShadowRootMode,
 } from './dom.js';
 export {
   appendChild,
+  attachShadow,
   createElement as createHtmlElement,
   createText,
   parseFragment,
   removeNode,
   replaceNode,
+  shadowRootOf,
 } from './dom.js';
 
 const h = React.createElement;

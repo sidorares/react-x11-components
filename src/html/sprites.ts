@@ -31,6 +31,7 @@
 // holds, or the element's own value — and after a transition's, its end.
 
 import { progressAt, timingAt, tracksOf } from './css/animation.js';
+import { animationTree } from './css/cascade.js';
 import type { Cascade } from './css/cascade.js';
 import { masked } from './css/style.js';
 import type { ComputedStyle } from './css/style.js';
@@ -188,7 +189,7 @@ export function liftOf(
     const name = animations.names[index];
     if (name === null) continue;
     // a name no `@keyframes` has runs nothing (CSS Animations 1, 3)
-    const rule = host.cascade.keyframes(name);
+    const rule = host.cascade.keyframes(name, animationTree(animations));
     if (!rule) continue;
     if (plays[index % plays.length] === 'paused') return null;
     let sets = false;

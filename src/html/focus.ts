@@ -11,7 +11,7 @@
 // it (`stops.ts`). So Tab goes from a link to a field to a button in the
 // order the markup has them, into and out of the document as it goes through
 // the rest of the window, and nothing of core's focus model is rebuilt here.
-import { attr, childrenOf, isElement, tagOf } from './dom.js';
+import { attr, flatChildrenOf, flatParentOf, isElement, tagOf } from './dom.js';
 import type { ChildNode, Element, ParentNode } from './dom.js';
 import { isDisabled } from './form.js';
 
@@ -99,13 +99,11 @@ export function isSummaryOf(el: Element): boolean {
   return false;
 }
 
-/** Whether an element is `inert`, or inside one that is: none of it is a
- *  focusable area (HTML 6.3). */
+/** Whether an element is `inert`, or inside one that is in the flat tree:
+ *  none of it is a focusable area (HTML 6.3). */
 export function isInert(el: Element): boolean {
-  for (let at: Element | null = el; at;) {
+  for (let at: Element | null = el; at; at = flatParentOf(at)) {
     if (attr(at, 'inert') !== undefined) return true;
-    const parent: Element['parent'] = at.parent;
-    at = isElement(parent) ? parent : null;
   }
   return false;
 }
@@ -131,11 +129,9 @@ export function stepFrom(
   // the nearest stop around the place, itself included
   const index = new Map<Element, number>();
   stops.forEach((s, i) => index.set(s.element, i));
-  for (let at: Element | null = from; at;) {
+  for (let at: Element | null = from; at; at = flatParentOf(at)) {
     const i = index.get(at);
     if (i !== undefined) return walk(stops, i, backwards);
-    const parent: Element['parent'] = at.parent;
-    at = isElement(parent) ? parent : null;
   }
   // and else the first stop after it, by a binary search over the stops,
   // which are in the document's order
@@ -162,13 +158,19 @@ function walk(
   return null;
 }
 
-/** Whether `a` comes before `b` in tree order — around it, or ahead of
- *  it. */
+/** Whether `a` comes before `b` in the flat tree's order, which is the
+ *  stops' — around it, or ahead of it. */
 function precedes(a: Element, b: Element): boolean {
   if (a === b) return false;
   const chain = (el: Element): ParentNode[] => {
     const out: ParentNode[] = [];
-    for (let at: ParentNode | null = el; at; at = at.parent) out.push(at);
+    let at: ParentNode | null = el;
+    for (let up = flatParentOf(el); up; up = flatParentOf(up)) {
+      out.push(at!);
+      at = up;
+    }
+    // and from the top of the flat tree, the document's
+    for (; at; at = at.parent) out.push(at);
     return out.reverse();
   };
   const above = chain(a);
@@ -178,7 +180,7 @@ function precedes(a: Element, b: Element): boolean {
   // one around the other
   if (i === above.length) return true;
   if (i === below.length || i === 0) return false;
-  const siblings = childrenOf(above[i - 1]);
+  const siblings = flatChildrenOf(above[i - 1]);
   return (
     siblings.indexOf(above[i] as ChildNode) <
     siblings.indexOf(below[i] as ChildNode)

@@ -750,6 +750,11 @@ function isSelector(s: string): boolean {
   // is none, and neither is `p:first-line[id]` — but for the user action
   // pseudo-classes Selectors 4 lets follow one, as in `a::before:hover`
   let ended = false;
+  // and `::part()` and `::slotted()` are followed by a pseudo-element of
+  // what they select — `::part(label)::before` — and `::part()` by the
+  // pseudo-classes of its state, `:checked` among them (CSS Shadow Parts
+  // 1, 4.2; CSS Scoping 1, 3.2.2)
+  let shadowed: string | null = null;
   while (i < n) {
     const c = s[i];
     if (isSpace(c)) {
@@ -771,8 +776,11 @@ function isSelector(s: string): boolean {
         ended &&
         !(
           d === ':' &&
-          s[i + 1] !== ':' &&
-          USER_ACTIONS.test(readIdent(s, i + 1).value)
+          (s[i + 1] !== ':'
+            ? USER_ACTIONS.test(readIdent(s, i + 1).value) ||
+              (shadowed === 'part' &&
+                !STRUCTURAL.test(readIdent(s, i + 1).value))
+            : shadowed !== null && TREE_ABIDING.test(readIdent(s, i + 2).value))
         )
       ) {
         return false;
@@ -814,7 +822,14 @@ function isSelector(s: string): boolean {
         // with a Kelvin sign, `:link`
         const lower = asciiLower(name.value);
         if (!knownPseudo(lower, element)) return false;
-        if (element || LEGACY_PSEUDO_ELEMENTS.test(lower)) ended = true;
+        if (element || LEGACY_PSEUDO_ELEMENTS.test(lower)) {
+          // a pseudo-element of a part or a slotted element is the last
+          shadowed =
+            element && !ended && (lower === 'part' || lower === 'slotted')
+              ? lower
+              : null;
+          ended = true;
+        }
         i = name.end;
         if (s[i] === '(') {
           const end = componentEnd(s, i);
@@ -950,6 +965,7 @@ const PSEUDO_CLASSES = new Set([
   'fullscreen',
   'future',
   'has',
+  'has-slotted',
   'host',
   'host-context',
   'hover',
@@ -1015,6 +1031,17 @@ const LEGACY_PSEUDO_ELEMENTS = /^(?:before|after|first-line|first-letter)$/i;
 /** The pseudo-classes that may follow a pseudo-element. */
 const USER_ACTIONS = /^(?:hover|active|focus|focus-visible|focus-within)$/i;
 
+/** The pseudo-elements that may follow `::part()` or `::slotted()`: the
+ *  ones of an element that are in its box tree, or beside it. */
+const TREE_ABIDING =
+  /^(?:before|after|marker|placeholder|file-selector-button|first-line|first-letter|selection)$/i;
+
+/** The pseudo-classes that ask where an element is among its siblings,
+ *  which no `::part()` may be followed by: a part is a part wherever it
+ *  is (CSS Shadow Parts 1, 4.2). */
+const STRUCTURAL =
+  /^(?:first-child|last-child|only-child|first-of-type|last-of-type|only-of-type|nth-child|nth-last-child|nth-of-type|nth-last-of-type|empty|root|has)$/i;
+
 export function specificityOf(selector: string): number {
   let ids = 0;
   let classes = 0;
@@ -1037,7 +1064,17 @@ export function specificityOf(selector: string): number {
     } else if (c === ':') {
       if (selector[i + 1] === ':') {
         types += 1;
-        i = identEnd(selector, i + 2);
+        const name = readIdent(selector, i + 2);
+        i = name.end;
+        if (selector[i] === '(') {
+          // `::slotted()` counts its compound, and `::part()`'s names are
+          // no selector (CSS Scoping 1, 3.2.2; CSS Shadow Parts 1, 4.1)
+          const end = componentEnd(selector, i);
+          if (name.value.toLowerCase() === 'slotted') {
+            inner += specificityOf(selector.slice(i + 1, end - 1));
+          }
+          i = end;
+        }
       } else {
         const name = readIdent(selector, i + 1);
         const lower = name.value.toLowerCase();
@@ -1053,6 +1090,10 @@ export function specificityOf(selector: string): number {
           types += 1;
         } else if (argument !== null && SELECTOR_LIST_PSEUDOS.has(lower)) {
           inner += mostSpecific(argument);
+        } else if (argument !== null && HOST_PSEUDOS.has(lower)) {
+          // a pseudo-class, and its compound (CSS Scoping 1, 3.2.1)
+          classes += 1;
+          inner += specificityOf(argument);
         } else if (argument !== null && lower === 'where') {
           // nothing
         } else {
@@ -1087,6 +1128,10 @@ const SELECTOR_LIST_PSEUDOS = new Set([
   '-webkit-any',
   '-moz-any',
 ]);
+
+/** `:host()` and `:host-context()`, whose specificity is a pseudo-class's
+ *  and their argument's. */
+const HOST_PSEUDOS = new Set(['host', 'host-context']);
 
 /** The pseudo-classes an `of S` may follow. */
 const NTH_OF_PSEUDOS = new Set(['nth-child', 'nth-last-child']);

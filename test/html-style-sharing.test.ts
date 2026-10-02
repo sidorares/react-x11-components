@@ -13,10 +13,12 @@ import type { Element } from 'domhandler';
 
 import { Cascade } from '../src/html/css/cascade.js';
 import { parseStylesheet } from '../src/html/css/parse.js';
+import type { Stylesheet } from '../src/html/css/parse.js';
 import { copyStyle, initialStyle } from '../src/html/css/style.js';
 import type { ComputedStyle, RootLook } from '../src/html/css/style.js';
 import { uaStylesheet } from '../src/html/css/ua.js';
 import { HtmlSource } from '../src/html/dom.js';
+import type { ShadowRoot } from '../src/html/dom.js';
 import { buildBoxes } from '../src/html/layout/boxes.js';
 import type { Box } from '../src/html/layout/boxes.js';
 
@@ -296,6 +298,124 @@ test('a rule that reads siblings, position or contents keeps its elements to the
   assert.notStrictEqual(
     JSON.stringify(styleOf(empty).paddingLeft),
     JSON.stringify(styleOf(full).paddingLeft),
+  );
+});
+
+// Shadow trees share too: the elements of two trees whose sheets read alike
+// share a style where they would compute the same one, and an element's key
+// says which tree it is in and which it hosts — a `<b>` assigned to a slot
+// in one card and the `<b>` that slot falls back to in another have parents
+// that share a key, and are styled by different trees' rules.
+const CARD = `
+:host { display: block; padding: 2px; }
+:host(.wide) { padding: 9px; }
+:host-context(.dark) { color: #eee; }
+:host(.wide) > .title { font-weight: 700; }
+.title { color: #123; }
+slot { color: #456; }
+b { font-style: italic; }
+::slotted(b) { color: #0a0; }
+slot[name=meta]::slotted(*) { font-size: 11px; }
+[part=label] { text-decoration: underline; }
+`;
+
+function cardHtml(): string {
+  const card = (light: string, cls = '') =>
+    `<x-card class="${cls}"><template shadowrootmode="open">` +
+    `<style>${CARD}</style><p class="title">Title</p>` +
+    `<span part="label">label</span><slot><b>fallback</b></slot>` +
+    `<slot name="meta"><i>no meta</i></slot>` +
+    `<x-badge exportparts="dot: badge-dot"><template shadowrootmode="open">` +
+    `<style>:host { display: inline-block } .dot { width: 4px }</style>` +
+    `<b part="dot" class="dot">•</b><slot></slot></template>` +
+    `<b>in badge</b></x-badge></template>${light}</x-card>`;
+  const parts: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    parts.push(
+      `<section class="${i % 2 ? 'dark' : ''}">` +
+        card('<b>bold</b> text', i % 3 ? '' : 'wide') +
+        card('<em>em</em><span slot="meta">meta</span>') +
+        card('') +
+        // the same element with another tree, whose `:host` is its own
+        '<x-card class=""><template shadowrootmode="open"><style>' +
+        ':host { display: block; padding: 5px; }</style>' +
+        '<p class="title">other</p></template></x-card>' +
+        `<b>outside</b></section>`,
+    );
+  }
+  const page =
+    'x-card::part(label) { color: #a00; } ' +
+    'x-card::part(badge-dot) { color: #00a; } b { color: #321; }';
+  return `<html><head><style>${page}</style></head><body>${parts.join('')}</body></html>`;
+}
+
+/** A cascade over a document's sheets and its shadow trees', bound to its
+ *  trees as the element does it (`HtmlViewNode._restyle`). */
+function cascadeWithShadows(source: HtmlSource): Cascade {
+  const facts = source.facts();
+  const text = (sheets: { kind: string; text?: string }[]) =>
+    sheets.map((s) => (s.kind === 'inline' ? s.text! : ''));
+  const keys = new Map<ShadowRoot, string>();
+  const byKey = new Map<string, Stylesheet[]>();
+  for (const { root, sheets } of facts.shadows) {
+    const texts = text(sheets);
+    const key = texts.join('\u0001');
+    keys.set(root, key);
+    if (texts.length && !byKey.has(key)) {
+      byKey.set(
+        key,
+        texts.map((t) => parseStylesheet(t, 0)),
+      );
+    }
+  }
+  const cascade = new Cascade(
+    [
+      uaStylesheet(LOOK),
+      ...text(facts.sheets).map((t) => parseStylesheet(t, 0)),
+    ],
+    LOOK,
+    800,
+    600,
+    1,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    [...byKey].map(([key, sheets]) => ({ key, sheets })),
+  );
+  cascade.bindShadows(keys);
+  return cascade;
+}
+
+test('in shadow trees, a shared style is the style the element computes alone', () => {
+  const source = new HtmlSource();
+  source.setSource(cardHtml(), true);
+  const doc = source.document;
+  const count = assertSameStyles(
+    build(doc, cascadeWithShadows(source)),
+    buildUnshared(doc, cascadeWithShadows(source)),
+  );
+  assert.ok(count > 300, `a document of ${count} boxes`);
+  // and the trees that read alike do share
+  const cascade = cascadeWithShadows(source);
+  const inner = cascade as unknown as {
+    _computeStyle: (...args: unknown[]) => ComputedStyle;
+  };
+  const compute = inner._computeStyle;
+  let computed = 0;
+  inner._computeStyle = function (this: Cascade, ...args: unknown[]) {
+    computed++;
+    return compute.apply(this, args);
+  };
+  const tree = build(doc, cascade);
+  const elements = [...boxes(tree.root)].filter(
+    (b) => b.el && b.kind !== 'text',
+  );
+  assert.ok(
+    computed < elements.length / 3,
+    `${computed} styles computed for ${elements.length} element boxes`,
   );
 });
 

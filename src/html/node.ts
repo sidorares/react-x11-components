@@ -51,12 +51,14 @@ import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
 import {
   attr,
   choosesSource,
+  flatChildrenOf,
+  flatParentOf,
   HtmlSource,
   imageUrlOf,
   isElement,
   tagOf,
 } from './dom.js';
-import type { Document } from './dom.js';
+import type { Document, ShadowRoot, SheetRef } from './dom.js';
 import {
   Cascade,
   HOVER_FOLLOWED,
@@ -71,6 +73,7 @@ import type {
   HoverTouch,
   KeptStyles,
   MetricFace,
+  ShadowSheets,
 } from './css/cascade.js';
 import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { MediaCondition, Stylesheet } from './css/parse.js';
@@ -312,6 +315,9 @@ export class HtmlViewNode extends Node {
   private _webFonts: WebFonts;
   /** The sheets the last restyle read, and the cascade built from them. */
   private _sheetsRead: SheetsRead | null = null;
+  /** Each sheet text a shadow tree has read as, by a number
+   *  (`_sheetsKey`). */
+  private _sheetIds = new Map<string, number>();
   /** Blurred shadows, drawn once each. */
   private _shadowCache: SurfaceCache | null = null;
   /** Whether the backend was found to have no offscreen surface. */
@@ -748,18 +754,17 @@ export class HtmlViewNode extends Node {
       for (const [family, named] of faces) fonts.prewarm(family, named);
   }
 
-  /** Rebuild the cascade — the document's sheets plus the host's. */
-  private _restyle(width: number): void {
+  /**
+   * What a tree's sheets are read from, in order: a `<style>`'s text or a
+   * fetched `<link>`'s — each with the URL its own relative URLs resolve
+   * against: the document's for a `<style>`, the sheet's own for a
+   * `<link>`.
+   */
+  private _readSheets(refs: readonly SheetRef[]): SheetText[] {
     const props = this._props();
-    const look = this._deviceLook();
     const documentBase = this._urls.base;
-    // What the sheets are read from, in order: a `<style>`'s text or a
-    // fetched `<link>`'s, and after them the host's — each with the URL its
-    // own relative URLs resolve against: the document's for a `<style>`,
-    // the sheet's own for a `<link>`, and the conditions its `media` puts it
-    // under.
     const read: SheetText[] = [];
-    for (const ref of this._source.facts().sheets) {
+    for (const ref of refs) {
       // A sheet handed over as bytes that names no encoding of its own is in
       // its referrer's: a `<link charset>`, then the document's (CSS 2.1
       // 4.4), and an import is in the encoding of the sheet importing it.
@@ -785,6 +790,51 @@ export class HtmlViewNode extends Node {
         media: ref.media,
       });
     }
+    return read;
+  }
+
+  /**
+   * How a tree's sheets read, as a key: the trees whose sheets read alike
+   * share their rules (`Cascade.bindShadows`), and '' is none. Each text is
+   * a number, the first time it is read and after: a page of a component's
+   * cards has its sheet once a card, and the text is the same string each
+   * scan, whose hash is kept, where a key of the texts themselves was a
+   * string of all of them to hash again on every restyle.
+   */
+  private _sheetsKey(read: readonly SheetText[]): string {
+    let key = '';
+    for (const { text, encoding, base, media } of read) {
+      let id = this._sheetIds.get(text);
+      if (id === undefined) {
+        id = this._sheetIds.size;
+        this._sheetIds.set(text, id);
+      }
+      key += `${id}\u0001${encoding ?? ''}\u0001${base ?? ''}`;
+      // what its `media` puts it under, by value, as `_sameSheets` asks
+      if (media) key += `\u0001${JSON.stringify(media)}`;
+      key += '\u0002';
+    }
+    return key;
+  }
+
+  /** Rebuild the cascade — the document's sheets plus the host's. */
+  private _restyle(width: number): void {
+    const props = this._props();
+    const look = this._deviceLook();
+    const facts = this._source.facts();
+    // the document's sheets, and after them the host's
+    const read = this._readSheets(facts.sheets);
+    // Each shadow tree's, which style it alone (CSS Scoping 1, 3.2): the
+    // trees whose sheets read alike — a component stamped out on every
+    // card of a page — are one set of rules, parsed and indexed once.
+    const shadowKeys = new Map<ShadowRoot, string>();
+    const shadowRead = new Map<string, SheetText[]>();
+    for (const { root, sheets } of facts.shadows) {
+      const own = this._readSheets(sheets);
+      const key = this._sheetsKey(own);
+      shadowKeys.set(root, key);
+      if (own.length && !shadowRead.has(key)) shadowRead.set(key, own);
+    }
     const extra = props.stylesheet;
     const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
     const fonts = this._fonts();
@@ -799,7 +849,8 @@ export class HtmlViewNode extends Node {
       kept.look === look &&
       kept.scale === this._scale &&
       kept.fonts === fonts &&
-      this._sameSheets(kept, read, extras)
+      this._sameSheets(kept, read, extras) &&
+      this._sameShadows(kept, shadowRead)
     ) {
       this._cascade = kept.cascade;
       this._cascade.previous = this._previousStyle;
@@ -851,6 +902,42 @@ export class HtmlViewNode extends Node {
         order += sheet.rules.length + 1;
         sheets.push(sheet);
       }
+      // a shadow tree's in an order and layers of their own, read as the
+      // document's are, imports and all; its `@font-face` rules are not
+      // the document's fonts
+      const shadows: ShadowSheets[] = [];
+      const shadowImports = new Map<string, ImportRead[][]>();
+      for (const [key, own] of shadowRead) {
+        const tree: Stylesheet[] = [];
+        const treeImports: ImportRead[][] = [];
+        const treeLayers = new Map<string, number>();
+        let treeOrder = 0;
+        const placeInTree = (sheet: Stylesheet): void => {
+          for (const rule of sheet.rules) rule.order = treeOrder++;
+          treeOrder += 1;
+          tree.push(sheet);
+        };
+        for (const { text, encoding, element, base, media } of own) {
+          const under = media ? [media] : null;
+          const sheet = parseStylesheet(text, 0, treeLayers, base, under);
+          const seen: ImportRead[] = [];
+          this._placeImports(
+            sheet,
+            encoding,
+            element,
+            treeLayers,
+            seen,
+            placeInTree,
+            0,
+            new Set(),
+            under,
+          );
+          treeImports.push(seen);
+          placeInTree(sheet);
+        }
+        shadows.push({ key, sheets: tree });
+        shadowImports.set(key, treeImports);
+      }
       this._cascade = new Cascade(
         sheets,
         look,
@@ -861,6 +948,9 @@ export class HtmlViewNode extends Node {
         fonts ? (face) => zeroWidthOf(fonts, face) : null,
         fonts ? (face) => normalLineOf(fonts, face) : null,
         faces.length ? this._webFonts : null,
+        null,
+        null,
+        shadows,
       );
       this._cascade.previous = this._previousStyle;
       this._sheetsRead = {
@@ -873,10 +963,13 @@ export class HtmlViewNode extends Node {
         media: read.map((r) => r.media),
         imports,
         extras,
+        shadows: shadowImports,
         faces,
         cascade: this._cascade,
       };
     }
+    // the trees as they are now, which a kept cascade was made for others of
+    this._cascade.bindShadows(shadowKeys);
     // The faces this width and scheme declare: a `@font-face` may sit in a
     // `@media` block like any rule.
     const cssWidth = width / this._scale;
@@ -974,19 +1067,44 @@ export class HtmlViewNode extends Node {
       ) {
         return false;
       }
-      // The encodings an import falls back to are its importer's, which
-      // only a parse knows; the text an import decoded to under them is what
-      // was kept, and bytes that decode differently now are a new sheet.
-      for (const { url, text, base } of kept.imports[i]) {
-        this._resources.request({
-          url,
-          kind: 'stylesheet',
-          element: r.element,
-        });
-        const fetched = this._resources.stylesheet(url, [r.encoding]);
-        if ((fetched?.text ?? null) !== text) return false;
-        if (this._resources.sheetBase(url) !== base) return false;
+      if (!this._sameImports(kept.imports[i], r)) return false;
+    }
+    return true;
+  }
+
+  /** Whether the shadow trees' sheets read as they did: the same sets,
+   *  each importing the same. */
+  private _sameShadows(
+    kept: SheetsRead,
+    shadows: ReadonlyMap<string, SheetText[]>,
+  ): boolean {
+    if (kept.shadows.size !== shadows.size) return false;
+    for (const [key, own] of shadows) {
+      const imports = kept.shadows.get(key);
+      if (!imports) return false;
+      for (let i = 0; i < own.length; i += 1) {
+        if (!this._sameImports(imports[i], own[i])) return false;
       }
+    }
+    return true;
+  }
+
+  /**
+   * Whether what a sheet imports reads as it did. The encodings an import
+   * falls back to are its importer's, which only a parse knows; the text an
+   * import decoded to under them is what was kept, and bytes that decode
+   * differently now are a new sheet.
+   */
+  private _sameImports(imports: readonly ImportRead[], r: SheetText): boolean {
+    for (const { url, text, base } of imports) {
+      this._resources.request({
+        url,
+        kind: 'stylesheet',
+        element: r.element,
+      });
+      const fetched = this._resources.stylesheet(url, [r.encoding]);
+      if ((fetched?.text ?? null) !== text) return false;
+      if (this._resources.sheetBase(url) !== base) return false;
     }
     return true;
   }
@@ -1716,10 +1834,12 @@ export class HtmlViewNode extends Node {
   hrefAtPoint(x: number, y: number): string | null {
     const el = this.elementAtPoint(x, y);
     let node: Element | null = el;
+    // up the flat tree: a link in a shadow tree around a slot is the link
+    // of what is assigned to the slot
     while (node) {
       const href = this.hrefOf(node);
       if (href !== null) return href;
-      node = isElement(node.parent) ? node.parent : null;
+      node = flatParentOf(node);
     }
     return null;
   }
@@ -1921,11 +2041,14 @@ export class HtmlViewNode extends Node {
     this._dropHeldHover();
     const cascade = this._cascade;
     if (!cascade || !cascade.hoverSensitive) return false;
+    // the element under the pointer and every element around it in the
+    // flat tree (Selectors 4, 9.2): a host and a slot are hovered over
+    // what is drawn in them
     const chain: Element[] = [];
     let node = this.elementAtPoint(x, y);
     while (node) {
       chain.push(node);
-      node = isElement(node.parent) ? node.parent : null;
+      node = flatParentOf(node);
     }
     if (sameChain(chain, this._hovered)) return false;
     const was = this._hovered;
@@ -1996,12 +2119,9 @@ export class HtmlViewNode extends Node {
     if (was.element === element && (!element || was.visible === visible)) {
       return false;
     }
+    // and every element around it in the flat tree (Selectors 4, 9.5)
     const within = new Set<Element>();
-    for (
-      let at: Element | null = element;
-      at;
-      at = isElement(at.parent) ? at.parent : null
-    ) {
+    for (let at: Element | null = element; at; at = flatParentOf(at)) {
       within.add(at);
     }
     const now: FocusState = element ? { element, visible, within } : NO_FOCUS;
@@ -2099,8 +2219,9 @@ export class HtmlViewNode extends Node {
       anchors(also, roots);
     }
 
-    // the roots' subtrees, which inherit from them and a descendant
-    // combinator reaches, and their later siblings' too where a sibling
+    // the roots' subtrees, which a descendant combinator reaches, and
+    // what inherits from them, through a host's shadow tree and a slot's
+    // assigned children; and their later siblings' too where a sibling
     // combinator follows the compound that tests the pointer
     const reach = new Set<Element>();
     const collect = (el: Element): void => {
@@ -2111,6 +2232,10 @@ export class HtmlViewNode extends Node {
         reach.add(at);
         for (const child of at.children)
           if (isElement(child)) stack.push(child);
+        const flat = flatChildrenOf(at);
+        if (flat !== at.children) {
+          for (const child of flat) if (isElement(child)) stack.push(child);
+        }
       }
     };
     for (const [root, touch] of roots) {
@@ -2213,8 +2338,9 @@ export class HtmlViewNode extends Node {
       const done = fresh.get(el);
       if (done) return done;
       // an element at the top of the document is styled from the box above
-      // it all, as the builder styled it (`BoxBuilder.run`)
-      const parent = isElement(el.parent) ? el.parent : null;
+      // it all, as the builder styled it (`BoxBuilder.run`), and every
+      // other from its parent in the flat tree, as the builder walks it
+      const parent = flatParentOf(el);
       const parentStyle = parent ? styleOf(parent) : tree.root.style;
       if (!parentStyle) {
         refused = true;
@@ -3382,6 +3508,9 @@ interface SheetsRead {
   media: (MediaCondition[] | null)[];
   imports: ImportRead[][];
   extras: string[];
+  /** Each set of shadow trees' sheets, by how they read (`_sheetsKey`), and
+   *  what each of its sheets imports. */
+  shadows: ReadonlyMap<string, ImportRead[][]>;
   faces: DeclaredFace[];
   cascade: Cascade;
 }
