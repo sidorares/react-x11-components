@@ -14,7 +14,7 @@ import * as ntk from 'react-x11/ntk';
 import type { Element } from 'domhandler';
 import { parseDocument } from 'htmlparser2';
 import { Html } from '../../src/index.js';
-import { decodesImageType } from '../../src/html/resources.js';
+import { decodesImageType } from '../../src/html/image-types.js';
 import {
   allowsAutoSizes,
   normalize,

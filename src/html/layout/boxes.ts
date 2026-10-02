@@ -47,12 +47,14 @@ import {
   FIRST_LINE_INHERITED,
   NO_MASK,
   copyStyle,
+  densityOf,
   firstLineParent,
   inherit,
+  urlOf,
 } from '../css/style.js';
 import { AUTO } from '../css/values.js';
 import { focusableElement } from '../focus.js';
-import { concreteSize, svgIntrinsics } from '../svg.js';
+import { atDensity, concreteSize, svgIntrinsics } from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
 import type { BoxShadow, ComputedStyle } from '../css/style.js';
 import type { GridLines } from './grid-lines.js';
@@ -1393,14 +1395,20 @@ class Builder {
     let ownMarker = false;
     let markerImage: { url: string; size: IntrinsicSize } | null = null;
     let insideImage: NonNullable<Marker['image']> | null = null;
-    if (style.display === 'list-item' && style.listStyleImage) {
+    const listImage =
+      style.display === 'list-item' ? urlOf(style.listStyleImage) : null;
+    if (listImage !== null) {
       // asked for as generated content's images are, and the tree built
       // again when it arrives; until it has, and where it never does, the
-      // item's marker is its `list-style-type`'s
-      const url = style.listStyleImage;
+      // item's marker is its `list-style-type`'s. One an `image-set()`
+      // chose is its pixels over its density across.
+      const url = listImage;
       const size = this._options.urlSize?.(url) ?? null;
       this._contentImages.push({ url, element: el, sized: !!size });
-      if (size) markerImage = { url, size };
+      if (size) {
+        const density = densityOf(style.listStyleImage);
+        markerImage = { url, size: atDensity(size, density) };
+      }
     }
     if (style.display === 'list-item') {
       // the item's number, the `list-item` counter it has just counted
@@ -1685,7 +1693,9 @@ class Builder {
     else if (flow === 'block' && outerLetter) giveBack(outerLetter);
     for (const piece of pieces) {
       if (typeof piece === 'string') this._textNode(piece, box, style, el);
-      else this._contentImage(piece.url, box, style, el);
+      else {
+        this._contentImage(piece.url, box, style, el, undefined, piece.density);
+      }
     }
     this._letterAfter(flow, skipped, outerLetter, null);
     if (flow !== 'inline') this._endLine();
@@ -1905,8 +1915,8 @@ class Builder {
     items: ContentItem[],
     style: ComputedStyle,
     el: Element,
-  ): (string | { url: string })[] {
-    const pieces: (string | { url: string })[] = [];
+  ): (string | { url: string; density: number })[] {
+    const pieces: (string | { url: string; density: number })[] = [];
     let text = '';
     for (const item of items) {
       switch (item.kind) {
@@ -1916,7 +1926,7 @@ class Builder {
         case 'url':
           if (text) pieces.push(text);
           text = '';
-          pieces.push({ url: item.url });
+          pieces.push({ url: item.url, density: item.density ?? 1 });
           break;
         case 'attr':
           text += attr(el, item.name) ?? '';
@@ -1971,6 +1981,9 @@ class Builder {
     /** Its size where it is a list marker's, which has one whatever the
      *  image says (`_markerImageSize`). */
     marker?: { width: number; height: number },
+    /** Its pixel density, where an `image-set()` chose it: a `2x` image is
+     *  half its pixels across. */
+    density = 1,
   ): Box {
     const box = new Box('replaced', null, {
       ...inherit(style, this._options.cascade.initial),
@@ -1985,8 +1998,9 @@ class Builder {
       const { width, height } = marker;
       const ratio = width > 0 && height > 0 ? width / height : 0;
       box.intrinsic = { width, height, missing: 0, ratio };
-    } else if (size) setIntrinsics(box, size, this._options.scale ?? 1);
-    else box.intrinsic = { width: 0, height: 0, missing: 0, ratio: 0 };
+    } else if (size) {
+      setIntrinsics(box, atDensity(size, density), this._options.scale ?? 1);
+    } else box.intrinsic = { width: 0, height: 0, missing: 0, ratio: 0 };
     this._ws = after('atomic', this._ws, this._ws);
     this._lettered = false;
     this._abandonLetter();
@@ -3060,7 +3074,7 @@ function namesImages(style: ComputedStyle): boolean {
   return (
     !!style.backgroundImage ||
     !!style.backgroundImages ||
-    typeof style.borderImage.source === 'string' ||
+    urlOf(style.borderImage.source) !== null ||
     style.mask !== NO_MASK
   );
 }

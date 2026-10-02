@@ -362,6 +362,38 @@ test("a sheet's url()s come out absolute, wherever they stand", () => {
   }
 });
 
+test('the string an image-set() option starts with is a URL, and comes out absolute as a url() does', () => {
+  // CSS Images 4, 2.4: `image-set("a.png" 1x)` names the image a `url()`
+  // would, and it was left relative, to be resolved by a host that cannot
+  // know which sheet it came from
+  const base = 'https://example.test/css/site.css';
+  const abs = (name: string) => `url("https://example.test/css/${name}")`;
+  assert.strictEqual(
+    absoluteUrls(`image-set('a.png' 1x, "b.png" type("image/png") 2x)`, base),
+    `image-set(${abs('a.png')} 1x, ${abs('b.png')} type("image/png") 2x)`,
+    "and a type()'s string is a string",
+  );
+  assert.strictEqual(
+    absoluteUrls('-webkit-image-set( "a.png" 1x , url(b.png) 2x)', base),
+    `-webkit-image-set( ${abs('a.png')} 1x , ${abs('b.png')} 2x)`,
+  );
+  assert.strictEqual(
+    absoluteUrls('image-set(linear-gradient(red, blue) 1x, "c.png")', base),
+    `image-set(linear-gradient(red, blue) 1x, ${abs('c.png')})`,
+  );
+  assert.strictEqual(
+    absoluteUrls(`var(--x, image-set('v.png'))`, base),
+    `var(--x, image-set(${abs('v.png')}))`,
+  );
+  for (const same of [
+    '"a.png"',
+    'foo-image-set("a.png")',
+    'image-set("#a" 1x, "data:image/png;base64,AAAA" 2x)',
+  ]) {
+    assert.strictEqual(absoluteUrls(same, base), same, same);
+  }
+});
+
 test('a sheet parsed with a base resolves its imports and its values', () => {
   const sheet = parseStylesheet(
     '@import "reset.css"; @import url(//cdn.test/x.css) screen;' +
@@ -655,13 +687,16 @@ test('a <base href> moves the base, and without either nothing resolves', async 
 test("a linked sheet's URLs resolve against it — or where it said it came from", async () => {
   const asked: string[] = [];
   const { node } = await mount(
-    '<link rel="stylesheet" href="css/site.css"><p id="p">x</p>',
+    '<link rel="stylesheet" href="css/site.css"><p id="p">x</p><div></div>',
     (r) => {
       asked.push(r.url);
       if (r.url === 'https://example.test/css/site.css') {
         return {
           kind: 'stylesheet',
-          text: '@import "more.css"; p { background: url(../img/bg.png) }',
+          text:
+            '@import "more.css"; p { background: url(../img/bg.png) }' +
+            // an image-set()'s strings are its URLs, and this its 1x
+            'div { background: image-set("../img/a.png", "../img/b.png" 2x) }',
         };
       }
       if (r.url === 'https://example.test/css/more.css') {
@@ -680,6 +715,7 @@ test("a linked sheet's URLs resolve against it — or where it said it came from
     'https://cdn.test/moved/deeper.css',
     'https://example.test/css/more.css',
     'https://example.test/css/site.css',
+    'https://example.test/img/a.png',
     'https://example.test/img/bg.png',
   ]);
   const p = boxOf(node, 'p');

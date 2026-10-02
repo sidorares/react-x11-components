@@ -123,6 +123,21 @@ export function svgIntrinsics(el: Element, fontSize = 16): IntrinsicSize {
 }
 
 /**
+ * An image's natural size at a pixel density: its pixels over the density,
+ * so that a `2x` source is half its pixels across (CSS Images 4, 2.4; HTML's
+ * "normalize the source densities"), and a drawing's own size the same. Its
+ * ratio is its ratio at any density; a density of 0 leaves it as it is.
+ */
+export function atDensity(size: IntrinsicSize, density: number): IntrinsicSize {
+  if (density === 1 || !(density > 0)) return size;
+  return {
+    width: size.width === null ? null : size.width / density,
+    height: size.height === null ? null : size.height / density,
+    ratio: size.ratio,
+  };
+}
+
+/**
  * An image's size, in device pixels, where nothing sets it: CSS Images 3's
  * default sizing algorithm (5.3.3), against a default object size of
  * `width` by `height` device pixels — a background's positioning area, a

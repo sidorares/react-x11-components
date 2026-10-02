@@ -5,16 +5,20 @@
 // in document order and the builder is that walk.
 
 import { parseUrl, urlEnd } from './parse.js';
+import { closingParen } from './vars.js';
+import type { ImageSource } from '../srcset.js';
 import {
   CounterStyles,
   counterStyleName,
   symbolsFunction,
 } from './counter-styles.js';
 
-/** One part of a `content` value, in the order it was written. */
+/** One part of a `content` value, in the order it was written. An image
+ *  an `image-set()` chose at a density other than 1x carries it, and is
+ *  that much smaller than its pixels. */
 export type ContentItem =
   | { kind: 'string'; text: string }
-  | { kind: 'url'; url: string }
+  | { kind: 'url'; url: string; density?: number }
   | { kind: 'attr'; name: string }
   | { kind: 'counter'; name: string; style: string }
   | { kind: 'counters'; name: string; separator: string; style: string }
@@ -199,6 +203,8 @@ export function languageQuotes(lang: string): readonly string[] {
 export type Token =
   | { kind: 'string'; text: string }
   | { kind: 'url'; url: string }
+  /** An `image-set()`, as written, for the caller to choose from. */
+  | { kind: 'image-set'; text: string }
   | { kind: 'ident'; name: string }
   | { kind: 'function'; name: string; args: Token[][] }
   | { kind: 'number'; value: number };
@@ -207,9 +213,16 @@ export type Token =
  * `content`: `normal`, `none`, or its items, CSS 2.1's: strings, images,
  * `attr()`, counters and quotes. Null when the value cannot be read, which
  * drops the declaration, as CSS does.
+ *
+ * An `image-set()` is the image `imageSet` says it chose: a url's, at its
+ * density, or null for one that is no url's — a gradient, or no option
+ * that decodes — which generated content draws nothing for and gives no
+ * room, as Chrome, Firefox and WebKit give it none. Undefined drops the
+ * declaration; with no `imageSet`, so does every `image-set()`.
  */
 export function parseContent(
   value: string,
+  imageSet?: (text: string) => ImageSource | null | undefined,
 ): ContentItem[] | 'normal' | 'none' | null {
   const tokens = tokenize(value);
   if (!tokens?.length) return null;
@@ -223,6 +236,11 @@ export function parseContent(
       items.push({ kind: 'string', text: token.text });
     } else if (token.kind === 'url') {
       items.push(token);
+    } else if (token.kind === 'image-set') {
+      const chosen = imageSet?.(token.text);
+      if (chosen === undefined) return null;
+      if (chosen?.density === 1) items.push({ kind: 'url', url: chosen.url });
+      else if (chosen) items.push({ kind: 'url', ...chosen });
     } else if (token.kind === 'ident') {
       const name = token.name.toLowerCase();
       if (
@@ -479,6 +497,15 @@ export function tokenize(value: string): Token[] | null {
           if (url === undefined) return null;
           if (url !== null) tokens.push({ kind: 'url', url });
           i = end;
+          continue;
+        }
+        if (/^(?:-webkit-)?image-set$/i.test(name)) {
+          // whole, to its parenthesis, for the caller to read as a
+          // background's is
+          const end = closingParen(value, i + 1);
+          if (end < 0) return null;
+          tokens.push({ kind: 'image-set', text: value.slice(start, end + 1) });
+          i = end + 1;
           continue;
         }
         i += 1;

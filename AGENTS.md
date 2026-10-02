@@ -1341,6 +1341,20 @@ answers the contained one: the flex item's basis and cross size read
 `box.intrinsic`, and an auto image in a flex row took its height from the
 candidate's ratio.
 
+**An `image-set()` is chosen as the style is computed, and a choice at
+another density is not a string.** A cascade is made for one scale, and
+its lengths are device pixels already, so `imageSetOf` (`css/style.ts`)
+picks an option with `pick` there, and a style computed for another
+display is computed again with the choice. A url chosen at 1x is the url,
+as `url()` writes it; at any other density it is `{ url, density }`
+(`UrlImage`), and the density is its size (`atDensity`). So **anything
+that reads a layer's image — a background's, a border image's, a mask's,
+a marker's — asks `urlOf`, `densityOf` and `gradientOf`**, and never
+`typeof image === 'string'`: that test passes a 2x image over silently,
+and its negation took one for a gradient. `decodesImageType` is in
+`image-types.ts`, a module that imports nothing, because the cascade asks
+it and `resources.ts` reaches the cascade through `svg.ts`.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides

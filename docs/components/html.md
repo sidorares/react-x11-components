@@ -274,6 +274,45 @@ that is not lazy. An image that is
 passed over. Unlike a browser, which lazily loads only what nears the
 viewport, `<Html>` asks for every image, a lazy one included.
 
+### Image sets
+
+A CSS `image-set()` (CSS Images 4, 2.4), or the `-webkit-image-set()` many
+sites still write, is the one image it chooses wherever an image goes — a
+background layer, a list marker, generated content, a border image, a
+mask — and that one alone is asked for through `onResource`:
+
+- **its options:** each a `url()`, a string that is one, or a gradient,
+  with a resolution — `2x`, `2dppx`, `192dpi`, or `1x` where it has none —
+  and a `type()`, in either order;
+- **the type:** an option whose `type()` does not decode here is passed
+  over, the types a `<source type>` takes — but the string as written, so
+  one with a parameter, white space round it, or nothing in it is a type
+  no browser has either;
+- **the option:** of the rest, the least dense at or above the display's
+  scale, else the densest, and of two at one density the first — the
+  choice a [responsive image](#responsive-images) makes, and the one
+  Chrome, Firefox and WebKit all make for an `image-set()`.
+
+The resolution is the image's size: a `2x` image is half its pixels across
+as a background at `background-size: auto`, as a list marker and as a
+`content` image, and a border image's slices are its CSS pixels, twenty of
+its pixels for a `10` at 2x, as all three engines slice one. A drawing is
+the same, as Firefox and WebKit size one, where Chrome leaves an SVG at its
+own size.
+
+An `image-set()` with no option that decodes draws nothing, asks for
+nothing and takes no room, and its declaration stands; one that is no
+`image-set()` at all — no options, a negative resolution or two of them,
+one nested in another — drops the declaration, and what it would have
+replaced stands, as in every browser. The choice is made as the style is
+computed, at the element's scale, as a length is; and with a base its
+strings resolve as its `url()`s do, against the sheet they are written in
+([Base URLs](#base-urls)).
+
+One part is not done: a gradient an `image-set()` chooses for a list
+marker draws the `list-style-type`'s marker, as a gradient
+`list-style-image` does, where a browser draws a small square of it.
+
 ### Fonts
 
 An `@font-face` is read, and its family is the document's to use:
@@ -1770,7 +1809,8 @@ among those above — is left undrawn, an empty box, and the rest of the
 document is drawn.
 
 **Backgrounds:** `background-color`, and `background-image` — through
-`onResource`, like an `<img>` — with `background-repeat`, `space` and
+`onResource`, like an `<img>`, and an `image-set()` as the one option it
+chooses ([Image sets](#image-sets)) — with `background-repeat`, `space` and
 `round` among it and each axis its own, and `background-position`, placed
 in the box `background-origin` names — the
 padding box unless it says otherwise — and painted, and repeated, across
