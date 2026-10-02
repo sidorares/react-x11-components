@@ -9,7 +9,8 @@
 // edit menu, and all of them join the window's focus order. What the
 // document draws itself is a `<button>`, whose content is the page's, and an
 // image button, which is a picture; a press on either reaches the element,
-// which is why this also watches the document's own presses.
+// which is why this also watches the document's own presses — a summary's
+// too, which opens its details.
 //
 // What the markup cannot say — what was typed, what a reset puts back — is
 // `FormState`'s (form.ts), one per `<Html>`, and what a submission carries
@@ -46,6 +47,7 @@ import {
   radioGroup,
 } from './form.js';
 import type { FormSubmission } from './form.js';
+import { isSummaryOf, tabIndexOf } from './focus.js';
 
 const h = React.createElement;
 
@@ -64,13 +66,32 @@ export interface FormsOptions {
 }
 
 export interface Forms {
-  /** The document's own presses: its `<button>`s, `<label>`s and image
-   *  buttons. */
+  /** The document's own presses: its `<button>`s, `<label>`s, image
+   *  buttons and summaries. */
   onMouseDown: (ev: X11MouseEvent<DrawnNode>) => void;
   onMouseUp: (ev: X11MouseEvent<DrawnNode>) => void;
-  /** The widgets for the rectangles layout reported, and the message of a
-   *  form that would not submit. */
-  render(rects: readonly ControlRect[], look: RootLook): ReactNode[];
+  /** The widgets for the rectangles layout reported, each at its rect's
+   *  index — null where a rect has none — and the message of a form that
+   *  would not submit. */
+  render(
+    rects: readonly ControlRect[],
+    look: RootLook,
+  ): { widgets: ReactNode[]; message: ReactNode };
+  /** Give a control's widget the focus; false where it has none mounted. */
+  focusControl(el: Element): boolean;
+  /** The control whose widget `node` is, or is in, or null. */
+  controlOf(node: DrawnNode | null): Element | null;
+  /** Something the document draws, activated from the keyboard: a
+   *  `<button>` or an image button pressed, a summary's details opened or
+   *  closed. False where it does nothing. */
+  activate(el: Element): boolean;
+  /**
+   * Something of the document's took the focus, or gave it up: the element
+   * it is the document's `:focus` (`HtmlViewNode.setFocus`). A blur is
+   * told a microtask later, so that a move from one to the next is one
+   * change to the document.
+   */
+  focused(el: Element, on: boolean): void;
 }
 
 /** How far a press may travel and still be a click — `useLinkClicks`'s
@@ -215,6 +236,16 @@ export function useForms(options: FormsOptions): Forms {
     changed(el, attr(el, 'value') ?? 'on', true);
   };
 
+  /** A summary's activation behaviour (HTML 4.11.2): its details open, or
+   *  close. The attribute is the state, as `checked` is a checkbox's, and
+   *  `details[open]` a selector a sheet styles by. */
+  const toggleDetails = (summary: Element) => {
+    const details = summary.parent as Element;
+    if (attr(details, 'open') !== undefined) delete details.attribs.open;
+    else details.attribs.open = '';
+    touch();
+  };
+
   /** A press on a `<label>` is one on its control (HTML 4.10.4): a box is
    *  toggled, a radio checked, a button pressed, and a field focused. */
   const activateLabel = (control: Element) => {
@@ -260,6 +291,10 @@ export function useForms(options: FormsOptions): Forms {
       // it; a button is pressed however many times it is clicked
       if (!(ev.currentTarget?.textSelection?.isCollapsed ?? true)) return;
       activateLabel(at.control);
+    } else if (at.kind === 'summary') {
+      // its text, as a label's is, and read the same way
+      if (!(ev.currentTarget?.textSelection?.isCollapsed ?? true)) return;
+      toggleDetails(at.element);
     } else if (at.kind === 'image')
       press(at.element, imagePoint(at.element, ev));
     else press(at.element);
@@ -316,13 +351,34 @@ export function useForms(options: FormsOptions): Forms {
     onMouseUp,
     render: (rects, look) => {
       rendered.current = rects;
-      const out = rects.map((rect) => renderControl(rect, look, ctx));
-      if (invalid) {
-        const bubble = renderMessage(invalid, rects, view.current, look);
-        if (bubble) out.push(bubble);
-      }
-      return out;
+      return {
+        widgets: rects.map((rect) => renderControl(rect, look, ctx)),
+        message: invalid
+          ? renderMessage(invalid, rects, view.current, look)
+          : null,
+      };
     },
+    focusControl: (el) => widgets.focus(el),
+    controlOf: (node) => widgets.elementOf(node),
+    activate: (el) => {
+      const tag = tagOf(el);
+      if (tag === 'summary') {
+        toggleDetails(el);
+        return true;
+      }
+      if (isDisabled(el)) return false;
+      if (tag === 'button') {
+        press(el);
+        return true;
+      }
+      if (tag === 'input' && inputType(el) === 'image') {
+        // from the keyboard, as a browser's: at the image's corner
+        press(el, { x: 0, y: 0 });
+        return true;
+      }
+      return false;
+    },
+    focused,
   };
 }
 
@@ -330,13 +386,14 @@ export function useForms(options: FormsOptions): Forms {
 type Pressable =
   | { kind: 'button'; element: Element }
   | { kind: 'image'; element: Element }
+  | { kind: 'summary'; element: Element }
   | { kind: 'label'; element: Element; control: Element };
 
 /**
- * The thing a press lands on: the nearest `<button>`, image button or
- * `<label>` around the element under it. A link inside one is the link's,
- * and a disabled button is pressed by nobody; a label with nothing to label
- * is only text.
+ * The thing a press lands on: the nearest `<button>`, image button,
+ * `<label>` or details' summary around the element under it. A link inside
+ * one is the link's, and a disabled button is pressed by nobody; a label
+ * with nothing to label is only text.
  */
 function pressableAt(ev: X11MouseEvent<DrawnNode>): Pressable | null {
   const target = ev.target as {
@@ -363,6 +420,9 @@ function pressableAt(ev: X11MouseEvent<DrawnNode>): Pressable | null {
       const control = labeledControl(node);
       return control ? { kind: 'label', element: node, control } : null;
     }
+    if (tag === 'summary' && isSummaryOf(node)) {
+      return { kind: 'summary', element: node };
+    }
   }
   return null;
 }
@@ -375,6 +435,7 @@ class WidgetBoxes {
   private _ids = new WeakMap<Element, number>();
   private _next = 0;
   private _boxes = new Map<Element, DrawnNode>();
+  private _elements = new WeakMap<DrawnNode, Element>();
   private _refs = new WeakMap<Element, (node: DrawnNode | null) => void>();
 
   /** `gone` hears of each element whose widget's box unmounted. */
@@ -391,8 +452,10 @@ class WidgetBoxes {
     let ref = this._refs.get(el);
     if (!ref) {
       ref = (node) => {
-        if (node) this._boxes.set(el, node);
-        else if (this._boxes.get(el)) {
+        if (node) {
+          this._boxes.set(el, node);
+          this._elements.set(node, el);
+        } else if (this._boxes.get(el)) {
           this._boxes.delete(el);
           this._gone(el);
         }
@@ -400,6 +463,15 @@ class WidgetBoxes {
       this._refs.set(el, ref);
     }
     return ref;
+  }
+
+  /** The element whose widget's box `node` is, or is inside. */
+  elementOf(node: DrawnNode | null): Element | null {
+    for (let at = node; at; at = at.parent as DrawnNode | null) {
+      const el = this._elements.get(at);
+      if (el) return this._boxes.get(el) === at ? el : null;
+    }
+    return null;
   }
 
   /** Focus `el`'s widget: the first node in its box that takes the focus. */
@@ -703,10 +775,8 @@ function renderControl(
  * is not the document's to set.
  */
 function tabOrder(el: Element): { tabIndex: -1 } | undefined {
-  // the rules for parsing integers (HTML 2.3.4.1): white space, a sign,
-  // digits, and whatever follows them ignored
-  const m = /^[ \t\n\f\r]*([+-]?\d+)/.exec(attr(el, 'tabindex') ?? '');
-  return m && Number(m[1]) < 0 ? { tabIndex: -1 } : undefined;
+  const index = tabIndexOf(el);
+  return index !== null && index < 0 ? { tabIndex: -1 } : undefined;
 }
 
 /** Whether an element is hidden from assistive technology: `aria-hidden`

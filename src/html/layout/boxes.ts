@@ -49,6 +49,7 @@ import {
   inherit,
 } from '../css/style.js';
 import { AUTO } from '../css/values.js';
+import { focusableElement } from '../focus.js';
 import { concreteSize, svgIntrinsics } from '../svg.js';
 import type { IntrinsicSize } from '../svg.js';
 import type { ComputedStyle } from '../css/style.js';
@@ -807,6 +808,10 @@ export interface BoxTree {
   controls: Box[];
   /** Every box carrying an `href`, for click and hover. */
   links: Box[];
+  /** Every box of an element whose markup makes it focusable — a link, a
+   *  control, a summary, a `tabindex` — in document order, controls
+   *  included: the order Tab goes through it in (`focus.ts`). */
+  focusables: Box[];
   /** The style of an anonymous box under a parent's (`anonymousStyles`):
    *  the one the fix-up gave each it made, and what such a box takes when
    *  its parent's style changes where it is (`HtmlViewNode._hoverInPlace`). */
@@ -976,6 +981,7 @@ class Builder {
   private _lastTextStyle: ComputedStyle | null = null;
   private _controls: Box[] = [];
   private _links: Box[] = [];
+  private _focusables: Box[] = [];
   private _backgrounds: Box[] = [];
   private _contentImages: {
     url: string;
@@ -1048,6 +1054,7 @@ class Builder {
       styles: this._styles,
       controls: this._controls,
       links: this._links,
+      focusables: this._focusables,
       backgrounds: this._backgrounds,
       contentImages: this._contentImages,
       relative: this._relative || isRelative(rootStyle),
@@ -1317,6 +1324,7 @@ class Builder {
 
     if (attr(el, 'href') && (tag === 'a' || tag === 'area'))
       this._links.push(box);
+    if (focusableElement(el, tag)) this._focusables.push(box);
 
     // a column's content is not rendered at all (CSS 2.1 17.2.1)
     if (style.display === 'table-column') return;
@@ -1440,6 +1448,7 @@ class Builder {
     const box = new Box('replaced', el, style);
     box.replaced = replaced;
     into.append(box);
+    if (focusableElement(el, tag)) this._focusables.push(box);
     if (namesImages(style)) this._backgrounds.push(box);
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;

@@ -1258,6 +1258,37 @@ position, every relayout that moved a field (a stylesheet landing while
 someone typed) mounted a new widget, and the focus and the caret went with
 the old one.
 
+**What the document draws takes the focus through a box mounted over it.**
+A link, a `<button>`, a summary or a `tabindex` element is a drawing, and
+a drawing takes no focus, so `stops.ts` mounts a **stop** over it — a
+`<box>` with no paint and `pointerEvents: 'none'` — which core focuses as
+any node, scrolls into view and names to an assistive technology; its
+`onFocus` makes the element the document's `:focus` (`setFocus`), as a
+text field's widget does. The pure half — what markup is focusable, where
+Tab goes from a stop, a widget or a pressed point — is `focus.ts`. Four
+things are load-bearing:
+
+- **Only a few stops are mounted** — the first, the last, the one focused
+  and its neighbours — because a box per link is a node core walks on every
+  hit test and paint. So Tab inside the document is the root's `onKeyDown`,
+  in the markup's order, and only running off the end is left to core.
+- **Widgets and stops are mounted in the document's order**, since core's
+  own cycle, which takes Tab into the document and out of it, goes by tree
+  order. The merge is in `index.ts`; the first test in
+  `test/html/focus.test.ts` fails without it.
+- **Nothing it changes may repaint the document.** An unfocused stop is a
+  point (a box of no size damages nothing as it mounts), `watchStops` is in
+  `selfDamagedProps`, and the root's `tabIndex` is guessed from the source
+  so it does not flip after the first render — each of the three was a
+  whole repaint of the document, at load or on every Tab. The stop report
+  runs after every restyle in place, a hover's included, so it compares
+  without allocating. Core claims a scroll pane's whole viewport whenever
+  it scrolls a focused node into view, scrolled or not; that one is core's
+  (react-x11#813).
+- **A focused stop is not the selection's surface.** Core runs Ctrl+A and
+  Ctrl+C on the focused node only, so a stop forwards them to the root's
+  `selectAll()` and `selectedText()`.
+
 Two things it changed elsewhere, both extractions rather than copies:
 
 - **`src/richtext/runs.ts`** is new: the per-run decoration painter and the

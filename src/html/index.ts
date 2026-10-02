@@ -31,6 +31,7 @@ import type { RootLook } from './css/style.js';
 import type { ControlRect } from './controls.js';
 import type { FormSubmission } from './form.js';
 import { useForms } from './widgets.js';
+import { useFocusStops, useFocusableMarkup } from './stops.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
 export {
@@ -349,6 +350,18 @@ export function Html(props: HtmlProps): ReactElement {
     touch: () => setDomRevision((n) => n + 1),
   });
 
+  // The keyboard's way through what the document draws: a box that takes
+  // the focus for each link, button and summary Tab reaches (`stops.ts`).
+  const rootNode = React.useRef<DrawnNode | null>(null);
+  const stops = useFocusStops({
+    view: viewNode,
+    root: rootNode,
+    forms,
+    selectable,
+    onLink,
+  });
+  const mayHaveStops = useFocusableMarkup(source);
+
   const handleDocument = React.useCallback(
     (doc: Document) => {
       documentRef.current = doc;
@@ -380,6 +393,8 @@ export function Html(props: HtmlProps): ReactElement {
     onScript,
     onDocument: handleDocument,
     onControls: handleControls,
+    onFocusStops: stops.onFocusStops,
+    watchStops: stops.watch,
     domRevision,
     animate,
     ref: viewRef as React.Ref<unknown>,
@@ -391,7 +406,24 @@ export function Html(props: HtmlProps): ReactElement {
   const children: ReactNode[] = [
     h(ELEMENT, { key: 'view', ...viewProps } as Record<string, unknown>),
   ];
-  children.push(...forms.render(controls, look));
+  // The widgets and the stops in the document's order, which is the order
+  // core's Tab goes through a subtree in where the document hands it on:
+  // into the document at its first, and out of it after its last.
+  const { widgets, message } = forms.render(controls, look);
+  const boxes = stops.render();
+  let next = 0;
+  controls.forEach((rect, i) => {
+    const order = stops.orderOf(rect.element) ?? -1;
+    while (
+      next < boxes.length &&
+      (stops.orderOf(boxes[next].element) ?? 0) < order
+    ) {
+      children.push(boxes[next++].node);
+    }
+    children.push(widgets[i]);
+  });
+  while (next < boxes.length) children.push(boxes[next++].node);
+  children.push(message);
 
   const rootStyle: Style = { flexDirection: 'column', position: 'relative' };
   return hx(
@@ -405,12 +437,19 @@ export function Html(props: HtmlProps): ReactElement {
       // selection per application. One element answers for every paragraph,
       // so there is nothing per-block to thread through.
       selectable,
+      // Where the document has stops of its own, Tab goes to them and not
+      // to the surface they are on, which a press still focuses for the
+      // selection's keys — and Tab from there goes on from the press.
+      ...(selectable && (stops.hasStops ?? mayHaveStops) && { tabIndex: -1 }),
+      ref: rootNode,
       selectionColor: props.selectionColor,
       ...links,
       onMouseDown: (ev: X11MouseEvent<DrawnNode>) => {
         links.onMouseDown(ev);
         forms.onMouseDown(ev);
+        stops.onMouseDown(ev);
       },
+      onKeyDown: stops.onKeyDown,
       onMouseUp: (ev: X11MouseEvent<DrawnNode>) => {
         links.onMouseUp(ev);
         forms.onMouseUp(ev);

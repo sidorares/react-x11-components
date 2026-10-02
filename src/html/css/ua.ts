@@ -249,17 +249,16 @@ input, select, button, textarea {
   text-indent: initial;
   text-shadow: initial;
 }
-/* Chrome's ring round a control that shows it has the focus, and \`auto\` is
-   the platform's own: the palette's ring here (\`settleOutline\`), round
-   the element's border box, which the document draws — the field's widget
-   draws none, so a page's \`outline: none\`, or a ring of its own, is what
-   shows. Only a text field's widget tells the document it has the focus:
-   the other controls are core's components, which draw their own ring and
-   keep their focus to themselves. */
-input:focus-visible, textarea:focus-visible {
-  outline: auto 1px -webkit-focus-ring-color;
-  outline-offset: 0;
-}
+/* Chrome's ring round whatever shows it has the focus, and \`auto\` is the
+   platform's own: the palette's ring here (\`settleOutline\`), round the
+   element's border box, which the document draws — a link's, a button's, a
+   field's, whose widget draws none — so a page's \`outline: none\`, or a
+   ring of its own, is what shows. A link, a button and a summary have it
+   from the box that takes the focus for them (\`stops.ts\`), and a text
+   field from its widget; the other controls are core's components, which
+   draw their own ring and keep their focus to themselves. */
+:focus-visible { outline: auto 1px -webkit-focus-ring-color; }
+input:focus-visible, textarea:focus-visible { outline-offset: 0; }
 /* Chrome's own margins for the checkables and a range, which sit on their
    border box's bottom edge, the margin under the line */
 input[type=checkbox] { margin: 3px 3px 3px 4px; }

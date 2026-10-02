@@ -899,9 +899,12 @@ metric(
       await userEvent.tab();
       stops.push(focused());
     }
+    // From the field `autofocus` took, which is no stop, Tab goes on from
+    // where it is, as a browser's does; past the last, the window's order
+    // brings it round to the first.
     assert.deepStrictEqual(
       stops,
-      ['first', 'late', 'last', 'first'],
+      ['late', 'last', 'first', 'late'],
       'Tab passes the negative ones, and a positive one stays where it is',
     );
     // `aria-hidden` on the element or around it keeps the widget from an

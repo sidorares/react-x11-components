@@ -36,7 +36,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `baseUrl`         | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.        |
 | `onResource`      | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading. May return a promise. **Absent, nothing loads.**                                  |
 | `onScript`        | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                |
-| `onLink`          | `(href, ev) => void`                             | A link was activated. Absent, clicks do nothing — this never navigates by itself.                                                                                            |
+| `onLink`          | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.          |
 | `onDocument`      | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                   |
 | `onControlChange` | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                    |
 | `onSubmit`        | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                            |
@@ -398,6 +398,72 @@ also written to its `value` attribute, as it always was, for a handler that
 reads it off the element. A checkbox, a radio and a `<select>` do keep what
 they hold in the DOM — `checked` and `selected` — because `:checked` is a
 selector documents really use.
+
+## Focus and the keyboard
+
+**Tab goes through a document as it goes through a page in a browser**: its
+links, its buttons, its summaries, its controls and whatever a `tabindex`
+makes focusable, in the order the markup has them, into the document from
+the window's control before it and out of it to the one after. Shift+Tab
+goes back. A link that is a preview — an `<a>` round an `<img>` — is a stop
+like any other.
+
+What is focusable is HTML's (6.6.3), as Chrome reads it: an `<a>` with an
+`href`, a `<button>`, an `<input>` that is not hidden, a `<select>` and a
+`<textarea>` that are not disabled — in a disabled `<fieldset>` outside its
+first `<legend>` they are — a `<details>`' summary, and any element with a
+`tabindex`. Of those, the ones that are rendered: an element with no box —
+`display: none`, or in a closed `<details>` — is passed, and so is one that
+is `visibility: hidden` or `inert`, or inside one that is. A negative
+`tabindex` keeps an element out of the order and leaves it focusable. A
+positive one is read as zero, as it is on a control's widget: it would put
+a page's element ahead of the application's own, and the order between a
+document and the window around it is not the document's to set.
+
+**The focus is the document's to draw.** The element Tab reaches is
+`:focus` and `:focus-visible`, and every element around it `:focus-within`,
+so a page's focus styles show — the Zen Garden's `a:focus`, a 5px outline
+with its corners rounded, and its previews' lift and glow. Where the page
+says nothing, the UA sheet's `:focus-visible { outline: auto 1px
+-webkit-focus-ring-color }`, Chrome's, draws the palette's ring round the
+element's border box, or round each of a link's fragments. A press does not
+focus a link or a button, which it does in a browser: the press focuses the
+document, whose selection Ctrl+A and Ctrl+C belong to, and a click on a
+link follows it. Tab after a press goes on from where it landed, as from a
+link pressed or from text between links, which is HTML's sequential focus
+navigation starting point (6.6.4). The element focused is scrolled into
+view, by the box around the document that scrolls.
+
+**Enter follows a link, with a click.** A browser activates a link from the
+keyboard with a `click` (HTML 6.5.6), and so does this: `onLink` is handed
+the link's `href` and a `MouseEvent` whose `detail` is 0, with the key's
+modifiers — Ctrl+Enter is Ctrl+click — and its point the middle of the
+link's first fragment, so a handler that asks what is under the click
+(`handle.elementAt(ev.x, ev.y)`, for a `target="_blank"`) finds the link.
+Space is the page's, as it is in a browser, and follows nothing. Enter or
+Space presses a `<button>` — reported through `onControlChange` and then
+doing what it does, as a press with the pointer does — and an image button,
+at its corner. On a summary it opens or closes its details, as a press on
+it does: the `open` attribute is the state, so `details[open]` styles it,
+and what it shows takes its place in the order. Ctrl+A and Ctrl+C reach the
+document's selection from whatever in it has the focus.
+
+**What takes the focus for a drawn element is a box over it.** A form
+control's widget takes the focus itself. A link, a `<button>` or a summary
+is drawn, and a drawing takes no focus — so each is given a box with no
+paint and no hit area, mounted over the element as a widget is, which core
+focuses as it focuses any node: that is what keeps a document's stops in the
+window's focus order rather than in an order of their own, what scrolls one
+into view, and what an assistive technology hears, as a link or a button,
+named by its text, its `aria-label` or the `alt` of its image. A page of
+links has thousands of them, and a box each would be a node core walks on
+every hit test and every paint, so **only a few are mounted**: the
+document's first and last stops, where Tab comes in from either side, and
+the one focused with the ones either side of it. Tab goes from one to the
+next itself, in the markup's order; one it goes to that is not mounted is
+mounted and then focused. Where it runs off the end, the window's own order
+takes it on out of the document. The cost is the accessibility tree's: an
+assistive technology finds the stops that are mounted, not every link.
 
 ## What renders
 
@@ -1639,11 +1705,12 @@ and rules, and the widgets a form control is.
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered
 from this renderer's own pointer state. `:focus`, `:focus-visible` and
-`:focus-within` are answered from which element's widget holds the focus:
-no element of the document takes it itself, a control's widget does,
-beside it, and a text field's says so (see [Forms](#forms)). Nothing else in
-a document is focused, so `:not(:focus)` holds everywhere else, and
-Wikipedia's skip link, hidden with it, stays hidden. `:target` is the
+`:focus-within` are answered from what holds the focus: no element of the
+document takes it itself — a control's widget does, beside it, and a text
+field's says so (see [Forms](#forms)), and a link, a button or a summary
+has a box that takes it for it (see [Focus and the
+keyboard](#focus-and-the-keyboard)) — so Wikipedia's skip link, hidden with
+`:not(:focus)`, shows when Tab reaches it. `:target` is the
 element an SVG image's URL names by its fragment, and none in a document.
 Specificity is Selectors 4's: `:where()` counts nothing, `:is()`, `:not()`
 and `:has()` count the most specific selector in their list, and
@@ -1822,8 +1889,8 @@ its ring, in a browser as in core), and every element around it
 github.com's login field takes Primer's accent border and inset shadow,
 where it kept its grey border. The field's ring is its element's
 `outline`, which the document draws round the border box — the UA sheet's
-`input:focus-visible, textarea:focus-visible { outline: auto 1px
--webkit-focus-ring-color }`, Chrome's, which is the palette's ring — and
+`:focus-visible { outline: auto 1px -webkit-focus-ring-color }`, Chrome's,
+which is the palette's ring — and
 the widget draws none of its own, so a page's `outline: none` takes it
 away and a ring of the page's own takes its place. Core's ring, round a
 widget that is only the content box of a field the page drew, stood inside
@@ -1832,7 +1899,7 @@ its ring is too. A caret in a field the page drew is the page's text
 colour, as `caret-color: auto` is in a browser; `caret-color` itself is
 not read. The other controls are core's components, which keep their focus
 to themselves and draw their own ring: a `<select>`, a checkbox, a radio or
-a submit button is never `:focus`. Focus moving restyles what it reaches
+an `<input type=submit>` is never `:focus`. Focus moving restyles what it reaches
 where it is, as a hover does ([Performance](#performance)) — a click into a search field is no
 restyle of the article around it.
 
@@ -1871,7 +1938,9 @@ its own alignment puts it. A
 press on it is reported through
 `onControlChange`, with its `value`, as a widget's is, and then does what
 the button does — submits its form, resets it, or nothing for
-`type=button`; it takes no focus of its own. Its text, like every control's,
+`type=button`. It takes the focus from the keyboard as a link does, and
+Enter or Space presses it (see [Focus and the
+keyboard](#focus-and-the-keyboard)). Its text, like every control's,
 keeps none of the letter and word spacing, the line height, the case, the
 indent or the shadow of the text around it, as HTML's rendering section has
 it: a button in a body of `line-height: 1.5` is its own font's line tall.
