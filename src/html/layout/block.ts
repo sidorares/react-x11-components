@@ -90,6 +90,7 @@ import { collapseEdges } from './collapse.js';
 import {
   clipsFor,
   computePaintBounds,
+  DOCUMENT_FLOW,
   FIXED_BOXES,
   fixedToViewport,
   hoistNegative,
@@ -202,38 +203,33 @@ export function layoutDocument(
     clipText: tree.clipText,
   };
   const root = tree.root;
-  root.x = 0;
-  root.y = 0;
-  root.width = viewportWidth;
-  // The root box stands in for `<body>` when the document has none (see
-  // `Cascade.rootStyle`), so it may carry a margin — and a margin on the
-  // initial containing block has nothing to sit inside. Folded into the
-  // padding at the sides and the bottom, which keeps `contentX` the one
-  // thing layout reads. Not at the top: a body's top margin collapses with
-  // its first block's, `<html>` being the formatting context's root and
-  // `<body>` not, so it is handed to the flow as the margin already pending
-  // there — or `<p>hi</p>` would stand 8px lower than the same paragraph in
-  // `<body>`. Where it stands in for the `<html>` implied around a
-  // `<body>`, it is the root element, whose margins collapse with nothing
-  // (CSS 2.1 8.3.1), and its top margin is folded like the rest: handed to
-  // the flow, it collapsed with the body's.
+  // The root box is the initial containing block, and where the markup
+  // writes no element for it, it stands in for one too (`Cascade.rootStyle`):
+  // a fragment's `<body>`, or the `<html>` implied around a `<body>`. It is
+  // laid out where that element is, inside its margins, so a border on it is
+  // drawn where the margins leave it, and not at the window's edge; what
+  // takes the initial containing block for its own — a box positioned
+  // against it, the canvas — takes the viewport (`containingRect`,
+  // `DOCUMENT_FLOW`). A body is a block in the formatting context of the
+  // `<html>` around it, which has no edges of its own here, so its top
+  // margin collapses with its first block's where nothing parts them, and
+  // the box starts where that margin ends, as a body in an `<html>` does.
+  // The root element's margins collapse with nothing (CSS 2.1 8.3.1).
   resolveEdges(root, viewportWidth);
+  const body = tree.impliedHtml !== null;
+  if (body) STANDS_FOR_BODY.add(root);
   const own = standInHeight(tree, viewportHeight);
-  const top = root.marginTop;
-  const leading = tree.impliedRoot ? 0 : top;
-  const trailing = root.marginBottom;
-  root.padTop += top - leading;
-  root.padRight += root.marginRight;
-  root.padBottom += root.marginBottom;
-  root.padLeft += root.marginLeft;
-  root.marginTop = 0;
-  root.marginRight = 0;
-  root.marginBottom = 0;
-  root.marginLeft = 0;
   if (own) handPercentBase(root, own.inner);
-
-  const contentWidth = Math.max(0, viewportWidth - root.horizontalExtra);
+  root.x = root.marginLeft;
+  root.width = Math.max(
+    root.horizontalExtra,
+    viewportWidth - root.marginLeft - root.marginRight,
+  );
+  const contentWidth = root.contentWidth;
   const floats = new FloatContext(root.contentX, root.contentX + contentWidth);
+  root.y = body
+    ? marginOf(collapsedTopMargin(root, viewportWidth, floats))
+    : root.marginTop;
   // the initial containing block is the viewport's size, which a percentage
   // height on the root element resolves against (CSS 2.1 10.1, 10.5); a
   // fragment has no root element, and the box standing in for its body has
@@ -245,19 +241,24 @@ export function layoutDocument(
     child.percentHeightBase = viewportHeight;
     if (readsPercentHeight(child.style)) readsViewportHeight = true;
   }
-  const flow = layoutChildren(
-    root,
-    ctx,
-    floats,
-    root.contentY,
-    contentWidth,
-    leading,
-  );
-  const floatBottom =
-    floats.bottom === -Infinity ? 0 : floats.bottom - root.contentY;
+  const flow = layoutChildren(root, ctx, floats, root.contentY, contentWidth);
+  // A formatting context holds its floats and the margins of its last
+  // blocks: the initial containing block, the root element. A body does
+  // not: its floats hang out of it into the `<html>` around it, which
+  // holds them, and its last blocks' margins collapse with its own below
+  // it, as they do out of any block.
+  const floatBottom = floats.bottom === -Infinity ? -Infinity : floats.bottom;
+  const contains = establishesBFC(root);
   root.height = own
-    ? top + own.outer + trailing
-    : Math.max(flow.height, floatBottom) + root.verticalExtra;
+    ? own.outer
+    : (contains
+        ? Math.max(flow.height, floatBottom - root.contentY)
+        : flow.height) + root.verticalExtra;
+  const flowBottom = Math.max(
+    root.y + root.height + marginOf(join(flow.hanging, root.marginBottom)),
+    floatBottom,
+  );
+  DOCUMENT_FLOW.set(tree, { width: viewportWidth, height: flowBottom });
 
   // Positioned boxes last, and in the order they were found, so a later one
   // can be positioned against an earlier one's resolved rectangle.
@@ -283,7 +284,7 @@ export function layoutDocument(
   // way to it clips it (CSS Overflow 3, 2.2): an absolute box 900px down
   // an `overflow: hidden` card made a page a browser shows 400px tall run
   // on to 980, blank
-  let bottom = Math.max(root.height, reach);
+  let bottom = Math.max(flowBottom, reach);
   let fixed: Box[] | null = null;
   for (const { box } of ctx.positioned) {
     if (box.style.position === 'fixed') {
@@ -319,7 +320,7 @@ export function layoutDocument(
  * holds takes its percentages of; `viewport` where the answer read the
  * viewport's height. Null where the document has an `<html>` of its own,
  * and where the height is `auto`, and the box is as tall as what is in
- * it. Measured before its margins are folded into its padding.
+ * it.
  */
 function standInHeight(
   tree: BoxTree,
@@ -4110,7 +4111,18 @@ interface CbRect {
 function containingRect(containing: Box, ctx: LayoutContext): CbRect {
   // a layout that reads the viewport's height lays out differently in
   // another (`LayoutResult.readsViewportHeight`)
-  if (!containing.parent) ctx.readViewportHeight = true;
+  // The root box's is the initial containing block, the viewport at the
+  // document's top (CSS 2.1 10.1): not the box of the element the root box
+  // stands in for, inside its margins and its border (`layoutDocument`)
+  if (!containing.parent) {
+    ctx.readViewportHeight = true;
+    return {
+      x: 0,
+      y: 0,
+      width: ctx.viewportWidth,
+      height: ctx.viewportHeight,
+    };
+  }
   return {
     x: containing.x + containing.borderLeft,
     y: containing.y + containing.captionTop + containing.borderTop,
@@ -4118,16 +4130,14 @@ function containingRect(containing: Box, ctx: LayoutContext): CbRect {
       0,
       containing.width - containing.borderLeft - containing.borderRight,
     ),
-    height: !containing.parent
-      ? ctx.viewportHeight
-      : Math.max(
-          0,
-          containing.height -
-            containing.captionTop -
-            containing.captionBottom -
-            containing.borderTop -
-            containing.borderBottom,
-        ),
+    height: Math.max(
+      0,
+      containing.height -
+        containing.captionTop -
+        containing.captionBottom -
+        containing.borderTop -
+        containing.borderBottom,
+    ),
   };
 }
 
@@ -4694,8 +4704,16 @@ export function establishesBFC(box: Box): boolean {
   // a button's content is in a formatting context of its own, the
   // anonymous button content box's (HTML 15.5.5), whatever its `display`
   if (isButtonBlock(box)) return true;
-  return box.parent === null;
+  // and the initial containing block, the root box — but not where it
+  // stands in for a fragment's body, which is a block in the `<html>`
+  // implied around it (`layoutDocument`)
+  return box.parent === null && !STANDS_FOR_BODY.has(box);
 }
+
+/** The root boxes that stand in for a fragment's `<body>` (`BoxTree.impliedHtml`):
+ *  blocks in the formatting context of the `<html>` around them, which has no
+ *  box, rather than its root. Marked as each is laid out. */
+const STANDS_FOR_BODY = new WeakSet<Box>();
 
 /** What a box's `position: relative` offset moves it by, applied after
  *  layout so it does not affect anything else's position — which is the

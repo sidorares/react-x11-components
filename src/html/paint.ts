@@ -768,13 +768,13 @@ export function paintDocument(
     // opaque, in the `Canvas` colour of its own (CSS Color Adjust 1, 2.2):
     // a page that says it is light, and sets its text dark on no
     // background, is not read against a dark window.
-    const area = canvasArea(tree.root, options);
+    const area = canvasArea(tree, options);
     if (area) {
       ctx.fillStyle = SCHEME_COLORS[scheme].canvas;
       ctx.fillRect(area.x, area.y, area.w, area.h);
     }
   }
-  if (canvas) paintCanvas(ctx, canvas, tree.root, options);
+  if (canvas) paintCanvas(ctx, canvas, tree, options);
   paintBox(ctx, tree.root, {
     ...options,
     canvasSource: canvas?.source,
@@ -791,7 +791,7 @@ export function paintDocument(
 interface CanvasBackground {
   style: ComputedStyle;
   source: Box | null;
-  anchor: Box;
+  anchor: Frame;
 }
 
 /**
@@ -804,7 +804,9 @@ interface CanvasBackground {
  * around it is implied: an `html { … }` or a `:root { … }` background, which
  * a test's reference sets on a document with no tags at all, has no box
  * but the canvas to be painted on. `anchor` is the box the image is
- * positioned against: the root element's, whichever box it came from.
+ * positioned against: the root element's, whichever box it came from —
+ * there, the implied `<html>`'s, which no box is laid out for
+ * (`impliedFrame`).
  */
 function canvasBackground(tree: BoxTree): CanvasBackground | null {
   const root = tree.root;
@@ -817,11 +819,13 @@ function canvasBackground(tree: BoxTree): CanvasBackground | null {
   if (implied) {
     // an `<html>` that is not displayed has no background to give
     if (implied.display === 'none') return null;
-    if (has(implied)) return { style: implied, source: null, anchor: root };
+    if (has(implied)) {
+      return { style: implied, source: null, anchor: impliedFrame(tree) };
+    }
     // containment on either keeps the body's to the body (CSS Containment 2)
     if (implied.contain || root.style.contain) return null;
     return has(root.style)
-      ? { style: root.style, source: root, anchor: root }
+      ? { style: root.style, source: root, anchor: impliedFrame(tree) }
       : null;
   }
   const top = childNamed(root, 'html') ?? root;
@@ -840,17 +844,44 @@ function rootScheme(tree: BoxTree): 'light' | 'dark' {
   return (childNamed(tree.root, 'html') ?? tree.root).style.colorScheme;
 }
 
+/**
+ * The box of the `<html>` a fragment's body is implied in, which the
+ * layout makes none for: it has no edges here, so it is the initial
+ * containing block as far down as the body's margin box and its floats
+ * reach (`DOCUMENT_FLOW`). Not the root box, which is the body's, inside
+ * its margins.
+ */
+function impliedFrame(tree: BoxTree): Frame {
+  const root = tree.root;
+  const flow = DOCUMENT_FLOW.get(tree) ?? root;
+  return {
+    x: 0,
+    y: 0,
+    width: flow.width,
+    height: flow.height,
+    captionTop: 0,
+    captionBottom: 0,
+    borderTop: 0,
+    borderRight: 0,
+    borderBottom: 0,
+    borderLeft: 0,
+    style: tree.impliedHtml ?? root.style,
+  };
+}
+
 /** The canvas, cut to what is being painted: the whole element where the
- *  host says what that is, and else the root box. */
+ *  host says what that is, and else the initial containing block as far
+ *  down as the document's flow reaches (`DOCUMENT_FLOW`). */
 function canvasArea(
-  root: Box,
+  tree: BoxTree,
   options: PaintOptions,
 ): { x: number; y: number; w: number; h: number } | null {
+  const flow = DOCUMENT_FLOW.get(tree) ?? tree.root;
   const whole = options.canvas ?? {
-    x: root.x + options.originX,
-    y: root.y + options.originY,
-    width: root.width,
-    height: root.height,
+    x: options.originX,
+    y: options.originY,
+    width: flow.width,
+    height: flow.height,
   };
   return clampRect(
     options,
@@ -878,10 +909,10 @@ function childNamed(box: Box, name: string): Box | null {
 function paintCanvas(
   ctx: PaintContext,
   { style: source, anchor }: CanvasBackground,
-  root: Box,
+  tree: BoxTree,
   options: PaintOptions,
 ): void {
-  const area = canvasArea(root, options);
+  const area = canvasArea(tree, options);
   if (!area) return;
   const layers = layersOf(source) ?? [source];
   const visible = source.visibility === 'visible';
@@ -3335,15 +3366,14 @@ function atViewport(box: Box, options: PaintOptions): PaintOptions {
   if (!viewport || options.atViewport || !fixedToViewport(box)) {
     return options;
   }
-  // where the document's top left is from the viewport's, less where the
-  // viewport is in the document: the scroll
-  const root = rootOf(box);
-  const dx = viewport.x - options.originX - root.x;
-  const dy = viewport.y - options.originY - root.y;
+  // the document's top left, the initial containing block's, which the
+  // box was laid out against, drawn at the viewport's: the scroll undone.
+  // Not the root box's, which is inside the margins of the element it
+  // stands in for (`layoutDocument`)
   return {
     ...options,
-    originX: options.originX + dx,
-    originY: options.originY + dy,
+    originX: viewport.x,
+    originY: viewport.y,
     atViewport: true,
   };
 }
@@ -3352,6 +3382,17 @@ function atViewport(box: Box, options: PaintOptions): PaintOptions {
  *  as the layout positions them: what the element answers a scroll pane's
  *  blit with (`HtmlViewNode.viewportFixedRects`). */
 export const FIXED_BOXES = new WeakMap<object, Box[]>();
+
+/** Per tree, the initial containing block as far down as the document's
+ *  flow reaches, the root element's margin box and the floats in it: the
+ *  canvas, where the host gives it no size (`canvasArea`), and the box of
+ *  the `<html>` implied around a fragment's body, which places the
+ *  canvas's image (`canvasBackground`). The root box is inside its margins
+ *  (`layoutDocument`), so neither is the root box. Set by the layout. */
+export const DOCUMENT_FLOW = new WeakMap<
+  object,
+  { width: number; height: number }
+>();
 
 /** Whether a box is fixed to the viewport: `position: fixed` with no
  *  transformed or contained box around it, which would be its containing
@@ -3370,12 +3411,6 @@ function holdsFixed(box: Box): boolean {
   return (
     transformed(box.style) || contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)
   );
-}
-
-function rootOf(box: Box): Box {
-  let root = box;
-  while (root.parent) root = root.parent;
-  return root;
 }
 
 /**
