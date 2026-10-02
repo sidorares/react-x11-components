@@ -2236,6 +2236,8 @@ export class Cascade {
     settleOverflow(style);
     settleOutline(style, this.look, this.scale);
     settleContentVisibility(style);
+    // after the containment, which keeps a body's `overflow` its own
+    if (own && el.name.length === 4) propagateOverflow(el, style, parentStyle);
     blockify(style, inFlexContainer);
     // a button is laid out as one, whatever `display` it was given
     if (own && el.name.length === 6 && tagOf(el) === 'button') {
@@ -3599,4 +3601,71 @@ const ABSOLUTE_SIZES = new Set([
  *  none, as the `<html>` the cascade supplies where the markup has none. */
 function isRootElement(el: Element): boolean {
   return !el.parent || el.parent.type === 'root';
+}
+
+/** The styles of root elements whose `overflow` went to the viewport other
+ *  than `visible` (`propagateOverflow`). */
+const VIEWPORT_OVERFLOW = new WeakSet<ComputedStyle>();
+
+/**
+ * The root element's `overflow` is the viewport's, and so is the first
+ * `<body>`'s where the root's is `visible` — and the element it went to the
+ * viewport from has a used `overflow` of `visible` (CSS Overflow 3, 3.3).
+ * The viewport here is the element, as tall as the document, which a host
+ * scrolls. Kept on the `<html>`, bun.sh's `html { height: 100%;
+ * overflow-y: scroll }` made it a box a window tall that held the page in
+ * it, and the document came out a window tall, with everything below cut
+ * off; kept on a `<body>`, an `overflow: hidden` made it a formatting
+ * context, which a first child's margin did not collapse through and which
+ * grew to hold a float. Containment on either element keeps the body's to
+ * the body (CSS Containment 2, 3), and a body that makes no box has none to
+ * give.
+ *
+ * The root's is `visible` afterwards whatever it was, so whether it went
+ * is kept beside its style (`VIEWPORT_OVERFLOW`): the body's goes only
+ * where the root's did not.
+ */
+function propagateOverflow(
+  el: Element,
+  style: ComputedStyle,
+  parentStyle: ComputedStyle,
+): void {
+  const tag = tagOf(el);
+  if (tag === 'html') {
+    if (!isRootElement(el)) return;
+    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+      VIEWPORT_OVERFLOW.add(style);
+    }
+  } else if (tag === 'body') {
+    // the root `<html>`'s, or one written with none, in the `<html>` the
+    // cascade supplies
+    const parent = el.parent;
+    if (
+      parent &&
+      parent.type !== 'root' &&
+      !(
+        isRootElement(parent as Element) &&
+        tagOf(parent) === 'html' &&
+        firstBody(parent as Element) === el
+      )
+    ) {
+      return;
+    }
+    if (VIEWPORT_OVERFLOW.has(parentStyle)) return;
+    if (style.contain || parentStyle.contain) return;
+    if (style.display === 'none' || style.display === 'contents') return;
+  } else {
+    return;
+  }
+  style.overflowX = 'visible';
+  style.overflowY = 'visible';
+}
+
+function firstBody(html: Element): Element | null {
+  for (const child of html.children) {
+    if (child.type === 'tag' && tagOf(child) === 'body') {
+      return child as Element;
+    }
+  }
+  return null;
 }

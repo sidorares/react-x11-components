@@ -82,6 +82,81 @@ test("html and body at 100% follow the viewport's height", async () => {
   assert.strictEqual(el.abs.height, 450);
 });
 
+/** A page with an `<html>` and a `<body>` of its own, under `css`. */
+const page = (css: string, body: string): string =>
+  `<html><head><style>${css}</style></head>` +
+  `<body id="body">${body}</body></html>`;
+
+test("the root's overflow is the viewport's, and the document holds all of the page", async () => {
+  // CSS Overflow 3, 3.3: the root element's `overflow` goes to the
+  // viewport, and the root's own is `visible`. bun.sh's sheet makes its
+  // `<html>` a window tall and scrolls it; taken as the root's own, the
+  // page was held inside a box a window tall, and the document ended at
+  // the window with the footer below it
+  const content =
+    '<div style="height:600px"></div>' +
+    '<div id="b" style="height:100px"></div>';
+  const { el } = await renderScrolled(
+    page(
+      'html{height:100%;overflow-y:scroll;overflow-x:hidden}' +
+        'body{margin:0;min-height:100%}',
+      content,
+    ),
+    300,
+  );
+  assert.strictEqual(el.abs.height, 700, 'as tall as its content');
+  const b = boxOf(el, 'b');
+  assert.strictEqual(b.y + b.height, 700);
+});
+
+test("the body's overflow is the viewport's where the root's is visible", async () => {
+  // and the body's own is `visible`: it clips nothing, and is no
+  // formatting context of its own
+  const hidden = 'body{margin:0;overflow:hidden}';
+  const { el } = await renderScrolled(
+    page(
+      `html{height:100%}${hidden}body{height:100%}`,
+      '<div style="height:600px"></div><div style="height:100px"></div>',
+    ),
+    300,
+  );
+  assert.strictEqual(el.abs.height, 700, 'the body does not cut it off');
+  // a first child's margin collapses through it, and comes out above it
+  const margin = await renderScrolled(
+    page(hidden, '<div style="margin-top:50px;height:20px"></div>'),
+    300,
+  );
+  assert.strictEqual(boxOf(margin.el, 'body').y, 50);
+  assert.strictEqual(boxOf(margin.el, 'body').height, 20);
+  // and a float is not its to hold
+  const floats = await renderScrolled(
+    page(hidden, '<div style="float:left;width:10px;height:100px"></div>'),
+    300,
+  );
+  assert.strictEqual(boxOf(floats.el, 'body').height, 0);
+});
+
+test('the body keeps its overflow where the root gives the viewport its own, or either is contained', async () => {
+  // then it clips what it holds, and the document is as tall as the
+  // viewport it fills
+  const tall = '<div style="height:600px"></div>';
+  for (const css of [
+    'html{height:100%;overflow:hidden}body{margin:0;height:100%;overflow:hidden}',
+    'html{height:100%}body{margin:0;height:100%;overflow:hidden;contain:paint}',
+    'html{height:100%;contain:layout}body{margin:0;height:100%;overflow:auto}',
+  ]) {
+    const { el } = await renderScrolled(page(css, tall), 300);
+    assert.strictEqual(el.abs.height, 300, css);
+  }
+  // and paint containment on the root clips as `overflow: clip` would, as
+  // Chrome has it: the document ends where the root does
+  const { el } = await renderScrolled(
+    page('html{height:100px;contain:paint}body{margin:0}', tall),
+    300,
+  );
+  assert.strictEqual(el.abs.height, 100, 'cut at the root');
+});
+
 metric(
   'a fixed box is drawn where the viewport is, however far the pane has scrolled the document',
   async () => {
