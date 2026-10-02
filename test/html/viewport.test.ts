@@ -5,6 +5,7 @@ import React from 'react';
 import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
+import type { HtmlViewNode } from '../../src/html/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import {
   FONTS,
@@ -14,6 +15,7 @@ import {
   metric,
   render,
   renderScrolled,
+  treeOf,
   view,
 } from './harness.js';
 import type { Fill, LaidBox, PaintOp } from './harness.js';
@@ -438,6 +440,168 @@ test('the element the root box stands in for is as wide as its width and margins
     const q = boxOf(el, 'p');
     assert.deepStrictEqual([q.x, q.width], p, `${css}: the paragraph`);
   }
+});
+
+test('the element the root box stands in for is as tall as its min-height and max-height let it be', async () => {
+  // Where the markup writes no element for it, the root box stands in for
+  // one — the `<html>` implied around a `<body>`, or a fragment's body —
+  // and an `auto` height on it is what it holds, within its limits (CSS
+  // 2.1 10.7). Only a height it set was read, and the limits on none:
+  // `html { min-height: 100% }` was as tall as the page, and a fragment's
+  // `body { min-height: 200px }` the height of its one block. Each case
+  // has Chrome's boxes at 200 × 120 — the implied `<html>`'s where the
+  // root box is that, and the body's — which the same page written with
+  // an `<html>` gives as well, and the document's height: the bottom of
+  // what overflows, or of the `<html>`'s margin, where Chrome's scroll
+  // height is the viewport's at least.
+  const written = (css: string, body: string): string =>
+    `<!DOCTYPE html><html id="html"><head><title>t</title>` +
+    `<style>${css}</style></head><body id="body">${body}</body></html>`;
+  const fragment = (css: string, body: string): string =>
+    `<!DOCTYPE html><style>${css}</style>${body}`;
+  const div = (style: string): string => `<div style="${style}"></div>`;
+  const rect = (box: LaidBox): number[] => [
+    box.x,
+    box.y,
+    box.width,
+    box.height,
+  ];
+  const rootOf = (el: HtmlViewNode): LaidBox =>
+    (treeOf(el) as { root: LaidBox }).root;
+  /** How the page is written, its style and body; the implied `<html>`'s
+   *  box, the body's, the document's height. */
+  const cases: [
+    typeof bare,
+    string,
+    string,
+    number[] | null,
+    number[],
+    number | null,
+  ][] = [
+    // the root element at least the viewport tall, its border outside it
+    [
+      bare,
+      'html{min-height:100%;border:2px solid red}body{margin:10px}',
+      div('height:10px'),
+      [0, 0, 200, 124],
+      [12, 12, 176, 10],
+      124,
+    ],
+    // and at most 50px, what it holds running on out of it
+    [
+      bare,
+      'html{max-height:50px;border:2px solid red}body{margin:10px}',
+      div('height:200px'),
+      [0, 0, 200, 54],
+      [12, 12, 176, 200],
+      212,
+    ],
+    // inside its margins
+    [
+      bare,
+      'html{min-height:80px;margin:5px;padding:3px}body{margin:10px}',
+      div('height:10px'),
+      [5, 5, 190, 86],
+      [18, 18, 164, 10],
+      96,
+    ],
+    // a fragment's body: the minimum sets its height, and parts the last
+    // block's bottom margin from its own, as it does a block's in the flow
+    [
+      fragment,
+      'body{margin:20px;min-height:200px}',
+      div('height:10px;margin:16px 0 50px'),
+      null,
+      [20, 20, 160, 200],
+      240,
+    ],
+    // where the minimum is not what sets it, the margin collapses through
+    [
+      fragment,
+      'body{margin:20px;min-height:30px}',
+      div('height:10px;margin-bottom:50px') +
+        div('height:40px;margin-bottom:50px'),
+      null,
+      [20, 20, 160, 100],
+      170,
+    ],
+    [
+      fragment,
+      'body{margin:20px;min-height:100vh}',
+      div('height:10px'),
+      null,
+      [20, 20, 160, 120],
+      160,
+    ],
+    [
+      fragment,
+      'body{margin:20px;max-height:30px}',
+      div('height:200px'),
+      null,
+      [20, 20, 160, 30],
+      220,
+    ],
+    // a percentage of the `<html>` around it, where that has a height —
+    // which, with no box of its own here, adds nothing to the document's
+    [
+      fragment,
+      'html{height:100%}body{margin:20px;min-height:50%}',
+      div('height:10px'),
+      null,
+      [20, 20, 160, 60],
+      null,
+    ],
+    [
+      fragment,
+      'html{height:100px}body{margin:20px;max-height:50%;border:1px solid red}',
+      div('height:200px'),
+      null,
+      [20, 20, 160, 52],
+      221,
+    ],
+    // and of none where it has only a minimum
+    [
+      fragment,
+      'html{min-height:100%}body{margin:20px;min-height:100%}',
+      div('height:10px'),
+      null,
+      [20, 20, 160, 10],
+      null,
+    ],
+  ];
+  for (const [page, css, inner, html, body, height] of cases) {
+    const ours = await renderScrolled(page(css, inner), 120, 200);
+    const theirs = await renderScrolled(written(css, inner), 120, 200);
+    const own = page === fragment ? rootOf(ours.el) : boxOf(ours.el, 'body');
+    assert.deepStrictEqual(rect(own), body, `${css}: the body`);
+    assert.deepStrictEqual(
+      rect(boxOf(theirs.el, 'body')),
+      body,
+      `${css}: the body written in an <html>`,
+    );
+    if (html) {
+      assert.deepStrictEqual(rect(rootOf(ours.el)), html, `${css}: the html`);
+      assert.deepStrictEqual(
+        rect(boxOf(theirs.el, 'html')),
+        html,
+        `${css}: the html written`,
+      );
+    }
+    if (height !== null) {
+      assert.strictEqual(ours.el.abs.height, height, `${css}: the document`);
+      assert.strictEqual(theirs.el.abs.height, height, `${css}: written`);
+    }
+  }
+  // and a minimum of the viewport follows it
+  const { el, resize } = await renderScrolled(
+    bare('html{min-height:100%}body{margin:0}', div('height:10px')),
+    120,
+    200,
+  );
+  assert.strictEqual(rootOf(el).height, 120);
+  await resize(200);
+  assert.strictEqual(rootOf(el).height, 200, 'and follows it');
+  assert.strictEqual(el.abs.height, 200);
 });
 
 metric(

@@ -219,7 +219,7 @@ export function layoutDocument(
   const body = tree.impliedHtml !== null;
   if (body) STANDS_FOR_BODY.add(root);
   const own = standInHeight(tree, viewportHeight);
-  if (own) handPercentBase(root, own.inner);
+  if (own !== null && own.outer !== null) handPercentBase(root, own.inner);
   if (body || tree.impliedRoot) {
     // and is as wide as that element is, a block in a containing block the
     // viewport wide — the `<html>` implied around a body, with no edges
@@ -249,7 +249,7 @@ export function layoutDocument(
   // height on the root element resolves against (CSS 2.1 10.1, 10.5); a
   // fragment has no root element, and the box standing in for its body has
   // the body's `auto` height to give, and a root box standing in for the
-  // root element took its height of the viewport above
+  // root element took its height, or a limit on it, of the viewport above
   let readsViewportHeight = own?.viewport === true;
   for (const child of root.children) {
     if (child.el?.name !== 'html') continue;
@@ -264,11 +264,17 @@ export function layoutDocument(
   // it, as they do out of any block.
   const floatBottom = floats.bottom === -Infinity ? -Infinity : floats.bottom;
   const contains = establishesBFC(root);
-  root.height = own
-    ? own.outer
-    : (contains
-        ? Math.max(flow.height, floatBottom - root.contentY)
-        : flow.height) + root.verticalExtra;
+  const grown =
+    (contains
+      ? Math.max(flow.height, floatBottom - root.contentY)
+      : flow.height) + root.verticalExtra;
+  // An element the root box stands in for is as tall as what it holds
+  // where its height is `auto`, within its `min-height` and `max-height`
+  // (CSS 2.1 10.7), as one written in the markup is: `html { min-height:
+  // 100% }` is a window tall however little the page holds. A minimum
+  // that sets the height has parted the last block's bottom margin from
+  // the body's (`layoutChildren`), which reads the same limits.
+  root.height = own === null ? grown : (own.outer ?? clampHeight(root, grown));
   const flowBottom = Math.max(
     root.y + root.height + marginOf(join(flow.hanging, root.marginBottom)),
     floatBottom,
@@ -324,23 +330,27 @@ export function layoutDocument(
 
 /**
  * How tall the element the root box stands in for says it is, where that
- * is definite (CSS 2.1 10.5). A fragment's root box stands in for its
- * body: a length, `100vh` among them, or a percentage of the `<html>`
- * implied around it where that has a height of its own — a length, or a
- * percentage of the viewport, as `html, body { height: 100% }` fills a
- * window. A document with a `<body>` and no `<html>` has it standing in
- * for the `<html>` implied around the body, which is the root element:
- * its percentages are of the viewport (10.1), as an `<html>` written in
- * the markup has them. Its border box, and its content box, which what it
- * holds takes its percentages of; `viewport` where the answer read the
- * viewport's height. Null where the document has an `<html>` of its own,
- * and where the height is `auto`, and the box is as tall as what is in
- * it.
+ * is definite (CSS 2.1 10.5), and what its percentages are of. A
+ * fragment's root box stands in for its body: a length, `100vh` among
+ * them, or a percentage of the `<html>` implied around it where that has a
+ * height of its own — a length, or a percentage of the viewport, as
+ * `html, body { height: 100% }` fills a window. A document with a `<body>`
+ * and no `<html>` has it standing in for the `<html>` implied around the
+ * body, which is the root element: its percentages are of the viewport
+ * (10.1), as an `<html>` written in the markup has them. The base is the
+ * root box's own, which its `min-height` and `max-height` resolve
+ * against as well, whether or not its height is set.
+ *
+ * Its border box, and its content box, which what it holds takes its
+ * percentages of — null and NaN where the height is `auto`, and the box
+ * is as tall as what is in it, within its limits; `viewport` where any of
+ * it read the viewport's height. Null where the document has an `<html>`
+ * of its own, and the root box is the initial containing block alone.
  */
 function standInHeight(
   tree: BoxTree,
   viewportHeight: number,
-): { outer: number; inner: number; viewport: boolean } | null {
+): { outer: number | null; inner: number; viewport: boolean } | null {
   const html = tree.impliedHtml;
   if (!html && !tree.impliedRoot) return null;
   const root = tree.root;
@@ -348,19 +358,16 @@ function standInHeight(
   const base = html
     ? resolveOrNull(html.height, viewportHeight)
     : viewportHeight;
-  const set = resolveOrNull(style.height, base ?? NaN);
-  if (set === null) return null;
   root.percentHeightBase = base ?? NaN;
+  const viewport = readsPercentHeight(style) && (!html || isPct(html.height));
+  const set = resolveOrNull(style.height, root.percentHeightBase);
+  if (set === null) return { outer: null, inner: NaN, viewport };
   const extra = root.verticalExtra;
   const outer = clampHeight(
     root,
     style.boxSizing === 'border-box' ? Math.max(set, extra) : set + extra,
   );
-  return {
-    outer,
-    inner: Math.max(0, outer - extra),
-    viewport: readsPercentHeight(style) && (!html || isPct(html.height)),
-  };
+  return { outer, inner: Math.max(0, outer - extra), viewport };
 }
 
 /** Whether a box's height, or a limit on it, is a percentage. */
