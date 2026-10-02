@@ -215,7 +215,7 @@ export function layoutDocument(
   // there — or `<p>hi</p>` would stand 8px lower than the same paragraph in
   // `<body>`.
   resolveEdges(root, viewportWidth);
-  const body = fragmentBodyHeight(tree, viewportHeight);
+  const own = standInHeight(tree, viewportHeight);
   const leading = root.marginTop;
   const trailing = root.marginBottom;
   root.padRight += root.marginRight;
@@ -225,26 +225,20 @@ export function layoutDocument(
   root.marginRight = 0;
   root.marginBottom = 0;
   root.marginLeft = 0;
-  if (body) handPercentBase(root, body.inner);
+  if (own) handPercentBase(root, own.inner);
 
   const contentWidth = Math.max(0, viewportWidth - root.horizontalExtra);
   const floats = new FloatContext(root.contentX, root.contentX + contentWidth);
   // the initial containing block is the viewport's size, which a percentage
   // height on the root element resolves against (CSS 2.1 10.1, 10.5); a
   // fragment has no root element, and the box standing in for its body has
-  // the body's `auto` height to give
-  let readsViewportHeight = body?.viewport === true;
+  // the body's `auto` height to give, and a root box standing in for the
+  // root element took its height of the viewport above
+  let readsViewportHeight = own?.viewport === true;
   for (const child of root.children) {
     if (child.el?.name !== 'html') continue;
     child.percentHeightBase = viewportHeight;
-    const { height, minHeight, maxHeight } = child.style;
-    if (
-      isPct(height) ||
-      isPct(minHeight) ||
-      (maxHeight !== 'none' && isPct(maxHeight))
-    ) {
-      readsViewportHeight = true;
-    }
+    if (readsPercentHeight(child.style)) readsViewportHeight = true;
   }
   const flow = layoutChildren(
     root,
@@ -256,8 +250,8 @@ export function layoutDocument(
   );
   const floatBottom =
     floats.bottom === -Infinity ? 0 : floats.bottom - root.contentY;
-  root.height = body
-    ? leading + body.outer + trailing
+  root.height = own
+    ? leading + own.outer + trailing
     : Math.max(flow.height, floatBottom) + root.verticalExtra;
 
   // Positioned boxes last, and in the order they were found, so a later one
@@ -308,26 +302,31 @@ export function layoutDocument(
 }
 
 /**
- * How tall the body a fragment's root box stands in for says it is, where
- * that is definite (CSS 2.1 10.5): a length, `100vh` among them, or a
- * percentage of the `<html>` implied around it where that has a height of
- * its own — a length, or a percentage of the viewport, as `html, body {
- * height: 100% }` fills a window. Its border box, and its content box,
- * which what it holds takes its percentages of; `viewport` where the
- * answer read the viewport's height. Null where the document has an
- * `<html>` or a `<body>`, and where the body's height is `auto`, and the
- * box is as tall as what is in it. Measured before its margins are folded
- * into its padding.
+ * How tall the element the root box stands in for says it is, where that
+ * is definite (CSS 2.1 10.5). A fragment's root box stands in for its
+ * body: a length, `100vh` among them, or a percentage of the `<html>`
+ * implied around it where that has a height of its own — a length, or a
+ * percentage of the viewport, as `html, body { height: 100% }` fills a
+ * window. A document with a `<body>` and no `<html>` has it standing in
+ * for the `<html>` implied around the body, which is the root element:
+ * its percentages are of the viewport (10.1), as an `<html>` written in
+ * the markup has them. Its border box, and its content box, which what it
+ * holds takes its percentages of; `viewport` where the answer read the
+ * viewport's height. Null where the document has an `<html>` of its own,
+ * and where the height is `auto`, and the box is as tall as what is in
+ * it. Measured before its margins are folded into its padding.
  */
-function fragmentBodyHeight(
+function standInHeight(
   tree: BoxTree,
   viewportHeight: number,
 ): { outer: number; inner: number; viewport: boolean } | null {
   const html = tree.impliedHtml;
-  if (!html) return null;
+  if (!html && !tree.impliedRoot) return null;
   const root = tree.root;
   const style = root.style;
-  const base = resolveOrNull(html.height, viewportHeight);
+  const base = html
+    ? resolveOrNull(html.height, viewportHeight)
+    : viewportHeight;
   const set = resolveOrNull(style.height, base ?? NaN);
   if (set === null) return null;
   root.percentHeightBase = base ?? NaN;
@@ -339,8 +338,18 @@ function fragmentBodyHeight(
   return {
     outer,
     inner: Math.max(0, outer - extra),
-    viewport: isPct(style.height) && isPct(html.height),
+    viewport: readsPercentHeight(style) && (!html || isPct(html.height)),
   };
+}
+
+/** Whether a box's height, or a limit on it, is a percentage. */
+function readsPercentHeight(style: ComputedStyle): boolean {
+  const { height, minHeight, maxHeight } = style;
+  return (
+    isPct(height) ||
+    isPct(minHeight) ||
+    (maxHeight !== 'none' && isPct(maxHeight))
+  );
 }
 
 /** No margin at all, shared: most joins leave a strut as it was. */

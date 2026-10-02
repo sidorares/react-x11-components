@@ -157,6 +157,41 @@ test('the body keeps its overflow where the root gives the viewport its own, or 
   assert.strictEqual(el.abs.height, 100, 'cut at the root');
 });
 
+/** The same page with a `<body>` and no `<html>`, as most pages start. */
+const bare = (css: string, body: string): string =>
+  `<!DOCTYPE html><title>t</title><style>${css}</style>` +
+  `<body id="body">${body}</body>`;
+
+test('a body with no html around it takes its percentage height of the viewport', async () => {
+  // The root box stands in for the `<html>` HTML implies around the body,
+  // and is the root element: its percentage height is of the viewport
+  // (CSS 2.1 10.1, 10.5), and the body's of the root's. Laid out as tall
+  // as its flow, as the initial containing block is, the root had no
+  // height to give, and the body's `height: 100%` was `auto`
+  const { el, resize } = await renderScrolled(
+    bare(
+      'html{height:100%}body{margin:0;height:100%}',
+      '<div style="height:10px"></div>',
+    ),
+    300,
+  );
+  assert.strictEqual(boxOf(el, 'body').height, 300);
+  assert.strictEqual(el.abs.height, 300);
+  await resize(450);
+  assert.strictEqual(boxOf(el, 'body').height, 450, 'and follows it');
+  assert.strictEqual(el.abs.height, 450);
+  // and a body that clips is the viewport tall to clip at
+  const tall = '<div style="height:600px"></div>';
+  for (const css of [
+    'html{height:100%;overflow:hidden}body{margin:0;height:100%;overflow:hidden}',
+    'html{height:100%}body{margin:0;height:100%;overflow:hidden;contain:paint}',
+  ]) {
+    const clipped = await renderScrolled(bare(css, tall), 300);
+    assert.strictEqual(boxOf(clipped.el, 'body').height, 300, css);
+    assert.strictEqual(clipped.el.abs.height, 300, css);
+  }
+});
+
 metric(
   'a fixed box is drawn where the viewport is, however far the pane has scrolled the document',
   async () => {
