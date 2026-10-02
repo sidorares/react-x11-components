@@ -1084,7 +1084,12 @@ and so is one that is positioned: painted with the positioned boxes, over
 the text after it on its line and on the lines after that. An
 absolute box with both offsets on an axis fills what they leave, or, with
 a width, shares it between its `auto` margins, which is how `margin: auto`
-centres one. A form
+centres one. The height two offsets leave is definite, as one the box
+sets is (CSS Sizing 3, 2.1), and the box is laid out in it: a percentage
+height inside it is of it, so `height: 100%` fills an `inset: 0` overlay,
+and a grid or a flex box sizes and aligns its content in it, so `inset:
+4px; display: grid; place-content: center` centres its icon down as well
+as across, as Chrome, Firefox and Safari do. A form
 control fills it too, as it does in Chrome — it is an inline block to CSS,
 whatever draws it — so the invisible `<select>` a page lays over a picker
 it draws, `position: absolute; inset: 0`, covers all of it and takes the

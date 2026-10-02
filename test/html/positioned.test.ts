@@ -1143,6 +1143,36 @@ test('an absolute box a max-width or max-height holds is centred by its auto mar
   );
 });
 
+test('what is in an absolute box between two offsets takes its percentage heights of the height they leave', async () => {
+  // CSS 2.1 10.6.4 makes the box as tall as `top` and `bottom` leave, and
+  // CSS Sizing 3, 2.1 has that stretch-fit height definite, so `height:
+  // 100%` in an `inset: 0` overlay fills it, as in Chrome, Firefox and
+  // Safari. The box was stretched only after its content was laid out,
+  // with no height to take a percentage of.
+  const { node } = await render(
+    '<style>body{margin:0}.w{position:relative;width:60px;height:60px}' +
+      '.a{position:absolute;inset:4px}</style>' +
+      '<div class="w"><div class="a"><div id="a" style="height:50%"></div>' +
+      '</div></div>' +
+      // of its content box
+      '<div class="w"><div class="a" style="padding:5px 0;' +
+      'box-sizing:border-box"><div id="b" style="height:100%"></div></div>' +
+      '</div>' +
+      // and of the height a limit holds it to
+      '<div class="w"><div class="a" style="min-height:80px">' +
+      '<div id="c" style="height:50%"></div></div></div>' +
+      // with one offset, its height is its content's, and none to take
+      '<div class="w"><div class="a" style="top:auto">' +
+      '<div id="d" style="height:50%"></div></div></div>',
+  );
+  const el = view(node);
+  const height = (id: string) => boxOf(el, id).height;
+  assert.strictEqual(height('a'), 26, 'half of the 52 the offsets leave');
+  assert.strictEqual(height('b'), 42, 'all of it inside the padding');
+  assert.strictEqual(height('c'), 40, 'half of its min-height');
+  assert.strictEqual(height('d'), 0, 'a percentage of nothing is auto');
+});
+
 test('an absolute form control with both offsets on an axis fills what they leave', async () => {
   // A form control is an inline block to CSS, whatever draws it (HTML's
   // rendering section), and Chrome sizes one positioned with both offsets

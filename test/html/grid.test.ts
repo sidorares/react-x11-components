@@ -1012,6 +1012,64 @@ test('a grid item that is a flex or grid container lays its items out in its str
   assert.deepStrictEqual(at('f2'), [20, 20], 'shrunk into it');
 });
 
+test('an absolute grid between two offsets places its content in the height they leave', async () => {
+  // CSS 2.1 10.6.4: with `top` and `bottom` and no height, the box is as
+  // tall as they leave of its containing block, and that height is
+  // definite (CSS Sizing 3, 2.1: a stretch-fit size against a containing
+  // block that always is), so the rows are sized and aligned in it (CSS
+  // Grid 1, 11). joshwcomeau.com's play buttons centre an icon with
+  // `position: absolute; inset: 4px; display: grid; place-content:
+  // center`: the grid was laid out at its content's height and stretched
+  // after, and the icon sat at its top. Each number is Chrome's, Firefox's
+  // and Safari's.
+  const cell = (id: string, style: string, items: string, outer = '') =>
+    `<div class="w"${outer}><div id="${id}" class="a" style="${style}">` +
+    `${items}</div></div>`;
+  const { node } = await render(
+    '<style>body{margin:0}.w{position:relative;width:42px;height:42px}' +
+      '.a{position:absolute;inset:4px;display:grid}' +
+      '.i{width:20px;height:20px}</style>' +
+      cell('a', 'place-content:center', '<div id="a1" class="i"></div>') +
+      // the one auto row stretched down it, and the item centred in that
+      cell('b', 'align-items:center', '<div id="b1" class="i"></div>') +
+      cell(
+        'c',
+        'grid-template-rows:1fr 1fr',
+        '<div></div><div id="c1"></div>',
+      ) +
+      // in its content box
+      cell(
+        'd',
+        'place-content:center;padding-top:6px;border-top:4px solid',
+        '<div id="d1" class="i"></div>',
+      ) +
+      // with one offset, as tall as what it holds, and nothing to align
+      cell(
+        'e',
+        'top:auto;place-content:center',
+        '<div id="e1" class="i"></div>',
+      ) +
+      // and in a containing block as tall as its flow
+      '<div style="position:relative;width:42px"><div style="height:42px">' +
+      '</div><div id="f" class="a" style="place-content:center">' +
+      '<div id="f1" class="i"></div></div></div>',
+  );
+  const el = view(node);
+  /** Where an item is in its grid, and how tall. */
+  const at = (id: string) => {
+    const item = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [item.x - item.parent.x, item.y - item.parent.y, item.height];
+  };
+  assert.strictEqual(boxOf(el, 'a').height, 34);
+  assert.deepStrictEqual(at('a1'), [7, 7, 20], 'centred both ways');
+  assert.deepStrictEqual(at('b1'), [0, 7, 20], 'centred in its row');
+  assert.deepStrictEqual(at('c1'), [0, 17, 17], 'the second fr row');
+  assert.deepStrictEqual(at('d1'), [7, 12, 20], 'under the border and padding');
+  assert.strictEqual(boxOf(el, 'e').height, 20, 'its content’s height');
+  assert.deepStrictEqual(at('e1'), [7, 0, 20]);
+  assert.deepStrictEqual(at('f1'), [7, 7, 20], 'centred');
+});
+
 test('auto-fit tracks no item is in collapse, gaps and all', async () => {
   // `repeat(auto-fit, …)` was `auto-fill`: every repetition stayed, empty,
   // and took its share of the space `justify-content` distributes

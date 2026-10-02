@@ -2403,7 +2403,8 @@ function stretchHeight(box: Box): number | null {
  * which what is in it takes its percentages of, and which an item that is
  * a flex or grid container itself lays its own items out in, and a table
  * shares out among its rows. Set by `flex.ts` and `css-grid.ts` for the
- * item's own layout alone.
+ * item's own layout alone, and by `layoutPositioned` for an absolute box's
+ * between two offsets.
  */
 export const FLEXED_HEIGHT = new WeakMap<Box, number>();
 
@@ -3765,6 +3766,12 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const right = resolveOrNull(style.right, cbWidth);
   const top = resolveOrNull(style.top, cbHeight);
   const bottom = resolveOrNull(style.bottom, cbHeight);
+  // what both offsets down and the margins leave of the containing block,
+  // and NaN where it has no pair of them
+  const fill =
+    top !== null && bottom !== null
+      ? Math.max(0, cbHeight - top - bottom - box.marginTop - box.marginBottom)
+      : NaN;
 
   // with neither offset on an axis, the box is where the flow would have
   // put it (CSS 2.1 10.3.7, 10.6.4): against its start edge, which is the
@@ -3825,13 +3832,10 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   ) {
     // the height its offsets leave it through its ratio, where its width
     // has no pair of them to stretch it (CSS Sizing 4, 5.1)
-    const fill = clampHeight(
-      box,
-      Math.max(0, cbHeight - top - bottom - box.marginTop - box.marginBottom),
-    );
+    const tall = clampHeight(box, fill);
     width = ratioMinimum(
       box,
-      clampWidth(box, widthFromHeight(box, fill)!, cbWidth, ctx),
+      clampWidth(box, widthFromHeight(box, tall)!, cbWidth, ctx),
       cbWidth,
       ctx,
     );
@@ -3866,6 +3870,19 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   // `<select>` over a picker it draws, `position: absolute; inset: 0`, to
   // take the press, and it has to cover it.
   const control = isControl(box);
+  // Both offsets and no height: the box fills what they leave, its `auto`
+  // margins nothing (10.6.4, rule 5) — but a box with a ratio has its
+  // height from its width, and a table is as tall as its rows, as it is as
+  // wide as its columns between two offsets: `normal` stretches neither
+  // (Blink: "Replaced/tables don't stretch in abspos",
+  // `out_of_flow_layout_part.cc`), and a table taken to the height its
+  // offsets leave was that tall around rows that were not
+  const stretches =
+    !Number.isNaN(fill) &&
+    style.height === AUTO &&
+    (box.kind !== 'replaced' || control) &&
+    box.kind !== 'table' &&
+    !boxRatio(box);
   if (box.kind === 'replaced') {
     sizeReplaced(box, cbWidth);
     stretchReplaced(
@@ -3880,6 +3897,24 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
         : null,
       cbWidth,
     );
+  } else if (stretches && style.heightKeyword === null) {
+    // That height is definite, a stretch-fit size against a containing
+    // block, which is always definite to the box (CSS Sizing 3, 2.1), so
+    // the box is laid out in it, as a grid item stretched down its area
+    // is: what is in it takes its percentages of it, and a grid or a flex
+    // box sizes and aligns its content in it (CSS Grid 1, 11.1; CSS
+    // Flexbox 9.2) — as `height: stretch` is laid out in it already
+    // (`specifiedHeight`). Laid out first and stretched after, `inset: 4px;
+    // display: grid; place-content: center` held its icon at the top.
+    FLEXED_HEIGHT.set(
+      box,
+      Math.max(0, clampHeight(box, fill) - box.verticalExtra),
+    );
+    try {
+      layoutOwn(box, ctx, width);
+    } finally {
+      FLEXED_HEIGHT.delete(box);
+    }
   } else layoutOwn(box, ctx, width);
 
   let x: number;
@@ -3940,23 +3975,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   }
   let y: number;
   if (top !== null && bottom !== null) {
-    const fill = Math.max(
-      0,
-      cbHeight - top - bottom - box.marginTop - box.marginBottom,
-    );
-    // — a box with a ratio has its height from its width, and a table is
-    // as tall as its rows, as it is as wide as its columns between two
-    // offsets: `normal` stretches neither (Blink: "Replaced/tables don't
-    // stretch in abspos", `out_of_flow_layout_part.cc`), and a table taken
-    // to the height its offsets leave was that tall around rows that were
-    // not
-    const stretches =
-      style.height === AUTO &&
-      (box.kind !== 'replaced' || control) &&
-      box.kind !== 'table' &&
-      !boxRatio(box);
-    // both offsets and no height: the box fills what they leave, its
-    // `auto` margins nothing (10.6.4, rule 5) — unless `min-height` or
+    // a box that fills what its offsets leave, unless `min-height` or
     // `max-height` moves that, which makes it a height like one set, and
     // the rules run again with it (10.7)
     if (stretches) {
