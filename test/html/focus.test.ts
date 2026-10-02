@@ -415,8 +415,11 @@ metric('the link Tab reaches is scrolled into view', async () => {
   assert.strictEqual(el.focusedElement?.attribs.id, 'l29');
   await act();
   const box = el.elementRect(el.focusedElement!)!;
+  // core scrolls by whole pixels, and a link's rect has fractions: DejaVu's
+  // line is 16.3 pixels tall, and the link scrolled to the bottom ends 0.3
+  // of a pixel past it
   assert.ok(
-    box.y >= pane.scrollY && box.y + box.height <= pane.scrollY + 200,
+    box.y >= pane.scrollY - 1 && box.y + box.height <= pane.scrollY + 201,
     `l29 at ${box.y}..${box.y + box.height} in ${pane.scrollY}..${pane.scrollY + 200}`,
   );
 });
