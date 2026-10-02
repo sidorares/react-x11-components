@@ -1680,7 +1680,12 @@ things are load-bearing.
   `PaintOptions.lifted` is checked at `paintBox` and `paintTransformed`,
   the two doors a box is painted through. `_skipLifted` is handed to the
   timeline's `live` and `nextFrame`. **Anything new that paints a box, or
-  asks for an animation frame, honours both.**
+  asks for an animation frame, honours both.** What is lifted is an
+  element's own animations or a pseudo-element's (`_lifted`, keyed by
+  both), and a `::before`'s box has no element of its own
+  (`GENERATED_FROM`), so the lifted set is read as boxes
+  (`_liftedBoxes`) and the skip asks of a target, the element and the
+  pseudo-element, never of the element alone.
 - **A part is made once and kept by a stamp of what it is made from.** Its
   frames are sampled on a fork of the timeline (`AnimationTimeline.fork`),
   which leaves the document's as it was, sixty styles a second of cycle.

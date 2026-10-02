@@ -92,6 +92,10 @@ const MAX_SAMPLES = 600;
  *  as core leaves it (src/cocoa/sprites.js). */
 const MAX_SIDE = 8192;
 
+/** Whose animations a sprite carries: an element's own (''), or those of
+ *  its `::before` or its `::after`. */
+export type Pseudo = '' | 'before' | 'after';
+
 /** What the document gives the sprites it offers. */
 export interface SpriteHost {
   tree: BoxTree;
@@ -101,6 +105,8 @@ export interface SpriteHost {
   now: number;
   /** Each element's first box (`HtmlViewNode._firstBoxesOf`). */
   boxes: ReadonlyMap<Element, Box>;
+  /** An element's `::before` or `::after` box, where it has one. */
+  pseudoBox(el: Element, which: 'before' | 'after'): Box | null;
   /** Whether the render server ran an animation of `el`'s to its end. */
   ended(el: Element, id: string): boolean;
 }
@@ -126,6 +132,8 @@ export interface Track {
  *  property, each its own animation on the layer. */
 export interface Lift {
   el: Element;
+  /** Whose: the element's own, or a pseudo-element's of it. */
+  pseudo: Pseudo;
   box: Box;
   tracks: Track[];
   /** Every track's: what the part is made from, but for the document. */
@@ -136,19 +144,24 @@ export interface Lift {
 }
 
 /**
- * The animations of `el` a sprite can carry, or null: each named animation
- * with frames, playing, in its active phase, setting only what a layer
- * carries — and no two setting one property, since a layer runs one
- * animation of each and the later of two is the cascade's to choose, not
- * the layer's. Not one the render server already ran to its end. Cheap,
- * and asked every frame: the frames are sampled once (`partOf`).
+ * The animations of `el` a sprite can carry, or of its `pseudo`, or null:
+ * each named animation with frames, playing, in its active phase, setting
+ * only what a layer carries — and no two setting one property, since a
+ * layer runs one animation of each and the later of two is the cascade's
+ * to choose, not the layer's. Not one the render server already ran to its
+ * end. Cheap, and asked every frame: the frames are sampled once
+ * (`partOf`).
  */
-export function liftOf(host: SpriteHost, el: Element): Lift | null {
-  const style = host.tree.styles.get(el)?.style;
-  const box = host.boxes.get(el);
-  if (!style || !box || box.el !== el) return null;
+export function liftOf(
+  host: SpriteHost,
+  el: Element,
+  pseudo: Pseudo = '',
+): Lift | null {
+  const box = pseudo ? host.pseudoBox(el, pseudo) : host.boxes.get(el);
+  const style = pseudo ? box?.style : host.tree.styles.get(el)?.style;
+  if (!style || !box || (!pseudo && box.el !== el)) return null;
   const animations = style.animations;
-  const runs = host.timeline.runsOf(el);
+  const runs = host.timeline.runsOf(el, pseudo);
   const plays = animations.playStates;
   const tracks: Track[] = [];
   let opacity = false;
@@ -190,6 +203,7 @@ export function liftOf(host: SpriteHost, el: Element): Lift | null {
       timing.fill,
       box.width,
       box.height,
+      pseudo,
     ].join('|');
     if (host.ended(el, id)) return null;
     tracks.push({
@@ -206,6 +220,7 @@ export function liftOf(host: SpriteHost, el: Element): Lift | null {
   if (!tracks.length) return null;
   return {
     el,
+    pseudo,
     box,
     tracks,
     id: tracks.map((t) => t.id).join('+'),
@@ -223,7 +238,9 @@ function liftableBox(host: SpriteHost, box: Box): boolean {
   if (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break') {
     return false;
   }
-  if (box.pseudo || !box.parent) return false;
+  // a first letter is its element's text, and a pseudo-element of the
+  // others is a box of its own
+  if (box.pseudo === 'first-letter' || !box.parent) return false;
   if (box.style.position === 'fixed' || drawsAgainstViewport(box)) {
     return false;
   }
@@ -243,7 +260,8 @@ function liftableBox(host: SpriteHost, box: Box): boolean {
       if (at.parent) return false;
     }
     if (style.clipPath || style.clip || masked(style)) return false;
-    if (at.el && host.timeline.isLive(at.el)) return false;
+    // its own: a pseudo-element's beside the box is no ancestor of it
+    if (at.el && host.timeline.isLive(at.el, '')) return false;
   }
   return true;
 }
@@ -338,9 +356,14 @@ function sample(
   const cascade = host.cascade;
   const fork = host.timeline.fork(el);
   const was = cascade.timeline;
+  const pseudo = lift.pseudo;
   const at = (time: number): ComputedStyle => {
     fork.now = time;
-    return cascade.styleFor(el, parentStyle, inFlex);
+    // a pseudo-element's inherits from its element's, which `parentStyle`
+    // is for one
+    return pseudo
+      ? (cascade.pseudoStyleFor(el, pseudo, parentStyle) ?? box.style)
+      : cascade.styleFor(el, parentStyle, inFlex);
   };
   cascade.timeline = fork;
   try {
@@ -425,7 +448,13 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
   const kept = tree.styles.get(el);
   if (!kept || !liftableBox(host, box)) return null;
   const parent = isElement(el.parent) ? el.parent : null;
-  const parentStyle = parent ? tree.styles.get(parent)?.style : tree.root.style;
+  // what its style is made from at another time: a pseudo-element's from
+  // its element's, an element's from its parent's
+  const parentStyle = lift.pseudo
+    ? kept.style
+    : parent
+      ? tree.styles.get(parent)?.style
+      : tree.root.style;
   if (!parentStyle) return null;
   // Where the box would be with no transform: layout moved it by the
   // translation its style has now (`applyRelativeOffsets`), and a layer's

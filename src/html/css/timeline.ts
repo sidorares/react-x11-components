@@ -177,26 +177,33 @@ export class AnimationTimeline {
     if (!targets.size) this._targets.delete(el);
   }
 
-  /** The runs of an element's own animations, by its `animation-name`
-   *  list as it was last styled — when each started, and the time a paused
-   *  one holds — or null where it has none. */
-  runsOf(el: object): readonly (Readonly<Running> | null)[] | null {
-    return this._targets.get(el)?.get('')?.running ?? null;
+  /** The runs of an element's own animations, or of its `pseudo`'s, by
+   *  its `animation-name` list as it was last styled — when each started,
+   *  and the time a paused one holds — or null where it has none. */
+  runsOf(
+    el: object,
+    pseudo = '',
+  ): readonly (Readonly<Running> | null)[] | null {
+    return this._targets.get(el)?.get(pseudo)?.running ?? null;
   }
 
   /**
-   * A timeline holding one element's own animations as this one has them:
-   * what its style at another time is computed against, `now` set to that
-   * time, leaving this one as it was. A sprite's frames are sampled so
-   * (`src/html/sprites.ts`).
+   * A timeline holding one element's animations as this one has them, its
+   * own and its pseudo-elements': what its style at another time is
+   * computed against, `now` set to that time, leaving this one as it was.
+   * A sprite's frames are sampled so (`src/html/sprites.ts`).
    */
   fork(el: object): AnimationTimeline {
     const fork = new AnimationTimeline();
     fork.now = this.now;
-    const target = this._targets.get(el)?.get('');
-    if (target) {
-      const running = target.running.map((run) => run && { ...run });
-      fork._targets.set(el, new Map([['', { ...target, running }]]));
+    const targets = this._targets.get(el);
+    if (targets) {
+      const copy = new Map<string, Target>();
+      for (const [pseudo, target] of targets) {
+        const running = target.running.map((run) => run && { ...run });
+        copy.set(pseudo, { ...target, running });
+      }
+      fork._targets.set(el, copy);
     }
     return fork;
   }
@@ -207,10 +214,15 @@ export class AnimationTimeline {
   }
 
   /** Whether an animation of an element's, or of a pseudo-element of its,
-   *  changes as time passes. */
-  isLive(el: object): boolean {
+   *  changes as time passes — of `pseudo`'s alone where it is given, ''
+   *  for the element's own. */
+  isLive(el: object, pseudo?: string): boolean {
     const targets = this._targets.get(el);
     if (!targets) return false;
+    if (pseudo !== undefined) {
+      const target = targets.get(pseudo);
+      return target !== undefined && target.next !== Infinity;
+    }
     for (const target of targets.values()) {
       if (target.next !== Infinity) return true;
     }
@@ -218,26 +230,34 @@ export class AnimationTimeline {
   }
 
   /** The elements with an animation that changes as time passes, and for
-   *  each whether what it holds inherits what changes, and whether it is
-   *  one of a pseudo-element's — but those `skip` says the frames of are
-   *  not this timeline's to run: one whose animation the render server
-   *  runs on a layer of its own. */
-  live(
-    skip: ((el: object) => boolean) | null = null,
-  ): { el: object; inherits: boolean; generated: boolean }[] {
-    const out: { el: object; inherits: boolean; generated: boolean }[] = [];
+   *  each whether what it holds inherits what changes, whether one is a
+   *  pseudo-element's, and whose they are ('' for the element's own) —
+   *  but those `skip` says the frames of are not this timeline's to run:
+   *  one the render server runs on a layer of its own. */
+  live(skip: ((el: object, pseudo: string) => boolean) | null = null): {
+    el: object;
+    inherits: boolean;
+    generated: boolean;
+    targets: string[];
+  }[] {
+    const out: {
+      el: object;
+      inherits: boolean;
+      generated: boolean;
+      targets: string[];
+    }[] = [];
     for (const [el, targets] of this._targets) {
-      if (skip?.(el)) continue;
-      let live = false;
+      let live: string[] | null = null;
       let inherits = false;
       let generated = false;
       for (const [pseudo, target] of targets) {
         if (target.next === Infinity) continue;
-        live = true;
+        if (skip?.(el, pseudo)) continue;
+        (live ??= []).push(pseudo);
         inherits ||= target.inherits;
         generated ||= pseudo !== '';
       }
-      if (live) out.push({ el, inherits, generated });
+      if (live) out.push({ el, inherits, generated, targets: live });
     }
     return out;
   }
@@ -245,12 +265,14 @@ export class AnimationTimeline {
   /** When an animation next changes, on the timeline; null where none
    *  will without a style change. One `skip` names is not counted
    *  (`live`). */
-  nextFrame(skip: ((el: object) => boolean) | null = null): number | null {
+  nextFrame(
+    skip: ((el: object, pseudo: string) => boolean) | null = null,
+  ): number | null {
     let next = Infinity;
     for (const [el, targets] of this._targets) {
-      if (skip?.(el)) continue;
-      for (const target of targets.values()) {
-        if (target.next < next) next = target.next;
+      for (const [pseudo, target] of targets) {
+        if (target.next >= next || skip?.(el, pseudo)) continue;
+        next = target.next;
       }
     }
     return next === Infinity ? null : next;
