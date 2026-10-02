@@ -181,6 +181,51 @@ exactly what it saw before. Nothing is fetched because of a base: it says
 where a URL points, and `onResource` still decides whether anything goes
 there.
 
+### Responsive images
+
+An `<img srcset>`, or an `<img>` in a `<picture>`, asks for the one image
+it chooses, as HTML's "selecting an image source" chooses it:
+
+- **the source:** the first `<source>` before the `<img>` in its
+  `<picture>` whose `media` holds, whose `type` decodes here and whose
+  `srcset` names a candidate; else the `<img>`'s own `srcset`, its `src`
+  counted as `1x` where the set has no `1x` and no widths;
+- **the candidate:** of that source's, the least dense at or above the
+  display's scale, or the densest where none is — the choice Chrome,
+  Firefox and Safari all make. A `w` candidate's density is its width over
+  the size `sizes` gives: the first entry whose media condition holds, or
+  `100vw`. Its `media` and its `vw`, like a `<source>`'s `media`, are read
+  against the document's width, as an `@media` query is.
+
+The density is the image's size, as in a browser: a `2x` candidate is
+drawn at half its pixels across, and a `w` one as wide as `sizes` says,
+whatever its file is. So Next.js's `srcset="…w=640 1x, …w=1920 2x"` asks
+for the 640 at 1x and the 1920 at 2x, never its `src`, and a
+`<picture>`'s WebP source is asked for ahead of the PNG in its `<img>`.
+
+A `type` is a source this takes where its bytes decode here: PNG, JPEG,
+WebP, GIF and SVG everywhere, BMP under Bun, and AVIF, HEIC and TIFF under
+Bun on macOS, the parameters and the case of the type aside. A `<picture>`
+whose AVIF this cannot decode goes on to its WebP or its JPEG, as a
+browser without AVIF does, where taking it would have left the image
+declined.
+
+The choice is made again when what it turns on moves — the width, the
+display's scale, the colour scheme a `prefers-color-scheme` source asks
+about — as a browser makes it again when its window does, and the new
+image is asked for then. The one shown stays until the new one arrives,
+rather than a frame meanwhile. A narrower window keeps a denser image it
+already has, at the density the new size gives it, rather than asking for
+a lighter one: Chrome's choice, where Firefox asks for the lighter one and
+Safari keeps the old density too. A chosen image that is declined is a
+declined image, and its `src` is not asked for in its place.
+
+Two parts are not done. `sizes="auto"` is the laid-out width of a lazily
+loaded image, which is not known when the source is chosen, so it is
+passed over for the entries after it — which is what WordPress writes
+them for. And a chosen `<source>`'s `width` and `height`, which a browser
+gives the `<img>` in place of its own, are not read: the `<img>`'s are.
+
 ### Fonts
 
 An `@font-face` is read, and its family is the document's to use:

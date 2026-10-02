@@ -1289,6 +1289,24 @@ component that silently made requests would turn "render this HTML" into
 error. **Do not add a convenience default that fetches**; the absence is the
 feature.
 
+**An image's source is chosen where the viewport is known, and stays
+chosen.** An `<img srcset>`, or an `<img>` in a `<picture>`, is chosen in
+`_update`, for the width the boxes are about to be built at
+(`srcset.ts`), and not as the markup is read: `facts().pictures` keeps
+them out of `_sweep`. Two things there are load-bearing. A choice is made
+again only when what it turns on moves — the width, the height, the
+scale, the scheme — or its attributes change, and never because an image
+arrived: `pick` prefers a denser candidate already asked for, as Chrome
+prefers one it has cached, so a choice made again on an arrival would
+trade one element's image for one another element asked for. And a choice
+that changes what an image shows builds the boxes again keeping every
+style and **leaves `_sizes` alone**, as a `vw` does: core asks a document
+its height at a resize's old width as well as its new one, and a cleared
+cache laid it out three times a frame. That is sound because the size a
+width comes to is the same whichever candidate it holds — a `w` one is as
+wide as `sizes` says, an `x` one its pixels over its density — and an
+arrival, which can change it, clears the cache as it always has.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides

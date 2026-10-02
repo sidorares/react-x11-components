@@ -10,6 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { existsSync } from 'node:fs';
+import { deflateSync } from 'node:zlib';
 import React from 'react';
 import { act, renderX11, screen } from 'react-x11/test';
 import type { RenderX11Options } from 'react-x11/test';
@@ -751,6 +752,43 @@ export const RED_PNG = new Uint8Array(
     'base64',
   ),
 );
+
+/** A PNG of one colour, `width` by `height`. */
+export function solidPng(
+  width: number,
+  height: number,
+  [r, g, b]: [number, number, number],
+): Uint8Array {
+  const row = Buffer.alloc(1 + width * 3);
+  for (let x = 0; x < width; x += 1) row.set([r, g, b], 1 + x * 3);
+  const rows = Buffer.concat(Array.from({ length: height }, () => row));
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    let crc = ~0;
+    for (const byte of body) {
+      crc ^= byte;
+      for (let k = 0; k < 8; k += 1)
+        crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(~crc >>> 0, 8 + data.length);
+    return out;
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8);
+  return new Uint8Array(
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk('IHDR', header),
+      chunk('IDAT', deflateSync(rows)),
+      chunk('IEND', Buffer.alloc(0)),
+    ]),
+  );
+}
 
 export async function renderWithImages(source: string, width = 200) {
   const result = await renderX11(
