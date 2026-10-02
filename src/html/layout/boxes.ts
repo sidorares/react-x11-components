@@ -366,8 +366,8 @@ export class Box {
    *  kept as a strut for the next sibling's to collapse with. Null where
    *  none came out, which is most boxes. Set by the block layout. */
   bottomStrut: MarginStrut | null = null;
-  /** An inline box with a background or a border to paint behind its
-   *  fragments: the ascent and descent of its own face, the height CSS
+  /** An inline box with a background, a border or a shadow to paint behind
+   *  its fragments: the ascent and descent of its own face, the height CSS
    *  paints them over (10.6.1). Set by the inline layout. */
   decoration: InlineDecoration | null = null;
   /** What a percentage `height` resolves against: an absolutely positioned

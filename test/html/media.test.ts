@@ -519,6 +519,127 @@ test("a media range is a width's bounds", () => {
   ]);
 });
 
+test('a media query joins features with or, and its not is the other side of each', () => {
+  // Media Queries 4, 3. `(max-width: 600px) or (min-width: 900px)` was one
+  // term that was no feature and no medium, passed over, and its rules held
+  // at every width; `not (max-width: 600px)` was decided once, and held at
+  // none. A `not` over a width is a bound on its other side, just past it,
+  // so its breakpoint is the one the width it negates has.
+  const sheet = parseStylesheet(
+    '@media (max-width: 600px) or (min-width: 900px) { p { color: red } }' +
+      '@media not (max-width: 600px) { p { color: blue } }' +
+      '@media not all and (min-width: 640px) { p { color: green } }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => r.media),
+    [
+      [[{ max: 600 }, { min: 900 }]],
+      [[{ min: 600 + 1 / 64 }]],
+      // Tailwind 3 writes its `max-sm:` variant so
+      [[{ max: 640 - 1 / 64 }]],
+    ],
+  );
+  assert.deepStrictEqual(sheet.breakpoints, [600 + 1 / 64, 640, 900]);
+
+  // Each row is where Chrome 154, Firefox and WebKit hold the query, by
+  // `matchMedia`, at each of these widths.
+  const widths = [300, 500, 600, 601, 700, 800, 900, 1000];
+  const rows: [string, string][] = [
+    ['(max-width: 600px) or (min-width: 900px)', '111...11'],
+    ['(max-width: 600px) OR (min-width: 900px)', '111...11'],
+    ['(max-width: 600px)or (min-width: 900px)', '111...11'],
+    ['(width > 600px) or (width < 300px)', '...11111'],
+    ['not (max-width: 600px)', '...11111'],
+    ['not (width > 600px)', '111.....'],
+    ['not (width: 600px)', '11.11111'],
+    ['not (400px <= width <= 700px)', '1....111'],
+    ['not all and (max-width: 600px)', '...11111'],
+    ['screen and not (max-width: 600px)', '...11111'],
+    ['not (not (not (max-width: 600px)))', '...11111'],
+    ['not ((max-width: 600px) or (min-width: 900px))', '...111..'],
+    [
+      '((max-width: 600px) or (min-width: 900px)) and (min-width: 400px)',
+      '.11...11',
+    ],
+    [
+      '(max-width: 600px) and ((min-width: 400px) or (min-width: 900px))',
+      '.11.....',
+    ],
+    ['not ((min-width: 900px) and (max-width: 600px))', '11111111'],
+    // `and` and `or` at one level, a `not` before more than one part, `only`
+    // before no medium and a function where `or` should be are no queries
+    [
+      '(max-width: 600px) and (min-width: 100px) or (min-width: 900px)',
+      '........',
+    ],
+    ['screen and (max-width: 600px) or (min-width: 900px)', '........'],
+    ['not (max-width: 600px) and (min-width: 100px)', '........'],
+    ['not (max-width: 600px) or (min-width: 900px)', '........'],
+    ['(max-width: 600px)or(min-width: 900px)', '........'],
+    ['only (max-width: 600px)', '........'],
+    ['(min-width: 600px) or print', '........'],
+    // a feature nothing knows, or a value its feature does not take, is
+    // neither true nor false, under a `not` as well
+    ['not (unknown-feature: 1)', '........'],
+    ['not (min-width: tall)', '........'],
+    ['not (min-width: 0\\0)', '........'],
+    ['not (prefers-color-scheme: no-preference)', '........'],
+    ['not (hover: bogus)', '........'],
+    ['not func(x)', '........'],
+    ['(min-width: tall) or (min-width: 0)', '11111111'],
+    ['not ((unknown: 1) and (min-width: 600px))', '11......'],
+    ['not ((unknown: 1) or (min-width: 600px))', '........'],
+    ['not screen and (unknown: 1)', '........'],
+    ['not print and (unknown: 1)', '11111111'],
+    ['not (hover)', '........'],
+    ['not (hover: none)', '11111111'],
+    ['not (monochrome)', '11111111'],
+  ];
+  for (const [query, holds] of rows) {
+    const media = [parseMediaQuery(query)];
+    const ours = widths
+      .map((w) => (mediaMatches(media, w, 'light', 600) ? '1' : '.'))
+      .join('');
+    assert.strictEqual(ours, holds, query);
+  }
+
+  // the opposite of a scheme is the other one, and of a run of tests any
+  // one of their opposites
+  assert.deepStrictEqual(
+    parseMediaQuery(
+      'not ((prefers-color-scheme: dark) and (max-width: 600px))',
+    ),
+    [{ scheme: 'light' }, { min: 600 + 1 / 64 }],
+  );
+  // and a square viewport is portrait, so it is not landscape
+  const landscape = [parseMediaQuery('not (orientation: landscape)')];
+  assert.ok(mediaMatches(landscape, 500, 'light', 500));
+  assert.ok(!mediaMatches(landscape, 501, 'light', 500));
+});
+
+test('a document restyles across the widths an or and a not change their minds at', async () => {
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}div{height:10px}' +
+      '@media (max-width:300px) or (min-width:500px){#or{height:20px}}' +
+      '@media not (max-width:300px){#not{height:20px}}' +
+      '@media not all and (min-width:500px){#max{height:20px}}' +
+      '@media not ((max-width:300px) or (min-width:500px)){#mid{height:20px}}' +
+      '</style><div id="or"></div><div id="not"></div>' +
+      '<div id="max"></div><div id="mid"></div>',
+    300,
+    250,
+  );
+  const heights = () =>
+    ['or', 'not', 'max', 'mid'].map((id) => boxOf(el, id).height);
+  assert.deepStrictEqual(heights(), [20, 10, 20, 10], 'at 250');
+  await resize(300, 400);
+  assert.deepStrictEqual(heights(), [10, 20, 20, 20], 'at 400');
+  await resize(300, 550);
+  assert.deepStrictEqual(heights(), [20, 20, 10, 10], 'at 550');
+  await resize(300, 250);
+  assert.deepStrictEqual(heights(), [20, 10, 20, 10], 'and back at 250');
+});
+
 test("a media feature's value may hold parentheses of its own", async () => {
   // MediaWiki writes its breakpoints `(max-width: calc(640px - 1px))`: the
   // value was read to the first `)`, found no feature, and the term was
@@ -573,7 +694,7 @@ test("device-width is the viewport's width", async () => {
     parseMediaQuery(
       'only screen and (max-device-width: 701px)and (orientation: landscape)',
     ),
-    [{ max: 701, minAspect: 1 + 1e-9 }],
+    [{ max: 701, minAspect: 1 + 2 ** -30 }],
   );
   const source =
     '<style>#phone{display:none}' +

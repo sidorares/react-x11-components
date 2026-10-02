@@ -25,6 +25,7 @@ import {
 import { parseTransform } from '../../src/html/css/transform.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
+import type { DocumentSprite } from '../../src/html/sprites.js';
 import { fixedToViewport, stacksLayers } from '../../src/html/paint.js';
 import type { Box } from '../../src/html/layout/boxes.js';
 import type { HtmlViewNode } from '../../src/html/node.js';
@@ -1678,7 +1679,7 @@ test('a box that clips an element cuts its layer: the sprite is offered with the
   assert.strictEqual(open.el.sprites(), null);
 });
 
-test('a box that clips cuts only what it holds: an absolute element whose containing block is outside it is not cut by it, and a rounded one cuts an element clear of its corners not at all, and keeps one that reaches them', async (t) => {
+test('a box that clips cuts only what it holds: an absolute element whose containing block is outside it is not cut by it, and a rounded one cuts an element clear of its corners not at all, and one that reaches them with its corners', async (t) => {
   const doc = await running(
     t,
     '<style>@keyframes fade { to { opacity: .2 } }' +
@@ -1692,7 +1693,7 @@ test('a box that clips cuts only what it holds: an absolute element whose contai
       '#middle { margin: 20px 40px }</style>' +
       '<div class="clip"><i id="out"></i></div>' +
       '<div class="clip round"><i id="middle"></i></div>' +
-      '<div class="clip round"><i id="corner"></i></div>',
+      '<div class="clip round" id="card"><i id="corner"></i></div>',
   );
   const abs = (doc.el as unknown as DrawnNode).abs;
   const sprites = doc.el.sprites()!;
@@ -1702,7 +1703,54 @@ test('a box that clips cuts only what it holds: an absolute element whose contai
   assert.strictEqual(at('out')!.clip, undefined);
   assert.ok(at('middle'), 'clear of the corners');
   assert.strictEqual(at('middle')!.clip, undefined);
-  assert.strictEqual(at('corner'), undefined, 'in the corner');
+  // in the corner: cut to the card with its corners
+  const card = boxOf(doc.el, 'card');
+  const corner = at('corner') as DocumentSprite | undefined;
+  assert.ok(corner, 'in the corner');
+  assert.deepStrictEqual(corner.clip, {
+    x: abs.x + card.x,
+    y: abs.y + card.y,
+    width: 100,
+    height: 60,
+  });
+  assert.strictEqual(corner.clipRadius, 10);
+});
+
+test('a rounded box cuts a layer with its corners only where they are one circle’s, inside its border, and no other clip cuts it again', async (t) => {
+  const offered = async (card: string, outer = '') => {
+    const doc = await running(
+      t,
+      '<style>@keyframes fade { to { opacity: .2 } }' +
+        'body { margin: 0 } .outer { overflow: hidden; width: 300px;' +
+        ` height: 200px; ${outer} }` +
+        `.card { overflow: hidden; width: 100px; height: 60px; ${card} }` +
+        'i { display: block; width: 20px; height: 20px; background: red;' +
+        ' animation: fade 1s infinite }</style>' +
+        '<div class="outer"><div class="card"><i></i></div></div>',
+    );
+    return (doc.el.sprites() ?? []) as DocumentSprite[];
+  };
+  // inside a border, its padding box's corners: the radius less the border
+  const [inset] = await offered('border-radius: 10px; border: 2px solid');
+  assert.deepStrictEqual(
+    [inset?.clip?.width, inset?.clip?.height, inset?.clipRadius],
+    [100, 60, 8],
+  );
+  // an ellipse, and corners of two sizes, are no one circle's
+  assert.strictEqual((await offered('border-radius: 10px / 20px')).length, 0);
+  assert.strictEqual((await offered('border-radius: 10px 0 0 0')).length, 0);
+  // cut again by a smaller box around it, and by a rounded one
+  assert.strictEqual(
+    (await offered('border-radius: 10px', 'width: 50px')).length,
+    0,
+    'cut again',
+  );
+  assert.strictEqual(
+    (await offered('border-radius: 10px', 'border-radius: 20px; width: 100px'))
+      .length,
+    0,
+    'two rounded',
+  );
 });
 
 test('a lifted element is a hole in the document, and its animation is no frame of the document’s; given back, it is drawn where its animation has got to', async (t) => {

@@ -1229,8 +1229,12 @@ spinner, `border-radius: 50%` with one side of another colour, is a ring
 with a quarter of it in that colour. A side with no width gives the whole
 of its corners to the sides beside it, and an opaque share is drawn over a
 little of the one next to it, so the page does not show through where the
-two meet. A dotted, dashed or double side on a rounded box has its border
-drawn straight. Two solid
+two meet. An `inset` or an `outset` side on a rounded box takes its share
+in its shade, as a solid side takes it in its colour, so a field or a
+button the page gave only a radius, its UA border `2px inset` or `outset`,
+is a ring of two shades that change on the same line. A dotted, dashed,
+double, groove or ridge side on a rounded box has its border drawn
+straight. Two solid
 sides of different colours share their corner on its diagonal, from its
 outer point to its inner one (CSS Backgrounds 3, 4.4), so each is a
 trapezoid — and a triangle on a box with nothing inside its borders, which
@@ -1314,16 +1318,28 @@ have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on
 the sides its `direction` says (CSS 2.1 8.6) — and its background, images
-and gradients included, and its border are painted a fragment a line, over
-its face's height plus its vertical padding, which is why they do not make
-the line taller. Where it wraps it is
+and gradients included, its border and its shadows are painted a fragment
+a line, over its face's height plus its vertical padding, which is why they
+do not make the line taller. A shadow is ink past the fragment and no
+overflow, as a block's is: a repaint of the strip under a line reaches the
+shadow its links cast there. Where it wraps it is
 sliced (`box-decoration-break: slice`, CSS's default): no border and no
 rounded corner on a side it goes on from, and its images and gradients
 placed as though its fragments were one box laid end to end in its
 `direction`, each showing its slice — so an icon `no-repeat` at its start is
-on its first line alone, and a gradient runs once across every line.
-`box-decoration-break: clone` places them in each fragment's own box
-instead; its fragments still take their borders and padding at the box's
+on its first line alone, and a gradient runs once across every line. Its
+shadows are cast by that box and cut where each fragment is, so none falls
+at an edge where it breaks (CSS Fragmentation 3, 5.4): a ring round a
+wrapped span is open at the end of its first line and the start of its
+next, and the line joshwcomeau.com's `box-shadow: 0 1.5px 0` draws under a
+link runs under each line's fragment. Chrome, Firefox and Safari agree on
+all of that; where a shadow is offset along the line by more than the
+fragments after it reach, Chrome casts it from the fragment run on past
+the break without end and Firefox and Safari from the fragment alone, and
+this from the unbroken box, as the spec has it.
+`box-decoration-break: clone` places images and gradients in each
+fragment's own box instead, and casts its shadows all round each fragment;
+its fragments still take their borders and padding at the box's
 two ends alone, where a browser gives every fragment its own. A padded
 `<a>` set as an email's button, a pill badge and a `<kbd>` keycap render as
 a browser renders them. Its edges are no place for a line to break (CSS
@@ -1562,8 +1578,11 @@ compositor:
   `overflow` other than `visible`, a `clip` — cuts its layer to the same
   rectangle, so a carousel's slide or a marquee goes on a layer cut where
   the document cuts it; one with rounded corners cuts nothing so long as
-  the element keeps clear of them while it runs, and keeps it in the
-  document where it does not, since a layer is cut to a rectangle;
+  the element keeps clear of them while it runs, and where it does not,
+  cuts the layer with its corners, as a shimmer in a card is: where they
+  are one circle's, the same radius at all four, and no other box that
+  clips cuts it again. An ellipse, corners of different sizes and two
+  rounded boxes keep the element in the document;
 - and nothing the document paints after it falls anywhere it can be while
   it runs: a box positioned after it or with a higher `z-index`, the
   outline of the stacking context it is in. What is painted before it is
@@ -1796,8 +1815,11 @@ spreads and draws a border without taking room. A spread rounds a corner
 out by less than itself where the radius is small beside it and the box
 is not already round, as browsers do, so a ring keeps a card's corners
 nearly square and a circle's round. An outer shadow is not
-drawn under its box, which a box's own opaque colour usually sees to and
-a cut sees to where it does not. A blurred shadow is the 2d context's
+drawn under its box, which a box's own opaque colour usually sees to, and
+where it does not, a hard one with square corners is drawn as the bands of
+it beside the box and any other is cut out of the box — on X11 a mask the
+size of the window, which a page with a shadow under every link paid once a
+link. A blurred shadow is the 2d context's
 own, cast by the box's rounded rect — an inset one by a rect less that
 shape, filled evenodd — and react-x11's contexts draw those from a tile
 they make once for the corners, the blur and the colour, and stretch along
@@ -2129,8 +2151,18 @@ the resolution is the display's scale, so a page's high-DPI rules hold on a
 retina panel and not at one dot to the pixel; the rest are a desktop
 screen's with a mouse — `hover` and a `fine` pointer, eight bits of colour,
 no contrast or colour preference forced, and no scripting, since nothing
-here runs one. A feature nothing knows is false, as Media Queries 4 has
-it, and so is a query on a size that is no length.
+here runs one. A query is read by Media Queries 4's grammar: `or` joins
+features as a comma joins queries, `(max-width: 600px) or (min-width:
+900px)`, a `not` holds on the other side of what it negates, so
+`not (max-width: 600px)` holds past 600px and Tailwind 3's
+`not all and (min-width: 640px)` short of 640px, and a condition may sit
+in parentheses inside another. All of them are answered live and restyle
+as the viewport crosses them. A query that mixes `and` and `or` at one
+level, or puts a `not` before more than one feature, is no query, and
+holds nowhere. A feature nothing knows, or a value its feature does not
+take — a size that is no length, `(min-width: 0\0)` — is neither true nor
+false, as Media Queries 4 has it: it holds nowhere under a `not` as well,
+and `(unknown: 1) or (min-width: 600px)` holds where the width does.
 `@import` goes through the resource seam, its media queries kept as the
 conditions of what it imports. Cascade layers are read (CSS
 Cascade 5): `@layer a, b;` fixes their order, the document's across all of
@@ -2368,11 +2400,13 @@ border or background properties of an `<input>`, a `<textarea>` or a
 paints that box, as a browser drops a field's native look for the author's;
 the widget is mounted bare inside its content box, with no frame or fill,
 and writes in the element's own colour and font, which the author chose to
-go on that background. Its size is then its text's, and the border and
-padding around it are the author's. It is the page setting them that
-counts, not what it set them to, as CSS UI 4 has it (7.2.1) and Chrome,
-Firefox and Safari do: `border: none; background: transparent` is a page
-taking the frame off to draw the field in a box of its own, as
+go on that background. Its size is then its text's, a line as tall as its
+`line-height` makes it — at `normal`, its font's own, as a browser's text
+field is — and the border and padding around it are the author's, or the
+web's where the author set only some of them. It is the page setting them
+that counts, not what it set them to, as CSS UI 4 has it (7.2.1) and
+Chrome, Firefox and Safari do: `border: none; background: transparent` is
+a page taking the frame off to draw the field in a box of its own, as
 joshwcomeau.com's newsletter form does in a white pill, and read as values
 it was a field left alone, the palette's frame mounted inside the pill. The
 answer is the one that takes the palette's look off a button, above. A
@@ -2386,6 +2420,19 @@ AppKit's drawn over it. `appearance: none` is how a design system writes
 every field it has, often with neither a border nor a background. A field
 the page set none of them on keeps the theme's frame, and so does every
 `<input type=submit>`: core's `<Button>` draws its own label.
+
+The web's edges are Chrome's, as a button's are: a text field's 2px inset
+border round 1px of padding above and below and 2px beside, a text area's
+1px solid border round 2px, and a select's 1px solid border, square, with
+none, each on the palette's ground and in its border colour. A page that
+sets one border property builds on the rest. The commonest focus style
+there is, `input:focus { outline: none; border-color: … }` on a field
+otherwise left alone, is a 2px inset border in that colour while the field
+has the focus, as it is in Chrome, and a field given only a radius is that
+border rounded. The checkables, a range, a file, an image and an input
+button have none, as in Blink's sheet. A field the page left alone has
+none either: its box is the palette's widget, frame and all, which the
+widget draws.
 
 **The application scrolls it, and height does not frighten it.** The element
 sizes to its content; put it in a `<box overflow="scroll">`, the same shape
