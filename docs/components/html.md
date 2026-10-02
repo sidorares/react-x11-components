@@ -1718,9 +1718,20 @@ least or greatest width through it.
 
 **SVG:** an inline `<svg>`, an SVG image and an SVG background are drawn by
 ntk's `SvgView`, which core's own `<svg>` element draws with, so they draw
-its subset: shapes and paths, groups, `<use>`, gradients and plain text,
-with presentation attributes and `style` attributes — not filters, masks
-or clip paths. An inline `<svg>`'s `fill` and `stroke` are the document's:
+its subset: shapes and paths, groups, `<use>`, gradients, text with its
+`<tspan>`s, and masks, with presentation attributes and `style`
+attributes — not filters or clip paths. An inline drawing's text is set in
+its box's font where it names none, as a browser sets it, so a family it
+gives as `var(--font-sans)`, which only the page could answer, is the
+page's. A mask in a drawing is drawn on the surfaces the document's own
+masks are, which is what lets it mask on macOS, where the context has no
+surface of ntk's to make. A drawing with text in it that a `transform`
+turns is drawn on a surface on X11, as a box with text is, since ntk sets
+glyphs level. Spans and masks are `SvgView`'s: an ntk from before them
+([sidorares/ntk#523](https://github.com/sidorares/ntk/pull/523)) draws a
+text's spans as one string and a masked element unmasked.
+
+An inline `<svg>`'s `fill` and `stroke` are the document's:
 properties a style sheet's rule sets on the element over its attributes,
 which inherit into it, and from it to the shapes it draws. That is how an
 icon set paints its icons, `.icon { fill: currentColor }`. A rule may name
