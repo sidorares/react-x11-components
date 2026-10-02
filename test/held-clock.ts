@@ -1,18 +1,18 @@
 // An animation's clock, held: its time moves only when the test says so.
 //
-// Seven things here run on the wall clock on purpose — the maps wheel's glide
+// Eight things here run on the wall clock on purpose — the maps wheel's glide
 // and the window a map counts as moving in after it (`glideClock` and
 // `settleClock` in ../src/maps/controller.ts), a reorder drop's flight home
 // (`flightClock` in ../src/reorder/clock.ts), the march of `<Flow>`'s dashed
-// edges (`flowClock` in ../src/flow/node.ts), the virtual window's idea
-// of a scroll in flight (`windowClock` in ../src/internal/window.ts), the
-// rest `<Html>` holds a hover for while its content moves under the pointer
-// (`hoverClock` in ../src/html/node.ts) and `<CodeEditor>`'s caret blink
-// (`blinkClock` in ../src/code-editor/node.ts). Each waits on a timer for
-// its next step, and all but the blink read the time as they go. A runner
-// slow enough to spend a step's wait inside one `await` finds the step
-// already taken, and each has failed that way. Held, a step is taken when a
-// `frame()` the test takes brings the time to it.
+// edges and the rest its zoom waits out (`flowClock` in ../src/flow/node.ts),
+// the virtual window's idea of a scroll in flight (`windowClock` in
+// ../src/internal/window.ts), the rest `<Html>` holds a hover for while its
+// content moves under the pointer (`hoverClock` in ../src/html/node.ts) and
+// `<CodeEditor>`'s caret blink (`blinkClock` in ../src/code-editor/node.ts).
+// Each waits on a timer for its next step, and all but the blink read the time
+// as they go. A runner slow enough to spend a step's wait inside one `await`
+// finds the step already taken, and each has failed that way. Held, a step is
+// taken when a `frame()` the test takes brings the time to it.
 //
 // It stands in for the clock and nothing else: the event still goes through
 // the in-process X server, and the harness's own timers and the component's
@@ -53,8 +53,8 @@ export function holdClock(t: TestContext, clock: AnimationClock): HeldClock {
   let time = 0;
   // By handle, as real timers are: a step disarmed is gone, and two armed
   // at once both run. Each waits what it asked for — a frame for the glide
-  // and the flight, longer for the dashes' tick, the window's idle one, a
-  // held hover's rest and the caret's blink.
+  // and the flight, longer for the dashes' tick, a zoom's rest, the
+  // window's idle one, a held hover's rest and the caret's blink.
   const waiting = new Map<unknown, { step: () => void; at: number }>();
   if (clock.now) t.mock.method(clock as { now(): number }, 'now', () => time);
   t.mock.method(clock, 'arm', (step: () => void, ms: number) => {

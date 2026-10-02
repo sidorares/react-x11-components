@@ -3687,6 +3687,7 @@ interface GlPane {
     zoom: number;
     lifted?: unknown;
     liftedKey?: string | null;
+    moving: boolean;
   } | null;
 }
 
@@ -3709,9 +3710,16 @@ async function glPane(
   return { node, asked: () => asked };
 }
 
-test('under GL a zoom gesture draws the world it has, scaled, and rebuilds it once the zoom rests', async () => {
+test('under GL a zoom gesture draws the world it has, scaled, and rebuilds it once the zoom rests', async (t) => {
   // Every step of a zoom built, packed and uploaded the whole world again
   // — 19 ms a step on a 300-node graph, where a step of a pan is a uniform.
+  //
+  // The pane's clock is held from the mount. Whether a step continues the
+  // gesture is judged on it, against the 120 ms a zoom rests in, and a
+  // runner that spent that over one frame made the next step a gesture of
+  // its own, which rebuilds; held, the rest comes only with frames this
+  // takes.
+  const clock = holdClock(t, flowClock);
   const { node, asked } = await glPane();
   let frame = node.glFrame(null)!;
   assert.ok(frame.world, 'the first frame builds the world');
@@ -3735,14 +3743,18 @@ test('under GL a zoom gesture draws the world it has, scaled, and rebuilds it on
   assert.strictEqual(frame.world, null, 'out as well as in');
   // once it holds still, the pane asks for the frame that rebuilds it
   const before = asked();
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  let held = 0;
+  while (asked() === before && (await clock.frame())) held += FRAME_MS;
   assert.ok(asked() > before, 'the rest asks for a frame by itself');
+  assert.ok(held >= 120, `once the zoom has rested, and not before: ${held}`);
   frame = node.glFrame(key)!;
   assert.ok(frame.world, 'which rebuilds the world at the zoom it rested at');
   assert.strictEqual(frame.zoom, 1);
 });
 
-test('under GL a zoom gesture never magnifies one build past the span', async () => {
+test('under GL a zoom gesture never magnifies one build past the span', async (t) => {
+  // held, so that the steps are one gesture however slow the runner
+  holdClock(t, flowClock);
   const { node } = await glPane();
   let frame = node.glFrame(null)!;
   node.setViewport({ x: 0, y: 0, zoom: 1.1 });
@@ -3761,7 +3773,11 @@ test('under GL a zoom gesture never magnifies one build past the span', async ()
   assert.ok(Math.abs(frame.zoom - 2.5 / 2.4) < 1e-9);
 });
 
-test('under GL a change to the graph mid-zoom rebuilds at the zoom of the moment', async () => {
+test('under GL a change to the graph mid-zoom rebuilds at the zoom of the moment', async (t) => {
+  // Held, or a runner slow between the steps makes the second a jump of
+  // its own, which rebuilds as well: the test passed without ever being
+  // mid-zoom.
+  holdClock(t, flowClock);
   const { node } = await glPane();
   let frame = node.glFrame(null)!;
   node.setViewport({ x: 0, y: 0, zoom: 1.1 });
@@ -3770,6 +3786,7 @@ test('under GL a change to the graph mid-zoom rebuilds at the zoom of the moment
   // the world the surface holds is not the one the pane last built — an
   // atlas reset, or anything that moved the version
   frame = node.glFrame(null)!;
+  assert.ok(frame.moving, 'precondition: the gesture is still moving');
   assert.ok(frame.world, 'rebuilt');
   assert.strictEqual(frame.zoom, 1, 'at the zoom it is drawn at, unscaled');
 });
