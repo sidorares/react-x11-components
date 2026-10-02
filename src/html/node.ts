@@ -917,13 +917,12 @@ export class HtmlViewNode extends Node {
     if (!boxes) return null;
     // laid out against the viewport at the document's top, and drawn at the
     // viewport (`atViewport`)
-    const root = tree.root;
     const out: Rect[] = [];
     for (const box of boxes) {
       if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
       out.push({
-        x: viewport.x + box.boundsX - root.x,
-        y: viewport.y + box.boundsY - root.y,
+        x: viewport.x + box.boundsX,
+        y: viewport.y + box.boundsY,
         width: box.boundsWidth,
         height: box.boundsHeight,
       });
@@ -1697,10 +1696,7 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const viewport = tree && FIXED_BOXES.has(tree) && this._viewport();
     if (!tree || !viewport) return null;
-    return {
-      x: viewport.x - this.abs.x - tree.root.x,
-      y: viewport.y - this.abs.y - tree.root.y,
-    };
+    return { x: viewport.x - this.abs.x, y: viewport.y - this.abs.y };
   }
 
   /**

@@ -238,6 +238,108 @@ test('the html implied around a body with no html keeps its margins to itself', 
   }
 });
 
+test('the element the root box stands in for is drawn inside its margins', async () => {
+  // Where the markup writes no element for it, the root box is the box of
+  // the one it stands in for: the `<html>` implied around a `<body>`, or a
+  // fragment's body. Its margins were folded into its padding, which kept
+  // what is in it where it belongs and drew its border at the window's
+  // edge, the whole width across and down past the body. Chrome draws it
+  // inset by the margins, as it does an element written in the markup.
+  const red = parseColor('red');
+  /** The rectangle a box's border sides are drawn over. */
+  const ring = (fills: Fill[]): number[] => {
+    const sides = fills.filter((f) => f.style === red);
+    assert.ok(sides.length, 'a border is drawn');
+    const x = Math.min(...sides.map((f) => f.x));
+    const y = Math.min(...sides.map((f) => f.y));
+    return [
+      x,
+      y,
+      Math.max(...sides.map((f) => f.x + f.w)) - x,
+      Math.max(...sides.map((f) => f.y + f.h)) - y,
+    ];
+  };
+  // the implied `<html>`: Chrome's is at 20, 20, 160 × 60, the body 35 down
+  const { el } = await renderScrolled(
+    bare(
+      'html{margin:20px;border:5px solid red}' +
+        'body{margin:10px;background:#f4a261;height:30px}',
+      '',
+    ),
+    120,
+    200,
+  );
+  const fills = await fillsOf(el);
+  assert.deepStrictEqual(ring(fills), [20, 20, 160, 60]);
+  assert.strictEqual(boxOf(el, 'body').y, 35);
+  // the body's background is the canvas's, and covers all of it still
+  const ground = fills.find((f) => f.style === parseColor('#f4a261'));
+  assert.deepStrictEqual(
+    ground && [ground.x, ground.y, ground.w],
+    [0, 0, 200],
+    `the canvas: ${JSON.stringify(ground)}`,
+  );
+  // A fragment's body, drawn and laid out where the same body in an
+  // `<html>` is. A body is a block in the `<html>` around it, so its top
+  // margin collapses with its first block's only where nothing parts them:
+  // with a border or padding on top, folded as well, it collapsed through
+  // them, and the paragraph stood its own margin higher than Chrome puts
+  // it, at 41 for Chrome's 16px one.
+  const written = (css: string, body: string): string =>
+    `<!DOCTYPE html><html><head><style>${css}</style></head>` +
+    `<body>${body}</body></html>`;
+  const fragment = (css: string, body: string): string =>
+    `<!DOCTYPE html><style>${css}</style>${body}`;
+  const cases: [string, string, number[]][] = [
+    // Chrome: body 20, 20, 160 wide; the paragraph 25 across
+    [
+      'body{margin:20px;border:5px solid red}',
+      '<p id="p">hi</p>',
+      [20, 20, 160],
+    ],
+    [
+      'body{margin:20px;border-top:5px solid red}',
+      '<p id="p">hi</p>',
+      [20, 20, 160],
+    ],
+    // with no border on top, the body starts where its margin and the
+    // paragraph's end: Chrome's at 20, 40
+    [
+      'body{margin:20px 20px 30px;border-left:4px solid red}',
+      '<p id="p" style="margin:40px 0 50px">hi</p>',
+      [20, 40, 4],
+    ],
+  ];
+  for (const [css, body, chrome] of cases) {
+    const ours = await renderScrolled(fragment(css, body), 120, 200);
+    const theirs = await renderScrolled(written(css, body), 120, 200);
+    const drawn = ring(await fillsOf(ours.el));
+    assert.deepStrictEqual(drawn.slice(0, 3), chrome, css);
+    assert.deepStrictEqual(drawn, ring(await fillsOf(theirs.el)), css);
+    const p = boxOf(ours.el, 'p');
+    const q = boxOf(theirs.el, 'p');
+    assert.deepStrictEqual([p.x, p.y], [q.x, q.y], `${css}: the paragraph`);
+    assert.strictEqual(ours.el.abs.height, theirs.el.abs.height, css);
+  }
+  // and a body's own background, where the `<html>` has one, is drawn in
+  // the body's box: Chrome's at 20, 20, 160 wide
+  const white = parseColor('#fff');
+  const own = await renderScrolled(
+    fragment(
+      'html{background:#ddd}body{margin:20px;background:#fff}',
+      '<p>hi</p>',
+    ),
+    120,
+    200,
+  );
+  const sheet = (await fillsOf(own.el)).find((f) => f.style === white);
+  assert.deepStrictEqual(
+    sheet && [sheet.x, sheet.y, sheet.w],
+    [20, 20, 160],
+    `the body's background: ${JSON.stringify(sheet)}`,
+  );
+});
+
 metric(
   'a fixed box is drawn where the viewport is, however far the pane has scrolled the document',
   async () => {
