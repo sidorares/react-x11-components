@@ -1318,6 +1318,29 @@ width comes to is the same whichever candidate it holds — a `w` one is as
 wide as `sizes` says, an `x` one its pixels over its density — and an
 arrival, which can change it, clears the cache as it always has.
 
+Two more things a choice decides, and each has a rule. **The `<source>` it
+took sizes the `<img>`** where it has a `width` or a `height` (HTML's
+dimension attribute source), so the cascade asks for it
+(`Cascade.dimensionSource`), and an `<img>`'s presentational hints are no
+longer a function of its own attributes. That is why the style-sharing key
+carries the source's two attributes, and why a choice that takes another
+source hands its `<img>` to the build to restyle (`SourceChanges.restyle`)
+rather than keeping its style: two images written alike in two pictures
+shared one style, and a resize across a `media` kept the old one. Anything
+else that makes a hint read past its element joins the key the same way.
+**An image whose `sizes` is `auto` is picked after layout**, from its
+content width (`chooseLaidOut`), and where that changes what it draws, the
+boxes are built and laid out once more, in the same `_update`. That
+terminates only because HTML's UA sheet gives such an image `contain: size
+!important`, so its width is no candidate's to change. That is also why the
+cascade has a UA `!important` origin over the author's
+(`Origin.UserAgentImportant`): a page's `img { contain: none }` would let
+the second layout move the width the pick was made for. And it is why
+layout reads a replaced box's own size through `ownIntrinsic` alone, which
+answers the contained one: the flex item's basis and cross size read
+`box.intrinsic`, and an auto image in a flex row took its height from the
+candidate's ratio.
+
 **An `image-set()` is chosen as the style is computed, and a choice at
 another density is not a string.** A cascade is made for one scale, and
 its lengths are device pixels already, so `imageSetOf` (`css/style.ts`)

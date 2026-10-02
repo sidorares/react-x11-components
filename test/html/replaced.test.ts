@@ -11,9 +11,12 @@ import {
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import * as ntk from 'react-x11/ntk';
+import type { Element } from 'domhandler';
+import { parseDocument } from 'htmlparser2';
 import { Html } from '../../src/index.js';
 import { decodesImageType } from '../../src/html/image-types.js';
 import {
+  allowsAutoSizes,
   normalize,
   parseSizes,
   parseSrcset,
@@ -36,7 +39,7 @@ import {
   svgBytes,
   view,
 } from './harness.js';
-import type { PaintOp, ReplacedBox } from './harness.js';
+import type { LaidBox, PaintOp, ReplacedBox } from './harness.js';
 
 afterEach(cleanup);
 
@@ -301,11 +304,52 @@ test('sizes: the first entry whose condition holds, past entries that are none, 
   assert.strictEqual(size('300'), 1000, 'a number');
   assert.strictEqual(size('-10px, 300px'), 300, 'a negative length');
   assert.strictEqual(size('screen 300px, 600px'), 600, 'a media type');
-  // `auto` is the laid-out width of a lazy image, which is not known when a
-  // source is chosen here; elsewhere it is passed over, as Firefox and
-  // WebKit pass it over — Chrome takes 100vw for the whole list
-  assert.strictEqual(size('auto, 300px'), 300, 'auto');
+  // `auto` is the laid-out width of a lazy image, and with none it is
+  // passed over, as Firefox and WebKit pass it over — Chrome takes 100vw
+  // for the whole list
+  assert.strictEqual(size('auto, 300px'), 300, 'auto, with no width');
+  assert.strictEqual(size('AUTO'), 1000, 'auto alone, with none');
   assert.strictEqual(size(''), 1000, 'none at all is 100vw');
+  const laidOut = (sizes: string, width: number) =>
+    sourceSize(parseSizes(sizes), env(1000), width);
+  assert.strictEqual(laidOut('auto, 300px', 120), 120, 'auto is the width');
+  assert.strictEqual(laidOut('Auto,300px', 120), 120, 'in any case');
+  assert.strictEqual(
+    laidOut('auto, (min-width: 2000px) auto, 300px', 0),
+    0,
+    'of nothing',
+  );
+  assert.strictEqual(
+    laidOut('(min-width: 2000px) auto, 300px', 120),
+    300,
+    'under a condition that does not hold',
+  );
+  assert.strictEqual(
+    laidOut('(min-width: 600px) auto, 300px', 120),
+    120,
+    'and one that does',
+  );
+});
+
+test('an image allows auto in its sizes where it loads lazily and its sizes starts with it, as written', () => {
+  const img = (attribs: string) =>
+    parseDocument(`<img ${attribs}>`).children[0] as Element;
+  assert.ok(allowsAutoSizes(img('loading="lazy" sizes="auto"')));
+  assert.ok(allowsAutoSizes(img('loading="LAZY" sizes="AUTO,100px"')));
+  assert.ok(allowsAutoSizes(img('loading="lazy" sizes="auto, 100px"')));
+  // Firefox and WebKit allow none of these, as HTML says; Chrome 154 takes
+  // the second and the third, and 100vw for the first
+  assert.ok(!allowsAutoSizes(img('sizes="auto, 100px"')), 'not lazy');
+  assert.ok(
+    !allowsAutoSizes(img('loading="lazy" sizes=" auto, 100px"')),
+    'a space before it',
+  );
+  assert.ok(
+    !allowsAutoSizes(img('loading="lazy" sizes="(min-width: 1px) 1px, auto"')),
+    'after another entry',
+  );
+  assert.ok(!allowsAutoSizes(img('loading="lazy" sizes="autoplay"')));
+  assert.ok(!allowsAutoSizes(img('loading="lazy"')), 'no sizes');
 });
 
 test('the least dense candidate at or above the scale is chosen, else the densest, and of equal ones the first', () => {
@@ -420,6 +464,7 @@ async function choosing(
   const el = () => view(screen.getByTestName('doc') as DrawnNode);
   return {
     asked,
+    el,
     size: (id: string): [number, number] => {
       const box = boxOf(el(), id);
       return [box.width, box.height];
@@ -576,6 +621,224 @@ test('a resize across a source’s media chooses again, and the image shown stay
   await doc.resize(200);
   assert.deepStrictEqual(doc.size('a'), [20, 10]);
   assert.deepStrictEqual(doc.asked, ['small.png', 'large.png']);
+});
+
+test("a <picture>'s chosen source sizes its image with its width and height, in place of the image's own", async () => {
+  // HTML's dimension attribute source: an art-directed picture reserves
+  // another shape at each breakpoint, as Chrome, Firefox and Safari all
+  // have it. The two images are written alike, and have two styles.
+  const picture = (width: number, height: number) =>
+    '<picture><source media="(min-width: 300px)" srcset="large.png" ' +
+    `width="${width}" height="${height}">` +
+    '<img src="small.png" width="30" height="30"></picture>';
+  const doc = await choosing(picture(50, 10) + picture(60, 12), {
+    'small.png': SMALL,
+    'large.png': LARGE,
+  });
+  const sizes = () => {
+    const root = (doc.el() as unknown as { _tree: { root: LaidBox } })._tree
+      .root;
+    const out: [number, number][] = [];
+    const walk = (box: LaidBox): void => {
+      if ((box.el as { name?: string } | null)?.name === 'img') {
+        out.push([box.width, box.height]);
+      }
+      box.children.forEach(walk);
+    };
+    walk(root);
+    return out;
+  };
+  assert.deepStrictEqual(sizes(), [
+    [50, 10],
+    [60, 12],
+  ]);
+  // a resize that takes the <img>'s own restyles it, with the boxes built
+  // again around every other style
+  await doc.resize(200);
+  assert.deepStrictEqual(sizes(), [
+    [30, 30],
+    [30, 30],
+  ]);
+  await doc.resize(400);
+  assert.deepStrictEqual(sizes(), [
+    [50, 10],
+    [60, 12],
+  ]);
+});
+
+test("a source's width and height map as every browser maps them: one alone, one that is no length, one that sizes nothing", async () => {
+  const img = (id: string, style = '') =>
+    `<img id="${id}" src="small.png" width="30" height="30"${style}></picture>`;
+  const { size } = await choosing(
+    // a width alone: the height is the image's, at its ratio, and not the
+    // <img>'s; and a height alone
+    '<picture><source srcset="large.png" width="50">' +
+      img('w') +
+      '<picture><source srcset="large.png" height="10">' +
+      img('h') +
+      // one that is no length leaves the <img>'s, and so its ratio
+      '<picture><source srcset="large.png" width="wide" height="10">' +
+      img('x') +
+      '<picture><source srcset="large.png" width="50%" height="10">' +
+      img('p') +
+      // a source with neither, one not chosen, and one after the <img>
+      '<picture><source srcset="large.png">' +
+      img('n') +
+      '<picture><source type="image/x-none" srcset="large.png" width="50" height="10">' +
+      img('t') +
+      '<picture><img id="f" src="small.png" width="30" height="30">' +
+      '<source srcset="large.png" width="50" height="10"></picture>' +
+      // and an image that never comes takes the ratio the source gives
+      '<picture><source srcset="gone.png" width="40" height="10">' +
+      img('g', ' style="width:20px;height:auto"'),
+    { 'small.png': SMALL, 'large.png': LARGE },
+    { width: 400 },
+  );
+  assert.deepStrictEqual(size('w'), [50, 25]);
+  assert.deepStrictEqual(size('h'), [20, 10]);
+  assert.deepStrictEqual(size('x'), [30, 10]);
+  assert.deepStrictEqual(size('p'), [200, 10], 'half the column');
+  assert.deepStrictEqual(size('n'), [30, 30]);
+  assert.deepStrictEqual(size('t'), [30, 30]);
+  assert.deepStrictEqual(size('f'), [30, 30]);
+  assert.deepStrictEqual(size('g'), [20, 5]);
+});
+
+/** WordPress 6.7's lazy image: `auto`, and the sizes for a browser without
+ *  it, which is any image that is not lazy. */
+const wordpress = (id: string, lazy = true) =>
+  `<img id="${id}" ${lazy ? 'loading="lazy" ' : ''}width="40" height="20" ` +
+  'sizes="auto, (max-width: 40px) 100vw, 40px" ' +
+  'srcset="small.png 20w, large.png 40w" src="large.png" ' +
+  'style="max-width:100%;height:auto">';
+
+test('an image whose sizes is auto is chosen for the width it is laid out at, and nothing else is asked for', async () => {
+  const images = { 'small.png': SMALL, 'large.png': LARGE };
+  const lazy = await choosing(
+    `<div style="width:20px">${wordpress('a')}</div>`,
+    images,
+  );
+  assert.deepStrictEqual(lazy.asked, ['small.png'], 'the 20w for 20 pixels');
+  assert.deepStrictEqual(lazy.size('a'), [20, 10]);
+  cleanup();
+  // 20 CSS pixels at 2x: the 40w
+  const at2 = await choosing(
+    `<div style="width:20px">${wordpress('a')}</div>`,
+    images,
+    { scale: 2 },
+  );
+  assert.deepStrictEqual(at2.asked, ['large.png']);
+  assert.deepStrictEqual(at2.size('a'), [40, 20]);
+  cleanup();
+  // an image that is not lazy has no auto: its 40px, as Firefox and WebKit
+  // have it, where Chrome 154 takes 100vw
+  const eager = await choosing(
+    `<div style="width:20px">${wordpress('a', false)}</div>`,
+    images,
+  );
+  assert.deepStrictEqual(eager.asked, ['large.png']);
+  assert.deepStrictEqual(eager.size('a'), [20, 10]);
+});
+
+test("auto: in a lazy image's sizes as written, a source's with none, at 2x and in no box at all", async () => {
+  const set = 'srcset="small.png 20w, large.png 40w"';
+  const images = { 'small.png': SMALL, 'large.png': LARGE };
+  const { asked } = await choosing(
+    // 15 pixels wide: the 20w, where auto is; the 40w, for 30px, where not
+    `<img loading="lazy" sizes="auto, 30px" ${set} style="width:15px;height:5px">` +
+      `<img sizes="auto, 30px" srcset="a.png 20w, b.png 40w" style="width:15px;height:5px">` +
+      `<img loading="lazy" sizes=" auto, 30px" srcset="c.png 20w, d.png 40w" style="width:15px;height:5px">` +
+      // a <source> with no sizes before a lazy image's auto is auto
+      `<picture><source srcset="e.png 20w, f.png 40w">` +
+      `<img loading="lazy" sizes="auto" src="g.png" style="width:15px;height:5px"></picture>` +
+      // and an image with no box is passed over to the size after it
+      `<img loading="lazy" sizes="auto, 30px" srcset="h.png 20w, i.png 40w" style="display:none">`,
+    images,
+  );
+  // the images that are not auto as the boxes are built, and those that
+  // are once they are laid out
+  assert.deepStrictEqual(asked, [
+    'b.png',
+    'd.png',
+    'small.png',
+    'e.png',
+    'i.png',
+  ]);
+  cleanup();
+  // the width is in CSS pixels: 10 of them at 2x is the 20w
+  const at2 = await choosing(
+    `<img loading="lazy" sizes="auto" ${set} style="width:10px;height:5px">`,
+    images,
+    { scale: 2 },
+  );
+  assert.deepStrictEqual(at2.asked, ['small.png']);
+});
+
+test("an image whose sizes is auto is laid out as though it had none, over any rule of the page, so its width is no candidate's", async () => {
+  // HTML's `contain: size !important` and `contain-intrinsic-size: 300px
+  // 150px` for it: with no size of its own it is 300 by 150 whichever
+  // candidate it holds, and a page cannot take that back
+  const doc = await choosing(
+    '<style>img{contain:none !important}</style>' +
+      '<img id="a" loading="lazy" sizes="auto" srcset="small.png 20w, large.png 40w">' +
+      '<img id="b" loading="lazy" sizes="auto" srcset="small.png 20w, large.png 40w" ' +
+      'style="width:25px;height:15px;object-fit:none">' +
+      // and in a flex row, whose item's height was the 40w's ratio's
+      '<div style="display:flex;width:60px">' +
+      '<img id="c" loading="lazy" sizes="auto" srcset="small.png 20w, large.png 40w" ' +
+      'style="flex:1;min-width:0"></div>',
+    { 'small.png': SMALL, 'large.png': LARGE },
+  );
+  assert.deepStrictEqual(doc.size('a'), [300, 150]);
+  assert.deepStrictEqual(doc.size('b'), [25, 15]);
+  assert.deepStrictEqual(doc.size('c'), [60, 150]);
+  // what it holds is the 40w at 40/25x, 25 by 12.5: what `object-fit:
+  // none` draws, built again for once it was picked
+  const held = boxOf(doc.el(), 'b') as unknown as {
+    intrinsic: { width: number; height: number };
+  };
+  assert.deepStrictEqual(
+    [held.intrinsic.width, held.intrinsic.height],
+    [25, 12.5],
+  );
+  assert.deepStrictEqual(doc.asked, ['large.png']);
+});
+
+test('an image whose sizes is auto is chosen again as its width moves, and picking settles', async () => {
+  const doc = await choosing(
+    '<img id="a" loading="lazy" sizes="auto" srcset="small.png 20w, large.png 40w" ' +
+      'style="width:50%;height:10px">',
+    { 'small.png': SMALL, 'large.png': LARGE },
+    { width: 40 },
+  );
+  const el = doc.el() as unknown as {
+    _chooseLaidOut(tree: unknown): boolean;
+    _invalidate(stale: number): void;
+  };
+  const picked: boolean[] = [];
+  const real = el._chooseLaidOut.bind(el);
+  el._chooseLaidOut = (tree) => {
+    const changed = real(tree);
+    picked.push(changed);
+    return changed;
+  };
+  assert.deepStrictEqual(doc.asked, ['small.png']);
+  await doc.resize(80);
+  assert.deepStrictEqual(doc.asked, ['small.png', 'large.png']);
+  // what it draws changed once, for the boxes built again around it, and
+  // that build's layout picked nothing anew
+  assert.deepStrictEqual(picked, [true]);
+  // a layout at the same width picks the same, and builds nothing
+  el._invalidate(1);
+  await act();
+  assert.deepStrictEqual(picked, [true, false]);
+  // and narrower again: the 40w in hand, at 2x, as for any width
+  await doc.resize(40);
+  assert.deepStrictEqual(doc.asked, ['small.png', 'large.png']);
+  const box = boxOf(doc.el(), 'a') as unknown as {
+    intrinsic: { width: number };
+  };
+  assert.strictEqual(box.intrinsic.width, 20);
 });
 
 metric(

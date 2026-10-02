@@ -230,11 +230,49 @@ a lighter one: Chrome's choice, where Firefox asks for the lighter one and
 Safari keeps the old density too. A chosen image that is declined is a
 declined image, and its `src` is not asked for in its place.
 
-Two parts are not done. `sizes="auto"` is the laid-out width of a lazily
-loaded image, which is not known when the source is chosen, so it is
-passed over for the entries after it — which is what WordPress writes
-them for. And a chosen `<source>`'s `width` and `height`, which a browser
-gives the `<img>` in place of its own, are not read: the `<img>`'s are.
+**A chosen `<source>` with a `width` or a `height` sizes the `<img>`**,
+in place of the `<img>`'s own: HTML's "dimension attribute source", which
+Chrome 90, Safari 15 and Firefox 108 have, and which lets an art-directed
+picture reserve another shape at each breakpoint. A resize that takes
+another source restyles the image. The three browsers map the attributes
+the same way, and so does this:
+
+- a source with a `width` alone leaves the height to the image's ratio,
+  and a `height` alone the width; the `<img>`'s attribute for the other
+  side is not read;
+- a source's attribute that is no length, `width="wide"`, leaves the
+  `<img>`'s for that side. One that makes no ratio, such as a percentage,
+  leaves the `<img>`'s ratio;
+- a source that is not chosen sizes nothing, whatever it says.
+
+**`sizes="auto"` is the image's laid-out width**, the width of its content
+box in CSS pixels, in an `<img loading="lazy">` whose `sizes` is `auto` or
+starts with `auto,`. WordPress 6.7 writes `sizes="auto, …"` on every lazy
+image. A `<source>` with no `sizes` before such an image counts as `auto`
+too. Such an image's source is chosen with the rest, and its candidate
+once it is laid out, again whenever its width moves. Nothing is asked for
+until then, neither the size the entries after `auto` give nor the
+`src`.
+
+HTML's UA sheet gives every image whose `sizes` starts with `auto`, lazy
+or not, `contain: size !important` and `contain-intrinsic-size: 300px
+150px`. It is laid out as though it had no image: at its attributes, its
+style, or 300 by 150. So the candidate its
+width picks cannot change that width, and no rule of the page can take the
+containment back. A pick after layout that changes what the image draws
+builds the boxes again for the size it now holds, which `object-fit:
+none` draws. That second layout leaves every width as it was, so picking
+stops there.
+
+An image without `loading="lazy"` has no `auto`, and neither does a
+`sizes` with a space before `auto` or with `auto` after another entry. In
+those, `auto` is passed over for the entries after it. That is how Firefox
+and WebKit read it, and how HTML says. Chrome 154 takes `auto` after a
+space or after another entry, and `100vw` for the whole list in an image
+that is not lazy. An image that is
+`display: none` is not laid out, so `auto` is the width it last had, or is
+passed over. Unlike a browser, which lazily loads only what nears the
+viewport, `<Html>` asks for every image, a lazy one included.
 
 ### Image sets
 

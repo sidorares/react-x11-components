@@ -104,6 +104,14 @@ const enum Origin {
   Animation = 4,
   AuthorImportant = 5,
   InlineImportant = 6,
+  /** The UA sheet's `!important`, over every author's (CSS Cascade 4,
+   *  6.1): HTML's `contain: size` on an image whose `sizes` is `auto`. */
+  UserAgentImportant = 7,
+}
+
+/** Whether a candidate is the UA sheet's, normal or `!important`. */
+function fromUserAgent(origin: Origin): boolean {
+  return origin === Origin.UserAgent || origin === Origin.UserAgentImportant;
 }
 
 interface Candidate {
@@ -1531,6 +1539,11 @@ export class Cascade {
    *  as it takes a presentational attribute: under any rule that sets its
    *  `color-scheme`. Set by the box builder from the document. */
   pageColorScheme: string | null = null;
+  /** The element whose `width` and `height` size an `<img>`: its
+   *  dimension attribute source (HTML 15.4.3), which is the `<source>` its
+   *  `<picture>` chose where that has either (`ImageSources`), and the
+   *  `<img>` where none says otherwise. */
+  dimensionSource: ((img: Element) => Element) | null = null;
   /** Each system colour as the `light-dark()` it is: the palette's where
    *  the element's scheme is the palette's, and Chrome's in an SVG image,
    *  which has none. */
@@ -2382,6 +2395,16 @@ export class Cascade {
       const shadow = shadowRootOf(el);
       if (shadow) key += `\u0001h${this._rootInfo(shadow).rules.id}`;
     }
+    // and an image's hints are the attributes of the source it chose, where
+    // that sizes it (`presentationHints`)
+    if (tag === 'img' && this.dimensionSource) {
+      const source = this.dimensionSource(el);
+      if (source !== el) {
+        const w = attr(source, 'width');
+        const h = attr(source, 'height');
+        key += `\u0001sized by=${w?.length ?? -1}:${w ?? ''}=${h?.length ?? -1}:${h ?? ''}`;
+      }
+    }
     if (!this._shareable(el)) {
       const matched: number[] = [];
       const candidates = this._candidates(el, matched);
@@ -2920,7 +2943,7 @@ export class Cascade {
     // the rest for the same reason: every `light-dark()` among them is read
     // by it.
     for (const c of candidates) {
-      authored = c.origin !== Origin.UserAgent;
+      authored = !fromUserAgent(c.origin);
       for (const d of pick(c)) {
         if (
           d.prop === 'font-family' ||
@@ -2989,7 +3012,7 @@ export class Cascade {
     // them. A `font` sets the size as well, which the first pass settled.
     if (this._lh) {
       for (const c of candidates) {
-        authored = c.origin !== Origin.UserAgent;
+        authored = !fromUserAgent(c.origin);
         for (const d of pick(c)) {
           if (d.prop === 'line-height' || d.prop === 'font') {
             this._apply(style, parentStyle, d, ctx);
@@ -3008,7 +3031,7 @@ export class Cascade {
     let animationTree: ShadowRoot | null = null;
     const scoped = this._scoped;
     for (const c of candidates) {
-      authored = c.origin !== Origin.UserAgent;
+      authored = !fromUserAgent(c.origin);
       for (const d of pick(c)) {
         if (d.prop === 'font-size' || d.custom) continue;
         this._apply(style, parentStyle, d, ctx);
@@ -3665,7 +3688,7 @@ export class Cascade {
     const tree = this._scoped ? this._treeInfo(el) : this._docInfo;
     if (this._scoped) this._scopedInto(el, '', out, matched);
 
-    const hints = presentationHints(el);
+    const hints = presentationHints(el, this.dimensionSource);
     // the page's colour schemes are its root's where no rule sets them
     if (
       this.pageColorScheme &&
@@ -3752,7 +3775,7 @@ function stylesControl(candidates: readonly Candidate[]): boolean {
   // auto` keeps the control's look, as a reset a page takes back does
   let appearance = '';
   for (const c of candidates) {
-    if (c.origin === Origin.UserAgent || c.origin === Origin.Animation) {
+    if (fromUserAgent(c.origin) || c.origin === Origin.Animation) {
       continue;
     }
     for (const d of pick(c)) {
@@ -4222,7 +4245,7 @@ function pushRule(
     out.push({
       origin: d.important
         ? origin === Origin.UserAgent
-          ? Origin.UserAgent
+          ? Origin.UserAgentImportant
           : Origin.AuthorImportant
         : origin,
       context,
@@ -4272,8 +4295,9 @@ function byCascade(a: Candidate, b: Candidate): number {
 
 /** Each origin's place by origin and importance alone: the user agent's;
  *  the presentational hints; the author's normal declarations, `style`
- *  attributes among them; the animations'; the author's `!important`. */
-const IMPORTANCE: readonly number[] = [0, 1, 2, 2, 3, 4, 4];
+ *  attributes among them; the animations'; the author's `!important`; the
+ *  user agent's `!important`. One for each `Origin`, in its order. */
+const IMPORTANCE: readonly number[] = [0, 1, 2, 2, 3, 4, 4, 5];
 
 /**
  * Which of two layers wins for a normal declaration: a later one over an
@@ -4300,7 +4324,10 @@ function compareLayers(
  * documents a desktop application is handed (mail, exported reports,
  * anything generated by a template from 2009) are full of them.
  */
-function presentationHints(el: Element): Declaration[] {
+function presentationHints(
+  el: Element,
+  dimensionSource: ((img: Element) => Element) | null = null,
+): Declaration[] {
   const out: Declaration[] = [];
   const tag = tagOf(el);
   const push = (prop: string, value: string): void => {
@@ -4404,17 +4431,40 @@ function presentationHints(el: Element): Declaration[] {
       (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
   ) {
     const width = attr(el, 'width');
-    if (width) push('width', lengthAttr(width));
     const height = attr(el, 'height');
-    if (height) push('height', lengthAttr(height));
-    // and, both numbers, an image's the ratio it has before it loads, or
-    // where it has none of its own (HTML 15.4.3, "map to the aspect-ratio
-    // property")
-    if (width && height && RATIO_SIZED.has(tag)) {
-      const w = parseFloat(width);
-      const h = parseFloat(height);
-      if (w > 0 && h > 0 && !/%/.test(width + height)) {
-        push('aspect-ratio', `auto ${w} / ${h}`);
+    // an `<img>` whose `<picture>` chose a `<source>` with a `width` or a
+    // `height` is sized by that source's (HTML 15.4.3, its "dimension
+    // attribute source"): an art-directed picture reserves another shape
+    // at each breakpoint
+    const source = tag === 'img' && dimensionSource ? dimensionSource(el) : el;
+    if (source === el) {
+      if (width) push('width', lengthAttr(width));
+      if (height) push('height', lengthAttr(height));
+      // and, both numbers, an image's the ratio it has before it loads, or
+      // where it has none of its own (HTML 15.4.3, "map to the
+      // aspect-ratio property")
+      if (RATIO_SIZED.has(tag)) ratioHint(width, height, push);
+    } else {
+      // The source's in place of the image's own, which stay where the
+      // source's are there and do not parse — a `width="abc"` leaves the
+      // image's, and so does a `width="50%"` its ratio — and go where the
+      // source has none: a source with a `width` alone leaves the height to
+      // the image's ratio. Chrome, Firefox and Safari all map them so,
+      // each the image's own and then the source's over them, which is why
+      // an invalid one here is followed by nothing that drops it.
+      const w = attr(source, 'width');
+      const h = attr(source, 'height');
+      if (w !== undefined) {
+        if (width) push('width', lengthAttr(width));
+        if (w) push('width', lengthAttr(w));
+      }
+      if (h !== undefined) {
+        if (height) push('height', lengthAttr(height));
+        if (h) push('height', lengthAttr(h));
+      }
+      if (w !== undefined && h !== undefined) {
+        ratioHint(width, height, push);
+        ratioHint(w, h, push);
       }
     }
   } else if (tag === 'svg') {
@@ -4567,6 +4617,21 @@ function closestBody(el: Element): Element | null {
 
 /** What the `width` and `height` attributes give a ratio as well. */
 const RATIO_SIZED = new Set(['img', 'video']);
+
+/** The `aspect-ratio` a `width` and a `height` attribute map to, where both
+ *  are numbers and neither a percentage. */
+function ratioHint(
+  width: string | undefined,
+  height: string | undefined,
+  push: (prop: string, value: string) => void,
+): void {
+  if (!width || !height) return;
+  const w = parseFloat(width);
+  const h = parseFloat(height);
+  if (w > 0 && h > 0 && !/%/.test(width + height)) {
+    push('aspect-ratio', `auto ${w} / ${h}`);
+  }
+}
 
 const SIZED = new Set([
   'img',

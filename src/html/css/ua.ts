@@ -190,6 +190,13 @@ hr {
 }
 
 img { display: inline-block; }
+/* an image whose sizes is its laid-out width is laid out as though it had
+   no image, so the candidate that width picks cannot change it (HTML
+   15.4.2), and over every author's rule */
+img:is([sizes="auto" i], [sizes^="auto," i]) {
+  contain: size !important;
+  contain-intrinsic-size: 300px 150px;
+}
 /* never loaded: a box of its own size, framed as a browser frames one */
 iframe { border: 2px inset; }
 /* a poster is drawn within the video's box at its own ratio (HTML 15.4.1) */

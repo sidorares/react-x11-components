@@ -1538,10 +1538,12 @@ class Builder {
       } else {
         // An image that has not arrived still needs a box, or the document
         // reflows under the reader when it does. The attributes are the
-        // author telling us the size in advance; without them the box is a
-        // small placeholder rather than nothing.
-        const width = numberAttr(el, 'width') ?? 0;
-        const height = numberAttr(el, 'height') ?? 0;
+        // author telling us the size in advance — those of the `<source>`
+        // its `<picture>` chose, where that has any (`dimensionSource`);
+        // without them the box is a small placeholder rather than nothing.
+        const sized = this._options.cascade.dimensionSource?.(el) ?? el;
+        const width = numberAttr(sized, 'width') ?? 0;
+        const height = numberAttr(sized, 'height') ?? 0;
         box.intrinsic = {
           width: width * scale,
           height: height * scale,
