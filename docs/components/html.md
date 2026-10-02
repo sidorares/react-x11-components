@@ -1394,8 +1394,10 @@ sidorares/react-x11#819, with `@windowkit/appkit` 0.19), and the document
 offers each element whose animation is one a browser would hand its
 compositor:
 
-- its one animation sets only `opacity`, `transform`, `translate`,
-  `rotate` and `scale`, plays, and is past its delay;
+- its animations set only `opacity`, `transform`, `translate`, `rotate`
+  and `scale`, no two of them the opacity or the transform, and each plays
+  and is past its delay — a fade and a turn on one element go over as two
+  animations on its layer, each with its own timing;
 - it is a box of its own — not an inline split across lines, not a
   `::before` or an `::after` — and is not fixed, clipped, masked or drawn
   against the viewport, and holds nothing fixed to it;

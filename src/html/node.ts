@@ -2777,7 +2777,7 @@ export class HtmlViewNode extends Node {
     if (!this._liftedSet.size || this._followingLifted) return;
     let moving: Set<Element> | null = null;
     for (const el of this._liftedSet) {
-      if (this._spriteOffers.get(el)?.part?.lift.transform) {
+      if (this._spriteOffers.get(el)?.part?.lift.moves) {
         (moving ??= new Set()).add(el);
       }
     }
