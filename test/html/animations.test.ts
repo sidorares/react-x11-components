@@ -1419,16 +1419,11 @@ test('a lifted element a hover draws otherwise asks for the frame that paints it
   );
   const [sprite] = doc.el.sprites()!;
   doc.el.spritesLifted(new Set([sprite.key]));
-  // a core that has the seam answers this; the floor this suite runs on
-  // may predate it
-  let asked = 0;
-  (doc.el as unknown as { spritesChanged(): void }).spritesChanged = () => {
-    asked += 1;
-  };
+  const asked = t.mock.method(doc.el, 'spritesChanged');
   const claims = t.mock.method(doc.el, 'invalidate');
   const abs = (doc.el as unknown as DrawnNode).abs;
   doc.el.setHover(abs.x + 10, abs.y + 10);
-  assert.strictEqual(asked, 1, 'a frame asked for');
+  assert.strictEqual(asked.mock.callCount(), 1, 'a frame asked for');
   assert.strictEqual(claims.mock.callCount(), 0, 'no hole repainted');
   const [again] = doc.el.sprites()!;
   assert.notStrictEqual(again.version, sprite.version, 'painted again');
@@ -1471,7 +1466,7 @@ test('a sprite paints its element as the document would, at full opacity and whe
   // every frame's
   assert.strictEqual(sprite.rect.x, abs.x);
   const { ctx, fills } = recorder();
-  sprite.paint(ctx);
+  sprite.paint(ctx as never);
   const own = fills.filter((f) => f.w === 40 && f.h === 20);
   assert.strictEqual(own.length, 1, JSON.stringify(fills));
   assert.strictEqual(own[0].x, abs.x, 'drawn untranslated');

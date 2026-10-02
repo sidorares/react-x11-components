@@ -2371,7 +2371,7 @@ export class HtmlViewNode extends Node {
     if (moved.length || widgets) this._reportControls();
     // which areas are visible, and where the watched ones are
     this._reportStops();
-    if (reoffer) this._askSprites();
+    if (reoffer) this.spritesChanged();
     // A lifted element only followed to where its layer has it changes no
     // height a reader sees: its own restyle, when it is given back, does.
     if (relayout && !this._followingLifted) {
@@ -2640,7 +2640,7 @@ export class HtmlViewNode extends Node {
    * out as it did; what is made each frame is where it is and the delay
    * from now.
    */
-  sprites(): DocumentSprite[] | null {
+  override sprites(): DocumentSprite[] | null {
     this._offeredEls.clear();
     if (this.destroyed || !this._animating()) return null;
     // this frame paints after the presenter: a build it owes is built now,
@@ -2709,7 +2709,7 @@ export class HtmlViewNode extends Node {
    * not the clock's. One given back is restyled where its animation has got
    * to, and back on the clock, in this frame.
    */
-  spritesLifted(keys: ReadonlySet<string>): void {
+  override spritesLifted(keys: ReadonlySet<string>): void {
     const next = new Map<string, Element>();
     for (const key of keys) {
       const el = this._liftedEls.get(key) ?? this._offeredEls.get(key);
@@ -2738,7 +2738,11 @@ export class HtmlViewNode extends Node {
    * layer went — is the document's clock's again, which `spritesLifted`
    * sees to.
    */
-  spriteAnimationEnded(key: string, id: string, finished: boolean): void {
+  override spriteAnimationEnded(
+    key: string,
+    id: string,
+    finished: boolean,
+  ): void {
     if (!finished) return;
     const el = this._liftedEls.get(key) ?? this._offeredEls.get(key);
     if (!el) return;
@@ -2748,14 +2752,8 @@ export class HtmlViewNode extends Node {
     let ended = this._endedSprites.get(el);
     if (!ended) this._endedSprites.set(el, (ended = new Set()));
     ended.add(own);
-    // the frame that asks again; a core that predates the seam has none
-    this._askSprites();
-  }
-
-  /** The frame in which a presenter asks for the sprites again — one a core
-   *  that predates the seam has no way to ask for. */
-  private _askSprites(): void {
-    (this as { spritesChanged?(): void }).spritesChanged?.();
+    // the frame that asks again
+    this.spritesChanged();
   }
 
   /**

@@ -144,6 +144,12 @@ stay hidden, and the rest of what it holds is drawn, where HTML's parser
 would have taken it into the body. `@media (scripting: none)` matches, to
 agree.
 
+A `<template>`'s content is inert, as in a browser (HTML 4.12.3): no box is
+made in it, a `<style>` or `<link rel=stylesheet>` in it styles nothing, an
+image or a sheet in it is not asked for through `onResource`, a `<script>`
+in it is not handed to `onScript`, and its `<title>` and `<base>` are not the
+document's. It stays in the DOM, for an application that stamps it out.
+
 ### Base URLs
 
 The component has no idea where a document came from — it is handed a
@@ -1407,8 +1413,8 @@ its animation has it at that moment: one that moves is restyled to then
 before the hit is worked out, which repaints nothing, since its pixels are
 its layer's. A hover that draws a lifted element otherwise — a colour, a
 border — paints its layer again in the next frame. Everywhere else — X11,
-Wayland, Windows, a core or a bridge that predates the seam — nothing asks,
-and every animation runs on the document's clock as above.
+Wayland, Windows, a macOS window drawn without layer promotion — nothing
+asks, and every animation runs on the document's clock as above.
 
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
