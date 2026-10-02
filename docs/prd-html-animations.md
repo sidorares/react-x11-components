@@ -1,6 +1,6 @@
 # PRD: `<Html>` animations off the JavaScript clock, and transforms that do not re-rasterize
 
-> **Status: investigation; nothing here is built.** `<Html>` runs CSS
+> **Status: the first part of step 1 is built.** `<Html>` runs CSS
 > animations since
 > [#584](https://github.com/sidorares/react-x11-components/pull/584), on a
 > timer of its own, restyling and repainting in JavaScript. This document
@@ -8,7 +8,9 @@
 > the platforms provide can run any of it, and how an animated transform
 > can stop re-rasterizing its subtree on every frame. §7 is the
 > recommendation and the order to build it in; §8 is what has to be filed
-> upstream first. The reference for what runs today is
+> upstream first. The retained sprite of §5.1 is built for the boxes X11
+> draws on a surface through their matrix — the kept surface, §7's step 1a —
+> and nothing after it is. The reference for what runs today is
 > `docs/components/html.md`, "Animations".
 
 ## 1. What `<Html>` does today
@@ -45,7 +47,8 @@ text in it goes through `paintRaster`: a fresh ntk `Surface` the size of
 the box's ink, the whole subtree painted into it, one composite through
 `SetPictureTransform`, and the surface destroyed in a `finally`. A card
 turning for a second pays sixty full rasterizations of its contents, for
-pixels that did not change.
+pixels that did not change. (So it did; while its transform or opacity
+animates, the surface is kept now — §7, step 1a.)
 
 **The frame runs on the JavaScript thread, whatever the platform could
 do.** On macOS the frame's claim re-rasters that part of the `<Html>` node's
@@ -390,6 +393,25 @@ In order, each step useful on its own and measured before the next:
    a frame drawn from a sprite to a frame drawn whole. Then the retained
    background. Measure a turning card and a fading panel on the in-process
    server and on Cocoa, frame time before and after.
+
+   **1a, built: the kept surface.** Where it was cheapest to prove, first:
+   the surface X11 already draws a turned box with text in it on
+   (`paintRaster`), kept from frame to frame while the box's transform or
+   opacity animates (`SpriteStore`, `src/html/surfaces.ts`) and drawn at
+   the box's opacity, so that box is faded as a group. What it holds is
+   painted at opacity 1; the key is the fraction of a pixel its corner
+   falls on, the scale and the selection's part in its text. A build
+   clears the store, and so does a layout at another width or under
+   another viewport; a restyle in place drops a surface when a box in it
+   draws something else, and keeps it when only the box's own transform,
+   opacity or `z-index` changed. Every frame is held to a build, and to a
+   surface made for that paint alone. A frame on the in-process server,
+   six interleaved runs: a turning card 17.3 → 10.1 ms, a growing one
+   13.9 → 6.2 ms, a fade 8.5 and a slide 7.6, unchanged. Not measured on
+   Xorg. The macOS and Windows contexts draw such a box through the matrix
+   every frame, as before; group opacity for any other element, on any
+   backend, and the retained background are the rest of step 1.
+
 2. **§5.2, translation without a surface**, and the `scrollContents` copy
    for a whole-pixel translation of an opaque sprite on X11.
 3. **`will-change`** parsed as the eligibility hint, and the eligibility

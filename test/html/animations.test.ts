@@ -25,8 +25,10 @@ import { parseTransform } from '../../src/html/css/transform.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
 import type { HtmlViewNode } from '../../src/html/node.js';
+import { SpriteStore } from '../../src/html/surfaces.js';
+import { Html } from '../../src/index.js';
 import { holdClock } from '../held-clock.js';
-import { boxOf, metric, render, view } from './harness.js';
+import { boxOf, h, metric, render, render2x, view } from './harness.js';
 import type { LaidBox } from './harness.js';
 
 afterEach(cleanup);
@@ -344,9 +346,14 @@ test('a design that cycles its panels shows them as they are without one', async
  * up to that time, a frame each 16 ms, and lets the document draw what they
  * restyled.
  */
-async function running(t: TestContext, source: string, width = 400) {
+async function running(
+  t: TestContext,
+  source: string,
+  width = 400,
+  how: typeof render = render,
+) {
   const clock = holdClock(t, animationClock);
-  const { node, result } = await render(source, width);
+  const { node, result } = await how(source, width);
   const el = view(node);
   let time = 0;
   return {
@@ -667,6 +674,269 @@ metric(
     doc.el.clearHover();
     await doc.at(160);
     assert.strictEqual(round(doc.style('m').opacity), round(held + 0.2));
+  },
+);
+
+// --- a box whose transform is animating -------------------------------------
+//
+// Drawn on a surface once and drawn through each frame's matrix after it,
+// where the context draws such a box on a surface at all (`paintSprite`) —
+// the in-process server's does, as X11's does. Each frame here is held to a
+// build of the whole document at the same moment, which draws the box on a
+// surface made for it then.
+
+const CARD =
+  '<style>body { margin: 0; font: 14px sans-serif }' +
+  '#card { width: 120px; margin: 30px; padding: 8px; background: #ddeeff;' +
+  ' border: 2px solid #335577; box-shadow: 0 2px 6px #00000066 }' +
+  '@keyframes r { to { transform: rotate(90deg) } }</style>';
+
+const CARD_TEXT = '<b>A card</b> with a line of text that wraps';
+
+/** How many surfaces the kept ones were made of, from now on. */
+function surfacesMade(t: TestContext): () => number {
+  const make = t.mock.method(SpriteStore.prototype, 'make');
+  return () => make.mock.callCount();
+}
+
+/** What the document draws now with nothing kept: each box drawn on a
+ *  surface made for the paint alone, as every one was before. */
+async function drawnAlone(
+  t: TestContext,
+  doc: Awaited<ReturnType<typeof running>>,
+): Promise<Uint8ClampedArray> {
+  t.mock.method(SpriteStore.prototype, 'make', () => null);
+  const el = doc.el as unknown as {
+    _sprites: { clear(): void } | null;
+    _invalidate(stale: number): void;
+  };
+  el._sprites?.clear();
+  el._invalidate(0);
+  return snapshot(doc.result, doc.el);
+}
+
+/** The surfaces a document keeps, by box. */
+const kept = (el: HtmlViewNode) =>
+  (el as unknown as { _sprites: { size: number } | null })._sprites?.size ?? 0;
+
+/** Whether each frame drew something other than the one before. */
+function moved(frames: Uint8ClampedArray[]): boolean {
+  return frames.every(
+    (frame, i) => i === 0 || frame.some((v, j) => v !== frames[i - 1][j]),
+  );
+}
+
+metric(
+  'a turning box is drawn from a surface it keeps, to the pixels a build draws',
+  async (t) => {
+    const made = surfacesMade(t);
+    const doc = await running(
+      t,
+      CARD +
+        '<style>#card { animation: r 640ms linear }</style>' +
+        `<div id="card">${CARD_TEXT}</div>`,
+      300,
+    );
+    await doc.at(16);
+    assert.strictEqual(made(), 1, 'drawn on a surface once it turned');
+    assert.strictEqual(kept(doc.el), 1, 'and the surface kept');
+    await doc.at(160);
+    assert.strictEqual(made(), 1, 'and not drawn again as it turned');
+    const { frames } = await framesAgainstBuilds(doc, [176, 320]);
+    assert.ok(moved(frames), 'it turned');
+    assert.strictEqual(
+      kept(doc.el),
+      1,
+      'the builds’ boxes keep one between them',
+    );
+    // a build draws it on a kept surface too: held to a surface made for
+    // one paint, as each was before any was kept
+    await doc.at(336);
+    const drawn = await snapshot(doc.result, doc.el);
+    const alone = await drawnAlone(t, doc);
+    assert.ok(
+      drawn.every((v, i) => v === alone[i]),
+      'what a surface made for the paint alone draws',
+    );
+  },
+);
+
+metric(
+  'a turning box moved a fraction of a pixel is drawn again where it falls',
+  async (t) => {
+    // what is on the surface is snapped to the pixel grid from where its
+    // corner falls within a pixel, which a translation moves
+    const doc = await running(
+      t,
+      CARD +
+        '<style>@keyframes m { to { transform: translateX(7.3px) rotate(90deg) } }' +
+        '#card { animation: m 640ms linear }</style>' +
+        `<div id="card">${CARD_TEXT}</div>`,
+      300,
+    );
+    const { frames } = await framesAgainstBuilds(doc, [48, 96, 144]);
+    assert.ok(moved(frames), 'it moved');
+  },
+);
+
+metric(
+  'a box that grows and fades in at once keeps its surface, faded as a group',
+  async (t) => {
+    // a turn, a scale and an opacity are where and how faded the surface
+    // is drawn, and leave what is on it as it was
+    const made = surfacesMade(t);
+    const doc = await running(
+      t,
+      CARD +
+        '<style>@keyframes z { from { transform: scale(.5); opacity: 0 }' +
+        ' to { transform: scale(1.5); opacity: .9 } }' +
+        '#card { animation: z 640ms linear }</style>' +
+        `<div id="card">${CARD_TEXT}</div>`,
+      300,
+    );
+    await doc.at(32);
+    const first = made();
+    await doc.at(160);
+    assert.strictEqual(made(), first, 'one surface all the way');
+    const { frames } = await framesAgainstBuilds(doc, [176, 320]);
+    assert.ok(moved(frames), 'it grew');
+  },
+);
+
+metric(
+  'what changes inside a turning box, or with its turn, draws its surface again',
+  async (t) => {
+    // a colour animating inside it, a box inside it turning on its own, and
+    // a turning box's own background animating with its turn: each frame
+    // draws what is on the surface again, as a build does
+    const doc = await running(
+      t,
+      CARD +
+        '<style>@keyframes c { from { color: #ff0000 } to { color: #0000ff } }' +
+        '@keyframes rb { from { transform: rotate(10deg); background: #ffffff }' +
+        ' to { transform: rotate(60deg); background: #ffcc00 } }' +
+        '#a { animation: r 640ms linear } #a b { animation: c 640ms linear }' +
+        '#n { animation: r 640ms linear }' +
+        '#n i { display: inline-block; animation: r 320ms linear infinite }' +
+        '#o { animation: rb 640ms linear }</style>' +
+        `<div id="card"><div id="a">${CARD_TEXT}</div>` +
+        `<div id="n"><i>turning</i> inside</div>` +
+        '<div id="o">turning and colouring</div></div>',
+      300,
+    );
+    const { frames } = await framesAgainstBuilds(doc, [48, 96, 112]);
+    assert.ok(moved(frames), 'they changed');
+  },
+);
+
+metric(
+  'a hover in a turning box, a selection across it, and a resize draw its surface again',
+  async (t) => {
+    const source =
+      CARD +
+      '<style>#card { width: 40%; animation: r 640ms linear }' +
+      '#card:hover b { color: #ff0000; background: #ffff00 }</style>' +
+      `<div id="card">${CARD_TEXT}</div>`;
+    const doc = await running(t, source, 300);
+    await doc.at(48);
+    const made = surfacesMade(t);
+    // the pointer over the middle of the card, which a turn about it keeps
+    // under the pointer
+    const rect = doc.el.elementRect(findElement(doc.el, 'card') as never)!;
+    const { abs } = doc.el as unknown as { abs: { x: number; y: number } };
+    doc.el.setHover(
+      abs.x + rect.x + rect.width / 2,
+      abs.y + rect.y + rect.height / 2,
+    );
+    await framesAgainstBuilds(doc, [64]);
+    assert.ok(made() > 0, 'drawn again under the pointer');
+    // drawn again with the pointer gone, before the selection is made
+    doc.el.clearHover();
+    await doc.at(72);
+    await act(async () => {
+      (doc.node as unknown as { selectAll(): void }).selectAll();
+    });
+    assert.ok(doc.el.selectionRange, 'selected');
+    await framesAgainstBuilds(doc, [80]);
+    await act(async () => {
+      (doc.node as unknown as { clearSelection(): void }).clearSelection();
+    });
+    await doc.result.rerender(
+      h(
+        'box',
+        { style: { width: 220, flexDirection: 'column' } },
+        h(Html, { source, partial: false, 'data-testname': 'doc' }),
+      ),
+    );
+    await framesAgainstBuilds(doc, [96, 112]);
+  },
+);
+
+metric(
+  'a hover that recolours a drawing in a turning box draws its surface again',
+  async (t) => {
+    // what the rules give the shapes in a drawing is no box's style
+    // (`BoxTree.shapeStyler`): a hover changes it and restyles no box
+    const doc = await running(
+      t,
+      CARD +
+        '<style>#card { animation: r 640ms linear }' +
+        '#s:hover path { fill: #ff0000 }</style>' +
+        '<div id="card">A drawing <svg id="s" width="24" height="24">' +
+        '<path d="M0 0h24v24H0z" fill="#0000ff"/></svg></div>',
+      300,
+    );
+    await doc.at(48);
+    const made = surfacesMade(t);
+    const rect = doc.el.elementRect(findElement(doc.el, 's') as never)!;
+    const { abs } = doc.el as unknown as { abs: { x: number; y: number } };
+    doc.el.setHover(
+      abs.x + rect.x + rect.width / 2,
+      abs.y + rect.y + rect.height / 2,
+    );
+    await framesAgainstBuilds(doc, [64]);
+    assert.ok(made() > 0, 'drawn again under the pointer');
+  },
+);
+
+metric(
+  'a turning box at a display scale of 2 is drawn from its surface where a build draws it',
+  async (t) => {
+    const made = surfacesMade(t);
+    const doc = await running(
+      t,
+      CARD +
+        '<style>#card { animation: r 640ms linear }</style>' +
+        `<div id="card">${CARD_TEXT}</div>`,
+      300,
+      render2x,
+    );
+    await doc.at(32);
+    const first = made();
+    await doc.at(160);
+    assert.strictEqual(made(), first, 'one surface all the way');
+    const { frames } = await framesAgainstBuilds(doc, [176, 320]);
+    assert.ok(moved(frames), 'it turned');
+  },
+);
+
+metric(
+  'a turning box keeps no surface once its animation is over',
+  async (t) => {
+    const doc = await running(
+      t,
+      CARD +
+        '<style>#card { animation: r 160ms linear forwards }</style>' +
+        `<div id="card">${CARD_TEXT}</div>`,
+      300,
+    );
+    await doc.at(80);
+    assert.strictEqual(kept(doc.el), 1, 'kept while it turns');
+    await doc.at(176);
+    assert.strictEqual(doc.clock.pending, false, 'over');
+    assert.strictEqual(kept(doc.el), 0, 'and given up');
+    // held at its last frame, a quarter turn, as any turned box is drawn
+    await framesAgainstBuilds(doc, [192]);
   },
 );
 

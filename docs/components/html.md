@@ -880,7 +880,9 @@ the box is as big as them, as in Chrome), `overflow`, `clip`,
 `opacity` — an element under 1 is a stacking context painted whole in its
 place, the positioned boxes in it with it, at 0 not at all and between
 faded, each thing drawn in it multiplied rather than the
-group, so where two of its boxes overlap the lower shows through; a block
+group, so where two of its boxes overlap the lower shows through, but for
+a turned, scaled or skewed box drawn on a surface of its own (see
+Transforms), which is faded whole, as the group it is; a block
 inside an inline element is faded with it, and the inline element's own
 text is not — `visibility` — a
 hidden element keeps its room and draws nothing, its text included, and a
@@ -1079,6 +1081,9 @@ drawn through the matrix, and one that holds text, an image, a gradient or
 a shadow is painted on a surface of its own, as it was laid out, and the
 surface drawn through the matrix: exact at a quarter turn or a reflection,
 and resampled — soft — where it is scaled up or turned by another angle.
+The surface is drawn at the box's opacity, so such a box is faded as the
+group it is, and while an animation turns or fades it the surface is kept
+from one frame to the next (see Animations).
 Such a box scaled so small that the server's fixed point cannot carry it —
 to a thirtieth of its size far across a wide window, or flatter than can be
 seen — is not drawn there. On every backend a box's corner is snapped to
@@ -1144,9 +1149,20 @@ every animation set to no length, which is how the Zen Garden bench holds
 Chrome, and how it runs `<Html>`. The iteration count, the duration and the delay are
 not used there, so an animation of two `alternate` iterations, or of half
 of one, is drawn as it ends its first. Transitions are not run either way.
-Every frame runs in JavaScript, on either backend; what the platforms
-could run of it, and how a transform could stop painting its subtree on
-every frame, is [a design document](../prd-html-animations.md).
+
+Every frame runs in JavaScript, on either backend. Where a box is drawn on
+a surface of its own through its matrix — on X11, one that holds text, an
+image, a gradient or a shadow — and an animation turns, scales, skews or
+fades it, the surface is kept while the animation runs: the box and what
+it holds are painted on it once, and a frame draws it through the matrix
+and at the opacity the frame has. Whatever else changes what is on it
+paints it again: a hover inside it, a colour animating in it or with its
+turn, a box in it that turns on its own, a selection across its text, a
+translation that moves it by a fraction of a pixel, a resize. It is given
+up when the animation is over. The native contexts on macOS and Windows
+draw such a box through the matrix each frame, as they draw any box. What
+the platforms could run of the rest, Core Animation among them, is
+[a design document](../prd-html-animations.md).
 
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
@@ -2194,6 +2210,20 @@ The report's first paint went from 954 to 928 ms on X11, and an edit pays
 about 0.15 ms for keeping the styles. Where the fonts have nothing to look
 up, a native text engine or faces handed over in memory, the call does
 nothing.
+
+**A turning box is painted once while it turns.** On X11 a turned box
+with text in it is painted on a surface, and the surface drawn through
+its matrix; every frame of an animation painted it again, a card and all
+it holds sixty times a second for pixels that had not changed. A box whose
+transform or opacity is animating keeps its surface while it animates —
+eight million pixels of them at most, and none larger than a quarter of
+that — and a frame draws it through the new matrix. On the in-process
+server a frame of a turning card went from 17.3 to 10.1 ms, and of a
+growing one from 13.9 to 6.2 ms; a fade and a slide, which draw no
+surface, cost what they did. What is left of a turning card's frame is
+the surface resampled through its turn, and the document repainted under
+it, which [the design document](../prd-html-animations.md)'s retained
+background is about.
 
 ## Types
 
