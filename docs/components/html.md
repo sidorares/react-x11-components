@@ -1230,16 +1230,28 @@ have all of it but the
 sizes: an inline box's padding, border and margin take room on its line —
 the start side before its first fragment, the end side after its last, on
 the sides its `direction` says (CSS 2.1 8.6) — and its background, images
-and gradients included, and its border are painted a fragment a line, over
-its face's height plus its vertical padding, which is why they do not make
-the line taller. Where it wraps it is
+and gradients included, its border and its shadows are painted a fragment
+a line, over its face's height plus its vertical padding, which is why they
+do not make the line taller. A shadow is ink past the fragment and no
+overflow, as a block's is: a repaint of the strip under a line reaches the
+shadow its links cast there. Where it wraps it is
 sliced (`box-decoration-break: slice`, CSS's default): no border and no
 rounded corner on a side it goes on from, and its images and gradients
 placed as though its fragments were one box laid end to end in its
 `direction`, each showing its slice — so an icon `no-repeat` at its start is
-on its first line alone, and a gradient runs once across every line.
-`box-decoration-break: clone` places them in each fragment's own box
-instead; its fragments still take their borders and padding at the box's
+on its first line alone, and a gradient runs once across every line. Its
+shadows are cast by that box and cut where each fragment is, so none falls
+at an edge where it breaks (CSS Fragmentation 3, 5.4): a ring round a
+wrapped span is open at the end of its first line and the start of its
+next, and the line joshwcomeau.com's `box-shadow: 0 1.5px 0` draws under a
+link runs under each line's fragment. Chrome, Firefox and Safari agree on
+all of that; where a shadow is offset along the line by more than the
+fragments after it reach, Chrome casts it from the fragment run on past
+the break without end and Firefox and Safari from the fragment alone, and
+this from the unbroken box, as the spec has it.
+`box-decoration-break: clone` places images and gradients in each
+fragment's own box instead, and casts its shadows all round each fragment;
+its fragments still take their borders and padding at the box's
 two ends alone, where a browser gives every fragment its own. A padded
 `<a>` set as an email's button, a pill badge and a `<kbd>` keycap render as
 a browser renders them. Its edges are no place for a line to break (CSS
@@ -1711,8 +1723,11 @@ spreads and draws a border without taking room. A spread rounds a corner
 out by less than itself where the radius is small beside it and the box
 is not already round, as browsers do, so a ring keeps a card's corners
 nearly square and a circle's round. An outer shadow is not
-drawn under its box, which a box's own opaque colour usually sees to and
-a cut sees to where it does not. A blurred shadow is the 2d context's
+drawn under its box, which a box's own opaque colour usually sees to, and
+where it does not, a hard one with square corners is drawn as the bands of
+it beside the box and any other is cut out of the box — on X11 a mask the
+size of the window, which a page with a shadow under every link paid once a
+link. A blurred shadow is the 2d context's
 own, cast by the box's rounded rect — an inset one by a rect less that
 shape, filled evenodd — and react-x11's contexts draw those from a tile
 they make once for the corners, the blur and the colour, and stretch along
