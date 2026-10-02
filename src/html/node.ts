@@ -103,6 +103,8 @@ import { invert, mapPoint, mapRect, transformed } from './css/transform.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { fontAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
+import { describe, liftOf, partOf } from './sprites.js';
+import type { DocumentSprite, Part, SpriteHost } from './sprites.js';
 import { SpriteStore, SurfaceCache, newSurface } from './surfaces.js';
 import type { SurfaceLike } from './surfaces.js';
 import {
@@ -140,13 +142,14 @@ import {
   onLine,
   ownBounds,
   paintDocument,
+  paintLiftedBox,
   pathClips,
   queryChildIndex,
   selectionRows,
   stackLayers,
   stacksLayers,
 } from './paint.js';
-import type { PaintContext, SpriteSource } from './paint.js';
+import type { PaintContext, PaintOptions, SpriteSource } from './paint.js';
 import { controlRectsOf, measureControl, styledField } from './controls.js';
 import { isInert, isTabbable } from './focus.js';
 import type { FocusStop } from './focus.js';
@@ -314,6 +317,37 @@ export class HtmlViewNode extends Node {
         animated,
       ),
   };
+  // --- sprites (`sprites()`, src/html/sprites.ts) ---
+  /** The elements a presenter has on layers of their own, by sprite key,
+   *  as it said last (`spritesLifted`): a hole in the document each, and an
+   *  animation the document's clock leaves alone. */
+  private _liftedEls = new Map<string, Element>();
+  private _liftedSet = new Set<Element>();
+  /** This frame's offers, by key: what a key the presenter names is. */
+  private _offeredEls = new Map<string, Element>();
+  /** Each element's sprite key, the same for as long as it lives. */
+  private _spriteKeys = new WeakMap<Element, string>();
+  private _spriteSeq = 0;
+  /** What each element was last offered as, and what that was made from:
+   *  making one samples its frames, and a frame asks every time. */
+  private _spriteOffers = new WeakMap<
+    Element,
+    { stamp: string; part: Part | null }
+  >();
+  /** Moves whenever what a lifted box draws may have changed without a
+   *  build — a restyle of it, or of a box in it. */
+  private _spriteGen = 0;
+  /** The animations the render server ran to their end, by element. */
+  private _endedSprites = new WeakMap<Element, Set<string>>();
+  /** The lifted elements' boxes, for the paint, as of a tree and a set. */
+  private _liftedBoxCache: {
+    tree: BoxTree;
+    lifted: ReadonlyMap<string, Element>;
+    boxes: ReadonlySet<Box>;
+  } | null = null;
+  /** The elements whose animation is not the document's clock's to run. */
+  private readonly _skipLifted = (el: object): boolean =>
+    this._liftedSet.has(el as Element);
   private _cascade: Cascade | null = null;
   private _tree: BoxTree | null = null;
   /** The faces `_warmFaces` has asked the font matcher for, and of which
@@ -1423,6 +1457,9 @@ export class HtmlViewNode extends Node {
     this._shadowCache = null;
     this._sprites?.clear();
     this._sprites = null;
+    this._liftedEls.clear();
+    this._liftedSet.clear();
+    this._offeredEls.clear();
     this._sheetsRead = null;
     this._tree = null;
     this._cascade = null;
@@ -2268,6 +2305,8 @@ export class HtmlViewNode extends Node {
       const was = box.style;
       box.style = style;
       if (sprites) this._restyledSprites(sprites, box, was, style);
+      // what a lifted box shows is its layer's to know: offered again
+      if (this._liftedSet.size && this._insideLifted(box)) this._spriteGen += 1;
       if (box.el && moving.has(box.el) && box.kind !== 'text') {
         moved.push([box, was]);
       }
@@ -2493,7 +2532,9 @@ export class HtmlViewNode extends Node {
     const reach = new Set<Element>();
     let generated = false;
     if (!this._animating()) return { reach, generated };
-    for (const { el, inherits, generated: pseudo } of this._timeline.live()) {
+    for (const { el, inherits, generated: pseudo } of this._timeline.live(
+      this._skipLifted,
+    )) {
       const element = el as Element;
       if (!tree.styles.has(element)) {
         this._timeline.drop(element, '');
@@ -2537,7 +2578,9 @@ export class HtmlViewNode extends Node {
       const el = (box as Box).el;
       return !!el && this._timeline.isLive(el);
     });
-    const next = this._animating() ? this._timeline.nextFrame() : null;
+    const next = this._animating()
+      ? this._timeline.nextFrame(this._skipLifted)
+      : null;
     if (next === null) {
       this._disarmFrame();
       return;
@@ -2556,6 +2599,173 @@ export class HtmlViewNode extends Node {
     animationClock.disarm(this._frameTimer);
     this._frameTimer = null;
     this._frameAt = Infinity;
+  }
+
+  // --- sprites --------------------------------------------------------------
+  //
+  // react-x11's surface presenter on macOS runs an animation in the render
+  // server where what it moves is on a layer of its own
+  // (sidorares/react-x11#819), and a document hands it the elements whose
+  // animation it can run (`src/html/sprites.ts` says which). The presenter
+  // decides every frame which go on layers, and says so (`spritesLifted`):
+  // each is a hole in the document from then on, and its animation is not
+  // the document's clock's, so a frame of it costs nothing here. One given
+  // back is restyled at once to where its animation has got to, and runs on
+  // the clock again. Nothing else asks — X11, Wayland, a scene the presenter
+  // refuses — and every animation there runs here, as it always has.
+
+  /**
+   * The elements whose CSS animation a presenter may run on a layer of its
+   * own, as react-x11's `Node.sprites()` takes them. Asked every frame,
+   * after layout, by the presenter that lifts them. A part's frames are
+   * sampled once and kept for as long as the document draws and lays it
+   * out as it did; what is made each frame is where it is and the delay
+   * from now.
+   */
+  sprites(): DocumentSprite[] | null {
+    this._offeredEls.clear();
+    if (this.destroyed || !this._animating()) return null;
+    // this frame paints after the presenter: a build it owes is built now,
+    // so that the boxes offered are the ones it paints
+    if (this._stale !== Stale.Nothing) this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    const cascade = this._cascade;
+    if (!tree || !cascade) return null;
+    const live = this._timeline.live();
+    if (!live.length) return null;
+    const now = animationClock.now();
+    const host: SpriteHost = {
+      tree,
+      cascade,
+      timeline: this._timeline,
+      now,
+      boxes: this._firstBoxesOf(tree),
+      ended: (el, id) => this._endedSprites.get(el)?.has(id) ?? false,
+    };
+    const range = this.selectionRange;
+    // what a part is made from, but for its own animation (`Lift.id`)
+    const stamp = [
+      serialOf(tree),
+      this._spriteGen,
+      this._laidOutWidth,
+      range ? `${range.start}-${range.end}` : '',
+    ].join(':');
+    let options: PaintOptions | null = null;
+    let out: DocumentSprite[] | null = null;
+    for (const { el, generated } of live) {
+      // a `::before`'s or an `::after`'s animation is its element's box's
+      // drawing: left to the document's clock
+      if (generated) continue;
+      const element = el as Element;
+      const lift = liftOf(host, element);
+      if (!lift) continue;
+      const made = `${stamp}|${lift.id}`;
+      let offer = this._spriteOffers.get(element);
+      if (offer?.stamp !== made) {
+        offer = { stamp: made, part: partOf(host, lift) };
+        this._spriteOffers.set(element, offer);
+      }
+      if (!offer.part) continue;
+      const key = this._spriteKeyOf(element);
+      this._offeredEls.set(key, element);
+      const painted = (options ??= this._paintOptions(range, null));
+      (out ??= []).push(
+        describe(
+          offer.part,
+          key,
+          `${serialOf(lift.box)}:${stamp}`,
+          this.abs.x,
+          this.abs.y,
+          now,
+          (ctx, box) => paintLiftedBox(ctx as PaintContext, tree, box, painted),
+        ),
+      );
+    }
+    return out;
+  }
+
+  /**
+   * Which of the offered elements are on layers now (react-x11's
+   * `Node.spritesLifted`), before the frame paints: those are holes in the
+   * document from here (`PaintOptions.lifted`), and their animations are
+   * not the clock's. One given back is restyled where its animation has got
+   * to, and back on the clock, in this frame.
+   */
+  spritesLifted(keys: ReadonlySet<string>): void {
+    const next = new Map<string, Element>();
+    for (const key of keys) {
+      const el = this._liftedEls.get(key) ?? this._offeredEls.get(key);
+      if (el) next.set(key, el);
+    }
+    let dropped = false;
+    for (const key of this._liftedEls.keys()) {
+      if (!next.has(key)) dropped = true;
+    }
+    this._liftedEls = next;
+    this._liftedSet = new Set(next.values());
+    this._liftedBoxCache = null;
+    if (dropped) {
+      this._disarmFrame();
+      this._frame();
+    } else {
+      this._scheduleFrame();
+    }
+  }
+
+  /**
+   * The render server is done with an animation it ran for a sprite
+   * (react-x11's `Node.spriteAnimationEnded`). One that ran out is over for
+   * the document too: no longer offered, and the frame that asks hands the
+   * element back to be drawn as the animation left it. One cut short — its
+   * layer went — is the document's clock's again, which `spritesLifted`
+   * sees to.
+   */
+  spriteAnimationEnded(key: string, id: string, finished: boolean): void {
+    if (!finished) return;
+    const el = this._liftedEls.get(key) ?? this._offeredEls.get(key);
+    if (!el) return;
+    // `<the animation's id>|<property>`: the first is what `liftOf` asks
+    const cut = id.lastIndexOf('|');
+    const own = cut < 0 ? id : id.slice(0, cut);
+    let ended = this._endedSprites.get(el);
+    if (!ended) this._endedSprites.set(el, (ended = new Set()));
+    ended.add(own);
+    // the frame that asks again; a core that predates the seam has none
+    (this as { spritesChanged?(): void }).spritesChanged?.();
+  }
+
+  private _spriteKeyOf(el: Element): string {
+    let key = this._spriteKeys.get(el);
+    if (!key) {
+      key = `html:${++this._spriteSeq}`;
+      this._spriteKeys.set(el, key);
+    }
+    return key;
+  }
+
+  /** Whether a box is a lifted element's, or inside one. */
+  private _insideLifted(box: Box): boolean {
+    for (let at: Box | null = box; at; at = at.parent) {
+      if (at.el && this._liftedSet.has(at.el)) return true;
+    }
+    return false;
+  }
+
+  /** The lifted elements' boxes in `tree`, for the paint to leave out. */
+  private _liftedBoxes(tree: BoxTree): ReadonlySet<Box> | null {
+    if (!this._liftedEls.size) return null;
+    const cache = this._liftedBoxCache;
+    if (cache?.tree === tree && cache.lifted === this._liftedEls) {
+      return cache.boxes;
+    }
+    const first = this._firstBoxesOf(tree);
+    const boxes = new Set<Box>();
+    for (const el of this._liftedEls.values()) {
+      const box = first.get(el);
+      if (box) boxes.add(box);
+    }
+    this._liftedBoxCache = { tree, lifted: this._liftedEls, boxes };
+    return boxes;
   }
 
   /** A frame of the document's animations. */
@@ -2805,6 +3015,19 @@ export class HtmlViewNode extends Node {
     damage: { x: number; y: number; width: number; height: number } | null,
   ): void {
     paintDocument(ctx as PaintContext, tree, {
+      ...this._paintOptions(range, damage),
+      lifted: this._liftedBoxes(tree),
+    });
+  }
+
+  /** What the document is painted with, but for the boxes a presenter has
+   *  lifted: the same for the document and for a part on a layer of its
+   *  own, which is painted where the document would paint it. */
+  private _paintOptions(
+    range: { start: number; end: number } | null,
+    damage: { x: number; y: number; width: number; height: number } | null,
+  ): PaintOptions {
+    return {
       originX: this.abs.x,
       originY: this.abs.y,
       // the root's background covers the whole element, not only the
@@ -2835,11 +3058,21 @@ export class HtmlViewNode extends Node {
           draw as (ctx: unknown) => void,
         ),
       sprites: this._spriteSource,
-    });
+    };
   }
 }
 
 const EMPTY_SET: ReadonlySet<Element> = new Set();
+
+/** A number for an object, the same for as long as it lives: what a tree
+ *  or a box is in a sprite's stamp and version. */
+const SERIALS = new WeakMap<object, number>();
+let serials = 0;
+function serialOf(of: object): number {
+  let n = SERIALS.get(of);
+  if (n === undefined) SERIALS.set(of, (n = ++serials));
+  return n;
+}
 
 /** Whether a tree has a background fixed to the viewport: an image a box
  *  names (`tree.backgrounds`), or the canvas's image or gradient — the

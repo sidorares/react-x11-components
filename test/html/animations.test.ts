@@ -4,6 +4,7 @@
 import { afterEach, test } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert';
+import type { DrawnNode } from 'react-x11';
 import { act, cleanup } from 'react-x11/test';
 import { parseStylesheet } from '../../src/html/css/parse.js';
 import {
@@ -1171,6 +1172,259 @@ test('an element that is taken away takes its timer with it', async (t) => {
   assert.strictEqual(doc.clock.pending, true);
   await doc.result.unmount();
   assert.strictEqual(doc.clock.pending, false);
+});
+
+// --- sprites: an animation a layer of its own can carry -----------------------
+//
+// react-x11's surface presenter on macOS asks a drawn element for the parts
+// of its drawing it may lift onto layers of their own (`Node.sprites()`,
+// sidorares/react-x11#819), and runs their animations in the render server.
+// Nothing asks in this suite: these ask as the presenter would, and answer
+// as it would.
+
+/** A context that records what is filled, where its translation puts it,
+ *  and does nothing else. */
+function recorder() {
+  const fills: {
+    style: unknown;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }[] = [];
+  let tx = 0;
+  let ty = 0;
+  const saved: [number, number][] = [];
+  const own = {
+    fillStyle: null as unknown,
+    globalAlpha: 1,
+    save() {
+      saved.push([tx, ty]);
+    },
+    restore() {
+      [tx, ty] = saved.pop() ?? [0, 0];
+    },
+    translate(x: number, y: number) {
+      tx += x;
+      ty += y;
+    },
+    fillRect(x: number, y: number, w: number, h: number) {
+      fills.push({ style: own.fillStyle, x: x + tx, y: y + ty, w, h });
+    },
+  };
+  const ctx = new Proxy(own, {
+    get: (target, key) =>
+      key in target ? target[key as keyof typeof target] : () => undefined,
+  });
+  return { ctx, fills };
+}
+
+const near = (a: number, b: number, by = 1e-6) => Math.abs(a - b) <= by;
+
+test('an element whose animation a layer can carry is offered as a sprite: its frames sampled as the document runs them, its delay from now', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '#a { animation: fade 160ms linear; width: 40px; height: 20px;' +
+      ' background: red; opacity: .8 }</style><div id="a"></div>',
+  );
+  await doc.at(48);
+  const sprites = doc.el.sprites();
+  assert.strictEqual(sprites?.length, 1);
+  const [sprite] = sprites!;
+  const box = boxOf(doc.el, 'a');
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  assert.deepStrictEqual(sprite.rect, {
+    x: abs.x + box.x,
+    y: abs.y + box.y,
+    width: box.width,
+    height: box.height,
+  });
+  const [fade] = sprite.animations;
+  assert.deepStrictEqual(
+    [fade.property, fade.duration, fade.repeat, fade.delay],
+    ['opacity', 160, 1, -48],
+  );
+  // a display's frames: from 0, through half way at half time, to a breath
+  // short of 1
+  const values = fade.values as number[];
+  assert.strictEqual(values.length, 11);
+  assert.strictEqual(values[0], 0);
+  assert.ok(near(values[5], 0.5));
+  assert.ok(values[10] > 0.99 && values[10] < 1);
+  // what it rests at once it is over, filling nothing: its own value
+  assert.strictEqual(sprite.opacity, 0.8);
+  // a frame later the same part, sampled once, its delay from the new now
+  await doc.at(64);
+  const [again] = doc.el.sprites()!;
+  assert.strictEqual(again.key, sprite.key);
+  assert.ok(again.animations[0].values === fade.values, 'not sampled again');
+  assert.strictEqual(again.animations[0].delay, -64);
+});
+
+test('a turn is offered as matrices about the transform origin, a whole turn turning, and an alternating slide as two iterations a cycle', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes spin { to { transform: rotate(360deg) } }' +
+      '@keyframes slide { to { transform: translateX(30px) } }' +
+      '#s { animation: spin 256ms linear infinite; width: 10px; height: 10px;' +
+      ' background: red }' +
+      '#t { animation: slide 160ms 3 alternate linear; width: 10px;' +
+      ' height: 10px; margin-top: 20px; background: blue }</style>' +
+      '<div id="s"></div><div id="t"></div>',
+  );
+  const sprites = doc.el.sprites()!;
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const s = boxOf(doc.el, 's');
+  const spin = sprites.find((p) => p.rect.y === abs.y + s.y)!;
+  assert.deepStrictEqual(spin.origin, {
+    x: abs.x + s.x + 5,
+    y: abs.y + s.y + 5,
+  });
+  const [turn] = spin.animations;
+  assert.deepStrictEqual(
+    [turn.property, turn.duration, turn.repeat],
+    ['transform', 256, Infinity],
+  );
+  // every frame the turn its time has — which no interpolation of the
+  // matrices of `rotate(0)` and `rotate(360deg)`, the same one, would give
+  const matrices = turn.values as number[][];
+  const n = matrices.length - 1;
+  matrices.forEach((m, k) => {
+    const angle = (2 * Math.PI * Math.min(k, n - 1e-6)) / n;
+    assert.ok(
+      near(m[0], Math.cos(angle), 1e-3) && near(m[1], Math.sin(angle), 1e-3),
+      `frame ${k} of ${n}: ${m}`,
+    );
+  });
+  const slide = sprites.find((p) => p !== spin)!;
+  const [move] = slide.animations;
+  // there and back is the cycle, run a time and a half
+  assert.deepStrictEqual([move.duration, move.repeat], [320, 1.5]);
+  // there 30px, and back: the value each frame's time has
+  const slid = move.values as number[][];
+  const last = slid.length - 1;
+  slid.forEach((m, k) => {
+    const u = k === last ? 320 - 1e-3 : (k / last) * 320;
+    const x = u <= 160 ? (30 * u) / 160 : (30 * (320 - u)) / 160;
+    assert.ok(near(m[4], x, 1e-6), `frame ${k}: ${m[4]} for ${x}`);
+  });
+});
+
+test('what a layer cannot carry stays on the document’s clock: a colour, two animations, a paused one, a clip around it, a fade around it, and ink beside it', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { to { opacity: .2 } }' +
+      '@keyframes tint { to { background: blue } }' +
+      'div { width: 20px; height: 20px; background: red }' +
+      '#colour { animation: tint 1s infinite }' +
+      '#two { animation: fade 1s infinite, fade 2s infinite }' +
+      '#paused { animation: fade 1s infinite paused }' +
+      '#clip { overflow: hidden; height: auto; background: none }' +
+      '#clipped { animation: fade 1s infinite }' +
+      '#faded { opacity: .5; height: auto; background: none }' +
+      '#inside { animation: fade 1s infinite }' +
+      '#under { animation: fade 1s infinite; margin-top: 10px }' +
+      '#over { position: relative; top: -15px; left: 5px; background: green }' +
+      '#free { animation: fade 1s infinite; margin-top: 30px }</style>' +
+      '<div id="colour"></div><div id="two"></div><div id="paused"></div>' +
+      '<div id="clip"><div id="clipped"></div></div>' +
+      '<div id="faded"><div id="inside"></div></div>' +
+      '<div id="under"></div><div id="over"></div><div id="free"></div>',
+  );
+  const sprites = doc.el.sprites()!;
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const free = boxOf(doc.el, 'free');
+  assert.deepStrictEqual(
+    sprites.map((p) => p.rect.y),
+    [abs.y + free.y],
+    'only the one nothing is near',
+  );
+});
+
+test('a lifted element is a hole in the document, and its animation is no frame of the document’s; given back, it is drawn where its animation has got to', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+      'body { margin: 0; background: white }' +
+      '#a { animation: fade 320ms linear; width: 40px; height: 20px;' +
+      ' background: red }</style><div id="a"></div>',
+  );
+  await doc.at(32);
+  const [sprite] = doc.el.sprites()!;
+  assert.strictEqual(doc.clock.pending, true, 'its frames are the clock’s');
+  doc.el.spritesLifted(new Set([sprite.key]));
+  assert.strictEqual(doc.clock.pending, false, 'and not now it is lifted');
+  // its paint leaves it out
+  const own = (fills: ReturnType<typeof recorder>['fills']) =>
+    fills.filter((f) => f.w === 40 && f.h === 20).length;
+  const before = recorder();
+  doc.el.paint(before.ctx as never);
+  assert.strictEqual(own(before.fills), 0, 'the document drew it');
+  // a timer of our own, so that time can pass with nothing of the
+  // document's waiting on it
+  const step = animationClock.arm(() => {}, 1000);
+  t.after(() => animationClock.disarm(step));
+  await doc.at(160);
+  const style = styleOf(doc.node, 'a');
+  assert.ok(near(style.opacity, 0.28, 1e-9), 'not restyled while lifted');
+  // given back: restyled to now, drawn, and on the clock again
+  doc.el.spritesLifted(new Set());
+  assert.ok(near(styleOf(doc.node, 'a').opacity, 0.6, 1e-9));
+  assert.strictEqual(doc.clock.pending, true);
+  const after = recorder();
+  doc.el.paint(after.ctx as never);
+  assert.strictEqual(own(after.fills), 1, 'drawn again');
+});
+
+test('the frames the document runs for what is not lifted restyle nothing that is', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+      '@keyframes tint { to { color: blue } }' +
+      '#a { animation: fade 320ms linear; width: 40px; height: 20px }' +
+      '#b { animation: tint 320ms linear; margin-top: 40px }</style>' +
+      '<div id="a"></div><p id="b">x</p>',
+  );
+  await doc.at(32);
+  const [sprite] = doc.el.sprites()!;
+  doc.el.spritesLifted(new Set([sprite.key]));
+  assert.strictEqual(doc.clock.pending, true, 'the colour runs on');
+  const tinted = styleOf(doc.node, 'b').color;
+  await doc.at(160);
+  assert.ok(near(styleOf(doc.node, 'a').opacity, 0.28, 1e-9), 'restyled');
+  assert.notStrictEqual(styleOf(doc.node, 'b').color, tinted, 'its frames');
+});
+
+test('a sprite paints its element as the document would, at full opacity and where it would be with no transform; an ended one is not offered again', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes slide { from { transform: translateX(10px) }' +
+      ' to { transform: translateX(50px) } }' +
+      'body { margin: 0 }' +
+      '#a { animation: slide 160ms linear forwards; width: 40px;' +
+      ' height: 20px; background: red; opacity: .9 }</style>' +
+      '<div id="a"></div>',
+  );
+  await doc.at(80);
+  const [sprite] = doc.el.sprites()!;
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  // with no transform the box is at the document's left: layout moved it by
+  // the 30px this frame's translation has, and its layer's matrix carries
+  // every frame's
+  assert.strictEqual(sprite.rect.x, abs.x);
+  const { ctx, fills } = recorder();
+  sprite.paint(ctx);
+  const own = fills.filter((f) => f.w === 40 && f.h === 20);
+  assert.strictEqual(own.length, 1, JSON.stringify(fills));
+  assert.strictEqual(own[0].x, abs.x, 'drawn untranslated');
+  // filling forwards, it rests at its last frame
+  assert.ok(near(sprite.transform[4], 50, 1e-6), `${sprite.transform}`);
+  // the render server ran it out: no longer offered, so the presenter gives
+  // it back, to be drawn as it ended
+  const [slide] = sprite.animations;
+  doc.el.spriteAnimationEnded(sprite.key, slide.id, true);
+  assert.strictEqual(doc.el.sprites(), null);
 });
 
 // --- the arithmetic ---------------------------------------------------------------

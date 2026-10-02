@@ -1354,6 +1354,48 @@ context says a faded surface is cheap, and on Windows each thing it draws
 is faded every frame. What the platforms could run of the rest, Core
 Animation among them, is [a design document](../prd-html-animations.md).
 
+**On macOS an animation a layer can carry runs in the render server.**
+react-x11's surface presenter asks a drawn element for the parts of its
+drawing it may lift onto layers of their own (react-x11's `sprites()`,
+sidorares/react-x11#819, with `@windowkit/appkit` 0.19), and the document
+offers each element whose animation is one a browser would hand its
+compositor:
+
+- its one animation sets only `opacity`, `transform`, `translate`,
+  `rotate` and `scale`, plays, and is past its delay;
+- it is a box of its own — not an inline split across lines, not a
+  `::before` or an `::after` — and is not fixed, clipped, masked or drawn
+  against the viewport;
+- nothing it is inside fades, turns, clips, masks, is fixed, or runs an
+  animation of its own;
+- and no ink in the document but its own and its ancestors' — which have
+  no outline — falls anywhere it can be while it runs, whether painted
+  before it or after.
+
+The last is deliberately strict: a toast, a panel fading in, a spinner and a
+card turning on its own pass it, and a badge over a card it does not belong
+to is left to the document. The frames go over as the document runs them:
+the element's style is sampled through a cycle of its animation — two
+iterations where it alternates — at a display's rate, so every easing,
+`steps()` among them, a frame made of the element's own value, a whole turn
+and a mixed transform list come out as `<Html>` draws them, and the render
+server plays straight lines between. At rest the layer shows what the
+animation leaves: the frame it ends on where it fills forwards, the
+element's own style where it does not.
+
+A lifted element is a hole in the document's paint, and its animation is
+no frame of the document's: a fading panel and a turning card cost no frame
+and no paint between them where the clock painted each sixty times a second.
+The presenter decides again every frame, and an element it gives back —
+something now drawn over it, a scroll that takes it under a clip — is
+restyled at once to where its animation has got to, drawn, and run on the
+document's clock from there. One the render server runs to its end is given
+back to be drawn as it ended. While an element is lifted its style is the
+one it had when it was lifted, so a pointer is hit against where a moving
+element was then, not where it is. Everywhere else — X11, Wayland, Windows,
+a core or a bridge that predates the seam — nothing asks, and every
+animation runs on the document's clock as above.
+
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
 (CSS Containment 2). A box with size containment is laid out as though it
@@ -2466,6 +2508,15 @@ the cheap way as well as the right one: on macOS a repaint of 24 faded
 cards went from 3.7–5.5 ms faded a thing at a time to 2.4–4.4 grouped, and
 a frame of a fade from 0.65–1.2 ms to 0.39–0.73. A native context that
 does not say so is not handed a group, and a page paints there as it did.
+
+**On macOS an animation a layer carries costs no frame.** A page with a
+CSS fade on a panel and a CSS turn on a card, over react-x11's sprites and
+a bridge that takes a matrix: two seconds of both painted 113 window frames
+and 113 paints of the document on the clock, and none of either lifted, the
+render server's opacity and turn moving under them. Sampling a part's frames
+is the cost instead, once: a style computed per frame of a cycle, sixty for
+a second's animation, kept for as long as the document draws and lays the
+element out as it did.
 
 ## Types
 

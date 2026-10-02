@@ -1643,6 +1643,31 @@ flip, the interpolation — was wrong too: measure a new surface on macOS,
 in a benchmark that varies one thing at a time, before taking a composite
 for the cheap side or a cause for the cost.
 
+**An animation a layer can carry is handed to core as a sprite**
+(`src/html/sprites.ts`; react-x11's `sprites()`, sidorares/react-x11#819).
+On macOS the surface presenter lifts it onto a layer of its own and the
+render server runs it: a fade and a turn on a page paint no frame. Three
+things are load-bearing.
+
+- **A lifted element is a hole and no frame of the clock's.**
+  `PaintOptions.lifted` is checked at `paintBox` and `paintTransformed`,
+  the two doors a box is painted through. `_skipLifted` is handed to the
+  timeline's `live` and `nextFrame`. **Anything new that paints a box, or
+  asks for an animation frame, honours both.**
+- **A part is made once and kept by a stamp of what it is made from.** Its
+  frames are sampled on a fork of the timeline (`AnimationTimeline.fork`),
+  which leaves the document's as it was, sixty styles a second of cycle.
+  **Anything new that changes what a lifted box draws without a build
+  bumps `_spriteGen`**, as a restyle in place inside one does; otherwise
+  the layer goes on showing the old picture.
+- **What is handed over is made fresh every frame from the kept part.**
+  Core reads an animation's `delay` when it attaches it, counted from that
+  frame, and a document that scrolled has moved every rect.
+
+The methods carry no `override` while the floor's declarations have no
+`sprites()`. The floor move that brings them adds it (`noImplicitOverride`),
+and can swap the types this side writes out for core's.
+
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's
 text is one batch of glyphs, so the fade of the inline boxes around a run

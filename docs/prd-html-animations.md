@@ -13,8 +13,11 @@
 > draws on a surface through their matrix — the kept surface, §7's step 1a
 > — and group opacity, with a fade drawn from its kept group, step 1b: on
 > X11 and Wayland, and on macOS over react-x11 2.27.0. The retained
-> background, 1c, is deferred on its measurement, and the steps after it
-> are not built. The reference for what runs today is
+> background, 1c, is deferred on its measurement. Step 4's spike is done,
+> and step 5 is built: core's sprite seam (react-x11#819) and the bridge's
+> matrices (windowkit/appkit#97), with `<Html>` offering what a layer can
+> carry, at no JavaScript frame on macOS once both are released. Steps 2,
+> 3 and 6 are not built. The reference for what runs today is
 > `docs/components/html.md`, "Animations".
 
 ## 1. What `<Html>` does today
@@ -487,10 +490,43 @@ In order, each step useful on its own and measured before the next:
    `allowsGroupOpacity` — and hand the opacity loop to the render server,
    and promotion's own fade is the same change.
 
+   **Which react-x11 2.28.0 made** (react-x11#817, #818). A layer under an
+   opacity below 1 composites with its sublayers as one by default on
+   macOS — `allowsGroupOpacity` read back off a promoted layer is 1 — so
+   promotion takes a fade, and refuses a box inside a fading one instead.
+   The fading sprite over `<Html>` went from 150 window frames, 150 paints
+   of `<Html>` and 150 draws of the canvas in two seconds to none of any.
+
 5. **§4.2, the sprite seam in core**, with pre-sampled transform
    keyframes, `<Html>` as its first consumer. Zero JavaScript frames for an
    eligible animation on macOS is the gate: the presenter bench's
    frames-per-120 ms row, 0 against 8.
+
+   **Built, three halves.**
+   - **Core** (react-x11#819) asks a drawn element every frame for the
+     parts of its drawing it may lift, `sprites()`, and lifts each under
+     promotion's rules onto a layer of its own, at everywhere the part can
+     be over its animations. The element hears which are lifted before the
+     frame paints, `spritesLifted`, and when the render server has run one
+     to its end.
+   - **The bridge** (windowkit/appkit#97) takes a transform as CSS's matrix,
+     and a negative delay as a begin time in the past: a `timeOffset` would
+     wrap a one-shot animation joined half way round to its start before
+     its end.
+   - **`<Html>`** offers each element whose one animation sets only opacity
+     and the transform properties, in a box of its own, inside nothing that
+     fades, turns, clips or animates, with no ink but its own and its
+     ancestors' within reach while it runs (`src/html/sprites.ts`). Its
+     frames are sampled, opacity as well as transform, so every easing and
+     every interpolation `<Html>` has comes out as it draws it. A lifted
+     element is a hole in the paint and no frame of the document's clock,
+     and one given back is restyled where its animation has got to.
+
+   A CSS fade and a CSS turn on a page went from 113 window frames and 113
+   paints of the document in two seconds to none. The gate is met on a
+   real window over unreleased builds of both. Pixels were not checked:
+   window capture answered blank on that machine at the time.
+
 6. **§5.3's Linux rung** only if step 1's measurements on Xorg say the
    resample is the cost.
 
@@ -499,14 +535,11 @@ In order, each step useful on its own and measured before the next:
 Four things to file, each in the repository it belongs to — the first three
 before step 5:
 
-- **react-x11: the sprite visual seam** (§4.2) — `registerElement({ visual
-})` or an element method the presenter asks per frame, for the layer
-  presenter and for promotion, with `animation-end` routed back to the
-  element. Reference `docs/macos.md`'s "Custom drawing on a layer tree" and
-  animation.md §4. Step 4's spike adds what it must carry first: an
-  opacity composited as a group (`allowsGroupOpacity`) and run by the
-  render server, which promotion declines today (`fadesAsGroup`) — the same
-  change lets core's own `<box>` fade off the clock.
+- **react-x11: the sprite visual seam** (§4.2) — filed as react-x11#819
+  and built as an element method the presenter asks per frame,
+  `sprites()`, for promotion; the layer presenter declines for now. What
+  step 4's spike asked of it first, an opacity composited as a group and run
+  by the render server, is react-x11#817/#818, in 2.28.0.
 - **react-x11: §3.4's vocabulary**, which is on its roadmap already;
   §4.1 and §5.4 wait on it. No new request, a dependency to note.
 - **ntk: a `Surface` backed by a GL framebuffer** (§5.3), a dma-buf the 2D
