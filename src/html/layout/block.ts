@@ -220,11 +220,26 @@ export function layoutDocument(
   if (body) STANDS_FOR_BODY.add(root);
   const own = standInHeight(tree, viewportHeight);
   if (own) handPercentBase(root, own.inner);
-  root.x = root.marginLeft;
-  root.width = Math.max(
-    root.horizontalExtra,
-    viewportWidth - root.marginLeft - root.marginRight,
-  );
+  if (body || tree.impliedRoot) {
+    // and is as wide as that element is, a block in a containing block the
+    // viewport wide — the `<html>` implied around a body, with no edges
+    // here, or the initial containing block around the root element — so
+    // its `width`, its limits and its `auto` margins are its own: a body
+    // set `max-width: 100px; margin: 0 auto` was the window wide at its
+    // left edge, where Chrome centres it. That containing block's
+    // direction is the implied `<html>`'s, or the root element's own
+    // (CSS 2.1 10.1), which says which margin an over-constrained width
+    // leaves to the room.
+    root.width = blockWidth(root, viewportWidth, viewportWidth, ctx);
+    const rtl = (tree.impliedHtml ?? root.style).direction === 'rtl';
+    placeBlock(root, 0, 0, viewportWidth, rtl);
+  } else {
+    root.x = root.marginLeft;
+    root.width = Math.max(
+      root.horizontalExtra,
+      viewportWidth - root.marginLeft - root.marginRight,
+    );
+  }
   const contentWidth = root.contentWidth;
   const floats = new FloatContext(root.contentX, root.contentX + contentWidth);
   root.y = body
@@ -2681,6 +2696,9 @@ function placeBlock(
   contentLeft: number,
   y: number,
   containingWidth: number,
+  /** Whether the containing block is right-to-left: its parent's, but for
+   *  the root box, which has none (`layoutDocument`). */
+  rtl = box.parent?.style.direction === 'rtl',
 ): void {
   const style = box.style;
   const leftAuto = style.marginLeft === AUTO;
@@ -2689,7 +2707,6 @@ function placeBlock(
   // what the width and the margins do not add up to goes to the margin at
   // the end: the right one, or in a right-to-left containing block the
   // left one, and a box too wide overflows there (CSS 2.1 10.3.3)
-  const rtl = box.parent?.style.direction === 'rtl';
   // an alignment around it places a box its margins do not (HTML's
   // `<center>` and `align`)
   const aligned = leftAuto || rightAuto ? null : box.parent?.style.alignBlocks;
