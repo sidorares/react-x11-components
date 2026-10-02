@@ -654,6 +654,12 @@ export interface ComputedStyle {
    *  Compositing 1, 3.2): what it holds with a `z-index` is ordered inside
    *  it, a negative one over its own background. */
   isolation: 'auto' | 'isolate';
+  /** What `will-change` names, as what that makes of the element
+   *  (`WILL_STACK` and the rest, CSS Will Change 1): what a value of each
+   *  property other than its initial one would. And what the properties
+   *  its running animations set make of it, which act as named there
+   *  (Web Animations 1, 5.6). 0 for `auto`. */
+  willChange: number;
   /** Where `translate` moves the box after layout (CSS Transforms 2): a
    *  length or a percentage of its own border box across and down; null
    *  for `none`. */
@@ -1168,6 +1174,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     clipPath: null,
     opacity: 1,
     isolation: 'auto',
+    willChange: 0,
     translate: null,
     rotate: null,
     scale: null,
@@ -2010,6 +2017,11 @@ export function applyDeclaration(
     case 'isolation': {
       const v = value.trim().toLowerCase();
       if (v === 'auto' || v === 'isolate') style.isolation = v;
+      return;
+    }
+    case 'will-change': {
+      const bits = parseWillChange(value);
+      if (bits !== null) style.willChange = bits;
       return;
     }
     case 'animation': {
@@ -3563,6 +3575,113 @@ function containOf(value: string): number | null {
     bits |= bit;
   }
   if (bits & CONTAIN_SIZE && bits & CONTAIN_INLINE_SIZE) return null;
+  return bits;
+}
+
+/** `will-change`'s bits (`WILL_CHANGES`): a stacking context, on any box. */
+export const WILL_STACK = 1;
+/** A stacking context, on a box a transform applies to: not an inline box
+ *  (CSS Transforms 1, the transformable element). */
+export const WILL_STACK_BOX = 2;
+/** A stacking context, where `z-index` applies: a positioned box, or a
+ *  flex or a grid item (CSS 2.1 9.9.1, CSS Flexbox 5.4). */
+export const WILL_STACK_Z = 4;
+/** The containing block of the absolute boxes in it, on any box. */
+export const WILL_HOLD_ABSOLUTE = 8;
+/** The containing block of the fixed boxes in it, and so of the absolute
+ *  ones, on any box. */
+export const WILL_HOLD_FIXED = 16;
+/** …on a box a transform applies to. */
+export const WILL_HOLD_FIXED_BOX = 32;
+/** A stacking context, and the containing block of the fixed boxes in it,
+ *  on a box containment applies to (`contained`). */
+export const WILL_CONTAIN = 64;
+
+const TRANSFORMING = WILL_STACK_BOX | WILL_HOLD_FIXED_BOX;
+const FILTERING = WILL_STACK | WILL_HOLD_FIXED;
+
+/**
+ * What naming a property in `will-change` makes of an element: what a value
+ * of the property other than its initial one would make of it (CSS Will
+ * Change 1, 2) — a stacking context, the containing block of the absolute
+ * boxes in it, of the fixed ones as well — on the boxes the property
+ * applies to. A name not here is a property no value of which does any of
+ * it, or no property at all, and makes nothing.
+ */
+const WILL_CHANGES: Record<string, number> = {
+  opacity: WILL_STACK,
+  'clip-path': WILL_STACK,
+  '-webkit-clip-path': WILL_STACK,
+  mask: WILL_STACK,
+  'mask-image': WILL_STACK,
+  'mask-border': WILL_STACK,
+  'mask-border-source': WILL_STACK,
+  '-webkit-mask': WILL_STACK,
+  '-webkit-mask-image': WILL_STACK,
+  '-webkit-mask-box-image': WILL_STACK,
+  'mix-blend-mode': WILL_STACK,
+  'view-transition-name': WILL_STACK,
+  // as `isolation: isolate` makes one here (`stacksLayers`)
+  isolation: WILL_STACK_BOX,
+  // `fixed` and `sticky` make a stacking context, and every value but
+  // `static` a containing block of absolute boxes — not of fixed ones
+  position: WILL_STACK | WILL_HOLD_ABSOLUTE,
+  'z-index': WILL_STACK_Z,
+  // a filter applies to an inline box as well, and holds what is fixed in
+  // it (CSS Filter Effects 1, 2; 2 again for `backdrop-filter`)
+  filter: FILTERING,
+  '-webkit-filter': FILTERING,
+  'backdrop-filter': FILTERING,
+  '-webkit-backdrop-filter': FILTERING,
+  transform: TRANSFORMING,
+  '-webkit-transform': TRANSFORMING,
+  translate: TRANSFORMING,
+  rotate: TRANSFORMING,
+  scale: TRANSFORMING,
+  perspective: TRANSFORMING,
+  '-webkit-perspective': TRANSFORMING,
+  'transform-style': TRANSFORMING,
+  '-webkit-transform-style': TRANSFORMING,
+  'offset-path': TRANSFORMING,
+  contain: WILL_CONTAIN,
+};
+
+/** What naming `property` in `will-change` makes of an element, or what an
+ *  animation of it does while it runs (`Cascade._computeStyle`). */
+export function willChangeOf(property: string): number {
+  return WILL_CHANGES[property] ?? 0;
+}
+
+/** The names `will-change` takes as no property (CSS Will Change 1, 2): its
+ *  own keywords, and what a `<custom-ident>` is never. */
+const NOT_PROPERTIES = new Set([
+  'will-change',
+  'none',
+  'all',
+  'auto',
+  'default',
+  'initial',
+  'inherit',
+  'unset',
+  'revert',
+  'revert-layer',
+]);
+
+/** A `will-change` value as its bits: `auto` is none of them, and a list
+ *  of `scroll-position`, `contents` and property names what the names
+ *  make of the element (`willChangeOf`); null where it is no value. */
+function parseWillChange(value: string): number | null {
+  const v = value.trim().toLowerCase();
+  if (v === 'auto') return 0;
+  let bits = 0;
+  for (const part of v.split(',')) {
+    const name = part.trim();
+    if (!/^(?:--|-?[a-z_\u0080-￿])[a-z0-9_\-\u0080-￿]*$/.test(name)) {
+      return null;
+    }
+    if (NOT_PROPERTIES.has(name)) return null;
+    bits |= willChangeOf(name);
+  }
   return bits;
 }
 
@@ -6164,6 +6283,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'overflow-y': ['overflowY'],
   opacity: ['opacity'],
   isolation: ['isolation'],
+  'will-change': ['willChange'],
   translate: ['translate'],
   rotate: ['rotate'],
   scale: ['scale'],

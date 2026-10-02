@@ -1242,6 +1242,56 @@ test('a transformed box holds the absolute boxes inside it', async () => {
   assert.deepStrictEqual([a.x, a.y], [10, 50], 'against it, not the page');
 });
 
+test('a box that names a property in will-change holds what the property would hold: a transform the fixed boxes in it, a position the absolute ones, a filter even on an inline box, and a transform nothing on one', async () => {
+  // CSS Will Change 1, 2: what a value of the property other than its
+  // initial one would make of the element, on the boxes it applies to — a
+  // transform not to an inline box, a filter to any
+  const { node } = await render(
+    '<style>body{margin:0}i{display:block;width:5px;height:5px}' +
+      'section{height:40px}</style>' +
+      '<div style="height:50px"></div>' +
+      '<section style="will-change:transform">' +
+      '<i id="f" style="position:fixed;top:0;left:10px"></i></section>' +
+      '<section style="will-change:position">' +
+      '<i id="a" style="position:absolute;top:0;left:10px"></i></section>' +
+      '<section style="will-change:height">' +
+      '<i id="n" style="position:absolute;top:0;left:10px"></i></section>' +
+      '<span style="will-change:transform">' +
+      '<i id="t" style="position:fixed;top:0;left:20px"></i></span>' +
+      '<span style="will-change:filter;margin-left:30px">x' +
+      '<i id="g" style="position:fixed;top:0;left:0"></i></span>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(at('f'), [10, 50], 'against the transform');
+  assert.deepStrictEqual(at('a'), [10, 90], 'against the position');
+  assert.deepStrictEqual(at('n'), [10, 0], 'a height holds nothing');
+  assert.deepStrictEqual(at('t'), [20, 0], 'an inline box takes no transform');
+  const [x, y] = at('g');
+  assert.ok(x >= 30 && y > 0, `${x}, ${y}: against the inline box's filter`);
+});
+
+test('a box that names a property in will-change is the stacking context it would make: an opacity on any box, a z-index only where one applies', async () => {
+  // what has a negative `z-index` in a stacking context is painted over its
+  // background, and in one that is not, under the flow it is in
+  const { node } = await render(
+    '<style>body{margin:0}div{width:20px;height:20px}</style>' +
+      '<div style="will-change:opacity;background:#ff0000">' +
+      '<div style="position:absolute;top:0;z-index:-1;' +
+      'background:#00ff00"></div></div>' +
+      '<div style="will-change:z-index;background:#0000ff">' +
+      '<div style="position:absolute;top:20px;z-index:-1;' +
+      'background:#ffff00"></div></div>',
+  );
+  const colours = ['#ff0000', '#00ff00', '#0000ff', '#ffff00'];
+  const order = (await fillsOf(view(node)))
+    .map((f) => f.style)
+    .filter((c) => colours.includes(c as string));
+  // yellow below the flow, blue in it, and red — a stacking context, so
+  // with the positioned boxes — over both, with green in it over its red
+  assert.deepStrictEqual(order, ['#ffff00', '#0000ff', '#ff0000', '#00ff00']);
+});
+
 test('a translated block is painted over the flow after it', async () => {
   const { node } = await render(
     '<style>body{margin:0}div{height:20px}</style>' +

@@ -19,7 +19,7 @@
 import { progressAt, timingAt, tracksOf } from './animation.js';
 import type { Animations, Easing } from './animation.js';
 import type { KeyframesRule } from './parse.js';
-import { isInherited } from './style.js';
+import { isInherited, willChangeOf } from './style.js';
 
 /** How long a frame is: what an animation under way waits for its next. */
 export const FRAME_MS = 16;
@@ -53,6 +53,9 @@ interface Target {
   /** Whether a property it animates is inherited, which reaches what the
    *  element holds. */
   inherits: boolean;
+  /** What the properties its current animations set make of the element,
+   *  as `will-change` naming them would (`animatedWillChange`). */
+  willChange: number;
 }
 
 export class AnimationTimeline {
@@ -101,6 +104,7 @@ export class AnimationTimeline {
     const now = this.now;
     let next = Infinity;
     let inherits = false;
+    let willChange = 0;
     let out: Sample[] | null = null;
     const { names, easings, playStates } = animations;
     for (let i = 0; i < names.length; i += 1) {
@@ -128,6 +132,11 @@ export class AnimationTimeline {
         timing,
         run.hold ?? now - run.start,
       );
+      // in its delay, under way, or filling forwards: what it sets acts as
+      // named in `will-change` (Web Animations 1, 5.6)
+      if (phase !== 'after' || progress !== null) {
+        willChange |= animatedWillChange(rule);
+      }
       if (!paused) {
         if (phase === 'active') next = Math.min(next, now + FRAME_MS);
         else if (phase === 'before') {
@@ -146,10 +155,18 @@ export class AnimationTimeline {
       return null;
     }
     if (!targets) this._targets.set(el, (targets = new Map()));
-    const target: Target = { running, next, inherits };
+    const target: Target = { running, next, inherits, willChange };
     targets.set(pseudo, target);
     this._seen?.add(target);
     return out;
+  }
+
+  /** What an element's animations make of it, or a pseudo-element's, as
+   *  `will-change` naming what they set would (`animatedWillChange`), as
+   *  of the last time it was sampled: each from the start of its delay to
+   *  its end, or for good where it fills forwards. 0 where it has none. */
+  willChange(el: object, pseudo: string): number {
+    return this._targets.get(el)?.get(pseudo)?.willChange ?? 0;
   }
 
   /** An element's animations, or a pseudo-element's, are over: its lists
@@ -258,3 +275,25 @@ function animatesInherited(rule: KeyframesRule): boolean {
 }
 
 const INHERITS = new WeakMap<KeyframesRule, boolean>();
+
+/**
+ * What the properties a `@keyframes` sets make of the element it runs on,
+ * as `will-change` naming them would: for every property an animation
+ * that is current or in effect targets, the element acts as though
+ * `will-change` named it (Web Animations 1, 5.6) — so an animation of
+ * `opacity` makes a stacking context for as long as it runs, the frames at
+ * an opacity of 1 among them, and one of `transform` a containing block as
+ * well, from before its delay ends to after its end where it fills
+ * forwards. Kept by the rule.
+ */
+export function animatedWillChange(rule: KeyframesRule): number {
+  let bits = WILL_CHANGES.get(rule);
+  if (bits === undefined) {
+    bits = 0;
+    for (const prop of tracksOf(rule).keys()) bits |= willChangeOf(prop);
+    WILL_CHANGES.set(rule, bits);
+  }
+  return bits;
+}
+
+const WILL_CHANGES = new WeakMap<KeyframesRule, number>();

@@ -30,6 +30,10 @@ import {
   CONTAIN_LAYOUT,
   CONTAIN_PAINT,
   CONTAIN_SIZE,
+  WILL_CONTAIN,
+  WILL_HOLD_ABSOLUTE,
+  WILL_HOLD_FIXED,
+  WILL_HOLD_FIXED_BOX,
   INLINE_BEFORE_ABSOLUTE,
   scrolls,
 } from '../css/style.js';
@@ -4431,6 +4435,7 @@ function containingBlockFor(box: Box): Box | null {
       (!fixed && node.style.position !== 'static') ||
       transformed(node.style) ||
       contained(node, CONTAIN_LAYOUT | CONTAIN_PAINT) ||
+      willHold(node, fixed) ||
       node.parent === null
     ) {
       return node;
@@ -4451,7 +4456,13 @@ const CONTAIN_WIDTH = CONTAIN_SIZE | CONTAIN_INLINE_SIZE;
  * containment to a table or a cell.
  */
 export function contained(box: Box, bits: number): boolean {
-  if (!(box.style.contain & bits)) return false;
+  const set = box.style.contain & bits;
+  return set !== 0 && containmentApplies(box, set);
+}
+
+/** Whether the containments `bits` would apply to a box, were they set
+ *  (`contained`). */
+export function containmentApplies(box: Box, bits: number): boolean {
   switch (box.kind) {
     case 'block':
     case 'flex':
@@ -4459,10 +4470,32 @@ export function contained(box: Box, bits: number): boolean {
       return true;
     case 'table':
     case 'table-cell':
-      return !!(box.style.contain & bits & ~CONTAIN_WIDTH);
+      return !!(bits & ~CONTAIN_WIDTH);
     default:
       return false;
   }
+}
+
+/**
+ * Whether what `will-change` names makes a box the containing block of the
+ * fixed boxes in it (`fixed`), or of the absolute ones: each name on the
+ * boxes its property applies to (CSS Will Change 1, 2; `WILL_CHANGES`) —
+ * a filter on any box, a transform on a box that is not inline,
+ * containment where it applies, and `position`, every value of which but
+ * `static` holds absolute boxes and none fixed ones.
+ */
+export function willHold(box: Box, fixed: boolean): boolean {
+  const bits = box.style.willChange;
+  if (!bits) return false;
+  if (bits & WILL_HOLD_FIXED) return true;
+  if (bits & WILL_HOLD_FIXED_BOX && box.kind !== 'inline') return true;
+  if (
+    bits & WILL_CONTAIN &&
+    containmentApplies(box, CONTAIN_LAYOUT | CONTAIN_PAINT)
+  ) {
+    return true;
+  }
+  return !fixed && !!(bits & WILL_HOLD_ABSOLUTE);
 }
 
 /** Move a box and everything under it, keeping the subtree's shape. */

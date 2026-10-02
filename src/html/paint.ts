@@ -55,11 +55,20 @@ import {
   copyStyle,
   masked,
   scrolls,
+  WILL_CONTAIN,
+  WILL_STACK,
+  WILL_STACK_BOX,
+  WILL_STACK_Z,
 } from './css/style.js';
 import { LARGEST } from './css/calc.js';
 import { invert, mapRect, multiply, transformed } from './css/transform.js';
 import type { Matrix } from './css/transform.js';
-import { contained, placedMatrix } from './layout/block.js';
+import {
+  contained,
+  containmentApplies,
+  placedMatrix,
+  willHold,
+} from './layout/block.js';
 import {
   BOX_RAISES,
   LINE_BOX_RAISES,
@@ -3440,10 +3449,13 @@ export function fixedToViewport(box: Box): boolean {
 }
 
 /** Whether a box is the containing block of the fixed boxes in it: a
- *  transformed box, or one with layout or paint containment. */
+ *  transformed box, one with layout or paint containment, or one that
+ *  names either in `will-change` (`willHold`). */
 function holdsFixed(box: Box): boolean {
   return (
-    transformed(box.style) || contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)
+    transformed(box.style) ||
+    contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT) ||
+    willHold(box, true)
   );
 }
 
@@ -3465,7 +3477,8 @@ export function containingBlockOf(box: Box): Box | null {
   while (
     containing?.parent &&
     containing.style.position === 'static' &&
-    !transformed(containing.style)
+    !transformed(containing.style) &&
+    !willHold(containing, false)
   ) {
     containing = containing.parent;
   }
@@ -4218,6 +4231,85 @@ function gatherLayers(box: Box, context: Box, into: Box[]): void {
   }
 }
 
+/**
+ * Whether anything the document paints after `box` puts ink within
+ * `extent`, in the document's coordinates: what a layer drawn over the
+ * document in `box`'s place would wrongly cover (`src/html/sprites.ts`).
+ * In `paintContent`'s order (CSS 2.1 Appendix E), a stacking context
+ * paints its flow, its layers and then its outline, so after a box painted
+ * as one of its context's layers come the layers after it in that list,
+ * the context's outline, and then the same of the context in the one
+ * around it, up to the root. The flow it is over and every layer before it
+ * are under it wherever it goes. A box fixed to the viewport is left out,
+ * since where it is drawn turns on the scroll, which the caller asks about
+ * itself (`FIXED_BOXES`). Null where `box`, or a context on the way up,
+ * is not painted from a list of layers — a box in the flow, one below it
+ * (`NEGATIVE`), one an inline box paints on its lines — and the caller has
+ * to ask of every box instead.
+ */
+export function paintedAfter(box: Box, extent: Rect): boolean | null {
+  let item = box;
+  while (item.parent) {
+    // its context: the nearest box that paints layers, which has it among
+    // them where it is one
+    let context: Box | null = item.parent;
+    while (context && !STACKED.has(context)) context = context.parent;
+    const list = context ? STACKED.get(context)! : null;
+    const index = list ? list.indexOf(item) : -1;
+    if (!context || index < 0) return null;
+    for (let k = index + 1; k < list!.length; k += 1) {
+      const later = list![k];
+      if (fixedToViewport(later)) continue;
+      if (!(later.boundsWidth > 0 && later.boundsHeight > 0)) continue;
+      const ink = {
+        x: later.boundsX,
+        y: later.boundsY,
+        width: later.boundsWidth,
+        height: later.boundsHeight,
+      };
+      if (meets(ink, extent)) return true;
+    }
+    if (outlineMeets(context, extent)) return true;
+    item = context;
+  }
+  return false;
+}
+
+/** Whether two rectangles share any area. */
+function meets(a: Rect, b: Rect): boolean {
+  return (
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height
+  );
+}
+
+/** Whether a box's outline, the ring `paintOutline` draws, reaches into
+ *  `rect`: what is inside the ring all of it is clear of it. */
+function outlineMeets(box: Box, rect: Rect): boolean {
+  const s = box.style;
+  if (s.outlineStyle === 'none' || !(s.outlineWidth > 0)) return false;
+  if (s.visibility !== 'visible') return false;
+  const grow = s.outlineOffset + s.outlineWidth;
+  const top = frameY(box);
+  const height = frameHeight(box);
+  const outer = {
+    x: box.x - grow,
+    y: top - grow,
+    width: box.width + 2 * grow,
+    height: height + 2 * grow,
+  };
+  if (!meets(outer, rect)) return false;
+  const off = s.outlineOffset;
+  return !(
+    rect.x >= box.x - off &&
+    rect.y >= top - off &&
+    rect.x + rect.width <= box.x + box.width + off &&
+    rect.y + rect.height <= top + height + off
+  );
+}
+
 function settleLayers(box: Box, list: Box[]): void {
   if (!list.length) {
     STACKED.delete(box);
@@ -4262,10 +4354,33 @@ export function stacksLayers(box: Box): boolean {
   ) {
     return true;
   }
+  // and naming any of them in `will-change`, which a running animation of
+  // one does as well (CSS Will Change 1, 2; Web Animations 1, 5.6)
+  if (style.willChange && willStack(box)) return true;
   // the opacity taken from an inline box, asked last: `layered` asks this
   // of every box in the flow at every paint, and a map lookup is the one
   // question here that is not a field read
   return FADED_BLOCKS.has(box);
+}
+
+/** Whether what `will-change` names makes a box a stacking context: each
+ *  name on the boxes its property applies to (`WILL_CHANGES`) — an opacity
+ *  on any box, a transform on one that is not inline, a `z-index` where
+ *  one applies, containment where it does. */
+function willStack(box: Box): boolean {
+  const bits = box.style.willChange;
+  if (bits & WILL_STACK) return true;
+  if (bits & WILL_STACK_BOX && box.kind !== 'inline') return true;
+  if (
+    bits & WILL_STACK_Z &&
+    (box.style.position !== 'static' || flexItem(box))
+  ) {
+    return true;
+  }
+  return (
+    !!(bits & WILL_CONTAIN) &&
+    containmentApplies(box, CONTAIN_LAYOUT | CONTAIN_PAINT)
+  );
 }
 
 /** Whether a box is an item of a flex box — or a grid, to the box tree the
@@ -4291,7 +4406,7 @@ export function clipsFor(box: Box, context: Box): Box[] {
     const fixed = box.style.position === 'fixed';
     while (from && from !== context) {
       const style = from.style;
-      if (transformed(style)) break;
+      if (transformed(style) || willHold(from, fixed)) break;
       if (!fixed && style.position !== 'static') break;
       from = from.parent;
     }

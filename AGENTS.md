@@ -1621,6 +1621,19 @@ draws: an ancestor's ink bounds take in the marquee scrolling inside it.
 `animate={false}` draws each animation at rest, which is how the Zen
 Garden bench runs `<Html>`.
 
+**And what an animation sets acts as though `will-change` named it**,
+from the start of its delay to its end, or for good where it fills
+forwards (Web Animations 1, 5.6): the timeline keeps each element's bits
+as it samples it (`animatedWillChange`) and the cascade ORs them into the
+style. So a fade is a stacking context on the frames at an opacity of 1
+too — before, it changed its place in the paint order each time it got
+there — and a transform holds what is fixed in it through its delay. A
+phase that changes the bits, an animation starting or ending, changes
+`willChange`, which `hoverChange` does not take in place: the boxes are
+built again, as they are for the frame an opacity first leaves 1. **The
+bits are what makes an animated element one of its context's layers on
+every frame**, which the sprites' paint-order test below stands on.
+
 **A box drawn on a surface of its own keeps the surface, keyed on its
 `Box`.** X11 draws a turned box with text in it on a surface
 (`paintRaster`), and X11 and Wayland draw an element an opacity fades as a
@@ -1660,7 +1673,7 @@ for the cheap side or a cause for the cost.
 **An animation a layer can carry is handed to core as a sprite**
 (`src/html/sprites.ts`; react-x11's `sprites()`, sidorares/react-x11#819).
 On macOS the surface presenter lifts it onto a layer of its own and the
-render server runs it: a fade and a turn on a page paint no frame. Four
+render server runs it: a fade and a turn on a page paint no frame. Five
 things are load-bearing.
 
 - **A lifted element is a hole and no frame of the clock's.**
@@ -1685,6 +1698,19 @@ things are load-bearing.
 - **What is handed over is made fresh every frame from the kept part.**
   Core reads an animation's `delay` when it attaches it, counted from that
   frame, and a document that scrolled has moved every rect.
+- **What a layer may cover is decided in the order the document paints.**
+  A layer is drawn over the whole document, so it is right where nothing
+  painted after the element reaches anywhere the element can be, and
+  whatever is painted before it may: `paintedAfter` (`paint.ts`) walks
+  `paintContent`'s order — the layers after it in its stacking context's
+  list, that context's outline, and the same up to the root. **Anything
+  new that paints after a stacking context's layers, or reorders them,
+  is in `paintedAfter` as well**, or a layer covers what is drawn over it.
+  A box fixed to the viewport is asked about every frame instead
+  (`fixedWithin`), since a scroll moves it over the document; and where
+  the element is in no list — under its flow, in an inline box that is a
+  stacking context — the old test stands, no ink but its own and its
+  ancestors' within reach (`crowded`).
 
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's

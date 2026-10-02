@@ -1038,7 +1038,16 @@ sets its text again in the new colours where it is, as a change of colour
 does — `isolation` — `isolate` makes a box a stacking context, positioned
 or not, painted whole among the positioned boxes as one under full
 opacity is, so a box in it with a negative `z-index` goes over its
-background and under its text (CSS Compositing 1, 3.2) — `visibility` — a
+background and under its text (CSS Compositing 1, 3.2) — `will-change` —
+a property named in it makes the box what a value of the property other
+than its initial one would (CSS Will Change 1, 2): a stacking context for
+`opacity`, a transform, a filter, a mask, a `clip-path`, `isolation`,
+`mix-blend-mode` and `position`, and a `z-index` where one applies; the
+containing block of the absolute boxes in it for `position`, and of the
+fixed ones as well for a transform, `perspective`, `transform-style`, a
+filter and `contain` — a transform and its kin, `isolation` and `contain`
+on the boxes they apply to, so not on an inline box, where a filter does.
+Nothing is drawn differently for it — `visibility` — a
 hidden element keeps its room and draws nothing, its text included, and a
 visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
@@ -1048,7 +1057,7 @@ element or a positioned box with a `z-index` of its own, and over that
 context's background (CSS 2.1 Appendix E). A box that is a stacking
 context without being positioned — under full opacity, transformed,
 masked, cut by a `clip-path`, with layout or paint containment or
-`isolation: isolate`; a float
+`isolation: isolate`, or naming one of those in `will-change`; a float
 or a flex item as much as a block — is painted with the positioned boxes
 whose `z-index` is 0, in the document's order among them (Appendix E,
 step 8), as Chrome, Firefox and Safari paint it: over the text of a block
@@ -1314,7 +1323,13 @@ shorthand any of whose longhands does, a custom property and a logical
 one. A frame's `animation-timing-function` eases to the next frame, and
 the animation's own where it gives none. The values sit at the animation
 origin, over the author's normal declarations and under their
-`!important` ones (CSS Cascade 5, 6.1). A `::before`'s and an `::after`'s
+`!important` ones (CSS Cascade 5, 6.1). And what an animation sets acts as
+though `will-change` named it, from the start of its delay to its end, or
+for good where it fills forwards (Web Animations 1, 5.6): a fade is a
+stacking context at every frame, the ones at an opacity of 1 among them,
+and so is a box once it has faded in and holds the frame it ended on, as
+in Chrome — a translucent element changed its place among the boxes
+around it each time its opacity reached 1. A `::before`'s and an `::after`'s
 animations run; a marker's, a first letter's and a first line's are drawn
 at rest, as below.
 
@@ -1371,16 +1386,27 @@ compositor:
   `rotate` and `scale`, plays, and is past its delay;
 - it is a box of its own — not an inline split across lines, not a
   `::before` or an `::after` — and is not fixed, clipped, masked or drawn
-  against the viewport;
+  against the viewport, and holds nothing fixed to it;
 - nothing it is inside fades, turns, clips, masks, is fixed, or runs an
   animation of its own;
-- and no ink in the document but its own and its ancestors' — which have
-  no outline — falls anywhere it can be while it runs, whether painted
-  before it or after.
+- and nothing the document paints after it falls anywhere it can be while
+  it runs: a box positioned after it or with a higher `z-index`, the
+  outline of the stacking context it is in. What is painted before it is
+  under its layer as it is under it.
 
-The last is deliberately strict: a toast, a panel fading in, a spinner and a
-card turning on its own pass it, and a badge over a card it does not belong
-to is left to the document. The frames go over as the document runs them:
+So a toast over the page, a panel fading in over text, a block that slides
+up over the paragraph after it, a spinner and a card turning pass, and a
+badge painted over a card it does not belong to leaves the card to the
+document. The order is the one the document paints in: an element its
+animation makes a stacking context is painted with the positioned boxes,
+after the flow it is in (see `z-index`). A box fixed to the viewport is
+asked about every frame, since a scroll moves it over the document: while
+it is anywhere the element can be, the element is drawn in the document,
+over it or under it as their order has it. Where the element is not one of
+its stacking context's layers — one with a negative `z-index`, or in an
+inline box that is a stacking context — no ink but its own and its
+ancestors' may be within its reach, painted before it or after. The frames
+go over as the document runs them:
 the element's style is sampled through a cycle of its animation — two
 iterations where it alternates — at a display's rate, so every easing,
 `steps()` among them, a frame made of the element's own value, a whole turn

@@ -40,6 +40,7 @@ import { NO_ANIMATIONS, restingFrames, spanAt, tracksOf } from './animation.js';
 import type { Keyframe } from './parse.js';
 import { discrete, interpolateField } from './interpolate.js';
 import type { AnimationTimeline, Sample } from './timeline.js';
+import { animatedWillChange } from './timeline.js';
 import {
   animatedFields,
   applyDeclaration,
@@ -1986,6 +1987,10 @@ export class Cascade {
           own,
         );
       }
+      // what its animations set acts as named in `will-change`, in a delay
+      // as much as under way (Web Animations 1, 5.6): a style made here is
+      // the element's alone (`_alone`)
+      style.willChange |= timeline.willChange(el, target!);
     } else {
       const frames = restingFrames(style.animations, (name) =>
         this.keyframes(name),
@@ -1999,6 +2004,10 @@ export class Cascade {
           own,
         );
       }
+      // and at rest, each that fills forwards is in effect
+      style.willChange |= restingWillChange(style.animations, (name) =>
+        this.keyframes(name),
+      );
     }
     // which faces of the document's own families this family, weight and
     // slant ask for — known only now, with all three computed
@@ -3674,4 +3683,24 @@ function firstBody(html: Element): Element | null {
     }
   }
   return null;
+}
+
+/** What the animations that fill forwards make of an element at rest, as
+ *  `will-change` naming what they set would: each is in effect for good
+ *  (Web Animations 1, 5.6; `animatedWillChange`). */
+function restingWillChange(
+  animations: ComputedStyle['animations'],
+  keyframesOf: (name: string) => KeyframesRule | null,
+): number {
+  let bits = 0;
+  const { names, fillModes } = animations;
+  for (let i = 0; i < names.length; i += 1) {
+    const name = names[i];
+    if (name === null) continue;
+    const fill = fillModes[i % fillModes.length];
+    if (fill !== 'forwards' && fill !== 'both') continue;
+    const rule = keyframesOf(name);
+    if (rule) bits |= animatedWillChange(rule);
+  }
+  return bits;
 }
