@@ -118,7 +118,14 @@ conditions on the sheet it brings in, as though an `@media` block were
 around all of it (CSS Cascade 4, 2): the sheet is asked for once, whatever
 the width, and its rules hold where the queries do, a resize across one of
 their breakpoints restyling as it does for `@media`. One that can hold
-nowhere here, `print`, is not asked for.
+nowhere here, `print`, is not asked for. A `<link rel=stylesheet>`'s or a
+`<style>`'s `media` attribute is the same (HTML 4.2.4, 4.2.6): `<link
+media="(max-width: 600px)" href="mobile.css">` is asked for at any width
+and styles the document where it is that narrow, and
+`<style media="not all and (min-width: 640px)">` where it is narrower than
+640px, each restyling as a resize crosses it, and one with a `print` query
+alone is left out and its sheet not asked for. Its queries are read as an
+`@media` block's are, below.
 
 A stylesheet may be handed over as bytes instead, with the charset the
 protocol named if it named one: `{ kind: 'stylesheet', bytes, charset }`.
@@ -2134,7 +2141,8 @@ take — a size that is no length, `(min-width: 0\0)` — is neither true nor
 false, as Media Queries 4 has it: it holds nowhere under a `not` as well,
 and `(unknown: 1) or (min-width: 600px)` holds where the width does.
 `@import` goes through the resource seam, its media queries kept as the
-conditions of what it imports. Cascade layers are read (CSS
+conditions of what it imports, and a `<link>`'s or a `<style>`'s `media`
+attribute as the conditions of its sheet. Cascade layers are read (CSS
 Cascade 5): `@layer a, b;` fixes their order, the document's across all of
 its sheets, and a rule in a later layer wins over one in an earlier layer
 whatever their specificity, a rule in no layer over both, and the other way

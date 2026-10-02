@@ -756,7 +756,8 @@ export class HtmlViewNode extends Node {
     // What the sheets are read from, in order: a `<style>`'s text or a
     // fetched `<link>`'s, and after them the host's — each with the URL its
     // own relative URLs resolve against: the document's for a `<style>`,
-    // the sheet's own for a `<link>`.
+    // the sheet's own for a `<link>`, and the conditions its `media` puts it
+    // under.
     const read: SheetText[] = [];
     for (const ref of this._source.facts().sheets) {
       // A sheet handed over as bytes that names no encoding of its own is in
@@ -776,7 +777,13 @@ export class HtmlViewNode extends Node {
         ref.kind === 'inline'
           ? documentBase
           : this._resources.sheetBase(ref.href);
-      read.push({ text, encoding, element: ref.element, base });
+      read.push({
+        text,
+        encoding,
+        element: ref.element,
+        base,
+        media: ref.media,
+      });
     }
     const extra = props.stylesheet;
     const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
@@ -819,10 +826,23 @@ export class HtmlViewNode extends Node {
         sheets.push(sheet);
         for (const rule of sheet.fontFaces) faces.push({ rule, element });
       };
-      for (const { text, encoding, element, base } of read) {
-        const sheet = parseStylesheet(text, 0, layers, base);
+      for (const { text, encoding, element, base, media } of read) {
+        // a sheet under its `media` is under it as an imported one is
+        // under its import's: each rule, each face and each import in it
+        const under = media ? [media] : null;
+        const sheet = parseStylesheet(text, 0, layers, base, under);
         const seen: ImportRead[] = [];
-        this._placeImports(sheet, encoding, element, layers, seen, place);
+        this._placeImports(
+          sheet,
+          encoding,
+          element,
+          layers,
+          seen,
+          place,
+          0,
+          new Set(),
+          under,
+        );
         imports.push(seen);
         place(sheet, element);
       }
@@ -850,6 +870,7 @@ export class HtmlViewNode extends Node {
         texts: read.map((r) => r.text),
         encodings: read.map((r) => r.encoding),
         bases: read.map((r) => r.base),
+        media: read.map((r) => r.media),
         imports,
         extras,
         faces,
@@ -948,7 +969,8 @@ export class HtmlViewNode extends Node {
       if (
         r.text !== kept.texts[i] ||
         r.encoding !== kept.encodings[i] ||
-        r.base !== kept.bases[i]
+        r.base !== kept.bases[i] ||
+        !sameValue(r.media, kept.media[i])
       ) {
         return false;
       }
@@ -3333,6 +3355,8 @@ interface SheetText {
   encoding?: string;
   element: Element;
   base: string | null;
+  /** What its `media` attribute puts it under (`SheetRef.media`). */
+  media: MediaCondition[] | null;
 }
 
 /** One `@import` a sheet read, and what it read as. */
@@ -3343,9 +3367,9 @@ interface ImportRead {
 }
 
 /** What a cascade was built from, to tell whether the next would be the
- *  same one: the look, scale and fonts, each sheet's text, encoding and
- *  base, the texts of everything each imports, and the host's own — and
- *  the faces all of them declare. */
+ *  same one: the look, scale and fonts, each sheet's text, encoding, base
+ *  and media, the texts of everything each imports, and the host's own —
+ *  and the faces all of them declare. */
 interface SheetsRead {
   look: RootLook;
   scale: number;
@@ -3353,6 +3377,9 @@ interface SheetsRead {
   texts: string[];
   encodings: (string | undefined)[];
   bases: (string | null)[];
+  /** Compared by value: the document's facts, and so each list, are made
+   *  again at every revision, a streamed append's too. */
+  media: (MediaCondition[] | null)[];
   imports: ImportRead[][];
   extras: string[];
   faces: DeclaredFace[];
