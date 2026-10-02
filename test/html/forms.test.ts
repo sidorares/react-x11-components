@@ -499,6 +499,100 @@ metric("a select the page styled is the page's to draw", async () => {
   assert.strictEqual(await red('none', 176, 24), 0, 'no arrow');
 });
 
+metric(
+  "a select's list is the platform's menu where the backend has one, styled or not",
+  async () => {
+    // Safari and Chrome on macOS drop an NSMenu from every <select>: the
+    // page's CSS restyles the box and not the list. Core's <Select> keeps a
+    // drawn menu under a drawn trigger unless it is asked for the platform's
+    // (`nativeMenu`), and a select the page styled gets the drawn trigger, so
+    // the document asks: a styled select drops the platform's menu at the
+    // size the page set, and a plain one drops it too. The seam is stubbed
+    // here, since the harness's X server has no menu of its own to drop.
+    const element = (source: string) =>
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, { source, partial: false, 'data-testname': 'doc' }),
+      );
+    const source =
+      '<style>body{margin:0}select{display:block;width:200px}' +
+      '.own{padding:5px;border:2px solid #000;background:#eee;font-size:20px}' +
+      '</style>' +
+      '<select id="plain"><option>one</option><option>two</option></select>' +
+      '<select id="own" class="own"><option>alpha</option>' +
+      '<option selected>beta</option><option>gamma</option></select>';
+    const result = await renderX11(element(source), {
+      width: 440,
+      height: 300,
+      fonts: FONTS!,
+    });
+    const menus: {
+      spec: {
+        items: { id: number; title: string }[];
+        selected?: number;
+        fontSize?: number;
+      };
+      answer: (id: number | null) => void;
+    }[] = [];
+    Object.assign(result.app, {
+      nativePopUpMenus: true,
+      popUpMenu: (
+        _wnd: unknown,
+        spec: (typeof menus)[number]['spec'],
+        answer: (id: number | null) => void,
+      ) => {
+        menus.push({ spec, answer });
+        return () => {};
+      },
+    });
+    // the seam is read as a widget renders, so render with it in place
+    await act(() => result.rerender(element(source)));
+    const [plain, own] = screen.getAllByRole('combobox') as DrawnNode[];
+    const open = async (trigger: DrawnNode) => {
+      await act(async () => {
+        fireEvent.mouseDown(trigger);
+        fireEvent.mouseUp(trigger);
+      });
+      await act();
+    };
+
+    await open(own);
+    assert.strictEqual(
+      menus.length,
+      1,
+      "the styled select drops the platform's menu",
+    );
+    assert.deepStrictEqual(
+      menus[0].spec.items.map((i) => i.title),
+      ['alpha', 'beta', 'gamma'],
+    );
+    assert.strictEqual(
+      menus[0].spec.selected,
+      2,
+      'the selected option over it',
+    );
+    assert.strictEqual(
+      Math.round(menus[0].spec.fontSize ?? 0),
+      20,
+      "at the size the page set the select's text in",
+    );
+    await act(() => menus[0].answer(3));
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const gamma = findById(el.document, 'own')?.children.filter(
+      (c) => (c as { name?: string }).name === 'option',
+    )[2] as { attribs: Record<string, string> } | undefined;
+    assert.ok(gamma && 'selected' in gamma.attribs, "the pick is the select's");
+
+    await open(plain);
+    assert.strictEqual(
+      menus.length,
+      2,
+      'and so does a select the page left alone',
+    );
+  },
+);
+
 test('a form control or a frame keeps its height when only its width is set', async () => {
   // Only an image has an intrinsic ratio (CSS 2.1 10.3.2). A control's size
   // and a frame's 300 by 150 are defaults, and a text field set to

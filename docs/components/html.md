@@ -2670,7 +2670,12 @@ select the page gave a border or a background, and loses it at
 most often. Its widget is core's `<Select>` restyled through its
 `labelStyle` and `chevronStyle` slots, which also make it the drawn trigger
 on every backend: under a native popup bezel the page's box would have
-AppKit's drawn over it. `appearance: none` is how a design system writes
+AppKit's drawn over it. Its list is the platform's own menu wherever the
+backend has one, styled or not: on macOS an `NSMenu` dropped from the
+select, the chosen option over it, at the select's font size — the menu
+Safari and Chrome drop there, since a page's CSS restyles the box and not
+the list (core's `nativeMenu`). Elsewhere it is the drawn menu.
+`appearance: none` is how a design system writes
 every field it has, often with neither a border nor a background. A field
 the page set none of them on keeps the theme's frame, and so does every
 `<input type=submit>`: core's `<Button>` draws its own label.
