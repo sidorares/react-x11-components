@@ -13,11 +13,16 @@ import {
   parseFragment,
   rawTextOf,
 } from '../../src/html/dom.js';
+import { parseColor } from '../../src/html/css/values.js';
+import type { HtmlViewNode } from '../../src/html/index.js';
 import {
   boxOf,
+  fillsOf,
+  findById,
   h,
   lineTextsOf,
   metric,
+  pointIn,
   render,
   view,
   type LaidBox,
@@ -284,6 +289,91 @@ test('head content with no <head> around it stays hidden, as in the head a brows
   assert.ok(!text.includes('display'), 'no stylesheet');
   assert.ok(text.includes('body'));
 });
+
+/** The style an element's box computed. */
+function styleOf(el: HtmlViewNode, id: string): Record<string, unknown> {
+  return (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+}
+
+metric(
+  'a <noscript> in the body is drawn, as a browser with scripting off draws it',
+  async () => {
+    // nothing here runs a script, so a noscript represents its children
+    // (HTML 4.12.2): a page's fallback for a browser without JavaScript is
+    // what this draws, where the UA sheet hid it as one with JavaScript does
+    const { node } = await render(
+      '<!DOCTYPE html><html><head><title>t</title></head><body>' +
+        '<p id="p">before <noscript><a id="a" href="https://example.test/nojs" ' +
+        'style="background: #00ff00">no JavaScript</a></noscript> after</p>' +
+        '</body></html>',
+    );
+    const el = view(node);
+    const a = el.elementRect(findById(el.document, 'a')!);
+    assert.ok(a && a.width > 0 && a.height > 0, 'the link is laid out');
+    assert.ok(
+      (await fillsOf(el)).some((f) => f.style === parseColor('#00ff00')),
+      'and its background painted',
+    );
+    assert.strictEqual(
+      el.hrefAtPoint(...pointIn(el, 'a')),
+      'https://example.test/nojs',
+      'and it is a link',
+    );
+    // inline, as an element the UA sheet has no rule for is
+    assert.deepStrictEqual(lineTextsOf(el, 'p'), [
+      'before no JavaScript after',
+    ]);
+  },
+);
+
+metric(
+  'a <noscript> in the head applies its stylesheets, as a browser with scripting off does',
+  async () => {
+    // with scripting off HTML's parser keeps a head noscript's <style> and
+    // <link> in it (13.2.6.4.5, "in head noscript"), and they apply
+    const { node } = await render(
+      '<!DOCTYPE html><html><head><title>t</title>' +
+        '<noscript><style>p { color: red }</style>' +
+        '<link rel="stylesheet" href="nojs.css"></noscript>' +
+        '</head><body><p id="p">x</p></body></html>',
+      400,
+      {
+        onResource: (r: { url: string; kind: string }) =>
+          r.kind === 'stylesheet' && r.url === 'nojs.css'
+            ? { kind: 'stylesheet', text: 'p { margin-left: 13px }' }
+            : null,
+      },
+    );
+    const el = view(node);
+    assert.strictEqual(styleOf(el, 'p').color, 'red');
+    assert.strictEqual(styleOf(el, 'p').marginLeft, 13, 'and the linked one');
+    const text = el.textContent();
+    assert.ok(
+      !text.includes('color'),
+      `and nothing of the head drawn: ${text}`,
+    );
+  },
+);
+
+metric(
+  "a <noscript> with no <head> around it draws what HTML's parser takes into the body",
+  async () => {
+    // at the top of the document a noscript is the implied head's, and with
+    // scripting off the parser moves what it holds that is not head content
+    // into the body (13.2.6.4.5): the link is drawn, the sheet applies and,
+    // as the head's, stays hidden whatever another sheet says
+    const { node } = await render(
+      '<noscript><style>p { color: red }</style>' +
+        '<a id="a" href="https://example.test/nojs">no JavaScript</a></noscript>' +
+        '<style>* { display: block }</style><p id="p">x</p>',
+    );
+    const el = view(node);
+    const text = el.textContent();
+    assert.ok(text.includes('no JavaScript'), `the link is drawn: ${text}`);
+    assert.ok(!text.includes('color'), 'and the sheet is not');
+    assert.strictEqual(styleOf(el, 'p').color, 'red');
+  },
+);
 
 metric(
   'a newline straight after a <pre> start tag is no part of its text',

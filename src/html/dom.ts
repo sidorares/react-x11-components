@@ -63,10 +63,37 @@ const HEAD_CONTENT = new Set([
   'template',
 ]);
 
+/** What a `<noscript>` in the head keeps of what it holds. With scripting
+ *  off HTML's parser takes anything else out of it and into the body
+ *  (13.2.6.4.5, "in head noscript"). */
+const HEAD_NOSCRIPT = new Set([
+  'basefont',
+  'bgsound',
+  'link',
+  'meta',
+  'noframes',
+  'style',
+]);
+
 /** Whether an element is head content with no `<head>` around it: at the
- *  top of the document or right under `<html>`. */
+ *  top of the document or right under `<html>`, or in a `<noscript>` there
+ *  that keeps it. A `<noscript>` is not, since nothing here runs a script:
+ *  the rest of what it holds is what the parser would have put in the
+ *  body, and is drawn. */
 export function inImpliedHead(el: Element, tag: string): boolean {
-  if (!HEAD_CONTENT.has(tag)) return false;
+  if (!HEAD_CONTENT.has(tag) || tag === 'noscript') return false;
+  if (atDocumentTop(el)) return true;
+  const parent = el.parent as Element;
+  return (
+    HEAD_NOSCRIPT.has(tag) &&
+    tagOf(parent) === 'noscript' &&
+    atDocumentTop(parent)
+  );
+}
+
+/** Whether an element is at the top of the document or right under
+ *  `<html>`: where the head a browser implies would be. */
+function atDocumentTop(el: Element): boolean {
   const parent = el.parent;
   return !parent || !isElement(parent) || tagOf(parent) === 'html';
 }
