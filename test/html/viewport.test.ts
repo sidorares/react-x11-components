@@ -192,6 +192,52 @@ test('a body with no html around it takes its percentage height of the viewport'
   }
 });
 
+test('the html implied around a body with no html keeps its margins to itself', async () => {
+  // The root box stands in for that `<html>`, the root element, whose
+  // margins collapse with nothing (CSS 2.1 8.3.1). Its top margin was
+  // handed to the flow as the margin pending before the body, as a
+  // fragment's root box standing in for a body has its own, so it
+  // collapsed with the body's: Chrome sets the body 20 + 30 down, and so
+  // did the same page here written with an `<html>`, where the body stood
+  // at 30. Each case has the body's top and the document's height, which
+  // the explicit `<html>` gives as well, and Chrome; the first body, the
+  // root's content height tall, runs 30px out of the root's bottom.
+  const written = (css: string, body: string): string =>
+    `<!DOCTYPE html><html><head><title>t</title><style>${css}</style>` +
+    `</head><body id="body">${body}</body></html>`;
+  const cases: [string, string, number, number][] = [
+    [
+      'html{height:50%;margin-top:20px}body{margin:30px 0 0;height:100%}',
+      '<div style="height:10px"></div>',
+      50,
+      200,
+    ],
+    // the body's margins still collapse with its first and last block's,
+    // inside the root's
+    [
+      'html{margin:20px 0 25px}body{margin:30px 0 35px}',
+      '<div style="height:10px;margin:40px 0 45px"></div>',
+      60,
+      140,
+    ],
+    // and padding on the root is between the two
+    [
+      'html{margin-top:20px;padding-top:1px}body{margin:30px 0 0}',
+      '<div style="height:10px;margin-top:40px"></div>',
+      61,
+      71,
+    ],
+  ];
+  for (const [css, inner, top, height] of cases) {
+    for (const source of [bare(css, inner), written(css, inner)]) {
+      const { el } = await renderScrolled(source, 300);
+      const what = `${source.includes('<html>') ? 'written' : 'bare'} ${css}`;
+      assert.strictEqual(boxOf(el, 'body').y, top, what);
+      assert.strictEqual(el.abs.height, height, what);
+    }
+  }
+});
+
 metric(
   'a fixed box is drawn where the viewport is, however far the pane has scrolled the document',
   async () => {

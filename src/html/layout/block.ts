@@ -213,11 +213,16 @@ export function layoutDocument(
   // its first block's, `<html>` being the formatting context's root and
   // `<body>` not, so it is handed to the flow as the margin already pending
   // there — or `<p>hi</p>` would stand 8px lower than the same paragraph in
-  // `<body>`.
+  // `<body>`. Where it stands in for the `<html>` implied around a
+  // `<body>`, it is the root element, whose margins collapse with nothing
+  // (CSS 2.1 8.3.1), and its top margin is folded like the rest: handed to
+  // the flow, it collapsed with the body's.
   resolveEdges(root, viewportWidth);
   const own = standInHeight(tree, viewportHeight);
-  const leading = root.marginTop;
+  const top = root.marginTop;
+  const leading = tree.impliedRoot ? 0 : top;
   const trailing = root.marginBottom;
+  root.padTop += top - leading;
   root.padRight += root.marginRight;
   root.padBottom += root.marginBottom;
   root.padLeft += root.marginLeft;
@@ -251,7 +256,7 @@ export function layoutDocument(
   const floatBottom =
     floats.bottom === -Infinity ? 0 : floats.bottom - root.contentY;
   root.height = own
-    ? leading + own.outer + trailing
+    ? top + own.outer + trailing
     : Math.max(flow.height, floatBottom) + root.verticalExtra;
 
   // Positioned boxes last, and in the order they were found, so a later one

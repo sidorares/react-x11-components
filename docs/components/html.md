@@ -2115,8 +2115,13 @@ background covers the canvas, and the body keeps its own. The root box is as
 tall as the body says where that is definite, as `html, body { height:
 100% }` makes it a window tall. A `<body>` with no `<html>` around
 it, which is how a lot of mail starts, is still the body: its background
-covers the whole canvas. A document that writes `<html>` gets the body
-element HTML's parser would have made — the first thing in it that is not
+covers the whole canvas, and the root box stands in for the `<html>`
+implied around it. That is the root element, whose margins collapse with
+nothing (CSS 2.1 8.3.1), so an `html { margin-top }` is set above the
+body's own top margin, as with an `<html>` written in the markup — where a
+fragment's root box, standing in for a body, has its top margin collapse
+with its first block's, as a body's does. A document that writes `<html>`
+gets the body element HTML's parser would have made — the first thing in it that is not
 head content opens one — and content before a written `<body>`, or after
 it ends, goes in the body, as a browser puts it there. A `/>` closes an
 element only where HTML's parser says it does, on a void element and in
