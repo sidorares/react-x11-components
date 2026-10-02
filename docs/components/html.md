@@ -1403,10 +1403,15 @@ compositor:
   with its element at every frame of the element's;
 - it is a box of its own — an element's, or its `::before`'s or
   `::after`'s, as a spinner drawn by one is, but not an inline split
-  across lines — and is not fixed, clipped, masked or drawn
+  across lines — and is not fixed, masked, cut by a `clip-path` or drawn
   against the viewport, and holds nothing fixed to it;
-- nothing it is inside fades, turns, clips, masks, is fixed, or runs an
-  animation of its own;
+- nothing it is inside fades, turns, masks, is cut by a `clip-path`, is
+  fixed, or runs an animation of its own. A box that clips it — an
+  `overflow` other than `visible`, a `clip` — cuts its layer to the same
+  rectangle, so a carousel's slide or a marquee goes on a layer cut where
+  the document cuts it; one with rounded corners cuts nothing so long as
+  the element keeps clear of them while it runs, and keeps it in the
+  document where it does not, since a layer is cut to a rectangle;
 - and nothing the document paints after it falls anywhere it can be while
   it runs: a box positioned after it or with a higher `z-index`, the
   outline of the stacking context it is in. What is painted before it is
@@ -1415,7 +1420,8 @@ compositor:
 So a toast over the page, a panel fading in over text, a block that slides
 up over the paragraph after it, a spinner and a card turning pass, and a
 badge painted over a card it does not belong to leaves the card to the
-document. The order is the one the document paints in: an element its
+document. What is painted after it is asked about only where the element
+shows, inside what clips it. The order is the one the document paints in: an element its
 animation makes a stacking context is painted with the positioned boxes,
 after the flow it is in (see `z-index`). A box fixed to the viewport is
 asked about every frame, since a scroll moves it over the document: while

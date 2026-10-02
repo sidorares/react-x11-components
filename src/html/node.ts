@@ -2663,6 +2663,7 @@ export class HtmlViewNode extends Node {
       cascade,
       timeline: this._timeline,
       now,
+      scale: this.scale,
       boxes: this._firstBoxesOf(tree),
       pseudoBox: (el, which) => this._pseudoBoxOf(tree, el, which),
       ended: (el, id) => this._endedSprites.get(el)?.has(id) ?? false,

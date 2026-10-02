@@ -184,6 +184,11 @@ change or a scroll can undo any of them:
 - **Its clips.** Every `overflow: hidden`, `clip-path` and `clip` ancestor
   either holds the whole of the element's reach or is applied to the
   sprite's composite. A platform layer cannot take the document's clip.
+  It can take a rectangle, though: react-x11's sprites are cut to one
+  (react-x11#827, a layer in a box that masks to it), and `<Html>` hands
+  over the clips of the boxes around an element as one (`clipFor`). A
+  rounded edge or a `clip-path` is not a rectangle, and keeps the
+  element in the document where it reaches into it.
 
 `will-change: transform` and `will-change: opacity` are the author's
 statement that an element will be animated this way (CSS Will Change 1).

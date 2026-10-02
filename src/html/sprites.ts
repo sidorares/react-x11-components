@@ -37,6 +37,7 @@ import { resolve } from './css/values.js';
 import type { Box, BoxTree } from './layout/boxes.js';
 import {
   FIXED_BOXES,
+  clipFor,
   drawsAgainstViewport,
   holds,
   ownBounds,
@@ -103,6 +104,8 @@ export interface SpriteHost {
   timeline: AnimationTimeline;
   /** The time on the document's clock. */
   now: number;
+  /** Device pixels to a CSS pixel. */
+  scale: number;
   /** Each element's first box (`HtmlViewNode._firstBoxesOf`). */
   boxes: ReadonlyMap<Element, Box>;
   /** An element's `::before` or `::after` box, where it has one. */
@@ -231,8 +234,9 @@ export function liftOf(
 /**
  * Whether `box` can be drawn by a layer at all: a box of its own, not
  * fixed, drawing nothing against the viewport, inside nothing whose group,
- * matrix, clip or mask would have to take the layer in — and inside no
- * element whose own animation runs, which may turn into any of those.
+ * matrix, clip path or mask would have to take the layer in — a box that
+ * clips it cuts the layer instead (`clipFor`) — and inside no element whose
+ * own animation runs, which may turn into any of those.
  */
 function liftableBox(host: SpriteHost, box: Box): boolean {
   if (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break') {
@@ -244,7 +248,7 @@ function liftableBox(host: SpriteHost, box: Box): boolean {
   if (box.style.position === 'fixed' || drawsAgainstViewport(box)) {
     return false;
   }
-  if (box.style.clipPath || box.style.clip || masked(box.style)) return false;
+  if (box.style.clipPath || masked(box.style)) return false;
   // one fixed to the viewport in it is drawn where the viewport is, which
   // the layer does not follow
   for (const fixed of FIXED_BOXES.get(host.tree) ?? NO_BOXES) {
@@ -254,12 +258,9 @@ function liftableBox(host: SpriteHost, box: Box): boolean {
     const style = at.style;
     if (style.opacity < 1 || transformed(style)) return false;
     if (style.position === 'fixed') return false;
-    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
-      // the root's is the viewport's, and so is the body's it gives it
-      // (`propagateOverflow`), which leaves the body's own visible
-      if (at.parent) return false;
-    }
-    if (style.clipPath || style.clip || masked(style)) return false;
+    // a box that clips it cuts its layer to a rectangle (`clipFor`), which a
+    // path or a mask is not
+    if (style.clipPath || masked(style)) return false;
     // its own: a pseudo-element's beside the box is no ancestor of it
     if (at.el && host.timeline.isLive(at.el, '')) return false;
   }
@@ -288,6 +289,16 @@ function mapRect(rect: Rect, m: SpriteMatrix, ox: number, oy: number): Rect {
     y1 = Math.max(y1, y);
   }
   return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+/** The overlap of two rects, or null where they have none. */
+function meet(a: Rect, b: Rect): Rect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  if (right <= x || bottom <= y) return null;
+  return { x, y, width: right - x, height: bottom - y };
 }
 
 function unionRect(a: Rect, b: Rect): Rect {
@@ -428,7 +439,11 @@ export interface Part {
   /** When each of `animations` began its active phase, on the document's
    *  clock: its delay, made each frame from now (`describe`). */
   begins: number[];
-  /** Everywhere it can be while it runs, in the document's coordinates. */
+  /** Where the boxes around it let it show (`clipFor`), in the document's
+   *  coordinates; null where nothing cuts it. */
+  clip: Rect | null;
+  /** What shows of everywhere it can be while it runs, in the document's
+   *  coordinates. */
   extent: Rect;
   /** The boxes fixed to the viewport, which a scroll moves over the
    *  document: one within `extent` where the viewport has it now covers
@@ -482,9 +497,15 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
       extent = unionRect(extent, mapRect(reach, m, ox, oy));
     }
   }
+  // the boxes that clip it cut its layer, and what shows of it is all that
+  // anything painted after it could cover
+  const clip = clipFor(box, extent, host.scale);
+  if (clip === null) return null;
+  const shows = clip ? meet(extent, clip) : extent;
+  if (!shows) return null;
   // what is painted before it is under the layer as it is under it, and
   // what is painted after it must not be
-  if (paintedAfter(box, extent) ?? crowded(tree, box, extent)) return null;
+  if (paintedAfter(box, shows) ?? crowded(tree, box, shows)) return null;
   const animations: DocumentSpriteAnimation[] = [];
   const begins: number[] = [];
   lift.tracks.forEach((track, i) => {
@@ -524,7 +545,8 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
     transform,
     animations,
     begins,
-    extent,
+    clip: clip ?? null,
+    extent: shows,
     fixed: FIXED_BOXES.get(tree) ?? NO_BOXES,
   };
 }
@@ -570,6 +592,7 @@ export function describe(
         ctx.restore();
       }
     },
+    ...(part.clip ? { clip: shift(part.clip) } : null),
     opacity: part.opacity,
     transform: part.transform,
     origin: { x: part.origin.x + originX, y: part.origin.y + originY },
