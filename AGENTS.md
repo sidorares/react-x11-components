@@ -1764,7 +1764,12 @@ things are load-bearing.
   (`fixedWithin`), since a scroll moves it over the document; and where
   the element is in no list — under its flow, in an inline box that is a
   stacking context — the old test stands, no ink but its own and its
-  ancestors' within reach (`crowded`). The boxes that clip the element cut
+  ancestors' within reach (`crowded`). An element fixed to the viewport,
+  or in one that is (`drawnAtViewport`), is the other way round: its
+  layer is placed from the viewport's corner (`Part.atViewport`) and
+  painted there (`paintLiftedBox`), the fixed boxes painted after it are
+  asked about once, where it is, and everything else painted after it
+  over the whole document a pane scrolls under it. The boxes that clip the element cut
   its layer to a rectangle (`clipFor`, the sprite's `clip`,
   react-x11#827), and what shows through it is all any of this is asked
   of. **Anything new that clips a box joins `clipFor`**, or a layer shows
