@@ -83,6 +83,7 @@ import {
   GENERATED_FROM,
   INLINE_OFFSETS,
   LINE_BOX_RAISES,
+  PAINT_ORDER,
   SHAPE_STYLES,
   SHIFTED_LINES,
   TEXT_SHIFTS,
@@ -136,6 +137,7 @@ import {
   inClipPath,
   layered,
   layerOf,
+  onLine,
   ownBounds,
   paintDocument,
   pathClips,
@@ -3603,7 +3605,8 @@ function collectBands(
 /** The layers of a hit test, in the order CSS paints them within a
  *  context (`deepestAt`): a stacking context's own box under the boxes it
  *  paints below its flow, which are over its background (CSS 2.1 Appendix
- *  E, steps 1 to 3). */
+ *  E, steps 1 to 3). What is painted with the lines — their text, their
+ *  atomics, a flex item — is ordered in theirs by the document. */
 const HIT_CONTEXT = -2;
 const HIT_NEGATIVE = -1;
 const HIT_BLOCK = 0;
@@ -3630,11 +3633,12 @@ function deepestAt(
   let viaText = false;
   // What is under a point is what was painted there last (CSS 2.1 Appendix
   // E): within a context, an in-flow block's own box, then a float over it,
-  // then a line's text and atomics, then a positioned box — and a float, an
-  // atomic or a positioned box paints its own content whole in its turn,
-  // those layers again inside it. So a hit carries the layers down to it,
-  // and takes the place of the one before where those come after them, or
-  // tie: an infobox floated out of one section hangs over the next, whose
+  // then the lines' text and atomics and the flex items, in the document's
+  // order, then a positioned box — and a float, an atomic, a flex item or a
+  // positioned box paints its own content whole in its turn, those layers
+  // again inside it. So a hit carries the layers down to it, and takes the
+  // place of the one before where those come after them, or tie: an
+  // infobox floated out of one section hangs over the next, whose
   // own box took every link in it, and a skin that puts the article in a
   // `position: relative` box put all of it in one layer. Positioned boxes
   // are painted in `z-index` order and then the document's (`byZIndex`),
@@ -3680,8 +3684,9 @@ function deepestAt(
   // hovered or pressed.
   let atViewport = false;
   // how many boxes painted whole in their turn the walk has entered —
-  // floats, and the ones painted with the positioned boxes — which is
-  // their order in the document (`gatherLayers`)
+  // floats, the ones painted with the positioned boxes, and an atomic or a
+  // flex item among the lines — and texts it has asked, which is their
+  // order in the document (`gatherLayers`, `placesOn`)
   let order = 0;
   const enter = (
     child: Box,
@@ -3794,6 +3799,12 @@ function deepestAt(
         z,
         (order += 1),
       ];
+    } else if (child.parent?.kind === 'flex') {
+      // A flex item is painted whole among the lines, in its turn (CSS
+      // Flexbox 5.4), as an inline-block is. Keyed with the blocks, it was
+      // under the background of a block after it that a negative margin
+      // drew up under it, and over the text of one before it.
+      context = [...context, HIT_INLINE, (order += 1)];
     } else if (style.float !== 'none') {
       // and a float after another over all of the first, its text too
       context = [...context, HIT_FLOAT, (order += 1)];
@@ -3865,48 +3876,65 @@ function deepestAt(
   ): void => {
     // The paint index answers a point query too — the wide level of a flat
     // document is the root's child list, and a hit test that walked all of
-    // it would run per pointer move once hover is in the picture.
-    const candidates = node.paintIndex
-      ? queryChildIndex(node.paintIndex, y, y + 1)
-      : node.children;
+    // it would run per pointer move once hover is in the picture. A flex
+    // box's are in the order paint has them, its `order`.
+    const ordered = node.kind === 'flex' ? PAINT_ORDER.get(node) : undefined;
+    const candidates =
+      ordered ??
+      (node.paintIndex
+        ? queryChildIndex(node.paintIndex, y, y + 1)
+        : node.children);
     for (const child of candidates) {
       if (child.kind === 'text' || child.kind === 'break') continue;
+      // one on a line is entered there, in its turn among the line's text,
+      // unless it is painted with the positioned boxes
+      if (onLine(node, child) && !layered(node, child)) continue;
       enter(child, context, stack, clipped);
     }
-    if (node.paintIndex && node.positionedPaint) {
+    if (!ordered && node.paintIndex && node.positionedPaint) {
       for (const child of node.positionedPaint) {
         enter(child, context, stack, clipped);
       }
     }
     if (node.lines) {
       for (const line of node.lines) {
+        // its texts and atomics in the document's order, which paint
+        // paints them in (`placesOn`): a word an inline-block is under is
+        // what the pointer is over
+        const texts =
+          clipped.length === 0 && y >= line.y && y < line.y + line.height
+            ? line.texts
+            : NO_TEXTS;
+        let i = 0;
         for (const placed of line.atomics) {
-          enter(placed.box, [...context, HIT_INLINE], stack, clipped);
-        }
-        // An inline box has no box of its own — its extent is the runs on
-        // this line — so the element under a point inside a paragraph is
-        // found from the run rather than from a rectangle: from where its
-        // text sits in the document, whose text boxes know their element.
-        // Not from the run itself, whose layout may be one an earlier parse
-        // made (`TextLayoutCache`), and which an engine may hand back with
-        // nothing on it but its extent.
-        if (clipped.length === 0 && y >= line.y && y < line.y + line.height) {
-          for (const text of line.texts) {
-            const natural = text.layout.lines[text.layoutLine];
-            if (!natural) continue;
-            for (const run of natural.runs) {
-              const left = text.drawX + natural.x + run.x;
-              if (x >= left && x < left + run.width) {
-                const owner = ownerOf(
-                  tree.textBoxes,
-                  text.spans.documentAt(run.start),
-                );
-                const style = owner && tree.styles.get(owner)?.style;
-                if (style) take(owner, style, [...context, HIT_INLINE], true);
-              }
-            }
+          for (; i < placed.before && i < texts.length; i += 1) {
+            textAt(texts[i], context);
           }
+          const atomic = placed.box;
+          if (atomic.parent && layered(atomic.parent, atomic)) continue;
+          enter(atomic, [...context, HIT_INLINE, (order += 1)], stack, clipped);
         }
+        for (; i < texts.length; i += 1) textAt(texts[i], context);
+      }
+    }
+  };
+  // An inline box has no box of its own — its extent is the runs on its
+  // line — so the element under a point inside a paragraph is found from
+  // the run rather than from a rectangle: from where its text sits in the
+  // document, whose text boxes know their element. Not from the run
+  // itself, whose layout may be one an earlier parse made
+  // (`TextLayoutCache`), and which an engine may hand back with nothing on
+  // it but its extent.
+  const textAt = (text: LineText, context: readonly number[]): void => {
+    const natural = text.layout.lines[text.layoutLine];
+    if (!natural) return;
+    const at = (order += 1);
+    for (const run of natural.runs) {
+      const left = text.drawX + natural.x + run.x;
+      if (x >= left && x < left + run.width) {
+        const owner = ownerOf(tree.textBoxes, text.spans.documentAt(run.start));
+        const style = owner && tree.styles.get(owner)?.style;
+        if (style) take(owner, style, [...context, HIT_INLINE, at], true);
       }
     }
   };
@@ -3914,6 +3942,8 @@ function deepestAt(
   if (hit) hit.text = viaText;
   return found;
 }
+
+const NO_TEXTS: LineText[] = [];
 
 /** Paint order between two hits' layers, outermost first: negative where
  *  `a` was painted under `b`. */

@@ -746,7 +746,10 @@ row the latter two would space out are set at its top and run past its
 bottom, `safe center` setting them at the box's own start, where Yoga set
 them at the lines' start: in a row that wraps in reverse, at the bottom,
 and they ran past the top. Items go in `order`, and in the document's where two have the
-same, and are painted so; one with a `z-index` is a stacking context
+same, and are painted so, each whole, among the lines of the flow around
+the box (CSS Flexbox 5.4): over the background of a block after it that a
+negative margin draws up under it, and under that block's text. One with a
+`z-index` is a stacking context
 whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines at
 their line's start, its bottom in a row that wraps in reverse, their
 line as tall as that makes it — an item shorter than its first line, or
@@ -970,7 +973,15 @@ the lines above it keep the paragraph's width. Where the line cannot break
 at the float, as in `nowrap` text, what follows it up to where the line can
 has to fit beside it too. A word with too little room
 left on a line after an inline-block or a float goes to the next line
-whole.
+whole. A line's inline-blocks and images are painted in their turn among
+its text, and one line before the next (CSS 2.1 Appendix E, 7.2.1), as
+browsers paint them: an inline-block a negative margin draws the text
+after it over is under that text, with its decorations and its shadow,
+and under the background of an element that starts after it, on its
+line and on any line it hangs into, and over the text before it. On a right-to-left line Chrome
+and Safari paint them left to right instead, and Firefox as here. A
+block is painted in parts only where one of them covers what comes after
+it.
 A line with an inline-block or a padded element on it is laid out a piece
 at a time and put in visual order by the paragraph's own UAX #9 levels,
 resolved once over its text with an object replacement character for each
@@ -1036,7 +1047,9 @@ or a flex item as much as a block — is painted with the positioned boxes
 whose `z-index` is 0, in the document's order among them (Appendix E,
 step 8), as Chrome, Firefox and Safari paint it: over the text of a block
 after it that a negative margin draws up under it, and over a relative
-box before it. An inline-block that is one is painted by its line. An
+box before it. An inline-block or an image is one as much as a block is,
+and so is one that is positioned: painted with the positioned boxes, over
+the text after it on its line and on the lines after that. An
 absolute box with both offsets on an axis fills what they leave, or, with
 a width, shares it between its `auto` margins, which is how `margin: auto`
 centres one. A form
@@ -2228,7 +2241,11 @@ positioned ones is ordered among those of its stacking context however
 deep it is, as paint orders it: a `z-index` on a box in a relative box
 with none is the page's, a stacking context that is not positioned is
 found where it is drawn over the box after it, and what a stacking
-context sets below its flow is over the context's own box. An infobox
+context sets below its flow is over the context's own box. What the
+lines paint — their text, their inline-blocks and images, and the flex
+items of the flow — is ordered by the document as paint orders it: the
+word drawn over an inline-block is under the pointer, and a flex item is
+over the background of a block after it. An infobox
 floated out of one section and hanging over the next keeps its links, and the next
 section's box does not take them. A box that is not visible is not under
 the pointer, and nor is one with `pointer-events: none`: the pointer

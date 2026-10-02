@@ -1075,6 +1075,7 @@ function linesOf(
         box,
         x: room.left + open.x + box.marginLeft,
         y: 0,
+        before: 0,
       };
       const raise = atomicRaise(fonts, box, (box.parent ?? block).style);
       if (raise) placed.raise = raise;
@@ -2597,6 +2598,14 @@ function finishLine(
     ...(open.edges.length ? { edges: open.edges } : null),
   };
   for (const placed of open.atomics) placed.y = y + alignAtomic(placed, line);
+  // each atomic's place among the texts, which levelPieces may have split
+  if (open.atomics.length && open.texts.length) {
+    let texts = 0;
+    for (const placed of open.order) {
+      if (placed.kind === 'text') texts += 1;
+      else if (placed.kind === 'atomic') placed.item.before = texts;
+    }
+  }
   // Every fragment on this line shares the line's baseline, whatever its own
   // layout thinks: that is what makes a small `<span>` beside body text sit
   // on the same baseline rather than on its own. One that `vertical-align`

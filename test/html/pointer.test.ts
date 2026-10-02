@@ -268,6 +268,86 @@ metric(
   },
 );
 
+metric(
+  'the pointer is over the text drawn over an inline-block, in the order the lines paint them',
+  async () => {
+    // What is under a point is what was painted there last, and a line
+    // paints its atomics in their turn among its text, as it paints one
+    // line before the next (CSS 2.1 Appendix E, 7.2.1) — as browsers find
+    // them with elementFromPoint. Keyed in the lines' layer with nothing to
+    // order them by, an inline-block, a layer longer than a word's, took
+    // the pointer from every word after it in the document: of its line, of
+    // the next, and of a block a negative margin drew up over it.
+    const { node } = await render(
+      '<style>body{margin:0;font:20px/20px monospace}section{height:60px}' +
+        '.a{display:inline-block;vertical-align:top;width:100px;' +
+        'height:20px}</style>' +
+        // a block after it
+        '<section><div class="a" id="a1" style="width:400px;height:40px">' +
+        '</div><div style="margin-top:-20px"><span id="t1">text</span>' +
+        '</div></section>' +
+        // a word after it on its line, over its own text
+        '<section><span class="a" id="a2" style="margin-right:-100px">' +
+        '<span id="i2">xxxx</span></span><span id="t2">text</span>' +
+        '</section>' +
+        // the next line, which it hangs into
+        '<section><span class="a" id="a3" style="height:40px;' +
+        'margin-bottom:-20px"></span><br><span id="t3">text</span></section>' +
+        // and a word before it, which it is over
+        '<section><span id="t4">text</span><span class="a" id="a4" ' +
+        'style="margin-left:-40px"></span></section>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as DrawnNode;
+    const at = (x: number, y: number) =>
+      el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id;
+    assert.strictEqual(at(10, 30), 't1', 'a block after it');
+    assert.strictEqual(at(10, 70), 't2', 'a word after it');
+    assert.strictEqual(at(10, 150), 't3', 'the next line');
+    assert.strictEqual(at(20, 190), 'a4', 'a word before it');
+    assert.strictEqual(at(80, 70), 'a2', 'and itself, past the word');
+  },
+);
+
+metric(
+  'a flex item is under the pointer in the order the lines paint it',
+  async () => {
+    // A flex box in the flow paints its items whole among the lines (CSS
+    // Flexbox 5.4), in the document's order with their text and over every
+    // block's background. Keyed with the blocks, an item went under the
+    // background of a block after it that a negative margin drew up over
+    // it, and under the text of a block before it it was drawn over; one
+    // that clips its overflow is painted so all the same.
+    const { node } = await render(
+      '<style>body{margin:0;font:20px/20px monospace}section{height:60px}' +
+        '.f{display:flex}.f>div{width:100px;height:40px}' +
+        '.m{margin-top:-20px}</style>' +
+        // the background of a block after it
+        '<section><div class="f"><div id="a1"></div></div>' +
+        '<div class="m" id="b1" style="height:40px;background:#0000ff">' +
+        '</div></section>' +
+        // in a flex box that clips
+        '<section><div class="f" style="overflow:hidden;height:40px">' +
+        '<div id="a2" style="width:200px"></div></div>' +
+        '<div class="m" id="b2" style="height:40px"></div></section>' +
+        // the text of a block after it, which is over it
+        '<section><div class="f"><div id="a3"></div></div>' +
+        '<div class="m"><span id="t3">text</span></div></section>' +
+        // and the text of a block before it, which it is over
+        '<section><div><span id="t4">text</span></div>' +
+        '<div class="f m"><div id="a4"></div></div></section>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as DrawnNode;
+    const at = (x: number, y: number) =>
+      el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id;
+    assert.strictEqual(at(50, 30), 'a1', 'over a block’s background');
+    assert.strictEqual(at(50, 90), 'a2', 'clipped or not');
+    assert.strictEqual(at(10, 150), 't3', 'under the text after it');
+    assert.strictEqual(at(10, 190), 'a4', 'over the text before it');
+  },
+);
+
 const HOVER_PAGE =
   '<style>body{margin:0} a{color:#0000ee;text-decoration:none}' +
   ' a:hover{color:#ff0000;text-decoration:underline}' +
