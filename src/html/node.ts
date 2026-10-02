@@ -79,6 +79,7 @@ import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
 import {
+  urlOf,
   WILL_HOLD_FIXED_BOX,
   WILL_STACK,
   WILL_STACK_BOX,
@@ -166,9 +167,11 @@ import { controlRectsOf, measureControl, styledField } from './controls.js';
 import { isInert, isTabbable } from './focus.js';
 import type { FocusStop } from './focus.js';
 import type { BareField, ControlRect } from './controls.js';
-import { decodesImageType, ResourceStore } from './resources.js';
+import { decodesImageType } from './image-types.js';
+import { ResourceStore } from './resources.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 import { ImageSources } from './srcset.js';
+import { atDensity } from './svg.js';
 import type { IntrinsicSize } from './svg.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace } from './fonts.js';
@@ -670,7 +673,10 @@ export class HtmlViewNode extends Node {
   /**
    * Ask for every `background-image` the styles name. Known only once the
    * cascade has run, where an `<img>` is known from the markup; the store
-   * asks once a URL, so a tree built again asks nothing new.
+   * asks once a URL, so a tree built again asks nothing new. An
+   * `image-set()` is the option it chose for this element's scale, which
+   * the cascade chose with the rest of the style (`imageSetOf`), and only
+   * that one is asked for.
    */
   private _requestBackgrounds(tree: BoxTree): void {
     for (const box of tree.backgrounds) {
@@ -678,15 +684,16 @@ export class HtmlViewNode extends Node {
       const element = box.el ?? GENERATED_FROM.get(box);
       if (!element) continue;
       // each layer's, where there is more than one
-      for (const url of box.style.backgroundImages ?? [
+      for (const image of box.style.backgroundImages ?? [
         box.style.backgroundImage,
       ]) {
-        if (typeof url === 'string') {
+        const url = urlOf(image);
+        if (url !== null) {
           this._resources.request({ url, kind: 'image', element });
         }
       }
-      const border = box.style.borderImage.source;
-      if (typeof border === 'string') {
+      const border = urlOf(box.style.borderImage.source);
+      if (border !== null) {
         this._resources.request({
           url: border,
           kind: 'image',
@@ -694,8 +701,9 @@ export class HtmlViewNode extends Node {
         });
       }
       // and each mask layer's, which is an image as a background's is
-      for (const url of box.style.mask.images) {
-        if (typeof url === 'string') {
+      for (const image of box.style.mask.images) {
+        const url = urlOf(image);
+        if (url !== null) {
           this._resources.request({ url, kind: 'image', element });
         }
       }
@@ -1357,14 +1365,7 @@ export class HtmlViewNode extends Node {
     }
     const shown = this._images.shown(el);
     const size = shown && this._resources.imageSize(shown.url);
-    if (!shown || !size || shown.density === 1) return size || null;
-    const per = (n: number | null): number | null =>
-      n === null ? null : shown.density > 0 ? n / shown.density : n;
-    return {
-      width: per(size.width),
-      height: per(size.height),
-      ratio: size.ratio,
-    };
+    return shown && size ? atDensity(size, shown.density) : null;
   }
 
   private _reportControls(): void {

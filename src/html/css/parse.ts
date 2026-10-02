@@ -1749,19 +1749,42 @@ function importConditions(prelude: string): MediaCondition[] | null | false {
  * — inside a function too, `image-set()` or a `var()` fallback, and never
  * inside a string. `url(#id)`, a reference into the document itself, is left
  * as it is, as are a `data:` URL, absolute already, and a url that is none.
+ *
+ * And the string an `image-set()` option starts with, which is a URL as a
+ * `url()` is (CSS Images 4, 2.4): written back as the `url()` it resolves
+ * to, where a `type()`'s string, or a string anywhere else, is a string.
  */
 export function absoluteUrls(value: string, base: string): string {
-  if (!/url\(/i.test(value)) return value;
+  if (!/url\(|image-set\(/i.test(value)) return value;
   let out = '';
   let from = 0;
   let i = 0;
+  // the depths at which the options of the `image-set()`s open here stand,
+  // innermost last, and whether what comes next starts one
+  const sets: number[] = [];
+  let depth = 0;
+  let option = false;
+  const resolve = (start: number, end: number): void => {
+    const url = parseUrl(value.slice(start, end));
+    if (typeof url === 'string' && url[0] !== '#' && !/^data:/i.test(url)) {
+      const resolved = resolveUrl(url, base);
+      if (resolved !== url) {
+        out += value.slice(from, start) + cssUrl(resolved);
+        from = end;
+      }
+    }
+  };
   while (i < value.length) {
     const c = value[i];
     if (c === '"' || c === "'") {
-      i = stringEnd(value, i);
+      const end = stringEnd(value, i);
+      if (option && sets[sets.length - 1] === depth) resolve(i, end);
+      option = false;
+      i = end;
       continue;
     }
     if (c === '\\') {
+      option = false;
       i = escapeEnd(value, i);
       continue;
     }
@@ -1772,21 +1795,32 @@ export function absoluteUrls(value: string, base: string): string {
       !isNameChar(value[i - 1])
     ) {
       const end = urlEnd(value, i + 3);
-      const url = parseUrl(value.slice(i, end));
-      if (typeof url === 'string' && url[0] !== '#' && !/^data:/i.test(url)) {
-        const resolved = resolveUrl(url, base);
-        if (resolved !== url) {
-          out += value.slice(from, i) + cssUrl(resolved);
-          from = end;
-        }
-      }
+      resolve(i, end);
+      option = false;
       i = end;
       continue;
+    }
+    if (c === '(') {
+      depth += 1;
+      option = IMAGE_SET_NAME.test(value.slice(Math.max(0, i - 18), i));
+      if (option) sets.push(depth);
+    } else if (c === ')') {
+      if (sets[sets.length - 1] === depth) sets.pop();
+      depth = Math.max(0, depth - 1);
+      option = false;
+    } else if (c === ',') {
+      option = sets[sets.length - 1] === depth;
+    } else if (!isSpace(c)) {
+      option = false;
     }
     i += 1;
   }
   return from === 0 ? value : out + value.slice(from);
 }
+
+/** `image-set` or `-webkit-image-set` ending the text before a parenthesis,
+ *  where nothing that continues a name stands before it. */
+const IMAGE_SET_NAME = /(?:^|[^\w-])(?:-webkit-)?image-set$/i;
 
 /** A URL as a `url()` that reads back as it: quoted, with the characters a
  *  string cannot hold as they are escaped. */

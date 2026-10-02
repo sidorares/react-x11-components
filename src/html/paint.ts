@@ -53,8 +53,12 @@ import {
   CONTAIN_PAINT,
   CONTAIN_SIZE,
   copyStyle,
+  densityOf,
+  gradientOf,
   masked,
   scrolls,
+  urlImageOf,
+  urlOf,
   WILL_CONTAIN,
   WILL_STACK,
   WILL_STACK_BOX,
@@ -114,7 +118,7 @@ import {
 } from './layout/inline.js';
 import { tableGrid } from './layout/grid.js';
 import type { Cell } from './layout/grid.js';
-import { SvgDrawing, concreteSize, inlineDrawing } from './svg.js';
+import { SvgDrawing, atDensity, concreteSize, inlineDrawing } from './svg.js';
 import type { IntrinsicSize } from './svg.js';
 import type { CollapsedBorder } from './layout/collapse.js';
 
@@ -984,8 +988,8 @@ function layersOf(style: ComputedStyle): ComputedStyle[] | null {
   layers = images.map((image, i) => {
     const layer = Object.create(style) as ComputedStyle;
     layer.backgroundImages = null;
-    layer.backgroundImage = typeof image === 'string' ? image : null;
-    layer.backgroundGradient = typeof image === 'string' ? null : image;
+    layer.backgroundImage = urlImageOf(image);
+    layer.backgroundGradient = gradientOf(image);
     layer.backgroundRepeat = nth(
       style.backgroundRepeats,
       style.backgroundRepeat,
@@ -2032,9 +2036,8 @@ function maskLayersOf(style: ComputedStyle): ComputedStyle[] {
     const layer = Object.create(style) as ComputedStyle;
     layer.backgroundColor = null;
     layer.backgroundImages = null;
-    layer.backgroundImage = typeof image === 'string' ? image : null;
-    layer.backgroundGradient =
-      image !== null && typeof image !== 'string' ? image : null;
+    layer.backgroundImage = urlImageOf(image);
+    layer.backgroundGradient = gradientOf(image);
     layer.backgroundRepeat = nth(mask.repeats, i);
     layer.backgroundSize = nth(mask.sizes, i);
     layer.backgroundAttachment = 'scroll';
@@ -2073,12 +2076,11 @@ function paintMasked(
   options: PaintOptions,
 ): boolean {
   const layers = maskLayersOf(box.style);
-  const drawable = layers.some(
-    (layer) =>
-      !!layer.backgroundGradient ||
-      (!!layer.backgroundImage &&
-        !!options.backgroundImageFor?.(layer.backgroundImage)),
-  );
+  const drawable = layers.some((layer) => {
+    if (layer.backgroundGradient) return true;
+    const url = urlOf(layer.backgroundImage);
+    return url !== null && !!options.backgroundImageFor?.(url);
+  });
   if (!drawable) return true;
   if (!options.surface || !ctx.drawImage) return false;
   let x0 = Math.floor(box.x + options.originX);
@@ -5533,18 +5535,21 @@ function paintBackgroundImage(
   if (style.backgroundAttachment === 'fixed' && options.canvas) {
     at = options.viewport ?? options.canvas;
   }
-  const url = style.backgroundImage;
-  const loaded = url ? options.backgroundImageFor?.(url) : null;
+  const url = urlOf(style.backgroundImage);
+  const loaded = url !== null ? options.backgroundImageFor?.(url) : null;
   if (!loaded) return;
   const svg = loaded.image instanceof SvgDrawing ? loaded.image : null;
   if (!svg && !ctx.drawImage) return;
-  // an image pixel is a CSS pixel, and the box is device
+  // an image pixel is a CSS pixel, and the box is device — but for one an
+  // `image-set()` chose at another density, whose pixels are that many to
+  // the CSS pixel: a `2x` image is half its pixels across
   const scale = options.scale ?? 1;
   const repeat = style.backgroundRepeat;
+  const natural = atDensity(loaded, densityOf(style.backgroundImage));
   const [iw, ih] = roundedTile(
     style.backgroundSize,
     repeat,
-    sizedTile(style.backgroundSize, loaded, at, scale),
+    sizedTile(style.backgroundSize, natural, at, scale),
     at,
   );
   if (!(iw > 0 && ih > 0)) return;
@@ -6020,9 +6025,14 @@ function paintBorderImage(
   const spec = box.style.borderImage;
   const source = spec.source;
   if (!source || !ctx.drawImage) return false;
-  const loaded =
-    typeof source === 'string' ? options.backgroundImageFor?.(source) : null;
-  if (typeof source === 'string' && !loaded) return false;
+  const url = urlOf(source);
+  const gradient = gradientOf(source);
+  const loaded = url !== null ? options.backgroundImageFor?.(url) : null;
+  if (url !== null && !loaded) return false;
+  // an image an `image-set()` chose at another density is that many of its
+  // pixels to the CSS pixel, its slices' unit too — as Chrome, Firefox and
+  // WebKit slice one
+  const density = densityOf(source);
   const scale = options.scale ?? 1;
   const borders = [
     box.borderTop,
@@ -6040,17 +6050,18 @@ function paintBorderImage(
   // the image's size, CSS Images' default sizing in the area: a drawing
   // with no size of its own is as large as it fits there, and a gradient,
   // which has none, is the area's
-  const [cw, ch] = loaded ? concreteSize(loaded, aw, ah, scale) : [aw, ah];
+  const [cw, ch] = loaded
+    ? concreteSize(atDensity(loaded, density), aw, ah, scale)
+    : [aw, ah];
   const iw = cw / scale;
   const ih = ch / scale;
   if (!(iw > 0 && ih > 0)) return false;
-  const key =
-    typeof source === 'string' ? source : gradientKey(source, box.style.color);
+  const key = url ?? gradientKey(gradient!, box.style.color);
   // A drawing or a gradient is drawn once at that size and cut as a raster
   // is, so that each piece stretches its part of the one picture
   let image = loaded?.image;
-  let unitX = 1;
-  let unitY = 1;
+  let unitX = density > 0 ? density : 1;
+  let unitY = unitX;
   if (!loaded || image instanceof SvgDrawing) {
     const svg = image instanceof SvgDrawing ? image : null;
     const w = Math.max(1, Math.round(cw));
@@ -6062,8 +6073,16 @@ function paintBorderImage(
       h,
       (sctx) => {
         if (svg) svg.drawImage(sctx, 0, 0, w, h, scale, scheme);
-        else if (typeof source !== 'string') {
-          const paint = gradientFill(sctx, source, 0, 0, w, h, box.style.color);
+        else if (gradient) {
+          const paint = gradientFill(
+            sctx,
+            gradient,
+            0,
+            0,
+            w,
+            h,
+            box.style.color,
+          );
           if (paint) fillGradient(sctx, paint, { x: 0, y: 0, w, h });
         }
       },
@@ -8038,11 +8057,9 @@ function paintClippedText(
     }
     const found =
       style.backgroundGradient ??
-      (style.backgroundImages?.find(
-        (image): image is Gradient =>
-          image !== null && typeof image !== 'string',
-      ) ||
-        null);
+      gradientOf(
+        style.backgroundImages?.find((image) => gradientOf(image)) ?? null,
+      );
     const gradient = found && fadedGradient(found, fade, style.color);
     let fill: unknown = null;
     // where the fill is a picture of the gradient, the corner it starts at

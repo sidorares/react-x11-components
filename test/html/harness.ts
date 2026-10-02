@@ -909,6 +909,37 @@ export async function renderWithBytes(
   return { result, el: view(screen.getByTestName('doc') as DrawnNode) };
 }
 
+/** Render on the mock backend at a display scale, each image URL answered
+ *  from `images` at once, and every image URL asked for in `asked`, in the
+ *  order asked. */
+export async function renderAsking(
+  source: string,
+  images: Record<string, Uint8Array>,
+  scale = 1,
+) {
+  const asked: string[] = [];
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 400, flexDirection: 'column' } },
+      h(Html, {
+        source,
+        partial: false,
+        'data-testname': 'doc',
+        onResource: (r: { url: string; kind: string }) => {
+          if (r.kind !== 'image') return null;
+          asked.push(r.url);
+          const bytes = images[r.url];
+          return bytes ? { kind: 'image' as const, bytes } : null;
+        },
+      }),
+    ),
+    { backend: 'mock', ...(scale !== 1 && { scale }) },
+  );
+  await act();
+  return { asked, el: view(screen.getByTestName('doc') as DrawnNode) };
+}
+
 export const svgBytes = (text: string): Uint8Array =>
   new Uint8Array(Buffer.from(text, 'utf8'));
 

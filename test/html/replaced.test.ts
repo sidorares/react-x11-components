@@ -12,7 +12,7 @@ import {
 import type { DrawnNode } from 'react-x11';
 import * as ntk from 'react-x11/ntk';
 import { Html } from '../../src/index.js';
-import { decodesImageType } from '../../src/html/resources.js';
+import { decodesImageType } from '../../src/html/image-types.js';
 import {
   normalize,
   parseSizes,
