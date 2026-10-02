@@ -1646,7 +1646,7 @@ for the cheap side or a cause for the cost.
 **An animation a layer can carry is handed to core as a sprite**
 (`src/html/sprites.ts`; react-x11's `sprites()`, sidorares/react-x11#819).
 On macOS the surface presenter lifts it onto a layer of its own and the
-render server runs it: a fade and a turn on a page paint no frame. Three
+render server runs it: a fade and a turn on a page paint no frame. Four
 things are load-bearing.
 
 - **A lifted element is a hole and no frame of the clock's.**
@@ -1658,8 +1658,16 @@ things are load-bearing.
   frames are sampled on a fork of the timeline (`AnimationTimeline.fork`),
   which leaves the document's as it was, sixty styles a second of cycle.
   **Anything new that changes what a lifted box draws without a build
-  bumps `_spriteGen`**, as a restyle in place inside one does; otherwise
-  the layer goes on showing the old picture.
+  bumps `_spriteGen` and asks for a frame (`_askSprites`)**, as a restyle
+  in place inside one does: a lifted box's hole claims no damage, so
+  nothing else would bring the frame in which its layer is painted again.
+- **A point is hit where the layer has the element.** A lifted element's
+  style stops at the lift, so every hit test first restyles the lifted
+  elements whose animation moves them to now (`_followLifted`). That
+  restyle repaints nothing, makes no part again and lays nothing out: their
+  pixels are their layers'. **Anything new that hit-tests the document
+  follows them first**, as `elementAtPoint`, `cursorAt` and `textIndexAt`
+  do.
 - **What is handed over is made fresh every frame from the kept part.**
   Core reads an animation's `delay` when it attaches it, counted from that
   frame, and a document that scrolled has moved every rect.
