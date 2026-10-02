@@ -31,6 +31,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `partial`         | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming). |
 | `selectable`      | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                     |
 | `animate`         | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                   |
+| `reducedMotion`   | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).         |
 | `stylesheet`      | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                   |
 | `charset`         | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.        |
 | `baseUrl`         | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.        |
@@ -222,7 +223,9 @@ declined.
 
 The choice is made again when what it turns on moves — the width, the
 display's scale, the colour scheme a `prefers-color-scheme` source asks
-about — as a browser makes it again when its window does, and the new
+about, the desktop's preference a `prefers-reduced-motion` source asks
+about, which is how a page offers a still frame in place of an animated
+image — as a browser makes it again when its window does, and the new
 image is asked for then. The one shown stays until the new one arrives,
 rather than a frame meanwhile. A narrower window keeps a denser image it
 already has, at the density the new size gives it, rather than asking for
@@ -1553,10 +1556,14 @@ every animation set to no length, which is how the Zen Garden bench holds
 Chrome, and how it runs `<Html>`. The iteration count, the duration and the delay are
 not used there, so an animation of two `alternate` iterations, or of half
 of one, is drawn as it ends its first. It is still the page that animates:
-`(prefers-reduced-motion: no-preference)` holds there as it does where the
-animations run, and `reduce` does not. A page's reduced branch is another
-page — joshwcomeau.com shows under it what it hides under `no-preference`
-— and Chrome, held still, draws this one.
+`prefers-reduced-motion` is answered as it is where the animations run,
+from the desktop's setting or `reducedMotion`, and holding them still is
+not an answer of `reduce`. A page's reduced branch is another page —
+joshwcomeau.com shows under it what it hides under `no-preference` — and
+Chrome, held still, draws this one. A capture that has to come out the
+same on every machine sets both: the Zen Garden bench runs `<Html>` with
+`animate={false}` and `reducedMotion={false}`, and pins Chrome's
+preference to `no-preference`.
 
 **Transitions:** `transition` and its five longhands, `-webkit-transition`
 and its longhands too. A style change — a hover, a focus, a width across a
@@ -2204,8 +2211,8 @@ starts with a digit — is dropped whole, as CSS 2.1 drops it. Rules nest
 (CSS Nesting 1): a rule inside a rule's block is relative to it, `&`
 standing for it and a selector without one a descendant, and an `@media`,
 `@supports` or `@layer` inside one holds for the same element, which is how
-Tailwind 4 writes its `hover:` and `md:` variants. `@media` width, height
-and `prefers-color-scheme` queries are evaluated, widths and heights in
+Tailwind 4 writes its `hover:` and `md:` variants. `@media` width, height,
+`prefers-color-scheme` and `prefers-reduced-motion` queries are evaluated, widths and heights in
 Media Queries 4's ranges, `(width >= 48rem)`, as well as `min-width` and
 `min-height`, a `calc()` in a value too — the height is the viewport's, and
 a document that asks it is styled again when it moves, as one with a `vh`
@@ -2218,16 +2225,23 @@ palette's in force, so a `<ThemeProvider colorScheme>` above the element
 answers it and a desktop that switches schemes re-cascades the document.
 The orientation and the aspect ratio are the viewport's too, and follow it;
 the resolution is the display's scale, so a page's high-DPI rules hold on a
-retina panel and not at one dot to the pixel; the rest are a desktop
-screen's with a mouse — `hover` and a `fine` pointer, eight bits of colour,
-no contrast or colour preference forced, no preference for less motion,
-and no scripting, since nothing here runs one. So a page's animations
-under `(prefers-reduced-motion: no-preference)` run, as in a desktop
-browser whose user has not asked for less motion, and its `reduce` branch
-is not taken. The desktop's own setting is not read yet, so a desktop that
-has asked for less motion still gets the animations; `animate={false}`
-does not answer `reduce` either, since it holds the animations at rest
-rather than asking for fewer (see Animations, above). A query is read by Media Queries 4's grammar: `or` joins
+retina panel and not at one dot to the pixel. `prefers-reduced-motion` is
+the desktop's setting, as a browser follows it: core's
+`useSystemAppearance().reducedMotion`, which reads macOS's Reduce motion,
+GNOME's and GTK's animations switch and the desktop portal's — the setting
+core's own animations stop under. A desktop that has not asked for less
+motion gets a page's animations under `(prefers-reduced-motion:
+no-preference)`; one that has gets its `reduce` branch, and a switch in the
+accessibility settings restyles the document, as a palette switch does,
+over the sheets it has already parsed. `reducedMotion` overrides it — a
+preference the application keeps of its own, or a capture that must not
+depend on the machine — and `createRoot({ desktop: { appearance: false }
+})` stops the desktop being asked at all, which answers `no-preference`.
+`animate={false}` is not an answer of `reduce`: it holds the animations at
+rest rather than asking for fewer (see Animations, above). The rest are a
+desktop screen's with a mouse — `hover` and a `fine` pointer, eight bits
+of colour, no contrast or colour preference forced, and no scripting,
+since nothing here runs one. A query is read by Media Queries 4's grammar: `or` joins
 features as a comma joins queries, `(max-width: 600px) or (min-width:
 900px)`, a `not` holds on the other side of what it negates, so
 `not (max-width: 600px)` holds past 600px and Tailwind 3's

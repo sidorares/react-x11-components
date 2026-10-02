@@ -772,6 +772,8 @@ function ownSheets(root: Element): Stylesheet[] {
  * The look an SVG image's own document starts from: CSS's initial values,
  * black at `medium`, since nothing of the page's is inherited into an
  * image — only the colour scheme, which its `prefers-color-scheme` answers.
+ * Its `prefers-reduced-motion` is answered `no-preference` whatever the
+ * desktop says (the cascade's default): nothing in an image moves here.
  */
 function imageLook(scheme: 'light' | 'dark', scale: number): RootLook {
   return {

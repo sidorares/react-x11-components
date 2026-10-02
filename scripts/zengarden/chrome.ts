@@ -38,10 +38,11 @@
 //   machine's appearance — so on a Mac in dark mode a page's
 //   `prefers-color-scheme` and `light-dark()` answered dark in one engine
 //   and light in the other.
-// - **No preference for less motion**, in the same call: <Html> answers
-//   `prefers-reduced-motion` as a desktop browser on a machine with the
-//   setting off, and Chrome otherwise follows the machine's accessibility
-//   setting, which would take a page's reduced branch in one engine alone.
+// - **No preference for less motion**, in the same call: `ours.tsx` holds
+//   <Html> at `reducedMotion={false}`, and both engines otherwise follow
+//   the machine's accessibility setting — so a Mac with Reduce motion on
+//   would take a page's reduced branch, and a run there would differ from
+//   a run anywhere else.
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import {

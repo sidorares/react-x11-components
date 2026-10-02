@@ -153,10 +153,11 @@ export type FontFaceSource =
   | { local: string };
 
 /** The tests this evaluates live, all of which must hold: bounds on the
- *  width, the height, the resolution and the aspect ratio, and a colour
- *  scheme. A query's `or` is more than one condition, and its `not` the
- *  bounds on the other side (`parseMediaQuery`). Anything else — `print`,
- *  `hover`, `prefers-reduced-motion` — is decided once, at parse time, by
+ *  width, the height, the resolution and the aspect ratio, a colour
+ *  scheme, and a preference for motion. A query's `or` is more than one
+ *  condition, and its `not` the bounds on the other side, the other scheme
+ *  or the other preference (`parseMediaQuery`). Anything else — `print`,
+ *  `hover`, `prefers-contrast` — is decided once, at parse time, by
  *  `staticPass`. */
 export interface MediaCondition {
   min?: number;
@@ -177,7 +178,10 @@ export interface MediaCondition {
   maxAspect?: number;
   /** `prefers-color-scheme`, answered from the palette in force. */
   scheme?: 'light' | 'dark';
-  /** Set when the query could not be evaluated as a width or scheme test:
+  /** `prefers-reduced-motion`, answered from the desktop's setting
+   *  (`mediaMatches`' `reducedMotion`). */
+  motion?: 'reduce' | 'no-preference';
+  /** Set when the query could not be evaluated as any of these tests:
    *  `true` keeps the rule, `false` drops it, and neither depends on the
    *  viewport or the theme. */
   staticPass?: boolean;
@@ -2176,9 +2180,10 @@ function unicodeRanges(value: string): [number, number][] | null {
  * `(unknown: 1)` does, and `(unknown: 1) or (a)` holds where `(a)` does.
  *
  * Every test here bounds one side of one number — the width, the height,
- * the resolution, the aspect ratio — or names the scheme, so the opposite
- * of a test is a bound on the other side, and the opposite of a run a
- * choice of them: `not (max-width: 600px)` is a `min` just past 600px, and
+ * the resolution, the aspect ratio — or names the scheme or the motion
+ * preference, so the opposite of a test is a bound on the other side, or
+ * the other scheme or preference, and the opposite of a run a choice of
+ * them: `not (max-width: 600px)` is a `min` just past 600px, and
  * `not (400px <= width <= 700px)` the two sides of it. So a condition stays
  * a run of tests however the query was written, which is what
  * `mediaMatches` answers at any width and the cascade reads its
@@ -2460,11 +2465,15 @@ function meet(a: MediaCondition, b: MediaCondition): MediaCondition | null {
     if (out.scheme !== undefined && out.scheme !== b.scheme) return null;
     out.scheme = b.scheme;
   }
+  if (b.motion !== undefined) {
+    if (out.motion !== undefined && out.motion !== b.motion) return null;
+    out.motion = b.motion;
+  }
   return out;
 }
 
-/** Where a run of tests fails: past any one of its bounds, or under the
- *  other scheme. */
+/** Where a run of tests fails: past any one of its bounds, under the other
+ *  scheme, or under the other preference for motion. */
 function opposites(test: MediaCondition): MediaCondition[] {
   const out: MediaCondition[] = [];
   for (const [lo, hi, edge] of BOUNDS) {
@@ -2475,6 +2484,9 @@ function opposites(test: MediaCondition): MediaCondition[] {
   }
   if (test.scheme) {
     out.push({ scheme: test.scheme === 'dark' ? 'light' : 'dark' });
+  }
+  if (test.motion) {
+    out.push({ motion: test.motion === 'reduce' ? 'no-preference' : 'reduce' });
   }
   return out;
 }
@@ -2517,6 +2529,8 @@ function featureTest(term: string): MediaCondition | boolean | null {
     if (RESOLUTION_FEATURES.has(key)) {
       return key.includes('min-') || key.includes('max-') ? null : true;
     }
+    // true where it is anything but `no-preference`, which is `reduce`
+    if (key === 'prefers-reduced-motion') return { motion: 'reduce' };
     return desktopFeature(key, null);
   }
   const key = feature[1].toLowerCase();
@@ -2545,6 +2559,21 @@ function featureTest(term: string): MediaCondition | boolean | null {
     // that changes. The two schemes are the whole vocabulary.
     const scheme = value.trim().toLowerCase();
     return scheme === 'light' || scheme === 'dark' ? { scheme } : null;
+  }
+  if (key === 'prefers-reduced-motion') {
+    // Answered live, from the desktop's own setting — macOS's Reduce motion,
+    // GNOME's and GTK's animations switch, the portal's — as Chrome answers
+    // it, and as core stops its own animations under it
+    // (`useSystemAppearance().reducedMotion`). `animate={false}` is not
+    // this: it holds the page's animations at rest, as the Zen Garden
+    // bench holds Chrome's with every one at no length, and the page it
+    // holds is the one that animates. `reduce` styles another page — one
+    // that shows under it what `no-preference` hides, as joshwcomeau.com's
+    // does — so a capture of this one answers `no-preference`.
+    const motion = value.trim().toLowerCase();
+    return motion === 'reduce' || motion === 'no-preference'
+      ? { motion }
+      : null;
   }
   if (key === 'orientation') {
     // the viewport's, as its aspect ratio: portrait where its height is at
@@ -2757,16 +2786,11 @@ function desktopFeature(key: string, value: string | null): boolean | null {
         { 'no-preference': true, more: false, less: false, custom: false },
         false,
       );
-    // No preference, which is what a desktop browser answers where its user
-    // has not asked for less motion: a page that keeps its animations under
-    // `(prefers-reduced-motion: no-preference)` runs them here, as it does
-    // in Chrome. The desktop's own setting, which core follows for its own
-    // loops (`useSystemAppearance().reducedMotion`), is not read yet.
-    // `animate={false}` does not answer `reduce`: it draws this page with
-    // its animations at rest, as Chrome draws it with each at no length,
-    // where `reduce` styles another page — one that shows under it what
-    // `no-preference` hides.
-    case 'prefers-reduced-motion':
+    // No preference, which is what a desktop browser answers where nothing
+    // tells it otherwise. `prefers-reduced-motion` is not one of these: the
+    // desktop has a setting for it, which core reads, so it is answered
+    // live (`featureTest`), and `animate={false}` holds the animations at
+    // rest without answering `reduce` — see there.
     case 'prefers-reduced-transparency':
     case 'prefers-reduced-data':
       return keyword({ 'no-preference': true, reduce: false }, false);
@@ -2826,7 +2850,7 @@ function mediaFeature(term: string): [string, string, string] | null {
 const ZERO_UNITS = { em: 16, rem: 16, vw: 0, vh: 0, scale: 1 };
 
 /** Whether a rule's `@media` blocks all hold at this viewport width, under
- *  this colour scheme. */
+ *  this colour scheme and this preference for motion. */
 export function mediaMatches(
   media: MediaCondition[][] | null,
   width: number,
@@ -2836,6 +2860,9 @@ export function mediaMatches(
   height = NaN,
   /** The display's scale, device pixels to the CSS pixel. */
   resolution = 1,
+  /** Whether the desktop has asked for less motion: what
+   *  `prefers-reduced-motion` is answered from. */
+  reducedMotion = false,
 ): boolean {
   if (!media) return true;
   for (const block of media) {
@@ -2854,7 +2881,8 @@ export function mediaMatches(
         (c.minAspect === undefined || width >= c.minAspect * height) &&
         (c.maxAspect === undefined || width <= c.maxAspect * height) &&
         (c.maxResolution === undefined || resolution <= c.maxResolution) &&
-        (c.scheme === undefined || c.scheme === scheme)
+        (c.scheme === undefined || c.scheme === scheme) &&
+        (c.motion === undefined || (c.motion === 'reduce') === reducedMotion)
       ) {
         any = true;
       }
