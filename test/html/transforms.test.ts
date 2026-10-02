@@ -416,6 +416,33 @@ async function inkIn(
     : { width: 0, height: 0, count };
 }
 
+metric(
+  'a box drawn on a surface through its matrix is faded as the group it is',
+  async () => {
+    // A context that draws a turned box holding a gradient on a surface of
+    // its own (`paintRaster`) — X11's, and the in-process server's — fades
+    // the surface as it draws it: the red over the box's own blue shows no
+    // blue through it (CSS Color 4, 3.2), where each thing drawn faded on
+    // its own showed the one under it
+    const { result } = await render(
+      PAGE +
+        '<div style="margin:20px;width:40px;height:40px;padding:10px;' +
+        'background:#0000ff;opacity:.5;transform:rotate(180deg)">' +
+        '<div style="height:40px;background:linear-gradient(#ff0000,#ff0000)">' +
+        '</div></div>',
+    );
+    await act();
+    await expectPixel(result.ctx, 50, 50, [255, 128, 128], {
+      tolerance: 2,
+      message: 'the red, half over the page',
+    });
+    await expectPixel(result.ctx, 24, 24, [128, 128, 255], {
+      tolerance: 2,
+      message: 'the blue around it, half over the page',
+    });
+  },
+);
+
 metric('the text of a turned box is turned with it', async () => {
   // A context that draws glyphs as they were shaped puts each where the
   // matrix puts its origin, upright: the box is drawn on a surface of its

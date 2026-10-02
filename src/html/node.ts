@@ -101,7 +101,7 @@ import { invert, mapPoint, mapRect, transformed } from './css/transform.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { weightAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
-import { SurfaceCache, newSurface } from './surfaces.js';
+import { SpriteStore, SurfaceCache, newSurface } from './surfaces.js';
 import type { SurfaceLike } from './surfaces.js';
 import { faceExtentOf, inlineDecoration, runFor } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
@@ -136,7 +136,7 @@ import {
   stackLayers,
   stacksLayers,
 } from './paint.js';
-import type { PaintContext } from './paint.js';
+import type { PaintContext, SpriteSource } from './paint.js';
 import { controlRectsOf, measureControl, styledField } from './controls.js';
 import type { BareField, ControlRect } from './controls.js';
 import { ResourceStore } from './resources.js';
@@ -266,6 +266,26 @@ export class HtmlViewNode extends Node {
   private _shadowCache: SurfaceCache | null = null;
   /** Whether the backend was found to have no offscreen surface. */
   private _noSurface = false;
+  /** The surfaces kept for the boxes whose transform is animating, drawn
+   *  once and composited each frame (`paintSprite`). They hold the boxes as
+   *  they were laid out and styled, so a build or a layout forgets them
+   *  all, and a restyle in place the ones it reaches (`_restyledSprites`). */
+  private _sprites: SpriteStore | null = null;
+  /** What the painter asks for a box's kept surface: only one whose
+   *  element an animation is under way on keeps one. A pseudo-element's box
+   *  is drawn each paint, as every box was. */
+  private readonly _spriteSource: SpriteSource = {
+    kept: (box, width, height, key) =>
+      this._sprites?.get(box, width, height, key) ?? null,
+    keeps: (box) => !!box.el && !box.pseudo && this._timeline.isLive(box.el),
+    keep: (box, width, height, key) =>
+      (this._sprites ??= new SpriteStore(this.app)).make(
+        box,
+        width,
+        height,
+        key,
+      ),
+  };
   private _cascade: Cascade | null = null;
   private _tree: BoxTree | null = null;
   /** The faces `_warmFaces` has asked the font matcher for, and of which
@@ -954,6 +974,7 @@ export class HtmlViewNode extends Node {
 
   private _fail(error: unknown, width: number): void {
     this._tree = null;
+    this._sprites?.clear();
     this._stale = Stale.Nothing;
     this._failedAt = width;
     this._laidOutWidth = -1;
@@ -1093,6 +1114,7 @@ export class HtmlViewNode extends Node {
         again = true;
       }
       if (again) this._tree = build();
+      this._sprites?.clear();
       this._warmFaces(this._tree);
       this._textPoints = null;
       this._pointsAreUnits = null;
@@ -1105,12 +1127,21 @@ export class HtmlViewNode extends Node {
         viewportMoved ||
         this._stale >= Stale.Layout)
     ) {
+      const laidOutAt = this._laidOutWidth;
       const result = layoutDocument(
         this._tree,
         this._layoutFonts(),
         target,
         viewport,
       );
+      // The same boxes, somewhere else and another size — but for the
+      // layout a restyle in place asks for where what it moved reached the
+      // document's end, to learn its height: at the width and under the
+      // viewport the boxes were laid out at, with nothing that layout reads
+      // changed, they come out where they were, and the surfaces kept for
+      // them still hold them. A small document whose card turns at its
+      // foot is laid out every frame of the turn.
+      if (target !== laidOutAt || viewportMoved) this._sprites?.clear();
       this._documentWidth = result.width;
       this._documentHeight = result.height;
       this._laidOutWidth = target;
@@ -1283,6 +1314,8 @@ export class HtmlViewNode extends Node {
     this._source.destroy();
     this._shadowCache?.destroy();
     this._shadowCache = null;
+    this._sprites?.clear();
+    this._sprites = null;
     this._sheetsRead = null;
     this._tree = null;
     this._cascade = null;
@@ -1905,6 +1938,7 @@ export class HtmlViewNode extends Node {
       const inks: Rect[] = [];
       for (const [box, shapes] of redrawn) {
         SHAPE_STYLES.set(box, shapes);
+        this._dropSprites(box, true);
         const ink = inkOf(box);
         if (ink) inks.push(ink);
       }
@@ -2077,9 +2111,11 @@ export class HtmlViewNode extends Node {
 
     // and only now, all of it
     const moved: [Box, ComputedStyle][] = [];
+    const sprites = this._sprites?.size ? this._sprites : null;
     for (const [box, style] of restyled) {
       const was = box.style;
       box.style = style;
+      if (sprites) this._restyledSprites(sprites, box, was, style);
       if (box.el && moving.has(box.el) && box.kind !== 'text') {
         moved.push([box, was]);
       }
@@ -2213,6 +2249,48 @@ export class HtmlViewNode extends Node {
     for (const r of inks) this.invalidate(false, place(r), 'props');
   }
 
+  /**
+   * Forget the surfaces kept for the boxes around `box`, and for `box`
+   * itself where `self` (`paintSprite`): what it draws is not what they
+   * hold.
+   */
+  private _dropSprites(box: Box, self: boolean): void {
+    const sprites = this._sprites;
+    if (!sprites?.size) return;
+    for (let at = self ? box : box.parent; at; at = at.parent) sprites.drop(at);
+  }
+
+  /**
+   * What a restyle of `box` from `was` to `now` leaves of the surfaces kept
+   * for it and around it. A box that draws something else now leaves none
+   * of them; one only turned, moved, faded or put in another place among
+   * its layers leaves its own, which holds it unturned and unfaded, and
+   * none around it. Text takes the style of the box it is set in, and
+   * neither turns nor fades on its own: what that box's transform did is
+   * the box's.
+   */
+  private _restyledSprites(
+    sprites: SpriteStore,
+    box: Box,
+    was: ComputedStyle,
+    now: ComputedStyle,
+  ): void {
+    let kept = false;
+    for (let at: Box | null = box; at && !kept; at = at.parent) {
+      kept = sprites.has(at);
+    }
+    if (!kept) return;
+    const change = spriteChange(was, now);
+    if (change === SpriteChange.Drawn) this._dropSprites(box, true);
+    else if (
+      change === SpriteChange.Placed &&
+      box.kind !== 'text' &&
+      box.kind !== 'break'
+    ) {
+      this._dropSprites(box, false);
+    }
+  }
+
   // --- animations ----------------------------------------------------------
   //
   // An animation is a style that changes as time passes, so a frame of one
@@ -2296,6 +2374,12 @@ export class HtmlViewNode extends Node {
    *  timer already waits for it. */
   private _scheduleFrame(): void {
     if (this.destroyed) return;
+    // the surfaces of boxes whose animations are over: drawn each paint as
+    // any box is, from now on
+    this._sprites?.sweep((box) => {
+      const el = (box as Box).el;
+      return !!el && this._timeline.isLive(el);
+    });
     const next = this._animating() ? this._timeline.nextFrame() : null;
     if (next === null) {
       this._disarmFrame();
@@ -2593,6 +2677,7 @@ export class HtmlViewNode extends Node {
           height,
           draw as (ctx: unknown) => void,
         ),
+      sprites: this._spriteSource,
     });
   }
 }
@@ -3777,6 +3862,57 @@ const TRANSFORM_FIELDS = new Set([
   'transform',
   'transformOrigin',
 ]);
+
+/** How a restyle changed what a box draws, for the surface kept for it and
+ *  the ones around it (`_restyledSprites`). */
+const enum SpriteChange {
+  /** It draws what it did, where it did. */
+  None = 0,
+  /** It draws what it did, turned, moved, faded or in another place among
+   *  its layers. */
+  Placed = 1,
+  /** It draws something else. */
+  Drawn = 2,
+}
+
+/** What places a box's drawing without changing it: where its surface is
+ *  drawn through, how faded, and among which layers. */
+const PLACING_FIELDS = new Set([...TRANSFORM_FIELDS, 'opacity', 'zIndex']);
+
+/** What draws nothing: the custom properties and the animation lists, which
+ *  are in the other fields already, and what the pointer does over it. */
+const UNDRAWN_FIELDS = new Set([
+  'custom',
+  'animations',
+  'cursor',
+  'pointerEvents',
+]);
+
+/** The last answer for each new style, which the text set in a box shares
+ *  with it. */
+const SPRITE_CHANGES = new WeakMap<
+  ComputedStyle,
+  { was: ComputedStyle; change: SpriteChange }
+>();
+
+function spriteChange(was: ComputedStyle, now: ComputedStyle): SpriteChange {
+  if (was === now) return SpriteChange.None;
+  const known = SPRITE_CHANGES.get(now);
+  if (known?.was === was) return known.change;
+  const a = was as unknown as Record<string, unknown>;
+  const b = now as unknown as Record<string, unknown>;
+  let change = SpriteChange.None;
+  for (const key in b) {
+    if (UNDRAWN_FIELDS.has(key) || sameValue(a[key], b[key])) continue;
+    if (!PLACING_FIELDS.has(key)) {
+      change = SpriteChange.Drawn;
+      break;
+    }
+    change = SpriteChange.Placed;
+  }
+  SPRITE_CHANGES.set(now, { was, change });
+  return change;
+}
 
 /**
  * How two styles of one element differ, for a restyle in place: null where

@@ -197,6 +197,23 @@ export interface Offscreen {
   destroy?(): void;
 }
 
+/**
+ * Where a box drawn on a surface through its matrix keeps that surface from
+ * one paint to the next (`paintSprite`): the element's, which knows which
+ * boxes are animating and forgets a surface whose box draws something else
+ * now.
+ */
+export interface SpriteSource {
+  /** The surface kept for `box`, drawn at this size under `key`, or null. */
+  kept(box: Box, width: number, height: number, key: string): Offscreen | null;
+  /** Whether `box` may keep a surface: its transform is animating. */
+  keeps(box: Box): boolean;
+  /** A transparent surface to keep for `box` from now on, to be drawn under
+   *  `key`: null where the surface would not fit, and the box is drawn for
+   *  this paint alone. */
+  keep(box: Box, width: number, height: number, key: string): Offscreen | null;
+}
+
 export interface PaintOptions {
   /** Where the document's origin sits in the window. Scrolling is this. */
   originX: number;
@@ -239,6 +256,10 @@ export interface PaintOptions {
     height: number,
     draw: (ctx: PaintContext) => void,
   ): unknown;
+  /** Surfaces kept from one paint to the next for the boxes whose
+   *  transform is animating (`paintSprite`). Absent, each paint draws such
+   *  a box again. */
+  sprites?: SpriteSource | null;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
   /** @internal The boxes clipping what is being painted, outermost first. */
@@ -1210,10 +1231,20 @@ function paintPlaced(ctx: PaintContext, box: Box, options: PaintOptions): void {
     ctx.save();
     ctx.globalAlpha = ctx.globalAlpha! * opacity;
   }
+  paintUnfaded(ctx, box, options);
+  if (fade) ctx.restore();
+}
+
+/** `paintPlaced` at full opacity: a box drawn on a surface of its own, which
+ *  is faded as it is composited (`paintRaster`). */
+function paintUnfaded(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
   if (!masked(box.style) || !paintMasked(ctx, box, options)) {
     paintClipped(ctx, box, options);
   }
-  if (fade) ctx.restore();
 }
 
 /**
@@ -1248,12 +1279,16 @@ function drawnAsPaths(box: Box): boolean {
 /**
  * A transformed box painted on a surface of its own, as it was laid out,
  * and the surface drawn through its matrix: the part of what it draws that
- * the damage reaches. True where that is done — or is nothing to do, or
- * cannot be: a part too large for a surface, or a matrix that does not fit
- * the fixed point a picture's transform is sent in, which is one that draws
- * the box a thirtieth its size far across a window, or flatter than can be
- * seen. None of it is drawn then. False where the context has no surface to
- * draw on, and the caller draws the box through the matrix itself.
+ * the damage reaches, or the whole of it on the surface kept for a box
+ * whose transform is animating (`paintSprite`). It is painted whole and
+ * faded as the surface is drawn, as the group it is (CSS Color 4, 3.2): an
+ * opacity on the box does not show its background through its text. True
+ * where that is done — or is nothing to do, or cannot be: a part too large
+ * for a surface, or a matrix that does not fit the fixed point a picture's
+ * transform is sent in, which is one that draws the box a thirtieth its
+ * size far across a window, or flatter than can be seen. None of it is
+ * drawn then. False where the context has no surface to draw on, and the
+ * caller draws the box through the matrix itself.
  */
 function paintRaster(
   ctx: PaintContext,
@@ -1262,6 +1297,11 @@ function paintRaster(
   through: Matrix,
 ): boolean {
   if (!options.surface || !ctx.drawImage) return false;
+  const opacity = opacityOf(box);
+  if (opacity <= 0) return true;
+  if (options.sprites && paintSprite(ctx, box, options, through, opacity)) {
+    return true;
+  }
   const own = ownBounds(box);
   let x0 = Math.floor(own.x + options.originX);
   let y0 = Math.floor(own.y + options.originY);
@@ -1280,8 +1320,143 @@ function paintRaster(
   const h = y1 - y0;
   if (!(w > 0 && h > 0)) return true;
   if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return true;
-  // what the context makes of the draw below: the picture's transform is
-  // the inverse of its matrix after the surface's place in it
+  if (!fitsFixedPoint(through, x0, y0)) return true;
+  const surface = options.surface(w, h);
+  if (!surface) return false;
+  try {
+    paintUnfaded(
+      surface.getContext('2d') as PaintContext,
+      box,
+      onSurface(options, x0, y0, w, h),
+    );
+    drawThrough(ctx, surface, through, x0, y0, opacity);
+    return true;
+  } finally {
+    surface.destroy?.();
+  }
+}
+
+/**
+ * A transformed box drawn from the surface it keeps from one paint to the
+ * next (`PaintOptions.sprites`), where it keeps one — its transform is
+ * animating: the whole box painted on it once, and each frame after it only
+ * drawn through the matrix the frame has. A turn, a scale and an opacity
+ * leave what is on the surface as it was. True where the box is drawn so;
+ * false where it keeps no surface, and it is painted for this paint alone.
+ *
+ * What the surface holds is the box and all it holds, at the fraction of a
+ * pixel its corner falls on — what every box in it is snapped to the grid
+ * by — under the document selection's part in its text, and nothing else:
+ * that is its key. Everything else that changes what it draws is a change
+ * of its boxes, which the element forgets the surface for. The root's box
+ * and the canvas's are not kept, nor one with a background fixed to the
+ * viewport inside it, all of which draw what a scroll moves.
+ */
+function paintSprite(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  through: Matrix,
+  opacity: number,
+): boolean {
+  const sprites = options.sprites!;
+  if (!box.parent || box === options.canvasSource) return false;
+  const own = ownBounds(box);
+  const left = own.x + options.originX;
+  const top = own.y + options.originY;
+  const x0 = Math.floor(left);
+  const y0 = Math.floor(top);
+  const w = Math.ceil(left + own.width) - x0;
+  const h = Math.ceil(top + own.height) - y0;
+  if (!(w > 0 && h > 0)) return false;
+  if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return false;
+  if (!fitsFixedPoint(through, x0, y0)) return false;
+  const key = spriteKey(box, options, left - x0, top - y0);
+  let surface = sprites.kept(box, w, h, key);
+  if (!surface) {
+    if (!sprites.keeps(box) || drawsAgainstViewport(box)) return false;
+    surface = sprites.keep(box, w, h, key);
+    if (!surface) return false;
+    paintUnfaded(
+      surface.getContext('2d') as PaintContext,
+      box,
+      onSurface(options, x0, y0, w, h),
+    );
+  }
+  drawThrough(ctx, surface, through, x0, y0, opacity);
+  return true;
+}
+
+/** What a kept surface's drawing depends on beyond its box's: where its
+ *  corner falls within a pixel, the display's scale, and the part of the
+ *  box's text the selection covers, and in what colour. */
+function spriteKey(
+  box: Box,
+  options: PaintOptions,
+  fractionX: number,
+  fractionY: number,
+): string {
+  let selected = '';
+  const range = options.selection;
+  if (range && range.end > range.start) {
+    const from = Math.max(range.start, box.subtreeTextStart);
+    const to = Math.min(range.end, box.subtreeTextEnd);
+    if (to > from) selected = `${from}-${to} ${options.selectionColor}`;
+  }
+  return `${fractionX} ${fractionY} ${options.scale ?? 1} ${selected}`;
+}
+
+/** Whether a box or anything in it draws a background fixed to the
+ *  viewport, which a scroll moves under it. */
+function drawsAgainstViewport(box: Box): boolean {
+  const stack: Box[] = [box];
+  while (stack.length) {
+    const at = stack.pop()!;
+    const style = at.style;
+    if (
+      style.backgroundAttachment === 'fixed' ||
+      style.backgroundAttachments?.includes('fixed')
+    ) {
+      return true;
+    }
+    for (const child of at.children) stack.push(child);
+  }
+  return false;
+}
+
+/** The options a box is painted with on a surface `width` by `height`
+ *  whose corner is at (`x0`, `y0`) in the window: its own coordinates, the
+ *  window's moved to its corner. */
+function onSurface(
+  options: PaintOptions,
+  x0: number,
+  y0: number,
+  width: number,
+  height: number,
+): PaintOptions {
+  return {
+    ...options,
+    originX: options.originX - x0,
+    originY: options.originY - y0,
+    damage: { x: 0, y: 0, width, height },
+    canvas: options.canvas && {
+      ...options.canvas,
+      x: options.canvas.x - x0,
+      y: options.canvas.y - y0,
+    },
+    viewport: options.viewport && {
+      ...options.viewport,
+      x: options.viewport.x - x0,
+      y: options.viewport.y - y0,
+    },
+    clips: [],
+  };
+}
+
+/** Whether a surface at (`x0`, `y0`) can be drawn through `through`: the
+ *  picture's transform the context makes of it, the inverse of the matrix
+ *  after the surface's place in it, fits the fixed point it is sent in. */
+function fitsFixedPoint(through: Matrix, x0: number, y0: number): boolean {
   const placed = invert([
     through[0],
     through[1],
@@ -1290,44 +1465,33 @@ function paintRaster(
     through[0] * x0 + through[2] * y0 + through[4],
     through[1] * x0 + through[3] * y0 + through[5],
   ]);
-  if (!placed || placed.some((n) => Math.abs(n) > FIXED_LIMIT)) return true;
-  const surface = options.surface(w, h);
-  if (!surface) return false;
-  try {
-    // the surface's own coordinates, the window's moved to its corner
-    const on: PaintOptions = {
-      ...options,
-      originX: options.originX - x0,
-      originY: options.originY - y0,
-      damage: { x: 0, y: 0, width: w, height: h },
-      canvas: options.canvas && {
-        ...options.canvas,
-        x: options.canvas.x - x0,
-        y: options.canvas.y - y0,
-      },
-      viewport: options.viewport && {
-        ...options.viewport,
-        x: options.viewport.x - x0,
-        y: options.viewport.y - y0,
-      },
-      clips: [],
-    };
-    paintPlaced(surface.getContext('2d') as PaintContext, box, on);
-    ctx.save();
-    ctx.transform!(
-      through[0],
-      through[1],
-      through[2],
-      through[3],
-      through[4],
-      through[5],
-    );
-    ctx.drawImage(surface, x0, y0);
-    ctx.restore();
-    return true;
-  } finally {
-    surface.destroy?.();
+  return !!placed && !placed.some((n) => Math.abs(n) > FIXED_LIMIT);
+}
+
+/** A surface with its corner at (`x0`, `y0`) drawn through `through`, at
+ *  `opacity` times the context's. */
+function drawThrough(
+  ctx: PaintContext,
+  surface: Offscreen,
+  through: Matrix,
+  x0: number,
+  y0: number,
+  opacity: number,
+): void {
+  ctx.save();
+  ctx.transform!(
+    through[0],
+    through[1],
+    through[2],
+    through[3],
+    through[4],
+    through[5],
+  );
+  if (opacity < 1 && typeof ctx.globalAlpha === 'number') {
+    ctx.globalAlpha *= opacity;
   }
+  ctx.drawImage!(surface, x0, y0);
+  ctx.restore();
 }
 
 /** A box and what it holds, cut to its `clip` and its `clip-path` as
@@ -1477,24 +1641,7 @@ function paintMasked(
     if (!content || !mask) return false;
     const cctx = content.getContext('2d') as PaintContext;
     const mctx = mask.getContext('2d') as PaintContext;
-    // the surfaces' own coordinates, the window's moved to their corner
-    const on: PaintOptions = {
-      ...options,
-      originX: options.originX - x0,
-      originY: options.originY - y0,
-      damage: { x: 0, y: 0, width: w, height: h },
-      canvas: options.canvas && {
-        ...options.canvas,
-        x: options.canvas.x - x0,
-        y: options.canvas.y - y0,
-      },
-      viewport: options.viewport && {
-        ...options.viewport,
-        x: options.viewport.x - x0,
-        y: options.viewport.y - y0,
-      },
-      clips: [],
-    };
+    const on = onSurface(options, x0, y0, w, h);
     for (let i = layers.length - 1; i >= 0; i -= 1) {
       paintLayer(mctx, box, on, layers[i], frameImages(mctx, box, on));
     }
