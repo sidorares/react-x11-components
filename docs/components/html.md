@@ -1420,7 +1420,11 @@ hidden panels through `visibility` shows none — what Chrome draws with
 every animation set to no length, which is how the Zen Garden bench holds
 Chrome, and how it runs `<Html>`. The iteration count, the duration and the delay are
 not used there, so an animation of two `alternate` iterations, or of half
-of one, is drawn as it ends its first.
+of one, is drawn as it ends its first. It is still the page that animates:
+`(prefers-reduced-motion: no-preference)` holds there as it does where the
+animations run, and `reduce` does not. A page's reduced branch is another
+page — joshwcomeau.com shows under it what it hides under `no-preference`
+— and Chrome, held still, draws this one.
 
 **Transitions:** `transition` and its five longhands, `-webkit-transition`
 and its longhands too. A style change — a hover, a focus, a width across a
@@ -2062,8 +2066,14 @@ The orientation and the aspect ratio are the viewport's too, and follow it;
 the resolution is the display's scale, so a page's high-DPI rules hold on a
 retina panel and not at one dot to the pixel; the rest are a desktop
 screen's with a mouse — `hover` and a `fine` pointer, eight bits of colour,
-no contrast or colour preference forced, and no scripting, since nothing
-here runs one. A query is read by Media Queries 4's grammar: `or` joins
+no contrast or colour preference forced, no preference for less motion,
+and no scripting, since nothing here runs one. So a page's animations
+under `(prefers-reduced-motion: no-preference)` run, as in a desktop
+browser whose user has not asked for less motion, and its `reduce` branch
+is not taken. The desktop's own setting is not read yet, so a desktop that
+has asked for less motion still gets the animations; `animate={false}`
+does not answer `reduce` either, since it holds the animations at rest
+rather than asking for fewer (see Animations, above). A query is read by Media Queries 4's grammar: `or` joins
 features as a comma joins queries, `(max-width: 600px) or (min-width:
 900px)`, a `not` holds on the other side of what it negates, so
 `not (max-width: 600px)` holds past 600px and Tailwind 3's
