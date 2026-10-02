@@ -2668,14 +2668,19 @@ function desktopFeature(key: string, value: string | null): boolean | null {
         { 'no-preference': true, more: false, less: false, custom: false },
         false,
       );
+    // No preference, which is what a desktop browser answers where its user
+    // has not asked for less motion: a page that keeps its animations under
+    // `(prefers-reduced-motion: no-preference)` runs them here, as it does
+    // in Chrome. The desktop's own setting, which core follows for its own
+    // loops (`useSystemAppearance().reducedMotion`), is not read yet.
+    // `animate={false}` does not answer `reduce`: it draws this page with
+    // its animations at rest, as Chrome draws it with each at no length,
+    // where `reduce` styles another page — one that shows under it what
+    // `no-preference` hides.
+    case 'prefers-reduced-motion':
     case 'prefers-reduced-transparency':
     case 'prefers-reduced-data':
       return keyword({ 'no-preference': true, reduce: false }, false);
-    case 'prefers-reduced-motion':
-      // Nothing here moves, so there is nothing to reduce: the branch an
-      // animated page keeps for this preference is not one this renderer
-      // needs.
-      return keyword({ 'no-preference': false, reduce: false }, false);
     case 'forced-colors':
       return keyword({ none: true, active: false }, false);
     case 'scripting':

@@ -38,6 +38,10 @@
 //   machine's appearance — so on a Mac in dark mode a page's
 //   `prefers-color-scheme` and `light-dark()` answered dark in one engine
 //   and light in the other.
+// - **No preference for less motion**, in the same call: <Html> answers
+//   `prefers-reduced-motion` as a desktop browser on a machine with the
+//   setting off, and Chrome otherwise follows the machine's accessibility
+//   setting, which would take a page's reduced branch in one engine alone.
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import {
@@ -250,7 +254,10 @@ export class Chrome {
       await send('Network.enable');
       await send('Emulation.setScriptExecutionDisabled', { value: true });
       await send('Emulation.setEmulatedMedia', {
-        features: [{ name: 'prefers-color-scheme', value: 'light' }],
+        features: [
+          { name: 'prefers-color-scheme', value: 'light' },
+          { name: 'prefers-reduced-motion', value: 'no-preference' },
+        ],
       });
       await send('Emulation.setDeviceMetricsOverride', {
         width,

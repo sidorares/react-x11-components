@@ -11,6 +11,7 @@ import {
   parseStylesheet,
 } from '../../src/html/css/parse.js';
 import { HtmlSource } from '../../src/html/dom.js';
+import { animationClock } from '../../src/html/node.js';
 import { lightDark, usedColorScheme } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
@@ -23,6 +24,7 @@ import {
   renderScrolled,
   view,
 } from './harness.js';
+import { holdClock } from '../held-clock.js';
 
 afterEach(cleanup);
 
@@ -797,5 +799,75 @@ test('a media query on the resolution, the pointer or a feature nothing knows is
     boxOf(el, 'o').height,
     10,
     'and 800 by 500 landscape again, a change of width alone',
+  );
+});
+
+test('prefers-reduced-motion is answered as a desktop browser answers it, with no preference', () => {
+  // It answered neither value while nothing here moved, so a page that
+  // keeps its animations under `no-preference` lost them, and one that
+  // writes the reduced branch as `not (… no-preference)` took it. Each row
+  // is where Chrome 154, Firefox 153 and WebKit 26.5 hold the query, by
+  // `matchMedia`, at 500px and at 1000px.
+  const rows: [string, string][] = [
+    ['(prefers-reduced-motion: no-preference)', '11'],
+    ['(PREFERS-REDUCED-MOTION: No-Preference)', '11'],
+    ['screen and (prefers-reduced-motion: no-preference)', '11'],
+    ['(prefers-reduced-motion: reduce)', '..'],
+    ['(prefers-reduced-motion)', '..'],
+    ['not (prefers-reduced-motion: no-preference)', '..'],
+    ['not (prefers-reduced-motion: reduce)', '11'],
+    ['not (prefers-reduced-motion)', '11'],
+    ['not all and (prefers-reduced-motion: reduce)', '11'],
+    ['(prefers-reduced-motion: reduce) or (min-width: 600px)', '.1'],
+    // a value it does not take is neither true nor false
+    ['(prefers-reduced-motion: bogus)', '..'],
+    ['not (prefers-reduced-motion: bogus)', '..'],
+  ];
+  for (const [query, holds] of rows) {
+    const media = [parseMediaQuery(query)];
+    const ours = [500, 1000]
+      .map((w) => (mediaMatches(media, w, 'light', 600) ? '1' : '.'))
+      .join('');
+    assert.strictEqual(ours, holds, query);
+  }
+});
+
+test('a page animated under (prefers-reduced-motion: no-preference) runs its animations, and holds them at rest under animate={false}', async (t) => {
+  // joshwcomeau.com writes its animations so, and hides under the same
+  // query what it shows under `reduce`. `animate={false}` holds the page's
+  // animations at rest and asks for no less motion: the reduced branch is
+  // another page, and Chrome, which the Zen Garden bench holds still with
+  // every animation at no length, draws this one.
+  const source =
+    '<style>body{margin:0}div{height:10px}' +
+    '@keyframes grow{to{height:30px}}' +
+    '@media (prefers-reduced-motion:no-preference)' +
+    '{#a{animation:grow 160ms linear forwards}}' +
+    '@media (prefers-reduced-motion:reduce){#b{height:20px}}' +
+    '@media not (prefers-reduced-motion:no-preference){#c{height:20px}}' +
+    '@media (prefers-reduced-motion){#d{height:20px}}' +
+    '</style><div id="a"></div><div id="b"></div><div id="c"></div>' +
+    '<div id="d"></div>';
+  const heights = (el: ReturnType<typeof view>) =>
+    ['a', 'b', 'c', 'd'].map((id) => boxOf(el, id).height);
+
+  const clock = holdClock(t, animationClock);
+  const first = await render(source);
+  const running = view(first.node);
+  assert.deepStrictEqual(heights(running), [10, 10, 10, 10], 'as it starts');
+  assert.ok(clock.pending, 'the animation asks for its frames');
+  for (let i = 0; i < 5; i++) await clock.frame();
+  await act();
+  assert.strictEqual(boxOf(running, 'a').height, 20, 'halfway through');
+  await clock.finish();
+  await act();
+  assert.deepStrictEqual(heights(running), [30, 10, 10, 10], 'at its end');
+  await first.result.unmount();
+
+  const still = view((await render(source, 400, { animate: false })).node);
+  assert.deepStrictEqual(
+    heights(still),
+    [30, 10, 10, 10],
+    'at rest it holds the frame it ends on, and no reduced branch is taken',
   );
 });
