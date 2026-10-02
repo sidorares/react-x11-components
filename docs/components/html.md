@@ -133,6 +133,12 @@ handle.
 Inline event attributes (`onclick="…"`) are likewise left in the DOM as
 attributes and never invoked.
 
+A `<template>`'s content is inert, as in a browser (HTML 4.12.3): no box is
+made in it, a `<style>` or `<link rel=stylesheet>` in it styles nothing, an
+image or a sheet in it is not asked for through `onResource`, a `<script>`
+in it is not handed to `onScript`, and its `<title>` and `<base>` are not the
+document's. It stays in the DOM, for an application that stamps it out.
+
 ### Base URLs
 
 The component has no idea where a document came from — it is handed a

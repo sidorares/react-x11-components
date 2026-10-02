@@ -37,11 +37,12 @@ export { Element, Text, Comment } from 'domhandler';
 const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title']);
 
 /** Never rendered, whatever the stylesheet says: a `<template>`'s
- *  content is inert. The rest of what has no box of its own — `<head>` and
- *  what is in it, `<script>`, `<style>` — is `display: none` by the UA
- *  sheet, and shown where an author's sheet says otherwise, as a browser
- *  shows it: `head, meta { display: block }` makes a `<meta>`'s `::before`
- *  a line of the page. */
+ *  content is inert, so the box builder makes no box in it and the scan
+ *  (`HtmlSource.facts`) does not look inside it. The rest of what has no
+ *  box of its own — `<head>` and what is in it, `<script>`, `<style>` — is
+ *  `display: none` by the UA sheet, and shown where an author's sheet says
+ *  otherwise, as a browser shows it: `head, meta { display: block }` makes
+ *  a `<meta>`'s `::before` a line of the page. */
 export const NON_RENDERED = new Set(['template']);
 
 /** What the HTML parser puts in `<head>`. Where the markup has no `<head>`
@@ -164,8 +165,13 @@ export function rawTextOf(node: AnyNode): string {
  * `yield*` chain is the worst recursion there is, costing a resume per level
  * per element (a walk of 1,000 nested divs measured 16ms as a generator and
  * rounds to zero as a loop).
+ *
+ * `opaque` names elements the walk yields and does not go into.
  */
-export function* elementsIn(root: AnyNode): Generator<Element> {
+export function* elementsIn(
+  root: AnyNode,
+  opaque?: ReadonlySet<string>,
+): Generator<Element> {
   const stack: ChildNode[][] = [childrenOf(root)];
   const at: number[] = [0];
   while (stack.length) {
@@ -181,6 +187,7 @@ export function* elementsIn(root: AnyNode): Generator<Element> {
     const child = kids[i];
     if (!isElement(child)) continue;
     yield child;
+    if (opaque?.has(tagOf(child))) continue;
     const grandkids = childrenOf(child);
     if (grandkids.length) {
       stack.push(grandkids);
@@ -191,7 +198,8 @@ export function* elementsIn(root: AnyNode): Generator<Element> {
 
 // --- the streaming source --------------------------------------------------
 
-/** What the document told the host about itself while parsing. */
+/** What the document told the host about itself while parsing — none of
+ *  it from inside a `<template>`, whose content is inert. */
 export interface DocumentFacts {
   /** `<style>` text and `<link rel=stylesheet>` hrefs, in document order —
    *  order is the cascade's tie-breaker, so it is data, not a detail. */
@@ -312,7 +320,12 @@ export class HtmlSource {
     if (this._facts.scanned === this.revision) return this._facts;
     const facts = freshFacts();
     facts.scanned = this.revision;
-    for (const el of elementsIn(this.document)) {
+    // Not into a `<template>`: its content is an inert fragment (HTML
+    // 4.12.3), out of the document until a script stamps it in, which here
+    // none does. A sheet in it styles nothing, an image in it loads nothing,
+    // a script in it runs nothing, and its `<title>` and `<base>` are not
+    // the document's.
+    for (const el of elementsIn(this.document, NON_RENDERED)) {
       const tag = tagOf(el);
       if (tag === 'style') {
         const media = attr(el, 'media');
