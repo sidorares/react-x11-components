@@ -66,7 +66,7 @@ handle.refresh();
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `document`             | The live DOM — [domhandler]'s tree, which [domutils] speaks natively.                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `refresh()`            | The DOM changed: restyle, re-lay-out, repaint.                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `elementAt(x, y)`      | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry.                                                                                                                                                                                                                                                                                                                                                                 |
+| `elementAt(x, y)`      | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry. In whichever tree it is: one in a shadow tree is that element, not its host.                                                                                                                                                                                                                                                                                    |
 | `hrefAt(x, y)`         | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                                                                                                                                                                                                                                                                                                                                                      |
 | `elementRect(element)` | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. Null for an element with no box. |
 | `title`                | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -161,7 +161,10 @@ A `<template>`'s content is inert, as in a browser (HTML 4.12.3): no box is
 made in it, a `<style>` or `<link rel=stylesheet>` in it styles nothing, an
 image or a sheet in it is not asked for through `onResource`, a `<script>`
 in it is not handed to `onScript`, and its `<title>` and `<base>` are not the
-document's. It stays in the DOM, for an application that stamps it out.
+document's. It stays in the DOM, for an application that stamps it out. One
+with a `shadowrootmode` is its parent's shadow tree instead — see
+[Shadow DOM](#shadow-dom) — whose images and sheets are asked for, and whose
+scripts are handed over, as the document's are.
 
 ### Base URLs
 
@@ -2193,6 +2196,87 @@ background, behind the whole viewport, makes every scroll a repaint. A fragment 
 root element, and its blocks have the body's `auto` height to resolve
 against.
 
+## Shadow DOM
+
+A `<template shadowrootmode="open">` — or `"closed"` — is a declarative
+shadow root, read as a browser's parser reads one (HTML 13.2.6.4.4, DOM
+4.8): where it is the first such child of an element that can host one — a
+`<div>`, a `<span>`, a `<p>`, `<body>`, the section elements, a custom
+element such as `<my-card>` — what it holds is that element's **shadow
+tree**, and the template is in neither tree. The host's `children` are its
+own, the light children, and its shadow root is `shadowRootOf(host)`
+(`htmlShadowRootOf` through the barrel). A second one, one under an element
+that hosts none, one of another `shadowrootmode`, and one in markup read by
+`parseFragment` — which reads as `innerHTML` does — are ordinary templates,
+and inert. An application builds a shadow root itself with
+`attachShadow(host, { mode })`, fills it with `appendChild`, and calls
+`refresh()`.
+
+**What is drawn is the flat tree** (CSS Scoping 1, 2.2): a host's shadow
+tree in place of its children, and in each `<slot>` the light children
+assigned to it — an element by its `slot` attribute, to the first slot of
+that `name`, and an element with none and every text node, white space
+included, to the first slot with no name — in the order they are in,
+whichever slot comes first. A slot nothing is assigned to draws its own
+children, its fallback; a light child no slot takes is drawn nowhere. A
+slot is `display: contents` by the user-agent sheet, so it makes no box
+until a sheet gives it one. Inheritance, counters, `:hover`,
+`:focus-within`, the Tab order and a link around a slot go by the flat tree:
+what is assigned to a slot inherits from the slot, and the top of a shadow
+tree from its host.
+
+**A shadow tree's sheets style it, and nothing else** (CSS Scoping 1, 3.2):
+its `<style>`s and its `<link rel=stylesheet>`s, asked for through
+`onResource` as the document's are, `@import`s and all. The document's rules
+do not reach into it and its do not reach out, and an element is styled by
+its own tree's rules wherever it is drawn: a light child in a slot is the
+page's. The trees whose sheets read alike — a component's, stamped out on
+every card of a page — share one set of rules, parsed and indexed once, and
+the elements in them share their styles as a document's do. At a tree's
+edges:
+
+- **`:host`, `:host(<compound>)` and `:host-context(<compound>)`** style
+  the host from inside, its `::before` and `::after` too, and, first in a
+  selector, reach into the tree from it: `:host(.dark) .label`, `:host >
+slot`. The host is featureless in its own tree, so `:host.dark` and `* >
+.top` match nothing, as in a browser.
+- **`::slotted(<compound>)`** styles what is assigned to a slot, and its
+  `::before` and `::after` — not what is inside it, and not a slot's
+  fallback.
+- **`::part(<name>…)`** styles, from outside, the elements of a shadow tree
+  whose `part` has the names, followed by a pseudo-class of their state —
+  `::part(label):hover` — or by `::before` or `::after`. A host's
+  `exportparts` passes its tree's parts on to the tree it is in, renamed or
+  as they are, and `:host::part()` is a tree's own host's parts, seen from
+  inside — those passed on to it from a tree inside it among them, as the
+  spec has it and Chrome does not.
+- **`:has-slotted`** matches a slot something is assigned to.
+
+**Between trees, context decides before specificity** (CSS Cascade 5,
+6.1): an outer tree's normal declaration over an inner one's — a page's
+`my-card { color }` over the card's own `:host(#id.k) { color }`, and its
+`::part()` rules over the part's own tree's rules and its `style` — and an
+inner tree's `!important` one over an outer one's. A presentational
+attribute of the host's, `align`, is under its `:host` rules, as it is in
+Chrome.
+
+**An `animation-name` is tree-scoped** (CSS Scoping 1, 3.5): it finds the
+`@keyframes` of the tree whose rule named it, and where that tree has none
+of the name, those of each tree around it out to the document's. A shadow
+tree's `@keyframes` are its own; a `::part()` rule of the page's finds the
+page's, whatever the part's tree has; and a component's `animation: spin`
+finds the page's `spin` where it has none of its own — the spec's lookup,
+and Safari's, where Chrome looks in the one tree. `@font-face` and
+`@counter-style` rules in a shadow tree are not read: the document's are
+what count, and no browser reads a shadow tree's `@font-face`.
+
+A `mode` is kept and changes nothing: closed keeps a page's scripts out,
+and nothing here runs one. `handle.document` is walked as a browser's
+document is, its shadow trees reached from their hosts: `elementAt()` can
+answer an element in one, and `elementRect()` takes one. Not yet: a rule
+at a tree's edge for a pseudo-element but `::before` and `::after`,
+`:host:has()`, and assigning slots by hand.
+
 ## The decisions
 
 **It draws the document; it does not compose one.** Every other document
@@ -2809,9 +2893,10 @@ window frames in two seconds, still or scrolled; lifted, none.
 ## Types
 
 `Document`, `Element`, `AnyNode`, `ChildNode` and `ParentNode` are
-domhandler's, re-exported. Through the barrel they are qualified —
-`HtmlDocument`, `HtmlElement` — because an application already has several
-things called `Element`.
+domhandler's, re-exported, and `ShadowRoot` is a domhandler `Document` with
+its `host` and `mode`. Through the barrel they are qualified —
+`HtmlDocument`, `HtmlElement`, `HtmlShadowRoot` — because an application
+already has several things called `Element`.
 
 ## Example
 

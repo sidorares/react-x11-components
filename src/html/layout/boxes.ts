@@ -22,6 +22,8 @@ import type { TextRun } from '../../richtext/index.js';
 import {
   attr,
   childrenOf,
+  flatChildrenOf,
+  flatParentOf,
   isElement,
   isText,
   inImpliedHead,
@@ -1191,7 +1193,10 @@ class Builder {
     };
   }
 
-  /** Build boxes for a parent's children into `into`. */
+  /** Build boxes for a parent's children into `into`: its children in
+   *  the flat tree (`flatChildrenOf`) — a host's shadow tree, and in a
+   *  slot what is assigned to it — styled from its style, as what is
+   *  drawn inherits through the flat tree (CSS Scoping 1, 2.2). */
   private _children(
     node: Element | { children: unknown },
     into: Box,
@@ -1211,7 +1216,7 @@ class Builder {
       tagOf(owner) === 'details' &&
       owner.attribs.open === undefined;
     let summarised = false;
-    for (const child of childrenOf(node as Element)) {
+    for (const child of flatChildrenOf(node as Element)) {
       if (closed) {
         if (!isElement(child) || summarised || tagOf(child) !== 'summary') {
           continue;
@@ -1807,7 +1812,7 @@ class Builder {
      *  reset of the counter in one is a counter of its own, and a later
      *  sibling's reset at the scope's own level ends it (`stopAtReset`). */
     const walk = (
-      children: ReturnType<typeof childrenOf>,
+      children: readonly ChildNode[],
       from: number,
       parentStyle: ComputedStyle,
       parentKey: number,
@@ -1838,7 +1843,7 @@ class Builder {
     const inside = (el: Element, st: ComputedStyle, key: number): void => {
       pseudo(el, 'before', st);
       walk(
-        childrenOf(el),
+        flatChildrenOf(el),
         0,
         st,
         key,
@@ -1856,10 +1861,10 @@ class Builder {
       const parent = place.parent;
       const node = place.node as Element & { parent?: Element | null };
       if (siblings && parent && node.parent) {
-        const children = childrenOf(node.parent);
+        const children = flatChildrenOf(flatParentOf(node) ?? node.parent);
         walk(
           children,
-          children.indexOf(place.node) + 1,
+          children.indexOf(node) + 1,
           parent.style,
           parent.key,
           parent.inFlex,

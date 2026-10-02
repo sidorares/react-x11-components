@@ -40,7 +40,7 @@ import {
 import type {} from 'react-x11/jsx-runtime';
 
 import { hx } from './hx.js';
-import { attr, childrenOf, isElement, isText, tagOf } from './dom.js';
+import { attr, flatChildrenOf, isElement, isText, tagOf } from './dom.js';
 import type { Element } from './dom.js';
 import { stepFrom } from './focus.js';
 import type { FocusStop } from './focus.js';
@@ -394,8 +394,9 @@ function nameOf(el: Element): string | undefined {
     return attr(el, 'alt')?.trim() || attr(el, 'value')?.trim() || undefined;
   }
   const parts: string[] = [];
+  // what is drawn in it, a slot's assigned children among it
   const walk = (node: Element) => {
-    for (const child of childrenOf(node)) {
+    for (const child of flatChildrenOf(node)) {
       if (isText(child)) parts.push(child.data);
       else if (isElement(child)) {
         if (tagOf(child) === 'img') parts.push(attr(child, 'alt') ?? '');

@@ -100,6 +100,10 @@ summary, dir, menu, center, marquee {
 head, link, meta, style, script, title, base, template, param,
 source, track, col, colgroup, datalist, area, rp { display: none; }
 
+/* a slot is where what is assigned to it is drawn, and makes no box of its
+   own (HTML 15.3.1) */
+slot { display: contents; }
+
 /* HTML's bidi rules for the two elements that are about it: <bdi> takes
    its first strong letter's direction, and <bdo> overrides. The \`dir\`
    attribute's isolation is a presentational hint (\`hints\`), where the

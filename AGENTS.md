@@ -1832,6 +1832,32 @@ is on the lines is faded where it is painted (`inlineFade`), and none of
 it may be text faded through the context's alpha, which ntk's glyphs do
 not take (`fadesGlyphs`).
 
+**A shadow tree is built where a browser's parser builds it, and drawn
+through the flat tree.** The handler attaches a declarative shadow root as
+the parser meets its template (`Handler._shadowRoot` in `dom.ts`), so the
+DOM is a browser's: the host's `children` are its light children, the tree
+hangs off it (`shadowRootOf`), and every walk by `children` — the scan, the
+forms, `getElementById`, `:first-child` — stays in the tree it started in,
+as the DOM's own walks do. What is drawn is `flatChildrenOf`. Three things
+are load-bearing. **Anything that inherits, hovers or is within goes up by
+`flatParentOf`, not `parent`** — the builder, a restyle in place's parent
+style, the hover chain, `:focus-within`, the Tab order: from the top of a
+shadow tree `parent` stops at its root, and from a slotted element it skips
+the slot. **A rule is filed under its tree** (`IndexedRule.scope`) in the
+one set of indexes, the trees whose sheets read alike sharing one set of
+rules, and a sharing key says which tree an element is in and which it
+hosts: a `<b>` assigned to a slot in one card and the `<b>` that slot falls
+back to in another have parents of one key, and are styled by different
+trees' rules. And **between trees,
+context decides before specificity** (`byCascade`): a candidate carries its
+tree's depth, which in a document with no shadow tree is 0 everywhere, so
+that document orders as it always did. The rules at a tree's edges —
+`:host`, `::slotted()`, `::part()` — are not in the indexes a restyle in
+place asks, so one that tests the pointer or the focus builds the boxes
+again on a change of it (`Cascade._noteEdge`); and they are compiled as the
+sheets are read, so the cascade's css-select adapter exists before the
+first sheet does.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would
