@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.29.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.29.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.30.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.30.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -592,6 +592,16 @@ it up. **The floor is a running one and moves often** — every move since
   a focus moving inside a scroll pane repainting the pane's whole viewport
   (#815): every Tab through an `<Html>` in its pane did (react-x11#813),
   and `test/html/focus.test.ts` holds one to the rows of its two links.
+- `^2.30.0` — a sprite cut to a clip (react-x11#828, over #827): core puts
+  a part's layer in a box that masks to the part's `clip` and to the clip
+  of every ancestor with square corners, where an ancestor that did not
+  hold everywhere the part could be refused it. `<Html>` hands over the
+  clips of the boxes around an element (`clipFor`), so a carousel's slide,
+  a marquee and a shimmer under `overflow: hidden` go on layers, and so
+  does a fade scrolled half out of its pane, which went from 117 frames in
+  two seconds to none on a real Mac. A core that takes no `clip` would show
+  the layer uncut, so the floor moves with the feature rather than after
+  it.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1715,7 +1725,11 @@ things are load-bearing.
   (`fixedWithin`), since a scroll moves it over the document; and where
   the element is in no list — under its flow, in an inline box that is a
   stacking context — the old test stands, no ink but its own and its
-  ancestors' within reach (`crowded`).
+  ancestors' within reach (`crowded`). The boxes that clip the element cut
+  its layer to a rectangle (`clipFor`, the sprite's `clip`,
+  react-x11#827), and what shows through it is all any of this is asked
+  of. **Anything new that clips a box joins `clipFor`**, or a layer shows
+  what the document cuts away.
 
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's

@@ -1411,7 +1411,7 @@ test('a fade and a turn on one element go over as two animations on its layer, e
   assert.strictEqual(both.el.sprites(), null);
 });
 
-test('what a layer cannot carry stays on the document’s clock: a colour, two animations of one property, a paused one, a clip around it, a fade around it, and ink beside it', async (t) => {
+test('what a layer cannot carry stays on the document’s clock: a colour, two animations of one property, a paused one, a fade around it, and ink beside it', async (t) => {
   const doc = await running(
     t,
     '<style>@keyframes fade { to { opacity: .2 } }' +
@@ -1420,15 +1420,12 @@ test('what a layer cannot carry stays on the document’s clock: a colour, two a
       '#colour { animation: tint 1s infinite }' +
       '#two { animation: fade 1s infinite, fade 2s infinite }' +
       '#paused { animation: fade 1s infinite paused }' +
-      '#clip { overflow: hidden; height: auto; background: none }' +
-      '#clipped { animation: fade 1s infinite }' +
       '#faded { opacity: .5; height: auto; background: none }' +
       '#inside { animation: fade 1s infinite }' +
       '#under { animation: fade 1s infinite; margin-top: 10px }' +
       '#over { position: relative; top: -15px; left: 5px; background: green }' +
       '#free { animation: fade 1s infinite; margin-top: 30px }</style>' +
       '<div id="colour"></div><div id="two"></div><div id="paused"></div>' +
-      '<div id="clip"><div id="clipped"></div></div>' +
       '<div id="faded"><div id="inside"></div></div>' +
       '<div id="under"></div><div id="over"></div><div id="free"></div>',
   );
@@ -1505,6 +1502,61 @@ test('a box fixed to the viewport keeps an element in the document while the scr
   assert.strictEqual(offered(), 0, 'under it');
   await act(async () => pane.scrollTo(200));
   assert.strictEqual(offered(), 1, 'past it');
+});
+
+test('a box that clips an element cuts its layer: the sprite is offered with the clip, and what is painted after it outside the clip keeps nothing from it', async (t) => {
+  const page = (overflow: string) =>
+    '<style>@keyframes slide { from { transform: translateX(-40px) }' +
+    ' to { transform: translateX(120px) } }' +
+    'body { margin: 0 }' +
+    `#frame { overflow: ${overflow}; width: 100px; height: 30px;` +
+    ' margin: 10px; border: 2px solid }' +
+    '#marquee { width: 40px; height: 20px; background: red;' +
+    ' animation: slide 1s linear infinite }' +
+    '#after { position: absolute; left: 130px; top: 10px; width: 20px;' +
+    ' height: 20px; background: blue }</style>' +
+    '<div id="frame"><div id="marquee"></div></div><div id="after"></div>';
+  const doc = await running(t, page('hidden'));
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const [sprite] = doc.el.sprites() ?? [];
+  // the padding box, inside the border: 10 + 2 across and down
+  assert.deepStrictEqual(sprite?.clip, {
+    x: abs.x + 12,
+    y: abs.y + 12,
+    width: 100,
+    height: 30,
+  });
+  // the blue box is painted after it, where its slide takes it: outside
+  // the clip it covers nothing that shows, and unclipped it does
+  const open = await running(t, page('visible'));
+  assert.strictEqual(open.el.sprites(), null);
+});
+
+test('a box that clips cuts only what it holds: an absolute element whose containing block is outside it is not cut by it, and a rounded one cuts an element clear of its corners not at all, and keeps one that reaches them', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { to { opacity: .2 } }' +
+      'body { margin: 0; position: relative }' +
+      '.clip { overflow: hidden; width: 100px; height: 60px }' +
+      '.round { border-radius: 10px }' +
+      'i { display: block; width: 20px; height: 20px; background: red;' +
+      ' animation: fade 1s infinite }' +
+      '#out { position: absolute; left: 0; top: 0 }' +
+      '#corner { margin: 0 }' +
+      '#middle { margin: 20px 40px }</style>' +
+      '<div class="clip"><i id="out"></i></div>' +
+      '<div class="clip round"><i id="middle"></i></div>' +
+      '<div class="clip round"><i id="corner"></i></div>',
+  );
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const sprites = doc.el.sprites()!;
+  const at = (id: string) =>
+    sprites.find((p) => p.rect.y === abs.y + boxOf(doc.el, id).y);
+  assert.ok(at('out'), 'positioned against the body, outside the clip');
+  assert.strictEqual(at('out')!.clip, undefined);
+  assert.ok(at('middle'), 'clear of the corners');
+  assert.strictEqual(at('middle')!.clip, undefined);
+  assert.strictEqual(at('corner'), undefined, 'in the corner');
 });
 
 test('a lifted element is a hole in the document, and its animation is no frame of the document’s; given back, it is drawn where its animation has got to', async (t) => {

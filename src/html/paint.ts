@@ -3545,6 +3545,70 @@ export function clipsOverflow(box: Box): boolean {
   }
 }
 
+/**
+ * What the boxes around `box` cut it to, in the document's coordinates, for
+ * a layer that has to show it as the document would (`src/html/sprites.ts`):
+ * the clip edge of each box that clips what it holds and holds `box` —
+ * not one an out-of-flow box on the way escapes by having its containing
+ * block outside it (`containingBlockOf`), nor a table's for its caption —
+ * and a `clip` on `box` or one of them, up to the root, whose overflow is
+ * the viewport's. A rounded edge cuts no rectangle, so it has to keep clear
+ * of `extent`, everywhere `box` can be, and then does not cut it at all.
+ * Undefined where nothing cuts `box`; null where something cuts it in a way
+ * a rectangle cannot.
+ */
+export function clipFor(
+  box: Box,
+  extent: Rect,
+  scale: number,
+): Rect | null | undefined {
+  const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
+  let clip: Rect | undefined;
+  const cut = (r: { x: number; y: number; w: number; h: number }): void => {
+    const x = Math.max(r.x, clip ? clip.x : -Infinity);
+    const y = Math.max(r.y, clip ? clip.y : -Infinity);
+    const right = Math.min(r.x + r.w, clip ? clip.x + clip.width : Infinity);
+    const bottom = Math.min(r.y + r.h, clip ? clip.y + clip.height : Infinity);
+    clip = {
+      x,
+      y,
+      width: Math.max(0, right - x),
+      height: Math.max(0, bottom - y),
+    };
+  };
+  if (box.outOfFlow && box.style.clip) cut(clipOf(box, space));
+  // the out-of-flow boxes on the way up, each clipped only by the boxes
+  // that hold its containing block
+  const escaping: Box[] = box.outOfFlow ? [box] : [];
+  let below = box;
+  for (let at = box.parent; at?.parent; below = at, at = at.parent) {
+    const applies =
+      !(at.kind === 'table' && below.kind === 'table-caption') &&
+      escaping.every((o) => holds(at, containingBlockOf(o)));
+    if (applies) {
+      if (clipsOverflow(at)) {
+        const { rect, radii } = clipEdge(at, space);
+        if (radii) {
+          let r = 0;
+          for (const v of radii.x) r = Math.max(r, v);
+          for (const v of radii.y) r = Math.max(r, v);
+          const clear =
+            extent.x >= rect.x + r &&
+            extent.y >= rect.y + r &&
+            extent.x + extent.width <= rect.x + rect.w - r &&
+            extent.y + extent.height <= rect.y + rect.h - r;
+          if (!clear) return null;
+        } else {
+          cut(rect);
+        }
+      }
+      if (at.outOfFlow && at.style.clip) cut(clipOf(at, space));
+    }
+    if (at.outOfFlow) escaping.push(at);
+  }
+  return clip;
+}
+
 /** A box's `clip` region, in window coordinates. */
 function clipOf(
   box: Box,
