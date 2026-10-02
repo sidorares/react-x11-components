@@ -54,6 +54,22 @@ test('splitValue keeps functions and quotes whole', () => {
     'url(a b.png)',
     'no-repeat',
   ]);
+  // a function ends its part, as a minified sheet has it: the next one may
+  // follow its `)` with no space, a comma or a slash may not be split off
+  assert.deepStrictEqual(splitValue('calc(100% - 7px)0'), [
+    'calc(100% - 7px)',
+    '0',
+  ]);
+  assert.deepStrictEqual(splitValue('translate(1px,0)rotate(f(2))x'), [
+    'translate(1px,0)',
+    'rotate(f(2))',
+    'x',
+  ]);
+  assert.deepStrictEqual(splitValue('rgb(1 2 3),red calc(1px)/2'), [
+    'rgb(1 2 3),red',
+    'calc(1px)/2',
+  ]);
+  assert.deepStrictEqual(splitValue('"a)b"c'), ['"a)b"c']);
 });
 
 test('transparency is answered without parsing a colour', () => {

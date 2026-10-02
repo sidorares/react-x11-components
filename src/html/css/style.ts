@@ -4967,8 +4967,10 @@ function parseGridTrack(token: string, ctx: UnitContext): GridTrack | null {
 /**
  * A track list's parts: a bracketed group of line names as one part, a
  * quoted string as one, and a size or a function as one — a group of two
- * names was two parts, and the second was no size. Undefined where a
- * bracket or a quote is not closed.
+ * names was two parts, and the second was no size. A function ends at its
+ * closing paren, as `splitValue`'s parts do: Tailwind writes
+ * `minmax(0,1.25fr)minmax(0,1fr)`, which was one part and no track list.
+ * Undefined where a bracket or a quote is not closed.
  */
 function trackParts(value: string): string[] | undefined {
   const out: string[] = [];
@@ -4993,8 +4995,10 @@ function trackParts(value: string): string[] | undefined {
     for (; j < text.length; j += 1) {
       const c = text[j];
       if (c === '(') depth += 1;
-      else if (c === ')') depth -= 1;
-      else if (depth === 0 && /[\s["']/.test(c)) break;
+      else if (c === ')' && --depth === 0) {
+        j += 1;
+        break;
+      } else if (depth === 0 && /[\s["']/.test(c)) break;
     }
     out.push(text.slice(i, j));
     i = j;

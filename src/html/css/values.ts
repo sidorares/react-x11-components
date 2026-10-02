@@ -285,9 +285,18 @@ export function parseAlpha(value: string): number | null {
   return Math.max(0, Math.min(1, pct ? n / 100 : n));
 }
 
+/** What may follow a function's `)` in the part it ends (`splitValue`). */
+const JOINED = /[\s,/)]/;
+
 /**
  * Split a value on top-level whitespace, keeping `rgb(1, 2, 3)` and
  * `url(a b.png)` whole. Every shorthand starts here.
+ *
+ * A function is a component value of its own, ended by its `)` (CSS Syntax
+ * 3, 5.4.9), so what follows it straight after is the next one: a minified
+ * sheet writes `translate(2px,0)rotate(0)` and `calc(100% - 7px)0`, and
+ * read as one part, Tailwind's every transform was no transform. A comma
+ * or a slash after it is left where it is, for the callers that find them.
  */
 export function splitValue(value: string): string[] {
   const out: string[] = [];
@@ -305,6 +314,10 @@ export function splitValue(value: string): string[] {
     } else if (c === '(') {
       depth += 1;
     } else if (c === ')') {
+      if (depth === 1 && i + 1 < value.length && !JOINED.test(value[i + 1])) {
+        out.push(value.slice(start, i + 1));
+        start = i + 1;
+      }
       depth = Math.max(0, depth - 1);
     } else if (
       depth === 0 &&
