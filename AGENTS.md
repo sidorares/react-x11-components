@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.35.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.35.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.36.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.36.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -650,6 +650,18 @@ it up. **The floor is a running one and moves often** — every move since
   at its point size and drops AppKit's own menu for a select; and the
   same release keeps a sprite none of which shows on its layer (#844),
   which `<Html>`'s parts needed no change for.
+- `^2.36.0` — a part listed before another that the presenter turns down,
+  and that the other overlaps, is turned down with it in that frame
+  (react-x11#852): `<Html>` offers the parts a later part of its own
+  covers, listed in the order it paints them, where it kept every one of
+  them but the last on the document's clock — the rows of a list that
+  slide in one into the next. A core without it would leave an earlier
+  part's layer over a later part the document draws, so the floor moves
+  with the feature. The same release declares `DesktopSettings.animations`
+  (#851), and `<Flow>` reads it without a cast; it pauses a loop nothing
+  of it can be seen from and runs an indeterminate `ProgressBar` and a
+  scrolled list's loop in the render server (#847, #848, #849), which no
+  component here needed a change for.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1827,8 +1839,10 @@ animation's**: the drawn style holds the frame before, and compared with
 this frame's it started a transition every frame, so the fields the
 element's animations set now (`fieldsAnimatedBy`), and those its drawn
 style's set (`noteAnimated`, by the style), start none and turn none
-back, and one under way on them runs on beneath. Transitions are not lifted onto
-layers yet.
+back, and one under way on them runs on beneath. A transition on what a
+layer carries goes on one as an animation does (`liftOf`): one iteration
+from where it starts to where it ends, held at its start through its
+delay.
 
 **A box drawn on a surface of its own keeps the surface, keyed on its
 `Box`.** X11 draws a turned box with text in it on a surface
@@ -1928,7 +1942,12 @@ things are load-bearing.
   all four corners, held by every other clip, since one box takes one
   shape — and what shows through it is all any of this is asked of.
   **Anything new that clips a box joins `clipFor`**, or a layer shows
-  what the document cuts away.
+  what the document cuts away. A part offered with the element and painted
+  after it is not what covers it: its layer stands over the element's,
+  and the presenter takes the element off its layer in any frame it turns
+  that part down where the two meet (react-x11#852). So the parts are
+  listed in the order the document paints them and asked from the last
+  painted down, each past the later ones that were kept (`coveredAfter`).
 
 **A part inside another's box goes in that part's layer** (`parent`,
 react-x11#842). `sprites()` offers the lifts an ancestor's first, and a

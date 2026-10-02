@@ -119,7 +119,7 @@ import { invert, mapPoint, mapRect, transformed } from './css/transform.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { fontAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
-import { describe, liftOf, partOf } from './sprites.js';
+import { coveredAfter, describe, liftOf, partOf } from './sprites.js';
 import type {
   DocumentSprite,
   Lift,
@@ -165,6 +165,7 @@ import {
   ownBounds,
   paintDocument,
   paintLiftedBox,
+  paintOrderOf,
   pathClips,
   queryChildIndex,
   selectionRows,
@@ -3174,28 +3175,27 @@ export class HtmlViewNode extends Node {
       }
       lifts.sort((a, b) => depths.get(a.box)! - depths.get(b.box)!);
     }
-    // the parts offered so far, by their boxes
-    const offeredBoxes = new Map<Box, { key: string; part: Part }>();
-    let options: PaintOptions | null = null;
-    let out: DocumentSprite[] | null = null;
+    // the parts made so far, by their boxes
+    const madeBoxes = new Map<Box, Made>();
+    const made: Made[] = [];
     let shift: { x: number; y: number } | null | undefined;
     for (const lift of lifts) {
       const { el: element, pseudo } = lift;
       // the nearest box around it that is a part's: its layer goes in that
       // one's, and the boxes between are all it is asked about
-      let parent: { key: string; part: Part } | null = null;
+      let parent: Made | null = null;
       for (let at = lift.box.parent; at && !parent; at = at.parent) {
-        parent = offeredBoxes.get(at) ?? null;
+        parent = madeBoxes.get(at) ?? null;
       }
-      const made =
+      const stamped =
         `${stamp}|${lift.id}` +
         (parent ? `|${parent.key}:${serialOf(parent.part)}` : '');
       let offers = this._spriteOffers.get(element);
       if (!offers) this._spriteOffers.set(element, (offers = {}));
       let offer = offers[pseudo];
-      if (offer?.stamp !== made) {
+      if (offer?.stamp !== stamped) {
         offer = {
-          stamp: made,
+          stamp: stamped,
           part: partOf(host, lift, offer?.part, parent?.part ?? null),
         };
         offers[pseudo] = offer;
@@ -3204,21 +3204,57 @@ export class HtmlViewNode extends Node {
       // a box fixed to the viewport the scroll has brought within its
       // reach: the document draws it this frame, under that box or over
       // it, as their order has it. One at the viewport keeps its place
-      // against them, and was asked about them once (`partOf`), and one
-      // inside another part goes where that part does.
+      // against them, and is asked about them with the rest
+      // (`coveredAfter`), and one inside another part goes where that part
+      // does.
       if (offer.part.fixed.length && !offer.part.atViewport) {
         if (shift === undefined) shift = this._fixedShift();
         if (fixedWithin(offer.part, shift)) continue;
       }
-      const key = this._spriteKeyOf(element, pseudo);
-      this._offered.set(key, { el: element, pseudo });
-      offeredBoxes.set(lift.box, { key, part: offer.part });
+      const entry: Made = {
+        lift,
+        key: this._spriteKeyOf(element, pseudo),
+        part: offer.part,
+        parent,
+        order: parent ? null : paintOrderOf(lift.box),
+        kids: [],
+      };
+      if (!parent && !entry.order) continue; // nowhere in the paint order
+      parent?.kids.push(entry);
+      madeBoxes.set(lift.box, entry);
+      made.push(entry);
+    }
+    // What the document paints after a part, asked from the last painted
+    // to the first: those it keeps are layers over the ones before them,
+    // and the presenter takes the earlier ones off their layers in the
+    // frame it turns a later one down (react-x11's `Node.sprites()`). One
+    // inside another is asked with the parts outside it the same way, and
+    // goes where its parent does.
+    const tops = made
+      .filter((entry) => !entry.parent)
+      .sort((a, b) => byPaintOrder(b.order!, a.order!));
+    const above = new Set<Box>();
+    const kept: Made[] = [];
+    for (const entry of tops) {
+      if (coveredAfter(tree, entry.part, above)) continue;
+      above.add(entry.lift.box);
+      kept.push(entry);
+    }
+    kept.reverse();
+    let options: PaintOptions | null = null;
+    let out: DocumentSprite[] | null = null;
+    // each top part in the order it is painted, and the parts inside it
+    // after it — a parent ahead of what is in its layer
+    const offer = (entry: Made): void => {
+      const { lift, key, part, parent } = entry;
+      if (parent && coveredAfter(tree, part, above)) return;
+      this._offered.set(key, { el: lift.el, pseudo: lift.pseudo });
       const painted = (options ??= this._paintOptions(range, null));
       // from the viewport's corner, for one the document draws there
-      const origin = offer.part.atViewport && viewport ? viewport : this.abs;
+      const origin = part.atViewport && viewport ? viewport : this.abs;
       (out ??= []).push(
         describe(
-          offer.part,
+          part,
           key,
           `${serialOf(lift.box)}:${stamp}`,
           origin.x,
@@ -3235,7 +3271,9 @@ export class HtmlViewNode extends Node {
           parent?.key ?? null,
         ),
       );
-    }
+      for (const kid of entry.kids) offer(kid);
+    };
+    for (const entry of kept) offer(entry);
     return out;
   }
 
@@ -5235,6 +5273,29 @@ interface SpriteTarget {
 /** How many of an element's animations the render server ran to their end
  *  are remembered (`spriteAnimationEnded`). */
 const MAX_ENDED = 32;
+
+/** A part the document made this frame, before it is asked what is
+ *  painted after it (`HtmlViewNode.sprites`). */
+interface Made {
+  lift: Lift;
+  key: string;
+  part: Part;
+  /** The part whose layer it goes in, or null for one above the
+   *  document. */
+  parent: Made | null;
+  /** Where it is painted (`paintOrderOf`), for one above the document. */
+  order: number[] | null;
+  /** The parts that go in its layer. */
+  kids: Made[];
+}
+
+/** Paint order, as `paintOrderOf` keys it: negative where `a` is painted
+ *  first. */
+function byPaintOrder(a: readonly number[], b: readonly number[]): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return a.length - b.length;
+}
 
 /** Whether one of the boxes fixed to the viewport is within a part's reach
  *  where it is drawn now, `shift` from where it was laid out

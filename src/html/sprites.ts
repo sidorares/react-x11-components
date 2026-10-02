@@ -12,13 +12,18 @@
 // fixed to the viewport, or in one, has its layer stay where the viewport
 // is, and one inside another element on a layer goes in that one's layer
 // (`partOf`'s `parent`) — and that nothing the document paints after it
-// draws within reach of while it runs. The last is the document's to answer — core's
-// presenter cannot see inside the element — and it is answered in the
-// order the document paints (`paintedAfter`): the layer is over all of the
-// document, which is right for what is painted before the element and
-// wrong for anything painted after it. A badge painted over a card it does
-// not belong to keeps the card on the document's clock; a toast over the
-// page, a panel fading in over text, a spinner and a turning card pass.
+// draws within reach of while it runs, but another part offered with it.
+// The last is the document's to answer — core's presenter cannot see
+// inside the element — and it is answered in the order the document paints
+// (`paintedAfter`): the layer is over all of the document, which is right
+// for what is painted before the element and wrong for anything painted
+// after it, but for a part painted after it, whose layer is over its own,
+// and which the presenter takes it off its layer with in a frame that
+// turns that one down (`coveredAfter`, react-x11#852). A badge painted
+// over a card it does not belong to keeps the card on the document's
+// clock; a toast over the page, a panel fading in over text, a spinner, a
+// turning card and the rows of a list that slide in one into the next
+// pass.
 //
 // The frames go over as values the document computed: the element's style
 // is sampled at times through one cycle of its animation — two iterations
@@ -552,6 +557,13 @@ export interface Part {
   atViewport: boolean;
   /** Its frames as sampled, kept by what they are sampled from. */
   sampled: Sampled;
+  /** Where nothing painted after it may reach, in the document's
+   *  coordinates — what shows of it, and the whole document where the
+   *  scroll takes it over all of it — and what shows of it for a box fixed
+   *  to the viewport, which keeps its place against it: asked by
+   *  `coveredAfter`, every frame, of what is painted after it then. */
+  over: Rect;
+  fixedOver: Rect | null;
 }
 
 /** A part's frames as sampled, and what they are sampled from: the box,
@@ -573,10 +585,11 @@ interface Sampled {
 
 /**
  * The part `lift` is, or null where the element cannot be one: in a box a
- * layer cannot draw (`liftableBox`), too large, or within reach of what
- * the document paints after it (`paintedAfter`) — where that cannot be
- * told, of any ink but its own and its ancestors' (`crowded`). Its frames
- * are `was`'s where they were sampled from what they would be now. Inside
+ * layer cannot draw (`liftableBox`), too large, or showing nothing. What
+ * the document paints after it is asked every frame, apart
+ * (`coveredAfter`), since what is offered with it changes what that is.
+ * Its frames are `was`'s where they were sampled from what they would be
+ * now. Inside
  * `parent`, where it is given: its layer goes in that part's, so the boxes
  * from its own up to the parent's are all that is asked about, and it is
  * placed with the parent untransformed.
@@ -678,12 +691,6 @@ export function partOf(
     atViewport && host.scrolls
       ? unionRect(showsHere, inkOf(tree.root))
       : showsHere;
-  if (
-    paintedAfter(box, over, atViewport ? showsHere : null) ??
-    crowded(tree, box, over)
-  ) {
-    return null;
-  }
   const animations: DocumentSpriteAnimation[] = [];
   const begins: number[] = [];
   lift.tracks.forEach((track, i) => {
@@ -730,7 +737,29 @@ export function partOf(
     fixed: parent ? NO_BOXES : (FIXED_BOXES.get(tree) ?? NO_BOXES),
     atViewport,
     sampled,
+    over,
+    fixedOver: atViewport ? showsHere : null,
   };
+}
+
+/**
+ * Whether the document paints anything after `part` that reaches where it
+ * shows (`paintedAfter`) — where that cannot be told, any ink but its own
+ * and its ancestors' (`crowded`) — but for the boxes in `above`: parts
+ * offered with it and painted after it, whose layers stand over its own.
+ * The presenter keeps that word, taking `part` off its layer in the frame
+ * it turns one of those down (react-x11's `Node.sprites()`).
+ */
+export function coveredAfter(
+  tree: BoxTree,
+  part: Part,
+  above: ReadonlySet<Box> | null = null,
+): boolean {
+  const box = part.lift.box;
+  return (
+    paintedAfter(box, part.over, part.fixedOver, above) ??
+    crowded(tree, box, part.over)
+  );
 }
 
 /** Everywhere a box and what it holds put ink. */
