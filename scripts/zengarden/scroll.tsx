@@ -114,6 +114,9 @@ root.render(
           partial: false,
           charset: page.charset,
           baseUrl: page.url,
+          // the page that animates, whatever this machine's accessibility
+          // setting says, so two runs measure the same frames
+          reducedMotion: false,
           onResource,
           style: { flexGrow: 1 },
         }),

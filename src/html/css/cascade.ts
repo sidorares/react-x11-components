@@ -1453,6 +1453,11 @@ export class Cascade {
    *  like every other length here. */
   viewportWidth: number;
   viewportHeight: number;
+  /** Whether the desktop has asked for less motion, which
+   *  `prefers-reduced-motion` is answered from: set before a restyle, as
+   *  the viewport is, so a change of it restyles over the sheets as they
+   *  were parsed. */
+  reducedMotion = false;
   /** Device pixels per CSS pixel. Every computed length is device; a
    *  `@media` width is the one CSS-pixel comparison left, and it divides. */
   readonly scale: number;
@@ -1900,6 +1905,7 @@ export class Cascade {
           this.look.colorScheme,
           height,
           this.scale,
+          this.reducedMotion,
         )
       ) {
         continue;
@@ -2264,6 +2270,7 @@ export class Cascade {
       this.look.colorScheme,
       this.viewportHeight / this.scale,
       this.scale,
+      this.reducedMotion,
     );
   }
 
@@ -3618,6 +3625,7 @@ export class Cascade {
             this.look.colorScheme,
             height,
             this.scale,
+            this.reducedMotion,
           )
         ) {
           continue;

@@ -14,7 +14,7 @@
 // is a property of the design rather than a setting.
 import React from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { useTheme } from 'react-x11';
+import { useSystemAppearance, useTheme } from 'react-x11';
 import type { DrawnNode, MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
@@ -107,10 +107,22 @@ export interface HtmlProps {
    * each as it stands once it has run one iteration at no length — the
    * frame it ends on where it fills forwards — which is what a capture
    * that has to come out the same every time wants. It does not answer
-   * `(prefers-reduced-motion: reduce)`: the page is styled as the one
-   * that animates, under `no-preference`.
+   * `(prefers-reduced-motion: reduce)`: the page held at rest is the one
+   * that animates, under `no-preference`, and `reducedMotion` says which
+   * page that is.
    */
   animate?: boolean;
+  /**
+   * Whether the desktop has asked for less motion, which
+   * `@media (prefers-reduced-motion)` is answered from: true takes the
+   * page's `reduce` branch, false its `no-preference` one. Default: the
+   * desktop's own setting, `useSystemAppearance().reducedMotion` — macOS's
+   * Reduce motion, GNOME's animations switch — followed as it changes, as
+   * a browser follows it. Set it where the application decides instead: a
+   * preference of its own, or a capture that has to come out the same on
+   * every machine.
+   */
+  reducedMotion?: boolean;
   /** Extra author stylesheets, applied after the document's own. */
   stylesheet?: string | string[];
   /**
@@ -338,6 +350,10 @@ export function Html(props: HtmlProps): ReactElement {
   } = props;
 
   const theme = useTheme() as unknown as Record<string, unknown>;
+  // read whether or not the prop decides, since a hook is called every
+  // render or never
+  const desktop = useSystemAppearance();
+  const reducedMotion = props.reducedMotion ?? desktop.reducedMotion;
   const links = useLinkClicks(onLink);
   const menu = useSelectionMenu(selectable);
 
@@ -425,6 +441,7 @@ export function Html(props: HtmlProps): ReactElement {
     watchStops: stops.watch,
     domRevision,
     animate,
+    reducedMotion,
     ref: viewRef as React.Ref<unknown>,
     // grown with the component, where an application grows it: the root's
     // background covers the whole of it, as a page's covers the window

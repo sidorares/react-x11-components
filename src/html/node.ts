@@ -258,6 +258,9 @@ export interface HtmlViewProps {
   domRevision?: number;
   /** Whether the document's CSS animations run. Default true. */
   animate?: boolean;
+  /** Whether the desktop has asked for less motion: what
+   *  `prefers-reduced-motion` is answered from. Default false. */
+  reducedMotion?: boolean;
   style?: Style | Style[];
 }
 
@@ -331,9 +334,9 @@ export class HtmlViewNode extends Node {
   /** The sources the `<img srcset>`s and `<picture>`s have chosen, and what
    *  each shows while its choice is on its way (`srcset.ts`). */
   private _images: ImageSources;
-  /** The viewport, scale and scheme they were last chosen in, and the
-   *  document's revision then: `_choose` asks nothing again until one of
-   *  them moves. */
+  /** The viewport, scale, scheme and preference for motion they were last
+   *  chosen in, and the document's revision then: `_choose` asks nothing
+   *  again until one of them moves. */
   private _choseIn = '';
   /** The families the document's `@font-face` rules declare (`fonts.ts`). */
   private _webFonts: WebFonts;
@@ -1012,6 +1015,10 @@ export class HtmlViewNode extends Node {
     }
     // the trees as they are now, which a kept cascade was made for others of
     this._cascade.bindShadows(shadowKeys);
+    // Set on a kept cascade as on a new one: a change of it is a restyle
+    // over the sheets as they were parsed, as a width across a breakpoint is
+    const reducedMotion = props.reducedMotion ?? false;
+    this._cascade.reducedMotion = reducedMotion;
     // The faces this width and scheme declare: a `@font-face` may sit in a
     // `@media` block like any rule.
     const cssWidth = width / this._scale;
@@ -1025,6 +1032,7 @@ export class HtmlViewNode extends Node {
           look.colorScheme,
           cssHeight,
           this._scale,
+          reducedMotion,
         ),
       ),
     );
@@ -1537,8 +1545,10 @@ export class HtmlViewNode extends Node {
     const facts = this._source.facts();
     if (!facts.pictures.length) return null;
     const s = this._scale;
-    const scheme = this._props().look.colorScheme;
-    const key = `${target}|${viewport}|${s}|${scheme}|${this._source.revision}`;
+    const props = this._props();
+    const scheme = props.look.colorScheme;
+    const reducedMotion = props.reducedMotion ?? false;
+    const key = `${target}|${viewport}|${s}|${scheme}|${reducedMotion}|${this._source.revision}`;
     if (key === this._choseIn) return null;
     this._choseIn = key;
     return this._images.choose(facts.pictures, {
@@ -1546,6 +1556,7 @@ export class HtmlViewNode extends Node {
       height: viewport / s,
       scale: s,
       scheme,
+      reducedMotion,
       decodes: decodesImageType,
     });
   }
@@ -1872,7 +1883,10 @@ export class HtmlViewNode extends Node {
     if (
       next.look !== prev.look ||
       next.stylesheet !== prev.stylesheet ||
-      next.charset !== prev.charset
+      next.charset !== prev.charset ||
+      // a page's `prefers-reduced-motion` rules hold or fail now, as its
+      // `prefers-color-scheme` rules do when the palette changes
+      (next.reducedMotion ?? false) !== (prev.reducedMotion ?? false)
     ) {
       this._invalidate(Stale.Style);
     } else if ((next.animate ?? true) !== (prev.animate ?? true)) {

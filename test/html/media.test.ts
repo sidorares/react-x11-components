@@ -935,34 +935,71 @@ test('a media query on the resolution, the pointer or a feature nothing knows is
   );
 });
 
-test('prefers-reduced-motion is answered as a desktop browser answers it, with no preference', () => {
+test("prefers-reduced-motion is answered from the desktop's setting, as a browser answers it under each", () => {
   // It answered neither value while nothing here moved, so a page that
   // keeps its animations under `no-preference` lost them, and one that
-  // writes the reduced branch as `not (… no-preference)` took it. Each row
-  // is where Chrome 154, Firefox 153 and WebKit 26.5 hold the query, by
-  // `matchMedia`, at 500px and at 1000px.
-  const rows: [string, string][] = [
-    ['(prefers-reduced-motion: no-preference)', '11'],
-    ['(PREFERS-REDUCED-MOTION: No-Preference)', '11'],
-    ['screen and (prefers-reduced-motion: no-preference)', '11'],
-    ['(prefers-reduced-motion: reduce)', '..'],
-    ['(prefers-reduced-motion)', '..'],
-    ['not (prefers-reduced-motion: no-preference)', '..'],
-    ['not (prefers-reduced-motion: reduce)', '11'],
-    ['not (prefers-reduced-motion)', '11'],
-    ['not all and (prefers-reduced-motion: reduce)', '11'],
-    ['(prefers-reduced-motion: reduce) or (min-width: 600px)', '.1'],
-    // a value it does not take is neither true nor false
-    ['(prefers-reduced-motion: bogus)', '..'],
-    ['not (prefers-reduced-motion: bogus)', '..'],
+  // writes the reduced branch as `not (… no-preference)` took it; then it
+  // answered `no-preference` whatever the desktop said. Each row is where
+  // Chromium 151, Firefox 153 and WebKit 26.5 hold the query, by
+  // `matchMedia`, at 500px and at 1000px — with no preference, then with
+  // Playwright's `reducedMotion: 'reduce'` — and all three agree on every
+  // one. The opposite of one preference is the other, as the opposite of
+  // a scheme is the other scheme.
+  const rows: [string, string, string][] = [
+    ['(prefers-reduced-motion: no-preference)', '11', '..'],
+    ['(PREFERS-REDUCED-MOTION: No-Preference)', '11', '..'],
+    ['screen and (prefers-reduced-motion: no-preference)', '11', '..'],
+    ['(prefers-reduced-motion: reduce)', '..', '11'],
+    // the boolean context: anything but `no-preference`
+    ['(prefers-reduced-motion)', '..', '11'],
+    ['not (prefers-reduced-motion: no-preference)', '..', '11'],
+    ['not (prefers-reduced-motion: reduce)', '11', '..'],
+    ['not (prefers-reduced-motion)', '11', '..'],
+    ['not all and (prefers-reduced-motion: reduce)', '11', '..'],
+    ['not all and (prefers-reduced-motion)', '11', '..'],
+    ['(prefers-reduced-motion: reduce) or (min-width: 600px)', '.1', '11'],
+    [
+      '(prefers-reduced-motion: no-preference) or (min-width: 600px)',
+      '11',
+      '.1',
+    ],
+    ['(prefers-reduced-motion: reduce) and (min-width: 600px)', '..', '.1'],
+    [
+      'not ((prefers-reduced-motion: reduce) and (min-width: 600px))',
+      '11',
+      '1.',
+    ],
+    ['not ((prefers-reduced-motion) or (max-width: 600px))', '.1', '..'],
+    // both at once holds nowhere
+    [
+      '(prefers-reduced-motion: reduce) and (prefers-reduced-motion: no-preference)',
+      '..',
+      '..',
+    ],
+    // a value it does not take is neither true nor false, and it is no
+    // range feature
+    ['(prefers-reduced-motion: bogus)', '..', '..'],
+    ['not (prefers-reduced-motion: bogus)', '..', '..'],
+    ['(min-prefers-reduced-motion: reduce)', '..', '..'],
   ];
-  for (const [query, holds] of rows) {
+  for (const [query, still, reduced] of rows) {
     const media = [parseMediaQuery(query)];
-    const ours = [500, 1000]
-      .map((w) => (mediaMatches(media, w, 'light', 600) ? '1' : '.'))
-      .join('');
-    assert.strictEqual(ours, holds, query);
+    const at = (reducedMotion: boolean) =>
+      [500, 1000]
+        .map((w) =>
+          mediaMatches(media, w, 'light', 600, 1, reducedMotion) ? '1' : '.',
+        )
+        .join('');
+    assert.strictEqual(at(false), still, `${query}, no preference`);
+    assert.strictEqual(at(true), reduced, `${query}, reduce`);
   }
+  // asked nothing about it, the answer is no preference
+  assert.ok(
+    mediaMatches(
+      [parseMediaQuery('(prefers-reduced-motion: no-preference)')],
+      800,
+    ),
+  );
 });
 
 test('a page animated under (prefers-reduced-motion: no-preference) runs its animations, and holds them at rest under animate={false}', async (t) => {
@@ -970,7 +1007,8 @@ test('a page animated under (prefers-reduced-motion: no-preference) runs its ani
   // query what it shows under `reduce`. `animate={false}` holds the page's
   // animations at rest and asks for no less motion: the reduced branch is
   // another page, and Chrome, which the Zen Garden bench holds still with
-  // every animation at no length, draws this one.
+  // every animation at no length, draws this one. With no `reducedMotion`, the
+  // desktop's setting answers, which the harness pins at no preference.
   const source =
     '<style>body{margin:0}div{height:10px}' +
     '@keyframes grow{to{height:30px}}' +
@@ -1003,4 +1041,102 @@ test('a page animated under (prefers-reduced-motion: no-preference) runs its ani
     [30, 10, 10, 10],
     'at rest it holds the frame it ends on, and no reduced branch is taken',
   );
+});
+
+test('a document restyles when the desktop asks for less motion, and again when it stops, over the sheets it parsed', async (t) => {
+  // The setting is the desktop's (`useSystemAppearance().reducedMotion`),
+  // which the harness pins at no preference and offers a test no way to
+  // change, so the change comes in through the prop that overrides it:
+  // the same path to the element, from the same render.
+  const source =
+    '<style>body{margin:0}div{height:10px}' +
+    '@keyframes grow{to{height:30px}}' +
+    '@media (prefers-reduced-motion:no-preference)' +
+    '{#a{animation:grow 160ms linear forwards}}' +
+    '@media (prefers-reduced-motion:reduce){#b{height:20px}}' +
+    '@media not (prefers-reduced-motion:no-preference){#c{height:20px}}' +
+    '@media (prefers-reduced-motion){#d{height:20px}}' +
+    // a shadow tree's part, which the page's rules reach from outside
+    '@media (prefers-reduced-motion:reduce){x-card::part(e){height:20px}}' +
+    '</style><div id="a"></div><div id="b"></div><div id="c"></div>' +
+    '<div id="d"></div><x-card><template shadowrootmode="open">' +
+    '<div id="e" part="e"></div></template></x-card>';
+  const doc = (props: Record<string, unknown>) =>
+    h(
+      'box',
+      { style: { width: 400, flexDirection: 'column' } },
+      h(Html, { source, partial: false, 'data-testname': 'doc', ...props }),
+    );
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  const heights = () =>
+    ['a', 'b', 'c', 'd', 'e'].map((id) => boxOf(el(), id).height);
+  const cascadeOf = () => (el() as unknown as { _cascade: unknown })._cascade;
+
+  const clock = holdClock(t, animationClock);
+  const { result } = await render(source, 400, { reducedMotion: true });
+  assert.deepStrictEqual(heights(), [10, 20, 20, 20, 20], 'the reduced branch');
+  assert.ok(!clock.pending, 'and nothing animates in it');
+  const parsed = cascadeOf();
+
+  await result.rerender(doc({ reducedMotion: false }));
+  await act();
+  assert.deepStrictEqual(heights(), [10, 10, 10, 10, 0], 'the page that moves');
+  assert.ok(clock.pending, 'its animation asks for its frames');
+  assert.strictEqual(cascadeOf(), parsed, 'a restyle, not a parse');
+  await clock.finish();
+  await act();
+  assert.deepStrictEqual(heights(), [30, 10, 10, 10, 0], 'and runs to its end');
+
+  // and back, live, as a browser follows the setting: the animation, and
+  // the frame it filled forwards with, go with the branch they were in
+  await result.rerender(doc({ reducedMotion: true }));
+  await act();
+  assert.deepStrictEqual(heights(), [10, 20, 20, 20, 20], 'reduced again');
+  assert.ok(!clock.pending, 'with nothing left asking for a frame');
+  assert.strictEqual(cascadeOf(), parsed, 'over the same sheets');
+
+  // `animate={false}` is no answer to it either way: held at rest, the
+  // page is the one the setting picks
+  await result.rerender(doc({ reducedMotion: true, animate: false }));
+  await act();
+  assert.deepStrictEqual(heights(), [10, 20, 20, 20, 20], 'reduced, held');
+  await result.rerender(doc({ reducedMotion: false, animate: false }));
+  await act();
+  assert.deepStrictEqual(heights(), [30, 10, 10, 10, 0], 'moving, held');
+});
+
+test("a <picture>'s source under prefers-reduced-motion is chosen again when the setting changes", async () => {
+  // A still frame in place of an animated image is what the feature is
+  // most often written for in markup: the source the setting picks is
+  // asked for, at the first choice and at a change.
+  const source =
+    '<picture>' +
+    '<source media="(prefers-reduced-motion: reduce)" srcset="still.png">' +
+    '<img id="a" src="moving.gif"></picture>';
+  const asked: string[] = [];
+  const onResource = (r: { url: string; kind: string }) => {
+    if (r.kind === 'image') asked.push(r.url);
+    return null;
+  };
+  const doc = (reducedMotion: boolean) =>
+    h(
+      'box',
+      { style: { width: 400, flexDirection: 'column' } },
+      h(Html, {
+        source,
+        partial: false,
+        reducedMotion,
+        onResource,
+        'data-testname': 'doc',
+      }),
+    );
+  const { result } = await render(source, 400, {
+    reducedMotion: false,
+    onResource,
+  });
+  await act();
+  assert.deepStrictEqual(asked, ['moving.gif'], 'with no preference');
+  await result.rerender(doc(true));
+  await act();
+  assert.deepStrictEqual(asked, ['moving.gif', 'still.png'], 'under reduce');
 });

@@ -7,10 +7,12 @@
 // choice: the first `<source>` whose `media` holds, whose `type` decodes here
 // and whose `srcset` has a candidate, else the `<img>`'s own; of its
 // candidates, the one dense enough for the display. That turns on the
-// viewport, the display's scale and the colour scheme, so it is made where
-// those are known — before the boxes are built, for the width they are built
-// at — and made again when one of them moves, as a browser makes it again
-// when its window does.
+// viewport, the display's scale, the colour scheme and the desktop's
+// preference for motion — a `<source media="(prefers-reduced-motion:
+// reduce)">` is a still frame in place of an animated image — so it is made
+// where those are known, before the boxes are built, for the width they are
+// built at, and made again when one of them moves, as a browser makes it
+// again when its window does.
 //
 // The choice is a URL and a pixel density, and the density is the image's
 // size: a candidate drawn at 2x is half its pixels across, and a `w`
@@ -58,6 +60,9 @@ export interface SourceEnv {
    *  for. */
   scale: number;
   scheme: 'light' | 'dark';
+  /** Whether the desktop has asked for less motion: a `media` query's
+   *  `prefers-reduced-motion`. */
+  reducedMotion: boolean;
   /** Whether an image of this MIME type decodes here: a `<source type>`'s
    *  question (`decodesImageType`). */
   decodes(type: string): boolean;
@@ -281,7 +286,14 @@ export function sourceSize(
     if (auto && width === null) continue;
     if (
       media &&
-      !mediaMatches([media], env.width, env.scheme, env.height, env.scale)
+      !mediaMatches(
+        [media],
+        env.width,
+        env.scheme,
+        env.height,
+        env.scale,
+        env.reducedMotion,
+      )
     ) {
       continue;
     }
@@ -686,7 +698,14 @@ export class ImageSources {
       this._media.set(text, (media = parseMediaQuery(text)));
     }
     if (readsHeight(media)) this.readsHeight = true;
-    return mediaMatches([media], env.width, env.scheme, env.height, env.scale);
+    return mediaMatches(
+      [media],
+      env.width,
+      env.scheme,
+      env.height,
+      env.scale,
+      env.reducedMotion,
+    );
   }
 }
 
@@ -702,7 +721,7 @@ function readsHeight(media: MediaCondition[]): boolean {
 }
 
 function envKey(env: SourceEnv): string {
-  return `${env.width}|${env.height}|${env.scale}|${env.scheme}`;
+  return `${env.width}|${env.height}|${env.scale}|${env.scheme}|${env.reducedMotion}`;
 }
 
 /** What an `<img>`'s choice reads, as one string: a choice is made again
