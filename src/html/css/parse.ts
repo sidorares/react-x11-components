@@ -152,9 +152,12 @@ export type FontFaceSource =
   /** `local(Arial)`: a face the system has, by name and unquoted. */
   | { local: string };
 
-/** The tests this evaluates live: a width, a height, a colour scheme.
- *  Anything else — `orientation`, `print`, `prefers-reduced-motion` — is
- *  decided once, at parse time, by `staticPass`. */
+/** The tests this evaluates live, all of which must hold: bounds on the
+ *  width, the height, the resolution and the aspect ratio, and a colour
+ *  scheme. A query's `or` is more than one condition, and its `not` the
+ *  bounds on the other side (`parseMediaQuery`). Anything else — `print`,
+ *  `hover`, `prefers-reduced-motion` — is decided once, at parse time, by
+ *  `staticPass`. */
 export interface MediaCondition {
   min?: number;
   max?: number;
@@ -438,17 +441,7 @@ export function parseStylesheet(
       if (item.block === null) continue;
       if (name === 'media') {
         const conditions = parseMediaQuery(item.prelude);
-        for (const c of conditions) {
-          if (c.min !== undefined) breakpoints.add(c.min);
-          if (c.max !== undefined) breakpoints.add(c.max + MAX_EDGE);
-          if (c.minHeight !== undefined || c.maxHeight !== undefined) {
-            sheet.readsHeight = true;
-          }
-          if (c.minAspect !== undefined || c.maxAspect !== undefined) {
-            sheet.readsHeight = true;
-            sheet.readsWidth = true;
-          }
-        }
+        note(conditions);
         styleRule(
           selectors,
           item.block,
@@ -1520,6 +1513,12 @@ function readAtRule(text: string, at: number): AtRule {
  *  divides a device width into (`640.5` at 2x) fall on the right side. */
 const MAX_EDGE = 1 / 64;
 
+/** How far past a ratio a bound beyond it is — an aspect ratio's or a
+ *  resolution's: past square is any width over the height. A power of two,
+ *  so that a bound taken to its opposite and back is the number it was:
+ *  `not (orientation: landscape)` is portrait, a square viewport included. */
+const RATIO_EDGE = 2 ** -30;
+
 /**
  * The media features that are the viewport's width and its height here.
  * `device-width` and `device-height` are the Web-exposed screen area's
@@ -2078,237 +2077,415 @@ function unicodeRanges(value: string): [number, number][] | null {
 }
 
 /**
- * A `@media` prelude, reduced to the width and colour-scheme tests this can
- * honour. Each comma group is one condition and they are OR-ed; within a
- * group, `and` means the tests intersect, so a group with a feature this
- * does not understand is decided statically by that feature alone.
+ * A media query list (Media Queries 4, 3), as the conditions it holds
+ * under: any one of them is enough, and each is a run of tests that must
+ * all hold. A query is read by Media Queries 4's grammar — `and`, `or` and
+ * `not`, over features in parentheses and conditions in them — and one that
+ * is none, `(a) and (b) or (c)` or `only (a)`, holds nowhere (3.2). A
+ * feature nothing knows, or a value its feature does not take, is neither
+ * true nor false (3.2's unknown): `not (unknown: 1)` holds nowhere, as
+ * `(unknown: 1)` does, and `(unknown: 1) or (a)` holds where `(a)` does.
+ *
+ * Every test here bounds one side of one number — the width, the height,
+ * the resolution, the aspect ratio — or names the scheme, so the opposite
+ * of a test is a bound on the other side, and the opposite of a run a
+ * choice of them: `not (max-width: 600px)` is a `min` just past 600px, and
+ * `not (400px <= width <= 700px)` the two sides of it. So a condition stays
+ * a run of tests however the query was written, which is what
+ * `mediaMatches` answers at any width and the cascade reads its
+ * breakpoints from. A query that ran `or` into one term held at every
+ * width, and a `not` over a width was decided once, and held at none.
  */
 export function parseMediaQuery(prelude: string): MediaCondition[] {
   const out: MediaCondition[] = [];
-  for (const group of splitSelectors(prelude)) {
-    const condition: MediaCondition = {};
-    let pass = true;
-    let sawWidth = false;
-    let sawHeight = false;
-    let sawResolution = false;
-    let sawAspect = false;
-    const negated = /^\s*not\b/i.test(group);
-    // `and` needs white space after it, where a `(` would make it a
-    // function, and none after the `)` it follows: DuckDuckGo writes
-    // `(max-device-width: 701px)and (orientation: landscape)`, which read
-    // as one term that was no feature, and held
-    for (const part of group.split(/(?:\s+|(?<=\)))and\s+/i)) {
-      const term = part
-        .trim()
-        .replace(/^not\s+/i, '')
-        .replace(/^only\s+/i, '');
-      if (!term) continue;
-      // Media Queries 4's ranges, which Tailwind 4 writes its breakpoints
-      // in: `(width >= 48rem)`, `(40rem <= width < 60rem)`
-      const range = widthRange(term);
-      if (range) {
-        if (range.min !== undefined) {
-          condition.min = Math.max(condition.min ?? 0, range.min);
-        }
-        if (range.max !== undefined) {
-          condition.max = Math.min(condition.max ?? Infinity, range.max);
-        }
-        sawWidth = true;
-        continue;
-      }
-      const heights = widthRange(term, 'height');
-      if (heights) {
-        if (heights.min !== undefined) {
-          condition.minHeight = Math.max(condition.minHeight ?? 0, heights.min);
-        }
-        if (heights.max !== undefined) {
-          condition.maxHeight = Math.min(
-            condition.maxHeight ?? Infinity,
-            heights.max,
-          );
-        }
-        sawHeight = true;
-        continue;
-      }
-      const feature = mediaFeature(term);
-      if (feature) {
-        const key = feature[1].toLowerCase();
-        const len = parseLength(feature[2], ZERO_UNITS);
-        const px = typeof len === 'number' ? len : null;
-        if (
-          (key === 'min-width' || key === 'min-device-width') &&
-          px !== null
-        ) {
-          condition.min = Math.max(condition.min ?? 0, px);
-          sawWidth = true;
-        } else if (
-          (key === 'max-width' || key === 'max-device-width') &&
-          px !== null
-        ) {
-          condition.max = Math.min(condition.max ?? Infinity, px);
-          sawWidth = true;
-        } else if (
-          px === null &&
-          /^(?:min-|max-)?(?:device-)?(?:width|height)$/.test(key)
-        ) {
-          // a size that is no length is a query that does not parse, which
-          // Media Queries 4 (3.2) makes `not all`: `(min-width:0\0)`, the
-          // hack that kept a block for Internet Explorer 9 and 10, held
-          // here as a query that asked nothing, and its rules applied
-          pass = false;
-        } else if (
-          (key === 'min-height' || key === 'min-device-height') &&
-          px !== null
-        ) {
-          // the viewport's height, answered live as its width is: a
-          // design that sets its heading's size by the window's height
-          // took the tallest step's at every height
-          condition.minHeight = Math.max(condition.minHeight ?? 0, px);
-          sawHeight = true;
-        } else if (
-          (key === 'max-height' || key === 'max-device-height') &&
-          px !== null
-        ) {
-          condition.maxHeight = Math.min(condition.maxHeight ?? Infinity, px);
-          sawHeight = true;
-        } else if (key === 'prefers-color-scheme') {
-          // Answered live, from the palette in force: a document dropped
-          // into a dark application takes its dark branch, and follows the
-          // desktop when that changes. The two schemes are the whole
-          // vocabulary; anything else never matches.
-          const scheme = feature[2].trim().toLowerCase();
-          if (scheme === 'light' || scheme === 'dark') {
-            if (condition.scheme && condition.scheme !== scheme) pass = false;
-            condition.scheme = scheme;
-          } else {
-            pass = false;
-          }
-        } else if (key === 'prefers-reduced-motion') {
-          // Nothing here moves, so there is nothing to reduce: the branch an
-          // animated page keeps for this preference is not one this
-          // renderer needs.
-          pass = false;
-        } else if (key === 'orientation') {
-          // the viewport's, as its aspect ratio: portrait where its height
-          // is at least its width (Media Queries 4, 4.5)
-          const orientation = feature[2].trim().toLowerCase();
-          if (orientation === 'portrait') {
-            condition.maxAspect = Math.min(condition.maxAspect ?? Infinity, 1);
-            sawAspect = true;
-          } else if (orientation === 'landscape') {
-            condition.minAspect = Math.max(
-              condition.minAspect ?? 0,
-              1 + ASPECT_EDGE,
-            );
-            sawAspect = true;
-          } else pass = false;
-        } else if (ASPECT_FEATURES.test(key)) {
-          const ratio = ratioOf(feature[2]);
-          if (ratio === null) pass = false;
-          else {
-            if (!key.startsWith('max-')) {
-              condition.minAspect = Math.max(condition.minAspect ?? 0, ratio);
-            }
-            if (!key.startsWith('min-')) {
-              condition.maxAspect = Math.min(
-                condition.maxAspect ?? Infinity,
-                ratio,
-              );
-            }
-            sawAspect = true;
-          }
-        } else if (RESOLUTION_FEATURES.has(key)) {
-          const dppx = resolutionOf(feature[2], key.startsWith('-webkit-'));
-          if (dppx === null) pass = false;
-          else {
-            if (!key.includes('max-')) {
-              condition.minResolution = Math.max(
-                condition.minResolution ?? 0,
-                dppx,
-              );
-            }
-            if (!key.includes('min-')) {
-              condition.maxResolution = Math.min(
-                condition.maxResolution ?? Infinity,
-                dppx,
-              );
-            }
-            sawResolution = true;
-          }
-        } else if (desktopFeature(key, feature[2]) !== true) {
-          // any other feature as a desktop screen with a mouse answers
-          // it, and one nothing knows is false (Media Queries 4, 3.2):
-          // Firefox's and Opera's resolution features, which a design lists
-          // beside WebKit's, held here, and a page at one dot to the pixel
-          // took the rules it keeps for two
-          pass = false;
-        }
-        continue;
-      }
-      const flag = /^\(\s*(-?[a-z][a-z0-9-]*)\s*\)$/i.exec(term);
-      if (flag) {
-        // a feature in the boolean context, `(hover)`: true where its value
-        // is anything but zero or none
-        const key = flag[1].toLowerCase();
-        if (
-          !BOOLEAN_TRUE.has(key) &&
-          !RESOLUTION_FEATURES.has(key) &&
-          desktopFeature(key, null) !== true
-        ) {
-          pass = false;
-        }
-        continue;
-      }
-      const type = term.toLowerCase();
-      if (type === 'screen' || type === 'all') continue;
-      // any other medium is not this one: `print`, `speech`, and the ones
-      // CSS 2.1 named that Media Queries retired, `braille`, `embossed`,
-      // `handheld`, `projection`, `tty`, `tv`. A term that is no name is
-      // left as it was.
-      if (/^[a-z-]+$/.test(type)) pass = false;
-    }
-    if (negated) {
-      // `not` over a scheme is the other scheme. `not` over a width range
-      // is not expressible as one range; the honest reduction is to decide
-      // it statically rather than invert it wrongly.
-      if (
-        !sawWidth &&
-        !sawHeight &&
-        !sawResolution &&
-        !sawAspect &&
-        pass &&
-        condition.scheme
-      ) {
-        out.push({ scheme: condition.scheme === 'dark' ? 'light' : 'dark' });
-        continue;
-      }
-      out.push({
-        staticPass:
-          !sawWidth && !sawHeight && !sawResolution && !sawAspect && pass
-            ? false
-            : !pass,
-      });
-      continue;
-    }
-    if (!pass) {
-      out.push({ staticPass: false });
-      continue;
-    }
-    if (
-      !sawWidth &&
-      !sawHeight &&
-      !sawResolution &&
-      !sawAspect &&
-      condition.scheme === undefined &&
-      condition.min === undefined &&
-      condition.max === undefined
-    ) {
-      out.push({ staticPass: true });
-      continue;
-    }
-    out.push(condition);
+  for (const query of splitSelectors(prelude)) {
+    const holds = queryHolds(query);
+    if (!holds.length) out.push({ staticPass: false });
+    else if (holds.some(isAlways)) out.push({ staticPass: true });
+    else out.push(...holds);
   }
   return out.length ? out : [{ staticPass: true }];
+}
+
+/** A media query's condition, read: a feature's tests, a fact whatever the
+ *  viewport — or null, a feature nothing knows — or parts. */
+type MediaPart =
+  | { test: MediaCondition }
+  | { fact: boolean | null }
+  | { not: MediaPart }
+  | { and: MediaPart[] }
+  | { or: MediaPart[] };
+
+const UNKNOWN: MediaPart = { fact: null };
+
+/** A run of no tests, which holds everywhere. */
+function isAlways(c: MediaCondition): boolean {
+  return Object.keys(c).length === 0;
+}
+
+/**
+ * Where a part holds, or where it fails, as conditions any one of which is
+ * enough. A part nothing knows does neither, and a `not` asks the part it
+ * negates the other question; so only a query with a `not` in it ever asks
+ * where a test fails.
+ */
+function where(part: MediaPart, holds: boolean): MediaCondition[] {
+  if ('test' in part) return holds ? [part.test] : opposites(part.test);
+  if ('fact' in part) return part.fact === holds ? [{}] : [];
+  if ('not' in part) return where(part.not, !holds);
+  // `and` holds where every part does and fails where any does; `or` the
+  // other way round
+  const all = 'and' in part;
+  const lists = (all ? part.and : part.or).map((p) => where(p, holds));
+  return all === holds ? everyOf(lists) : someOf(lists);
+}
+
+/** The words a media type may not be (Media Queries 4, 3). */
+const NOT_A_TYPE = new Set(['not', 'and', 'or', 'only', 'layer']);
+
+/** Where one query of a list holds: nowhere where it is none. */
+function queryHolds(text: string): MediaCondition[] {
+  const tokens = mediaTokens(text);
+  const first = tokens[0];
+  // a condition, unless it starts with a media type: a `not` before a word
+  // is the query's, and before a parenthesis the condition's
+  if (
+    first?.kind !== 'word' ||
+    (first.text === 'not' && tokens[1]?.kind !== 'word')
+  ) {
+    const cursor = { tokens, at: 0, depth: 0 };
+    const part = mediaCondition(cursor, true);
+    return part && cursor.at === tokens.length ? where(part, true) : [];
+  }
+  // `[ not | only ]? <media-type> [ and <media-condition-without-or> ]?`
+  const negated = first.text === 'not';
+  let at = negated || first.text === 'only' ? 1 : 0;
+  const type = tokens[at];
+  if (type?.kind !== 'word' || NOT_A_TYPE.has(type.text)) return [];
+  at += 1;
+  let condition: MediaPart | null = null;
+  if (at < tokens.length) {
+    const and = tokens[at];
+    if (and.kind !== 'word' || and.text !== 'and') return [];
+    const cursor = { tokens, at: at + 1, depth: 0 };
+    condition = mediaCondition(cursor, false);
+    if (!condition || cursor.at !== tokens.length) return [];
+  }
+  // any medium but the screen is not this one: `print`, `speech`, and the
+  // ones CSS 2.1 named that Media Queries retired, `braille`, `embossed`,
+  // `handheld`, `projection`, `tty`, `tv`, as is a name nobody has
+  const part: MediaPart =
+    type.text === 'screen' || type.text === 'all'
+      ? (condition ?? { fact: true })
+      : { fact: false };
+  return where(part, !negated);
+}
+
+/**
+ * The tokens of a media query its grammar turns on: words, blocks in
+ * parentheses, functions, and anything else. White space only parts them,
+ * so a word may follow a block with none between: DuckDuckGo writes
+ * `(max-device-width: 701px)and (orientation: landscape)`. A word with a
+ * `(` straight after it is a function, as CSS Syntax reads one, which
+ * makes `(a) and(b)` and `(a)or(b)` no queries, as in every browser.
+ */
+type MediaToken =
+  /** lowercased, its escapes read */
+  | { kind: 'word'; text: string }
+  /** what is inside the parentheses */
+  | { kind: 'block'; text: string }
+  | { kind: 'function' }
+  | { kind: 'other' };
+
+function mediaTokens(text: string): MediaToken[] {
+  const out: MediaToken[] = [];
+  let i = 0;
+  while (i < text.length) {
+    if (isSpace(text[i])) {
+      i += 1;
+    } else if (text[i] === '(') {
+      const block = parenBlock(text, i);
+      out.push({ kind: 'block', text: block.inner });
+      i = block.end;
+    } else if (startsIdent(text, i)) {
+      const ident = readIdent(text, i);
+      if (text[ident.end] === '(') {
+        out.push({ kind: 'function' });
+        i = parenBlock(text, ident.end).end;
+      } else {
+        out.push({ kind: 'word', text: ident.value.toLowerCase() });
+        i = ident.end;
+      }
+    } else {
+      out.push({ kind: 'other' });
+      i = componentEnd(text, i);
+    }
+  }
+  return out;
+}
+
+/** A block from its `(`: what is inside, and where it ends — the end of
+ *  the text where nothing closes it, as CSS Syntax closes it there. */
+function parenBlock(text: string, at: number): { inner: string; end: number } {
+  let i = at + 1;
+  while (i < text.length) {
+    const code = text.charCodeAt(i);
+    if (code === 0x29) return { inner: text.slice(at + 1, i), end: i + 1 };
+    i = opens(code) ? componentEnd(text, i) : i + 1;
+  }
+  return { inner: text.slice(at + 1), end: text.length };
+}
+
+/** Tokens being read, and how many parentheses deep. */
+interface MediaCursor {
+  tokens: MediaToken[];
+  at: number;
+  depth: number;
+}
+
+/** How deep conditions in parentheses are read; one further in is taken
+ *  for a part nothing knows. */
+const MAX_MEDIA_DEPTH = 16;
+
+/**
+ * `<media-condition>`, or `<media-condition-without-or>` where `or` is not
+ * allowed — after a media type: a `not` and the part it negates, or parts
+ * joined all by `and` or all by `or`. Null where the tokens are none; what
+ * is left after one is the caller's to refuse.
+ */
+function mediaCondition(
+  cursor: MediaCursor,
+  allowOr: boolean,
+): MediaPart | null {
+  const first = cursor.tokens[cursor.at];
+  if (first?.kind === 'word' && first.text === 'not') {
+    cursor.at += 1;
+    const part = mediaInParens(cursor);
+    return part && { not: part };
+  }
+  const parts: MediaPart[] = [];
+  let join = '';
+  for (;;) {
+    const part = mediaInParens(cursor);
+    if (!part) return null;
+    parts.push(part);
+    const next = cursor.tokens[cursor.at];
+    if (next?.kind !== 'word' || (next.text !== 'and' && next.text !== 'or')) {
+      break;
+    }
+    // `and` and `or` at one level, unparenthesised, is no condition
+    if (join ? next.text !== join : next.text === 'or' && !allowOr) {
+      return null;
+    }
+    join = next.text;
+    cursor.at += 1;
+  }
+  if (parts.length === 1) return parts[0];
+  return join === 'or' ? { or: parts } : { and: parts };
+}
+
+/** `<media-in-parens>`: a condition in parentheses, or a feature, or
+ *  anything else in them or in a function, which nothing knows. */
+function mediaInParens(cursor: MediaCursor): MediaPart | null {
+  const token = cursor.tokens[cursor.at];
+  if (token?.kind === 'function') {
+    cursor.at += 1;
+    return UNKNOWN;
+  }
+  if (token?.kind !== 'block') return null;
+  cursor.at += 1;
+  // only a parenthesis or a `not` starts a condition; anything else in
+  // parentheses is a feature, or nothing anybody knows either way
+  if (cursor.depth < MAX_MEDIA_DEPTH && /^\s*(?:\(|not\s)/i.test(token.text)) {
+    const inner = {
+      tokens: mediaTokens(token.text),
+      at: 0,
+      depth: cursor.depth + 1,
+    };
+    const part = mediaCondition(inner, true);
+    if (part && inner.at === inner.tokens.length) return part;
+  }
+  const test = featureTest(`(${token.text})`);
+  return test === null || typeof test === 'boolean' ? { fact: test } : { test };
+}
+
+/** Lists of conditions any one of which is enough, as one such list. */
+function someOf(lists: MediaCondition[][]): MediaCondition[] {
+  const out = lists.flat();
+  return out.some(isAlways) ? [{}] : out;
+}
+
+/** A query long enough to make more ways than this through its parts is no
+ *  query anybody writes: it is taken to hold nowhere, rather than taking
+ *  the time. */
+const MAX_MEDIA_WAYS = 64;
+
+/** Lists of conditions, one from each of which must hold, as one list of
+ *  conditions any one of which is enough: every way of taking one from each,
+ *  its bounds met. A way whose bounds cross holds nowhere, and is left out. */
+function everyOf(lists: MediaCondition[][]): MediaCondition[] {
+  let out = lists[0] ?? [{}];
+  for (const list of lists.slice(1)) {
+    const next: MediaCondition[] = [];
+    for (const a of out) {
+      for (const b of list) {
+        const both = meet(a, b);
+        if (both) next.push(both);
+      }
+    }
+    if (next.length > MAX_MEDIA_WAYS) return [];
+    out = next;
+  }
+  return out;
+}
+
+/** The bounds a condition keeps, lower and upper, and how far past one a
+ *  bound beyond it is. */
+type Bound =
+  | 'min'
+  | 'max'
+  | 'minHeight'
+  | 'maxHeight'
+  | 'minResolution'
+  | 'maxResolution'
+  | 'minAspect'
+  | 'maxAspect';
+const BOUNDS: [Bound, Bound, number][] = [
+  ['min', 'max', MAX_EDGE],
+  ['minHeight', 'maxHeight', MAX_EDGE],
+  ['minResolution', 'maxResolution', RATIO_EDGE],
+  ['minAspect', 'maxAspect', RATIO_EDGE],
+];
+
+/** Two runs of tests as one, or null where nothing passes both. */
+function meet(a: MediaCondition, b: MediaCondition): MediaCondition | null {
+  const out: MediaCondition = { ...a };
+  for (const [lo, hi] of BOUNDS) {
+    const min = b[lo];
+    const max = b[hi];
+    if (min !== undefined) out[lo] = Math.max(out[lo] ?? -Infinity, min);
+    if (max !== undefined) out[hi] = Math.min(out[hi] ?? Infinity, max);
+    if ((out[lo] ?? -Infinity) > (out[hi] ?? Infinity)) return null;
+  }
+  if (b.scheme !== undefined) {
+    if (out.scheme !== undefined && out.scheme !== b.scheme) return null;
+    out.scheme = b.scheme;
+  }
+  return out;
+}
+
+/** Where a run of tests fails: past any one of its bounds, or under the
+ *  other scheme. */
+function opposites(test: MediaCondition): MediaCondition[] {
+  const out: MediaCondition[] = [];
+  for (const [lo, hi, edge] of BOUNDS) {
+    const min = test[lo];
+    const max = test[hi];
+    if (min !== undefined) out.push(bounded(hi, min - edge));
+    if (max !== undefined) out.push(bounded(lo, max + edge));
+  }
+  if (test.scheme) {
+    out.push({ scheme: test.scheme === 'dark' ? 'light' : 'dark' });
+  }
+  return out;
+}
+
+function bounded(bound: Bound, value: number): MediaCondition {
+  const out: MediaCondition = {};
+  out[bound] = value;
+  return out;
+}
+
+/** The size features: the viewport's width and height, bare, `min-` or
+ *  `max-`, the device's as well. */
+const SIZE_FEATURES = /^(min-|max-)?(?:device-)?(width|height)$/;
+
+/**
+ * A feature in parentheses, answered: the bounds it sets, true or false
+ * where a desktop screen answers it whatever the viewport, or null where
+ * it is no feature anybody knows or has a value its feature does not take.
+ */
+function featureTest(term: string): MediaCondition | boolean | null {
+  // Media Queries 4's ranges, which Tailwind 4 writes its breakpoints in:
+  // `(width >= 48rem)`, `(40rem <= width < 60rem)`
+  const widths = widthRange(term);
+  if (widths) return widths;
+  const heights = widthRange(term, 'height');
+  if (heights) {
+    const out: MediaCondition = {};
+    if (heights.min !== undefined) out.minHeight = heights.min;
+    if (heights.max !== undefined) out.maxHeight = heights.max;
+    return out;
+  }
+  const feature = mediaFeature(term);
+  if (!feature) {
+    // a feature in the boolean context, `(hover)`: true where its value is
+    // anything but zero or none
+    const flag = /^\(\s*(-?[a-z][a-z0-9-]*)\s*\)$/i.exec(term);
+    if (!flag) return null;
+    const key = flag[1].toLowerCase();
+    if (BOOLEAN_TRUE.has(key)) return true;
+    if (RESOLUTION_FEATURES.has(key)) {
+      return key.includes('min-') || key.includes('max-') ? null : true;
+    }
+    return desktopFeature(key, null);
+  }
+  const key = feature[1].toLowerCase();
+  const value = feature[2];
+  const size = SIZE_FEATURES.exec(key);
+  if (size) {
+    // The viewport's height is answered live as its width is: a design that
+    // sets its heading's size by the window's height took the tallest
+    // step's at every height. `device-` is the viewport's too: the screen
+    // an element is drawn on is the element's box. A size that is no
+    // length is a value the feature does not take: `(min-width:0\0)`, the
+    // hack that kept a block for Internet Explorer 9 and 10, held here as a
+    // query that asked nothing, and its rules applied.
+    const px = parseLength(value, ZERO_UNITS);
+    if (typeof px !== 'number') return null;
+    const [lo, hi]: [Bound, Bound] =
+      size[2] === 'width' ? ['min', 'max'] : ['minHeight', 'maxHeight'];
+    const out: MediaCondition = {};
+    if (size[1] !== 'max-') out[lo] = px;
+    if (size[1] !== 'min-') out[hi] = px;
+    return out;
+  }
+  if (key === 'prefers-color-scheme') {
+    // Answered live, from the palette in force: a document dropped into a
+    // dark application takes its dark branch, and follows the desktop when
+    // that changes. The two schemes are the whole vocabulary.
+    const scheme = value.trim().toLowerCase();
+    return scheme === 'light' || scheme === 'dark' ? { scheme } : null;
+  }
+  if (key === 'orientation') {
+    // the viewport's, as its aspect ratio: portrait where its height is at
+    // least its width (Media Queries 4, 4.5)
+    const orientation = value.trim().toLowerCase();
+    if (orientation === 'portrait') return { maxAspect: 1 };
+    if (orientation === 'landscape') return { minAspect: 1 + RATIO_EDGE };
+    return null;
+  }
+  if (ASPECT_FEATURES.test(key)) {
+    const ratio = ratioOf(value);
+    if (ratio === null) return null;
+    const out: MediaCondition = {};
+    if (!key.startsWith('max-')) out.minAspect = ratio;
+    if (!key.startsWith('min-')) out.maxAspect = ratio;
+    return out;
+  }
+  if (RESOLUTION_FEATURES.has(key)) {
+    const dppx = resolutionOf(value, key.startsWith('-webkit-'));
+    if (dppx === null) return null;
+    const out: MediaCondition = {};
+    if (!key.includes('max-')) out.minResolution = dppx;
+    if (!key.includes('min-')) out.maxResolution = dppx;
+    return out;
+  }
+  // any other feature as a desktop screen with a mouse answers it, and one
+  // nothing knows is unknown (Media Queries 4, 3.2): Firefox's and Opera's
+  // resolution features, which a design lists beside WebKit's, held here,
+  // and a page at one dot to the pixel took the rules it keeps for two
+  return desktopFeature(key, value);
 }
 
 /**
@@ -2389,19 +2566,8 @@ export function supportsCondition(prelude: string): boolean | null {
   return true;
 }
 
-/**
- * A `(name: value)` media feature: the whole term, its name, and its value
- * read to the parenthesis that closes the feature, or null where the term is
- * no such thing. A value may hold parentheses of its own: MediaWiki's
- * breakpoints are `(max-width: calc(640px - 1px))`, and a value read to the
- * first `)` found no feature there — the term was passed over as though it
- * said nothing, and every narrow-screen rule held at every width.
- */
 /** `aspect-ratio` and the device's, bare or `min-`/`max-`. */
 const ASPECT_FEATURES = /^(?:min-|max-)?(?:device-)?aspect-ratio$/;
-
-/** How far past square a landscape viewport is: any width over the height. */
-const ASPECT_EDGE = 1e-9;
 
 /** A ratio, `16/9` or `16 / 9` or `1.5`, as a number; null for anything
  *  else, or a ratio of nothing. */
@@ -2455,10 +2621,12 @@ const BOOLEAN_TRUE = new Set([
 /**
  * A media feature as a desktop screen driven by a mouse answers it — the
  * device `<Html>` draws on — for the features that do not depend on the
- * viewport: true, false, or null for a feature nothing knows, which is
- * false (Media Queries 4, 3.2). `value` is null in the boolean context.
- * The colour is eight bits a component on no palette and no grid; scripts
- * never run here, so `scripting` is `none`.
+ * viewport: true or false, or null for a feature nothing knows, or a value
+ * its feature does not take, which is unknown (Media Queries 4, 3.2): it
+ * holds no more under `not` than without it, so each feature lists every
+ * value it takes. `value` is null in the boolean context. The colour is
+ * eight bits a component on no palette and no grid; scripts never run
+ * here, so `scripting` is `none`.
  */
 function desktopFeature(key: string, value: string | null): boolean | null {
   const v = value?.trim().toLowerCase() ?? null;
@@ -2466,14 +2634,15 @@ function desktopFeature(key: string, value: string | null): boolean | null {
     const bare = key.replace(/^(min|max)-/, '');
     if (bare !== feature) return null;
     if (v === null) return key === feature ? has !== 0 : null;
+    // an integer, and nothing else
+    if (!/^[+-]?\d+$/.test(v)) return null;
     const n = Number(v);
-    if (!Number.isFinite(n)) return false;
     if (key.startsWith('min-')) return has >= n;
     if (key.startsWith('max-')) return has <= n;
     return has === n;
   };
   const keyword = (answers: Record<string, boolean>, bool: boolean) =>
-    v === null ? bool : (answers[v] ?? false);
+    v === null ? bool : Object.hasOwn(answers, v) ? answers[v] : null;
   switch (key) {
     case 'hover':
     case 'any-hover':
@@ -2484,27 +2653,50 @@ function desktopFeature(key: string, value: string | null): boolean | null {
     case 'update':
       return keyword({ fast: true, slow: false, none: false }, true);
     case 'overflow-block':
+      return keyword({ scroll: true, none: false, paged: false }, true);
     case 'overflow-inline':
-      return keyword({ scroll: true }, true);
+      return keyword({ scroll: true, none: false }, true);
     case 'scan':
-      return false;
+      return keyword({ interlace: false, progressive: false }, false);
     case 'color-gamut':
-      return keyword({ srgb: true }, true);
+      return keyword({ srgb: true, p3: false, rec2020: false }, true);
     case 'dynamic-range':
     case 'video-dynamic-range':
-      return keyword({ standard: true }, true);
+      return keyword({ standard: true, high: false }, true);
     case 'prefers-contrast':
+      return keyword(
+        { 'no-preference': true, more: false, less: false, custom: false },
+        false,
+      );
     case 'prefers-reduced-transparency':
     case 'prefers-reduced-data':
-      return keyword({ 'no-preference': true }, false);
+      return keyword({ 'no-preference': true, reduce: false }, false);
+    case 'prefers-reduced-motion':
+      // Nothing here moves, so there is nothing to reduce: the branch an
+      // animated page keeps for this preference is not one this renderer
+      // needs.
+      return keyword({ 'no-preference': false, reduce: false }, false);
     case 'forced-colors':
-      return keyword({ none: true }, false);
+      return keyword({ none: true, active: false }, false);
     case 'scripting':
-      return keyword({ none: true }, false);
+      return keyword(
+        { none: true, 'initial-only': false, enabled: false },
+        false,
+      );
     case 'display-mode':
-      return keyword({ browser: true }, true);
+      return keyword(
+        {
+          browser: true,
+          fullscreen: false,
+          standalone: false,
+          'minimal-ui': false,
+          'picture-in-picture': false,
+          'window-controls-overlay': false,
+        },
+        true,
+      );
     case '-webkit-transform-3d':
-      return v === null || v === '1';
+      return keyword({ 1: true, 0: false }, true);
   }
   return (
     numeric('color', 8) ??
@@ -2514,8 +2706,16 @@ function desktopFeature(key: string, value: string | null): boolean | null {
   );
 }
 
+/**
+ * A `(name: value)` media feature: the whole term, its name, and its value
+ * read to the parenthesis that closes the feature, or null where the term is
+ * no such thing. A value may hold parentheses of its own: MediaWiki's
+ * breakpoints are `(max-width: calc(640px - 1px))`, and a value read to the
+ * first `)` found no feature there — the term was passed over as though it
+ * said nothing, and every narrow-screen rule held at every width.
+ */
 function mediaFeature(term: string): [string, string, string] | null {
-  const m = /^\(\s*([a-z-]+)\s*:([\s\S]*)\)$/i.exec(term);
+  const m = /^\(\s*(-?[a-z][a-z0-9-]*)\s*:([\s\S]*)\)$/i.exec(term);
   if (!m) return null;
   let depth = 0;
   for (const c of m[2]) {

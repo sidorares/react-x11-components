@@ -2063,8 +2063,18 @@ the resolution is the display's scale, so a page's high-DPI rules hold on a
 retina panel and not at one dot to the pixel; the rest are a desktop
 screen's with a mouse — `hover` and a `fine` pointer, eight bits of colour,
 no contrast or colour preference forced, and no scripting, since nothing
-here runs one. A feature nothing knows is false, as Media Queries 4 has
-it, and so is a query on a size that is no length.
+here runs one. A query is read by Media Queries 4's grammar: `or` joins
+features as a comma joins queries, `(max-width: 600px) or (min-width:
+900px)`, a `not` holds on the other side of what it negates, so
+`not (max-width: 600px)` holds past 600px and Tailwind 3's
+`not all and (min-width: 640px)` short of 640px, and a condition may sit
+in parentheses inside another. All of them are answered live and restyle
+as the viewport crosses them. A query that mixes `and` and `or` at one
+level, or puts a `not` before more than one feature, is no query, and
+holds nowhere. A feature nothing knows, or a value its feature does not
+take — a size that is no length, `(min-width: 0\0)` — is neither true nor
+false, as Media Queries 4 has it: it holds nowhere under a `not` as well,
+and `(unknown: 1) or (min-width: 600px)` holds where the width does.
 `@import` goes through the resource seam, its media queries kept as the
 conditions of what it imports. Cascade layers are read (CSS
 Cascade 5): `@layer a, b;` fixes their order, the document's across all of
