@@ -169,6 +169,7 @@ import type { BareField, ControlRect } from './controls.js';
 import { decodesImageType, ResourceStore } from './resources.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 import { ImageSources } from './srcset.js';
+import type { SourceChanges } from './srcset.js';
 import type { IntrinsicSize } from './svg.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace } from './fonts.js';
@@ -1168,14 +1169,22 @@ export class HtmlViewNode extends Node {
     if (!cascade) return;
     cascade.viewportWidth = target;
     cascade.viewportHeight = viewport;
+    cascade.dimensionSource = this._dimensionSource;
     // An image chosen for this viewport (`_choose`) that shows another
     // candidate, or the same one at another density, is another size: the
-    // boxes are built again, keeping every style, as a `vw` has them built
-    // again — and as for a `vw`, the sizes other widths came to stand,
-    // since what a width chooses is the same each time it is asked.
-    if (this._choose(target, viewport) && this._stale < Stale.Boxes) {
-      this._stale = Stale.Boxes;
-      restyleOnly = new Set<Element>();
+    // boxes are built again, keeping every style but those of the images
+    // whose `<source>` sizes them another way now (`dimensionSource`), as a
+    // `vw` has them built again — and as for a `vw`, the sizes other widths
+    // came to stand, since what a width chooses is the same each time it
+    // is asked.
+    const chose = this._choose(target, viewport);
+    if (chose && (chose.shown || chose.restyle.length)) {
+      if (this._stale < Stale.Boxes) {
+        this._stale = Stale.Boxes;
+        restyleOnly = new Set(chose.restyle);
+      } else if (restyleOnly) {
+        restyleOnly = new Set([...restyleOnly, ...chose.restyle]);
+      }
     }
     // A `vw` or a `vh` is a number by the time a style holds it, so the
     // styles computed for another viewport are wrong for this one: built
@@ -1189,100 +1198,119 @@ export class HtmlViewNode extends Node {
       restyleOnly = null;
     }
 
-    if (this._stale >= Stale.Boxes || !this._tree) {
-      const look = this._deviceLook();
-      // A build a pointer move asked for styles the elements the move
-      // reached, and takes every other element's from the tree it replaces
-      // (`Cascade.beginSharing`): the first build only, since a second is
-      // one the first found a reason for — a face, an image's size.
-      let kept: KeptStyles | null =
-        restyleOnly && this._tree && this._styledWith === cascade
-          ? {
-              styles: this._tree.styles,
-              restyle: this._withAnimated(restyleOnly, this._tree),
-            }
-          : null;
-      const timeline = this._clockIn(cascade);
-      const boxes = () =>
-        buildBoxes(this._source.document, {
-          cascade,
-          kept,
-          scale: this._scale,
-          imageSize: (el) => this._imageSize(el),
-          urlSize: (url) => this._resources.imageSize(url),
-          faceAscent: (style) => {
-            const fonts = this._fonts();
-            return fonts ? faceExtentOf(fonts, style).ascent : undefined;
-          },
-          faceExtent: (style) => {
-            const fonts = this._fonts();
-            return fonts ? faceExtentOf(fonts, style) : undefined;
-          },
-          controlSize: (el, kind, style) =>
-            measureControl(el, kind, style, this._fonts(), look),
-        });
-      // a build that styles every element ends the animations of the ones
-      // it does not reach: under `display: none`, or out of the document
-      const build = () => {
-        timeline?.beginPass(!kept);
-        const tree = boxes();
-        timeline?.endPass();
-        return tree;
-      };
-      this._tree = build();
-      kept = null;
-      this._styledWith = cascade;
-      this._styledWidth = target;
-      this._styledHeight = viewport;
-      this._requestBackgrounds(this._tree);
-      let again = this._contentImagesArrived(this._tree);
-      // the faces the styles just asked for, of the families the document
-      // loads itself — which, answered at once, change the styles asking
-      if (this._webFonts.request(this._tree.text)) {
-        this._layouts = null;
-        again = true;
+    // Built and laid out — and, where an image whose `sizes` is its own
+    // laid-out width (`auto`) draws another candidate for the width it was
+    // just laid out at, built again, keeping every style, for the size that
+    // candidate has, and laid out again. Once: HTML's `contain: size` on
+    // such an image (the UA sheet) lays it out the same whichever candidate
+    // it holds, so the second layout leaves every width as the first did,
+    // and the candidates picked again for them are the same.
+    for (let pass = 0; ; pass += 1) {
+      if (this._stale >= Stale.Boxes || !this._tree) {
+        const look = this._deviceLook();
+        // A build a pointer move asked for styles the elements the move
+        // reached, and takes every other element's from the tree it replaces
+        // (`Cascade.beginSharing`): the first build only, since a second is
+        // one the first found a reason for — a face, an image's size.
+        let kept: KeptStyles | null =
+          restyleOnly && this._tree && this._styledWith === cascade
+            ? {
+                styles: this._tree.styles,
+                restyle: this._withAnimated(restyleOnly, this._tree),
+              }
+            : null;
+        const timeline = this._clockIn(cascade);
+        const boxes = () =>
+          buildBoxes(this._source.document, {
+            cascade,
+            kept,
+            scale: this._scale,
+            imageSize: (el) => this._imageSize(el),
+            urlSize: (url) => this._resources.imageSize(url),
+            faceAscent: (style) => {
+              const fonts = this._fonts();
+              return fonts ? faceExtentOf(fonts, style).ascent : undefined;
+            },
+            faceExtent: (style) => {
+              const fonts = this._fonts();
+              return fonts ? faceExtentOf(fonts, style) : undefined;
+            },
+            controlSize: (el, kind, style) =>
+              measureControl(el, kind, style, this._fonts(), look),
+          });
+        // a build that styles every element ends the animations of the ones
+        // it does not reach: under `display: none`, or out of the document
+        const build = () => {
+          timeline?.beginPass(!kept);
+          const tree = boxes();
+          timeline?.endPass();
+          return tree;
+        };
+        this._tree = build();
+        kept = null;
+        this._styledWith = cascade;
+        this._styledWidth = target;
+        this._styledHeight = viewport;
+        this._requestBackgrounds(this._tree);
+        let again = this._contentImagesArrived(this._tree);
+        // the faces the styles just asked for, of the families the document
+        // loads itself — which, answered at once, change the styles asking
+        if (this._webFonts.request(this._tree.text)) {
+          this._layouts = null;
+          again = true;
+        }
+        if (again) this._tree = build();
+        this._sprites?.clear();
+        this._warmFaces(this._tree);
+        this._textPoints = null;
+        this._pointsAreUnits = null;
+        this._laidOutWidth = -1;
       }
-      if (again) this._tree = build();
-      this._sprites?.clear();
-      this._warmFaces(this._tree);
-      this._textPoints = null;
-      this._pointsAreUnits = null;
-      this._laidOutWidth = -1;
-    }
 
-    if (
-      this._tree &&
-      (this._laidOutWidth !== target ||
-        viewportMoved ||
-        this._stale >= Stale.Layout)
-    ) {
-      const laidOutAt = this._laidOutWidth;
-      const result = layoutDocument(
-        this._tree,
-        this._layoutFonts(),
-        target,
-        viewport,
-      );
-      // The same boxes, somewhere else and another size — but for the
-      // layout a restyle in place asks for where what it moved reached the
-      // document's end, to learn its height: at the width and under the
-      // viewport the boxes were laid out at, with nothing that layout reads
-      // changed, they come out where they were, and the surfaces kept for
-      // them still hold them. A small document whose card turns at its
-      // foot is laid out every frame of the turn.
-      if (target !== laidOutAt || viewportMoved) this._sprites?.clear();
-      this._documentWidth = result.width;
-      this._documentHeight = result.height;
-      this._laidOutWidth = target;
-      this._laidOutUnder = viewport;
-      this._layoutReadsViewport = result.readsViewportHeight;
-      this._sizes.delete(target);
-      this._sizes.set(target, { width: result.width, height: result.height });
-      if (this._sizes.size > SIZES_KEPT) {
-        this._sizes.delete(this._sizes.keys().next().value!);
+      const laysOut =
+        !!this._tree &&
+        (this._laidOutWidth !== target ||
+          viewportMoved ||
+          this._stale >= Stale.Layout);
+      if (this._tree && laysOut) {
+        const laidOutAt = this._laidOutWidth;
+        const result = layoutDocument(
+          this._tree,
+          this._layoutFonts(),
+          target,
+          viewport,
+        );
+        // The same boxes, somewhere else and another size — but for the
+        // layout a restyle in place asks for where what it moved reached the
+        // document's end, to learn its height: at the width and under the
+        // viewport the boxes were laid out at, with nothing that layout reads
+        // changed, they come out where they were, and the surfaces kept for
+        // them still hold them. A small document whose card turns at its
+        // foot is laid out every frame of the turn.
+        if (target !== laidOutAt || viewportMoved) this._sprites?.clear();
+        this._documentWidth = result.width;
+        this._documentHeight = result.height;
+        this._laidOutWidth = target;
+        this._laidOutUnder = viewport;
+        this._layoutReadsViewport = result.readsViewportHeight;
+        this._sizes.delete(target);
+        this._sizes.set(target, { width: result.width, height: result.height });
+        if (this._sizes.size > SIZES_KEPT) {
+          this._sizes.delete(this._sizes.keys().next().value!);
+        }
+        this._reportControls();
+        this._reportStops();
       }
-      this._reportControls();
-      this._reportStops();
+      if (
+        pass > 0 ||
+        !laysOut ||
+        !this._tree ||
+        !this._chooseLaidOut(this._tree)
+      ) {
+        break;
+      }
+      this._stale = Stale.Boxes;
+      restyleOnly = new Set<Element>();
     }
     this._stale = Stale.Nothing;
     // Read after core's layout pass — the viewport is the box around this
@@ -1319,15 +1347,16 @@ export class HtmlViewNode extends Node {
    * element's width. Core asks a document its height at widths it is
    * never drawn at — the old width in a resize, as well as the new — and
    * a choice is made at each, which is a request at most for an image that
-   * is never shown, and only where that width chose another.
+   * is never shown, and only where that width chose another. What changed,
+   * or null where nothing was chosen again.
    */
-  private _choose(target: number, viewport: number): boolean {
+  private _choose(target: number, viewport: number): SourceChanges | null {
     const facts = this._source.facts();
-    if (!facts.pictures.length) return false;
+    if (!facts.pictures.length) return null;
     const s = this._scale;
     const scheme = this._props().look.colorScheme;
     const key = `${target}|${viewport}|${s}|${scheme}|${this._source.revision}`;
-    if (key === this._choseIn) return false;
+    if (key === this._choseIn) return null;
     this._choseIn = key;
     return this._images.choose(facts.pictures, {
       width: target / s,
@@ -1337,6 +1366,26 @@ export class HtmlViewNode extends Node {
       decodes: decodesImageType,
     });
   }
+
+  /**
+   * Pick the candidates of the images whose `sizes` is their laid-out
+   * width (`auto`), for the content widths `tree` was just laid out at.
+   * Whether what any of them draws changed.
+   */
+  private _chooseLaidOut(tree: BoxTree): boolean {
+    const facts = this._source.facts();
+    if (!facts.pictures.length) return false;
+    const s = this._scale;
+    return this._images.chooseLaidOut(facts.pictures, (el) => {
+      const box = this._firstBoxesOf(tree).get(el);
+      return box?.kind === 'replaced' ? box.contentWidth / s : null;
+    });
+  }
+
+  /** The element whose `width` and `height` size an `<img>`, for the
+   *  cascade (`Cascade.dimensionSource`). */
+  private _dimensionSource = (img: Element): Element =>
+    this._images.dimensionSource(img);
 
   /** Where an image element's image is: what an `<img>` that chooses its
    *  source shows of it (`_choose`), or what the element names. */

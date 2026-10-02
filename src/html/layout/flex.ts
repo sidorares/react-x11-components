@@ -45,6 +45,7 @@ import {
   intrinsicWidth,
   measureIntrinsicWidth,
   moveTo,
+  ownIntrinsic,
   percentBaseInside,
   percentHeightsIn,
   positionOutOfFlow,
@@ -583,7 +584,7 @@ function keepRatios(
  */
 function replacedMinimum(box: Box, containingWidth: number): number | null {
   const style = box.style;
-  const own = box.intrinsic;
+  const own = ownIntrinsic(box);
   const ratio = replacedRatio(box);
   const hx = style.boxSizing === 'border-box' ? box.horizontalExtra : 0;
   const vx = style.boxSizing === 'border-box' ? box.verticalExtra : 0;
@@ -624,7 +625,7 @@ function contentBasis(
   containingWidth: number,
 ): number {
   if (box.kind === 'replaced') {
-    const own = box.intrinsic;
+    const own = ownIntrinsic(box);
     if (own && !(own.missing & 1)) return own.width + box.horizontalExtra;
   }
   // a ratio's is a definite height through it, whatever the width says
@@ -3107,7 +3108,7 @@ function naturalAcross(
 ): number {
   const width = meant(laid.main, laid.set, laid.stretch, laid.width, laid.held);
   if (box.kind === 'replaced') {
-    const own = box.intrinsic;
+    const own = ownIntrinsic(box);
     const natural =
       heightThroughRatio(box, width) ??
       (own && !(own.missing & 2) ? own.height + box.verticalExtra : null);

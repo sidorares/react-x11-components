@@ -2496,10 +2496,29 @@ export function widthFromHeight(box: Box, height: number): number | null {
 /** A replaced element's ratio: its `aspect-ratio`, unless that says `auto`
  *  and it has one of its own, as `sizeReplaced` takes it. */
 export function replacedRatio(box: Box): number {
-  const own = box.intrinsic;
+  const own = ownIntrinsic(box);
   const aspect = box.style.aspectRatio;
   const natural = own ? own.ratio : 0;
   return aspect && !(aspect.auto && natural > 0) ? aspect.ratio : natural;
+}
+
+/**
+ * A replaced element's own size and ratio, as layout is to read them: its
+ * content's, or under size containment none but the size
+ * `contain-intrinsic-size` gives it (CSS Containment 2, 3.2) — which is how
+ * HTML lays out an image whose `sizes` is `auto`, so that the candidate its
+ * width picks cannot change that width. Every reader in layout goes
+ * through this, the flex item's least size and basis among them.
+ */
+export function ownIntrinsic(box: Box): Intrinsic | null {
+  if (!contained(box, CONTAIN_SIZE)) return box.intrinsic;
+  const style = box.style;
+  return {
+    width: style.containIntrinsicWidth ?? 0,
+    height: style.containIntrinsicHeight ?? 0,
+    ratio: 0,
+    missing: 0,
+  };
 }
 
 /** A border-box height through any box's ratio into its border-box width
@@ -3534,15 +3553,8 @@ function sizeReplaced(
     style.maxHeight === 'none' ? Infinity : (down(style.maxHeight) ?? Infinity),
   );
   // under size containment, as though it had no size or ratio of its own
-  // but the one `contain-intrinsic-size` gives it (CSS Containment 2, 3.2)
-  const own = contained(box, CONTAIN_SIZE)
-    ? {
-        width: style.containIntrinsicWidth ?? 0,
-        height: style.containIntrinsicHeight ?? 0,
-        ratio: 0,
-        missing: 0,
-      }
-    : (box.intrinsic ?? NO_INTRINSIC);
+  // but the one `contain-intrinsic-size` gives it (`ownIntrinsic`)
+  const own = ownIntrinsic(box) ?? NO_INTRINSIC;
   const iw = own.missing & 1 ? null : own.width;
   const ih = own.missing & 2 ? null : own.height;
   // `aspect-ratio` over its own, unless written `auto` and it has one
