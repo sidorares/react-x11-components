@@ -133,6 +133,17 @@ handle.
 Inline event attributes (`onclick="…"`) are likewise left in the DOM as
 attributes and never invoked.
 
+**So `<noscript>` is drawn.** With scripting off a noscript represents its
+children (HTML 4.12.2), so a page's fallback for a browser without
+JavaScript — a link to the plain version, a notice that the site needs a
+script — is what this draws, as Firefox and Chrome with JavaScript turned
+off draw it: an inline element, like any the UA sheet has no rule for. A
+noscript in the head keeps its `<link rel=stylesheet>` and `<style>`, and
+they apply; one with no `<head>` around it is the implied head's, so those
+stay hidden, and the rest of what it holds is drawn, where HTML's parser
+would have taken it into the body. `@media (scripting: none)` matches, to
+agree.
+
 ### Base URLs
 
 The component has no idea where a document came from — it is handed a
@@ -1188,7 +1199,8 @@ narrow for it runs past its end.
 As in a browser, `display: none` is all that hides `<head>`, `<title>`,
 `<style>` and `<script>`: a stylesheet that shows them shows them. What the
 markup leaves outside a `<head>`, at the top of the document, is in the
-head a browser implies, and stays hidden.
+head a browser implies, and stays hidden — but for a `<noscript>`, which is
+drawn (see `onScript` above).
 
 **Replaced content:** an image is sized by its style and what it has of
 an intrinsic width, height and ratio (CSS 2.1 10.3.2, 10.6.2), and a

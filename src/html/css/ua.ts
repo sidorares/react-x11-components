@@ -93,8 +93,11 @@ summary, dir, menu, center, marquee {
   display: block;
 }
 /* <map> is inline (HTML 15.3.1), so an <area> in it the author gives a
-   display of its own is drawn */
-head, link, meta, style, script, title, base, template, noscript, param,
+   display of its own is drawn. <noscript> is not here: nothing runs a
+   script, and with scripting off a noscript represents its children (HTML
+   4.12.2), an inline element like any the sheet has no rule for — a
+   browser hides it only where JavaScript runs */
+head, link, meta, style, script, title, base, template, param,
 source, track, col, colgroup, datalist, area, rp { display: none; }
 
 /* HTML's bidi rules for the two elements that are about it: <bdi> takes
