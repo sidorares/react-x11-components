@@ -1838,9 +1838,12 @@ The initial containing block is the viewport: the box that scrolls the
 element, where one does — a browser's page area, under its tabs and its
 toolbar — and the window where nothing does, since the element sizes to its
 content. So `html, body { height: 100% }` is a viewport tall and `bottom: 0`
-with nothing positioned around it is the viewport's bottom, as in a browser;
-the document is as tall as what overflows its root, so nothing longer than
-the viewport is cut off — an inline element's padding and border below its
+with nothing positioned around it is the viewport's bottom, as in a browser
+— and in a page that writes a `<body>` and no `<html>`, as most begin
+`<!DOCTYPE html><title>`, where the root element is the `<html>` HTML
+implies around the body and its percentage height is of the viewport as a
+written one's is. The document is as tall as what overflows its root, so
+nothing longer than the viewport is cut off — an inline element's padding and border below its
 line among it, as a browser counts them, where nothing clips them. The
 root's `overflow` is the viewport's, and so is the `<body>`'s where the
 root's is `visible`, and the element it came from is `visible` itself
