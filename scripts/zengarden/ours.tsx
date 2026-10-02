@@ -451,6 +451,9 @@ export async function capture(
                 selectable: false,
                 // Chrome is captured with every animation at rest
                 animate: false,
+                // and with no preference for less motion, whatever this
+                // machine's accessibility setting says (chrome.ts)
+                reducedMotion: false,
                 fontSize: 16,
                 fontFamily: 'serif',
                 monoFamily: 'monospace',

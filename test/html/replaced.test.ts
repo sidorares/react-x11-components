@@ -279,6 +279,7 @@ test('sizes: the first entry whose condition holds, past entries that are none, 
     height: 700,
     scale: 1,
     scheme: 'light' as const,
+    reducedMotion: false,
     decodes: () => true,
   });
   const size = (sizes: string, width = 1000) =>
