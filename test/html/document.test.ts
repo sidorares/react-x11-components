@@ -13,7 +13,15 @@ import {
   parseFragment,
   rawTextOf,
 } from '../../src/html/dom.js';
-import { h, lineTextsOf, metric, render, view } from './harness.js';
+import {
+  boxOf,
+  h,
+  lineTextsOf,
+  metric,
+  render,
+  view,
+  type LaidBox,
+} from './harness.js';
 
 afterEach(cleanup);
 
@@ -94,6 +102,59 @@ test('the document reports its stylesheets, scripts and resources in one pass', 
   // the stylesheet link and the image are both resources
   assert.strictEqual(facts.resources.length, 2);
 });
+
+test("a <template>'s content is none of the document's: no sheet, script, resource, title or base", () => {
+  // an inert fragment (HTML 4.12.3), out of the document until a script
+  // stamps it in; the walk goes on past it
+  const source = new HtmlSource();
+  source.setSource(
+    '<template><title>Inert</title><base href="http://inert.test/">' +
+      '<style>p{color:red}</style><link rel="stylesheet" href="inert.css">' +
+      '<script src="inert.js"></script><img src="inert.png">' +
+      '<template><img src="deeper.png"></template></template>' +
+      '<title>T</title><style>p{color:blue}</style><img src="c.png">',
+    true,
+  );
+  const facts = source.facts();
+  assert.strictEqual(facts.title, 'T');
+  assert.strictEqual(facts.base, null);
+  assert.deepStrictEqual(
+    facts.sheets.map((s) => (s.kind === 'inline' ? s.text : s.href)),
+    ['p{color:blue}'],
+  );
+  assert.strictEqual(facts.scripts.length, 0);
+  assert.deepStrictEqual(
+    facts.resources.map((el) => el.attribs.src),
+    ['c.png'],
+  );
+});
+
+metric(
+  "a <template>'s <style> styles nothing, and nothing in it is asked for",
+  async () => {
+    const asked: string[] = [];
+    const scripts: (string | null)[] = [];
+    const { node } = await render(
+      '<style>p { color: #00ff00 }</style>' +
+        '<template><style>p { color: #ff0000 }</style>' +
+        '<link rel="stylesheet" href="inert.css"><img src="inert.png">' +
+        '<script src="inert.js"></script></template>' +
+        '<p id="p">text</p><img src="shown.png">',
+      400,
+      {
+        onResource: (r: { url: string }) => {
+          asked.push(r.url);
+          return null;
+        },
+        onScript: (s: { src: string | null }) => scripts.push(s.src),
+      },
+    );
+    const p = boxOf(view(node), 'p') as LaidBox & { style: { color: string } };
+    assert.strictEqual(p.style.color, '#00ff00');
+    assert.deepStrictEqual(asked, ['shown.png']);
+    assert.deepStrictEqual(scripts, []);
+  },
+);
 
 /** A parsed document's elements, and its text that is not white space. */
 function shapeOf(markup: string): string {
