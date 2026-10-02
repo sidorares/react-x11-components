@@ -1,9 +1,25 @@
 // <Html> — replaced elements: images, SVG, aspect-ratio and object-fit.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup, expectPixel, renderX11, waitFor } from 'react-x11/test';
+import {
+  act,
+  cleanup,
+  expectPixel,
+  renderX11,
+  screen,
+  waitFor,
+} from 'react-x11/test';
+import type { DrawnNode } from 'react-x11';
 import * as ntk from 'react-x11/ntk';
 import { Html } from '../../src/index.js';
+import { decodesImageType } from '../../src/html/resources.js';
+import {
+  normalize,
+  parseSizes,
+  parseSrcset,
+  pick,
+  sourceSize,
+} from '../../src/html/srcset.js';
 import {
   FONTS,
   RED_PNG,
@@ -16,6 +32,7 @@ import {
   render,
   renderWithBytes,
   renderWithImages,
+  solidPng,
   svgBytes,
   view,
 } from './harness.js';
@@ -191,6 +208,374 @@ test('an object is its image once its data is one, and its content until then', 
   assert.strictEqual((boxOf(el, 'f') as ReplacedBox).replaced, 'none');
   assert.ok(el.textContent().includes('still here'), 'the fallback content');
   assert.ok(!el.textContent().includes('fallback'), 'not the loaded one');
+});
+
+// --- choosing an image's source ----------------------------------------------
+//
+// HTML's "selecting an image source" (4.8.4.3). Every case below was put to
+// Chrome 154, Firefox and WebKit through Playwright, at 1x and 2x and at two
+// viewport widths, and each answer here is theirs — all three agree on all
+// of these but where a comment says otherwise.
+
+test('a srcset is read as every browser reads it: a URL to white space, its descriptors, a candidate dropped whole', () => {
+  const read = (srcset: string) =>
+    parseSrcset(srcset).map((c) =>
+      c.width !== undefined
+        ? `${c.url} ${c.width}w`
+        : c.density !== undefined
+          ? `${c.url} ${c.density}`
+          : c.url,
+    );
+  assert.deepStrictEqual(read('a.png, b.png 2x'), ['a.png', 'b.png 2']);
+  assert.deepStrictEqual(
+    read('  ,, a.png  1x  ,,b.png 2x ,'),
+    ['a.png 1', 'b.png 2'],
+    'commas and white space around candidates',
+  );
+  // a URL runs to white space: a comma inside one is the URL's, and a data:
+  // URL is one candidate
+  assert.deepStrictEqual(read('a.png,b.png 2x'), ['a.png,b.png 2']);
+  assert.deepStrictEqual(read('data:image/png;base64,iVBO= 1x, b.png 2x'), [
+    'data:image/png;base64,iVBO= 1',
+    'b.png 2',
+  ]);
+  assert.deepStrictEqual(
+    read('a.png 400w, b.png 0400w, c.png 400w 200h'),
+    ['a.png 400w', 'b.png 400w', 'c.png 400w'],
+    'a width, leading zeros and all, and a height beside one',
+  );
+  assert.deepStrictEqual(
+    read('a.png .5x, b.png 1e1x, c.png -0x'),
+    ['a.png 0.5', 'b.png 10', 'c.png 0'],
+    'a density is any valid floating-point number at or above zero',
+  );
+  for (const none of [
+    'a.png 1X',
+    'a.png 400W',
+    'a.png 1.x',
+    'a.png +1x',
+    'a.png -1x',
+    'a.png 0w',
+    'a.png 1x 2x',
+    'a.png 400w 1x',
+    'a.png 200h',
+    'a.png 1x (foo, bar)',
+  ]) {
+    assert.deepStrictEqual(read(none), [], `${none} is no candidate`);
+  }
+  assert.deepStrictEqual(
+    read('a.png 1x (foo, bar), b.png 2x'),
+    ['b.png 2'],
+    'a comma in parentheses is the descriptor’s, and the next goes on',
+  );
+});
+
+test('sizes: the first entry whose condition holds, past entries that are none, and the viewport where none does', () => {
+  const env = (width: number) => ({
+    width,
+    height: 700,
+    scale: 1,
+    scheme: 'light' as const,
+    decodes: () => true,
+  });
+  const size = (sizes: string, width = 1000) =>
+    sourceSize(parseSizes(sizes), env(width));
+  assert.strictEqual(size('(max-width: 600px) 100vw, 420px'), 420);
+  assert.strictEqual(size('(max-width: 600px) 100vw, 420px', 500), 500);
+  assert.strictEqual(size('(max-width:600px)100vw,500px', 500), 500);
+  assert.strictEqual(size('calc(50vw - 100px)'), 400);
+  assert.strictEqual(size('calc(50vw - 100px)', 100), 0, 'held at zero');
+  assert.strictEqual(
+    size('(min-width: 2000px) 10px, 20em'),
+    320,
+    'an em is the initial font size, as in a media query',
+  );
+  assert.strictEqual(
+    size('(max-width: 600px) 100vw, 50em, 10px'),
+    800,
+    'what follows a size with no condition is never reached',
+  );
+  assert.strictEqual(size('0'), 0, 'a zero needs no unit');
+  // none of these is a size, and the list goes on past it
+  assert.strictEqual(size('50%'), 1000, 'a percentage');
+  assert.strictEqual(size('300'), 1000, 'a number');
+  assert.strictEqual(size('-10px, 300px'), 300, 'a negative length');
+  assert.strictEqual(size('screen 300px, 600px'), 600, 'a media type');
+  // `auto` is the laid-out width of a lazy image, which is not known when a
+  // source is chosen here; elsewhere it is passed over, as Firefox and
+  // WebKit pass it over — Chrome takes 100vw for the whole list
+  assert.strictEqual(size('auto, 300px'), 300, 'auto');
+  assert.strictEqual(size(''), 1000, 'none at all is 100vw');
+});
+
+test('the least dense candidate at or above the scale is chosen, else the densest, and of equal ones the first', () => {
+  const at = (srcset: string, scale: number, size = 1000) =>
+    pick(normalize(parseSrcset(srcset), size), scale)?.url;
+  assert.strictEqual(at('a 1x, b 2x', 1), 'a');
+  assert.strictEqual(at('a 1x, b 2x', 1.5), 'b');
+  assert.strictEqual(at('a 1x, b 2x', 3), 'b', 'the densest, short of it');
+  // Chrome once chose 1x here at 1.5 and 2 — below the scale, where the
+  // scale fell short of the geometric mean of the two — and 154 does not
+  assert.strictEqual(at('a 1x, b 5x', 1.5), 'b');
+  assert.strictEqual(at('a 1.5x, b 3x', 1), 'a');
+  assert.strictEqual(at('a 0.5x, b 1x', 2), 'b');
+  assert.strictEqual(at('a 1x, b 1x', 1), 'a', 'the first of equal ones');
+  assert.strictEqual(at('b 2x, a 1x', 1), 'a', 'in any order');
+  assert.strictEqual(
+    at('s 400w, m 800w, l 1600w', 2, 420),
+    'l',
+    'a width over the size: 0.95x, 1.9x and 3.8x',
+  );
+  assert.strictEqual(at('s 400w, m 800w, l 1600w', 1, 420), 'm');
+  // and a denser candidate already asked for is taken over a lighter one
+  // asked for anew, as Chrome takes one it has cached: Firefox would take
+  // the lighter one
+  const held = (url: string) => url === 'l';
+  assert.strictEqual(
+    pick(normalize(parseSrcset('s 400w, m 800w, l 1600w'), 500), 1, held)?.url,
+    'l',
+  );
+  assert.strictEqual(
+    pick(
+      normalize(parseSrcset('s 400w, m 800w, l 1600w'), 500),
+      1,
+      (u) => u === 's',
+    )?.url,
+    'm',
+    'a lighter one held is not',
+  );
+});
+
+test("a source's type is one the decoders here read, parameters and case aside", (t) => {
+  for (const type of [
+    'image/webp',
+    ' IMAGE/WEBP ; codecs=x',
+    'image/png',
+    'image/jpeg',
+    'image/jpg',
+    'image/gif',
+    'image/svg+xml',
+    '',
+  ]) {
+    assert.ok(decodesImageType(type), `${type || 'none'} decodes`);
+  }
+  const g = globalThis as { Bun?: unknown };
+  const had = 'Bun' in g;
+  const bun = g.Bun;
+  t.after(() => {
+    if (had) g.Bun = bun;
+    else delete g.Bun;
+  });
+  delete g.Bun;
+  for (const type of ['image/avif', 'image/bmp', 'image/jxl', 'webp']) {
+    assert.ok(!decodesImageType(type), `${type} does not, under Node`);
+  }
+  // `Bun.Image`, found as core's ladder finds it: BMP everywhere, and AVIF
+  // where macOS's ImageIO decodes it — never JPEG XL, which Bun sniffs for
+  // itself and turns down
+  g.Bun = { Image: function Image() {} };
+  const darwin =
+    (globalThis as { process?: { platform?: string } }).process?.platform ===
+    'darwin';
+  assert.ok(decodesImageType('image/bmp'), 'a BMP under Bun');
+  assert.strictEqual(decodesImageType('image/avif'), darwin);
+  assert.ok(!decodesImageType('image/jxl'));
+});
+
+/** A document whose images are answered from `images` — at once, or, with
+ *  `later`, each when the test lets it go — in a column the test can make
+ *  another width. What it asked for is `asked`, in order. */
+async function choosing(
+  source: string,
+  images: Record<string, Uint8Array>,
+  options: { width?: number; scale?: number; later?: boolean } = {},
+) {
+  const asked: string[] = [];
+  const waiting: Array<() => void> = [];
+  const doc = (width: number) =>
+    h(
+      'box',
+      { style: { width, flexDirection: 'column' } },
+      h(Html, {
+        source: '<style>body{margin:0}img{display:block}</style>' + source,
+        partial: false,
+        'data-testname': 'doc',
+        onResource: (r: { url: string; kind: string; element: unknown }) => {
+          if (r.kind !== 'image') return null;
+          asked.push(r.url);
+          const bytes = images[r.url];
+          if (!bytes) return null;
+          const answer = { kind: 'image' as const, bytes };
+          if (!options.later) return answer;
+          return new Promise<typeof answer>((resolve) => {
+            waiting.push(() => resolve(answer));
+          });
+        },
+      }),
+    );
+  const result = await renderX11(doc(options.width ?? 400), {
+    backend: 'mock',
+    ...(options.scale && { scale: options.scale }),
+  });
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  return {
+    asked,
+    size: (id: string): [number, number] => {
+      const box = boxOf(el(), id);
+      return [box.width, box.height];
+    },
+    resize: async (width: number) => {
+      await result.rerender(doc(width));
+      await act();
+    },
+    release: async () => {
+      for (const go of waiting.splice(0)) go();
+      await waitFor(() => assert.strictEqual(waiting.length, 0));
+      await act();
+    },
+  };
+}
+
+const SMALL = solidPng(20, 10, [255, 0, 0]);
+const LARGE = solidPng(40, 20, [0, 0, 255]);
+
+test('an <img srcset> with no src shows its candidate, as large as its density makes it', async () => {
+  // An `<img srcset>` with no `src` showed nothing, and one with a `src`
+  // showed the `src` whatever the set said.
+  const source =
+    '<img id="a" srcset="small.png 1x, large.png 2x">' +
+    '<img id="b" srcset="large.png 2x">';
+  const at1 = await choosing(source, {
+    'small.png': SMALL,
+    'large.png': LARGE,
+  });
+  assert.deepStrictEqual(at1.asked, ['small.png', 'large.png']);
+  assert.deepStrictEqual(at1.size('a'), [20, 10], 'the 1x, at its pixels');
+  assert.deepStrictEqual(at1.size('b'), [20, 10], 'the 2x, at half of them');
+  cleanup();
+  const at2 = await choosing(
+    source,
+    { 'small.png': SMALL, 'large.png': LARGE },
+    { scale: 2 },
+  );
+  assert.deepStrictEqual(at2.asked, ['large.png'], 'the 2x alone, at 2x');
+  // device pixels: 20 by 10 CSS pixels at 2x
+  assert.deepStrictEqual(at2.size('a'), [40, 20]);
+  assert.deepStrictEqual(at2.size('b'), [40, 20]);
+});
+
+test("Next.js's srcset is chosen at 1x, and its src, the 2x, is not asked for", async () => {
+  // The course card on joshwcomeau.com: `next/image` writes the 2x as the
+  // `src` for a browser with no `srcset`, and Chrome loads the 640.
+  const url = (w: number) => `/_next/image/?url=%2Fcourse.jpg&w=${w}&q=75`;
+  const markup = (w: number) => url(w).replace(/&/g, '&amp;');
+  const source =
+    `<img id="card" alt="" width="640" height="337.5" ` +
+    `srcset="${markup(640)} 1x, ${markup(1920)} 2x" src="${markup(1920)}">`;
+  const at1 = await choosing(source, {}, { width: 700 });
+  assert.deepStrictEqual(at1.asked, [url(640)]);
+  cleanup();
+  const at2 = await choosing(source, {}, { width: 700, scale: 2 });
+  assert.deepStrictEqual(at2.asked, [url(1920)]);
+});
+
+test("a <picture>'s first source that decodes here is its image's, and the <img> is the fallback", async () => {
+  // The footer of joshwcomeau.com: a WebP source, and a PNG `<img>` for a
+  // browser without WebP. The PNG was loaded, where every browser loads
+  // the WebP.
+  const webp = new Uint8Array(
+    Buffer.from('UklGRhwAAABXRUJQVlA4TA8AAAAvCUACAAcQ/Y/+ByKi/wEA', 'base64'),
+  );
+  const { asked, size } = await choosing(
+    '<picture><source type="image/avif" srcset="a.avif">' +
+      '<source type="image/jxl" srcset="a.jxl">' +
+      '<source type=" IMAGE/WEBP ; codecs=x" srcset="a.webp">' +
+      '<img id="a" src="a.png"></picture>',
+    { 'a.webp': webp, 'a.png': SMALL },
+  );
+  // AVIF is past what Node decodes, and JPEG XL past what anything here
+  // does: a browser without either goes on the same way
+  assert.deepStrictEqual(asked, ['a.webp']);
+  await waitFor(() => assert.deepStrictEqual(size('a'), [10, 10]));
+});
+
+test("a <picture>'s sources: a media that does not hold, a source after the <img>, one with no srcset, and one not the picture's child", async () => {
+  const { asked } = await choosing(
+    '<picture><source media="(min-width: 600px)" srcset="wide.png">' +
+      '<source media="print" srcset="print.png">' +
+      '<source media="(prefers-color-scheme: dark)" srcset="dark.png">' +
+      '<img id="a" src="a.png"></picture>' +
+      '<picture><source srcset=""><source src="src.png">' +
+      '<div><source srcset="nested.png"></div>' +
+      '<img id="b" src="b.png"><source srcset="after.png"></picture>' +
+      '<picture><source media="" srcset="any.png"><img src="c.png"></picture>' +
+      '<picture><img srcset="d2.png 2x" src="d.png"></picture>',
+    {},
+  );
+  assert.deepStrictEqual(asked, ['a.png', 'b.png', 'any.png', 'd.png']);
+});
+
+test('a choice that is declined is a declined image, and its src is not asked for in its place', async () => {
+  const { asked, size } = await choosing(
+    '<img id="a" srcset="gone.png 1x" src="small.png" width="30" height="12">',
+    { 'small.png': SMALL },
+  );
+  assert.deepStrictEqual(asked, ['gone.png']);
+  assert.deepStrictEqual(size('a'), [30, 12], 'framed at its attributes');
+});
+
+test('sizes and w descriptors: the image is as wide as sizes says, and a narrower window keeps the denser image it has', async () => {
+  // 20w and 40w over a size of 100vw: at 40 CSS pixels the 40w is 1x; at
+  // 20 the 20w is, but the 40w is in hand, and Chrome keeps it, at 2x —
+  // Firefox asks for the 20w, and Safari asks nothing and keeps the 40w at
+  // 1x, 40 pixels wide in a 20 pixel window
+  const doc = await choosing(
+    '<img id="a" srcset="small.png 20w, large.png 40w" sizes="100vw">',
+    { 'small.png': SMALL, 'large.png': LARGE },
+    { width: 40 },
+  );
+  assert.deepStrictEqual(doc.asked, ['large.png']);
+  assert.deepStrictEqual(doc.size('a'), [40, 20]);
+  await doc.resize(20);
+  assert.deepStrictEqual(doc.asked, ['large.png'], 'nothing asked anew');
+  assert.deepStrictEqual(doc.size('a'), [20, 10], 'the 40w at 2x');
+  await doc.resize(30);
+  assert.deepStrictEqual(doc.size('a'), [30, 15], 'at 4/3x');
+  cleanup();
+  // and a wider one asks for the denser image it now needs
+  const widening = await choosing(
+    '<img id="a" srcset="small.png 20w, large.png 40w" sizes="(max-width: 25px) 20px, 40px">',
+    { 'small.png': SMALL, 'large.png': LARGE },
+    { width: 20 },
+  );
+  assert.deepStrictEqual(widening.asked, ['small.png']);
+  assert.deepStrictEqual(widening.size('a'), [20, 10]);
+  await widening.resize(40);
+  assert.deepStrictEqual(widening.asked, ['small.png', 'large.png']);
+  assert.deepStrictEqual(widening.size('a'), [40, 20]);
+});
+
+test('a resize across a source’s media chooses again, and the image shown stays until the new one arrives', async () => {
+  const doc = await choosing(
+    '<picture><source media="(min-width: 300px)" srcset="large.png">' +
+      '<img id="a" src="small.png"></picture>',
+    { 'small.png': SMALL, 'large.png': LARGE },
+    { width: 200, later: true },
+  );
+  assert.deepStrictEqual(doc.asked, ['small.png']);
+  await doc.release();
+  await waitFor(() => assert.deepStrictEqual(doc.size('a'), [20, 10]));
+  await doc.resize(320);
+  assert.deepStrictEqual(doc.asked, ['small.png', 'large.png']);
+  // HTML's current request, beside the pending one: not a frame while the
+  // new one is on its way
+  assert.deepStrictEqual(doc.size('a'), [20, 10], 'the small one meanwhile');
+  await doc.release();
+  await waitFor(() => assert.deepStrictEqual(doc.size('a'), [40, 20]));
+  // and back: both in hand, so nothing is asked for again
+  await doc.resize(200);
+  assert.deepStrictEqual(doc.size('a'), [20, 10]);
+  assert.deepStrictEqual(doc.asked, ['small.png', 'large.png']);
 });
 
 metric(

@@ -163,7 +163,8 @@ export function attr(el: Element, name: string): string | undefined {
  *  `data` — which is shown as an image when it is one (HTML's "the object
  *  element"), and as the element's fallback content otherwise — an
  *  `<embed>`'s `src` the same, and a `<video>`'s `poster`, the frame it
- *  shows until it plays, which here it does not. */
+ *  shows until it plays, which here it does not. An `<img>` that chooses
+ *  its source (`choosesSource`) shows what it chose, which this is not. */
 export function imageUrlOf(el: Element): string | undefined {
   const tag = tagOf(el);
   return tag === 'object'
@@ -171,6 +172,18 @@ export function imageUrlOf(el: Element): string | undefined {
     : tag === 'video'
       ? attr(el, 'poster')
       : attr(el, 'src');
+}
+
+/**
+ * Whether an `<img>`'s image is chosen rather than named: it has a
+ * `srcset`, or a `<picture>` is its parent (HTML's "uses srcset or
+ * picture"). One that is neither shows its `src`, at 1x.
+ */
+export function choosesSource(el: Element): boolean {
+  if (tagOf(el) !== 'img') return false;
+  if (attr(el, 'srcset') !== undefined) return true;
+  const parent = el.parent;
+  return !!parent && isElement(parent) && tagOf(parent) === 'picture';
 }
 
 /** The text under a node, uncollapsed — what `<style>` hands the CSS parser
@@ -235,6 +248,10 @@ export interface DocumentFacts {
   scripts: Element[];
   /** Elements with a resource to fetch — `<img>`, and `<link>` above. */
   resources: Element[];
+  /** The `<img>`s whose image is chosen rather than named — a `srcset`, or
+   *  a `<picture>` around them — which are asked for once the viewport
+   *  they are chosen for is known (`srcset.ts`), and not with `resources`. */
+  pictures: Element[];
   /** `<title>`, when the document had one. */
   title: string | null;
   /** The first `<base>` with an `href`, as written: the document's base URL
@@ -377,6 +394,8 @@ export class HtmlSource {
         }
       } else if (tag === 'script') {
         facts.scripts.push(el);
+      } else if (tag === 'img' && choosesSource(el)) {
+        facts.pictures.push(el);
       } else if (
         tag === 'img' ||
         tag === 'image' ||
@@ -415,6 +434,7 @@ function freshFacts(): ScannedFacts {
     sheets: [],
     scripts: [],
     resources: [],
+    pictures: [],
     title: null,
     base: null,
     scanned: -1,

@@ -48,7 +48,14 @@ import type { Style } from 'react-x11/style';
 import type { Element } from 'domhandler';
 
 import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
-import { attr, HtmlSource, imageUrlOf, isElement, tagOf } from './dom.js';
+import {
+  attr,
+  choosesSource,
+  HtmlSource,
+  imageUrlOf,
+  isElement,
+  tagOf,
+} from './dom.js';
 import type { Document } from './dom.js';
 import {
   Cascade,
@@ -159,8 +166,10 @@ import { controlRectsOf, measureControl, styledField } from './controls.js';
 import { isInert, isTabbable } from './focus.js';
 import type { FocusStop } from './focus.js';
 import type { BareField, ControlRect } from './controls.js';
-import { ResourceStore } from './resources.js';
+import { decodesImageType, ResourceStore } from './resources.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
+import { ImageSources } from './srcset.js';
+import type { IntrinsicSize } from './svg.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace } from './fonts.js';
 import { resolveUrl, UrlResolver } from './url.js';
@@ -292,6 +301,13 @@ export class HtmlViewNode extends Node {
    *  the `baseUrl` prop, or the prop, or nowhere (`url.ts`). */
   private _urls = new UrlResolver();
   private _resources: ResourceStore;
+  /** The sources the `<img srcset>`s and `<picture>`s have chosen, and what
+   *  each shows while its choice is on its way (`srcset.ts`). */
+  private _images: ImageSources;
+  /** The viewport, scale and scheme they were last chosen in, and the
+   *  document's revision then: `_choose` asks nothing again until one of
+   *  them moves. */
+  private _choseIn = '';
   /** The families the document's `@font-face` rules declare (`fonts.ts`). */
   private _webFonts: WebFonts;
   /** The sheets the last restyle read, and the cascade built from them. */
@@ -460,6 +476,11 @@ export class HtmlViewNode extends Node {
       },
       this._urls,
     );
+    this._images = new ImageSources({
+      request: (url, element) =>
+        this._resources.request({ url, kind: 'image', element }),
+      state: (url) => this._resources.state(url),
+    });
     this._webFonts = new WebFonts(
       app,
       ask,
@@ -1147,6 +1168,15 @@ export class HtmlViewNode extends Node {
     if (!cascade) return;
     cascade.viewportWidth = target;
     cascade.viewportHeight = viewport;
+    // An image chosen for this viewport (`_choose`) that shows another
+    // candidate, or the same one at another density, is another size: the
+    // boxes are built again, keeping every style, as a `vw` has them built
+    // again — and as for a `vw`, the sizes other widths came to stand,
+    // since what a width chooses is the same each time it is asked.
+    if (this._choose(target, viewport) && this._stale < Stale.Boxes) {
+      this._stale = Stale.Boxes;
+      restyleOnly = new Set<Element>();
+    }
     // A `vw` or a `vh` is a number by the time a style holds it, so the
     // styles computed for another viewport are wrong for this one: built
     // again, where some style reads the side that moved. A document that
@@ -1178,7 +1208,7 @@ export class HtmlViewNode extends Node {
           cascade,
           kept,
           scale: this._scale,
-          imageSize: (el) => this._resources.imageSize(imageUrlOf(el) ?? ''),
+          imageSize: (el) => this._imageSize(el),
           urlSize: (url) => this._resources.imageSize(url),
           faceAscent: (style) => {
             const fonts = this._fonts();
@@ -1272,8 +1302,69 @@ export class HtmlViewNode extends Node {
   /** Whether the document as laid out reads its viewport's height. */
   private _readsViewportHeight(): boolean {
     return (
-      this._layoutReadsViewport || this._cascade?.readsViewportHeight === true
+      this._layoutReadsViewport ||
+      this._cascade?.readsViewportHeight === true ||
+      this._images.readsHeight
     );
+  }
+
+  /**
+   * Choose a source for each `<img srcset>` and each `<img>` in a
+   * `<picture>`, for the viewport the document is laid out in — `target`
+   * and `viewport`, in device pixels — and this element's scale, which is
+   * the density a candidate is chosen for (`srcset.ts`). Each is asked for
+   * as it is chosen. Whether what any of them shows changed.
+   *
+   * The viewport is the document's, as a `@media` query's is: this
+   * element's width. Core asks a document its height at widths it is
+   * never drawn at — the old width in a resize, as well as the new — and
+   * a choice is made at each, which is a request at most for an image that
+   * is never shown, and only where that width chose another.
+   */
+  private _choose(target: number, viewport: number): boolean {
+    const facts = this._source.facts();
+    if (!facts.pictures.length) return false;
+    const s = this._scale;
+    const scheme = this._props().look.colorScheme;
+    const key = `${target}|${viewport}|${s}|${scheme}|${this._source.revision}`;
+    if (key === this._choseIn) return false;
+    this._choseIn = key;
+    return this._images.choose(facts.pictures, {
+      width: target / s,
+      height: viewport / s,
+      scale: s,
+      scheme,
+      decodes: decodesImageType,
+    });
+  }
+
+  /** Where an image element's image is: what an `<img>` that chooses its
+   *  source shows of it (`_choose`), or what the element names. */
+  private _imageUrl(el: Element): string | undefined {
+    return choosesSource(el) ? this._images.shown(el)?.url : imageUrlOf(el);
+  }
+
+  /**
+   * An image element's intrinsic size, in CSS pixels: its image's, over
+   * the density it was chosen at — a `2x` candidate is half its pixels
+   * across, and a `w` one as wide as its `sizes` — or null where it has
+   * not arrived. An infinitely dense one, chosen for a `sizes` of 0, is no
+   * size at all, as in a browser.
+   */
+  private _imageSize(el: Element): IntrinsicSize | null {
+    if (!choosesSource(el)) {
+      return this._resources.imageSize(imageUrlOf(el) ?? '');
+    }
+    const shown = this._images.shown(el);
+    const size = shown && this._resources.imageSize(shown.url);
+    if (!shown || !size || shown.density === 1) return size || null;
+    const per = (n: number | null): number | null =>
+      n === null ? null : shown.density > 0 ? n / shown.density : n;
+    return {
+      width: per(size.width),
+      height: per(size.height),
+      ratio: size.ratio,
+    };
   }
 
   private _reportControls(): void {
@@ -3178,7 +3269,7 @@ export class HtmlViewNode extends Node {
         : null,
       selectionColor: this.selectionColor,
       imageFor: (box) => {
-        const url = box.el ? imageUrlOf(box.el) : CONTENT_IMAGES.get(box);
+        const url = box.el ? this._imageUrl(box.el) : CONTENT_IMAGES.get(box);
         return url === undefined ? null : this._resources.image(url);
       },
       backgroundImageFor: (url) => {
