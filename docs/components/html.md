@@ -1588,7 +1588,12 @@ compositor:
   across lines — and is not masked, cut by a `clip-path` or drawn against
   the viewport, and holds nothing fixed to it unless it is fixed itself;
 - nothing it is inside fades, turns, masks, is cut by a `clip-path`, or
-  runs an animation of its own. A box that clips it — an
+  runs an animation of its own — but for an element that goes on a layer
+  itself: an element animating inside it goes on a layer inside that
+  one's, fading, turning and cut with it, so a spinner in a card that
+  pulses is two layers and no frame of the document's. Then only the boxes
+  between the two are asked about, and the inner one is kept to everywhere
+  the outer one's layer was asked about. A box that clips it — an
   `overflow` other than `visible`, a `clip` — cuts its layer to the same
   rectangle, so a carousel's slide or a marquee goes on a layer cut where
   the document cuts it; one with rounded corners cuts nothing so long as
@@ -2928,7 +2933,10 @@ pointer painted 40 to 43 window frames and as many paints of the document
 on the clock, each way; lifted, it takes 4 to 6 frames and 3 or 4 paints,
 the change that starts it and the one that hands it back. A toast fixed to
 the viewport and fading in a pane that scrolls the page painted 116 to 118
-window frames in two seconds, still or scrolled; lifted, none.
+window frames in two seconds, still or scrolled; lifted, none. A spinner
+turning in a card that pulses, the card lifted and the spinner not, painted
+117 window frames in two seconds and uploaded the card's layer again at
+each; with the spinner on a layer inside the card's, none of either.
 
 ## Types
 
