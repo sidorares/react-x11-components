@@ -299,14 +299,18 @@ const VISUAL_PROPS = [
 const clock = globalThis as { performance?: { now(): number } };
 
 /**
- * The pane's time and the dashes' timer: what a pan is stamped with, what
- * the dashes' march reads to decide it has held still, and what takes the
- * march's steps. A test holds both (`holdClock` in test/held-clock.ts). On
- * the real clock a runner that spends longer than the dashes' wait over one
- * step of a pan lets them march in the middle of it, as they should, and
- * one that stalls before the pan lets a tick claim the dashes the first step
- * copies, which declines the copy. A test of the pan cannot tell either from
- * a march it should not have made.
+ * The pane's time and its timers: what a pan and a zoom are stamped with,
+ * what the dashes' march and a zoom's rest read to decide the view has held
+ * still, and what takes their steps. A test holds both (`holdClock` in
+ * test/held-clock.ts). On the real clock a runner that spends longer than
+ * the dashes' wait over one step of a pan lets them march in the middle of
+ * it, as they should, and one that stalls before the pan lets a tick claim
+ * the dashes the first step copies, which declines the copy. One that spends
+ * longer than `GL_ZOOM_REST_MS` between two steps of a zoom makes the second
+ * a gesture of its own, which rebuilds the GL world where the step was to
+ * draw it scaled. A test cannot tell any of them from the bug it looks for.
+ * A timer whose step reads this time waits on this timer, or a held clock
+ * never comes to the time the step waits for, and it waits again for good.
  *
  * The shape of the map's `glideClock`. Exported from this module and not
  * from `./index.ts`: this is for the tests.
@@ -3230,9 +3234,9 @@ export class FlowGraphNode extends Node implements FlowInstance {
     this._dropZoomShot();
     this._dropLiftShot();
     this._glRequest = null;
-    if (this._bodiesRest != null) timers.clearTimeout?.(this._bodiesRest);
+    if (this._bodiesRest != null) flowClock.disarm(this._bodiesRest);
     this._bodiesRest = null;
-    if (this._zoomRest != null) timers.clearTimeout?.(this._zoomRest);
+    if (this._zoomRest != null) flowClock.disarm(this._zoomRest);
     this._zoomRest = null;
     this._stopAnimation();
     this._dropGridTile();
@@ -3853,7 +3857,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _restZoom(): void {
     if (this._zoomRest != null) return;
     const wait = this._zoomAt + GL_ZOOM_REST_MS - now();
-    this._zoomRest = timers.setTimeout?.(
+    this._zoomRest = flowClock.arm(
       () => {
         this._zoomRest = null;
         if (now() - this._zoomAt < GL_ZOOM_REST_MS) this._restZoom();
@@ -4624,7 +4628,7 @@ export class FlowGraphNode extends Node implements FlowInstance {
   private _restBodies(): void {
     if (this._bodiesRest != null) return;
     const wait = this._restFrom() + BODY_ZOOM_REST_MS - now();
-    this._bodiesRest = timers.setTimeout?.(
+    this._bodiesRest = flowClock.arm(
       () => {
         this._bodiesRest = null;
         if (now() - this._restFrom() < BODY_ZOOM_REST_MS) this._restBodies();
