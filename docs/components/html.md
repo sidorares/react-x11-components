@@ -1135,6 +1135,9 @@ every animation set to no length, which is how the Zen Garden bench holds
 Chrome, and how it runs `<Html>`. The iteration count, the duration and the delay are
 not used there, so an animation of two `alternate` iterations, or of half
 of one, is drawn as it ends its first. Transitions are not run either way.
+Every frame runs in JavaScript, on either backend; what the platforms
+could run of it, and how a transform could stop painting its subtree on
+every frame, is [a design document](../prd-html-animations.md).
 
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
