@@ -506,15 +506,37 @@ export interface Part {
    *  document: one within `extent` where the viewport has it now covers
    *  the element there, or ought to (`HtmlViewNode.sprites`). */
   fixed: readonly Box[];
+  /** Its frames as sampled, kept by what they are sampled from. */
+  sampled: Sampled;
+}
+
+/** A part's frames as sampled, and what they are sampled from: the box,
+ *  its style, the style that inherits into it and its animations
+ *  (`Lift.id`). The same while those are, so a box inside it that
+ *  changes, which paints its layer again, samples nothing: a spinner
+ *  turning in a card that pulses would otherwise sample the card's whole
+ *  cycle at every frame of the spinner's. */
+interface Sampled {
+  id: string;
+  box: Box;
+  style: ComputedStyle;
+  parent: ComputedStyle;
+  frames: { opacities: number[]; matrices: SpriteMatrix[] }[];
+  rest: ComputedStyle;
 }
 
 /**
  * The part `lift` is, or null where the element cannot be one: in a box a
  * layer cannot draw (`liftableBox`), too large, or within reach of what
  * the document paints after it (`paintedAfter`) — where that cannot be
- * told, of any ink but its own and its ancestors' (`crowded`).
+ * told, of any ink but its own and its ancestors' (`crowded`). Its frames
+ * are `was`'s where they were sampled from what they would be now.
  */
-export function partOf(host: SpriteHost, lift: Lift): Part | null {
+export function partOf(
+  host: SpriteHost,
+  lift: Lift,
+  was: Part | null = null,
+): Part | null {
   const { el, box } = lift;
   const tree = host.tree;
   const kept = tree.styles.get(el);
@@ -542,7 +564,22 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
     height: own.height,
   };
   if (reach.width > MAX_SIDE || reach.height > MAX_SIDE) return null;
-  const { frames, rest } = sample(host, parentStyle, kept.inFlex, lift);
+  const known = was?.sampled;
+  const sampled =
+    known &&
+    known.id === lift.id &&
+    known.box === box &&
+    known.style === box.style &&
+    known.parent === parentStyle
+      ? known
+      : {
+          id: lift.id,
+          box,
+          style: box.style,
+          parent: parentStyle,
+          ...sample(host, parentStyle, kept.inFlex, lift),
+        };
+  const { frames, rest } = sampled;
   const origin = box.style.transformOrigin;
   const ox = bx + resolve(origin[0], box.width, 0);
   const oy = by + resolve(origin[1], box.height, 0);
@@ -604,6 +641,7 @@ export function partOf(host: SpriteHost, lift: Lift): Part | null {
     clip: clip ?? null,
     extent: shows,
     fixed: FIXED_BOXES.get(tree) ?? NO_BOXES,
+    sampled,
   };
 }
 
