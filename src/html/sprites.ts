@@ -66,8 +66,11 @@ export interface DocumentSpriteAnimation extends SpriteAnimation {
 }
 
 /** A part of the document's drawing, as react-x11's `Node.sprites()` takes
- *  one, with everything a document always says about it. */
+ *  one, with everything a document always says about it — its `paint`
+ *  among it, since nothing a document offers is a source that shows
+ *  itself (`contents`). */
 export interface DocumentSprite extends Sprite {
+  paint(ctx: Context2D): void;
   reach: Rect;
   version: string;
   opacity: number;
@@ -505,6 +508,9 @@ export interface Part {
   /** Where the boxes around it let it show (`clipFor`), in the document's
    *  coordinates; null where nothing cuts it. */
   clip: Rect | null;
+  /** The radius of the clip's corners, where a box with round corners cuts
+   *  it (`clipFor`): 0 for a square clip. */
+  clipRadius: number;
   /** What shows of everywhere it can be while it runs, in the document's
    *  coordinates. */
   extent: Rect;
@@ -603,8 +609,9 @@ export function partOf(
   }
   // the boxes that clip it cut its layer, and what shows of it is all that
   // anything painted after it could cover
-  const clip = clipFor(box, extent, host.scale);
-  if (clip === null) return null;
+  const cut = clipFor(box, extent, host.scale);
+  if (cut === null) return null;
+  const clip = cut?.rect;
   const shows = clip ? meet(extent, clip) : extent;
   if (!shows) return null;
   // What is painted before it is under the layer as it is under it, and
@@ -659,6 +666,7 @@ export function partOf(
     animations,
     begins,
     clip: clip ?? null,
+    clipRadius: cut?.radius ?? 0,
     extent: shows,
     fixed: FIXED_BOXES.get(tree) ?? NO_BOXES,
     atViewport,
@@ -718,6 +726,7 @@ export function describe(
       }
     },
     ...(part.clip ? { clip: shift(part.clip) } : null),
+    ...(part.clip && part.clipRadius ? { clipRadius: part.clipRadius } : null),
     opacity: part.opacity,
     transform: part.transform,
     origin: { x: part.origin.x + originX, y: part.origin.y + originY },

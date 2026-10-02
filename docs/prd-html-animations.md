@@ -581,6 +581,14 @@ In order, each step useful on its own and measured before the next:
    is fixed after it where it is. A fading toast in a scrolling pane went
    from 116–118 window frames in two seconds, still or scrolled, to none.
 
+   **And what a rounded box cuts.** A layer's box takes round corners
+   (react-x11#838's `clipRadius`), so an element that reaches a rounded
+   clipping box's corners is lifted with its layer cut by them, where it
+   had to keep clear of them: one circle's radius at all four corners, and
+   no other clip cutting the rounded one again. A shimmer sliding through a
+   card with a radius went from 117 window frames and 104 paints of the
+   document in two seconds to none.
+
 6. **§5.3's Linux rung** only if step 1's measurements on Xorg say the
    resample is the cost.
 
