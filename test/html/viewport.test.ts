@@ -157,6 +157,87 @@ test('the body keeps its overflow where the root gives the viewport its own, or 
   assert.strictEqual(el.abs.height, 100, 'cut at the root');
 });
 
+/** The same page with a `<body>` and no `<html>`, as most pages start. */
+const bare = (css: string, body: string): string =>
+  `<!DOCTYPE html><title>t</title><style>${css}</style>` +
+  `<body id="body">${body}</body>`;
+
+test('a body with no html around it takes its percentage height of the viewport', async () => {
+  // The root box stands in for the `<html>` HTML implies around the body,
+  // and is the root element: its percentage height is of the viewport
+  // (CSS 2.1 10.1, 10.5), and the body's of the root's. Laid out as tall
+  // as its flow, as the initial containing block is, the root had no
+  // height to give, and the body's `height: 100%` was `auto`
+  const { el, resize } = await renderScrolled(
+    bare(
+      'html{height:100%}body{margin:0;height:100%}',
+      '<div style="height:10px"></div>',
+    ),
+    300,
+  );
+  assert.strictEqual(boxOf(el, 'body').height, 300);
+  assert.strictEqual(el.abs.height, 300);
+  await resize(450);
+  assert.strictEqual(boxOf(el, 'body').height, 450, 'and follows it');
+  assert.strictEqual(el.abs.height, 450);
+  // and a body that clips is the viewport tall to clip at
+  const tall = '<div style="height:600px"></div>';
+  for (const css of [
+    'html{height:100%;overflow:hidden}body{margin:0;height:100%;overflow:hidden}',
+    'html{height:100%}body{margin:0;height:100%;overflow:hidden;contain:paint}',
+  ]) {
+    const clipped = await renderScrolled(bare(css, tall), 300);
+    assert.strictEqual(boxOf(clipped.el, 'body').height, 300, css);
+    assert.strictEqual(clipped.el.abs.height, 300, css);
+  }
+});
+
+test('the html implied around a body with no html keeps its margins to itself', async () => {
+  // The root box stands in for that `<html>`, the root element, whose
+  // margins collapse with nothing (CSS 2.1 8.3.1). Its top margin was
+  // handed to the flow as the margin pending before the body, as a
+  // fragment's root box standing in for a body has its own, so it
+  // collapsed with the body's: Chrome sets the body 20 + 30 down, and so
+  // did the same page here written with an `<html>`, where the body stood
+  // at 30. Each case has the body's top and the document's height, which
+  // the explicit `<html>` gives as well, and Chrome; the first body, the
+  // root's content height tall, runs 30px out of the root's bottom.
+  const written = (css: string, body: string): string =>
+    `<!DOCTYPE html><html><head><title>t</title><style>${css}</style>` +
+    `</head><body id="body">${body}</body></html>`;
+  const cases: [string, string, number, number][] = [
+    [
+      'html{height:50%;margin-top:20px}body{margin:30px 0 0;height:100%}',
+      '<div style="height:10px"></div>',
+      50,
+      200,
+    ],
+    // the body's margins still collapse with its first and last block's,
+    // inside the root's
+    [
+      'html{margin:20px 0 25px}body{margin:30px 0 35px}',
+      '<div style="height:10px;margin:40px 0 45px"></div>',
+      60,
+      140,
+    ],
+    // and padding on the root is between the two
+    [
+      'html{margin-top:20px;padding-top:1px}body{margin:30px 0 0}',
+      '<div style="height:10px;margin-top:40px"></div>',
+      61,
+      71,
+    ],
+  ];
+  for (const [css, inner, top, height] of cases) {
+    for (const source of [bare(css, inner), written(css, inner)]) {
+      const { el } = await renderScrolled(source, 300);
+      const what = `${source.includes('<html>') ? 'written' : 'bare'} ${css}`;
+      assert.strictEqual(boxOf(el, 'body').y, top, what);
+      assert.strictEqual(el.abs.height, height, what);
+    }
+  }
+});
+
 metric(
   'a fixed box is drawn where the viewport is, however far the pane has scrolled the document',
   async () => {

@@ -23,14 +23,19 @@ import {
   SVG_NS,
   atScale2,
   boxOf,
+  bytesApart,
   fillsOf,
   h,
   metric,
   pixelsIn,
+  pointIn,
+  rebuilt,
   render,
   render2x,
   renderWithBytes,
+  snapshot,
   svgBytes,
+  treeOf,
   view,
 } from './harness.js';
 import type { LaidBox, PaintOp } from './harness.js';
@@ -367,6 +372,198 @@ test('a block inside an inline element is faded with it', async (t) => {
   });
 });
 
+/** How tall each row of a `ROWS` document is, a case a row. */
+const ROW = 30;
+
+const ROWS =
+  '<style>body{margin:0;font:20px sans-serif;background:#ffffff}' +
+  `div,p{margin:0;height:${ROW}px;line-height:${ROW}px}</style>`;
+
+/** The least of each channel over a row of a `ROWS` document: where text
+ *  or a rule is drawn there, the colour a pixel its ink covers whole is. */
+async function expectLeast(
+  ctx: unknown,
+  row: number,
+  want: string,
+  message: string,
+): Promise<void> {
+  const data = await pixelsIn(ctx, {
+    x: 0,
+    y: row * ROW,
+    width: 200,
+    height: ROW,
+  });
+  const least: [number, number, number] = [255, 255, 255];
+  for (let i = 0; i < data.length; i += 4) {
+    for (let c = 0; c < 3; c += 1) least[c] = Math.min(least[c], data[i + c]);
+  }
+  assert.ok(
+    isNear(least, want, 3),
+    `${message}: ${want}, where it is ${least.join(', ')}`,
+  );
+}
+
+metric(
+  "an inline element's own text, background and rules are faded with it",
+  async () => {
+    // CSS Color 4, 3.2: an inline box under full opacity is a group, and
+    // what its block's lines draw of it is its content. Only a block inside
+    // one was faded: its text, its background and the rules through its
+    // text were drawn at full strength. In two such boxes, by both.
+    const { result } = await render(
+      ROWS +
+        '<div><span style="opacity:.5;color:#ff0000">HHHH</span></div>' +
+        '<div><span style="opacity:.5;background:#ff0000;padding:0 20px">' +
+        '&nbsp;</span></div>' +
+        '<div><span style="opacity:.5;color:transparent;' +
+        'text-decoration:underline;text-decoration-color:#0000ff;' +
+        'text-decoration-thickness:4px">HHHH</span></div>' +
+        '<div><span style="opacity:.5"><b style="opacity:.5;color:#ff0000">' +
+        'HHHH</b></span></div>' +
+        '<div style="height:60px;line-height:20px">&nbsp;<br><span ' +
+        'style="opacity:.5;background:#ff0000;padding-top:16px">x</span></div>' +
+        '<div style="height:60px;line-height:20px">&nbsp;<br><span ' +
+        'style="background:rgba(255,0,0,.5);padding-top:16px">x</span></div>' +
+        '<div><span style="opacity:.5;background:#0000ff;' +
+        'background-clip:text;color:transparent">HHHH</span></div>' +
+        '<div><span style="opacity:.5;background:linear-gradient(#0000ff,' +
+        '#0000ff);background-clip:text;color:transparent">HHHH</span></div>',
+    );
+    await expectLeast(result.ctx, 0, '#ff8080', 'the text, half over the page');
+    await expectLeast(result.ctx, 1, '#ff8080', 'the background');
+    await expectLeast(result.ctx, 2, '#8080ff', 'the underline');
+    await expectLeast(result.ctx, 3, '#ffc0c0', 'a quarter in two of them');
+    // its background drawn through its text, a colour and a gradient
+    await expectLeast(result.ctx, 8, '#8080ff', 'the background in the text');
+    await expectLeast(result.ctx, 9, '#8080ff', 'and a gradient');
+    // its padding over the line above, drawn again over that line's text
+    // (`paintBleeds`), as a background of its colour at half is
+    const bled = await pixelAt(result.ctx, 3, 4 * ROW + 10);
+    assert.ok(
+      isNear(bled, await pixelAt(result.ctx, 3, 6 * ROW + 10), 2),
+      `the padding over the line above: ${bled.join(', ')}`,
+    );
+  },
+);
+
+metric(
+  'what is on the lines of a faded inline element is faded with it: an inline-block, a text shadow, a selection',
+  async () => {
+    // The text and an opacity of 0 selected under a `::selection` that
+    // colours it: the highlight is drawn as a part of what the element
+    // holds, and none of it shows.
+    const { result, node } = await render(
+      ROWS +
+        '<style>.hid::selection{background:#0000ff;color:#ff0000}' +
+        '.band::selection{background:#0000ff}</style>' +
+        '<div><span style="opacity:.5"><span style="display:inline-block;' +
+        'width:40px;height:20px;background:#ff0000"></span></span></div>' +
+        '<div><span style="opacity:.5;color:transparent;' +
+        'text-shadow:0 0 0 #0000ff">HHHH</span></div>' +
+        '<div><span class="hid" style="opacity:0">HHHH</span></div>' +
+        '<div><span class="band" style="opacity:.5;color:transparent">' +
+        'HHHH</span></div>',
+    );
+    await expectLeast(result.ctx, 0, '#ff8080', 'the inline-block');
+    await expectLeast(result.ctx, 1, '#8080ff', 'the shadow');
+    await act(async () => {
+      (node as unknown as { selectAll(): void }).selectAll();
+    });
+    await expectLeast(result.ctx, 2, '#ffffff', 'nothing of the hidden text');
+    await expectLeast(result.ctx, 3, '#8080ff', 'the selection’s band');
+  },
+);
+
+metric('a faded inline element on a first line is faded there', async () => {
+  // In the `::first-line`'s colour alone, and in fonts of its own, where
+  // the line's runs are made again in the styles their boxes have on it
+  const { result } = await render(
+    ROWS +
+      '<style>.c::first-line{color:#0000ff}' +
+      '.f::first-line{color:#0000ff;font-size:22px}</style>' +
+      '<p class="c"><span style="opacity:.5">HHHH</span></p>' +
+      '<p class="f"><span style="opacity:.5">HHHH</span></p>',
+  );
+  await expectLeast(result.ctx, 0, '#8080ff', 'in the colour of the line');
+  await expectLeast(result.ctx, 1, '#8080ff', 'and in its fonts');
+});
+
+metric(
+  "a hover that changes an inline element's opacity is restyled in place, to the pixels a build draws",
+  async () => {
+    // Its text is laid out again in faded ink, as a colour's change is:
+    // its own (#s), the text of an element in it no rule restyled (#o's
+    // `<b>`), and a link in a faded element whose colour changes (#l) —
+    // and its shadow, its background and an inline-block on its line. A
+    // paragraph all of whose text casts one shadow keeps what it casts
+    // (#t), and is asked again, and its shadow falls below its line, which
+    // the repaint reaches.
+    const { result, node } = await render(
+      '<style>body{margin:0;font:20px sans-serif;background:#ffffff}' +
+        '#s{opacity:.5;color:#ff0000;background:#ffff00;' +
+        'text-shadow:2px 2px 0 #00ffff}#s:hover{opacity:.25}' +
+        '#o{opacity:.8}#o:hover{opacity:.4}' +
+        '#q{opacity:.5}#l{color:#0000ee}#l:hover{color:#00aa00}' +
+        '#t{opacity:.5;text-shadow:0 16px 0 #00ffff}' +
+        '#t:hover{opacity:.25}</style>' +
+        '<p>text with <span id="s">a span <span style="display:' +
+        'inline-block;width:20px;height:10px;background:#0000ff"></span>' +
+        '</span> in it</p>' +
+        '<p><span id="o">an <b>outer</b> one</span></p>' +
+        '<p><span id="q">a <a id="l">link</a> in it</span></p>' +
+        '<p><span id="t">a shadow</span></p>' +
+        '<p id="away">away from them</p>',
+      300,
+    );
+    const el = view(node);
+    for (const id of ['s', 'o', 'l', 't']) {
+      el.setHover(...pointIn(el, 'away'));
+      const quiet = await snapshot(result, el);
+      const tree = treeOf(el);
+      el.setHover(...pointIn(el, id));
+      const hovered = await snapshot(result, el);
+      assert.ok(treeOf(el) === tree, `#${id}: the document was built again`);
+      assert.ok(
+        bytesApart(hovered, quiet) > 0,
+        `#${id}: the hover drew nothing`,
+      );
+      assert.strictEqual(
+        bytesApart(hovered, await rebuilt(result, el)),
+        0,
+        `#${id}: not the pixels a build draws`,
+      );
+    }
+  },
+);
+
+metric(
+  'a hover that changes the opacity of an inline element a block broke apart builds the document again',
+  async () => {
+    // The block took the opacity when the boxes were built
+    // (`FADED_BLOCKS`), and is no child of the pieces the element became:
+    // restyled in place, it kept the half it was drawn at
+    const { result, node } = await render(
+      '<style>body{margin:0;background:#ffffff}' +
+        '#s{opacity:.5}#s:hover{opacity:.25}</style>' +
+        '<span id="s">a<div id="d" style="height:20px;background:#ff0000">' +
+        '</div>b</span>',
+    );
+    const el = view(node);
+    const [x, y] = pointIn(el, 'd');
+    el.setHover(x, y);
+    const hovered = await snapshot(result, el);
+    assert.strictEqual(
+      bytesApart(hovered, await rebuilt(result, el)),
+      0,
+      'not the pixels a build draws',
+    );
+    await expectPixel(result.ctx, x, y, '#ffc0c0', {
+      tolerance: 3,
+      message: 'the block, at a quarter',
+    });
+  },
+);
+
 /** The surfaces a document draws on for a paint of all of it: the ones it
  *  keeps, and the ones it makes for that paint alone. */
 async function surfacesOfRepaint(
@@ -468,6 +665,38 @@ metric(
     assert.ok(
       (await surfacesOfRepaint(t, text.node)) > 0,
       'faded on a surface',
+    );
+  },
+);
+
+metric(
+  'a faded inline element is a group of the positioned boxes in it, and of nothing on its lines',
+  async (t) => {
+    // Its text, its background and the inline-block on its line are drawn
+    // by its block's lines, each faded there, and none of them in its own
+    // paint: a surface for them was a surface with nothing on it. What its
+    // paint draws is the badge it holds, background and text.
+    const lines = await render(
+      '<style>body{margin:0}</style>' +
+        '<p><a style="opacity:.5;background:#ffff00;padding:2px">a link ' +
+        '<span style="display:inline-block;width:16px;height:16px;' +
+        'background:#0000ff"></span></a></p>',
+    );
+    assert.strictEqual(
+      await surfacesOfRepaint(t, lines.node),
+      0,
+      'a surface for what its lines draw',
+    );
+    cleanup();
+    const badge = await render(
+      '<style>body{margin:0}</style>' +
+        '<p style="position:relative"><a style="opacity:.5">a link ' +
+        '<span style="position:absolute;left:0;top:30px;padding:4px;' +
+        'background:#0000ff;color:#ffffff">a badge</span></a></p>',
+    );
+    assert.ok(
+      (await surfacesOfRepaint(t, badge.node)) > 0,
+      'no group for the badge',
     );
   },
 );

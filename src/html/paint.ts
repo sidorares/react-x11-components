@@ -33,7 +33,7 @@ import {
   isTransparent,
   resolve,
 } from './css/values.js';
-import { SCHEME_COLORS, blend, borderShades } from './css/color.js';
+import { SCHEME_COLORS, blend, borderShades, fadeColor } from './css/color.js';
 import type { Len } from './css/values.js';
 import type {
   BackgroundClip,
@@ -80,6 +80,8 @@ import {
   SHIFTED_LINES,
   TEXT_RAISES,
   TEXT_SHIFTS,
+  inlineFade,
+  textFade,
 } from './layout/boxes.js';
 import type {
   AtomicPlacement,
@@ -406,12 +408,16 @@ export function computePaintBounds(box: Box, moved = false): number {
     }
   }
   const lines = box.lines;
+  // and the shadows its text casts, as far past the text as they fall: an
+  // expose of the strip they fall in, or a hover that fades them, has to
+  // reach them
+  const cast = lines ? textShadowReach(box) : null;
   if (lines) {
     let tallest = 0;
     for (const line of lines) {
-      x1 = Math.min(x1, line.x);
+      x1 = Math.min(x1, line.x - (cast?.left ?? 0));
       y1 = Math.min(y1, line.y);
-      x2 = Math.max(x2, line.x + line.width);
+      x2 = Math.max(x2, line.x + line.width + (cast?.right ?? 0));
       y2 = Math.max(y2, line.y + line.height);
       tallest = Math.max(tallest, line.height);
       if (moved && SHIFTED_LINES.has(line)) {
@@ -501,8 +507,14 @@ export function computePaintBounds(box: Box, moved = false): number {
         const natural = text.layout.lines[text.layoutLine];
         if (!natural) continue;
         const baseline = text.drawY + natural.baseline;
-        top = Math.min(top, baseline - (natural.ascent ?? 0));
-        bottom = Math.max(bottom, baseline + (natural.descent ?? 0));
+        top = Math.min(
+          top,
+          baseline - (natural.ascent ?? 0) - (cast?.top ?? 0),
+        );
+        bottom = Math.max(
+          bottom,
+          baseline + (natural.descent ?? 0) + (cast?.bottom ?? 0),
+        );
       }
       if (top < line.y) {
         y1 = Math.min(y1, top);
@@ -642,6 +654,29 @@ function inlineFragmentsReach(
     );
   }
   return x1 === Infinity ? null : { x1, y1, x2, y2 };
+}
+
+/** How far past a block's text the shadows it casts fall on each side, at
+ *  most (`SHADOWED_TEXT`); null where its text casts none. */
+function textShadowReach(
+  box: Box,
+): { left: number; top: number; right: number; bottom: number } | null {
+  const casts = SHADOWED_TEXT.get(box);
+  if (!casts) return null;
+  let left = 0;
+  let top = 0;
+  let right = 0;
+  let bottom = 0;
+  for (const shadows of casts) {
+    for (const s of shadows) {
+      const reach = shadowReach(s.blur);
+      left = Math.max(left, reach - s.x);
+      right = Math.max(right, reach + s.x);
+      top = Math.max(top, reach - s.y);
+      bottom = Math.max(bottom, reach + s.y);
+    }
+  }
+  return { left, top, right, bottom };
 }
 
 /** Children lists past this size get the sorted viewport index; below it a
@@ -1646,28 +1681,36 @@ const OVERLAP_PROBE = 64;
  * dialog dims a page with — is faded the same either way, and needs no
  * surface. A box with more than `OVERLAP_PROBE` in it is taken for one
  * that does.
+ *
+ * An inline box's text, its background and borders, and what is on its
+ * lines are drawn on its block's lines, each faded there (`inlineFade`),
+ * and none of it in its own paint: what that draws, and a group of its
+ * would hold, is the floats and the positioned boxes in it (`paintedApart`).
  */
 function drawsOverItself(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
 ): boolean {
-  // the text is one thing, and the selection under it another — and the
-  // text is a group of its own where the context does not fade glyphs
   let things = 0;
-  if (box.subtreeTextEnd > box.subtreeTextStart) {
-    things += fadesGlyphs(ctx) ? 1 : 2;
-    const range = options.selection;
-    if (
-      range &&
-      range.start < box.subtreeTextEnd &&
-      range.end > box.subtreeTextStart
-    ) {
-      things += 1;
+  let looked = 0;
+  const stack: Box[] = box.kind === 'inline' ? paintedApart(box) : [box];
+  for (const at of stack) {
+    // the text is one thing, and the selection under it another — and the
+    // text is a group of its own where the context does not fade glyphs
+    if (at.subtreeTextEnd > at.subtreeTextStart) {
+      things += fadesGlyphs(ctx) ? 1 : 2;
+      const range = options.selection;
+      if (
+        range &&
+        range.start < at.subtreeTextEnd &&
+        range.end > at.subtreeTextStart
+      ) {
+        things += 1;
+      }
     }
   }
-  let looked = 0;
-  const stack: Box[] = [box];
+  if (things > 1) return true;
   while (stack.length) {
     const at = stack.pop()!;
     looked += 1;
@@ -1677,6 +1720,20 @@ function drawsOverItself(
     for (const child of at.children) stack.push(child);
   }
   return false;
+}
+
+/** What an inline box's own paint draws (`paintContent`): the floats in it,
+ *  through the inline boxes in it, and the positioned boxes it paints as
+ *  the stacking context its opacity makes it (`stackLayers`). */
+function paintedApart(box: Box): Box[] {
+  const out = [...(NEGATIVE.get(box) ?? []), ...(STACKED.get(box) ?? [])];
+  const stack = [...box.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at.isFloat) out.push(at);
+    else if (at.kind === 'inline') stack.push(...at.children);
+  }
+  return out;
 }
 
 /**
@@ -2003,9 +2060,6 @@ function paintContent(
     for (const child of below) paintStacked(ctx, child, options);
   }
   if (visible) {
-    if (box.marker) {
-      paintMarker(ctx, box.marker, options, box.style.colorScheme);
-    }
     if (box.replaced === 'image') paintImage(ctx, box, options);
     else if (box.replaced === 'svg') paintSvg(ctx, box, options);
   }
@@ -2018,12 +2072,8 @@ function paintContent(
   const clips = clipsOverflow(box);
   // a table's captions are outside the table box that clips, and painted
   // before it does
-  if (clips && box.kind === 'table') {
-    for (const child of box.children) {
-      if (child.kind !== 'table-caption' || layered(box, child)) continue;
-      paintBox(ctx, child, options);
-    }
-  }
+  const table = clips && box.kind === 'table';
+  if (table) paintFlow(ctx, box, options, CAPTIONS);
   if (clips) {
     const { rect, radii } = clipEdge(box, options);
     // Clipped to no area, nothing in the box shows but an absolute box
@@ -2044,31 +2094,12 @@ function paintContent(
     }
   }
 
-  // The flow this box holds, in CSS 2.1 Appendix E's order: the backgrounds
-  // and borders of its in-flow blocks, then its floats, then the lines of
-  // them all, then — where it is a stacking context — the positioned boxes
-  // in it (`stackLayers`). Painted a block at a time instead,
-  // a float was covered by the background of every block after it — the
-  // shaded paragraph beside a floated image hid the image — and a block's
-  // text by the next one's background where a negative margin overlapped
-  // them. A child that is no plain block of the flow — a table, a flex box,
-  // a box that clips, a replaced element — is painted whole in its place;
-  // one that is a stacking context is painted whole with the positioned
-  // boxes (`layered`).
-  const floats: Box[] = [];
-  paintFlowBackgrounds(ctx, box, options, floats);
-  for (const float of floats) paintBox(ctx, float, options);
-  // a hidden box's text is drawn in no ink, so that a visible element's in
-  // it is drawn (`runFor`)
-  if (box.lines) paintLines(ctx, box, options);
-  const outlines: Box[] = [];
-  paintFlowLines(ctx, box, options, outlines);
-  // the outlines of the blocks in the flow over all of its lines, and under
-  // its positioned boxes, as browsers draw them (CSS 2.1 Appendix E, step
-  // 10 left the choice open): drawn after each block's own lines, an
-  // outline went under an inline-block the next block held
-  for (const child of outlines) paintOutline(ctx, child, options);
-  if (box.collapsed && visible) paintCollapsedBorders(ctx, box, options);
+  // its marker under its clip with the rest, an outside one among it, as
+  // all three browsers cut it
+  if (visible && box.marker) {
+    paintMarker(ctx, box.marker, options, box.style.colorScheme);
+  }
+  paintFlow(ctx, box, options, table ? GRID : ALL_PARTS);
 
   // `z-index: auto` and 0 in document order, then the positive ones
   const stacked = STACKED.get(box);
@@ -2675,18 +2706,28 @@ function paintedChildren(box: Box, options: PaintOptions): readonly Box[] {
   );
 }
 
-/** Whether a child is a plain block of its parent's flow, whose background
- *  goes with the flow's and whose lines with its lines: an in-flow block
- *  that clips nothing, in a parent that is no flex box, where an item is
- *  painted whole (CSS Flexbox 5.4), and that is not the root element
- *  holding boxes below its flow, which it paints itself (`hoistNegative`).
- *  One that is a stacking context is painted with the positioned boxes,
- *  and is not asked (`layered`). */
+/** Whether a child is a box of its parent's flow, painted in the flow's
+ *  passes rather than whole in its place: its background with the flow's
+ *  backgrounds, its lines with the flow's lines, and what it holds in the
+ *  same passes at any depth (CSS 2.1 Appendix E, steps 4 to 7). That is an
+ *  in-flow block, one that clips among them, and a table with its parts
+ *  and captions. It is not an item of a flex box, which is painted whole
+ *  (CSS Flexbox 5.4), nor the root element holding boxes below its flow,
+ *  which it paints itself (`hoistNegative`). One that is a stacking context
+ *  is painted with the positioned boxes, and is not asked (`layered`). */
 function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
-  if (child.kind !== 'block' || parent.kind === 'flex') return false;
-  if (options.negative && NEGATIVE.has(child)) return false;
-  const style = child.style;
-  return style.overflowX === 'visible' && style.overflowY === 'visible';
+  if (parent.kind === 'flex') return false;
+  switch (child.kind) {
+    case 'block':
+    case 'table':
+    case 'table-row-group':
+    case 'table-row':
+    case 'table-cell':
+    case 'table-caption':
+      return !(options.negative && NEGATIVE.has(child));
+    default:
+      return false;
+  }
 }
 
 /** How opaque a box is drawn: its own `opacity`, and the one it takes from
@@ -2696,27 +2737,112 @@ function opacityOf(box: Box): number {
   return taken === undefined ? box.style.opacity : box.style.opacity * taken;
 }
 
-/** Whether a child is a flex box of its parent's flow — or a grid — that
- *  clips nothing: its background and borders go with the flow's
- *  backgrounds, in the document's order, and its items with the flow's
- *  lines, each painted whole as an inline block is (CSS 2.1 Appendix E,
- *  CSS Flexbox 5.4). Painted whole in its place, its background covered a
- *  block after it that a negative margin drew up over it. One that is a
- *  stacking context is painted with the positioned boxes (`layered`). */
+/** Whether a child is a flex box of its parent's flow, or a grid. Its
+ *  background and borders go with the flow's backgrounds, in the
+ *  document's order. Its items go with the flow's lines, under its clip
+ *  where it clips, each painted whole as an inline block is (CSS 2.1
+ *  Appendix E, CSS Flexbox 5.4). Painted whole in its place, its
+ *  background covered a block after it that a negative margin drew up
+ *  over it. One that is a stacking context is painted with the positioned
+ *  boxes (`layered`). */
 function flowFlex(parent: Box, child: Box, options: PaintOptions): boolean {
   if (child.kind !== 'flex' || parent.kind === 'flex') return false;
   // the root element holding boxes below its flow paints them itself
-  if (options.negative && NEGATIVE.has(child)) return false;
-  const style = child.style;
-  return style.overflowX === 'visible' && style.overflowY === 'visible';
+  return !(options.negative && NEGATIVE.has(child));
+}
+
+/** Which of a box's children a pass over its flow takes: all of them, or,
+ *  of a table that clips, either its captions alone, which are outside the
+ *  table box and its clip (the CSS 2.1 errata, 11.1.1), or all but them. */
+type Part = 0 | 1 | 2;
+const ALL_PARTS: Part = 0;
+const CAPTIONS: Part = 1;
+const GRID: Part = 2;
+
+/** What a pass over a flow leaves to a later pass: the floats it met to the
+ *  floats' pass, the outlines to the outlines'. Each is kept with the boxes
+ *  between it and the flow's own box that clip what they hold, outermost
+ *  first, and is painted in its turn under their clips (`paintLater`). */
+interface Later {
+  boxes: Box[];
+  clips: (readonly Box[])[];
+}
+
+/** The first pass's state: the floats it leaves to theirs, and the boxes
+ *  that clip it has walked into, with their clips, which are pushed only
+ *  once something under them draws (`pushEntered`). A box of text and
+ *  images draws nothing in this pass, and on X11 a rounded clip is a mask
+ *  the size of the window, made again at every restore: pushed whether or
+ *  not anything drew, a page of rounded cards painted an eighth slower. */
+interface BackgroundPass {
+  floats: Later;
+  entered: { box: Box; clip: ClipEdge }[];
+  /** How many of `entered` are pushed, the outermost first. */
+  pushed: number;
 }
 
 /**
- * The first pass over a box's flow: each plain block's background and
- * borders, in document order and at any depth, while the floats met on the
- * way are kept for their own pass, and the positioned boxes are left to
- * the stacking context that paints them (`stackLayers`). A child that is
- * no plain block is left for the last pass, where it is painted whole
+ * The flow a box holds, in CSS 2.1 Appendix E's order: the backgrounds and
+ * borders of its in-flow blocks and tables, then its floats, then the lines
+ * of them all, then their outlines. The positioned boxes in it are left to
+ * the stacking context that paints them (`stackLayers`). Painted a block
+ * at a time instead, a float was covered by the background of every block
+ * after it, so the shaded paragraph beside a floated image hid the image,
+ * and a block's text was covered by the next one's background where a
+ * negative margin overlapped them.
+ *
+ * A box that clips is in the flow too, unless it is a stacking context. Its
+ * own background goes with the flow's, and what it holds goes in each pass
+ * under its clip (`flowClip`). A table is the same: its backgrounds, its
+ * parts' and its cells' with the blocks', then its collapsed borders over
+ * them, its cells' floats with the floats and their lines with the lines.
+ * Chrome, Firefox and Safari paint both so. Painted whole at the lines'
+ * turn, a box that clips, or a table, covered a block after it that a
+ * negative margin drew up over it, and the hit test found that block.
+ */
+function paintFlow(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  part: Part,
+): void {
+  const floats: Later = { boxes: [], clips: [] };
+  const pass: BackgroundPass = { floats, entered: [], pushed: 0 };
+  paintFlowBackgrounds(ctx, box, options, NO_CLIPS, part, pass);
+  if (
+    box.collapsed &&
+    part !== CAPTIONS &&
+    box.style.visibility === 'visible'
+  ) {
+    paintCollapsedBorders(ctx, box, options);
+  }
+  paintLater(ctx, floats, options, true);
+  // a hidden box's text is drawn in no ink, so that a visible element's in
+  // it is drawn (`runFor`)
+  if (box.lines) paintLines(ctx, box, options);
+  const outlines: Later = { boxes: [], clips: [] };
+  paintFlowLines(ctx, box, options, NO_CLIPS, part, outlines);
+  // the outlines of the blocks in the flow over all of its lines, and under
+  // its positioned boxes, as browsers draw them (CSS 2.1 Appendix E, step
+  // 10 left the choice open): drawn after each block's own lines, an
+  // outline went under an inline-block the next block held
+  paintLater(ctx, outlines, options, false);
+}
+
+/** Whether a pass takes a child (`Part`). */
+function takes(part: Part, child: Box): boolean {
+  return (
+    part === ALL_PARTS ||
+    (child.kind === 'table-caption') === (part === CAPTIONS)
+  );
+}
+
+/**
+ * The first pass over a box's flow: the backgrounds and borders of its
+ * blocks and tables, in document order and at any depth. A table's
+ * collapsed borders follow its cells' backgrounds and the blocks in them.
+ * The floats met on the way are kept for their own pass. A child that is no
+ * box of the flow is left for the last pass, where it is painted whole
  * among the lines: its text is text, over every block background, and it
  * stands beside the floats rather than under them.
  */
@@ -2724,70 +2850,283 @@ function paintFlowBackgrounds(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
-  floats: Box[],
+  clips: readonly Box[],
+  part: Part,
+  pass: BackgroundPass,
 ): void {
   for (const child of paintedChildren(box, options)) {
     if (child.kind === 'text' || child.kind === 'break') continue;
+    if (!takes(part, child)) continue;
     if (layered(box, child) || onLine(box, child)) continue;
     if (CLAMPED.has(child)) continue;
     if (child.isFloat) {
-      floats.push(child);
+      pass.floats.boxes.push(child);
+      pass.floats.clips.push(clips);
       continue;
     }
     if (flowFlex(box, child, options)) {
       if (child.style.visibility === 'visible' && intersects(child, options)) {
+        if (pass.pushed < pass.entered.length && drawsOwn(child)) {
+          pushEntered(ctx, options, pass);
+        }
         paintOwnBackground(ctx, child, options);
       }
       continue;
     }
     if (!inFlow(box, child, options) || !intersects(child, options)) continue;
-    if (child.style.visibility === 'visible') {
+    if (child.kind === 'table-cell' && COLLAPSED_CELLS.has(child)) continue;
+    const visible = child.style.visibility === 'visible';
+    if (visible) {
+      if (pass.pushed < pass.entered.length && drawsOwn(child)) {
+        pushEntered(ctx, options, pass);
+      }
       paintOwnBackground(ctx, child, options);
     }
-    paintFlowBackgrounds(ctx, child, options, floats);
+    // what it holds, under its clip where it clips, in a function of its
+    // own: each name more in this one is stack a level of nesting takes
+    if (clipsOverflow(child)) {
+      paintClippedBackgrounds(ctx, child, options, clips, pass);
+      continue;
+    }
+    paintFlowBackgrounds(ctx, child, options, clips, ALL_PARTS, pass);
+    if (child.collapsed && visible) {
+      pushEntered(ctx, options, pass);
+      paintCollapsedBorders(ctx, child, options);
+    }
   }
 }
 
-/** The last pass over a box's flow: the plain blocks' markers and lines,
- *  and the children painted whole, in document order and at any depth,
- *  over the floats. */
+/** The first pass through a box of the flow that clips: a table's
+ *  captions, which are outside its clip, and then what it holds under its
+ *  clip, a table's collapsed borders among it. */
+function paintClippedBackgrounds(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  clips: readonly Box[],
+  pass: BackgroundPass,
+): void {
+  const table = box.kind === 'table';
+  if (table) paintFlowBackgrounds(ctx, box, options, clips, CAPTIONS, pass);
+  const clip = flowClip(box, options);
+  if (!clip) return;
+  const entered = pass.entered;
+  entered.push({ box, clip });
+  const inner = [...clips, box];
+  paintFlowBackgrounds(
+    ctx,
+    box,
+    options,
+    inner,
+    table ? GRID : ALL_PARTS,
+    pass,
+  );
+  if (box.collapsed && box.style.visibility === 'visible') {
+    pushEntered(ctx, options, pass);
+    paintCollapsedBorders(ctx, box, options);
+  }
+  if (pass.pushed === entered.length) {
+    popFlowClip(ctx, options, false);
+    pass.pushed -= 1;
+  }
+  entered.pop();
+}
+
+/** Push the clips of the boxes the first pass has walked into that are not
+ *  pushed yet, before something under them draws (`BackgroundPass`). */
+function pushEntered(
+  ctx: PaintContext,
+  options: PaintOptions,
+  pass: BackgroundPass,
+): void {
+  for (; pass.pushed < pass.entered.length; pass.pushed += 1) {
+    const { box, clip } = pass.entered[pass.pushed];
+    pushFlowClip(ctx, box, clip, options, false);
+  }
+}
+
+/** Whether a box draws anything of its own in the first pass, as far as its
+ *  style says (`paintOwnBackground`): a background, a border or a shadow,
+ *  and a table its parts' backgrounds. */
+function drawsOwn(box: Box): boolean {
+  const style = box.style;
+  return (
+    !isTransparent(style.backgroundColor) ||
+    style.backgroundImage !== null ||
+    style.backgroundImages !== null ||
+    style.backgroundGradient !== null ||
+    style.boxShadow !== null ||
+    style.borderImage.source !== null ||
+    box.borderTop > 0 ||
+    box.borderRight > 0 ||
+    box.borderBottom > 0 ||
+    box.borderLeft > 0 ||
+    box.kind === 'table'
+  );
+}
+
+/** The last pass over a box's flow: the markers and lines of its blocks and
+ *  tables, and the children painted whole, in document order and at any
+ *  depth, over the floats. The outlines met on the way are kept for their
+ *  own pass. */
 function paintFlowLines(
   ctx: PaintContext,
   box: Box,
   options: PaintOptions,
-  outlines: Box[],
+  clips: readonly Box[],
+  part: Part,
+  outlines: Later,
 ): void {
   for (const child of paintedChildren(box, options)) {
     if (child.kind === 'text' || child.kind === 'break') continue;
+    if (!takes(part, child)) continue;
     if (layered(box, child) || onLine(box, child) || child.isFloat) continue;
     if (CLAMPED.has(child)) continue;
     if (flowFlex(box, child, options)) {
       if (!intersects(child, options)) continue;
-      // its items, each whole, in `order` — one `float` makes no float of
-      for (const item of paintedChildren(child, options)) {
-        if (item.kind === 'text' || item.kind === 'break') continue;
-        if (layered(child, item) || CLAMPED.has(item)) continue;
-        paintBox(ctx, item, options);
+      paintFlexItems(ctx, child, options);
+      if (child.style.outlineStyle !== 'none') {
+        outlines.boxes.push(child);
+        outlines.clips.push(clips);
       }
-      if (child.style.outlineStyle !== 'none') outlines.push(child);
       continue;
     }
     if (!inFlow(box, child, options)) {
-      // a clipping table's captions were painted before its clip
-      if (child.kind === 'table-caption' && clipsOverflow(box)) continue;
       paintBox(ctx, child, options);
       continue;
     }
     if (!intersects(child, options)) continue;
-    if (child.marker && child.style.visibility === 'visible') {
-      paintMarker(ctx, child.marker, options, child.style.colorScheme);
+    if (child.kind === 'table-cell' && COLLAPSED_CELLS.has(child)) continue;
+    // What it holds, under its clip where it clips. The work of the clip is
+    // in a function of its own, and so are a flex box's items: each name
+    // more in this one is stack a level of nesting takes, and a deep
+    // document ran out of it.
+    const inner = clipsOverflow(child)
+      ? enterFlowClip(ctx, child, options, clips, outlines)
+      : clips;
+    if (inner) {
+      // its marker, an outside one under its clip with the rest, as all
+      // three browsers cut it
+      if (child.marker && child.style.visibility === 'visible') {
+        paintMarker(ctx, child.marker, options, child.style.colorScheme);
+      }
+      if (child.lines) paintLines(ctx, child, options);
+      paintFlowLines(
+        ctx,
+        child,
+        options,
+        inner,
+        inner !== clips && child.kind === 'table' ? GRID : ALL_PARTS,
+        outlines,
+      );
+      if (inner !== clips) popFlowClip(ctx, options, true);
     }
-    if (child.lines) paintLines(ctx, child, options);
-    paintFlowLines(ctx, child, options, outlines);
-    // an inline box's is drawn a fragment at a time, on its lines
-    if (child.style.outlineStyle !== 'none' && child.kind !== 'inline') {
-      outlines.push(child);
+    // its own outside its clip, over the lines after it
+    if (child.style.outlineStyle !== 'none') {
+      outlines.boxes.push(child);
+      outlines.clips.push(clips);
     }
+  }
+}
+
+/** A flex box's items, each whole, in `order` — one `float` makes no float
+ *  of — under its clip where it clips (`flowFlex`). */
+function paintFlexItems(ctx: PaintContext, box: Box, options: PaintOptions) {
+  const clip = clipsOverflow(box) ? flowClip(box, options) : undefined;
+  if (clip === null) return;
+  if (clip) pushFlowClip(ctx, box, clip, options, true);
+  for (const item of paintedChildren(box, options)) {
+    if (item.kind === 'text' || item.kind === 'break') continue;
+    if (layered(box, item) || CLAMPED.has(item)) continue;
+    paintBox(ctx, item, options);
+  }
+  if (clip) popFlowClip(ctx, options, true);
+}
+
+/** The last pass into a box of the flow that clips: a table's captions,
+ *  which are outside its clip, and then its clip pushed. The clips what it
+ *  holds is under, its own last, or null where its clip shows nothing. */
+function enterFlowClip(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  clips: readonly Box[],
+  outlines: Later,
+): readonly Box[] | null {
+  if (box.kind === 'table') {
+    paintFlowLines(ctx, box, options, clips, CAPTIONS, outlines);
+  }
+  const clip = flowClip(box, options);
+  if (!clip) return null;
+  pushFlowClip(ctx, box, clip, options, true);
+  return [...clips, box];
+}
+
+/** The edge a box of the flow clips what it holds at (`clipEdge`). Null
+ *  where it has no area and nothing under it shows: there is no positioned
+ *  box in it, which may be outside the clip. */
+function flowClip(box: Box, options: PaintOptions): ClipEdge | null {
+  const clip = clipEdge(box, options);
+  const { w, h } = clip.rect;
+  return (w <= 0 || h <= 0) && !holdsAbsolute(box) ? null : clip;
+}
+
+/** Push a box's clip (`flowClip`). With `levels`, also push a level for
+ *  `paintPositioned`: a pass that paints boxes whole may reach a positioned
+ *  box whose containing block is outside the clip, inside an inline-block
+ *  that is a stacking context, and that box is put off until the clip
+ *  ends, as `paintContent` puts it off. On a context that cannot clip,
+ *  nothing is pushed, and `popFlowClip` pops nothing. */
+function pushFlowClip(
+  ctx: PaintContext,
+  box: Box,
+  clip: ClipEdge,
+  options: PaintOptions,
+  levels: boolean,
+): void {
+  if (!pushClip(ctx, clip.rect, clip.radii)) return;
+  if (levels) (options.clips ??= []).push({ box, deferred: [] });
+}
+
+/** End a clip `pushFlowClip` pushed, and paint what its level put off. */
+function popFlowClip(
+  ctx: PaintContext,
+  options: PaintOptions,
+  levels: boolean,
+): void {
+  if (!canClip(ctx)) return;
+  ctx.restore();
+  if (!levels) return;
+  const level = options.clips!.pop()!;
+  for (const child of level.deferred) paintPositioned(ctx, child, options);
+}
+
+/** The floats or the outlines a pass over a flow left (`Later`), each
+ *  under the clips of the boxes it was found in. */
+function paintLater(
+  ctx: PaintContext,
+  later: Later,
+  options: PaintOptions,
+  floats: boolean,
+): void {
+  for (let i = 0; i < later.boxes.length; i += 1) {
+    const box = later.boxes[i];
+    let pushed = 0;
+    let shown = true;
+    for (const clipper of later.clips[i]) {
+      const clip = flowClip(clipper, options);
+      if (!clip) {
+        shown = false;
+        break;
+      }
+      pushFlowClip(ctx, clipper, clip, options, floats);
+      pushed += 1;
+    }
+    if (shown) {
+      if (floats) paintBox(ctx, box, options);
+      else paintOutline(ctx, box, options);
+    }
+    for (let j = 0; j < pushed; j += 1) popFlowClip(ctx, options, floats);
   }
 }
 
@@ -2812,6 +3151,12 @@ function overflowClip(
   };
 }
 
+/** Where a box that clips cuts what it holds (`clipEdge`). */
+interface ClipEdge {
+  rect: { x: number; y: number; w: number; h: number };
+  radii: Corners | null;
+}
+
 /**
  * The edge a box that clips cuts what it holds at: its padding box where it
  * scrolls, and for `overflow: clip` and paint containment its overflow clip
@@ -2821,13 +3166,7 @@ function overflowClip(
  * draw where the text measures from the border edge. Along an axis it lets
  * overflow show, nothing is cut.
  */
-function clipEdge(
-  box: Box,
-  options: ClipSpace,
-): {
-  rect: { x: number; y: number; w: number; h: number };
-  radii: Corners | null;
-} {
+function clipEdge(box: Box, options: ClipSpace): ClipEdge {
   const style = box.style;
   const painted = contained(box, CONTAIN_PAINT);
   if (
@@ -3687,6 +4026,11 @@ function roundedRect(
   ctx.closePath!();
 }
 
+/** Whether a context can clip what follows; the mock backend's cannot. */
+function canClip(ctx: PaintContext): boolean {
+  return !!(ctx.beginPath && ctx.rect && ctx.clip);
+}
+
 /** Clip what follows to a rectangle, rounded where `radii` are: false
  *  where the context cannot clip, and nothing was pushed. */
 function pushClip(
@@ -3694,14 +4038,14 @@ function pushClip(
   rect: { x: number; y: number; w: number; h: number },
   radii: Corners | null,
 ): boolean {
-  if (!ctx.beginPath || !ctx.rect || !ctx.clip) return false;
+  if (!canClip(ctx)) return false;
   ctx.save();
-  ctx.beginPath();
+  ctx.beginPath!();
   const w = Math.max(0, rect.w);
   const h = Math.max(0, rect.h);
   if (radii && ctx.roundRect) roundedRect(ctx, rect.x, rect.y, w, h, radii);
-  else ctx.rect(rect.x, rect.y, w, h);
-  ctx.clip();
+  else ctx.rect!(rect.x, rect.y, w, h);
+  ctx.clip!();
   return true;
 }
 
@@ -5572,6 +5916,23 @@ function paintBorderImage(
 
 const GRADIENT_KEYS = new WeakMap<Gradient, string>();
 
+/** A gradient with each of its stops faded by `fade`, `currentColor` among
+ *  them the colour it is: the gradient faded, as each stop is faded alike. */
+function fadedGradient(
+  gradient: Gradient,
+  fade: number,
+  currentColor: string,
+): Gradient {
+  if (!(fade < 1)) return gradient;
+  return {
+    ...gradient,
+    stops: gradient.stops.map((stop) => ({
+      ...stop,
+      color: fadeColor(inkColor(stop.color, currentColor), fade),
+    })),
+  };
+}
+
 /** A gradient as a key for what is drawn of it: its angle and stops, and
  *  the colour `currentColor` among them is. */
 function gradientKey(gradient: Gradient, color: string): string {
@@ -6412,7 +6773,9 @@ function paintSculpted(
  * A table's collapsed borders: one per segment of its grid, centred on the
  * line, reaching across the borders it meets at either end. The winners
  * are painted last, so where two cross, the corner is the one that won
- * (CSS 2.1 17.6.2.1). Painted over the cells, as the table's borders are.
+ * (CSS 2.1 17.6.2.1). Painted over the cells' backgrounds and those of the
+ * blocks in them, and under their floats and lines (`paintFlow`), as
+ * browsers paint them.
  */
 function paintCollapsedBorders(
   ctx: PaintContext,
@@ -6870,8 +7233,11 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
     // is not (heights vary), which is what the tallest-line slack is for.
     // Start at the first line that could reach the damage, stop at the
     // first one past it: the cost is the visible lines, not the box's.
-    const top = damage.y - dy;
-    const bottom = top + damage.height;
+    // And the lines whose text casts a shadow that falls in it, from as far
+    // above or below as the shadows fall (`textShadowReach`)
+    const cast = textShadowReach(box);
+    const top = damage.y - dy - (cast?.bottom ?? 0);
+    const bottom = damage.y - dy + damage.height + (cast?.top ?? 0);
     let lo = 0;
     let hi = lines.length;
     // and a line whose glyphs, or an atomic on it, reach past it
@@ -7033,8 +7399,19 @@ function paintLinePart(
   // it came back over the box it was under.
   for (const line of visible) {
     for (const placed of line.atomics) {
-      if (skip?.has(placed) || liftedOff(placed.box)) continue;
-      paintBox(ctx, placed.box, options);
+      const atomic = placed.box;
+      if (skip?.has(placed) || liftedOff(atomic)) continue;
+      // drawn on its line rather than in the inline boxes it is in, which
+      // fade it here (`inlineFade`)
+      const fade = inlineFade(atomic.parent);
+      if (fade <= 0) continue;
+      const faded = fade < 1 && typeof ctx.globalAlpha === 'number';
+      if (faded) {
+        ctx.save();
+        ctx.globalAlpha = ctx.globalAlpha! * fade;
+      }
+      paintBox(ctx, atomic, options);
+      if (faded) ctx.restore();
     }
   }
 }
@@ -7246,10 +7623,12 @@ function inkInto(line: LineBox, top: number, bottom: number): boolean {
 }
 
 /** An inline box's fragment whose padding or border reaches up over the
- *  lines before its own, and where its own line starts. */
+ *  lines before its own, where its own line starts, and how faded the box
+ *  is drawn (`inlineFade`). */
 interface Bleed {
   fragment: Frame;
   lineTop: number;
+  fade: number;
 }
 
 /**
@@ -7267,12 +7646,15 @@ function paintBleeds(
 ): void {
   if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip)
     return;
-  for (const { fragment, lineTop } of bleeds) {
+  for (const { fragment, lineTop, fade } of bleeds) {
     const left = Math.floor(fragment.x + options.originX) - 1;
     const top = Math.floor(fragment.y + options.originY) - 1;
     const bottom = Math.round(lineTop + options.originY);
     if (bottom <= top) continue;
     ctx.save();
+    if (fade < 1 && typeof ctx.globalAlpha === 'number') {
+      ctx.globalAlpha *= fade;
+    }
     ctx.beginPath();
     ctx.rect(left, top, Math.ceil(fragment.width) + 2, bottom - top);
     ctx.clip();
@@ -7350,6 +7732,11 @@ function paintClippedText(
     }
   }
   for (const [clip, byLayout] of parts) {
+    // an inline box's background, faded with it and the inline boxes
+    // around it (`inlineFade`) — in its colours, since ntk draws glyphs at
+    // full strength whatever the context's alpha is
+    const fade = inlineFade(clip);
+    if (fade <= 0) continue;
     const list = [...byLayout.values()];
     const style = clip.style;
     let area: Rect;
@@ -7375,13 +7762,14 @@ function paintClippedText(
         height: y1 - y0 + clip.padTop + clip.padBottom,
       };
     }
-    const gradient =
+    const found =
       style.backgroundGradient ??
       (style.backgroundImages?.find(
         (image): image is Gradient =>
           image !== null && typeof image !== 'string',
       ) ||
         null);
+    const gradient = found && fadedGradient(found, fade, style.color);
     let fill: unknown = null;
     // where the fill is a picture of the gradient, the corner it starts at
     let origin: { x: number; y: number } | null = null;
@@ -7444,7 +7832,10 @@ function paintClippedText(
       } else if (paint) fill = paint.style;
     }
     if (fill === null && !isTransparent(style.backgroundColor)) {
-      fill = inkColor(style.backgroundColor as string, style.color);
+      fill = fadeColor(
+        inkColor(style.backgroundColor as string, style.color),
+        fade,
+      );
     }
     if (fill === null) continue;
     for (const part of list) {
@@ -7465,11 +7856,13 @@ function paintClippedText(
   }
 }
 
-/** The shadows one stretch of a layout's text casts, and the colour its
- *  `currentColor` is. */
+/** The shadows one stretch of a layout's text casts, the colour its
+ *  `currentColor` is, and how much the inline boxes around the text fade
+ *  them (`textFade`). */
 interface Cast {
   shadows: BoxShadow[];
   color: string;
+  fade: number;
 }
 
 /**
@@ -7528,14 +7921,22 @@ function paintTextShadows(
 }
 
 /** A layout whose runs do not all cast the same shadows. */
-const MIXED: Cast = { shadows: [], color: '' };
+const MIXED: Cast = { shadows: [], color: '', fade: 1 };
 
 /** What a layout's runs cast: null for none, the one cast of all of them,
  *  or `MIXED`. Kept by the map of its runs to their boxes, which is its
  *  paragraph's own — not by the layout, which another paragraph of the same
  *  runs may share, casting other shadows or none, since a shadow is no
- *  field of a run. */
+ *  field of a run — until a restyle in place changes what its boxes cast
+ *  (`forgetCasts`). */
 const CASTS = new WeakMap<object, Cast | null>();
+
+/** A restyle in place (a `:hover`, a frame of an animation) has given the
+ *  boxes of a layout's runs new styles, which may cast other shadows, in
+ *  another colour or faded otherwise: the layout's cast is asked again. */
+export function forgetCasts(spans: object): void {
+  CASTS.delete(spans);
+}
 
 function castOf(text: LineText): Cast | null {
   const layout = text.layout;
@@ -7545,10 +7946,12 @@ function castOf(text: LineText): Cast | null {
   for (const natural of layout.lines) {
     for (const run of natural.runs) {
       // a spacer, or a bidi control, is no one's text and draws nothing
-      const style = boxAt?.call(text.spans, run.start)?.style;
-      if (!style) continue;
-      const shadows = style.textShadow;
-      const next = shadows ? { shadows, color: style.color } : null;
+      const box = boxAt?.call(text.spans, run.start);
+      if (!box) continue;
+      const shadows = box.style.textShadow;
+      const next = shadows
+        ? { shadows, color: box.style.color, fade: textFade(box) }
+        : null;
       if (cast === undefined) cast = next;
       else if (!sameCast(cast, next)) cast = MIXED;
       if (cast === MIXED) break;
@@ -7561,7 +7964,12 @@ function castOf(text: LineText): Cast | null {
 
 function sameCast(a: Cast | null, b: Cast | null): boolean {
   return (
-    a === b || (!!a && !!b && a.shadows === b.shadows && a.color === b.color)
+    a === b ||
+    (!!a &&
+      !!b &&
+      a.shadows === b.shadows &&
+      a.color === b.color &&
+      a.fade === b.fade)
   );
 }
 
@@ -7573,15 +7981,33 @@ function stretchesOf(
 ): [Cast, number, number][] {
   const out: [Cast, number, number][] = [];
   for (const run of natural.runs) {
-    const style = text.spans.boxAt!.call(text.spans, run.start)?.style;
-    if (!style?.textShadow) continue;
-    const cast = { shadows: style.textShadow, color: style.color };
+    const box = text.spans.boxAt!.call(text.spans, run.start);
+    if (!box?.style.textShadow) continue;
+    const cast = {
+      shadows: box.style.textShadow,
+      color: box.style.color,
+      fade: textFade(box),
+    };
     const last = out[out.length - 1];
     if (last && sameCast(last[0], cast) && Math.abs(last[2] - run.x) < 0.5) {
       last[2] = Math.max(last[2], run.x + run.width);
     } else out.push([cast, run.x, run.x + run.width]);
   }
   return out;
+}
+
+/**
+ * Whether a context casts a shadow from what it draws, its colour's alpha
+ * and all, rather than from the coverage alone, as ntk's does and a
+ * browser casts a text's — so that `color: transparent` with a
+ * `text-shadow` is blurred text there. The native contexts (`scalesText`)
+ * are the first: on macOS, text in a transparent colour casts no shadow,
+ * and a run faded by the inline boxes around it (`fadeRun`) casts one
+ * faded as much already. Windows' is taken to cast as macOS's does, and
+ * has not been tried.
+ */
+function castsFromInk(ctx: PaintContext): boolean {
+  return ctx.scalesText === true;
 }
 
 /** A layout's shadows, drawn where `left` and `top` put it, each clipped to
@@ -7595,6 +8021,10 @@ function castShadows(
   cast: Cast,
   stretch: { x: number; y: number; width: number; height: number } | null,
 ): void {
+  if (cast.fade <= 0) return;
+  // faded by the inline boxes around the text, as its glyphs are — which
+  // a context that casts from what it draws has done already
+  const fade = castsFromInk(ctx) ? 1 : cast.fade;
   const layout = text.layout;
   // clear of the window: the far end of its furthest line, which a line
   // `text-align` moves in from the layout's left reaches past its width,
@@ -7618,7 +8048,7 @@ function castShadows(
       );
       ctx.clip();
     }
-    ctx.shadowColor = inkColor(s.color, cast.color);
+    ctx.shadowColor = fadeColor(inkColor(s.color, cast.color), fade);
     // CoreGraphics casts no shadow with no blur at all: a hard one is one
     // blurred too little to see
     const move = aside(
@@ -7975,12 +8405,26 @@ function paintInlineBoxes(
   const boxes = [...fragments.keys()].sort((a, b) => depthOf(a) - depthOf(b));
   for (const box of boxes) {
     if (box.style.visibility !== 'visible') continue;
+    // faded by its own opacity and the inline boxes' around it, each
+    // fragment on its own (`inlineFade`)
+    const fade = inlineFade(box);
+    if (fade <= 0) continue;
     for (const f of fragments.get(box)!) {
       if (!whole) {
         const first = f.first ?? 0;
         if (first < from || first >= to) continue;
       }
-      paintInlineFragment(ctx, line, lines, options, bleeds, box, f, baseline);
+      paintInlineFragment(
+        ctx,
+        line,
+        lines,
+        options,
+        bleeds,
+        box,
+        f,
+        baseline,
+        fade,
+      );
     }
   }
 }
@@ -7995,6 +8439,7 @@ function paintInlineFragment(
   box: Box,
   f: InlineFragment,
   baseline: number,
+  fade: number,
 ): void {
   const shifted = SHIFTED_LINES.has(line);
   {
@@ -8039,11 +8484,17 @@ function paintInlineFragment(
       const strip = stripFor(lines, line, box, fragment);
       if (strip) fragment.strip = strip;
     }
+    const faded = fade < 1 && typeof ctx.globalAlpha === 'number';
+    if (faded) {
+      ctx.save();
+      ctx.globalAlpha = ctx.globalAlpha! * fade;
+    }
     paintLayers(ctx, fragment, options, frameImages(ctx, fragment, options));
     paintBorders(ctx, fragment, options);
     if (box.style.outlineStyle !== 'none') paintOutline(ctx, fragment, options);
+    if (faded) ctx.restore();
     if (bleeds && fragment.y < line.y - 0.5) {
-      bleeds.push({ fragment, lineTop: line.y + (moved?.y ?? 0) });
+      bleeds.push({ fragment, lineTop: line.y + (moved?.y ?? 0), fade });
     }
   }
 }
@@ -8247,8 +8698,8 @@ function paintSelection(
 ): void {
   for (const band of selectedBands(line, options, skip)) {
     const fill = band.style ? band.style.background : options.selectionColor;
-    if (!fill || isTransparent(fill)) continue;
-    ctx.fillStyle = fill;
+    if (!fill || isTransparent(fill) || band.fade <= 0) continue;
+    ctx.fillStyle = fadeColor(fill, band.fade);
     ctx.fillRect(band.x, band.y, band.width, band.height);
   }
 }
@@ -8257,6 +8708,9 @@ function paintSelection(
  *  `::selection` of the element it is in: null for the palette's. */
 interface SelectedBand extends Rect {
   style: SelectionStyle | null;
+  /** How much the inline boxes around its text fade it (`textFade`), whose
+   *  highlight is drawn as a part of what they hold. */
+  fade: number;
   /** The layout whose text it is. */
   layout: unknown;
 }
@@ -8294,9 +8748,13 @@ function selectedBands(
     const rows = selectionRows(line, text, natural);
     const y = Math.round(rows.y + options.originY);
     const height = Math.ceil(rows.height);
-    const pieces = styler
-      ? stylePieces(text, natural, layoutFrom, layoutTo, styler)
-      : [{ from: layoutFrom, to: layoutTo, style: null }];
+    const pieces = selectionPieces(
+      text,
+      natural,
+      layoutFrom,
+      layoutTo,
+      styler ?? null,
+    ) ?? [{ from: layoutFrom, to: layoutTo, style: null, fade: 1 }];
     for (const piece of pieces) {
       for (const band of lineBands(
         text.layout,
@@ -8311,6 +8769,7 @@ function selectedBands(
           width: Math.ceil(band.width),
           height,
           style: piece.style,
+          fade: piece.fade,
           layout: text.layout,
         });
       }
@@ -8319,43 +8778,67 @@ function selectedBands(
   return out;
 }
 
+/** A stretch of a line's selected text, in the layout's offsets, that one
+ *  `::selection` styles and the inline boxes around it fade alike. */
+interface SelectionPiece {
+  from: number;
+  to: number;
+  style: SelectionStyle | null;
+  fade: number;
+}
+
 /**
  * A line's selected text, `from` to `to` in the layout's offsets, cut where
- * the `::selection` over it changes: a run's is its element's, and a run of
- * no element's — an inline box's edge, laid out as a spacer — the one
- * beside it, so a styled band has no palette-coloured gap at a `<span>`.
+ * the `::selection` over it changes, or how much the inline boxes around it
+ * fade it (`textFade`): a run's are its element's, and a run of no
+ * element's — an inline box's edge, laid out as a spacer — the one beside
+ * it, so a styled band has no palette-coloured gap at a `<span>`. Null
+ * where no rule styles a selection and no box around the text fades it,
+ * which is one piece.
  */
-function stylePieces(
+function selectionPieces(
   text: LineText,
   natural: LineText['layout']['lines'][number],
   from: number,
   to: number,
-  styler: SelectionStyler,
-): { from: number; to: number; style: SelectionStyle | null }[] {
+  styler: SelectionStyler | null,
+): SelectionPiece[] | null {
   const runs = natural.runs
     .filter((run) => run.end > from && run.start < to)
     .sort((a, b) => a.start - b.start);
   const boxAt = text.spans.boxAt;
-  const styles: (SelectionStyle | null | undefined)[] = runs.map((run) => {
+  const styles: (SelectionStyle | null | undefined)[] = [];
+  const fades: (number | undefined)[] = [];
+  let faded = false;
+  for (const run of runs) {
     const box = boxAt?.call(text.spans, run.start) ?? null;
-    return box ? styler(box) : undefined;
-  });
-  for (let i = 1; i < styles.length; i += 1) {
+    styles.push(box ? (styler?.(box) ?? null) : undefined);
+    const fade = box ? textFade(box) : undefined;
+    if (fade !== undefined && fade < 1) faded = true;
+    fades.push(fade);
+  }
+  if (!styler && !faded) return null;
+  for (let i = 1; i < runs.length; i += 1) {
     if (styles[i] === undefined) styles[i] = styles[i - 1];
+    if (fades[i] === undefined) fades[i] = fades[i - 1];
   }
-  for (let i = styles.length - 2; i >= 0; i -= 1) {
+  for (let i = runs.length - 2; i >= 0; i -= 1) {
     if (styles[i] === undefined) styles[i] = styles[i + 1];
+    if (fades[i] === undefined) fades[i] = fades[i + 1];
   }
-  const out: { from: number; to: number; style: SelectionStyle | null }[] = [];
+  const out: SelectionPiece[] = [];
   runs.forEach((run, i) => {
     const style = styles[i] ?? null;
+    const fade = fades[i] ?? 1;
     const last = out[out.length - 1];
-    if (last && last.style === style) last.to = Math.min(to, run.end);
-    else {
+    if (last && last.style === style && last.fade === fade) {
+      last.to = Math.min(to, run.end);
+    } else {
       out.push({
         from: Math.max(from, run.start),
         to: Math.min(to, run.end),
         style,
+        fade,
       });
     }
   });
@@ -8393,7 +8876,9 @@ function recoloredBands(
  * text shadow, since a layout draws in its runs' own colours. Drawn over
  * rather than in place of the text, the old glyphs' edges showed round the
  * new ones. Where the context cannot clip or cast, the text keeps its own
- * colours.
+ * colours. A band's colour is faded as the inline boxes around its text
+ * fade it, as the glyphs it replaces were (`fadeRun`) — but by a context
+ * that casts from what it draws, which casts from those faded glyphs.
  */
 function drawRecolored(
   ctx: PaintContext,
@@ -8435,8 +8920,11 @@ function drawRecolored(
     0.01,
   );
   const colors = new Map<string, SelectedBand[]>();
+  const inked = castsFromInk(ctx);
   for (const band of bands) {
-    const color = band.style!.color!;
+    const color = inked
+      ? band.style!.color!
+      : fadeColor(band.style!.color!, band.fade);
     const group = colors.get(color);
     if (group) group.push(band);
     else colors.set(color, [band]);

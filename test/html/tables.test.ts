@@ -1,7 +1,7 @@
 // <Html> — tables.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { cleanup, expectPixel } from 'react-x11/test';
+import { cleanup, expectPixel, pixelAt } from 'react-x11/test';
 import type { FontsLike } from '../../src/html/layout/inline.js';
 import { parseColor } from '../../src/html/css/values.js';
 import {
@@ -2041,6 +2041,77 @@ metric(
     // the caption is drawn, and the cell's block does not reach up over it
     await expectPixel(ctx, 10, 15, '#0000ff', { message: 'the caption' });
     await expectPixel(ctx, 10, 25, '#ff0000', { message: 'in the table box' });
+  },
+);
+
+metric(
+  "a table is painted in the flow's passes: its backgrounds and borders with the blocks', its cells' floats and lines with theirs",
+  async () => {
+    // CSS 2.1 Appendix E, step 4: a table's background, its parts' and its
+    // cells', and its borders, are painted with the backgrounds of the
+    // blocks around it, and what its cells hold in the passes after,
+    // floats and then lines — as Chrome, Firefox and Safari paint and
+    // hit-test it, its captions outside the clip of a table that clips. It
+    // was painted whole at the lines' turn, over the block after it that a
+    // negative margin drew up over it, while the hit test found that block,
+    // and its collapsed borders over what its cells held.
+    const { node, result } = await render(
+      '<style>body{margin:0}section{height:60px}' +
+        'table{border-spacing:0;width:300px}td{padding:0}' +
+        '.b{height:40px;margin-top:-20px;background:#0000ff}' +
+        '.f{float:left;width:100px;height:40px;background:#ff0000}' +
+        '.c{border-collapse:collapse}.c td{height:20px;' +
+        'border:10px solid #00ff00;vertical-align:top}</style>' +
+        // the table's background, under the block after it
+        '<section><table style="height:40px;background:#ff0000"><tr><td>' +
+        '</td></tr></table><div class="b" id="b1"></div></section>' +
+        // a cell's
+        '<section><table><tr><td style="height:40px;background:#ff0000">' +
+        '</td></tr></table><div class="b" id="b2"></div></section>' +
+        // a collapsed border
+        '<section><table class="c"><tr><td></td></tr></table>' +
+        '<div class="b" id="b3"></div></section>' +
+        // a float in a cell over the block after the table
+        '<section><table><tr><td style="height:40px"><div class="f" ' +
+        'id="f4"></div></td></tr></table><div class="b"></div></section>' +
+        // a float after the table over a cell's background
+        '<section><table><tr><td style="height:40px;background:#00ff00">' +
+        '</td></tr></table><div style="margin-top:-20px"><div class="f" ' +
+        'id="f5"></div></div></section>' +
+        // the caption of a table that clips
+        '<section><table style="overflow:hidden"><caption style=' +
+        '"height:40px;background:#ff0000"></caption></table>' +
+        '<div class="b" id="b6"></div></section>' +
+        // a cell's inline-block over the collapsed border below it
+        '<section><table class="c"><tr><td><span id="s7" style=' +
+        '"display:inline-block;vertical-align:top;width:100px;' +
+        'height:30px;margin-bottom:-10px;background:#ff0000"></span>' +
+        '</td></tr></table></section>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as { abs: { x: number; y: number } };
+    const points: [number, number, string][] = [
+      [10, 30, 'b1'],
+      [10, 90, 'b2'],
+      [10, 157, 'b3'],
+      [10, 210, 'f4'],
+      [10, 270, 'f5'],
+      [10, 330, 'b6'],
+      [10, 397, 's7'],
+    ];
+    for (const [x, y, over] of points) {
+      const [r, g, b] = await pixelAt(result.ctx, abs.x + x, abs.y + y);
+      const blue = over.startsWith('b');
+      assert.ok(
+        blue ? b > 200 && r < 100 && g < 100 : r > 200 && g < 100,
+        `${over} drawn at ${x},${y}: ${r},${g},${b}`,
+      );
+      assert.strictEqual(
+        el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id,
+        over,
+        `under the pointer at ${x},${y}`,
+      );
+    }
   },
 );
 

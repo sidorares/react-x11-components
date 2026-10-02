@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.26.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.26.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.27.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.27.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -565,6 +565,20 @@ it up. **The floor is a running one and moves often** — every move since
   to the active window on macOS (#800) and make `-apple-system` and
   `BlinkMacSystemFont` the system font (#803), which head GitHub's font
   stack and had fallen to Helvetica.
+- `^2.27.0` — `fadesSurfacesCheaply` (react-x11#812) over @windowkit/appkit
+  0.18.0's `ctxDrawSurfaceFaded` (windowkit/appkit#94, react-x11#814):
+  CoreGraphics draws an image under an alpha below 1 at some fifteen times
+  its cost at 1, so on macOS a group faded on a surface cost more than
+  fading each thing in it, and `<Html>` faded each thing — a card's
+  background through its text (react-x11#810). The macOS context draws a
+  surface's pixels scaled by the alpha now and says so, and `<Html>` hands
+  it a faded element's group and keeps a fade's: a repaint of 24 faded
+  cards went from 3.7–5.5 ms to 2.4–4.4 on macOS, a frame of a fade from
+  0.65–1.2 to 0.39–0.73. Read at run time, so an older core still paints,
+  a thing at a time. The lockfile holds ntk at 8.17.8, the least 2.27.0
+  takes: 8.18.0 cuts a self-crossing fill at its crossings (ntk#505), and
+  `<Flow>`'s folded edge, drawn in two runs by a pass that cuts its turn,
+  no longer matches the edge drawn whole (`test/flow.test.ts`).
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1628,6 +1642,19 @@ in-process server's here, and the first guess at why — the image path, a
 flip, the interpolation — was wrong too: measure a new surface on macOS,
 in a benchmark that varies one thing at a time, before taking a composite
 for the cheap side or a cause for the cost.
+
+**An inline element's opacity is in the colours its text is set in.**
+What an inline box holds is drawn on its block's lines, and a paragraph's
+text is one batch of glyphs, so the fade of the inline boxes around a run
+goes into the run's colours where the run is made (`collect`, `fadeRun`).
+**Anything that makes a run again folds the fade in again** —
+`restyledRun` and `firstLineColour` for a first line, `reinked` for a
+restyle in place, which compares a run with what its style makes, fade
+and all, and re-inks every run under an inline box whose opacity changed
+— or that text is drawn at full strength with nothing failing. What else
+is on the lines is faded where it is painted (`inlineFade`), and none of
+it may be text faded through the context's alpha, which ntk's glyphs do
+not take (`fadesGlyphs`).
 
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,

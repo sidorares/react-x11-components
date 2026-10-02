@@ -1,7 +1,7 @@
 // <Html> — overflow, clipping and containment.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup, expectPixel, waitFor } from 'react-x11/test';
+import { act, cleanup, expectPixel, pixelAt, waitFor } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
@@ -13,6 +13,7 @@ import {
   fillsOf,
   findById,
   metric,
+  pixelsIn,
   render,
   renderWithBytes,
   view,
@@ -166,6 +167,141 @@ metric('what a box clipped to no area holds is not painted', async () => {
     fills.some((f) => f.style === parseColor(color));
   assert.ok(!painted('#ff0000'), 'what it holds');
   assert.ok(painted('#0000ff'), 'an absolute box outside its clip');
+});
+
+metric(
+  "a box that clips is painted in the flow's passes, what it holds under its clip",
+  async () => {
+    // CSS 2.1 Appendix E: a box that clips its overflow is no stacking
+    // context, so its background is painted with the other blocks', what
+    // it holds in the same passes, and its floats with the floats — under
+    // its clip, as Chrome, Firefox and Safari paint and hit-test it. It was
+    // painted whole at the lines' turn, over the block after it that a
+    // negative margin drew up over it, while the hit test found that block.
+    const doc = (overflow: string) =>
+      '<style>body{margin:0}section{height:60px}' +
+      `.a{${overflow}}.r{height:40px;background:#ff0000}` +
+      '.b{height:40px;margin-top:-20px;background:#0000ff}' +
+      '.f{float:left;width:100px;height:40px;background:#ff0000}</style>' +
+      // its background under the block after it
+      '<section><div class="a r" id="a1"></div><div class="b" id="b1">' +
+      '</div></section>' +
+      // and the background of a block in it
+      '<section><div class="a"><div class="r" id="i2"></div></div>' +
+      '<div class="b" id="b2"></div></section>' +
+      // a float in it over the block after it
+      '<section><div class="a" style="height:40px"><div class="f" id="f3">' +
+      '</div></div><div class="b" id="b3"></div></section>' +
+      // and a float after it over a block in it
+      '<section><div class="a" style="height:40px"><div ' +
+      'style="height:40px;background:#00ff00"></div></div>' +
+      '<div style="margin-top:-20px"><div class="f" id="f4"></div></div>' +
+      '</section>';
+    const points: [number, number, string][] = [
+      [10, 30, 'b1'],
+      [10, 90, 'b2'],
+      [10, 150, 'f3'],
+      [10, 210, 'f4'],
+    ];
+    for (const overflow of [
+      'overflow:hidden',
+      'overflow:clip',
+      'overflow:auto',
+      'overflow-x:hidden',
+      // and a box that clips nothing, which was right
+      '',
+    ]) {
+      const { node, result } = await render(doc(overflow));
+      const el = view(node);
+      const { abs } = el as unknown as { abs: { x: number; y: number } };
+      for (const [x, y, over] of points) {
+        const [r, , b] = await pixelAt(result.ctx, abs.x + x, abs.y + y);
+        const red = over.startsWith('f');
+        assert.ok(
+          red ? r > 200 && b < 100 : b > 200 && r < 100,
+          `${overflow || 'none'}: ${over} drawn at ${x},${y}: ${r},${b}`,
+        );
+        assert.strictEqual(
+          el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id,
+          over,
+          `${overflow || 'none'}: under the pointer at ${x},${y}`,
+        );
+      }
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'a float and an outline in a box that clips are cut to it in their passes',
+  async () => {
+    // Painted in the passes of the flow around the box, each is still
+    // under its clip: a float in it, with blocks beside it or text, and the
+    // outline of a block in it. Its own outline is outside its clip, and
+    // over the lines of the block after it, as a block's is.
+    const { node } = await render(
+      '<style>body{margin:0}.o{overflow:hidden;height:40px}' +
+        '.f{float:left;width:20px;height:200px}</style>' +
+        '<div class="o" id="o" style="outline:2px solid #00ff00">' +
+        '<div class="f" style="background:#ff0000"></div>' +
+        '<div style="height:10px;outline:3px solid #0000ff"></div></div>' +
+        '<div class="o" id="p">x<span class="f" style="background:#ffff00">' +
+        '</span></div>' +
+        '<div style="margin-top:-90px"><span style="display:inline-block;' +
+        'width:10px;height:10px;background:#00ffff"></span></div>',
+    );
+    const el = view(node);
+    const cut = (id: string) => {
+      const box = boxOf(el, id);
+      return [Math.round(box.x), Math.round(box.y), box.width, box.height];
+    };
+    const ops: PaintOp[] = [];
+    const fills = await fillsOf(el, ops);
+    const clipsOf = (color: string) =>
+      clipsAround(ops, color).map((clips) =>
+        clips.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
+      );
+    assert.deepStrictEqual(clipsOf('#ff0000'), [[cut('o')]], 'the float');
+    assert.deepStrictEqual(clipsOf('#ffff00'), [[cut('p')]], 'beside text');
+    const outline = clipsOf('#0000ff');
+    assert.ok(outline.length > 0, 'the outline is drawn');
+    for (const clips of outline) {
+      assert.deepStrictEqual(clips, [cut('o')], 'the outline');
+    }
+    for (const clips of clipsOf('#00ff00')) {
+      assert.deepStrictEqual(clips, [], 'its own outline');
+    }
+    const at = (color: string) =>
+      fills.findIndex((f) => f.style === parseColor(color));
+    assert.ok(at('#00ffff') >= 0 && at('#00ffff') < at('#00ff00'));
+  },
+);
+
+metric('a list item that clips cuts away its outside marker', async () => {
+  // The marker is the item's, and under its clip with the rest of what it
+  // holds, as all three browsers cut it: it was painted before the clip.
+  const ink = async (overflow: string) => {
+    const { node, result } = await render(
+      '<style>body{margin:0}ul{margin:0;padding:0 0 0 40px;' +
+        `font-size:30px;color:#ff00ff}li{height:40px;${overflow}}</style>` +
+        '<ul><li>x</li></ul>',
+    );
+    const { abs } = view(node) as unknown as { abs: { x: number; y: number } };
+    const data = await pixelsIn(result.ctx, {
+      x: abs.x,
+      y: abs.y,
+      width: 40,
+      height: 40,
+    });
+    cleanup();
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] > 200 && data[i + 1] < 100 && data[i + 2] > 200) count += 1;
+    }
+    return count;
+  };
+  assert.ok((await ink('')) > 0, 'drawn where the item clips nothing');
+  assert.strictEqual(await ink('overflow:hidden'), 0);
 });
 
 metric(

@@ -1019,12 +1019,20 @@ Windows, and on macOS before that, each thing drawn is faded on its own,
 so where two of its boxes overlap the lower shows through: CoreGraphics
 drew a surface under an alpha at more
 cost than drawing again what was on it. A box fixed to the viewport inside
-one fades each thing too. A block inside an inline element is faded with
-it, and the inline element's own text is not — `isolation` — `isolate`
-makes a box a stacking context, positioned or not, painted whole among
-the positioned boxes as one under full opacity is, so a box in it with a
-negative `z-index` goes over its background and under its text (CSS
-Compositing 1, 3.2) — `visibility` — a
+one fades each thing too. An inline element under 1 fades what it holds:
+its text, with the decorations, shadows and selection drawn with it, its
+background, borders and outline, the inline-blocks and images on its
+lines, and a block inside it. All but the block are drawn on its block's
+lines, where a paragraph's text is one batch of glyphs that no context
+fades a part of, so each is faded on its own, the text in the colours it
+is set in, and its background shows through its text where a browser's
+group would not let it. The floats and positioned boxes in it are faded as
+an element's are, and a hover or an animation that changes its opacity
+sets its text again in the new colours where it is, as a change of colour
+does — `isolation` — `isolate` makes a box a stacking context, positioned
+or not, painted whole among the positioned boxes as one under full
+opacity is, so a box in it with a negative `z-index` goes over its
+background and under its text (CSS Compositing 1, 3.2) — `visibility` — a
 hidden element keeps its room and draws nothing, its text included, and a
 visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
@@ -1108,7 +1116,21 @@ one. `overflow-clip-margin` moves the edge `clip` and paint containment
 cut at: out from the box it names by its length, or in where the length is
 negative, the rounded corners moving out as a browser's do. A box that
 scrolls cuts at its padding box whatever the margin says. A table clips to its table box, with its
-captions outside the clip. `clip` shows the part of an absolutely positioned
+captions outside the clip. A box that clips is no stacking context, and
+is painted in the passes of the flow around it as a block is (CSS 2.1
+Appendix E), as Chrome, Firefox and Safari paint it. Its own background
+goes with the other blocks' backgrounds. What it holds goes in the same
+passes under its clip: the backgrounds of the blocks in it with the
+backgrounds, its floats with the floats, and its lines and its outside
+marker with the lines. So a block after it that a negative margin draws
+up over it covers its background and the backgrounds in it, and a float
+after it covers a block in it. A table is painted the same way, whether
+it clips or not. Its background, its parts', its cells' and their borders
+go with the blocks' backgrounds, and its collapsed borders over them;
+what its cells hold goes in the later passes, so a cell's text is drawn
+over a collapsed border. A flex box or a grid that clips is painted
+likewise, its background with the backgrounds and its items, each whole,
+with the lines under its clip. `clip` shows the part of an absolutely positioned
 box it names, and of what the box holds, and nothing it cuts away is under
 the pointer (CSS 2.1 11.1.2): a label hidden for a screen reader alone with
 `clip: rect(0, 0, 0, 0)` takes no hover and no press from the link it lies
@@ -1854,9 +1876,12 @@ The initial containing block is the viewport: the box that scrolls the
 element, where one does — a browser's page area, under its tabs and its
 toolbar — and the window where nothing does, since the element sizes to its
 content. So `html, body { height: 100% }` is a viewport tall and `bottom: 0`
-with nothing positioned around it is the viewport's bottom, as in a browser;
-the document is as tall as what overflows its root, so nothing longer than
-the viewport is cut off — an inline element's padding and border below its
+with nothing positioned around it is the viewport's bottom, as in a browser
+— and in a page that writes a `<body>` and no `<html>`, as most begin
+`<!DOCTYPE html><title>`, where the root element is the `<html>` HTML
+implies around the body and its percentage height is of the viewport as a
+written one's is. The document is as tall as what overflows its root, so
+nothing longer than the viewport is cut off — an inline element's padding and border below its
 line among it, as a browser counts them, where nothing clips them. The
 root's `overflow` is the viewport's, and so is the `<body>`'s where the
 root's is `visible`, and the element it came from is `visible` itself
@@ -2103,8 +2128,13 @@ background covers the canvas, and the body keeps its own. The root box is as
 tall as the body says where that is definite, as `html, body { height:
 100% }` makes it a window tall. A `<body>` with no `<html>` around
 it, which is how a lot of mail starts, is still the body: its background
-covers the whole canvas. A document that writes `<html>` gets the body
-element HTML's parser would have made — the first thing in it that is not
+covers the whole canvas, and the root box stands in for the `<html>`
+implied around it. That is the root element, whose margins collapse with
+nothing (CSS 2.1 8.3.1), so an `html { margin-top }` is set above the
+body's own top margin, as with an `<html>` written in the markup — where a
+fragment's root box, standing in for a body, has its top margin collapse
+with its first block's, as a body's does. A document that writes `<html>`
+gets the body element HTML's parser would have made — the first thing in it that is not
 head content opens one — and content before a written `<body>`, or after
 it ends, goes in the body, as a browser puts it there. A `/>` closes an
 element only where HTML's parser says it does, on a void element and in

@@ -7,6 +7,7 @@ import {
   RED_PNG,
   SVG_NS,
   boxOf,
+  clipsAround,
   fillsOf,
   linesOf,
   metric,
@@ -15,7 +16,7 @@ import {
   svgBytes,
   view,
 } from './harness.js';
-import type { LaidBox, PlacedLine } from './harness.js';
+import type { LaidBox, PaintOp, PlacedLine } from './harness.js';
 
 afterEach(cleanup);
 
@@ -207,6 +208,42 @@ metric(
       fills.findIndex((f) => f.style === parseColor(color));
     assert.ok(at('#ff0000') < at('#00ff00'), 'the next block over the box');
     assert.ok(at('#00ff00') < at('#0000ff'), 'and the item over both');
+  },
+);
+
+metric(
+  "a flex box that clips goes with the flow's backgrounds, and its items with its lines under its clip",
+  async () => {
+    // It is no stacking context, so it is painted as one that clips
+    // nothing is, with its items cut to it, as Chrome, Firefox and Safari
+    // paint it: painted whole in its place, it covered the block after it
+    // that a negative margin drew up
+    for (const display of ['flex', 'grid']) {
+      const { node } = await render(
+        '<style>body{margin:0}</style>' +
+          `<div id="x" style="display:${display};height:40px;` +
+          'overflow:hidden;background:#ff0000">' +
+          '<div style="width:20px;height:80px;background:#0000ff"></div>' +
+          '</div><div style="height:40px;margin-top:-40px;' +
+          'background:#00ff00"></div>',
+      );
+      const el = view(node);
+      const ops: PaintOp[] = [];
+      const fills = await fillsOf(el, ops);
+      const at = (color: string) =>
+        fills.findIndex((f) => f.style === parseColor(color));
+      assert.ok(at('#ff0000') < at('#00ff00'), `${display}: the next over`);
+      assert.ok(at('#00ff00') < at('#0000ff'), `${display}: the item over`);
+      const x = boxOf(el, 'x');
+      assert.deepStrictEqual(
+        clipsAround(ops, '#0000ff').map((clips) =>
+          clips.map((c) => c.op === 'clip' && [c.x, c.y, c.w, c.h]),
+        ),
+        [[[Math.round(x.x), Math.round(x.y), x.width, x.height]]],
+        `${display}: the item cut to it`,
+      );
+      cleanup();
+    }
   },
 );
 
