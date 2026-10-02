@@ -4164,6 +4164,82 @@ test('a dash tick claims only what the pane shows of its edges', async (t) => {
   }
 });
 
+test('the dashes hold still while the window is minimized, and march on from where they were', async (t) => {
+  // A tick is a repaint of the dashes' box sixteen times a second, and a
+  // minimized window shows none of them — the rule core's own loops follow
+  // (react-x11's docs/styling.md, "Loops"), on the window manager's word.
+  const clock = holdClock(t, flowClock);
+  await mount({
+    nodes: [
+      { id: 'a', position: { x: 20, y: 20 }, data: { label: 'a' } },
+      { id: 'b', position: { x: 240, y: 160 }, data: { label: 'b' } },
+    ],
+    edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
+  });
+  await act();
+  const node = pane() as unknown as {
+    invalidate(...a: unknown[]): void;
+    _dashPhase: number;
+  };
+  const ticks: unknown[] = [];
+  const own = node.invalidate.bind(node);
+  node.invalidate = (...a: unknown[]) => {
+    if (a[2] === 'animation') ticks.push(a);
+    own(...a);
+  };
+  await twoTicks(clock, () => ticks.length);
+  assert.ok(ticks.length >= 2, 'the dashes march');
+
+  // the window manager iconifies the window
+  const wnd = (
+    pane().root as unknown as {
+      window: { emit(name: string, ...a: unknown[]): void };
+    }
+  ).window;
+  wnd.emit('statechange', ['hidden']);
+  await act();
+  const phase = node._dashPhase;
+  ticks.length = 0;
+  for (let frame = 0; frame < 30; frame++) await clock.frame();
+  assert.equal(ticks.length, 0, 'not a tick while it is minimized');
+  assert.equal(node._dashPhase, phase, 'and the dashes where they were');
+
+  wnd.emit('statechange', []);
+  await act();
+  await twoTicks(clock, () => ticks.length);
+  assert.ok(ticks.length >= 2, 'restored, they march again');
+  assert.ok(node._dashPhase > phase, 'from where they stopped');
+});
+
+test('the dashes hold still where the pane is told to, and the timer goes with them', async (t) => {
+  // `setMarching(false)` is what reduced motion comes to as well, from the
+  // same component above the pane
+  const clock = holdClock(t, flowClock);
+  await mount({
+    nodes: [
+      { id: 'a', position: { x: 20, y: 20 }, data: { label: 'a' } },
+      { id: 'b', position: { x: 240, y: 160 }, data: { label: 'b' } },
+    ],
+    edges: [{ id: 'a-b', source: 'a', target: 'b', animated: true }],
+  });
+  await act();
+  const node = pane() as unknown as {
+    setMarching(marching: boolean): void;
+    _animTimer: unknown;
+  };
+  assert.ok(node._animTimer != null, 'a timer for the dashes');
+  node.setMarching(false);
+  assert.equal(node._animTimer, null, 'none while they hold still');
+  await act();
+  for (let frame = 0; frame < 5; frame++) await clock.frame();
+  assert.equal(node._animTimer, null, 'and a repaint does not arm one');
+  node.setMarching(true);
+  assert.ok(
+    node._animTimer != null,
+    'armed again, with no repaint to wait for',
+  );
+});
+
 test('a 2D pan over mounted bodies moves their pixels with the graph’s', async () => {
   // The bodies are laid out in one box a pan moves by exactly the pan, and
   // that box sat over the region the pane blits: every step declined the

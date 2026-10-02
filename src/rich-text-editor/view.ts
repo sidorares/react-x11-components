@@ -112,6 +112,11 @@ export interface ViewConfig {
   /** How a decoration's `class` looks — the one part of a DOM decoration
    *  this view cannot read off the decoration itself. */
   decorationClasses?: Readonly<Record<string, RunStyle>>;
+  /** Whether the caret blinks, and how long it stays in each state: the
+   *  desktop's (`useDesktopSettings()`). False — the desktop asking for a
+   *  still caret, an accessibility setting — draws it solid. */
+  caretBlink?: boolean;
+  caretBlinkMs?: number;
 }
 
 /** One block's decorations, as its renderer reads them. `sig` is what makes
@@ -478,6 +483,12 @@ export class RichEditorView implements EditorHost, ClipboardView {
   configure(config: ViewConfig): void {
     const prev = this.config;
     this.config = config;
+    if (
+      config.caretBlink !== prev.caretBlink ||
+      config.caretBlinkMs !== prev.caretBlinkMs
+    ) {
+      this.restartBlink();
+    }
     const c = config.colors;
     const p = prev.colors;
     const redraw =
@@ -790,12 +801,20 @@ export class RichEditorView implements EditorHost, ClipboardView {
     stopInterval(this.blinkTimer);
     this.blinkTimer = null;
     if (!this.caretKey || !this.focused || this.destroyedFlag) return;
+    // shown from the start of every blink, and for good where the desktop
+    // asks for a still caret
+    this.texts.get(this.caretKey)?.blink(true);
+    if (this.config.caretBlink === false) return;
+    const rate = this.config.caretBlinkMs;
     let on = true;
-    this.blinkTimer = startInterval(() => {
-      on = !on;
-      const key = this.caretKey;
-      if (key) this.texts.get(key)?.blink(on);
-    }, CARET_BLINK_MS);
+    this.blinkTimer = startInterval(
+      () => {
+        on = !on;
+        const key = this.caretKey;
+        if (key) this.texts.get(key)?.blink(on);
+      },
+      typeof rate === 'number' && rate > 0 ? rate : CARET_BLINK_MS,
+    );
   }
 
   private stopBlink(): void {

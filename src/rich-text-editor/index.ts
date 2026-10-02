@@ -35,7 +35,7 @@ import React, {
   useSyncExternalStore,
 } from 'react';
 import type { ComponentType, ReactElement, ReactNode, Ref } from 'react';
-import { useApp, useClipboard, useTheme } from 'react-x11';
+import { useApp, useClipboard, useDesktopSettings, useTheme } from 'react-x11';
 import type {
   DragEndEvent,
   DragEvent,
@@ -407,6 +407,8 @@ function hasCode(props: RichTextEditorProps, format: EditorFormat): boolean {
 export function RichTextEditor(props: RichTextEditorProps): ReactElement {
   const theme = useTheme() as unknown as Record<string, unknown>;
   const clipboard = useClipboard();
+  // the caret blinks as the desktop says, or not at all
+  const desktop = useDesktopSettings();
   const {
     placeholder,
     readOnly = false,
@@ -513,6 +515,8 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     onUpdate: (prev, trs) => onUpdate(prev, trs),
     onFocusChange: setFocused,
     clipboard,
+    caretBlink: desktop.caretBlink,
+    caretBlinkMs: desktop.caretBlinkMs,
     ...(placeholder ? { placeholder } : null),
     colors: {
       selection: look.selection,

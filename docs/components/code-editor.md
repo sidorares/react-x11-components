@@ -88,6 +88,13 @@ Colours: `selectionColor`, `caretColor`, `gutterColor`, `gutterBackground`,
 `activeLineColor`, `matchingBracketColor`, `placeholderColor`. Each defaults
 from the react-x11 theme.
 
+The caret blinks as the desktop says, the way core's `<textinput>` does:
+`<CodeEditor>` hands `useDesktopSettings()`'s `caretBlink` and `caretBlinkMs`
+to the element, which takes them as props of the same names. A desktop that
+asks for a still caret gets one drawn solid — that is an accessibility
+setting, not a taste — and the blink stops while the window does not have the
+keyboard, since core blurs the editor's default focus then.
+
 ### Completion, focus and the handle
 
 | Prop                | Type                            | Notes                                                                                     |

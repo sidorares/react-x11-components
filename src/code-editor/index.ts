@@ -18,7 +18,7 @@
 import React, { useCallback, useRef, useState } from 'react';
 import type { ReactElement, ReactNode, Ref, RefObject } from 'react';
 import { registerElement, registeredElements } from 'react-x11/host';
-import { useTheme } from 'react-x11';
+import { useDesktopSettings, useTheme } from 'react-x11';
 import type {
   DrawnNode,
   FocusEvent,
@@ -186,6 +186,8 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
   } = props;
 
   const theme = useTheme();
+  // the caret blinks as the desktop says, or not at all (`caretBlink`)
+  const { caretBlink, caretBlinkMs } = useDesktopSettings();
   // the editor's text is all in this family, from its first frame
   useFontPrewarm(styleFamily(style, 'monospace'));
   const nodeRef = useRef<CodeEditorNode | null>(null);
@@ -472,6 +474,8 @@ export function CodeEditor(props: CodeEditorComponentProps): ReactElement {
     focusable: focusable && !disabled,
     disabled,
     autoFocus,
+    caretBlink,
+    caretBlinkMs,
     role: 'textbox',
     onKeyDown: handleKeyDown,
     onMouseDown: handleMouseDown,
