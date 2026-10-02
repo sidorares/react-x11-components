@@ -230,11 +230,88 @@ a lighter one: Chrome's choice, where Firefox asks for the lighter one and
 Safari keeps the old density too. A chosen image that is declined is a
 declined image, and its `src` is not asked for in its place.
 
-Two parts are not done. `sizes="auto"` is the laid-out width of a lazily
-loaded image, which is not known when the source is chosen, so it is
-passed over for the entries after it — which is what WordPress writes
-them for. And a chosen `<source>`'s `width` and `height`, which a browser
-gives the `<img>` in place of its own, are not read: the `<img>`'s are.
+**A chosen `<source>` with a `width` or a `height` sizes the `<img>`**,
+in place of the `<img>`'s own: HTML's "dimension attribute source", which
+Chrome 90, Safari 15 and Firefox 108 have, and which lets an art-directed
+picture reserve another shape at each breakpoint. A resize that takes
+another source restyles the image. The three browsers map the attributes
+the same way, and so does this:
+
+- a source with a `width` alone leaves the height to the image's ratio,
+  and a `height` alone the width; the `<img>`'s attribute for the other
+  side is not read;
+- a source's attribute that is no length, `width="wide"`, leaves the
+  `<img>`'s for that side. One that makes no ratio, such as a percentage,
+  leaves the `<img>`'s ratio;
+- a source that is not chosen sizes nothing, whatever it says.
+
+**`sizes="auto"` is the image's laid-out width**, the width of its content
+box in CSS pixels, in an `<img loading="lazy">` whose `sizes` is `auto` or
+starts with `auto,`. WordPress 6.7 writes `sizes="auto, …"` on every lazy
+image. A `<source>` with no `sizes` before such an image counts as `auto`
+too. Such an image's source is chosen with the rest, and its candidate
+once it is laid out, again whenever its width moves. Nothing is asked for
+until then, neither the size the entries after `auto` give nor the
+`src`.
+
+HTML's UA sheet gives every image whose `sizes` starts with `auto`, lazy
+or not, `contain: size !important` and `contain-intrinsic-size: 300px
+150px`. It is laid out as though it had no image: at its attributes, its
+style, or 300 by 150. So the candidate its
+width picks cannot change that width, and no rule of the page can take the
+containment back. A pick after layout that changes what the image draws
+builds the boxes again for the size it now holds, which `object-fit:
+none` draws. That second layout leaves every width as it was, so picking
+stops there.
+
+An image without `loading="lazy"` has no `auto`, and neither does a
+`sizes` with a space before `auto` or with `auto` after another entry. In
+those, `auto` is passed over for the entries after it. That is how Firefox
+and WebKit read it, and how HTML says. Chrome 154 takes `auto` after a
+space or after another entry, and `100vw` for the whole list in an image
+that is not lazy. An image that is
+`display: none` is not laid out, so `auto` is the width it last had, or is
+passed over. Unlike a browser, which lazily loads only what nears the
+viewport, `<Html>` asks for every image, a lazy one included.
+
+### Image sets
+
+A CSS `image-set()` (CSS Images 4, 2.4), or the `-webkit-image-set()` many
+sites still write, is the one image it chooses wherever an image goes — a
+background layer, a list marker, generated content, a border image, a
+mask — and that one alone is asked for through `onResource`:
+
+- **its options:** each a `url()`, a string that is one, or a gradient,
+  with a resolution — `2x`, `2dppx`, `192dpi`, or `1x` where it has none —
+  and a `type()`, in either order;
+- **the type:** an option whose `type()` does not decode here is passed
+  over, the types a `<source type>` takes — but the string as written, so
+  one with a parameter, white space round it, or nothing in it is a type
+  no browser has either;
+- **the option:** of the rest, the least dense at or above the display's
+  scale, else the densest, and of two at one density the first — the
+  choice a [responsive image](#responsive-images) makes, and the one
+  Chrome, Firefox and WebKit all make for an `image-set()`.
+
+The resolution is the image's size: a `2x` image is half its pixels across
+as a background at `background-size: auto`, as a list marker and as a
+`content` image, and a border image's slices are its CSS pixels, twenty of
+its pixels for a `10` at 2x, as all three engines slice one. A drawing is
+the same, as Firefox and WebKit size one, where Chrome leaves an SVG at its
+own size.
+
+An `image-set()` with no option that decodes draws nothing, asks for
+nothing and takes no room, and its declaration stands; one that is no
+`image-set()` at all — no options, a negative resolution or two of them,
+one nested in another — drops the declaration, and what it would have
+replaced stands, as in every browser. The choice is made as the style is
+computed, at the element's scale, as a length is; and with a base its
+strings resolve as its `url()`s do, against the sheet they are written in
+([Base URLs](#base-urls)).
+
+One part is not done: a gradient an `image-set()` chooses for a list
+marker draws the `list-style-type`'s marker, as a gradient
+`list-style-image` does, where a browser draws a small square of it.
 
 ### Fonts
 
@@ -1732,7 +1809,8 @@ among those above — is left undrawn, an empty box, and the rest of the
 document is drawn.
 
 **Backgrounds:** `background-color`, and `background-image` — through
-`onResource`, like an `<img>` — with `background-repeat`, `space` and
+`onResource`, like an `<img>`, and an `image-set()` as the one option it
+chooses ([Image sets](#image-sets)) — with `background-repeat`, `space` and
 `round` among it and each axis its own, and `background-position`, placed
 in the box `background-origin` names — the
 padding box unless it says otherwise — and painted, and repeated, across

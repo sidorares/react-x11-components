@@ -17,6 +17,13 @@
 // candidate is as wide as `sizes` says, whatever its file is. So a choice
 // that keeps its URL and changes its density still changes the box.
 //
+// Two things a choice decides besides the image. The `<source>` it took is
+// the `<img>`'s dimension attribute source where it has a `width` or a
+// `height`, whose attributes size the image in place of its own
+// (`dimensionSource`), so the cascade asks it. And an image whose `sizes`
+// is `auto` is as wide as it is laid out, so its candidate is picked once
+// layout has said (`chooseLaidOut`), from a set chosen with the rest.
+//
 // Asking for the chosen URL is still the host's (`onResource`), and a
 // declined one is an ordinary state: the image is framed as any declined
 // image is.
@@ -57,11 +64,16 @@ export interface SourceEnv {
 }
 
 /** One entry of a `sizes` list: a media condition, or none, and a length
- *  as written, evaluated against the viewport each time it is asked. */
+ *  as written, evaluated against the viewport each time it is asked — or
+ *  `auto`, the image's laid-out width. */
 export interface SizeEntry {
   media: MediaCondition[] | null;
   length: string;
 }
+
+/** What a `<source>` with no `sizes` before an image that allows `auto`
+ *  says (HTML 4.8.2, "the source element"). */
+const AUTO_SIZES: SizeEntry[] = [{ media: null, length: 'auto' }];
 
 /** HTML's "ASCII whitespace". */
 function isSpace(c: string): boolean {
@@ -181,27 +193,28 @@ function candidateOf(url: string, descriptors: string[]): Candidate | null {
 
 /**
  * A `sizes` attribute's entries (HTML's "parse a sizes attribute"), each a
- * media condition, or none, before a length: the first whose condition
- * holds is the size, and with none, `100vw`. An entry whose length is no
- * non-negative length — a percentage, a number, `-10px` — or whose
- * condition is no condition — `screen` — is passed over, and so is `auto`:
- * it is the image's laid-out width, which is not known when the source is
- * chosen, so the list goes on to the size it gives for a browser without
- * it, as WordPress's `sizes="auto, …"` is written to.
+ * media condition, or none, before a length or `auto`: the first whose
+ * condition holds is the size, and with none, `100vw`. An entry whose
+ * length is no non-negative length — a percentage, a number, `-10px` — or
+ * whose condition is no condition — `screen` — is passed over. `auto` is
+ * kept, for `sourceSize` to pass over where it has no width for it.
  */
 export function parseSizes(input: string): SizeEntry[] {
   const out: SizeEntry[] = [];
   for (const entry of splitSelectors(input)) {
     const at = lastComponent(entry);
     if (at < 0) continue;
-    const length = entry.slice(at).trim();
-    if (!isSourceSize(length)) continue;
+    let length = entry.slice(at).trim();
+    const auto = /^auto$/i.test(length);
+    if (auto) length = 'auto';
+    else if (!isSourceSize(length)) continue;
     const condition = entry.slice(0, at).trim();
     if (!condition) {
       out.push({ media: null, length });
       // a size with no condition is the size; what follows it is never
-      // reached
-      break;
+      // reached — but past an `auto` it is, where there is no width
+      if (!auto) break;
+      continue;
     }
     // a `<media-condition>`, which has no media type: `(…)` or `not (…)`
     if (!/^(?:not\s+)?\(/i.test(condition)) continue;
@@ -240,7 +253,7 @@ const PROBE = { em: 16, rem: 16, vw: 1000, vh: 1000, scale: 1 };
 const MATH = /^(?:-webkit-)?(?:calc|min|max|clamp)\(/i;
 
 /** Whether a `sizes` length is a non-negative `<length>`, or a math
- *  function of lengths. `auto` is not, here (see `parseSizes`). */
+ *  function of lengths. */
 function isSourceSize(length: string): boolean {
   const px = parseLength(length, PROBE);
   return typeof px === 'number' && (px >= 0 || MATH.test(length));
@@ -251,15 +264,28 @@ function isSourceSize(length: string): boolean {
  * entry whose condition holds, and the viewport's width where none does.
  * Its units are a media query's (Media Queries 4, 1.3): an `em` is the
  * initial font size, 16px, whatever the document sets.
+ *
+ * `auto` is `width`, the image's laid-out width, and is passed over where
+ * that is null: where the image does not allow `auto` (`allowsAutoSizes`),
+ * or has not been laid out — as Firefox and WebKit pass it over, and HTML
+ * does. Chrome 154 takes `100vw` for the whole list in an image that does
+ * not load lazily.
  */
-export function sourceSize(entries: SizeEntry[], env: SourceEnv): number {
+export function sourceSize(
+  entries: SizeEntry[],
+  env: SourceEnv,
+  width: number | null = null,
+): number {
   for (const { media, length } of entries) {
+    const auto = length === 'auto';
+    if (auto && width === null) continue;
     if (
       media &&
       !mediaMatches([media], env.width, env.scheme, env.height, env.scale)
     ) {
       continue;
     }
+    if (auto) return width ?? env.width;
     const px = parseLength(length, {
       em: 16,
       rem: 16,
@@ -291,7 +317,8 @@ export function normalize(set: Candidate[], size: number): ImageSource[] {
  * first written. Chrome, Firefox and Safari all choose this way — Chrome
  * once took a candidate below the scale where the scale fell short of the
  * geometric mean of the two around it, and no longer does (Chrome 154: `1x,
- * 5x` at 1.5 is `5x`).
+ * 5x` at 1.5 is `5x`). An `image-set()` chooses among its options the
+ * same way (`style.ts`), and its `T` carries what each option draws.
  *
  * `held` names a URL this document has already asked for, and a denser
  * candidate held is taken over a lighter one asked for anew: Chrome's
@@ -299,16 +326,16 @@ export function normalize(set: Candidate[], size: number): ImageSource[] {
  * that narrows keeps the image it has, at the new density, where Firefox
  * fetches the lighter one.
  */
-export function pick(
-  sources: ImageSource[],
+export function pick<T extends ImageSource>(
+  sources: readonly T[],
   scale: number,
   held?: (url: string) => boolean,
-): ImageSource | null {
+): T | null {
   if (!sources.length) return null;
   const sorted = sources
     .map((source, order) => ({ source, order }))
     .sort((a, b) => a.source.density - b.source.density || a.order - b.order);
-  const unique: ImageSource[] = [];
+  const unique: T[] = [];
   for (const { source } of sorted) {
     const last = unique[unique.length - 1];
     if (!last || last.density !== source.density) unique.push(source);
@@ -332,10 +359,46 @@ function sourcesOf(img: Element): readonly AnyNode[] {
     : [img];
 }
 
+/**
+ * Whether an `<img>` allows `auto` in its `sizes`, and its `<source>`s' (HTML
+ * 4.8.3, "allows auto-sizes"): it loads lazily, and its own `sizes` is
+ * `auto` or starts with `auto,` — as written, so a space before it, or an
+ * `auto` after another entry, is none, as Firefox and WebKit read it.
+ * Chrome 154 takes either, and `100vw` for the whole list in an image that
+ * does not load lazily.
+ */
+export function allowsAutoSizes(img: Element): boolean {
+  if (attr(img, 'loading')?.toLowerCase() !== 'lazy') return false;
+  const sizes = attr(img, 'sizes')?.toLowerCase();
+  return sizes === 'auto' || sizes?.startsWith('auto,') === true;
+}
+
+/**
+ * An `<img>`'s dimension attribute source, given the `<source>` its
+ * candidates came from: that source where it has a `width` or a `height`,
+ * and the `<img>` otherwise (HTML's "update the source set").
+ */
+function dimensionsOf(img: Element, source: Element | null): Element {
+  return source &&
+    (attr(source, 'width') !== undefined ||
+      attr(source, 'height') !== undefined)
+    ? source
+    : img;
+}
+
 /** The store a choice asks for its URLs through, and asks the state of. */
 export interface SourceStore {
   request(url: string, element: Element): void;
   state(url: string): 'pending' | 'ready' | 'failed' | null;
+}
+
+/** What a round of choices changed (`ImageSources.choose`). */
+export interface SourceChanges {
+  /** Whether what any image shows changed: its URL, or its density. */
+  shown: boolean;
+  /** The images whose dimension attribute source is another element now,
+   *  whose styles the attributes it has make (`dimensionSource`). */
+  restyle: Element[];
 }
 
 interface Choice {
@@ -343,6 +406,19 @@ interface Choice {
   signature: string;
   /** The environment it was made in (`envKey`). */
   env: string;
+  /** The `<source>` its candidates came from, or null for the `<img>`'s
+   *  own. */
+  source: Element | null;
+  /** Those candidates, and the `sizes` they are measured against. */
+  set: Candidate[];
+  sizes: SizeEntry[];
+  /** Whether the size may be the image's laid-out width: `auto` in
+   *  `sizes`, in an image that allows it. Its candidate is picked once
+   *  the image is laid out (`chooseLaidOut`). */
+  auto: boolean;
+  /** The laid-out width it was picked at, in CSS pixels, where `auto`:
+   *  null where it had none, and undefined until it is picked. */
+  width: number | null | undefined;
   chosen: ImageSource | null;
   /** What the element showed when this was chosen, which it goes on
    *  showing while `chosen` is on its way: HTML's current request, beside
@@ -364,10 +440,23 @@ const KEPT = 512;
  * choice depend on what has been asked for, and a choice made again on any
  * of those would trade an image for a denser one some other element asked
  * for, which no browser does once an image has its source.
+ *
+ * An image whose `sizes` is `auto` is chosen in two halves: its source with
+ * the rest, before the boxes are built, since that turns on the viewport
+ * and its attributes size the box; and its candidate once it is laid out,
+ * again when its width moves. HTML gives such an image `contain: size`
+ * (the UA sheet), so its width is no candidate's to change, and the second
+ * half cannot change what it was made from.
  */
 export class ImageSources {
   private _store: SourceStore;
   private _choices = new WeakMap<Element, Choice>();
+  /** HTML's "last auto-sizes width": what an image was last laid out at,
+   *  which `auto` is while it is not laid out at all. */
+  private _widths = new WeakMap<Element, number>();
+  /** The environment of the last round (`choose`), which the candidates
+   *  picked after layout are picked in. */
+  private _env: SourceEnv | null = null;
   private _srcsets = new Map<string, Candidate[]>();
   private _sizes = new Map<string, SizeEntry[]>();
   private _media = new Map<string, MediaCondition[]>();
@@ -380,39 +469,71 @@ export class ImageSources {
   }
 
   /**
-   * Choose each element's source in `env`, and ask for each one chosen.
-   * Whether what any of them shows changed: its URL, or its density.
+   * Choose each element's source in `env`, and ask for each one chosen —
+   * but an image whose `sizes` waits on its layout, whose candidate
+   * `chooseLaidOut` picks, and which shows what it showed until then. What
+   * changed: whether what any of them shows, and which are sized by
+   * another element now.
    */
-  choose(elements: readonly Element[], env: SourceEnv): boolean {
+  choose(elements: readonly Element[], env: SourceEnv): SourceChanges {
+    this._env = env;
     const key = envKey(env);
-    let changed = false;
+    const changes: SourceChanges = { shown: false, restyle: [] };
     for (const el of elements) {
       const signature = signatureOf(el);
       const kept = this._choices.get(el);
       if (kept && kept.signature === signature && kept.env === key) continue;
       const before = this.shown(el);
-      const sources = this._sourcesFor(el, env);
-      const chosen = pick(sources, env.scale, (url) => {
-        const state = this._store.state(url);
-        return state === 'ready' || state === 'pending';
-      });
-      // what is on screen stays there while its successor is asked for —
-      // at the density the new choice gives its URL, where it is among the
-      // candidates still, so that an image whose size follows `sizes` goes
-      // on following it
-      let previous: ImageSource | null = null;
-      if (
-        kept &&
-        before &&
-        chosen &&
-        before.url !== chosen.url &&
-        this._store.state(before.url) === 'ready'
-      ) {
-        previous = sources.find((s) => s.url === before.url) ?? before;
+      const { source, set, sizes } = this._select(el, env);
+      const choice: Choice = {
+        signature,
+        env: key,
+        source,
+        set,
+        sizes,
+        auto: allowsAutoSizes(el) && sizes.some((s) => s.length === 'auto'),
+        width: undefined,
+        chosen: kept?.chosen ?? null,
+        previous: kept?.previous ?? null,
+      };
+      this._choices.set(el, choice);
+      if (!choice.auto) this._pick(el, choice, null, env);
+      if (dimensionsOf(el, source) !== dimensionsOf(el, kept?.source ?? null)) {
+        changes.restyle.push(el);
       }
-      this._choices.set(el, { signature, env: key, chosen, previous });
-      if (chosen) this._store.request(chosen.url, el);
       const after = this.shown(el);
+      if (before?.url !== after?.url || before?.density !== after?.density) {
+        changes.shown = true;
+      }
+    }
+    return changes;
+  }
+
+  /**
+   * Pick the candidate of each image whose `sizes` is `auto`, for the width
+   * it was laid out at — `widthOf`, its content box's, in CSS pixels, or
+   * null where it is not laid out, which is the width it last had or none
+   * — and ask for it. Picked again only where that width moved. Whether
+   * what any of them draws changed: an image that has arrived, or its
+   * density.
+   */
+  chooseLaidOut(
+    elements: readonly Element[],
+    widthOf: (el: Element) => number | null,
+  ): boolean {
+    const env = this._env;
+    if (!env) return false;
+    let changed = false;
+    for (const el of elements) {
+      const choice = this._choices.get(el);
+      if (!choice?.auto) continue;
+      let width = widthOf(el);
+      if (width === null) width = this._widths.get(el) ?? null;
+      else this._widths.set(el, width);
+      if (choice.width === width) continue;
+      const before = this._drawn(el);
+      this._pick(el, choice, width, env);
+      const after = this._drawn(el);
       if (before?.url !== after?.url || before?.density !== after?.density) {
         changed = true;
       }
@@ -424,7 +545,8 @@ export class ImageSources {
    * The source an element shows: its choice, once that has arrived or
    * failed, and until then what it showed before, where that had arrived.
    * Null for an element that chose nothing: no candidate anywhere, which
-   * is an `<img>` with no image at all.
+   * is an `<img>` with no image at all, or one whose `sizes` waits on a
+   * layout it has not had.
    */
   shown(el: Element): ImageSource | null {
     const choice = this._choices.get(el);
@@ -439,9 +561,64 @@ export class ImageSources {
     return choice.chosen;
   }
 
-  /** The candidates an `<img>` chooses between (HTML's "update the source
-   *  set"), each with its density. */
-  private _sourcesFor(img: Element, env: SourceEnv): ImageSource[] {
+  /**
+   * The element whose `width` and `height` size an `<img>` (HTML 15.4.3):
+   * the `<source>` it chose, where that has either, and the `<img>`
+   * otherwise — one that chooses nothing among them too.
+   */
+  dimensionSource(el: Element): Element {
+    return dimensionsOf(el, this._choices.get(el)?.source ?? null);
+  }
+
+  /** What an element shows of an image that has arrived. */
+  private _drawn(el: Element): ImageSource | null {
+    const shown = this.shown(el);
+    return shown && this._store.state(shown.url) === 'ready' ? shown : null;
+  }
+
+  /** Pick a choice's candidate, for `width` where its size is `auto`, and
+   *  ask for it. */
+  private _pick(
+    el: Element,
+    choice: Choice,
+    width: number | null,
+    env: SourceEnv,
+  ): void {
+    const before = this.shown(el);
+    const sources = normalize(
+      choice.set,
+      sourceSize(choice.sizes, env, choice.auto ? width : null),
+    );
+    const chosen = pick(sources, env.scale, (url) => {
+      const state = this._store.state(url);
+      return state === 'ready' || state === 'pending';
+    });
+    // what is on screen stays there while its successor is asked for — at
+    // the density the new choice gives its URL, where it is among the
+    // candidates still, so that an image whose size follows `sizes` goes on
+    // following it
+    let previous: ImageSource | null = null;
+    if (
+      before &&
+      chosen &&
+      before.url !== chosen.url &&
+      this._store.state(before.url) === 'ready'
+    ) {
+      previous = sources.find((s) => s.url === before.url) ?? before;
+    }
+    choice.chosen = chosen;
+    choice.previous = previous;
+    choice.width = width;
+    if (chosen) this._store.request(chosen.url, el);
+  }
+
+  /** What an `<img>` chooses between (HTML's "update the source set"): the
+   *  first `<source>` that offers a set, or its own, with the `sizes`
+   *  that measures it. */
+  private _select(
+    img: Element,
+    env: SourceEnv,
+  ): { source: Element | null; set: Candidate[]; sizes: SizeEntry[] } {
     for (const child of sourcesOf(img)) {
       if (child === img) {
         const own = this._srcset(attr(img, 'srcset') ?? '');
@@ -453,7 +630,7 @@ export class ImageSources {
           !own.some((c) => c.width !== undefined || (c.density ?? 1) === 1)
             ? [...own, { url: src }]
             : own;
-        return normalize(set, this._size(attr(img, 'sizes'), env));
+        return { source: null, set, sizes: this._sizesOf(attr(img, 'sizes')) };
       }
       if (!isElement(child) || tagOf(child) !== 'source') continue;
       const srcset = attr(child, 'srcset');
@@ -464,9 +641,19 @@ export class ImageSources {
       if (media !== undefined && !this._matches(media, env)) continue;
       const type = attr(child, 'type');
       if (type !== undefined && !env.decodes(type)) continue;
-      return normalize(set, this._size(attr(child, 'sizes'), env));
+      // a source's `sizes` left out before an image that allows `auto` is
+      // `auto` (HTML 4.8.2), as Chrome, Firefox and WebKit all read it
+      const sizes = attr(child, 'sizes');
+      return {
+        source: child,
+        set,
+        sizes:
+          sizes === undefined && allowsAutoSizes(img)
+            ? AUTO_SIZES
+            : this._sizesOf(sizes),
+      };
     }
-    return [];
+    return { source: null, set: [], sizes: [] };
   }
 
   private _srcset(text: string): Candidate[] {
@@ -478,8 +665,8 @@ export class ImageSources {
     return set;
   }
 
-  private _size(text: string | undefined, env: SourceEnv): number {
-    if (!text) return env.width;
+  private _sizesOf(text: string | undefined): SizeEntry[] {
+    if (!text) return [];
     let entries = this._sizes.get(text);
     if (!entries) {
       if (this._sizes.size >= KEPT) this._sizes.clear();
@@ -489,7 +676,7 @@ export class ImageSources {
       if (/v(?:h|b|min|max)\b/i.test(entry.length)) this.readsHeight = true;
       if (entry.media && readsHeight(entry.media)) this.readsHeight = true;
     }
-    return sourceSize(entries, env);
+    return entries;
   }
 
   private _matches(text: string, env: SourceEnv): boolean {
