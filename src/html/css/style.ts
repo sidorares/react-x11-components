@@ -644,6 +644,10 @@ export interface ComputedStyle {
    *  shape this does not draw. */
   clipPath: ClipPath | null;
   opacity: number;
+  /** `isolation: isolate` makes the element a stacking context (CSS
+   *  Compositing 1, 3.2): what it holds with a `z-index` is ordered inside
+   *  it, a negative one over its own background. */
+  isolation: 'auto' | 'isolate';
   /** Where `translate` moves the box after layout (CSS Transforms 2): a
    *  length or a percentage of its own border box across and down; null
    *  for `none`. */
@@ -1155,6 +1159,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     clip: null,
     clipPath: null,
     opacity: 1,
+    isolation: 'auto',
     translate: null,
     rotate: null,
     scale: null,
@@ -1990,6 +1995,11 @@ export function applyDeclaration(
     case 'opacity': {
       const a = parseAlpha(value);
       if (a !== null) style.opacity = a;
+      return;
+    }
+    case 'isolation': {
+      const v = value.trim().toLowerCase();
+      if (v === 'auto' || v === 'isolate') style.isolation = v;
       return;
     }
     case 'animation': {
@@ -6123,6 +6133,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'overflow-x': ['overflowX'],
   'overflow-y': ['overflowY'],
   opacity: ['opacity'],
+  isolation: ['isolation'],
   translate: ['translate'],
   rotate: ['rotate'],
   scale: ['scale'],

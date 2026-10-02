@@ -2671,8 +2671,10 @@ function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
     !masked(style) &&
     // cut to a path with all it holds, as one group
     !style.clipPath &&
-    // containment makes it a stacking context, painted whole
-    !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
+    // containment makes it a stacking context, painted whole, and so does
+    // isolation
+    !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT) &&
+    style.isolation !== 'isolate'
   );
 }
 
@@ -2700,7 +2702,8 @@ function flowFlex(parent: Box, child: Box, options: PaintOptions): boolean {
     !(child.outOfFlow && style.clip) &&
     !masked(style) &&
     !style.clipPath &&
-    !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT)
+    !contained(child, CONTAIN_LAYOUT | CONTAIN_PAINT) &&
+    style.isolation !== 'isolate'
   );
 }
 
@@ -3830,8 +3833,10 @@ export function stacksLayers(box: Box): boolean {
   // and so does a mask, which is applied to the group (CSS Masking 1, 7),
   // and a clip path, which cuts it (5.1)
   if (masked(style) || pathClips(box)) return true;
-  // layout and paint containment make one (CSS Containment 2, 3.3, 3.5)
+  // layout and paint containment make one (CSS Containment 2, 3.3, 3.5),
+  // and isolation, whose whole purpose that is (CSS Compositing 1, 3.2)
   if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
+  if (style.isolation === 'isolate' && box.kind !== 'inline') return true;
   // and a transform (CSS Transforms 1, 3), on a box one applies to: what it
   // holds is painted with it, through its matrix, and not by a context
   // outside it

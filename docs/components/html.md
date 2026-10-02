@@ -889,7 +889,10 @@ lower shows through: those contexts draw a surface at more cost than
 drawing what is on it again, and fade a group well only once they can draw
 one themselves. A box fixed to the viewport inside one fades each thing
 too. A block inside an inline element is faded with it, and the inline
-element's own text is not — `visibility` — a
+element's own text is not — `isolation` — `isolate` makes a box a
+stacking context, positioned or not, painted whole in its place as one
+under full opacity is, so a box in it with a negative `z-index` goes over
+its background and under its text (CSS Compositing 1, 3.2) — `visibility` — a
 hidden element keeps its room and draws nothing, its text included, and a
 visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
