@@ -293,10 +293,10 @@ export function layoutFlex(
   // row that does not wrap through its pass for lines, which sets the one
   // line there as tall as its items and not the row: an item centred or at
   // the end of a row of a height was centred or ended in the items'
-  // height. Told none is, it takes neither. A row whose lines wrap in
-  // reverse is left to Yoga.
+  // height. Told none is, it takes neither. A line of a row that wraps in
+  // reverse starts at its bottom, where Yoga sets them as well.
   const started = new Set<Box>();
-  if (baselines && box.style.flexWrap !== 'wrap-reverse') {
+  if (baselines) {
     for (const { box: child, node } of items) {
       if (!byBaseline(box.style, child.style)) continue;
       node.setAlignSelf(Y.ALIGN_FLEX_START);
@@ -470,12 +470,15 @@ export function layoutFlex(
   // Items that share a line and are aligned by their baselines are laid
   // out by the flex layout again, set at their lines' starts with the
   // margins that put their baselines together (`baselineLines`), which
-  // makes each line as tall as that does
+  // makes each line as tall as that does: their top margins, or where the
+  // lines start at the bottom, their bottom ones
   const lines = started.size > 1 ? baselineLines(box.style, items) : null;
   if (lines) {
+    const edge =
+      box.style.flexWrap === 'wrap-reverse' ? Y.EDGE_BOTTOM : Y.EDGE_TOP;
     for (const line of lines) {
       line.forEach(({ node }, i) => {
-        node.setMargin(Y.EDGE_TOP, line.margins[i]);
+        node.setMargin(edge, line.margins[i]);
       });
     }
     ctx.flexDepth = depth + 1;
@@ -2872,14 +2875,19 @@ function contentBottom(box: Box): number {
  * its bottom edge, so it lined them up by their bottoms. With the items laid
  * out, each line's, and for each the top margin that sets it at the line's
  * start with its first baseline where the lowest-reaching one's is — or
- * null where no line has two to align. Not for a row whose lines wrap in
- * reverse, which grow from their ends and are left to Yoga (`layoutFlex`).
+ * null where no line has two to align.
+ *
+ * A line of a row whose lines wrap in reverse starts at its bottom (8.3),
+ * and the items are set together there: for each the bottom margin that
+ * puts its first baseline where the one reaching furthest below its own to
+ * its bottom margin edge has it, which is on the line's bottom.
  */
 function baselineLines<T extends { box: Box; node: YogaNode }>(
   style: ComputedStyle,
   items: readonly T[],
 ): (T[] & { margins: number[] })[] | null {
   const wraps = style.flexWrap !== 'nowrap';
+  const reverse = style.flexWrap === 'wrap-reverse';
   // along a line the items go the way the main axis does, each margin box
   // after the last one's end, and the next line starts before it (9.3): at
   // the line's start, where an item with a margin before it was further
@@ -2893,14 +2901,19 @@ function baselineLines<T extends { box: Box; node: YogaNode }>(
   const close = (): void => {
     if (!line.length) return;
     if (line.length > 1) several = true;
+    // how far each reaches from its baseline to its margin edge at the
+    // line's start: up to its top, or down to its bottom
     let reach = -Infinity;
-    const ascents = line.map(({ box }) => {
-      const ascent = box.marginTop + itemBaseline(box);
-      reach = Math.max(reach, ascent);
-      return ascent;
+    const lengths = line.map(({ box }) => {
+      const length = reverse
+        ? box.height + box.marginBottom - itemBaseline(box)
+        : box.marginTop + itemBaseline(box);
+      reach = Math.max(reach, length);
+      return length;
     });
     const margins = line.map(
-      ({ box }, i) => box.marginTop + reach - ascents[i],
+      ({ box }, i) =>
+        (reverse ? box.marginBottom : box.marginTop) + reach - lengths[i],
     );
     out.push(Object.assign(line, { margins }));
   };
@@ -3378,7 +3391,9 @@ function unspace(
  * no taller where it is not, and Yoga ends it at its line's end, or with
  * its margins at the line's start, or centres it with neither
  * (`lineMarginFix`). Read with the lines turned back the right way up where
- * they run bottom to top.
+ * they run bottom to top, and by the margins Yoga holds, which put items
+ * aligned by baselines together where they are not the item's own
+ * (`baselineLines`).
  */
 function linesReach(
   root: YogaNode,
@@ -3394,8 +3409,10 @@ function linesReach(
       ? height - node.getComputedTop() - tall
       : node.getComputedTop();
     const style = box.style;
-    const above = style.marginTop === AUTO ? 0 : box.marginTop;
-    const below = style.marginBottom === AUTO ? 0 : box.marginBottom;
+    const above =
+      style.marginTop === AUTO ? 0 : node.getComputedMargin(Y.EDGE_TOP);
+    const below =
+      style.marginBottom === AUTO ? 0 : node.getComputedMargin(Y.EDGE_BOTTOM);
     const own = node.getAlignSelf();
     const align = own === Y.ALIGN_AUTO ? lines : own;
     // where Yoga set it at its line's start with no margin above it, the

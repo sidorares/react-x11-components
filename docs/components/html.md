@@ -625,7 +625,8 @@ bottom, `safe center` setting them at the box's own start, where Yoga set
 them at the lines' start: in a row that wraps in reverse, at the bottom,
 and they ran past the top. Items go in `order`, and in the document's where two have the
 same, and are painted so; one with a `z-index` is a stacking context
-whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines, their
+whether or not it is positioned, a grid's item too. Items aligned by their `baseline` line up their first lines at
+their line's start, its bottom in a row that wraps in reverse, their
 line as tall as that makes it — an item shorter than its first line, or
 whose padding puts the line under it, on that line all the same, and only
 one that is a scroll container on its border edge — `last baseline` is taken as the end of the

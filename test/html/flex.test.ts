@@ -623,6 +623,117 @@ test('a row that wraps aligned by baselines that no line has two items to align 
   assert.deepStrictEqual(at('p'), [34, 12], 'by their baselines');
 });
 
+test('a row that wraps in reverse sets the items it aligns by baselines together at the bottom of their line', async () => {
+  // The cross start of a line of a row that wraps in reverse is its
+  // bottom, and the items aligned by baselines are set there together:
+  // their baselines lined up, and the one that reaches furthest below its
+  // own to its bottom margin edge on the line's bottom (CSS Flexbox 8.3,
+  // 9.4 step 8), as Chrome sets them. Yoga lined them up by their bottom
+  // edges, which it takes for a baseline, and sized the line as the most
+  // any item reached down to that and the largest bottom margin besides.
+  const row = (style: string, items: string, id = '') =>
+    `<div${id ? ` id="${id}"` : ''} style="display:flex;` +
+    `flex-wrap:wrap-reverse;align-items:baseline;${style}">${items}</div>`;
+  const item = (id: string, style: string) =>
+    `<div${id ? ` id="${id}"` : ''} style="width:20px;${style}"></div>`;
+  // two lines of two, from the bottom
+  const lines = (a: string, b: string, c: string, d: string) =>
+    item(a, 'height:30px;margin-top:4px') +
+    item(b, 'height:10px;margin-bottom:6px') +
+    item(c, 'height:12px;margin-bottom:3px') +
+    item(d, 'height:20px;margin-bottom:1px');
+  const { node } = await render(
+    '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+      row(
+        'width:200px',
+        item('a', 'height:10px;margin-bottom:20px;align-self:flex-start') +
+          item('b', 'height:30px'),
+        'k',
+      ) +
+      row(
+        'width:200px',
+        item('c', 'height:30px;margin-top:4px') +
+          item('d', 'height:10px;margin-bottom:6px'),
+        'l',
+      ) +
+      row('width:45px', lines('e', 'f', 'g', 'h'), 'm') +
+      row('width:45px;flex-direction:row-reverse', lines('i', 'j', 'n', 'o')) +
+      row(
+        'width:45px;height:100px;align-content:center',
+        lines('p', 'q', 'r', 's'),
+      ) +
+      // spaced around in a row too short for the line, which is set at
+      // the row's own start, its top (CSS Box Alignment 3, 5.1)
+      row(
+        'width:200px;height:36px;align-content:space-around',
+        item('o1', 'height:30px;margin-top:4px') +
+          item('o2', 'height:10px;margin-bottom:6px'),
+      ) +
+      // in a line the items aligned otherwise make taller
+      row(
+        'width:200px',
+        item('t', 'height:30px;margin-top:4px') +
+          item('u', 'height:10px;margin-bottom:6px') +
+          item('', 'height:60px;align-self:flex-end'),
+      ) +
+      row(
+        'width:200px',
+        item('', 'height:30px;margin-top:4px') +
+          item('', 'height:10px;margin-bottom:6px') +
+          item('v', 'align-self:stretch') +
+          item('w', 'height:8px;align-self:center'),
+      ) +
+      // a negative bottom margin reaches less far below
+      row(
+        'width:200px;align-items:flex-start',
+        item('x', 'height:30px;margin-top:4px;align-self:baseline') +
+          item('y', 'height:10px;margin-bottom:-4px;align-self:baseline') +
+          item('z', 'height:14px;margin-bottom:9px'),
+      ) +
+      // and by the text in them
+      '<div style="display:flex;flex-wrap:wrap-reverse;' +
+      'align-items:baseline;width:200px;height:80px">' +
+      '<div id="big" style="height:30px">a</div>' +
+      '<div id="small" style="height:10px;font-size:30px">b</div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const box = boxOf(el, id) as LaidBox & { parent: LaidBox };
+    return [box.y - box.parent.y, box.height];
+  };
+  const tops = (ids: string) => [...ids].map((id) => at(id)[0]);
+  assert.strictEqual(boxOf(el, 'k').height, 30, 'as tall as its margin boxes');
+  assert.deepStrictEqual(tops('ab'), [0, 0], 'each at the bottom');
+  assert.strictEqual(boxOf(el, 'l').height, 40, 'the group, 34 and 6');
+  assert.deepStrictEqual(tops('cd'), [4, 24], 'their bottoms together');
+  assert.strictEqual(boxOf(el, 'm').height, 63, 'two lines, 40 and 23');
+  assert.deepStrictEqual(tops('efgh'), [27, 47, 8, 0], 'line by line');
+  assert.deepStrictEqual(tops('ijno'), [27, 47, 8, 0], 'from the right');
+  assert.deepStrictEqual(
+    tops('pqrs'),
+    [45.5, 65.5, 26.5, 18.5],
+    'the lines centred',
+  );
+  assert.deepStrictEqual(
+    [at('o1')[0], at('o2')[0]],
+    [4, 24],
+    'the line from the top, past the bottom',
+  );
+  assert.deepStrictEqual(tops('tu'), [24, 44], 'at the bottom of the line');
+  assert.deepStrictEqual(at('v'), [0, 40], 'stretched to the group');
+  assert.deepStrictEqual(at('w'), [16, 8], 'centred in it');
+  assert.deepStrictEqual(tops('xyz'), [4, 24, 11], 'the one with none down');
+  const baseline = (id: string) => {
+    const [line] = linesOf(el, id);
+    return line.y + line.baseline;
+  };
+  assert.deepStrictEqual(at('big'), [50, 30], 'at the bottom of the row');
+  assert.ok(
+    Math.abs(baseline('big') - baseline('small')) < 0.01,
+    `${baseline('big')} and ${baseline('small')}`,
+  );
+});
+
 test('a column aligned by baselines keeps each margin across it once', async () => {
   // Yoga takes no pass for lines down a column that does not wrap, aligned
   // by baselines or not, and keeps an item's margins across it: added back
