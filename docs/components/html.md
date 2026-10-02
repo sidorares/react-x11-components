@@ -949,25 +949,27 @@ faded as the group it is (CSS Color 4, 3.2): on X11 and Wayland, where two
 things it draws can overlap — a background under its text, a badge over a
 header — it is painted on a surface of its own and the surface faded, so
 neither shows through the other, and where it draws one thing, a
-background or text alone, that thing is faded. On macOS and Windows each
+background or text alone, that thing is faded. On macOS it is a group
+too where react-x11 says a surface drawn faded costs about what it costs
+opaque (`fadesSurfacesCheaply`, over an @windowkit/appkit that scales the
+surface's pixels by the alpha). On Windows, and on macOS before that, each
 thing drawn is faded on its own, so where two of its boxes overlap the
-lower shows through: those contexts draw a surface at more cost than
-drawing what is on it again, and fade a group well only once they can draw
-one themselves. A box fixed to the viewport inside one fades each thing
-too. An inline element under 1 fades what it holds: its text, with the
-decorations, shadows and selection drawn with it, its background, borders
-and outline, the inline-blocks and images on its lines, and a block inside
-it. All but the block are drawn on its block's lines, where a paragraph's
-text is one batch of glyphs that no context fades a part of, so each is
-faded on its own, the text in the colours it is set in, and its background
-shows through its text where a browser's group would not let it. The
-floats and positioned boxes in it are faded as an element's are, and a
-hover or an animation that changes its opacity sets its text again in the
-new colours where it is, as a change of colour does — `isolation` —
-`isolate` makes a box a stacking context, positioned or not, painted
-whole in its place as one under full opacity is, so a box in it with a
-negative `z-index` goes over its background and under its text (CSS
-Compositing 1, 3.2) — `visibility` — a
+lower shows through: CoreGraphics drew a surface under an alpha at more
+cost than drawing again what was on it. A box fixed to the viewport inside
+one fades each thing too. An inline element under 1 fades what it holds:
+its text, with the decorations, shadows and selection drawn with it, its
+background, borders and outline, the inline-blocks and images on its
+lines, and a block inside it. All but the block are drawn on its block's
+lines, where a paragraph's text is one batch of glyphs that no context
+fades a part of, so each is faded on its own, the text in the colours it
+is set in, and its background shows through its text where a browser's
+group would not let it. The floats and positioned boxes in it are faded as
+an element's are, and a hover or an animation that changes its opacity
+sets its text again in the new colours where it is, as a change of colour
+does — `isolation` — `isolate` makes a box a stacking context, positioned
+or not, painted whole in its place as one under full opacity is, so a box
+in it with a negative `z-index` goes over its background and under its
+text (CSS Compositing 1, 3.2) — `visibility` — a
 hidden element keeps its room and draws nothing, its text included, and a
 visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
@@ -1257,10 +1259,11 @@ inside it, a colour animating in it or with its turn, a box in it that
 turns on its own, a selection across its text, a translation that moves
 it by a fraction of a pixel, a resize. One kept for an animation is given
 up when the animation is over. The native contexts on macOS and Windows
-draw a turned box through the matrix and fade each thing a faded element
-draws, every frame, as they draw any box. What the platforms could run of
-the rest, Core Animation among them, is
-[a design document](../prd-html-animations.md).
+draw a turned box through the matrix every frame, as they draw any box. A
+faded element's group, and a fade's kept one, are macOS's where its
+context says a faded surface is cheap, and on Windows each thing it draws
+is faded every frame. What the platforms could run of the rest, Core
+Animation among them, is [a design document](../prd-html-animations.md).
 
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
@@ -2338,8 +2341,13 @@ thing faded and showed each through the other. An element that draws one
 thing is faded as it was, and a page that fades nothing paints as it did.
 The macOS context drew a faded card's group in twice the time it took to
 draw the card again — 3.4 ms a frame of a fade, where it had been 1.7 —
-so the native contexts are not handed one, and a page paints there as it
-did.
+because CoreGraphics draws an image under an alpha at some fifteen times
+its cost at 1 (react-x11#810). Over a context that draws a surface's
+pixels scaled by the alpha instead (`fadesSurfacesCheaply`), the group is
+the cheap way as well as the right one: on macOS a repaint of 24 faded
+cards went from 3.7–5.5 ms faded a thing at a time to 2.4–4.4 grouped, and
+a frame of a fade from 0.65–1.2 ms to 0.39–0.73. A native context that
+does not say so is not handed a group, and a page paints there as it did.
 
 ## Types
 

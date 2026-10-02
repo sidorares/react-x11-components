@@ -592,10 +592,12 @@ metric(
   },
 );
 
-test('a native context fades each thing a faded element draws', async () => {
-  // react-x11's macOS and Windows contexts draw a surface through an image
-  // of it, which cost a faded card more than drawing it again: no group is
-  // asked for there, until the context can draw one of its own
+test('a native context fades each thing a faded element draws, but where a faded surface is cheap', async () => {
+  // react-x11's macOS and Windows contexts drew a surface under an alpha
+  // through CoreGraphics' own, which cost a faded card more than drawing it
+  // again: no group is asked for there, but of one that says a faded
+  // surface costs what an opaque one does (`fadesSurfacesCheaply`,
+  // react-x11#810)
   const { node } = await render(
     '<div style="opacity:.5;padding:4px;background:#ff0000"><b>text</b></div>',
   );
@@ -609,6 +611,12 @@ test('a native context fades each thing a faded element draws', async () => {
   asked = 0;
   await fillsOf(view(node), [], { surface, scalesText: true });
   assert.strictEqual(asked, 0, 'and none of a native one');
+  await fillsOf(view(node), [], {
+    surface,
+    scalesText: true,
+    fadesSurfacesCheaply: true,
+  });
+  assert.ok(asked > 0, 'but of one whose faded surfaces are cheap');
 });
 
 metric(
