@@ -1605,14 +1605,18 @@ a drawing do. Every frame in `test/html/animations.test.ts` is held to a
 build and to a surface made for that paint alone: a frame and a build can
 both be wrong the same way, and only the second check sees it.
 
-**A group goes only to a context where it pays** (`groupsOnSurfaces`).
-The macOS context draws a surface through a `CGImage` of its bitmap at
-about 12 ns a pixel, which cost a faded card's group twice what drawing the
-card again did, so the native contexts fade each thing an element draws
-until core gives them a group of their own (`docs/prd-html-animations.md`
-§8). Which side of a trade like that is cheap differs by backend and was
-the opposite of the in-process server's here: measure a new surface on
-macOS before taking a composite for the cheap side.
+**A group goes only to a context where it pays** (`groupsOnSurfaces`):
+ntk's, and a native one that says a faded surface is cheap
+(`fadesSurfacesCheaply`). CoreGraphics draws an image under an alpha below
+1 at some fifteen times its cost at 1, so on macOS a faded card's group
+cost twice what drawing the card again did, until react-x11 drew a surface
+there from its pixels scaled by the alpha (react-x11#810). A native context
+that does not say so fades each thing an element draws. Which side of a
+trade like that is cheap differs by backend and was the opposite of the
+in-process server's here, and the first guess at why — the image path, a
+flip, the interpolation — was wrong too: measure a new surface on macOS,
+in a benchmark that varies one thing at a time, before taking a composite
+for the cheap side or a cause for the cost.
 
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,

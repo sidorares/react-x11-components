@@ -227,6 +227,9 @@ export async function fillsOf(
     /** A context that draws text through its matrix: react-x11's macOS and
      *  Windows one. */
     scalesText?: boolean;
+    /** A context whose surfaces cost about the same drawn under an alpha:
+     *  react-x11's macOS one over a bridge that scales them. */
+    fadesSurfacesCheaply?: boolean;
   },
 ): Promise<Fill[]> {
   const { paintDocument } = await import('../../src/html/paint.js');
@@ -443,6 +446,9 @@ export async function fillsOf(
     });
   }
   if (options?.scalesText) (ctx as { scalesText?: boolean }).scalesText = true;
+  if (options?.fadesSurfacesCheaply) {
+    (ctx as { fadesSurfacesCheaply?: boolean }).fadesSurfacesCheaply = true;
+  }
   for (const layout of layouts) {
     (layout as { draw: unknown }).draw = (_: unknown, x: number, y: number) => {
       const shadow = shadowOf();

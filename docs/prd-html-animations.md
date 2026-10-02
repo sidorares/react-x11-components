@@ -429,8 +429,21 @@ In order, each step useful on its own and measured before the next:
    12 ns a pixel, and a card's group cost 2 ms at 2x where its fills and
    glyphs cost 0.3 — a fade's frame 1.7 → 3.4 ms, 24 faded cards 7.0 →
    11.3. So the native contexts (`scalesText`) fade each thing as before,
-   and group opacity there waits on §8's native group. The retained
-   background is the rest of step 1.
+   until one says a faded surface is cheap.
+
+   **1b on macOS.** The cost was not the image path but its alpha:
+   CoreGraphics draws an image under any alpha below 1 at some fifteen
+   times its cost at 1, and its transparency layers composite the same
+   way, so a native layer would not have helped (react-x11#810, with the
+   standalone benchmark). Scaling the surface's premultiplied pixels by
+   the alpha and drawing them at 1 is a fifth of the cost:
+   `ctxDrawSurfaceFaded` in @windowkit/appkit (windowkit/appkit#94), sent
+   by react-x11's `drawImage` under an alpha and announced as the context's
+   `fadesSurfacesCheaply` (react-x11#812). `<Html>` hands a group to a
+   native context that says so. On macOS over both, grouped against faded
+   a thing at a time on the same build: 24 faded cards 3.7–5.5 → 2.4–4.4
+   ms, a fade's frame 0.65–1.2 → 0.39–0.73. Windows, unmeasured, fades
+   each thing. The retained background is the rest of step 1.
 
 2. **§5.2, translation without a surface**, and the `scrollContents` copy
    for a whole-pixel translation of an opaque sprite on X11.
@@ -462,14 +475,15 @@ before step 5:
 - **ntk: a `Surface` backed by a GL framebuffer** (§5.3), a dma-buf the 2D
   context composites as a pixmap, over the import `glswapchain.js` already
   does. Filed when and if step 6 is reached, with step 1's numbers.
-- **react-x11: a group on the native 2D contexts** — `beginLayer(alpha)`
-  and `endLayer()` over `CGContextBeginTransparencyLayer` and Direct2D's
-  `PushLayer`, as the Canvas 2D layers proposal names them — or a
-  `drawImage` of a surface that does not go through a `CGImage` of the
-  bitmap and a flipped matrix at 12 ns a pixel. Either lets step 1b's
-  groups run on macOS and Windows; without one they fade each thing,
-  which step 1b measured as the cheaper wrong answer there. Core's own
-  `<box>` opacity (`_paintGroup`) draws the same surface the same way.
+- **react-x11: a faded surface as cheap as an opaque one on macOS** —
+  filed as react-x11#810. A native layer (`beginLayer`/`endLayer` over
+  `CGContextBeginTransparencyLayer`) was the first idea and measured no
+  better: CoreGraphics composites a layer under an alpha as slowly as an
+  image. The fix is windowkit/appkit#94's `ctxDrawSurfaceFaded` and
+  react-x11#812's `drawImage` and `fadesSurfacesCheaply`, which core's own
+  `<box>` opacity (`_paintGroup`) takes as it is. Windows is unmeasured:
+  Direct2D draws a bitmap with an opacity on the GPU, and the capability
+  stays off there until someone measures it.
 
 ## 9. Open questions
 

@@ -185,6 +185,10 @@ export interface PaintContext extends FillContext {
    *  turned and scaled, glyphs and all: the native contexts', and not
    *  ntk's, whose glyphs are drawn as they were shaped. */
   scalesText?: boolean;
+  /** Whether a surface drawn under an alpha below 1 costs about what it
+   *  costs at 1: the macOS context, over a bridge that scales a surface's
+   *  pixels by the alpha (react-x11 `fadesSurfacesCheaply`). */
+  fadesSurfacesCheaply?: boolean;
   /** What every drawing is multiplied by: an element's `opacity`. */
   globalAlpha?: number;
   /** How a drawing meets what is under it; a value a backend does not
@@ -1610,15 +1614,17 @@ function paintGroupThrough(
 /**
  * Whether a context fades a group on a surface of its own (`paintGroup`):
  * ntk's, which X11 and Wayland draw with, whose server composites a surface
- * in a request and sets a box's glyphs again from scratch. The native
- * contexts on macOS and Windows (`scalesText`) draw a surface through an
- * image of it, and on macOS that cost a faded card twice what drawing it
- * again did — a fade's frame 3.4 ms where it had been 1.7 — so they fade
- * each thing a box draws, as every context did, until they can draw a
- * group of their own: a CoreGraphics transparency layer, a Direct2D layer.
+ * in a request and sets a box's glyphs again from scratch; and a native one
+ * that says a surface under an alpha costs about what it costs at 1
+ * (`fadesSurfacesCheaply`, react-x11#810) — macOS over a bridge that scales
+ * a surface's pixels rather than drawing it through CoreGraphics' own
+ * alpha, which cost a faded card twice what drawing it again did. A native
+ * context that does not say so — Windows, and macOS over an older bridge —
+ * fades each thing a box draws, as every context did.
  */
 function groupsOnSurfaces(ctx: PaintContext): boolean {
-  return !!ctx.drawImage && ctx.scalesText !== true;
+  if (!ctx.drawImage) return false;
+  return ctx.scalesText !== true || ctx.fadesSurfacesCheaply === true;
 }
 
 /** `onSurface` for a group: what escapes a clip around the box is painted
