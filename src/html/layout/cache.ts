@@ -17,9 +17,8 @@
 // Two generations bound it: a pass may take what the pass before used, and
 // what neither used is dropped. A long document costs one pass's layouts
 // and the layouts an edit replaced, never the history of every edit.
-import type { TextRun } from '../../richtext/index.js';
 import type { TextLayoutLike } from './boxes.js';
-import type { FontsLike } from './inline.js';
+import type { DocumentRun, FontsLike } from './inline.js';
 
 export class TextLayoutCache {
   /** The fonts to lay out with: the engine's, answered from here when a
@@ -61,7 +60,7 @@ export class TextLayoutCache {
    * the text once.
    */
   private _layout(
-    content: TextRun[],
+    content: DocumentRun[],
     style: Record<string, unknown>,
     options: Parameters<FontsLike['layout']>[2],
   ): TextLayoutLike {
@@ -92,7 +91,7 @@ export class TextLayoutCache {
    */
   inputsOf(layout: TextLayoutLike):
     | {
-        readonly content: readonly TextRun[];
+        readonly content: readonly DocumentRun[];
         readonly style: Record<string, unknown>;
         readonly options: Options;
       }
@@ -111,7 +110,7 @@ const KEY_EDGE = 16;
  * whose hashes meet, are told apart by `find`; a key of the whole text was
  * the text copied and hashed for every layout of every pass.
  */
-function keyOf(content: readonly TextRun[], maxWidth: unknown): number {
+function keyOf(content: readonly DocumentRun[], maxWidth: unknown): number {
   let length = 0;
   for (const run of content) length += run.text.length;
   let h = Math.imul(content.length ^ length, 0x9e3779b1);
@@ -139,7 +138,7 @@ type Options = Parameters<FontsLike['layout']>[2];
 
 /** A layout, and a copy of everything it was made from. */
 interface Kept {
-  content: TextRun[];
+  content: DocumentRun[];
   style: Record<string, unknown>;
   options: Options;
   layout: TextLayoutLike;
@@ -148,7 +147,7 @@ interface Kept {
 /** The layout among `kept` made from exactly these inputs. */
 function find(
   kept: Kept[] | undefined,
-  content: readonly TextRun[],
+  content: readonly DocumentRun[],
   style: Record<string, unknown>,
   options: Options,
 ): Kept | undefined {
@@ -167,9 +166,9 @@ function find(
 
 /**
  * Every field of a run: two runs are the same run when these are. Checked
- * against `TextRun` by the compiler, so a field added there cannot be left
- * out of the list, and `sameRun` compares each of them, which a test holds
- * it to.
+ * against `DocumentRun` by the compiler, so a field added there or to
+ * `TextRun` cannot be left out of the list, and `sameRun` compares each of
+ * them, which a test holds it to.
  */
 export const RUN_FIELDS = [
   'text',
@@ -193,10 +192,11 @@ export const RUN_FIELDS = [
   'nowrap',
   'shapeApart',
   'kernAcross',
-] as const satisfies readonly (keyof TextRun)[];
+  'stretch',
+] as const satisfies readonly (keyof DocumentRun)[];
 
-/** A field of `TextRun` missing from `RUN_FIELDS` names itself here. */
-type Unlisted = Exclude<keyof TextRun, (typeof RUN_FIELDS)[number]>;
+/** A field of `DocumentRun` missing from `RUN_FIELDS` names itself here. */
+type Unlisted = Exclude<keyof DocumentRun, (typeof RUN_FIELDS)[number]>;
 const everyField: [Unlisted] extends [never] ? true : Unlisted = true;
 void everyField;
 
@@ -204,10 +204,11 @@ void everyField;
  * Whether two runs are the same run: `RUN_FIELDS`, spelled out. A
  * paragraph's runs are compared on every pass over a long document, and
  * walking each run's own fields, or the list's, was most of what finding
- * its layout cost. A field `TextRun` does not name is not the engine's to
- * read, and two runs that differ only there are the same.
+ * its layout cost. A field `DocumentRun` does not name is not the engine's
+ * to read, nor the document's below the cache (`axes.ts`), and two runs
+ * that differ only there are the same.
  */
-function sameRun(a: TextRun, b: TextRun): boolean {
+function sameRun(a: DocumentRun, b: DocumentRun): boolean {
   return (
     a.text === b.text &&
     a.family === b.family &&
@@ -229,7 +230,8 @@ function sameRun(a: TextRun, b: TextRun): boolean {
     a.features === b.features &&
     a.nowrap === b.nowrap &&
     a.shapeApart === b.shapeApart &&
-    a.kernAcross === b.kernAcross
+    a.kernAcross === b.kernAcross &&
+    a.stretch === b.stretch
   );
 }
 
@@ -259,12 +261,13 @@ function sameStyle(
     a.features === b.features &&
     a.nowrap === b.nowrap &&
     a.shapeApart === b.shapeApart &&
-    a.kernAcross === b.kernAcross
+    a.kernAcross === b.kernAcross &&
+    a.stretch === b.stretch
   );
 }
 
 /** Every option a layout is made with, held to the engine's by the
- *  compiler as `RUN_FIELDS` is to `TextRun`. */
+ *  compiler as `RUN_FIELDS` is to `DocumentRun`. */
 export const OPTION_FIELDS = [
   'maxWidth',
   'lineHeight',

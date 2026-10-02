@@ -15,7 +15,7 @@
 // stylesheet is easy; matching `li:nth-child(2n+1) > a[href^="/"]` correctly
 // and quickly is not, and that is the part worth importing.
 import { resolveUrl } from '../url.js';
-import { parseLength } from './values.js';
+import { parseLength, parseStretch, splitValue } from './values.js';
 import { hasVar, unbalanced, validVars } from './vars.js';
 
 /** One `prop: value` pair, with `!important` already taken off the value. */
@@ -123,8 +123,7 @@ export interface Keyframe {
 /**
  * One `@font-face` (CSS Fonts 4, 4): a face of a family, and where to get
  * it. The descriptors are kept to what choosing and registering a face
- * reads — `font-stretch`, `font-display` and the feature descriptors are
- * not.
+ * reads — `font-display` and the feature descriptors are not.
  */
 export interface FontFaceRule {
   /** The family as the document names it, unquoted. */
@@ -137,6 +136,11 @@ export interface FontFaceRule {
    *  range for a variable face. */
   weight: [number, number];
   style: 'normal' | 'italic';
+  /** The widths the face covers, as `font-stretch` percentages: `[75, 75]`
+   *  for a condensed face, a range for a variable one. Null for `auto`,
+   *  which is matched as `normal` and sets no bound on a `wdth` axis
+   *  (CSS Fonts 4, 4.4). */
+  stretch: [number, number] | null;
   /** Code point ranges, inclusive; null for every code point. */
   unicodeRange: [number, number][] | null;
   /** The `@media` blocks the rule sits under, as a style rule's. */
@@ -1935,6 +1939,7 @@ function parseFontFace(
   let src: string | null = null;
   let weight: [number, number] = [400, 400];
   let style: 'normal' | 'italic' = 'normal';
+  let stretch: [number, number] | null = null;
   let unicodeRange: [number, number][] | null = null;
   // a descriptor that is not one is dropped, as a declaration is, and the
   // one before it stands
@@ -1949,6 +1954,9 @@ function parseFontFace(
       const v = d.value.trim().toLowerCase();
       if (v === 'normal') style = 'normal';
       else if (v === 'italic' || /^oblique\b/.test(v)) style = 'italic';
+    } else if (d.prop === 'font-stretch') {
+      const range = faceStretch(d.value);
+      if (range !== undefined) stretch = range;
     } else if (d.prop === 'unicode-range') {
       unicodeRange = unicodeRanges(d.value) ?? unicodeRange;
     }
@@ -1978,7 +1986,7 @@ function parseFontFace(
     sources.push({ url: resolveUrl(url, base), format });
   }
   if (!sources.length) return null;
-  return { family, sources, weight, style, unicodeRange, media };
+  return { family, sources, weight, style, stretch, unicodeRange, media };
 }
 
 /** A `@font-face`'s one family name: a string, or identifiers, which one
@@ -2022,6 +2030,27 @@ function faceWeight(value: string): [number, number] | null {
   const a = one(parts[0]);
   const b = one(parts[1]);
   if (a === null || b === null) return null;
+  return a <= b ? [a, b] : [b, a];
+}
+
+/**
+ * A `@font-face`'s `font-stretch` (CSS Fonts 4, 4.4): `auto`, one width or
+ * the range a variable face covers, each a keyword or a percentage, as the
+ * property takes them — null for `auto`, and undefined for a value that is
+ * none of them, which drops the descriptor. A range written high to low is
+ * the same range.
+ *
+ * Chrome and Safari drop a range with a keyword in it, and Chrome reads
+ * `normal` as `auto`; Firefox reads both as the spec has them, and so does
+ * this.
+ */
+function faceStretch(value: string): [number, number] | null | undefined {
+  const parts = splitValue(value);
+  if (parts.length === 1 && parts[0].toLowerCase() === 'auto') return null;
+  if (parts.length < 1 || parts.length > 2) return undefined;
+  const ends = parts.map((p) => parseStretch(p));
+  const [a, b = a] = ends;
+  if (a === null || b === null) return undefined;
   return a <= b ? [a, b] : [b, a];
 }
 

@@ -1388,21 +1388,29 @@ text was set in before, ask the engine which face it matched**
 (`app.fonts.match(list).postscriptName`), at both commits, before reading
 either diff.
 
-**The weight axis is the document's to set.** A style's weight is a place
-on a variable face's `wght` axis, clamped to the range its `@font-face`
-declares (CSS Fonts 4, 7.2), and an engine knows the file, not the rule:
-ntk moves the axis to the style's weight whatever was declared, and
-CoreText, for a face core registered, does not move it — every heading set
-in Geist was its regular on macOS. `WebFonts.wght` says the value and
-`layout/axes.ts` hands it on as the run's `variations`, under the layout
-cache, so nothing a layout is found by changes. Three things there are
-load-bearing: only a run whose list **leads** with a ranged variable face
-is touched, because an axis value set on a run in another family lands on
-the system's own variable font (San Francisco takes `wght` and would be
-set at this document's rule); the run is handed on as a copy, since it is
-the caller's; and a value is one shared object, since ntk tells two runs'
-`variations` apart by identity and would split a paragraph at one weight
-into a run a word.
+**The weight and width axes are the document's to set.** A style's weight
+is a place on a variable face's `wght` axis, and its `font-stretch` one on
+its `wdth` axis, each clamped to the range its `@font-face` declares (CSS
+Fonts 4, 7.2), and an engine knows the file, not the rule: ntk moves the
+weight axis to the style's weight whatever was declared, CoreText, for a
+face core registered, does not move it — every heading set in Geist was its
+regular on macOS — and neither knows a width at all. `WebFonts.setting`
+says the values and `layout/axes.ts` hands them on as the run's
+`variations`, under the layout cache, so nothing a layout is found by
+changes. Four things there are load-bearing: only a run whose list
+**leads** with a variable face of the document's is touched, because an
+axis value set on a run in another family lands on the system's own
+variable font (San Francisco takes `wght` and would be set at this
+document's rule); the run is handed on as a copy, since it is the caller's;
+a value is one shared object, since ntk tells two runs' `variations` apart
+by identity and would split a paragraph at one weight into a run a word;
+and the width reaches that layer as the run's `stretch`, a field of
+`DocumentRun` that no engine reads, so it is in `RUN_FIELDS` — two runs that
+differ only in it are two layouts. CSS matches a family's faces by width
+before slant and weight (5.2), and the font manager picks by weight and
+slant alone, so faces of several widths in one family are registered a name
+per width, and the same layer hands a run the list with its width's name
+first.
 
 **A probe of an unbounded width places nothing at infinity.** A
 shrink-to-fit probe lays a subtree out in infinite room, where sharing room

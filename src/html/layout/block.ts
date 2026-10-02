@@ -1403,6 +1403,7 @@ function setsFonts(line: ComputedStyle, block: ComputedStyle): boolean {
     line.fontSize !== block.fontSize ||
     line.fontWeight !== block.fontWeight ||
     line.fontStyle !== block.fontStyle ||
+    line.fontStretch !== block.fontStretch ||
     line.lineHeight !== block.lineHeight ||
     line.lineHeightIsLength !== block.lineHeightIsLength ||
     line.letterSpacing !== block.letterSpacing ||

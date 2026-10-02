@@ -81,10 +81,23 @@ const PARAGRAPH_FIT = 'items' as const;
  *  third of one past the line a browser breaks before it. */
 const FIT_SLACK = 1 / 64;
 
+/**
+ * A run of the document's text: `<richtext>`'s, and the width CSS sets it at
+ * — `font-stretch`, a percentage of its face's normal width (100 where
+ * unset). No text engine reads `stretch`. The document reads it below the
+ * layouts it keeps, where it sets a variable face's `wdth` axis and picks
+ * the face of its width that a family declares (`axes.ts`), so two runs
+ * that differ in it are two runs to the layout cache; a run that reaches
+ * an engine with it is set at its face's own width.
+ */
+export interface DocumentRun extends TextRun {
+  stretch?: number;
+}
+
 /** The slice of ntk's font manager this needs. Structural, as everywhere. */
 export interface FontsLike {
   layout(
-    content: TextRun[],
+    content: DocumentRun[],
     style: Record<string, unknown>,
     options: {
       maxWidth?: number;
@@ -3063,12 +3076,13 @@ function levelled(
     const tail = letters[letters.length - 1];
     const docStart = head.doc;
     const docEnd = tail.doc + tail.run.text.length;
-    const face = (run: TextRun, control: string): TextRun => ({
+    const face = (run: DocumentRun, control: string): DocumentRun => ({
       text: control,
       family: run.family,
       size: run.size,
       weight: run.weight,
       style: run.style,
+      stretch: run.stretch,
     });
     const rtl = (level & 1) === 1;
     const laidRuns: TextRun[] = [face(head.run, rtl ? '\u202e' : '\u202d')];
@@ -4477,7 +4491,10 @@ function spaceIn(box: Box): string {
 }
 
 /** A text's font, the part of a run a character's advance depends on. */
-type Face = Pick<TextRun, 'family' | 'size' | 'weight' | 'style'>;
+type Face = Pick<
+  DocumentRun,
+  'family' | 'size' | 'weight' | 'style' | 'stretch'
+>;
 
 /** A block's font, as its runs name it (`runFor`). */
 function fontOf(style: ComputedStyle): Face {
@@ -4486,6 +4503,7 @@ function fontOf(style: ComputedStyle): Face {
     size: style.fontSize,
     weight: style.fontWeight,
     style: style.fontStyle === 'normal' ? 'normal' : 'italic',
+    stretch: style.fontStretch,
   };
 }
 
@@ -4493,7 +4511,7 @@ function fontOf(style: ComputedStyle): Face {
 function advanceOf(fonts: FontsLike, font: Face, char: string): number {
   let kept = ADVANCES.get(fonts);
   if (!kept) ADVANCES.set(fonts, (kept = new Map()));
-  const key = `${font.family}|${font.size}|${font.weight}|${font.style}|${char}`;
+  const key = `${font.family}|${font.size}|${font.weight}|${font.style}|${font.stretch}|${char}`;
   let advance = kept.get(key);
   if (advance === undefined) {
     const face: Face = {
@@ -4501,6 +4519,7 @@ function advanceOf(fonts: FontsLike, font: Face, char: string): number {
       size: font.size,
       weight: font.weight,
       style: font.style,
+      stretch: font.stretch,
     };
     // between two letters, so that no engine drops it as a line's end
     advance =
@@ -4771,13 +4790,15 @@ const FEATURES = new Map<string, Readonly<Record<string, number>>>();
  *  paint field of a run of the document's text is this function's, which
  *  is what lets a pointer move re-ink a paragraph without laying it out
  *  again (`HtmlViewNode._hoverInPlace`). */
-export function runFor(text: string, style: ComputedStyle): TextRun {
-  const run: TextRun = {
+export function runFor(text: string, style: ComputedStyle): DocumentRun {
+  const run: DocumentRun = {
     text,
     family: style.fontFamily,
     size: style.fontSize,
     weight: style.fontWeight,
     style: style.fontStyle === 'normal' ? 'normal' : 'italic',
+    // in every run, so that the runs have one shape (`shapeApart`)
+    stretch: style.fontStretch,
     // the glyphs' fill, which `-webkit-text-fill-color` sets apart from
     // `color` — the decorations keep `color`
     color:
@@ -5001,14 +5022,14 @@ function advance(
  */
 const SPACE_ADVANCE = new WeakMap<FontsLike, Map<string, number>>();
 
-function spaceAdvance(fonts: FontsLike, run: TextRun): number {
+function spaceAdvance(fonts: FontsLike, run: DocumentRun): number {
   let cache = SPACE_ADVANCE.get(fonts);
   if (!cache) {
     cache = new Map();
     SPACE_ADVANCE.set(fonts, cache);
   }
   const spacing = run.letterSpacing ?? 0;
-  const key = `${run.family}|${run.size}|${run.weight}|${run.style}`;
+  const key = `${run.family}|${run.size}|${run.weight}|${run.style}|${run.stretch}`;
   const hit = cache.get(key);
   if (hit !== undefined) return hit + spacing;
   const style = {
@@ -5016,6 +5037,7 @@ function spaceAdvance(fonts: FontsLike, run: TextRun): number {
     size: run.size,
     weight: run.weight,
     style: run.style,
+    stretch: run.stretch,
   };
   const measure = (text: string): number =>
     fonts.layout([{ ...style, text }], style, {}).lines[0]?.width ?? 0;

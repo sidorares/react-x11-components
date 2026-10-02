@@ -1014,15 +1014,17 @@ class StateRules {
 
 /**
  * The face a style's font-relative units are measured in: its family list,
- * size, weight and slant, the four that pick one. A family's faces can be
- * different fonts altogether — a page's `@font-face` rules may set its
- * bold in another file — so an `ex` in bold text is the bold face's.
+ * size, weight, slant and width, the five that pick one. A family's faces
+ * can be different fonts altogether — a page's `@font-face` rules may set
+ * its bold in another file — so an `ex` in bold text is the bold face's,
+ * and a `ch` in condensed text is the condensed face's "0".
  */
 export interface MetricFace {
   family: string;
   size: number;
   weight: number;
   style: ComputedStyle['fontStyle'];
+  stretch: number;
 }
 
 /** What a face measures, where the fonts can say. */
@@ -1032,7 +1034,7 @@ export type FaceMetric = (face: MetricFace) => number | null;
  *  a declaration's font-relative units are measured against. */
 type FaceSource = Pick<
   ComputedStyle,
-  'fontFamily' | 'fontSize' | 'fontWeight' | 'fontStyle'
+  'fontFamily' | 'fontSize' | 'fontWeight' | 'fontStyle' | 'fontStretch'
 >;
 
 /** …and its line height, for `lh`. */
@@ -1045,11 +1047,12 @@ function faceOf(style: FaceSource): MetricFace {
     size: style.fontSize,
     weight: style.fontWeight,
     style: style.fontStyle,
+    stretch: style.fontStretch,
   };
 }
 
 function faceKey(style: FaceSource): string {
-  return `${style.fontFamily}\u0001${style.fontSize}\u0001${style.fontWeight}\u0001${style.fontStyle}`;
+  return `${style.fontFamily}\u0001${style.fontSize}\u0001${style.fontWeight}\u0001${style.fontStyle}\u0001${style.fontStretch}`;
 }
 
 /**
@@ -2118,12 +2121,13 @@ export class Cascade {
       focusRing: this.look.focusRing,
       systemColors: this._systemColors,
     };
-    // The family, the weight and the slant go with the size: together they
-    // pick the face an `ex`, a `ch` or an `lh` in any declaration is
-    // measured in, however the declarations are ordered. A `width: 10ex`
-    // in a sheet under an inline `font-weight: 900` was measured in the
-    // family's regular face. The colour scheme goes ahead of the rest for
-    // the same reason: every `light-dark()` among them is read by it.
+    // The family, the weight, the slant and the width go with the size:
+    // together they pick the face an `ex`, a `ch` or an `lh` in any
+    // declaration is measured in, however the declarations are ordered. A
+    // `width: 10ex` in a sheet under an inline `font-weight: 900` was
+    // measured in the family's regular face. The colour scheme goes ahead of
+    // the rest for the same reason: every `light-dark()` among them is read
+    // by it.
     let sized = false;
     let keyword = false;
     for (const c of candidates) {
@@ -2133,6 +2137,7 @@ export class Cascade {
           d.prop === 'font-family' ||
           d.prop === 'font-weight' ||
           d.prop === 'font-style' ||
+          d.prop === 'font-stretch' ||
           d.prop === 'color-scheme'
         ) {
           this._apply(style, parentStyle, d, ctxParent);
@@ -2173,6 +2178,7 @@ export class Cascade {
       fontSize: style.fontSize,
       fontWeight: style.fontWeight,
       fontStyle: style.fontStyle,
+      fontStretch: style.fontStretch,
     };
     let line: LineSource | null = null;
     // the root's other declarations measure a `rem` from its own size
