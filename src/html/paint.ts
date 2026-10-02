@@ -56,7 +56,7 @@ import {
   scrolls,
 } from './css/style.js';
 import { LARGEST } from './css/calc.js';
-import { invert, mapRect, transformed } from './css/transform.js';
+import { invert, mapRect, multiply, transformed } from './css/transform.js';
 import type { Matrix } from './css/transform.js';
 import { contained, placedMatrix } from './layout/block.js';
 import {
@@ -281,6 +281,12 @@ export interface PaintOptions {
   /** @internal What the rules give the shapes in each drawing, where one
    *  could reach any (`BoxTree.shapeStyler`). */
   shapeStyler?: ShapeStyler | null;
+  /** @internal The matrix the context draws through, from the coordinates
+   *  being painted in to the window's, inside a box drawn through its
+   *  transform (`paintTransformed`): what a shadow's offset and blur, which
+   *  a context takes in the window's coordinates, are carried out through
+   *  (`aside`). Absent, the two are one. */
+  matrix?: Matrix;
 }
 
 /**
@@ -1206,6 +1212,7 @@ function paintTransformed(
     ...options,
     damage:
       damage && mapRect(back, damage.x, damage.y, damage.width, damage.height),
+    matrix: options.matrix ? multiply(options.matrix, through) : through,
   };
   if (
     ctx.scalesText !== true &&
@@ -1586,7 +1593,11 @@ function paintGroupThrough(
       through[4],
       through[5],
     );
-    paintUnfaded(on, box, inside);
+    // what it draws clear of the surface is clear of the surface's corner
+    paintUnfaded(on, box, {
+      ...inside,
+      matrix: multiply([1, 0, 0, 1, -x0, -y0], through),
+    });
     on.restore();
     drawThrough(ctx, surface, null, x0, y0, opacity);
     return true;
@@ -1718,6 +1729,8 @@ function onSurface(
       y: options.viewport.y - y0,
     },
     clips: [],
+    // drawn on the surface as laid out, and the surface through the matrix
+    matrix: undefined,
   };
 }
 
@@ -2297,15 +2310,9 @@ function paintShadows(
       }
       if (!(s.blur > 0) && covered) {
         // a hard shadow, under a box that hides what falls under it
-        fillShadow(
-          ctx,
-          s,
-          color,
-          (dx) => {
-            roundedRect(ctx, x - dx, y, width, height, cut.corners);
-          },
-          0,
-        );
+        fillShadow(ctx, options, s, color, () => {
+          roundedRect(ctx, x, y, width, height, cut.corners);
+        });
         continue;
       }
       // what of the shadow falls under the box is not drawn
@@ -2336,12 +2343,13 @@ function paintShadows(
       }
       fillShadow(
         ctx,
+        options,
         s,
         color,
-        (dx) => {
-          shadowShape(ctx, x - dx, y, width, height, cut.corners);
+        (mx, my) => {
+          shadowShape(ctx, x + mx, y + my, width, height, cut.corners);
         },
-        x + width + reach,
+        { x, y, width, height },
       );
       if (clipped) ctx.restore();
     }
@@ -2425,16 +2433,17 @@ function paintShadows(
     };
     fillShadow(
       ctx,
+      options,
       s,
       color,
-      (dx) => {
-        ctx.rect!(frame.x - dx, frame.y, frame.width, frame.height);
+      (mx, my) => {
+        ctx.rect!(frame.x + mx, frame.y + my, frame.width, frame.height);
         if (hole) {
           const { rect: r } = hole;
-          shadowShape(ctx, r.x - dx, r.y, r.width, r.height, hole.corners);
+          shadowShape(ctx, r.x + mx, r.y + my, r.width, r.height, hole.corners);
         }
       },
-      frame.x + frame.width + shadowReach(s.blur),
+      frame,
       'evenodd',
     );
     ctx.restore();
@@ -2443,36 +2452,100 @@ function paintShadows(
 
 /**
  * Fill a shadow's shape: in its colour where it has no blur, and otherwise
- * as the context's shadow of the shape drawn `dx` to the left — clear of
- * the window, its right edge at `right` before the move — with the shadow
- * offset back by as much, so that only the shadow lands.
+ * as the context's shadow of the shape drawn clear of the window, where
+ * `aside` moves it from `bounds`, so that only the shadow lands.
  */
 function fillShadow(
   ctx: PaintContext,
+  options: PaintOptions,
   s: BoxShadow,
   color: string,
-  shape: (dx: number) => void,
-  right: number,
+  shape: (mx: number, my: number) => void,
+  bounds: Rect | null = null,
   rule: 'nonzero' | 'evenodd' = 'nonzero',
 ): void {
-  if (!(s.blur > 0)) {
+  if (!(s.blur > 0) || !bounds) {
     ctx.fillStyle = color;
     ctx.beginPath!();
-    shape(0);
+    shape(0, 0);
     ctx.fill!(rule);
     return;
   }
-  const dx = Math.ceil(right) + 1;
+  const move = aside(
+    options.matrix,
+    bounds.x,
+    bounds.y,
+    bounds.x + bounds.width + shadowReach(s.blur),
+    bounds.y + bounds.height,
+    0,
+    0,
+    s.blur,
+  );
   ctx.save();
   ctx.shadowColor = color;
-  ctx.shadowBlur = s.blur;
-  ctx.shadowOffsetX = dx;
-  ctx.shadowOffsetY = 0;
+  ctx.shadowBlur = move.blur;
+  ctx.shadowOffsetX = move.offsetX;
+  ctx.shadowOffsetY = move.offsetY;
   ctx.fillStyle = '#000000';
   ctx.beginPath!();
-  shape(dx);
+  shape(move.x, move.y);
   ctx.fill!(rule);
   ctx.restore();
+}
+
+/** Where `aside` moves a drawing, and the shadow that lands it back. */
+interface Aside {
+  /** The move, in the coordinates painted in. */
+  x: number;
+  y: number;
+  /** The shadow's offset and blur, in the window's. */
+  offsetX: number;
+  offsetY: number;
+  blur: number;
+}
+
+/**
+ * How a drawing whose shadow alone is to land is drawn clear of the window:
+ * moved left, in the window, until the right edge of what it covers — `x0`
+ * to `x1` across, `y0` to `y1` down, in the coordinates painted in — is
+ * past the window's left, and its shadow offset back by as much, with the
+ * shadow's own offset (`sx`, `sy`) and `blur` on top.
+ *
+ * A context takes a shadow's offset and blur in the window's coordinates,
+ * whatever matrix it draws through (HTML, "shadows"), where a transformed
+ * box is rendered, shadows and all, in the coordinates its transform makes
+ * (CSS Transforms 1, 3). So under `matrix` the move is made in the window
+ * and taken back through it, the shadow's offset is carried out through
+ * it, and its blur scaled as it scales a length — the square root of what
+ * it does to an area. Moved in the box's own coordinates and offset back
+ * by as much in the window's, a card drawn at 101% cast its glow a
+ * hundredth of the way across the window short of itself.
+ */
+function aside(
+  matrix: Matrix | undefined,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  sx: number,
+  sy: number,
+  blur: number,
+): Aside {
+  const back = matrix && invert(matrix);
+  if (!matrix || !back) {
+    const shift = Math.ceil(x1) + 1;
+    return { x: -shift, y: 0, offsetX: shift + sx, offsetY: sy, blur };
+  }
+  const reach = mapRect(matrix, x0, y0, x1 - x0, y1 - y0);
+  const shift = Math.ceil(reach.x + reach.width) + 1;
+  const [a, b, c, d] = matrix;
+  return {
+    x: -shift * back[0],
+    y: -shift * back[1],
+    offsetX: shift + a * sx + c * sy,
+    offsetY: b * sx + d * sy,
+    blur: blur * Math.sqrt(Math.abs(a * d - b * c)),
+  };
 }
 
 /**
@@ -6750,8 +6823,9 @@ function paintLines(ctx: PaintContext, box: Box, options: PaintOptions): void {
       const bands = recolored?.get(text.layout);
       const clipped =
         rows !== undefined && clipToRows(ctx, text, rows, text.drawX + dx, top);
-      if (bands) drawRecolored(ctx, text.layout, text.drawX + dx, top, bands);
-      else text.layout.draw(ctx, text.drawX + dx, top);
+      if (bands) {
+        drawRecolored(ctx, options, text.layout, text.drawX + dx, top, bands);
+      } else text.layout.draw(ctx, text.drawX + dx, top);
       if (clipped) ctx.restore();
     }
   }
@@ -7071,14 +7145,14 @@ function paintTextShadows(
         whole.add(rows ?? layout);
         const clipped =
           rows !== undefined && clipToRows(ctx, text, rows, left, top);
-        castShadows(ctx, text, left, top, cast, null);
+        castShadows(ctx, options, text, left, top, cast, null);
         if (clipped) ctx.restore();
         continue;
       }
       const natural = layout.lines[text.layoutLine];
       if (!natural || !text.spans.boxAt) continue;
       for (const [stretch, from, to] of stretchesOf(text, natural)) {
-        castShadows(ctx, text, left, top, stretch, {
+        castShadows(ctx, options, text, left, top, stretch, {
           x: left + natural.x + from,
           y: text.drawY + dy + natural.y,
           width: to - from,
@@ -7150,6 +7224,7 @@ function stretchesOf(
  *  `stretch` where the layout's runs do not all cast them. */
 function castShadows(
   ctx: PaintContext,
+  options: PaintOptions,
   text: LineText,
   left: number,
   top: number,
@@ -7164,7 +7239,6 @@ function castShadows(
   for (const natural of layout.lines) {
     right = Math.max(right, natural.x + natural.width);
   }
-  const shift = Math.ceil(left + right) + 1;
   for (let i = cast.shadows.length - 1; i >= 0; i -= 1) {
     const s = cast.shadows[i];
     ctx.save!();
@@ -7183,10 +7257,20 @@ function castShadows(
     ctx.shadowColor = inkColor(s.color, cast.color);
     // CoreGraphics casts no shadow with no blur at all: a hard one is one
     // blurred too little to see
-    ctx.shadowBlur = s.blur > 0 ? s.blur : 0.01;
-    ctx.shadowOffsetX = s.x + shift;
-    ctx.shadowOffsetY = s.y;
-    layout.draw(ctx, left - shift, top);
+    const move = aside(
+      options.matrix,
+      left,
+      top,
+      left + right,
+      top + layout.height,
+      s.x,
+      s.y,
+      s.blur > 0 ? s.blur : 0.01,
+    );
+    ctx.shadowBlur = move.blur;
+    ctx.shadowOffsetX = move.offsetX;
+    ctx.shadowOffsetY = move.offsetY;
+    layout.draw(ctx, left + move.x, top + move.y);
     ctx.restore!();
   }
 }
@@ -7901,6 +7985,7 @@ function recoloredBands(
  */
 function drawRecolored(
   ctx: PaintContext,
+  options: PaintOptions,
   layout: LineText['layout'],
   left: number,
   top: number,
@@ -7927,7 +8012,16 @@ function drawRecolored(
   for (const natural of layout.lines) {
     right = Math.max(right, natural.x + natural.width);
   }
-  const shift = Math.ceil(left + right) + 1;
+  const move = aside(
+    options.matrix,
+    left,
+    top,
+    left + right,
+    top + layout.height,
+    0,
+    0,
+    0.01,
+  );
   const colors = new Map<string, SelectedBand[]>();
   for (const band of bands) {
     const color = band.style!.color!;
@@ -7941,10 +8035,10 @@ function drawRecolored(
     for (const r of group) ctx.rect(r.x, r.y, r.width, r.height);
     ctx.clip();
     ctx.shadowColor = color;
-    ctx.shadowBlur = 0.01;
-    ctx.shadowOffsetX = shift;
-    ctx.shadowOffsetY = 0;
-    layout.draw(ctx, left - shift, top);
+    ctx.shadowBlur = move.blur;
+    ctx.shadowOffsetX = move.offsetX;
+    ctx.shadowOffsetY = move.offsetY;
+    layout.draw(ctx, left + move.x, top + move.y);
     ctx.restore();
   }
 }

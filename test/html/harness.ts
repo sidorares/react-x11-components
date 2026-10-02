@@ -182,7 +182,14 @@ export type PaintOp =
       /** The piece of the image drawn, where not all of it is. */
       src?: number[];
     }
-  | { op: 'text'; x: number; y: number; shadow?: Fill['shadow'] };
+  | {
+      op: 'text';
+      x: number;
+      y: number;
+      shadow?: Fill['shadow'];
+      /** The matrix the layout was drawn under, where `transform` set one. */
+      matrix?: number[];
+    };
 
 /** What painting the document fills, in order. The glyphs are left out:
  *  the recorder has nowhere to draw them. `ops`, when given, gets the fills
@@ -439,7 +446,13 @@ export async function fillsOf(
   for (const layout of layouts) {
     (layout as { draw: unknown }).draw = (_: unknown, x: number, y: number) => {
       const shadow = shadowOf();
-      ops?.push({ op: 'text', x, y, ...(shadow ? { shadow } : null) });
+      ops?.push({
+        op: 'text',
+        x,
+        y,
+        ...(shadow ? { shadow } : null),
+        ...(matrix ? { matrix } : null),
+      });
     };
   }
   try {

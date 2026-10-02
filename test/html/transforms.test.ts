@@ -28,6 +28,7 @@ import {
   fillsOf,
   findById,
   h,
+  linesOf,
   metric,
   pixelsIn,
   render,
@@ -35,7 +36,7 @@ import {
   renderWithBytes,
   view,
 } from './harness.js';
-import type { LaidBox, Region } from './harness.js';
+import type { LaidBox, PaintOp, Region } from './harness.js';
 
 afterEach(cleanup);
 
@@ -703,6 +704,82 @@ test('a context with no transform draws a turned box where it was laid out', asy
     fills.map((f) => [f.x, f.y, f.w, f.h]),
     [[0, 0, 20, 10]],
   );
+});
+
+test('a box drawn through its matrix casts its blurred shadow where it is drawn', async () => {
+  // A context takes a shadow's offset and blur in the window's
+  // coordinates, whatever matrix it draws through, and the shape a shadow
+  // is cast from is drawn clear of the window with the shadow offset back.
+  // The shape was moved in the box's coordinates and the shadow offset
+  // back by as much in the window's: a card at scale(1.01) — the Zen
+  // Garden's design list, hovered — cast its glow 20px left of itself on a
+  // 2x display, where every box is drawn through its matrix.
+  for (const [transform, scale] of [
+    ['scale(2)', 2],
+    ['scale(1.01)', 1.01],
+    ['rotate(90deg)', 1],
+    ['rotate(30deg) scale(1.5)', 1.5],
+    ['scale(2, 0.5)', 1],
+  ] as const) {
+    const { node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div style="margin:200px 0 0 300px;width:100px;height:40px;' +
+        `background:#ffffff;box-shadow:0 0 10px #0d0d0d;transform:${transform}">` +
+        '</div>',
+    );
+    const shadow = (await fillsOf(view(node))).find((f) => f.shadow);
+    assert.ok(shadow?.matrix, `${transform}: a shadowed fill through a matrix`);
+    const m = shadow.matrix as unknown as Matrix;
+    const s = shadow.shadow!;
+    // where the box's corner is drawn, and where the shadow of the shape's
+    // corner lands
+    const [bx, by] = mapPoint(m, 300, 200);
+    const [sx, sy] = mapPoint(m, shadow.x, shadow.y);
+    assert.ok(
+      Math.abs(sx + s.x - bx) < 1e-6 && Math.abs(sy + s.y - by) < 1e-6,
+      `${transform}: lands at ${[sx + s.x, sy + s.y]}, drawn at ${[bx, by]}`,
+    );
+    assert.ok(
+      Math.abs(s.blur - 10 * scale) < 1e-9,
+      `${transform}: blurred as the box is scaled, ${s.blur}`,
+    );
+    const drawn = mapRect(m, shadow.x, shadow.y, shadow.w, shadow.h);
+    assert.ok(
+      drawn.x + drawn.width < 0,
+      `${transform}: the shape itself is clear of the window`,
+    );
+  }
+});
+
+test('a box drawn through its matrix casts its text shadow where its text is drawn', async () => {
+  const { node } = await render(
+    '<style>body{margin:0}p{margin:0;font-size:20px}</style>' +
+      '<p id="t" style="margin:100px 0 0 200px;width:80px;transform:rotate(30deg) ' +
+      'scale(2);text-shadow:3px 4px 2px #ff0000">Title</p>',
+  );
+  const el = view(node);
+  const ops: PaintOp[] = [];
+  await fillsOf(el, ops);
+  const texts = ops.filter(
+    (op): op is Extract<PaintOp, { op: 'text' }> => op.op === 'text',
+  );
+  const cast = texts.find((op) => op.shadow);
+  const text = texts.find((op) => !op.shadow);
+  assert.ok(cast?.matrix && text?.matrix, 'both drawn through the matrix');
+  const m = cast.matrix as unknown as Matrix;
+  const s = cast.shadow!;
+  // the shadow's own offset is the box's, turned and scaled with it
+  const [tx, ty] = mapPoint(m, text.x + 3, text.y + 4);
+  const [cx, cy] = mapPoint(m, cast.x, cast.y);
+  assert.ok(
+    Math.abs(cx + s.x - tx) < 1e-6 && Math.abs(cy + s.y - ty) < 1e-6,
+    `lands at ${[cx + s.x, cy + s.y]}, cast to ${[tx, ty]}`,
+  );
+  assert.ok(Math.abs(s.blur - 4) < 1e-9, `blurred twice as much: ${s.blur}`);
+  const [line] = linesOf(el, 't');
+  const right =
+    cast.x + Math.max(...line.texts[0].layout.lines.map((l) => l.x + l.width));
+  assert.ok(mapPoint(m, right, cast.y)[0] < 0, 'the glyphs clear of it');
 });
 
 metric(
