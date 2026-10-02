@@ -879,12 +879,17 @@ limit under the padding and borders leaves the content box none wide, so
 the box is as big as them, as in Chrome), `overflow`, `clip`,
 `opacity` — an element under 1 is a stacking context painted whole in its
 place, the positioned boxes in it with it, at 0 not at all and between
-faded, each thing drawn in it multiplied rather than the
-group, so where two of its boxes overlap the lower shows through, but for
-a turned, scaled or skewed box drawn on a surface of its own (see
-Transforms), which is faded whole, as the group it is; a block
-inside an inline element is faded with it, and the inline element's own
-text is not — `visibility` — a
+faded as the group it is (CSS Color 4, 3.2): on X11 and Wayland, where two
+things it draws can overlap — a background under its text, a badge over a
+header — it is painted on a surface of its own and the surface faded, so
+neither shows through the other, and where it draws one thing, a
+background or text alone, that thing is faded. On macOS and Windows each
+thing drawn is faded on its own, so where two of its boxes overlap the
+lower shows through: those contexts draw a surface at more cost than
+drawing what is on it again, and fade a group well only once they can draw
+one themselves. A box fixed to the viewport inside one fades each thing
+too. A block inside an inline element is faded with it, and the inline
+element's own text is not — `visibility` — a
 hidden element keeps its room and draws nothing, its text included, and a
 visible element inside it is drawn; a
 collapsed table row or column gives its room and its spacing back —
@@ -1082,8 +1087,8 @@ a shadow is painted on a surface of its own, as it was laid out, and the
 surface drawn through the matrix: exact at a quarter turn or a reflection,
 and resampled — soft — where it is scaled up or turned by another angle.
 The surface is drawn at the box's opacity, so such a box is faded as the
-group it is, and while an animation turns or fades it the surface is kept
-from one frame to the next (see Animations).
+group it is, and it is kept from one paint to the next while an animation
+turns or fades the box, or while the surface is small (see Animations).
 Such a box scaled so small that the server's fixed point cannot carry it —
 to a thirtieth of its size far across a wide window, or flatter than can be
 seen — is not drawn there. On every backend a box's corner is snapped to
@@ -1151,17 +1156,21 @@ not used there, so an animation of two `alternate` iterations, or of half
 of one, is drawn as it ends its first. Transitions are not run either way.
 
 Every frame runs in JavaScript, on either backend. Where a box is drawn on
-a surface of its own through its matrix — on X11, one that holds text, an
-image, a gradient or a shadow — and an animation turns, scales, skews or
-fades it, the surface is kept while the animation runs: the box and what
-it holds are painted on it once, and a frame draws it through the matrix
-and at the opacity the frame has. Whatever else changes what is on it
-paints it again: a hover inside it, a colour animating in it or with its
-turn, a box in it that turns on its own, a selection across its text, a
-translation that moves it by a fraction of a pixel, a resize. It is given
+a surface of its own — on X11 one that turns and holds text, an image, a
+gradient or a shadow, and on X11 and Wayland an element faded as a group
+— and an animation turns, scales, skews or fades it, the surface is kept
+while the animation runs: the box and what it holds are painted on it
+once, and a frame draws it through the matrix and at the opacity the
+frame has, so a fade paints nothing but that. A surface no larger than a
+card's is kept while nothing animates it too, and a repaint draws it as
+it was. Whatever else changes what is on it paints it again: a hover
+inside it, a colour animating in it or with its turn, a box in it that
+turns on its own, a selection across its text, a translation that moves
+it by a fraction of a pixel, a resize. One kept for an animation is given
 up when the animation is over. The native contexts on macOS and Windows
-draw such a box through the matrix each frame, as they draw any box. What
-the platforms could run of the rest, Core Animation among them, is
+draw a turned box through the matrix and fade each thing a faded element
+draws, every frame, as they draw any box. What the platforms could run of
+the rest, Core Animation among them, is
 [a design document](../prd-html-animations.md).
 
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
@@ -2219,11 +2228,25 @@ transform or opacity is animating keeps its surface while it animates —
 eight million pixels of them at most, and none larger than a quarter of
 that — and a frame draws it through the new matrix. On the in-process
 server a frame of a turning card went from 17.3 to 10.1 ms, and of a
-growing one from 13.9 to 6.2 ms; a fade and a slide, which draw no
-surface, cost what they did. What is left of a turning card's frame is
+growing one from 13.9 to 6.2 ms. What is left of a turning card's frame is
 the surface resampled through its turn, and the document repainted under
 it, which [the design document](../prd-html-animations.md)'s retained
 background is about.
+
+**A faded element is a group, and a fade a composite.** On X11 and
+Wayland an element under full opacity that draws two things that can
+overlap is painted on a surface and the surface faded, and a fading one
+keeps its surface, so a frame of a fade went from 8.0 to 3.8 ms on the
+in-process server. A still surface no larger than a card's — 128 thousand
+pixels — is kept as well, so a repaint of 24 turned cards went from 40.3
+to 30.0 ms. Being a group costs what drawing the surface does: a repaint
+of 24 faded cards went from 13.9 to 18.0 ms there, where it drew each
+thing faded and showed each through the other. An element that draws one
+thing is faded as it was, and a page that fades nothing paints as it did.
+The macOS context drew a faded card's group in twice the time it took to
+draw the card again — 3.4 ms a frame of a fade, where it had been 1.7 —
+so the native contexts are not handed one, and a page paints there as it
+did.
 
 ## Types
 

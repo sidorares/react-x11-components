@@ -1,7 +1,9 @@
 // <Html> — painting: order, opacity, masks, the pixel grid, and documents too
 // long to draw whole.
 import { afterEach, test } from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert';
+import React from 'react';
 import {
   act,
   cleanup,
@@ -282,6 +284,185 @@ test('a block inside an inline element is faded with it', async (t) => {
     message: 'and at a quarter inside two such boxes',
   });
 });
+
+/** The surfaces a document draws on for a paint of all of it: the ones it
+ *  keeps, and the ones it makes for that paint alone. */
+async function surfacesOfRepaint(
+  t: TestContext,
+  node: DrawnNode,
+): Promise<number> {
+  const el = view(node) as unknown as {
+    _surface(width: number, height: number): unknown;
+    _invalidate(stale: number): void;
+    _sprites: { size: number } | null;
+  };
+  const surface = t.mock.method(el, '_surface');
+  el._invalidate(0);
+  await act();
+  return surface.mock.callCount() + (el._sprites?.size ?? 0);
+}
+
+metric(
+  'an element under full opacity is faded as the group it is',
+  async (t) => {
+    // CSS Color 4, 3.2: what it holds is drawn whole and faded as one, so
+    // the red over its blue background shows no blue through it, where
+    // each thing faded on its own did — and two such elements, one in the
+    // other, are a group in a group
+    const { result, node } = await render(
+      '<style>body{margin:0}html{background:#ffffff}</style>' +
+        '<div style="opacity:.5;width:60px;height:40px;padding:10px;' +
+        'background:#0000ff"><div style="height:40px;background:#ff0000">' +
+        '</div></div>' +
+        '<div style="opacity:.5;width:60px;height:40px;padding:10px;' +
+        'background:#0000ff"><div style="opacity:.5;height:40px;' +
+        'padding:10px;box-sizing:border-box;background:#ff0000">' +
+        '<div style="height:20px;background:#00ff00"></div></div></div>' +
+        '<div style="opacity:.5;width:40px;height:20px;' +
+        'border:10px solid #ff0000;background:#0000ff"></div>',
+    );
+    await expectPixel(result.ctx, 40, 30, '#ff8080', {
+      tolerance: 3,
+      message: 'the red, half over the page',
+    });
+    await expectPixel(result.ctx, 5, 5, '#8080ff', {
+      tolerance: 3,
+      message: 'the blue around it, half over the page',
+    });
+    // the green over the red, half over the blue, and all of it half over
+    // the page
+    await expectPixel(result.ctx, 40, 90, '#80bfbf', {
+      tolerance: 3,
+      message: 'a group in a group',
+    });
+    // a border over its own background
+    await expectPixel(result.ctx, 5, 125, '#ff8080', {
+      tolerance: 3,
+      message: 'the border, half over the page',
+    });
+    assert.ok((await surfacesOfRepaint(t, node)) > 0, 'drawn on surfaces');
+  },
+);
+
+metric(
+  'an element under full opacity that draws one thing is faded without a surface',
+  async (t) => {
+    // a background alone — the backdrop a dialog dims a page with — text
+    // alone, or an image alone is the same faded either way
+    const { result, node } = await render(
+      '<style>body{margin:0}html{background:#ffffff}</style>' +
+        '<div style="opacity:.5;height:40px;background:#ff0000"></div>' +
+        '<p style="opacity:.5;margin:0">muted text, and more of it</p>',
+    );
+    await expectPixel(result.ctx, 10, 20, '#ff8080', {
+      tolerance: 3,
+      message: 'the backdrop, half over the page',
+    });
+    assert.strictEqual(await surfacesOfRepaint(t, node), 0, 'and no surface');
+  },
+);
+
+test('a native context fades each thing a faded element draws', async () => {
+  // react-x11's macOS and Windows contexts draw a surface through an image
+  // of it, which cost a faded card more than drawing it again: no group is
+  // asked for there, until the context can draw one of its own
+  const { node } = await render(
+    '<div style="opacity:.5;padding:4px;background:#ff0000"><b>text</b></div>',
+  );
+  let asked = 0;
+  const surface = () => {
+    asked += 1;
+    return null;
+  };
+  await fillsOf(view(node), [], { surface });
+  assert.ok(asked > 0, 'a group asked for of ntk’s context');
+  asked = 0;
+  await fillsOf(view(node), [], { surface, scalesText: true });
+  assert.strictEqual(asked, 0, 'and none of a native one');
+});
+
+metric(
+  'a positioned box that escapes a clip around a faded element is still drawn',
+  async () => {
+    // painted where the clip ends, outside the group, as it was: a group
+    // drawn whole inside the clip would have cut it off
+    const { result } = await render(
+      '<style>body{margin:0}html{background:#ffffff}</style>' +
+        '<div style="position:relative;height:80px">' +
+        '<div style="overflow:hidden;height:20px">' +
+        '<div style="opacity:.5;height:20px;background:#0000ff">' +
+        '<span style="background:#00ff00">x</span>' +
+        '<div style="position:absolute;top:40px;left:0;width:20px;' +
+        'height:20px;background:#ff0000"></div></div></div></div>',
+    );
+    const [r, g, b] = await pixelAt(result.ctx, 10, 50);
+    assert.ok(
+      r > 200 && g < 200 && b < 200,
+      `drawn below the clip: ${r},${g},${b}`,
+    );
+  },
+);
+
+metric(
+  'a box fixed to the viewport in a faded element is drawn where the viewport is',
+  async () => {
+    // laid out against the viewport at the document's top and drawn where
+    // the viewport is now, past the ink its faded element was laid out
+    // with once the document scrolls: a group the size of that ink cut it
+    // off, so the element fades each thing it draws
+    const pane = React.createRef<DrawnNode & { scrollTo(y: number): void }>();
+    const result = await renderX11(
+      h(
+        'box',
+        { ref: pane, style: { width: 200, height: 200, overflow: 'scroll' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}html{background:#ffffff}</style>' +
+            '<div style="opacity:.5;height:50px;background:#0000ff">a' +
+            '<div style="position:fixed;bottom:0;left:0;width:100px;' +
+            'height:20px;background:#ff0000"></div></div>' +
+            '<div style="height:2000px"></div>',
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 240, height: 240, fonts: FONTS! },
+    );
+    await act();
+    await act(async () => pane.current!.scrollTo(100));
+    const el = view(screen.getByTestName('doc') as DrawnNode) as unknown as {
+      _invalidate(stale: number): void;
+    };
+    el._invalidate(0);
+    await act();
+    await expectPixel(result.ctx, 50, 190, '#ff8080', {
+      tolerance: 3,
+      message: 'the bar at the viewport’s foot, half over the page',
+    });
+  },
+);
+
+metric(
+  'an element under full opacity at a display scale of 2 is faded as a group on the device grid',
+  async () => {
+    const { result } = await render2x(
+      '<style>body{margin:0}html{background:#ffffff}</style>' +
+        '<div style="opacity:.5;width:30px;height:20px;padding:5px;' +
+        'background:#0000ff"><div style="height:20px;background:#ff0000">' +
+        '</div></div>',
+    );
+    // the document at 40 device pixels in; the red box 5 logical pixels
+    // further, 60 by 40 device pixels
+    await expectPixel(result.ctx, 80, 70, '#ff8080', {
+      tolerance: 3,
+      message: 'the red, half over the page',
+    });
+    await expectPixel(result.ctx, 43, 43, '#8080ff', {
+      tolerance: 3,
+      message: 'the blue around it',
+    });
+  },
+);
 
 metric(
   'at a display scale of 2 the document lays out in CSS pixels, on the device grid',

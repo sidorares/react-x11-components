@@ -9,9 +9,11 @@
 > can stop re-rasterizing its subtree on every frame. §7 is the
 > recommendation and the order to build it in; §8 is what has to be filed
 > upstream first. The retained sprite of §5.1 is built for the boxes X11
-> draws on a surface through their matrix — the kept surface, §7's step 1a —
-> and nothing after it is. The reference for what runs today is
-> `docs/components/html.md`, "Animations".
+> draws on a surface through their matrix — the kept surface, §7's step 1a
+> — and group opacity on X11 and Wayland, with a fade drawn from its kept
+> group, step 1b. The retained background and everything after it are not.
+> The reference for what runs today is `docs/components/html.md`,
+> "Animations".
 
 ## 1. What `<Html>` does today
 
@@ -409,8 +411,26 @@ In order, each step useful on its own and measured before the next:
    six interleaved runs: a turning card 17.3 → 10.1 ms, a growing one
    13.9 → 6.2 ms, a fade 8.5 and a slide 7.6, unchanged. Not measured on
    Xorg. The macOS and Windows contexts draw such a box through the matrix
-   every frame, as before; group opacity for any other element, on any
-   backend, and the retained background are the rest of step 1.
+   every frame, as before.
+
+   **1b, built: group opacity, on the contexts where a group pays.** An
+   element under full opacity that draws two things that can overlap is
+   painted on a surface and faded as it is drawn (`paintGroup`), and one
+   drawn through a matrix by the context itself onto a surface where it
+   lands (`paintGroupThrough`); one that draws a single thing is faded as
+   before, which is exact. A fading element keeps its group, so a frame of
+   a fade is a composite: 8.0 → 3.8 ms on the in-process server. A still
+   surface up to 128k pixels is kept as well, a turned one among them:
+   a repaint of 24 turned cards 40.3 → 30.0 ms. Being right costs the
+   composite: 24 faded cards 13.9 → 18.0 ms. A box fixed to the viewport
+   inside a faded element is drawn past the ink a surface would be cut to,
+   and fades each thing. **macOS measured the other way**: the native
+   context draws a surface through a `CGImage` of its bitmap at about
+   12 ns a pixel, and a card's group cost 2 ms at 2x where its fills and
+   glyphs cost 0.3 — a fade's frame 1.7 → 3.4 ms, 24 faded cards 7.0 →
+   11.3. So the native contexts (`scalesText`) fade each thing as before,
+   and group opacity there waits on §8's native group. The retained
+   background is the rest of step 1.
 
 2. **§5.2, translation without a surface**, and the `scrollContents` copy
    for a whole-pixel translation of an opaque sprite on X11.
@@ -429,7 +449,8 @@ In order, each step useful on its own and measured before the next:
 
 ## 8. Upstream
 
-Three things to file before step 5, each in the repository it belongs to:
+Four things to file, each in the repository it belongs to — the first three
+before step 5:
 
 - **react-x11: the sprite visual seam** (§4.2) — `registerElement({ visual
 })` or an element method the presenter asks per frame, for the layer
@@ -441,6 +462,14 @@ Three things to file before step 5, each in the repository it belongs to:
 - **ntk: a `Surface` backed by a GL framebuffer** (§5.3), a dma-buf the 2D
   context composites as a pixmap, over the import `glswapchain.js` already
   does. Filed when and if step 6 is reached, with step 1's numbers.
+- **react-x11: a group on the native 2D contexts** — `beginLayer(alpha)`
+  and `endLayer()` over `CGContextBeginTransparencyLayer` and Direct2D's
+  `PushLayer`, as the Canvas 2D layers proposal names them — or a
+  `drawImage` of a surface that does not go through a `CGImage` of the
+  bitmap and a flipped matrix at 12 ns a pixel. Either lets step 1b's
+  groups run on macOS and Windows; without one they fade each thing,
+  which step 1b measured as the cheaper wrong answer there. Core's own
+  `<box>` opacity (`_paintGroup`) draws the same surface the same way.
 
 ## 9. Open questions
 

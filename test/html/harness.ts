@@ -217,6 +217,9 @@ export async function fillsOf(
     scale?: number;
     /** A context whose radial gradients are one colour. */
     flatRadial?: boolean;
+    /** A context that draws text through its matrix: react-x11's macOS and
+     *  Windows one. */
+    scalesText?: boolean;
   },
 ): Promise<Fill[]> {
   const { paintDocument } = await import('../../src/html/paint.js');
@@ -432,6 +435,7 @@ export async function fillsOf(
       addColorStop() {},
     });
   }
+  if (options?.scalesText) (ctx as { scalesText?: boolean }).scalesText = true;
   for (const layout of layouts) {
     (layout as { draw: unknown }).draw = (_: unknown, x: number, y: number) => {
       const shadow = shadowOf();

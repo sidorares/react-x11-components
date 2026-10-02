@@ -110,17 +110,21 @@ interface Sprite {
   width: number;
   height: number;
   key: string;
+  /** Kept while its box animates, and given up once it does not. */
+  animated: boolean;
 }
 
 /**
- * Surfaces kept for boxes from one paint to the next: a box whose transform
- * is animating is drawn on one once, and each frame after composites it
- * through the matrix the frame has (`paintRaster`). A surface answers for
- * the size it was made at and for its key — what the painter knows the
- * drawing depends on — and for nothing else, so the element forgets the
- * ones a change reaches (`drop`, `clear`). At most `budget` pixels are kept,
- * the least recently drawn given up first, and none is made larger than a
- * quarter of it: that box is drawn on a surface for each paint, as before.
+ * Surfaces kept for boxes from one paint to the next: a box drawn on a
+ * surface of its own — one that turns, or a group an opacity fades — is
+ * drawn on one once, and each paint after composites it, through the matrix
+ * and at the opacity it has then (`paintSprite`). A surface answers for the
+ * size it was made at and for its key — what the painter knows the drawing
+ * depends on — and for nothing else, so the element forgets the ones a
+ * change reaches (`drop`, `clear`), and the ones kept for an animation once
+ * it is over (`sweep`). At most `budget` pixels are kept, the least recently
+ * drawn given up first, and none is made larger than a quarter of it: that
+ * box is drawn on a surface for each paint, as before.
  */
 export class SpriteStore {
   private readonly kept = new Map<object, Sprite>();
@@ -162,14 +166,15 @@ export class SpriteStore {
     return hit.surface;
   }
 
-  /** A transparent surface kept for `box` from now on, for the caller to
-   *  draw under `key`; null where none is made — too large, or no surface
-   *  to be had. */
+  /** A transparent surface kept for `box` from now on — while it animates,
+   *  where `animated` — for the caller to draw under `key`; null where none
+   *  is made: too large, or no surface to be had. */
   make(
     box: object,
     width: number,
     height: number,
     key: string,
+    animated = false,
   ): SurfaceLike | null {
     this.drop(box);
     const pixels = width * height;
@@ -181,7 +186,7 @@ export class SpriteStore {
       this.unavailable = true;
       return null;
     }
-    this.kept.set(box, { surface, width, height, key });
+    this.kept.set(box, { surface, width, height, key, animated });
     this.pixels += width * height;
     for (const oldest of this.kept.keys()) {
       if (this.pixels <= this.budget || oldest === box) break;
@@ -199,9 +204,12 @@ export class SpriteStore {
     sprite.surface.destroy?.();
   }
 
-  /** Give up the surface of every box `keep` says no to. */
-  sweep(keep: (box: object) => boolean): void {
-    for (const box of [...this.kept.keys()]) if (!keep(box)) this.drop(box);
+  /** Give up each surface kept for an animation whose box `animates` says
+   *  no longer does. */
+  sweep(animates: (box: object) => boolean): void {
+    for (const [box, sprite] of [...this.kept]) {
+      if (sprite.animated && !animates(box)) this.drop(box);
+    }
   }
 
   clear(): void {
