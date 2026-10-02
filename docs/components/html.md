@@ -1395,8 +1395,8 @@ its animation has it at that moment: one that moves is restyled to then
 before the hit is worked out, which repaints nothing, since its pixels are
 its layer's. A hover that draws a lifted element otherwise — a colour, a
 border — paints its layer again in the next frame. Everywhere else — X11,
-Wayland, Windows, a core or a bridge that predates the seam — nothing asks,
-and every animation runs on the document's clock as above.
+Wayland, Windows, a macOS window drawn without layer promotion — nothing
+asks, and every animation runs on the document's clock as above.
 
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`

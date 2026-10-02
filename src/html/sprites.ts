@@ -37,41 +37,28 @@ import { resolve } from './css/values.js';
 import type { Box, BoxTree } from './layout/boxes.js';
 import { drawsAgainstViewport, ownBounds } from './paint.js';
 import type { Element } from 'domhandler';
+import type { Rect } from 'react-x11';
+import type {
+  Context2D,
+  Sprite,
+  SpriteAnimation,
+  SpriteMatrix,
+} from 'react-x11/node';
 import { isElement } from './dom.js';
 
-/** CSS's `matrix(a, b, c, d, e, f)`, `e` and `f` in device pixels. */
-export type SpriteMatrix = [number, number, number, number, number, number];
-
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-/**
- * An animation a sprite carries, as react-x11's `Node.sprites()` takes one.
- * Written out rather than imported: this package installs against a core
- * whose declarations may predate the seam, and the shape is plain data.
- */
-export interface DocumentSpriteAnimation {
-  id: string;
-  property: 'opacity' | 'transform';
-  values: number[] | SpriteMatrix[];
-  /** Milliseconds, one cycle of what the render server repeats. */
-  duration: number;
+/** An animation a sprite carries: react-x11's, with the delay and the
+ *  repeat a document always gives it. */
+export interface DocumentSpriteAnimation extends SpriteAnimation {
   /** Milliseconds from now; negative where the cycle began that far back. */
   delay: number;
   repeat: number;
 }
 
-/** A part of the document's drawing, as `Node.sprites()` answers one. */
-export interface DocumentSprite {
-  key: string;
-  rect: Rect;
+/** A part of the document's drawing, as react-x11's `Node.sprites()` takes
+ *  one, with everything a document always says about it. */
+export interface DocumentSprite extends Sprite {
   reach: Rect;
   version: string;
-  paint(ctx: unknown): void;
   opacity: number;
   transform: SpriteMatrix;
   origin: { x: number; y: number };
@@ -457,7 +444,7 @@ export function describe(
   originX: number,
   originY: number,
   now: number,
-  paint: (ctx: unknown, box: Box) => void,
+  paint: (ctx: Context2D, box: Box) => void,
 ): DocumentSprite {
   const shift = (r: Rect): Rect => ({
     x: r.x + originX,
@@ -473,20 +460,15 @@ export function describe(
     rect: shift(part.rect),
     reach: shift(part.reach),
     version,
-    paint(ctx: unknown) {
-      const c = ctx as {
-        save(): void;
-        restore(): void;
-        translate(x: number, y: number): void;
-      };
-      c.save();
+    paint(ctx: Context2D) {
+      ctx.save();
       try {
         // drawn where it would be with no transform: the layer's matrix
         // puts it where each frame has it
-        c.translate(-tx, -ty);
+        ctx.translate(-tx, -ty);
         paint(ctx, box);
       } finally {
-        c.restore();
+        ctx.restore();
       }
     },
     opacity: part.opacity,
