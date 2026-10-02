@@ -11,6 +11,7 @@ import {
   parseStylesheet,
 } from '../../src/html/css/parse.js';
 import { HtmlSource } from '../../src/html/dom.js';
+import { animationClock } from '../../src/html/node.js';
 import { lightDark, usedColorScheme } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
@@ -23,6 +24,7 @@ import {
   renderScrolled,
   view,
 } from './harness.js';
+import { holdClock } from '../held-clock.js';
 
 afterEach(cleanup);
 
@@ -39,6 +41,51 @@ test('a print-only stylesheet is not applied', () => {
   const source = new HtmlSource();
   source.setSource('<style media="print">p{color:red}</style>', true);
   assert.strictEqual(source.facts().sheets.length, 0);
+});
+
+test("a sheet's media attribute is the condition it is under, and one that holds nowhere leaves it out", () => {
+  // HTML 4.2.4, 4.2.6: a `<link>` or a `<style>` applies where its `media`
+  // matches. The attribute was a string check: a query that started with
+  // `(` held at every width, so a phone sheet styled a desktop window, and
+  // one that started with `not` held at none
+  const source = new HtmlSource();
+  source.setSource(
+    '<style media="(max-width: 600px)">a{}</style>' +
+      '<style media="not all and (min-width: 640px)">b{}</style>' +
+      '<style media="screen">c{}</style>' +
+      '<style media="">d{}</style>' +
+      '<style media="print">e{}</style>' +
+      '<style media="speech, (min-height: 500px)">f{}</style>' +
+      '<style media="tv and (min-width: 1px)">g{}</style>' +
+      '<link rel="stylesheet" href="phone.css" media="(max-width: 600px)">' +
+      '<link rel="stylesheet" href="print.css" media="print">' +
+      '<link rel="stylesheet" href="all.css">',
+    true,
+  );
+  const { sheets, resources } = source.facts();
+  assert.deepStrictEqual(
+    sheets.map((s) => (s.kind === 'inline' ? s.text : s.href)),
+    ['a{}', 'b{}', 'c{}', 'd{}', 'f{}', 'phone.css', 'all.css'],
+    'a list that holds nowhere leaves its sheet out',
+  );
+  assert.deepStrictEqual(
+    sheets.map((s) => s.media),
+    [
+      [{ max: 600 }],
+      [{ max: 640 - 1 / 64 }],
+      null,
+      null,
+      [{ staticPass: false }, { minHeight: 500 }],
+      [{ max: 600 }],
+      null,
+    ],
+    'any other is its condition, and one that always holds none',
+  );
+  assert.deepStrictEqual(
+    resources.map((el) => el.attribs.href),
+    ['phone.css', 'all.css'],
+    'a link under a width is asked for, and one left out is not',
+  );
 });
 
 test('prefers-color-scheme is a live condition, alone and beside a width', () => {
@@ -199,6 +246,94 @@ test('a sheet imported under a width is applied at that width, and dropped past 
     ['#0000ff', 30],
     'and at 500 the sheet it imports under its own width',
   );
+});
+
+test('a sheet under its media attribute applies where it holds, and a resize across one restyles', async () => {
+  const sheets: Record<string, string> = {
+    'phone.css':
+      '@import "tiny.css" (max-width: 300px); #p { margin-left: 10px }',
+    'tiny.css': '#t { margin-left: 20px }',
+    'print.css': '#p { margin-left: 99px }',
+  };
+  const asked: string[] = [];
+  const doc = (width: number) =>
+    h(
+      'box',
+      { style: { width, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<link rel="stylesheet" href="phone.css" media="(max-width: 600px)">' +
+          '<link rel="stylesheet" href="print.css" media="print">' +
+          '<style media="not all and (min-width: 640px)">#q { margin-left: 30px }</style>' +
+          '<p id="p">p</p><p id="t">t</p><p id="q">q</p>',
+        partial: false,
+        onResource: (r: { kind: string; url: string }) => {
+          asked.push(r.url);
+          return r.kind === 'stylesheet'
+            ? { kind: 'stylesheet' as const, text: sheets[r.url] }
+            : null;
+        },
+        'data-testname': 'doc',
+      }),
+    );
+  const result = await renderX11(doc(800), { backend: 'mock' });
+  const margins = () =>
+    ['p', 't', 'q'].map(
+      (id) =>
+        (
+          boxOf(
+            view(screen.getByTestName('doc') as DrawnNode),
+            id,
+          ) as unknown as { marginLeft: number }
+        ).marginLeft,
+    );
+  assert.deepStrictEqual(margins(), [0, 0, 0], 'none of them at 800');
+  assert.deepStrictEqual(
+    [...new Set(asked)].sort(),
+    ['phone.css', 'tiny.css'],
+    'the phone sheet asked for at 800, and what it imports, and the print one not',
+  );
+  for (const [width, expected] of [
+    [620, [0, 0, 30]],
+    [500, [10, 0, 30]],
+    [250, [10, 20, 30]],
+    [800, [0, 0, 0]],
+  ] as const) {
+    await result.rerender(doc(width));
+    await act();
+    assert.deepStrictEqual(margins(), expected, `at ${width}`);
+  }
+});
+
+test('a sheet under its media attribute stays parsed through an append, and is parsed again under another', async () => {
+  // the document's facts are made again at every revision, so the
+  // conditions are compared by what they are rather than which list
+  const doc = (source: string) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, 'data-testname': 'doc' }),
+    );
+  const sheet = (media: string) =>
+    `<style media="${media}">p { color: #0b0b0b }</style><p id="a">one</p>`;
+  const head = sheet('(max-width: 600px)');
+  const result = await renderX11(doc(head), { backend: 'mock' });
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  const cascadeOf = () => (el() as unknown as { _cascade: unknown })._cascade;
+  const color = () =>
+    (boxOf(el(), 'a') as unknown as { style: { color: string } }).style.color;
+  el().textContent();
+  const before = cascadeOf();
+  assert.strictEqual(color(), '#0b0b0b', 'the sheet holds at 300');
+  await act(() => result.rerender(doc(head + '<p>two</p>')));
+  assert.strictEqual(el().textContent(), 'onetwo');
+  assert.strictEqual(cascadeOf(), before, 'the same cascade after an append');
+  await act(() =>
+    result.rerender(doc(sheet('(min-width: 600px)') + '<p>two</p>')),
+  );
+  el().textContent();
+  assert.notStrictEqual(cascadeOf(), before, 'another under another media');
+  assert.notStrictEqual(color(), '#0b0b0b', 'which does not hold at 300');
 });
 
 test('the palette in force answers prefers-color-scheme, and a switch re-cascades', async () => {
@@ -797,5 +932,75 @@ test('a media query on the resolution, the pointer or a feature nothing knows is
     boxOf(el, 'o').height,
     10,
     'and 800 by 500 landscape again, a change of width alone',
+  );
+});
+
+test('prefers-reduced-motion is answered as a desktop browser answers it, with no preference', () => {
+  // It answered neither value while nothing here moved, so a page that
+  // keeps its animations under `no-preference` lost them, and one that
+  // writes the reduced branch as `not (… no-preference)` took it. Each row
+  // is where Chrome 154, Firefox 153 and WebKit 26.5 hold the query, by
+  // `matchMedia`, at 500px and at 1000px.
+  const rows: [string, string][] = [
+    ['(prefers-reduced-motion: no-preference)', '11'],
+    ['(PREFERS-REDUCED-MOTION: No-Preference)', '11'],
+    ['screen and (prefers-reduced-motion: no-preference)', '11'],
+    ['(prefers-reduced-motion: reduce)', '..'],
+    ['(prefers-reduced-motion)', '..'],
+    ['not (prefers-reduced-motion: no-preference)', '..'],
+    ['not (prefers-reduced-motion: reduce)', '11'],
+    ['not (prefers-reduced-motion)', '11'],
+    ['not all and (prefers-reduced-motion: reduce)', '11'],
+    ['(prefers-reduced-motion: reduce) or (min-width: 600px)', '.1'],
+    // a value it does not take is neither true nor false
+    ['(prefers-reduced-motion: bogus)', '..'],
+    ['not (prefers-reduced-motion: bogus)', '..'],
+  ];
+  for (const [query, holds] of rows) {
+    const media = [parseMediaQuery(query)];
+    const ours = [500, 1000]
+      .map((w) => (mediaMatches(media, w, 'light', 600) ? '1' : '.'))
+      .join('');
+    assert.strictEqual(ours, holds, query);
+  }
+});
+
+test('a page animated under (prefers-reduced-motion: no-preference) runs its animations, and holds them at rest under animate={false}', async (t) => {
+  // joshwcomeau.com writes its animations so, and hides under the same
+  // query what it shows under `reduce`. `animate={false}` holds the page's
+  // animations at rest and asks for no less motion: the reduced branch is
+  // another page, and Chrome, which the Zen Garden bench holds still with
+  // every animation at no length, draws this one.
+  const source =
+    '<style>body{margin:0}div{height:10px}' +
+    '@keyframes grow{to{height:30px}}' +
+    '@media (prefers-reduced-motion:no-preference)' +
+    '{#a{animation:grow 160ms linear forwards}}' +
+    '@media (prefers-reduced-motion:reduce){#b{height:20px}}' +
+    '@media not (prefers-reduced-motion:no-preference){#c{height:20px}}' +
+    '@media (prefers-reduced-motion){#d{height:20px}}' +
+    '</style><div id="a"></div><div id="b"></div><div id="c"></div>' +
+    '<div id="d"></div>';
+  const heights = (el: ReturnType<typeof view>) =>
+    ['a', 'b', 'c', 'd'].map((id) => boxOf(el, id).height);
+
+  const clock = holdClock(t, animationClock);
+  const first = await render(source);
+  const running = view(first.node);
+  assert.deepStrictEqual(heights(running), [10, 10, 10, 10], 'as it starts');
+  assert.ok(clock.pending, 'the animation asks for its frames');
+  for (let i = 0; i < 5; i++) await clock.frame();
+  await act();
+  assert.strictEqual(boxOf(running, 'a').height, 20, 'halfway through');
+  await clock.finish();
+  await act();
+  assert.deepStrictEqual(heights(running), [30, 10, 10, 10], 'at its end');
+  await first.result.unmount();
+
+  const still = view((await render(source, 400, { animate: false })).node);
+  assert.deepStrictEqual(
+    heights(still),
+    [30, 10, 10, 10],
+    'at rest it holds the frame it ends on, and no reduced branch is taken',
   );
 });

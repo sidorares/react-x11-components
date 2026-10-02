@@ -21,7 +21,16 @@ import * as DomUtils from 'domutils';
 import { Element as DomElement, isTag } from 'domhandler';
 import type { Element } from 'domhandler';
 
-import { NON_RENDERED, attr, tagOf } from '../dom.js';
+import {
+  NON_RENDERED,
+  ShadowRoot,
+  assignedSlot,
+  attr,
+  isElement,
+  shadowRootAround,
+  shadowRootOf,
+  tagOf,
+} from '../dom.js';
 import { systemColorTable, usedColorScheme } from './color.js';
 import {
   asciiLower,
@@ -37,6 +46,7 @@ import type {
   Stylesheet,
 } from './parse.js';
 import { NO_ANIMATIONS, restingFrames, spanAt, tracksOf } from './animation.js';
+import type { Animations } from './animation.js';
 import type { Keyframe } from './parse.js';
 import { discrete, interpolateField } from './interpolate.js';
 import type { AnimationTimeline, Sample } from './timeline.js';
@@ -106,6 +116,15 @@ function fromUserAgent(origin: Origin): boolean {
 
 interface Candidate {
   origin: Origin;
+  /** How many shadow trees deep the tree the declarations were written for
+   *  is (`TreeInfo.depth`), the document's 0: of two from different trees,
+   *  the outer one's normal declarations win and the inner one's
+   *  `!important` ones (CSS Cascade 5, 6.1, "context"). */
+  context: number;
+  /** That tree's shadow root, null for the document's: where an
+   *  `animation-name` in its declarations finds its `@keyframes` first
+   *  (CSS Scoping 1, 3.5). */
+  tree: ShadowRoot | null;
   /** The rule's cascade layer, null for none (`StyleRule.layer`). */
   layer: readonly number[] | null;
   specificity: number;
@@ -145,6 +164,87 @@ export interface KeptStyles {
   styles: ReadonlyMap<Element, { style: ComputedStyle; inFlex: boolean }>;
   restyle: ReadonlySet<Element>;
 }
+
+/** A shadow tree's sheets, as the cascade is handed them: every tree whose
+ *  sheets read the same — `key` — shares their rules (`Cascade.bindShadows`),
+ *  which a component stamped out on every card of a page has parsed and
+ *  indexed once. */
+export interface ShadowSheets {
+  key: string;
+  sheets: Stylesheet[];
+}
+
+/**
+ * The rules written for one tree (CSS Scoping 1, 3.2): the document's, or a
+ * set of shadow trees'. Its ordinary rules are in the cascade's indexes,
+ * filed under `id` (`IndexedRule.scope`); what is here is what is asked of
+ * the elements at its edges — its host, from inside (`:host`), the light
+ * children assigned to its slots (`::slotted()`), and the parts of the
+ * shadow trees of the hosts in it (`::part()`) — and its `@keyframes`.
+ */
+interface TreeRules {
+  id: number;
+  host: HostRule[];
+  slotted: SlottedRule[];
+  parts: PartRule[];
+  keyframes: Map<string, KeyframesRule[]>;
+}
+
+function newTreeRules(id: number): TreeRules {
+  return { id, host: [], slotted: [], parts: [], keyframes: new Map() };
+}
+
+/** The tree an element is in: its shadow root, null for the document's,
+ *  how many shadow trees deep it is — the document's 0 — and its rules. */
+interface TreeInfo {
+  root: ShadowRoot | null;
+  depth: number;
+  rules: TreeRules;
+}
+
+/** What a rule is for of an element — itself, or a pseudo-element of it. */
+type PseudoTarget = '' | PseudoElement;
+
+/** A rule whose subject is its tree's host, seen from inside: `:host`,
+ *  `:host()` or `:host-context()` alone, or before a pseudo-element. */
+interface HostRule {
+  rule: StyleRule;
+  /** Its id in a sharing key, below every index's (`_scopedId`). */
+  id: number;
+  pseudo: PseudoTarget;
+  host: (host: Element) => boolean;
+}
+
+/** `::slotted()`: what the slot has to be, in its tree, and what the light
+ *  child assigned to it has to be. */
+interface SlottedRule {
+  rule: StyleRule;
+  id: number;
+  pseudo: PseudoTarget;
+  slot: (slot: Element) => boolean;
+  el: (el: Element) => boolean;
+}
+
+/** `::part()`: what the host has to be, in the rule's tree, the part names
+ *  the element has to have, and the pseudo-classes after it. `inner` for
+ *  one that hangs off `:host`, which is the tree's own host's parts, seen
+ *  from inside: the elements of the tree, and of the trees inside it that
+ *  export theirs to it (CSS Shadow Parts 1, 4.1). */
+interface PartRule {
+  rule: StyleRule;
+  id: number;
+  pseudo: PseudoTarget;
+  host: (host: Element) => boolean;
+  names: readonly string[];
+  el: ((el: Element) => boolean) | null;
+  inner: boolean;
+}
+
+/** The user agent's rules' tree (`IndexedRule.scope`): every one. */
+const UA_SCOPE = -1;
+
+/** A selector that says something of the edge of a shadow tree. */
+const SCOPING = /:host|::?(?:slotted|part)\(/i;
 
 /** What the pointer entering or leaving an element can change
  *  (`Cascade.hoverTouches`): nothing, the element and what is in it, or
@@ -190,6 +290,14 @@ interface IndexedRule {
    *  (`Cascade.shapeStyles`), compiled once one is first asked. */
   inCopy: ((el: Element) => boolean) | null;
   inCopyCompiled: boolean;
+  /** The tree the rule is for (`TreeRules.id`): the document's 0, a set
+   *  of shadow trees' their own, and the user agent's every tree's
+   *  (`UA_SCOPE`). */
+  scope: number;
+  /** For a rule written from inside a shadow tree past its top, `:host(…)
+   *  .x`: what the tree's host has to be, asked once the rest of the
+   *  selector has matched (`readHost`). Null in every other rule. */
+  host: ((host: Element) => boolean) | null;
 }
 
 /**
@@ -201,12 +309,12 @@ interface IndexedRule {
  * (`Cascade.sharedStyleFor`). css-select spells some of them under other
  * names, and those count too: `:checked` and `:selected` read which option
  * comes first, `:disabled` and `:enabled` which legend does, and `:parent`
- * and `:contains()` the element's contents. Over-broad on purpose: a `+` or
- * `~` inside an attribute value, or the `~=` operator, costs sharing and
- * nothing else.
+ * and `:contains()` the element's contents; and `:has-slotted` reads what
+ * the host it is in has. Over-broad on purpose: a `+` or `~` inside an
+ * attribute value, or the `~=` operator, costs sharing and nothing else.
  */
 const UNSHAREABLE =
-  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:focus-within|:target|:scope|:(?:checked|selected|disabled|enabled|parent)\b|:i?contains\(/;
+  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:(?:checked|selected|disabled|enabled|parent)\b|:i?contains\(/;
 
 /**
  * Rules bucketed by the key of their rightmost compound selector. An element
@@ -267,7 +375,12 @@ class RuleIndex {
     return false;
   }
 
-  add(rule: StyleRule, key = rightmostKey(rule.selector)): void {
+  add(
+    rule: StyleRule,
+    key = rightmostKey(rule.selector),
+    scope = 0,
+    host: ((host: Element) => boolean) | null = null,
+  ): void {
     this.size += 1;
     const indexed: IndexedRule = {
       rule,
@@ -278,6 +391,8 @@ class RuleIndex {
       root: null,
       inCopy: null,
       inCopyCompiled: false,
+      scope,
+      host,
     };
     if (rule.selector.includes(':hover') || rule.selector.includes(':active')) {
       this.hoverSensitive = true;
@@ -515,6 +630,228 @@ function closeOf(text: string, open: number): number {
     }
   }
   return text.length;
+}
+
+/** `:host`, `:host()` or `:host-context()` as a compound reads: the
+ *  function's argument, null for `:host`, and whether the host's
+ *  ancestors are asked too. */
+interface HostCompound {
+  arg: string | null;
+  context: boolean;
+}
+
+/** `:host` or `:host-context` at the start of a string, and no longer
+ *  name. */
+const HOST_AT = /^:host(-context)?(?![\w-])/i;
+
+/**
+ * What a compound says of its tree's host (CSS Scoping 1, 3.2.1): undefined
+ * where it names no `:host` outside its functions, null where it names one
+ * it can match nothing as, and else the compound, which is `:host`,
+ * `:host(<compound>)` or `:host-context(<compound>)` and nothing more. The
+ * host is featureless in its own tree, so nothing else in a compound
+ * matches it there: `:host.dark` and `div:host` match nothing.
+ */
+function hostCompound(text: string): HostCompound | null | undefined {
+  let depth = 0;
+  let quote = '';
+  let at = -1;
+  for (let i = 0; i < text.length && at < 0; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote && text[i - 1] !== '\\') quote = '';
+    } else if (c === '\\') i = escapeEnd(text, i) - 1;
+    else if (c === '"' || c === "'") quote = c;
+    else if (c === '(' || c === '[') depth += 1;
+    else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
+    else if (c === ':' && depth === 0 && HOST_AT.test(text.slice(i))) at = i;
+  }
+  if (at < 0) return undefined;
+  if (at > 0) return null;
+  const m = HOST_AT.exec(text)!;
+  let i = m[0].length;
+  let arg: string | null = null;
+  if (text[i] === '(') {
+    const close = closeOf(text, i);
+    if (close >= text.length) return null;
+    arg = text.slice(i + 1, close).trim();
+    i = close + 1;
+    if (!arg || compoundsOf(arg).length !== 1) return null;
+  }
+  const context = m[1] !== undefined;
+  if (i !== text.length || (context && arg === null)) return null;
+  return { arg, context };
+}
+
+/** A selector written in a shadow tree, as it reads of the host
+ *  (`readHost`). */
+type HostReading =
+  | { kind: 'none' }
+  | { kind: 'never' }
+  | { kind: 'subject'; host: HostCompound }
+  | { kind: 'anchored'; host: HostCompound; rest: string };
+
+/**
+ * A selector written in a shadow tree, read for its host (CSS Scoping 1,
+ * 3.1.1). In its own tree the host stands where the shadow root does, above
+ * the tree's top, so a `:host` compound is the selector's subject — a rule
+ * for the host, from inside — or its first compound, before a descendant
+ * or a child combinator; then the rest is matched inside the tree, with the
+ * child at its top (`:-rx-top`). Anywhere else it matches nothing: the host
+ * has no ancestor and no sibling in its tree.
+ */
+function readHost(selector: string): HostReading {
+  const compounds = compoundsOf(selector);
+  let host: HostCompound | undefined;
+  for (let i = 0; i < compounds.length; i += 1) {
+    const found = hostCompound(compounds[i].text);
+    if (found === undefined) continue;
+    if (found === null || i > 0) return { kind: 'never' };
+    host = found;
+  }
+  if (!host) return { kind: 'none' };
+  if (compounds.length === 1) return { kind: 'subject', host };
+  const next = compounds[0].next;
+  if (next !== ' ' && next !== '>') return { kind: 'never' };
+  let rest = '';
+  for (let i = 1; i < compounds.length; i += 1) {
+    const { text, next: after } = compounds[i];
+    rest += i === 1 && next === '>' ? `${text}:-rx-top` : text;
+    if (after) rest += after === ' ' ? ' ' : ` ${after} `;
+  }
+  return { kind: 'anchored', host, rest };
+}
+
+/** Where `::name(` opens outside every function, bracket and string in a
+ *  selector, and where its argument closes; null where it does not. */
+function pseudoFunction(
+  selector: string,
+  name: RegExp,
+): { at: number; close: number } | null {
+  let depth = 0;
+  let quote = '';
+  for (let i = 0; i < selector.length; i += 1) {
+    const c = selector[i];
+    if (quote) {
+      if (c === quote && selector[i - 1] !== '\\') quote = '';
+    } else if (c === '\\') i = escapeEnd(selector, i) - 1;
+    else if (c === '"' || c === "'") quote = c;
+    else if (c === '(' || c === '[') depth += 1;
+    else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
+    else if (c === ':' && depth === 0) {
+      const m = name.exec(selector.slice(i));
+      if (m) return { at: i, close: closeOf(selector, i + m[0].length - 1) };
+    }
+  }
+  return null;
+}
+
+/** The compound a pseudo-element hangs off, from what is written before
+ *  it: `*` where nothing is, or where a combinator ends it. */
+function originOf(head: string): string {
+  const trimmed = head.trimEnd();
+  return !trimmed
+    ? '*'
+    : head !== trimmed || /[>+~]$/.test(trimmed)
+      ? `${trimmed} *`
+      : trimmed;
+}
+
+/**
+ * `::slotted(<compound>)` (CSS Scoping 1, 3.2.2): the slot it hangs off,
+ * as a selector, and what the assigned element has to be. Undefined where
+ * the selector has none; null where it is not one that can match.
+ */
+function readSlotted(
+  selector: string,
+): { slot: string; arg: string } | null | undefined {
+  const found = pseudoFunction(selector, SLOTTED_AT);
+  if (!found) return undefined;
+  if (found.close !== selector.length - 1) return null;
+  const arg = selector
+    .slice(found.at + '::slotted('.length, found.close)
+    .trim();
+  if (!arg || compoundsOf(arg).length !== 1) return null;
+  return { slot: originOf(selector.slice(0, found.at)), arg };
+}
+const SLOTTED_AT = /^::slotted\(/i;
+
+/**
+ * `::part(<ident>+)` (CSS Shadow Parts 1, 4.1): the host it hangs off, as
+ * a selector, the names, and the pseudo-classes after it, of the part's
+ * state — `:hover`, `:checked`. Undefined where the selector has none;
+ * null where it is not one that can match.
+ */
+function readPart(
+  selector: string,
+): { host: string; names: string[]; after: string | null } | null | undefined {
+  const found = pseudoFunction(selector, PART_AT);
+  if (!found) return undefined;
+  const names = selector
+    .slice(found.at + '::part('.length, found.close)
+    .trim()
+    .split(/\s+/);
+  if (!names[0] || names.some((n) => !PART_NAME.test(n))) return null;
+  const after = selector.slice(found.close + 1);
+  if (after && (after[0] !== ':' || after.includes('::'))) return null;
+  if (after && compoundsOf(after).length !== 1) return null;
+  return {
+    host: originOf(selector.slice(0, found.at)),
+    names,
+    after: after || null,
+  };
+}
+const PART_AT = /^::part\(/i;
+const PART_NAME = /^-?[_a-zA-Z\u0080-\uffff][-\w\u0080-\uffff]*$/;
+
+/** Whether a slot of a shadow tree has anything assigned to it, after
+ *  flattening: a slot assigned to it counts by what it has, assigned or
+ *  its fallback (DOM 4.2.2.3, "find flattened slottables"). */
+function hasSlotted(slot: Element, nested = false): boolean {
+  const root = shadowRootAround(slot);
+  // a `<slot>` outside a shadow tree is no slot, and assigned as it is
+  if (!root) return nested;
+  const assigned = root.assignedTo(slot);
+  const nodes = assigned.length || !nested ? assigned : slot.children;
+  for (const node of nodes) {
+    if (!isElement(node) || node.name !== 'slot') {
+      if (isElement(node) || node.type === 'text') return true;
+    } else if (hasSlotted(node, true)) return true;
+  }
+  return false;
+}
+
+/** The parent of an element in the shadow-including tree: the host for the
+ *  top of a shadow tree. */
+function shadowIncludingParent(el: Element): Element | null {
+  const parent = el.parent;
+  if (parent instanceof ShadowRoot) return parent.host;
+  return isElement(parent) ? parent : null;
+}
+
+/** A space-separated list's tokens: a `part` attribute's names. */
+function tokensOf(value: string): string[] {
+  return value.split(/[ \t\n\f\r]+/).filter((name) => name.length > 0);
+}
+
+/**
+ * The names `names`, parts of the tree a host hosts, go by in the tree the
+ * host is in, through its `exportparts` (CSS Shadow Parts 1, 3.2): each
+ * entry an `inner` it exports as it is, or an `inner: outer` it exports
+ * as `outer`. A name no entry names is not seen there.
+ */
+function exportedNames(
+  names: readonly string[],
+  exportparts: string,
+): string[] {
+  const out: string[] = [];
+  for (const entry of exportparts.split(',')) {
+    const [inner, outer, extra] = entry.split(':').map((part) => part.trim());
+    if (!inner || extra !== undefined) continue;
+    if (outer !== undefined && !outer) continue;
+    if (names.includes(inner)) out.push(outer ?? inner);
+  }
+  return out;
 }
 
 /** `pointerCompounds` for one complex selector, into `out`. */
@@ -1124,9 +1461,32 @@ export class Cascade {
   readonly breakpoints: number[];
   /** The counter styles the sheets define, over the predefined ones. */
   readonly counterStyles: CounterStyles;
-  /** The `@keyframes` rules, by name, in document order: which one a name
-   *  finds turns on the media in force (`keyframes`). */
-  private _keyframes = new Map<string, KeyframesRule[]>();
+  /** The document's rules: its elements', and the ones of its tree's
+   *  edges (`TreeRules`) — its `::part()` rules — and its `@keyframes`,
+   *  by name, in document order: which one a name finds turns on the
+   *  media in force (`keyframes`). */
+  private _document: TreeRules = newTreeRules(0);
+  private _docInfo: TreeInfo = { root: null, depth: 0, rules: this._document };
+  /** Each set of shadow trees' rules, by how their sheets read
+   *  (`ShadowSheets.key`), and the trees bound to each (`bindShadows`). */
+  private _byKey = new Map<string, TreeRules>();
+  private _nextTree = 1;
+  private _bound = new Map<ShadowRoot, TreeRules>();
+  /** What is known of each shadow tree (`_rootInfo`), and of the tree each
+   *  element is in, for a build (`_treeInfo`). */
+  private _roots = new Map<ShadowRoot, TreeInfo>();
+  private _trees = new WeakMap<Element, TreeInfo>();
+  /** Whether there is a shadow tree to tell an element's from the
+   *  document's: where there is none, nothing asks which tree an element
+   *  is in, and a document styles as it did before there were any. */
+  private _scoped = false;
+  /** The ids of the rules of the trees' edges in a sharing key, below
+   *  every index's. */
+  private _scopedId = -1;
+  /** The pseudo-elements a rule of a tree's edge is for. */
+  private _scopedPseudos = new Set<PseudoTarget>();
+  /** Whether any tree has a `@keyframes`. */
+  private _anyKeyframes = false;
   /** The style an element has in the document as it is drawn, or a
    *  pseudo-element's (`pseudo`, '' for the element's own): what a
    *  transition starts from (`AnimationTimeline.transition`). Null where it
@@ -1207,6 +1567,9 @@ export class Cascade {
     /** The element the document's URL names by its fragment, which is
      *  `:target` (Selectors 4, 9.1): an SVG image's, `image.svg#icon`. */
     target: Element | null = null,
+    /** The shadow trees' sheets, a set for each way they read: what each
+     *  styles is in the trees bound to it (`bindShadows`). */
+    shadows: readonly ShadowSheets[] = [],
   ) {
     // css-select has none of the focus's three, and a pseudo-class is
     // handed only the element, so they are this cascade's own closures
@@ -1235,53 +1598,8 @@ export class Cascade {
     this.viewportWidth = viewportWidth;
     this.viewportHeight = viewportHeight;
     this.scale = scale;
-    const breakpoints = new Set<number>();
-    const counterStyles = new Map<string, CounterStyleRule>();
-    for (const sheet of sheets) {
-      // a counter style's rule whole over any before it of its name
-      for (const { prelude, declarations } of sheet.counterStyles ?? []) {
-        const style = counterStyleRule(prelude, declarations);
-        if (style) counterStyles.set(style.name, style.rule);
-      }
-      for (const rule of sheet.rules) {
-        if (!this._vars && usesVars(rule.declarations)) this._vars = true;
-        this._noteViewportUnits(rule.declarations);
-        if (!this._lh && usesLh(rule.declarations)) this._lh = true;
-        const pseudo = splitPseudoElement(rule);
-        if (pseudo) this._pseudo[pseudo.which].add(pseudo.rule);
-        else {
-          const key = rightmostKey(rule.selector);
-          this._index.add(rule, key);
-          if (
-            rule.order >= 0 &&
-            (key.kind !== 'tag' || SHAPE_TAGS.has(key.name)) &&
-            declaresShape(rule.declarations)
-          ) {
-            this._shapes.add(rule, key);
-          }
-        }
-        const selector = (pseudo?.rule ?? rule).selector;
-        this._hoverRules.note(selector);
-        this._focusRules.note(selector);
-      }
-      for (const rule of sheet.keyframes ?? []) {
-        let named = this._keyframes.get(rule.name);
-        if (!named) this._keyframes.set(rule.name, (named = []));
-        named.push(rule);
-        for (const frame of rule.frames) {
-          const declarations = frame.declarations;
-          if (!this._vars && usesVars(declarations)) this._vars = true;
-          this._noteViewportUnits(declarations);
-          if (!this._lh && usesLh(declarations)) this._lh = true;
-        }
-      }
-      for (const bp of sheet.breakpoints) breakpoints.add(bp);
-      // a query on the viewport's height reads it as a `vh` does
-      if (sheet.readsHeight) this.readsViewportHeight = true;
-      if (sheet.readsWidth) this.readsViewportWidth = true;
-    }
-    this.breakpoints = [...breakpoints].sort((a, b) => a - b);
-    this.counterStyles = new CounterStyles(counterStyles);
+    // Before the sheets, whose rules at a shadow tree's edges are compiled
+    // as they are read (`_addScoped`).
     // css-select's default adapter is domutils; `isHovered` and `isActive`
     // are its documented hooks for exactly this, so `:hover` costs an
     // adapter field rather than a fork of the matcher.
@@ -1311,6 +1629,85 @@ export class Cascade {
       isHovered: () => false,
       isActive: () => false,
     };
+    const breakpoints = new Set<number>();
+    const counterStyles = new Map<string, CounterStyleRule>();
+    for (const sheet of sheets) {
+      // a counter style's rule whole over any before it of its name
+      for (const { prelude, declarations } of sheet.counterStyles ?? []) {
+        const style = counterStyleRule(prelude, declarations);
+        if (style) counterStyles.set(style.name, style.rule);
+      }
+      this._addSheet(sheet, this._document, breakpoints);
+    }
+    // A shadow tree's sheets go in the same indexes, each rule filed
+    // under its tree (`IndexedRule.scope`) and asked of that tree's
+    // elements alone (`_matchInto`): one look in a bucket for every
+    // element, whichever tree it is in, and the trees whose sheets read
+    // the same — a component's, stamped out on every card — share one set
+    // of rules, parsed and indexed once. Its `@counter-style` and
+    // `@font-face` rules are not read: the document's are what count.
+    for (const { key, sheets: own } of shadows) {
+      const rules = this._treeRules(key);
+      for (const sheet of own) this._addSheet(sheet, rules, breakpoints);
+    }
+    this._scoped = shadows.length > 0;
+    this.breakpoints = [...breakpoints].sort((a, b) => a - b);
+    this.counterStyles = new CounterStyles(counterStyles);
+  }
+
+  /**
+   * A sheet's rules into the indexes, filed under the tree they are for —
+   * the user agent's for every tree — and its `@keyframes` into that
+   * tree's. The rules written from inside a shadow tree about what is
+   * outside it — `:host`, `::slotted()` — and from outside it about what is
+   * inside — `::part()` — are the tree's own (`_addScoped`).
+   */
+  private _addSheet(
+    sheet: Stylesheet,
+    rules: TreeRules,
+    breakpoints: Set<number>,
+  ): void {
+    for (const rule of sheet.rules) {
+      if (!this._vars && usesVars(rule.declarations)) this._vars = true;
+      this._noteViewportUnits(rule.declarations);
+      if (!this._lh && usesLh(rule.declarations)) this._lh = true;
+      const scope = rule.order < 0 ? UA_SCOPE : rules.id;
+      if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
+        continue;
+      }
+      const pseudo = splitPseudoElement(rule);
+      if (pseudo) this._pseudo[pseudo.which].add(pseudo.rule, undefined, scope);
+      else {
+        const key = rightmostKey(rule.selector);
+        this._index.add(rule, key, scope);
+        if (
+          rule.order >= 0 &&
+          (key.kind !== 'tag' || SHAPE_TAGS.has(key.name)) &&
+          declaresShape(rule.declarations)
+        ) {
+          this._shapes.add(rule, key, scope);
+        }
+      }
+      const selector = (pseudo?.rule ?? rule).selector;
+      this._hoverRules.note(selector);
+      this._focusRules.note(selector);
+    }
+    for (const rule of sheet.keyframes ?? []) {
+      let named = rules.keyframes.get(rule.name);
+      if (!named) rules.keyframes.set(rule.name, (named = []));
+      named.push(rule);
+      this._anyKeyframes = true;
+      for (const frame of rule.frames) {
+        const declarations = frame.declarations;
+        if (!this._vars && usesVars(declarations)) this._vars = true;
+        this._noteViewportUnits(declarations);
+        if (!this._lh && usesLh(declarations)) this._lh = true;
+      }
+    }
+    for (const bp of sheet.breakpoints) breakpoints.add(bp);
+    // a query on the viewport's height reads it as a `vh` does
+    if (sheet.readsHeight) this.readsViewportHeight = true;
+    if (sheet.readsWidth) this.readsViewportWidth = true;
   }
 
   /** Whether declarations read the viewport's width or height (`vw`,
@@ -1464,14 +1861,33 @@ export class Cascade {
   }
 
   /**
-   * The `@keyframes` an animation's name finds, or null: of the rules of
-   * the name whose media hold, the one in the latest layer — no layer
+   * The `@keyframes` an animation's name finds, or null. A name is
+   * tree-scoped (CSS Scoping 1, 3.5): it is looked for in the tree whose
+   * rule named it — `tree`, null for the document's (`animationTree`) —
+   * and then in each tree around that one out to the document's, so a
+   * shadow tree's `@keyframes` is its own, and a `::part()` rule of the
+   * page's names the page's whatever the part's tree has.
+   */
+  keyframes(
+    name: string,
+    tree: ShadowRoot | null = null,
+  ): KeyframesRule | null {
+    for (let root = tree; root; root = shadowRootAround(root.host)) {
+      const found = this._keyframesIn(this._rootInfo(root).rules, name);
+      if (found) return found;
+    }
+    return this._keyframesIn(this._document, name);
+  }
+
+  /**
+   * The `@keyframes` of a name one tree has, or null: of its rules of the
+   * name whose media hold, the one in the latest layer — no layer
    * outranking any, as for a style rule — and the last of those, but that
    * an `@-webkit-keyframes` never takes the place of an `@keyframes`, as in
    * Blink (`ScopedStyleResolver::AddKeyframeStyle`).
    */
-  keyframes(name: string): KeyframesRule | null {
-    const named = this._keyframes.get(name);
+  private _keyframesIn(rules: TreeRules, name: string): KeyframesRule | null {
+    const named = rules.keyframes.get(name);
     if (!named) return null;
     const width = this.viewportWidth / this.scale;
     const height = this.viewportHeight / this.scale;
@@ -1539,6 +1955,316 @@ export class Cascade {
   endSharing(): void {
     this._kept = null;
     this._keptShared.clear();
+  }
+
+  /**
+   * The document's shadow trees, each with how its sheets read — the key
+   * of the `ShadowSheets` it was handed, which a tree with no sheet has as
+   * `''` — as they are now: asked again whenever the document is restyled,
+   * since a cascade outlives the tree it was made for where the sheets read
+   * the same.
+   */
+  bindShadows(roots: ReadonlyMap<ShadowRoot, string>): void {
+    this._bound.clear();
+    this._roots.clear();
+    this._trees = new WeakMap();
+    for (const [root, key] of roots)
+      this._bound.set(root, this._treeRules(key));
+    this._scoped = this._byKey.size > 0 || roots.size > 0;
+  }
+
+  /** The rules of the shadow trees whose sheets read as `key`. */
+  private _treeRules(key: string): TreeRules {
+    let rules = this._byKey.get(key);
+    if (!rules) {
+      rules = newTreeRules(this._nextTree++);
+      this._byKey.set(key, rules);
+    }
+    return rules;
+  }
+
+  /** What is known of a shadow tree: how deep it is, and its rules — the
+   *  user agent's alone, where it was bound to none. */
+  private _rootInfo(root: ShadowRoot): TreeInfo {
+    let info = this._roots.get(root);
+    if (info) return info;
+    const outer = shadowRootAround(root.host);
+    info = {
+      root,
+      depth: (outer ? this._rootInfo(outer).depth : 0) + 1,
+      rules: this._bound.get(root) ?? this._treeRules(''),
+    };
+    this._roots.set(root, info);
+    return info;
+  }
+
+  /** The tree an element is in, found once a build. */
+  private _treeInfo(el: Element): TreeInfo {
+    if (!this._scoped) return this._docInfo;
+    let info = this._trees.get(el);
+    if (info) return info;
+    const root = shadowRootAround(el);
+    info = root ? this._rootInfo(root) : this._docInfo;
+    this._trees.set(el, info);
+    return info;
+  }
+
+  /**
+   * A rule that says something of a shadow tree's edge (`SCOPING`), into
+   * its tree's lists, or into the indexes as the rest of it with a test of
+   * the host (`IndexedRule.host`). True where it was taken — whether or not
+   * it can ever match: one of the document's for a `:host` or a slot,
+   * which no element of it is from inside, matches nothing — and false
+   * where it says nothing of one after all, a `:host` in an attribute's
+   * value, and is an ordinary rule.
+   */
+  private _addScoped(rule: StyleRule, rules: TreeRules): boolean {
+    const pseudo = splitPseudoElement(rule);
+    const which: PseudoTarget = pseudo?.which ?? '';
+    const subject = pseudo?.rule ?? rule;
+    const selector = subject.selector;
+    const shadow = rules !== this._document;
+    const slotted = readSlotted(selector);
+    if (slotted !== undefined) {
+      this._noteEdge(rule.selector);
+      if (!slotted || !shadow) return true;
+      const slot = this._matcherIn(slotted.slot, true);
+      const el = this._compile(slotted.arg);
+      if (!slot || !el) return true;
+      rules.slotted.push({
+        rule: subject,
+        id: this._scopedId--,
+        pseudo: which,
+        slot,
+        el,
+      });
+      this._scopedPseudos.add(which);
+      return true;
+    }
+    const part = readPart(selector);
+    if (part !== undefined) {
+      this._noteEdge(rule.selector);
+      if (!part) return true;
+      // `:host::part()` is the tree's own host's, and every other the parts
+      // of a host in the tree
+      const own = readHost(part.host);
+      const inner = own.kind === 'subject';
+      if (inner && !shadow) return true;
+      const host = inner
+        ? this._hostTest(own.host)
+        : this._matcherIn(part.host, shadow);
+      const el = part.after ? this._compile(`*${part.after}`) : null;
+      if (!host || (part.after && !el)) return true;
+      rules.parts.push({
+        rule: subject,
+        id: this._scopedId--,
+        pseudo: which,
+        host,
+        names: part.names,
+        el,
+        inner,
+      });
+      this._scopedPseudos.add(which);
+      return true;
+    }
+    const reading = readHost(selector);
+    if (reading.kind === 'none') return false;
+    if (!shadow || reading.kind === 'never') return true;
+    const test = this._hostTest(reading.host);
+    if (!test) return true;
+    if (reading.kind === 'subject') {
+      this._noteEdge(rule.selector);
+      rules.host.push({
+        rule: subject,
+        id: this._scopedId--,
+        pseudo: which,
+        host: test,
+      });
+      this._scopedPseudos.add(which);
+      return true;
+    }
+    // `:host(.dark) .x`: the rest, which is in the tree, matched as any
+    // rule of the tree's, and then its host asked
+    const derived = { ...subject, selector: reading.rest };
+    const key = rightmostKey(reading.rest);
+    if (which) this._pseudo[which].add(derived, key, rules.id, test);
+    else {
+      this._index.add(derived, key, rules.id, test);
+      if (
+        (key.kind !== 'tag' || SHAPE_TAGS.has(key.name)) &&
+        declaresShape(subject.declarations)
+      ) {
+        this._shapes.add(derived, key, rules.id, test);
+      }
+    }
+    // what its host is asked can test the state too, `:host(:hover) .x`
+    if (HOVER_STATE.mentions.test(rule.selector)) {
+      this._index.hoverSensitive = true;
+    }
+    if (FOCUS_STATE.mentions.test(rule.selector)) {
+      this._index.focusSensitive = true;
+    }
+    this._hoverRules.note(rule.selector);
+    this._focusRules.note(rule.selector);
+    if (UNSHAREABLE.test(rule.selector)) this._index.ownStyleEverywhere = true;
+    return true;
+  }
+
+  /**
+   * A rule of a tree's edge that tests the pointer or the focus, or where
+   * an element sits: what makes a restyle in place safe is asked of the
+   * indexes, which the rule is not in, so a change of the state builds the
+   * boxes again, and no element shares a style a sibling could change.
+   */
+  private _noteEdge(selector: string): void {
+    if (HOVER_STATE.mentions.test(selector)) {
+      this._index.hoverSensitive = true;
+      this._hoverRules.local = false;
+    }
+    if (FOCUS_STATE.mentions.test(selector)) {
+      this._index.focusSensitive = true;
+      this._focusRules.local = false;
+    }
+    if (UNSHAREABLE.test(selector)) this._index.ownStyleEverywhere = true;
+  }
+
+  /** A selector for an element of a tree, compiled, with its `:host` read
+   *  where it is written in a shadow tree (`readHost`). Null where it can
+   *  match nothing. */
+  private _matcherIn(
+    selector: string,
+    shadow: boolean,
+  ): ((el: Element) => boolean) | null {
+    const reading = readHost(selector);
+    if (reading.kind === 'none') return this._compile(selector);
+    if (!shadow || reading.kind !== 'anchored') return null;
+    const rest = this._compile(reading.rest);
+    const test = this._hostTest(reading.host);
+    if (!rest || !test) return null;
+    return (el) => {
+      if (!rest(el)) return false;
+      const root = shadowRootAround(el);
+      return root !== null && test(root.host);
+    };
+  }
+
+  /** What a `:host` compound asks of the host, compiled: nothing, of
+   *  `:host`; its argument, of `:host()`; and of `:host-context()`, its
+   *  argument of the host or of an element around it, outside the tree. */
+  private _hostTest(found: HostCompound): ((host: Element) => boolean) | null {
+    if (found.arg === null) return () => true;
+    const match = this._compile(found.arg);
+    if (!match || !found.context) return match;
+    return (host) => {
+      for (let at: Element | null = host; at; at = shadowIncludingParent(at)) {
+        if (match(at)) return true;
+      }
+      return false;
+    };
+  }
+
+  /**
+   * The rules of the trees at an element's edges that reach it, or its
+   * pseudo-element `pseudo`, into `out` — each in its own tree's context
+   * (`Candidate.context`), and its id into `matched`:
+   *
+   *  - where it hosts a shadow tree, that tree's `:host` rules, an inner
+   *    tree's;
+   *  - for each slot it is assigned to, that slot's tree's `::slotted()`
+   *    rules, and on through a slot assigned to another slot;
+   *  - where it is in a shadow tree and has a `part`, the `::part()`
+   *    rules of the tree its host is in, and of each tree further out its
+   *    names are exported to, through the hosts' `exportparts` (CSS
+   *    Shadow Parts 1, 3.2) — outer trees'.
+   */
+  private _scopedInto(
+    el: Element,
+    pseudo: PseudoTarget,
+    out: Candidate[],
+    matched?: number[],
+  ): void {
+    const shadow = shadowRootOf(el);
+    if (shadow) {
+      const inner = this._rootInfo(shadow);
+      for (const r of inner.rules.host) {
+        if (r.pseudo !== pseudo || !this._holds(r.rule) || !r.host(el)) {
+          continue;
+        }
+        matched?.push(r.id);
+        pushRule(out, r.rule, Origin.Author, inner.depth, shadow);
+      }
+    }
+    for (let slot = assignedSlot(el); slot; slot = assignedSlot(slot)) {
+      const where = this._treeInfo(slot);
+      for (const r of where.rules.slotted) {
+        if (
+          r.pseudo !== pseudo ||
+          !this._holds(r.rule) ||
+          !r.el(el) ||
+          !r.slot(slot)
+        ) {
+          continue;
+        }
+        matched?.push(r.id);
+        pushRule(out, r.rule, Origin.Author, where.depth, where.root);
+      }
+    }
+    const part = el.attribs.part;
+    if (part === undefined) return;
+    // a part of each host out from it, by the names it has there: the
+    // host's own tree's `:host::part()` rules, and the rules of the tree
+    // the host is in
+    let names = tokensOf(part);
+    for (let tree = this._treeInfo(el); names.length && tree.root;) {
+      const host = tree.root.host;
+      const outer = this._treeInfo(host);
+      this._partsInto(el, pseudo, names, host, tree, true, out, matched);
+      this._partsInto(el, pseudo, names, host, outer, false, out, matched);
+      const exported = host.attribs.exportparts;
+      if (exported === undefined) break;
+      names = exportedNames(names, exported);
+      tree = outer;
+    }
+  }
+
+  /** The `::part()` rules of one tree that reach `el` as a part of `host`
+   *  named `names`, into `out`: its `:host::part()` ones (`inner`), or the
+   *  rest. */
+  private _partsInto(
+    el: Element,
+    pseudo: PseudoTarget,
+    names: readonly string[],
+    host: Element,
+    tree: TreeInfo,
+    inner: boolean,
+    out: Candidate[],
+    matched?: number[],
+  ): void {
+    for (const r of tree.rules.parts) {
+      if (
+        r.inner !== inner ||
+        r.pseudo !== pseudo ||
+        !this._holds(r.rule) ||
+        !r.names.every((name) => names.includes(name)) ||
+        (r.el !== null && !r.el(el)) ||
+        !r.host(host)
+      ) {
+        continue;
+      }
+      matched?.push(r.id);
+      pushRule(out, r.rule, Origin.Author, tree.depth, tree.root);
+    }
+  }
+
+  /** Whether a rule's media queries hold now. */
+  private _holds(rule: StyleRule): boolean {
+    return mediaMatches(
+      rule.media,
+      this.viewportWidth / this.scale,
+      this.look.colorScheme,
+      this.viewportHeight / this.scale,
+      this.scale,
+    );
   }
 
   /**
@@ -1659,6 +2385,16 @@ export class Cascade {
       const value = attribs[name];
       key += `\u0001${name.length}:${name}=${value.length}:${value}`;
     }
+    // which tree's rules it is styled by, and where it hosts a tree, that
+    // tree's `:host` rules: a `<b>` assigned to a slot in one card and the
+    // `<b>` the slot falls back to in another have parents of one key, and
+    // two `<my-card>`s alike in every way can host trees of other sheets
+    if (this._scoped) {
+      const tree = this._treeInfo(el).rules.id;
+      if (tree) key += `\u0001s${tree}`;
+      const shadow = shadowRootOf(el);
+      if (shadow) key += `\u0001h${this._rootInfo(shadow).rules.id}`;
+    }
     // and an image's hints are the attributes of the source it chose, where
     // that sizes it (`presentationHints`)
     if (tag === 'img' && this.dimensionSource) {
@@ -1773,9 +2509,12 @@ export class Cascade {
     elementStyle: ComputedStyle,
   ): ComputedStyle | null {
     const index = this._pseudo[which];
-    if (!index.size || !index.reaches(el)) return null;
+    const indexed = index.size > 0 && index.reaches(el);
+    const edges = this._scoped && this._scopedPseudos.has(which);
+    if (!indexed && !edges) return null;
     const candidates: Candidate[] = [];
-    this._matchInto(index, el, candidates);
+    if (indexed) this._matchInto(index, el, candidates);
+    if (edges) this._scopedInto(el, which, candidates);
     if (!candidates.length) return null;
     // One that no rule gives a `content` is none, whatever else reaches it —
     // `content` is not inherited, and its initial `normal` is nothing here.
@@ -1998,19 +2737,25 @@ export class Cascade {
       candidates,
       own,
     );
+    // where the names are looked for: in the tree whose rule named them
+    const tree = ANIMATION_TREES.get(style.animations) ?? null;
+    const keyframesOf = (name: string) => this.keyframes(name, tree);
     const timeline = target === null ? null : this.timeline;
     // the fields its animations set now, which no transition starts on
     let animated: ReadonlySet<string> | null = null;
     if (
       style.animations === NO_ANIMATIONS ||
-      !this._keyframes.size ||
+      !this._anyKeyframes ||
       // one not displayed runs none (CSS Animations 1, 3)
       (timeline && style.display === 'none')
     ) {
       if (timeline && !timeline.empty) timeline.drop(el, target!);
     } else if (timeline) {
-      const samples = timeline.sample(el, target!, style.animations, (name) =>
-        this.keyframes(name),
+      const samples = timeline.sample(
+        el,
+        target!,
+        style.animations,
+        keyframesOf,
       );
       animated = fieldsAnimatedBy(samples);
       if (samples) {
@@ -2038,9 +2783,7 @@ export class Cascade {
       // the element's alone (`_alone`)
       style.willChange |= timeline.willChange(el, target!);
     } else {
-      const frames = restingFrames(style.animations, (name) =>
-        this.keyframes(name),
-      );
+      const frames = restingFrames(style.animations, keyframesOf);
       if (frames) {
         style = this._cascadeStyle(
           el,
@@ -2051,9 +2794,7 @@ export class Cascade {
         );
       }
       // and at rest, each that fills forwards is in effect
-      style.willChange |= restingWillChange(style.animations, (name) =>
-        this.keyframes(name),
-      );
+      style.willChange |= restingWillChange(style.animations, keyframesOf);
     }
     // and what its transitions make of it, from the style the document has
     // for it now (CSS Transitions 1, 3): none for one not displayed, and
@@ -2286,12 +3027,22 @@ export class Cascade {
       };
     }
     const settled = style.fontSize;
+    // the tree whose rule named the animations, where it is a shadow tree
+    let animationTree: ShadowRoot | null = null;
+    const scoped = this._scoped;
     for (const c of candidates) {
       authored = !fromUserAgent(c.origin);
       for (const d of pick(c)) {
         if (d.prop === 'font-size' || d.custom) continue;
         this._apply(style, parentStyle, d, ctx);
+        if (scoped && ANIMATION_NAMES.has(d.prop)) animationTree = c.tree;
       }
+    }
+    // kept beside the lists, which are shared by what they were read from
+    if (animationTree && style.animations !== NO_ANIMATIONS) {
+      const named = { ...style.animations };
+      ANIMATION_TREES.set(named, animationTree);
+      style.animations = named;
     }
     // A `font` is applied again, to keep its other longhands in cascade
     // order, and it sets the size it names as well: the size is the first
@@ -2464,7 +3215,13 @@ export class Cascade {
     copies: ShapeCopies | null = null,
   ): ShapeStyles | null {
     const index = this._shapes;
-    const byId = copies?.byId ?? ((id: string) => elementById(root, id));
+    // the drawing's tree, whose rules and attributes are of one context,
+    // and whose ids are its own: the build's index is of the document's
+    const tree = this._scoped ? this._treeInfo(root) : this._docInfo;
+    const byId =
+      copies && !tree.root
+        ? copies.byId
+        : (id: string) => elementById(root, id);
     // A presentation attribute is a declaration too (SVG 2, 6.2), and one
     // with a `var()` in it is read here, where the drawing's custom
     // properties are: `SvgView` reads the attribute as it is written, and
@@ -2566,6 +3323,8 @@ export class Cascade {
           // attributes are (`presentationHints`)
           candidates.push({
             origin: Origin.Presentation,
+            context: tree.depth,
+            tree: tree.root,
             layer: null,
             specificity: 0,
             order: 0,
@@ -2574,7 +3333,9 @@ export class Cascade {
           });
         }
         if (candidates.length || inlineVars) {
-          if (inline) pushInlineShapes(candidates, inline);
+          if (inline) {
+            pushInlineShapes(candidates, inline, tree.depth, tree.root);
+          }
           candidates.sort(byCascade);
         }
         each(el, candidates.length ? candidates : null);
@@ -2837,10 +3598,17 @@ export class Cascade {
     // A media query's width is CSS pixels; the viewport is kept in device.
     const width = this.viewportWidth / this.scale;
     const height = this.viewportHeight / this.scale;
+    // the rules of the tree the element is in, and the user agent's
+    const scoped = this._scoped;
+    const tree = scoped ? this._treeInfo(el) : this._docInfo;
+    const scope = tree.rules.id;
 
     const consider = (bucket: IndexedRule[] | undefined): void => {
       if (!bucket) return;
       for (const indexed of bucket) {
+        if (scoped && indexed.scope !== scope && indexed.scope !== UA_SCOPE) {
+          continue;
+        }
         if (live !== undefined && !live(indexed)) continue;
         const rule = indexed.rule;
         if (
@@ -2891,10 +3659,11 @@ export class Cascade {
           match = indexed.match;
         }
         if (!match || !match(el)) continue;
+        if (indexed.host !== null && !indexed.host(tree.root!.host)) continue;
         matched?.push(indexed.id);
         if (out === null) continue;
         const origin = rule.order < 0 ? Origin.UserAgent : Origin.Author;
-        pushRule(out, rule, origin);
+        pushRule(out, rule, origin, tree.depth, tree.root);
       }
     };
 
@@ -2916,12 +3685,15 @@ export class Cascade {
   private _candidates(el: Element, matched?: number[]): Candidate[] {
     const out: Candidate[] = [];
     this._matchInto(this._index, el, out, matched);
+    const tree = this._scoped ? this._treeInfo(el) : this._docInfo;
+    if (this._scoped) this._scopedInto(el, '', out, matched);
 
     const hints = presentationHints(el, this.dimensionSource);
     // the page's colour schemes are its root's where no rule sets them
     if (
       this.pageColorScheme &&
       el.name === 'html' &&
+      tree.root === null &&
       !(el.parent && isTag(el.parent as Element))
     ) {
       hints.push({
@@ -2933,6 +3705,8 @@ export class Cascade {
     if (hints.length) {
       out.push({
         origin: Origin.Presentation,
+        context: tree.depth,
+        tree: tree.root,
         layer: null,
         specificity: 0,
         order: 0,
@@ -2947,28 +3721,7 @@ export class Cascade {
       if (!this._vars && usesVars(declarations)) this._vars = true;
       this._noteViewportUnits(declarations);
       if (!this._lh && usesLh(declarations)) this._lh = true;
-      const normal = declarations.filter((d) => !d.important);
-      const important = declarations.filter((d) => d.important);
-      if (normal.length) {
-        out.push({
-          origin: Origin.Inline,
-          layer: null,
-          specificity: 0,
-          order: 0,
-          declarations: normal,
-          only: -1,
-        });
-      }
-      if (important.length) {
-        out.push({
-          origin: Origin.InlineImportant,
-          layer: null,
-          specificity: 0,
-          order: 0,
-          declarations: important,
-          only: -1,
-        });
-      }
+      pushInline(out, declarations, tree.depth, tree.root);
     }
 
     out.sort(byCascade);
@@ -3050,6 +3803,25 @@ function stylesChrome(d: Declaration): boolean {
   return false;
 }
 
+/** The declarations that name an element's animations. */
+const ANIMATION_NAMES = new Set([
+  'animation',
+  'animation-name',
+  '-webkit-animation',
+  '-webkit-animation-name',
+]);
+
+/** The shadow tree whose rule named an element's animations, by its lists
+ *  (`Cascade._cascadeStyle`): where their names are looked for first. The
+ *  document's are in none. */
+const ANIMATION_TREES = new WeakMap<Animations, ShadowRoot>();
+
+/** The tree an element's animations' names are looked for in first
+ *  (`Cascade.keyframes`): null for the document's. */
+export function animationTree(animations: Animations): ShadowRoot | null {
+  return ANIMATION_TREES.get(animations) ?? null;
+}
+
 /** An implied element's style as the root box's: its look, not its role —
  *  the root is still a block, in flow, and the initial containing block. */
 function asRoot(style: ComputedStyle): ComputedStyle {
@@ -3073,6 +3845,16 @@ function asRoot(style: ComputedStyle): ComputedStyle {
 const PSEUDOS = {
   root: (el: Element) =>
     el.name === 'html' && !(el.parent && isTag(el.parent as Element)),
+  // the top of a shadow tree, where `:host > .x`'s `.x` is (`readHost`)
+  '-rx-top': (el: Element) => el.parent instanceof ShadowRoot,
+  // the host, which nothing in its tree is: a `:host` this reads in a
+  // compound of its own is the host's (`readHost`), and one inside a
+  // function's list, `:not(:host)`, is nothing's
+  host: (_el: Element) => false,
+  // a slot something is assigned to, through the slots assigned to it —
+  // white space included, as a text node is assigned like any other —
+  // and not its own fallback (CSS Scoping 1, 3.2.3)
+  'has-slotted': (el: Element) => el.name === 'slot' && hasSlotted(el),
   focus: (_el: Element) => false,
   'focus-visible': (_el: Element) => false,
   'focus-within': (_el: Element) => false,
@@ -3109,7 +3891,13 @@ export function languageOf(el: Element): string {
     if (value != null) return value;
     root = node;
     const parent: Element['parent'] = node.parent;
-    node = parent && isTag(parent as Element) ? (parent as Element) : null;
+    // the top of a shadow tree is in its host's language (HTML 3.2.6.2)
+    node =
+      parent instanceof ShadowRoot
+        ? parent.host
+        : parent && isTag(parent as Element)
+          ? (parent as Element)
+          : null;
   }
   return pragmaLanguage(root.parent ?? root);
 }
@@ -3338,16 +4126,36 @@ function declaresRootShape(declarations: readonly Declaration[]): boolean {
 }
 
 /** A `style` attribute's declarations of a shape's properties, as
- *  candidates: over every rule, and its `!important` ones over theirs. */
-function pushInlineShapes(out: Candidate[], inline: string): void {
+ *  candidates: over every rule, and its `!important` ones over theirs —
+ *  of the tree `context` deep, the drawing's. */
+function pushInlineShapes(
+  out: Candidate[],
+  inline: string,
+  context: number,
+  tree: ShadowRoot | null,
+): void {
   const declarations = parseDeclarations(inline).filter((d) =>
     isShapeProp(d.prop),
   );
+  pushInline(out, declarations, context, tree);
+}
+
+/** A `style` attribute's declarations as candidates, element-attached
+ *  (CSS Cascade 5, 6.1): over every rule of its tree, and its
+ *  `!important` ones over theirs. */
+function pushInline(
+  out: Candidate[],
+  declarations: Declaration[],
+  context: number,
+  tree: ShadowRoot | null,
+): void {
   const normal = declarations.filter((d) => !d.important);
   const important = declarations.filter((d) => d.important);
   if (normal.length) {
     out.push({
       origin: Origin.Inline,
+      context,
+      tree,
       layer: null,
       specificity: 0,
       order: 0,
@@ -3358,6 +4166,8 @@ function pushInlineShapes(out: Candidate[], inline: string): void {
   if (important.length) {
     out.push({
       origin: Origin.InlineImportant,
+      context,
+      tree,
       layer: null,
       specificity: 0,
       order: 0,
@@ -3386,6 +4196,8 @@ function withAnimations(
     ...candidates.slice(0, at),
     ...frames.map((declarations, order) => ({
       origin: Origin.Animation,
+      context: 0,
+      tree: null,
       layer: null,
       specificity: 0,
       order,
@@ -3396,7 +4208,16 @@ function withAnimations(
   ];
 }
 
-function pushRule(out: Candidate[], rule: StyleRule, origin: Origin): void {
+/** A rule's declarations as candidates, for an element of the tree
+ *  `context` deep — the rule's tree, `tree` — at its origin, and its
+ *  `!important` ones at theirs. */
+function pushRule(
+  out: Candidate[],
+  rule: StyleRule,
+  origin: Origin,
+  context = 0,
+  tree: ShadowRoot | null = null,
+): void {
   let hasImportant = false;
   for (const d of rule.declarations) {
     if (d.important) {
@@ -3407,6 +4228,8 @@ function pushRule(out: Candidate[], rule: StyleRule, origin: Origin): void {
   if (!hasImportant) {
     out.push({
       origin,
+      context,
+      tree,
       layer: rule.layer,
       specificity: rule.specificity,
       order: rule.order,
@@ -3425,6 +4248,8 @@ function pushRule(out: Candidate[], rule: StyleRule, origin: Origin): void {
           ? Origin.UserAgentImportant
           : Origin.AuthorImportant
         : origin,
+      context,
+      tree,
       layer: rule.layer,
       specificity: rule.specificity,
       order: rule.order,
@@ -3434,7 +4259,29 @@ function pushRule(out: Candidate[], rule: StyleRule, origin: Origin): void {
   }
 }
 
+/**
+ * Cascade order, the last declaration winning: by origin and importance,
+ * then — between two of the same — by context, an outer tree's normal
+ * declaration over an inner one's and an inner tree's `!important` one over
+ * an outer one's (CSS Cascade 5, 6.1): a page's `my-card { color }` over
+ * the card's own `:host { color }`, whatever their specificity, and its
+ * `::part()` rules over the part's own tree's rules and its `style`. Then a
+ * `style` attribute over its tree's rules; then layers, specificity and
+ * order. The presentational hints are under every author rule, whatever
+ * its tree — a host's `align` under its tree's `:host { text-align }`, as
+ * Chrome has it. In a document with no shadow tree every context is 0, and
+ * the order is the one by origin.
+ */
 function byCascade(a: Candidate, b: Candidate): number {
+  if (a.origin !== b.origin) {
+    const by = IMPORTANCE[a.origin] - IMPORTANCE[b.origin];
+    if (by !== 0) return by;
+  }
+  if (a.context !== b.context) {
+    return a.origin >= Origin.AuthorImportant
+      ? a.context - b.context
+      : b.context - a.context;
+  }
   if (a.origin !== b.origin) return a.origin - b.origin;
   if (a.layer !== b.layer) {
     // a later layer wins over an earlier one whatever the specificity, and
@@ -3445,6 +4292,12 @@ function byCascade(a: Candidate, b: Candidate): number {
   if (a.specificity !== b.specificity) return a.specificity - b.specificity;
   return a.order - b.order;
 }
+
+/** Each origin's place by origin and importance alone: the user agent's;
+ *  the presentational hints; the author's normal declarations, `style`
+ *  attributes among them; the animations'; the author's `!important`; the
+ *  user agent's `!important`. One for each `Origin`, in its order. */
+const IMPORTANCE: readonly number[] = [0, 1, 2, 2, 3, 4, 4, 5];
 
 /**
  * Which of two layers wins for a normal declaration: a later one over an

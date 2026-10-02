@@ -25,8 +25,10 @@
 // [domhandler]: https://github.com/fb55/domhandler
 // [htmlparser2]: https://github.com/fb55/htmlparser2
 import { Parser } from 'htmlparser2';
-import { DomHandler, Element, Text } from 'domhandler';
+import { DomHandler, Document as DomDocument, Element, Text } from 'domhandler';
 import type { AnyNode, ChildNode, Document, ParentNode } from 'domhandler';
+import { sheetConditions } from './css/parse.js';
+import type { MediaCondition } from './css/parse.js';
 
 export type { AnyNode, ChildNode, Document, ParentNode } from 'domhandler';
 export { Element, Text, Comment } from 'domhandler';
@@ -92,9 +94,11 @@ export function inImpliedHead(el: Element, tag: string): boolean {
 }
 
 /** Whether an element is at the top of the document or right under
- *  `<html>`: where the head a browser implies would be. */
+ *  `<html>`: where the head a browser implies would be. Not at the top of
+ *  a shadow tree, which has no head. */
 function atDocumentTop(el: Element): boolean {
   const parent = el.parent;
+  if (parent instanceof ShadowRoot) return false;
   return !parent || !isElement(parent) || tagOf(parent) === 'html';
 }
 
@@ -236,17 +240,268 @@ export function* elementsIn(
   }
 }
 
+// --- shadow trees ------------------------------------------------------------
+//
+// A declarative shadow root (HTML 13.2.6.4.4, "a start tag whose tag name is
+// template"; DOM 4.2.2): a `<template shadowrootmode>` that the parser meets
+// as the first such child of an element that can host one is no element at
+// all — what it holds becomes the element's shadow tree, a tree of its own,
+// and the template is in neither. So the DOM here is the one a browser
+// builds: the host's `children` are its light children alone, and the
+// shadow tree hangs off it (`shadowRootOf`), as `host.shadowRoot` does.
+// Everything that walks the document by `children` — the scan, the forms,
+// `getElementById`, `:first-child` — stays in the tree it started in, as
+// the DOM's own walks do, and what is drawn is the flat tree
+// (`flatChildrenOf`): the host's shadow tree in its place, and in each
+// `<slot>` the light children assigned to it.
+
+/** Each host's shadow root. */
+const SHADOW_ROOTS = new WeakMap<Element, ShadowRoot>();
+
+/** Bumped whenever a tree may have changed: what slot assignment keeps is
+ *  good while it holds still (`ShadowRoot._assign`). */
+let generation = 0;
+
+/** A tree changed: the parser wrote to it, an application mutated it and
+ *  said so, or a shadow root was attached. */
+export function treesChanged(): void {
+  generation += 1;
+}
+
+/** `shadowrootmode`'s states (HTML 4.12.3), `open` and `closed` — any other
+ *  value, or none, is no shadow root, and the template an ordinary one. */
+export type ShadowRootMode = 'open' | 'closed';
+
+/**
+ * The root of a shadow tree (DOM 4.8): a document of its own, so a walk by
+ * `parent` from inside it stops at it, as a selector's does — and its
+ * `host`, the element whose boxes it is drawn as.
+ *
+ * `mode` is kept and changes nothing here: closed keeps a page's scripts
+ * out, and this runs none. The application, which is not a script on the
+ * page, reaches a closed one as it does an open one (`shadowRootOf`).
+ */
+export class ShadowRoot extends DomDocument {
+  readonly host: Element;
+  readonly mode: ShadowRootMode;
+  /** `shadowrootdelegatesfocus`. */
+  readonly delegatesFocus: boolean;
+  private _assignedAt = -1;
+  /** The nodes assigned to each slot, in tree order. */
+  private _assigned = new Map<Element, ChildNode[]>();
+  /** The slot each assigned node is in. */
+  private _slots = new Map<ChildNode, Element>();
+
+  constructor(host: Element, mode: ShadowRootMode, delegatesFocus = false) {
+    super([]);
+    this.host = host;
+    this.mode = mode;
+    this.delegatesFocus = delegatesFocus;
+  }
+
+  /** The nodes assigned to `slot`, in tree order: none where it is no slot
+   *  of this tree, or where no light child of the host names it. */
+  assignedTo(slot: Element): readonly ChildNode[] {
+    this._assign();
+    return this._assigned.get(slot) ?? EMPTY;
+  }
+
+  /** The slot a light child of the host is assigned to, or null where it
+   *  is in none, and so in no box. */
+  slotOf(node: ChildNode): Element | null {
+    this._assign();
+    return this._slots.get(node) ?? null;
+  }
+
+  /**
+   * Slot assignment (DOM 4.2.2.3, "find slottables"), in "named" mode: each
+   * element and text child of the host goes to the first `<slot>` in this
+   * tree, in tree order, whose `name` is its `slot` — `''` for a text node
+   * and for an element without one, which is the slot with no name. Not a
+   * slot in a `<template>`'s content, or in a shadow tree inside this one,
+   * which are other trees. Kept until a tree changes (`treesChanged`).
+   */
+  private _assign(): void {
+    if (this._assignedAt === generation) return;
+    this._assignedAt = generation;
+    this._assigned.clear();
+    this._slots.clear();
+    let named: Map<string, Element> | null = null;
+    for (const el of elementsIn(this, NON_RENDERED)) {
+      if (tagOf(el) !== 'slot') continue;
+      const name = attr(el, 'name') ?? '';
+      named ??= new Map();
+      if (!named.has(name)) named.set(name, el);
+    }
+    if (!named) return;
+    for (const child of this.host.children) {
+      const name = isElement(child)
+        ? (attr(child, 'slot') ?? '')
+        : isText(child)
+          ? ''
+          : null;
+      if (name === null) continue;
+      const slot = named.get(name);
+      if (!slot) continue;
+      this._slots.set(child, slot);
+      let nodes = this._assigned.get(slot);
+      if (!nodes) this._assigned.set(slot, (nodes = []));
+      nodes.push(child);
+    }
+  }
+}
+
+/** The shadow root an element hosts, or null — open or closed. */
+export function shadowRootOf(el: Element): ShadowRoot | null {
+  return SHADOW_ROOTS.get(el) ?? null;
+}
+
+/** The elements that may host a shadow root (DOM 4.9, `attachShadow()`):
+ *  these, and an autonomous custom element. */
+const SHADOW_HOSTS = new Set([
+  'article',
+  'aside',
+  'blockquote',
+  'body',
+  'div',
+  'footer',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'main',
+  'nav',
+  'p',
+  'section',
+  'span',
+]);
+
+/** The names HTML keeps from custom elements (4.13.2). */
+const RESERVED_NAMES = new Set([
+  'annotation-xml',
+  'color-profile',
+  'font-face',
+  'font-face-src',
+  'font-face-uri',
+  'font-face-format',
+  'font-face-name',
+  'missing-glyph',
+]);
+
+/** Whether an element can host a shadow root: one of `SHADOW_HOSTS`, or a
+ *  name that is a valid custom element name — a lower-case ASCII letter
+ *  first, a hyphen somewhere, and no ASCII upper case, white space or
+ *  colon (HTML 4.13.2; the parser has lowered the case already). */
+export function canHostShadow(el: Element): boolean {
+  const name = el.name;
+  if (SHADOW_HOSTS.has(name)) return true;
+  return (
+    name.includes('-') &&
+    CUSTOM_ELEMENT_NAME.test(name) &&
+    !RESERVED_NAMES.has(name)
+  );
+}
+const CUSTOM_ELEMENT_NAME = /^[a-z][^\s\0/>:A-Z]*$/;
+
+/**
+ * Attach a shadow root to `host` (DOM 4.9, `attachShadow()`), for an
+ * application building one itself: fill it with `appendChild` and call
+ * `refresh()`. Null where the element cannot host one or already does —
+ * where a browser would throw.
+ */
+export function attachShadow(
+  host: Element,
+  init: { mode: ShadowRootMode; delegatesFocus?: boolean },
+): ShadowRoot | null {
+  if (SHADOW_ROOTS.has(host) || !canHostShadow(host)) return null;
+  const root = new ShadowRoot(host, init.mode, init.delegatesFocus ?? false);
+  SHADOW_ROOTS.set(host, root);
+  treesChanged();
+  return root;
+}
+
+/** A `shadowrootmode` attribute's state: its keyword, ASCII
+ *  case-insensitively, or null for none. */
+function shadowRootMode(value: string | undefined): ShadowRootMode | null {
+  if (value === undefined) return null;
+  const mode = value.toLowerCase();
+  return mode === 'open' || mode === 'closed' ? mode : null;
+}
+
+/** The slot a light child of a host is assigned to, or null: where its
+ *  parent hosts no shadow tree, or no slot of it takes the child. */
+export function assignedSlot(node: ChildNode): Element | null {
+  const parent = node.parent;
+  if (!isElement(parent)) return null;
+  const shadow = SHADOW_ROOTS.get(parent);
+  return shadow ? shadow.slotOf(node) : null;
+}
+
+/** The shadow root whose tree `node` is in, or null for the document's. */
+export function shadowRootAround(node: AnyNode): ShadowRoot | null {
+  for (let at = node.parent; at; at = at.parent) {
+    if (at instanceof ShadowRoot) return at;
+  }
+  return null;
+}
+
+/**
+ * What a node's boxes are made of — its children in the flat tree (CSS
+ * Scoping 1, 2.2): a host's shadow tree, in place of its own children; in
+ * a `<slot>` of a shadow tree, the light children assigned to it, or its
+ * own where none is, its fallback; everywhere else the node's children.
+ */
+export function flatChildrenOf(node: AnyNode): readonly ChildNode[] {
+  if (!isElement(node)) return childrenOf(node);
+  const shadow = SHADOW_ROOTS.get(node);
+  if (shadow) return shadow.children;
+  if (node.name === 'slot') {
+    const root = shadowRootAround(node);
+    if (root) {
+      const assigned = root.assignedTo(node);
+      if (assigned.length) return assigned;
+    }
+  }
+  return node.children;
+}
+
+/**
+ * A node's parent in the flat tree: the host for the top of a shadow
+ * tree, the slot a light child of a host is assigned to, and else its
+ * parent element. Null at the top of the document, and for a light child
+ * no slot takes, which is in no box — and so what a style inherits from,
+ * where a pointer's hover reaches and where the focus is within.
+ */
+export function flatParentOf(node: ChildNode): Element | null {
+  const parent = node.parent;
+  if (!parent) return null;
+  if (parent instanceof ShadowRoot) return parent.host;
+  if (!isElement(parent)) return null;
+  const shadow = SHADOW_ROOTS.get(parent);
+  return shadow ? shadow.slotOf(node) : parent;
+}
+
 // --- the streaming source --------------------------------------------------
 
 /** What the document told the host about itself while parsing — none of
  *  it from inside a `<template>`, whose content is inert. */
 export interface DocumentFacts {
   /** `<style>` text and `<link rel=stylesheet>` hrefs, in document order —
-   *  order is the cascade's tie-breaker, so it is data, not a detail. */
+   *  order is the cascade's tie-breaker, so it is data, not a detail. The
+   *  document's alone: a shadow tree's style it and nothing else
+   *  (`shadows`). */
   sheets: SheetRef[];
+  /** Every shadow tree, in the order the scan meets them, a host's before
+   *  those in its own, with its sheets in its order: what each styles is
+   *  in it (CSS Scoping 1, 3.2). */
+  shadows: { root: ShadowRoot; sheets: SheetRef[] }[];
   /** Every `<script>`, for the seam. Never parsed and never evaluated. */
   scripts: Element[];
-  /** Elements with a resource to fetch — `<img>`, and `<link>` above. */
+  /** Elements with a resource to fetch — `<img>`, and `<link>` above —
+   *  in shadow trees as well as in the document. */
   resources: Element[];
   /** The `<img>`s whose image is chosen rather than named — a `srcset`, or
    *  a `<picture>` around them — which are asked for once the viewport
@@ -259,9 +514,15 @@ export interface DocumentFacts {
   base: string | null;
 }
 
-export type SheetRef =
+export type SheetRef = (
   | { kind: 'inline'; text: string; element: Element }
-  | { kind: 'link'; href: string; element: Element };
+  | { kind: 'link'; href: string; element: Element }
+) & {
+  /** The conditions its `media` attribute puts the whole sheet under, as
+   *  an `@import`'s media queries do: null where it has none, or one that
+   *  always holds. */
+  media: MediaCondition[] | null;
+};
 
 /**
  * A document being parsed. Feed it source; read `document` at any time.
@@ -332,6 +593,7 @@ export class HtmlSource {
     if (changed) {
       this.revision += 1;
       this._facts = freshFacts();
+      treesChanged();
     }
     return changed;
   }
@@ -346,6 +608,7 @@ export class HtmlSource {
     this._written = '';
     this.complete = false;
     this._facts = freshFacts();
+    treesChanged();
   }
 
   /** The DOM changed under us — an app mutated it, or a stylesheet arrived
@@ -353,6 +616,7 @@ export class HtmlSource {
   touch(): void {
     this.revision += 1;
     this._facts = freshFacts();
+    treesChanged();
   }
 
   /**
@@ -364,53 +628,77 @@ export class HtmlSource {
     if (this._facts.scanned === this.revision) return this._facts;
     const facts = freshFacts();
     facts.scanned = this.revision;
-    // Not into a `<template>`: its content is an inert fragment (HTML
-    // 4.12.3), out of the document until a script stamps it in, which here
-    // none does. A sheet in it styles nothing, an image in it loads nothing,
-    // a script in it runs nothing, and its `<title>` and `<base>` are not
-    // the document's.
-    for (const el of elementsIn(this.document, NON_RENDERED)) {
-      const tag = tagOf(el);
-      if (tag === 'style') {
-        const media = attr(el, 'media');
-        // A media query this renderer cannot evaluate is not a licence to
-        // apply the sheet anyway: `media="print"` is meant not to show.
-        if (!media || appliesToScreen(media)) {
-          facts.sheets.push({
-            kind: 'inline',
-            text: rawTextOf(el),
-            element: el,
-          });
+    // The document's tree, then each shadow tree as the walk meets its
+    // host: a sheet is its own tree's, and a `<title>` or a `<base>` in a
+    // shadow tree is not the document's, which a browser looks for in the
+    // document's tree alone.
+    const trees: { root: ParentNode; sheets: SheetRef[] }[] = [
+      { root: this.document, sheets: facts.sheets },
+    ];
+    for (let i = 0; i < trees.length; i += 1) {
+      const { root, sheets } = trees[i];
+      const shadow = root instanceof ShadowRoot;
+      // Not into a `<template>`: its content is an inert fragment (HTML
+      // 4.12.3), out of the document until a script stamps it in, which
+      // here none does. A sheet in it styles nothing, an image in it loads
+      // nothing, a script in it runs nothing, and its `<title>` and
+      // `<base>` are not the document's.
+      for (const el of elementsIn(root, NON_RENDERED)) {
+        const hosted = SHADOW_ROOTS.get(el);
+        if (hosted) {
+          const tree = { root: hosted, sheets: [] };
+          facts.shadows.push(tree);
+          trees.push(tree);
         }
-      } else if (tag === 'link') {
-        const rel = (attr(el, 'rel') ?? '').toLowerCase();
-        const href = attr(el, 'href');
-        if (href && rel.split(/\s+/).includes('stylesheet')) {
-          const media = attr(el, 'media');
-          if (!media || appliesToScreen(media)) {
-            facts.sheets.push({ kind: 'link', href, element: el });
-            facts.resources.push(el);
+        const tag = tagOf(el);
+        if (tag === 'style') {
+          // A sheet whose `media` can hold nowhere here, `print`, is left
+          // out; any other is under it, as though an `@media` block of it
+          // were around all of it (HTML 4.2.6, 4.2.4).
+          const media = sheetConditions(attr(el, 'media') ?? '');
+          if (media !== false) {
+            sheets.push({
+              kind: 'inline',
+              text: rawTextOf(el),
+              element: el,
+              media,
+            });
           }
+        } else if (tag === 'link') {
+          const rel = (attr(el, 'rel') ?? '').toLowerCase();
+          const href = attr(el, 'href');
+          if (href && rel.split(/\s+/).includes('stylesheet')) {
+            // One left out is not asked for either. One under a width,
+            // `(max-width: 600px)`, is, whatever the width: as a browser
+            // asks for it, and as an `@import` under one is asked for.
+            const media = sheetConditions(attr(el, 'media') ?? '');
+            if (media !== false) {
+              sheets.push({ kind: 'link', href, element: el, media });
+              facts.resources.push(el);
+            }
+          }
+        } else if (tag === 'script') {
+          facts.scripts.push(el);
+        } else if (tag === 'img' && choosesSource(el)) {
+          facts.pictures.push(el);
+        } else if (
+          tag === 'img' ||
+          tag === 'image' ||
+          tag === 'object' ||
+          tag === 'embed' ||
+          tag === 'video' ||
+          (tag === 'input' &&
+            (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
+        ) {
+          if (imageUrlOf(el)) facts.resources.push(el);
+        } else if (shadow) {
+          continue;
+        } else if (tag === 'title' && facts.title === null) {
+          facts.title = rawTextOf(el).trim();
+        } else if (tag === 'base' && facts.base === null) {
+          const href = attr(el, 'href');
+          if (href !== undefined) facts.base = href;
         }
-      } else if (tag === 'script') {
-        facts.scripts.push(el);
-      } else if (tag === 'img' && choosesSource(el)) {
-        facts.pictures.push(el);
-      } else if (
-        tag === 'img' ||
-        tag === 'image' ||
-        tag === 'object' ||
-        tag === 'embed' ||
-        tag === 'video' ||
-        (tag === 'input' &&
-          (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
-      ) {
-        if (imageUrlOf(el)) facts.resources.push(el);
-      } else if (tag === 'title' && facts.title === null) {
-        facts.title = rawTextOf(el).trim();
-      } else if (tag === 'base' && facts.base === null) {
-        const href = attr(el, 'href');
-        if (href !== undefined) facts.base = href;
       }
     }
     this._facts = facts;
@@ -432,6 +720,7 @@ interface ScannedFacts extends DocumentFacts {
 function freshFacts(): ScannedFacts {
   return {
     sheets: [],
+    shadows: [],
     scripts: [],
     resources: [],
     pictures: [],
@@ -457,6 +746,10 @@ class Handler extends DomHandler {
    *  leaves outside them. */
   private _html: Element | null = null;
   private _body: Element | null = null;
+  /** Whether a `<template shadowrootmode>` attaches a shadow root, as it
+   *  does in a document a browser's parser builds, and not in a fragment
+   *  parsed for `innerHTML` (HTML 13.2.6.4.4). */
+  declarative = true;
 
   /**
    * Past `MAX_DEPTH` open elements, what is opened goes into the element at
@@ -512,6 +805,7 @@ class Handler extends DomHandler {
         if (name !== 'html') this._reopen();
       } else if (this._html && inBody(name)) this._reopen();
     }
+    if (name === 'template' && this._shadowRoot(attribs)) return;
     super.onopentag(name, attribs);
     const opened = this.tagStack[this.tagStack.length - 1] as Element;
     if (name === 'html' && !this._html && opened.parent === this.root) {
@@ -525,6 +819,39 @@ class Handler extends DomHandler {
     }
     this._afterPre =
       name === 'pre' || name === 'listing' || name === 'textarea';
+  }
+
+  /**
+   * A `<template shadowrootmode>` that the element open can host a shadow
+   * root from, where it hosts none yet: the shadow root takes the
+   * template's place on the stack, so what the template holds goes into it
+   * and its end tag closes it, and the template is in no tree (HTML
+   * 13.2.6.4.4). True where it did. Any other template is one, inert: a
+   * second one, one under an element that hosts none — an `<img>`, the
+   * `<html>` — and one in a fragment.
+   */
+  private _shadowRoot(attribs: Record<string, string>): boolean {
+    if (!this.declarative) return false;
+    const mode = shadowRootMode(attribs.shadowrootmode);
+    if (!mode) return false;
+    const stack = this.tagStack;
+    const host = stack[stack.length - 1];
+    if (
+      stack.length > MAX_DEPTH ||
+      !isElement(host) ||
+      SHADOW_ROOTS.has(host) ||
+      !canHostShadow(host)
+    ) {
+      return false;
+    }
+    const delegates = attribs.shadowrootdelegatesfocus !== undefined;
+    const root = new ShadowRoot(host, mode, delegates);
+    SHADOW_ROOTS.set(host, root);
+    treesChanged();
+    stack.push(root);
+    this.lastNode = null;
+    this._afterPre = false;
+    return true;
   }
 
   /** Whether what is open is the top of the document, or the written
@@ -628,12 +955,16 @@ function startsBody(node: ChildNode): boolean {
   return node instanceof Text && NOT_SPACE.test(node.data);
 }
 
-function createParser(): { parser: Parser; handler: DomHandler } {
+function createParser(declarative = true): {
+  parser: Parser;
+  handler: DomHandler;
+} {
   const handler = new Handler(null, {
     // Positions cost time and memory per node and nothing here reads them.
     withStartIndices: false,
     withEndIndices: false,
   });
+  handler.declarative = declarative;
   const parser = new DocumentParser(handler, {
     lowerCaseTags: true,
     lowerCaseAttributeNames: true,
@@ -679,24 +1010,6 @@ class DocumentParser extends Parser {
   }
 }
 
-/**
- * Whether a `media` attribute is one a screen honours. Deliberately not a
- * media-query engine: `screen`, `all` and an empty list apply, `print` and
- * anything else with a type this is not does not, and a query with features
- * in it (`(min-width: …)`) applies — a responsive sheet written for a real
- * browser is closer to right applied than dropped.
- */
-function appliesToScreen(media: string): boolean {
-  for (const query of media.split(',')) {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    if (q === 'all' || q === 'screen') return true;
-    if (q.startsWith('screen ') || q.startsWith('(')) return true;
-    if (q.startsWith('only screen')) return true;
-  }
-  return false;
-}
-
 // --- mutation ---------------------------------------------------------------
 //
 // domhandler's nodes carry `parent`/`prev`/`next` as well as `children`, so a
@@ -709,6 +1022,7 @@ function appliesToScreen(media: string): boolean {
 /** Append `child` to `parent`, unlinking it from wherever it was. */
 export function appendChild(parent: ParentNode, child: ChildNode): void {
   removeNode(child);
+  treesChanged();
   const kids = parent.children;
   const last = kids[kids.length - 1] ?? null;
   if (last) last.next = child;
@@ -720,6 +1034,7 @@ export function appendChild(parent: ParentNode, child: ChildNode): void {
 
 /** Unlink a node from its parent. Safe on a node that has none. */
 export function removeNode(node: ChildNode): void {
+  treesChanged();
   const parent = node.parent;
   if (parent) {
     const kids = parent.children;
@@ -737,6 +1052,7 @@ export function removeNode(node: ChildNode): void {
 export function replaceNode(node: ChildNode, next: ChildNode): void {
   const parent = node.parent;
   if (!parent) return;
+  treesChanged();
   const kids = parent.children;
   const at = kids.indexOf(node);
   removeNode(next);
@@ -768,10 +1084,12 @@ export function createText(data: string): Text {
 }
 
 /** Parse a fragment into nodes an app can splice in — `innerHTML`, without
- *  the element to hang it off. Not streaming: a fragment is small by
- *  definition, and an app calling this already has the whole string. */
+ *  the element to hang it off, and like it, with a `<template
+ *  shadowrootmode>` left a template: `attachShadow` makes a shadow root.
+ *  Not streaming: a fragment is small by definition, and an app calling
+ *  this already has the whole string. */
 export function parseFragment(html: string): ChildNode[] {
-  const { parser, handler } = createParser();
+  const { parser, handler } = createParser(false);
   parser.write(html);
   parser.end();
   const kids = handler.root.children.slice();

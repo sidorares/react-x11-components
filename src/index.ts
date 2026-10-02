@@ -383,11 +383,13 @@ export type {
 export { Html, useHtmlHandle } from './html/index.js';
 export {
   appendChild as htmlAppendChild,
+  attachShadow as attachHtmlShadow,
   createHtmlElement,
   createText as createHtmlText,
   parseFragment as parseHtmlFragment,
   removeNode as removeHtmlNode,
   replaceNode as replaceHtmlNode,
+  shadowRootOf as htmlShadowRootOf,
 } from './html/index.js';
 export type {
   ControlRect as HtmlControlRect,
@@ -399,6 +401,7 @@ export type {
   ResourceRequest as HtmlResourceRequest,
   ResourceResult as HtmlResourceResult,
   ScriptRequest as HtmlScriptRequest,
+  ShadowRoot as HtmlShadowRoot,
 } from './html/index.js';
 
 // Styled text that a document selects across. The selection itself is
