@@ -243,6 +243,181 @@ export function parseAnimation(value: string): Animations | null {
   };
 }
 
+/** `transition-behavior` (CSS Transitions 2, 2.1): whether a property whose
+ *  values go over discretely transitions at all. */
+export type TransitionBehavior = 'normal' | 'allow-discrete';
+
+/**
+ * `transition` and its longhands (CSS Transitions 1, 2), a list each, as an
+ * animation's are, and the list a property's transition takes its
+ * duration, timing function, delay and behavior from at the index its name
+ * is at in `properties` (`transitionFields`, `css/timeline.ts`).
+ */
+export interface Transitions {
+  /** `transition-property`: the property each is of — its name, or `all`
+   *  for every one — and none at all for `none`. */
+  readonly properties: readonly string[];
+  /** `transition-duration`, in milliseconds. */
+  readonly durations: readonly number[];
+  /** `transition-timing-function`. */
+  readonly easings: readonly Easing[];
+  /** `transition-delay`, in milliseconds: one that is negative starts that
+   *  far in. */
+  readonly delays: readonly number[];
+  readonly behaviors: readonly TransitionBehavior[];
+}
+
+/** The initial value of every longhand: every property, in no time — which
+ *  is no transition at all. */
+export const NO_TRANSITIONS: Transitions = {
+  properties: ['all'],
+  durations: [0],
+  easings: [EASE],
+  delays: [0],
+  behaviors: ['normal'],
+};
+
+/** The longhands, by property name, and the list each is. */
+export const TRANSITION_LONGHANDS: Record<string, keyof Transitions> = {
+  'transition-property': 'properties',
+  'transition-duration': 'durations',
+  'transition-timing-function': 'easings',
+  'transition-delay': 'delays',
+  'transition-behavior': 'behaviors',
+};
+
+const BEHAVIORS = new Set<string>(['normal', 'allow-discrete']);
+
+/** A `transition-property` entry: `all`, or a property's name, lowercased;
+ *  undefined for what is neither — `none`, a CSS-wide keyword, or no
+ *  identifier. */
+function transitionProperty(value: string): string | undefined {
+  const v = value.trim().toLowerCase();
+  if (v === 'none' || !IDENT.test(v) || RESERVED.has(v)) return undefined;
+  return v;
+}
+
+/** One value of each longhand's list; null where it is none. */
+const ONE_TRANSITION: {
+  [K in keyof Transitions]: (value: string) => Transitions[K][number] | null;
+} = {
+  properties: (v) => transitionProperty(v) ?? null,
+  durations: duration,
+  easings: parseEasing,
+  delays: parseTime,
+  behaviors: (v) => keyword(v, BEHAVIORS) as TransitionBehavior | null,
+};
+
+/**
+ * `transitions` with one longhand's list set from a declaration's value, or
+ * null where the value is not a list of that longhand's values and the
+ * declaration is dropped. `transition-property: none` is no property at
+ * all, and `none` among others is no value.
+ */
+export function transitionLonghand(
+  transitions: Transitions,
+  key: keyof Transitions,
+  value: string,
+): Transitions | null {
+  if (key === 'properties' && value.trim().toLowerCase() === 'none') {
+    return { ...transitions, properties: [] };
+  }
+  const read = ONE_TRANSITION[key] as (value: string) => unknown;
+  const list: unknown[] = [];
+  for (const item of splitCommas(value)) {
+    const one = read(item.trim());
+    if (one === null) return null;
+    list.push(one);
+  }
+  return { ...transitions, [key]: list };
+}
+
+/**
+ * The `transition` shorthand: a comma list of transitions, each a property
+ * or `none`, a duration, a timing function, a delay and a behavior in any
+ * order and the rest at their initial values, the first time the duration
+ * and the second the delay — or null where an item is not one, or where
+ * `none` is one of several (CSS Transitions 1, 2.5; 2, 2.1).
+ */
+export function parseTransition(value: string): Transitions | null {
+  // one object for one value: a reset gives every element the same, and
+  // what a list runs on is kept by the list (`transitionFields`)
+  let parsed = PARSED_TRANSITIONS.get(value);
+  if (parsed === undefined) {
+    if (PARSED_TRANSITIONS.size >= 256) PARSED_TRANSITIONS.clear();
+    parsed = readTransition(value);
+    PARSED_TRANSITIONS.set(value, parsed);
+  }
+  return parsed;
+}
+
+const PARSED_TRANSITIONS = new Map<string, Transitions | null>();
+
+function readTransition(value: string): Transitions | null {
+  const properties: string[] = [];
+  const durations: number[] = [];
+  const easings: Easing[] = [];
+  const delays: number[] = [];
+  const behaviors: TransitionBehavior[] = [];
+  const items = splitCommas(value);
+  for (const item of items) {
+    const tokens = splitValue(item.trim());
+    if (!tokens.length) return null;
+    // null for `none`
+    let property: string | null | undefined;
+    let time = 0;
+    let dur: number | undefined;
+    let del: number | undefined;
+    let easing: Easing | undefined;
+    let behavior: TransitionBehavior | undefined;
+    for (const token of tokens) {
+      const t = parseTime(token);
+      if (t !== null) {
+        if (time === 0) {
+          if (t < 0) return null;
+          dur = t;
+        } else if (time === 1) {
+          del = t;
+        } else {
+          return null;
+        }
+        time += 1;
+        continue;
+      }
+      if (easing === undefined) {
+        const e = parseEasing(token);
+        if (e !== null) {
+          easing = e;
+          continue;
+        }
+      }
+      const lower = token.toLowerCase();
+      if (behavior === undefined && BEHAVIORS.has(lower)) {
+        behavior = lower as TransitionBehavior;
+        continue;
+      }
+      if (property !== undefined) return null;
+      if (lower === 'none') {
+        property = null;
+        continue;
+      }
+      const name = transitionProperty(token);
+      if (name === undefined) return null;
+      property = name;
+    }
+    if (property === null) {
+      if (items.length > 1) return null;
+    } else {
+      properties.push(property ?? 'all');
+    }
+    durations.push(dur ?? 0);
+    easings.push(easing ?? EASE);
+    delays.push(del ?? 0);
+    behaviors.push(behavior ?? 'normal');
+  }
+  return { properties, durations, easings, delays, behaviors };
+}
+
 /** An `animation-name` entry: the name, null for `none`, and undefined for
  *  what is neither — a CSS-wide keyword, `default`, or no identifier. */
 function animationName(value: string): string | null | undefined {

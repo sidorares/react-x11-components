@@ -319,6 +319,23 @@ export class HtmlViewNode extends Node {
       ),
   };
   // --- sprites (`sprites()`, src/html/sprites.ts) ---
+  /**
+   * The style an element has in the tree the document draws, or a
+   * pseudo-element's: what a transition starts from (`Cascade.previous`).
+   * None where the tree was styled by other sheets: a stylesheet arriving
+   * is no change to transition through, as a browser that waits for it to
+   * draw shows none.
+   */
+  private readonly _previousStyle = (
+    el: Element,
+    pseudo: string,
+  ): ComputedStyle | null => {
+    const tree = this._tree;
+    if (!tree || this._styledWith !== this._cascade) return null;
+    if (pseudo === '') return tree.styles.get(el)?.style ?? null;
+    if (pseudo !== 'before' && pseudo !== 'after') return null;
+    return this._pseudoBoxOf(tree, el, pseudo)?.style ?? null;
+  };
   /** What a presenter has on layers of their own, by sprite key, as it
    *  said last (`spritesLifted`): an element or a pseudo-element of one
    *  each, a hole in the document, and an animation the document's clock
@@ -753,6 +770,7 @@ export class HtmlViewNode extends Node {
       this._sameSheets(kept, read, extras)
     ) {
       this._cascade = kept.cascade;
+      this._cascade.previous = this._previousStyle;
       kept.cascade.viewportWidth = width;
       kept.cascade.viewportHeight = this._viewportHeight();
       faces = kept.faces;
@@ -799,6 +817,7 @@ export class HtmlViewNode extends Node {
         fonts ? (face) => normalLineOf(fonts, face) : null,
         faces.length ? this._webFonts : null,
       );
+      this._cascade.previous = this._previousStyle;
       this._sheetsRead = {
         look,
         scale: this._scale,
@@ -4477,6 +4496,7 @@ const PLACING_FIELDS = new Set([...TRANSFORM_FIELDS, 'opacity', 'zIndex']);
 const UNDRAWN_FIELDS = new Set([
   'custom',
   'animations',
+  'transitions',
   'cursor',
   'pointerEvents',
 ]);
@@ -4537,9 +4557,10 @@ function hoverChange(
       }
       continue;
     }
-    // what an element's animations leave is in its other fields already
-    // (`Cascade._computeStyle`); the lists themselves draw nothing
-    if (key === 'animations') {
+    // what an element's animations and transitions leave is in its other
+    // fields already (`Cascade._computeStyle`); the lists themselves draw
+    // nothing
+    if (key === 'animations' || key === 'transitions') {
       if (!sameValue(a[key], b[key])) {
         change ??= {
           ink: false,

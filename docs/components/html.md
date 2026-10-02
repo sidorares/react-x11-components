@@ -1366,7 +1366,27 @@ hidden panels through `visibility` shows none — what Chrome draws with
 every animation set to no length, which is how the Zen Garden bench holds
 Chrome, and how it runs `<Html>`. The iteration count, the duration and the delay are
 not used there, so an animation of two `alternate` iterations, or of half
-of one, is drawn as it ends its first. Transitions are not run either way.
+of one, is drawn as it ends its first.
+
+**Transitions:** `transition` and its five longhands, `-webkit-transition`
+and its longhands too. A style change — a hover, a focus, a width across a
+`@media` breakpoint — that moves a property a transition names starts one
+from the value before the change to the value after it (CSS Transitions 1,
+3): it holds the value before through its delay, is eased by its timing
+function, and is interpolated field by field of the computed style, as an
+animation's frames are; `all` names every property that interpolates. A
+property whose values do not interpolate, a keyword, goes over at once —
+`transition-behavior: allow-discrete` is read, and runs nothing more. One
+under way that is turned back the way it came runs back as far as it had
+come, in that part of its duration; one given a new end runs on to it from
+where it is; and one whose property the list no longer names is at its
+new value at once. Nothing transitions on a document's first style, nor
+where a stylesheet that arrives restyles it — a browser waits for a
+stylesheet before it draws — nor in a document that runs no animation
+(`animate={false}`), which takes each new value at once. A transition is
+an animation, so what it runs makes the stacking context an animation of
+it would, from its delay to its end, an opacity at 1 still waiting to fall
+among it.
 
 Every frame runs in JavaScript, on either backend. Where a box is drawn on
 a surface of its own — on X11 one that turns and holds text, an image, a
@@ -1963,7 +1983,7 @@ whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, transforms out of the
-plane of the page, transitions, a multicol container's `column-rule`,
+plane of the page, a multicol container's `column-rule`,
 `column-span` on a box further in than its children, forced breaks, and
 a table in one broken
 between its rows — it goes to the next column whole, and a box a break

@@ -1644,6 +1644,24 @@ built again, as they are for the frame an opacity first leaves 1. **The
 bits are what makes an animated element one of its context's layers on
 every frame**, which the sprites' paint-order test below stands on.
 
+**A transition runs on the same timeline, from the style the document
+draws.** `AnimationTimeline.transition` is asked of every style the cascade
+computes, after its animations (`Cascade._computeStyle`), and keeps an
+element's transitions under way, and a pseudo-element's, by the field of
+the computed style each runs on. What a change starts one from is the
+style the document has for the element (`Cascade.previous`,
+`HtmlViewNode._previousStyle`), asked only where the style's list names a
+property that could start one — so a document with no transition pays a
+map lookup a style — and none where the tree was styled by other sheets: a
+stylesheet arriving is no change a browser, which waits for it, shows.
+Three things are load-bearing. **A style its transitions run in is the
+element's alone** (`_running` asks `transiting(el)`), or a sibling under
+the same key takes it and never starts its own. **The lists draw
+nothing**, as the animation lists do (`hoverChange`, `spriteChange`). And
+a transition starting or ending changes `willChange`, as an animation
+does, so its first frame is a build. Transitions are not lifted onto
+layers yet.
+
 **A box drawn on a surface of its own keeps the surface, keyed on its
 `Box`.** X11 draws a turned box with text in it on a surface
 (`paintRaster`), and X11 and Wayland draw an element an opacity fades as a

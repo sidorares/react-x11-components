@@ -45,10 +45,14 @@ import type { TransformFunction } from './transform.js';
 import {
   ANIMATION_LONGHANDS,
   NO_ANIMATIONS,
+  NO_TRANSITIONS,
+  TRANSITION_LONGHANDS,
   animationLonghand,
   parseAnimation,
+  parseTransition,
+  transitionLonghand,
 } from './animation.js';
-import type { Animations } from './animation.js';
+import type { Animations, Transitions } from './animation.js';
 import {
   LIGHT_DARK,
   SYSTEM_COLOR,
@@ -681,6 +685,11 @@ export interface ComputedStyle {
    *  `NO_ANIMATIONS`, shared, where nothing sets one. What they leave on
    *  the style is in its other fields already (`Cascade._computeStyle`). */
   animations: Animations;
+  /** `transition` and its longhands, each a list (`css/animation.ts`):
+   *  `NO_TRANSITIONS`, shared, where nothing sets one. What they make of
+   *  the style as they run is in its other fields already
+   *  (`AnimationTimeline.transition`). */
+  transitions: Transitions;
   zIndex: number | 'auto';
   /** A keyword, a length to raise the box by, or a percentage of its own
    *  line height. */
@@ -1181,6 +1190,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     transform: null,
     transformOrigin: [{ pct: 50 }, { pct: 50 }],
     animations: NO_ANIMATIONS,
+    transitions: NO_TRANSITIONS,
     zIndex: AUTO,
     verticalAlign: 'baseline',
 
@@ -1553,6 +1563,11 @@ const PREFIXED_ALIASES: Record<string, string> = {
   '-webkit-animation-direction': 'animation-direction',
   '-webkit-animation-fill-mode': 'animation-fill-mode',
   '-webkit-animation-play-state': 'animation-play-state',
+  '-webkit-transition': 'transition',
+  '-webkit-transition-property': 'transition-property',
+  '-webkit-transition-duration': 'transition-duration',
+  '-webkit-transition-timing-function': 'transition-timing-function',
+  '-webkit-transition-delay': 'transition-delay',
 };
 
 /**
@@ -2043,6 +2058,24 @@ export function applyDeclaration(
         value,
       );
       if (animations) style.animations = animations;
+      return;
+    }
+    case 'transition': {
+      const transitions = parseTransition(value);
+      if (transitions) style.transitions = transitions;
+      return;
+    }
+    case 'transition-property':
+    case 'transition-duration':
+    case 'transition-timing-function':
+    case 'transition-delay':
+    case 'transition-behavior': {
+      const transitions = transitionLonghand(
+        style.transitions,
+        TRANSITION_LONGHANDS[name],
+        value,
+      );
+      if (transitions) style.transitions = transitions;
       return;
     }
     case 'translate': {
@@ -5904,10 +5937,43 @@ export function animatedFields(
 ): readonly (keyof ComputedStyle)[] | null {
   const prop = PREFIXED_ALIASES[name] ?? name;
   if (MASK_LISTS[prop] || ANIMATION_LONGHANDS[prop]) return null;
+  if (TRANSITION_LONGHANDS[prop] || prop === 'transition') return null;
   const color = COLOR_PROPS[prop];
   if (color) return [color];
   return INHERIT_TARGETS[prop] ?? null;
 }
+
+/**
+ * The fields a transition of `all` may run on (CSS Transitions 1, 2.1):
+ * every field a property `animatedFields` names sets, but what is no
+ * quantity — the bits `contain` and `will-change` are, and the lists an
+ * animation, a transition and a mask are. Whether one runs is then
+ * whether its two values interpolate (`interpolateField`): a keyword does
+ * not, and goes over at once, as a property with no animation type does.
+ */
+export function transitionableFields(): ReadonlySet<keyof ComputedStyle> {
+  if (TRANSITIONABLE) return TRANSITIONABLE;
+  const fields = new Set<keyof ComputedStyle>();
+  for (const name of [
+    ...Object.keys(INHERIT_TARGETS),
+    ...Object.keys(COLOR_PROPS),
+  ]) {
+    for (const field of animatedFields(name) ?? []) fields.add(field);
+  }
+  for (const field of NOT_TRANSITIONABLE) fields.delete(field);
+  return (TRANSITIONABLE = fields);
+}
+
+let TRANSITIONABLE: ReadonlySet<keyof ComputedStyle> | null = null;
+
+const NOT_TRANSITIONABLE: readonly (keyof ComputedStyle)[] = [
+  'contain',
+  'willChange',
+  'animations',
+  'transitions',
+  'mask',
+  'custom',
+];
 
 export function isInherited(name: string): boolean {
   return INHERITED_NAMES.has(name);
@@ -5935,6 +6001,14 @@ export function initialOne(
     };
     return;
   }
+  const transition = TRANSITION_LONGHANDS[PREFIXED_ALIASES[name] ?? name];
+  if (transition) {
+    style.transitions = {
+      ...style.transitions,
+      [transition]: initial.transitions[transition],
+    };
+    return;
+  }
   const keys = INHERIT_TARGETS[name];
   if (!keys) return;
   for (const key of keys) {
@@ -5958,6 +6032,14 @@ function inheritOne(
     style.animations = {
       ...style.animations,
       [animation]: parent.animations[animation],
+    };
+    return;
+  }
+  const transition = TRANSITION_LONGHANDS[PREFIXED_ALIASES[name] ?? name];
+  if (transition) {
+    style.transitions = {
+      ...style.transitions,
+      [transition]: parent.transitions[transition],
     };
     return;
   }
@@ -6017,6 +6099,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   '-webkit-mask': ['mask'],
   animation: ['animations'],
   '-webkit-animation': ['animations'],
+  transition: ['transitions'],
+  '-webkit-transition': ['transitions'],
   'border-image-source': ['borderImage'],
   'border-image-slice': ['borderImage'],
   'border-image-width': ['borderImage'],
