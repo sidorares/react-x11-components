@@ -2671,9 +2671,11 @@ export class Cascade {
       false,
       which,
     );
-    return style.content === 'normal' || style.content === 'none'
-      ? null
-      : style;
+    if (style.content === 'normal' || style.content === 'none') return null;
+    // what `auto` is on a `::before` or an `::after` (CSS UI 4, 6.1): text
+    // a stylesheet made up, which no browser selects or copies
+    if (style.userSelect === 'auto') style.userSelect = 'none';
+    return style;
   }
 
   /**
@@ -3208,6 +3210,15 @@ export class Cascade {
     }
     settleClamp(style, parentStyle);
     settleAlign(style, parentStyle);
+    // `auto` is the parent's used value where that is `none` or `all`
+    // (CSS UI 4, 6.1), which is what the parent's style holds: so text in
+    // a `user-select: none` toolbar is none however deep
+    if (
+      style.userSelect === 'auto' &&
+      (parentStyle.userSelect === 'none' || parentStyle.userSelect === 'all')
+    ) {
+      style.userSelect = parentStyle.userSelect;
+    }
     settleOverflow(style);
     settleOutline(style, this.look, this.scale);
     settleContentVisibility(style);

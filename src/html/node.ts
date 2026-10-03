@@ -185,6 +185,7 @@ import {
   paintOrderOf,
   pathClips,
   queryChildIndex,
+  selectedPieces,
   selectionRows,
   stackLayers,
   stacksLayers,
@@ -2045,9 +2046,62 @@ export class HtmlViewNode extends Node {
   //
   // Core counts in **code points**; the boxes count in code units, because
   // that is what ntk's run geometry speaks. The conversion is here, once.
+  //
+  // And core counts only the text a selection can take. The runs
+  // `user-select: none` keeps out — generated content's, unless a rule
+  // says otherwise (CSS UI 4, 6.1) — are not in what it is told the
+  // document holds, so a copy, which is core's slice of that, leaves them
+  // out as a browser's does, and a drag across one has nothing in it to
+  // take (`_selectable`, `_inDocument`).
 
   override textContent(): string {
-    return this._tree?.text ?? '';
+    const tree = this._tree;
+    if (!tree) return '';
+    return tree.unselectable.length ? selectableOf(tree).text : tree.text;
+  }
+
+  /** A document offset, in code units, as one of the text a selection can
+   *  take: one inside a run it cannot take is where that run stands. */
+  private _selectable(units: number): number {
+    const tree = this._tree;
+    if (!tree?.unselectable.length) return units;
+    const gaps = tree.unselectable;
+    const { before } = selectableOf(tree);
+    // the last run that starts before the offset
+    let lo = 0;
+    let hi = before.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (gaps[mid * 2] < units) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo === 0) return units;
+    const i = lo - 1;
+    return units - before[i] - (Math.min(units, gaps[i * 2 + 1]) - gaps[i * 2]);
+  }
+
+  /** An offset of the text a selection can take, in code units, as the
+   *  document's: past the runs it cannot take that stand there where
+   *  `past`, as a range's start and a caret are, and before them where
+   *  not, as a range's end is. */
+  private _inDocument(units: number, past: boolean): number {
+    const tree = this._tree;
+    if (!tree?.unselectable.length) return units;
+    const gaps = tree.unselectable;
+    const { before } = selectableOf(tree);
+    // the last run whose place in the selectable text is before the
+    // offset, or at it where `past`
+    let lo = 0;
+    let hi = before.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const at = gaps[mid * 2] - before[mid];
+      if (at < units || (past && at === units)) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo === 0) return units;
+    const i = lo - 1;
+    return units + before[i] + gaps[i * 2 + 1] - gaps[i * 2];
   }
 
   /**
@@ -2107,13 +2161,7 @@ export class HtmlViewNode extends Node {
     // large faint word gave its press and its drag to the word: Zen Garden
     // 220's "Est. 2003", a fixed `::before`, stands behind its preamble.
     const shift = this._fixedShift();
-    const hit: SelectionHit = {
-      text: null,
-      box: null,
-      x: local.x,
-      y: local.y,
-      atViewport: false,
-    };
+    const hit = selectionHit(local);
     deepestAt(tree, local.x, local.y, undefined, shift, hit);
     let at: number | null;
     if (hit.text) {
@@ -2121,18 +2169,21 @@ export class HtmlViewNode extends Node {
     } else {
       const box = hit.box ?? tree.root;
       const frame = { box, x: hit.x, y: hit.y, atViewport: hit.atViewport };
-      at = nearestText(frame, shift, true) ?? nearestText(frame, shift);
+      const boxes = tree.textBoxes;
+      at =
+        nearestText(frame, shift, boxes, true) ??
+        nearestText(frame, shift, boxes);
       if (at === null && box !== tree.root) at = textBefore(box);
     }
     if (at === null) return 0;
-    return this._toPoints(at);
+    return this._toPoints(this._selectable(at));
   }
 
   override textCaretRect(index: number): Rect | null {
     const tree = this._tree;
     if (!tree) return null;
-    const units = this._toUnits(index);
-    const found = caretAt(tree.root, units);
+    const units = this._inDocument(this._toUnits(index), true);
+    const found = caretAt(tree.root, units, this._fixedShift());
     if (!found) return null;
     return {
       x: this.abs.x + found.x,
@@ -2145,12 +2196,16 @@ export class HtmlViewNode extends Node {
   override textRangeRects(start: number, end: number): Rect[] {
     const tree = this._tree;
     if (!tree) return [];
-    const from = this._toUnits(start);
-    const to = this._toUnits(end);
+    const from = this._inDocument(this._toUnits(start), true);
+    const to = this._inDocument(this._toUnits(end), false);
     if (to <= from) return [];
     const out: Rect[] = [];
-    // the rows the highlight paints, over glyphs taller than their line
-    collectBands(tree.root, from, to, this.abs.x, this.abs.y, out, true);
+    // the rows the highlight paints, over glyphs taller than their line,
+    // and none over the text it leaves out
+    const shift = this._fixedShift();
+    for (const [a, b] of selectedPieces(from, to, tree.unselectable)) {
+      collectBands(tree.root, a, b, this.abs.x, this.abs.y, out, true, shift);
+    }
     return out;
   }
 
@@ -2316,6 +2371,25 @@ export class HtmlViewNode extends Node {
       width: rect.width / s,
       height: rect.height / s,
     };
+  }
+
+  /**
+   * Whether a press at a logical window point may start a selection: not
+   * on text or a box `user-select: none` keeps out of one, which a
+   * `::before` and an `::after` are unless a rule says otherwise (CSS UI 4,
+   * 6.1). The root turns such a press down, and the selection there was
+   * stays, as Blink keeps it (`CanStartSelection`): a toolbar's button
+   * pressed with a paragraph selected does not take the selection away.
+   */
+  startsSelectionAt(x: number, y: number): boolean {
+    this._followLifted();
+    const tree = this._tree;
+    if (!tree) return true;
+    const local = this._toDocument(x, y);
+    const hit = selectionHit(local);
+    deepestAt(tree, local.x, local.y, undefined, this._fixedShift(), hit);
+    if (hit.text) return !withinRuns(tree.unselectable, hit.run);
+    return hit.box?.style.userSelect !== 'none';
   }
 
   /** The deepest element whose box contains a logical window point. */
@@ -4019,7 +4093,11 @@ export class HtmlViewNode extends Node {
       scale: this._scale,
       damage,
       selection: range
-        ? { start: this._toUnits(range.start), end: this._toUnits(range.end) }
+        ? {
+            start: this._inDocument(this._toUnits(range.start), true),
+            end: this._inDocument(this._toUnits(range.end), false),
+            skip: this._tree?.unselectable,
+          }
         : null,
       selectionColor: this.selectionColor,
       imageFor: (box) => {
@@ -4264,6 +4342,43 @@ function relativeOffsetOf(box: Box): { x: number; y: number } {
   return { x, y };
 }
 
+/** Whether a document offset is inside one of a list of runs: sorted,
+ *  disjoint `[start, end)` pairs, flat (`BoxTree.unselectable`). */
+function withinRuns(runs: readonly number[], at: number): boolean {
+  let lo = 0;
+  let hi = runs.length >> 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (runs[mid * 2 + 1] <= at) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < runs.length >> 1 && runs[lo * 2] <= at;
+}
+
+/** The text a selection can take, and how many code units of the text it
+ *  cannot take stand before each run of that (`BoxTree.unselectable`). */
+function selectableOf(tree: BoxTree): { text: string; before: number[] } {
+  let found = SELECTABLE.get(tree);
+  if (!found) {
+    const gaps = tree.unselectable;
+    const before: number[] = [];
+    let text = '';
+    let at = 0;
+    let removed = 0;
+    for (let i = 0; i < gaps.length; i += 2) {
+      before.push(removed);
+      text += tree.text.slice(at, gaps[i]);
+      at = gaps[i + 1];
+      removed += gaps[i + 1] - gaps[i];
+    }
+    found = { text: text + tree.text.slice(at), before };
+    SELECTABLE.set(tree, found);
+  }
+  return found;
+}
+
+const SELECTABLE = new WeakMap<BoxTree, { text: string; before: number[] }>();
+
 /** Where a box that holds no text stands in the document's text: at the
  *  end of the text before it, found up the boxes before it and around it,
  *  as each knows the range its subtree holds. */
@@ -4494,15 +4609,38 @@ interface TextFrame {
  *  the box the one or the other was laid out in. */
 interface SelectionHit {
   text: LineText | null;
+  /** Where the run under the point starts in the document's text, in code
+   *  units: a run's text is all of one box. */
+  run: number;
   box: Box | null;
   x: number;
   y: number;
   atViewport: boolean;
 }
 
+/** A hit for the selection to be told of, at a document point. */
+function selectionHit(at: { x: number; y: number }): SelectionHit {
+  return { text: null, run: -1, box: null, ...at, atViewport: false };
+}
+
+/** Whether any of a line text's runs is seen: a run's text is all of one
+ *  text box, whose style says so. Text a page hid is no place for a press
+ *  to land nearest, as Blink passes over a box that is not visible
+ *  (`IsHitTestCandidate`). */
+function seenText(text: LineText, boxes: readonly Box[]): boolean {
+  const runs = text.layout.lines[text.layoutLine]?.runs;
+  if (!runs?.length) return true;
+  for (const run of runs) {
+    const box = textBoxAt(boxes, text.spans.documentAt(run.start));
+    if (!box || box.style.visibility === 'visible') return true;
+  }
+  return false;
+}
+
 /**
  * The code-unit offset nearest a point, among the text a box holds: the
- * box and the point in its frame (`TextFrame`).
+ * box and the point in its frame (`TextFrame`), passing over text no one
+ * can see.
  *
  * Two prunes keep this the viewport's cost rather than the document's — it
  * runs per pointer event during a selection drag, where an unpruned walk of
@@ -4520,6 +4658,8 @@ function nearestText(
   /** How far a box fixed to the viewport is drawn from where it was laid
    *  out (`HtmlViewNode._fixedShift`). */
   fixedShift: { x: number; y: number } | null,
+  /** The document's text boxes, which say whether a text is seen. */
+  boxes: readonly Box[],
   /** Only the text in the box's flow: not what its absolute and fixed
    *  boxes hold, however deep (`HtmlViewNode.textIndexAt`). */
   inFlow = false,
@@ -4537,6 +4677,7 @@ function nearestText(
       const dx = axisDistance(x, left, natural.width);
       const distance = dy * 4 + dx;
       if (distance >= bestDistance) continue;
+      if (!seenText(text, boxes)) continue;
       bestDistance = distance;
       best = textOffsetAt(text, x, y);
     }
@@ -4672,8 +4813,13 @@ function nearestText(
 function caretAt(
   box: Box,
   units: number,
+  /** How far a box fixed to the viewport is drawn from where it was laid
+   *  out (`HtmlViewNode._fixedShift`): a caret in one is where it is
+   *  drawn. */
+  fixedShift: { x: number; y: number } | null = null,
 ): { x: number; y: number; height: number } | null {
   let found: { x: number; y: number; height: number } | null = null;
+  let shift: { x: number; y: number } | null = null;
   const visit = (node: Box): void => {
     if (found) return;
     if (node.subtreeTextEnd <= node.subtreeTextStart) return;
@@ -4708,14 +4854,22 @@ function caretAt(
             },
             node,
           );
-          found = { x: at.x, y: at.y, height: at.height };
+          found = {
+            x: at.x + (shift?.x ?? 0),
+            y: at.y + (shift?.y ?? 0),
+            height: at.height,
+          };
           return;
         }
       }
     }
     for (const child of node.children) {
       if (child.kind === 'text' || child.kind === 'break') continue;
-      visit(child);
+      if (fixedShift && !shift && fixedToViewport(child)) {
+        shift = fixedShift;
+        visit(child);
+        if (!found) shift = null;
+      } else visit(child);
       if (found) return;
     }
   };
@@ -4954,6 +5108,10 @@ function collectBands(
   dy: number,
   out: Rect[],
   ink = false,
+  /** How far a box fixed to the viewport is drawn from where it was laid
+   *  out (`HtmlViewNode._fixedShift`), for the bands in one: null inside
+   *  one already. */
+  fixedShift: { x: number; y: number } | null = null,
 ): void {
   if (box.subtreeTextEnd <= box.subtreeTextStart) return;
   if (box.subtreeTextEnd <= from || box.subtreeTextStart >= to) return;
@@ -4962,7 +5120,11 @@ function collectBands(
   // Atomics are ordinary children, reached below.
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
-    collectBands(child, from, to, dx, dy, out, ink);
+    if (fixedShift && fixedToViewport(child)) {
+      const x = dx + fixedShift.x;
+      const y = dy + fixedShift.y;
+      collectBands(child, from, to, x, y, out, ink);
+    } else collectBands(child, from, to, dx, dy, out, ink, fixedShift);
   }
   // where a box painted through a matrix draws them
   const matrix = out.length > first ? placedMatrix(box) : null;
@@ -5037,9 +5199,11 @@ function deepestAt(
     style: ComputedStyle,
     key: readonly number[],
     text: boolean,
-    /** The text or the box it was found in, for the selection. */
+    /** The text or the box it was found in, for the selection, and the
+     *  run's place in the document's text. */
     line: LineText | null,
     hitBox: Box | null,
+    run = -1,
   ) => {
     if (style.visibility !== 'visible' || style.pointerEvents === 'none') {
       return;
@@ -5050,6 +5214,7 @@ function deepestAt(
     viaText = text;
     if (select) {
       select.text = line;
+      select.run = run;
       select.box = hitBox;
       select.x = x;
       select.y = y;
@@ -5331,7 +5496,10 @@ function deepestAt(
   // document, whose text boxes know their element. Not from the run
   // itself, whose layout may be one an earlier parse made
   // (`TextLayoutCache`), and which an engine may hand back with nothing on
-  // it but its extent.
+  // it but its extent. Whether it is seen and pointed at is its text box's
+  // to say, whose style is the pseudo-element's in generated content: Zen
+  // Garden 220's headings are hidden, and their `::after`s, which say
+  // `visible`, are what each shows.
   const textAt = (text: LineText, context: readonly number[]): void => {
     const natural = text.layout.lines[text.layoutLine];
     if (!natural) return;
@@ -5339,10 +5507,12 @@ function deepestAt(
     for (const run of natural.runs) {
       const left = text.drawX + natural.x + run.x;
       if (x >= left && x < left + run.width) {
-        const owner = ownerOf(tree.textBoxes, text.spans.documentAt(run.start));
-        const style = owner && tree.styles.get(owner)?.style;
-        if (style) {
-          take(owner, style, [...context, HIT_INLINE, at], true, text, null);
+        const offset = text.spans.documentAt(run.start);
+        const box = textBoxAt(tree.textBoxes, offset);
+        const owner = box?.el;
+        if (owner && tree.styles.has(owner)) {
+          const key = [...context, HIT_INLINE, at];
+          take(owner, box.style, key, true, text, null, offset);
         }
       }
     }
@@ -6025,9 +6195,9 @@ function sameShape(a: TextLayoutLike, b: TextLayoutLike): boolean {
   return true;
 }
 
-/** The element whose text holds a document index: the text box around it,
- *  found by bisecting the boxes in document order. */
-function ownerOf(boxes: readonly Box[], index: number): Element | null {
+/** The text box that holds a document index, found by bisecting the boxes
+ *  in document order: its element, and the style its text is set in. */
+function textBoxAt(boxes: readonly Box[], index: number): Box | null {
   let lo = 0;
   let hi = boxes.length - 1;
   while (lo < hi) {
@@ -6036,7 +6206,7 @@ function ownerOf(boxes: readonly Box[], index: number): Element | null {
     else hi = mid - 1;
   }
   const box = boxes[lo];
-  return box && index >= box.textStart && index < box.textEnd ? box.el : null;
+  return box && index >= box.textStart && index < box.textEnd ? box : null;
 }
 
 export type {

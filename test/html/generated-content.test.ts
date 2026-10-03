@@ -21,6 +21,7 @@ import {
   SVG_NS,
   boxOf,
   documentText,
+  drawnText,
   findById,
   linesOf,
   metric,
@@ -300,10 +301,7 @@ metric('a pseudo-element set list-item has a marker', async () => {
   );
   assert.ok(after?.marker, 'an outside marker');
   assert.strictEqual(after.marker.text, '\u2022');
-  assert.ok(
-    el.textContent().includes('\u2022 y'),
-    'an inside one, in its text',
-  );
+  assert.ok(drawnText(el).includes('\u2022 y'), 'an inside one, in its text');
 });
 
 test('a list counts with the list-item counter, down where it is reversed', async () => {

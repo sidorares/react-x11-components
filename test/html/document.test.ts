@@ -17,6 +17,7 @@ import { parseColor } from '../../src/html/css/values.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import {
   boxOf,
+  drawnText,
   fillsOf,
   findById,
   h,
@@ -274,7 +275,7 @@ test('the head is shown where a stylesheet says so, as a browser shows it', asyn
       '<style>head, meta { display: block } meta::before { content: attr(content) }</style>' +
       '</head><body><p>body</p></body></html>',
   );
-  const text = view(node).textContent();
+  const text = drawnText(view(node));
   assert.ok(text.includes('PASS'), `the meta's ::before is drawn: ${text}`);
   assert.ok(!text.includes('T\n') && !text.startsWith('T'), 'the title is not');
   assert.ok(text.includes('body'));

@@ -845,6 +845,10 @@ export interface BoxTree {
   text: string;
   /** Text boxes in document order — the selection binary-searches this. */
   textBoxes: Box[];
+  /** The text no selection takes, where `user-select` is `none` — generated
+   *  content's, unless a rule says otherwise: sorted, disjoint `[start,
+   *  end)` pairs of code units, flat. Empty in most documents. */
+  unselectable: readonly number[];
   /** The styles text is set in, each once: the faces a host warms before
    *  laying the text out, found here rather than by walking `textBoxes`
    *  again after every build. */
@@ -1030,6 +1034,7 @@ class Builder {
    *  end, so that taking back a line's last space is not a copy of it. */
   private _chunks: string[] = [];
   private _length = 0;
+  private _unselectable: number[] = [];
   private _textBoxes: Box[] = [];
   private _textStyles = new Set<ComputedStyle>();
   private _styles = new Map<
@@ -1117,6 +1122,7 @@ class Builder {
       anonymous,
       text: this._chunks.join(''),
       textBoxes: this._textBoxes,
+      unselectable: this._unselectable,
       textStyles: this._textStyles,
       styles: this._styles,
       controls: this._controls,
@@ -2207,6 +2213,12 @@ class Builder {
     box.text = box.text.slice(0, -1);
     box.textEnd -= 1;
     this._length -= 1;
+    const ranges = this._unselectable;
+    const n = ranges.length;
+    if (n && ranges[n - 1] > this._length) {
+      ranges[n - 1] = this._length;
+      if (ranges[n - 2] >= this._length) ranges.length = n - 2;
+    }
     const last = this._chunks.length - 1;
     this._chunks[last] = this._chunks[last].slice(0, -1);
     if (!box.text) {
@@ -2223,6 +2235,12 @@ class Builder {
     this._chunks.push(text);
     this._length += text.length;
     box.textEnd = this._length;
+    if (box.style.userSelect === 'none' && text) {
+      const ranges = this._unselectable;
+      if (ranges[ranges.length - 1] === box.textStart) {
+        ranges[ranges.length - 1] = box.textEnd;
+      } else ranges.push(box.textStart, box.textEnd);
+    }
     if (box.kind === 'text') {
       this._textBoxes.push(box);
       if (box.style !== this._lastTextStyle) {

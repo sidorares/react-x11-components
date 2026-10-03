@@ -278,8 +278,14 @@ export interface PaintOptions {
   scale?: number;
   /** The rectangle being repainted, in window coordinates, or null for all. */
   damage: Rect | null;
-  /** The document range the selection covers, in code units, or null. */
-  selection: { start: number; end: number } | null;
+  /** The document range the selection covers, in code units, or null, and
+   *  the runs in it no selection takes (`BoxTree.unselectable`), which it
+   *  leaves unlit. */
+  selection: {
+    start: number;
+    end: number;
+    skip?: readonly number[];
+  } | null;
   selectionColor: string | null;
   /** A decoded image for an element, when the host has one. */
   imageFor(box: Box): unknown | null;
@@ -9875,7 +9881,6 @@ function selectedBands(
   if (line.textEnd <= range.start || line.textStart >= range.end) {
     return NO_BANDS;
   }
-  const styler = options.selectionStyler;
   const out: SelectedBand[] = [];
   for (const text of line.texts) {
     if (skip?.has(text)) continue;
@@ -9885,39 +9890,81 @@ function selectedBands(
     const to = Math.min(range.end, text.textEnd);
     if (to <= from) continue;
     const offsets = layoutOffsets(text.layout);
-    const layoutFrom = layoutOffsetOf(text, from);
-    const layoutTo = layoutOffsetOf(text, to, true);
     const rows = selectionRows(line, text, natural);
     const y = Math.round(rows.y + options.originY);
     const height = Math.ceil(rows.height);
-    const pieces = selectionPieces(
-      text,
-      natural,
-      layoutFrom,
-      layoutTo,
-      styler ?? null,
-    ) ?? [{ from: layoutFrom, to: layoutTo, style: null, fade: 1 }];
-    for (const piece of pieces) {
-      for (const band of lineBands(
-        text.layout,
-        natural,
-        offsets,
-        piece.from,
-        piece.to,
-      )) {
-        out.push({
-          x: Math.round(band.x + text.drawX + options.originX),
-          y,
-          width: Math.ceil(band.width),
-          height,
-          style: piece.style,
-          fade: piece.fade,
-          layout: text.layout,
-        });
-      }
+    // less the text no selection takes: generated content, mostly
+    const pieces = range.skip?.length
+      ? selectedPieces(from, to, range.skip)
+      : [[from, to] as const];
+    for (const [a, b] of pieces) {
+      selectedIn(text, natural, offsets, a, b, y, height, options, out);
     }
   }
   return out;
+}
+
+/** A document range, in code units, less the runs no selection takes
+ *  (`BoxTree.unselectable`): what a highlight lights of it. */
+export function selectedPieces(
+  from: number,
+  to: number,
+  skip: readonly number[],
+): (readonly [number, number])[] {
+  const out: [number, number][] = [];
+  let at = from;
+  for (let i = 0; i < skip.length && at < to; i += 2) {
+    if (skip[i + 1] <= at) continue;
+    if (skip[i] >= to) break;
+    if (skip[i] > at) out.push([at, skip[i]]);
+    at = Math.max(at, skip[i + 1]);
+  }
+  if (at < to) out.push([at, to]);
+  return out;
+}
+
+/** The bands of one stretch of a line text's selected text, from `from` to
+ *  `to` in the document's code units, a band for each `::selection` and
+ *  fade over it (`selectionPieces`). */
+function selectedIn(
+  text: LineText,
+  natural: LineText['layout']['lines'][number],
+  offsets: ReturnType<typeof layoutOffsets>,
+  from: number,
+  to: number,
+  y: number,
+  height: number,
+  options: PaintOptions,
+  out: SelectedBand[],
+): void {
+  const layoutFrom = layoutOffsetOf(text, from);
+  const layoutTo = layoutOffsetOf(text, to, true);
+  const pieces = selectionPieces(
+    text,
+    natural,
+    layoutFrom,
+    layoutTo,
+    options.selectionStyler ?? null,
+  ) ?? [{ from: layoutFrom, to: layoutTo, style: null, fade: 1 }];
+  for (const piece of pieces) {
+    for (const band of lineBands(
+      text.layout,
+      natural,
+      offsets,
+      piece.from,
+      piece.to,
+    )) {
+      out.push({
+        x: Math.round(band.x + text.drawX + options.originX),
+        y,
+        width: Math.ceil(band.width),
+        height,
+        style: piece.style,
+        fade: piece.fade,
+        layout: text.layout,
+      });
+    }
+  }
 }
 
 /** A stretch of a line's selected text, in the layout's offsets, that one
@@ -9951,15 +9998,22 @@ function selectionPieces(
   const boxAt = text.spans.boxAt;
   const styles: (SelectionStyle | null | undefined)[] = [];
   const fades: (number | undefined)[] = [];
+  // selected text nobody can see is lit by no band and set in no colour:
+  // a heading a page hid under the `::after` it shows was drawn over it
+  const unseen: boolean[] = [];
   let faded = false;
+  let hidden = false;
   for (const run of runs) {
     const box = boxAt?.call(text.spans, run.start) ?? null;
     styles.push(box ? (styler?.(box) ?? null) : undefined);
     const fade = box ? textFade(box) : undefined;
     if (fade !== undefined && fade < 1) faded = true;
     fades.push(fade);
+    const away = !!box && box.style.visibility !== 'visible';
+    if (away) hidden = true;
+    unseen.push(away);
   }
-  if (!styler && !faded) return null;
+  if (!styler && !faded && !hidden) return null;
   for (let i = 1; i < runs.length; i += 1) {
     if (styles[i] === undefined) styles[i] = styles[i - 1];
     if (fades[i] === undefined) fades[i] = fades[i - 1];
@@ -9969,13 +10023,19 @@ function selectionPieces(
     if (fades[i] === undefined) fades[i] = fades[i + 1];
   }
   const out: SelectionPiece[] = [];
+  let apart = false;
   runs.forEach((run, i) => {
+    if (unseen[i]) {
+      apart = true;
+      return;
+    }
     const style = styles[i] ?? null;
     const fade = fades[i] ?? 1;
     const last = out[out.length - 1];
-    if (last && last.style === style && last.fade === fade) {
+    if (last && !apart && last.style === style && last.fade === fade) {
       last.to = Math.min(to, run.end);
     } else {
+      apart = false;
       out.push({
         from: Math.max(from, run.start),
         to: Math.min(to, run.end),
