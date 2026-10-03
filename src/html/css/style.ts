@@ -6934,3 +6934,20 @@ const GENERIC_FAMILY = new Set([
   '-apple-system',
   'blinkmacsystemfont',
 ]);
+
+/** Structural equality for a computed value: a number, a string, or the
+ *  plain objects and arrays a length or a shadow list is. */
+export function sameValue(x: unknown, y: unknown): boolean {
+  if (x === y) return true;
+  if (typeof x === 'number' && typeof y === 'number') {
+    return Number.isNaN(x) && Number.isNaN(y);
+  }
+  if (!x || !y || typeof x !== 'object' || typeof y !== 'object') return false;
+  if (Array.isArray(x) !== Array.isArray(y)) return false;
+  const a = x as Record<string, unknown>;
+  const b = y as Record<string, unknown>;
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) if (!sameValue(a[key], b[key])) return false;
+  return true;
+}

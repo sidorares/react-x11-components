@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.38.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.38.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.39.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.39.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -672,6 +672,15 @@ it up. **The floor is a running one and moves often** — every move since
   a row's hover fade went on a layer, and a wheel over `<Table>` cost 29%
   more of a frame on macOS, found by round 45 of the perf sweep
   (`docs/perf-sweep-2026-09.md`). Neither needed a change here.
+- `^2.39.0` — a sprite turned out of the plane (react-x11#859): a part's
+  transform at rest and in its keyframes may be a `matrix3d()`, its corners
+  asked about where the perspective shows them, and Core Animation draws
+  the layer through it on the GPU. `<Html>` puts a box out of the plane on
+  a layer, still or moving, where it drew it a tile at a time at every
+  paint (`stillLiftOf`, `solidFrames`); Zen Garden 219 went from 25 frames
+  a second to 54 at rest on macOS. A core without it has no
+  `SpriteMatrix3D` to type one with, and turns down such a part as no
+  sprite at all, warning, so the floor moves with the feature.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1831,8 +1840,10 @@ twice over, which shows as a seam, and tiles that overlap draw a fade
 twice. A tile is cut until its matrix is within a quarter of a logical
 pixel of the projection at its corners, across the way it bends; 219's
 panel at 35° is some 440 tiles, and they cost a repaint a few
-milliseconds. Behind the viewer is nothing (`inFront`), and a layer on macOS
-takes only matrices of the plane, so a box out of it is never lifted.
+milliseconds. Behind the viewer is nothing (`inFront`). On macOS the box
+goes on a layer instead, whose matrix is the whole 4×4 and which the render
+server draws on the GPU (see "A box out of the plane is lifted" below):
+the perspective is `perspectiveAround`, one copy of it for both.
 
 **An animation is a style that changes as time passes, and runs as one.**
 `css/timeline.ts` keeps when each element's animations started — by
@@ -1981,11 +1992,15 @@ things are load-bearing.
   bumps `_spriteGen` and asks for a frame (`spritesChanged()`)**, as a
   restyle in place inside one does: a lifted box's hole claims no damage, so
   nothing else would bring the frame in which its layer is painted again.
-  The part is made again then, and its frames are kept apart, by the box,
-  its style, the style it inherits from and its animations (`Sampled`): a
-  spinner turning in a lifted card paints the card's layer again at each
-  of its frames, and sampled the card's whole cycle at each as well until
-  the frames were kept so.
+  The part is made again then, and its frames are kept apart, by its
+  style, the style it inherits from — compared by value where a build made
+  the root box's again — and its animations, with its box's size
+  (`Sampled`): a spinner turning in a lifted card paints the card's layer
+  again at each of its frames, and sampled the card's whole cycle at each
+  as well until the frames were kept so. Not by the box, since a build
+  that keeps the element's style makes new boxes: Zen Garden 219's
+  marquees build the document at every frame, and every lifted part
+  sampled its cycle again at each.
 - **A point is hit where the layer has the element.** A lifted element's
   style stops at the lift, so every hit test first restyles the lifted
   elements whose animation moves them to now (`_followLifted`). That
@@ -2055,6 +2070,51 @@ transition does. A transition is never changed but replaced, and its
 layer from where the old one had come to. The restyle that turns it back
 is in place: the opacity is named in `will-change` on both sides of 1, and
 the paint order is what it was (`hoverChange`).
+
+**A box out of the plane is lifted with its whole 4×4, and one that is
+still is lifted too.** A part's matrix is then each frame's `matrix3d()`
+about the depth of the transform origin, seen in the perspective the
+document sees the box in, about the point the layer turns about
+(`solidFrames`); core takes it in device pixels and hands Core Animation
+points (react-x11 2.39.0, react-x11#859). A box the document draws
+through a projection and whose own animation is not under way is a part
+with none (`stillLiftOf`), because on macOS the document draws it a tile
+at a time, and CoreGraphics' medium interpolation resamples the whole
+surface a tile is cut from for each one, at every paint that reaches it:
+Zen Garden 219's tilted sidebar was most of every frame there, and a
+browser gives every box with a 3D transform a layer anyway. Three
+things are load-bearing. A part out of the plane is a layer of the
+window's alone (`liftableBox`'s `within`): in a parent's layer it would be
+seen in the parent's plane, which a perspective outside the parent does not
+move with. A box that shows its back under `backface-visibility: hidden` in
+any frame stays the document's, since a layer draws the back the document
+leaves undrawn. And the boxes a tree turns out of the plane are found by a
+walk, once a tree and only where the builder saw one (`BoxTree.tilted`);
+a restyle in place that turns a box in or out sets the flag and drops what
+was found (`_tiltedKept`). **Anything new that can turn a box out of the
+plane without a build does the same**, or the box is drawn a tile at a
+time with a layer to be had.
+
+**What the document paints over a part out of the plane goes on a layer
+too, and a part is painted again only where what it holds changed.** A box
+painted after such a part and within its reach would keep it in the
+document, so it is made a part of its own with no animation (`overLiftOf`)
+and its layer stands over the other's, as Chrome gives an overlapping box
+a layer: 219's preamble hangs over a corner of the sidebar
+(`coverersAfter`, the walk `paintedAfter` shares). All of what is over it
+or none, no more than `MAX_OVER_PARTS`, none larger than what shows the
+document, which would be a raster as large, and never for a part in the plane,
+which the document draws as cheaply as what is over it — the badge over a
+fading card stays the document's. And a part's `version`, which a
+presenter paints its raster again for, survives a build a frame made for
+boxes laid out apart, where none of them is the part's element, inside it
+or around it (`_quietBuild`, `repaints`): the marquees beside 219's
+preamble repainted its layer at every frame before. A root of that build
+inside a lifted part claims nothing of the document's — its ink is a hole
+— and asks for the frame that paints the layer instead (`spritesChanged`).
+**Anything new that builds the boxes again and can say what it changed
+records it the same way**, or every part on a layer is painted again with
+each build.
 
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's

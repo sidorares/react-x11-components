@@ -16,10 +16,13 @@
 //   PROFILE  a directory: a CPU profile of each phase, for `cpuprofile.ts`
 //   ONLY     one target's phases alone
 //
-// A line a phase: `fps`, frames that painted a second; `frame50`, `frame95`
+// A line a phase: `fps`, frames that painted a second — the window's bitmap,
+// or a layer of the document's on macOS, which a frame that changed nothing
+// else repaints in place of the bitmap (`layerPaint`); `frame50`, `frame95`
 // and `frameMax`, the window's flush; `cpu`, this process's processor time
 // as a share of the phase; `builds`, the box trees built; and calls and the
-// mean of `_update`, `paint`, `_restyleInPlace` and `_rebuildFrame`.
+// mean of `_update`, `paint`, `_restyleInPlace`, `_rebuildFrame`, `sprites`
+// and each layer's paint.
 import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { Session } from 'node:inspector/promises';
@@ -49,13 +52,17 @@ const ONLY = process.env.ONLY ?? '';
 
 const frames = [];
 let windowNode = null;
+// the layers painted in the flush under way
+let layersPainted = 0;
 {
   const inner = WindowNode.prototype._flushFrame;
   WindowNode.prototype._flushFrame = function (...args) {
     windowNode = this;
     const start = performance.now();
+    layersPainted = 0;
     const painted = inner.apply(this, args);
-    if (painted) frames.push({ start, end: performance.now() });
+    if (painted || layersPainted)
+      frames.push({ start, end: performance.now() });
     return painted;
   };
 }
@@ -73,9 +80,37 @@ const wrap = (proto, name) => {
     }
   };
 };
-for (const m of ['_update', 'paint', '_restyleInPlace', '_rebuildFrame']) {
+for (const m of [
+  '_update',
+  'paint',
+  '_restyleInPlace',
+  '_rebuildFrame',
+  'sprites',
+]) {
   if (typeof HtmlViewNode.prototype[m] === 'function')
     wrap(HtmlViewNode.prototype, m);
+}
+// each part of the document a presenter paints on a layer of its own
+{
+  const inner = HtmlViewNode.prototype.sprites;
+  HtmlViewNode.prototype.sprites = function (...args) {
+    const parts = inner.apply(this, args);
+    for (const part of parts ?? []) {
+      const paint = part.paint;
+      part.paint = function (...a) {
+        const start = performance.now();
+        try {
+          return paint.apply(this, a);
+        } finally {
+          layersPainted += 1;
+          const e = (spent.layerPaint ??= { ms: 0, calls: 0 });
+          e.ms += performance.now() - start;
+          e.calls += 1;
+        }
+      };
+    }
+    return parts;
+  };
 }
 let builds = 0;
 {

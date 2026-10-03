@@ -4938,6 +4938,43 @@ export function paintedAfter(
   fixedExtent: Rect | null = null,
   above: ReadonlySet<Box> | null = null,
 ): boolean | null {
+  return walkPaintedAfter(box, extent, fixedExtent, above, () => true);
+}
+
+/**
+ * The layers `paintedAfter` finds: each a box the document paints after
+ * `box` whose ink is within `extent`, from the one painted first — what a
+ * layer of `box`'s would cover, and what would have to be layers of their
+ * own over it for it to be one (`HtmlViewNode.sprites`). Null where
+ * `paintedAfter` is, and where the outline of a context around `box`
+ * reaches the extent, which is no box to give a layer.
+ */
+export function coverersAfter(
+  box: Box,
+  extent: Rect,
+  fixedExtent: Rect | null = null,
+  above: ReadonlySet<Box> | null = null,
+): Box[] | null {
+  const found: Box[] = [];
+  const stopped = walkPaintedAfter(box, extent, fixedExtent, above, (later) => {
+    found.push(later);
+    return false;
+  });
+  return stopped === false ? found : null;
+}
+
+/** The walk `paintedAfter` and `coverersAfter` share: each layer painted
+ *  after `box` whose ink is within the extent is handed to `meet`, which
+ *  stops the walk by answering true. True where it was stopped, or an
+ *  outline reaches the extent; false where neither; null where `box`, or a
+ *  context on the way up, is painted from no list of layers. */
+function walkPaintedAfter(
+  box: Box,
+  extent: Rect,
+  fixedExtent: Rect | null,
+  above: ReadonlySet<Box> | null,
+  meet: (later: Box) => boolean,
+): boolean | null {
   let item = box;
   while (item.parent) {
     // its context: the nearest box that paints layers, which has it among
@@ -4963,7 +5000,9 @@ export function paintedAfter(
         width: later.boundsWidth,
         height: later.boundsHeight,
       };
-      if (meets(ink, fixed ? fixedExtent! : extent)) return true;
+      if (meets(ink, fixed ? fixedExtent! : extent) && meet(later)) {
+        return true;
+      }
     }
     if (outlineMeets(context, extent)) return true;
     item = context;
