@@ -20,7 +20,16 @@ import {
   mapRect,
   multiply,
   rotation,
+  solidOf,
 } from '../../src/html/css/transform.js';
+import type { TransformFunction } from '../../src/html/css/transform.js';
+import {
+  IDENTITY4,
+  multiply4,
+  perspective4,
+  rotate4,
+  scale4,
+} from '../../src/html/css/transform3d.js';
 import { Html } from '../../src/index.js';
 import {
   boxOf,
@@ -51,7 +60,12 @@ type Styled = LaidBox & {
     rotate: unknown;
     scale: unknown;
     transform:
-      ({ by: unknown } | { matrix: Matrix; fn?: { kind: string } })[] | null;
+      | (
+          | { by: unknown; z?: number }
+          | { matrix: Matrix; fn?: { kind: string } }
+          | { solid: readonly number[]; fn?: { kind: string } }
+        )[]
+      | null;
     transformOrigin: unknown;
   };
   boundsX: number;
@@ -151,16 +165,39 @@ test('a transform is read as its functions, in the order written', async () => {
   assert.deepStrictEqual(matrix('e'), [1, 2, 3, 4, 5, 6]);
   assert.deepStrictEqual(
     list('f'),
-    [],
-    'a transform, and nothing in the plane',
+    [{ by: [0, 0] }],
+    'a transform, and a move by nothing',
   );
-  // out of the plane is left out; about the axis out of the page is a turn
-  assert.ok(near(product('g'), [0, 2, -3, 0, 0, 0]), `${product('g')}`);
+  // out of the plane: each a 4×4, and about the axis out of the page a
+  // turn in it
+  assert.deepStrictEqual(
+    list('g')!.map((fn) => ('by' in fn ? 'by' : fn.fn?.kind)),
+    ['rotate3d', 'rotate', 'perspective', 'scale'],
+  );
+  assert.deepStrictEqual(
+    list('g')!.map((fn) => ('solid' in fn ? 'solid' : 'plane')),
+    ['solid', 'plane', 'solid', 'solid'],
+  );
+  const g = multiply4(
+    multiply4(rotate4(1, 0, 0, 45), rotate4(0, 0, 1, 90)),
+    multiply4(perspective4(100), scale4(2, 3, 4)),
+  );
+  let made: readonly number[] = IDENTITY4;
+  for (const fn of list('g')!) {
+    made = multiply4(made, solidOf(fn as TransformFunction, 0, 0));
+  }
+  assert.ok(near(made, g), `${made}`);
   assert.deepStrictEqual(matrix('h'), [0, 1, -1, 0, 0, 0], 'no angle: dropped');
   assert.strictEqual(list('i'), null);
   assert.ok(near(matrix('j'), [1, 0, 1, 1, 0, 0]), `${matrix('j')}`);
   assert.deepStrictEqual(matrix('k'), [0, -1, 1, 0, 0, 0]);
-  assert.deepStrictEqual(matrix('l'), [1, 0, 0, 1, 7, 8]);
+  // a 4×4 with a depth in it is one
+  const l = list('l')![0];
+  assert.ok('solid' in l, 'a matrix3d() that moves toward the viewer');
+  assert.deepStrictEqual(
+    [...l.solid],
+    [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 7, 8, 9, 1],
+  );
   assert.strictEqual(list('m'), null, 'a function with no argument: dropped');
 });
 
@@ -793,5 +830,254 @@ metric(
       'a hundred across, twenty down',
     );
     assert.deepStrictEqual(await at(210, 90), [0, 0, 255]);
+  },
+);
+
+/** Where CSS Transforms 2 puts a point of the plane turned `deg` about the
+ *  upright through `o` — the transform's origin, its depth `o.z` — and seen
+ *  from `d` in front of `p`: worked out here as the spec has it, to hold
+ *  the projection to. */
+function seen(
+  x: number,
+  y: number,
+  o: { x: number; y: number; z?: number },
+  deg: number,
+  d: number | null,
+  p: { x: number; y: number },
+): [number, number] {
+  const t = (deg * Math.PI) / 180;
+  const oz = o.z ?? 0;
+  const X = x - o.x;
+  const Z = -oz;
+  const wx = o.x + X * Math.cos(t) + Z * Math.sin(t);
+  const wz = oz - X * Math.sin(t) + Z * Math.cos(t);
+  const w = d === null ? 1 : 1 - wz / d;
+  return [p.x + (wx - p.x) / w, p.y + (y - p.y) / w];
+}
+
+/** The rectangle around a box's four corners where `at` puts them. */
+function around(
+  box: { x: number; y: number; width: number; height: number },
+  at: (x: number, y: number) => [number, number],
+) {
+  const corners = [
+    at(box.x, box.y),
+    at(box.x + box.width, box.y),
+    at(box.x, box.y + box.height),
+    at(box.x + box.width, box.y + box.height),
+  ];
+  const xs = corners.map((c) => c[0]);
+  const ys = corners.map((c) => c[1]);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return {
+    x,
+    y,
+    width: Math.max(...xs) - x,
+    height: Math.max(...ys) - y,
+  };
+}
+
+const closeRect = (
+  got: { x: number; y: number; width: number; height: number } | null,
+  want: { x: number; y: number; width: number; height: number },
+  message: string,
+) =>
+  assert.ok(
+    got &&
+      Math.abs(got.x - want.x) < 1e-6 &&
+      Math.abs(got.y - want.y) < 1e-6 &&
+      Math.abs(got.width - want.width) < 1e-6 &&
+      Math.abs(got.height - want.height) < 1e-6,
+    `${message}: ${JSON.stringify(got)} for ${JSON.stringify(want)}`,
+  );
+
+metric(
+  'a box turned out of the plane in the perspective of the box it is laid out in is drawn smaller where it turns away, and is under the pointer there',
+  async () => {
+    // the Zen Garden's 219 at a third of the size: a panel turned about its
+    // upright in a box with a perspective
+    const { result, node } = await render(
+      PAGE +
+        '<style>#s{position:relative;width:400px;height:400px;' +
+        'perspective:500px}#w{position:absolute;left:50px;top:100px;' +
+        'width:300px;height:200px;background:#ff0000;' +
+        'transform:rotateY(40deg)}</style>' +
+        '<div id="s"><div id="w"></div></div>',
+    );
+    await act();
+    const el = view(node);
+    const w = findById(el.document, 'w')!;
+    const at = (x: number, y: number) =>
+      seen(x, y, { x: 200, y: 200 }, 40, 500, { x: 200, y: 200 });
+    const want = around({ x: 50, y: 100, width: 300, height: 200 }, at);
+    // the side that turns away is drawn shorter: it is the left that comes
+    // near, and taller than the box is
+    assert.ok(want.height > 200 && want.width < 300, JSON.stringify(want));
+    closeRect(el.elementRect(w), want, 'where it is drawn');
+    // drawn there: above the box at its near side, and short of where it
+    // was laid out at its far one
+    await expectPixel(result.ctx, 60, 80, RED, { message: 'near corner' });
+    await expectPixel(result.ctx, 60, 320, RED, { message: 'near, below' });
+    await expectPixel(result.ctx, 290, 120, RED, { message: 'far corner' });
+    await expectPixel(result.ctx, 290, 110, WHITE, { message: 'above it' });
+    await expectPixel(result.ctx, 330, 200, WHITE, { message: 'where it was' });
+    // and the pointer finds it where it is drawn
+    assert.strictEqual(el.elementAtPoint(60, 80), w, 'over its near corner');
+    assert.strictEqual(el.elementAtPoint(290, 120), w, 'over its far corner');
+    assert.notStrictEqual(el.elementAtPoint(330, 200), w, 'where it was');
+    assert.notStrictEqual(el.elementAtPoint(290, 110), w, 'above it');
+  },
+);
+
+metric(
+  "a box's perspective is the nearest up its containing blocks, through a positioned box and not through one with a transform, from its perspective-origin; and transform-origin's depth is the turn's",
+  async () => {
+    const { node } = await render(
+      PAGE +
+        '<style>.s{position:relative;width:300px;height:150px;' +
+        'perspective:300px}.r{position:relative;height:150px}' +
+        '.t{position:relative;height:150px;transform:translateX(0)}' +
+        '.w{position:absolute;left:50px;top:25px;width:200px;height:100px;' +
+        'background:#ff0000;transform:rotateY(40deg)}</style>' +
+        '<div class="s"><div class="w" id="a"></div></div>' +
+        '<div class="s"><div class="r"><div class="w" id="b"></div></div></div>' +
+        '<div class="s"><div class="t"><div class="w" id="c"></div></div></div>' +
+        '<div class="s" style="perspective-origin:right center">' +
+        '<div class="w" id="d"></div></div>' +
+        '<div class="s" style="perspective:none">' +
+        '<div class="w" id="e" style="transform:perspective(300px) ' +
+        'rotateY(40deg)"></div></div>',
+    );
+    const el = view(node);
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!);
+    const box = (top: number) => ({
+      x: 50,
+      y: top + 25,
+      width: 200,
+      height: 100,
+    });
+    const turned = (top: number, d: number | null, px = 150, oz = 0) =>
+      around(box(top), (x, y) =>
+        seen(x, y, { x: 150, y: top + 75, z: oz }, 40, d, {
+          x: px,
+          y: top + 75,
+        }),
+      );
+    closeRect(rect('a'), turned(0, 300), 'in its parent’s perspective');
+    closeRect(rect('b'), turned(150, 300), 'through a positioned box');
+    // flattened into the plane of the box with a transform: as wide as it
+    // turns to, and as tall as it is
+    closeRect(rect('c'), turned(300, null), 'not through a transform');
+    assert.ok(Math.abs(rect('c')!.height - 100) < 1e-9);
+    closeRect(rect('d'), turned(450, 300, 300), 'seen from the right');
+    // a perspective of its own, from its origin, which is the middle of the
+    // box a perspective around it would be seen from
+    closeRect(rect('e'), turned(600, 300), 'its own perspective()');
+  },
+);
+
+metric(
+  'a box moved toward the viewer is drawn larger about the perspective origin, and one moved behind the viewer is not drawn',
+  async () => {
+    const { result, node } = await render(
+      PAGE +
+        '<style>.s{position:relative;width:300px;height:150px;' +
+        'perspective:300px}.w{position:absolute;left:50px;top:25px;' +
+        'width:200px;height:100px;background:#ff0000}</style>' +
+        '<div class="s"><div class="w" id="a" style="transform:translateZ(100px)">' +
+        '</div></div>' +
+        '<div class="s"><div class="w" id="b" style="transform:translateZ(400px)">' +
+        '</div></div>' +
+        '<div class="s"><div class="w" id="c" ' +
+        'style="transform-origin:50% 50% -100px;transform:rotateY(40deg)">' +
+        '</div></div>',
+    );
+    await act();
+    const el = view(node);
+    const a = findById(el.document, 'a')!;
+    const b = findById(el.document, 'b')!;
+    // a third of the way to the viewer: half as large again, about the
+    // middle of the box it is in
+    closeRect(
+      el.elementRect(a),
+      { x: 0, y: 0, width: 300, height: 150 },
+      'nearer',
+    );
+    await expectPixel(result.ctx, 4, 4, RED, { message: 'drawn larger' });
+    assert.strictEqual(el.elementAtPoint(4, 4), a);
+    // past the viewer: none of it is in front
+    await expectPixel(result.ctx, 150, 225, WHITE, { message: 'behind' });
+    assert.notStrictEqual(el.elementAtPoint(150, 225), b);
+    // turned about a point behind its plane, it swings away as it turns
+    closeRect(
+      el.elementRect(findById(el.document, 'c')!),
+      around({ x: 50, y: 325, width: 200, height: 100 }, (x, y) =>
+        seen(x, y, { x: 150, y: 375, z: -100 }, 40, 300, { x: 150, y: 375 }),
+      ),
+      'about its origin’s depth',
+    );
+  },
+);
+
+metric(
+  'at a display scale of 2 a box turned out of the plane is where it is at 1',
+  async () => {
+    const source =
+      PAGE +
+      '<style>#s{position:relative;width:300px;height:150px;' +
+      'perspective:300px}#w{position:absolute;left:50px;top:25px;' +
+      'width:200px;height:100px;background:#ff0000;' +
+      'transform:rotateY(40deg)}</style>' +
+      '<div id="s"><div id="w"></div></div>';
+    const { result, node } = await render2x(source);
+    await act();
+    const el = view(node);
+    const w = findById(el.document, 'w')!;
+    const want = around({ x: 50, y: 25, width: 200, height: 100 }, (x, y) =>
+      seen(x, y, { x: 150, y: 75 }, 40, 300, { x: 150, y: 75 }),
+    );
+    closeRect(el.elementRect(w), want, 'in logical pixels');
+    // the document is 20 pixels in, and the window's pixels are two a pixel
+    const { abs } = el as unknown as DrawnNode;
+    const near = { x: want.x + 3, y: want.y + 8 };
+    assert.strictEqual(el.elementAtPoint(20 + near.x, 20 + near.y), w);
+    await expectPixel(result.ctx, abs.x + 2 * near.x, abs.y + 2 * near.y, RED);
+    const flat = { x: 245, y: 75 };
+    assert.notStrictEqual(el.elementAtPoint(20 + flat.x, 20 + flat.y), w);
+    await expectPixel(
+      result.ctx,
+      abs.x + 2 * flat.x,
+      abs.y + 2 * flat.y,
+      WHITE,
+    );
+  },
+);
+
+metric(
+  "a card's back face turned away from the viewer is not drawn under backface-visibility: hidden, and is drawn mirrored where it is visible",
+  async () => {
+    // a card that flips: its back is turned half round behind its front
+    const { result, node } = await render(
+      PAGE +
+        '<style>.card{position:relative;width:100px;height:60px;' +
+        'margin-bottom:20px;perspective:400px}.card div{position:absolute;' +
+        'inset:0}.front{background:#ff0000}.back{background:#0000ff;' +
+        'transform:rotateY(180deg)}.hidden .back{backface-visibility:hidden}' +
+        '</style>' +
+        '<div class="card hidden"><div class="front"></div>' +
+        '<div class="back" id="a"></div></div>' +
+        '<div class="card"><div class="front"></div>' +
+        '<div class="back" id="b"></div></div>',
+    );
+    await act();
+    const el = view(node);
+    await expectPixel(result.ctx, 50, 30, RED, { message: 'its front' });
+    assert.notStrictEqual(
+      el.elementAtPoint(50, 30),
+      findById(el.document, 'a'),
+    );
+    await expectPixel(result.ctx, 50, 110, BLUE, { message: 'its back' });
+    assert.strictEqual(el.elementAtPoint(50, 110), findById(el.document, 'b'));
   },
 );

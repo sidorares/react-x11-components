@@ -23,6 +23,13 @@ import {
   interpolateTransforms,
 } from '../../src/html/css/interpolate.js';
 import { parseTransform } from '../../src/html/css/transform.js';
+import {
+  interpolateMatrix4,
+  multiply4,
+  perspective4,
+  rotate4,
+  translate4,
+} from '../../src/html/css/transform3d.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
 import type { DocumentSprite } from '../../src/html/sprites.js';
@@ -1397,6 +1404,32 @@ test('a turn is offered as matrices about the transform origin, a whole turn tur
   });
 });
 
+test('a turn out of the plane is not offered, which a layer cannot carry, and a turn in it inside a perspective is', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes flip { to { transform: rotateY(180deg) } }' +
+      '@keyframes spin { to { transform: rotate(360deg) } }' +
+      '@keyframes fade { from { opacity: .2 } }' +
+      '#f { animation: flip 256ms linear infinite; width: 10px;' +
+      ' height: 10px; background: red }' +
+      '#t { animation: fade 256ms linear infinite; width: 10px;' +
+      ' height: 10px; background: red; transform: rotateX(30deg) }' +
+      '#p { perspective: 100px }' +
+      '#s { animation: spin 256ms linear infinite; width: 10px;' +
+      ' height: 10px; background: blue }</style>' +
+      '<div id="f"></div><div id="t"></div><div id="p"><div id="s"></div></div>',
+  );
+  await doc.at(32);
+  // the turning box, and not the flip, which turns it out of the plane, nor
+  // the fade of a box turned out of it
+  const sprites = doc.el.sprites()!;
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  assert.deepStrictEqual(
+    sprites.map((p) => p.rect.y - abs.y),
+    [boxOf(doc.el, 's').y],
+  );
+});
+
 test('a fade and a turn on one element go over as two animations on its layer, each with its own cycle and delay; a name with no frames is none', async (t) => {
   const doc = await running(
     t,
@@ -2206,6 +2239,79 @@ test('two transform lists between', () => {
       0.5,
     ),
     undefined,
+  );
+});
+
+test('two transform lists between, out of the plane', () => {
+  const ctx = { em: 16, rem: 16, vw: 0, vh: 0, scale: 1 } as never;
+  const list = (v: string) => parseTransform(v, ctx)!;
+  const close = (a: readonly number[], b: readonly number[]) =>
+    a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
+  const fnOf = (f: object) => ('fn' in f ? f.fn : undefined);
+  // a turn about one axis, by its angle: the Zen Garden's 219 straightens
+  // its panel from rotateY(40deg)
+  const [half] = interpolateTransforms(
+    list('rotateY(40deg)'),
+    list('rotateY(0)'),
+    0.5,
+  )!;
+  assert.deepStrictEqual(fnOf(half), {
+    kind: 'rotate3d',
+    x: 0,
+    y: 1,
+    z: 0,
+    angle: 20,
+  });
+  assert.ok('solid' in half && close(half.solid, rotate4(0, 1, 0, 20)));
+  // a turn of none is about any axis: 219's sign turns back in the plane
+  const sign = interpolateTransforms(
+    list('rotate(-5deg) skew(-5deg) scale(0.8)'),
+    list('rotateY(0) scale(1)'),
+    0.5,
+  )!;
+  assert.deepStrictEqual(fnOf(sign[0]), { kind: 'rotate', angle: -2.5 });
+  // and its header's scale meets a turn: not alike, and in the plane, so
+  // one matrix of the plane from there
+  const header = interpolateTransforms(
+    list('scale(0.8)'),
+    list('rotateY(0) scale(1)'),
+    0.5,
+  )!;
+  assert.strictEqual(header.length, 1);
+  assert.ok(
+    'matrix' in header[0] && close(header[0].matrix, [0.9, 0, 0, 0.9, 0, 0]),
+  );
+  // two turns about axes of their own: the shorter way round, in space —
+  // halfway from a quarter about one to a quarter about the other is a
+  // turn about the axis between them
+  const [both] = interpolateTransforms(
+    list('rotateX(90deg)'),
+    list('rotateY(90deg)'),
+    0.5,
+  )!;
+  const angle = (2 * Math.acos(Math.sqrt(2 / 3)) * 180) / Math.PI;
+  assert.ok('solid' in both && close(both.solid, rotate4(1, 1, 0, angle)));
+  // a matrix in space taken apart and put together again at either end is
+  // that end
+  const a = multiply4(perspective4(400), rotate4(1, 2, 3, 50));
+  const b = multiply4(translate4(10, 20, 30), rotate4(0, 1, 0, -20));
+  assert.ok(close(interpolateMatrix4(a, b, 0), a));
+  assert.ok(close(interpolateMatrix4(a, b, 1), b));
+  // a perspective by how much it divides: halfway to none is twice as far
+  const [far] = interpolateTransforms(
+    list('perspective(100px)'),
+    list('perspective(none)'),
+    0.5,
+  )!;
+  assert.deepStrictEqual(fnOf(far), { kind: 'perspective', depth: 200 });
+  // and a move toward the viewer by its depth
+  assert.deepStrictEqual(
+    interpolateTransforms(
+      list('translateZ(0)'),
+      list('translate3d(10px, 0, 100px)'),
+      0.5,
+    ),
+    [{ by: [5, 0], z: 50 }],
   );
 });
 

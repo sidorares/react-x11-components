@@ -66,7 +66,16 @@ import {
 } from './css/style.js';
 import { LARGEST } from './css/calc.js';
 import { invert, mapRect, multiply, transformed } from './css/transform.js';
-import type { Matrix } from './css/transform.js';
+import type { Matrix, Placed } from './css/transform.js';
+import {
+  inFront,
+  invertProjection,
+  project,
+  projectionAfter,
+  projectionMoved,
+  tangentAt,
+} from './css/transform3d.js';
+import type { Projection } from './css/transform3d.js';
 import {
   contained,
   containmentApplies,
@@ -1327,6 +1336,10 @@ function paintTransformed(
   const top = box.y + options.originY;
   const ox = options.originX + Math.round(left) - left;
   const oy = options.originY + Math.round(top) - top;
+  if (matrix.length === 9) {
+    paintProjected(ctx, box, options, projectionMoved(matrix, ox, oy));
+    return;
+  }
   const [a, b, c, d] = matrix;
   const through: Matrix = [
     a,
@@ -1364,6 +1377,366 @@ function paintTransformed(
   ctx.transform(a, b, c, d, through[4], through[5]);
   paintPlaced(ctx, box, inside);
   ctx.restore();
+}
+
+/**
+ * A box a perspective shows the far side of smaller than the near one
+ * (CSS Transforms 2, 6; `placedMatrix`): what its plane comes to is a
+ * projection, and a context draws through a matrix of the plane and no
+ * more. So the box is painted on a surface of its own, as it was laid out,
+ * and the surface drawn through the projection a tile of the device's
+ * pixels at a time (`drawProjected`) — resampled, as a browser draws a
+ * layer in perspective, and at the box's opacity, as the group it is. The
+ * surface is the part of the box the damage reaches, taken back through
+ * the projection, or the whole of it kept while its transform animates
+ * (`spriteFor`). With no surface to be had it is drawn through the matrix
+ * of the plane nearest the projection at its middle.
+ *
+ * `through` is in the coordinates being painted in. The tiles are whole
+ * pixels of the device, so where the context draws through a matrix of a
+ * box around this one (`PaintOptions.matrix`) the projection is drawn
+ * after it, from the device's coordinates: a tile cut out in the turned
+ * box's would be a turned square, and its edges would not meet.
+ */
+function paintProjected(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  through: Projection,
+): void {
+  const opacity = opacityOf(box);
+  if (opacity <= 0) return;
+  if (
+    !options.surface ||
+    !ctx.drawImage ||
+    !ctx.beginPath ||
+    !ctx.rect ||
+    !ctx.clip
+  ) {
+    const near = tangentAt(
+      through,
+      box.x + box.width / 2 + options.originX,
+      box.y + box.height / 2 + options.originY,
+    );
+    const back = near && invert(near);
+    if (!near || !back) return;
+    const damage = options.damage;
+    ctx.save();
+    ctx.transform!(near[0], near[1], near[2], near[3], near[4], near[5]);
+    paintPlaced(ctx, box, {
+      ...options,
+      damage:
+        damage &&
+        mapRect(back, damage.x, damage.y, damage.width, damage.height),
+      matrix: options.matrix ? multiply(options.matrix, near) : near,
+    });
+    ctx.restore();
+    return;
+  }
+  const outer = options.matrix;
+  const undo = outer ? invert(outer) : null;
+  if (outer && !undo) return;
+  const total = outer ? projectionAfter(outer, through) : through;
+  const back = invertProjection(total);
+  if (!back) return;
+  const reach = options.damage ?? options.canvas ?? null;
+  const bound =
+    reach && outer
+      ? mapRect(outer, reach.x, reach.y, reach.width, reach.height)
+      : reach;
+  const tolerance = TILE_ERROR * (options.scale ?? 1);
+  ctx.save();
+  try {
+    if (undo) {
+      ctx.transform!(undo[0], undo[1], undo[2], undo[3], undo[4], undo[5]);
+    }
+    const kept = options.sprites ? spriteFor(box, options, total) : null;
+    if (kept) {
+      const { surface, x, y, width, height } = kept;
+      drawProjected(
+        ctx,
+        surface,
+        total,
+        x,
+        y,
+        width,
+        height,
+        opacity,
+        bound,
+        tolerance,
+      );
+      return;
+    }
+    const own = ownBounds(box);
+    let x0 = Math.floor(own.x + options.originX);
+    let y0 = Math.floor(own.y + options.originY);
+    let x1 = Math.ceil(own.x + own.width + options.originX);
+    let y1 = Math.ceil(own.y + own.height + options.originY);
+    if (options.damage && bound) {
+      // where the damage comes from on the box, a pixel more each way: the
+      // edge of what is drawn is sampled from beside it. All of the box
+      // where some of the damage is beyond the horizon, behind the viewer.
+      let sx0 = Infinity;
+      let sy0 = Infinity;
+      let sx1 = -Infinity;
+      let sy1 = -Infinity;
+      for (const [x, y] of [
+        [bound.x, bound.y],
+        [bound.x + bound.width, bound.y],
+        [bound.x, bound.y + bound.height],
+        [bound.x + bound.width, bound.y + bound.height],
+      ]) {
+        const from = project(back, x, y);
+        if (!from) {
+          sx0 = -Infinity;
+          sx1 = Infinity;
+          sy0 = -Infinity;
+          sy1 = Infinity;
+          break;
+        }
+        sx0 = Math.min(sx0, from[0]);
+        sy0 = Math.min(sy0, from[1]);
+        sx1 = Math.max(sx1, from[0]);
+        sy1 = Math.max(sy1, from[1]);
+      }
+      x0 = Math.max(x0, Math.floor(sx0) - 1);
+      y0 = Math.max(y0, Math.floor(sy0) - 1);
+      x1 = Math.min(x1, Math.ceil(sx1) + 1);
+      y1 = Math.min(y1, Math.ceil(sy1) + 1);
+    }
+    const w = x1 - x0;
+    const h = y1 - y0;
+    if (!(w > 0 && h > 0)) return;
+    if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return;
+    const surface = options.surface(w, h);
+    if (!surface) return;
+    try {
+      paintUnfaded(
+        surface.getContext('2d') as PaintContext,
+        box,
+        onSurface(options, x0, y0, w, h),
+      );
+      drawProjected(
+        ctx,
+        surface,
+        total,
+        x0,
+        y0,
+        w,
+        h,
+        opacity,
+        bound,
+        tolerance,
+      );
+    } finally {
+      surface.destroy?.();
+    }
+  } finally {
+    ctx.restore();
+  }
+}
+
+/** How far a tile's matrix may put a point of the surface from where the
+ *  projection does, in logical pixels (`drawProjected`): what a line that
+ *  crosses from one tile to the next can be off by where it does. */
+const TILE_ERROR = 0.25;
+
+/** A tile no wider and no taller than this is not cut again, whatever its
+ *  matrix is off by, and past this many tiles none is: only near the
+ *  horizon, where a pixel of the device is a field of the surface's. */
+const TILE_LEAST = 4;
+const TILES_MOST = 4096;
+
+/**
+ * A surface with its corner at (`x0`, `y0`), `width` by `height`, drawn
+ * through a projection at `opacity`: the device's pixels it lands on cut
+ * into tiles of whole pixels, each drawn through the matrix of the plane
+ * nearest the projection at its middle (`tangentAt`) and clipped to the
+ * tile. A tile is cut in two across its longer side until its matrix puts
+ * each of its corners within `tolerance` of where the projection does, so
+ * tiles are large where the projection is all but a matrix — a box turned
+ * a little, or seen from far off — and small where it bends. Their clips
+ * are whole pixels and meet edge to edge: nothing is drawn twice, which a
+ * fade would show, and no seam shows between two, which clips cut through
+ * a pixel would leave half covered twice over. A line that crosses from
+ * one tile to the next is off by no more than the tolerance where it does.
+ * Only what is in `bound` is drawn, and nothing behind the viewer.
+ */
+function drawProjected(
+  ctx: PaintContext,
+  surface: Offscreen,
+  p: Projection,
+  x0: number,
+  y0: number,
+  width: number,
+  height: number,
+  opacity: number,
+  bound: Rect | null,
+  tolerance: number,
+): void {
+  // where the part of it in front of the viewer lands
+  let X0 = Infinity;
+  let Y0 = Infinity;
+  let X1 = -Infinity;
+  let Y1 = -Infinity;
+  for (const [x, y] of inFront(p, [
+    [x0, y0],
+    [x0 + width, y0],
+    [x0 + width, y0 + height],
+    [x0, y0 + height],
+  ])) {
+    const to = project(p, x, y);
+    if (!to) continue;
+    X0 = Math.min(X0, to[0]);
+    Y0 = Math.min(Y0, to[1]);
+    X1 = Math.max(X1, to[0]);
+    Y1 = Math.max(Y1, to[1]);
+  }
+  X0 = Math.max(Math.floor(X0), -FIXED_LIMIT);
+  Y0 = Math.max(Math.floor(Y0), -FIXED_LIMIT);
+  X1 = Math.min(Math.ceil(X1), FIXED_LIMIT);
+  Y1 = Math.min(Math.ceil(Y1), FIXED_LIMIT);
+  if (bound) {
+    X0 = Math.max(X0, Math.floor(bound.x));
+    Y0 = Math.max(Y0, Math.floor(bound.y));
+    X1 = Math.min(X1, Math.ceil(bound.x + bound.width));
+    Y1 = Math.min(Y1, Math.ceil(bound.y + bound.height));
+  }
+  if (!(X1 > X0 && Y1 > Y0)) return;
+  const back = invertProjection(p);
+  if (!back) return;
+  ctx.save();
+  if (opacity < 1 && typeof ctx.globalAlpha === 'number') {
+    ctx.globalAlpha *= opacity;
+  }
+  const area = { x0, y0, x1: x0 + width, y1: y0 + height };
+  const tiles = [X0, Y0, X1, Y1];
+  let made = 1;
+  while (tiles.length) {
+    const by = tiles.pop()!;
+    const bx = tiles.pop()!;
+    const ay = tiles.pop()!;
+    const ax = tiles.pop()!;
+    const last = made >= TILES_MOST;
+    const fit = tileFit(p, back, ax, ay, bx, by, area, tolerance, last);
+    if (fit === MISSES) continue;
+    if (fit === CUT_ACROSS || fit === CUT_DOWN) {
+      made += 1;
+      // a side of one pixel is cut no further
+      if (fit === CUT_ACROSS ? bx - ax > 1 : by - ay <= 1) {
+        const mid = ax + Math.floor((bx - ax) / 2);
+        tiles.push(ax, ay, mid, by, mid, ay, bx, by);
+      } else {
+        const mid = ay + Math.floor((by - ay) / 2);
+        tiles.push(ax, ay, bx, mid, ax, mid, bx, by);
+      }
+      continue;
+    }
+    ctx.save();
+    ctx.beginPath!();
+    ctx.rect!(ax, ay, bx - ax, by - ay);
+    ctx.clip!();
+    ctx.transform!(fit[0], fit[1], fit[2], fit[3], fit[4], fit[5]);
+    ctx.drawImage!(surface, x0, y0);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/** What a tile is (`tileFit`): none of the surface, or cut in two across
+ *  its width or across its height. */
+const MISSES = 0;
+const CUT_ACROSS = 1;
+const CUT_DOWN = 2;
+
+/**
+ * The matrix a tile from (`ax`, `ay`) to (`bx`, `by`) is drawn through, or
+ * whether it misses the surface or is cut (`drawProjected`). The matrix is
+ * the projection's nearest at the tile's middle (`tangentAt`), moved half
+ * the way to where that puts the corners on average: a projection that
+ * bends one way across the tile puts its middle and its corners off by
+ * half as much each, where the nearest matrix puts the middle right and
+ * the corners off by all of it. A tile its matrix leaves off by more than
+ * `tolerance` is cut across the way the projection bends more — along, up
+ * and down, or both ways at once, which a cut either way halves — and the
+ * longer way where neither is the more.
+ */
+function tileFit(
+  p: Projection,
+  back: Projection,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  area: { x0: number; y0: number; x1: number; y1: number },
+  tolerance: number,
+  last: boolean,
+): Matrix | typeof MISSES | typeof CUT_ACROSS | typeof CUT_DOWN {
+  const least = last || (bx - ax <= TILE_LEAST && by - ay <= TILE_LEAST);
+  const longer = bx - ax >= by - ay ? CUT_ACROSS : CUT_DOWN;
+  // the corners, the middles of the four edges and the middle: where each
+  // comes from on the surface
+  const mx = (ax + bx) / 2;
+  const my = (ay + by) / 2;
+  const at = [ax, ay, bx, ay, ax, by, bx, by, ax, my, bx, my, mx, ay, mx, by];
+  const from: number[] = [];
+  let left = 0;
+  let right = 0;
+  let above = 0;
+  let below = 0;
+  for (let i = 0; i < 16; i += 2) {
+    const s = project(back, at[i], at[i + 1]);
+    // the tile reaches past the horizon: what is beyond it is behind the
+    // viewer, and a tile at it is a field of the surface in a pixel
+    if (!s) return least ? MISSES : longer;
+    from.push(s[0], s[1]);
+    if (i < 8) {
+      if (s[0] < area.x0) left += 1;
+      if (s[0] > area.x1) right += 1;
+      if (s[1] < area.y0) above += 1;
+      if (s[1] > area.y1) below += 1;
+    }
+  }
+  // a tile is the four-sided figure its corners come from, and one with
+  // all four past one side of the surface has all of it there
+  if (left === 4 || right === 4 || above === 4 || below === 4) return MISSES;
+  const middle = project(back, mx, my);
+  const m = middle && tangentAt(p, middle[0], middle[1]);
+  if (!m) return least ? MISSES : longer;
+  // how far the nearest matrix puts each point from where it lands
+  const off: number[] = [];
+  for (let i = 0; i < 16; i += 2) {
+    const sx = from[i];
+    const sy = from[i + 1];
+    off.push(
+      m[0] * sx + m[2] * sy + m[4] - at[i],
+      m[1] * sx + m[3] * sy + m[5] - at[i + 1],
+    );
+  }
+  // half the corners' mean, which the matrix is moved back by
+  const hx = (off[0] + off[2] + off[4] + off[6]) / 8;
+  const hy = (off[1] + off[3] + off[5] + off[7]) / 8;
+  const fit: Matrix = [m[0], m[1], m[2], m[3], m[4] - hx, m[5] - hy];
+  if (least) return fit;
+  let worst = hx * hx + hy * hy;
+  for (let i = 0; i < 8; i += 2) {
+    const ex = off[i] - hx;
+    const ey = off[i + 1] - hy;
+    worst = Math.max(worst, ex * ex + ey * ey);
+  }
+  if (worst <= tolerance * tolerance) return fit;
+  // which way it bends: along, as the middles of the sides do; up and
+  // down, as the middles of the top and the bottom do; and both at once,
+  // as the corners do against each other
+  const along = Math.hypot((off[8] + off[10]) / 2, (off[9] + off[11]) / 2);
+  const down = Math.hypot((off[12] + off[14]) / 2, (off[13] + off[15]) / 2);
+  const both = Math.hypot(
+    (off[0] - off[2] - off[4] + off[6]) / 4,
+    (off[1] - off[3] - off[5] + off[7]) / 4,
+  );
+  if (along > down + both) return CUT_ACROSS;
+  if (down > along + both) return CUT_DOWN;
+  return longer;
 }
 
 /**
@@ -1566,8 +1939,30 @@ function paintSprite(
   through: Matrix | null,
   opacity: number,
 ): boolean {
+  const kept = spriteFor(box, options, through);
+  if (!kept) return false;
+  drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity);
+  return true;
+}
+
+/** A surface kept for a box, with where its corner is. */
+interface Kept {
+  surface: Offscreen;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** `paintSprite`'s surface: the one the box keeps, or a new one it keeps
+ *  from now on with the box painted on it; null where it keeps none. */
+function spriteFor(
+  box: Box,
+  options: PaintOptions,
+  through: Placed | null,
+): Kept | null {
   const sprites = options.sprites!;
-  if (!box.parent || box === options.canvasSource) return false;
+  if (!box.parent || box === options.canvasSource) return null;
   // in its own coordinates where it is drawn through a matrix, and where it
   // is drawn otherwise — its ink, all of it
   const own = through
@@ -1584,17 +1979,18 @@ function paintSprite(
   const y0 = Math.floor(top);
   const w = Math.ceil(left + own.width) - x0;
   const h = Math.ceil(top + own.height) - y0;
-  if (!(w > 0 && h > 0)) return false;
-  if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return false;
-  if (through && !fitsFixedPoint(through, x0, y0)) return false;
+  if (!(w > 0 && h > 0)) return null;
+  if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return null;
+  // a projection is drawn a tile at a time, each tile's matrix asked then
+  if (through?.length === 6 && !fitsFixedPoint(through, x0, y0)) return null;
   const key = spriteKey(box, options, through, left - x0, top - y0);
   let surface = sprites.kept(box, w, h, key);
   if (!surface) {
     const animated = sprites.animates(box);
-    if (!animated && w * h > KEPT_STILL) return false;
-    if (drawsAgainstViewport(box)) return false;
+    if (!animated && w * h > KEPT_STILL) return null;
+    if (drawsAgainstViewport(box)) return null;
     surface = sprites.keep(box, w, h, key, animated);
-    if (!surface) return false;
+    if (!surface) return null;
     paintUnfaded(
       surface.getContext('2d') as PaintContext,
       box,
@@ -1603,8 +1999,7 @@ function paintSprite(
         : inGroup(options, x0, y0, w, h),
     );
   }
-  drawThrough(ctx, surface, through, x0, y0, opacity);
-  return true;
+  return { surface, x: x0, y: y0, width: w, height: h };
 }
 
 /** What a kept surface's drawing depends on beyond its box's: whether it
@@ -1614,7 +2009,7 @@ function paintSprite(
 function spriteKey(
   box: Box,
   options: PaintOptions,
-  through: Matrix | null,
+  through: Placed | null,
   fractionX: number,
   fractionY: number,
 ): string {

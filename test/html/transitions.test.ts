@@ -20,7 +20,17 @@ import { stacksLayers } from '../../src/html/paint.js';
 import type { Box } from '../../src/html/layout/boxes.js';
 import { Html } from '../../src/index.js';
 import { holdClock } from '../held-clock.js';
-import { FONTS, boxOf, h, render, view } from './harness.js';
+import {
+  FONTS,
+  boxOf,
+  bytesApart,
+  h,
+  metric,
+  rebuilt,
+  render,
+  snapshot,
+  view,
+} from './harness.js';
 
 afterEach(cleanup);
 
@@ -113,6 +123,54 @@ test('a hover that changes a property a transition names runs it, from the value
   assert.ok(near(doc.style('a').opacity, 0.2));
   assert.strictEqual(doc.clock.pending, false, 'over');
 });
+
+metric(
+  'a panel a hover straightens out of a perspective is drawn at every frame as the document built at that frame draws it',
+  async (t) => {
+    // the Zen Garden's 219: its sidebar's panel turned away, straightening
+    // as the pointer comes to it
+    const clock = holdClock(t, animationClock);
+    const { result, node } = await render(
+      '<style>html{background:#fff}body{margin:0}' +
+        '#s{position:relative;width:360px;height:300px;perspective:400px}' +
+        '#w{position:absolute;left:30px;top:50px;width:300px;height:200px;' +
+        'background:#c00;border-left:20px solid #00c;font:20px sans-serif;' +
+        'color:#fff;transform:rotateY(40deg);transition:transform 160ms linear}' +
+        '#w:hover{transform:rotateY(0)}</style>' +
+        '<div id="s"><div id="w">Steel by Dan Mall</div></div>',
+    );
+    await act();
+    const el = view(node);
+    const abs = (el as unknown as DrawnNode).abs;
+    const at = async (ms: number) => {
+      await act();
+      while (animationClock.now() + 16 <= ms) {
+        if (!(await clock.frame())) break;
+      }
+      await act();
+    };
+    // its near edge, which is there at every angle of it
+    el.setHover(abs.x + 40, abs.y + 150);
+    await act();
+    const angles: number[] = [];
+    for (const ms of [48, 96, 144, 192]) {
+      await at(ms);
+      const fn = (styleOf(node, 'w').transform ?? [])[0];
+      angles.push(
+        fn && 'fn' in fn && fn.fn ? (fn.fn as { angle: number }).angle : 0,
+      );
+      const frame = await snapshot(result, el);
+      assert.strictEqual(
+        bytesApart(frame, await rebuilt(result, el)),
+        0,
+        `at ${ms}ms`,
+      );
+    }
+    // straightening, and straight at its end
+    assert.ok(angles[0] < 40 && angles[0] > angles[2], `${angles}`);
+    assert.strictEqual(angles[3], 0);
+  },
+);
 
 test('a transition holds where it starts through its delay', async (t) => {
   const doc = await holding(

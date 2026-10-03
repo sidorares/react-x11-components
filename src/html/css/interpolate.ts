@@ -11,12 +11,28 @@
 // `transform` lists go function by function where their functions are
 // alike — which is why each keeps what it was (`Primitive`) — and the rest
 // of them as matrices, taken apart into a translation, a turn, a scale and
-// a skew and put together again. What none of that reads goes over at the
+// a skew and put together again: in space where either is out of the
+// plane, the turn as a quaternion the short way round
+// (`interpolateMatrix4`). What none of that reads goes over at the
 // half-way point, as CSS has a discrete value go.
 
 import { blend } from './color.js';
-import { IDENTITY, multiply, primitive, rotation } from './transform.js';
+import {
+  IDENTITY,
+  multiply,
+  primitive,
+  rotation,
+  solidOf,
+} from './transform.js';
 import type { Matrix, Primitive, TransformFunction } from './transform.js';
+import {
+  IDENTITY4,
+  flatten4,
+  interpolateMatrix4,
+  isPlanar,
+  multiply4,
+} from './transform3d.js';
+import type { Mat4 } from './transform3d.js';
 import type { Len, Pct } from './values.js';
 
 /**
@@ -197,10 +213,12 @@ function clamp(v: number, lo: number, hi: number): number {
  * Two `transform` lists `q` of the way between (CSS Transforms 2, 9): `none`
  * is the other's functions at nothing, a shorter list is padded with them,
  * and the functions are interpolated pair by pair — a translation by its
- * lengths, a scale, a turn or a skew by its arguments, a `matrix()` taken
- * apart — up to the first pair that are not alike, from which the rest of
- * each list is one matrix, taken apart. Undefined where that rest moves by
- * a percentage, which no matrix can hold before the box's size is known.
+ * lengths, a scale, a turn, a skew or a perspective by its arguments, a
+ * `matrix()` taken apart — up to the first pair that are not alike, from
+ * which the rest of each list is one matrix, taken apart: of the plane
+ * where both rests are in it, and in space where either is not. Undefined
+ * where that rest moves by a percentage, which no matrix can hold before
+ * the box's size is known.
  */
 export function interpolateTransforms(
   a: readonly TransformFunction[] | null,
@@ -221,25 +239,53 @@ export function interpolateTransforms(
     out.push(one);
   }
   if (i < n) {
-    const from = flatten(x.slice(i));
-    const to = flatten(y.slice(i));
-    if (!from || !to) return undefined;
-    out.push({ matrix: interpolateMatrix(from, to, q) });
+    const from = x.slice(i);
+    const to = y.slice(i);
+    if (from.some(isSolid) || to.some(isSolid)) {
+      const m = flatten3(from);
+      const n3 = flatten3(to);
+      if (!m || !n3) return undefined;
+      out.push(solidFunction(interpolateMatrix4(m, n3, q)));
+    } else {
+      const m = flatten(from);
+      const n2 = flatten(to);
+      if (!m || !n2) return undefined;
+      out.push({ matrix: interpolateMatrix(m, n2, q) });
+    }
   }
   return out;
+}
+
+/** Whether a function is out of the plane. */
+function isSolid(fn: TransformFunction): boolean {
+  return 'solid' in fn || ('by' in fn && !!fn.z);
+}
+
+/** A 4×4 as the function it is: of the plane where it is one. */
+function solidFunction(m: Mat4): TransformFunction {
+  return isPlanar(m) ? { matrix: flatten4(m) } : { solid: m };
 }
 
 /** A function at nothing, of the kind `fn` is. */
 function identityOf(fn: TransformFunction): TransformFunction {
   if ('by' in fn) return { by: [0, 0] };
-  if (!fn.fn) return { matrix: IDENTITY };
+  if (!fn.fn)
+    return 'solid' in fn ? { solid: IDENTITY4 } : { matrix: IDENTITY };
   switch (fn.fn.kind) {
     case 'scale':
-      return primitive({ kind: 'scale', x: 1, y: 1 });
+      return primitive(
+        fn.fn.z === undefined
+          ? { kind: 'scale', x: 1, y: 1 }
+          : { kind: 'scale', x: 1, y: 1, z: 1 },
+      );
     case 'rotate':
       return primitive({ kind: 'rotate', angle: 0 });
+    case 'rotate3d':
+      return primitive({ ...fn.fn, angle: 0 });
     case 'skew':
       return primitive({ kind: 'skew', x: 0, y: 0 });
+    case 'perspective':
+      return primitive({ kind: 'perspective', depth: null });
   }
 }
 
@@ -252,11 +298,19 @@ function interpolateFunction(
   if ('by' in f || 'by' in g) {
     if (!('by' in f) || !('by' in g)) return null;
     const by = mix(f.by, g.by, q);
-    return by === undefined ? null : { by: by as [Len, Len] };
+    if (by === undefined) return null;
+    const z = (f.z ?? 0) + ((g.z ?? 0) - (f.z ?? 0)) * q;
+    return z ? { by: by as [Len, Len], z } : { by: by as [Len, Len] };
   }
   if (!f.fn || !g.fn) {
     if (f.fn || g.fn) return null;
-    return { matrix: interpolateMatrix(f.matrix, g.matrix, q) };
+    if ('matrix' in f && 'matrix' in g) {
+      return { matrix: interpolateMatrix(f.matrix, g.matrix, q) };
+    }
+    // `matrix3d()` at either end: taken apart in space
+    return solidFunction(
+      interpolateMatrix4(solidOf(f, 0, 0), solidOf(g, 0, 0), q),
+    );
   }
   const s = f.fn;
   const t = g.fn;
@@ -264,28 +318,96 @@ function interpolateFunction(
   let fn: Primitive;
   if (s.kind === 'rotate' && t.kind === 'rotate') {
     fn = { kind: 'rotate', angle: at(s.angle, t.angle) };
+  } else if (turns(s) && turns(t)) {
+    // about the axis they share, or the one of the two that turns at all,
+    // by the angle; two turns about axes of their own are matrices,
+    // taken apart (CSS Transforms 2, 9, `rotate3d()`)
+    const u = axisOf(s);
+    const v = axisOf(t);
+    const axis = !u[3] ? v : !v[3] ? u : sameAxis(u, v) ? u : null;
+    if (!axis) {
+      return solidFunction(
+        interpolateMatrix4(solidOf(f, 0, 0), solidOf(g, 0, 0), q),
+      );
+    }
+    // a turn of none is none about any axis
+    const angle = at(u[3], v[3]);
+    const [x, y, z] = axis;
+    fn =
+      x === 0 && y === 0
+        ? { kind: 'rotate', angle: z < 0 ? -angle : angle }
+        : { kind: 'rotate3d', x, y, z, angle };
   } else if (s.kind === 'scale' && t.kind === 'scale') {
-    fn = { kind: 'scale', x: at(s.x, t.x), y: at(s.y, t.y) };
+    fn =
+      s.z === undefined && t.z === undefined
+        ? { kind: 'scale', x: at(s.x, t.x), y: at(s.y, t.y) }
+        : {
+            kind: 'scale',
+            x: at(s.x, t.x),
+            y: at(s.y, t.y),
+            z: at(s.z ?? 1, t.z ?? 1),
+          };
   } else if (s.kind === 'skew' && t.kind === 'skew') {
     fn = { kind: 'skew', x: at(s.x, t.x), y: at(s.y, t.y) };
+  } else if (s.kind === 'perspective' && t.kind === 'perspective') {
+    // by how much it divides, where `none` divides by nothing, as Blink
+    // has it: a distance halfway to none is twice as far
+    const r = at(s.depth ? 1 / s.depth : 0, t.depth ? 1 / t.depth : 0);
+    fn = { kind: 'perspective', depth: r > 0 ? 1 / r : null };
   } else {
     return null;
   }
   return primitive(fn);
 }
 
-/** A list as one matrix, its translations in pixels; null where one is a
- *  percentage of the box. */
+/** Whether a primitive is a turn, in the plane or in space. */
+function turns(fn: Primitive): boolean {
+  return fn.kind === 'rotate' || fn.kind === 'rotate3d';
+}
+
+/** A turn's axis, of length one, and its angle: no angle where the axis
+ *  has no length, which is no turn. */
+function axisOf(fn: Primitive): [number, number, number, number] {
+  if (fn.kind === 'rotate') return [0, 0, 1, fn.angle];
+  if (fn.kind !== 'rotate3d') return [0, 0, 1, 0];
+  const length = Math.hypot(fn.x, fn.y, fn.z);
+  if (!(length > 0)) return [0, 0, 1, 0];
+  return [fn.x / length, fn.y / length, fn.z / length, fn.angle];
+}
+
+function sameAxis(u: readonly number[], v: readonly number[]): boolean {
+  return (
+    Math.abs(u[0] - v[0]) < 1e-9 &&
+    Math.abs(u[1] - v[1]) < 1e-9 &&
+    Math.abs(u[2] - v[2]) < 1e-9
+  );
+}
+
+/** A list as one matrix of the plane, its translations in pixels; null
+ *  where one is a percentage of the box. */
 function flatten(list: readonly TransformFunction[]): Matrix | null {
   let m = IDENTITY;
   for (const fn of list) {
-    if ('matrix' in fn) {
-      m = multiply(m, fn.matrix);
-      continue;
+    if ('by' in fn) {
+      const [x, y] = fn.by;
+      if (typeof x !== 'number' || typeof y !== 'number') return null;
+      m = multiply(m, [1, 0, 0, 1, x, y]);
+    } else {
+      m = multiply(m, 'matrix' in fn ? fn.matrix : flatten4(fn.solid));
     }
-    const [x, y] = fn.by;
-    if (typeof x !== 'number' || typeof y !== 'number') return null;
-    m = multiply(m, [1, 0, 0, 1, x, y]);
+  }
+  return m;
+}
+
+/** `flatten` in space. */
+function flatten3(list: readonly TransformFunction[]): Mat4 | null {
+  let m: Mat4 = IDENTITY4;
+  for (const fn of list) {
+    if ('by' in fn) {
+      const [x, y] = fn.by;
+      if (typeof x !== 'number' || typeof y !== 'number') return null;
+    }
+    m = multiply4(m, solidOf(fn, 0, 0));
   }
   return m;
 }

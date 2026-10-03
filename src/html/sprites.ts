@@ -37,7 +37,7 @@ import type { Cascade } from './css/cascade.js';
 import { masked } from './css/style.js';
 import type { ComputedStyle } from './css/style.js';
 import type { AnimationTimeline, Transit } from './css/timeline.js';
-import { matrixOf, transformed } from './css/transform.js';
+import { matrixOf, outOfPlane } from './css/transform.js';
 import { resolve } from './css/values.js';
 import type { Box, BoxTree } from './layout/boxes.js';
 import {
@@ -315,6 +315,9 @@ function liftableBox(
   // others is a box of its own
   if (box.pseudo === 'first-letter' || !box.parent) return false;
   if (drawsAgainstViewport(box)) return false;
+  // a layer's matrix is one of the plane, and a box turned out of it is
+  // drawn through a projection (`paintProjected`)
+  if (outOfPlane(box.style)) return false;
   if (box.style.clipPath || masked(box.style)) return false;
   // one fixed to the viewport in it is drawn where the viewport is, which
   // a layer the document scrolls does not follow
@@ -327,7 +330,17 @@ function liftableBox(
   // turn and its animation, and was asked about the rest
   for (let at: Box | null = box.parent; at && at !== within; at = at.parent) {
     const style = at.style;
-    if (style.opacity < 1 || transformed(style)) return false;
+    // a `perspective` turns nothing in the plane, and a layer's frames are
+    // all in it
+    if (
+      style.opacity < 1 ||
+      style.transform !== null ||
+      style.translate !== null ||
+      style.rotate !== null ||
+      style.scale !== null
+    ) {
+      return false;
+    }
     // a box that clips it cuts its layer to a rectangle (`clipFor`), which a
     // path or a mask is not
     if (style.clipPath || masked(style)) return false;
@@ -422,8 +435,9 @@ export function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
 
 /** Each track's frames through one cycle of it, sampled from the
  *  element's style on a fork of the document's timeline — its opacities
- *  where it sets the opacity, its matrices where it moves — and the style
- *  the animations leave at rest. */
+ *  where it sets the opacity, its matrices where it moves — the style the
+ *  animations leave at rest, and whether a frame turns it out of the
+ *  plane, which no layer's matrix can. */
 function sample(
   host: SpriteHost,
   parentStyle: ComputedStyle,
@@ -432,6 +446,7 @@ function sample(
 ): {
   frames: { opacities: number[]; matrices: SpriteMatrix[] }[];
   rest: ComputedStyle;
+  solid: boolean;
 } {
   const { el, box } = lift;
   const cascade = host.cascade;
@@ -450,6 +465,7 @@ function sample(
       ? (cascade.pseudoStyleFor(el, pseudo, parentStyle) ?? box.style)
       : cascade.styleFor(el, parentStyle, inFlex);
   };
+  let solid = false;
   try {
     // a track's property is its alone (`liftOf`), so the style at a time
     // in its cycle says what it is there, whatever the others are at
@@ -470,6 +486,7 @@ function sample(
           opacities.push(Math.min(1, Math.max(0, style.opacity)));
         }
         if (track.transform) {
+          solid ||= outOfPlane(style);
           matrices.push([
             ...matrixOf(style, box.width, box.height),
           ] as SpriteMatrix);
@@ -486,7 +503,7 @@ function sample(
     }
     const rest =
       end === -Infinity ? box.style : at(host.timeline.fork(el), end + 1);
-    return { frames, rest };
+    return { frames, rest, solid: solid || outOfPlane(rest) };
   } finally {
     cascade.timeline = was;
   }
@@ -550,6 +567,8 @@ interface Sampled {
   parent: ComputedStyle;
   frames: { opacities: number[]; matrices: SpriteMatrix[] }[];
   rest: ComputedStyle;
+  /** Whether a frame, or the rest, is out of the plane. */
+  solid: boolean;
 }
 
 /**
@@ -618,6 +637,7 @@ export function partOf(
           ...sample(host, parentStyle, kept.inFlex, lift),
         };
   const { frames, rest } = sampled;
+  if (sampled.solid) return null;
   const origin = box.style.transformOrigin;
   const ox = bx + resolve(origin[0], box.width, 0);
   const oy = by + resolve(origin[1], box.height, 0);
