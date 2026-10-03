@@ -68,10 +68,12 @@ const PROPS: Record<string, boolean> = {
   'fill-rule': true,
   'fill-opacity': true,
   'stroke-opacity': true,
+  'clip-rule': true,
   color: true,
   visibility: true,
   opacity: false,
   display: false,
+  'clip-path': false,
   'stop-color': false,
   'stop-opacity': false,
 };
@@ -83,7 +85,7 @@ export function isShapeProp(prop: string): boolean {
 
 /** The properties the drawing's box has from its computed style already:
  *  its paint, which `paintSvg` hands the drawing, and what makes it a box,
- *  shown and see-through as one. */
+ *  shown, see-through and cut as one. */
 export const ROOT_BOX_PROPS: ReadonlySet<string> = new Set([
   'fill',
   'stroke',
@@ -91,6 +93,7 @@ export const ROOT_BOX_PROPS: ReadonlySet<string> = new Set([
   'display',
   'visibility',
   'opacity',
+  'clip-path',
 ]);
 
 /** Each at its initial value (SVG 2, 13; CSS Color 4; CSS Display 3). */
@@ -104,9 +107,11 @@ const INITIAL: Record<string, string> = {
   'fill-rule': 'nonzero',
   'fill-opacity': '1',
   'stroke-opacity': '1',
+  'clip-rule': 'nonzero',
   visibility: 'visible',
   opacity: '1',
   display: 'inline',
+  'clip-path': 'none',
   'stop-color': '#000000',
   'stop-opacity': '1',
 };
@@ -132,6 +137,7 @@ export const SHAPE_TAGS: ReadonlySet<string> = new Set([
   'switch',
   'image',
   'stop',
+  'clippath',
 ]);
 
 /** What a shape's values are read against: the drawing's own `color` and
@@ -243,9 +249,17 @@ export function shapeValue(
     }
     case 'stroke-linejoin':
       return LINE_JOINS[value.toLowerCase()] ?? null;
-    case 'fill-rule': {
+    case 'fill-rule':
+    case 'clip-rule': {
       const v = value.toLowerCase();
       return v === 'nonzero' || v === 'evenodd' ? v : null;
+    }
+    case 'clip-path': {
+      // `none`, or the `<clipPath>` a `url()` names in the drawing: a
+      // shape of CSS's own is one `SvgView` does not cut to
+      if (value.toLowerCase() === 'none') return 'none';
+      const url = /^url\(\s*(['"]?)(#[^'")\s]+)\1\s*\)$/i.exec(value);
+      return url ? `url(${url[2]})` : null;
     }
     case 'visibility': {
       const v = value.toLowerCase();
