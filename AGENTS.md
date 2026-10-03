@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.36.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.36.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.38.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.38.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -661,6 +661,17 @@ it up. **The floor is a running one and moves often** — every move since
   of it can be seen from and runs an indeterminate `ProgressBar` and a
   scrolled list's loop in the render server (#847, #848, #849), which no
   component here needed a change for.
+- `^2.38.0` — a `<Frame>` pane's `<video src>` played by its host
+  (react-x11#856). The browser example runs each page in a pane, and on
+  macOS a pane runs no AppKit, so a player it made never heard from
+  AVFoundation: every video in a page sat on its poster and a press did
+  nothing, samplelib.com's among them. The host makes the player now and
+  copies its frames down through shared IOSurfaces, so `<Html>`'s videos
+  play in a pane as they do in a window. The same release keeps a node
+  inside a pane that is scrolling off promotion layers (#857): since #848
+  a row's hover fade went on a layer, and a wheel over `<Table>` cost 29%
+  more of a frame on macOS, found by round 45 of the perf sweep
+  (`docs/perf-sweep-2026-09.md`). Neither needed a change here.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
