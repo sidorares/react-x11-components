@@ -297,6 +297,12 @@ test("the video takes its stream's size once the player knows it", async () => {
   // a side the style sets is held, and the other is the stream's ratio
   const b = boxOf(el, 'b');
   assert.deepStrictEqual([b.width, b.height], [100, 50]);
+  // The players are a commit behind the boxes: the frame that sized the
+  // boxes reported them (`onMedia`), and the frame that lays the players
+  // out at that size comes on the window's clock after the commit — inside
+  // the act the wait ended on, or after it, as the clock's phase falls. A
+  // warm process ran the boxes' frame in that act's last flush, every time.
+  await act();
   const [first, second] = videos();
   assert.deepStrictEqual([first.abs.width, first.abs.height], [64, 32]);
   assert.deepStrictEqual([second.abs.width, second.abs.height], [100, 50]);
