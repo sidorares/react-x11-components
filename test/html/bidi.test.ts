@@ -238,6 +238,47 @@ metric(
 );
 
 metric(
+  'left-to-right isolates in a left-to-right paragraph leave it as it is written',
+  async () => {
+    // Wikipedia's skin isolates every citation's `[8]`. An isolate's
+    // contents are a level up from the paragraph's, by two, so nothing
+    // in it can come to read right to left, and the paragraph is laid out
+    // and drawn as one without its controls. Taken for one that could be
+    // reordered, every such paragraph went a piece at a time, ordered by
+    // levels resolved again for each of its lines at each width — and a
+    // line put in visual order is not justified, so each line with a
+    // citation on it was left at its start
+    const cite = (bidi: string) =>
+      `<sup style="unicode-bidi:${bidi}">[1]</sup>`;
+    const para = (bidi: string) =>
+      '<p id="p" style="margin:0;width:180px;font:16px monospace;text-align:justify">' +
+      `The window system ${cite(bidi)} draws what clients ask, and the ` +
+      `toolkits ${cite(bidi)} on top of it draw the widgets ${cite(bidi)}.` +
+      '</p>';
+    const placed = async (bidi: string) => {
+      const { node } = await render(para(bidi));
+      const el = view(node);
+      const text = el.textContent().replace(/[\u2066-\u2069]/g, '');
+      const full = el.textContent();
+      // every letter of the document's own text, by where it is drawn
+      const at: string[] = [];
+      for (let i = 0, j = 0; i < full.length; i += 1) {
+        if (/[\u2066-\u2069]/.test(full[i])) continue;
+        const [band] = el.textRangeRects(i, i + 1);
+        at.push(`${text[j]}@${band.x.toFixed(1)},${band.y.toFixed(1)}`);
+        j += 1;
+      }
+      return { text, at, lines: linesOf(el, 'p').length };
+    };
+    const isolated = await placed('isolate');
+    const plain = await placed('normal');
+    assert.strictEqual(isolated.text, plain.text);
+    assert.strictEqual(isolated.lines, plain.lines, 'the same lines');
+    assert.deepStrictEqual(isolated.at, plain.at, 'every letter in its place');
+  },
+);
+
+metric(
   'a space before a bidi control that a piece ends on takes its room',
   async () => {
     // the engine strips the spaces a piece ends on, before a control as
