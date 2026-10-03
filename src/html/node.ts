@@ -2096,9 +2096,36 @@ export class HtmlViewNode extends Node {
     // Core's contract: a device-pixel point, the same space the two rect
     // accessors below answer in.
     const local = { x: x - this.abs.x, y: y - this.abs.y };
-    const hit = nearestText(tree.root, local.x, local.y);
-    if (!hit) return 0;
-    return this._toPoints(hit);
+    // What a press starts a selection in is what the pointer is over —
+    // what was painted there last (`deepestAt`), the target of the press
+    // (Pointer Events' topmost event target) — as every engine has it,
+    // with no spec to say so: on text, the letter under the point; on a
+    // box, the text in its flow nearest the point, or any text it holds,
+    // or where it stands in the document where it holds none (Blink's
+    // `HitTestResult::GetPosition`, Gecko's `GetContentOffsetsFromPoint`).
+    // Nearest across the whole document, a paragraph a page drew over a
+    // large faint word gave its press and its drag to the word: Zen Garden
+    // 220's "Est. 2003", a fixed `::before`, stands behind its preamble.
+    const shift = this._fixedShift();
+    const hit: SelectionHit = {
+      text: null,
+      box: null,
+      x: local.x,
+      y: local.y,
+      atViewport: false,
+    };
+    deepestAt(tree, local.x, local.y, undefined, shift, hit);
+    let at: number | null;
+    if (hit.text) {
+      at = textOffsetAt(hit.text, hit.x, hit.y);
+    } else {
+      const box = hit.box ?? tree.root;
+      const frame = { box, x: hit.x, y: hit.y, atViewport: hit.atViewport };
+      at = nearestText(frame, shift, true) ?? nearestText(frame, shift);
+      if (at === null && box !== tree.root) at = textBefore(box);
+    }
+    if (at === null) return 0;
+    return this._toPoints(at);
   }
 
   override textCaretRect(index: number): Rect | null {
@@ -4237,6 +4264,22 @@ function relativeOffsetOf(box: Box): { x: number; y: number } {
   return { x, y };
 }
 
+/** Where a box that holds no text stands in the document's text: at the
+ *  end of the text before it, found up the boxes before it and around it,
+ *  as each knows the range its subtree holds. */
+function textBefore(box: Box): number {
+  for (let node = box; node.parent; node = node.parent) {
+    const siblings = node.parent.children;
+    for (let i = siblings.indexOf(node) - 1; i >= 0; i -= 1) {
+      const sibling = siblings[i];
+      if (sibling.subtreeTextEnd > sibling.subtreeTextStart) {
+        return sibling.subtreeTextEnd;
+      }
+    }
+  }
+  return 0;
+}
+
 /** Where the document's text goes on after a box with none: the start of
  *  the next text in document order, or the end of the last before it. */
 function textAfter(root: Box, target: Box): number {
@@ -4417,8 +4460,49 @@ function axisDistance(v: number, lo: number, span: number): number {
   return v < lo ? lo - v : v > lo + span ? v - (lo + span) : 0;
 }
 
+/** The code-unit offset in the document of the place in a text's line
+ *  nearest a point in the coordinates the text was laid out in. */
+function textOffsetAt(text: LineText, x: number, y: number): number {
+  // in the row that is this line's, where the layout's other lines are
+  // in another column and a point past this one is not over them
+  let row = y - text.drawY;
+  const natural = text.layout.lines[text.layoutLine];
+  if (natural && columned.any && COLUMN_ROWS.has(text)) {
+    row = Math.max(natural.y, Math.min(row, natural.y + natural.height - 0.01));
+  }
+  const local = text.layout.indexAt(x - text.drawX, row);
+  const offsets = layoutOffsetsOf(text.layout);
+  const units = offsets.length
+    ? offsets[Math.max(0, Math.min(local, offsets.length - 1))]
+    : local;
+  return Math.max(text.textStart, documentOffsetOf(text, units));
+}
+
+/** A box, and a point in the coordinates what it holds was laid out in:
+ *  inside its own matrix, and taken back by the viewport's scroll where it
+ *  is fixed to it, as the hit test that reached it took it (`deepestAt`). */
+interface TextFrame {
+  box: Box;
+  x: number;
+  y: number;
+  /** Whether the box is fixed to the viewport, or in one that is. */
+  atViewport: boolean;
+}
+
+/** What the selection asks of the hit test (`deepestAt`): the text on top
+ *  under the point, or else the box on top, and the point in the frame of
+ *  the box the one or the other was laid out in. */
+interface SelectionHit {
+  text: LineText | null;
+  box: Box | null;
+  x: number;
+  y: number;
+  atViewport: boolean;
+}
+
 /**
- * The code-unit offset nearest a document-space point.
+ * The code-unit offset nearest a point, among the text a box holds: the
+ * box and the point in its frame (`TextFrame`).
  *
  * Two prunes keep this the viewport's cost rather than the document's — it
  * runs per pointer event during a selection drag, where an unpruned walk of
@@ -4431,7 +4515,16 @@ function axisDistance(v: number, lo: number, span: number): number {
  *    binary search and the scan stops the moment vertical distance alone
  *    rules a line out.
  */
-function nearestText(box: Box, x: number, y: number): number | null {
+function nearestText(
+  from: TextFrame,
+  /** How far a box fixed to the viewport is drawn from where it was laid
+   *  out (`HtmlViewNode._fixedShift`). */
+  fixedShift: { x: number; y: number } | null,
+  /** Only the text in the box's flow: not what its absolute and fixed
+   *  boxes hold, however deep (`HtmlViewNode.textIndexAt`). */
+  inFlow = false,
+): number | null {
+  let { x, y, atViewport } = from;
   let best: number | null = null;
   let bestDistance = Infinity;
 
@@ -4445,25 +4538,29 @@ function nearestText(box: Box, x: number, y: number): number | null {
       const distance = dy * 4 + dx;
       if (distance >= bestDistance) continue;
       bestDistance = distance;
-      // in the row that is this line's, where the layout's other lines are
-      // in another column and a point past this one is not over them
-      let row = y - text.drawY;
-      if (columned.any && COLUMN_ROWS.has(text)) {
-        row = Math.max(
-          natural.y,
-          Math.min(row, natural.y + natural.height - 0.01),
-        );
-      }
-      const local = text.layout.indexAt(x - text.drawX, row);
-      const offsets = layoutOffsetsOf(text.layout);
-      const units = offsets.length
-        ? offsets[Math.max(0, Math.min(local, offsets.length - 1))]
-        : local;
-      best = Math.max(text.textStart, documentOffsetOf(text, units));
+      best = textOffsetAt(text, x, y);
     }
   };
 
+  // a box fixed to the viewport is where the pane's scroll draws it
   const visit = (node: Box): void => {
+    if (!fixedShift || atViewport || !fixedToViewport(node)) {
+      visitAt(node);
+      return;
+    }
+    x -= fixedShift.x;
+    y -= fixedShift.y;
+    atViewport = true;
+    try {
+      visitAt(node);
+    } finally {
+      x += fixedShift.x;
+      y += fixedShift.y;
+      atViewport = false;
+    }
+  };
+
+  const visitAt = (node: Box): void => {
     const boundsDistance =
       axisDistance(y, node.boundsY, node.boundsHeight) * 4 +
       axisDistance(x, node.boundsX, node.boundsWidth);
@@ -4553,16 +4650,19 @@ function nearestText(box: Box, x: number, y: number): number | null {
         visit(child);
       }
       if (node.positionedPaint) {
-        for (const child of node.positionedPaint) visit(child);
+        for (const child of node.positionedPaint) {
+          if (!inFlow || !child.outOfFlow) visit(child);
+        }
       }
       return;
     }
     for (const child of node.children) {
       if (child.kind === 'text' || child.kind === 'break') continue;
-      visit(child);
+      if (!inFlow || !child.outOfFlow) visit(child);
     }
   };
-  visit(box);
+  // the frame's own box is entered already: the point is in its frame
+  visitIn(from.box);
   return best;
 }
 
@@ -4904,6 +5004,9 @@ function deepestAt(
    *  out (`HtmlViewNode._fixedShift`): the point is taken back by it in
    *  there, as paint moved the box by it (`atViewport`). */
   fixedShift: { x: number; y: number } | null = null,
+  /** Told, for the selection, the text or the box what was found was
+   *  found in, and the point in its frame (`SelectionHit`). */
+  select?: SelectionHit,
 ): Element | null {
   const box = tree.root;
   let found: Element | null = box.el;
@@ -4934,6 +5037,9 @@ function deepestAt(
     style: ComputedStyle,
     key: readonly number[],
     text: boolean,
+    /** The text or the box it was found in, for the selection. */
+    line: LineText | null,
+    hitBox: Box | null,
   ) => {
     if (style.visibility !== 'visible' || style.pointerEvents === 'none') {
       return;
@@ -4942,6 +5048,13 @@ function deepestAt(
     found = el;
     foundKey = key;
     viaText = text;
+    if (select) {
+      select.text = line;
+      select.box = hitBox;
+      select.x = x;
+      select.y = y;
+      select.atViewport = atViewport;
+    }
   };
   // A box is walked into wherever it draws — its reach, overflow and all
   // (`computePaintBounds`) — and named only where its own rectangle is. A
@@ -4961,6 +5074,7 @@ function deepestAt(
   // hidden` list with no height of its own, and not one of them could be
   // hovered or pressed.
   let atViewport = false;
+  const aroundFixed = fixedShift ? boxesAroundFixed(tree) : null;
   // how many boxes painted whole in their turn the walk has entered —
   // floats, the ones painted with the positioned boxes, and an atomic or a
   // flex item among the lines — and texts it has asked, which is their
@@ -5120,17 +5234,18 @@ function deepestAt(
       const across = bounds ? bounds.width : child.boundsWidth;
       const down = bounds ? bounds.height : child.boundsHeight;
       const known = Number.isFinite(reach) && (across > 0 || down > 0);
-      if (!known) {
-        if (!inside) return;
-      } else if (
-        x < left ||
-        x >= left + across ||
-        y < reach ||
-        y >= reach + down
-      ) {
-        return;
-      }
-      if (clipsOverflow(child)) cut = true;
+      const away = known
+        ? x < left || x >= left + across || y < reach || y >= reach + down
+        : !inside;
+      if (away) {
+        // A box fixed to the viewport in it is drawn where the scroll has
+        // the viewport, which no reach laid out at the document's top
+        // says: the walk goes on to it, naming nothing on the way, as past
+        // a clip. Zen Garden 220's "Est. 2003" is in its banner, and was
+        // under the pointer only where the page had not scrolled.
+        if (!fixedShift || atViewport || !aroundFixed?.has(child)) return;
+        cut = true;
+      } else if (clipsOverflow(child)) cut = true;
     }
     if (cut) {
       if (!holdsAbsolute(child)) return;
@@ -5144,7 +5259,8 @@ function deepestAt(
     // lost the hover in the frame it left the pointer and slid back.
     const named = child.el ?? GENERATED_FROM.get(child) ?? null;
     if (own && named && clipped.length === 0) {
-      take(named, style, [...context, ground ? HIT_CONTEXT : HIT_BLOCK], false);
+      const key = [...context, ground ? HIT_CONTEXT : HIT_BLOCK];
+      take(named, style, key, false, null, child);
     }
     visit(child, context, stack, clipped);
   };
@@ -5170,6 +5286,17 @@ function deepestAt(
       // unless it is painted with the positioned boxes
       if (onLine(node, child) && !layered(node, child)) continue;
       enter(child, context, stack, clipped);
+    }
+    // and the ones the query passed over that hold a box fixed to the
+    // viewport, which is not where they were laid out
+    if (!ordered && node.paintIndex && fixedShift && !atViewport) {
+      if (aroundFixed?.has(node)) {
+        for (const child of node.paintIndex.boxes) {
+          if (aroundFixed.has(child) && !candidates.includes(child)) {
+            enter(child, context, stack, clipped);
+          }
+        }
+      }
     }
     if (!ordered && node.paintIndex && node.positionedPaint) {
       for (const child of node.positionedPaint) {
@@ -5214,7 +5341,9 @@ function deepestAt(
       if (x >= left && x < left + run.width) {
         const owner = ownerOf(tree.textBoxes, text.spans.documentAt(run.start));
         const style = owner && tree.styles.get(owner)?.style;
-        if (style) take(owner, style, [...context, HIT_INLINE, at], true);
+        if (style) {
+          take(owner, style, [...context, HIT_INLINE, at], true, text, null);
+        }
       }
     }
   };
@@ -5225,6 +5354,28 @@ function deepestAt(
 
 const NO_TEXTS: LineText[] = [];
 const NO_BOXES: readonly Box[] = [];
+
+/** The boxes a tree's boxes fixed to the viewport are in, from their
+ *  parents up: what a hit test walks into past their reach once the
+ *  viewport has scrolled (`deepestAt`). Kept by the list, which a layout
+ *  makes again. */
+function boxesAroundFixed(tree: BoxTree): Set<Box> | null {
+  const fixed = FIXED_BOXES.get(tree);
+  if (!fixed) return null;
+  let around = AROUND_FIXED.get(fixed);
+  if (!around) {
+    around = new Set();
+    for (const box of fixed) {
+      for (let at = box.parent; at && !around.has(at); at = at.parent) {
+        around.add(at);
+      }
+    }
+    AROUND_FIXED.set(fixed, around);
+  }
+  return around;
+}
+
+const AROUND_FIXED = new WeakMap<readonly Box[], Set<Box>>();
 
 /** Paint order between two hits' layers, outermost first: negative where
  *  `a` was painted under `b`. */
