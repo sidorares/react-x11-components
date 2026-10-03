@@ -3157,11 +3157,35 @@ passes over all of its text a frame. The size a width came to is kept
 instead, a few widths deep, and answers until anything a layout reads
 changes: the source, a stylesheet, a resource, the hover, the viewport
 height where the document reads it. A `vw` or a `vh` is a number once
-computed, so a document whose styles use one is restyled when that side of
-the viewport moves, and one that uses neither skips the cascade on a resize
-as before. Only a size comes from it; paint and the selection read the boxes,
+computed, so a document whose styles hold one is restyled when that side of
+the viewport moves, and one whose styles hold neither skips the cascade on a
+resize as before — whatever its sheets mention: Wikipedia's skin has a
+`75vw` under classes its pages are not served with. Only a size comes from it; paint and the selection read the boxes,
 and those are only ever laid out for real. A frame of a window resize at
 600 KB went from 573 to 196 ms on macOS and from 256 to 86 ms on XQuartz.
+
+**A width that keeps moving lays out what can be seen.** A window edge
+dragged moves the width a frame at a time, and a long page laid out whole
+at each step cannot keep up: Wikipedia's article on the X Window System is
+26,000 pixels of text and some 60 ms a layout at 2x on macOS. A width that
+moves again within 200 ms of the last layout at another width is a drag's,
+and its layouts stop a viewport past the bottom of the one the pane shows.
+A block's children that start below that are set aside: not laid out, and
+reached by nothing that reads the layout — the paint, the hit test, the
+form controls and the videos mounted over the document — while the block is
+as tall as they were when last laid out. 150 ms after the width rests the
+document is laid out whole. What can be seen is laid out as the whole
+layout lays it out, so the one thing on screen that differs is the scroll
+bar's thumb, sized to the guess. The first move of a drag is laid out
+whole, so a width set once is exact at once, and so is everything else that
+lays out; a tree no layout has laid out whole yet, which a `@media` band
+crossed mid-drag builds; a document of animations the window server runs; a
+document less than two such stops tall; a multicol container, whose columns
+balance all of what it holds; and a document with a fixed box, or an
+absolute one placed against something laid out, inside what a layout would
+set aside, since it would be missing from where it is drawn. On that
+article the browser example's page lays itself out at each step of a drag
+in some 10 ms, where it took 60, and keeps up with a 30 Hz drag.
 
 **A style is computed once per kind of element.** An edit builds the box
 tree again, and building it matched every element against the stylesheets

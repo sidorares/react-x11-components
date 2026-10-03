@@ -1,12 +1,24 @@
 // <Html> — layouts kept across passes.
-import { afterEach } from 'node:test';
+import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, renderX11, screen, waitFor } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
 import type { FontsLike } from '../../src/html/layout/inline.js';
-import { FONTS, h, metric, render, view } from './harness.js';
+import { resizeClock } from '../../src/html/node.js';
+import { holdClock } from '../held-clock.js';
+import {
+  boxOf,
+  FONTS,
+  fillsOf,
+  h,
+  metric,
+  render,
+  renderScrolled,
+  view,
+} from './harness.js';
+import type { Fill } from './harness.js';
 
 afterEach(cleanup);
 
@@ -323,3 +335,156 @@ metric(
     );
   },
 );
+
+// A window edge dragged moves the width a frame at a time, and the document
+// is laid out at each step only down to a viewport past the one the pane
+// shows (`_stopAt`); the rest is set aside and laid out once the width has
+// rested (`resizeClock`), as tall as it was meanwhile.
+
+/** Whether a box of the element's tree reaches the one with `id` from its
+ *  root: what the paint and the hit test find. */
+function reached(el: HtmlViewNode, id: string): boolean {
+  type B = { el?: { attribs?: { id?: string } }; children: B[] };
+  const root = (el as unknown as { _tree: { root: B } })._tree.root;
+  const stack = [root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (box.el?.attribs?.id === id) return true;
+    stack.push(...box.children);
+  }
+  return false;
+}
+
+const partial = (el: HtmlViewNode): boolean =>
+  (el as unknown as { _partial: boolean })._partial;
+
+/** Sixty rows of fifty pixels, every third one wider, with a paragraph in
+ *  each fifth, and a box at the end. */
+const LONG =
+  '<body style="margin:0">' +
+  Array.from(
+    { length: 60 },
+    (_, i) =>
+      `<div id="r${i}" style="height:50px;width:${i % 3 ? 50 : 80}%;` +
+      `background:#${(i * 40).toString(16).padStart(2, '0')}8040">` +
+      (i % 5 ? '' : `<p style="margin:0">row ${i} of the long one</p>`) +
+      '</div>',
+  ).join('') +
+  '<div id="end" style="height:10px"></div></body>';
+
+/** The fills that reach the top `height` of the document. */
+const shown = (fills: Fill[], height: number): string[] =>
+  fills
+    .filter((f) => f.y < height)
+    .map((f) => `${String(f.style)} ${f.x},${f.y} ${f.w}x${f.h}`);
+
+test('a dragged width lays out what can be seen, and the rest once it rests', async (t) => {
+  const clock = holdClock(t, resizeClock);
+  const { el, resize } = await renderScrolled(LONG, 300, 400);
+  // the drag's first move is laid out whole, as a width set once is
+  await resize(300, 390);
+  assert.ok(!partial(el), 'the first move');
+  assert.ok(reached(el, 'end'));
+  // the next, within a frame of it, down to a viewport past the pane's
+  await resize(300, 380);
+  assert.ok(partial(el), 'the next');
+  assert.strictEqual(boxOf(el, 'r0').width, 304, '80% of the new width');
+  assert.ok(reached(el, 'r12'), 'what can be seen, and a viewport more');
+  assert.ok(!reached(el, 'r20') && !reached(el, 'end'), 'and no further');
+  assert.strictEqual(el.abs.height, 3010, 'as tall as it was');
+  const seen = shown(await fillsOf(el), 300);
+  // rested: laid out whole, at the width the drag ended at
+  assert.ok(clock.pending, 'waiting for the width to rest');
+  await clock.finish();
+  assert.ok(!partial(el), 'laid out whole');
+  assert.strictEqual(boxOf(el, 'end').y, 3000);
+  assert.strictEqual(boxOf(el, 'r59').width, 190);
+  assert.deepStrictEqual(
+    shown(await fillsOf(el), 300),
+    seen,
+    'what can be seen drawn as the whole layout draws it',
+  );
+});
+
+test('a dragged width lays out whole a document whose fixed box is set aside', async (t) => {
+  // An out-of-flow box among the children set aside stays, and is placed
+  // as ever. One inside a box set aside would go with it — and a fixed
+  // box is drawn where the viewport is wherever the flow has it, so it
+  // would be missing from the window: such a tree is laid out whole.
+  holdClock(t, resizeClock);
+  const fixed =
+    '<div id="fixed" style="position:fixed;top:0;right:0;width:20px;' +
+    'height:20px;background:#ff0000"></div>';
+  const among = await renderScrolled(
+    LONG.replace('</body>', `${fixed}</body>`),
+    300,
+    400,
+  );
+  await among.resize(300, 390);
+  await among.resize(300, 380);
+  assert.ok(partial(among.el), 'among the children set aside');
+  assert.ok(reached(among.el, 'fixed'), 'it stays');
+  assert.strictEqual(boxOf(among.el, 'fixed').x, 360, 'placed at the width');
+  await cleanup();
+
+  const inside = await renderScrolled(
+    LONG.replace('</body>', `<div id="foot">${fixed}</div></body>`),
+    300,
+    400,
+  );
+  await inside.resize(300, 390);
+  await inside.resize(300, 380);
+  assert.ok(!partial(inside.el), 'inside one: laid out whole');
+  assert.ok(reached(inside.el, 'fixed') && reached(inside.el, 'end'));
+  await inside.resize(300, 370);
+  assert.ok(!partial(inside.el), 'and whole from then on');
+});
+
+test('a dragged width mounts no control past where the layout stops', async (t) => {
+  // its box is where it was a width ago, which may be over what the
+  // layout put in view since: it is mounted again once the width rests
+  const clock = holdClock(t, resizeClock);
+  const { el, resize } = await renderScrolled(
+    LONG.replace('</body>', '<input id="field" value="x"></body>'),
+    300,
+    400,
+  );
+  const mounted = () =>
+    (
+      el as unknown as {
+        _controls: { element: { attribs: { id?: string } } }[];
+      }
+    )._controls.some((c) => c.element.attribs.id === 'field');
+  assert.ok(mounted(), 'mounted at first');
+  await resize(300, 390);
+  await resize(300, 380);
+  assert.ok(partial(el));
+  assert.ok(!mounted(), 'not while it is set aside');
+  await clock.finish();
+  assert.ok(mounted(), 'and mounted again once the width rests');
+});
+
+test('a dragged width lays a multicol container out whole', async (t) => {
+  // its content is one strip, balanced in its columns: what a layout set
+  // aside of it would move the columns of what can be seen
+  holdClock(t, resizeClock);
+  const { el, resize } = await renderScrolled(
+    LONG.replace(
+      '<body style="margin:0">',
+      '<body style="margin:0"><div style="columns:2;column-gap:0">' +
+        Array.from(
+          { length: 40 },
+          (_, i) => `<div id="c${i}" style="height:50px"></div>`,
+        ).join('') +
+        '</div>',
+    ),
+    300,
+    400,
+  );
+  await resize(300, 390);
+  await resize(300, 380);
+  assert.ok(partial(el), 'what comes after it is set aside');
+  assert.ok(reached(el, 'c39'), 'and none of it');
+  assert.strictEqual(boxOf(el, 'c20').y, 0, 'the second column at the top');
+  assert.ok(!reached(el, 'end'));
+});

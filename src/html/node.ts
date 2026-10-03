@@ -487,6 +487,18 @@ export class HtmlViewNode extends Node {
   private _styledWith: Cascade | null = null;
   private _documentHeight = 0;
   private _documentWidth = 0;
+  /**
+   * While the width keeps moving — a window edge dragged — the document is
+   * laid out down to a viewport past what can be seen and no further, and
+   * whole once the width rests (`_stopAt`). Whether the layout it has is
+   * one that stopped; the box tree last laid out whole, which a layout
+   * that stops takes the size of what it sets aside from; when the width
+   * last moved; and the wait for it to rest.
+   */
+  private _partial = false;
+  private _wholeTree: BoxTree | null = null;
+  private _widthMovedAt = -Infinity;
+  private _settleTimer: unknown = null;
   /** The viewport height the document was last laid out under, and whether
    *  that layout read it (`LayoutResult.readsViewportHeight`). */
   private _laidOutUnder = -1;
@@ -1543,7 +1555,15 @@ export class HtmlViewNode extends Node {
           target,
           viewport,
           this._scale,
+          this._stopAt(target, laidOutAt, viewportMoved),
         );
+        this._partial = result.partial;
+        if (result.partial) this._armSettle();
+        else this._wholeTree = this._tree;
+        // from when the layout is done: one that took long is no rest
+        if (laidOutAt !== -1 && laidOutAt !== target) {
+          this._widthMovedAt = resizeClock.now();
+        }
         // The same boxes, somewhere else and another size — but for the
         // layout a restyle in place asks for where what it moved reached the
         // document's end, to learn its height: at the width and under the
@@ -1590,6 +1610,62 @@ export class HtmlViewNode extends Node {
       this.invalidateMeasure('content');
     }
     this._scheduleFrame();
+  }
+
+  /**
+   * Where a layout at `target` stops, in document coordinates, or nothing
+   * for a layout of the whole document. A width that moves again within
+   * `RESIZE_BURST_MS` of the last layout at another width is a window edge
+   * being dragged, and each frame of the drag lays the document out only
+   * down to a viewport past the one the pane shows: the rest keeps its
+   * boxes as they were and its height (`setAside`), and is laid out at the
+   * width the drag rests at, `RESIZE_SETTLE_MS` later (`_armSettle`). What
+   * can be seen is laid out at every step, and Wikipedia's longest articles
+   * reflow at the rate of their first screen. The first move of a drag lays
+   * out the whole, so a width set once is exact at once; so does anything
+   * else that lays out, a tree no layout has laid out whole, a document of
+   * layers the presenter runs, and a document less than two of those stops
+   * tall.
+   */
+  private _stopAt(
+    target: number,
+    laidOutAt: number,
+    viewportMoved: boolean,
+  ): number | undefined {
+    if (laidOutAt === -1 || laidOutAt === target) return undefined;
+    if (
+      resizeClock.now() - this._widthMovedAt >= RESIZE_BURST_MS ||
+      viewportMoved ||
+      this._stale >= Stale.Layout ||
+      this._wholeTree !== this._tree ||
+      this._lifted.size > 0
+    ) {
+      return undefined;
+    }
+    const until = this._seenBottom() + this._viewportHeight();
+    return until * 2 < this._documentHeight ? until : undefined;
+  }
+
+  /** How far down the document what can be seen of it reaches: the bottom
+   *  of the pane that scrolls it, or of the window, less where the
+   *  document starts. */
+  private _seenBottom(): number {
+    const viewport = this._viewport();
+    const bottom = viewport
+      ? viewport.y + viewport.height
+      : (this.root?.abs?.height ?? 0);
+    return Math.max(0, bottom - this.contentBox().y);
+  }
+
+  /** Lay the document out whole once the width has rested. */
+  private _armSettle(): void {
+    if (this._settleTimer !== null) resizeClock.disarm(this._settleTimer);
+    this._settleTimer = resizeClock.arm(() => {
+      this._settleTimer = null;
+      if (this.destroyed || !this._partial) return;
+      this._widthMovedAt = -Infinity;
+      this._invalidate(Stale.Layout);
+    }, RESIZE_SETTLE_MS);
   }
 
   /**
@@ -2016,6 +2092,8 @@ export class HtmlViewNode extends Node {
 
   override destroySubtree(): void {
     this._dropHeldHover();
+    if (this._settleTimer !== null) resizeClock.disarm(this._settleTimer);
+    this._settleTimer = null;
     this._disarmFrame();
     this._resources.destroy();
     this._webFonts.destroy();
@@ -5611,6 +5689,31 @@ export const animationClock = {
     timers.clearTimeout?.(handle);
   },
 };
+
+/**
+ * The clock a resize rests on (`_stopAt`), as `hoverClock` is a held
+ * hover's: through `globalThis`, unref'd, and exported for a test to hold.
+ */
+export const resizeClock = {
+  now(): number {
+    return Date.now();
+  },
+  arm(step: () => void, ms: number): unknown {
+    const handle = timers.setTimeout?.(step, ms) ?? null;
+    (handle as { unref?(): void } | null)?.unref?.();
+    return handle;
+  },
+  disarm(handle: unknown): void {
+    timers.clearTimeout?.(handle);
+  },
+};
+
+/** How soon after the last a width that moves again is a drag's: a window
+ *  edge dragged moves it a frame at a time. */
+const RESIZE_BURST_MS = 200;
+
+/** How long a dragged width rests before the document is laid out whole. */
+const RESIZE_SETTLE_MS = 150;
 
 /**
  * The computed properties a pointer move may change in place: ink, which

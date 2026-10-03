@@ -47,7 +47,7 @@ import { between, covers } from './controls.js';
 import { attr, isElement, tagOf } from './dom.js';
 import type { ComputedStyle } from './css/style.js';
 import { masked } from './css/style.js';
-import { placedMatrix } from './layout/block.js';
+import { heldBack, placedMatrix } from './layout/block.js';
 import type { Box, BoxTree } from './layout/boxes.js';
 import {
   clipFor,
@@ -158,6 +158,8 @@ export function mediaRectsOf(
   for (const box of tree.media) {
     const el = box.el;
     if (!el) continue;
+    // set aside by a layout that stopped short of it (`heldBack`)
+    if (heldBack(tree, box)) continue;
     if (box.style.visibility !== 'visible') continue;
     if (!mountable(box)) continue;
     const picture = pixelsOf(box);
