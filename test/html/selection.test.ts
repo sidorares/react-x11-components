@@ -1,11 +1,22 @@
 // <Html> — selection, the caret and the text accessors.
 import { afterEach } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup, fireEvent } from 'react-x11/test';
+import { act, cleanup, fireEvent, renderX11, screen } from 'react-x11/test';
+import type { DrawnNode } from 'react-x11';
+import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
 import { cocoaShapedLayout } from '../cocoa-shaped.js';
 import type { ShapedLayout } from '../cocoa-shaped.js';
-import { boxOf, linesOf, metric, render, textRunsOf, view } from './harness.js';
+import {
+  FONTS,
+  boxOf,
+  h,
+  linesOf,
+  metric,
+  render,
+  textRunsOf,
+  view,
+} from './harness.js';
 import type { LaidBox } from './harness.js';
 
 afterEach(cleanup);
@@ -92,6 +103,132 @@ metric('a point maps back to the character under it', async () => {
   const index = el.textIndexAt(caret.x + 1, caret.y + caret.height / 2);
   assert.ok(Math.abs(index - 6) <= 1, `round-tripped to ${index}`);
 });
+
+// What a press starts a selection in is what is drawn on top under it, as
+// in every browser: Zen Garden 220 draws its preamble over a fixed
+// `::before` of "Est. 2003" in letters 500px tall, and a press on a
+// paragraph selected from the word behind it.
+const behind = (extra = '') =>
+  '<style>body{margin:0}' +
+  '#banner{position:relative;height:20px}' +
+  '#banner::before{content:"BIG";position:absolute;top:0;left:0;' +
+  'font-size:200px;line-height:1;color:rgba(0,0,0,.15)}' +
+  '#article{position:relative}p{margin:0 0 20px}' +
+  extra +
+  '</style><div id="banner"></div><div id="article">' +
+  '<p id="a">first paragraph words</p>' +
+  '<p id="b">second paragraph words</p></div>';
+
+/** Where in the document a press on a letter of a word lands. */
+function pressOn(el: HtmlViewNode, word: string): number {
+  const caret = el.textCaretRect(el.textContent().indexOf(word) + 2)!;
+  return el.textIndexAt(caret.x + 1, caret.y + caret.height / 2);
+}
+
+metric(
+  'a press on text drawn over larger text starts in the text on top',
+  async () => {
+    const { node } = await render(behind());
+    const el = view(node);
+    const text = el.textContent();
+    assert.ok(text.startsWith('BIG'), `the word behind is text: ${text}`);
+    const second = text.indexOf('second');
+    const at = pressOn(el, 'second');
+    assert.ok(Math.abs(at - (second + 2)) <= 1, `in "second": ${at}`);
+  },
+);
+
+metric(
+  'a press between paragraphs is in the text of the box on top, not of the word behind it',
+  async () => {
+    // Blink and Gecko alike: the box the point is over, and the text in it
+    // nearest the point
+    const { node } = await render(behind());
+    const el = view(node);
+    const text = el.textContent();
+    const a = boxOf(el, 'a');
+    const b = boxOf(el, 'b');
+    const { abs } = el as unknown as DrawnNode;
+    const at = el.textIndexAt(abs.x + 30, abs.y + (a.y + a.height + b.y) / 2);
+    assert.ok(at >= text.indexOf('first'), `in the article's: ${at}`);
+  },
+);
+
+metric('the word drawn on top takes the press where it is on top', async () => {
+  // the order is the paint order, not a preference for the later box
+  const { node } = await render(behind('#banner::before{z-index:1}'));
+  const el = view(node);
+  assert.ok(pressOn(el, 'second') <= 3, 'in "BIG", over the paragraph');
+});
+
+metric(
+  'text the pointer passes through is not where a press starts',
+  async () => {
+    // `pointer-events: none` (CSS UI 4, 6.2): as if it were not there
+    const { node } = await render(behind('#article{pointer-events:none}'));
+    const el = view(node);
+    assert.ok(pressOn(el, 'second') <= 3, 'in "BIG", under the paragraph');
+  },
+);
+
+metric(
+  'a press on a box with no text drawn over text is where the box stands in the document',
+  async () => {
+    // Blink's position in the element pressed: no letter of the text it
+    // covers, and none of the text nearest it in the document
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0}#cover{position:absolute;top:0;' +
+        'left:0;width:300px;height:40px}</style>' +
+        '<p>one two</p><div id="cover"></div><p>three</p>',
+    );
+    const el = view(node);
+    assert.strictEqual(el.textContent(), 'one twothree');
+    assert.strictEqual(pressOn(el, 'two'), 7, 'after the text before it');
+  },
+);
+
+metric(
+  'a press on text fixed to the viewport is where the scroll draws it',
+  async () => {
+    // "Est. 2003" is fixed: scrolled, the word is drawn down the document
+    // from where it was laid out, and the article scrolls up over it
+    await renderX11(
+      h(
+        'box',
+        {
+          'data-testname': 'pane',
+          style: { width: 400, height: 200, overflow: 'scroll' },
+        },
+        h(Html, {
+          source: behind(
+            '#banner::before{position:fixed}#article{margin-top:300px}' +
+              '#tall{height:1000px}',
+          ).replace('</p></div>', '</p><div id="tall"></div></div>'),
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 300, fonts: FONTS! },
+    );
+    const pane = screen.getByTestName('pane') as DrawnNode & {
+      scrollTo(y: number): void;
+    };
+    await act(async () => pane.scrollTo(250));
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const text = el.textContent();
+    // above the article, the word is all the pane draws
+    const above = el.textIndexAt(pane.abs.x + 30, pane.abs.y + 30);
+    assert.ok(above <= 3, `in "BIG", where the pane draws it: ${above}`);
+    const first = text.indexOf('first');
+    const caret = el.textCaretRect(first + 2)!;
+    assert.ok(
+      caret.y > pane.abs.y + 30 && caret.y < pane.abs.y + 150,
+      `the paragraph is in view, over the word: ${caret.y - pane.abs.y}`,
+    );
+    const at = el.textIndexAt(caret.x + 1, caret.y + caret.height / 2);
+    assert.ok(Math.abs(at - (first + 2)) <= 1, `in "first": ${at}`);
+  },
+);
 
 metric('Ctrl+A selects the whole document, across every block', async () => {
   const { node, result } = await render('<h1>Title</h1><p>Body.</p>', 400);

@@ -2962,7 +2962,19 @@ section's box does not take them. A box that is not visible is not under
 the pointer, and nor is one with `pointer-events: none`: the pointer
 passes through it to what is, and a box inside it that sets either back
 is still found. A closed menu laid over a page, hidden until it opens,
-takes nothing from the page under it.
+takes nothing from the page under it. A box fixed to the viewport is found
+where the scroll draws it, wherever its parent was laid out.
+
+**A selection starts in what the press is on.** Selecting asks the same
+hit test, as every browser does (no spec says how a press picks the
+boundary point). On text, the press lands on the letter under it. On a box,
+it lands on the box's in-flow text nearest the point; failing that, on any
+text inside the box; failing that, at the box's place in the document. So
+a paragraph a page paints over a large faint word takes its own press and
+drag, and so does the gap between two paragraphs over that word. Zen
+Garden 220's preamble over its fixed "Est. 2003" is the case. Text with
+`pointer-events: none` is not where a press starts: the press goes through
+to what is under it.
 
 **`text-wrap: pretty` breaks lines where Chrome breaks them.** CSS Text 4
 asks for better lines than the greedy ones and leaves how to the user agent,
