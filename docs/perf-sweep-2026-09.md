@@ -4532,6 +4532,116 @@ over a hundred megabytes of paragraphs it may never lay out again; in
 - Scroll. A frame of a scroll is 1.25 ms for the median design. 219's
   18 ms was its drawings, below.
 
+## Round 45: what four releases of core and ntk cost
+
+Between release 0.19.0 and today's master, core went from 2.32 to 2.36,
+ntk from 8.17.8 to 8.21.1 and appkit from 0.19 to 0.22, all in two days.
+This round ran the whole sweep on both trees on this Mac today, 226 cells
+each, today's tree first. The other session's round 44 held its own
+measurements while it ran.
+
+### What the sweep flagged, and what three reruns kept
+
+Every flagged cell was run again three times on each tree, interleaved:
+
+| flagged cell                    | the sweep, 0.19.0 → master | reruns, 0.19.0 / master      | what it was               |
+| ------------------------------- | -------------------------- | ---------------------------- | ------------------------- |
+| X11 `<Markdown>` mount          | 660 → 1,602 ms             | 653–681 / 658–717 ms         | one run, laid out 8 times |
+| X11 `<Html>` mount              | 485 → 650 ms               | 486–491 / 484–499 ms         | noise                     |
+| X11 docs reflow, edit, append   | up 10–35%                  | within 3% either way         | noise                     |
+| X11 `<Tree>` fling, thumb, keys | 69 → 44 fps and worse      | 66–69 / 65–68 fps, and alike | noise                     |
+| X11 `<Flow>` stress pane, map   | 54 → 42 fps                | 39–41 / 43–48 fps            | noise, master ahead       |
+| X11 `<Map>` GL pan              | 62 → 54 fps                | 61–64 / 63–64 fps            | noise                     |
+| Cocoa `<Table>` jump            | 73 → 29 fps                | 72.5–73.0 / 28.5–28.8 fps    | core #848, fewer frames   |
+| Cocoa `<Table>` wheel           | frame p50 3.9 → 5.4 ms     | 3.85–3.92 / 5.32–5.43 ms     | core #848, a real cost    |
+| Cocoa `<Tree>` keys             | frame p50 0.8 → 3.4 ms     | 13 / 1,085 ms between frames | core #848, and the probe  |
+
+The X11 `<Markdown>` mount's one bad run did twice the work: eight layout
+passes where every other run of either tree did five, and twice the
+processor time. Nothing like it came back in six runs.
+
+### The gain was ntk 8.19.0
+
+The X11 2D `<Flow>` zooms were the sweep's gains: lattice 27.7 → 50.7 fps,
+lattice2000 16.8 → 38.6, fanout 33.7 → 46.6, widgets 38.6 → 49, charts
+42.8 → 55.4. The 0.19.0 tree with nothing changed but ntk says which
+release:
+
+| ntk, under core 2.32.0 | lattice zoom | lattice2000 zoom | X server CPU |
+| ---------------------- | -----------: | ---------------: | -----------: |
+| 8.17.8                 |     26.3 fps |         16.5 fps |       65–68% |
+| 8.18.0                 |         16.8 |             14.5 |          65% |
+| 8.18.1                 |         22.0 |             15.7 |       62–66% |
+| 8.19.0                 |         48.2 |             38.7 |       40–45% |
+| 8.21.1                 |         48.9 |             38.8 |       40–44% |
+
+8.19.0 keeps the solid pictures a colour style paints with in an LRU and
+hands `drawGlyphs` and `drawTraps` a colour source (sidorares/ntk#513,
+#516, #517). A zoom repaints every edge in its colour at every step, so it
+made a solid each time. The client's CPU rose as the server's fell: the
+frames come faster, and each is the client's work now. 8.18.0's precise
+masks cost a third of the frame rate, 8.18.1 took about half of that back,
+and 8.19.0 made up the rest.
+
+### Rows on layers in a list that scrolls (react-x11 #857)
+
+All three Cocoa flags were one commit. The same components code on each
+core release put it in 2.36.0: 2.35.0 was clean on every cell. Overlaying
+core's `src/` from each commit in between put it in react-x11 #848, "a loop on a
+row of a list runs in the render server". Its parent, #847, was clean, and
+#848 alone reproduced all three.
+
+The log table's rows fade their background on hover and selection, over
+80 ms. Before #848, promotion turned every row down, because the
+scrollbar's track crosses it, and the fade ran on the clock in the bitmap.
+Since #848 a row goes on a layer, with the thumb lifted above it. What
+that did to each cell:
+
+- **Jump lost frames, not time.** The fade in the render server took away
+  the clock frames that ticked it, which were the cheap ones, so the
+  median of what was left rose from 0.55 ms to 7.7 and the frame rate fell
+  from 73 to 29, at equal CPU.
+- **The tree's keys cell moves nothing on Cocoa.** It scrolls no row on
+  either tree at 2–3% CPU; its keys never reach the tree there. It painted
+  three frames before and one after, and its 1,085 ms "p50" is the gap
+  between them. In "Still open".
+- **The wheel paid for it.** A wheel brings row after row under the
+  pointer. Each kept its layer for the grace, a second, was asked every
+  frame whether it might stay, and had its raster synced as the pane moved
+  it. Over the same run, flush time went from 1,214 to 1,568 ms. 782 ms of
+  it was promotion's frame: asking whether each kept row might stay was
+  316 ms, half of that the paint order of a list whose rows come and go,
+  and syncing them 215. The bitmap had painted the same fades for 581 →
+  156 ms.
+
+#857 keeps a node inside a pane that scrolled in the last 250 ms off
+layers: not promoted, not kept and not offered again. A wheel steps a pane
+sixty times a second against a 75 Hz display, so the frames between its
+steps are still the scroll. A loop on a row comes off with the rest and
+goes back a quarter of a second after the pane stops.
+
+| core master's `src/`, 0.19.0's `<Table>` | wheel: frame p50 / CPU | jump: fps |
+| ---------------------------------------- | ---------------------: | --------: |
+| as released                              |  5.35–5.43 ms / 66–68% | 28.6–29.0 |
+| with #857                                |  3.93–3.96 ms / 57–58% | 72.4–72.9 |
+| core 2.35.0, for reference               |          3.87 ms / 57% |      72.8 |
+
+### And rows on layers in a list that holds still
+
+#848's author asked whether an 80 ms fade is worth a layer at all, even
+where nothing scrolls. A scratch probe walked the pointer down the table
+and back over four seconds, crossing some twenty rows each way, with core
+2.37 and #857:
+
+| a row's 80 ms fade      |   fps | frame p50 |    CPU |
+| ----------------------- | ----: | --------: | -----: |
+| on a layer, as now      | 22–23 |   3.0–3.3 | 19–20% |
+| on the clock, below 250 |    65 |       1.6 | 19–21% |
+
+The same CPU either way: the layer saves two thirds of the frames and each
+costs twice as much. So core gets no minimum duration for a layer, and the
+layer keeps its place on what it saves in frames.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -4939,6 +5049,22 @@ over a hundred megabytes of paragraphs it may never lay out again; in
     tables, was wrong. The chain of retainers a few levels above them
     named ntk's paragraph cache at once.
 
+84. **A frame rate that falls at equal CPU can be work leaving the
+    clock.** `<Table>`'s jump lost three frames in five when a row's fade
+    moved to the render server, and its frame median rose fourteen-fold,
+    because the frames that went were the cheap ones. Read the CPU and what
+    the frames did before calling it a regression: the median of what is
+    left is not the cost of a frame.
+85. **Bisect core under unchanged components code by overlaying `src/`.**
+    Core is plain JavaScript, so `git archive <sha> src | tar -x -C
+node_modules/react-x11/` puts any commit of it under a tree in a
+    second. Release by release found 2.36.0; commit by commit, two runs
+    found #848.
+86. **A layer saves frames only where what is on it holds still.** A row
+    on a layer in a list that scrolls moves every frame, so it costs the
+    frame its test and its sync, and saves nothing the pane's blit was not
+    already saving.
+
 ## Still open
 
 Ordered by practical impact, after round 12, and `<Html>`'s edit after
@@ -5061,3 +5187,9 @@ round 15.
   is a few boxes out of the flow. Building and laying out only those, and
   keeping the surfaces of the boxes that did not change across the build,
   is the engine's next step for a page that moves.
+- **The tree probe's keys on Cocoa** (`treesweep.tsx`): its key presses
+  reach no tree there. On both trees it scrolls no row, at 2–3% CPU, and
+  paints one to three frames in a run, so its frame rate and median
+  measure nothing (round 45). Why is not known: the keys go to the window
+  by `wnd.emit` after a press that focuses the tree through `app._route`,
+  and either half may be what Cocoa does not take.
