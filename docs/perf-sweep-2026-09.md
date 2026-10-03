@@ -4358,6 +4358,180 @@ than a fix: core's height-floor pass (react-x11 #737), the geometry a
 partial pass cuts (ntk #462), and React's development-build prop diff
 (react-x11 #789).
 
+## Round 44: what a page costs `<Html>`
+
+Every `<Html>` measurement before this round was of one document, the
+600 KB report `docsweep.tsx` mounts, edits and scrolls. A browser is asked
+for many documents, each with its own stylesheet, images and fonts, and
+much of what they cost happens as they load. So this round measured many.
+`htmlsweep.mjs` mounts the CSS Zen Garden's 221 designs one after another
+in one window: the same markup under 221 designers' stylesheets, which is
+as varied a corpus of real CSS as one site has. `htmlgen.mjs` makes a
+synthetic document for each feature, at an everyday size and a stress
+size. For each document the probe times the first frame and the last frame
+of its arrivals, then forces each stage of the pipeline through the
+element's own code and times it apart, then scrolls the pane and moves the
+pointer over a grid of points. All of it on X11 against Xvfb, a real X
+server with no window on a screen, in production React, from `dist/`.
+
+### Rendering all of the Zen Garden
+
+Every resource answered at once, from a cache read before anything is
+timed, with the animations held at rest:
+
+| all 221 designs                       |  total | median design | the most |
+| ------------------------------------- | -----: | ------------: | -------: |
+| to the first frame                    | 13.8 s |         63 ms |      193 |
+| to the last frame                     | 29.6 s |        126 ms |      401 |
+| processor time, to the last           | 57.4 s |        202 ms |      748 |
+| builds of the boxes                   |    443 |             2 |        3 |
+| the cascade from the sheets' text, ms |  2,101 |          9.04 |     24.1 |
+| the boxes from kept styles, ms        |  1,218 |          5.37 |     12.1 |
+| a layout at the same width, ms        |    375 |          1.25 |     4.78 |
+| a viewport painted, ms                |    536 |          2.22 |     26.0 |
+| a frame of a scroll, ms               |        |          1.25 |     18.0 |
+| a restyle under the pointer, ms       |        |          0.17 |     0.50 |
+
+The most for each is a different design: 001's first frame, 214's last,
+179's processor time. 219 has both the most for a paint and the most for a
+scroll.
+
+Of the processor time, a profile of 58 designs' mounts put 3.0 s in
+layout, and 1.6 s of that was waiting for `fc-match` to answer for a face
+the layout reached before the warm-up had answered for it (ntk's
+`answerSync`). Decoding images took 1.9 s: core's `decodeImageBytes`
+decodes on the JavaScript thread under Node, with `jpeg-js` and `pngjs`.
+Painting took 0.9 s, building boxes 0.6 s and collecting garbage 0.5 s.
+The first two are ntk's and core's, and are in "Still open". 219 is the
+one design whose paint stands out, and it was its drawings: see "Zen Garden
+219, moving" below.
+
+### The same pages over a network (#658)
+
+Answered at once, every arrival lands in the frame after the build that
+asked for it. Over a network they come one at a time, and each was a build
+and a layout of the whole document. An image that only paints, a
+background or a border image, built the boxes as an `<img>` does. A
+stylesheet the head links to, arriving after the first frame, restyled a
+document that had been drawn unstyled. `LATENCY=300` answers each resource
+up to 300 ms late, by a delay its URL fixes:
+
+| 58 designs, answered over 300 ms | master | images painted | and head sheets hold |
+| -------------------------------- | -----: | -------------: | -------------------: |
+| builds                           |    598 |            121 |                   63 |
+| builds, the median page          |   10.5 |              2 |                    1 |
+| processor time                   | 21.2 s |         16.9 s |               16.1 s |
+| text layouts                     |  6,432 |          6,319 |                3,767 |
+
+A head stylesheet now holds the first rendering until it is in, as a
+browser holds a page, and an image that is only painted is painted where
+it lands.
+
+### A stylesheet of 2,000 rules (#660)
+
+The synthetic suite found one stage out of line with the others. Under
+`selectors`, 2,000 rules in a utility framework's shape, a restyle of 1,000
+elements took 640 ms, two thirds of it in css-select. A `.class` is a
+regular expression over the attribute, run for every rule in each of an
+element's buckets, and a rule naming an ancestor climbs to the root before
+it says no. A rule that is nothing but its class or its id now matches
+its bucket without the matcher. The names that rules ask of an ancestor
+are kept for each element of a build, so a rule naming one that no
+ancestor has is passed over without the climb:
+
+|                                                                     |  master |    #660 |
+| ------------------------------------------------------------------- | ------: | ------: |
+| 2,000 utility rules over 1,000 elements, a restyle                  |  640 ms |  379 ms |
+| the same, a build of the boxes                                      |  623 ms |  353 ms |
+| a Tailwind-shaped page, 6,011 elements 24 deep: matched for a build |  185 ms |   51 ms |
+| the same, 62 deep elements restyled in place                        | 2.09 ms | 1.54 ms |
+
+The first cut kept every name above an element, and outside a build worked
+them out again for each rule. It made the stress document faster, and a
+hover over the Tailwind-shaped page 180 times slower: 375 ms to restyle the
+62 elements. Nothing in the suite had a page that deep, and the hover's
+path keeps nothing, so nothing in the suite could see it. A benchmark
+written to try the cache on the deepest page found it.
+
+### A flex box's nodes (#661)
+
+Flex and grid lay out at 6–7 µs a box where blocks, text, inline boxes and
+tables take 1–2. A profile of 800 cards of nested flex boxes put 3.4 s of
+10 s of layout in the glue of Yoga's JavaScript binding, and 0.5 s in
+Yoga's own layout. Counting the calls by method found 1.88 million in a
+run, a fifth of them in `freeRecursive`: it asks the root for each child,
+and the binding answers that with a new object every time. Freeing the
+nodes the layout already holds made a layout of the 800 cards 104 ms where
+it was 115. The rest of the glue is the calls themselves, which is the
+binding's to change, or a layout's that keeps its nodes from one pass to
+the next.
+
+### Zen Garden 219, moving (#662)
+
+The corpus holds every animation at rest, and 219's cost is in moving. Its
+sidebar's panel is turned out of the plane under a perspective, and the
+eight names in it scroll by an animation of `text-indent`, for good. Its
+hovers turn the panels flat over a second and slide them with `top`,
+`bottom` and `margin`. Each of those is a length, so every frame builds the
+boxes and lays them out again, about 6 ms, and repaints what moved, and
+what moved is drawn from SVG: the fixed body backgrounds, the panels'
+frames and hooks. `htmlanim.mjs` measures it: frames idle, then with the
+pointer on each panel and off it again. X11 on Xvfb at 1x:
+
+| 219                          | master fps | #662 fps | a paint, master | a paint, #662 |
+| ---------------------------- | ---------: | -------: | --------------: | ------------: |
+| idle                         |       41.7 |     54.3 |          9.4 ms |        1.9 ms |
+| the sidebar's panel, hovered |       26.1 |     54.6 |         13.1 ms |        1.5 ms |
+| and left                     |       22.3 |     43.8 |         15.4 ms |        3.4 ms |
+| the header, hovered          |       21.9 |     53.8 |         16.7 ms |        3.3 ms |
+| the preamble, hovered        |       31.2 |     44.1 |         12.3 ms |        3.0 ms |
+
+An SVG image was set from its paths at every paint that reached it, and
+the tiled warp the panel is drawn through (#655) was the smaller part of
+the paint. The element keeps a raster of a drawing at a size from its
+second drawing there, and copies it after where the copy is exact. Over the
+whole corpus at rest, that took a viewport's paint on 219 from 24.9 to 1.5
+ms, on 214 from 10.1 to 2.2 and on 220 from 8.4 to 3.1, and left the median
+design as it was.
+
+On macOS the same page went only from 21 to 24.5 frames a second idle,
+from 12 to 14 with the header hovered, and the warp is why. Each of its
+some 440 tiles draws the panel's surface under the tile's clip, and the
+bridge draws the whole surface for each: `CtxDrawSurface` takes a
+`CGBitmapContextCreateImage` of all of it and draws that, 146 µs for a
+surface of 700 by 560 and 266 µs for one four times the size, whatever the
+clip. That is 1.6 s of a 3.1 s idle profile. Cutting each draw to its clip
+in core's context made the warp five times faster and was not exact:
+CoreGraphics resamples an image that is turned and shrunk by its size, and
+the pixels moved by up to 59 levels whatever the margin, and with the cut
+aligned to blocks of 64. A cut that depends on the clip would also set a
+partial repaint apart from a whole one. So what is left is native, and in
+"Still open".
+
+### What a page leaves behind
+
+The heap after each design is gone and collected climbs about 1.4 MB a
+design and falls back in steps: to 328 MB, then 199 MB at the 199th design
+and 92 MB at the 214th. Between the 10th and the 40th it grew by 62 MB, and
+heap snapshots there put most of it in ntk's paragraph cache
+(`lib/text/paragraphs.js`): each paragraph's shaped tokens, kept for its next
+layout at another width, in two generations of half a million characters,
+the older dropped whole as the newer fills, which is the step. Every design
+sets the same text in faces of its own, so none of it is found again.
+Bounded, and not leaked, but a generation is counted in characters, and
+here a character kept was some 140 bytes, so a browser over many sites holds
+over a hundred megabytes of paragraphs it may never lay out again; in
+"Still open".
+
+### What needed nothing
+
+- Layout outside flex and grid. A layout at the same width is 1.3 ms for
+  the median design.
+- Hover. A restyle under the pointer is 0.16 ms for the median design and
+  6 ms for the worst, all of it in place.
+- Scroll. A frame of a scroll is 1.25 ms for the median design. 219's
+  18 ms was its drawings, below.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -4737,6 +4911,33 @@ partial pass cuts (ntk #462), and React's development-build prop diff
     one chart update cost ten times what it does in production. Keep both
     numbers, and read a profile's top frames for whose code they are
     before fixing anything.
+79. **Answered at once, arrivals hide.** Every test and bench answered
+    a resource in the frame that asked for it, so a page's arrivals fell
+    into one frame and their builds into one build. Over a network each
+    one was a build of the whole document. Measure loading with a delay
+    on each resource, fixed by its URL so two runs agree.
+80. **A cache is two paths, and the one that keeps nothing needs its own
+    benchmark.** The selector filter kept what it knew about an element's
+    ancestors in a build, and worked it out again outside one. Measured
+    on no document deep enough, the second path was 180 times slower
+    than the matcher it replaced. Try a cache on the deepest document
+    there is, on the path where it misses.
+81. **Count the calls into a binding by method before tuning them.** A
+    fifth of the calls into Yoga were a recursive free asking for each
+    child, and the binding's answer to each ask was the dearest thing it
+    does. A profile showed the glue; only the count said which calls
+    were not needed.
+82. **A bench that holds the animations still cannot see what moving
+    costs.** The corpus ran with every animation at rest, as the Zen Garden
+    bench always had, and found 219's paint the worst there was. Only a
+    probe that let it move and hovered its panels found that every frame
+    of it is a build, and that most of a frame's paint was drawings set
+    again from their paths.
+83. **Name what grows by what holds it, not by what it is.** Between two
+    heap snapshots the growth was plain objects, arrays and numbers, which
+    said nothing, and the first guess at whose they were, fontkit's
+    tables, was wrong. The chain of retainers a few levels above them
+    named ntk's paragraph cache at once.
 
 ## Still open
 
@@ -4816,3 +5017,47 @@ round 15.
   65 in production (round 43). It is React's to fix. The decision is
   whether to file the report the issue drafts, and whether core's docs
   should tell apps to run with `NODE_ENV=production`.
+- **A face reached before the warm-up answered** (ntk): on X11 a layout
+  that reaches a family `fc-match` has not answered for yet waits for it,
+  napping in `answerSync`: 1.6 s of 3.0 s of layout over 58 Zen Garden
+  designs' mounts (round 44). Each design names families of its own, so
+  the warm-up started at the build has a layout's time to answer, and
+  `fc-match` takes longer than that.
+- **Images decoded on the JavaScript thread under Node** (core):
+  `decodeImageBytes` decodes PNG and JPEG with `pngjs` and `jpeg-js` on
+  the main thread under Node, 1.9 s over the same 58 mounts, where under
+  Bun it decodes on a worker (round 44). A worker rung under Node would
+  take it out of the frame.
+- **Yoga's binding** (round 44): a flex layout of 800 cards spends 3.4 s
+  of 10 s in the glue of the engine's JavaScript binding, its invoker and
+  the handles it makes, and 0.5 s in Yoga's own layout. What is left is
+  a call per style set and per value read; a layout that kept its nodes
+  from one pass to the next would make most of them once.
+- **Paragraphs a page leaves behind** (ntk): the heap after each Zen Garden
+  design is gone climbs about 1.4 MB a design, to 328 MB, in ntk's
+  paragraph cache, two generations of half a million characters each, the
+  older dropped whole as the newer fills (round 44). A character kept is
+  some 140 bytes there, so a browser over many sites holds over a hundred
+  megabytes of paragraphs set in faces it may not use again. A bound in
+  bytes, or a document's paragraphs going with its element, would answer
+  it.
+- **A surface drawn under a clip on macOS** (core, appkit): the bridge
+  draws the whole source surface whatever the clip (`CtxDrawSurface`), so
+  `<Html>`'s tiled warp of a box out of the plane costs each tile the whole
+  panel, 1.6 s of 219's 3.1 s idle profile (round 44). A cut in core's
+  context is five times faster and changes pixels where an image is turned
+  and shrunk, so the fix is the bridge's: keep the image it makes of a
+  surface until the surface is drawn on, if that is where the cost is; or a
+  verb that draws a surface through a projection, which X11's Render does
+  with a 3×3 picture transform and Core Animation does on a layer.
+- **A box out of the plane on a layer** (core, appkit, `<Html>`): a sprite's
+  transform is a matrix of the plane, so a turned panel is never lifted. A
+  part that may carry a 4×4 with a perspective, as `CATransform3D` does,
+  would put 219's panel and its turn on a layer, where Chrome puts them on
+  the compositor, and leave only its raster to paint.
+- **A frame of a length animates the whole document** (`<Html>`): an
+  animation or a transition of `top`, `margin` or `text-indent` builds the
+  boxes and lays them out again every frame, 6–8 ms on 219, where what moved
+  is a few boxes out of the flow. Building and laying out only those, and
+  keeping the surfaces of the boxes that did not change across the build,
+  is the engine's next step for a page that moves.
