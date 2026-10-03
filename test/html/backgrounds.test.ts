@@ -15,6 +15,7 @@ import {
 import { parseColor } from '../../src/html/css/values.js';
 import { blend } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
+import { SvgDrawing } from '../../src/html/svg.js';
 import {
   FONTS,
   RED_PNG,
@@ -1952,5 +1953,65 @@ metric(
       [boxOf(el, 'im').width, boxOf(el, 'im').height],
       [30, 16],
     );
+  },
+);
+
+metric(
+  'an SVG background drawn again at its size is copied from a raster of it, the pixels its paths set',
+  async () => {
+    // Set from its paths at every paint that reached it, a drawing of a
+    // few tens of kilobytes was milliseconds a paint: Zen Garden 219's
+    // fixed backgrounds at every frame of a scroll. Its second drawing at a
+    // size keeps a raster, and every drawing after copies it: a repeated
+    // tile from the first paint, a lone one from the second.
+    const drawing = svgBytes(
+      `<svg ${SVG_NS} width="40" height="30" viewBox="0 0 40 30">` +
+        '<defs><linearGradient id="g"><stop offset="0" stop-color="#0000ff"/>' +
+        '<stop offset="1" stop-color="#ff00ff"/></linearGradient></defs>' +
+        '<rect width="40" height="30" fill="url(#g)"/>' +
+        '<circle cx="17.3" cy="13.6" r="9.4" fill="#ffcc00"/></svg>',
+    );
+    for (const scale of [1, 2]) {
+      const { result, el } = await renderWithBytes(
+        '<style>body{margin:0}div{height:60px}' +
+          '#lone{background:url(a.svg) 3px 4px/33.3px auto no-repeat}' +
+          '#tiled{background:url(a.svg) 0 0/21.7px auto}</style>' +
+          '<div id="lone"></div><div id="tiled"></div>',
+        { 'a.svg': drawing },
+        200,
+        scale,
+      );
+      const proto = SvgDrawing.prototype;
+      const draw = proto.drawImage;
+      let set = 0;
+      proto.drawImage = function (
+        this: SvgDrawing,
+        ...args: Parameters<typeof draw>
+      ) {
+        set += 1;
+        return draw.apply(this, args);
+      };
+      try {
+        const repaint = async () => {
+          set = 0;
+          (
+            el as unknown as {
+              invalidate(all: boolean, by: unknown, why: string): void;
+            }
+          ).invalidate(false, el, 'test');
+          return snapshot(result, el);
+        };
+        const first = await snapshot(result, el);
+        const second = await repaint();
+        assert.strictEqual(set, 1, `${scale}x: the lone one's raster is made`);
+        const third = await repaint();
+        assert.strictEqual(set, 0, `${scale}x: and nothing is set from paths`);
+        assert.strictEqual(bytesApart(first, second), 0, `${scale}x: second`);
+        assert.strictEqual(bytesApart(first, third), 0, `${scale}x: third`);
+      } finally {
+        proto.drawImage = draw;
+      }
+      cleanup();
+    }
   },
 );

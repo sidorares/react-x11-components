@@ -304,6 +304,15 @@ export interface PaintOptions {
     height: number,
     draw: (ctx: PaintContext) => void,
   ): unknown;
+  /** An SVG image's raster at a size, made for its key on a surface `width`
+   *  by `height` and kept, to be drawn with `drawImage` (`drawSvg`); null
+   *  where it is not kept, and the drawing is set from its paths. */
+  drawingKept?(
+    key: string,
+    width: number,
+    height: number,
+    draw: (ctx: PaintContext) => void,
+  ): unknown;
   /** Surfaces kept from one paint to the next for the boxes whose
    *  transform is animating (`paintSprite`). Absent, each paint draws such
    *  a box again. */
@@ -6210,29 +6219,20 @@ function paintBackgroundImage(
     if (tiles <= MAX_TILES) {
       for (let y = fromY; y < toY; y += stepY) {
         for (let x = fromX; x < toX; x += stepX) {
-          svg.drawImage(
+          drawSvg(
             ctx,
+            svg,
             Math.round(x),
             Math.round(y),
             iw,
             ih,
-            scale,
             style.colorScheme,
-            surfaceMaker(options),
+            options,
           );
         }
       }
     } else {
-      svg.drawImage(
-        ctx,
-        x0,
-        y0,
-        iw,
-        ih,
-        scale,
-        style.colorScheme,
-        surfaceMaker(options),
-      );
+      drawSvg(ctx, svg, x0, y0, iw, ih, style.colorScheme, options);
     }
   } else if (
     tiles > 1 &&
@@ -7987,16 +7987,7 @@ function paintMarker(
     const loaded = options.backgroundImageFor?.(url);
     if (!loaded || !(width > 0 && height > 0)) return;
     if (loaded.image instanceof SvgDrawing) {
-      loaded.image.drawImage(
-        ctx,
-        x,
-        y,
-        width,
-        height,
-        options.scale ?? 1,
-        scheme,
-        surfaceMaker(options),
-      );
+      drawSvg(ctx, loaded.image, x, y, width, height, scheme, options);
     } else ctx.drawImage?.(loaded.image, x, y, width, height);
     return;
   }
@@ -8028,15 +8019,15 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
     const clipped =
       (!!corners || past) && pushClip(ctx, { x, y, w, h }, corners);
     if (image instanceof SvgDrawing) {
-      image.drawImage(
+      drawSvg(
         ctx,
+        image,
         at.x,
         at.y,
         at.w,
         at.h,
-        options.scale ?? 1,
         box.style.colorScheme,
-        surfaceMaker(options),
+        options,
       );
     } else ctx.drawImage!(image, at.x, at.y, at.w, at.h);
     if (clipped) ctx.restore();
@@ -8165,6 +8156,56 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
       style: style.fontStyle,
     },
   );
+}
+
+/** A number for an SVG image, the same while it lives: its part in the key
+ *  of a raster kept of it (`drawSvg`). */
+const DRAWINGS = new WeakMap<SvgDrawing, number>();
+let drawings = 0;
+
+/**
+ * An SVG image, `w` by `h` device pixels at (`x`, `y`), drawn from a raster
+ * of it kept at that size (`drawingKept`) where the context draws in whole
+ * pixels of its own: no matrix (`PaintOptions.matrix`) and a corner on the
+ * grid, where a raster copied is the drawing set again, pixel for pixel.
+ * Elsewhere, and where none is kept, from its paths. A drawing of a few
+ * tens of kilobytes took milliseconds to set from its paths, at every
+ * paint that reached it: Zen Garden 219's fixed backgrounds at every frame
+ * of a scroll, the panels its hovers move at every frame they moved.
+ */
+function drawSvg(
+  ctx: PaintContext,
+  svg: SvgDrawing,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  scheme: 'light' | 'dark',
+  options: PaintOptions,
+): void {
+  const scale = options.scale ?? 1;
+  if (
+    !options.matrix &&
+    options.drawingKept &&
+    ctx.drawImage &&
+    Number.isInteger(x) &&
+    Number.isInteger(y)
+  ) {
+    let n = DRAWINGS.get(svg);
+    if (n === undefined) DRAWINGS.set(svg, (n = ++drawings));
+    const kept = options.drawingKept(
+      `${n}|${w}x${h}|${scale}|${scheme}`,
+      Math.ceil(w),
+      Math.ceil(h),
+      (sctx) =>
+        svg.drawImage(sctx, 0, 0, w, h, scale, scheme, surfaceMaker(options)),
+    );
+    if (kept) {
+      ctx.drawImage(kept, x, y);
+      return;
+    }
+  }
+  svg.drawImage(ctx, x, y, w, h, scale, scheme, surfaceMaker(options));
 }
 
 /** What makes the surface a masked element inside a drawing is drawn on:

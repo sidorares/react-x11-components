@@ -1897,6 +1897,22 @@ a drawing do. Every frame in `test/html/animations.test.ts` is held to a
 build and to a surface made for that paint alone: a frame and a build can
 both be wrong the same way, and only the second check sees it.
 
+**An SVG image is kept as a raster by its drawing and its size, not by a
+box.** A background, a list marker or an `<img>` that is an SVG is copied
+from a raster of the drawing at that size (`drawSvg`), made the second
+time it is drawn there (`_drawingKept`), wherever the context draws in
+whole pixels of its own: no `PaintOptions.matrix`, and a corner on the
+pixel grid, where the copy is the drawing set from its paths, pixel for
+pixel. Elsewhere — a macOS context drawing through a transform — it is set
+from its paths as before. Keyed by the drawing and not by a `Box`, it
+outlives a build, which clears every surface kept for a box: on a page
+whose every frame builds, under an animation of a `top` or a
+`text-indent`, it is the part of the paint a frame does not do again.
+**A key holds everything the drawing is set from** — the drawing, its
+device size, the scale and the colour scheme — and a drawing that came to
+depend on anything else, the page's fonts or its rules, would have to
+join it.
+
 **A group goes only to a context where it pays** (`groupsOnSurfaces`):
 ntk's, and a native one that says a faded surface is cheap
 (`fadesSurfacesCheaply`). CoreGraphics draws an image under an alpha below

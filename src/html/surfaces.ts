@@ -59,6 +59,11 @@ export class SurfaceCache {
     private readonly budget = 8 * 1024 * 1024,
   ) {}
 
+  /** Whether a surface is kept under `key`. */
+  has(key: string): boolean {
+    return this.kept.has(key);
+  }
+
   get(
     key: string,
     width: number,
