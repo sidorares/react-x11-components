@@ -1532,8 +1532,9 @@ parent's edge; where the containing block's height is not known,
 `stretch` is `auto`, and as a least height nothing.
 
 **Transforms:** `transform` and the three properties that are one function
-of it each, `translate`, `rotate` and `scale` (CSS Transforms 1 and 2), in
-the plane of the page, about `transform-origin`. A transform is no part of
+of it each, `translate`, `rotate` and `scale` (CSS Transforms 1 and 2), about
+`transform-origin`, and the functions out of the plane of the page with them
+(see below). A transform is no part of
 layout: the box is laid out as though it had none, moved by the translation
 its transform comes to — `translate(-50%, -50%)`, Tailwind's
 `-translate-x-1/2` in either of the ways it is written, a percentage being
@@ -1574,16 +1575,36 @@ grid. A box drawn through its matrix casts its shadows through it too, and
 its text its text shadows: turned, scaled and offset with the box, their
 blur scaled as it is, as a browser casts them as part of the box.
 
-What is out of the plane is read and not drawn: `rotateX()`, `rotateY()`,
-`translateZ()`, `perspective()` and the depth of a `matrix3d()` or a
-`scale3d()` are left out of their list, whose other functions are drawn, so
-`translateZ(0)` and `translate3d(x, y, 0)` are the transforms they are in
-the plane. `perspective`, `transform-style`, `backface-visibility` and
-`transform-box` do nothing, and a card that flips shows both of its faces.
-A form control in a turned or scaled box is mounted where the box was laid
-out, as it is: a widget is a node of its own, which no matrix of the
-document's reaches. `background-attachment: fixed` in a transformed box is
-still fixed, where CSS has it scroll.
+Out of the plane: `rotateX()`, `rotateY()`, `rotate3d()`, `translateZ()`,
+`translate3d()`, `scaleZ()`, `scale3d()`, `perspective()` and `matrix3d()`
+are what they are in space, about `transform-origin` and its depth, and a
+box is seen in the `perspective` of the nearest box with one up its
+containing blocks — through positioned boxes, and not past a box with a
+transform of its own, which flattens what it holds into its plane — from
+that box's `perspective-origin`, as Chrome sees it. So a panel turned about
+its upright in a perspective is drawn as a trapezoid, its far side smaller,
+where the pointer finds it and `elementRect` measures it: the Zen Garden's
+219 tilts its sidebar's panel `rotateY(40deg)` in a `perspective: 1000px`,
+and `elementRect` answers what `getBoundingClientRect` does in Chrome. A
+box moved toward the viewer is drawn larger about the perspective origin;
+with no perspective a turn out of the plane squashes it; and what is behind
+the viewer is not drawn. No context draws through a perspective — a 2d
+context's matrix is one of the plane — so such a box is painted on a
+surface as it was laid out, and the surface drawn a tile of the window's
+pixels at a time, each through the matrix nearest the perspective over it:
+resampled, as a browser draws a layer in perspective, and no line off by
+more than a quarter of a pixel where it crosses from one tile to the next.
+`perspective` makes a box a containing block and a stacking context, as a
+transform does. Under `backface-visibility: hidden` a box its transform
+turns to face away is not drawn, so a card that flips shows its front at
+rest. `transform-style: preserve-3d` is not read: what a box holds is
+flattened into its plane, so boxes do not meet in depth, a card that flips
+by turning the box its two faces are in shows its front mirrored, and
+`backface-visibility` is asked of a box's own turn alone. `transform-box`
+does nothing. A form control in a turned or scaled box is mounted where the
+box was laid out, as it is: a widget is a node of its own, which no matrix
+of the document's reaches. `background-attachment: fixed` in a transformed
+box is still fixed, where CSS has it scroll.
 
 **Animations:** `@keyframes`, and `@-webkit-keyframes`, which never takes
 the place of an `@keyframes` of the same name, as in Chrome; `animation`
@@ -2343,8 +2364,8 @@ its sheets, and a rule in a later layer wins over one in an earlier layer
 whatever their specificity, a rule in no layer over both, and the other way
 round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
-**Not implemented:** the parts of CSS grid above, transforms out of the
-plane of the page, a multicol container's `column-rule`,
+**Not implemented:** the parts of CSS grid above, `transform-style:
+preserve-3d`, a multicol container's `column-rule`,
 `column-span` on a box further in than its children, forced breaks, and
 a table in one broken
 between its rows — it goes to the next column whole, and a box a break

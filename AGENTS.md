@@ -1744,6 +1744,29 @@ left of itself on macOS, where every box is drawn through its matrix.
 `PaintOptions.matrix` is the matrix the context draws through, and a box
 painted on a surface as it was laid out (`onSurface`) has none.
 
+**Out of the plane, `placedMatrix` is a projection, and no context draws
+through one.** A list with a function out of the plane is a 4×4
+(`css/transform3d.ts`); layout still takes its translation across and down
+(`translation4`), and what is left is seen in the `perspective` of the
+nearest box with one up the containing blocks (`perspectiveFor` — through a
+positioned box, as Blink hangs a transform under the nearest perspective,
+and not past a box with a transform of its own, which flattens what it
+holds). What the box's plane comes to is a 3×3 `Projection`, or the matrix
+of the plane it is where all of the box is as far from the viewer as any of
+it, so `placedMatrix` answers a `Placed` and **anything that reads geometry
+through it asks `invert`, `mapPoint` and `mapRect`, which take either**, and
+never indexes it as a matrix: `paintTransformed` sends a projection to
+`paintProjected`, and that paints the box on a surface and draws the
+surface a tile of whole device pixels at a time, each tile through the
+matrix nearest the projection over it and clipped to it (`drawProjected`).
+Whole pixels are the point: clips cut through a pixel leave it half covered
+twice over, which shows as a seam, and tiles that overlap draw a fade
+twice. A tile is cut until its matrix is within a quarter of a logical
+pixel of the projection at its corners, across the way it bends; 219's
+panel at 35° is some 440 tiles, and they cost a repaint a few
+milliseconds. Behind the viewer is nothing (`inFront`), and a layer on macOS
+takes only matrices of the plane, so a box out of it is never lifted.
+
 **An animation is a style that changes as time passes, and runs as one.**
 `css/timeline.ts` keeps when each element's animations started — by
 element, so a document built again finds them — and the cascade asks it

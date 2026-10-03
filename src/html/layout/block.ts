@@ -37,8 +37,26 @@ import {
   INLINE_BEFORE_ABSOLUTE,
   scrolls,
 } from '../css/style.js';
-import { about, linearOf, matrixOf, transformed } from '../css/transform.js';
-import type { Matrix } from '../css/transform.js';
+import {
+  about,
+  linearOf,
+  matrix4Of,
+  matrixOf,
+  outOfPlane,
+  transformed,
+  translation4,
+} from '../css/transform.js';
+import type { Placed } from '../css/transform.js';
+import {
+  affineOf,
+  facesAway,
+  multiply4,
+  perspective4,
+  projectionIsAffine,
+  projectionOf,
+  translate4,
+} from '../css/transform3d.js';
+import type { Projection } from '../css/transform3d.js';
 import { lineOf, spanToName } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import {
@@ -4867,9 +4885,11 @@ function translationOf(box: Box, style = box.style): [number, number] {
  * `transform-origin`, where layout has put it (`applyRelativeOffsets`). Null
  * for a box that only moves, which is every box but a few, and for an
  * inline box, which no transform applies to (CSS Transforms 1, 2: a
- * transformable element is no inline box).
+ * transformable element is no inline box). A transform out of the plane
+ * comes to what the box's plane does through it, seen in its containing
+ * block's `perspective` (`projectedMatrix`).
  */
-export function placedMatrix(box: Box): Matrix | null {
+export function placedMatrix(box: Box): Placed | null {
   const style = box.style;
   if (
     style.transform === null &&
@@ -4881,14 +4901,120 @@ export function placedMatrix(box: Box): Matrix | null {
   if (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break') {
     return null;
   }
-  const linear = linearOf(style);
-  if (!linear) return null;
+  const solid = outOfPlane(style);
+  const linear = solid ? null : linearOf(style);
+  if (!solid && !linear) return null;
   const origin = style.transformOrigin;
-  return about(
-    linear,
-    box.x + resolve(origin[0], box.width, 0),
-    box.y + resolve(origin[1], box.height, 0),
+  const ox = box.x + resolve(origin[0], box.width, 0);
+  const oy = box.y + resolve(origin[1], box.height, 0);
+  return linear ? about(linear, ox, oy) : projectedMatrix(box, ox, oy);
+}
+
+/** A matrix that flattens the plane to nothing, which draws nothing and is
+ *  under no point. */
+const NOWHERE: Placed = [0, 0, 0, 0, 0, 0];
+
+/**
+ * `placedMatrix` for a transform out of the plane (CSS Transforms 2, 6): its
+ * 4×4 less the translation layout moved the box by, about the origin where
+ * layout put it — the depth of `transform-origin` with it — and in the
+ * perspective of the box it is laid out in where that has one
+ * (`perspectiveFor`), from that box's `perspective-origin`. What the box's
+ * plane comes to through that is a projection, which is a matrix of the
+ * plane where all of it is as far from the viewer as any of it — no
+ * perspective, or none it is turned in — and draws the side that goes away
+ * smaller where it is not. A box wholly behind the viewer is nowhere, and
+ * so is one turned to face away from it under `backface-visibility:
+ * hidden` — by its own transform and the perspective, since what a box
+ * holds is flattened into its plane (`transform-style: flat`).
+ */
+function projectedMatrix(box: Box, ox: number, oy: number): Placed | null {
+  const style = box.style;
+  const m = matrix4Of(style, box.width, box.height)!;
+  const [tx, ty] = translation4(m);
+  const oz = style.transformOriginZ;
+  let placed = multiply4(
+    translate4(ox, oy, oz),
+    multiply4(multiply4(translate4(-tx, -ty, 0), m), translate4(-ox, -oy, -oz)),
   );
+  const holder = perspectiveFor(box);
+  if (holder) {
+    const at = holder.style.perspectiveOrigin;
+    const px = holder.x + resolve(at[0], holder.width, 0);
+    const py = holder.y + resolve(at[1], holder.height, 0);
+    placed = multiply4(
+      multiply4(translate4(px, py, 0), perspective4(holder.style.perspective!)),
+      multiply4(translate4(-px, -py, 0), placed),
+    );
+  }
+  if (style.backfaceVisibility === 'hidden' && facesAway(placed)) {
+    return NOWHERE;
+  }
+  const p = projectionOf(placed);
+  // the furthest any corner of the box is: none in front of the viewer, and
+  // nothing of it is seen
+  let most = -Infinity;
+  for (const [x, y] of [
+    [box.x, box.y],
+    [box.x + box.width, box.y],
+    [box.x, box.y + box.height],
+    [box.x + box.width, box.y + box.height],
+  ]) {
+    most = Math.max(most, p[6] * x + p[7] * y + p[8]);
+  }
+  if (!(most > 0)) return NOWHERE;
+  if (!projectionIsAffine(p)) {
+    return p.map((v) => v / most) as unknown as Projection;
+  }
+  const a = affineOf(p);
+  const near = (u: number, v: number) => Math.abs(u - v) < 1e-9;
+  return near(a[0], 1) &&
+    near(a[1], 0) &&
+    near(a[2], 0) &&
+    near(a[3], 1) &&
+    near(a[4], 0) &&
+    near(a[5], 0)
+    ? null
+    : a;
+}
+
+/**
+ * The box whose `perspective` a box's transform is seen in: the nearest
+ * with one up its containing blocks — the box it is positioned in, for one
+ * out of the flow, and its parent for one in it (CSS Transforms 2, 6) —
+ * through boxes positioned and not transformed, as Blink hangs a box's
+ * transform under the perspective of the nearest box above it that has
+ * one. Not past a box with a transform of its own: what that holds is
+ * flattened into its plane (`transform-style: flat`), which its own
+ * transform is all the perspective around it sees of. No inline box's.
+ * Null where there is none.
+ */
+function perspectiveFor(box: Box): Box | null {
+  for (let at = holderOf(box); at; at = holderOf(at)) {
+    // an inline box is not transformable, and has no rectangle to be seen
+    // from (CSS Transforms 1, 2)
+    if (at.kind === 'inline') continue;
+    const style = at.style;
+    if (style.perspective !== null) return at;
+    if (
+      style.transform !== null ||
+      style.translate !== null ||
+      style.rotate !== null ||
+      style.scale !== null
+    ) {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** The box a box's transform is placed in (`perspectiveFor`): the one it is
+ *  positioned in, out of the flow, and its parent in it. */
+function holderOf(box: Box): Box | null {
+  const position = box.style.position;
+  return position === 'absolute' || position === 'fixed'
+    ? containingBlockFor(box)
+    : box.parent;
 }
 
 /**

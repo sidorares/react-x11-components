@@ -730,14 +730,30 @@ export interface ComputedStyle {
   rotate: number | null;
   /** `scale`: across and down; null for `none`. */
   scale: [number, number] | null;
-  /** `transform`: its functions in the order written, the ones out of the
-   *  plane left out (`css/transform.ts`); null for `none`. Any of the four
-   *  makes the box a containing block and a stacking context, and paints it
-   *  with the positioned boxes (CSS Transforms 1, 3; `transformed`). */
+  /** `transform`: its functions in the order written (`css/transform.ts`);
+   *  null for `none`. Any of the four makes the box a containing block and
+   *  a stacking context, and paints it with the positioned boxes (CSS
+   *  Transforms 1, 3; `transformed`). */
   transform: TransformFunction[] | null;
   /** `transform-origin`: the point a transform turns and scales about,
    *  from the border box's top left, a percentage of its width and height. */
   transformOrigin: [Len, Len];
+  /** `transform-origin`'s depth: how far toward the viewer the point is,
+   *  in device pixels, which only a turn out of the plane is about. */
+  transformOriginZ: number;
+  /** `perspective`: how far the viewer is from the plane the boxes this
+   *  box is the containing block of are laid out in, in device pixels — so
+   *  that one a transform turns out of that plane is drawn smaller where
+   *  it goes away and larger where it comes near (CSS Transforms 2, 6.1);
+   *  null for `none`. Like a transform it makes the box a containing block
+   *  and a stacking context (`transformed`). */
+  perspective: number | null;
+  /** `perspective-origin`: where across the box the viewer is, from its
+   *  border box's top left, as a position is. */
+  perspectiveOrigin: [Len, Len];
+  /** `backface-visibility`: whether the box is drawn where its transform
+   *  turns it to face away from the viewer. */
+  backfaceVisibility: 'visible' | 'hidden';
   /** `animation` and its longhands, each a list (`css/animation.ts`):
    *  `NO_ANIMATIONS`, shared, where nothing sets one. What they leave on
    *  the style is in its other fields already (`Cascade._computeStyle`). */
@@ -1254,6 +1270,10 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     scale: null,
     transform: null,
     transformOrigin: [{ pct: 50 }, { pct: 50 }],
+    transformOriginZ: 0,
+    perspective: null,
+    perspectiveOrigin: [{ pct: 50 }, { pct: 50 }],
+    backfaceVisibility: 'visible',
     animations: NO_ANIMATIONS,
     transitions: NO_TRANSITIONS,
     zIndex: AUTO,
@@ -2179,13 +2199,41 @@ export function applyDeclaration(
     }
     case 'transform-origin':
     case '-webkit-transform-origin': {
-      // across and down, as a position is, and a depth nothing here has
+      // across and down, as a position is, and a depth, a length
       const parts = splitValue(value);
+      let depth = 0;
       if (parts.length === 3) {
-        if (typeof parseLength(parts.pop()!, ctx) !== 'number') return;
+        const z = parseLength(parts.pop()!, ctx);
+        if (typeof z !== 'number') return;
+        depth = z;
       } else if (parts.length > 2) return;
       const origin = positionPair(parts, ctx);
-      if (origin) style.transformOrigin = origin;
+      if (!origin) return;
+      style.transformOrigin = origin;
+      style.transformOriginZ = depth;
+      return;
+    }
+    case 'perspective':
+    case '-webkit-perspective': {
+      if (value.trim().toLowerCase() === 'none') {
+        style.perspective = null;
+        return;
+      }
+      // a distance, and none behind the viewer
+      const depth = parseLength(value, ctx);
+      if (typeof depth === 'number' && depth >= 0) style.perspective = depth;
+      return;
+    }
+    case 'perspective-origin':
+    case '-webkit-perspective-origin': {
+      const origin = positionPair(splitValue(value), ctx);
+      if (origin) style.perspectiveOrigin = origin;
+      return;
+    }
+    case 'backface-visibility':
+    case '-webkit-backface-visibility': {
+      const v = value.trim().toLowerCase();
+      if (v === 'visible' || v === 'hidden') style.backfaceVisibility = v;
       return;
     }
     case 'visibility': {
@@ -6603,8 +6651,14 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   scale: ['scale'],
   transform: ['transform'],
   '-webkit-transform': ['transform'],
-  'transform-origin': ['transformOrigin'],
-  '-webkit-transform-origin': ['transformOrigin'],
+  'transform-origin': ['transformOrigin', 'transformOriginZ'],
+  '-webkit-transform-origin': ['transformOrigin', 'transformOriginZ'],
+  perspective: ['perspective'],
+  '-webkit-perspective': ['perspective'],
+  'perspective-origin': ['perspectiveOrigin'],
+  '-webkit-perspective-origin': ['perspectiveOrigin'],
+  'backface-visibility': ['backfaceVisibility'],
+  '-webkit-backface-visibility': ['backfaceVisibility'],
   'z-index': ['zIndex'],
   'vertical-align': ['verticalAlign'],
   'text-decoration': [

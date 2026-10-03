@@ -1,6 +1,6 @@
 // `transform`, and the properties that are one function of it each —
 // `translate`, `rotate` and `scale` (CSS Transforms 1 and 2) — read down to
-// what is drawn: a matrix in the plane.
+// what is drawn: a matrix in the plane, or what the plane comes to out of it.
 //
 // A transform moves nothing but the box it is on and what that holds, so it
 // is no part of layout: the box is laid out where it would be, moved by the
@@ -13,8 +13,12 @@
 // only a box that turns, scales or skews is painted through a matrix.
 //
 // The functions out of the plane — `rotateX()`, `translateZ()`,
-// `perspective()` — are read and are no part of the matrix: a declaration
-// that names one is kept, and drawn as the rest of its list.
+// `perspective()`, a `matrix3d()` with a depth — are kept as what they are
+// in space (`css/transform3d.ts`): a list with one in it is a 4×4 matrix,
+// whose translation across and down is still layout's, and the rest of it
+// is what the box's plane comes to seen in the `perspective` of the box it
+// is laid out in (`placedMatrix`) — a matrix of the plane, or a projection
+// that draws its far side smaller.
 //
 // Each function keeps what it was as well as its matrix (`Primitive`): an
 // animation from `rotate(0)` to `rotate(360deg)` turns once, where the
@@ -31,27 +35,55 @@ import {
 } from './values.js';
 import type { Len, UnitContext } from './values.js';
 import type { ComputedStyle } from './style.js';
+import {
+  IDENTITY4,
+  flatten4,
+  invertProjection,
+  isPlanar,
+  lift,
+  multiply4,
+  perspective4,
+  project,
+  projectRect,
+  rotate4,
+  scale4,
+  translate4,
+} from './transform3d.js';
+import type { Mat4, Projection } from './transform3d.js';
 
 /** `matrix(a, b, c, d, e, f)`: the point (x, y) goes to
  *  (ax + cy + e, bx + dy + f), as a 2d context's `transform` has it. */
 export type Matrix = readonly [number, number, number, number, number, number];
 
+/** What a box's plane comes to where it is drawn (`placedMatrix`): a
+ *  matrix of the plane, or a projection of it where a perspective shows
+ *  its far side smaller than its near one. */
+export type Placed = Matrix | Projection;
+
 /** One function of a `transform` list: a translation by lengths, a
- *  percentage of the box's own width across and its height down, or a
- *  matrix, with the function it was where that is one an animation
- *  interpolates by its arguments. */
+ *  percentage of the box's own width across and its height down, and a
+ *  depth in pixels where it moves toward the viewer; a matrix of the
+ *  plane; or a 4×4 for a function out of it — each with the function it
+ *  was where that is one an animation interpolates by its arguments. */
 export type TransformFunction =
-  { by: [Len, Len] } | { matrix: Matrix; fn?: Primitive };
+  | { by: [Len, Len]; z?: number }
+  | { matrix: Matrix; fn?: Primitive }
+  | { solid: Mat4; fn?: Primitive };
 
-/** A function of the plane that is numbers alone, as its arguments: a
- *  scale across and down, a turn in degrees, a skew in degrees across and
- *  down. `matrix()` is none of them. */
+/** A function that is numbers alone, as its arguments: a scale across,
+ *  down and in depth, a turn in degrees in the plane or about an axis
+ *  (x, y, z) in space, a skew in degrees across and down, and a
+ *  perspective's distance in pixels, null for `none`. `matrix()` and
+ *  `matrix3d()` are none of them. */
 export type Primitive =
-  | { kind: 'scale'; x: number; y: number }
+  | { kind: 'scale'; x: number; y: number; z?: number }
   | { kind: 'rotate'; angle: number }
-  | { kind: 'skew'; x: number; y: number };
+  | { kind: 'rotate3d'; x: number; y: number; z: number; angle: number }
+  | { kind: 'skew'; x: number; y: number }
+  | { kind: 'perspective'; depth: number | null };
 
-/** The matrix a primitive is. */
+/** The matrix a primitive is in the plane: of one out of it, what it does
+ *  across and down (`flatten4`). */
 export function primitiveMatrix(fn: Primitive): Matrix {
   switch (fn.kind) {
     case 'scale':
@@ -60,6 +92,22 @@ export function primitiveMatrix(fn: Primitive): Matrix {
       return rotation(fn.angle);
     case 'skew':
       return [1, tanDegrees(fn.y), tanDegrees(fn.x), 1, 0, 0];
+    default:
+      return flatten4(primitiveSolid(fn));
+  }
+}
+
+/** The 4×4 a primitive is. */
+export function primitiveSolid(fn: Primitive): Mat4 {
+  switch (fn.kind) {
+    case 'scale':
+      return scale4(fn.x, fn.y, fn.z ?? 1);
+    case 'rotate3d':
+      return rotate4(fn.x, fn.y, fn.z, fn.angle);
+    case 'perspective':
+      return fn.depth === null ? IDENTITY4 : perspective4(fn.depth);
+    default:
+      return lift(primitiveMatrix(fn));
   }
 }
 
@@ -67,9 +115,31 @@ function tanDegrees(degrees: number): number {
   return Math.tan((degrees * Math.PI) / 180);
 }
 
-/** A function of a list as its primitive: the matrix and what made it. */
+/** A function of a list as its primitive: the matrix and what made it —
+ *  of the plane where it does nothing out of it, as `rotateY(0)` and
+ *  `scale3d(2, 2, 1)` do, and the 4×4 where it does. */
 export function primitive(fn: Primitive): TransformFunction {
-  return { matrix: primitiveMatrix(fn), fn };
+  if (fn.kind === 'rotate' || fn.kind === 'skew') {
+    return { matrix: primitiveMatrix(fn), fn };
+  }
+  const solid = primitiveSolid(fn);
+  return isPlanar(solid) ? { matrix: flatten4(solid), fn } : { solid, fn };
+}
+
+/** A function of a list as the 4×4 it is: a translation by `width` and
+ *  `height` where its lengths are percentages of them. */
+export function solidOf(
+  fn: TransformFunction,
+  width: number,
+  height: number,
+): Mat4 {
+  if ('solid' in fn) return fn.solid;
+  if ('matrix' in fn) return lift(fn.matrix);
+  return translate4(
+    resolve(fn.by[0], width, 0),
+    resolve(fn.by[1], height, 0),
+    fn.z ?? 0,
+  );
 }
 
 export const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
@@ -90,7 +160,10 @@ export function multiply(m: Matrix, n: Matrix): Matrix {
 /** The matrix that undoes `m`, or null where none does: one that flattens
  *  the plane to a line or a point, which draws nothing (CSS Transforms 1,
  *  6). */
-export function invert(m: Matrix): Matrix | null {
+export function invert(m: Matrix): Matrix | null;
+export function invert(m: Placed): Placed | null;
+export function invert(m: Placed): Placed | null {
+  if (m.length === 9) return invertProjection(m);
   const det = m[0] * m[3] - m[1] * m[2];
   if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return null;
   const a = m[3] / det;
@@ -100,19 +173,24 @@ export function invert(m: Matrix): Matrix | null {
   return [a, b, c, d, -(a * m[4] + c * m[5]), -(b * m[4] + d * m[5])];
 }
 
-/** Where a point goes. */
-export function mapPoint(m: Matrix, x: number, y: number): [number, number] {
+/** Where a point goes: through a projection, nowhere — out at infinity —
+ *  where it goes behind the viewer, which sees nothing of it. */
+export function mapPoint(m: Placed, x: number, y: number): [number, number] {
+  if (m.length === 9) return project(m, x, y) ?? [Infinity, Infinity];
   return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 }
 
-/** The rectangle around where a rectangle goes: its four corners'. */
+/** The rectangle around where a rectangle goes: its four corners', and
+ *  through a projection the corners of the part of it in front of the
+ *  viewer (`projectRect`). */
 export function mapRect(
-  m: Matrix,
+  m: Placed,
   x: number,
   y: number,
   width: number,
   height: number,
 ): { x: number; y: number; width: number; height: number } {
+  if (m.length === 9) return projectRect(m, x, y, width, height);
   let x1 = Infinity;
   let y1 = Infinity;
   let x2 = -Infinity;
@@ -199,9 +277,9 @@ function parseOffset(value: string | undefined, ctx: UnitContext): Len | null {
  * A `transform`: its functions in the order written. Null for `none`, and
  * undefined for what is no transform list, which drops the declaration. A
  * list that comes to nothing in the plane — `translateZ(0)`, which pages
- * write to have a layer made — is a list of none, and a transform still: the
- * box is a containing block and a stacking context as any transformed box
- * is.
+ * write to have a layer made — is a list of a translation by nothing, and
+ * a transform still: the box is a containing block and a stacking context
+ * as any transformed box is.
  */
 export function parseTransform(
   value: string,
@@ -222,8 +300,8 @@ export function parseTransform(
   return out;
 }
 
-/** One function: what it is in the plane, null where that is nothing, and
- *  undefined where it is no function or its arguments are not its own. */
+/** One function: what it is, null where that is nothing, and undefined
+ *  where it is no function or its arguments are not its own. */
 function functionOf(
   name: string,
   args: string[],
@@ -249,11 +327,10 @@ function functionOf(
       if (count !== 3) return undefined;
       const x = parseOffset(args[0], ctx);
       const y = parseOffset(args[1], ctx);
-      if (x === null || y === null) return undefined;
       // a depth is a length, and no percentage
-      return typeof parseOffset(args[2], ctx) === 'number'
-        ? { by: [x, y] }
-        : undefined;
+      const z = parseOffset(args[2], ctx);
+      if (x === null || y === null || typeof z !== 'number') return undefined;
+      return z ? { by: [x, y], z } : { by: [x, y] };
     }
     case 'translatex':
     case 'translatey': {
@@ -261,10 +338,11 @@ function functionOf(
       if (by === null) return undefined;
       return { by: name === 'translatex' ? [by, 0] : [0, by] };
     }
-    case 'translatez':
-      return count === 1 && typeof parseOffset(args[0], ctx) === 'number'
-        ? null
-        : undefined;
+    case 'translatez': {
+      const z = count === 1 ? parseOffset(args[0], ctx) : null;
+      if (typeof z !== 'number') return undefined;
+      return z ? { by: [0, 0], z } : { by: [0, 0] };
+    }
     case 'scale': {
       const f = count >= 1 && count <= 2 ? factors() : null;
       return f
@@ -273,7 +351,9 @@ function functionOf(
     }
     case 'scale3d': {
       const f = count === 3 ? factors() : null;
-      return f ? primitive({ kind: 'scale', x: f[0], y: f[1] }) : undefined;
+      return f
+        ? primitive({ kind: 'scale', x: f[0], y: f[1], z: f[2] })
+        : undefined;
     }
     case 'scalex':
     case 'scaley': {
@@ -285,16 +365,22 @@ function functionOf(
           : { kind: 'scale', x: 1, y: f[0] },
       );
     }
-    case 'scalez':
-      return count === 1 && factors() ? null : undefined;
+    case 'scalez': {
+      const f = count === 1 ? factors() : null;
+      return f ? primitive({ kind: 'scale', x: 1, y: 1, z: f[0] }) : undefined;
+    }
     case 'rotate':
     case 'rotatez': {
       const a = count === 1 ? angles() : null;
       return a ? primitive({ kind: 'rotate', angle: a[0] }) : undefined;
     }
     case 'rotatex':
-    case 'rotatey':
-      return count === 1 && angles() ? null : undefined;
+    case 'rotatey': {
+      const a = count === 1 ? angles() : null;
+      if (!a) return undefined;
+      const x = name === 'rotatex' ? 1 : 0;
+      return primitive({ kind: 'rotate3d', x, y: 1 - x, z: 0, angle: a[0] });
+    }
     case 'rotate3d': {
       if (count !== 4) return undefined;
       const axis = args.slice(0, 3).map(parseNumber);
@@ -324,30 +410,50 @@ function functionOf(
         return undefined;
       }
       const v = n as number[];
-      // the plane's part of a 4×4, whose columns are written in turn; a
-      // matrix's translation is in CSS pixels, as a length without its unit
-      const [a, b, c, d, e, f] = flat
-        ? v
-        : [v[0], v[1], v[4], v[5], v[12], v[13]];
-      return { matrix: [a, b, c, d, e * ctx.scale, f * ctx.scale] };
+      // A matrix's translation is in CSS pixels, as a length without its
+      // unit; and a 4×4's columns are written in turn, its depth's
+      // translation a length as well and the row a perspective divides by
+      // a length's reciprocal, so the device's pixels are S·M·S⁻¹ with S
+      // the scale in all three directions.
+      if (flat) {
+        const [a, b, c, d, e, f] = v;
+        return { matrix: [a, b, c, d, e * ctx.scale, f * ctx.scale] };
+      }
+      const s = ctx.scale;
+      const solid = v.map((x, i) =>
+        i === 12 || i === 13 || i === 14
+          ? x * s
+          : i === 3 || i === 7 || i === 11
+            ? x / s
+            : x,
+      );
+      return isPlanar(solid) ? { matrix: flatten4(solid) } : { solid };
     }
     case 'perspective': {
       if (count !== 1) return undefined;
-      if (args[0].toLowerCase() === 'none') return null;
-      return typeof parseOffset(args[0], ctx) === 'number' ? null : undefined;
+      if (args[0].toLowerCase() === 'none') {
+        return primitive({ kind: 'perspective', depth: null });
+      }
+      const depth = parseOffset(args[0], ctx);
+      // a distance, and none behind the viewer
+      if (typeof depth !== 'number' || depth < 0) return undefined;
+      return primitive({ kind: 'perspective', depth });
     }
     default:
       return undefined;
   }
 }
 
-/** A turn about an axis, where the axis is the one out of the page — the
- *  other way where it points into it; about any other it is out of the
- *  plane, and nothing here. */
-function axisRotation(axis: number[], angle: number): TransformFunction | null {
+/** A turn about an axis: in the plane where the axis is the one out of the
+ *  page — the other way where it points into it — and in space about any
+ *  other. An axis of no length is no turn, and still a function of the
+ *  list, which an animation interpolates function by function. */
+function axisRotation(axis: number[], angle: number): TransformFunction {
   const [x, y, z] = axis;
-  if (x !== 0 || y !== 0 || z === 0) return null;
-  return primitive({ kind: 'rotate', angle: z > 0 ? angle : -angle });
+  if (x === 0 && y === 0 && z !== 0) {
+    return primitive({ kind: 'rotate', angle: z > 0 ? angle : -angle });
+  }
+  return primitive({ kind: 'rotate3d', x, y, z, angle });
 }
 
 /**
@@ -373,9 +479,9 @@ export function parseRotate(value: string): number | null | undefined {
   }
   const vector = axis.map(parseNumber);
   if (vector.length !== 3 || vector.some((n) => n === null)) return undefined;
-  const turned = axisRotation(vector as number[], 1);
-  if (!turned) return null;
-  return (vector[2] as number) > 0 ? angle : -angle;
+  const [x, y, z] = vector as number[];
+  if (x !== 0 || y !== 0 || z === 0) return null;
+  return z > 0 ? angle : -angle;
 }
 
 /** `scale` (CSS Transforms 2, 5): across and down, the one factor both
@@ -393,20 +499,76 @@ export function parseScale(value: string): [number, number] | null | undefined {
 
 type Transformed = Pick<
   ComputedStyle,
-  'translate' | 'rotate' | 'scale' | 'transform'
+  'translate' | 'rotate' | 'scale' | 'transform' | 'perspective'
 >;
 
 /** Whether a style transforms its box: any of the four properties at
  *  anything but `none`, whatever it comes to — which makes the box a
  *  containing block for all it holds and a stacking context (CSS
- *  Transforms 1, 3). */
+ *  Transforms 1, 3) — or a `perspective` for what it holds, which does the
+ *  same (CSS Transforms 2, 6.1). */
 export function transformed(style: Transformed): boolean {
   return (
     style.transform !== null ||
     style.translate !== null ||
     style.rotate !== null ||
-    style.scale !== null
+    style.scale !== null ||
+    style.perspective !== null
   );
+}
+
+const SOLID = new WeakMap<readonly TransformFunction[], boolean>();
+
+/** Whether a style's transform takes its box out of the plane: a function
+ *  of its list that turns it about an axis in the page, moves it toward
+ *  the viewer or puts it in a perspective of its own. Kept by the list,
+ *  which every style with it shares. */
+export function outOfPlane(style: Pick<ComputedStyle, 'transform'>): boolean {
+  const list = style.transform;
+  if (!list) return false;
+  let solid = SOLID.get(list);
+  if (solid === undefined) {
+    solid = list.some((fn) => 'solid' in fn || ('by' in fn && !!fn.z));
+    SOLID.set(list, solid);
+  }
+  return solid;
+}
+
+/**
+ * A style's whole transform in space, for a box `width` by `height`
+ * (`matrixOf`), where it takes the box out of the plane; null where it
+ * does not, and `matrixOf` is all of it.
+ */
+export function matrix4Of(
+  style: Transformed,
+  width: number,
+  height: number,
+): Mat4 | null {
+  if (!outOfPlane(style)) return null;
+  let m: Mat4 = IDENTITY4;
+  const moved = style.translate;
+  if (moved) {
+    m = translate4(
+      resolve(moved[0], width, 0),
+      resolve(moved[1], height, 0),
+      0,
+    );
+  }
+  if (style.rotate !== null) m = multiply4(m, lift(rotation(style.rotate)));
+  if (style.scale) m = multiply4(m, scale4(style.scale[0], style.scale[1], 1));
+  for (const fn of style.transform!)
+    m = multiply4(m, solidOf(fn, width, height));
+  return m;
+}
+
+/** How far a 4×4 moves the point it turns about, across and down where the
+ *  plane is drawn: the translation layout gives the box
+ *  (`applyRelativeOffsets`). None where the point goes to the viewer's eye,
+ *  where nothing of the box is drawn. */
+export function translation4(m: Mat4): [number, number] {
+  const w = m[15];
+  if (!(Math.abs(w) > 1e-12)) return [0, 0];
+  return [m[12] / w, m[13] / w];
 }
 
 /**
@@ -420,6 +582,12 @@ export function matrixOf(
   width: number,
   height: number,
 ): Matrix {
+  const solid = matrix4Of(style, width, height);
+  if (solid) {
+    // what it does across and down, and how far it moves its origin there
+    const [tx, ty] = translation4(solid);
+    return [solid[0], solid[1], solid[4], solid[5], tx, ty];
+  }
   let m = IDENTITY;
   const moved = style.translate;
   if (moved) {
@@ -433,16 +601,18 @@ export function matrixOf(
     for (const fn of style.transform) {
       m = multiply(
         m,
-        'matrix' in fn
-          ? fn.matrix
-          : [
+        'by' in fn
+          ? [
               1,
               0,
               0,
               1,
               resolve(fn.by[0], width, 0),
               resolve(fn.by[1], height, 0),
-            ],
+            ]
+          : 'matrix' in fn
+            ? fn.matrix
+            : flatten4(fn.solid),
       );
     }
   }
