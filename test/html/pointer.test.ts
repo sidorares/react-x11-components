@@ -1410,6 +1410,62 @@ metric(
 );
 
 metric(
+  'a pseudo-element is its element to the pointer, so a box its hover slides down the cable it hangs from keeps the hover',
+  async (t) => {
+    // The Zen Garden's "Steel" (219) hangs each panel from a cable, a
+    // `::before` 600px tall above it, and slides the panel down the cable
+    // on `:hover`. A browser hits a pseudo-element as its element (CSSOM
+    // View 5, `elementFromPoint`), so the pointer stays over the panel's
+    // cable and the panel stays hovered. Here the cable named nothing: a
+    // tenth of a second after the panel left the pointer, core asked again
+    // what was under it, the hover went, the panel slid back under the
+    // pointer, and round again.
+    const clock = holdClock(t, hoverClock);
+    const { node } = await render(
+      '<style>body{margin:0} #h{position:absolute;top:160px;left:40px;' +
+        'width:200px;height:40px;background:#c33;transform:scale(.8)}' +
+        '#h::before{content:"";position:absolute;left:0;top:-150px;' +
+        'width:200px;height:150px;z-index:-1;background:#33c}' +
+        '#h:hover{top:260px}</style><div id="h"></div>',
+      300,
+    );
+    const el = view(node);
+    const abs = (node as unknown as DrawnNode).abs;
+    const id = (x: number, y: number) =>
+      el.elementAtPoint(abs.x + x, abs.y + y)?.attribs.id;
+    assert.strictEqual(id(140, 180), 'h', 'its own box');
+    assert.strictEqual(id(140, 100), 'h', 'its ::before, above it');
+    assert.strictEqual(id(140, 5), undefined, 'and nothing past that');
+
+    const hovered = () =>
+      (el as unknown as { _hovered: { attribs: { id?: string } }[] })
+        ._hovered[0]?.attribs.id;
+    const top = () =>
+      (boxOf(el, 'h') as unknown as { style: ComputedStyle }).style.top;
+    await act(async () => {
+      fireEvent.mouseMove(node, {
+        dx: 140 - abs.width / 2,
+        dy: 180 - abs.height / 2,
+      });
+    });
+    await waitFor(() => assert.strictEqual(hovered(), 'h'));
+    assert.strictEqual(top(), 260, 'it slid down, off the pointer');
+    // core asks again at the point the pointer stayed at, the content
+    // having moved under it (react-x11#793) — a move to that same point —
+    // and the document answers once it has been still a tenth of a second
+    const doc = el as unknown as {
+      _pointerAt: { x: number; y: number };
+      defaultMouseMove(ev: { x: number; y: number }): void;
+    };
+    await act(async () => doc.defaultMouseMove({ ...doc._pointerAt }));
+    assert.ok(clock.pending, 'asked again');
+    for (let i = 0; i < 10; i += 1) await clock.frame();
+    assert.strictEqual(hovered(), 'h', 'over its cable, it is still hovered');
+    assert.strictEqual(top(), 260, 'and it stays down');
+  },
+);
+
+metric(
   "the cursor under the pointer is the document's: a link's pointer, text's I-beam",
   async () => {
     // what core asks a drawn element for as the pointer moves (`cursorAt`,

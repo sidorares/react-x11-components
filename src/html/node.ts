@@ -4780,13 +4780,15 @@ function deepestAt(
       if (!holdsAbsolute(child)) return;
       clipped = [...clipped, child];
     }
-    if (own && child.el && clipped.length === 0) {
-      take(
-        child.el,
-        style,
-        [...context, ground ? HIT_CONTEXT : HIT_BLOCK],
-        false,
-      );
+    // A pseudo-element's box is its element's to the pointer (CSSOM View
+    // 5, `elementFromPoint`; Selectors 4, 11.2): a `::before` hung above
+    // its box — the Zen Garden's cables that panels hang from — hovers the
+    // panel, as it does in a browser. Named by nothing, it kept nothing
+    // under the pointer, and a panel that slid down its cable on `:hover`
+    // lost the hover in the frame it left the pointer and slid back.
+    const named = child.el ?? GENERATED_FROM.get(child) ?? null;
+    if (own && named && clipped.length === 0) {
+      take(named, style, [...context, ground ? HIT_CONTEXT : HIT_BLOCK], false);
     }
     visit(child, context, stack, clipped);
   };
