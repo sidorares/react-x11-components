@@ -513,9 +513,8 @@ function MarchingEdges({
   pane: RefObject<FlowGraphNode | null>;
 }): null {
   const { visible } = useWindowState();
-  // `animations` is the reduced-motion half, read at run time: react-x11
-  // answers it on every backend and its declarations leave it out
-  const { animations } = useDesktopSettings() as { animations?: boolean };
+  // the reduced-motion half, which react-x11 answers on every backend
+  const { animations } = useDesktopSettings();
   const marching = visible !== false && animations !== false;
   useLayoutEffect(() => {
     pane.current?.setMarching(marching);

@@ -1753,7 +1753,12 @@ compositor:
 - and nothing the document paints after it falls anywhere it can be while
   it runs: a box positioned after it or with a higher `z-index`, the
   outline of the stacking context it is in. What is painted before it is
-  under its layer as it is under it.
+  under its layer as it is under it. An element offered with it and
+  painted after it is no such thing, since its layer stands over this
+  one's: the rows of a list that slide in one after another, each into
+  the row before it, all go on layers, listed in the order the document
+  paints them, and the presenter takes a row off its layer in the frame it
+  gives back a later one over it (react-x11 2.36.0).
 
 So a toast over the page, fixed or not, a panel fading in over text, a block that slides
 up over the paragraph after it, a spinner and a card turning pass, and a

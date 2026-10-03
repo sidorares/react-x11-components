@@ -1684,6 +1684,61 @@ test('an element inside a box fixed to the viewport goes on a layer at the viewp
   );
 });
 
+test('parts that overlap are offered together and listed in the order the document paints them, the later over the earlier', async (t) => {
+  // A staggered list: each row slides in from 8px below, into the row
+  // before it. Every row's layer stands over the ones painted before it,
+  // so each is offered on the word that the rows after it are lifted too,
+  // which the presenter keeps (react-x11's `Node.sprites()`). The document
+  // used to keep every row but the last for itself. The first row's
+  // z-index paints it last, and it is listed last.
+  const doc = await running(
+    t,
+    '<style>@keyframes in { from { opacity: 0; transform: translateY(8px) }' +
+      ' to { opacity: 1; transform: none } }' +
+      '.r { animation: in 400ms ease-out both; height: 10px; margin: 0;' +
+      ' background: #ccd }</style>' +
+      '<div class="r" id="a" style="position: relative; z-index: 2"></div>' +
+      '<div class="r" id="b" style="animation-delay: 40ms"></div>' +
+      '<div class="r" id="c" style="animation-delay: 80ms"></div>',
+  );
+  await doc.at(100);
+  const sprites = doc.el.sprites()!;
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  // where layout puts each row, with no transform: a row of 10px each
+  const top = sprites.at(-1)!.rect.y - abs.y;
+  assert.deepStrictEqual(
+    sprites.map((s) => s.rect.y - abs.y),
+    [top + 10, top + 20, top],
+    'every row, b and c in the order they are painted and a after them',
+  );
+
+  // a box painted over the last row, which no layer carries, keeps that
+  // row for the document, and every row whose slide reaches one the
+  // document keeps: c, then b, then a
+  const page = (gap: number) =>
+    '<style>@keyframes in { from { opacity: 0; transform: translateY(8px) }' +
+    ' to { opacity: 1; transform: none } }' +
+    '.r { animation: in 400ms ease-out both; height: 10px; margin: 0;' +
+    ' background: #ccd } #o { position: relative; height: 4px;' +
+    ' margin-top: -4px; background: #000 }</style>' +
+    `<div class="r" id="a" style="margin-bottom: ${gap}px"></div>` +
+    '<div class="r" id="b"></div><div class="r" id="c"></div><div id="o"></div>';
+  const covered = await running(t, page(0));
+  await covered.at(100);
+  assert.strictEqual(covered.el.sprites(), null, 'no row is offered');
+
+  // …and a row clear of the ones it keeps keeps its layer
+  const clear = await running(t, page(20));
+  await clear.at(100);
+  const kept = clear.el.sprites() ?? [];
+  const clearAbs = (clear.el as unknown as DrawnNode).abs;
+  assert.deepStrictEqual(
+    kept.map((s) => s.rect.y - clearAbs.y),
+    [top],
+    'only a, which its slide keeps 12px clear of b',
+  );
+});
+
 test('a box that clips an element cuts its layer: the sprite is offered with the clip, and what is painted after it outside the clip keeps nothing from it', async (t) => {
   const page = (overflow: string) =>
     '<style>@keyframes slide { from { transform: translateX(-40px) }' +

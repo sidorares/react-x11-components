@@ -4905,7 +4905,9 @@ function gatherLayers(box: Box, context: Box, into: Box[]): void {
 /**
  * Whether anything the document paints after `box` puts ink within
  * `extent`, in the document's coordinates: what a layer drawn over the
- * document in `box`'s place would wrongly cover (`src/html/sprites.ts`).
+ * document in `box`'s place would wrongly cover (`src/html/sprites.ts`) —
+ * but for the boxes in `above`, which are layers of their own over it,
+ * with everything they hold.
  * In `paintContent`'s order (CSS 2.1 Appendix E), a stacking context
  * paints its flow, its layers and then its outline, so after a box painted
  * as one of its context's layers come the layers after it in that list,
@@ -4922,6 +4924,7 @@ export function paintedAfter(
   box: Box,
   extent: Rect,
   fixedExtent: Rect | null = null,
+  above: ReadonlySet<Box> | null = null,
 ): boolean | null {
   let item = box;
   while (item.parent) {
@@ -4934,6 +4937,8 @@ export function paintedAfter(
     if (!context || index < 0) return null;
     for (let k = index + 1; k < list!.length; k += 1) {
       const later = list![k];
+      // a layer of its own over this one's, with all it holds (`above`)
+      if (above?.has(later)) continue;
       // one fixed to the viewport is asked about at every frame, where the
       // scroll has it (`fixedWithin`), but by a box at the viewport too,
       // which it keeps its place against
@@ -4952,6 +4957,27 @@ export function paintedAfter(
     item = context;
   }
   return false;
+}
+
+/**
+ * Where `box` is in the order the document paints its layers, as
+ * `paintedAfter` walks it: its index among its context's layers, after its
+ * context's place in the same terms, from the root down — compared index
+ * by index, a box painted later has the larger key. Null where it, or a
+ * context on the way up, is not painted from a list of layers.
+ */
+export function paintOrderOf(box: Box): number[] | null {
+  const key: number[] = [];
+  let item = box;
+  while (item.parent) {
+    let context: Box | null = item.parent;
+    while (context && !STACKED.has(context)) context = context.parent;
+    const index = context ? STACKED.get(context)!.indexOf(item) : -1;
+    if (!context || index < 0) return null;
+    key.push(index);
+    item = context;
+  }
+  return key.reverse();
 }
 
 /** Whether two rectangles share any area. */
