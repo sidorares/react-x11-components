@@ -4773,6 +4773,15 @@ test('a pass that cuts the turn out of a folded edge draws its doubled line as a
   // whose clip ends between the handle and the turn cuts the edge into two
   // runs, and stroked as two paths one leg lay over the other instead, so
   // the shared line's edges came out lighter than a repaint drew them.
+  //
+  // Both passes are rasterized by ntk. The whole edge is a drawing large
+  // enough to go to the server's trapezoids, and the pass's runs one small
+  // enough to be rasterized in the process; since ntk 8.18 that is
+  // pixman's own algorithm, to the byte (sidorares/ntk#507), and a real X
+  // server draws this edge the same way by either route. The in-process
+  // server the suite runs on is not pixman: it covers a column of the
+  // legs' edge where pixman leaves one of its 17 samples uncovered, 15
+  // levels, so a comparison across the two routes measured the harness.
   const result = await renderX11(
     h(FLOW_ELEMENT, {
       nodes: [
@@ -4800,6 +4809,9 @@ test('a pass that cuts the turn out of a folded edge draws its doubled line as a
     }),
     { backend: 'xserver', width: 600, height: 400 },
   );
+  (
+    result.app as unknown as { options: Record<string, unknown> }
+  ).options.rasterPolicy = { maxArea: Infinity, maxBytes: Infinity };
   await act();
   const node = pane() as unknown as {
     invalidate(layout: boolean, rect: unknown, reason: string): void;
