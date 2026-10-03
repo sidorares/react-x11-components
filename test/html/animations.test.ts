@@ -757,6 +757,102 @@ metric(
 );
 
 metric(
+  'a frame that moves a ::before or an ::after out of the flow repaints it, to the pixels a build draws',
+  async (t) => {
+    // Zen Garden 215's robot rises into the page as an `aside::after`: a
+    // pseudo-element has no element of its own to compare, and its frames
+    // repainted nothing
+    const doc = await running(
+      t,
+      '<style>body { margin: 0 }' +
+        '@keyframes rise { from { top: 80px } to { top: 0 } }' +
+        '#page { position: relative; height: 100px; background: #eeeeee }' +
+        '#page::after { content: ""; position: absolute; left: 20px;' +
+        ' width: 30px; height: 20px; background: #aa0000;' +
+        ' animation: rise 160ms linear infinite }</style>' +
+        '<div id="page"></div>',
+      300,
+    );
+    const { repainted, frames } = await framesAgainstBuilds(doc, [48, 96]);
+    assert.ok(repainted.length > 0, 'something was repainted');
+    assert.ok(
+      repainted.every((r) => r !== doc.el),
+      'only what moved was repainted',
+    );
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[1][i]),
+      'it moved',
+    );
+  },
+);
+
+metric(
+  'a frame of a box fixed to the viewport repaints it where the viewport has it, however far the pane has scrolled the document under it',
+  async (t) => {
+    // Zen Garden 215's starburst turns, fixed to the viewport, behind its
+    // robot rising the same way: a frame repainted where each was laid out,
+    // at the document's top, and they moved only as a scroll repainted them
+    const doc = await running(
+      t,
+      '<style>body { margin: 0 } #tall { height: 1000px }' +
+        '@keyframes spin { to { transform: rotate(360deg) } }' +
+        '@keyframes rise { from { top: 120px } to { top: 40px } }' +
+        '#star { position: fixed; top: 20px; left: 20px; width: 80px;' +
+        ' height: 20px; background: #000080;' +
+        ' animation: spin 160ms linear infinite }' +
+        '#bot::after { content: ""; position: fixed; top: 40px; left: 200px;' +
+        ' width: 40px; height: 40px; background: #aa0000;' +
+        ' animation: rise 160ms linear infinite }</style>' +
+        '<div id="tall"></div><div id="star"></div><div id="bot"></div>',
+      400,
+      inPane,
+    );
+    const pane = screen.getByTestName('pane') as DrawnNode & {
+      scrollTo(y: number): void;
+    };
+    await act(async () => pane.scrollTo(100));
+    const shot = async (): Promise<Uint8ClampedArray> => {
+      await act();
+      const { x, y, width, height } = pane.abs;
+      return new Promise((ok, fail) =>
+        (
+          doc.result.ctx as unknown as {
+            getImageData(
+              x: number,
+              y: number,
+              w: number,
+              h: number,
+              cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+            ): void;
+          }
+        ).getImageData(x, y, width, height, (e, d) =>
+          e ? fail(e) : ok(d.data),
+        ),
+      );
+    };
+    const frames: Uint8ClampedArray[] = [];
+    for (const ms of [48, 96]) {
+      await doc.at(ms);
+      const drawn = await shot();
+      // the whole element painted again, at the same moment
+      (
+        doc.el as unknown as { invalidate(layout: boolean, at: unknown): void }
+      ).invalidate(false, doc.el);
+      const whole = await shot();
+      assert.ok(
+        drawn.every((v, i) => v === whole[i]),
+        `at ${ms} ms the frame drew what a whole repaint does`,
+      );
+      frames.push(drawn);
+    }
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[1][i]),
+      'they moved',
+    );
+  },
+);
+
+metric(
   "a frame of an inline element's fade fades its text, in place, to the pixels a build draws",
   async (t) => {
     // a prompt's cursor that blinks by its opacity: its text is in its

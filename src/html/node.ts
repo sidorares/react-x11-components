@@ -150,6 +150,7 @@ import {
   clipsOverflow,
   computePaintBounds,
   containingBlockOf,
+  drawnAtViewport,
   FIXED_BOXES,
   fixedToViewport,
   forgetCasts,
@@ -2667,7 +2668,7 @@ export class HtmlViewNode extends Node {
       for (const [box, shapes] of redrawn) {
         SHAPE_STYLES.set(box, shapes);
         this._dropSprites(box, true);
-        const ink = inkOf(box);
+        const ink = this._inkOf(box);
         if (ink) inks.push(ink);
       }
       return inks;
@@ -2840,7 +2841,7 @@ export class HtmlViewNode extends Node {
     // what each box drew before, to be repainted with what it draws after
     const inks: Rect[] = [];
     for (const box of inked) {
-      const ink = inkOf(box);
+      const ink = this._inkOf(box);
       if (ink) inks.push(ink);
     }
 
@@ -2921,7 +2922,7 @@ export class HtmlViewNode extends Node {
       return true;
     }
     for (const box of inked) {
-      const ink = inkOf(box);
+      const ink = this._inkOf(box);
       if (ink) inks.push(ink);
     }
     this._repaintInk(inks);
@@ -2978,6 +2979,23 @@ export class HtmlViewNode extends Node {
       if (!inside) out.push(block);
     }
     return out;
+  }
+
+  /**
+   * Where a box draws, in the document's coordinates as the element is
+   * painted now: its ink (`inkOf`), moved by the scroll of the pane that
+   * scrolls the element where the box is fixed to the viewport or in one
+   * that is, since paint draws it where the viewport is (`atViewport`).
+   * Where it was laid out is where a fixed box is drawn only at the
+   * document's top: the frames of Zen Garden 215's turning starburst,
+   * `position: fixed`, repainted where it had been laid out, and showed
+   * only as a scroll repainted the viewport's fixed boxes.
+   */
+  private _inkOf(box: Box): Rect | null {
+    const ink = inkOf(box);
+    const shift = ink && this._fixedShift();
+    if (!ink || !shift || !drawnAtViewport(box)) return ink;
+    return { ...ink, x: ink.x + shift.x, y: ink.y + shift.y };
   }
 
   /**
@@ -3450,15 +3468,7 @@ export class HtmlViewNode extends Node {
     el: Element,
     which: 'before' | 'after',
   ): Box | null {
-    const box = this._firstBoxesOf(tree).get(el);
-    if (!box || box.el !== el) return null;
-    const stack = [...box.children];
-    while (stack.length) {
-      const at = stack.pop()!;
-      if (at.pseudo === which && GENERATED_FROM.get(at) === el) return at;
-      if (!at.el && !at.pseudo) stack.push(...at.children);
-    }
-    return null;
+    return generatedIn(this._firstBoxesOf(tree).get(el), el, which);
   }
 
   /** Whether a box is a lifted one, or inside one. */
@@ -3557,7 +3567,7 @@ export class HtmlViewNode extends Node {
       this._laidOutWidth === width &&
       this._documentWidth === size[0] &&
       this._documentHeight === size[1]
-        ? this._changedOutOfFlow(before, beforeBoxes, after)
+        ? this._changedOutOfFlow(before, beforeBoxes, after, reach)
         : null;
     if (inks) {
       this._repaintInk(inks);
@@ -3570,13 +3580,15 @@ export class HtmlViewNode extends Node {
   /**
    * What a tree built again changed, where all it changed is positioned out
    * of the flow: the ink of each element out of the flow whose style
-   * changed, before and after. Null where an element in the flow changed,
-   * or a box of one that did not moved.
+   * changed, before and after, and of each `::before` or `::after` of the
+   * elements the frame restyled (`reach`). Null where an element or a
+   * pseudo-element in the flow changed, or a box of one that did not moved.
    */
   private _changedOutOfFlow(
     before: BoxTree,
     beforeBoxes: ReadonlyMap<Element, Box>,
     after: BoxTree,
+    reach: ReadonlySet<Element>,
   ): Rect[] | null {
     if (before.styles.size !== after.styles.size) return null;
     const changed: Element[] = [];
@@ -3611,8 +3623,29 @@ export class HtmlViewNode extends Node {
     const inks: Rect[] = [];
     for (const root of roots) {
       for (const box of [beforeBoxes.get(root), afterBoxes.get(root)]) {
-        const ink = box && inkOf(box);
+        const ink = box && this._inkOf(box);
         if (ink) inks.push(ink);
+      }
+    }
+    // A pseudo-element has no element, so no style in `styles` to compare,
+    // and its box is no element's: the rest found nothing of it, and a frame
+    // that moved one alone repainted nothing. Zen Garden 215's robot rises
+    // into the page as an `aside::after` fixed to the viewport, and was not
+    // seen until a scroll repainted it.
+    for (const el of reach) {
+      for (const [which] of GENERATED_BITS) {
+        const was = generatedIn(beforeBoxes.get(el), el, which);
+        const now = generatedIn(afterBoxes.get(el), el, which);
+        if (!was && !now) continue;
+        if (!was || !now) return null;
+        if (was.style === now.style || sameValue(was.style, now.style)) {
+          continue;
+        }
+        if (!outOfFlow(was.style) || !outOfFlow(now.style)) return null;
+        for (const box of [was, now]) {
+          const ink = this._inkOf(box);
+          if (ink) inks.push(ink);
+        }
       }
     }
     return inks;
@@ -5486,6 +5519,23 @@ function sameGeometry(a: Box, b: Box): boolean {
  */
 function brokenAround(box: Box): boolean {
   return box.kind === 'inline' && box.cut !== 0;
+}
+
+/** An element's `::before` or `::after` box, in its first box or the
+ *  anonymous boxes in it. */
+function generatedIn(
+  box: Box | undefined,
+  el: Element,
+  which: 'before' | 'after',
+): Box | null {
+  if (!box || box.el !== el) return null;
+  const stack = [...box.children];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (at.pseudo === which && GENERATED_FROM.get(at) === el) return at;
+    if (!at.el && !at.pseudo) stack.push(...at.children);
+  }
+  return null;
 }
 
 /** Where a box draws, in document coordinates: its ink bounds, or for an
