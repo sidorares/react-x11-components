@@ -529,9 +529,13 @@ export class HtmlViewNode extends Node {
         // is painted (`_imagePainted`). Either arriving after first paint
         // is the ordinary case, not an error path: a host on a network
         // answers every request that way. A video's source changes no box:
-        // a player goes over one.
+        // a player goes over one. A sheet declined that late changes no
+        // style either, but the first rendering may be held for it.
         if (what === 'video') this._reportMedia();
-        else if (what === 'image' && !layout) this._imagePainted();
+        else if (what === 'declined') {
+          // nothing to restyle, but a first rendering may have waited on it
+          if (!this._tree) this._invalidate(Stale.Style);
+        } else if (what === 'image' && !layout) this._imagePainted();
         else
           this._invalidate(what === 'stylesheet' ? Stale.Style : Stale.Boxes);
       },
