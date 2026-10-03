@@ -1684,6 +1684,20 @@ function spacerRun(
 const REORDERS =
   /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc\u202a-\u202e\u2066-\u2069]|[\ud802\ud803\ud83a\ud83b]/;
 
+/**
+ * What gives a left-to-right paragraph a right-to-left level: a
+ * right-to-left letter, or a control that opens a right-to-left embedding,
+ * override or isolate. Without one every level is even, and the order the
+ * letters are drawn in is the order they are in (UAX #9, L2). The
+ * left-to-right controls — an isolate around a citation's `[8]`, which
+ * Wikipedia's skin gives every one — raise a level by two and reorder
+ * nothing: taken for something that could, each of its paragraphs was
+ * ordered a piece at a time, with the rest of the paragraph's levels
+ * resolved again for every line of it, at every width of a resize.
+ */
+const TURNS_RTL =
+  /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc\u202b\u202e\u2067]|[\ud802\ud803\ud83a\ud83b]/;
+
 /** Whether a paragraph's edges can be spacers: it reads left to right, and
  *  nothing in it can be reordered. */
 function spacersHold(style: ComputedStyle, items: Item[]): boolean {
@@ -2940,9 +2954,10 @@ function bidiJs(): Bidi {
 }
 
 /** A paragraph's levels, or null where nothing in it can be reordered:
- *  it reads left to right, and holds no right-to-left letter and no bidi
- *  control. Kept on its block, and resolved again only where its text is
- *  not what it was: a pass at another width has the same. */
+ *  it reads left to right, and holds no right-to-left letter and no
+ *  control that opens a right-to-left embedding, override or isolate.
+ *  Kept on its block, and resolved again only where its text is not what
+ *  it was: a pass at another width has the same. */
 function paragraphBidi(
   block: Box,
   items: Item[],
@@ -2951,7 +2966,7 @@ function paragraphBidi(
   let reorders = rtl;
   for (let i = 0; !reorders && i < items.length; i += 1) {
     const item = items[i];
-    if (item.kind === 'text' && REORDERS.test(item.run.text)) reorders = true;
+    if (item.kind === 'text' && TURNS_RTL.test(item.run.text)) reorders = true;
   }
   if (!reorders) return null;
   const starts: number[] = [];
