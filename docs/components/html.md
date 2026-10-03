@@ -1622,8 +1622,11 @@ viewer is not drawn. No context draws through a perspective — a 2d
 context's matrix is one of the plane — so such a box is painted on a
 surface as it was laid out, and the surface drawn a tile of the window's
 pixels at a time, each through the matrix nearest the perspective over it:
-resampled, as a browser draws a layer in perspective, and no line off by
-more than a quarter of a pixel where it crosses from one tile to the next.
+resampled, as a browser draws a layer in perspective — bilinearly, where
+the context can be asked to (`imageSmoothingQuality`), which on macOS
+costs each tile its own pixels where the context's own quality resampled
+the whole surface — and no line off by more than a quarter of a pixel
+where it crosses from one tile to the next.
 On macOS such a box goes on a layer of its own instead, which the render
 server draws through the whole matrix on the GPU, still or moving (see
 "On macOS an animation a layer can carry runs in the render server").

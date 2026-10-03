@@ -969,6 +969,55 @@ metric(
 );
 
 metric(
+  "the tiles a box in perspective is drawn in are drawn at 'low' smoothing where the context has the setting, as a layer in perspective is, and the context has its own back after",
+  async () => {
+    const { node } = await render(
+      PAGE +
+        '<style>#s{position:relative;width:400px;height:400px;' +
+        'perspective:500px}#w{position:absolute;left:50px;top:100px;' +
+        'width:300px;height:200px;background:#ff0000;' +
+        'transform:rotateY(40deg)}</style>' +
+        '<div id="s"><div id="w"></div></div>',
+    );
+    await act();
+    const el = view(node);
+    // a context that resamples at the quality it holds, as the native
+    // contexts do, and draws nothing
+    let quality: string = 'medium';
+    const saved: string[] = [];
+    const drawn: string[] = [];
+    const own = {
+      get imageSmoothingQuality() {
+        return quality;
+      },
+      set imageSmoothingQuality(value: string) {
+        quality = value;
+      },
+      save() {
+        saved.push(quality);
+      },
+      restore() {
+        quality = saved.pop() ?? quality;
+      },
+      drawImage() {
+        drawn.push(quality);
+      },
+    };
+    const ctx = new Proxy(own, {
+      get: (target, key) =>
+        key in target ? Reflect.get(target, key) : () => undefined,
+    });
+    el.paint(ctx as never);
+    assert.ok(drawn.length > 1, `${drawn.length} tiles`);
+    assert.ok(
+      drawn.every((q) => q === 'low'),
+      [...new Set(drawn)].join(),
+    );
+    assert.strictEqual(quality, 'medium', 'its own back');
+  },
+);
+
+metric(
   "a box's perspective is the nearest up its containing blocks, through a positioned box and not through one with a transform, from its perspective-origin; and transform-origin's depth is the turn's",
   async () => {
     const { node } = await render(

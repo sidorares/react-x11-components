@@ -4728,6 +4728,36 @@ leaving it. Low is bilinear, what a browser draws a layer in perspective
 with, and the canvas's own default for `imageSmoothingQuality`; the bridge
 has no verb for it yet, and core no property.
 
+## Round 47: the tiles at `'low'`
+
+Round 46 found the cost of the tiles a box in perspective is drawn in on
+macOS: `kCGInterpolationMedium`, which every context the bridge makes is
+made at, resamples the whole source for a draw through a matrix whatever
+the clip. @windowkit/appkit's `ctxSetImageSmoothing` sets it
+(windowkit/appkit#109), react-x11's native context takes canvas's
+`imageSmoothingEnabled` and `imageSmoothingQuality` over it
+(react-x11#861), and `<Html>`'s `drawProjected` asks for `'low'`, bilinear,
+inside the save it already makes. A context without the setting, ntk's
+among them, draws as it did, so nothing here waits on the releases but
+the effect.
+
+Zen Garden 219 on macOS at 1x, both trees over appkit's main and core's
+branch, three interleaved runs each with the machine's load under 3.5:
+
+| 219 on macOS                 | master fps | branch fps | a paint, master | a paint, branch |
+| ---------------------------- | ---------: | ---------: | --------------: | --------------: |
+| idle                         |       52.0 |       52.2 |               — |               — |
+| the sidebar's panel, hovered |       39.2 |       46.5 |         62.5 ms |         26.2 ms |
+| and left                     |       43.7 |       50.4 |         16.3 ms |          6.4 ms |
+| the header, hovered          |       48.7 |       50.2 |         13.8 ms |          9.4 ms |
+| the preamble, hovered        |       33.6 |       33.4 |        235.4 ms |        169.9 ms |
+| and left                     |       33.0 |       35.4 |        195.4 ms |        143.0 ms |
+
+At rest everything that moves is on a layer and the bitmap paints
+nothing, so there is nothing for the tiles to change. The preamble's
+phases are a handful of paints of 140 to 240 ms each, made where the
+layers change at a transition's start and end, and the next thing to read.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -5270,11 +5300,10 @@ round 15.
   every context the bridge makes draws an image with
   `kCGInterpolationMedium`, which resamples the whole source for each
   transformed draw, so `<Html>`'s tiled warp of a box out of the plane
-  costs each tile the whole panel (rounds 44 and 46). `kCGInterpolationLow`
-  took 784 tiles from 214 ms to 29.6 and 219's hovers from 19–36 frames a
-  second to 29–43. A verb that sets it, the 2D context's
-  `imageSmoothingQuality` over that verb in core, and the warp asking for
-  `low` would answer it.
+  costs each tile the whole panel (rounds 44 and 46). The verb is
+  windowkit/appkit#109, the context's `imageSmoothingQuality` over it
+  react-x11#861, and the warp asks for `'low'` (round 47); what is left is
+  the two releases that carry the first two to an app.
 - **A box out of the plane that its own clock moves** (`<Html>`): one whose
   transition moves it by `top` or `margin` as well as turning it, as 219's
   hovered panels do, runs on the document's clock and is drawn through its
