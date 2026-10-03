@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.21.0](https://github.com/sidorares/react-x11-components/compare/v0.20.0...v0.21.0) (2026-10-03)
+
+
+### Features
+
+* **html:** a box turned out of the plane goes on a layer of its own on macOS, still or moving, and so does what is painted over it, so Zen Garden 219 draws its tilted sidebar on the GPU and runs at 54 frames a second at rest where it ran at 25 ([#672](https://github.com/sidorares/react-x11-components/issues/672)) ([52bf4be](https://github.com/sidorares/react-x11-components/commit/52bf4be05debf88748604884d3b2e06634e71638))
+* **html:** defaultColorScheme, the scheme a page that names none is drawn in, and the browser example draws one light as every browser does ([#670](https://github.com/sidorares/react-x11-components/issues/670)) ([cdca003](https://github.com/sidorares/react-x11-components/commit/cdca0030da877ca210ea41a59b0b5d73aea73380))
+* **html:** react-x11 ^2.38.0, so a video in a page the browser example shows in a &lt;Frame&gt; pane plays on macOS, on a player the host makes for it, where a pane ran no AppKit and every video in a page sat on its poster ([#666](https://github.com/sidorares/react-x11-components/issues/666)) ([e6b933c](https://github.com/sidorares/react-x11-components/commit/e6b933c6c854a5510de2f88a012223373145a6ee))
+* **html:** translate, rotate and scale are what they are in space, so `rotate: y 40deg` turns a box as rotateY(40deg) does and `translate: 0 0 100px` brings it nearer in the perspective around it, where all three dropped what was out of the plane ([#667](https://github.com/sidorares/react-x11-components/issues/667)) ([bf0d30b](https://github.com/sidorares/react-x11-components/commit/bf0d30b6f36575585f121176d5c8ae8ac559627d))
+
+
+### Bug Fixes
+
+* **deps:** ntk 8.21.1, so an inline SVG's marker inside a display: none subtree is drawn nowhere and one that is display: none itself is drawn, as Chrome and WebKit draw them, where 8.21.0 had both the other way round ([#657](https://github.com/sidorares/react-x11-components/issues/657)) ([3729fc0](https://github.com/sidorares/react-x11-components/commit/3729fc0bc1543d63138c40b42ae707d8925fb8e5))
+* **html:** a stylesheet declined after the first rendering waits on it lets that rendering go on, so Zen Garden 215, whose two imported http: sheets a secure page's host refuses, is drawn and measured whole, where it waited for something else to ask again ([#671](https://github.com/sidorares/react-x11-components/issues/671)) ([9f562ce](https://github.com/sidorares/react-x11-components/commit/9f562ce6a5547577abf619d15ef9b6b3d6349b35))
+* **html:** an animation on a box fixed to the viewport repaints where the box is drawn, so Zen Garden 215's starburst turns and its robot rises while the page is still, where both moved only as a scroll repainted them ([#669](https://github.com/sidorares/react-x11-components/issues/669)) ([dc93484](https://github.com/sidorares/react-x11-components/commit/dc9348494e4ab892eddc74f8624f37427553f748))
+* **html:** the pointer over a video with controls is the arrow, as a browser's is, where it was the I-beam the document's root shows as a selectable surface ([#664](https://github.com/sidorares/react-x11-components/issues/664)) ([fafe302](https://github.com/sidorares/react-x11-components/commit/fafe3028b3ad77f733adf07e5b10ad8ef9813945))
+
+
+### Performance Improvements
+
+* **html:** a flex layout frees the nodes it made in Yoga itself, so a page of 800 cards lays out in 104 ms where it took 115 ([#661](https://github.com/sidorares/react-x11-components/issues/661)) ([10260e5](https://github.com/sidorares/react-x11-components/commit/10260e593d32ce42be4557673cfb605cb0049057))
+* **html:** a rule that is its class or its id alone matches its bucket without the matcher, and one that names an ancestor no ancestor has is passed over without a climb to the root, so a restyle under 2,000 utility rules takes 379 ms where it took 640 ([#660](https://github.com/sidorares/react-x11-components/issues/660)) ([44e53a5](https://github.com/sidorares/react-x11-components/commit/44e53a54ae43afaa1e486f234e042bd76c1dd930))
+* **html:** a stylesheet the head links to holds the first rendering, and an image that is only painted is painted where it lands, so a Zen Garden design arriving over a network is built once where it was built some ten times ([#658](https://github.com/sidorares/react-x11-components/issues/658)) ([1907d76](https://github.com/sidorares/react-x11-components/commit/1907d76ce958ecd79b73bbe2bec4f02efcc27ba5))
+* **html:** an SVG image drawn again at its size is copied from a raster of it, so Zen Garden 219 paints a frame of its hovers in 1.5–3.4 ms where it took 12–17, its drawings set from their paths at every paint ([#662](https://github.com/sidorares/react-x11-components/issues/662)) ([a62f6f6](https://github.com/sidorares/react-x11-components/commit/a62f6f6f5e50e0f2697b17b556ce84bbe452717b))
+* **html:** the tiles a box in perspective is drawn in ask for bilinear smoothing, so on macOS each tile costs its own pixels where the context's own medium quality resampled the whole surface, and Zen Garden 219's sidebar hover paints in 26 ms where it took 62 ([#673](https://github.com/sidorares/react-x11-components/issues/673)) ([9277b52](https://github.com/sidorares/react-x11-components/commit/9277b5286b9a347fe8165117121e7c2a72f11b9a))
+
 ## [0.20.0](https://github.com/sidorares/react-x11-components/compare/v0.19.0...v0.20.0) (2026-10-03)
 
 
