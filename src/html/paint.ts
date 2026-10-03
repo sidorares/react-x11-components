@@ -232,6 +232,10 @@ export interface PaintContext extends FillContext {
   /** How a drawing meets what is under it; a value a backend does not
    *  have does not stick, and reads back as the one before. */
   globalCompositeOperation?: string;
+  /** How an image drawn scaled or turned is resampled, canvas's: the
+   *  native contexts' (react-x11 `imageSmoothingQuality`), and not ntk's.
+   *  A value a context cannot set does not stick. */
+  imageSmoothingQuality?: 'low' | 'medium' | 'high';
 }
 
 /** An offscreen surface, as painting uses one. */
@@ -1624,6 +1628,12 @@ function drawProjected(
   if (opacity < 1 && typeof ctx.globalAlpha === 'number') {
     ctx.globalAlpha *= opacity;
   }
+  // Bilinear, as a layer in perspective is drawn: each tile's matrix is
+  // within a fraction of a pixel of the plane's, and on macOS a context's
+  // own 'medium' resamples the whole surface for each tile, whatever its
+  // clip — 784 tiles of a 1400 by 1120 surface took 200 ms there, and 27
+  // at 'low' (react-x11's `imageSmoothingQuality`, windowkit/appkit#109).
+  if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'low';
   const area = { x0, y0, x1: x0 + width, y1: y0 + height };
   const tiles = [X0, Y0, X1, Y1];
   let made = 1;

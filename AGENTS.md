@@ -1840,10 +1840,16 @@ twice over, which shows as a seam, and tiles that overlap draw a fade
 twice. A tile is cut until its matrix is within a quarter of a logical
 pixel of the projection at its corners, across the way it bends; 219's
 panel at 35° is some 440 tiles, and they cost a repaint a few
-milliseconds. Behind the viewer is nothing (`inFront`). On macOS the box
-goes on a layer instead, whose matrix is the whole 4×4 and which the render
-server draws on the GPU (see "A box out of the plane is lifted" below):
-the perspective is `perspectiveAround`, one copy of it for both.
+milliseconds. Behind the viewer is nothing (`inFront`). The tiles are drawn
+at `imageSmoothingQuality = 'low'`, bilinear, where the context has the
+setting: each tile's matrix is within a fraction of a pixel of the plane's,
+and on macOS a context's own `'medium'` resamples the whole surface for
+each tile whatever its clip, 200 ms for 784 tiles of a 1400 by 1120
+surface where `'low'` takes 27 (windowkit/appkit#109, react-x11#861). On
+macOS the box goes on a layer instead where it can, whose matrix is the
+whole 4×4 and which the render server draws on the GPU (see "A box out of
+the plane is lifted" below): the perspective is `perspectiveAround`, one
+copy of it for both.
 
 **An animation is a style that changes as time passes, and runs as one.**
 `css/timeline.ts` keeps when each element's animations started — by
