@@ -1219,25 +1219,32 @@ test('an absolute form control with both offsets on an axis fills what they leav
   assert.deepStrictEqual(rect('img'), [0, 0, 10, 10], 'an image is its size');
 });
 
-test('translate is read, with the depth nothing here has dropped', async () => {
+test('translate is read, with its depth', async () => {
   const { node } = await render(
     '<div id="a" style="translate:10px 20%"></div>' +
       '<div id="b" style="translate:5px"></div>' +
       '<div id="c" style="translate:5px;translate:none"></div>' +
       '<div id="d" style="translate:1px 2px 3px"></div>' +
       '<div id="e" style="translate:4px;translate:1px 2px 3%"></div>' +
+      '<div id="f" style="font-size:10px;translate:0 0 -2em"></div>' +
       '<div id="l" style="--x:calc(calc(1/2 * 100%) * -1);' +
       'translate:var(--x) 0"></div>',
   );
   const el = view(node);
   const style = (id: string) =>
     (boxOf(el, id) as unknown as { style: { translate: unknown } }).style;
-  assert.deepStrictEqual(style('a').translate, [10, { pct: 20 }]);
-  assert.deepStrictEqual(style('b').translate, [5, 0]);
+  // across, down and toward the viewer, by nothing where it is not written
+  assert.deepStrictEqual(style('a').translate, [10, { pct: 20 }, 0]);
+  assert.deepStrictEqual(style('b').translate, [5, 0, 0]);
   assert.strictEqual(style('c').translate, null);
-  assert.deepStrictEqual(style('d').translate, [1, 2], 'a depth is dropped');
-  assert.deepStrictEqual(style('e').translate, [4, 0], 'a depth is a length');
-  assert.deepStrictEqual(style('l').translate, [{ pct: -50, px: 0 }, 0]);
+  assert.deepStrictEqual(style('d').translate, [1, 2, 3], 'in depth');
+  assert.deepStrictEqual(
+    style('e').translate,
+    [4, 0, 0],
+    'a depth is a length',
+  );
+  assert.deepStrictEqual(style('f').translate, [0, 0, -20], 'away from it');
+  assert.deepStrictEqual(style('l').translate, [{ pct: -50, px: 0 }, 0, 0]);
 });
 
 test('a translated box is moved by a share of its own size', async () => {

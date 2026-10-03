@@ -320,8 +320,9 @@ function liftableBox(
   // others is a box of its own
   if (box.pseudo === 'first-letter' || !box.parent) return false;
   if (drawsAgainstViewport(box)) return false;
-  // a layer's matrix is one of the plane, and a box turned out of it is
-  // drawn through a projection (`paintProjected`)
+  // a layer's matrix is one of the plane, and a box turned out of it, or
+  // moved or scaled in depth, is drawn through a projection
+  // (`paintProjected`)
   if (outOfPlane(box.style)) return false;
   if (box.style.clipPath || masked(box.style)) return false;
   // one fixed to the viewport in it is drawn where the viewport is, which
@@ -441,7 +442,7 @@ export function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
 /** Each track's frames through one cycle of it, sampled from the
  *  element's style on a fork of the document's timeline — its opacities
  *  where it sets the opacity, its matrices where it moves — the style the
- *  animations leave at rest, and whether a frame turns it out of the
+ *  animations leave at rest, and whether a frame takes it out of the
  *  plane, which no layer's matrix can. */
 function sample(
   host: SpriteHost,

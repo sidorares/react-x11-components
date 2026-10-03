@@ -13,20 +13,30 @@
 // of them as matrices, taken apart into a translation, a turn, a scale and
 // a skew and put together again: in space where either is out of the
 // plane, the turn as a quaternion the short way round
-// (`interpolateMatrix4`). What none of that reads goes over at the
-// half-way point, as CSS has a discrete value go.
+// (`interpolateMatrix4`). `translate` and `scale` go by their values, a
+// depth with them, and `rotate` as a `rotate3d()` of a list goes. What none
+// of that reads goes over at the half-way point, as CSS has a discrete
+// value go.
 
 import { blend } from './color.js';
 import {
   IDENTITY,
   multiply,
   primitive,
+  primitiveSolid,
   rotation,
   solidOf,
+  turnAbout,
 } from './transform.js';
-import type { Matrix, Primitive, TransformFunction } from './transform.js';
+import type {
+  Matrix,
+  Primitive,
+  TransformFunction,
+  Turn,
+} from './transform.js';
 import {
   IDENTITY4,
+  axisAngleOf,
   flatten4,
   interpolateMatrix4,
   isPlanar,
@@ -66,12 +76,14 @@ export function interpolateField(
         b as TransformFunction[] | null,
         q,
       );
+    // `none` at one end is the other's at nothing (CSS Transforms 2, 5):
+    // a move by nothing, a turn of none, a scale by one, in depth as well
     case 'translate':
-      return mix(a ?? [0, 0], b ?? [0, 0], q);
+      return mix(a ?? NO_MOVE, b ?? NO_MOVE, q);
     case 'rotate':
-      return mix(a ?? 0, b ?? 0, q);
+      return interpolateRotate(a as Turn | null, b as Turn | null, q);
     case 'scale':
-      return mix(a ?? [1, 1], b ?? [1, 1], q);
+      return mix(a ?? NO_SCALE, b ?? NO_SCALE, q);
     case 'fontSizeBasis':
       // a size part of the way between two is the length it comes to,
       // which no family scales, as Blink has an animated size; and the
@@ -89,6 +101,11 @@ export function interpolateField(
 export function discrete<T>(a: T, b: T, q: number): T {
   return q < 0.5 ? a : b;
 }
+
+/** `translate` and `scale` at nothing: what `none` is at one end of an
+ *  interpolation of them, across, down and in depth. */
+const NO_MOVE = Object.freeze([0, 0, 0]);
+const NO_SCALE = Object.freeze([1, 1, 1]);
 
 /** The fields whose values are whole numbers, rounded between. */
 const INTEGERS = new Set([
@@ -319,24 +336,14 @@ function interpolateFunction(
   if (s.kind === 'rotate' && t.kind === 'rotate') {
     fn = { kind: 'rotate', angle: at(s.angle, t.angle) };
   } else if (turns(s) && turns(t)) {
-    // about the axis they share, or the one of the two that turns at all,
-    // by the angle; two turns about axes of their own are matrices,
-    // taken apart (CSS Transforms 2, 9, `rotate3d()`)
-    const u = axisOf(s);
-    const v = axisOf(t);
-    const axis = !u[3] ? v : !v[3] ? u : sameAxis(u, v) ? u : null;
-    if (!axis) {
+    // two turns about axes of their own are matrices, taken apart
+    const turn = turnBetween(s, t, q);
+    if (!turn) {
       return solidFunction(
         interpolateMatrix4(solidOf(f, 0, 0), solidOf(g, 0, 0), q),
       );
     }
-    // a turn of none is none about any axis
-    const angle = at(u[3], v[3]);
-    const [x, y, z] = axis;
-    fn =
-      x === 0 && y === 0
-        ? { kind: 'rotate', angle: z < 0 ? -angle : angle }
-        : { kind: 'rotate3d', x, y, z, angle };
+    fn = turn;
   } else if (s.kind === 'scale' && t.kind === 'scale') {
     fn =
       s.z === undefined && t.z === undefined
@@ -361,15 +368,53 @@ function interpolateFunction(
 }
 
 /** Whether a primitive is a turn, in the plane or in space. */
-function turns(fn: Primitive): boolean {
+function turns(fn: Primitive): fn is Turn {
   return fn.kind === 'rotate' || fn.kind === 'rotate3d';
+}
+
+/**
+ * Two turns `q` of the way between where they are about one axis (CSS
+ * Transforms 2, 14, `rotate3d()`): the axis they share, or the one of the
+ * two that turns at all — a turn of none is none about any axis — by the
+ * angle. Null for two about axes of their own, which go as matrices.
+ */
+function turnBetween(s: Turn, t: Turn, q: number): Turn | null {
+  const u = axisOf(s);
+  const v = axisOf(t);
+  const axis = !u[3] ? v : !v[3] ? u : sameAxis(u, v) ? u : null;
+  if (!axis) return null;
+  return turnAbout(axis[0], axis[1], axis[2], u[3] + (v[3] - u[3]) * q);
+}
+
+/** A turn of none: `none`, at one end of an interpolation of `rotate`. */
+const NO_TURN: Turn = Object.freeze({ kind: 'rotate', angle: 0 });
+
+/**
+ * Two values of `rotate` `q` of the way between, as two `rotate3d()` of a
+ * list go: about one axis by the angle (`turnBetween`), and about axes of
+ * their own as their matrices, taken apart and put together again — the
+ * turn as a quaternion (`interpolateMatrix4`) — which is a turn about an
+ * axis of its own, between theirs. Undefined where that cannot be taken
+ * apart.
+ */
+function interpolateRotate(
+  a: Turn | null,
+  b: Turn | null,
+  q: number,
+): Turn | undefined {
+  const s = a ?? NO_TURN;
+  const t = b ?? NO_TURN;
+  const turn = turnBetween(s, t, q);
+  if (turn) return turn;
+  const m = interpolateMatrix4(primitiveSolid(s), primitiveSolid(t), q);
+  const axis = axisAngleOf(m);
+  return axis ? turnAbout(axis[0], axis[1], axis[2], axis[3]) : undefined;
 }
 
 /** A turn's axis, of length one, and its angle: no angle where the axis
  *  has no length, which is no turn. */
-function axisOf(fn: Primitive): [number, number, number, number] {
+function axisOf(fn: Turn): [number, number, number, number] {
   if (fn.kind === 'rotate') return [0, 0, 1, fn.angle];
-  if (fn.kind !== 'rotate3d') return [0, 0, 1, 0];
   const length = Math.hypot(fn.x, fn.y, fn.z);
   if (!(length > 0)) return [0, 0, 1, 0];
   return [fn.x / length, fn.y / length, fn.z / length, fn.angle];

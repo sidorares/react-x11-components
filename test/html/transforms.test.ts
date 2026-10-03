@@ -219,21 +219,58 @@ test('rotate, scale and transform-origin are read', async () => {
       '<div id="m" style="transform-origin:0 0"></div>' +
       '<div id="n" style="transform-origin:bottom"></div>' +
       '<div id="o" style="transform-origin:right 10px 5px"></div>' +
-      '<div id="p" style="transform-origin:top left"></div>',
+      '<div id="p" style="transform-origin:top left"></div>' +
+      '<div id="q" style="rotate:30deg y"></div>' +
+      '<div id="r" style="rotate:1 2 0 -45deg"></div>' +
+      '<div id="s" style="rotate:0 0 -2 45deg"></div>' +
+      '<div id="t" style="rotate:45deg;rotate:x y 45deg"></div>' +
+      '<div id="u" style="rotate:45deg;rotate:w 45deg"></div>',
   );
   const el = view(node);
   const style = (id: string) => (boxOf(el, id) as Styled).style;
-  assert.strictEqual(style('a').rotate, 90);
-  assert.strictEqual(style('b').rotate, -180);
-  assert.strictEqual(style('c').rotate, 90);
-  assert.strictEqual(style('d').rotate, null, 'out of the plane');
+  // in the plane: about the axis out of the page, either way it points
+  assert.deepStrictEqual(style('a').rotate, { kind: 'rotate', angle: 90 });
+  assert.deepStrictEqual(style('b').rotate, { kind: 'rotate', angle: -180 });
+  assert.deepStrictEqual(style('c').rotate, { kind: 'rotate', angle: 90 });
+  assert.deepStrictEqual(
+    style('s').rotate,
+    { kind: 'rotate', angle: -45 },
+    'about the axis into the page',
+  );
+  // and in space about any other: a letter or a vector, as written, its
+  // angle before or after it
+  assert.deepStrictEqual(style('d').rotate, {
+    kind: 'rotate3d',
+    x: 1,
+    y: 0,
+    z: 0,
+    angle: 90,
+  });
+  assert.deepStrictEqual(style('q').rotate, {
+    kind: 'rotate3d',
+    x: 0,
+    y: 1,
+    z: 0,
+    angle: 30,
+  });
+  assert.deepStrictEqual(style('r').rotate, {
+    kind: 'rotate3d',
+    x: 1,
+    y: 2,
+    z: 0,
+    angle: -45,
+  });
   assert.strictEqual(style('e').rotate, null);
-  assert.strictEqual(style('f').rotate, 45, 'a number is no angle');
-  assert.deepStrictEqual(style('g').scale, [2, 2]);
-  assert.deepStrictEqual(style('h').scale, [1.5, 0.5]);
-  assert.deepStrictEqual(style('i').scale, [2, 3], 'a depth is dropped');
+  const turn = { kind: 'rotate', angle: 45 };
+  assert.deepStrictEqual(style('f').rotate, turn, 'a number is no angle');
+  assert.deepStrictEqual(style('t').rotate, turn, 'two axes are none');
+  assert.deepStrictEqual(style('u').rotate, turn, 'an axis is x, y or z');
+  // across, down and in depth, which is 1 where it is not written
+  assert.deepStrictEqual(style('g').scale, [2, 2, 1]);
+  assert.deepStrictEqual(style('h').scale, [1.5, 0.5, 1]);
+  assert.deepStrictEqual(style('i').scale, [2, 3, 4], 'in depth');
   assert.strictEqual(style('j').scale, null);
-  assert.deepStrictEqual(style('k').scale, [-1.5, 1]);
+  assert.deepStrictEqual(style('k').scale, [-1.5, 1, 1]);
   assert.deepStrictEqual(style('l').transformOrigin, [
     { pct: 50 },
     { pct: 50 },
@@ -834,9 +871,9 @@ metric(
 );
 
 /** Where CSS Transforms 2 puts a point of the plane turned `deg` about the
- *  upright through `o` — the transform's origin, its depth `o.z` — and seen
- *  from `d` in front of `p`: worked out here as the spec has it, to hold
- *  the projection to. */
+ *  upright through `o` — the transform's origin, its depth `o.z` — and then
+ *  scaled `depth` times in depth about it, and seen from `d` in front of
+ *  `p`: worked out here as the spec has it, to hold the projection to. */
 function seen(
   x: number,
   y: number,
@@ -844,13 +881,14 @@ function seen(
   deg: number,
   d: number | null,
   p: { x: number; y: number },
+  depth = 1,
 ): [number, number] {
   const t = (deg * Math.PI) / 180;
   const oz = o.z ?? 0;
   const X = x - o.x;
   const Z = -oz;
   const wx = o.x + X * Math.cos(t) + Z * Math.sin(t);
-  const wz = oz - X * Math.sin(t) + Z * Math.cos(t);
+  const wz = oz + depth * (-X * Math.sin(t) + Z * Math.cos(t));
   const w = d === null ? 1 : 1 - wz / d;
   return [p.x + (wx - p.x) / w, p.y + (y - p.y) / w];
 }
@@ -1079,5 +1117,177 @@ metric(
     );
     await expectPixel(result.ctx, 50, 110, BLUE, { message: 'its back' });
     assert.strictEqual(el.elementAtPoint(50, 110), findById(el.document, 'b'));
+  },
+);
+
+/** Boxes of 200 by 100 at (50, 25) in boxes of 300 by 150 with a
+ *  perspective of 300px, one under the other, each holding the one whose
+ *  style is given. */
+const IN_PERSPECTIVE =
+  PAGE +
+  '<style>.s{position:relative;width:300px;height:150px;' +
+  'perspective:300px}.w{position:absolute;left:50px;top:25px;' +
+  'width:200px;height:100px;background:#ff0000}</style>';
+
+metric(
+  'rotate turns a box about an axis in the page as the function does, in the perspective of the box it is laid out in; and turned half round under backface-visibility: hidden it is not drawn',
+  async () => {
+    const { result, node } = await render(
+      IN_PERSPECTIVE +
+        '<div class="s"><div class="w" id="a" style="rotate:y 40deg"></div>' +
+        '</div><div class="s"><div class="w" id="b" style="rotate:0 2 0 40deg">' +
+        '</div></div><div class="s"><div class="w"></div>' +
+        '<div class="w" id="e" style="background:#0000ff;rotate:y 180deg;' +
+        'backface-visibility:hidden"></div></div>' +
+        '<div class="s"><div class="w" id="c" style="rotate:1 1 0 30deg">' +
+        '</div></div><div class="s"><div class="w" id="d" ' +
+        'style="transform:rotate3d(1, 1, 0, 30deg)"></div></div>',
+    );
+    await act();
+    const el = view(node);
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!);
+    const turned = (top: number) =>
+      around({ x: 50, y: top + 25, width: 200, height: 100 }, (x, y) =>
+        seen(x, y, { x: 150, y: top + 75 }, 40, 300, { x: 150, y: top + 75 }),
+      );
+    closeRect(rect('a'), turned(0), 'about the upright');
+    closeRect(rect('b'), turned(150), 'about a vector of any length');
+    // drawn there: above the box at its near side, and short of where it
+    // was laid out at its far one
+    await expectPixel(result.ctx, 60, 15, RED, { message: 'near side' });
+    await expectPixel(result.ctx, 205, 40, RED, { message: 'far side' });
+    await expectPixel(result.ctx, 205, 26, WHITE, { message: 'above it' });
+    await expectPixel(result.ctx, 230, 75, WHITE, { message: 'where it was' });
+    assert.strictEqual(el.elementAtPoint(60, 15), findById(el.document, 'a'));
+    // its back to the viewer, the box under it shows
+    await expectPixel(result.ctx, 150, 375, RED, { message: 'its back' });
+    assert.notStrictEqual(
+      el.elementAtPoint(150, 375),
+      findById(el.document, 'e'),
+    );
+    // and about any axis as rotate3d() turns about it
+    const c = rect('c')!;
+    closeRect(rect('d'), { ...c, y: c.y + 150 }, 'as rotate3d()');
+  },
+);
+
+metric(
+  'translate with a depth moves a box toward the viewer: drawn larger about the perspective origin, from where its move across lays it out, and not drawn past the viewer',
+  async () => {
+    const { result, node } = await render(
+      IN_PERSPECTIVE +
+        '<div class="s"><div class="w" id="a" style="translate:0 0 100px">' +
+        '</div></div><div class="s" style="perspective-origin:0 0">' +
+        '<div class="w" id="b" style="translate:0 0 100px"></div></div>' +
+        '<div class="s"><div class="w" id="c" style="translate:30px 0 100px">' +
+        '</div></div><div class="s"><div class="w" id="d" ' +
+        'style="translate:0 0 400px"></div></div>',
+    );
+    await act();
+    const el = view(node);
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!);
+    // a third of the way to the viewer: half as large again, about the
+    // middle of the box it is in, as translateZ(100px) is
+    closeRect(rect('a'), { x: 0, y: 0, width: 300, height: 150 }, 'nearer');
+    await expectPixel(result.ctx, 4, 4, RED, { message: 'drawn larger' });
+    assert.strictEqual(el.elementAtPoint(4, 4), findById(el.document, 'a'));
+    // and about the corner where the viewer is in front of that
+    closeRect(
+      rect('b'),
+      { x: 75, y: 187.5, width: 300, height: 150 },
+      'about the corner',
+    );
+    // laid out where its move across puts it, and drawn nearer from there
+    assert.strictEqual(boxOf(el, 'c').x, 80);
+    closeRect(
+      rect('c'),
+      { x: 45, y: 300, width: 300, height: 150 },
+      'moved across first',
+    );
+    // past the viewer: none of it is in front
+    await expectPixel(result.ctx, 150, 525, WHITE, { message: 'behind' });
+    assert.notStrictEqual(
+      el.elementAtPoint(150, 525),
+      findById(el.document, 'd'),
+    );
+  },
+);
+
+metric(
+  'scale with a depth deepens what a turn in the list takes out of the plane, and is nothing to the flat box rotate turns after it',
+  async () => {
+    const { result, node } = await render(
+      IN_PERSPECTIVE +
+        '<div class="s"><div class="w" id="a" ' +
+        'style="scale:1 1 2;transform:rotateY(40deg)"></div></div>' +
+        '<div class="s"><div class="w" id="b" style="scale:1 1 2;' +
+        'rotate:y 40deg"></div></div>',
+    );
+    await act();
+    const el = view(node);
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!);
+    const turned = (top: number, depth: number) =>
+      around({ x: 50, y: top + 25, width: 200, height: 100 }, (x, y) =>
+        seen(
+          x,
+          y,
+          { x: 150, y: top + 75 },
+          40,
+          300,
+          { x: 150, y: top + 75 },
+          depth,
+        ),
+      );
+    // the list turns the box, and the scale then puts each side of it
+    // twice as far from the plane: the near one nearer, and drawn larger
+    closeRect(rect('a'), turned(0, 2), 'turned, then deepened');
+    await expectPixel(result.ctx, 25, 5, RED, { message: 'twice as near' });
+    // `rotate` turns it after the scale, which found it flat
+    closeRect(rect('b'), turned(150, 1), 'deepened, then turned');
+  },
+);
+
+metric(
+  'translate, rotate and scale are one transform before the list, in that order, each with its depth',
+  async () => {
+    const { node } = await render(
+      IN_PERSPECTIVE +
+        '<div class="s"><div class="w" id="a" style="translate:20px 10% 50px;' +
+        'rotate:y 40deg;scale:0.8 1 2;transform:translateZ(30px) ' +
+        'rotateX(20deg)"></div></div>' +
+        '<div class="s"><div class="w" id="b" style="transform:' +
+        'translate3d(20px, 10%, 50px) rotateY(40deg) scale3d(0.8, 1, 2) ' +
+        'translateZ(30px) rotateX(20deg)"></div></div>',
+    );
+    const el = view(node);
+    const a = boxOf(el, 'a');
+    const b = boxOf(el, 'b');
+    assert.deepStrictEqual([a.x, a.y + 150], [b.x, b.y], 'moved as the list');
+    const drawn = el.elementRect(findById(el.document, 'a')!)!;
+    closeRect(
+      el.elementRect(findById(el.document, 'b')!),
+      { ...drawn, y: drawn.y + 150 },
+      'drawn as the list',
+    );
+  },
+);
+
+metric(
+  "at a display scale of 2 translate's depth is where it is at 1",
+  async () => {
+    const { result, node } = await render2x(
+      IN_PERSPECTIVE +
+        '<div class="s"><div class="w" id="a" style="translate:0 0 100px">' +
+        '</div></div>',
+    );
+    await act();
+    const el = view(node);
+    closeRect(
+      el.elementRect(findById(el.document, 'a')!),
+      { x: 0, y: 0, width: 300, height: 150 },
+      'in logical pixels',
+    );
+    const { abs } = el as unknown as DrawnNode;
+    await expectPixel(result.ctx, abs.x + 8, abs.y + 8, RED);
   },
 );

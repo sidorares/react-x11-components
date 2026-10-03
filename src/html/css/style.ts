@@ -46,7 +46,7 @@ import {
 import type { ContentItem, CounterChange } from './content.js';
 import type { CustomProps } from './vars.js';
 import { parseRotate, parseScale, parseTransform } from './transform.js';
-import type { TransformFunction } from './transform.js';
+import type { TransformFunction, Turn } from './transform.js';
 import {
   ANIMATION_LONGHANDS,
   NO_ANIMATIONS,
@@ -722,14 +722,16 @@ export interface ComputedStyle {
    *  (Web Animations 1, 5.6). 0 for `auto`. */
   willChange: number;
   /** Where `translate` moves the box after layout (CSS Transforms 2): a
-   *  length or a percentage of its own border box across and down; null
-   *  for `none`. */
-  translate: [Len, Len] | null;
-  /** `rotate`: a turn in the plane of the page, in degrees; null for
-   *  `none`, and for a turn about an axis in the page. */
-  rotate: number | null;
-  /** `scale`: across and down; null for `none`. */
-  scale: [number, number] | null;
+   *  length or a percentage of its own border box across and down, and a
+   *  depth toward the viewer in device pixels, 0 where none is written;
+   *  null for `none`. */
+  translate: [Len, Len, number] | null;
+  /** `rotate`: a turn in the plane of the page, or about an axis in space
+   *  (`Turn`); null for `none`. */
+  rotate: Turn | null;
+  /** `scale`: across, down and in depth, 1 in depth where none is written;
+   *  null for `none`. */
+  scale: [number, number, number] | null;
   /** `transform`: its functions in the order written (`css/transform.ts`);
    *  null for `none`. Any of the four makes the box a containing block and
    *  a stacking context, and paints it with the positioned boxes (CSS
@@ -2168,7 +2170,8 @@ export function applyDeclaration(
       return;
     }
     case 'translate': {
-      // `none`, or across, down, and a depth nothing here has
+      // `none`, or across, down, and a depth toward the viewer, which is a
+      // length and no percentage
       if (value.trim().toLowerCase() === 'none') {
         style.translate = null;
         return;
@@ -2178,7 +2181,7 @@ export function applyDeclaration(
       const [x, y, z] = parts.map((p) => parseLength(p, ctx));
       if (x == null || x === AUTO || y === null || y === AUTO) return;
       if (z !== undefined && typeof z !== 'number') return;
-      style.translate = [x, y ?? 0];
+      style.translate = [x, y ?? 0, z ?? 0];
       return;
     }
     case 'rotate': {
