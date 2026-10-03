@@ -278,11 +278,15 @@ interface IndexedRule {
   compiled: boolean;
   /** Which rule this is, in a sharing key (`Cascade.sharedStyleFor`). */
   id: number;
-  /** For a rule asked of the elements in a drawing by their type, or of
-   *  them all (`Cascade.shapeStyles`): the ids and classes it asks of its
-   *  subject's ancestors (`ancestorKeys`). Null until a drawing asks, and
-   *  in every other rule. */
+  /** The ids and classes the rule asks of its subject's ancestors
+   *  (`ancestorKeys`): an element with no ancestor of one of them is not
+   *  the rule's, which is known without matching it. Null until first
+   *  asked, and set by `Cascade._needsOf` alone, which notes the names. */
   needs: readonly string[] | null;
+  /** Whether the selector is the class or the id the rule is filed under,
+   *  and nothing else (`keyOnly`): an element its bucket is asked for is
+   *  the rule's, with no matcher to run. */
+  keyOnly: boolean;
   /** For a rule kept for drawings: whether it declares something a
    *  drawing's root does not have from its box's style. Null until asked. */
   root: boolean | null;
@@ -388,6 +392,7 @@ class RuleIndex {
       compiled: false,
       id: this._nextId++,
       needs: null,
+      keyOnly: keyOnly(rule.selector, key),
       root: null,
       inCopy: null,
       inCopyCompiled: false,
@@ -1093,6 +1098,24 @@ function rightmostKey(selector: string): {
   return compoundKey(selector.slice(start));
 }
 
+/**
+ * Whether a selector is nothing but the class or the id it is filed under
+ * (`rightmostKey`): `.p-4`, `#nav`, as a utility framework writes all its
+ * rules. An element its bucket is asked for has that class or that id,
+ * which is all such a rule asks. A type is left to the matcher, which
+ * reads an element's name its own way (`getName`).
+ */
+function keyOnly(
+  selector: string,
+  key: { kind: 'id' | 'class' | 'tag' | 'any'; name: string },
+): boolean {
+  if (key.kind !== 'class' && key.kind !== 'id') return false;
+  const text = selector.trim();
+  if (text[0] !== (key.kind === 'class' ? '.' : '#')) return false;
+  const name = readIdent(text, 1);
+  return name.end === text.length && name.value === key.name;
+}
+
 /** A compound selector's most selective key (`rightmostKey`). */
 function compoundKey(compound: string): {
   kind: 'id' | 'class' | 'tag' | 'any';
@@ -1150,6 +1173,17 @@ function ancestorKeys(selector: string): string[] {
     else if (key.kind === 'class') keys.push(`.${key.name}`);
   }
   return keys;
+}
+
+/** No names: what is above the root. */
+const NO_NAMES: ReadonlySet<string> = new Set();
+
+/** The element a selector's ancestor is matched against: the parent, where
+ *  that is an element — not the document, nor a shadow tree's root, as the
+ *  matcher's own climb stops there. */
+function elementParent(el: Element): Element | null {
+  const parent = el.parent;
+  return parent && isTag(parent as Element) ? (parent as Element) : null;
 }
 
 /** A drawing none of whose own elements a rule reaches. */
@@ -1948,6 +1982,8 @@ export class Cascade {
    * on a page with a Tailwind sheet, and 150 without it.
    */
   beginSharing(kept: KeptStyles | null = null): void {
+    this._namesKept.clear();
+    this._keepNames = true;
     this._shared.clear();
     this._sharedByMatch.clear();
     // the kept styles' custom properties are the sets in here, which the
@@ -1961,6 +1997,105 @@ export class Cascade {
   endSharing(): void {
     this._kept = null;
     this._keptShared.clear();
+    this._namesKept.clear();
+    this._keepNames = false;
+  }
+
+  /**
+   * The ids and the classes some rule asks of an ancestor (`_needsOf`),
+   * as the rules are first asked of: what is known of the names above an
+   * element is kept to these, so a page of utility classes keeps the few
+   * its variants name — `.dark`, `.group` — and most of its elements none.
+   * `_askedGen` counts the names noted, since what was worked out before
+   * one was noted is short of it.
+   */
+  private _askedIds = new Set<string>();
+  private _askedClasses = new Set<string>();
+  private _askedGen = 0;
+
+  /**
+   * The asked names of an element and of every element above it, as the
+   * matcher climbs to them — an element's parents, up to the root of the
+   * tree it is in — kept for a build (`beginSharing`), whose elements are
+   * styled from the top down and ask for their parents' in turn: one set
+   * for an element and every element under it that adds no name. Outside
+   * a build — a hover's restyle in place — they are worked out once for
+   * each element matched and not kept, since nothing then says the
+   * document has not changed under them.
+   */
+  private _namesKept = new Map<Element, ReadonlySet<string>>();
+  private _keepNames = false;
+
+  /** The names a rule asks of its subject's ancestors (`IndexedRule.needs`),
+   *  worked out once, with each a rule had not asked before noted. */
+  private _needsOf(indexed: IndexedRule): readonly string[] {
+    if (indexed.needs) return indexed.needs;
+    const needs = (indexed.needs = ancestorKeys(indexed.rule.selector));
+    for (const name of needs) {
+      const asked = name[0] === '#' ? this._askedIds : this._askedClasses;
+      if (asked.has(name.slice(1))) continue;
+      asked.add(name.slice(1));
+      this._askedGen += 1;
+      this._namesKept.clear();
+    }
+    return needs;
+  }
+
+  /** The names of `el`'s own that a rule asks of an ancestor, or null. */
+  private _ownAsked(el: Element): string[] | null {
+    let own: string[] | null = null;
+    if (this._askedIds.size) {
+      const id = attr(el, 'id');
+      if (id && this._askedIds.has(id)) own = [`#${id}`];
+    }
+    if (this._askedClasses.size) {
+      const className = attr(el, 'class');
+      if (className) {
+        for (const name of className.split(/\s+/)) {
+          if (name && this._askedClasses.has(name)) {
+            (own ??= []).push(`.${name}`);
+          }
+        }
+      }
+    }
+    return own;
+  }
+
+  /** The asked names of `el` and of everything above it (`_namesKept`). */
+  private _namesAbove(el: Element): ReadonlySet<string> {
+    if (!this._keepNames) {
+      let names: Set<string> | null = null;
+      for (let at: Element | null = el; at; at = elementParent(at)) {
+        const own = this._ownAsked(at);
+        if (own) for (const name of own) (names ??= new Set()).add(name);
+      }
+      return names ?? NO_NAMES;
+    }
+    const kept = this._namesKept.get(el);
+    if (kept) return kept;
+    // the ones not known yet, the nearest first, under the nearest that is
+    const chain: Element[] = [];
+    let base: ReadonlySet<string> = NO_NAMES;
+    for (let at: Element | null = el; at; at = elementParent(at)) {
+      const known = this._namesKept.get(at);
+      if (known) {
+        base = known;
+        break;
+      }
+      chain.push(at);
+    }
+    // and then down: each one's are those above it and its own
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const at = chain[i];
+      const own = this._ownAsked(at);
+      if (own) {
+        const names = new Set(base);
+        for (const name of own) names.add(name);
+        base = names;
+      }
+      this._namesKept.set(at, base);
+    }
+    return base;
   }
 
   /**
@@ -3530,8 +3665,7 @@ export class Cascade {
     const read = (bucket: IndexedRule[]): boolean => {
       let free = false;
       for (const indexed of bucket) {
-        const keys = ancestorKeys(indexed.rule.selector);
-        indexed.needs = keys;
+        const keys = this._needsOf(indexed);
         if (!keys.length) free = true;
         for (const key of keys) {
           (key[0] === '#' ? needs.ids : needs.classes).add(key.slice(1));
@@ -3610,6 +3744,19 @@ export class Cascade {
     const tree = scoped ? this._treeInfo(el) : this._docInfo;
     const scope = tree.rules.id;
 
+    // the asked names above the element (`_namesAbove`), worked out where a
+    // rule first asks for them, and again after one notes a name
+    let above: ReadonlySet<string> = NO_NAMES;
+    let aboveGen = -1;
+    const hasAncestors = (needs: readonly string[]): boolean => {
+      if (aboveGen !== this._askedGen) {
+        const parent = elementParent(el);
+        above = parent ? this._namesAbove(parent) : NO_NAMES;
+        aboveGen = this._askedGen;
+      }
+      for (const name of needs) if (!above.has(name)) return false;
+      return true;
+    };
     const consider = (bucket: IndexedRule[] | undefined): void => {
       if (!bucket) return;
       for (const indexed of bucket) {
@@ -3629,6 +3776,23 @@ export class Cascade {
           )
         ) {
           continue;
+        }
+        // filed under the class or the id that is all it asks
+        if (indexed.keyOnly && !inCopy) {
+          if (indexed.host !== null && !indexed.host(tree.root!.host)) {
+            continue;
+          }
+          matched?.push(indexed.id);
+          if (out === null) continue;
+          const origin = rule.order < 0 ? Origin.UserAgent : Origin.Author;
+          pushRule(out, rule, origin, tree.depth, tree.root);
+          continue;
+        }
+        // naming an ancestor no ancestor of the element is: not its, with
+        // no walk up the tree to say so
+        if (!inCopy) {
+          const needs = this._needsOf(indexed);
+          if (needs.length && !hasAncestors(needs)) continue;
         }
         let match: ((el: Element) => boolean) | null;
         if (inCopy) {

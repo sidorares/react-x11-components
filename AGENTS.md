@@ -1269,6 +1269,28 @@ line is not "is there a library" but **"would a bug be visible"**: flexbox is
 long, subtle and silently wrong when wrong; block flow and floats are none of
 those.
 
+**The index answers most rules without the matcher, and only ever says
+no.** A rule that is nothing but the class or the id it is filed under —
+`.p-4`, `#nav`, a utility framework's every rule — is the element's
+whenever its bucket is asked (`keyOnly`). A rule that names an ancestor
+(`.dark .card`, `#nav a`) is not the element's where no ancestor has the
+name, which the cascade knows without css-select's climb to the root: it
+keeps, for each element of a build, the names above it that some rule
+asks of an ancestor (`_namesAbove`), one set shared by every element under
+it that adds none, and outside a build works them out once for each
+element matched. A rule whose names are all there still goes to the
+matcher. Two things are load-bearing. **Only the names some rule asks are
+kept** (`_needsOf` notes each, and drops what was kept when a rule asks a
+new one), so a page of Tailwind utilities keeps `.dark` and `.group`
+rather than every class of every ancestor. And **the path that keeps
+nothing was measured on the deepest document there was**: the first cut
+kept every name and, outside a build, worked them out again for each rule,
+so the build it was written for got faster and a hover over a Tailwind
+page 24 elements deep got 180 times slower. `test/html-selector-filter.test.ts`
+holds both paths to css-select, over generated documents and selectors
+and over a name first asked after the names above an element were worked
+out.
+
 **And one step of it is written out, because Yoga's is silently wrong.**
 Yoga 3.2.1 shares a line out in two passes where CSS Flexbox 9.7 goes round
 until no limit stops an item, divides by a running sum (react/yoga#2006),

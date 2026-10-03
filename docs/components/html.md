@@ -3079,6 +3079,20 @@ than needing a style each. The report computes 110 styles, and 112 with its tabl
 An edit went from 111 to 76 ms on macOS and from 80 to 54 ms on XQuartz, an
 append from 118 to 83 ms and from 88 to 59 ms.
 
+**Most rules are answered without the matcher.** An element is asked of
+the rules in its buckets — its tag's, its id's and each of its classes' —
+and each of them went to css-select, where a class is a regular expression
+over the `class` attribute and a rule that names an ancestor climbs to the
+root before it says no. A rule that is nothing but its class or its id, as
+all of a utility framework's are, is the element's whenever its bucket is
+asked. The names that rules ask of an ancestor are kept for each element
+as a build goes down the document, so a rule that names one no ancestor
+has is passed over without the climb; one whose names are all there still
+goes to the matcher. Under a stylesheet of 2,000 utility rules a restyle
+of 1,000 elements went from 640 to 379 ms on X11, and on a Tailwind-shaped
+page of 6,000 elements 24 deep, matching every element for a build went
+from 185 to 51 ms.
+
 **A padded inline box leaves its paragraph one layout.** Its padding,
 border and margin take room on its line, and one layout of the
 paragraph's text has none to give them; set a line at a time instead, the
