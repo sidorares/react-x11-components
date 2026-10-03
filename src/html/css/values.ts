@@ -135,6 +135,10 @@ export interface UnitContext {
   initial?: ComputedStyle;
   /** The palette's focus ring, which `-webkit-focus-ring-color` is. */
   focusRing?: string;
+  /** The scheme the palette is, the reader's preference, which a
+   *  `color-scheme` that names it takes (`usedColorScheme`); `initial`'s,
+   *  which is `normal`'s, where it is missing. */
+  paletteScheme?: 'light' | 'dark';
   /** Each system colour as the `light-dark()` it is, the palette's in the
    *  palette's scheme (`systemColorTable`); Chrome's where it is missing. */
   systemColors?: Map<string, string>;

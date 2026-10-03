@@ -475,7 +475,8 @@ export interface ComputedStyle {
    * its `color-scheme` resolved against the scheme the palette is, which
    * stands for the reader's preference, as it does for `@media
    * (prefers-color-scheme)`. What a `light-dark()` picks by. `normal` is
-   * the palette's own, since the palette is this renderer's default look.
+   * the palette's own, since the palette is this renderer's default look,
+   * unless the host names another (`RootLook.normalScheme`).
    */
   colorScheme: 'light' | 'dark';
   fontFamily: string;
@@ -1089,6 +1090,10 @@ export interface RootLook {
   /** Which scheme the palette is — what `@media (prefers-color-scheme)`
    *  is answered from. */
   colorScheme: 'light' | 'dark';
+  /** The scheme `color-scheme: normal` is drawn in, the user agent's
+   *  default (`HtmlProps.defaultColorScheme`): the palette's, where it is
+   *  missing. */
+  normalScheme?: 'light' | 'dark';
   /**
    * The palette's own control chrome, carried here because the **box in the
    * flow has to be the size the widget will be** and layout runs long before
@@ -1167,7 +1172,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
   // a copy of the literal, not the literal: see `copyStyle`
   return copyStyle({
     color: look.color,
-    colorScheme: look.colorScheme,
+    // what the root has where no rule sets one: `normal`'s
+    colorScheme: look.normalScheme ?? look.colorScheme,
     fontFamily: look.fontFamily,
     fontSize: look.fontSize,
     // the host's font is a browser's standard font, which is no generic
@@ -1754,7 +1760,12 @@ export function applyDeclaration(
 
   switch (name) {
     case 'color-scheme': {
-      const scheme = usedColorScheme(value, ctx.initial?.colorScheme);
+      // `initial` holds what `normal` gives: the initial value is `normal`
+      const scheme = usedColorScheme(
+        value,
+        ctx.paletteScheme ?? ctx.initial?.colorScheme,
+        ctx.initial?.colorScheme,
+      );
       if (scheme) style.colorScheme = scheme;
       return;
     }

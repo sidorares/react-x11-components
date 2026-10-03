@@ -1131,7 +1131,7 @@ class Builder {
       clipText: this._clipText,
       impliedHtml,
       impliedRoot: body && !html,
-      paletteScheme: cascade.initial.colorScheme,
+      paletteScheme: cascade.look.colorScheme,
     };
   }
 

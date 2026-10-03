@@ -429,6 +429,11 @@ export default function Page(props: PageProps): ReactElement {
               // a browser, and a design system spaces a page in them, where
               // the theme's own text size set it all an eighth too tight
               fontSize={16}
+              // and a page that does not say which colour scheme it is
+              // drawn in is light, on white, as every browser draws it —
+              // the reader's own preference is still what its
+              // `prefers-color-scheme` rules are asked
+              defaultColorScheme="light"
               source={page.source}
               partial={page.partial}
               charset={page.charset}
