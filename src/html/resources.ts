@@ -79,6 +79,10 @@ export type ResourceResult =
 export type VideoSource =
   { kind: 'video'; src: string } | { kind: 'video'; frames: VideoFrames };
 
+/** What `ResourceStore` tells its owner arrived late: a stylesheet, an
+ *  image or a video, or a stylesheet that was declined or failed. */
+export type ResourceChange = 'stylesheet' | 'image' | 'video' | 'declined';
+
 /** Where a video request is: answered with what plays, still being
  *  answered, or declined — by the host, or by the player it was handed to. */
 export type VideoAnswer = VideoSource | 'pending' | 'failed';
@@ -119,10 +123,7 @@ export class ResourceStore {
   private _ask: (
     request: ResourceRequest,
   ) => Promise<ResourceResult | null> | ResourceResult | null;
-  private _changed: (
-    what: 'stylesheet' | 'image' | 'video',
-    layout: boolean,
-  ) => void;
+  private _changed: (what: ResourceChange, layout: boolean) => void;
   private _urls: UrlResolver | null;
   private _destroyed = false;
   /** What each video URL plays, kept apart from the other resources: a
@@ -135,12 +136,15 @@ export class ResourceStore {
    * image the boxes — or, where nothing its size lays out asked for it
    * (`layout`), only what is painted — and a video what is mounted over
    * them; a host answering over a network answers every one of them later.
+   * It is told too where a stylesheet is declined or fails that late
+   * (`'declined'`): that changes no style, but what waited for the sheet
+   * goes on without it.
    */
   constructor(
     ask: (
       request: ResourceRequest,
     ) => Promise<ResourceResult | null> | ResourceResult | null,
-    changed: (what: 'stylesheet' | 'image' | 'video', layout: boolean) => void,
+    changed: (what: ResourceChange, layout: boolean) => void,
     urls: UrlResolver | null = null,
   ) {
     this._ask = ask;
@@ -179,10 +183,8 @@ export class ResourceStore {
     }
     if (isPromise(answer)) {
       answer.then(
-        (result) => this._settle(url, entry, result),
-        () => {
-          entry.state = 'failed';
-        },
+        (result) => this._settle(url, entry, result, false, request.kind),
+        () => this._settle(url, entry, null, false, request.kind),
       );
       return;
     }
@@ -194,12 +196,21 @@ export class ResourceStore {
     entry: Entry,
     result: ResourceResult | null,
     synchronous = false,
+    asked: ResourceRequest['kind'] | null = null,
   ): void {
     if (this._destroyed) return;
     // a font is `fonts.ts`'s to ask for, and never comes through here; a
     // video is `requestVideo`'s, and no answer for anything else
     if (!result || result.kind === 'font' || result.kind === 'video') {
       entry.state = 'failed';
+      // A sheet that will not come holds nothing back, and what was held
+      // for it has to hear so: a first rendering waits on the sheets the
+      // head links to and the ones they import (`_renderBlocked`), and
+      // nothing else was going to ask again. Zen Garden 215 imports two
+      // `http:` sheets, which a secure page's host refuses.
+      if (!synchronous && asked === 'stylesheet') {
+        this._changed('declined', false);
+      }
       return;
     }
     if (result.kind === 'stylesheet') {

@@ -296,13 +296,16 @@ test("an imported stylesheet's rules come before its importer's", async () => {
   assert.strictEqual(p.style.color, '#00ff00');
 });
 
-test('a stylesheet the head links to, or imports, holds the first rendering until it arrives; one in the body, for print or declined holds nothing', async () => {
+test('a stylesheet the head links to, or imports, holds the first rendering until it arrives or is declined; one in the body, for print or declined at once holds nothing', async () => {
   // A browser paints a page once its head's sheets are in (HTML,
   // "render-blocking"). Drawn before then, the document was built, laid out
   // and painted in the user agent's styles, and built again when the sheet
   // landed: a flash of unstyled content, and the first frame's work twice.
   const held = new Map<string, () => void>();
-  const mount = async (source: string, declined = false) => {
+  /** How the host answers: with the sheet, declining it at once, or
+   *  declining or failing it once it is held for. */
+  type Answer = 'sheet' | 'declined' | 'declined later' | 'failed later';
+  const mount = async (source: string, how: Answer = 'sheet') => {
     await renderX11(
       h(
         'box',
@@ -311,16 +314,20 @@ test('a stylesheet the head links to, or imports, holds the first rendering unti
           source,
           partial: false,
           onResource: (r: ResourceRequest) => {
-            if (r.kind !== 'stylesheet' || declined) return null;
-            return new Promise<ResourceResult>((answer) =>
+            if (r.kind !== 'stylesheet' || how === 'declined') return null;
+            return new Promise<ResourceResult | null>((answer, fail) =>
               held.set(r.url, () =>
-                answer({
-                  kind: 'stylesheet' as const,
-                  text:
-                    r.url === 'a.css'
-                      ? '@import "b.css"; p { color: #ff0000 }'
-                      : 'p { margin: 0 }',
-                }),
+                how === 'declined later'
+                  ? answer(null)
+                  : how === 'failed later'
+                    ? fail(new Error('offline'))
+                    : answer({
+                        kind: 'stylesheet' as const,
+                        text:
+                          r.url === 'a.css'
+                            ? '@import "b.css"; p { color: #ff0000 }'
+                            : 'p { margin: 0 }',
+                      }),
               ),
             );
           },
@@ -373,8 +380,25 @@ test('a stylesheet the head links to, or imports, holds the first rendering unti
   assert.ok(tree(), 'nor by one for print');
   held.clear();
   cleanup();
-  tree = await mount('<link rel="stylesheet" href="b.css"><p>text</p>', true);
+  tree = await mount(
+    '<link rel="stylesheet" href="b.css"><p>text</p>',
+    'declined',
+  );
   assert.ok(tree(), 'nor by one the host declined');
+  cleanup();
+
+  // Declined or failed once it is held for, it holds nothing from then:
+  // nothing else was going to ask again, and Zen Garden 215, which imports
+  // two `http:` sheets a secure page's host refuses, was never drawn
+  for (const how of ['declined later', 'failed later'] as const) {
+    tree = await mount('<link rel="stylesheet" href="b.css"><p>text</p>', how);
+    assert.strictEqual(tree(), null, `held until it is ${how}`);
+    await release('b.css');
+    assert.ok(tree(), `drawn once it is ${how}`);
+    const doc = screen.getByTestName('doc') as DrawnNode;
+    assert.ok(doc.abs.height > 0, `and as tall as it is, ${how}`);
+    cleanup();
+  }
 });
 
 test('an image handed over as bytes is decoded and drawn', async (t) => {

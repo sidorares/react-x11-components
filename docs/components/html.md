@@ -113,8 +113,8 @@ things to know about when:
 - **A stylesheet the head links to holds the first rendering until it is
   in**, as a browser holds a page's first paint (HTML, "render-blocking"),
   and so do the sheets it imports: the element draws nothing — and
-  measures nothing — until each one has arrived or been declined, and then
-  draws the document styled. Built before then, it was built, laid out and
+  measures nothing — until each one has arrived or been declined, at once
+  or later, and then draws the document styled. Built before then, it was built, laid out and
   painted in the user agent's styles and built again as each sheet landed:
   a flash of unstyled content over a network, and the first frame's work
   twice. A sheet linked to from the body (where the parser has started one

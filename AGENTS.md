@@ -1417,7 +1417,13 @@ so where it was asked for (`request`'s `paintOnly`); one whose size lays
 something out still builds the boxes. Over a network, the Zen Garden's
 designs took eleven builds a page before these and take one.
 `htmlsweep.mjs`'s `LATENCY` is how that is measured: answered at once,
-arrivals coalesce into a frame and none of it shows.
+arrivals coalesce into a frame and none of it shows. **A sheet declined
+or failed after it was asked for is news too** (`'declined'`, in
+`resources.ts`): it changes no style, but nothing else asks the held
+rendering again. Zen Garden 215 imports two `http:` sheets its secure page's
+host refuses, and the bench's harness measured it a viewport tall until a
+query built it; anything new that holds the first rendering has to be told
+when what it waits on will never come.
 
 **An image's source is chosen where the viewport is known, and stays
 chosen.** An `<img srcset>`, or an `<img>` in a `<picture>`, is chosen in
