@@ -71,6 +71,14 @@ export interface Filtered {
   outHeight: number;
   outFor: string | null;
   scratch: Pixels | null;
+  /** Where a context runs the filter itself (`through`): the box's group,
+   *  painted unfiltered as it draws under `key` while `fresh`, kept to be
+   *  filtered again as the filter changes, and bumped as it is painted. */
+  group: SurfaceLike | null;
+  groupCtx: unknown;
+  groupWidth: number;
+  groupHeight: number;
+  groupSerial: number;
 }
 
 /** What a surface hands back for its pixels: ntk's context and the native
@@ -88,6 +96,15 @@ interface Writable {
   putImageData(data: Pixels, x: number, y: number): void;
 }
 
+/** A context that runs a filter: canvas's own `filter`, a CSS list. */
+interface Filtering {
+  filter: string;
+  save(): void;
+  restore(): void;
+  clearRect(x: number, y: number, width: number, height: number): void;
+  drawImage(image: unknown, x: number, y: number): void;
+}
+
 /**
  * The element's kept pixels, the least recently drawn given up first once
  * the reads hold more than `budget` pixels.
@@ -98,11 +115,16 @@ export class FilterStore {
   private unavailable = false;
 
   constructor(
-    private readonly app: unknown,
+    app: unknown,
     /** Told a read arrived for `box` that differs from what it was drawn
      *  from, which the element paints again. */
     private readonly arrived: (box: object) => void,
     private readonly budget = 16 * 1024 * 1024,
+    /** Where a surface the filtered pixels go on comes from: the app's. */
+    private readonly make: (
+      width: number,
+      height: number,
+    ) => SurfaceLike | null = (width, height) => newSurface(app, width, height),
   ) {}
 
   /** How many elements keep pixels. */
@@ -148,6 +170,11 @@ export class FilterStore {
         outHeight: 0,
         outFor: null,
         scratch: null,
+        group: null,
+        groupCtx: null,
+        groupWidth: 0,
+        groupHeight: 0,
+        groupSerial: 0,
       };
       if (!slots) this.kept.set(owner, (slots = new Map()));
       slots.set(pseudo, hit);
@@ -233,6 +260,87 @@ export class FilterStore {
   }
 
   /**
+   * The surface the box's group is kept on for `kept`, cleared, and its
+   * context, for the caller to paint the box on unfiltered as it draws now,
+   * where a context runs the filter itself (`through`). It is fresh until
+   * what the box draws changes, and the caller paints it only where it is
+   * not: a transition of the filter is the group drawn through each frame's
+   * filter, and painted once. Null where no surface can be had.
+   */
+  group(kept: Filtered): { surface: SurfaceLike; ctx: unknown } | null {
+    const { width, height } = kept;
+    if (
+      !kept.group ||
+      kept.groupWidth !== width ||
+      kept.groupHeight !== height
+    ) {
+      dropGroup(kept);
+      kept.group = this.make(width, height);
+      kept.groupCtx = kept.group?.getContext('2d') ?? null;
+      kept.groupWidth = width;
+      kept.groupHeight = height;
+      if (!kept.group) return null;
+    } else {
+      (kept.groupCtx as Partial<Filtering>).clearRect?.(0, 0, width, height);
+    }
+    kept.groupSerial += 1;
+    kept.fresh = true;
+    return { surface: kept.group, ctx: kept.groupCtx };
+  }
+
+  /**
+   * The group kept for `kept` drawn onto the surface the filtered pixels go
+   * on through `filter`, by a context that runs one itself: canvas's
+   * `filter`, which react-x11's native context takes for the colour
+   * functions (its `src/backend/filter.js`). That is the whole of it, in the
+   * paint that asks, with no read and nothing to lag, and drawn again only
+   * where the group or the filter is other than it was. Null where the
+   * surface's context has no `filter`, or the list does not stick on it,
+   * which is remembered: every box is drawn from a read from then on.
+   */
+  through(kept: Filtered, filter: string): SurfaceLike | null {
+    if (this.unfiltered || !kept.group) return null;
+    const { width, height } = kept;
+    const want = `css ${kept.groupSerial} ${filter}`;
+    if (kept.out && kept.outFor === want) return kept.out;
+    if (!kept.out || kept.outWidth !== width || kept.outHeight !== height) {
+      dropOut(kept);
+      kept.out = this.make(width, height);
+      kept.outCtx = kept.out?.getContext('2d') as Partial<Writable> | null;
+      kept.outWidth = width;
+      kept.outHeight = height;
+      if (!kept.out) return null;
+    }
+    const ctx = kept.outCtx as Partial<Filtering> | null;
+    let took = !!ctx && 'filter' in ctx && typeof ctx.drawImage === 'function';
+    if (took) {
+      ctx!.save!();
+      try {
+        ctx!.filter = filter;
+        took = ctx!.filter === filter;
+        if (took) {
+          ctx!.clearRect!(0, 0, width, height);
+          ctx!.drawImage!(kept.group, 0, 0);
+        }
+      } finally {
+        ctx!.restore!();
+      }
+    }
+    if (!took) {
+      this.unfiltered = true;
+      // what is fresh is a group painted, and no read: one is asked for
+      kept.fresh = false;
+      return null;
+    }
+    kept.outFor = want;
+    return kept.out;
+  }
+
+  /** Whether a context was found that runs no filter of its own, and every
+   *  box is drawn from a read. */
+  unfiltered = false;
+
+  /**
    * The surface the matrices make of the pixels read for `kept`, made again
    * only where they or the pixels are other ones than it holds: null where
    * none can be made, or nothing read is the box's size.
@@ -251,7 +359,7 @@ export class FilterStore {
     if (kept.out && kept.outFor === want) return kept.out;
     if (!kept.out || kept.outWidth !== width || kept.outHeight !== height) {
       dropOut(kept);
-      kept.out = newSurface(this.app, width, height);
+      kept.out = this.make(width, height);
       kept.outCtx = kept.out?.getContext('2d') as Partial<Writable> | null;
       kept.outWidth = width;
       kept.outHeight = height;
@@ -306,6 +414,7 @@ export class FilterStore {
     hit.raw = null;
     hit.dropped = true;
     dropOut(hit);
+    dropGroup(hit);
   }
 
   /** Give up the least recently drawn past the budget, but `keep`. */
@@ -333,6 +442,14 @@ function dropOut(kept: Filtered): void {
   kept.out = null;
   kept.outCtx = null;
   kept.outFor = null;
+}
+
+/** Give up the surface the group is kept on, and its context. */
+function dropGroup(kept: Filtered): void {
+  (kept.groupCtx as { destroy?(): void } | null)?.destroy?.();
+  kept.group?.destroy?.();
+  kept.group = null;
+  kept.groupCtx = null;
 }
 
 /** Whether two reads hold the same pixels: a read that brings nothing new

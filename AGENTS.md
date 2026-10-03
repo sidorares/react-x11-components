@@ -1982,12 +1982,18 @@ for the cheap side or a cause for the cost.
 
 **A filter's colour functions are run over pixels read back, and what
 lags is the content, never the filter** (`paintFiltered`,
-`src/html/filters.ts`). No context runs a filter and none hands a
-surface's pixels over as it is asked — ntk's are the X server's, a round
-trip away, and the native contexts keep the canvas contract and resolve a
-read a tick later — so a filtered box's group is painted on a surface,
-read back, and kept by element; every paint runs the matrices the box has
-now over the newest pixels read for it. Four things are load-bearing.
+`src/html/filters.ts`). A filtered box's group is painted on a surface
+kept by element. Where the context runs a filter itself — react-x11's
+native one takes the colour functions as canvas's `filter` — the group is
+drawn through it onto a second kept surface (`through`), again only as the
+group or the filter changes, and nothing lags. Everywhere else none runs a
+filter and none hands a surface's pixels over as it is asked — ntk's are
+the X server's, a round trip away — so the group is read back, and every
+paint runs the matrices the box has now over the newest pixels read for
+it. A context whose `filter` does not stick for a list sends every box to
+the read from then on (`unfiltered`), and is asked with `in` first, since
+assigning an unknown property sticks on any object. Four things about the
+read are load-bearing.
 **A read is made stale, never dropped** (`stale`, through
 `_dropSprites`): a page whose animations build the document every frame
 — ekazinich.com's — dropped the read at each build, and those frames drew

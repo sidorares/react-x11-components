@@ -476,3 +476,74 @@ test('a filtered box a hover moves a fraction of a pixel at a time is drawn at e
   }
   assert.deepStrictEqual([...sizes], ['201x21'], 'one size, moving or not');
 });
+
+test("a context that runs a filter itself is handed the group, kept and drawn through canvas's filter again only as it or the filter changes, and one that does not is remembered", () => {
+  // react-x11's native context runs the colour functions as canvas's
+  // `filter`; ntk's has none. A context records what it was asked.
+  const drawn: string[] = [];
+  let made = 0;
+  const surface = (runs: boolean) => {
+    const name = `surface ${++made}`;
+    const ctx: Record<string, unknown> = {
+      save() {},
+      restore() {},
+      clearRect: () => drawn.push(`clear ${name}`),
+      drawImage: (image: { name: string }) =>
+        drawn.push(`draw ${image.name} on ${name} through ${ctx.filter}`),
+    };
+    let filter = 'none';
+    if (runs) {
+      Object.defineProperty(ctx, 'filter', {
+        get: () => filter,
+        set: (v: string) => {
+          // as the native context: blur does not stick
+          if (!/blur/.test(v)) filter = v;
+        },
+      });
+    }
+    return { name, getContext: () => ctx, destroy() {} };
+  };
+  const runs = new FilterStore(
+    null,
+    () => {},
+    undefined,
+    () => surface(true),
+  );
+  const el = {};
+  const kept = runs.at(el, '', {}, 30, 20, 'k');
+  const colour = colourFilter([
+    { fn: 'grayscale', amount: 0.5 },
+    { fn: 'hue-rotate', angle: 90 },
+    { fn: 'opacity', amount: 0.5 },
+  ])!;
+  assert.strictEqual(colour.css, 'grayscale(0.5) hue-rotate(90deg)');
+  assert.ok(runs.group(kept), 'the group, for the caller to paint');
+  assert.strictEqual(kept.fresh, true);
+  const out = runs.through(kept, colour.css);
+  assert.ok(out);
+  assert.strictEqual(runs.through(kept, colour.css), out, 'nothing changed');
+  assert.ok(runs.through(kept, 'invert(1)'), 'another filter');
+  assert.deepStrictEqual(drawn, [
+    'clear surface 2',
+    'draw surface 1 on surface 2 through grayscale(0.5) hue-rotate(90deg)',
+    'clear surface 2',
+    'draw surface 1 on surface 2 through invert(1)',
+  ]);
+  runs.stale(el, '');
+  assert.strictEqual(kept.fresh, false, 'painted again as the box changes');
+  assert.ok(runs.group(kept));
+  assert.deepStrictEqual(drawn.at(-1), 'clear surface 1', 'the same surface');
+  assert.strictEqual(runs.through(kept, 'blur(2px)'), null);
+  assert.strictEqual(runs.unfiltered, true, 'a list that did not stick');
+  assert.strictEqual(kept.fresh, false, 'and a read is asked for');
+  const none = new FilterStore(
+    null,
+    () => {},
+    undefined,
+    () => surface(false),
+  );
+  const other = none.at(el, '', {}, 30, 20, 'k');
+  assert.ok(none.group(other));
+  assert.strictEqual(none.through(other, colour.css), null);
+  assert.strictEqual(none.unfiltered, true, 'no filter at all');
+});

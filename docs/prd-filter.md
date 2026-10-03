@@ -29,16 +29,25 @@ for interpolation (10.4), so a transition of `filter` runs.
 every other colour function, each of which leaves alpha alone: it is the
 group opacity the box already has.
 
-## How: a read back, kept
+## How: through the context's filter, or a read back
 
-No 2d context any backend has runs a filter, and none hands a surface's
+The box's group is painted unfiltered on a surface kept for the element
+(`src/html/filters.ts`). Where the paint's context runs a filter itself —
+react-x11's native context, from sidorares/react-x11#866, takes the colour
+functions as canvas's `filter` — the group is drawn through it onto a
+second kept surface in the paint that draws the box, and drawn through
+again only as the group or the filter changes (`through`). A context is
+asked whether it has a `filter` with `in` before anything is assigned,
+because an assignment to an unknown property sticks on any object; and a
+list that does not stick on it sends every box to the read from then on.
+
+Everywhere else no context runs a filter, and none hands a surface's
 pixels over as it is asked. ntk's surfaces are X pixmaps, a round trip
-away. The native contexts read synchronously inside and resolve
-`getImageData` a tick later, keeping the canvas contract. So `paintFiltered`
-paints the box's group unfiltered on a surface, reads it back, and keeps
-what it read by element (`src/html/filters.ts`). Every paint runs the
-matrices the box has now over the newest pixels read for it and draws the
-result through the box's matrix and at its opacity.
+away. The native contexts before #866 read synchronously inside and
+resolve `getImageData` a tick later, keeping the canvas contract. So
+`paintFiltered` reads the group back and keeps what it read. Every paint
+runs the matrices the box has now over the newest pixels read for it and
+draws the result through the box's matrix and at its opacity.
 
 What the box draws changing makes the read stale, through the same hook
 that drops the surfaces kept for boxes (`_dropSprites`). The next paint asks
@@ -50,7 +59,8 @@ grey and colour, then between colour and blank.
 
 ### What it costs
 
-Measured on the browser example over ekazinich.com, on a 2x Mac:
+Measured on the browser example over ekazinich.com, on a 2x Mac, from a
+read back:
 
 - A paint during the hover takes 4–10 ms, with a few around 25 ms where a
   read lands and its box is painted again.
@@ -58,6 +68,11 @@ Measured on the browser example over ekazinich.com, on a 2x Mac:
   for the read, and each read that differs repaints the box once more.
 - The first time a box is drawn, it is drawn a round trip late, as an image
   arriving is.
+
+Through the context's `filter`, the same frames cost about the same: the
+pixel pass is #866's, in JavaScript, about 5.5 ms a frame for the hero
+card's 840 by 427 device pixels. What goes is the lag, the read and the
+second paint of the group.
 
 ## The core seam: `ctx.filter`
 
@@ -69,13 +84,16 @@ every `drawImage`, surfaces included. A filter applied to some sources and
 not others would be worse than none: a box drawn half filtered, with no
 error.
 
-`<Html>` would ask once per context. Where the value sticks, it paints the
-group, sets `ctx.filter` and draws the surface: synchronous, with no read
-and no kept pixels. Elsewhere it keeps today's read. The rungs, by backend:
+`<Html>` asks its surfaces' contexts, as above. Where the value sticks, it
+draws the group through it: synchronous, with no read. Elsewhere it keeps
+the read. The rungs, by backend:
 
 ### macOS: `BackendContext2D` and @windowkit/appkit
 
-1. **In core, over today's bridge.** `drawImage` under a colour filter reads
+1. **In core, over today's bridge** — sidorares/react-x11#866, which every
+   drawing call honours: a fill, a stroke, a gradient, a glyph run and a
+   symbol through their colours, and a layout in colours of its own through
+   its pixels, as an image is. `drawImage` under a colour filter reads
    the source surface with `ctxGetImageData`, which is synchronous inside.
    It runs the matrices in JavaScript, puts the pixels on a scratch surface
    with `ctxPutImageData`, and draws that. That makes the filter
@@ -128,12 +146,11 @@ Two things ntk could do, recorded so they are not rediscovered:
 
 ## Next
 
-`blur()` and `drop-shadow()` are the next functions to draw. They are
-where the seam is needed. A blur in JavaScript over a read back is a
-convolution per frame on the main thread, and the ink a blur or a shadow
-adds past the box has to reach `computePaintBounds` and the damage. Core's
-`ctx.filter` comes first for them: ntk's convolution, Core Image's or
-vImage's gaussian, two shader passes on Wayland. The colour functions
-need no core change to be correct today. The first macOS rung is worth
-landing alongside, to take the round trip and the second group paint off
-every frame of a moving filtered box.
+- The vImage verb, macOS's second rung, which takes the pixel pass off the
+  JavaScript thread.
+- `blur()` and `drop-shadow()`, which need the seam more than the colour
+  functions did. A blur in JavaScript over a read back is a convolution
+  per frame on the main thread, and the ink a blur or a shadow adds past
+  the box has to reach `computePaintBounds` and the damage. ntk's
+  convolution, Core Image's or vImage's gaussian, two shader passes on
+  Wayland.

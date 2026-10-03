@@ -235,6 +235,10 @@ export interface PaintContext extends FillContext {
   /** How a drawing meets what is under it; a value a backend does not
    *  have does not stick, and reads back as the one before. */
   globalCompositeOperation?: string;
+  /** Canvas's filter list, which react-x11's native contexts run for the
+   *  colour functions, and no other does; a list one does not run does
+   *  not stick (`FilterStore`'s `through`). */
+  filter?: string;
   /** How an image drawn scaled or turned is resampled, canvas's: the
    *  native contexts' (react-x11 `imageSmoothingQuality`), and not ntk's.
    *  A value a context cannot set does not stick. */
@@ -2063,13 +2067,13 @@ function spriteFor(
  * A box a `filter`'s colour functions are run over (Filter Effects 1, 13):
  * painted whole, as the group the filter makes it, on a surface of its
  * own, and the surface's pixels run through the matrices before it is
- * drawn — at the box's opacity, and through `through` where it turns. No
- * context runs a filter, and pixels come back from a surface a round trip
- * after they are asked for, so they are read and kept
- * (`src/html/filters.ts`): until a read arrives the box is drawn from the
- * one before, or not at all. True where it is drawn so, or is to draw
- * nothing yet;
- * false where there is nothing to run, or no way to — the headless mock, a
+ * drawn — at the box's opacity, and through `through` where it turns.
+ * Where the context runs a filter itself, canvas's `filter`, the surface is
+ * drawn through it; elsewhere its pixels come back a round trip after they
+ * are asked for, so they are read and kept (`src/html/filters.ts`), and
+ * until a read arrives the box is drawn from the one before, or not at
+ * all. True where it is drawn so, or is to draw nothing yet; false where
+ * there is nothing to run, or no way to — the headless mock, a
  * box too large for a surface, an inline box, whose text is drawn on its
  * block's lines — and the caller paints the box as it is.
  */
@@ -2134,6 +2138,23 @@ function filteredFor(
     key += ` ${options.viewport?.x ?? 0} ${options.viewport?.y ?? 0}`;
   }
   const kept = store.at(box.el ?? box, box.pseudo ?? '', box, w, h, key);
+  // a context that runs a filter itself — react-x11's native ones, canvas's
+  // `filter` — is handed the group this paint makes, and nothing lags
+  if (!store.unfiltered && 'filter' in ctx) {
+    if (!kept.fresh) {
+      const group = store.group(kept);
+      if (!group) return null;
+      paintUnfaded(
+        group.ctx as PaintContext,
+        box,
+        through
+          ? onSurface(options, x0, y0, w, h)
+          : inGroup(options, x0, y0, w, h),
+      );
+    }
+    const out = store.through(kept, colour.css);
+    if (out) return { surface: out, x: x0, y: y0, width: w, height: h };
+  }
   if (!kept.fresh && !kept.reading) {
     const surface = options.surface(w, h);
     if (!surface) return null;

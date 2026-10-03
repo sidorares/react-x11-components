@@ -214,6 +214,10 @@ export interface ColourFilter {
   matrices: ColourMatrix[];
   /** What two filters with one key do the same (`matricesKey`). */
   key: string;
+  /** The colour functions as a filter list a 2d context takes — canvas's
+   *  `filter`, which react-x11's native context runs (`FilterStore`'s
+   *  `through`) — without `opacity()`, which is the box's opacity. */
+  css: string;
   alpha: number;
   /** Whether the list has a function the pass does not do — `blur()`,
    *  `drop-shadow()`, a `url()` — which is drawn as though it were not
@@ -229,6 +233,7 @@ export function colourFilter(
 ): ColourFilter | null {
   if (!list) return null;
   const matrices: ColourMatrix[] = [];
+  const css: string[] = [];
   let alpha = 1;
   let partial = false;
   for (const f of list) {
@@ -246,10 +251,22 @@ export function colourFilter(
       continue;
     }
     const m = matrixOf(f);
-    if (m) matrices.push(m);
+    if (!m) continue;
+    matrices.push(m);
+    css.push(
+      f.fn === 'hue-rotate'
+        ? `hue-rotate(${f.angle}deg)`
+        : `${f.fn}(${f.amount})`,
+    );
   }
   if (!matrices.length && alpha === 1) return null;
-  return { matrices, key: matricesKey(matrices), alpha, partial };
+  return {
+    matrices,
+    key: matricesKey(matrices),
+    css: css.join(' '),
+    alpha,
+    partial,
+  };
 }
 
 /** One colour function's matrix, null where it leaves every colour as it

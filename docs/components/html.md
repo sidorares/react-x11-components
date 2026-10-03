@@ -1323,13 +1323,17 @@ in it, an inline box as well (Filter Effects 1, 2). Its colour functions
 are drawn: `grayscale()`, `sepia()`, `saturate()`, `hue-rotate()`,
 `invert()`, `brightness()` and `contrast()` as the matrices the spec gives
 them, run over the box and all it draws in the order written, and
-`opacity()` as more of the box's opacity. No context runs a filter, so the
-box is painted unfiltered on a surface of its own and read back, and the
-matrices are run over what was read; the read arrives a round trip after
-the paint that asked for it, which draws the box from the read before, or
-— the first time a box is drawn — not at all. What lags is the box's
-content and never the filter: a transition of the filter, as a hover runs
-one, draws each frame at the amount it has then, from what was read once.
+`opacity()` as more of the box's opacity. The box is painted unfiltered on
+a surface of its own, kept for the element. Where the context runs a
+filter itself — react-x11's native one on macOS and Windows takes the
+colour functions as canvas's `filter` — the surface is drawn through it in
+the paint, and drawn through again only as the box or the filter changes.
+Elsewhere — X11 and Wayland — the surface is read back and the matrices
+run over what was read; the read arrives a round trip after the paint that
+asked for it, which draws the box from the read before, or — the first
+time a box is drawn — not at all. What lags then is the box's content and
+never the filter: a transition of the filter, as a hover runs one, draws
+each frame at the amount it has then, from what was read once.
 An inline box's filter is not drawn, nor are `blur()`, `drop-shadow()` and
 a `url()` to an SVG `<filter>`, which has the whole list ignored, as a
 reference to a filter that is not there has (Filter Effects 1, 4). A
