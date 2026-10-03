@@ -575,10 +575,9 @@ it up. **The floor is a running one and moves often** — every move since
   it a faded element's group and keeps a fade's: a repaint of 24 faded
   cards went from 3.7–5.5 ms to 2.4–4.4 on macOS, a frame of a fade from
   0.65–1.2 to 0.39–0.73. Read at run time, so an older core still paints,
-  a thing at a time. The lockfile holds ntk at 8.17.8, the least 2.27.0
-  takes: 8.18.0 cuts a self-crossing fill at its crossings (ntk#505), and
-  `<Flow>`'s folded edge, drawn in two runs by a pass that cuts its turn,
-  no longer matches the edge drawn whole (`test/flow.test.ts`).
+  a thing at a time. The lockfile held ntk at 8.17.8, the least 2.27.0
+  takes, until 8.21.0: see "the in-process server is not pixman" under
+  Gotchas for the `<Flow>` test that held it there.
 - `^2.29.0` — the sprite seam (react-x11#821, over #819): an element hands
   the macOS surface presenter parts of its drawing, each lifted onto a
   layer of its own and run there by the render server, and `<Html>` offers
@@ -2730,6 +2729,26 @@ One more, specific to here:
   the node otherwise, and the reason it bothers is that `kind` is what paint
   order, the test queries and the DEV assertion all match on. Keep the name
   in one exported constant per component and use it in all three places.
+
+One that comes from the test harness:
+
+- **The in-process server is not pixman.** ntk draws a mask either itself
+  or with the server's trapezoids, picked by size, and since 8.18 its own
+  is pixman's algorithm to the byte (sidorares/ntk#507), so on a real X
+  server the route never shows. The pure-JavaScript server the suite runs
+  on rasterizes trapezoids its own way, and does not always agree. So a
+  test that compares a full repaint, large enough to go to the server,
+  with a pass over a small clip, rasterized by ntk, can measure the
+  harness and not the component: `<Flow>`'s folded edge, a line that
+  doubles back on itself, came out 15 levels apart in one column between
+  the two — pixman leaves one of its 17 sample columns there uncovered,
+  and the harness server covers it — and 15 by both routes on Xvfb, which
+  is pixman. Such a test pins ntk's
+  route, which still catches what it was written for (`test/flow.test.ts`):
+
+  ```ts
+  result.app.options.rasterPolicy = { maxArea: Infinity, maxBytes: Infinity };
+  ```
 
 And two that come from subclassing `Node` and augmenting JSX:
 
