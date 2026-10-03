@@ -80,7 +80,7 @@ import { CounterStyles, counterStyleRule } from './counter-styles.js';
 import type { CounterStyleRule } from './counter-styles.js';
 import { PALETTE_CHROME } from './ua.js';
 import type { UnitContext } from './values.js';
-import { FIXED_SIZE, keywordFontSize, viewportUnit } from './values.js';
+import { FIXED_SIZE, keywordFontSize } from './values.js';
 import { customProperties, hasVar, substituteIn, validVars } from './vars.js';
 import type { CustomProps } from './vars.js';
 import {
@@ -1551,12 +1551,34 @@ export class Cascade {
   /** Whether any declaration sets a custom property or reads one: without
    *  one, no element's style asks about them. */
   private _vars = false;
-  /** Whether any declaration is in a unit of the viewport's width — `vw`,
-   *  `vmin`, `vmax` — or of its height, `vh` and the same two: a style
-   *  holds such a length as a number, so it is computed again when that
-   *  side of the viewport moves (`HtmlViewNode._update`). */
-  readsViewportWidth = false;
-  readsViewportHeight = false;
+  /**
+   * Whether a style holds a length in a unit of the viewport's width —
+   * `vw`, `vmin`, `vmax` — or of its height, `vh` and the same two: a style
+   * holds such a length as a number, so it is computed again when that
+   * side of the viewport moves (`HtmlViewNode._update`). Or whether a
+   * `@media` rule tests the viewport's height or its aspect ratio, which a
+   * resize that crosses no breakpoint changes too.
+   *
+   * A length is noted as it is resolved (`_viewportRead`), for the styles
+   * computed since a build styled every element (`beginSharing`), and not
+   * as a sheet mentions one: Wikipedia's skin has a `75vw` under a class
+   * its pages are not served with, and noted from the sheet, every pixel of
+   * a resize styled the whole article again and built its boxes again.
+   */
+  get readsViewportWidth(): boolean {
+    return this._queriesWidth || this._heldWidth;
+  }
+  get readsViewportHeight(): boolean {
+    return this._queriesHeight || this._heldHeight;
+  }
+  private _queriesWidth = false;
+  private _queriesHeight = false;
+  private _heldWidth = false;
+  private _heldHeight = false;
+  private _viewportRead = (unit: 'vw' | 'vh' | 'vmin' | 'vmax'): void => {
+    if (unit !== 'vh') this._heldWidth = true;
+    if (unit !== 'vw') this._heldHeight = true;
+  };
   /** The families the document loads itself (`fonts.ts`), or null for a
    *  document with no `@font-face`. */
   private _families: FontFamilies | null;
@@ -1708,7 +1730,6 @@ export class Cascade {
   ): void {
     for (const rule of sheet.rules) {
       if (!this._vars && usesVars(rule.declarations)) this._vars = true;
-      this._noteViewportUnits(rule.declarations);
       if (!this._lh && usesLh(rule.declarations)) this._lh = true;
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
@@ -1739,28 +1760,13 @@ export class Cascade {
       for (const frame of rule.frames) {
         const declarations = frame.declarations;
         if (!this._vars && usesVars(declarations)) this._vars = true;
-        this._noteViewportUnits(declarations);
         if (!this._lh && usesLh(declarations)) this._lh = true;
       }
     }
     for (const bp of sheet.breakpoints) breakpoints.add(bp);
     // a query on the viewport's height reads it as a `vh` does
-    if (sheet.readsHeight) this.readsViewportHeight = true;
-    if (sheet.readsWidth) this.readsViewportWidth = true;
-  }
-
-  /** Whether declarations read the viewport's width or height (`vw`,
-   *  `vh`, `vmin`, `vmax`), noted on the cascade. */
-  private _noteViewportUnits(declarations: readonly Declaration[]): void {
-    if (this.readsViewportWidth && this.readsViewportHeight) return;
-    for (const d of declarations) {
-      if (!VIEWPORT_UNIT.test(d.value)) continue;
-      for (const m of d.value.matchAll(VIEWPORT_UNITS)) {
-        const unit = viewportUnit(m[1]);
-        if (unit !== 'vh') this.readsViewportWidth = true;
-        if (unit !== 'vw') this.readsViewportHeight = true;
-      }
-    }
+    if (sheet.readsHeight) this._queriesHeight = true;
+    if (sheet.readsWidth) this._queriesWidth = true;
   }
 
   /** Whether a pointer move can change what this cascade produces. */
@@ -1982,6 +1988,12 @@ export class Cascade {
    * on a page with a Tailwind sheet, and 150 without it.
    */
   beginSharing(kept: KeptStyles | null = null): void {
+    // every style there is is about to be computed: whether one holds a
+    // length of the viewport's is for this build to find out
+    if (!kept) {
+      this._heldWidth = false;
+      this._heldHeight = false;
+    }
     this._namesKept.clear();
     this._keepNames = true;
     this._shared.clear();
@@ -3070,6 +3082,7 @@ export class Cascade {
       codeFamily: () => (authored ? null : this._codeFamily),
       vw: this.viewportWidth,
       vh: this.viewportHeight,
+      viewport: this._viewportRead,
       scale: this.scale,
       ex: () => this._exOf(parentStyle),
       ch: () => this._chOf(parentStyle),
@@ -3512,6 +3525,7 @@ export class Cascade {
           rem: (this._root ?? this.initial).fontSize,
           vw: this.viewportWidth,
           vh: this.viewportHeight,
+          viewport: this._viewportRead,
           scale: this.scale,
           initial: this.initial,
           systemColors: this._systemColors,
@@ -3903,7 +3917,6 @@ export class Cascade {
     if (inline) {
       const declarations = parseDeclarations(inline);
       if (!this._vars && usesVars(declarations)) this._vars = true;
-      this._noteViewportUnits(declarations);
       if (!this._lh && usesLh(declarations)) this._lh = true;
       pushInline(out, declarations, tree.depth, tree.root);
     }
@@ -4085,11 +4098,6 @@ export function languageOf(el: Element): string {
   }
   return pragmaLanguage(root.parent ?? root);
 }
-
-/** A length in a unit of the viewport: a number, then the unit, and no
- *  more of a name after it. */
-const VIEWPORT_UNIT = /\d[sld]?v(?:w|h|i|b|min|max)(?![\w-])/i;
-const VIEWPORT_UNITS = /\d([sld]?v(?:w|h|i|b|min|max))(?![\w-])/gi;
 
 /**
  * A selector with its `[attr~=""]` made one that matches nothing: an empty
