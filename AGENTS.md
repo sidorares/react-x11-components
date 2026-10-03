@@ -1928,6 +1928,27 @@ layer carries goes on one as an animation does (`liftOf`): one iteration
 from where it starts to where it ends, held at its start through its
 delay.
 
+**A dragged width lays out what can be seen, and sets the rest aside.**
+While the width keeps moving, `_stopAt` hands `layoutDocument` an `until`,
+and `layoutChildren` lays out no child that starts below it: the rest of
+that box's children are set aside (`setAside`) — the box's `children` is
+the part laid out until the next layout puts the whole list back
+(`putBack`), so the paint, the hit test and every walk from the root miss
+them — and the box is as tall as they last were. The whole document is laid
+out once the width rests (`resizeClock`). Three things are load-bearing.
+**Anything that reaches boxes from a list of the tree's rather than from
+the root asks `heldBack`**, as `controlRectsOf` and `mediaRectsOf` do: a
+box set aside is where it was a width ago, which may be over what is laid
+out there now. **A layout that cannot set a box aside leaves it laid out**:
+a multicol container's content is one strip its columns balance
+(`multicolAround`), and a tree with a fixed box, or an absolute one placed
+against something laid out, inside what is set aside is laid out whole from
+then on (`escapes`). And **a partial layout stands on intrinsic sizes the
+tree's first, whole layout found**, which a box keeps for its lifetime: one
+no whole layout has laid out is laid out whole (`_wholeTree`), since a
+measure taken after a descendant was set aside would see less than is
+there.
+
 **A box drawn on a surface of its own keeps the surface, keyed on its
 `Box`.** X11 draws a turned box with text in it on a surface
 (`paintRaster`), and X11 and Wayland draw an element an opacity fades as a

@@ -30,7 +30,7 @@ import {
 } from './form.js';
 import type { ComputedStyle } from './css/style.js';
 import { invert } from './css/transform.js';
-import { placedMatrix } from './layout/block.js';
+import { heldBack, placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import { lineHeightOf } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
@@ -120,6 +120,9 @@ export function controlRectsOf(tree: BoxTree, scale = 1): ControlRect[] {
   for (const box of tree.controls) {
     if (!box.el) continue;
     if (box.width <= 0 || box.height <= 0) continue;
+    // set aside by a layout that stopped short of it, where it was a width
+    // ago: drawn by nothing, and over what is drawn there now
+    if (heldBack(tree, box)) continue;
     // a hidden element draws nothing and takes no press (CSS 2.1 11.2)
     if (box.style.visibility !== 'visible') continue;
     const rect: ControlRect = {

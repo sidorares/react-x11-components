@@ -171,6 +171,15 @@ export interface LayoutContext {
   /** The clamp of the line-clamp container whose formatting context is
    *  being laid out, if any (`layoutInternals`). */
   clamp?: Clamp | null;
+  /** Where a layout made while the width is still moving stops, in
+   *  document coordinates (`layoutDocument`'s `until`): the flow lays out
+   *  no box that starts below it, and sets the rest aside (`setAside`). */
+  until?: number;
+  /** The boxes this pass set children aside in, each with the whole list
+   *  it had, and the pass's number, which marks what was set aside
+   *  (`HELD_BACK`). */
+  setAside?: Map<Box, Box[]>;
+  pass?: number;
 }
 
 /**
@@ -207,16 +216,142 @@ export interface LayoutResult {
    * another height, and one that did not — most — lays out the same.
    */
   readsViewportHeight: boolean;
+  /** Whether the layout stopped where it was asked to (`until`), with the
+   *  boxes past it set aside and its height a guess at theirs. */
+  partial: boolean;
 }
 
-/** Lay the whole document out at a width. */
+/**
+ * The children each box's last layout set aside, by the pass that did
+ * (`setAside`): put back before the tree is laid out again, and what tells
+ * a box set aside from one laid out (`heldBack`).
+ */
+const SET_ASIDE = new WeakMap<
+  BoxTree,
+  { pass: number; boxes: Map<Box, Box[]> }
+>();
+
+/** The pass that set a box aside, with everything in it. */
+const HELD_BACK = new WeakMap<Box, number>();
+
+/** Passes that set boxes aside, counted, for `HELD_BACK`. */
+let setAsidePasses = 0;
+
+/** Trees with a box set aside that something laid out is placed against
+ *  (`escapes`): laid out whole from then on. */
+const LAID_WHOLE = new WeakSet<BoxTree>();
+
+/** Every out-of-flow box in a tree, found once (`escapes`). */
+const OUT_OF_FLOW = new WeakMap<BoxTree, Box[]>();
+
+/** Put back what the last layout of a tree set aside. */
+function putBack(tree: BoxTree): void {
+  const aside = SET_ASIDE.get(tree);
+  if (!aside) return;
+  SET_ASIDE.delete(tree);
+  for (const [box, children] of aside.boxes) box.children = children;
+}
+
+/**
+ * Whether a box was set aside by its tree's last layout, or is in one that
+ * was: it was not laid out, its geometry is a width ago, and nothing that
+ * reads the layout — the paint, the hit test, the widgets mounted over the
+ * document — finds it from the root. A tree laid out whole has none.
+ */
+export function heldBack(tree: BoxTree, box: Box): boolean {
+  const aside = SET_ASIDE.get(tree);
+  if (!aside) return false;
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (HELD_BACK.get(at) === aside.pass) return true;
+  }
+  return false;
+}
+
+/**
+ * Set aside a box's children from `from` on, the ones in flow and the
+ * floats, which start below where the layout stops (`LayoutContext.until`).
+ * Its out-of-flow children stay: what they are placed against may be
+ * laid out. How tall the ones set aside were when last laid out, which is
+ * what the box is taller by — a guess, until the layout that lays them out.
+ */
+function setAside(
+  box: Box,
+  children: Box[],
+  from: number,
+  ctx: LayoutContext,
+): number {
+  const kept = children.slice(0, from);
+  let first: Box | null = null;
+  let last: Box | null = null;
+  for (let i = from; i < children.length; i += 1) {
+    const child = children[i];
+    if (child.outOfFlow) {
+      kept.push(child);
+      continue;
+    }
+    HELD_BACK.set(child, ctx.pass!);
+    if (child.isFloat || child.kind === 'text') continue;
+    first ??= child;
+    last = child;
+  }
+  if (!ctx.setAside!.has(box)) ctx.setAside!.set(box, children);
+  box.children = kept;
+  if (!first || !last) return 0;
+  const span =
+    last.y + last.height + last.marginBottom - (first.y - first.marginTop);
+  return Number.isFinite(span) && span > 0 ? span : 0;
+}
+
+/** Whether a box is a multicol container, or in one. */
+function multicolAround(box: Box): boolean {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (at.style.columns) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a box set aside is one something laid out places: a fixed box,
+ * drawn where the viewport is wherever the flow has it, or an absolute one
+ * whose offsets put it against a box that was laid out. One placed where
+ * the flow would have it is below where the layout stopped.
+ */
+function escapes(tree: BoxTree): boolean {
+  let boxes = OUT_OF_FLOW.get(tree);
+  if (!boxes) {
+    boxes = [];
+    const stack: Box[] = [tree.root];
+    while (stack.length) {
+      const box = stack.pop()!;
+      if (box.outOfFlow) boxes.push(box);
+      for (const child of box.children) stack.push(child);
+    }
+    OUT_OF_FLOW.set(tree, boxes);
+  }
+  for (const box of boxes) {
+    if (!heldBack(tree, box)) continue;
+    if (box.style.position === 'fixed') return true;
+    if (box.style.top === AUTO && box.style.bottom === AUTO) continue;
+    const containing = containingBlockFor(box);
+    if (containing && !heldBack(tree, containing)) return true;
+  }
+  return false;
+}
+
+/** Lay the whole document out at a width — or, given `until`, what starts
+ *  above it, with the rest set aside (`setAside`). */
 export function layoutDocument(
   tree: BoxTree,
   fonts: FontsLike | null,
   viewportWidth: number,
   viewportHeight: number,
   scale = 1,
+  until?: number,
 ): LayoutResult {
+  // what the last layout set aside is laid out, or set aside again
+  putBack(tree);
+  const cuts = until !== undefined && !LAID_WHOLE.has(tree);
+  if (cuts && !OUT_OF_FLOW.has(tree)) escapes(tree);
   const ctx: LayoutContext = {
     fonts,
     scale,
@@ -229,6 +364,9 @@ export function layoutDocument(
     firstLineStyler: tree.firstLineStyler,
     nestedOutOfLine: tree.nestedOutOfLine,
     clipText: tree.clipText,
+    ...(cuts
+      ? { until, setAside: new Map<Box, Box[]>(), pass: ++setAsidePasses }
+      : null),
   };
   const root = tree.root;
   // The root box is the initial containing block, and where the markup
@@ -285,6 +423,16 @@ export function layoutDocument(
     if (readsPercentHeight(child.style)) readsViewportHeight = true;
   }
   const flow = layoutChildren(root, ctx, floats, root.contentY, contentWidth);
+  const aside = ctx.setAside;
+  if (aside?.size) {
+    SET_ASIDE.set(tree, { pass: ctx.pass!, boxes: aside });
+    // a box set aside that something laid out places would be missing
+    // from where it is drawn: this tree is laid out whole
+    if (escapes(tree)) {
+      LAID_WHOLE.add(tree);
+      return layoutDocument(tree, fonts, viewportWidth, viewportHeight, scale);
+    }
+  }
   // A formatting context holds its floats and the margins of its last
   // blocks: the initial containing block, the root element. A body does
   // not: its floats hang out of it into the `<html>` around it, which
@@ -353,6 +501,7 @@ export function layoutDocument(
     width: viewportWidth,
     height: bottom,
     readsViewportHeight: readsViewportHeight || ctx.readViewportHeight === true,
+    partial: (aside?.size ?? 0) > 0,
   };
 }
 
@@ -889,8 +1038,42 @@ function layoutChildren(
   let pushed = MARKER_ASCENT.get(box) ?? null;
   let marked = pushed === null ? (MARKER_ROOM.get(box) ?? null) : null;
   const clamp = ctx.clamp ?? null;
+  // A layout that stops (`until`) lays out no child that starts below
+  // where it stops, and sets it aside. One this pass set aside already, in
+  // a layout of this box at another width or another place, is laid out
+  // again from the whole list, and set aside again where it starts below.
+  const until = ctx.until;
+  let children = box.children;
+  const whole = until === undefined ? undefined : ctx.setAside!.get(box);
+  if (whole) {
+    for (const child of whole) HELD_BACK.delete(child);
+    ctx.setAside!.delete(box);
+    box.children = children = whole;
+  }
+  let stopped = false;
+  /** Whether this flow is a multicol container's, or in one: laid out as
+   *  one strip, all of it, and balanced in its columns (`layoutColumns`),
+   *  it is laid out whole. Asked once, where the layout would stop. */
+  let inColumns: boolean | null = null;
 
-  for (const child of box.children) {
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    if (stopped) {
+      if (!child.outOfFlow) continue;
+    } else if (
+      until !== undefined &&
+      y > until &&
+      !(inColumns ??= multicolAround(box))
+    ) {
+      // the rest as tall as it was, after the margin hanging above it
+      y += marginOf(pendingMargin) + setAside(box, children, index, ctx);
+      pendingMargin = NO_MARGIN;
+      open = false;
+      openFloats = Infinity;
+      cleared = false;
+      stopped = true;
+      if (!child.outOfFlow) continue;
+    }
     if (child.kind === 'text' && isBlank(child.text)) continue;
     // Past a line-clamp container's clamp point, a box in flow or floating
     // is invisible and takes no room (CSS Overflow 4, 5.3.1); a positioned
