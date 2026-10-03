@@ -24,10 +24,13 @@ import {
   FONTS,
   boxOf,
   bytesApart,
+  drawnCorners,
   h,
+  layerCorners,
   metric,
   rebuilt,
   render,
+  samePoints,
   snapshot,
   view,
 } from './harness.js';
@@ -554,6 +557,46 @@ test('a transform in transition is offered as matrices, and goes on one layer wi
       `#${id} not offered`,
     );
   }
+});
+
+test('a panel turned out of the plane is a part with no animation, and a transition of its turn goes on the same layer as `matrix3d()` frames that put it where the document draws it, from where it was; turned back into the plane, it is the document’s, as Zen Garden 219’s panels are on a hover', async (t) => {
+  const doc = await holding(
+    t,
+    '<style>body { margin: 0 } #s { perspective: 400px; padding: 20px }' +
+      '#w { width: 80px; height: 40px; background: red;' +
+      ' transform: rotateY(40deg); transition: transform 160ms linear }' +
+      '#w:hover { transform: rotateY(0) scale(1.2) }</style>' +
+      '<div id="s"><div id="w"></div></div>',
+  );
+  const [still, ...more] = doc.el.sprites()!;
+  assert.strictEqual(more.length, 0);
+  assert.deepStrictEqual(still.animations, [], 'still');
+  assert.ok(samePoints(layerCorners(still), drawnCorners(doc.el, 'w')));
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const box = boxOf(doc.el, 'w');
+  doc.el.setHover(abs.x + box.x + 40, abs.y + box.y + 20);
+  await act();
+  const [turning] = doc.el.sprites()!;
+  assert.strictEqual(turning.key, still.key, 'the same layer');
+  const [turn] = turning.animations;
+  assert.deepStrictEqual(
+    [turn.property, turn.duration, turn.repeat],
+    ['transform', 160, 1],
+  );
+  const frames = turn.values as number[][];
+  assert.ok(frames.every((m) => m.length === 16));
+  assert.ok(
+    samePoints(layerCorners(turning, frames[0]), layerCorners(still)),
+    'from where it was',
+  );
+  await doc.at(48);
+  assert.ok(
+    samePoints(layerCorners(turning, frames[3]), drawnCorners(doc.el, 'w')),
+  );
+  // its end is in the plane, 1.2 times the size: drawn through a matrix of
+  // the plane, which the document does as cheaply as any
+  await doc.at(176);
+  assert.strictEqual(doc.el.sprites(), null);
 });
 
 /** A palette to make an initial style from, every colour its own. */

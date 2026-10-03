@@ -47,10 +47,13 @@ import { holdClock } from '../held-clock.js';
 import {
   FONTS,
   boxOf,
+  drawnCorners,
   h,
+  layerCorners,
   metric,
   render,
   render2x,
+  samePoints,
   snapshot,
   treeOf,
   view,
@@ -1469,12 +1472,16 @@ function recorder() {
     fillRect(x: number, y: number, w: number, h: number) {
       fills.push({ style: own.fillStyle, x: x + tx, y: y + ty, w, h });
     },
+    drawImage() {
+      images.count += 1;
+    },
   };
+  const images = { count: 0 };
   const ctx = new Proxy(own, {
     get: (target, key) =>
       key in target ? target[key as keyof typeof target] : () => undefined,
   });
-  return { ctx, fills };
+  return { ctx, fills, images };
 }
 
 const near = (a: number, b: number, by = 1e-6) => Math.abs(a - b) <= by;
@@ -1569,33 +1576,292 @@ test('a turn is offered as matrices about the transform origin, a whole turn tur
   });
 });
 
-test('a turn out of the plane is not offered, which a layer cannot carry, and a turn in it inside a perspective is', async (t) => {
+test('a turn out of the plane goes over as `matrix3d()` frames, each the 4×4 of its time seen in the perspective the document sees the box in, so that its layer has the box where the document draws it; the fade of a box turned out of the plane carries the turn', async (t) => {
   const doc = await running(
     t,
     '<style>@keyframes flip { to { transform: rotateY(180deg) } }' +
-      '@keyframes spin { to { transform: rotate(360deg) } }' +
       '@keyframes fade { from { opacity: .2 } }' +
-      '#f { animation: flip 256ms linear infinite; width: 10px;' +
-      ' height: 10px; background: red }' +
-      '#t { animation: fade 256ms linear infinite; width: 10px;' +
-      ' height: 10px; background: red; transform: rotateX(30deg) }' +
-      '#p { perspective: 100px }' +
-      '#s { animation: spin 256ms linear infinite; width: 10px;' +
-      ' height: 10px; background: blue }</style>' +
-      '<div id="f"></div><div id="t"></div><div id="p"><div id="s"></div></div>',
+      'body { margin: 0 }' +
+      '#s { perspective: 200px; perspective-origin: 30% 40%;' +
+      ' padding: 10px 30px }' +
+      '#f { width: 40px; height: 20px; background: red;' +
+      ' transform-origin: 30% 60% 6px; animation: flip 160ms linear infinite }' +
+      '#t { margin-top: 40px; width: 40px; height: 20px; background: blue;' +
+      ' transform: translateX(20px) rotateX(30deg);' +
+      ' animation: fade 160ms linear infinite }</style>' +
+      '<div id="s"><div id="f"></div><div id="t"></div></div>',
+  );
+  await doc.at(48);
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const sprites = doc.el.sprites()! as DocumentSprite[];
+  assert.strictEqual(sprites.length, 2);
+  const of = (id: string) =>
+    sprites.find((p) => p.rect.y === abs.y + boxOf(doc.el, id).y)!;
+  const flip = of('f');
+  const frames = flip.animations[0].values as number[][];
+  assert.strictEqual(frames.length, 11);
+  assert.ok(
+    frames.every((m) => m.length === 16),
+    'each a matrix3d',
+  );
+  // a display's frame each 16ms, the fourth the document's now: the
+  // layer's corners are where the document draws the box's, and so are
+  // they where it rests, a loop resting where it is
+  assert.ok(
+    samePoints(layerCorners(flip, frames[3]), drawnCorners(doc.el, 'f')),
+  );
+  assert.ok(samePoints(layerCorners(flip), drawnCorners(doc.el, 'f')));
+  await doc.at(80);
+  assert.ok(
+    samePoints(layerCorners(flip, frames[5]), drawnCorners(doc.el, 'f')),
+  );
+  // the fading box, turned out of the plane and moved 20px across: its
+  // layer is placed where it would be with no transform, and turned and
+  // seen as the document draws it
+  const fade = of('t');
+  assert.strictEqual(fade.transform.length, 16);
+  assert.strictEqual(fade.rect.x, abs.x + boxOf(doc.el, 't').x - 20);
+  assert.ok(samePoints(layerCorners(fade), drawnCorners(doc.el, 't')));
+});
+
+/** A panel turned out of the plane, moved and seen in a perspective: Zen
+ *  Garden 219's sidebar, at rest. */
+const TILTED =
+  'body { margin: 0 }' +
+  '#s { perspective: 400px; perspective-origin: 30% 40%; padding: 20px }' +
+  '#p { width: 120px; height: 60px; background: red;' +
+  ' transform: translateX(20px) rotateY(40deg); transform-origin: 30% 60% }';
+
+test('a box turned out of the plane and seen in a perspective is a part with no animation, which its layer draws where the document does — and at rest too — but not one drawn through a matrix of the plane, nor one with a corner behind the viewer', async () => {
+  const page =
+    '<style>' +
+    TILTED +
+    '#n { perspective: 50px; margin-bottom: 40px }' +
+    '#b { width: 300px; height: 20px; background: green;' +
+    ' transform: rotateY(60deg) }' +
+    '#flat { margin-top: 200px; width: 40px; height: 20px;' +
+    ' background: blue; transform: rotateY(40deg) }</style>' +
+    '<div id="n"><div id="b"></div></div>' +
+    '<div id="s"><div id="p"></div></div><div id="flat"></div>';
+  const el = view((await render(page, 400)).node);
+  const sprites = el.sprites()! as DocumentSprite[];
+  assert.strictEqual(sprites?.length, 1, 'the panel alone');
+  const [panel] = sprites;
+  assert.deepStrictEqual(panel.animations, []);
+  assert.strictEqual(panel.transform.length, 16);
+  assert.ok(samePoints(layerCorners(panel), drawnCorners(el, 'p')));
+  const still = view((await rest(page)).node).sprites();
+  assert.strictEqual(still?.length, 1, 'drawn at rest');
+});
+
+test('a box whose back is hidden is offered only where no frame shows its back, which the document leaves undrawn and a layer would draw; one whose back shows is offered turned round', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes flip { to { transform: rotateY(180deg) } }' +
+      '@keyframes tilt { to { transform: rotateY(60deg) } }' +
+      'body { margin: 0 } #s { perspective: 200px }' +
+      '#s div { width: 40px; height: 20px; background: red;' +
+      ' margin-bottom: 40px; backface-visibility: hidden }' +
+      '#f { animation: flip 160ms linear infinite }' +
+      '#t { animation: tilt 160ms linear infinite }' +
+      '#s #m { transform: rotateY(150deg); backface-visibility: visible }' +
+      '#s #h { transform: rotateY(150deg) }</style>' +
+      '<div id="s"><div id="f"></div><div id="t"></div>' +
+      '<div id="m"></div><div id="h"></div></div>',
   );
   await doc.at(32);
-  // the turning box, and not the flip, which turns it out of the plane, nor
-  // the fade of a box turned out of it
-  const sprites = doc.el.sprites()!;
   const abs = (doc.el as unknown as DrawnNode).abs;
+  const ys = (doc.el.sprites() ?? []).map((p) => p.rect.y - abs.y);
+  assert.deepStrictEqual(ys, [boxOf(doc.el, 't').y, boxOf(doc.el, 'm').y]);
+});
+
+test('a box turned out of the plane is a hole in the document once lifted, and drawn again given back', async () => {
+  const el = view(
+    (
+      await render(
+        '<style>' + TILTED + '</style><div id="s"><div id="p"></div></div>',
+        400,
+      )
+    ).node,
+  );
+  const [panel] = el.sprites()!;
+  // drawn on a surface a tile at a time, or through a matrix where there
+  // is none to be had
+  const drawn = () => {
+    const { ctx, fills, images } = recorder();
+    el.paint(ctx as never);
+    return images.count + fills.filter((f) => f.w === 120 && f.h === 60).length;
+  };
+  assert.ok(drawn() > 0, 'the document draws it');
+  el.spritesLifted(new Set([panel.key]));
+  assert.strictEqual(drawn(), 0, 'a hole');
+  el.spritesLifted(new Set());
+  assert.ok(drawn() > 0, 'drawn again');
+});
+
+test('an element animating inside a box turned out of the plane goes in its layer, and one turned out of the plane inside a part stays in that part’s raster', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+      TILTED +
+      '#d { margin: 10px; width: 20px; height: 20px; background: white;' +
+      ' animation: fade 160ms linear infinite }</style>' +
+      '<div id="s"><div id="p"><div id="d"></div></div></div>',
+  );
+  const sprites = doc.el.sprites()! as DocumentSprite[];
+  assert.strictEqual(sprites.length, 2);
+  const [panel, dot] = sprites;
+  assert.deepStrictEqual(panel.animations, []);
+  assert.strictEqual(dot.parent, panel.key, 'in the panel’s layer');
+  // placed as though the panel had not moved, in the panel's raster
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  const box = boxOf(doc.el, 'd');
   assert.deepStrictEqual(
-    sprites.map((p) => p.rect.y - abs.y),
-    [boxOf(doc.el, 's').y],
+    [dot.rect.x, dot.rect.y],
+    [abs.x + box.x - 20, abs.y + box.y],
+  );
+  const own = (fills: ReturnType<typeof recorder>['fills']) =>
+    fills.filter((f) => f.w === 20 && f.h === 20).length;
+  const whole = recorder();
+  panel.paint(whole.ctx as never);
+  assert.strictEqual(own(whole.fills), 1, 'drawn in the panel');
+  const holed = recorder();
+  panel.paint(holed.ctx as never, new Set([dot.key]));
+  assert.strictEqual(own(holed.fills), 0, 'a hole where it is lifted');
+  // a card that pulses, with a box turned out of the plane in it: the card
+  // alone, its raster drawing the box as the document would
+  const card = await running(
+    t,
+    '<style>@keyframes pulse { from { opacity: 1 } to { opacity: .6 } }' +
+      'body { margin: 0 } #c { width: 200px; height: 120px;' +
+      ' background: blue; perspective: 400px;' +
+      ' animation: pulse 1s infinite alternate }' +
+      '#q { margin: 20px; width: 60px; height: 30px; background: red;' +
+      ' transform: rotateY(40deg) }</style>' +
+      '<div id="c"><div id="q"></div></div>',
+  );
+  assert.strictEqual(card.el.sprites()!.length, 1, 'the card alone');
+});
+
+test('what the document paints over a box turned out of the plane goes on a layer of its own too, after it, so that both can; where it cannot be a part, or would be a raster larger than the document shows, neither is', async () => {
+  const page = (over: string) =>
+    '<style>' +
+    TILTED +
+    '#o { position: absolute; top: 30px; left: 40px; width: 50px;' +
+    ` height: 20px; background: blue; transform: rotate(-5deg); ${over} }` +
+    '</style><div id="s"><div id="p"></div></div><div id="o"></div>';
+  const el = view((await render(page(''), 400)).node);
+  const sprites = el.sprites()! as DocumentSprite[];
+  assert.strictEqual(sprites?.length, 2);
+  const [panel, over] = sprites;
+  assert.strictEqual(panel.transform.length, 16, 'the panel first');
+  assert.deepStrictEqual(over.animations, [], 'what is over it, still');
+  assert.ok(samePoints(layerCorners(over), drawnCorners(el, 'o')));
+  // a box a layer cannot draw over it keeps both in the document
+  const masked = view(
+    (await render(page('mask-image: linear-gradient(black, transparent)'), 400))
+      .node,
+  );
+  assert.strictEqual(masked.sprites(), null);
+  // and nor does one larger than what shows the document, which would be a
+  // raster as large on a layer of its own
+  const huge = view(
+    (await render(page('width: 3000px; height: 3000px'), 400)).node,
+  );
+  assert.strictEqual(huge.sprites(), null);
+});
+
+test('a part is painted again only where what it holds changed: a build a frame makes for a box laid out apart beside it keeps its version, and one inside it changes it, and asks for the frame that paints its layer while the hole repaints nothing', async (t) => {
+  const page = (inside: boolean) =>
+    '<style>@keyframes slide { to { left: 100px } }' +
+    TILTED +
+    '#m { position: absolute; left: 0; width: 10px; height: 10px;' +
+    ` background: blue; top: ${inside ? 5 : 300}px;` +
+    ' animation: slide 160ms linear infinite }</style>' +
+    '<div id="s"><div id="p">' +
+    (inside ? '<div id="m"></div>' : '') +
+    '</div></div>' +
+    (inside ? '' : '<div id="m"></div>');
+  const panelOf = (doc: Awaited<ReturnType<typeof running>>) =>
+    (doc.el.sprites() as DocumentSprite[]).find(
+      (p) => p.transform.length === 16,
+    )!;
+  const tree = (doc: Awaited<ReturnType<typeof running>>) =>
+    (doc.el as unknown as { _tree: object })._tree;
+  const beside = await running(t, page(false));
+  await beside.at(16);
+  const before = panelOf(beside);
+  const built = tree(beside);
+  await beside.at(32);
+  assert.ok(tree(beside) !== built, 'built again');
+  assert.strictEqual(panelOf(beside).version, before.version, 'the same');
+  const inside = await running(t, page(true));
+  await inside.at(16);
+  const first = panelOf(inside);
+  await inside.at(32);
+  const next = panelOf(inside);
+  assert.notStrictEqual(next.version, first.version, 'painted again');
+  // lifted, the slide inside it claims nothing of the document's, and asks
+  // for the frame that paints the layer
+  inside.el.spritesLifted(new Set([next.key]));
+  const claims = t.mock.method(inside.el, 'invalidate');
+  const asked = t.mock.method(inside.el, 'spritesChanged');
+  await inside.at(48);
+  assert.ok(asked.mock.callCount() > 0, 'a frame asked for');
+  assert.strictEqual(claims.mock.callCount(), 0, 'no hole repainted');
+});
+
+test('the frames of a lifted part are kept through a build a frame makes beside it, which keeps its style', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+      '@keyframes slide { to { left: 100px } }' +
+      'body { margin: 0 } #a { width: 40px; height: 20px; background: red;' +
+      ' animation: fade 160ms linear infinite }' +
+      '#m { position: absolute; top: 200px; left: 0; width: 10px;' +
+      ' height: 10px; background: blue; animation: slide 160ms linear' +
+      ' infinite }</style><div id="a"></div><div id="m"></div>',
+  );
+  const [fade] = doc.el.sprites()!;
+  doc.el.spritesLifted(new Set([fade.key]));
+  const built = (doc.el as unknown as { _tree: object })._tree;
+  await doc.at(32);
+  assert.ok(
+    (doc.el as unknown as { _tree: object })._tree !== built,
+    'built again',
+  );
+  const [again] = doc.el.sprites()!;
+  assert.strictEqual(again.key, fade.key);
+  assert.ok(
+    again.animations[0].values === fade.animations[0].values,
+    'not sampled again',
   );
 });
 
-test('nor is translate, rotate or scale out of the plane, nor a fade of a box one of them takes out of it; and rotate in the plane is', async (t) => {
+test('a hover that turns a box out of the plane in place makes it a part', async () => {
+  const el = view(
+    (
+      await render(
+        '<style>body { margin: 0 } #s { perspective: 400px; padding: 20px }' +
+          '#p { width: 120px; height: 60px; background: red;' +
+          ' transform: rotate(10deg) }' +
+          '#p:hover { transform: rotateY(40deg) }</style>' +
+          '<div id="s"><div id="p"></div></div>',
+        400,
+      )
+    ).node,
+  );
+  assert.strictEqual(el.sprites(), null, 'turned in the plane');
+  const abs = (el as unknown as DrawnNode).abs;
+  const box = boxOf(el, 'p');
+  el.setHover(abs.x + box.x + 60, abs.y + box.y + 30);
+  await act();
+  const sprites = el.sprites();
+  assert.strictEqual(sprites?.length, 1);
+  assert.ok(samePoints(layerCorners(sprites![0]), drawnCorners(el, 'p')));
+});
+
+test('so do translate, rotate and scale out of the plane, and the fade of a box one of them takes out of it, each a `matrix3d()` with the box where the document draws it; and rotate in the plane is a matrix of it', async (t) => {
   const doc = await running(
     t,
     '<style>@keyframes tilt { to { rotate: y 180deg } }' +
@@ -1603,22 +1869,41 @@ test('nor is translate, rotate or scale out of the plane, nor a fade of a box on
       '@keyframes deepen { to { scale: 1 1 3 } }' +
       '@keyframes fade { from { opacity: .2 } }' +
       '@keyframes spin { to { rotate: 360deg } }' +
-      'div { width: 10px; height: 10px; background: red }' +
-      '#r { animation: tilt 256ms linear infinite }' +
-      '#z { animation: rise 256ms linear infinite }' +
-      '#d { animation: deepen 256ms linear infinite }' +
-      '#f { animation: fade 256ms linear infinite; translate: 0 0 10px }' +
-      '#s { animation: spin 256ms linear infinite }</style>' +
-      '<div id="r"></div><div id="z"></div><div id="d"></div>' +
-      '<div id="f"></div><div id="s"></div>',
+      'body { margin: 0 } #p { perspective: 200px }' +
+      '#p div { width: 10px; height: 10px; margin-bottom: 30px;' +
+      ' background: red }' +
+      '#r { animation: tilt 160ms linear infinite }' +
+      '#z { animation: rise 160ms linear infinite }' +
+      '#d { animation: deepen 160ms linear infinite }' +
+      '#f { animation: fade 160ms linear infinite; translate: 0 0 10px }' +
+      '#s { animation: spin 160ms linear infinite }</style>' +
+      '<div id="p"><div id="r"></div><div id="z"></div><div id="d"></div>' +
+      '<div id="f"></div><div id="s"></div></div>',
   );
   await doc.at(32);
-  const sprites = doc.el.sprites()!;
+  const sprites = doc.el.sprites()! as DocumentSprite[];
   const abs = (doc.el as unknown as DrawnNode).abs;
+  const ids = ['r', 'z', 'd', 'f', 's'];
   assert.deepStrictEqual(
     sprites.map((p) => p.rect.y - abs.y),
-    [boxOf(doc.el, 's').y],
+    ids.map((id) => boxOf(doc.el, id).y),
   );
+  sprites.forEach((sprite, i) => {
+    const id = ids[i];
+    assert.strictEqual(sprite.transform.length, id === 's' ? 6 : 16, id);
+    // a loop rests where it is, and the third of its frames is now
+    assert.ok(
+      samePoints(layerCorners(sprite), drawnCorners(doc.el, id)),
+      `#${id} at rest`,
+    );
+    const turn = sprite.animations.find((a) => a.property === 'transform');
+    if (!turn) return;
+    const frame = (turn.values as number[][])[2];
+    assert.ok(
+      samePoints(layerCorners(sprite, frame), drawnCorners(doc.el, id)),
+      `#${id} now`,
+    );
+  });
 });
 
 test('a fade and a turn on one element go over as two animations on its layer, each with its own cycle and delay; a name with no frames is none', async (t) => {

@@ -83,6 +83,7 @@ import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
 import {
+  sameValue,
   urlOf,
   WILL_HOLD_FIXED_BOX,
   WILL_STACK,
@@ -116,11 +117,24 @@ import type {
   TextLayoutLike,
 } from './layout/boxes.js';
 import { layoutDocument, placedMatrix, retranslate } from './layout/block.js';
-import { invert, mapPoint, mapRect, transformed } from './css/transform.js';
+import {
+  invert,
+  mapPoint,
+  mapRect,
+  outOfPlane,
+  transformed,
+} from './css/transform.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { fontAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
-import { coveredAfter, describe, liftOf, partOf } from './sprites.js';
+import {
+  coveredAfter,
+  describe,
+  liftOf,
+  overLiftOf,
+  partOf,
+  stillLiftOf,
+} from './sprites.js';
 import type {
   DocumentSprite,
   Lift,
@@ -150,6 +164,7 @@ import {
   clipsOverflow,
   computePaintBounds,
   containingBlockOf,
+  coverersAfter,
   drawnAtViewport,
   FIXED_BOXES,
   fixedToViewport,
@@ -417,8 +432,18 @@ export class HtmlViewNode extends Node {
    *  one samples its frames, and a frame asks every time. */
   private _spriteOffers = new WeakMap<
     Element,
-    Partial<Record<Pseudo, { stamp: string; part: Part | null }>>
+    Partial<Record<Pseudo, SpriteOffer>>
   >();
+  /** The build a frame of the document's animations made last where all
+   *  it changed was laid out apart, out of the flow (`_rebuildFrame`): the
+   *  trees before and after it, by their serials, and the elements whose
+   *  change it laid out apart. A part that holds none of them and is
+   *  inside none paints what it painted before (`sprites`). */
+  private _quietBuild: {
+    before: number;
+    after: number;
+    roots: readonly Element[];
+  } | null = null;
   /** Moves whenever what a lifted box draws may have changed without a
    *  build — a restyle of it, or of a box in it. */
   private _spriteGen = 0;
@@ -428,6 +453,10 @@ export class HtmlViewNode extends Node {
    *  where their animations have them (`_followLifted`): what they draw is
    *  what it was, and their layers already show them there. */
   private _followingLifted = false;
+  /** The boxes a tree turns out of the plane (`_tiltedBoxes`), as of
+   *  that tree: dropped by a restyle in place that turns one into or out
+   *  of it. */
+  private _tiltedKept: { tree: BoxTree; boxes: readonly Box[] } | null = null;
   /** The lifted boxes, for the paint, as of a tree and a set. */
   private _liftedBoxCache: {
     tree: BoxTree;
@@ -2857,6 +2886,12 @@ export class HtmlViewNode extends Node {
       const was = box.style;
       box.style = style;
       if (sprites) this._restyledSprites(sprites, box, was, style);
+      // a box turned into the plane or out of it is a still part to offer
+      // or one no longer (`_tiltedBoxes`)
+      if (outOfPlane(style) !== outOfPlane(was)) {
+        tree.tilted ||= outOfPlane(style);
+        this._tiltedKept = null;
+      }
       // what a lifted box shows is its layer's to know: offered again, and
       // painted there, in a frame asked for since its hole claims none
       if (
@@ -3207,15 +3242,22 @@ export class HtmlViewNode extends Node {
    */
   override sprites(): DocumentSprite[] | null {
     this._offered.clear();
-    if (this.destroyed || !this._animating()) return null;
+    if (this.destroyed) return null;
+    const animating = this._animating();
+    // no animation, and no box turned out of the plane in the tree this
+    // frame paints, or one a build it owes may make
+    if (!animating && this._stale === Stale.Nothing && !this._tree?.tilted) {
+      return null;
+    }
     // this frame paints after the presenter: a build it owes is built now,
     // so that the boxes offered are the ones it paints
     if (this._stale !== Stale.Nothing) this._prepare(this.abs.width || 1);
     const tree = this._tree;
     const cascade = this._cascade;
     if (!tree || !cascade) return null;
-    const live = this._timeline.live();
-    if (!live.length) return null;
+    const live = animating ? this._timeline.live() : [];
+    const tilted = this._tiltedBoxes(tree);
+    if (!live.length && !tilted.length) return null;
     const now = animationClock.now();
     // the pane that scrolls the element, whose viewport a box fixed to it
     // is drawn at
@@ -3232,14 +3274,23 @@ export class HtmlViewNode extends Node {
       ended: (el, id) => this._endedSprites.get(el)?.has(id) ?? false,
     };
     const range = this.selectionRange;
-    // what a part is made from, but for its own animation (`Lift.id`)
-    const stamp = [
-      serialOf(tree),
+    // what a part is painted from, but for the tree and its own animation
+    // (`Lift.id`)
+    const held = [
       this._spriteGen,
       this._laidOutWidth,
       range ? `${range.start}-${range.end}` : '',
       viewport ? 'scrolled' : '',
     ].join(':');
+    // and what it is made from
+    const stamp = `${serialOf(tree)}:${held}`;
+    // The build since the frame before, where all it changed was laid out
+    // apart (`_quietBuild`): a part that holds none of what changed, and is
+    // inside none of it, paints what it painted, though every box is new —
+    // Zen Garden 219's marquees build the document at every frame, beside
+    // the panels on layers.
+    const quiet =
+      this._quietBuild?.after === serialOf(tree) ? this._quietBuild : null;
     // the lifts, an ancestor's ahead of its descendants': a part inside
     // another's box goes in that part's layer, and the presenter takes a
     // parent before the parts in it
@@ -3255,6 +3306,13 @@ export class HtmlViewNode extends Node {
         if (lift) lifts.push(lift);
       }
     }
+    // and each box turned out of the plane and seen in a perspective that
+    // no animation of its own is moving: still, and drawn by the render
+    // server through its whole matrix (`stillLiftOf`)
+    for (const box of tilted) {
+      const lift = stillLiftOf(host, box);
+      if (lift) lifts.push(lift);
+    }
     if (lifts.length > 1) {
       const depths = new Map<Box, number>();
       for (const { box } of lifts) {
@@ -3268,7 +3326,7 @@ export class HtmlViewNode extends Node {
     const madeBoxes = new Map<Box, Made>();
     const made: Made[] = [];
     let shift: { x: number; y: number } | null | undefined;
-    for (const lift of lifts) {
+    const make = (lift: Lift): Made | null => {
       const { el: element, pseudo } = lift;
       // the nearest box around it that is a part's: its layer goes in that
       // one's, and the boxes between are all it is asked about
@@ -3276,20 +3334,34 @@ export class HtmlViewNode extends Node {
       for (let at = lift.box.parent; at && !parent; at = at.parent) {
         parent = madeBoxes.get(at) ?? null;
       }
+      const own = `${lift.id}` + (parent ? `|${parent.key}` : '');
       const stamped =
-        `${stamp}|${lift.id}` +
-        (parent ? `|${parent.key}:${serialOf(parent.part)}` : '');
+        `${stamp}|${own}` + (parent ? `:${serialOf(parent.part)}` : '');
       let offers = this._spriteOffers.get(element);
       if (!offers) this._spriteOffers.set(element, (offers = {}));
       let offer = offers[pseudo];
       if (offer?.stamp !== stamped) {
+        const was = offer;
+        const part = partOf(host, lift, was?.part, parent?.part ?? null);
+        // the raster painted again, but where all that changed is the tree,
+        // built again around it by a frame that changed nothing it holds
+        const same =
+          was?.part &&
+          part &&
+          was.held === `${held}|${own}` &&
+          quiet !== null &&
+          was.tree === quiet.before &&
+          !repaints(quiet.roots, element);
         offer = {
           stamp: stamped,
-          part: partOf(host, lift, offer?.part, parent?.part ?? null),
+          part,
+          held: `${held}|${own}`,
+          tree: serialOf(tree),
+          version: same ? was.version : `${serialOf(lift.box)}:${stamped}`,
         };
         offers[pseudo] = offer;
       }
-      if (!offer.part) continue;
+      if (!offer.part) return null;
       // a box fixed to the viewport the scroll has brought within its
       // reach: the document draws it this frame, under that box or over
       // it, as their order has it. One at the viewport keeps its place
@@ -3298,20 +3370,66 @@ export class HtmlViewNode extends Node {
       // does.
       if (offer.part.fixed.length && !offer.part.atViewport) {
         if (shift === undefined) shift = this._fixedShift();
-        if (fixedWithin(offer.part, shift)) continue;
+        if (fixedWithin(offer.part, shift)) return null;
       }
       const entry: Made = {
         lift,
         key: this._spriteKeyOf(element, pseudo),
         part: offer.part,
+        version: offer.version,
         parent,
         order: parent ? null : paintOrderOf(lift.box),
         kids: [],
       };
-      if (!parent && !entry.order) continue; // nowhere in the paint order
+      if (!parent && !entry.order) return null; // nowhere in the paint order
       parent?.kids.push(entry);
       madeBoxes.set(lift.box, entry);
       made.push(entry);
+      return entry;
+    };
+    for (const lift of lifts) make(lift);
+    // What the document paints over a part turned out of the plane, made a
+    // part of its own where it can be one, so that its layer stands over
+    // the other's as it is painted over it (`overLiftOf`) — or the other
+    // could go on no layer at all, and be drawn a tile at a time at every
+    // paint: Zen Garden 219's preamble hangs over a corner of the tilted
+    // sidebar. A browser gives a box a layer for the same reason. Only what
+    // is over such a part, all of it or none, and no more than a few in
+    // all: a layer is a raster to keep. A part in the plane the document
+    // draws as cheaply as anything over it, and is left to it.
+    let room = MAX_OVER_PARTS;
+    for (const entry of made.slice()) {
+      if (entry.parent || room === 0) continue;
+      if (entry.part.transform.length !== 16) continue;
+      const over = coverersAfter(
+        entry.lift.box,
+        entry.part.over,
+        entry.part.fixedOver,
+      );
+      if (!over?.length) continue;
+      const covers: Lift[] = [];
+      // no layer of a raster larger than what shows the document
+      const shown = viewport ?? this.abs;
+      const most = shown.width * shown.height;
+      for (const box of over) {
+        if (madeBoxes.has(box)) continue;
+        // one that holds a part already made is that part's to answer for
+        const lift =
+          box.boundsWidth * box.boundsHeight > most ||
+          made.some((other) => holds(box, other.lift.box))
+            ? null
+            : overLiftOf(host, box);
+        if (!lift) {
+          covers.length = 0;
+          break;
+        }
+        covers.push(lift);
+      }
+      if (!covers.length || covers.length > room) continue;
+      for (const lift of covers) {
+        if (!make(lift)) break;
+        room -= 1;
+      }
     }
     // What the document paints after a part, asked from the last painted
     // to the first: those it keeps are layers over the ones before them,
@@ -3345,7 +3463,7 @@ export class HtmlViewNode extends Node {
         describe(
           part,
           key,
-          `${serialOf(lift.box)}:${stamp}`,
+          entry.version,
           origin.x,
           origin.y,
           now,
@@ -3459,6 +3577,24 @@ export class HtmlViewNode extends Node {
     }
   }
 
+  /** The boxes `tree` turns out of the plane, an element's or a
+   *  pseudo-element's: found by a walk, once a tree, and none where the
+   *  build turned none (`BoxTree.tilted`). */
+  private _tiltedBoxes(tree: BoxTree): readonly Box[] {
+    if (!tree.tilted) return NO_BOXES;
+    const kept = this._tiltedKept;
+    if (kept?.tree === tree) return kept.boxes;
+    const boxes: Box[] = [];
+    const stack: Box[] = [tree.root];
+    while (stack.length) {
+      const at = stack.pop()!;
+      for (const child of at.children) stack.push(child);
+      if (outOfPlane(at.style)) boxes.push(at);
+    }
+    this._tiltedKept = { tree, boxes };
+    return boxes;
+  }
+
   private _spriteKeyOf(el: Element, pseudo: Pseudo): string {
     let keys = this._spriteKeys.get(el);
     if (!keys) this._spriteKeys.set(el, (keys = {}));
@@ -3566,14 +3702,34 @@ export class HtmlViewNode extends Node {
     this._restyleOnly = new Set(reach);
     this._prepare(width);
     const after = this._tree;
-    const inks =
+    const changes =
       after &&
       this._laidOutWidth === width &&
       this._documentWidth === size[0] &&
       this._documentHeight === size[1]
         ? this._changedOutOfFlow(before, beforeBoxes, after, reach)
         : null;
-    if (inks) {
+    if (changes) {
+      this._quietBuild = {
+        before: serialOf(before),
+        after: serialOf(after!),
+        roots: changes.map((change) => change.el),
+      };
+      // what a change on a layer, or in one, drew and draws is its layer's:
+      // its hole needs no repaint, and the layer is moved or painted again
+      // in a frame asked for
+      let shown = changes;
+      if (this._lifted.size) {
+        shown = changes.filter(({ now }) => !now || !this._insideLifted(now));
+        if (shown.length < changes.length) this.spritesChanged();
+      }
+      const inks: Rect[] = [];
+      for (const { was, now } of shown) {
+        for (const box of [was, now]) {
+          const ink = box && this._inkOf(box);
+          if (ink) inks.push(ink);
+        }
+      }
       this._repaintInk(inks);
       return;
     }
@@ -3583,9 +3739,9 @@ export class HtmlViewNode extends Node {
 
   /**
    * What a tree built again changed, where all it changed is positioned out
-   * of the flow: the ink of each element out of the flow whose style
-   * changed, before and after, and of each `::before` or `::after` of the
-   * elements the frame restyled (`reach`). Null where an element or a
+   * of the flow: each element out of the flow whose style changed, and each
+   * `::before` or `::after` of the elements the frame restyled (`reach`),
+   * with the boxes it was drawn in and is. Null where an element or a
    * pseudo-element in the flow changed, or a box of one that did not moved.
    */
   private _changedOutOfFlow(
@@ -3593,7 +3749,7 @@ export class HtmlViewNode extends Node {
     beforeBoxes: ReadonlyMap<Element, Box>,
     after: BoxTree,
     reach: ReadonlySet<Element>,
-  ): Rect[] | null {
+  ): OutOfFlowChange[] | null {
     if (before.styles.size !== after.styles.size) return null;
     const changed: Element[] = [];
     const roots: Element[] = [];
@@ -3624,13 +3780,11 @@ export class HtmlViewNode extends Node {
       const was = beforeBoxes.get(el);
       if (!was || !sameGeometry(was, box)) return null;
     }
-    const inks: Rect[] = [];
-    for (const root of roots) {
-      for (const box of [beforeBoxes.get(root), afterBoxes.get(root)]) {
-        const ink = box && this._inkOf(box);
-        if (ink) inks.push(ink);
-      }
-    }
+    const changes: OutOfFlowChange[] = roots.map((el) => ({
+      el,
+      was: beforeBoxes.get(el) ?? null,
+      now: afterBoxes.get(el) ?? null,
+    }));
     // A pseudo-element has no element, so no style in `styles` to compare,
     // and its box is no element's: the rest found nothing of it, and a frame
     // that moved one alone repainted nothing. Zen Garden 215's robot rises
@@ -3646,13 +3800,10 @@ export class HtmlViewNode extends Node {
           continue;
         }
         if (!outOfFlow(was.style) || !outOfFlow(now.style)) return null;
-        for (const box of [was, now]) {
-          const ink = this._inkOf(box);
-          if (ink) inks.push(ink);
-        }
+        changes.push({ el, was, now });
       }
     }
-    return inks;
+    return changes;
   }
 
   /** The document, for an application that wants to read or change it. */
@@ -5073,6 +5224,7 @@ function deepestAt(
 }
 
 const NO_TEXTS: LineText[] = [];
+const NO_BOXES: readonly Box[] = [];
 
 /** Paint order between two hits' layers, outermost first: negative where
  *  `a` was painted under `b`. */
@@ -5447,6 +5599,8 @@ interface Made {
   lift: Lift;
   key: string;
   part: Part;
+  /** What its raster is painted at (`SpriteOffer.version`). */
+  version: string;
   /** The part whose layer it goes in, or null for one above the
    *  document. */
   parent: Made | null;
@@ -5454,6 +5608,53 @@ interface Made {
   order: number[] | null;
   /** The parts that go in its layer. */
   kids: Made[];
+}
+
+/** An element out of the flow whose style a build changed, or one of its
+ *  pseudo-elements, and the boxes it was drawn in before the build and is
+ *  after it (`_changedOutOfFlow`). */
+interface OutOfFlowChange {
+  el: Element;
+  was: Box | null;
+  now: Box | null;
+}
+
+/** What an element, or a pseudo-element of one, was last offered as, and
+ *  what that was made from (`HtmlViewNode.sprites`). */
+interface SpriteOffer {
+  /** Everything it was made from: a new one makes the part again. */
+  stamp: string;
+  part: Part | null;
+  /** What it was painted from, but for the tree: the same, and the tree
+   *  built again by a frame that changed nothing it holds, it paints what
+   *  it painted (`_quietBuild`). */
+  held: string;
+  /** The tree it was made from, by its serial. */
+  tree: number;
+  /** What its raster is painted at, which a presenter paints again when it
+   *  changes. */
+  version: string;
+}
+
+/** No more parts than this are made of what the document paints over a
+ *  part (`HtmlViewNode.sprites`). */
+const MAX_OVER_PARTS = 4;
+
+/**
+ * Whether a build that changed `roots`, each laid out apart from the rest
+ * (`_quietBuild`), changed what a part of `el`'s paints: one of them is
+ * `el`, is inside it, or holds it.
+ */
+function repaints(roots: Iterable<Element>, el: Element): boolean {
+  for (const root of roots) {
+    for (let at: Element | null = root; at; at = flatParentOf(at)) {
+      if (at === el) return true;
+    }
+    for (let at = flatParentOf(el); at; at = flatParentOf(at)) {
+      if (at === root) return true;
+    }
+  }
+  return false;
 }
 
 /** Paint order, as `paintOrderOf` keys it: negative where `a` is painted
@@ -5563,23 +5764,6 @@ function inkOf(box: Box): Rect | null {
     },
     at.parent,
   );
-}
-
-/** Structural equality for a computed value: a number, a string, or the
- *  plain objects and arrays a length or a shadow list is. */
-function sameValue(x: unknown, y: unknown): boolean {
-  if (x === y) return true;
-  if (typeof x === 'number' && typeof y === 'number') {
-    return Number.isNaN(x) && Number.isNaN(y);
-  }
-  if (!x || !y || typeof x !== 'object' || typeof y !== 'object') return false;
-  if (Array.isArray(x) !== Array.isArray(y)) return false;
-  const a = x as Record<string, unknown>;
-  const b = y as Record<string, unknown>;
-  const keys = Object.keys(a);
-  if (keys.length !== Object.keys(b).length) return false;
-  for (const key of keys) if (!sameValue(a[key], b[key])) return false;
-  return true;
 }
 
 /**

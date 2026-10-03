@@ -25,6 +25,12 @@
 // turning card and the rows of a list that slide in one into the next
 // pass.
 //
+// A box turned out of the plane goes over with its whole 4×4, seen in the
+// perspective the document sees it in (`solidFrames`), and one that runs no
+// animation goes over too where a perspective shows it, as a part with
+// none (`stillLiftOf`): the render server draws it through the matrix on
+// the GPU, where the document draws it a tile at a time at every paint.
+//
 // The frames go over as values the document computed: the element's style
 // is sampled at times through one cycle of its animation — two iterations
 // where it alternates, a transition from its start to its end — on a
@@ -39,11 +45,21 @@
 import { progressAt, timingAt, tracksOf } from './css/animation.js';
 import { animationTree } from './css/cascade.js';
 import type { Cascade } from './css/cascade.js';
-import { masked } from './css/style.js';
+import { masked, sameValue } from './css/style.js';
 import type { ComputedStyle } from './css/style.js';
 import type { AnimationTimeline, Transit } from './css/timeline.js';
-import { matrixOf, outOfPlane } from './css/transform.js';
+import { matrix4Of, matrixOf, outOfPlane } from './css/transform.js';
+import type { Matrix } from './css/transform.js';
+import {
+  facesAway,
+  lift as lift4,
+  multiply4,
+  translate4,
+} from './css/transform3d.js';
+import type { Mat4 } from './css/transform3d.js';
 import { resolve } from './css/values.js';
+import { perspectiveAround, placedMatrix } from './layout/block.js';
+import { GENERATED_FROM } from './layout/boxes.js';
 import type { Box, BoxTree } from './layout/boxes.js';
 import {
   FIXED_BOXES,
@@ -61,6 +77,7 @@ import type {
   Sprite,
   SpriteAnimation,
   SpriteMatrix,
+  SpriteMatrix3D,
 } from 'react-x11/node';
 import { isElement } from './dom.js';
 
@@ -81,10 +98,14 @@ export interface DocumentSprite extends Sprite {
   reach: Rect;
   version: string;
   opacity: number;
-  transform: SpriteMatrix;
+  transform: LayerMatrix;
   origin: { x: number; y: number };
   animations: DocumentSpriteAnimation[];
 }
+
+/** A layer's matrix: one of the plane, or `matrix3d()`'s sixteen numbers
+ *  for a part turned out of it and seen in a perspective. */
+export type LayerMatrix = SpriteMatrix | SpriteMatrix3D;
 
 /** The properties a sprite's layer can carry. Anything else an animation
  *  sets — a colour, a width, `transform-origin` — is drawn, and keeps the
@@ -106,6 +127,12 @@ const MAX_SAMPLES = 600;
 /** Past this many device pixels on a side a part is left to the document,
  *  as core leaves it (src/cocoa/sprites.js). */
 const MAX_SIDE = 8192;
+
+/** A corner of a part turned out of the plane no further in front of the
+ *  viewer than this is behind them, as core has it: nowhere on the page,
+ *  and its part the document's, which cuts it where the plane meets the
+ *  viewer's. */
+const W_NEAR = 1e-6;
 
 /** Whose animations a sprite carries: an element's own (''), or those of
  *  its `::before` or its `::after`. */
@@ -153,7 +180,9 @@ export interface Track {
 }
 
 /** An element's animations and transitions, where a sprite can carry
- *  them: one track a property, each its own animation on the layer. */
+ *  them: one track a property, each its own animation on the layer — or
+ *  none, for a box turned out of the plane that is still
+ *  (`stillLiftOf`). */
 export interface Lift {
   el: Element;
   /** Whose: the element's own, or a pseudo-element's of it. */
@@ -299,6 +328,44 @@ export function liftOf(
 }
 
 /**
+ * A box turned out of the plane and seen in a perspective, as a part with
+ * no animation: its layer is drawn through its whole matrix by the render
+ * server, where the document draws such a box a tile at a time
+ * (`paintProjected`), at every paint that reaches it — and on macOS each
+ * tile resamples the whole surface it is cut from. A browser
+ * gives every box a 3D transform a layer of its own. Null for a box drawn
+ * through a matrix of the plane, or not at all, which costs the document
+ * no more than any other box, and where `overLiftOf` is.
+ */
+export function stillLiftOf(host: SpriteHost, box: Box): Lift | null {
+  const placed = placedMatrix(box);
+  if (!placed || placed.length !== 9) return null;
+  return overLiftOf(host, box);
+}
+
+/**
+ * A box as a part with no animation, whatever it draws: one the document
+ * paints over a part (`HtmlViewNode.sprites`), whose layer then stands
+ * over the other's, as the document draws it over the other — or the other
+ * could go on no layer at all. A browser gives such a box a layer for the
+ * same reason. Null for one whose own animation or transition is under
+ * way, which only a track can carry (`liftOf`): a lifted element's
+ * animations are not the document's clock's. And for one that is no
+ * element's box, or a pseudo-element's but its `::before`'s or its
+ * `::after`'s.
+ */
+export function overLiftOf(host: SpriteHost, box: Box): Lift | null {
+  const which = box.pseudo;
+  if (which === 'first-letter') return null;
+  const pseudo: Pseudo = which ?? '';
+  const el = pseudo ? GENERATED_FROM.get(box) : box.el;
+  if (!el) return null;
+  const own = pseudo ? host.pseudoBox(el, pseudo) : host.boxes.get(el);
+  if (own !== box || host.timeline.isLive(el, pseudo)) return null;
+  return { el, pseudo, box, tracks: [], id: 'still', moves: false };
+}
+
+/**
  * Whether `box` can be drawn by a layer at all: a box of its own, drawing
  * nothing against the viewport, inside nothing whose group, matrix, clip
  * path or mask would have to take the layer in — a box that clips it cuts
@@ -320,10 +387,11 @@ function liftableBox(
   // others is a box of its own
   if (box.pseudo === 'first-letter' || !box.parent) return false;
   if (drawsAgainstViewport(box)) return false;
-  // a layer's matrix is one of the plane, and a box turned out of it, or
-  // moved or scaled in depth, is drawn through a projection
-  // (`paintProjected`)
-  if (outOfPlane(box.style)) return false;
+  // one turned out of the plane, or moved or scaled in depth, goes on a
+  // layer of the window's, whose matrix carries the perspective it is seen
+  // in: inside another part's, it would be seen in the other's plane,
+  // which a perspective outside it does not move with
+  if (within && outOfPlane(box.style)) return false;
   if (box.style.clipPath || masked(box.style)) return false;
   // one fixed to the viewport in it is drawn where the viewport is, which
   // a layer the document scrolls does not follow
@@ -336,8 +404,8 @@ function liftableBox(
   // turn and its animation, and was asked about the rest
   for (let at: Box | null = box.parent; at && at !== within; at = at.parent) {
     const style = at.style;
-    // a `perspective` turns nothing in the plane, and a layer's frames are
-    // all in it
+    // a `perspective` turns nothing in the plane, and the one a box out of
+    // it is seen in is in its layer's matrix (`solidFrames`)
     if (
       style.opacity < 1 ||
       style.transform !== null ||
@@ -356,8 +424,15 @@ function liftableBox(
   return true;
 }
 
-/** `rect` through `m` about `origin`: the bounds of its corners. */
-function mapRect(rect: Rect, m: SpriteMatrix, ox: number, oy: number): Rect {
+/** `rect` through `m` about `origin`: the bounds of its corners, which
+ *  for a matrix out of the plane are where the perspective puts them — or
+ *  null, where a corner is behind the viewer. */
+function mapRect(
+  rect: Rect,
+  m: LayerMatrix,
+  ox: number,
+  oy: number,
+): Rect | null {
   let x0 = Infinity;
   let y0 = Infinity;
   let x1 = -Infinity;
@@ -370,8 +445,17 @@ function mapRect(rect: Rect, m: SpriteMatrix, ox: number, oy: number): Rect {
   ]) {
     const dx = px - ox;
     const dy = py - oy;
-    const x = m[0] * dx + m[2] * dy + m[4] + ox;
-    const y = m[1] * dx + m[3] * dy + m[5] + oy;
+    let x: number;
+    let y: number;
+    if (m.length === 16) {
+      const w = m[3] * dx + m[7] * dy + m[15];
+      if (!(w > W_NEAR)) return null;
+      x = (m[0] * dx + m[4] * dy + m[12]) / w + ox;
+      y = (m[1] * dx + m[5] * dy + m[13]) / w + oy;
+    } else {
+      x = m[0] * dx + m[2] * dy + m[4] + ox;
+      y = m[1] * dx + m[3] * dy + m[5] + oy;
+    }
     x0 = Math.min(x0, x);
     y0 = Math.min(y0, y);
     x1 = Math.max(x1, x);
@@ -439,18 +523,24 @@ export function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
   return false;
 }
 
+/** A frame's transform as sampled: a matrix of the plane, or the whole
+ *  4×4 of one out of it (`matrix4Of`), without the perspective it is seen
+ *  in, which the part's place decides (`solidFrames`). */
+type SampledMatrix = SpriteMatrix | Mat4;
+
 /** Each track's frames through one cycle of it, sampled from the
  *  element's style on a fork of the document's timeline — its opacities
  *  where it sets the opacity, its matrices where it moves — the style the
  *  animations leave at rest, and whether a frame takes it out of the
- *  plane, which no layer's matrix can. */
+ *  plane, or the rest does, which a layer then carries as a `matrix3d()`.
+ *  A still part's is no frame and its own style. */
 function sample(
   host: SpriteHost,
   parentStyle: ComputedStyle,
   inFlex: boolean,
   lift: Lift,
 ): {
-  frames: { opacities: number[]; matrices: SpriteMatrix[] }[];
+  frames: { opacities: number[]; matrices: SampledMatrix[] }[];
   rest: ComputedStyle;
   solid: boolean;
 } {
@@ -478,7 +568,7 @@ function sample(
     const frames = lift.tracks.map((track) => {
       const fork = host.timeline.fork(el);
       const opacities: number[] = [];
-      const matrices: SpriteMatrix[] = [];
+      const matrices: SampledMatrix[] = [];
       const n = Math.max(
         2,
         Math.min(MAX_SAMPLES, Math.round(track.cycle / SAMPLE_MS)),
@@ -492,10 +582,12 @@ function sample(
           opacities.push(Math.min(1, Math.max(0, style.opacity)));
         }
         if (track.transform) {
-          solid ||= outOfPlane(style);
-          matrices.push([
-            ...matrixOf(style, box.width, box.height),
-          ] as SpriteMatrix);
+          const turned = matrix4Of(style, box.width, box.height);
+          solid ||= turned !== null;
+          matrices.push(
+            turned ??
+              ([...matrixOf(style, box.width, box.height)] as SpriteMatrix),
+          );
         }
       }
       return { opacities, matrices };
@@ -534,7 +626,7 @@ export interface Part {
    *  The space its `rect`, `origin` and `clip` are in. */
   translation: [number, number];
   opacity: number;
-  transform: SpriteMatrix;
+  transform: LayerMatrix;
   animations: DocumentSpriteAnimation[];
   /** When each of `animations` began its active phase, on the document's
    *  clock: its delay, made each frame from now (`describe`). */
@@ -567,26 +659,95 @@ export interface Part {
   fixedOver: Rect | null;
 }
 
-/** A part's frames as sampled, and what they are sampled from: the box,
- *  its style, the style that inherits into it and its animations
- *  (`Lift.id`). The same while those are, so a box inside it that
- *  changes, which paints its layer again, samples nothing: a spinner
- *  turning in a card that pulses would otherwise sample the card's whole
- *  cycle at every frame of the spinner's. */
+/** A part's frames as sampled, and what they are sampled from: its
+ *  style, the style that inherits into it and its animations, with the
+ *  size of its box (`Lift.id`). The same while those are, so a box inside
+ *  it that changes, which paints its layer again, samples nothing — a
+ *  spinner turning in a card that pulses would otherwise sample the card's
+ *  whole cycle at every frame of the spinner's — and nor does a build that
+ *  keeps its style, though its boxes are new: Zen Garden 219's marquees
+ *  build the document at every frame. */
 interface Sampled {
   id: string;
-  box: Box;
   style: ComputedStyle;
   parent: ComputedStyle;
-  frames: { opacities: number[]; matrices: SpriteMatrix[] }[];
+  frames: { opacities: number[]; matrices: SampledMatrix[] }[];
   rest: ComputedStyle;
   /** Whether a frame, or the rest, is out of the plane. */
   solid: boolean;
+  /** Where it is: its frames as its layer takes them, and what they were
+   *  made for (`solidFrames`). */
+  layer?: { key: string; frames: SolidFrames };
+}
+
+/** The matrices of a part out of the plane, as its layer takes them: where
+ *  it rests, and each track's frames — a fade's none. */
+interface SolidFrames {
+  rest: SpriteMatrix3D;
+  tracks: SpriteMatrix3D[][];
+}
+
+/**
+ * A part's matrices out of the plane, as its layer takes them: each the
+ * 4×4 of a frame, about the depth of the transform origin, seen in the
+ * perspective the document sees the box in (`perspectiveAround`) — all
+ * about (`ox`, `oy`), the point the layer turns about, where the document
+ * has the origin with no transform. A frame of the plane is one of space
+ * with nothing out of it. Null where the box shows its back with
+ * `backface-visibility: hidden`, at rest or on the way, which the document
+ * leaves undrawn and a layer would draw. Kept by the sampling, for as long
+ * as the perspective is where it was.
+ */
+function solidFrames(
+  sampled: Sampled,
+  box: Box,
+  ox: number,
+  oy: number,
+): SolidFrames | null {
+  const style = box.style;
+  const oz = style.transformOriginZ;
+  const around = perspectiveAround(box);
+  // the perspective about the layer's origin: T(-o) · P · T(o)
+  const seen =
+    around &&
+    multiply4(
+      translate4(-ox, -oy, 0),
+      multiply4(around, translate4(ox, oy, 0)),
+    );
+  const key = `${oz}:${seen ? seen.join(',') : ''}`;
+  if (sampled.layer?.key === key) return sampled.layer.frames;
+  const hidden = style.backfaceVisibility === 'hidden';
+  let away = false;
+  const toLayer = (m: SampledMatrix): SpriteMatrix3D => {
+    let m4: Mat4 = m.length === 6 ? lift4(m as Matrix) : m;
+    if (oz) {
+      m4 = multiply4(
+        translate4(0, 0, oz),
+        multiply4(m4, translate4(0, 0, -oz)),
+      );
+    }
+    const out = seen ? multiply4(seen, m4) : [...m4];
+    away ||= hidden && facesAway(out);
+    return out as unknown as SpriteMatrix3D;
+  };
+  const rest = sampled.rest;
+  const frames: SolidFrames = {
+    rest: toLayer(
+      matrix4Of(rest, box.width, box.height) ??
+        ([...matrixOf(rest, box.width, box.height)] as SpriteMatrix),
+    ),
+    tracks: sampled.frames.map(({ matrices }) => matrices.map(toLayer)),
+  };
+  if (away) return null;
+  sampled.layer = { key, frames };
+  return frames;
 }
 
 /**
  * The part `lift` is, or null where the element cannot be one: in a box a
- * layer cannot draw (`liftableBox`), too large, or showing nothing. What
+ * layer cannot draw (`liftableBox`), too large, showing nothing, or turned
+ * out of the plane so that a corner goes behind the viewer, or its hidden
+ * back faces them (`solidFrames`). What
  * the document paints after it is asked every frame, apart
  * (`coveredAfter`), since what is offered with it changes what that is.
  * Its frames are `was`'s where they were sampled from what they would be
@@ -635,34 +796,53 @@ export function partOf(
     height: own.height,
   };
   if (reach.width > MAX_SIDE || reach.height > MAX_SIDE) return null;
+  // the frames sampled before, where they are of the same animations of
+  // the same style, inheriting the same: a build that kept the element's
+  // style keeps them, though its boxes are new (`Lift.id` has the box's
+  // size, which a percentage is of)
+  // A style a build made again for the root box, which is no element's,
+  // is compared by what it holds.
   const known = was?.sampled;
   const sampled =
     known &&
     known.id === lift.id &&
-    known.box === box &&
     known.style === box.style &&
-    known.parent === parentStyle
+    (known.parent === parentStyle || sameValue(known.parent, parentStyle))
       ? known
       : {
           id: lift.id,
-          box,
           style: box.style,
           parent: parentStyle,
           ...sample(host, parentStyle, kept.inFlex, lift),
         };
   const { frames, rest } = sampled;
-  if (sampled.solid) return null;
   const origin = box.style.transformOrigin;
   const ox = bx + resolve(origin[0], box.width, 0);
   const oy = by + resolve(origin[1], box.height, 0);
-  const transform = [...matrixOf(rest, box.width, box.height)] as SpriteMatrix;
+  // the layer's matrices: of the plane, as sampled, or out of it, each seen
+  // in the perspective the document sees the box in
+  let transform: LayerMatrix;
+  let turns: LayerMatrix[][];
+  if (sampled.solid) {
+    const solid = solidFrames(sampled, box, ox, oy);
+    if (!solid) return null;
+    transform = solid.rest;
+    turns = solid.tracks;
+  } else {
+    transform = [...matrixOf(rest, box.width, box.height)] as SpriteMatrix;
+    turns = frames.map(({ matrices }) => matrices as SpriteMatrix[]);
+  }
   // everywhere it can be: its reach where it rests, and through every frame
+  // — none of it behind the viewer, which only the document can cut
   let extent = mapRect(reach, transform, ox, oy);
-  for (const { matrices } of frames) {
+  for (const matrices of turns) {
     for (const m of matrices) {
-      extent = unionRect(extent, mapRect(reach, m, ox, oy));
+      if (!extent) break;
+      const at = mapRect(reach, m, ox, oy);
+      extent = at && unionRect(extent, at);
     }
   }
+  if (!extent) return null;
   // the boxes that clip it cut its layer — up to its parent's, which cut
   // that part's — and what shows of it is all that anything painted after
   // it could cover. The document's own boxes are where layout put them,
@@ -696,7 +876,7 @@ export function partOf(
   const begins: number[] = [];
   lift.tracks.forEach((track, i) => {
     const repeat = track.repeat;
-    const { opacities, matrices } = frames[i];
+    const { opacities } = frames[i];
     if (track.opacity) {
       animations.push({
         id: `${track.id}|opacity`,
@@ -712,7 +892,7 @@ export function partOf(
       animations.push({
         id: `${track.id}|transform`,
         property: 'transform',
-        values: matrices,
+        values: turns[i],
         duration: track.cycle,
         delay: 0,
         repeat,

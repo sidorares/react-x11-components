@@ -31,6 +31,7 @@ import {
   tagOf,
 } from '../dom.js';
 import { ShapeCopies, languageOf, metaColorScheme } from '../css/cascade.js';
+import { outOfPlane } from '../css/transform.js';
 import type {
   Cascade,
   FirstLetterRules,
@@ -879,6 +880,10 @@ export interface BoxTree {
   /** Whether any box is relatively positioned: where none is, layout skips
    *  the walk that moves them. */
   relative: boolean;
+  /** Whether any box is turned out of the plane (`outOfPlane`): where none
+   *  is, no layer is offered for one (`HtmlViewNode.sprites`), and nothing
+   *  looks. A restyle in place that turns one sets it too. */
+  tilted: boolean;
   /** Whether any positioned box has a negative `z-index`: where none has,
    *  paint has no layer below the flow to find. */
   negative: boolean;
@@ -1045,6 +1050,7 @@ class Builder {
     sized: boolean;
   }[] = [];
   private _relative = false;
+  private _tilted = false;
   private _negative = false;
   private _firstLine = false;
   private _nestedOutOfLine = false;
@@ -1120,6 +1126,7 @@ class Builder {
       backgrounds: this._backgrounds,
       contentImages: this._contentImages,
       relative: this._relative || isRelative(rootStyle),
+      tilted: this._tilted || outOfPlane(rootStyle),
       negative: this._negative,
       firstLine: this._firstLine,
       firstLineStyler: this._firstLine ? this._firstLineStyler() : null,
@@ -1311,6 +1318,7 @@ class Builder {
     }
     // a translation is moved by the same pass
     if (style.translate || style.transform) this._relative = true;
+    if (outOfPlane(style)) this._tilted = true;
     if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;
@@ -1636,6 +1644,7 @@ class Builder {
     }
     // a translation is moved by the same pass
     if (style.translate || style.transform) this._relative = true;
+    if (outOfPlane(style)) this._tilted = true;
     if (style.backgroundClipText) this._clipText = true;
     if (style.verticalAlign !== 'baseline' && style.display === 'inline') {
       this._movedInline = true;

@@ -57,7 +57,7 @@ import {
   projectionOf,
   translate4,
 } from '../css/transform3d.js';
-import type { Projection } from '../css/transform3d.js';
+import type { Mat4, Projection } from '../css/transform3d.js';
 import { lineOf, spanToName } from './grid-lines.js';
 import type { GridLines } from './grid-lines.js';
 import {
@@ -4933,16 +4933,8 @@ function projectedMatrix(box: Box, ox: number, oy: number): Placed | null {
     translate4(ox, oy, oz),
     multiply4(multiply4(translate4(-tx, -ty, 0), m), translate4(-ox, -oy, -oz)),
   );
-  const holder = perspectiveFor(box);
-  if (holder) {
-    const at = holder.style.perspectiveOrigin;
-    const px = holder.x + resolve(at[0], holder.width, 0);
-    const py = holder.y + resolve(at[1], holder.height, 0);
-    placed = multiply4(
-      multiply4(translate4(px, py, 0), perspective4(holder.style.perspective!)),
-      multiply4(translate4(-px, -py, 0), placed),
-    );
-  }
+  const seen = perspectiveAround(box);
+  if (seen) placed = multiply4(seen, placed);
   if (style.backfaceVisibility === 'hidden' && facesAway(placed)) {
     return NOWHERE;
   }
@@ -4972,6 +4964,26 @@ function projectedMatrix(box: Box, ox: number, oy: number): Placed | null {
     near(a[5], 0)
     ? null
     : a;
+}
+
+/**
+ * The perspective a box's transform is seen in (`perspectiveFor`), as a
+ * 4×4 in the document's coordinates: that box's `perspective`, from its
+ * `perspective-origin` where layout put it. Null where there is none. What
+ * the document draws a box out of the plane through (`projectedMatrix`),
+ * and what a layer that carries one is turned through
+ * (`src/html/sprites.ts`).
+ */
+export function perspectiveAround(box: Box): Mat4 | null {
+  const holder = perspectiveFor(box);
+  if (!holder) return null;
+  const at = holder.style.perspectiveOrigin;
+  const px = holder.x + resolve(at[0], holder.width, 0);
+  const py = holder.y + resolve(at[1], holder.height, 0);
+  return multiply4(
+    multiply4(translate4(px, py, 0), perspective4(holder.style.perspective!)),
+    translate4(-px, -py, 0),
+  );
 }
 
 /**

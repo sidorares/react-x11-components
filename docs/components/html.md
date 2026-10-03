@@ -1623,6 +1623,9 @@ surface as it was laid out, and the surface drawn a tile of the window's
 pixels at a time, each through the matrix nearest the perspective over it:
 resampled, as a browser draws a layer in perspective, and no line off by
 more than a quarter of a pixel where it crosses from one tile to the next.
+On macOS such a box goes on a layer of its own instead, which the render
+server draws through the whole matrix on the GPU, still or moving (see
+"On macOS an animation a layer can carry runs in the render server").
 `perspective` makes a box a containing block and a stacking context, as a
 transform does. Under `backface-visibility: hidden` a box its transform
 turns to face away is not drawn, so a card that flips shows its front at
@@ -1771,9 +1774,9 @@ compositor:
   `::after`'s, as a spinner drawn by one is, but not an inline split
   across lines — and is not masked, cut by a `clip-path` or drawn against
   the viewport, and holds nothing fixed to it unless it is fixed itself.
-  Nor is it out of the plane at any frame — by its list, `translate`'s or
-  `scale`'s depth, or `rotate` about an axis in the page — since a layer's
-  matrix is one of the plane;
+  One out of the plane — by its list, `translate`'s or `scale`'s depth, or
+  `rotate` about an axis in the page — goes over with its whole 4×4 (see
+  below);
 - nothing it is inside fades, turns, masks, is cut by a `clip-path`, or
   runs an animation of its own — but for an element that goes on a layer
   itself: an element animating inside it goes on a layer inside that
@@ -1843,6 +1846,34 @@ lifted transition back hands its layer a new animation, from where the
 transition had come to. Everywhere else — X11,
 Wayland, Windows, a macOS window drawn without layer promotion — nothing
 asks, and every animation runs on the document's clock as above.
+
+A box turned out of the plane goes on a layer too, its matrix the whole
+4×4 of each frame seen in the perspective the document sees it in, as a
+`matrix3d()` (react-x11 2.39.0): a card that flips, a panel that tilts back
+on a hover. And one whose own animation is not under way goes on a layer
+still, where a perspective shows it, as a part with no animation: the
+document draws such a box a tile at a time through its perspective at
+every paint that reaches it, and the render server draws the layer through
+the whole matrix on the GPU — as a browser gives every box with a 3D
+transform a layer of its own. Zen Garden 219 tilts its sidebar
+`rotateY(40deg)` in a `perspective: 1000px`, and the marquees inside it
+repaint it at every frame. Not where a corner of the box goes behind the
+viewer, at rest or on the way, which only the document cuts where the
+plane meets the viewer's; not under `backface-visibility: hidden` where a
+frame shows its back; not a box drawn through a matrix of the plane — in
+no perspective, or turned in none — which costs the document no more than
+any other; and not one inside another element on a layer, whose plane it
+would be seen in, where it is drawn in that layer's raster. An element
+animating inside a still one goes in its layer, as in any other's. What the
+document paints over a box out of the plane goes on a layer of its own too,
+with no animation, so that both can — as a browser gives an overlapping box
+a layer — where all of it can, up to four such boxes and none larger than
+what shows the document: Zen Garden 219's
+preamble hangs over a corner of its tilted sidebar. A layer's raster is
+painted again only where what it holds changed: a frame of an animation
+that builds the document again for a box laid out apart — 219's marquees,
+moved by `text-indent` — paints again the layer that box is in, and no
+other.
 
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`

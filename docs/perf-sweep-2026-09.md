@@ -4642,6 +4642,92 @@ The same CPU either way: the layer saves two thirds of the frames and each
 costs twice as much. So core gets no minimum duration for a layer, and the
 layer keeps its place on what it saves in frames.
 
+## Round 46: a box out of the plane on a layer
+
+Round 44 left 219 at 21–25 frames a second on macOS, most of every frame
+the tiled warp of its sidebar's panel, turned `rotateY(40deg)` in a
+`perspective: 1000px`. This round put such a box on a Core Animation layer,
+whose matrix is the whole 4×4 (react-x11 #859, released as 2.39.0), and
+followed what kept it off one.
+
+### A part out of the plane, still or moving
+
+A part's transform may be a `matrix3d()` now: each frame's 4×4 about the
+depth of its origin, seen in the perspective the document sees it in, and
+core hands Core Animation points. A box the document draws through a
+projection, whose own animation is not under way, is offered as a part
+with no animation, as Chrome gives every box with a 3D transform a layer.
+On a real window the layer and the document's tiles put the panel in the
+same place, apart from antialiasing along its edges and its glyphs: a mean
+of 1.2 levels.
+
+### What kept it off a layer
+
+219's panel was offered and turned down at every frame, and two things
+were why. The preamble, painted after the sidebar, hangs over a corner of
+its reach, so a layer of the sidebar's would have stood over the preamble
+where the document draws it under it. So what the document paints over a
+part out of the plane goes on a layer of its own too, with no animation,
+where it can, as Chrome gives an overlapping box a layer. And every frame
+of 219 builds the document again for its marquees, which made every part's
+version new, so each layer was painted again at every frame, the
+preamble's included, and every lifted part sampled its cycle again. A
+build a frame makes for boxes laid out apart now keeps the version of a
+part none of them is in or around, a lifted part's frames are kept by its
+style rather than its box, and a root of that build inside a lifted part
+claims nothing of the document's: its ink is a hole.
+
+### What it came to
+
+`htmlanim.mjs` counts a frame that paints only a layer now: on macOS a
+frame of the marquees inside the lifted panel paints no bitmap at all, and
+the bench had counted it as no frame. Three interleaved runs each on this
+Mac at 1x, on react-x11 2.39.0, each run started with the machine's load
+under 3.5, master against the branch:
+
+| 219 on macOS                 | master fps | branch fps | median frame, master | median frame, branch |
+| ---------------------------- | ---------: | ---------: | -------------------: | -------------------: |
+| idle                         |       27.5 |       54.0 |              27.7 ms |               2.9 ms |
+| the sidebar's panel, hovered |       22.1 |       39.9 |              31.0 ms |               2.8 ms |
+| and left                     |       20.9 |       44.2 |              28.3 ms |               2.9 ms |
+| the header, hovered          |       24.0 |       49.1 |              24.0 ms |               2.7 ms |
+| and left                     |       26.4 |       53.1 |              30.8 ms |               2.7 ms |
+| the preamble, hovered        |       16.2 |       33.8 |              29.5 ms |               2.7 ms |
+| and left                     |       19.0 |       33.8 |              26.5 ms |               2.8 ms |
+| the summary, hovered         |       27.2 |       53.5 |              28.6 ms |               2.8 ms |
+
+X11 has no presenter, and was the same in every phase within the runs'
+noise, at most two frames a second either way. What is left on macOS is
+in the hovers: each moves its panel by `top`, `left` and `margin` as it
+turns it, which no layer carries, so the document draws the panel through
+its matrix or its tiles at every frame of the transition, and a frame where
+the layers change — a transition starting or ending — repaints what they
+leave, 200 ms and more for the preamble's. Putting such a box on a layer
+the document's own clock moves, as Chrome does for a transform transition
+beside a `top` one, took the hovers further and flipped the set of layers
+on and off at their starts and ends, each flip a repaint of hundreds of
+milliseconds; it is in "Still open". An earlier run of the same comparison
+on core 2.36 put master's sidebar hover at 36 frames a second and the
+branch's at 35: the machine and the core both moved between the two, and
+only runs interleaved on one of each are compared here.
+
+### Two hypotheses about the tiles on macOS
+
+Round 44 found each tile of the warp costing a draw of the whole surface it
+is cut from, and guessed at the image `CtxDrawSurface` makes of the surface
+for every draw. Keeping that image until the surface is next drawn on, in
+the bridge, changed nothing: 784 tiles of a 1400 by 1120 surface took 214
+ms either way, the patched addon loaded and checked. The surfaces are all
+sRGB, so no colour conversion either. What it is is the interpolation the
+bridge sets on every context, `kCGInterpolationMedium`: with
+`kCGInterpolationLow`, the same 784 tiles took 29.6 ms, faster than cutting
+each to its clip in core, which round 44 found five times faster. On 219,
+the hovers the document still draws went from 36 to 43 frames a second over
+the sidebar, 19 to 29 leaving it, 26 to 36 over the header and 23 to 33
+leaving it. Low is bilinear, what a browser draws a layer in perspective
+with, and the canvas's own default for `imageSmoothingQuality`; the bridge
+has no verb for it yet, and core no property.
+
 ## Lessons
 
 1. **Look for caches that never hit.** Identity-keyed caches handed a new
@@ -5064,6 +5150,19 @@ node_modules/react-x11/` puts any commit of it under a tree in a
     on a layer in a list that scrolls moves every frame, so it costs the
     frame its test and its sync, and saves nothing the pane's blit was not
     already saving.
+87. **Count what a frame shows, not what it paints.** A frame that only
+    repaints a layer paints no bitmap, and a bench that counted bitmap
+    paints called 219 at 54 frames a second 0. Count every part a frame's
+    presenter paints as well, or the faster the page, the slower it reads.
+88. **A layer that works in a test can be kept off it by its neighbour.**
+    219's panel was offered at every frame and lifted at none: the
+    preamble's ink box touched its reach. Log why a part is turned down
+    on the real page before measuring it.
+89. **Verify the binary under test, then believe the result.** The first
+    run of a patched bridge loaded the installed one, from an unset
+    variable, and reported no change; a check of which `calayers.node` the
+    process holds made the second run worth reading. That refuted the
+    image-per-draw guess and found the interpolation in one more patch.
 
 ## Still open
 
@@ -5167,26 +5266,32 @@ round 15.
   megabytes of paragraphs set in faces it may not use again. A bound in
   bytes, or a document's paragraphs going with its element, would answer
   it.
-- **A surface drawn under a clip on macOS** (core, appkit): the bridge
-  draws the whole source surface whatever the clip (`CtxDrawSurface`), so
-  `<Html>`'s tiled warp of a box out of the plane costs each tile the whole
-  panel, 1.6 s of 219's 3.1 s idle profile (round 44). A cut in core's
-  context is five times faster and changes pixels where an image is turned
-  and shrunk, so the fix is the bridge's: keep the image it makes of a
-  surface until the surface is drawn on, if that is where the cost is; or a
-  verb that draws a surface through a projection, which X11's Render does
-  with a 3×3 picture transform and Core Animation does on a layer.
-- **A box out of the plane on a layer** (core, appkit, `<Html>`): a sprite's
-  transform is a matrix of the plane, so a turned panel is never lifted. A
-  part that may carry a 4×4 with a perspective, as `CATransform3D` does,
-  would put 219's panel and its turn on a layer, where Chrome puts them on
-  the compositor, and leave only its raster to paint.
+- **A surface drawn through a matrix on macOS** (appkit, core, `<Html>`):
+  every context the bridge makes draws an image with
+  `kCGInterpolationMedium`, which resamples the whole source for each
+  transformed draw, so `<Html>`'s tiled warp of a box out of the plane
+  costs each tile the whole panel (rounds 44 and 46). `kCGInterpolationLow`
+  took 784 tiles from 214 ms to 29.6 and 219's hovers from 19–36 frames a
+  second to 29–43. A verb that sets it, the 2D context's
+  `imageSmoothingQuality` over that verb in core, and the warp asking for
+  `low` would answer it.
+- **A box out of the plane that its own clock moves** (`<Html>`): one whose
+  transition moves it by `top` or `margin` as well as turning it, as 219's
+  hovered panels do, runs on the document's clock and is drawn through its
+  tiles at every frame. A layer the clock moves, its raster kept while only
+  its place, its matrix and its opacity change, as Chrome composites a
+  transform transition beside a `top` one, took those frames off the
+  bitmap in round 46, and flipped the layers on and off where the
+  transitions start and end. Holding the set steady across those edges is
+  the step before it can ship.
 - **A frame of a length animates the whole document** (`<Html>`): an
   animation or a transition of `top`, `margin` or `text-indent` builds the
   boxes and lays them out again every frame, 6–8 ms on 219, where what moved
-  is a few boxes out of the flow. Building and laying out only those, and
-  keeping the surfaces of the boxes that did not change across the build,
-  is the engine's next step for a page that moves.
+  is a few boxes out of the flow. A part on a layer no longer paints again
+  for such a build unless the boxes it changed are in it (round 46);
+  building and laying out only those boxes, and keeping the surfaces of
+  the boxes that did not change across the build, is the engine's next
+  step for a page that moves.
 - **The tree probe's keys on Cocoa** (`treesweep.tsx`): its key presses
   reach no tree there. On both trees it scrolls no row, at 2–3% CPU, and
   paints one to three frames in a run, so its frame rate and median

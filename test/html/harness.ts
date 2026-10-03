@@ -18,6 +18,9 @@ import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
 import { parseColor } from '../../src/html/css/values.js';
+import { mapPoint } from '../../src/html/css/transform.js';
+import { placedMatrix } from '../../src/html/layout/block.js';
+import type { Box } from '../../src/html/layout/boxes.js';
 
 export const h = React.createElement;
 
@@ -871,6 +874,77 @@ export function boxOf(el: HtmlViewNode, id: string): LaidBox {
   const found = find(root);
   assert.ok(found, `#${id} has a box`);
   return found;
+}
+
+/** The corners of a rect, clockwise from its top left. */
+export function cornersOf(r: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): [number, number][] {
+  return [
+    [r.x, r.y],
+    [r.x + r.width, r.y],
+    [r.x + r.width, r.y + r.height],
+    [r.x, r.y + r.height],
+  ];
+}
+
+/** Where a sprite's layer puts the corners of its rect in the window: its
+ *  matrix — `m`, or the one it rests at — about its origin, and over the w
+ *  it comes to where it is a `matrix3d()`. */
+export function layerCorners(
+  sprite: {
+    rect: { x: number; y: number; width: number; height: number };
+    origin?: { x: number; y: number };
+    transform?: readonly number[];
+  },
+  m: readonly number[] = sprite.transform ?? [1, 0, 0, 1, 0, 0],
+): [number, number][] {
+  const { x: ox, y: oy } = sprite.origin!;
+  return cornersOf(sprite.rect).map(([x, y]) => {
+    const dx = x - ox;
+    const dy = y - oy;
+    if (m.length !== 16) {
+      return [
+        m[0] * dx + m[2] * dy + m[4] + ox,
+        m[1] * dx + m[3] * dy + m[5] + oy,
+      ];
+    }
+    const w = m[3] * dx + m[7] * dy + m[15];
+    return [
+      (m[0] * dx + m[4] * dy + m[12]) / w + ox,
+      (m[1] * dx + m[5] * dy + m[13]) / w + oy,
+    ];
+  });
+}
+
+/** Where the document draws the corners of an element's box in the window:
+ *  through the matrix, or the projection, it paints the box through
+ *  (`placedMatrix`). */
+export function drawnCorners(el: HtmlViewNode, id: string): [number, number][] {
+  const box = boxOf(el, id) as unknown as Box;
+  const placed = placedMatrix(box);
+  const abs = (el as unknown as DrawnNode).abs;
+  return cornersOf(box).map(([x, y]) => {
+    const [px, py] = placed ? mapPoint(placed, x, y) : [x, y];
+    return [px + abs.x, py + abs.y];
+  });
+}
+
+/** Whether two lists of points are the same, each to within `by`. */
+export function samePoints(
+  a: readonly (readonly [number, number])[],
+  b: readonly (readonly [number, number])[],
+  by = 1e-6,
+): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      ([x, y], i) => Math.abs(x - b[i][0]) <= by && Math.abs(y - b[i][1]) <= by,
+    )
+  );
 }
 
 export type ReplacedBox = LaidBox & { kind: string; replaced: string };
