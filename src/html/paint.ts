@@ -65,7 +65,13 @@ import {
   WILL_STACK_Z,
 } from './css/style.js';
 import { LARGEST } from './css/calc.js';
-import { invert, mapRect, multiply, transformed } from './css/transform.js';
+import {
+  drawnThrough,
+  invert,
+  mapRect,
+  multiply,
+  transformed,
+} from './css/transform.js';
 import type { Matrix, Placed } from './css/transform.js';
 import {
   inFront,
@@ -1749,17 +1755,14 @@ function tileFit(
 }
 
 /**
- * Whether a box's style turns, scales or skews it, which is asked before
- * every box that may be one is painted (`paintPositioned`, `paintLines`) —
- * there, and not in `paintBox`, whose frame is one of three a level of
- * nesting costs the stack: a name more in it, and a document a thousand
- * boxes deep ran out.
+ * Whether a box's style turns, scales or skews it, or moves it toward the
+ * viewer (`drawnThrough`), which is asked before every box that may be one
+ * is painted (`paintPositioned`, `paintLines`) — there, and not in
+ * `paintBox`, whose frame is one of three a level of nesting costs the
+ * stack: a name more in it, and a document a thousand boxes deep ran out.
  */
 function turns(box: Box): boolean {
-  const style = box.style;
-  return (
-    style.transform !== null || style.rotate !== null || style.scale !== null
-  );
+  return drawnThrough(box.style);
 }
 
 /**

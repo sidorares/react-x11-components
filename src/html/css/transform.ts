@@ -14,11 +14,13 @@
 //
 // The functions out of the plane — `rotateX()`, `translateZ()`,
 // `perspective()`, a `matrix3d()` with a depth — are kept as what they are
-// in space (`css/transform3d.ts`): a list with one in it is a 4×4 matrix,
-// whose translation across and down is still layout's, and the rest of it
-// is what the box's plane comes to seen in the `perspective` of the box it
-// is laid out in (`placedMatrix`) — a matrix of the plane, or a projection
-// that draws its far side smaller.
+// in space (`css/transform3d.ts`), and so are the three properties where
+// they leave it: `translate`'s depth, `scale`'s, and `rotate` about an axis
+// in the page. A style with one of them is a 4×4 matrix, whose translation
+// across and down is still layout's, and the rest of it is what the box's
+// plane comes to seen in the `perspective` of the box it is laid out in
+// (`placedMatrix`) — a matrix of the plane, or a projection that draws its
+// far side smaller.
 //
 // Each function keeps what it was as well as its matrix (`Primitive`): an
 // animation from `rotate(0)` to `rotate(360deg)` turns once, where the
@@ -81,6 +83,37 @@ export type Primitive =
   | { kind: 'rotate3d'; x: number; y: number; z: number; angle: number }
   | { kind: 'skew'; x: number; y: number }
   | { kind: 'perspective'; depth: number | null };
+
+/** A turn, as `rotate` is one (CSS Transforms 2, 5): in the plane of the
+ *  page, which `rotate()` is, or about an axis (x, y, z) in space, which
+ *  `rotate3d()` is (`turnAbout`). */
+export type Turn = Extract<Primitive, { kind: 'rotate' | 'rotate3d' }>;
+
+/** A turn by degrees about an axis: in the plane where the axis is the one
+ *  out of the page — the other way where it points into it — and in space
+ *  about any other. An axis of no length turns nothing (`rotate4`). */
+export function turnAbout(
+  x: number,
+  y: number,
+  z: number,
+  angle: number,
+): Turn {
+  if (x === 0 && y === 0 && z !== 0) {
+    return { kind: 'rotate', angle: z > 0 ? angle : -angle };
+  }
+  return { kind: 'rotate3d', x, y, z, angle };
+}
+
+/** Whether a turn takes the plane out of itself: about an axis with a part
+ *  in the page, by anything but whole turns, which come back to it — the
+ *  turns whose matrix `primitive` finds is no matrix of the plane. */
+function turnsOutOfPlane(turn: Turn): boolean {
+  return (
+    turn.kind === 'rotate3d' &&
+    (turn.x !== 0 || turn.y !== 0) &&
+    turn.angle % 360 !== 0
+  );
+}
 
 /** The matrix a primitive is in the plane: of one out of it, what it does
  *  across and down (`flatten4`). */
@@ -386,7 +419,10 @@ function functionOf(
       const axis = args.slice(0, 3).map(parseNumber);
       const angle = parseAngle(args[3]);
       if (angle === null || axis.some((n) => n === null)) return undefined;
-      return axisRotation(axis as number[], angle);
+      const [x, y, z] = axis as number[];
+      // still a function of the list where it turns nothing, which an
+      // animation interpolates function by function
+      return primitive(turnAbout(x, y, z, angle));
     }
     case 'skew': {
       const a = count >= 1 && count <= 2 ? angles() : null;
@@ -444,57 +480,56 @@ function functionOf(
   }
 }
 
-/** A turn about an axis: in the plane where the axis is the one out of the
- *  page — the other way where it points into it — and in space about any
- *  other. An axis of no length is no turn, and still a function of the
- *  list, which an animation interpolates function by function. */
-function axisRotation(axis: number[], angle: number): TransformFunction {
-  const [x, y, z] = axis;
-  if (x === 0 && y === 0 && z !== 0) {
-    return primitive({ kind: 'rotate', angle: z > 0 ? angle : -angle });
-  }
-  return primitive({ kind: 'rotate3d', x, y, z, angle });
+/** The axis `rotate` names by a letter, as `rotateX()`, `rotateY()` and
+ *  `rotateZ()` turn about it; null for anything else. */
+function namedAxis(name: string): number[] | null {
+  if (name === 'x') return [1, 0, 0];
+  if (name === 'y') return [0, 1, 0];
+  return name === 'z' ? [0, 0, 1] : null;
 }
 
 /**
- * `rotate` (CSS Transforms 2, 4): an angle in degrees, about the axis out of
- * the page where one is named. Null for `none`, and for a turn about any
- * other axis, which is out of the plane; undefined for what is no value of
- * it.
+ * `rotate` (CSS Transforms 2, 5): an angle in degrees, about the axis out of
+ * the page, or about the axis it names — a letter, or a vector, which need
+ * not be of length one — in space (`turnAbout`). Null for `none`; undefined
+ * for what is no value of it.
  */
-export function parseRotate(value: string): number | null | undefined {
+export function parseRotate(value: string): Turn | null | undefined {
   const parts = splitValue(value.trim().toLowerCase());
   if (parts.length === 1) {
     if (parts[0] === 'none') return null;
-    return parseAngle(parts[0], false) ?? undefined;
+    const angle = parseAngle(parts[0], false);
+    return angle === null ? undefined : { kind: 'rotate', angle };
   }
   // an axis and an angle, in either order; the axis a letter or a vector
   const at = parts.findIndex((p) => parseAngle(p, false) !== null);
   const angle = at < 0 ? null : parseAngle(parts[at], false);
   if (angle === null || (at !== 0 && at !== parts.length - 1)) return undefined;
   const axis = parts.filter((_, i) => i !== at);
-  if (axis.length === 1) {
-    if (axis[0] === 'z') return angle;
-    return axis[0] === 'x' || axis[0] === 'y' ? null : undefined;
-  }
-  const vector = axis.map(parseNumber);
-  if (vector.length !== 3 || vector.some((n) => n === null)) return undefined;
+  const vector =
+    axis.length === 1
+      ? namedAxis(axis[0])
+      : axis.length === 3
+        ? axis.map(parseNumber)
+        : null;
+  if (!vector || vector.some((n) => n === null)) return undefined;
   const [x, y, z] = vector as number[];
-  if (x !== 0 || y !== 0 || z === 0) return null;
-  return z > 0 ? angle : -angle;
+  return turnAbout(x, y, z, angle);
 }
 
-/** `scale` (CSS Transforms 2, 5): across and down, the one factor both
- *  where one is written, and a depth that is nothing here. Null for
- *  `none`. */
-export function parseScale(value: string): [number, number] | null | undefined {
+/** `scale` (CSS Transforms 2, 5): across, down and in depth, the one
+ *  factor across and down where one is written, and none in depth where
+ *  two are. Null for `none`. */
+export function parseScale(
+  value: string,
+): [number, number, number] | null | undefined {
   const parts = splitValue(value.trim());
   if (parts.length === 1 && parts[0].toLowerCase() === 'none') return null;
   if (parts.length < 1 || parts.length > 3) return undefined;
   const factors = parts.map(parseFactor);
   if (factors.some((f) => f === null)) return undefined;
-  const [x, y] = factors as number[];
-  return [x, y ?? x];
+  const [x, y, z] = factors as number[];
+  return [x, y ?? x, z ?? 1];
 }
 
 type Transformed = Pick<
@@ -517,13 +552,34 @@ export function transformed(style: Transformed): boolean {
   );
 }
 
+/** Whether a style's transform may do more to its box than move it across
+ *  and down — turn it, scale it, skew it, or move it toward the viewer —
+ *  which is what a box is painted through a matrix for (`placedMatrix`).
+ *  Its fields alone, since it is asked before every box that may be one
+ *  is painted: a list that only moves the box is one as well. */
+export function drawnThrough(style: Transformed): boolean {
+  return (
+    style.transform !== null ||
+    style.rotate !== null ||
+    style.scale !== null ||
+    (style.translate !== null && style.translate[2] !== 0)
+  );
+}
+
 const SOLID = new WeakMap<readonly TransformFunction[], boolean>();
 
-/** Whether a style's transform takes its box out of the plane: a function
- *  of its list that turns it about an axis in the page, moves it toward
- *  the viewer or puts it in a perspective of its own. Kept by the list,
- *  which every style with it shares. */
-export function outOfPlane(style: Pick<ComputedStyle, 'transform'>): boolean {
+/** Whether a style's transform takes its box out of the plane: `translate`
+ *  or `scale` with a depth, `rotate` about an axis in the page, or a
+ *  function of the list that does one of those or puts the box in a
+ *  perspective of its own. The list's answer kept by the list, which every
+ *  style with it shares. */
+export function outOfPlane(
+  style: Pick<ComputedStyle, 'translate' | 'rotate' | 'scale' | 'transform'>,
+): boolean {
+  const { translate, rotate, scale } = style;
+  if (translate !== null && translate[2] !== 0) return true;
+  if (scale !== null && scale[2] !== 1) return true;
+  if (rotate !== null && turnsOutOfPlane(rotate)) return true;
   const list = style.transform;
   if (!list) return false;
   let solid = SOLID.get(list);
@@ -536,8 +592,10 @@ export function outOfPlane(style: Pick<ComputedStyle, 'transform'>): boolean {
 
 /**
  * A style's whole transform in space, for a box `width` by `height`
- * (`matrixOf`), where it takes the box out of the plane; null where it
- * does not, and `matrixOf` is all of it.
+ * (`matrixOf`), where it takes the box out of the plane — `translate`,
+ * then `rotate`, then `scale`, then the list, each with what it does in
+ * depth (CSS Transforms 2, 6) — and null where it does not, and
+ * `matrixOf` is all of it.
  */
 export function matrix4Of(
   style: Transformed,
@@ -551,13 +609,17 @@ export function matrix4Of(
     m = translate4(
       resolve(moved[0], width, 0),
       resolve(moved[1], height, 0),
-      0,
+      moved[2],
     );
   }
-  if (style.rotate !== null) m = multiply4(m, lift(rotation(style.rotate)));
-  if (style.scale) m = multiply4(m, scale4(style.scale[0], style.scale[1], 1));
-  for (const fn of style.transform!)
-    m = multiply4(m, solidOf(fn, width, height));
+  if (style.rotate) m = multiply4(m, primitiveSolid(style.rotate));
+  const scale = style.scale;
+  if (scale) m = multiply4(m, scale4(scale[0], scale[1], scale[2]));
+  if (style.transform) {
+    for (const fn of style.transform) {
+      m = multiply4(m, solidOf(fn, width, height));
+    }
+  }
   return m;
 }
 
@@ -574,7 +636,7 @@ export function translation4(m: Mat4): [number, number] {
 /**
  * A style's whole transform, for a box `width` by `height`, which its
  * percentages are of: `translate`, then `rotate`, then `scale`, then the
- * `transform` list (CSS Transforms 2, 7) — without its origin, which is
+ * `transform` list (CSS Transforms 2, 6) — without its origin, which is
  * where the box is.
  */
 export function matrixOf(
@@ -593,7 +655,9 @@ export function matrixOf(
   if (moved) {
     m = [1, 0, 0, 1, resolve(moved[0], width, 0), resolve(moved[1], height, 0)];
   }
-  if (style.rotate !== null) m = multiply(m, rotation(style.rotate));
+  // in the plane, a turn is about the axis out of the page, or one in it by
+  // whole turns, and a scale has no depth
+  if (style.rotate !== null) m = multiply(m, primitiveMatrix(style.rotate));
   if (style.scale) {
     m = multiply(m, [style.scale[0], 0, 0, style.scale[1], 0, 0]);
   }
@@ -631,13 +695,7 @@ const LINEAR = new WeakMap<object, Linear | null>();
  * style.
  */
 export function linearOf(style: Transformed): Linear | null {
-  if (
-    style.transform === null &&
-    style.rotate === null &&
-    style.scale === null
-  ) {
-    return null;
-  }
+  if (!drawnThrough(style)) return null;
   let linear = LINEAR.get(style);
   if (linear === undefined) {
     const m = matrixOf(style, 0, 0);

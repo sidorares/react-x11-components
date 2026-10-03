@@ -1597,18 +1597,27 @@ blur scaled as it is, as a browser casts them as part of the box.
 
 Out of the plane: `rotateX()`, `rotateY()`, `rotate3d()`, `translateZ()`,
 `translate3d()`, `scaleZ()`, `scale3d()`, `perspective()` and `matrix3d()`
-are what they are in space, about `transform-origin` and its depth, and a
-box is seen in the `perspective` of the nearest box with one up its
-containing blocks — through positioned boxes, and not past a box with a
-transform of its own, which flattens what it holds into its plane — from
-that box's `perspective-origin`, as Chrome sees it. So a panel turned about
+are what they are in space, and so are the three properties where they
+leave the plane — `translate`'s third length, a depth toward the viewer,
+`scale`'s third factor, and `rotate` about `x`, `y` or an axis of three
+numbers, so `rotate: y 40deg` turns a box as `rotateY(40deg)` does. All of
+them are about `transform-origin` and its depth, and the properties come
+before the list, `translate`, then `rotate`, then `scale`, as CSS
+Transforms 2 puts them together: `scale: 1 1 2` deepens what a
+`rotateY()` in the list turns out of the plane, and is nothing to the flat
+box that `rotate` turns after it. A box is seen in the `perspective` of the
+nearest box with one up its containing blocks — through positioned boxes,
+and not past a box with a transform of its own, which flattens what it
+holds into its plane — from that box's `perspective-origin`, as Chrome
+sees it. So a panel turned about
 its upright in a perspective is drawn as a trapezoid, its far side smaller,
 where the pointer finds it and `elementRect` measures it: the Zen Garden's
 219 tilts its sidebar's panel `rotateY(40deg)` in a `perspective: 1000px`,
 and `elementRect` answers what `getBoundingClientRect` does in Chrome. A
-box moved toward the viewer is drawn larger about the perspective origin;
-with no perspective a turn out of the plane squashes it; and what is behind
-the viewer is not drawn. No context draws through a perspective — a 2d
+box moved toward the viewer — `translate: 0 0 100px` as much as
+`translateZ(100px)` — is drawn larger about the perspective origin; with
+no perspective a turn out of the plane squashes it; and what is behind the
+viewer is not drawn. No context draws through a perspective — a 2d
 context's matrix is one of the plane — so such a box is painted on a
 surface as it was laid out, and the surface drawn a tile of the window's
 pixels at a time, each through the matrix nearest the perspective over it:
@@ -1641,7 +1650,14 @@ other mix — a colour, in premultiplied sRGB, a `visibility`, visible all
 the way between a visible end and another, and `transform` lists, function
 by function where their functions are alike, so `rotate(0)` to
 `rotate(360deg)` turns once, and as matrices taken apart into a
-translation, a turn, a scale and a skew where they are not. What none of
+translation, a turn, a scale and a skew where they are not. `translate`
+and `scale` go by their values, a depth with them, and `rotate` by its
+angle about the axis its two ends share, as a `rotate3d()` goes; `none`
+at either end is a move by nothing, a scale by one, or a turn of none
+about the other end's axis. Two turns about axes of their own go as their
+matrices do, taken apart, the turn as a quaternion — halfway from
+`rotate: x 90deg` to `rotate: y 90deg` is a turn about the axis between
+them — and what that comes to is a turn still. What none of
 that reads goes over half-way, as CSS has a discrete value go; so does a
 shorthand any of whose longhands does, a custom property and a logical
 one. A frame's `animation-timing-function` eases to the next frame, and
@@ -1754,7 +1770,10 @@ compositor:
 - it is a box of its own — an element's, or its `::before`'s or
   `::after`'s, as a spinner drawn by one is, but not an inline split
   across lines — and is not masked, cut by a `clip-path` or drawn against
-  the viewport, and holds nothing fixed to it unless it is fixed itself;
+  the viewport, and holds nothing fixed to it unless it is fixed itself.
+  Nor is it out of the plane at any frame — by its list, `translate`'s or
+  `scale`'s depth, or `rotate` about an axis in the page — since a layer's
+  matrix is one of the plane;
 - nothing it is inside fades, turns, masks, is cut by a `clip-path`, or
   runs an animation of its own — but for an element that goes on a layer
   itself: an element animating inside it goes on a layer inside that

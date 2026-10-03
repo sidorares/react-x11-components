@@ -613,6 +613,22 @@ function slerp(
   return out;
 }
 
+/**
+ * The turn a 4×4 that does nothing else is: its axis, of length one, and
+ * its angle in degrees, as "Decomposing a 3D matrix" finds its quaternion
+ * — so no more than a half turn, about the axis the other way for one the
+ * other way round. Null where it cannot be taken apart.
+ */
+export function axisAngleOf(m: Mat4): [number, number, number, number] | null {
+  const d = decompose3(m);
+  if (!d) return null;
+  const [x, y, z, w] = d.quaternion;
+  const length = Math.hypot(x, y, z);
+  if (!(length > 0)) return [0, 0, 1, 0];
+  const angle = (2 * Math.atan2(length, w) * 180) / Math.PI;
+  return [x / length, y / length, z / length, angle];
+}
+
 /** Two 4×4 matrices `q` of the way between (CSS Transforms 2, 11.2): their
  *  parts interpolated, the turn as quaternions; one that cannot be taken
  *  apart is the nearer end. */

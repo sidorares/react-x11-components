@@ -39,6 +39,7 @@ import {
 } from '../css/style.js';
 import {
   about,
+  drawnThrough,
   linearOf,
   matrix4Of,
   matrixOf,
@@ -4883,21 +4884,16 @@ function translationOf(box: Box, style = box.style): [number, number] {
  * The matrix a box is painted through, in the document's coordinates: what
  * its transform does besides move it — a turn, a scale, a skew — about its
  * `transform-origin`, where layout has put it (`applyRelativeOffsets`). Null
- * for a box that only moves, which is every box but a few, and for an
- * inline box, which no transform applies to (CSS Transforms 1, 2: a
- * transformable element is no inline box). A transform out of the plane
- * comes to what the box's plane does through it, seen in its containing
- * block's `perspective` (`projectedMatrix`).
+ * for a box that only moves across and down, which is every box but a
+ * few, and for an inline box, which no transform applies to (CSS
+ * Transforms 1, 2: a transformable element is no inline box). A transform
+ * out of the plane — a move toward the viewer among it — comes to what the
+ * box's plane does through it, seen in its containing block's
+ * `perspective` (`projectedMatrix`).
  */
 export function placedMatrix(box: Box): Placed | null {
   const style = box.style;
-  if (
-    style.transform === null &&
-    style.rotate === null &&
-    style.scale === null
-  ) {
-    return null;
-  }
+  if (!drawnThrough(style)) return null;
   if (box.kind === 'inline' || box.kind === 'text' || box.kind === 'break') {
     return null;
   }

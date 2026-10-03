@@ -22,7 +22,12 @@ import {
   interpolateField,
   interpolateTransforms,
 } from '../../src/html/css/interpolate.js';
-import { parseTransform } from '../../src/html/css/transform.js';
+import {
+  parseRotate,
+  parseTransform,
+  primitiveSolid,
+} from '../../src/html/css/transform.js';
+import type { Turn } from '../../src/html/css/transform.js';
 import {
   interpolateMatrix4,
   multiply4,
@@ -519,6 +524,35 @@ test('a turn is interpolated by its angle, a whole one included', async (t) => {
   assert.strictEqual(doc.clock.pending, true);
 });
 
+test('translate, rotate and scale run out of the plane: a depth by its value, and a turn about one axis to one about another through the turn between them', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes tilt { from { rotate: x 90deg } to { rotate: y 90deg } }' +
+      '@keyframes rise { to { translate: 0 0 100px; scale: 1 1 3 } }' +
+      '#a { animation: tilt 256ms linear; width: 10px; height: 10px }' +
+      '#b { animation: rise 256ms linear; width: 10px; height: 10px }' +
+      '</style><div id="a"></div><div id="b"></div>',
+  );
+  const tree = treeOf(doc.el);
+  await doc.at(128);
+  // halfway from a quarter about one axis to a quarter about the other: a
+  // turn about the axis between them
+  const tilt = doc.style('a').rotate!;
+  const angle = (2 * Math.acos(Math.sqrt(2 / 3)) * 180) / Math.PI;
+  assert.ok(
+    tilt.kind === 'rotate3d' &&
+      near(tilt.x, Math.SQRT1_2, 1e-9) &&
+      near(tilt.y, Math.SQRT1_2, 1e-9) &&
+      near(tilt.z, 0, 1e-9) &&
+      near(tilt.angle, angle, 1e-9),
+    JSON.stringify(tilt),
+  );
+  // from `none`, which is nothing in depth as well
+  assert.deepStrictEqual(doc.style('b').translate, [0, 0, 50]);
+  assert.deepStrictEqual(doc.style('b').scale, [1, 1, 2]);
+  assert.ok(treeOf(doc.el) === tree, 'the document was built again');
+});
+
 test('colours, lengths of two kinds, visibility, and a value that goes over half-way', async (t) => {
   const doc = await running(
     t,
@@ -774,6 +808,41 @@ metric(
     assert.ok(
       frames[1].some((v, i) => v !== frames[2][i]),
       'it faded',
+    );
+  },
+);
+
+metric(
+  'a frame that takes a box out of the plane by translate, rotate or scale restyles it in place, to the pixels a build draws',
+  async (t) => {
+    // the first two start flat, at `none`, and leave the plane at their
+    // first frame; the third deepens a box a turn has already taken out of
+    // it. Each is drawn through a projection, and reaches where that puts it
+    const doc = await running(
+      t,
+      '<style>body { margin: 0 }' +
+        '.s { position: relative; width: 300px; height: 120px;' +
+        ' perspective: 300px }' +
+        '.w { position: absolute; left: 50px; top: 20px; width: 200px;' +
+        ' height: 80px; background: #aa0000 }' +
+        '@keyframes tilt { to { rotate: y 60deg } }' +
+        '@keyframes rise { to { translate: 0 0 100px } }' +
+        '@keyframes deepen { to { scale: 1 1 3 } }' +
+        '#a { animation: tilt 160ms linear }' +
+        '#b { animation: rise 160ms linear }' +
+        '#c { animation: deepen 160ms linear; transform: rotateY(40deg) }' +
+        '</style><div class="s"><div class="w" id="a"></div></div>' +
+        '<div class="s"><div class="w" id="b"></div></div>' +
+        '<div class="s"><div class="w" id="c"></div></div>',
+      300,
+    );
+    const tree = treeOf(doc.el);
+    await doc.at(32);
+    assert.ok(treeOf(doc.el) === tree, 'the document was built again');
+    const { frames } = await framesAgainstBuilds(doc, [48, 96, 144]);
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[2][i]),
+      'they moved',
     );
   },
 );
@@ -1422,6 +1491,32 @@ test('a turn out of the plane is not offered, which a layer cannot carry, and a 
   await doc.at(32);
   // the turning box, and not the flip, which turns it out of the plane, nor
   // the fade of a box turned out of it
+  const sprites = doc.el.sprites()!;
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  assert.deepStrictEqual(
+    sprites.map((p) => p.rect.y - abs.y),
+    [boxOf(doc.el, 's').y],
+  );
+});
+
+test('nor is translate, rotate or scale out of the plane, nor a fade of a box one of them takes out of it; and rotate in the plane is', async (t) => {
+  const doc = await running(
+    t,
+    '<style>@keyframes tilt { to { rotate: y 180deg } }' +
+      '@keyframes rise { to { translate: 0 0 50px } }' +
+      '@keyframes deepen { to { scale: 1 1 3 } }' +
+      '@keyframes fade { from { opacity: .2 } }' +
+      '@keyframes spin { to { rotate: 360deg } }' +
+      'div { width: 10px; height: 10px; background: red }' +
+      '#r { animation: tilt 256ms linear infinite }' +
+      '#z { animation: rise 256ms linear infinite }' +
+      '#d { animation: deepen 256ms linear infinite }' +
+      '#f { animation: fade 256ms linear infinite; translate: 0 0 10px }' +
+      '#s { animation: spin 256ms linear infinite }</style>' +
+      '<div id="r"></div><div id="z"></div><div id="d"></div>' +
+      '<div id="f"></div><div id="s"></div>',
+  );
+  await doc.at(32);
   const sprites = doc.el.sprites()!;
   const abs = (doc.el as unknown as DrawnNode).abs;
   assert.deepStrictEqual(
@@ -2367,6 +2462,106 @@ test('two transform lists between, out of the plane', () => {
       0.5,
     ),
     [{ by: [5, 0], z: 50 }],
+  );
+});
+
+test('translate, rotate and scale between, out of the plane', () => {
+  const close = (a: readonly number[], b: readonly number[]) =>
+    a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
+  const turn = (value: string) => parseRotate(value)!;
+  const between = (a: Turn | null, b: Turn | null, q: number) =>
+    interpolateField('rotate', a, b, q) as Turn;
+  // a move and a scale by their values, a depth with them, and `none` the
+  // other's at nothing
+  assert.deepStrictEqual(
+    interpolateField('translate', [0, { pct: 50 }, 0], [10, 0, 100], 0.5),
+    [5, { pct: 25 }, 50],
+  );
+  assert.deepStrictEqual(
+    interpolateField('translate', null, [0, 0, 100], 0.25),
+    [0, 0, 25],
+  );
+  assert.deepStrictEqual(
+    interpolateField('scale', [2, 2, 1], [1, 1, 3], 0.5),
+    [1.5, 1.5, 2],
+  );
+  assert.deepStrictEqual(
+    interpolateField('scale', null, [1, 1, 3], 0.5),
+    [1, 1, 2],
+  );
+  // about one axis by the angle: a whole turn in the plane, and in space
+  // about axes of any length that point one way
+  assert.deepStrictEqual(between(null, turn('360deg'), 0.25), {
+    kind: 'rotate',
+    angle: 90,
+  });
+  assert.deepStrictEqual(between(turn('y 40deg'), turn('0 2 0 80deg'), 0.5), {
+    kind: 'rotate3d',
+    x: 0,
+    y: 1,
+    z: 0,
+    angle: 60,
+  });
+  // a turn of none is about the other's axis, `none` among them
+  assert.deepStrictEqual(between(null, turn('x 90deg'), 0.5), {
+    kind: 'rotate3d',
+    x: 1,
+    y: 0,
+    z: 0,
+    angle: 45,
+  });
+  assert.deepStrictEqual(between(turn('45deg'), turn('y 0deg'), 0.5), {
+    kind: 'rotate',
+    angle: 22.5,
+  });
+  // two about axes of their own as their matrices, taken apart and put
+  // together again, which is a turn: halfway from a quarter about one to a
+  // quarter about the other is a turn about the axis between them, as
+  // rotateX() to rotateY() is
+  const both = between(turn('x 90deg'), turn('y 90deg'), 0.5);
+  const angle = (2 * Math.acos(Math.sqrt(2 / 3)) * 180) / Math.PI;
+  assert.ok(
+    both.kind === 'rotate3d' &&
+      close(
+        [both.x, both.y, both.z, both.angle],
+        [Math.SQRT1_2, Math.SQRT1_2, 0, angle],
+      ),
+    JSON.stringify(both),
+  );
+  assert.ok(
+    close(
+      primitiveSolid(both),
+      interpolateMatrix4(rotate4(1, 0, 0, 90), rotate4(0, 1, 0, 90), 0.5),
+    ),
+  );
+  // and a turn in the plane to one out of it, where Chrome, Firefox and
+  // WebKit all come to 36.1357deg about (0, 0.3235, 0.9462)
+  const tilt = between(turn('45deg'), turn('y 45deg'), 0.25);
+  assert.ok(
+    close(
+      primitiveSolid(tilt),
+      interpolateMatrix4(rotate4(0, 0, 1, 45), rotate4(0, 1, 0, 45), 0.25),
+    ),
+    JSON.stringify(tilt),
+  );
+  assert.ok(
+    tilt.kind === 'rotate3d' &&
+      [tilt.x, tilt.y, tilt.z, tilt.angle].every(
+        (v, i) => Math.abs(v - [0, 0.323459, 0.946242, 36.135673][i]) < 1e-6,
+      ),
+    JSON.stringify(tilt),
+  );
+  // a turn past a half is the matrix's, the shorter one the other way, as
+  // Chrome and WebKit have it; Firefox slerps the turn as written, and is
+  // half a turn about (1, 1, 0) here
+  const past = between(turn('x 270deg'), turn('y 90deg'), 0.5);
+  assert.ok(
+    past.kind === 'rotate3d' &&
+      close(
+        [past.x, past.y, past.z, past.angle],
+        [-Math.SQRT1_2, Math.SQRT1_2, 0, angle],
+      ),
+    JSON.stringify(past),
   );
 });
 

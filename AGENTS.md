@@ -1801,8 +1801,13 @@ left of itself on macOS, where every box is drawn through its matrix.
 painted on a surface as it was laid out (`onSurface`) has none.
 
 **Out of the plane, `placedMatrix` is a projection, and no context draws
-through one.** A list with a function out of the plane is a 4×4
-(`css/transform3d.ts`); layout still takes its translation across and down
+through one.** A style out of the plane — by a function of its list,
+`translate`'s or `scale`'s depth, or `rotate` about an axis in the page —
+is a 4×4 (`css/transform3d.ts`). **Ask `outOfPlane`, and `drawnThrough`
+for whether a box is painted through a matrix at all, never the fields**:
+`translate: 0 0 100px` leaves `transform`, `rotate` and `scale` all
+`null`, which three tests of just those took for a box that only moves.
+Layout still takes its translation across and down
 (`translation4`), and what is left is seen in the `perspective` of the
 nearest box with one up the containing blocks (`perspectiveFor` — through a
 positioned box, as Blink hangs a transform under the nearest perspective,
