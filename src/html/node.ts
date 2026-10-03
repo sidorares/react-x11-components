@@ -45,7 +45,7 @@ import type {
 } from 'react-x11/node';
 import type { MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import type { Style } from 'react-x11/style';
-import type { Element } from 'domhandler';
+import type { ChildNode, Element } from 'domhandler';
 
 import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
 import {
@@ -56,6 +56,7 @@ import {
   HtmlSource,
   imageUrlOf,
   isElement,
+  isText,
   tagOf,
 } from './dom.js';
 import type { Document, ShadowRoot, SheetRef } from './dom.js';
@@ -510,14 +511,18 @@ export class HtmlViewNode extends Node {
       this._props().onResource?.(request) ?? null;
     this._resources = new ResourceStore(
       ask,
-      (what) => {
+      (what, layout) => {
         // A late stylesheet is a new cascade: its rules, what it imports,
         // the faces it declares. A late image changes intrinsic sizes, so
-        // the box tree is what has to be rebuilt — not merely repainted.
-        // Either arriving after first paint is the ordinary case, not an
-        // error path: a host on a network answers every request that way.
-        // A video's source changes no box: a player goes over one.
+        // the box tree is what has to be rebuilt — not merely repainted —
+        // where anything its size lays out asked for it; one only a
+        // background, a border image or a mask paints changes no box, and
+        // is painted (`_imagePainted`). Either arriving after first paint
+        // is the ordinary case, not an error path: a host on a network
+        // answers every request that way. A video's source changes no box:
+        // a player goes over one.
         if (what === 'video') this._reportMedia();
+        else if (what === 'image' && !layout) this._imagePainted();
         else
           this._invalidate(what === 'stylesheet' ? Stale.Style : Stale.Boxes);
       },
@@ -728,27 +733,31 @@ export class HtmlViewNode extends Node {
       const element = box.el ?? GENERATED_FROM.get(box);
       if (!element) continue;
       // each layer's, where there is more than one
+      // only painted, each of them: no box's size waits on one
       for (const image of box.style.backgroundImages ?? [
         box.style.backgroundImage,
       ]) {
         const url = urlOf(image);
         if (url !== null) {
-          this._resources.request({ url, kind: 'image', element });
+          this._resources.request({ url, kind: 'image', element }, true);
         }
       }
       const border = urlOf(box.style.borderImage.source);
       if (border !== null) {
-        this._resources.request({
-          url: border,
-          kind: 'image',
-          element,
-        });
+        this._resources.request(
+          {
+            url: border,
+            kind: 'image',
+            element,
+          },
+          true,
+        );
       }
       // and each mask layer's, which is an image as a background's is
       for (const image of box.style.mask.images) {
         const url = urlOf(image);
         if (url !== null) {
-          this._resources.request({ url, kind: 'image', element });
+          this._resources.request({ url, kind: 'image', element }, true);
         }
       }
     }
@@ -757,6 +766,24 @@ export class HtmlViewNode extends Node {
     for (const { url, element } of tree.contentImages) {
       this._resources.request({ url, kind: 'image', element });
     }
+  }
+
+  /**
+   * An image arrived that only paints — a background, a border image, a
+   * mask: no box is any other size for it, so the element is painted again
+   * rather than built and laid out again, which each image a page decorates
+   * its boxes with cost it, an arrival at a time over a network. What holds
+   * a drawing made without it goes: the surfaces kept for boxes, and the
+   * layers lifted from them, made again in a frame asked for, since a
+   * lifted box's hole claims no damage.
+   */
+  private _imagePainted(): void {
+    this._sprites?.clear();
+    if (this._lifted.size) {
+      this._spriteGen += 1;
+      this.spritesChanged();
+    }
+    this.invalidate(false, this, 'image');
   }
 
   /** Whether an image generated content names arrived as it was asked for,
@@ -1355,6 +1382,9 @@ export class HtmlViewNode extends Node {
       restyleOnly = null;
     }
 
+    // a first rendering waits for the stylesheets the head links to
+    if (!this._tree && this._renderBlocked()) return;
+
     const cascade = this._cascade;
     if (!cascade) return;
     cascade.viewportWidth = target;
@@ -1517,6 +1547,32 @@ export class HtmlViewNode extends Node {
       this.invalidateMeasure('content');
     }
     this._scheduleFrame();
+  }
+
+  /**
+   * Whether the document's first rendering waits on a stylesheet: one its
+   * head links to, under no media query that could leave it out, or one a
+   * sheet imports, still on its way. A browser holds a page's first paint
+   * until they are in (HTML, "render-blocking"). Built before then, the
+   * document was built, laid out and painted in the user agent's styles —
+   * its text set in fonts it never asked for — and built again as each one
+   * arrived: the flash of unstyled content, and the first frame's work
+   * twice. A sheet the host declined, or failed to fetch, holds nothing,
+   * and once something is drawn a sheet arriving restyles it as before.
+   */
+  private _renderBlocked(): boolean {
+    for (const ref of this._source.facts().sheets) {
+      if (ref.kind !== 'link' || ref.media !== null) continue;
+      if (inBody(ref.element)) continue;
+      if (this._resources.state(ref.href) === 'pending') return true;
+    }
+    for (const imports of this._sheetsRead?.imports ?? []) {
+      for (const read of imports) {
+        if (read.text !== null) continue;
+        if (this._resources.state(read.url) === 'pending') return true;
+      }
+    }
+    return false;
   }
 
   /** Whether the document as laid out reads its viewport's height. */
@@ -3816,6 +3872,45 @@ interface SheetsRead {
   shadows: ReadonlyMap<string, ImportRead[][]>;
   faces: DeclaredFace[];
   cascade: Cascade;
+}
+
+/** What the parser keeps in a head: anything else, or text, starts the
+ *  body (HTML, "in head" insertion mode). */
+const HEAD_CONTENT = new Set([
+  'html',
+  'head',
+  'title',
+  'meta',
+  'link',
+  'style',
+  'script',
+  'base',
+  'noscript',
+  'template',
+]);
+
+/**
+ * Whether an element is in the document's `<body>`, where a stylesheet
+ * linked to holds no rendering (`_renderBlocked`): inside one written, or,
+ * where none is, after the first thing no head holds, where the parser
+ * starts one — a fragment's `<link>` after its first paragraph.
+ */
+function inBody(element: Element): boolean {
+  for (let at = element.parent; at; at = at.parent) {
+    if (isElement(at) && tagOf(at) === 'body') return true;
+  }
+  for (let at: ChildNode | null = element; at; at = at.parent as ChildNode) {
+    for (let prev = at.prev; prev; prev = prev.prev) {
+      if (
+        isElement(prev)
+          ? !HEAD_CONTENT.has(tagOf(prev))
+          : isText(prev) && /\S/.test(prev.data)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /** The first box an element made, depth first. */

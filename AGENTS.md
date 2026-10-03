@@ -1374,6 +1374,18 @@ component that silently made requests would turn "render this HTML" into
 error. **Do not add a convenience default that fetches**; the absence is the
 feature.
 
+**What arrives late is answered by what it changes.** A stylesheet the head
+links to, or one it imports, holds the first rendering until it is in
+(`_renderBlocked`), as a browser holds a page: built before then, the
+document was built, laid out and painted unstyled and built again for
+each sheet. An image only a background, a border image or a mask paints
+is painted where it lands (`_imagePainted`), the store having been told
+so where it was asked for (`request`'s `paintOnly`); one whose size lays
+something out still builds the boxes. Over a network, the Zen Garden's
+designs took eleven builds a page before these and take one.
+`htmlsweep.mjs`'s `LATENCY` is how that is measured: answered at once,
+arrivals coalesce into a frame and none of it shows.
+
 **An image's source is chosen where the viewport is known, and stays
 chosen.** An `<img srcset>`, or an `<img>` in a `<picture>`, is chosen in
 `_update`, for the width the boxes are about to be built at

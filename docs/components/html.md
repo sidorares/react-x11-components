@@ -107,9 +107,28 @@ Return `{ kind: 'image', image, width, height }` instead to hand over an
 image the host decoded itself. A declined or absent resource is an ordinary state:
 images draw as a frame at their attribute size, an `<object>` shows its
 fallback content, linked stylesheets are skipped and text is set in the
-fonts the system has. A resource may arrive whenever it arrives: a
-stylesheet that comes after the first paint restyles the document, and an
-image rebuilds its boxes.
+fonts the system has. A resource may arrive whenever it arrives, with two
+things to know about when:
+
+- **A stylesheet the head links to holds the first rendering until it is
+  in**, as a browser holds a page's first paint (HTML, "render-blocking"),
+  and so do the sheets it imports: the element draws nothing — and
+  measures nothing — until each one has arrived or been declined, and then
+  draws the document styled. Built before then, it was built, laid out and
+  painted in the user agent's styles and built again as each sheet landed:
+  a flash of unstyled content over a network, and the first frame's work
+  twice. A sheet linked to from the body (where the parser has started one
+  — after a fragment's first paragraph), one under a `media` that could
+  leave it out, and one arriving after something is drawn hold nothing: a
+  late sheet restyles the document. A host that never answers a head sheet
+  leaves the document undrawn, as a browser that never hears back does; a
+  host that cannot fetch one returns `null`.
+- **An image changes the boxes only where its size lays something out**: an
+  `<img>` and the like, a list's marker, generated content. Arriving, such
+  an image builds the boxes again. One only painted — a background, a
+  border image, a mask — is painted where it lands, and the boxes stay as
+  they are: a page's backgrounds arriving one at a time over a network had
+  each built and laid out the whole document again.
 
 `@import` is asked for through the same seam, an import inside an import
 too, each sheet's rules standing where its `@import` does; a sheet that

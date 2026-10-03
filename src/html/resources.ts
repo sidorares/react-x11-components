@@ -96,6 +96,10 @@ interface Entry {
   /** An ntk `Image`, or an `SvgDrawing`. */
   image?: unknown;
   size?: IntrinsicSize;
+  /** Whether something its size lays out asked for the image — an `<img>`,
+   *  a list's marker, generated content — where a background, a border
+   *  image or a mask only paints it (`request`'s `paintOnly`). */
+  layout?: boolean;
 }
 
 /** The ntk `Image` slice this uses. Structural, as everywhere else here. */
@@ -115,7 +119,10 @@ export class ResourceStore {
   private _ask: (
     request: ResourceRequest,
   ) => Promise<ResourceResult | null> | ResourceResult | null;
-  private _changed: (what: 'stylesheet' | 'image' | 'video') => void;
+  private _changed: (
+    what: 'stylesheet' | 'image' | 'video',
+    layout: boolean,
+  ) => void;
   private _urls: UrlResolver | null;
   private _destroyed = false;
   /** What each video URL plays, kept apart from the other resources: a
@@ -125,14 +132,15 @@ export class ResourceStore {
   /**
    * `changed` is told when a resource arrives after the request that asked
    * for it returned, and which kind: a stylesheet changes the cascade, an
-   * image the boxes and a video what is mounted over them, and a host
-   * answering over a network answers every one of them later.
+   * image the boxes — or, where nothing its size lays out asked for it
+   * (`layout`), only what is painted — and a video what is mounted over
+   * them; a host answering over a network answers every one of them later.
    */
   constructor(
     ask: (
       request: ResourceRequest,
     ) => Promise<ResourceResult | null> | ResourceResult | null,
-    changed: (what: 'stylesheet' | 'image' | 'video') => void,
+    changed: (what: 'stylesheet' | 'image' | 'video', layout: boolean) => void,
     urls: UrlResolver | null = null,
   ) {
     this._ask = ask;
@@ -145,12 +153,18 @@ export class ResourceStore {
     return this._urls ? this._urls.resolve(url) : url;
   }
 
-  /** Ask for a resource, once per URL. */
-  request(request: ResourceRequest): void {
+  /** Ask for a resource, once per URL: for what only paints it where
+   *  `paintOnly` — a background, a border image, a mask — and its arrival
+   *  changes no box. Asked for again by what lays it out, it does. */
+  request(request: ResourceRequest, paintOnly = false): void {
     if (this._destroyed || !request.url) return;
     const url = this._key(request.url);
-    if (this._entries.has(url)) return;
-    const entry: Entry = { state: 'pending' };
+    const known = this._entries.get(url);
+    if (known) {
+      if (!paintOnly) known.layout = true;
+      return;
+    }
+    const entry: Entry = { state: 'pending', layout: !paintOnly };
     this._entries.set(url, entry);
     let answer: Promise<ResourceResult | null> | ResourceResult | null;
     try {
@@ -197,14 +211,14 @@ export class ResourceStore {
         entry.text = result.text;
       }
       entry.state = 'ready';
-      if (!synchronous) this._changed('stylesheet');
+      if (!synchronous) this._changed('stylesheet', true);
       return;
     }
     if ('image' in result) {
       entry.image = result.image;
       entry.size = rasterSize(result.width, result.height);
       entry.state = 'ready';
-      if (!synchronous) this._changed('image');
+      if (!synchronous) this._changed('image', entry.layout !== false);
       return;
     }
     const svg = svgFromBytes(result.bytes, fragmentOf(url));
@@ -212,7 +226,7 @@ export class ResourceStore {
       entry.image = svg;
       entry.size = svg.intrinsics;
       entry.state = 'ready';
-      if (!synchronous) this._changed('image');
+      if (!synchronous) this._changed('image', entry.layout !== false);
       return;
     }
     const decoded = decodeImage(result.bytes);
@@ -223,7 +237,7 @@ export class ResourceStore {
           entry.image = image;
           entry.size = rasterSize(image.width, image.height);
           entry.state = 'ready';
-          this._changed('image');
+          this._changed('image', entry.layout !== false);
         },
         () => {
           entry.state = 'failed';
@@ -238,7 +252,7 @@ export class ResourceStore {
     entry.image = decoded;
     entry.size = rasterSize(decoded.width, decoded.height);
     entry.state = 'ready';
-    if (!synchronous) this._changed('image');
+    if (!synchronous) this._changed('image', entry.layout !== false);
   }
 
   /** A loaded stylesheet, as text, or null while it has not arrived.
@@ -313,7 +327,7 @@ export class ResourceStore {
     const settle = (result: ResourceResult | null, late: boolean) => {
       if (this._destroyed || this._videos.get(key) !== 'pending') return;
       this._videos.set(key, playable(result) ? result : 'failed');
-      if (late) this._changed('video');
+      if (late) this._changed('video', false);
     };
     let answer: Promise<ResourceResult | null> | ResourceResult | null;
     try {

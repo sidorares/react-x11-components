@@ -271,9 +271,11 @@ test('a stylesheet that arrives later starts no transition: the change it makes 
       'box',
       { style: { width: 300, flexDirection: 'column' } },
       h(Html, {
+        // linked to after the text, in the body, where a sheet holds no
+        // rendering: the document is drawn before it arrives
         source:
           '<style>p { color: #000000; transition: color 1s linear }</style>' +
-          '<link rel="stylesheet" href="a.css"><p id="p">text</p>',
+          '<p id="p">text</p><link rel="stylesheet" href="a.css">',
         partial: false,
         onResource: (r: { kind: string }) =>
           r.kind === 'stylesheet' ? late : null,
