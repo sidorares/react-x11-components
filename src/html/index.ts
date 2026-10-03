@@ -515,6 +515,19 @@ export function Html(props: HtmlProps): ReactElement {
         links.onMouseDown(ev);
         forms.onMouseDown(ev);
         stops.onMouseDown(ev);
+        // a press on what `user-select: none` keeps out of a selection
+        // starts none, and leaves the one there is: turned down here, it
+        // never reaches the surface's press, nor its drag
+        const view = viewNode.current;
+        if (
+          selectable &&
+          view &&
+          ev.target === view &&
+          ev.button === 1 &&
+          !view.startsSelectionAt(ev.x, ev.y)
+        ) {
+          ev.preventDefault();
+        }
       },
       onKeyDown: stops.onKeyDown,
       onMouseUp: (ev: X11MouseEvent<DrawnNode>) => {

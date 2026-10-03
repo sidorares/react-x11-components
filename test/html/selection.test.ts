@@ -1,7 +1,15 @@
 // <Html> — selection, the caret and the text accessors.
 import { afterEach } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup, fireEvent, renderX11, screen } from 'react-x11/test';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  isNear,
+  pixelAt,
+  renderX11,
+  screen,
+} from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
@@ -10,6 +18,7 @@ import type { ShapedLayout } from '../cocoa-shaped.js';
 import {
   FONTS,
   boxOf,
+  drawnText,
   h,
   linesOf,
   metric,
@@ -108,14 +117,15 @@ metric('a point maps back to the character under it', async () => {
 // in every browser: Zen Garden 220 draws its preamble over a fixed
 // `::before` of "Est. 2003" in letters 500px tall, and a press on a
 // paragraph selected from the word behind it.
+// An element here, where 220's is generated, whose text no selection takes.
 const behind = (extra = '') =>
   '<style>body{margin:0}' +
   '#banner{position:relative;height:20px}' +
-  '#banner::before{content:"BIG";position:absolute;top:0;left:0;' +
+  '#big{position:absolute;top:0;left:0;' +
   'font-size:200px;line-height:1;color:rgba(0,0,0,.15)}' +
   '#article{position:relative}p{margin:0 0 20px}' +
   extra +
-  '</style><div id="banner"></div><div id="article">' +
+  '</style><div id="banner"><div id="big">BIG</div></div><div id="article">' +
   '<p id="a">first paragraph words</p>' +
   '<p id="b">second paragraph words</p></div>';
 
@@ -156,7 +166,7 @@ metric(
 
 metric('the word drawn on top takes the press where it is on top', async () => {
   // the order is the paint order, not a preference for the later box
-  const { node } = await render(behind('#banner::before{z-index:1}'));
+  const { node } = await render(behind('#big{z-index:1}'));
   const el = view(node);
   assert.ok(pressOn(el, 'second') <= 3, 'in "BIG", over the paragraph');
 });
@@ -201,7 +211,7 @@ metric(
         },
         h(Html, {
           source: behind(
-            '#banner::before{position:fixed}#article{margin-top:300px}' +
+            '#big{position:fixed}#article{margin-top:300px}' +
               '#tall{height:1000px}',
           ).replace('</p></div>', '</p><div id="tall"></div></div>'),
           partial: false,
@@ -227,6 +237,203 @@ metric(
     );
     const at = el.textIndexAt(caret.x + 1, caret.y + caret.height / 2);
     assert.ok(Math.abs(at - (first + 2)) <= 1, `in "first": ${at}`);
+    // and the word's caret and bands are where the pane draws it, too
+    const big = el.textCaretRect(1)!;
+    assert.ok(
+      Math.abs(big.y - pane.abs.y) < 1,
+      `the caret at the viewport's top: ${big.y - pane.abs.y}`,
+    );
+    // over the glyphs, which reach past a line at `line-height: 1`
+    const [band] = el.textRangeRects(0, 3);
+    assert.ok(
+      band.y <= big.y && big.y - band.y < 20,
+      `the band there with it: ${band.y - pane.abs.y}`,
+    );
+  },
+);
+
+// What `user-select: none` keeps out of a selection — and what `auto` is on
+// a `::before` or an `::after`, whose text no browser selects or copies
+// (CSS UI 4, 6.1) — is no part of the text the selection is made of.
+
+metric(
+  'a selection takes no generated text, and none that user-select: none keeps out',
+  async () => {
+    const { node } = await render(
+      '<style>p{margin:0}#n{user-select:none}#w{-webkit-user-select:none}' +
+        '#back{user-select:text}#ok::before{content:"[gen] ";' +
+        'user-select:text}</style>' +
+        '<p><q>quoted</q> plain <span id="n">none <b>inner</b> ' +
+        '<i id="back">back</i></span> <span id="w">webkit</span> end</p>' +
+        '<p id="ok">opted</p>',
+    );
+    const el = view(node);
+    assert.ok(drawnText(el).includes('\u201cquoted\u201d'), 'drawn, quotes');
+    // `<q>`'s quotes are generated; inside `none`, `auto` is none and
+    // `text` takes it back; a rule may make a `::before` selectable
+    assert.strictEqual(el.textContent(), 'quoted plain back  end[gen] opted');
+    await act(async () => {
+      fireEvent.mouseDown(node, {});
+      fireEvent.mouseUp(node, {});
+    });
+    await act(async () => {
+      fireEvent.key(0x61 /* a */, { modifiers: ['Control'] });
+    });
+    assert.strictEqual(node.selectedText(), el.textContent(), 'a copy');
+  },
+);
+
+metric(
+  'the highlight leaves out the text a selection cannot take',
+  async () => {
+    const { node, result } = await render(
+      '<style>body{margin:0;font-size:20px}p{margin:0}' +
+        'p::before{content:"GEN "}</style><p id="p">text</p>',
+      400,
+      { selectionColor: '#00ff00' },
+    );
+    const el = view(node);
+    await act(async () => {
+      fireEvent.mouseDown(node, {});
+      fireEvent.mouseUp(node, {});
+    });
+    await act(async () => {
+      fireEvent.key(0x61 /* a */, { modifiers: ['Control'] });
+    });
+    assert.strictEqual(node.selectedText(), 'text');
+    // the selection's first letter is the paragraph's own, past "GEN "
+    const start = el.textCaretRect(0)!;
+    const { abs } = el as unknown as DrawnNode;
+    assert.ok(start.x - abs.x > 20, `past the generated text: ${start.x}`);
+    const lit = (x: number) => pixelAt(result.ctx, x, start.y + 1);
+    assert.ok(
+      isNear(await lit(start.x + 10), '#00ff00', 40),
+      'its text is lit',
+    );
+    assert.ok(
+      !isNear(await lit(abs.x + 4), '#00ff00', 40),
+      'the generated text is not',
+    );
+    const [band] = el.textRangeRects(0, 4);
+    assert.ok(band.x >= start.x - 0.5, `nor in its bands: ${band.x}`);
+  },
+);
+
+metric('selected text no one can see is neither lit nor drawn', async () => {
+  // Zen Garden 220 hides its headings under the `::after`s it shows: a
+  // selection set each in the `::selection`'s colour over its `::after`
+  const { node, result } = await render(
+    '<style>body{margin:0;font-size:20px}p{margin:0}#h{visibility:hidden}' +
+      '::selection{background:#00ff00;color:#ff0000}</style>' +
+      '<p>shown <span id="h">HIDDEN</span> shown</p>',
+  );
+  const el = view(node);
+  await act(async () => {
+    fireEvent.mouseDown(node, {});
+    fireEvent.mouseUp(node, {});
+  });
+  await act(async () => {
+    fireEvent.key(0x61 /* a */, { modifiers: ['Control'] });
+  });
+  const text = el.textContent();
+  const from = el.textCaretRect(text.indexOf('HIDDEN'))!;
+  const to = el.textCaretRect(text.indexOf('HIDDEN') + 6)!;
+  const lit = await pixelAt(result.ctx, from.x - 20, from.y + 2);
+  assert.ok(isNear(lit, '#00ff00', 40), `the text around it is lit: ${lit}`);
+  for (let x = from.x + 1; x < to.x - 1; x += 3) {
+    for (let y = from.y + 1; y < from.y + from.height - 1; y += 3) {
+      const rgb = await pixelAt(result.ctx, x, y);
+      assert.ok(
+        !isNear(rgb, '#00ff00', 60) && !isNear(rgb, '#ff0000', 60),
+        `nothing of it at ${x},${y}: ${rgb}`,
+      );
+    }
+  }
+});
+
+metric(
+  'a press on generated text starts no selection, and keeps the one there is',
+  async () => {
+    // Blink's `CanStartSelection`: a toolbar's button pressed with a
+    // paragraph selected leaves the paragraph selected
+    const { node } = await render(
+      '<style>body{margin:0}p{margin:0 0 20px}' +
+        '#g::before{content:"GENERATED "}</style>' +
+        '<p>one two three</p><p id="g">four</p>',
+    );
+    const el = view(node);
+    const target = el as unknown as DrawnNode;
+    const offset = (x: number, y: number) => ({
+      dx: x - (target.abs.x + target.abs.width / 2),
+      dy: y - (target.abs.y + target.abs.height / 2),
+    });
+    const a = el.textCaretRect(0)!;
+    const b = el.textCaretRect(7)!;
+    const from = offset(a.x + 1, a.y + a.height / 2);
+    const to = offset(b.x - 1, b.y + b.height / 2);
+    await act(async () => {
+      fireEvent.mouseMove(target, from);
+      fireEvent.mouseDown(target, from);
+      fireEvent.mouseMove(target, to);
+      fireEvent.mouseUp(target);
+    });
+    const selected = node.selectedText();
+    assert.ok(selected.startsWith('one tw'), `a drag selects: ${selected}`);
+    // a press on "GENERATED ", and a drag from it across "four"
+    const four = el.textCaretRect(el.textContent().indexOf('four'))!;
+    const y = four.y + four.height / 2;
+    const on = offset((target.abs.x + four.x) / 2, y);
+    await act(async () => {
+      fireEvent.mouseMove(target, on);
+      fireEvent.mouseDown(target, on);
+      fireEvent.mouseMove(target, offset(four.x + 20, y));
+      fireEvent.mouseUp(target);
+    });
+    assert.strictEqual(node.selectedText(), selected, 'the selection stays');
+  },
+);
+
+metric(
+  'a press nearest text no one can see lands in the text that is seen',
+  async () => {
+    // Blink passes over a box that is not visible (`IsHitTestCandidate`)
+    const { node } = await render(
+      '<style>body{margin:0}#box{padding:40px 0}p{margin:0}' +
+        '#h{visibility:hidden}</style>' +
+        '<div id="box"><p id="h">hidden words</p><p>shown words</p></div>',
+    );
+    const el = view(node);
+    const { abs } = el as unknown as DrawnNode;
+    const at = el.textIndexAt(abs.x + 10, abs.y + 5);
+    const shown = el.textContent().indexOf('shown');
+    assert.ok(at >= shown, `in "shown words": ${at}`);
+  },
+);
+
+metric(
+  'generated text a hidden element shows is under the pointer',
+  async () => {
+    // Zen Garden 220 hides its headings and shows each one's `::after`
+    const { node } = await render(
+      '<style>body{margin:0}h3{visibility:hidden;margin:0}' +
+        'h3::after{content:" Shown";visibility:visible}</style>' +
+        '<h3 id="h">Hidden</h3>',
+    );
+    const el = view(node);
+    const [line] = linesOf(el, 'h');
+    const runs = textRunsOf(line);
+    const [left, right] = runs[runs.length - 1];
+    const { abs } = el as unknown as DrawnNode;
+    const x = abs.x + (left + right) / 2;
+    const y = abs.y + line.y + line.height / 2;
+    assert.strictEqual(el.elementAtPoint(x, y)?.attribs.id, 'h');
+    assert.strictEqual(el.cursorAt(x, y), 'text');
+    const hidden = abs.x + runs[0][0] + 2;
+    assert.strictEqual(
+      el.cursorAt(hidden, y),
+      'default',
+      'not the hidden text before it',
+    );
   },
 );
 

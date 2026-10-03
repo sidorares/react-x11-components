@@ -2257,8 +2257,9 @@ an inline image in the pseudo-element's line, of its own size once it
 arrives and of none before.
 `counter-reset`, `counter-increment` and `counter-set` are scoped as CSS
 Lists 3 scopes them, `reversed()` included, so numbered headings and nested
-outline numbers come out as they do in a browser. The generated text is part of the document's text, so a selection
-over it copies it.
+outline numbers come out as they do in a browser. The generated text is
+drawn and laid out as the document's, and is no part of a selection, as
+in every browser: see "A selection starts in what the press is on".
 
 **First letters:** `::first-letter` (and `:first-letter`) styles the first
 letter of a block's first line, with the punctuation before and after it, as
@@ -2974,7 +2975,24 @@ a paragraph a page paints over a large faint word takes its own press and
 drag, and so does the gap between two paragraphs over that word. Zen
 Garden 220's preamble over its fixed "Est. 2003" is the case. Text with
 `pointer-events: none` is not where a press starts: the press goes through
-to what is under it.
+to what is under it. Nor is text nobody can see, which a press nearest it
+passes over, as Blink's does, and which a selection across it neither
+lights nor sets in its `::selection` colour. The caret and the bands of text fixed to
+the viewport are where the scroll draws it.
+
+**What `user-select: none` keeps out is no part of a selection.**
+`user-select` (and `-webkit-user-select`) is CSS UI 4's: `none` leaves
+an element's text out, and `auto` inside it is `none` too, so a toolbar's
+labels are out however deep, while `text` takes a descendant back in. On a
+`::before` or an `::after`, `auto` is `none`, so generated content — a
+`<q>`'s quotes, a heading's counter, a link's arrow — is drawn and never
+selected, as no browser selects or copies it; a rule that gives the
+pseudo-element `user-select: text` takes it back in. Such text is left out
+of what the element tells core it holds (`textContent()`), so a copy
+leaves it out, and the highlight passes over it. A press on it starts no
+selection and leaves the one there is, as Blink's does: a button a page
+drew pressed with a paragraph selected does not take the selection away.
+`all` and `contain` select as `text` does.
 
 **`text-wrap: pretty` breaks lines where Chrome breaks them.** CSS Text 4
 asks for better lines than the greedy ones and leaves how to the user agent,

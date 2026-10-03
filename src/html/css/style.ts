@@ -578,6 +578,11 @@ export interface ComputedStyle {
   /** `pointer-events`: `none` for an element the pointer passes through,
    *  to what is under it (CSS UI 4, 5.2). Its SVG values are `auto`. */
   pointerEvents: 'auto' | 'none';
+  /** `user-select` (CSS UI 4, 6.1), as used: `auto` is `none` in an
+   *  element whose own is `none`, `all` in one whose own is `all`, and
+   *  `none` on a `::before` or an `::after` (`Cascade.pseudoStyleFor`),
+   *  whose text no browser selects. Not inherited. */
+  userSelect: 'auto' | 'text' | 'none' | 'contain' | 'all';
   /** `fill` and `stroke`, what an `<svg>` in the document is painted with
    *  (SVG 2, 13.2): a colour, `currentColor`, `none`, or a `url()` of a
    *  paint server in the drawing — and null where nothing has set one,
@@ -1214,6 +1219,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     listStyleImage: null,
     cursor: null,
     pointerEvents: 'auto',
+    userSelect: 'auto',
     fill: null,
     stroke: null,
     borderCollapse: 'separate',
@@ -1643,8 +1649,8 @@ const BORDER_WIDTH_KEYWORDS: Record<string, number> = {
   thick: 5,
 };
 
-/** `-webkit-` names that are the multicol properties' own, and the
- *  animation's. */
+/** `-webkit-` names that are the multicol properties' own, the
+ *  animation's and `user-select`'s. */
 const PREFIXED_ALIASES: Record<string, string> = {
   '-webkit-columns': 'columns',
   '-webkit-column-count': 'column-count',
@@ -1665,6 +1671,9 @@ const PREFIXED_ALIASES: Record<string, string> = {
   '-webkit-transition-duration': 'transition-duration',
   '-webkit-transition-timing-function': 'transition-timing-function',
   '-webkit-transition-delay': 'transition-delay',
+  // Safari's only name for it until 2024, and so what every page that
+  // sets it writes beside the standard one, or alone
+  '-webkit-user-select': 'user-select',
 };
 
 /**
@@ -3181,6 +3190,12 @@ export function applyDeclaration(
     }
     case 'cursor': {
       style.cursor = splitCommas(value)[0]?.trim().toLowerCase() || null;
+      return;
+    }
+    case 'user-select': {
+      const v = value.trim().toLowerCase();
+      if (USER_SELECT.has(v))
+        style.userSelect = v as ComputedStyle['userSelect'];
       return;
     }
     case 'pointer-events': {
@@ -5834,6 +5849,8 @@ function splitTopLevelSlash(value: string): string[] {
 // --- logical properties ----------------------------------------------------
 
 /** `pointer-events`' values besides `none` (CSS UI 4, SVG 2 15.6). */
+const USER_SELECT = new Set(['auto', 'text', 'none', 'contain', 'all']);
+
 const POINTER_EVENTS = new Set([
   'auto',
   'bounding-box',
@@ -6459,6 +6476,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'list-style-image': ['listStyleImage'],
   cursor: ['cursor'],
   'pointer-events': ['pointerEvents'],
+  'user-select': ['userSelect'],
   fill: ['fill'],
   stroke: ['stroke'],
   'border-collapse': ['borderCollapse'],

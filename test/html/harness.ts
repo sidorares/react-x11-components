@@ -72,7 +72,13 @@ export const metric = FONTS ? test : test.skip;
 /** The text a document's boxes hold, generated content included. */
 export async function documentText(source: string): Promise<string> {
   const { node } = await render(source, 300);
-  return (view(node) as unknown as { _tree: { text: string } })._tree.text;
+  return drawnText(view(node));
+}
+
+/** The text an element draws, generated content included: `textContent()`
+ *  is what a selection can take, which leaves `user-select: none` out. */
+export function drawnText(el: HtmlViewNode): string {
+  return (el as unknown as { _tree: { text: string } })._tree.text;
 }
 
 interface PlacedText {
