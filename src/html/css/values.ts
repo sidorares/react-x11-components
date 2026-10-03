@@ -105,6 +105,11 @@ export interface UnitContext {
   /** Viewport, for `vw`/`vh`/`vmin`/`vmax` and their kin (`viewportUnit`). */
   vw: number;
   vh: number;
+  /** Told as a length in one of those is resolved — `vmin` and `vmax`
+   *  read both sides — so the cascade knows which styles hold one, where
+   *  a sheet that only mentions one, in a rule nothing matches, holds
+   *  none (`Cascade.readsViewportWidth`). */
+  viewport?: (unit: 'vw' | 'vh' | 'vmin' | 'vmax') => void;
   /** Device pixels per CSS pixel — the display scale. */
   scale: number;
   /** The x-height of the font the lengths are in, asked only for a length
@@ -265,12 +270,16 @@ function unitScale(unit: string, ctx: UnitContext): number {
     case 'rlh':
       return ctx.rlh ? ctx.rlh() : ctx.rem * 1.2;
     case 'vw':
+      ctx.viewport?.('vw');
       return ctx.vw / 100;
     case 'vh':
+      ctx.viewport?.('vh');
       return ctx.vh / 100;
     case 'vmin':
+      ctx.viewport?.('vmin');
       return Math.min(ctx.vw, ctx.vh) / 100;
     case 'vmax':
+      ctx.viewport?.('vmax');
       return Math.max(ctx.vw, ctx.vh) / 100;
     default:
       return 1;

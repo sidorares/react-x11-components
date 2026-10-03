@@ -792,6 +792,63 @@ test('a vw length follows the width of the viewport', async () => {
   assert.strictEqual(boxOf(el, 'half').width, 300);
 });
 
+test('a vw only a sheet mentions leaves a resize to the layout', async () => {
+  // Wikipedia's skin has a `75vw` under a class its pages are not served
+  // with. Noted from the sheet, it made every pixel of a resize style the
+  // whole article again and build its boxes again; a style holds none, so
+  // a resize is a layout
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}.absent{width:75vw}</style>' +
+      '<div id="a" style="height:10px"></div>',
+    300,
+    400,
+  );
+  const tree = treeOf(el);
+  assert.strictEqual(boxOf(el, 'a').width, 400);
+  await resize(300, 600);
+  assert.strictEqual(boxOf(el, 'a').width, 600, 'laid out at the new width');
+  assert.ok(treeOf(el) === tree, 'no box built again');
+});
+
+test('a vw that comes to hold follows the width, and one that stops does not', async () => {
+  // under a `@media` band: crossing into it styles the page again, which
+  // finds the `vw`, and every resize in the band after it does too
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}#a{height:10px}' +
+      '@media (max-width:500px){#a{width:50vw}}</style><div id="a"></div>',
+    300,
+    600,
+  );
+  assert.strictEqual(boxOf(el, 'a').width, 600);
+  await resize(300, 400);
+  assert.strictEqual(boxOf(el, 'a').width, 200, 'into the band');
+  await resize(300, 300);
+  assert.strictEqual(boxOf(el, 'a').width, 150, 'inside it');
+  await resize(300, 700);
+  assert.strictEqual(boxOf(el, 'a').width, 700, 'out of it');
+  const tree = treeOf(el);
+  await resize(300, 800);
+  assert.strictEqual(boxOf(el, 'a').width, 800);
+  assert.ok(treeOf(el) === tree, 'the vw out of the band is read no more');
+});
+
+test('a vw through a custom property, or on a pseudo-element, follows the width', async () => {
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}:root{--w:25vw}#a{width:var(--w);height:10px}' +
+      '#b{height:10px}#b::before{content:"";display:block;width:10vw;' +
+      'height:5px}</style><div id="a"></div><div id="b"></div>',
+    300,
+    400,
+  );
+  // the `::before` is the first box in its element's
+  const before = () => boxOf(el, 'b').children[0];
+  assert.strictEqual(boxOf(el, 'a').width, 100);
+  assert.strictEqual(before()?.width, 40);
+  await resize(300, 800);
+  assert.strictEqual(boxOf(el, 'a').width, 200);
+  assert.strictEqual(before()?.width, 80);
+});
+
 test('the small, large and dynamic viewports, and its inline and block axes, are the viewport', async () => {
   // melbcss.com's body is `min-height: 100svh`: an unread unit dropped the
   // declaration, and the page did not fill the window
