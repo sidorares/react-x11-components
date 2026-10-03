@@ -25,27 +25,28 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 
 ## Props
 
-| Prop              | Type                                             | What it does                                                                                                                                                                              |
-| ----------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `source`          | `string`                                         | The HTML. Required.                                                                                                                                                                       |
-| `partial`         | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming).              |
-| `selectable`      | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                  |
-| `animate`         | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                                |
-| `reducedMotion`   | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                      |
-| `stylesheet`      | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                                |
-| `charset`         | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                     |
-| `baseUrl`         | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                     |
-| `onResource`      | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.** |
-| `onScript`        | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                             |
-| `onLink`          | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.                       |
-| `onDocument`      | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                |
-| `onControlChange` | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                 |
-| `onSubmit`        | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                         |
-| `fontSize`        | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                                      |
-| `fontFamily`      | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                                |
-| `monoFamily`      | `string`                                         | Code font, and a `<textarea>`'s: the generic `monospace` where the UA sheet names it — see [Fonts](#fonts). Default `'monospace'` — there is no theme token for it.                       |
-| `selectionColor`  | `string`                                         | Selection band fill where no `::selection` rule reaches the text. Default: theme accent at 35% opacity.                                                                                   |
-| `style`           | `Style \| Style[]`                               | The root `<box>`'s style.                                                                                                                                                                 |
+| Prop                 | Type                                             | What it does                                                                                                                                                                                          |
+| -------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `source`             | `string`                                         | The HTML. Required.                                                                                                                                                                                   |
+| `partial`            | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming).                          |
+| `selectable`         | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                              |
+| `animate`            | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                                            |
+| `reducedMotion`      | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                                  |
+| `defaultColorScheme` | `'light' \| 'dark'`                              | The scheme a page that names none (`color-scheme: normal`) is drawn in. Default: the palette's. A host that shows the web names `'light'`, as every browser draws one — see [Colours](#what-renders). |
+| `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                                            |
+| `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                                 |
+| `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                 |
+| `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.**             |
+| `onScript`           | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                                         |
+| `onLink`             | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.                                   |
+| `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                            |
+| `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                             |
+| `onSubmit`           | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                                     |
+| `fontSize`           | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                                                  |
+| `fontFamily`         | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                                            |
+| `monoFamily`         | `string`                                         | Code font, and a `<textarea>`'s: the generic `monospace` where the UA sheet names it — see [Fonts](#fonts). Default `'monospace'` — there is no theme token for it.                                   |
+| `selectionColor`     | `string`                                         | Selection band fill where no `::selection` rule reaches the text. Default: theme accent at 35% opacity.                                                                                               |
+| `style`              | `Style \| Style[]`                               | The root `<box>`'s style.                                                                                                                                                                             |
 
 ## The handle
 
@@ -2322,7 +2323,14 @@ custom property's included. The scheme is the element's `color-scheme`
 resolved against the react-x11 palette's in force, which stands for the
 reader's preference: `light dark` follows the palette, `light` or `only
 dark` holds whatever it is, and `normal` — the initial value — is the
-palette's own, since the palette is this renderer's default look. A page's
+palette's own, since the palette is this renderer's default look, unless
+the host names another with `defaultColorScheme`. A host that shows the
+web names `'light'`: every browser draws a page that names no scheme light,
+on white, whatever the reader prefers, and Zen Garden 215, which names none
+and leaves its canvas bare under a panel of 90% white, came out grey over
+a dark palette's ground. The palette still answers `prefers-color-scheme`
+and the scheme `light dark` takes there, since those are the reader's
+preference. A page's
 `<meta name="color-scheme">` is its root element's `color-scheme` where no
 rule sets one, as HTML has it. Where the root element's scheme is the
 palette's, the document is drawn on the window's own ground in the

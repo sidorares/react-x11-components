@@ -1027,15 +1027,18 @@ function pickScheme(value: string, scheme: 'light' | 'dark'): string | null {
  * The scheme an element with this `color-scheme` is drawn in (CSS Color
  * Adjust 1, 2.2), given the one `preferred` — the palette's, which stands
  * for the reader's preference: that one where the element supports it,
- * else the first it names that is one, else the one `normal` gives, which
- * is the palette's own too. Null for a value that is not a `color-scheme`.
+ * else the first it names that is one, else the one `normal` gives — the
+ * user agent's default, `normal`, which is the palette's own unless the
+ * host says otherwise (`defaultColorScheme`). Null for a value that is not
+ * a `color-scheme`.
  */
 export function usedColorScheme(
   value: string,
   preferred: 'light' | 'dark' = 'light',
+  normal: 'light' | 'dark' = preferred,
 ): 'light' | 'dark' | null {
   const words = value.trim().toLowerCase().split(/\s+/);
-  if (words.length === 1 && words[0] === 'normal') return preferred;
+  if (words.length === 1 && words[0] === 'normal') return normal;
   // `[ light | dark | <custom-ident> ]+ && only?`: `only` once, first or
   // last, and never on its own
   const only = words.indexOf('only');
@@ -1050,7 +1053,8 @@ export function usedColorScheme(
     if (word === preferred) return preferred;
     if (!first && (word === 'light' || word === 'dark')) first = word;
   }
-  return first ?? preferred;
+  // naming none it knows, it is as though it said `normal`
+  return first ?? normal;
 }
 
 /**

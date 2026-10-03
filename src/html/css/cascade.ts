@@ -3075,6 +3075,7 @@ export class Cascade {
       lh: () => this._lineHeightOf(parentStyle),
       rlh: () => this._lineHeightOf(rootStyle),
       focusRing: this.look.focusRing,
+      paletteScheme: this.look.colorScheme,
       systemColors: this._systemColors,
     };
     // The family, the weight, the slant and the width go with the size:

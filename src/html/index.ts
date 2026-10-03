@@ -123,6 +123,18 @@ export interface HtmlProps {
    * every machine.
    */
   reducedMotion?: boolean;
+  /**
+   * The colour scheme a document that does not say which it is drawn in —
+   * `color-scheme: normal`, the initial value — is drawn in: the user
+   * agent's default (CSS Color Adjust 1, 2.1). Default: the palette's, since
+   * the palette is this renderer's look, so a document dropped into a dark
+   * application is drawn dark. A host that shows the web as a browser does
+   * sets `'light'`: every browser draws a page that says nothing about its
+   * scheme light, on white, whatever the reader prefers. The palette still
+   * answers `@media (prefers-color-scheme)` and the scheme `light dark`
+   * takes, which are the reader's preference.
+   */
+  defaultColorScheme?: 'light' | 'dark';
   /** Extra author stylesheets, applied after the document's own. */
   stylesheet?: string | string[];
   /**
@@ -274,6 +286,7 @@ function deriveLook(
     mutedColor: String(theme.textMuted ?? '#7f8c8d'),
     background: String(theme.background ?? 'white'),
     colorScheme: theme.scheme === 'dark' ? 'dark' : 'light',
+    ...(props.defaultColorScheme && { normalScheme: props.defaultColorScheme }),
     surface: String(theme.surface ?? theme.background ?? 'white'),
     controlPadY: Number(theme.paddingY ?? 6),
     controlBorder: Number(theme.borderWidth ?? 1),
@@ -372,7 +385,13 @@ export function Html(props: HtmlProps): ReactElement {
 
   const look = React.useMemo(
     () => deriveLook(theme, props),
-    [theme, props.fontSize, props.fontFamily, props.monoFamily],
+    [
+      theme,
+      props.fontSize,
+      props.fontFamily,
+      props.monoFamily,
+      props.defaultColorScheme,
+    ],
   );
   // a document with code in it sets that code in the mono family, and its
   // render is the head start its first layout would otherwise wait on the

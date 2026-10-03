@@ -424,6 +424,11 @@ test("color-scheme resolves against the palette's scheme, which stands for the p
   // `normal`, and a list of none the renderer has: the palette's own
   assert.strictEqual(usedColorScheme('normal', 'dark'), 'dark');
   assert.strictEqual(usedColorScheme('sepia', 'dark'), 'dark');
+  // or the user agent's default where the host names one, which the
+  // preference is still taken over where the element supports it
+  assert.strictEqual(usedColorScheme('normal', 'dark', 'light'), 'light');
+  assert.strictEqual(usedColorScheme('sepia', 'dark', 'light'), 'light');
+  assert.strictEqual(usedColorScheme('light dark', 'dark', 'light'), 'dark');
   // not a color-scheme
   for (const bad of [
     'only',
@@ -594,6 +599,83 @@ test('a document of the scheme the palette is not is drawn on that scheme’s ca
       link: '#0000ee',
     },
   );
+});
+
+test('a host that shows the web draws a page that names no scheme light, on white, under a dark palette that still answers prefers-color-scheme', async () => {
+  // Every browser draws a page of `color-scheme: normal` light, whatever
+  // the reader prefers (CSS Color Adjust 1, 2.1: the user agent's default
+  // scheme). Zen Garden 215 names none and leaves its canvas bare under a
+  // panel of 90% white, which came out grey over the dark palette's ground
+  // in the browser example, and white in Chrome.
+  const page = (root: string) =>
+    `<style>${root}body{margin:0}` +
+    '@media (prefers-color-scheme: dark){#m{color:#00ff00}}</style>' +
+    '<p id="p">x <a id="a" href="#">y</a></p><p id="m">m</p>';
+  const doc = (source: string, light: boolean) =>
+    h(
+      'window',
+      { width: 340, height: 200 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { colorScheme: 'dark' },
+        h(
+          'box',
+          { style: { width: 300, flexDirection: 'column' } },
+          h(Html, {
+            source,
+            partial: false,
+            ...(light && { defaultColorScheme: 'light' as const }),
+            'data-testname': 'doc',
+          }),
+        ),
+      ),
+    );
+  const result = await renderX11(
+    doc(page(''), true),
+    FONTS ? { fonts: FONTS, wrap: false } : { backend: 'mock', wrap: false },
+  );
+  const look = async () => {
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const color = (id: string) =>
+      (boxOf(el, id) as unknown as { style: ComputedStyle }).style.color;
+    const fills = await fillsOf(el);
+    return {
+      canvas: fills.filter((f) => f.w === 300).map((f) => f.style),
+      text: color('p'),
+      link: color('a'),
+      preferred: color('m'),
+    };
+  };
+  const show = async (source: string, light: boolean) => {
+    await act(async () => {
+      result.root.render(doc(source, light));
+    });
+    for (let i = 0; i < 4; i += 1) await act();
+    return look();
+  };
+  assert.deepStrictEqual(
+    await look(),
+    {
+      canvas: ['#ffffff'],
+      text: '#000000',
+      link: '#0000ee',
+      preferred: '#00ff00',
+    },
+    'light, on white, and the reader still prefers dark',
+  );
+  assert.deepStrictEqual(
+    await show(page(':root{color-scheme:normal}'), true),
+    await look(),
+    '`normal` written out is the same',
+  );
+  // a page that supports both is drawn in the one the reader prefers: the
+  // palette's, on its own ground
+  const both = await show(page(':root{color-scheme:light dark}'), true);
+  assert.deepStrictEqual(both.canvas, [], 'the palette’s ground shows');
+  assert.notStrictEqual(both.text, '#000000');
+  // and with no default named, a page that names no scheme is the
+  // palette's, as an embedded document is
+  assert.deepStrictEqual(await show(page(''), false), both);
 });
 
 test("a system colour is the palette's in its scheme, and Chrome's in the other", async () => {
