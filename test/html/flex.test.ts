@@ -2,6 +2,7 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { cleanup, waitFor } from 'react-x11/test';
+import { Yoga } from 'react-x11/yoga';
 import { parseColor } from '../../src/html/css/values.js';
 import {
   RED_PNG,
@@ -71,6 +72,49 @@ metric(
     assert.ok(tree.root.children[0].height > 10, 'the row has the text height');
   },
 );
+
+test('every node a flex layout makes in the engine is freed', async () => {
+  // A flex box's items are nodes in Yoga's memory, made for one layout and
+  // freed after it, nested boxes inside their containers' measures. The
+  // root is freed first and then the items it held, rather than the root
+  // asking itself for each child to free, which the engine answers with a
+  // new object for every child. Core's own nodes, the boxes around the
+  // document, live as long as they do, so only the flex layout's count.
+  const fromFlex = (): boolean =>
+    /html[\\/]layout[\\/]flex\./.test(new Error().stack ?? '');
+  let made = 0;
+  let freed = 0;
+  const node = Yoga.Node;
+  // the class's methods, which its declaration as a factory leaves out
+  const proto = (node as unknown as { prototype: { free(): void } }).prototype;
+  const create = node.create;
+  const free = proto.free;
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 50;
+  node.create = (...args: Parameters<typeof create>) => {
+    if (fromFlex()) made += 1;
+    return create(...args);
+  };
+  proto.free = function (this: unknown) {
+    if (fromFlex()) freed += 1;
+    return free.call(this);
+  };
+  try {
+    await render(
+      '<style>.f{display:flex;gap:4px}.c{flex-direction:column}' +
+        '.w{flex-wrap:wrap}</style><div class="f w">' +
+        '<div class="f c"><div class="f"><b>a</b><i>b</i></div><p>c</p></div>' +
+        '<div class="f c"><div class="f"><b>d</b></div><p>e</p></div></div>',
+      300,
+    );
+  } finally {
+    node.create = create;
+    proto.free = free;
+    Error.stackTraceLimit = limit;
+  }
+  assert.ok(made > 0, 'the layout made nodes');
+  assert.strictEqual(freed, made, 'and freed every one');
+});
 
 test('a flex item as wide as its content keeps it on one line', async () => {
   // An item exactly as wide as its content — `width: fit-content` in a
