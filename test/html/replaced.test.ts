@@ -911,6 +911,59 @@ metric(
 );
 
 metric(
+  'a drawing is cut to the clipPath its clip-path names, through a use in it as Illustrator writes one, in an image and inline',
+  async () => {
+    // CSS Zen Garden 215's arm in a circle: an Illustrator drawing whose
+    // shapes are cut to a `<use>` of a circle (CSS Masking 1, 6). ntk drew
+    // no clip path at all, and the arm reached out of its circle. Inline,
+    // a rule that reaches into a drawing has it drawn from a copy, where a
+    // `<use>` was a group, which a clipPath takes nothing from; and one in
+    // a clipPath may name an element of another drawing, as a `<use>`
+    // anywhere may.
+    const arm = (id: string) =>
+      `<defs><circle id="${id}c" cx="10" cy="10" r="8"/></defs>` +
+      `<clipPath id="${id}k"><use xlink:href="#${id}c" overflow="visible"/></clipPath>` +
+      `<rect width="20" height="20" fill="#ff0000" clip-path="url(#${id}k)"/>`;
+    const XLINK = 'xmlns:xlink="http://www.w3.org/1999/xlink"';
+    const { result } = await renderWithBytes(
+      '<style>body{margin:0}svg,div{display:block} .ruled rect{stroke:none}' +
+        ' .cut{clip-path:url(#ck)} .eo{clip-rule:evenodd}</style>' +
+        // an SVG image, as 215's `::after` draws it
+        '<div style="width:20px;height:20px;background:url(arm.svg)"></div>' +
+        `<svg class="ruled" width="20" height="20" ${XLINK}>${arm('a')}</svg>` +
+        '<svg style="display:none"><circle id="far" cx="10" cy="10" r="8"/></svg>' +
+        '<svg width="20" height="20"><clipPath id="bk"><use href="#far"/></clipPath>' +
+        '<rect width="20" height="20" fill="#ff0000" clip-path="url(#bk)"/></svg>' +
+        // what the rules give a clip path and what is in one
+        '<svg width="20" height="20"><clipPath id="ck">' +
+        '<path class="eo" d="M2 2h16v16h-16zM6 6h8v8h-8z"/></clipPath>' +
+        '<rect class="cut" width="20" height="20" fill="#ff0000"/></svg>',
+      {
+        'arm.svg': svgBytes(
+          `<svg ${SVG_NS} ${XLINK} width="20" height="20">${arm('i')}</svg>`,
+        ),
+      },
+    );
+    const ctx = result.ctx;
+    for (const [y, what] of [
+      [0, 'an image'],
+      [20, 'inline, with a rule that reaches it'],
+      [40, 'its use naming the circle of another drawing'],
+    ] as const) {
+      await expectPixel(ctx, 10, y + 10, '#ff0000', {
+        message: `${what}: inside the circle`,
+      });
+      await expectPixel(ctx, 2, y + 18, '#ffffff', {
+        message: `${what}: a corner it leaves out`,
+      });
+    }
+    await expectPixel(ctx, 4, 64, '#ff0000', { message: 'a ring' });
+    await expectPixel(ctx, 10, 70, '#ffffff', { message: 'its hole, evenodd' });
+    await expectPixel(ctx, 19, 79, '#ffffff', { message: 'outside it' });
+  },
+);
+
+metric(
   'a <use> finds the element a document that is still arriving brings later',
   async () => {
     // a sprite at the end of the body, after the icons that use it

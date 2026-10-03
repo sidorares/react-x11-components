@@ -1913,8 +1913,8 @@ least or greatest width through it.
 **SVG:** an inline `<svg>`, an SVG image and an SVG background are drawn by
 ntk's `SvgView`, which core's own `<svg>` element draws with, so they draw
 its subset: shapes and paths, groups, `<use>`, gradients, text with its
-`<tspan>`s, and masks, with presentation attributes and `style`
-attributes — not filters or clip paths. An inline drawing's text is set in
+`<tspan>`s, masks and clip paths, with presentation attributes and `style`
+attributes — not filters. An inline drawing's text is set in
 its box's font where it names none, as a browser sets it, so a family it
 gives as `var(--font-sans)`, which only the page could answer, is the
 page's. A mask in a drawing is drawn on the surfaces the document's own
@@ -1923,7 +1923,11 @@ surface of ntk's to make. A drawing with text in it that a `transform`
 turns is drawn on a surface on X11, as a box with text is, since ntk sets
 glyphs level. Spans and masks are `SvgView`'s: an ntk from before them
 ([sidorares/ntk#523](https://github.com/sidorares/ntk/pull/523)) draws a
-text's spans as one string and a masked element unmasked.
+text's spans as one string and a masked element unmasked. So are clip
+paths, and one from before them
+([sidorares/ntk#529](https://github.com/sidorares/ntk/pull/529)) draws a
+clipped element whole: an Illustrator drawing cuts its shapes to a `<use>`
+of a circle, and CSS Zen Garden 215's arm reached out of its circle.
 
 An inline `<svg>`'s `fill` and `stroke` are the document's:
 properties a style sheet's rule sets on the element over its attributes,
@@ -1933,7 +1937,8 @@ an element inside the drawing as well — `.logo path { fill: #fff }`,
 `a:hover svg path { fill: red }` — and sets its `fill`, `stroke`,
 `stroke-width`, `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`,
 `fill-rule`, `fill-opacity`, `stroke-opacity`, `opacity`, `color`,
-`display` and `visibility`, and a gradient stop's `stop-color` and
+`display`, `visibility`, `clip-path` — a `url()` naming a `<clipPath>` —
+and `clip-rule`, and a gradient stop's `stop-color` and
 `stop-opacity`: over the element's presentation attributes and under its
 `style` attribute, as the cascade orders them, `!important` and `var()`
 included. A `<style>` inside the `<svg>` is one of the document's style
@@ -1985,7 +1990,9 @@ it, `a:hover use { fill: red }` or a link's `color`. A copy of one of the
 drawing's own elements is styled the same way, and so may be drawn
 otherwise than the element where it stands. A symbol a rule gives
 `display: none` is still found by a `<use>`, which draws nothing of it, as
-Chrome has it.
+Chrome has it. A `<use>` in a `<clipPath>` cuts as the shape it names,
+from this drawing or another on the page, and is drawn from no copy: a
+clipPath takes nothing from a group, which is what a copy is.
 
 An SVG root's `width` and `height` are CSS lengths, a percentage one too;
 its intrinsic size is what of them is absolute, and its ratio comes from

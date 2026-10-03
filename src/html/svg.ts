@@ -1221,6 +1221,24 @@ function copyTree(
     }
     return new Element('g', attribs, children);
   };
+  /** What a `<use>` in a `<clipPath>` names outside the root, copied, by
+   *  its id: `SvgView` looks a use's element up in the tree it is given,
+   *  so they go in it, in a `<defs>` at its end. */
+  const brought = new Map<string, Element | null>();
+  const bring = (use: Element, resolve: boolean, depth: number): void => {
+    const id = useHref(use);
+    if (id === null || brought.has(id) || depth >= USE_DEPTH) return;
+    ids ??= idsUnder(root);
+    if (ids.has(id)) return;
+    brought.set(id, null);
+    const target = elementById(documentOf(root), id);
+    if (!target) {
+      if (reached) reached.missing = true;
+      return;
+    }
+    reached?.outside.add(target);
+    brought.set(id, copy(target, resolve, depth + 1, false, null));
+  };
   /** Whether an element is drawn at all, in a group that is hidden or
    *  not: one no rule gives `display: none`, and no shape a rule hides. */
   const shown = (
@@ -1263,8 +1281,15 @@ function copyTree(
     const own = styles?.get(el);
     hidden = hiddenIn(own, hidden);
     if (localName(el.name) === 'use') {
-      const group = expand(el, resolve, depth, hidden, own);
-      if (group) return group;
+      // One in a `<clipPath>` clips as the shape or the text it names, and
+      // a group clips as nothing (CSS Masking 1, 6.3): it stays a use.
+      const parent = el.parent;
+      if (parent?.type === 'tag' && localName(parent.name) === 'clippath') {
+        bring(el, resolve, depth);
+      } else {
+        const group = expand(el, resolve, depth, hidden, own);
+        if (group) return group;
+      }
     }
     const here = resolve && !OWN_UNITS.has(localName(el.name));
     const attribs = { ...el.attribs };
@@ -1285,7 +1310,11 @@ function copyTree(
     copyInto(children, el, here, depth, hidden, styles);
     return new Element(strip(el.name), attribs, children);
   };
-  return copy(root, true);
+  const tree = copy(root, true);
+  const defs: Element[] = [];
+  for (const el of brought.values()) if (el) defs.push(el);
+  if (defs.length) tree.children.push(new Element('defs', {}, defs));
+  return tree;
 }
 
 /** What `display: none` takes nothing from: `SvgView` draws none of them

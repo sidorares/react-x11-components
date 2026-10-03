@@ -1779,7 +1779,12 @@ page of hundreds of sprite icons matches each symbol once. Blink used to
 style a copy as its original where the original stands
 (`CorrespondingElement()`), and that is still how it is remembered. Chrome
 154 does not: `.sprite .line` misses a sprite's line. Settle a claim like
-that with a test page in Chrome, not with the recollection.
+that with a test page in Chrome, not with the recollection. **A `<use>` in
+a `<clipPath>` is not copied**: a copy is a group, and a clipPath takes
+nothing from a group (CSS Masking 1, 6.3), so the clip came out empty and
+hid what it cut. It stays a use, and an element it names outside the root
+is copied into a `<defs>` at the end of the tree (`bring`), since `SvgView`
+looks a reference up in the tree it is given.
 
 **A transform is two halves, and inside one every number is the box's
 own.** Its translation is layout's — `applyRelativeOffsets` moves the box
