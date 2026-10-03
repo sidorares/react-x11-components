@@ -1980,6 +1980,31 @@ flip, the interpolation — was wrong too: measure a new surface on macOS,
 in a benchmark that varies one thing at a time, before taking a composite
 for the cheap side or a cause for the cost.
 
+**A filter's colour functions are run over pixels read back, and what
+lags is the content, never the filter** (`paintFiltered`,
+`src/html/filters.ts`). No context runs a filter and none hands a
+surface's pixels over as it is asked — ntk's are the X server's, a round
+trip away, and the native contexts keep the canvas contract and resolve a
+read a tick later — so a filtered box's group is painted on a surface,
+read back, and kept by element; every paint runs the matrices the box has
+now over the newest pixels read for it. Four things are load-bearing.
+**A read is made stale, never dropped** (`stale`, through
+`_dropSprites`): a page whose animations build the document every frame
+— ekazinich.com's — dropped the read at each build, and those frames drew
+what was filtered last, at the amount it had then, between frames at the
+amount they had, so its hover flashed between grey and colour. **The
+surface is the box's size and a pixel, wherever the box's corner falls**:
+sized from its edges it was one height and the next alternately as a
+hover lifted the card a fraction at a time, and a read of the other
+height drew nothing. **Anything new that changes what a box draws makes
+the reads around it stale**, as it drops the surfaces kept around it —
+`_dropSprites` does both. And **a context from ntk's `getContext` is the
+caller's to destroy**: a surface kept and written each frame keeps the
+one it was made with. A filtered element is neither lifted onto a layer
+nor in one, and no video is mounted in one: neither runs the matrices.
+The core seam that lifts the round trip — `ctx.filter` — is planned in
+`docs/prd-filter.md`.
+
 **An animation a layer can carry is handed to core as a sprite**
 (`src/html/sprites.ts`; react-x11's `sprites()`, sidorares/react-x11#819).
 On macOS the surface presenter lifts it onto a layer of its own and the

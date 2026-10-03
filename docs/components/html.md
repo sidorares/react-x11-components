@@ -1316,7 +1316,26 @@ is set in, and its background shows through its text where a browser's
 group would not let it. The floats and positioned boxes in it are faded as
 an element's are, and a hover or an animation that changes its opacity
 sets its text again in the new colours where it is, as a change of colour
-does — `isolation` — `isolate` makes a box a stacking context, positioned
+does — `filter` (and `-webkit-filter`) — any list makes a box a stacking
+context, painted whole among the positioned boxes as one under full
+opacity is, and the containing block of the absolute and the fixed boxes
+in it, an inline box as well (Filter Effects 1, 2). Its colour functions
+are drawn: `grayscale()`, `sepia()`, `saturate()`, `hue-rotate()`,
+`invert()`, `brightness()` and `contrast()` as the matrices the spec gives
+them, run over the box and all it draws in the order written, and
+`opacity()` as more of the box's opacity. No context runs a filter, so the
+box is painted unfiltered on a surface of its own and read back, and the
+matrices are run over what was read; the read arrives a round trip after
+the paint that asked for it, which draws the box from the read before, or
+— the first time a box is drawn — not at all. What lags is the box's
+content and never the filter: a transition of the filter, as a hover runs
+one, draws each frame at the amount it has then, from what was read once.
+An inline box's filter is not drawn, nor are `blur()`, `drop-shadow()` and
+a `url()` to an SVG `<filter>`, which has the whole list ignored, as a
+reference to a filter that is not there has (Filter Effects 1, 4). A
+filtered element is never lifted onto a layer of its own on macOS, nor is
+anything in it, and a `<video>` in one shows its poster, filtered, rather
+than a player — `isolation` — `isolate` makes a box a stacking context, positioned
 or not, painted whole among the positioned boxes as one under full
 opacity is, so a box in it with a negative `z-index` goes over its
 background and under its text (CSS Compositing 1, 3.2) — `will-change` —
@@ -1336,8 +1355,8 @@ collapsed table row or column gives its room and its spacing back —
 `z-index` is painted under the flow of its stacking context, the root
 element or a positioned box with a `z-index` of its own, and over that
 context's background (CSS 2.1 Appendix E). A box that is a stacking
-context without being positioned — under full opacity, transformed,
-masked, cut by a `clip-path`, with layout or paint containment or
+context without being positioned — under full opacity, filtered,
+transformed, masked, cut by a `clip-path`, with layout or paint containment or
 `isolation: isolate`, or naming one of those in `will-change`; a float
 or a flex item as much as a block — is painted with the positioned boxes
 whose `z-index` is 0, in the document's order among them (Appendix E,

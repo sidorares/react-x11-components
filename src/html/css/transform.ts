@@ -286,7 +286,7 @@ export function parseAngle(value: string, bare = true): number | null {
 
 /** A scale factor: a number, or a percentage of one (CSS Transforms 2, 5),
  *  or a `calc()` of either. */
-function parseFactor(value: string): number | null {
+export function parseFactor(value: string): number | null {
   const v = value.trim();
   if (v.endsWith('%')) {
     const n = parseNumber(v.slice(0, -1));

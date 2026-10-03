@@ -86,7 +86,7 @@ import {
   contained,
   containmentApplies,
   placedMatrix,
-  willHold,
+  holdsOutOfFlow,
 } from './layout/block.js';
 import {
   BOX_RAISES,
@@ -143,6 +143,9 @@ import {
 } from './svg.js';
 import type { IntrinsicSize, SurfaceMaker } from './svg.js';
 import type { CollapsedBorder } from './layout/collapse.js';
+import { colourFilter } from './css/filter.js';
+import type { ColourFilter, FilterFunction } from './css/filter.js';
+import type { FilterStore } from './filters.js';
 
 export interface Rect {
   x: number;
@@ -333,6 +336,10 @@ export interface PaintOptions {
    *  transform is animating (`paintSprite`). Absent, each paint draws such
    *  a box again. */
   sprites?: SpriteSource | null;
+  /** Where a filtered box's pixels are kept from one paint to the next,
+   *  read back and run through its colour functions (`paintFiltered`).
+   *  Absent, a filter's colour functions are not drawn. */
+  filters?: FilterStore | null;
   /** The boxes a presenter has on layers of their own (`src/html/sprites.ts`):
    *  each is a hole in the document, it and all it holds, where the layer
    *  shows through. */
@@ -1268,6 +1275,12 @@ function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   // multiplies each thing drawn rather than the group they make.
   const opacity = opacityOf(box);
   if (opacity <= 0) return;
+  if (
+    box.style.filter !== null &&
+    paintFiltered(ctx, box, options, null, opacity)
+  ) {
+    return;
+  }
   if (opacity < 1 && paintGroup(ctx, box, options, opacity)) return;
   const fade = opacity < 1 && typeof ctx.globalAlpha === 'number';
   if (fade) {
@@ -1383,6 +1396,15 @@ function paintTransformed(
       damage && mapRect(back, damage.x, damage.y, damage.width, damage.height),
     matrix: options.matrix ? multiply(options.matrix, through) : through,
   };
+  // a filter's colour functions are run over the box as laid out, and the
+  // result drawn through the matrix (Filter Effects 1, 2: the filter
+  // comes before the transform)
+  if (
+    box.style.filter !== null &&
+    paintFiltered(ctx, box, inside, through, opacityOf(box))
+  ) {
+    return;
+  }
   if (
     ctx.scalesText !== true &&
     !drawnAsPaths(box) &&
@@ -1475,7 +1497,14 @@ function paintProjected(
     if (undo) {
       ctx.transform!(undo[0], undo[1], undo[2], undo[3], undo[4], undo[5]);
     }
-    const kept = options.sprites ? spriteFor(box, options, total) : null;
+    const colour = box.style.filter && colourOf(box.style.filter);
+    const filtered = colour?.matrices.length
+      ? filteredFor(ctx, box, options, total, colour)
+      : null;
+    // a filtered box with nothing read for it yet draws nothing
+    if (filtered === undefined) return;
+    const kept =
+      filtered ?? (options.sprites ? spriteFor(box, options, total) : null);
     if (kept) {
       const { surface, x, y, width, height } = kept;
       drawProjected(
@@ -2028,6 +2057,101 @@ function spriteFor(
     );
   }
   return { surface, x: x0, y: y0, width: w, height: h };
+}
+
+/**
+ * A box a `filter`'s colour functions are run over (Filter Effects 1, 13):
+ * painted whole, as the group the filter makes it, on a surface of its
+ * own, and the surface's pixels run through the matrices before it is
+ * drawn — at the box's opacity, and through `through` where it turns. No
+ * context runs a filter, and pixels come back from a surface a round trip
+ * after they are asked for, so they are read and kept
+ * (`src/html/filters.ts`): until a read arrives the box is drawn from the
+ * one before, or not at all. True where it is drawn so, or is to draw
+ * nothing yet;
+ * false where there is nothing to run, or no way to — the headless mock, a
+ * box too large for a surface, an inline box, whose text is drawn on its
+ * block's lines — and the caller paints the box as it is.
+ */
+function paintFiltered(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  through: Matrix | null,
+  opacity: number,
+): boolean {
+  const colour = colourOf(box.style.filter!);
+  if (!colour?.matrices.length) return false;
+  const kept = filteredFor(ctx, box, options, through, colour);
+  if (kept === null) return false;
+  if (kept) drawThrough(ctx, kept.surface, through, kept.x, kept.y, opacity);
+  return true;
+}
+
+/**
+ * The surface a filtered box is drawn from (`paintFiltered`): the newest
+ * pixels read for its element, run through the matrices it has now, and a
+ * read asked for where those were not read under the key it draws under
+ * now (`spriteKey`). Undefined where nothing the box's size has been read
+ * yet, and nothing is drawn; null where no surface can be had.
+ */
+function filteredFor(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  through: Placed | null,
+  colour: ColourFilter,
+): Kept | null | undefined {
+  const store = options.filters;
+  if (!store || !options.surface || !ctx.drawImage) return null;
+  if (box.kind === 'inline') return null;
+  const own = through
+    ? ownBounds(box)
+    : {
+        x: box.boundsX,
+        y: box.boundsY,
+        width: box.boundsWidth,
+        height: box.boundsHeight,
+      };
+  const left = own.x + options.originX;
+  const top = own.y + options.originY;
+  const x0 = Math.floor(left);
+  const y0 = Math.floor(top);
+  if (!(own.width > 0 && own.height > 0)) return undefined;
+  // a pixel more than the box each way, wherever within a pixel its corner
+  // falls: a box moving a fraction at a time — a card lifted on hover —
+  // came to one height and the next alternately, and what was read at the
+  // other was no use to it
+  const w = Math.ceil(own.width) + 1;
+  const h = Math.ceil(own.height) + 1;
+  if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return null;
+  if (through?.length === 6 && !fitsFixedPoint(through, x0, y0)) {
+    return undefined;
+  }
+  let key = spriteKey(box, options, through, left - x0, top - y0);
+  // a background fixed to the viewport in it is where the viewport is
+  if (drawsAgainstViewport(box)) {
+    key += ` ${options.viewport?.x ?? 0} ${options.viewport?.y ?? 0}`;
+  }
+  const kept = store.at(box.el ?? box, box.pseudo ?? '', box, w, h, key);
+  if (!kept.fresh && !kept.reading) {
+    const surface = options.surface(w, h);
+    if (!surface) return null;
+    const on = surface.getContext('2d') as PaintContext;
+    paintUnfaded(
+      on,
+      box,
+      through
+        ? onSurface(options, x0, y0, w, h)
+        : inGroup(options, x0, y0, w, h),
+    );
+    if (!store.read(kept, surface, on)) return null;
+  }
+  // the newest pixels read for it, through the filter it has now: a read
+  // under way lags what is drawn, and never the filter
+  if (!kept.raw) return undefined;
+  const surface = store.filtered(kept, colour.matrices, colour.key);
+  return surface ? { surface, x: x0, y: y0, width: w, height: h } : undefined;
 }
 
 /** What a kept surface's drawing depends on beyond its box's: whether it
@@ -3385,11 +3509,33 @@ function inFlow(parent: Box, child: Box, options: PaintOptions): boolean {
   }
 }
 
-/** How opaque a box is drawn: its own `opacity`, and the one it takes from
- *  an inline box it broke in pieces (`FADED_BLOCKS`). */
+/** How opaque a box is drawn: its own `opacity`, a filter's `opacity()`
+ *  functions, and the opacity it takes from an inline box it broke in
+ *  pieces (`FADED_BLOCKS`). */
 function opacityOf(box: Box): number {
+  const style = box.style;
+  const own =
+    style.filter === null
+      ? style.opacity
+      : style.opacity * (colourOf(style.filter)?.alpha ?? 1);
   const taken = FADED_BLOCKS.get(box);
-  return taken === undefined ? box.style.opacity : box.style.opacity * taken;
+  return taken === undefined ? own : own * taken;
+}
+
+/** What a filter's colour functions come to, kept by the list: asked at
+ *  each paint of a box with one. */
+const COLOUR_FILTERS = new WeakMap<
+  readonly FilterFunction[],
+  ColourFilter | null
+>();
+
+function colourOf(list: readonly FilterFunction[]): ColourFilter | null {
+  let known = COLOUR_FILTERS.get(list);
+  if (known === undefined) {
+    known = colourFilter(list);
+    COLOUR_FILTERS.set(list, known);
+  }
+  return known;
 }
 
 /** Whether a child is a flex box of its parent's flow, or a grid. Its
@@ -4041,12 +4187,12 @@ export function drawnAtViewport(box: Box): boolean {
 
 /** Whether a box is the containing block of the fixed boxes in it: a
  *  transformed box, one with layout or paint containment, or one that
- *  names either in `will-change` (`willHold`). */
+ *  names either in `will-change`, or a filter (`holdsOutOfFlow`). */
 function holdsFixed(box: Box): boolean {
   return (
     transformed(box.style) ||
     contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT) ||
-    willHold(box, true)
+    holdsOutOfFlow(box, true)
   );
 }
 
@@ -4069,7 +4215,7 @@ export function containingBlockOf(box: Box): Box | null {
     containing?.parent &&
     containing.style.position === 'static' &&
     !transformed(containing.style) &&
-    !willHold(containing, false)
+    !holdsOutOfFlow(containing, false)
   ) {
     containing = containing.parent;
   }
@@ -4836,7 +4982,8 @@ function pushClip(
  * positioned block, which CSS paints among them in document order (CSS 2.1
  * Appendix E) — a relative box after an absolute one covers it. And a box
  * that is a stacking context unpositioned — under full opacity,
- * transformed, masked, cut to a path, contained, isolated — which is
+ * filtered, transformed, masked, cut to a path, contained, isolated —
+ * which is
  * painted in the
  * layer of the positioned boxes with a `z-index` of 0, in the document's
  * order among them (Appendix E, step 8; CSS Color 4, 3.2), as Chrome,
@@ -5099,7 +5246,7 @@ function settleLayers(box: Box, list: Box[]): void {
  * flex item with one; fixed or sticky with none (CSS Positioned Layout 3, as
  * browsers paint them — a fixed header's box set behind its content with
  * `z-index: -1` went behind the page); transformed (CSS Transforms 1, 3);
- * or under full opacity (CSS Color 4
+ * filtered (Filter Effects 1, 2); or under full opacity (CSS Color 4
  * 3.2), its own or the opacity it takes from an inline box it broke
  * (`FADED_BLOCKS`), which is painted as one group — faded with it, or at
  * `opacity: 0` not at all, where its root context drew a hover menu's
@@ -5109,6 +5256,8 @@ export function stacksLayers(box: Box): boolean {
   const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
   if (style.opacity < 1) return true;
+  // and a filter, which is applied to the group (Filter Effects 1, 2)
+  if (style.filter !== null) return true;
   // and so does a mask, which is applied to the group (CSS Masking 1, 7),
   // and a clip path, which cuts it (5.1)
   if (masked(style) || pathClips(box)) return true;
@@ -5178,7 +5327,7 @@ export function clipsFor(box: Box, context: Box): Box[] {
     const fixed = box.style.position === 'fixed';
     while (from && from !== context) {
       const style = from.style;
-      if (transformed(style) || willHold(from, fixed)) break;
+      if (transformed(style) || holdsOutOfFlow(from, fixed)) break;
       if (!fixed && style.position !== 'static') break;
       from = from.parent;
     }

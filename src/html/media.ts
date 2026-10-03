@@ -270,14 +270,18 @@ function inset(rect: Rect, by: number): Rect {
  * Whether a sibling over the document can stand for the video: no matrix
  * the document draws it through, on it or around it — its translation is
  * layout's and moves the box — no `clip-path` or mask, which cut it to
- * what a rectangle is not, and not fixed to the viewport, which a sibling
- * the document scrolls does not follow.
+ * what a rectangle is not, no filter, which is run over the pixels the
+ * document draws, and not fixed to the viewport, which a sibling the
+ * document scrolls does not follow.
  */
 function mountable(box: Box): boolean {
   if (drawnAtViewport(box)) return false;
   for (let at: Box | null = box; at; at = at.parent) {
     if (placedMatrix(at)) return false;
     if (at.style.clipPath || masked(at.style)) return false;
+    // a filter is run over the pixels the document draws, which a player
+    // over them is not
+    if (at.style.filter !== null) return false;
   }
   return true;
 }

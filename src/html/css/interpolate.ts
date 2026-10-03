@@ -19,6 +19,8 @@
 // value go.
 
 import { blend } from './color.js';
+import { interpolateFilters } from './filter.js';
+import type { FilterFunction } from './filter.js';
 import {
   IDENTITY,
   multiply,
@@ -70,6 +72,13 @@ export function interpolateField(
       return typeof a === 'number' && typeof b === 'number'
         ? clamp(a + (b - a) * q, 0, 1)
         : undefined;
+    case 'filter':
+      return interpolateFilters(
+        a as FilterFunction[] | null,
+        b as FilterFunction[] | null,
+        q,
+        mix,
+      );
     case 'transform':
       return interpolateTransforms(
         a as TransformFunction[] | null,
