@@ -349,6 +349,14 @@ export class HtmlViewNode extends Node {
   private _sheetIds = new Map<string, number>();
   /** Blurred shadows, drawn once each. */
   private _shadowCache: SurfaceCache | null = null;
+  /**
+   * The rasters of the SVG images this has drawn at a size more than once
+   * (`drawSvg`), the least recently drawn given up first past the cache's
+   * budget: what a single paint draws once is not kept, and a page painted
+   * once keeps none. `_drawnOnce` is the keys drawn once.
+   */
+  private _drawings: SurfaceCache | null = null;
+  private _drawnOnce = new Set<string>();
   /** Whether the backend was found to have no offscreen surface. */
   private _noSurface = false;
   /** The surfaces kept for the boxes whose transform is animating, drawn
@@ -1979,6 +1987,9 @@ export class HtmlViewNode extends Node {
     this._source.destroy();
     this._shadowCache?.destroy();
     this._shadowCache = null;
+    this._drawings?.destroy();
+    this._drawings = null;
+    this._drawnOnce.clear();
     this._sprites?.clear();
     this._sprites = null;
     this._lifted.clear();
@@ -3742,6 +3753,28 @@ export class HtmlViewNode extends Node {
     return surface;
   }
 
+  /** The raster kept of an SVG image at a size (`_drawings`), made on its
+   *  second drawing there; null on its first, and where none can be. */
+  private _drawingKept(
+    key: string,
+    width: number,
+    height: number,
+    draw: (ctx: unknown) => void,
+  ): SurfaceLike | null {
+    const cache = (this._drawings ??= new SurfaceCache(this.app));
+    if (!cache.has(key)) {
+      if (!this._drawnOnce.has(key)) {
+        // keys drawn once are cheap, and a long life of them is forgotten
+        // wholesale
+        if (this._drawnOnce.size >= 4096) this._drawnOnce.clear();
+        this._drawnOnce.add(key);
+        return null;
+      }
+      this._drawnOnce.delete(key);
+    }
+    return cache.get(key, width, height, draw);
+  }
+
   private _paint(
     ctx: Context2D,
     tree: BoxTree,
@@ -3792,6 +3825,8 @@ export class HtmlViewNode extends Node {
           height,
           draw as (ctx: unknown) => void,
         ),
+      drawingKept: (key, width, height, draw) =>
+        this._drawingKept(key, width, height, draw as (ctx: unknown) => void),
       sprites: this._spriteSource,
     };
   }

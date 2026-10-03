@@ -3120,6 +3120,18 @@ about 0.15 ms for keeping the styles. Where the fonts have nothing to look
 up, a native text engine or faces handed over in memory, the call does
 nothing.
 
+**An SVG image is set from its paths once a size.** A background, a list
+marker or an `<img>` that is an SVG was set from its paths at every paint
+that reached it, which is milliseconds for a drawing of a few tens of
+kilobytes. The element keeps a raster of a drawing at a size the second
+time it draws it there, and copies it after, wherever the copy is the
+drawing pixel for pixel: in whole pixels, with no transform to draw
+through. A page painted once keeps none, and those kept are held to eight
+million pixels, the least recently drawn given up first. Zen Garden 219
+draws its backgrounds and panels from SVG, and every frame of its
+animations repaints some of them: on X11 a paint went from 9.4 to 1.9 ms
+with them running, and its hovers from 22–31 frames a second to 44–55.
+
 **A turning box is painted once while it turns.** On X11 a turned box
 with text in it is painted on a surface, and the surface drawn through
 its matrix; every frame of an animation painted it again, a card and all
