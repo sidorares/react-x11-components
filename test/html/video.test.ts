@@ -6,6 +6,7 @@ import {
   act,
   cleanup,
   expectPixel,
+  fireEvent,
   renderX11,
   screen,
   waitFor,
@@ -414,6 +415,34 @@ test('a press on a video with controls is the video’s, and on one without the 
     typeof (video as unknown as { props: { onClick?: unknown } }).props.onClick,
     'function',
   );
+});
+
+test('over a video with controls the window shows the arrow, not the document’s I-beam', async () => {
+  await renderVideo(
+    '<p>text before</p>' +
+      '<video src="a.mp4" controls style="display:block;width:60px;height:30px">' +
+      '</video>',
+    (_, app) => ({
+      kind: 'video',
+      frames: createVideoFrames(app, { width: 16, height: 16 }),
+    }),
+  );
+  const [video] = videos();
+  const wnd = (
+    video as unknown as {
+      root: { window: { setCursor(name: string | null): void } };
+    }
+  ).root.window;
+  const shown: (string | null)[] = [];
+  const set = wnd.setCursor.bind(wnd);
+  wnd.setCursor = (name) => {
+    shown.push(name);
+    set(name);
+  };
+  fireEvent.mouseMove(video);
+  await act();
+  await waitFor(() => assert.ok(shown.length > 0, 'a cursor'));
+  assert.strictEqual(shown.at(-1), 'default');
 });
 
 test('a box fixed to the viewport cuts the player where the scroll brings it over', async () => {

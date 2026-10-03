@@ -18,7 +18,10 @@
 // A press goes through to the document — a drag across a video selects the
 // text around it — unless the page asked for `controls`. There is no bar of
 // them: a press plays and pauses, as a browser's video does, and the rest is
-// an application's to draw, around the document.
+// an application's to draw, around the document. A video that takes the
+// press shows the arrow over it, as a browser's does: the boxes it is in say
+// nothing, and the document's root, a selectable surface, would have it
+// show the I-beam.
 import React from 'react';
 import type { ReactNode } from 'react';
 import type { VideoNode } from 'react-x11';
@@ -73,7 +76,12 @@ function renderVideo(
     'frames' in rect.source
       ? { frames: rect.source.frames }
       : { src: rect.source.src };
-  const style: Style = { width, height, objectFit: rect.fit };
+  const style: Style = {
+    width,
+    height,
+    objectFit: rect.fit,
+    ...(rect.controls && { cursor: 'default' }),
+  };
   return hx(
     'box',
     {
