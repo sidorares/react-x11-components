@@ -531,7 +531,12 @@ export function layoutFlex(
   }
 
   const contentHeight = root.getComputedHeight();
-  root.freeRecursive();
+  // The nodes this made, the root first, which leaves its children with no
+  // parent to be taken out of one at a time. `freeRecursive` asked the root
+  // for each child, and the engine hands a node back as a new object each
+  // time: a fifth of the calls into Yoga in a page of cards.
+  root.free();
+  for (const { node } of items) node.free();
   return Math.max(contentHeight, bottom - box.contentY);
 }
 
