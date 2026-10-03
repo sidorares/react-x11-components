@@ -13,6 +13,7 @@ import {
 import { drawnKinds, registeredElements } from 'react-x11/host';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
+import type { ResourceRequest, ResourceResult } from '../../src/html/index.js';
 import { decodeStylesheet } from '../../src/html/css/decode.js';
 import { FONTS, boxOf, h, render, view } from './harness.js';
 
@@ -293,6 +294,87 @@ test("an imported stylesheet's rules come before its importer's", async () => {
   const el = view(screen.getByTestName('doc') as DrawnNode);
   const p = boxOf(el, 'p') as unknown as { style: { color: string } };
   assert.strictEqual(p.style.color, '#00ff00');
+});
+
+test('a stylesheet the head links to, or imports, holds the first rendering until it arrives; one in the body, for print or declined holds nothing', async () => {
+  // A browser paints a page once its head's sheets are in (HTML,
+  // "render-blocking"). Drawn before then, the document was built, laid out
+  // and painted in the user agent's styles, and built again when the sheet
+  // landed: a flash of unstyled content, and the first frame's work twice.
+  const held = new Map<string, () => void>();
+  const mount = async (source: string, declined = false) => {
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 300, flexDirection: 'column' } },
+        h(Html, {
+          source,
+          partial: false,
+          onResource: (r: ResourceRequest) => {
+            if (r.kind !== 'stylesheet' || declined) return null;
+            return new Promise<ResourceResult>((answer) =>
+              held.set(r.url, () =>
+                answer({
+                  kind: 'stylesheet' as const,
+                  text:
+                    r.url === 'a.css'
+                      ? '@import "b.css"; p { color: #ff0000 }'
+                      : 'p { margin: 0 }',
+                }),
+              ),
+            );
+          },
+          'data-testname': 'doc',
+        }),
+      ),
+      { backend: 'mock' },
+    );
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    return () => (el as unknown as { _tree: object | null })._tree;
+  };
+  const release = async (url: string) => {
+    held.get(url)!();
+    held.delete(url);
+    await act();
+    await act();
+  };
+
+  // in the head: nothing until the sheet, and what it imports, are in
+  let tree = await mount(
+    '<html><head><link rel="stylesheet" href="a.css"></head>' +
+      '<body><p id="p">text</p></body></html>',
+  );
+  assert.strictEqual(tree(), null, 'held for a.css');
+  await release('a.css');
+  assert.strictEqual(tree(), null, 'and for the b.css it imports');
+  await release('b.css');
+  assert.ok(tree(), 'drawn once both are in');
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const p = boxOf(el, 'p') as unknown as { style: { color: string } };
+  assert.strictEqual(p.style.color, '#ff0000', 'styled from the first');
+  cleanup();
+
+  // a fragment's link before its content is in the head as well
+  tree = await mount('<link rel="stylesheet" href="b.css"><p>text</p>');
+  assert.strictEqual(tree(), null, 'a fragment held');
+  await release('b.css');
+  assert.ok(tree());
+  cleanup();
+
+  // after content, in the body: drawn before it arrives
+  tree = await mount('<p>text</p><link rel="stylesheet" href="b.css">');
+  assert.ok(tree(), 'not held by a sheet in the body');
+  await release('b.css');
+  cleanup();
+  tree = await mount(
+    '<link rel="stylesheet" href="b.css" media="print"><p>text</p>',
+  );
+  assert.ok(tree(), 'nor by one for print');
+  held.clear();
+  cleanup();
+  tree = await mount('<link rel="stylesheet" href="b.css"><p>text</p>', true);
+  assert.ok(tree(), 'nor by one the host declined');
 });
 
 test('an image handed over as bytes is decoded and drawn', async (t) => {

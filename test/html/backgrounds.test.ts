@@ -8,32 +8,45 @@ import {
   expectPixel,
   isNear,
   pixelAt,
+  renderX11,
+  screen,
   waitFor,
 } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
 import { blend } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
+  FONTS,
   RED_PNG,
   SVG_NS,
   boxOf,
+  bytesApart,
   fillsIn,
   fillsOf,
+  h,
   metric,
   pathsOf,
   render,
   render2x,
   renderAsking,
+  rebuilt,
   renderWithBytes,
   renderWithImages,
+  snapshot,
   solidPng,
   svgBytes,
+  treeOf,
   view,
   windingAt,
 } from './harness.js';
 import type { Fill, PaintOp } from './harness.js';
+import { Html } from '../../src/index.js';
 import type { DrawnNode } from 'react-x11';
-import type { HtmlViewNode } from '../../src/html/index.js';
+import type {
+  HtmlViewNode,
+  ResourceRequest,
+  ResourceResult,
+} from '../../src/html/index.js';
 
 afterEach(cleanup);
 
@@ -1866,6 +1879,78 @@ metric(
         .boxDecorationBreak,
       'clone',
       'under its prefixed name too',
+    );
+  },
+);
+
+metric(
+  'an image that arrives to be painted only is painted, the boxes kept; one an image is sized by builds them again',
+  async () => {
+    // A page's backgrounds arrive one at a time over a network, after the
+    // build that asked for them. None of them is a box's size, and each was a
+    // build and a layout of the whole document; an <img> without a size is
+    // one, and still is.
+    const BLUE = solidPng(30, 16, [0, 0, 255]);
+    const waiting = new Map<string, () => void>();
+    const { result } = await (async () => {
+      const result = await renderX11(
+        h(
+          'box',
+          { style: { width: 300, flexDirection: 'column' } },
+          h(Html, {
+            source:
+              '<style>body{margin:0}#bg{width:40px;height:20px;' +
+              'background:url(bg.png)}#bd{width:40px;height:20px;' +
+              'border:4px solid;border-image:url(bg.png) 4}' +
+              'img{display:block}</style>' +
+              '<div id="bg"></div><div id="bd"></div><img id="im" src="im.png">',
+            partial: false,
+            'data-testname': 'doc',
+            onResource: (r: ResourceRequest) => {
+              if (r.kind !== 'image') return null;
+              const bytes = r.url === 'im.png' ? BLUE : RED_PNG;
+              return new Promise<ResourceResult>((answer) =>
+                waiting.set(r.url, () => answer({ kind: 'image', bytes })),
+              );
+            },
+          }),
+        ),
+        { width: 340, height: 200, fonts: FONTS! },
+      );
+      await act();
+      return { result };
+    })();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    await waitFor(() =>
+      assert.ok(waiting.has('bg.png') && waiting.has('im.png')),
+    );
+    const before = treeOf(el);
+    await expectPixel(result.ctx, 20, 10, [255, 255, 255], {
+      message: 'nothing yet',
+    });
+    // the background: painted, from the same boxes
+    waiting.get('bg.png')!();
+    await waitFor(() => expectPixel(result.ctx, 20, 10, [255, 0, 0]));
+    assert.strictEqual(treeOf(el), before, 'not built again');
+    await expectPixel(result.ctx, 2, 22, [255, 0, 0], {
+      message: 'the border image too',
+    });
+    assert.strictEqual(
+      bytesApart(await snapshot(result, el), await rebuilt(result, el)),
+      0,
+      'as a build of the whole document draws it',
+    );
+    // the image without a size: built again, at its size
+    const built = treeOf(el);
+    assert.deepStrictEqual(
+      [boxOf(el, 'im').width, boxOf(el, 'im').height],
+      [0, 0],
+    );
+    waiting.get('im.png')!();
+    await waitFor(() => assert.notStrictEqual(treeOf(el), built));
+    assert.deepStrictEqual(
+      [boxOf(el, 'im').width, boxOf(el, 'im').height],
+      [30, 16],
     );
   },
 );

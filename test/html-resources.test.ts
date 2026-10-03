@@ -727,13 +727,14 @@ test("a linked sheet's URLs resolve against it — or where it said it came from
 });
 
 test('a stylesheet that arrives after the first paint restyles the document', async () => {
-  // Every stylesheet a host on a network hands over arrives this way. The
+  // A sheet the body links to arrives this way over a network; one the
+  // head links to holds the first paint instead (`test/html/element`). The
   // arrival rebuilt the boxes, and the cascade the boxes are styled from
   // was never read again: the sheet did not apply until something else
   // restyled the document.
   let answer!: (result: ResourceResult) => void;
   const { node } = await mount(
-    '<link rel="stylesheet" href="a.css"><p id="p">text</p>',
+    '<p id="p">text</p><link rel="stylesheet" href="a.css">',
     (r) =>
       r.kind === 'stylesheet'
         ? new Promise<ResourceResult>((resolve) => (answer = resolve))
