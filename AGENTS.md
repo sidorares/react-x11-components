@@ -1850,6 +1850,13 @@ once, so that where everything it changed is positioned out of the flow
 and no other box moved, it repaints only those boxes' ink
 (`_rebuildFrame`). Compare where a box is laid out there, not how far it
 draws: an ancestor's ink bounds take in the marquee scrolling inside it.
+**A frame repaints a box where it is drawn now** (`_inkOf`): a box fixed
+to the viewport, or in one, is laid out at the document's top and drawn
+where the pane's scroll has the viewport, so its ink is moved by that
+scroll, as the paint and the hit test move it; and a `::before` or an
+`::after` has no element in `styles`, so `_changedOutOfFlow` compares its
+own box. Zen Garden 215's starburst turns and its robot rises, both fixed
+pseudo-elements, and neither showed a frame until a scroll repainted them.
 `animate={false}` draws each animation at rest, which is how the Zen
 Garden bench runs `<Html>`.
 
