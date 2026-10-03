@@ -15,24 +15,72 @@ rather than a display number: XQuartz crashes in the GL cells over 2,000
 nodes, and the socket starts it again for the next cell, where `:29` leaves
 every cell after the crash failing to connect.
 
-| Probe             | What                                     | `ACTION=`                                                                                                                                                                                 |
-| ----------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `matrix.tsx`      | `<Flow>`, five scenes                    | `pan`, `zoom`, `wheel`, `drag` (`SCENE`, `GL`, `ZOOM`, `MAP`)                                                                                                                             |
-| `mapsweep.tsx`    | `<Map>`, London z15                      | `pan`, `drag`, `wheel`, `fly` (`RENDERER=retained\|gl`; tiles from `BENCH_TILES`)                                                                                                         |
-| `chartsweep.tsx`  | the charts                               | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                                                             |
-| `tablesweep.tsx`  | `<Table>`, 100,000 log rows              | `wheel`, `fling`, `thumb`, `jump`                                                                                                                                                         |
-| `treesweep.tsx`   | `<Tree>`, 100,000 rows, all expanded     | `wheel`, `fling`, `thumb`, `keys` (`ROWS`; `FRAMES=1` says where the selection sits in each frame)                                                                                        |
-| `docsweep.tsx`    | `<Markdown>`, `<Html>` (`COMP=md\|html`) | `mount`, `edit`, `append`, `scroll`, `reflow` (`SIZE` sections, default 300 ≈ 600 KB; `DOC=tailwind` puts a Tailwind-4-shaped stylesheet under the report)                                |
-| `editorsweep.tsx` | `<CodeEditor>` (`COMP=code`)             | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` (`LINES`, `LONG`, `PLAIN=1` for no language) |
-| `editorsweep.tsx` | `<RichTextEditor>` (`COMP=rte`)          | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste` (`SIZE`)                                                                                                   |
-| `startup.mjs`     | an app's start, run with plain `node`    | `APP=small\|menubar\|editor`: the imports, `createRoot` and the first paint, in ms since the process started (`editor` reads `dist/`; `npm run build` first)                              |
-| `docgen.ts`       | the documents                            | a report of N sections, deterministic by seed; the Markdown and HTML spellings of the same content                                                                                        |
+| Probe             | What                                                    | `ACTION=`                                                                                                                                                                                 |
+| ----------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `matrix.tsx`      | `<Flow>`, five scenes                                   | `pan`, `zoom`, `wheel`, `drag` (`SCENE`, `GL`, `ZOOM`, `MAP`)                                                                                                                             |
+| `mapsweep.tsx`    | `<Map>`, London z15                                     | `pan`, `drag`, `wheel`, `fly` (`RENDERER=retained\|gl`; tiles from `BENCH_TILES`)                                                                                                         |
+| `chartsweep.tsx`  | the charts                                              | `stream`, `pan1m`, `zoom1m`, `multiples`, `scatter`, `scroll`                                                                                                                             |
+| `tablesweep.tsx`  | `<Table>`, 100,000 log rows                             | `wheel`, `fling`, `thumb`, `jump`                                                                                                                                                         |
+| `treesweep.tsx`   | `<Tree>`, 100,000 rows, all expanded                    | `wheel`, `fling`, `thumb`, `keys` (`ROWS`; `FRAMES=1` says where the selection sits in each frame)                                                                                        |
+| `docsweep.tsx`    | `<Markdown>`, `<Html>` (`COMP=md\|html`)                | `mount`, `edit`, `append`, `scroll`, `reflow` (`SIZE` sections, default 300 ≈ 600 KB; `DOC=tailwind` puts a Tailwind-4-shaped stylesheet under the report)                                |
+| `editorsweep.tsx` | `<CodeEditor>` (`COMP=code`)                            | `mount`, `scroll`, `type-end`, `type-mid`, `type-start`, `undo`, `replace`, `long-mount`, `long-type`, `caret-down`, `enter-end`, `jump-end` (`LINES`, `LONG`, `PLAIN=1` for no language) |
+| `editorsweep.tsx` | `<RichTextEditor>` (`COMP=rte`)                         | `mount`, `scroll`, `type-mid`, `type-hidden`, `type-long`, `bold-all`, `paste` (`SIZE`)                                                                                                   |
+| `startup.mjs`     | an app's start, run with plain `node`                   | `APP=small\|menubar\|editor`: the imports, `createRoot` and the first paint, in ms since the process started (`editor` reads `dist/`; `npm run build` first)                              |
+| `htmlsweep.mjs`   | `<Html>`, a document at a time, plain `node` on `dist/` | `SUITE=corpus` (every Zen Garden design from a `CACHE`) or `synthetic` (`htmlgen.mjs`'s features, `SCALE=small\|large\|both`); a line a document, see below                               |
+| `docgen.ts`       | the documents                                           | a report of N sections, deterministic by seed; the Markdown and HTML spellings of the same content                                                                                        |
+| `htmlanim.mjs`    | `<Html>`, a Zen Garden design moving                    | `PAGE` (219), `TARGETS`: its animations running, frames with the pointer away, then on each target and off it again; plain `node` on `dist/`                                              |
+| `htmlgen.mjs`     | `<Html>`'s synthetic documents                          | one a feature — `text`, `inline`, `table`, `flex`, `grid`, `float`, `selectors`, `positioned`, `paint`, `anim` — at an everyday size and a stress size, deterministic by seed             |
 
 What the fields mean: `fps` — frames that painted, per second; `frame50`,
 `frame95` — the window's flush time; `lat50`, `lat95` — from an input to the
 end of the first flush that painted after it; `cpu` — this process, percent
 of a core; `firstPaint`, `idle` — for mounts. A frame is
 `WindowNode._flushFrame` answering that it painted.
+
+## `<Html>` over many documents
+
+`htmlsweep.mjs` mounts one document after another in one window and
+measures each the way a page is lived with: the source handed over to its
+first frame and to the last frame of its arrivals (`first`, `settle`, and
+the processor time between, `cpu`), then each stage of the pipeline forced
+through the element's own code and timed apart — the parse, the cascade
+from its sheets' text (`cold`) and with them kept (`restyle`), the boxes
+(`build`), the layout at the same width (`relayout`) and at another
+(`resize`), a whole viewport painted (`paint`) — then the pane scrolled and
+the pointer moved over a grid of points. The corpus is the CSS Zen Garden's
+221 designs, read whole from the bench's cache before anything is timed, so
+an answer costs no disk read; `LATENCY=ms` answers each resource that much
+later at most, by a delay its URL fixes, as a network spreads arrivals over
+the first frames. `PROFILE=dir` writes a CPU profile of each mount, and
+`cpuprofile.ts` reads them as one with `ALL=1`. `SNAPSHOT=dir
+SNAPSHOT_AT=010,040` writes a heap snapshot after each named document is
+gone and collected: load two in Chrome's DevTools, Memory panel, and
+compare them for what one document left behind. Answered at once, a
+page's arrivals fall into one frame and hide what they cost, which is
+what `LATENCY` is for.
+
+The corpus holds every animation at rest, which is how it compares
+designs, and so it cannot see what a design costs while it moves.
+`htmlanim.mjs` is that half: one design with its animations running, the
+frames with the pointer away from it, and with it on each panel a hover
+moves and off it again (`TARGETS`). Zen Garden 219, whose every frame is a
+build, is its default.
+
+```bash
+npm run build
+NODE_ENV=production REACT_X11_BACKEND=x11 DISPLAY=:99 CACHE=zengarden-results/cache \
+  node --expose-gc scripts/bench/sweep/htmlsweep.mjs > corpus.jsonl
+NODE_ENV=production REACT_X11_BACKEND=cocoa SUITE=synthetic \
+  node --expose-gc scripts/bench/sweep/htmlsweep.mjs > synthetic.jsonl
+node scripts/bench/sweep/htmltab.mjs corpus.jsonl [older.jsonl]
+```
+
+It runs `dist/`, in React's production build, with plain node: tsx names
+every function it compiles, which a profile of `src/` reads as time. A
+headless X server (Xvfb) is enough for the X11 backend; the Cocoa one
+needs its window uncovered. `htmltab.mjs` prints the totals — the time to
+render every document — each measurement's distribution, the documents
+that cost the most of it, and with a second file what moved.
 
 ## Running one
 

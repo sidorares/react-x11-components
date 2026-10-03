@@ -1,7 +1,8 @@
 // A V8 CPU profile, read four ways. Run a probe with
 // `NODE_OPTIONS=--cpu-prof --cpu-prof-dir=<dir>` and point this at the
 // directory; it reads the largest `.cpuprofile` there, which is the probe's
-// own process rather than a helper's.
+// own process rather than a helper's — or, with `ALL=1`, every profile
+// there as one: `htmlsweep.mjs`'s `PROFILE` writes one a document.
 //
 //   npx tsx scripts/bench/sweep/cpuprofile.ts self <dir> [count]
 //   npx tsx scripts/bench/sweep/cpuprofile.ts incl <dir> <regex>
@@ -37,15 +38,33 @@ if (!mode || !dir) {
   console.error('usage: cpuprofile.ts self|incl|callers|tree <dir> [...]');
   process.exit(1);
 }
-const file = readdirSync(dir)
+const files = readdirSync(dir)
   .filter((f) => f.endsWith('.cpuprofile'))
   .map((f) => path.join(dir, f))
-  .sort((a, b) => statSync(b).size - statSync(a).size)[0];
+  .sort((a, b) => statSync(b).size - statSync(a).size)
+  .slice(0, process.env.ALL ? Infinity : 1);
+const file = files[0];
 if (!file) {
   console.error(`no .cpuprofile in ${dir}`);
   process.exit(1);
 }
-const profile = JSON.parse(readFileSync(file, 'utf8')) as Profile;
+/** The profiles, as one: each one's node ids moved past the last one's. */
+const profile: Profile = { nodes: [], samples: [], timeDeltas: [] };
+const roots: number[] = [];
+for (const f of files) {
+  const one = JSON.parse(readFileSync(f, 'utf8')) as Profile;
+  const offset = profile.nodes.reduce((m, n) => Math.max(m, n.id), 0);
+  roots.push(one.nodes[0].id + offset);
+  for (const n of one.nodes) {
+    profile.nodes.push({
+      ...n,
+      id: n.id + offset,
+      children: n.children?.map((c) => c + offset),
+    });
+  }
+  for (const id of one.samples) profile.samples.push(id + offset);
+  for (const d of one.timeDeltas) profile.timeDeltas.push(d);
+}
 const byId = new Map(profile.nodes.map((n) => [n.id, n]));
 const parent = new Map<number, number>();
 for (const n of profile.nodes)
@@ -66,7 +85,9 @@ const top = (m: Map<string, number>, n: number) =>
   [...m].sort((a, b) => b[1] - a[1]).slice(0, n);
 
 const total = [...selfOf.values()].reduce((a, b) => a + b, 0);
-console.log(`${path.basename(file)}: ${(total / 1000).toFixed(0)} ms sampled`);
+console.log(
+  `${files.length > 1 ? `${files.length} profiles` : path.basename(file)}: ${(total / 1000).toFixed(0)} ms sampled`,
+);
 
 if (mode === 'self') {
   const self = new Map<string, number>();
@@ -138,7 +159,7 @@ if (mode === 'self') {
     if (hit) add(id, 0, root);
     for (const c of byId.get(id)!.children ?? []) visit(c, inside || hit);
   };
-  visit(profile.nodes[0].id, false);
+  for (const id of roots) visit(id, false);
   console.log(`${arg}: ${(root.us / 1000).toFixed(0)} ms`);
   const print = (branch: Branch, indent: number) => {
     for (const [k, b] of [...branch.kids].sort((x, y) => y[1].us - x[1].us)) {
