@@ -1043,10 +1043,14 @@ metric(
       Math.abs(inside.width - side) <= 1 && Math.abs(inside.height - side) <= 1,
       `inside, a ${side}px square: ${inside.width} by ${inside.height}`,
     );
-    assert.strictEqual(
-      inside.left,
-      Math.round(e.x),
-      'at the start of the line',
+    // within a pixel: where half the ascent is a half pixel — DejaVu's 37
+    // at 40px, on Linux — the square is drawn on whole pixels 19 by 18, its
+    // drawing centred in that, so its edge is on a half pixel, and pixman's
+    // 17 sample columns cover 8 of the pixel there, which reads as less
+    // than half covered
+    assert.ok(
+      Math.abs(inside.left - Math.round(e.x)) <= 1,
+      `at the start of the line, ${Math.round(e.x)}: ${inside.left}`,
     );
 
     // the square is device pixels: twice as large at 2x
