@@ -727,7 +727,8 @@ style sheet — and centred whatever `object-position` says. The opacity the
 document fades it by fades the player.
 
 **There are no `controls` drawn.** A press on a video with `controls` plays
-and pauses it, as one in a browser does; a press on one without goes to the
+and pauses it, as one in a browser does, and the pointer over it is the
+arrow rather than the document's I-beam; a press on one without goes to the
 document, so a drag across it selects the text around it. A transport bar
 is an application's to draw, around the document. `<audio>` is not a
 video, and plays nothing.
