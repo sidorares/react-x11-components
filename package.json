@@ -165,6 +165,7 @@
     "docs:build": "npm --prefix website run build",
     "bench:zengarden": "node --import tsx scripts/zengarden/run.ts",
     "bench:zengarden:scroll": "node --import tsx scripts/zengarden/scroll.tsx",
+    "bench:zengarden:resize": "node --import tsx scripts/zengarden/resize.tsx",
     "examples:browser": "node --import tsx examples/browser/browser.tsx",
     "examples:calendar": "node --import tsx examples/calendar.tsx",
     "examples:charts": "node --import tsx examples/charts.tsx",

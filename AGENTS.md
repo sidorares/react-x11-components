@@ -2637,6 +2637,7 @@ npm run docs          # sync docs/ into website/ and serve it
 npm run docs:build    # what the deploy workflow runs
 npm run bench:zengarden  # the CSS Zen Garden against Chrome — scripts/zengarden/
 npm run bench:zengarden:scroll  # a Zen Garden page scrolled, frame costs by region
+npm run bench:zengarden:resize  # each design's window dragged narrower, frame costs
 ```
 
 Every `examples:<name>` needs a display — a real `$DISPLAY`, or a Mac running

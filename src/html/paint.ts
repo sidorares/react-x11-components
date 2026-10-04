@@ -327,6 +327,15 @@ export interface PaintOptions {
     height: number,
     draw: (ctx: PaintContext) => void,
   ): unknown;
+  /** A block of a small background image's tiles, made for its key on a
+   *  surface `width` by `height` and kept, to be drawn with `drawImage`
+   *  (`tileBlock`). Null where there is no surface to be had. */
+  tilesKept?(
+    key: string,
+    width: number,
+    height: number,
+    draw: (ctx: PaintContext) => void,
+  ): unknown;
   /** An SVG image's raster at a size, made for its key on a surface `width`
    *  by `height` and kept, to be drawn with `drawImage` (`drawSvg`); null
    *  where it is not kept, and the drawing is set from its paths. */
@@ -6416,6 +6425,90 @@ function columnBox(
  *  context has no pattern to fill with. Past it, the image draws once. */
 const MAX_TILES = 4096;
 
+/** How many tiles of a repeating background make it worth drawing them
+ *  from a block of them (`tileBlock`) rather than one by one. */
+const BLOCK_FROM = 16;
+
+/** The side, in device pixels, a block of tiles is made up to along each
+ *  axis the image repeats on, and the most pixels one may hold. */
+const BLOCK_SIDE = 256;
+const BLOCK_PIXELS = 1 << 20;
+
+/** The most copies a level of a block is made of (`tileBlock`). */
+const BLOCK_COPIES = 16;
+
+/** A number for a decoded image, the same while it lives: its part in the
+ *  key of a block of its tiles. */
+const IMAGES = new WeakMap<object, number>();
+let images = 0;
+
+/** Whether a background's tiles repeat along an axis, by its mode, which
+ *  keeps a block's key the same however much of a box a paint reaches: all
+ *  but `no-repeat`, and `space` with room for no more than one. */
+function repeats(mode: RepeatMode, run: number, size: number): boolean {
+  return mode !== 'no-repeat' && (mode !== 'space' || run > size);
+}
+
+/**
+ * A block of a repeating background's tiles, `iw` by `ih` device pixels
+ * each, kept on a surface (`PaintOptions.tilesKept`) and drawn in their
+ * place: a block at least `BLOCK_SIDE` along each axis the image repeats
+ * on. A tile is drawn with a `drawImage` of its own where a context has no
+ * pattern — on macOS, and on X11 at any scale but 1, where a tile is not
+ * the image's own size — so the 4 by 4 GIF a Zen Garden design lays
+ * across a box was thousands of calls a paint, and the 1 pixel wide strip
+ * across its page a thousand: a frame of a resize of 008 painted for 35
+ * ms. Each tile is where the one by one path draws it, a whole number of
+ * device pixels from the last, and a surface drawn where it is takes it
+ * pixel for pixel. A block is made a level at a time, each of at most
+ * `BLOCK_COPIES` of the level under it a side, so a tile of a pixel or two
+ * costs a few hundred draws to make once. Null where a block is no gain or
+ * none can be had.
+ */
+function tileBlock(
+  image: unknown,
+  iw: number,
+  ih: number,
+  across: boolean,
+  down: boolean,
+  options: PaintOptions,
+): { surface: unknown; width: number; height: number } | null {
+  const keep = options.tilesKept;
+  if (!keep || typeof image !== 'object' || image === null) return null;
+  let id = IMAGES.get(image);
+  if (id === undefined) IMAGES.set(image, (id = ++images));
+  let source: unknown = image;
+  let w = iw;
+  let h = ih;
+  for (let level = 0; ; level += 1) {
+    const kx = across ? Math.min(BLOCK_COPIES, Math.ceil(BLOCK_SIDE / w)) : 1;
+    const ky = down ? Math.min(BLOCK_COPIES, Math.ceil(BLOCK_SIDE / h)) : 1;
+    if ((kx <= 1 && ky <= 1) || w * kx * h * ky > BLOCK_PIXELS) break;
+    const from = source;
+    const tw = w;
+    const th = h;
+    const made = keep(
+      `${id}|${iw}x${ih}|${across ? 1 : 0}${down ? 1 : 0}|${level}`,
+      tw * kx,
+      th * ky,
+      (sctx) => {
+        for (let j = 0; j < ky; j += 1) {
+          for (let i = 0; i < kx; i += 1) {
+            // the image at the tile's size; a level above it as it is
+            if (level === 0) sctx.drawImage!(from, i * tw, j * th, tw, th);
+            else sctx.drawImage!(from, i * tw, j * th);
+          }
+        }
+      },
+    );
+    if (!made) break;
+    source = made;
+    w = tw * kx;
+    h = th * ky;
+  }
+  return source === image ? null : { surface: source, width: w, height: h };
+}
+
 /**
  * A `background-image` (CSS 2.1 14.2.1): positioned in `at`, the padding
  * box — or the viewport, the element, for `background-attachment: fixed` —
@@ -6491,6 +6584,7 @@ function paintBackgroundImage(
   }
   const tiles =
     Math.ceil((toX - fromX) / stepX) * Math.ceil((toY - fromY) / stepY);
+  let block: ReturnType<typeof tileBlock> = null;
   if (svg) {
     // a drawing is drawn a tile at a time, at the size it was given
     if (tiles <= MAX_TILES) {
@@ -6526,6 +6620,31 @@ function paintBackgroundImage(
     ctx.fillStyle = ctx.createPattern(loaded.image, 'repeat');
     ctx.translate(x0, y0);
     ctx.fillRect(fromX - x0, fromY - y0, toX - fromX, toY - fromY);
+  } else if (
+    tiles > BLOCK_FROM &&
+    stepX === iw &&
+    stepY === ih &&
+    Number.isInteger(iw) &&
+    Number.isInteger(ih) &&
+    Number.isInteger(fromX) &&
+    Number.isInteger(fromY) &&
+    (block = tileBlock(
+      loaded.image,
+      iw,
+      ih,
+      repeats(repeat[0], toX - fromX, iw),
+      repeats(repeat[1], toY - fromY, ih),
+      options,
+    )) !== null &&
+    Math.ceil((toX - fromX) / block.width) *
+      Math.ceil((toY - fromY) / block.height) <=
+      MAX_TILES
+  ) {
+    for (let y = fromY; y < toY; y += block.height) {
+      for (let x = fromX; x < toX; x += block.width) {
+        ctx.drawImage!(block.surface, x, y);
+      }
+    }
   } else if (tiles <= MAX_TILES) {
     // each tile's edges on the pixels they fall nearest, so tiles `space`
     // sets apart or `round` sizes to a fraction meet without a seam

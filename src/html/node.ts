@@ -377,6 +377,8 @@ export class HtmlViewNode extends Node {
    */
   private _drawings: SurfaceCache | null = null;
   private _drawnOnce = new Set<string>();
+  /** Blocks of the tiles of small repeating backgrounds (`tileBlock`). */
+  private _tileBlocks: SurfaceCache | null = null;
   /** Whether the backend was found to have no offscreen surface. */
   private _noSurface = false;
   /** The surfaces kept for the boxes whose transform is animating, drawn
@@ -2192,6 +2194,8 @@ export class HtmlViewNode extends Node {
     this._drawings?.destroy();
     this._drawings = null;
     this._drawnOnce.clear();
+    this._tileBlocks?.destroy();
+    this._tileBlocks = null;
     this._sprites?.clear();
     this._sprites = null;
     this._filtered?.clear();
@@ -4336,6 +4340,13 @@ export class HtmlViewNode extends Node {
         return image && size ? { image, ...size } : null;
       },
       surface: (width, height) => this._surface(width, height),
+      tilesKept: (key, width, height, draw) =>
+        (this._tileBlocks ??= new SurfaceCache(this.app)).get(
+          key,
+          width,
+          height,
+          draw as (ctx: unknown) => void,
+        ),
       cached: (key, width, height, draw) =>
         (this._shadowCache ??= new SurfaceCache(this.app)).get(
           key,

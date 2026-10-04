@@ -766,11 +766,24 @@ export const RED_PNG = new Uint8Array(
 export function solidPng(
   width: number,
   height: number,
-  [r, g, b]: [number, number, number],
+  colour: [number, number, number],
 ): Uint8Array {
-  const row = Buffer.alloc(1 + width * 3);
-  for (let x = 0; x < width; x += 1) row.set([r, g, b], 1 + x * 3);
-  const rows = Buffer.concat(Array.from({ length: height }, () => row));
+  return pixelsPng(width, height, () => colour);
+}
+
+/** A PNG whose pixel at (`x`, `y`) is `at`'s colour for it. */
+export function pixelsPng(
+  width: number,
+  height: number,
+  at: (x: number, y: number) => [number, number, number],
+): Uint8Array {
+  const rows = Buffer.concat(
+    Array.from({ length: height }, (_, y) => {
+      const row = Buffer.alloc(1 + width * 3);
+      for (let x = 0; x < width; x += 1) row.set(at(x, y), 1 + x * 3);
+      return row;
+    }),
+  );
   const chunk = (type: string, data: Buffer): Buffer => {
     const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
     let crc = ~0;
