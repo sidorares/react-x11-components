@@ -85,6 +85,7 @@ import type { ComputedStyle, RootLook } from './css/style.js';
 import {
   sameValue,
   urlOf,
+  WILL_HOLD_FIXED,
   WILL_HOLD_FIXED_BOX,
   WILL_STACK,
   WILL_STACK_BOX,
@@ -143,6 +144,7 @@ import type {
   SpriteHost,
 } from './sprites.js';
 import { SpriteStore, SurfaceCache, newSurface } from './surfaces.js';
+import { FilterStore } from './filters.js';
 import type { SurfaceLike } from './surfaces.js';
 import {
   faceExtentOf,
@@ -381,6 +383,12 @@ export class HtmlViewNode extends Node {
    *  they were laid out and styled, so a build or a layout forgets them
    *  all, and a restyle in place the ones it reaches (`_restyledSprites`). */
   private _sprites: SpriteStore | null = null;
+  /** The pixels of the boxes a filter's colour functions are run over, read
+   *  back from the group each painted and kept (`paintFiltered`). What a
+   *  build, a layout or a restyle forgets of the surfaces kept for boxes it
+   *  forgets of these, keeping what each element drew last until a read
+   *  under its new boxes arrives. */
+  private _filtered: FilterStore | null = null;
   /** What the painter asks for a box's kept surface. A box whose element an
    *  animation is under way on keeps one however large it is, until the
    *  animation is over; a pseudo-element's box is one only the painter's
@@ -834,6 +842,7 @@ export class HtmlViewNode extends Node {
    */
   private _imagePainted(): void {
     this._sprites?.clear();
+    this._filtered?.staleAll();
     if (this._lifted.size) {
       this._spriteGen += 1;
       this.spritesChanged();
@@ -1368,6 +1377,7 @@ export class HtmlViewNode extends Node {
   private _fail(error: unknown, width: number): void {
     this._tree = null;
     this._sprites?.clear();
+    this._filtered?.staleAll();
     this._stale = Stale.Nothing;
     this._failedAt = width;
     this._laidOutWidth = -1;
@@ -1536,6 +1546,7 @@ export class HtmlViewNode extends Node {
         }
         if (again) this._tree = build();
         this._sprites?.clear();
+        this._filtered?.staleAll();
         this._warmFaces(this._tree);
         this._textPoints = null;
         this._pointsAreUnits = null;
@@ -1571,7 +1582,10 @@ export class HtmlViewNode extends Node {
         // changed, they come out where they were, and the surfaces kept for
         // them still hold them. A small document whose card turns at its
         // foot is laid out every frame of the turn.
-        if (target !== laidOutAt || viewportMoved) this._sprites?.clear();
+        if (target !== laidOutAt || viewportMoved) {
+          this._sprites?.clear();
+          this._filtered?.staleAll();
+        }
         this._documentWidth = result.width;
         this._documentHeight = result.height;
         this._laidOutWidth = target;
@@ -2105,6 +2119,8 @@ export class HtmlViewNode extends Node {
     this._drawnOnce.clear();
     this._sprites?.clear();
     this._sprites = null;
+    this._filtered?.clear();
+    this._filtered = null;
     this._lifted.clear();
     this._liftedTargets.clear();
     this._offered.clear();
@@ -3059,12 +3075,12 @@ export class HtmlViewNode extends Node {
 
     // and only now, all of it
     const moved: [Box, ComputedStyle][] = [];
-    const sprites = this._sprites?.size ? this._sprites : null;
+    const kept = !!this._sprites?.size || !!this._filtered?.size;
     let reoffer = false;
     for (const [box, style] of restyled) {
       const was = box.style;
       box.style = style;
-      if (sprites) this._restyledSprites(sprites, box, was, style);
+      if (kept) this._restyledSprites(box, was, style);
       // a box turned into the plane or out of it is a still part to offer
       // or one no longer (`_tiltedBoxes`)
       if (outOfPlane(style) !== outOfPlane(was)) {
@@ -3247,10 +3263,33 @@ export class HtmlViewNode extends Node {
    * hold.
    */
   private _dropSprites(box: Box, self: boolean): void {
-    const sprites = this._sprites;
-    if (!sprites?.size) return;
-    for (let at = self ? box : box.parent; at; at = at.parent) sprites.drop(at);
+    const sprites = this._sprites?.size ? this._sprites : null;
+    const filtered = this._filtered?.size ? this._filtered : null;
+    if (!sprites && !filtered) return;
+    for (let at = self ? box : box.parent; at; at = at.parent) {
+      sprites?.drop(at);
+      filtered?.stale(at.el ?? at, at.pseudo ?? '');
+    }
   }
+
+  /**
+   * A read of a filtered box's pixels arrived (`FilterStore`): the box is
+   * painted again, from them, and what holds a drawing made without them
+   * goes — the surfaces kept around it, the reads of a filter around it,
+   * and the layer lifted around it, made again in a frame asked for, since
+   * a lifted box's hole claims no damage.
+   */
+  private readonly _filterArrived = (of: object): void => {
+    if (this.destroyed) return;
+    const box = of as Box;
+    this._dropSprites(box, false);
+    if (this._lifted.size && this._insideLifted(box)) {
+      this._spriteGen += 1;
+      this.spritesChanged();
+    }
+    const ink = this._inkOf(box);
+    if (ink) this._repaintInk([ink]);
+  };
 
   /**
    * What a restyle of `box` from `was` to `now` leaves of the surfaces kept
@@ -3262,14 +3301,16 @@ export class HtmlViewNode extends Node {
    * the box's.
    */
   private _restyledSprites(
-    sprites: SpriteStore,
     box: Box,
     was: ComputedStyle,
     now: ComputedStyle,
   ): void {
+    const sprites = this._sprites;
+    const filtered = this._filtered;
     let kept = false;
     for (let at: Box | null = box; at && !kept; at = at.parent) {
-      kept = sprites.has(at);
+      kept =
+        !!sprites?.has(at) || !!filtered?.has(at.el ?? at, at.pseudo ?? '');
     }
     if (!kept) return;
     const change = spriteChange(was, now);
@@ -4199,6 +4240,10 @@ export class HtmlViewNode extends Node {
       drawingKept: (key, width, height, draw) =>
         this._drawingKept(key, width, height, draw as (ctx: unknown) => void),
       sprites: this._spriteSource,
+      filters: (this._filtered ??= new FilterStore(
+        this.app,
+        this._filterArrived,
+      )),
     };
   }
 }
@@ -5838,8 +5883,13 @@ const enum SpriteChange {
 }
 
 /** What places a box's drawing without changing it: where its surface is
- *  drawn through, how faded, and among which layers. */
-const PLACING_FIELDS = new Set([...TRANSFORM_FIELDS, 'opacity', 'zIndex']);
+ *  drawn through, how faded or filtered, and among which layers. */
+const PLACING_FIELDS = new Set([
+  ...TRANSFORM_FIELDS,
+  'opacity',
+  'filter',
+  'zIndex',
+]);
 
 /** What draws nothing: the custom properties and the animation lists, which
  *  are in the other fields already, and what the pointer does over it. */
@@ -5944,6 +5994,19 @@ function hoverChange(
         return false;
       }
       change.fade = true;
+      continue;
+    }
+    if (key === 'filter') {
+      // a stacking context and the containing block of what is out of the
+      // flow in it before and after, or neither — or a filter named in
+      // `will-change` both times, which one in transition or animated is:
+      // only how the group's pixels are drawn changes (`paintFiltered`)
+      if (
+        (a[key] === null) !== (b[key] === null) &&
+        (was.willChange & now.willChange & FILTER_WILL) !== FILTER_WILL
+      ) {
+        return false;
+      }
       continue;
     }
     // drawn or not, and under the pointer or not, where it was laid out —
@@ -6119,6 +6182,10 @@ function fixedWithin(
 /** What naming a transform in `will-change` makes of a box that is not
  *  inline: what a transform does, but for moving it. */
 const TRANSFORM_WILL = WILL_STACK_BOX | WILL_HOLD_FIXED_BOX;
+
+/** What naming a filter in `will-change` makes of any box: a stacking
+ *  context, and the containing block of what is out of the flow in it. */
+const FILTER_WILL = WILL_STACK | WILL_HOLD_FIXED;
 
 /** Whether a style takes its box out of the flow, to be laid out apart
  *  from everything around it. */

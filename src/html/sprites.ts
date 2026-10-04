@@ -368,7 +368,7 @@ export function overLiftOf(host: SpriteHost, box: Box): Lift | null {
 /**
  * Whether `box` can be drawn by a layer at all: a box of its own, drawing
  * nothing against the viewport, inside nothing whose group, matrix, clip
- * path or mask would have to take the layer in — a box that clips it cuts
+ * path, mask or filter would have to take the layer in — a box that clips it cuts
  * the layer instead (`clipFor`) — and inside no element whose own
  * animation runs, which may turn into any of those. One fixed to the
  * viewport, or in one that is, goes on a layer that stays where the
@@ -393,6 +393,9 @@ function liftableBox(
   // which a perspective outside it does not move with
   if (within && outOfPlane(box.style)) return false;
   if (box.style.clipPath || masked(box.style)) return false;
+  // a filter's colour functions are run over the box's pixels as the
+  // document draws them (`paintFiltered`), which a layer does not do
+  if (box.style.filter !== null) return false;
   // one fixed to the viewport in it is drawn where the viewport is, which
   // a layer the document scrolls does not follow
   if (!drawnAtViewport(box)) {
@@ -417,7 +420,9 @@ function liftableBox(
     }
     // a box that clips it cuts its layer to a rectangle (`clipFor`), which a
     // path or a mask is not
-    if (style.clipPath || masked(style)) return false;
+    if (style.clipPath || masked(style) || style.filter !== null) {
+      return false;
+    }
     // its own: a pseudo-element's beside the box is no ancestor of it
     if (at.el && host.timeline.isLive(at.el, '')) return false;
   }

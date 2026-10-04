@@ -2001,6 +2001,37 @@ flip, the interpolation — was wrong too: measure a new surface on macOS,
 in a benchmark that varies one thing at a time, before taking a composite
 for the cheap side or a cause for the cost.
 
+**A filter's colour functions are run over pixels read back, and what
+lags is the content, never the filter** (`paintFiltered`,
+`src/html/filters.ts`). A filtered box's group is painted on a surface
+kept by element. Where the context runs a filter itself — react-x11's
+native one takes the colour functions as canvas's `filter` — the group is
+drawn through it onto a second kept surface (`through`), again only as the
+group or the filter changes, and nothing lags. Everywhere else none runs a
+filter and none hands a surface's pixels over as it is asked — ntk's are
+the X server's, a round trip away — so the group is read back, and every
+paint runs the matrices the box has now over the newest pixels read for
+it. A context whose `filter` does not stick for a list sends every box to
+the read from then on (`unfiltered`), and is asked with `in` first, since
+assigning an unknown property sticks on any object. Four things about the
+read are load-bearing.
+**A read is made stale, never dropped** (`stale`, through
+`_dropSprites`): a page whose animations build the document every frame
+— ekazinich.com's — dropped the read at each build, and those frames drew
+what was filtered last, at the amount it had then, between frames at the
+amount they had, so its hover flashed between grey and colour. **The
+surface is the box's size and a pixel, wherever the box's corner falls**:
+sized from its edges it was one height and the next alternately as a
+hover lifted the card a fraction at a time, and a read of the other
+height drew nothing. **Anything new that changes what a box draws makes
+the reads around it stale**, as it drops the surfaces kept around it —
+`_dropSprites` does both. And **a context from ntk's `getContext` is the
+caller's to destroy**: a surface kept and written each frame keeps the
+one it was made with. A filtered element is neither lifted onto a layer
+nor in one, and no video is mounted in one: neither runs the matrices.
+The core seam that lifts the round trip — `ctx.filter` — is planned in
+`docs/prd-filter.md`.
+
 **An animation a layer can carry is handed to core as a sprite**
 (`src/html/sprites.ts`; react-x11's `sprites()`, sidorares/react-x11#819).
 On macOS the surface presenter lifts it onto a layer of its own and the

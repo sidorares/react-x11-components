@@ -47,6 +47,8 @@ import type { ContentItem, CounterChange } from './content.js';
 import type { CustomProps } from './vars.js';
 import { parseRotate, parseScale, parseTransform } from './transform.js';
 import type { TransformFunction, Turn } from './transform.js';
+import { parseFilter } from './filter.js';
+import type { FilterFunction } from './filter.js';
 import {
   ANIMATION_LONGHANDS,
   NO_ANIMATIONS,
@@ -717,6 +719,12 @@ export interface ComputedStyle {
    *  shape this does not draw. */
   clipPath: ClipPath | null;
   opacity: number;
+  /** `filter`: its functions in the order written (`css/filter.ts`); null
+   *  for `none`. Any list makes the box a stacking context and the
+   *  containing block of the absolute and the fixed boxes in it, an inline
+   *  box as well (Filter Effects 1, 2), and paints it as a group, whose
+   *  pixels the colour functions are run over (`paintFiltered`). */
+  filter: FilterFunction[] | null;
   /** `isolation: isolate` makes the element a stacking context (CSS
    *  Compositing 1, 3.2): what it holds with a `z-index` is ordered inside
    *  it, a negative one over its own background. */
@@ -1277,6 +1285,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     clip: null,
     clipPath: null,
     opacity: 1,
+    filter: null,
     isolation: 'auto',
     willChange: 0,
     translate: null,
@@ -1674,6 +1683,7 @@ const PREFIXED_ALIASES: Record<string, string> = {
   // Safari's only name for it until 2024, and so what every page that
   // sets it writes beside the standard one, or alone
   '-webkit-user-select': 'user-select',
+  '-webkit-filter': 'filter',
 };
 
 /**
@@ -2138,6 +2148,11 @@ export function applyDeclaration(
     case 'opacity': {
       const a = parseAlpha(value);
       if (a !== null) style.opacity = a;
+      return;
+    }
+    case 'filter': {
+      const list = parseFilter(value, ctx);
+      if (list !== undefined) style.filter = list;
       return;
     }
     case 'isolation': {
@@ -6676,6 +6691,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'overflow-x': ['overflowX'],
   'overflow-y': ['overflowY'],
   opacity: ['opacity'],
+  filter: ['filter'],
   isolation: ['isolation'],
   'will-change': ['willChange'],
   translate: ['translate'],

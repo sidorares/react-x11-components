@@ -75,6 +75,10 @@ parts.
   are eligible, how an animated transform stops re-rasterizing its subtree
   (a retained sprite, a translate fast path, and where an offscreen GL
   renderer does and does not help), and the sprite seam to file in core.
+- [`filter` in `<Html>`](prd-filter.md) — the colour functions run over a
+  group read back, why what lags is the content and never the filter, and
+  the `ctx.filter` seam core would need per backend — macOS, Wayland,
+  Windows, and why X11 can blur synchronously but not run a matrix.
 - [`<Html>` against the CSS 2.1 test suite](html-conformance.md) — the
   web-platform-tests reftests run through `<Html>` on X11 and Cocoa: what it
   supports, the hangs and crashes the suite found, what was fixed, and what
