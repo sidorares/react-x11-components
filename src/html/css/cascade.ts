@@ -173,6 +173,10 @@ export interface KeptStyles {
    * their children's. Without it, `restyle` holds everything it reaches.
    */
   follow?: boolean;
+  /** The root box's style in the build the styles were kept from: the
+   *  parent of an element with no element above it — `<html>`, or the top
+   *  of a fragment — for `follow`. */
+  root?: ComputedStyle;
 }
 
 /** A shadow tree's sheets, as the cascade is handed them: every tree whose
@@ -2053,6 +2057,8 @@ export class Cascade {
   /** The styles kept from the build before, while a build that keeps them
    *  runs, and what each kept element shares under in this one. */
   private _kept: KeptStyles | null = null;
+  /** Whether a build is styling the document (`beginSharing`). */
+  private _inBuild = false;
   private _keptShared = new Map<Element, SharedStyle>();
 
   /**
@@ -2074,6 +2080,7 @@ export class Cascade {
     }
     this._namesKept.clear();
     this._keepNames = true;
+    this._inBuild = true;
     this._shared.clear();
     this._sharedByMatch.clear();
     // the kept styles' custom properties are the sets in here, which the
@@ -2091,7 +2098,7 @@ export class Cascade {
     kept: KeptStyles,
   ): boolean {
     const parent = elementParent(el);
-    const was = parent ? kept.styles.get(parent)?.style : undefined;
+    const was = parent ? kept.styles.get(parent)?.style : kept.root;
     return (
       was !== undefined && (was === parentStyle || sameStyle(was, parentStyle))
     );
@@ -2103,6 +2110,7 @@ export class Cascade {
     this._keptShared.clear();
     this._namesKept.clear();
     this._keepNames = false;
+    this._inBuild = false;
   }
 
   /**
@@ -2762,8 +2770,47 @@ export class Cascade {
     const indexed = index.size > 0 && index.reaches(el);
     const edges = this._scoped && this._scopedPseudos.has(which);
     if (!indexed && !edges) return null;
+    // Worked out already under this very style, in a build: the builder
+    // asks again for the counters, and a build that keeps an element's
+    // style keeps what it was worked out from — what else changes one in a
+    // build, the pointer, a band crossed, an animation's clock, styles the
+    // element again (`KeptStyles`), into a style of its own. A crossing's
+    // build matched a document's every `::before` and `::after` again, half
+    // of it on Wikipedia. Not outside one: a hover or an animation frame
+    // restyled in place changes a pseudo-element and not the element, and
+    // what that comes to is kept for the next build to start from.
+    let kept = this._pseudoKept.get(el);
+    if (kept?.from !== elementStyle) {
+      kept = { from: elementStyle, before: undefined, after: undefined };
+      this._pseudoKept.set(el, kept);
+    } else if (this._inBuild && kept[which] !== undefined) {
+      return kept[which];
+    }
+    const style = this._pseudoStyle(el, which, elementStyle, indexed, edges);
+    kept[which] = style;
+    return style;
+  }
+
+  /** What `pseudoStyleFor` keeps, by element: the style worked out from,
+   *  and each pseudo-element's style under it, undefined until asked. */
+  private _pseudoKept = new WeakMap<
+    Element,
+    {
+      from: ComputedStyle;
+      before: ComputedStyle | null | undefined;
+      after: ComputedStyle | null | undefined;
+    }
+  >();
+
+  private _pseudoStyle(
+    el: Element,
+    which: 'before' | 'after',
+    elementStyle: ComputedStyle,
+    indexed: boolean,
+    edges: boolean,
+  ): ComputedStyle | null {
     const candidates: Candidate[] = [];
-    if (indexed) this._matchInto(index, el, candidates);
+    if (indexed) this._matchInto(this._pseudo[which], el, candidates);
     if (edges) this._scopedInto(el, which, candidates);
     if (!candidates.length) return null;
     // One that no rule gives a `content` is none, whatever else reaches it —
