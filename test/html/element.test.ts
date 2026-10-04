@@ -101,6 +101,30 @@ test('a script is handed over, unparsed and unevaluated', async () => {
   );
 });
 
+test('a script a stream breaks inside is handed over once, whole, after its end tag', async () => {
+  const seen: string[] = [];
+  const doc = (source: string, partial: boolean) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, {
+        source,
+        partial,
+        onScript: (s: { text: string }) => seen.push(s.text),
+      }),
+    );
+  const head = '<p>a</p><script>var greeting = "hel';
+  const result = await renderX11(doc(head, true), { backend: 'mock' });
+  // the parser is inside it, and what it holds so far is not the script
+  assert.deepStrictEqual(seen, []);
+  const more = head + 'lo";</script><p>b</p><script>var x = 1';
+  await act(() => result.rerender(doc(more, true)));
+  assert.deepStrictEqual(seen, ['var greeting = "hello";']);
+  // the parse ends with the second still open: what it holds is all of it
+  await act(() => result.rerender(doc(more, false)));
+  assert.deepStrictEqual(seen, ['var greeting = "hello";', 'var x = 1']);
+});
+
 test('nothing loads without onResource, and every reference is offered to it', async () => {
   const asked: string[] = [];
   await renderX11(

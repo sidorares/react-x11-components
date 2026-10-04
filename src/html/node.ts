@@ -771,6 +771,9 @@ export class HtmlViewNode extends Node {
     if (props.onScript) {
       for (const el of facts.scripts) {
         if (this._scriptsSeen.has(el)) continue;
+        // a chunk of a stream that ended inside it left it holding part of
+        // its text: it is handed over once, whole, after its end tag
+        if (this._source.isOpen(el)) continue;
         this._scriptsSeen.add(el);
         props.onScript({
           type: (attr(el, 'type') ?? 'text/javascript').toLowerCase(),

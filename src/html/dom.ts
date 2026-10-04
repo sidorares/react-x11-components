@@ -549,7 +549,7 @@ export class HtmlSource {
   complete = false;
 
   private _parser: Parser;
-  private _handler: DomHandler;
+  private _handler: Handler;
   private _written = '';
   private _facts: ScannedFacts = freshFacts();
 
@@ -617,6 +617,13 @@ export class HtmlSource {
     this.revision += 1;
     this._facts = freshFacts();
     treesChanged();
+  }
+
+  /** Whether the parser has yet to meet an element's end tag. A chunk of a
+   *  stream that ends inside a `<script>` leaves it in the tree holding the
+   *  text written so far, which is not the script. */
+  isOpen(el: Element): boolean {
+    return !this.complete && this._handler.isOpen(el);
   }
 
   /**
@@ -750,6 +757,11 @@ class Handler extends DomHandler {
    *  does in a document a browser's parser builds, and not in a fragment
    *  parsed for `innerHTML` (HTML 13.2.6.4.4). */
   declarative = true;
+
+  /** Whether an element is open: its end tag not met yet. */
+  isOpen(el: Element): boolean {
+    return this.tagStack.includes(el);
+  }
 
   /**
    * Past `MAX_DEPTH` open elements, what is opened goes into the element at
@@ -957,7 +969,7 @@ function startsBody(node: ChildNode): boolean {
 
 function createParser(declarative = true): {
   parser: Parser;
-  handler: DomHandler;
+  handler: Handler;
 } {
   const handler = new Handler(null, {
     // Positions cost time and memory per node and nothing here reads them.

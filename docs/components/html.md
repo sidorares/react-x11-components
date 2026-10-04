@@ -162,7 +162,9 @@ element and its text verbatim, and nothing in this package reads any of it —
 there is no parser, no sandbox and no partial evaluation, because a renderer
 that half-runs a script is one nobody can reason about. An application that
 wants scripting brings its own engine, and drives the result through the DOM
-handle.
+handle. Each script is handed over once, whole: in a streamed document, a
+`<script>` that a chunk ended inside waits for its end tag, or for the end of
+the parse, since what it holds before then is not the script.
 
 Inline event attributes (`onclick="…"`) are likewise left in the DOM as
 attributes and never invoked.
