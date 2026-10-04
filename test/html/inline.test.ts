@@ -4,7 +4,7 @@ import assert from 'node:assert';
 import { act, cleanup, pixelAt } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { HtmlViewNode } from '../../src/html/index.js';
-import { hungSpaces } from '../../src/html/layout/inline.js';
+import { faceLineHeight, hungSpaces } from '../../src/html/layout/inline.js';
 import type { FontsLike } from '../../src/html/layout/inline.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
@@ -1591,7 +1591,11 @@ metric(
         const tall = Object.create(face) as typeof face;
         tall.metrics = (size: number) => {
           const m = face.metrics(size);
-          return { ...m, ascent: m.ascent + 3, lineHeight: m.lineHeight + 3 };
+          return {
+            ...m,
+            ascent: m.ascent + 3,
+            lineHeight: faceLineHeight(m) + 3,
+          };
         };
         return tall;
       },
@@ -1619,5 +1623,72 @@ metric(
       p.height > 20.5,
       `the bold box's leading stacks over the strut's: ${p.height}`,
     );
+  },
+);
+
+metric(
+  "a face that states no lineHeight sets `line-height: normal` from its ascent, descent and gap, as react-x11's Windows engine states them",
+  async () => {
+    // DirectWrite's face metrics are an ascent, a descent and a line gap,
+    // and react-x11's Windows engine handed them on with no `lineHeight`:
+    // read off the field, every `line-height: normal` was NaN, a NaN in a
+    // block's height culled the whole document from the paint, and every
+    // Zen Garden design came up blank on Windows
+    const source =
+      '<div id="d" style="margin:0;font:16px sans-serif">' +
+      '<p style="margin:0">one <span style="border:1px solid">boxed</span> ' +
+      '<span style="display:inline-block;width:20px;height:20px"></span>' +
+      ' line</p><p style="margin:0">' +
+      'word '.repeat(40) +
+      '</p></div>';
+    const { node } = await render(source, 300);
+    const el = view(node) as unknown as {
+      app: { fonts: FontsLike };
+      _source: { document: unknown };
+      _cascade: unknown;
+    };
+    const engine = el.app.fonts;
+    const named = (gap: 'lineGap' | 'leading' | null): FontsLike => ({
+      layout: (content, style, options) =>
+        engine.layout(content, style, options),
+      match: (family, style) => {
+        const face = engine.match(family, style);
+        const bare = Object.create(face) as typeof face;
+        bare.metrics = (size: number) => {
+          const { lineHeight, lineGap, ...rest } = face.metrics(size);
+          void lineHeight;
+          return gap ? { ...rest, [gap]: lineGap } : rest;
+        };
+        return bare;
+      },
+    });
+    const { buildBoxes } = await import('../../src/html/layout/boxes.js');
+    const { layoutDocument } = await import('../../src/html/layout/block.js');
+    const heightWith = (fonts: FontsLike): number => {
+      const tree = buildBoxes(el._source.document as never, {
+        cascade: el._cascade as never,
+        scale: 1,
+        imageSize: () => null,
+        urlSize: () => null,
+        controlSize: () => ({ width: 0, height: 0 }) as never,
+      });
+      layoutDocument(tree, fonts, 300, 600);
+      const find = (box: LaidBox): LaidBox | null => {
+        if (box.el?.attribs.id === 'd') return box;
+        for (const child of box.children) {
+          const hit = find(child);
+          if (hit) return hit;
+        }
+        return null;
+      };
+      return find(tree.root as unknown as LaidBox)!.height;
+    };
+    const stated = heightWith(engine);
+    for (const gap of ['lineGap', 'leading', null] as const) {
+      const height = heightWith(named(gap));
+      assert.ok(Number.isFinite(height), `${gap}: a height, not ${height}`);
+      if (gap) assert.strictEqual(height, stated, `${gap}: the same lines`);
+      else assert.ok(height > 0, `no gap: still lines, ${height}`);
+    }
   },
 );

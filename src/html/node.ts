@@ -148,6 +148,7 @@ import { FilterStore } from './filters.js';
 import type { SurfaceLike } from './surfaces.js';
 import {
   faceExtentOf,
+  faceLineHeight,
   fadeRun,
   inlineDecoration,
   runFor,
@@ -856,7 +857,7 @@ export class HtmlViewNode extends Node {
       this._spriteGen += 1;
       this.spritesChanged();
     }
-    this.invalidate(false, this, 'image');
+    this.invalidate(false, this, 'content');
   }
 
   /** Whether an image generated content names arrived as it was asked for,
@@ -6530,9 +6531,9 @@ function zeroWidthOf(fonts: FontsLike, face: MetricFace): number | null {
 function normalLineOf(fonts: FontsLike, face: MetricFace): number | null {
   const { family, size, weight, style } = face;
   try {
-    const line = fonts
-      .match(family, { size, weight, style })
-      .metrics(size).lineHeight;
+    const line = faceLineHeight(
+      fonts.match(family, { size, weight, style }).metrics(size),
+    );
     return line > 0 ? line : null;
   } catch {
     return null;

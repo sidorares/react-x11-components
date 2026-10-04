@@ -140,12 +140,36 @@ export interface FontsLike {
     family: string,
     style: Record<string, unknown>,
   ): {
-    metrics(size: number): {
-      ascent: number;
-      descent: number;
-      lineHeight: number;
-    };
+    metrics(size: number): FaceMetrics;
   };
+}
+
+/**
+ * A face's metrics, under the names each engine gives them: ntk's
+ * `lineHeight` and `lineGap`, CoreText's `leading`. react-x11's Windows
+ * engine states the ascent, the descent and the gap and no `lineHeight`,
+ * so a line height is read through `faceLineHeight`, never off the field.
+ */
+export interface FaceMetrics {
+  ascent: number;
+  descent: number;
+  lineHeight?: number;
+  lineGap?: number;
+  leading?: number;
+}
+
+/**
+ * A face's own line height: its `lineHeight` where the engine states one,
+ * else the ascent, the descent and the gap under either name. Read off the
+ * field alone, every `line-height: normal` on Windows was `NaN`, and one
+ * `NaN` in a block's height culls the whole document from the paint.
+ */
+export function faceLineHeight(m: FaceMetrics): number {
+  if (typeof m.lineHeight === 'number' && Number.isFinite(m.lineHeight)) {
+    return m.lineHeight;
+  }
+  const gap = m.lineGap ?? m.leading ?? 0;
+  return m.ascent + m.descent + (Number.isFinite(gap) ? gap : 0);
 }
 
 /**
@@ -6462,7 +6486,7 @@ function naturalLineHeight(fonts: FontsLike, style: ComputedStyle): number {
         weight: style.fontWeight,
         style: style.fontStyle,
       });
-      height = font.metrics(style.fontSize).lineHeight;
+      height = faceLineHeight(font.metrics(style.fontSize));
     } catch {
       height = style.fontSize * 1.2;
     }
