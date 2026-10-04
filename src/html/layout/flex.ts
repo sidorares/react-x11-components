@@ -30,7 +30,7 @@ import type { Config as YogaConfig, Node as YogaNode } from 'react-x11/yoga';
 import { AUTO, gapOf, isPct, resolve, resolveOrNull } from '../css/values.js';
 import { scrolls } from '../css/style.js';
 import type { ComputedStyle, ContentSize } from '../css/style.js';
-import { Box, PAINT_ORDER, isBlank } from './boxes.js';
+import { Box, inOrder, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
@@ -156,26 +156,16 @@ export function layoutFlex(
   }
 
   const flowing: Box[] = [];
-  let reordered = false;
   for (const child of box.children) {
     if (child.kind === 'text' && isBlank(child.text)) continue;
     if (child.outOfFlow) {
       positionOutOfFlow(child, box, ctx, true);
       continue;
     }
-    if (child.style.order !== 0) reordered = true;
     flowing.push(child);
   }
-  // in `order`, and where two have the same, in the document's (CSS
-  // Flexbox 5.4): Yoga places its children in the order they were given,
-  // and paint paints them in it
-  if (reordered) {
-    flowing.sort((a, b) => a.style.order - b.style.order);
-    PAINT_ORDER.set(
-      box,
-      [...box.children].sort((a, b) => orderOf(a) - orderOf(b)),
-    );
-  } else PAINT_ORDER.delete(box);
+  // in `order`: Yoga places its children in the order they were given
+  inOrder(box, flowing);
 
   // Whether a line weighs its items one against another as it shrinks
   // them, each by its flex base size (CSS Flexbox 9.7, step 4c): the one
@@ -692,12 +682,6 @@ function ratioHeightBasis(box: Box, containingWidth: number): number | null {
       ? Math.max(set, box.horizontalExtra)
       : set + box.horizontalExtra;
   return heightFromWidth(box, clampWidth(box, outer, containingWidth));
-}
-
-/** A child's `order`, which an absolutely positioned one takes as 0 when
- *  it is painted among the items. */
-function orderOf(box: Box): number {
-  return box.outOfFlow || box.kind === 'text' ? 0 : box.style.order;
 }
 
 /** Lay each item out where the flex layout put it, at the size it gave it,

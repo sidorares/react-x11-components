@@ -2,11 +2,13 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { cleanup, waitFor } from 'react-x11/test';
+import { parseColor } from '../../src/html/css/values.js';
 import { sizeTracks } from '../../src/html/layout/tracks.js';
 import {
   RED_PNG,
   SVG_NS,
   boxOf,
+  fillsOf,
   linesOf,
   metric,
   render,
@@ -417,6 +419,62 @@ metric(
     );
   },
 );
+
+metric('grid items are placed and painted in `order`', async () => {
+  // CSS Grid 1, 6.3, 7.7 and 8.5: auto-placement takes the items in
+  // order-modified document order — `order` first, the document's where
+  // two have the same — the ones locked to a row as much as the rest, and
+  // 6.5 paints them in it, as flex items are. They were placed and painted
+  // in the document's: the Zen Garden's about page, `.page-main { order:
+  // 2 }` and `.page-sidebar { order: 1 }` in a grid of one column below
+  // 800px, drew its nav below the article where Chrome draws it above
+  const { node } = await render(
+    '<style>body{margin:0} .g{display:grid} .c>div{height:10px}</style>' +
+      '<div class="g"><div id="main" style="order:2;height:30px"></div>' +
+      '<div id="side" style="order:1;height:20px"></div></div>' +
+      '<div class="g c" style="grid-template-columns:repeat(4,50px)">' +
+      '<div id="a" style="order:1"></div><div id="b"></div>' +
+      '<div id="c" style="order:-1"></div><div id="d" style="order:1"></div>' +
+      '<div id="e" style="grid-row:1;order:1"></div>' +
+      '<div id="f" style="grid-row:1"></div></div>' +
+      '<div class="g" style="grid-template:20px / 40px">' +
+      '<div id="over" style="grid-area:1/1;order:2;background:#ff0000"></div>' +
+      '<div id="under" style="grid-area:1/1;order:1;background:#00ff00"></div>' +
+      '</div>',
+  );
+  const el = view(node);
+  const at = (id: string) => [boxOf(el, id).x, boxOf(el, id).y];
+  assert.deepStrictEqual(
+    [at('side'), at('main')],
+    [
+      [0, 0],
+      [0, 20],
+    ],
+    'the sidebar first, as `order` has it',
+  );
+  // the two locked to the first row take it first, `f` before `e`, and the
+  // rest follow them from the cursor: `c`, `b`, then `a` and `d` as they
+  // come
+  assert.deepStrictEqual(['f', 'e', 'c', 'b', 'a', 'd'].map(at), [
+    [0, 50],
+    [50, 50],
+    [100, 50],
+    [150, 50],
+    [0, 60],
+    [50, 60],
+  ]);
+  const fills = await fillsOf(el);
+  const paint = (color: string) =>
+    fills.findIndex((f) => f.style === parseColor(color));
+  assert.ok(paint('#00ff00') < paint('#ff0000'), 'the second in `order` over');
+  const { abs } = el as unknown as { abs: { x: number; y: number } };
+  const over = boxOf(el, 'over');
+  assert.strictEqual(
+    el.elementAtPoint(abs.x + over.x + 5, abs.y + over.y + 5)?.attribs.id,
+    'over',
+    'and under the pointer',
+  );
+});
 
 metric(
   'a grid item of a content width is that width, and fit-content() stops at its argument',

@@ -27,7 +27,7 @@ import type {
   GridTrack,
 } from '../css/style.js';
 import { scrolls } from '../css/style.js';
-import { Box, GRID_TRACKS, isBlank } from './boxes.js';
+import { Box, GRID_TRACKS, inOrder, isBlank } from './boxes.js';
 import {
   FLEXED_HEIGHT,
   MIN_CONTENT_PROBE,
@@ -112,6 +112,8 @@ export function layoutGrid(
     resolveEdges(child, 0);
     boxes.push(child);
   }
+  // placed, and painted, in `order`
+  inOrder(box, boxes);
   // the gaps: a percentage of the grid's content size along them, and of
   // nothing where that is not known yet (CSS Box Alignment 3, 8.3)
   const colGap = gapOf(style.columnGap, contentWidth);
@@ -506,10 +508,11 @@ function trackList(
 }
 
 /**
- * Place the items (CSS Grid 1, 8.5): an item with both its lines where it
- * says; one that names only the lines across the flow — its row, where the
- * grid fills its rows — in the first place free along them, past the ones
- * placed there before it; and the rest in order from a cursor that moves
+ * Place the items (CSS Grid 1, 8.5), which come in order-modified document
+ * order, and each step takes them in it: an item with both its lines where
+ * it says; one that names only the lines across the flow — its row, where
+ * the grid fills its rows — in the first place free along them, past the
+ * ones placed there before it; and the rest in order from a cursor that moves
  * along the flow and on to the next line of it — to the next where an
  * item's own line is before it — or, `dense`, from the start each time.
  * `grid-auto-flow: column` is the same with the axes turned round.

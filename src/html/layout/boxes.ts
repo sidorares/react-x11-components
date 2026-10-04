@@ -720,10 +720,37 @@ export interface GridTracks {
 }
 export const GRID_TRACKS = new WeakMap<Box, GridTracks>();
 
-/** A flex box's children in the order it lays them out and paints them,
- *  `order` first and the document's after it (CSS Flexbox 5.4), where
- *  `order` moves any: an absolutely positioned child's is 0. */
+/** A flex or grid box's children in the order it lays them out and paints
+ *  them, `order` first and the document's after it (CSS Flexbox 5.4, CSS
+ *  Grid 1 6.3), where `order` moves any: an absolutely positioned child's
+ *  is 0. */
 export const PAINT_ORDER = new WeakMap<Box, Box[]>();
+
+/**
+ * Put a flex or grid box's items in order-modified document order — by
+ * `order`, and in the document's where two have the same (CSS Flexbox 5.4)
+ * — which flex lays them out in and grid places them in (CSS Grid 1, 7.7
+ * and 8.5), and keep its children in it for paint and the hit test, as a
+ * flex item and a grid item are painted (CSS Flexbox 5.4, CSS Grid 1
+ * 6.5).
+ */
+export function inOrder(box: Box, items: Box[]): void {
+  if (items.every((item) => item.style.order === 0)) {
+    PAINT_ORDER.delete(box);
+    return;
+  }
+  items.sort((a, b) => a.style.order - b.style.order);
+  PAINT_ORDER.set(
+    box,
+    [...box.children].sort((a, b) => orderOf(a) - orderOf(b)),
+  );
+}
+
+/** A child's `order`, which an absolutely positioned one takes as 0 when
+ *  it is painted among the items. */
+function orderOf(box: Box): number {
+  return box.outOfFlow || box.kind === 'text' ? 0 : box.style.order;
+}
 
 /** The blocks that broke an inline box in pieces, under its first piece
  *  (`breakAround`): a relative offset of the box moves them too (CSS 2.1

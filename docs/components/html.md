@@ -1092,7 +1092,9 @@ is in collapsing with the gaps beside it — and those past the template from
 percentages of the grid's size along them.
 It places its items by line, span, line name or the area
 `grid-template-areas` names, or in order into the first cells free, along
-the rows or down the columns by `grid-auto-flow`, `dense` or not, and
+the rows or down the columns by `grid-auto-flow`, `dense` or not — in
+`order`, and in the document's where two have the same, which is the order
+they are painted in too, as flex items are (CSS Grid 1, 6.3 and 6.5) — and
 sizes its columns and its rows by the track sizing algorithm:
 an item spanning several tracks grows the ones its content sizes, and the
 `fr` rows of a grid with a height or a `min-height` fill it, which puts a
