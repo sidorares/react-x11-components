@@ -133,19 +133,46 @@ export interface FontsLike {
       justify?: boolean | 'last' | 'all';
     },
   ): TextLayoutLike;
-  /** Whether `layout` takes `justify`. Absent, a justified line is spaced
+  /** Whether `layout` takes `justify`: `true` for all three, `'rest'` for
+   *  `true` alone — every line but the paragraph's last, which is what
+   *  DirectWrite justifies, and react-x11's Windows engine says so. Absent,
+   *  or for a mode the engine does not take, a justified line is spaced
    *  through letter spacing here (`justifiedRuns`). */
-  readonly justifies?: boolean;
+  readonly justifies?: boolean | 'rest';
   match(
     family: string,
     style: Record<string, unknown>,
   ): {
-    metrics(size: number): {
-      ascent: number;
-      descent: number;
-      lineHeight: number;
-    };
+    metrics(size: number): FaceMetrics;
   };
+}
+
+/**
+ * A face's metrics, under the names each engine gives them: ntk's
+ * `lineHeight` and `lineGap`, CoreText's `leading`. react-x11's Windows
+ * engine states the ascent, the descent and the gap and no `lineHeight`,
+ * so a line height is read through `faceLineHeight`, never off the field.
+ */
+export interface FaceMetrics {
+  ascent: number;
+  descent: number;
+  lineHeight?: number;
+  lineGap?: number;
+  leading?: number;
+}
+
+/**
+ * A face's own line height: its `lineHeight` where the engine states one,
+ * else the ascent, the descent and the gap under either name. Read off the
+ * field alone, every `line-height: normal` on Windows was `NaN`, and one
+ * `NaN` in a block's height culls the whole document from the paint.
+ */
+export function faceLineHeight(m: FaceMetrics): number {
+  if (typeof m.lineHeight === 'number' && Number.isFinite(m.lineHeight)) {
+    return m.lineHeight;
+  }
+  const gap = m.lineGap ?? m.leading ?? 0;
+  return m.ascent + m.descent + (Number.isFinite(gap) ? gap : 0);
 }
 
 /**
@@ -791,7 +818,12 @@ function linesOf(
       !clamp &&
       !cut &&
       !pretty &&
-      engineJustifies(fonts, layoutOptions, options.width);
+      engineJustifies(
+        fonts,
+        layoutOptions,
+        options.width,
+        justifyOption(justifyRest, justifyLast),
+      );
     if (justifiedAtOnce) {
       (layoutOptions as Parameters<FontsLike['layout']>[2]).justify =
         justifyOption(justifyRest, justifyLast);
@@ -1700,7 +1732,19 @@ function spacerRun(
           : ('italic' as const),
     };
     const run: TextRun = { text: '\u00a0', ...face };
-    spacer = { run, advance: fonts.layout([run], face, {}).width };
+    // its line's advance where the engine states one: a layout's width is
+    // whole pixels on some engines, and on react-x11's Windows engine was
+    // none at all \u2014 DirectWrite leaves a no-break space at the end of a
+    // line out of the text's width \u2014 so every edge was a space too wide
+    const laid = fonts.layout([run], face, {});
+    const line = laid.lines[0] as { advance?: number } | undefined;
+    spacer = {
+      run,
+      advance:
+        typeof line?.advance === 'number' && line.advance > 0
+          ? line.advance
+          : laid.width,
+    };
     byStyle.set(style, spacer);
   }
   return { ...spacer.run, letterSpacing: width - spacer.advance };
@@ -5639,7 +5683,7 @@ function recording(fonts: FontsLike): FontsLike {
         return layout;
       },
       match: (family, style) => fonts.match(family, style),
-      justifies: fonts.justifies === true,
+      justifies: justifiesOf(fonts),
     };
     RECORDERS.set(fonts, recorder);
   }
@@ -6323,11 +6367,9 @@ function justifiedLayout(
   // the engine's own, where it has it: the lines it broke, spaced at their
   // separators, from the shaping the paragraph keeps — where spacing every
   // space through letter spacing shaped the text again at every width
-  if (engineJustifies(fonts, options, width) && !skip?.size) {
-    const out = fonts.layout(runs, base, {
-      ...options,
-      justify: justifyOption(rest, last),
-    });
+  const mode = justifyOption(rest, last);
+  if (engineJustifies(fonts, options, width, mode) && !skip?.size) {
+    const out = fonts.layout(runs, base, { ...options, justify: mode });
     LAYOUT_RUNS.set(out, runs);
     return { layout: out, runs };
   }
@@ -6346,12 +6388,21 @@ function engineJustifies(
   fonts: FontsLike,
   options: Parameters<FontsLike['layout']>[2],
   width: number,
+  mode: true | 'last' | 'all',
 ): boolean {
   return (
-    fonts.justifies === true &&
+    (fonts.justifies === true ||
+      (fonts.justifies === 'rest' && mode === true)) &&
     options.maxWidth !== undefined &&
     Math.abs(options.maxWidth - width) < 1e-9
   );
+}
+
+/** What an engine says it justifies, for a stand-in for it to say too. */
+export function justifiesOf(fonts: FontsLike): FontsLike['justifies'] {
+  return fonts.justifies === true || fonts.justifies === 'rest'
+    ? fonts.justifies
+    : false;
 }
 
 /** Which of a paragraph's lines are justified, as the engine takes it. */
@@ -6462,7 +6513,7 @@ function naturalLineHeight(fonts: FontsLike, style: ComputedStyle): number {
         weight: style.fontWeight,
         style: style.fontStyle,
       });
-      height = font.metrics(style.fontSize).lineHeight;
+      height = faceLineHeight(font.metrics(style.fontSize));
     } catch {
       height = style.fontSize * 1.2;
     }

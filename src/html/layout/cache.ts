@@ -37,7 +37,10 @@ export class TextLayoutCache {
         this._layout(content, style, options),
       match: (family, style) => engine.match(family, style),
       // the engine's, which a layout asked of the cache is laid out by
-      justifies: engine.justifies === true,
+      justifies:
+        engine.justifies === true || engine.justifies === 'rest'
+          ? engine.justifies
+          : false,
     };
   }
 

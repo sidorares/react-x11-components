@@ -20,6 +20,12 @@
 //               nobody is fixing yet does not stop the run
 // A plain run stops at the first page that fails and leaves its report —
 // chrome.png, ours.png, diff.png, report.txt — under <out>/<NNN>/.
+//
+// `--native` draws our side on react-x11's native backend (`native.tsx`),
+// the window the browser example opens on Windows or a Mac, where it is
+// otherwise the in-process X server. Such a run starts at 001, reports
+// under zengarden-results/native/, keeps its cache with the X11 run's, and
+// leaves `state.json` alone: that is the X11 run's memory.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +37,7 @@ import type { Capture, Image } from './chrome.js';
 import { compareBoxes, visualDiff } from './compare.js';
 import type { Finding } from './compare.js';
 import { CachedNetwork, capture } from './ours.js';
+import { captureNative, closeNative } from './native.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const STATE = join(HERE, 'state.json');
@@ -51,7 +58,11 @@ const number = (name: string, fallback: number) =>
 const width = number('--width', 1280);
 const height = number('--height', 800);
 const last = number('--last', 221);
-const out = resolve(option('--out') ?? 'zengarden-results');
+const native = args.includes('--native');
+const out = resolve(
+  option('--out') ??
+    (native ? join('zengarden-results', 'native') : 'zengarden-results'),
+);
 const keepGoing = args.includes('--keep-going');
 const only = option('--page');
 /** The most of a page compared, top down: a design is rarely longer. */
@@ -62,19 +73,15 @@ const visualAllowance = Number(option('--visual') ?? 0.01);
 const state = JSON.parse(readFileSync(STATE, 'utf8')) as State;
 const pad = (n: number) => String(n).padStart(3, '0');
 
+const from = number('--from', native ? 1 : state.lastPassed + 1);
 const pages: number[] = only
   ? [Number(only)]
-  : Array.from(
-      {
-        length: Math.max(
-          0,
-          last - (number('--from', state.lastPassed + 1) - 1),
-        ),
-      },
-      (_, i) => number('--from', state.lastPassed + 1) + i,
-    );
+  : Array.from({ length: Math.max(0, last - (from - 1)) }, (_, i) => from + i);
 
-const network = new CachedNetwork(join(out, 'cache'));
+const network = new CachedNetwork(
+  native ? resolve('zengarden-results', 'cache') : join(out, 'cache'),
+);
+const ourCapture = native ? captureNative : capture;
 const chrome = await Chrome.launch();
 let failed = 0;
 try {
@@ -93,7 +100,7 @@ try {
     let ours: Capture | null;
     try {
       reference = await chrome.capture(url, size);
-      ours = await capture(network, url, size);
+      ours = await ourCapture(network, url, size);
       // a page drawn without a file its server never answered for is not
       // the page
       const dropped = network.takeDropped();
@@ -147,6 +154,7 @@ try {
   }
 } finally {
   await chrome.close();
+  if (native) await closeNative();
 }
 process.exit(failed ? 1 : 0);
 
@@ -156,7 +164,7 @@ function line(finding: Finding): string {
 
 /** Record `n` as passed, when every page before it has. */
 function advance(n: number): void {
-  if (n !== state.lastPassed + 1) return;
+  if (native || n !== state.lastPassed + 1) return;
   state.lastPassed = n;
   writeFileSync(STATE, JSON.stringify(state, null, 2) + '\n');
 }

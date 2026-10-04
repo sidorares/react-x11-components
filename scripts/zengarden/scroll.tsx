@@ -15,7 +15,7 @@
 //            the middle and the bottom 300 of the page
 //   HOVER    x,y — a pointer parked there in logical window pixels, as a
 //            user's is while they scroll: over a card on /pages/alldesigns/
-//            its hover shadow is in every frame. Cocoa only.
+//            its hover shadow is in every frame. Cocoa and Windows.
 //   STEP     pixels a step, default 20; DUR ms a region, default 3000
 //
 //   REACT_X11_BACKEND=cocoa npx tsx scripts/zengarden/scroll.tsx
@@ -65,11 +65,15 @@ const onResource = (request: ResourceRequest) => {
 };
 
 interface Frame {
+  t: number;
   ms: number;
   paint: number;
 }
 const frames: Frame[] = [];
-let windowNode: { children: unknown[] } | null = null;
+let windowNode: {
+  children: unknown[];
+  invalidate(layout: boolean, damage?: unknown, reason?: string): void;
+} | null = null;
 let paintMs = 0;
 {
   const proto = WindowNode.prototype as unknown as {
@@ -81,10 +85,13 @@ let paintMs = 0;
     paintMs = 0;
     const t0 = performance.now();
     const painted = flush.apply(this, a);
-    if (painted) frames.push({ ms: performance.now() - t0, paint: paintMs });
+    if (painted)
+      frames.push({ t: t0, ms: performance.now() - t0, paint: paintMs });
     return painted;
   };
 }
+// from the render call: the page's first frames, until it is still
+const loadStart = performance.now();
 
 interface Pane {
   abs: { height: number };
@@ -158,6 +165,47 @@ const damages: number[] = [];
   };
 }
 
+const r1 = (v: number) => Math.round(v * 10) / 10;
+// The load: the frames from the render call until the page was still, and
+// what they cost — the resources come from the disk cache, so this is the
+// document's work, not the network's. `firstPaint` is the first frame
+// <Html> painted in, `settled` the end of the last.
+{
+  const load = frames.filter((f) => f.t >= loadStart);
+  const last = load.at(-1);
+  console.log(
+    'LOAD ' +
+      JSON.stringify({
+        frames: load.length,
+        settled: last ? r1(last.t + last.ms - loadStart) : null,
+        firstPaint: r1(
+          (load.find((f) => f.paint > 0)?.t ?? loadStart) - loadStart,
+        ),
+        work: r1(load.reduce((s, f) => s + f.ms, 0)),
+        longest: r1(Math.max(0, ...load.map((f) => f.ms))),
+      }),
+  );
+}
+// A repaint of the whole window, the page as it is: what an expose or a
+// theme change costs, five times.
+{
+  const f0 = frames.length;
+  for (let i = 0; i < 5; i += 1) {
+    windowNode!.invalidate(false, null, 'expose');
+    await wait(120);
+  }
+  const repaints = frames.slice(f0).map((f) => f.ms);
+  const sorted = [...repaints].sort((a, b) => a - b);
+  console.log(
+    'REPAINT ' +
+      JSON.stringify({
+        frames: repaints.length,
+        median: r1(sorted[sorted.length >> 1] ?? NaN),
+        max: r1(Math.max(0, ...repaints)),
+      }),
+  );
+}
+
 const scale = wref.current?.scale ?? 1;
 const bottom = Math.max(
   0,
@@ -174,26 +222,37 @@ const regions: [string, number, number][] = process.env.REGIONS
       ['footer', Math.max(0, bottom - 300), bottom],
     ];
 
-// a pointer parked over the page, through the Cocoa bridge's own entry for
-// an NSEvent — X11 has no such thing to call without a server's input
+// a pointer parked over the page, through the bridge's own entry for an
+// event — the Cocoa one's NSEvent, the Windows one's message, each in its
+// own shape — where X11 has no such thing to call without a server's input
 const hover = process.env.HOVER?.split(',').map(Number);
 const park = () => {
   const app = wref.current?.app as {
     _route?: (ev: unknown) => void;
-    _windows?: Map<unknown, { _key: unknown }>;
+    _windows?: Map<unknown, { _key: unknown; id: unknown; scale?: number }>;
   };
   if (!hover || typeof app?._route !== 'function') return;
   const win = [...app._windows!.values()][0];
+  const s = (wref.current as unknown as { scale?: number }).scale ?? 1;
   for (const dx of [0, 1]) {
-    app._route({
-      type: 'mousemove',
-      handle: win._key,
-      x: hover[0] + dx,
-      y: hover[1],
-      gx: hover[0] + dx,
-      gy: hover[1],
-      time: Date.now() & 0x7fffffff,
-    });
+    app._route(
+      process.platform === 'win32'
+        ? {
+            type: 'mousemove',
+            id: win.id,
+            a: (hover[0] + dx) * s,
+            b: hover[1] * s,
+          }
+        : {
+            type: 'mousemove',
+            handle: win._key,
+            x: hover[0] + dx,
+            y: hover[1],
+            gx: hover[0] + dx,
+            gy: hover[1],
+            time: Date.now() & 0x7fffffff,
+          },
+    );
   }
 };
 

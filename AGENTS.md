@@ -2659,6 +2659,7 @@ npm run check:package # exports map + tree-shaking contract (needs a build)
 npm run docs          # sync docs/ into website/ and serve it
 npm run docs:build    # what the deploy workflow runs
 npm run bench:zengarden  # the CSS Zen Garden against Chrome — scripts/zengarden/
+npm run bench:zengarden -- --native  # the same on the native backend: Windows, a Mac
 npm run bench:zengarden:scroll  # a Zen Garden page scrolled, frame costs by region
 npm run bench:zengarden:resize  # each design's window dragged narrower, frame costs
 ```
