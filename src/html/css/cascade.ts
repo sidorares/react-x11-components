@@ -2059,6 +2059,9 @@ export class Cascade {
   private _kept: KeptStyles | null = null;
   /** Whether a build is styling the document (`beginSharing`). */
   private _inBuild = false;
+  /** The timeline the last build ran its animations on: the document's,
+   *  where a style `pseudoStyleFor` keeps has to have been worked out. */
+  private _buildTimeline: AnimationTimeline | null = null;
   private _keptShared = new Map<Element, SharedStyle>();
 
   /**
@@ -2081,6 +2084,7 @@ export class Cascade {
     this._namesKept.clear();
     this._keepNames = true;
     this._inBuild = true;
+    this._buildTimeline = this.timeline;
     this._shared.clear();
     this._sharedByMatch.clear();
     // the kept styles' custom properties are the sets in here, which the
@@ -2778,7 +2782,13 @@ export class Cascade {
     // build matched a document's every `::before` and `::after` again, half
     // of it on Wikipedia. Not outside one: a hover or an animation frame
     // restyled in place changes a pseudo-element and not the element, and
-    // what that comes to is kept for the next build to start from.
+    // what that comes to is kept for the next build to start from — where
+    // it was worked out on the document's timeline. A layer's frames are
+    // sampled on a fork of it (`sprites.ts`), at times through a cycle, and
+    // a build that kept the element gave its pseudo-element the last.
+    const style = (): ComputedStyle | null =>
+      this._pseudoStyle(el, which, elementStyle, indexed, edges);
+    if (this.timeline !== this._buildTimeline) return style();
     let kept = this._pseudoKept.get(el);
     if (kept?.from !== elementStyle) {
       kept = { from: elementStyle, before: undefined, after: undefined };
@@ -2786,9 +2796,7 @@ export class Cascade {
     } else if (this._inBuild && kept[which] !== undefined) {
       return kept[which];
     }
-    const style = this._pseudoStyle(el, which, elementStyle, indexed, edges);
-    kept[which] = style;
-    return style;
+    return (kept[which] = style());
   }
 
   /** What `pseudoStyleFor` keeps, by element: the style worked out from,
