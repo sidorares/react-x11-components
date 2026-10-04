@@ -1335,10 +1335,21 @@ coordinates). Both are properties of the data shapes in `css/values.ts` and
 `layout/boxes.ts`. Breaking either turns every resize into a full restyle,
 silently and only on large documents. `@media` is the deliberate exception:
 the widths at which some rule changes its mind are collected at parse time,
-so a resize restyles only when it crossed one. The viewport units are the
-other, handled the same way: a `vw` or a `vh` is a number once computed, so
-the cascade notes at parse time whether any declaration uses one, and only
-those documents restyle when that side of the viewport moves. The viewport
+so a resize restyles only when it crossed one — and then only the elements
+the rules it turned on or off match (`Cascade.crossed`), with the elements
+under them whose parent's style came out other than it was
+(`KeptStyles.follow`): Wikipedia's 1120px breakpoint turns 55 rules over
+that match 27 of its 4,386 elements. That stands on **a child's computed
+style being a function of the rules that match it and its parent's
+style**: anything new that makes a style read more — a sibling's style, an
+ancestor's past the parent — has to say so to `follow`, or a crossing keeps
+a style that changed. And `crossed` answers null, a whole restyle, for
+what is under a media query outside the rule indexes: a `@keyframes`, a
+rule at a shadow tree's edge, a shadow tree, a `@font-face`. The viewport
+units are the other exception, handled the same way: a `vw` or a `vh` is a
+number once computed, so the cascade notes as a length is resolved whether
+a style holds one (`_viewportRead`), and only those documents restyle when
+that side of the viewport moves. The viewport
 is the box that scrolls the element, whose height core's layout pass
 decides _after_ the element was measured — so a document that reads it (a
 `vh`, the root's percentage height, a box against the initial containing

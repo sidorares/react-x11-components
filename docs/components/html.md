@@ -3134,7 +3134,7 @@ least:
 | a stylesheet       | style, box, layout, paint                        |
 | the DOM            | box, layout, paint                               |
 | the width          | layout, paint                                    |
-| a `@media` band    | style, box, layout, paint                        |
+| a `@media` band    | style of what it reaches, box, layout, paint     |
 | an expose / scroll | paint, culled to the damage rect                 |
 
 Nothing in a computed style depends on the width — percentages and `auto`
@@ -3187,6 +3187,17 @@ resize as before — whatever its sheets mention: Wikipedia's skin has a
 and those are only ever laid out for real. A frame of a window resize at
 600 KB went from 573 to 196 ms on macOS and from 256 to 86 ms on XQuartz.
 
+**A breakpoint restyles what it changes.** A resize across a `@media`
+breakpoint styles again the elements the rules it turns on or off match,
+and under them only the elements whose parent's style came out other than
+it was — the rest keep the styles they had — and a breakpoint whose rules
+match nothing in the document styles nothing. Wikipedia's 1120px
+breakpoint turns 55 rules over that match 27 of the article's 4,386
+elements, page grids at the top of every subtree; every element was
+styled again there, and a crossing's build went from 130 ms to 53 ms at 2x
+on macOS. A document with a `@keyframes` or a `@font-face` under a media
+query, or a shadow tree, is styled again whole, as before.
+
 **A width that keeps moving lays out what can be seen.** A window edge
 dragged moves the width a frame at a time, and a long page laid out whole
 at each step cannot keep up: Wikipedia's article on the X Window System is
@@ -3201,9 +3212,11 @@ document is laid out whole. What can be seen is laid out as the whole
 layout lays it out, so the one thing on screen that differs is the scroll
 bar's thumb, sized to the guess. The first move of a drag is laid out
 whole, so a width set once is exact at once, and so is everything else that
-lays out; a tree no layout has laid out whole yet, which a `@media` band
-crossed mid-drag builds; a document of animations the window server runs; a
-document less than two such stops tall; a multicol container, whose columns
+lays out; a tree no layout has laid out whole yet — but the one a `@media`
+band crossed mid-drag builds, which a layout that stops measures from all
+it holds, so a drag across a breakpoint lays out what can be seen too, in
+some 64 ms where it took 200; a document of animations the window server
+runs; a document less than two such stops tall; a multicol container, whose columns
 balance all of what it holds; and a document with a fixed box, or an
 absolute one placed against something laid out, inside what a layout would
 set aside, since it would be missing from where it is drawn. On that

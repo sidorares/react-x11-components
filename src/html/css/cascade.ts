@@ -72,6 +72,7 @@ import {
   initialOne,
   initialStyle,
   isInherited,
+  sameStyle,
 } from './style.js';
 import type { ComputedStyle, RootLook } from './style.js';
 import type { FontFamilies } from '../fonts.js';
@@ -163,6 +164,15 @@ export interface SharedStyle {
 export interface KeptStyles {
   styles: ReadonlyMap<Element, { style: ComputedStyle; inFlex: boolean }>;
   restyle: ReadonlySet<Element>;
+  /**
+   * Whether `restyle` names the elements a change reached and nothing under
+   * them (`Cascade.crossed`): an element under one is styled again only
+   * where its parent's style came out other than it was, which is all its
+   * own is computed from beside the rules — so a band that changes a
+   * page's grid at its top styles the grid's children again and keeps
+   * their children's. Without it, `restyle` holds everything it reaches.
+   */
+  follow?: boolean;
 }
 
 /** A shadow tree's sheets, as the cascade is handed them: every tree whose
@@ -348,7 +358,16 @@ class RuleIndex {
   ownStyleEverywhere = false;
   /** How many rules are in here, so an empty index costs one comparison. */
   size = 0;
+  /** The rules under a media query, which a width can turn on or off
+   *  (`Cascade.crossed`). */
+  readonly withMedia: IndexedRule[] = [];
   private _nextId = 0;
+
+  /** A rule of another index, filed here under its key as it is. */
+  adopt(indexed: IndexedRule): void {
+    this.size += 1;
+    this._bucket(rightmostKey(indexed.rule.selector)).push(indexed);
+  }
 
   /**
    * Whether a bucket here could hold a rule for `el`, by its tag, id and
@@ -411,6 +430,7 @@ class RuleIndex {
       else this.ownStyleEverywhere = true;
     }
     this._bucket(key).push(indexed);
+    if (rule.media) this.withMedia.push(indexed);
     if (focus || HOVER.test(rule.selector)) {
       this.pointer ??= new RuleIndex();
       this.pointer.size += 1;
@@ -1446,6 +1466,10 @@ function faceKey(style: FaceSource): string {
  */
 export class Cascade {
   private _index = new RuleIndex();
+  /** Whether something under a media query is no rule of an index here —
+   *  a `@keyframes`, a rule at a shadow tree's edge — which a width that
+   *  crosses a breakpoint changes in ways `crossed` does not look for. */
+  private _mediaOutsideRules = false;
   /** The rules for pseudo-elements, kept apart: they never style the
    *  element itself, and a document with none of them asks nothing. */
   private _pseudo: Record<PseudoElement, RuleIndex> = {
@@ -1733,6 +1757,7 @@ export class Cascade {
       if (!this._lh && usesLh(rule.declarations)) this._lh = true;
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
+        if (rule.media) this._mediaOutsideRules = true;
         continue;
       }
       const pseudo = splitPseudoElement(rule);
@@ -1757,6 +1782,7 @@ export class Cascade {
       if (!named) rules.keyframes.set(rule.name, (named = []));
       named.push(rule);
       this._anyKeyframes = true;
+      if (rule.media) this._mediaOutsideRules = true;
       for (const frame of rule.frames) {
         const declarations = frame.declarations;
         if (!this._vars && usesVars(declarations)) this._vars = true;
@@ -1892,6 +1918,58 @@ export class Cascade {
     }
   }
 
+  /**
+   * The elements whose styles a viewport `from` device pixels wide and one
+   * `to` wide make differently, for a resize that crossed a breakpoint:
+   * each one a rule matches whose media hold at one width and not at the
+   * other, or a pseudo-element of it is — or null where that cannot be
+   * told from the rules here, as for a shadow tree's, which styles
+   * elements the document's walk does not reach, or a `@keyframes` under
+   * a media query. A band changes few elements: Wikipedia's 1120px
+   * breakpoint turns 55 rules over, which match 27 of 4,386 elements, and
+   * its 1400px one 2, which match none — where every element was styled
+   * again and every box built again.
+   */
+  crossed(
+    from: number,
+    to: number,
+    root: { children?: readonly unknown[] },
+  ): Set<Element> | null {
+    if (this._scoped || this._mediaOutsideRules) return null;
+    const holds = (rule: StyleRule, width: number): boolean =>
+      mediaMatches(
+        rule.media,
+        width / this.scale,
+        this.look.colorScheme,
+        this.viewportHeight / this.scale,
+        this.scale,
+        this.reducedMotion,
+      );
+    const turned = new RuleIndex();
+    for (const index of [this._index, ...Object.values(this._pseudo)]) {
+      for (const indexed of index.withMedia) {
+        if (holds(indexed.rule, from) !== holds(indexed.rule, to)) {
+          turned.adopt(indexed);
+        }
+      }
+    }
+    const reached = new Set<Element>();
+    if (!turned.size) return reached;
+    const stack: unknown[] = [...(root.children ?? [])];
+    while (stack.length) {
+      const node = stack.pop();
+      if (!isElement(node as never)) continue;
+      const el = node as Element;
+      if (turned.reaches(el)) {
+        const matched: number[] = [];
+        this._matchInto(turned, el, null, matched, undefined, false, true);
+        if (matched.length) reached.add(el);
+      }
+      for (const child of el.children) stack.push(child);
+    }
+    return reached;
+  }
+
   /** Which media band a device-pixel width falls in. Two widths in the same
    *  band produce identical styles, which is what lets a resize skip
    *  restyling. */
@@ -2003,6 +2081,20 @@ export class Cascade {
     if (!kept) this._customs.clear();
     this._kept = kept;
     this._keptShared.clear();
+  }
+
+  /** Whether an element's parent has the style it had before the build,
+   *  what the element's own is computed from beside the rules (`follow`). */
+  private _parentAsWas(
+    el: Element,
+    parentStyle: ComputedStyle,
+    kept: KeptStyles,
+  ): boolean {
+    const parent = elementParent(el);
+    const was = parent ? kept.styles.get(parent)?.style : undefined;
+    return (
+      was !== undefined && (was === parentStyle || sameStyle(was, parentStyle))
+    );
   }
 
   /** The build is over: nothing later is answered from what it kept. */
@@ -2507,7 +2599,11 @@ export class Cascade {
     inFlexContainer: boolean,
   ): SharedStyle {
     const kept = this._kept;
-    if (kept !== null && !kept.restyle.has(el)) {
+    if (
+      kept !== null &&
+      !kept.restyle.has(el) &&
+      (!kept.follow || this._parentAsWas(el, parentStyle, kept))
+    ) {
       // An element the change did not reach keeps its style, under a key
       // of its own: a key stands for an element's ancestors, which the
       // elements styled again under it have in common, and two kept
@@ -3761,6 +3857,8 @@ export class Cascade {
     /** Whether `el` is matched where a `<use>` draws a copy of it
      *  (`_copyTop`). */
     inCopy = false,
+    /** Whether a rule matches whatever its media say (`crossed`). */
+    anyMedia = false,
   ): void {
     // A media query's width is CSS pixels; the viewport is kept in device.
     const width = this.viewportWidth / this.scale;
@@ -3792,6 +3890,7 @@ export class Cascade {
         if (live !== undefined && !live(indexed)) continue;
         const rule = indexed.rule;
         if (
+          !anyMedia &&
           !mediaMatches(
             rule.media,
             width,

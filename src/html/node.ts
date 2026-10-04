@@ -506,6 +506,9 @@ export class HtmlViewNode extends Node {
    */
   private _partial = false;
   private _wholeTree: BoxTree | null = null;
+  /** The tree a band a drag crossed built, which a layout may stop in as
+   *  it may in one laid out whole (`_stopAt`). */
+  private _crossedTree: BoxTree | null = null;
   private _widthMovedAt = -Infinity;
   /** The width of the last layout, whatever was built since: a band a
    *  drag crosses builds the boxes again, and the width still moved. */
@@ -1438,6 +1441,10 @@ export class HtmlViewNode extends Node {
     // found below changes them all
     let restyleOnly = this._stale === Stale.Boxes ? this._restyleOnly : null;
     this._restyleOnly = null;
+    // whether `restyleOnly` names only what a crossing reached, and
+    // whether a crossing is what restyles (`_stopAt`)
+    let follow = false;
+    let crossing = false;
     if (this._stale >= Stale.Style || !this._cascade) {
       this._restyle(target);
       this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
@@ -1445,10 +1452,29 @@ export class HtmlViewNode extends Node {
     } else if (this._cascade.mediaBand(target) !== this._mediaBand) {
       // A resize that crossed a `@media` breakpoint is the one resize that
       // does have to restyle. Knowing which resizes those are is why the
-      // breakpoints are collected at parse time.
-      this._restyle(target);
-      this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
-      restyleOnly = null;
+      // breakpoints are collected at parse time — and which elements, is
+      // the rules it turns on and off: those they match are styled again,
+      // and the elements under them where what they are computed from came
+      // out other than it was (`Cascade.crossed`, `KeptStyles.follow`),
+      // where every element was. A crossing they match nothing of styles
+      // nothing.
+      const reached = this._crossed(target);
+      crossing = reached !== null;
+      if (reached === null) {
+        this._restyle(target);
+        this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
+        restyleOnly = null;
+      } else {
+        this._mediaBand = this._cascade.mediaBand(target);
+        if (reached.size && this._stale < Stale.Boxes) {
+          this._stale = Stale.Boxes;
+          restyleOnly = reached;
+          follow = true;
+        } else if (reached.size && restyleOnly) {
+          restyleOnly = new Set([...restyleOnly, ...reached]);
+          follow = true;
+        }
+      }
     }
 
     // a first rendering waits for the stylesheets the head links to
@@ -1506,6 +1532,7 @@ export class HtmlViewNode extends Node {
             ? {
                 styles: this._tree.styles,
                 restyle: this._withAnimated(restyleOnly, this._tree),
+                follow,
               }
             : null;
         const timeline = this._clockIn(cascade);
@@ -1564,14 +1591,20 @@ export class HtmlViewNode extends Node {
           this._stale >= Stale.Layout);
       if (this._tree && laysOut) {
         const laidOutAt = this._laidOutWidth;
+        if (crossing) this._crossedTree = this._tree;
         const result = layoutDocument(
           this._tree,
           this._layoutFonts(),
           target,
           viewport,
           this._scale,
-          this._stopAt(target, laidOutAt, viewportMoved),
+          this._stopAt(target, viewportMoved, crossing),
         );
+        // A tree a crossing built and laid out down to where the layout
+        // stops: what it set aside was never laid out, and is no height
+        // to guess the document's from, so it is as tall as it was.
+        const fresh = result.partial && this._wholeTree !== this._tree;
+        if (fresh) result.height = Math.max(result.height, wasHeight);
         this._partial = result.partial;
         if (result.partial) this._armSettle();
         else this._wholeTree = this._tree;
@@ -1632,6 +1665,27 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * The elements a resize to `target` restyles, having crossed a breakpoint
+   * (`Cascade.crossed`), or null where the whole document is: where the
+   * boxes were not styled by this cascade at the band it is at, or a face
+   * the document loads sits under a media query, which the width chooses as
+   * it chooses a rule (`_restyle`).
+   */
+  private _crossed(target: number): Set<Element> | null {
+    const cascade = this._cascade;
+    if (!cascade || !this._tree || this._styledWith !== cascade) return null;
+    if (cascade.mediaBand(cascade.viewportWidth) !== this._mediaBand) {
+      return null;
+    }
+    if (this._sheetsRead?.faces.some((face) => face.rule.media)) return null;
+    return cascade.crossed(
+      cascade.viewportWidth,
+      target,
+      this._source.document,
+    );
+  }
+
+  /**
    * Where a layout at `target` stops, in document coordinates, or nothing
    * for a layout of the whole document. A width that moves again within
    * `RESIZE_BURST_MS` of the last layout at another width is a window edge
@@ -1648,16 +1702,26 @@ export class HtmlViewNode extends Node {
    */
   private _stopAt(
     target: number,
-    laidOutAt: number,
     viewportMoved: boolean,
+    crossing: boolean,
   ): number | undefined {
-    if (laidOutAt === -1 || laidOutAt === target) return undefined;
+    const was = this._widthLaid;
+    if (was === -1 || was === target) return undefined;
     if (
       resizeClock.now() - this._widthMovedAt >= RESIZE_BURST_MS ||
       viewportMoved ||
-      this._stale >= Stale.Layout ||
-      this._wholeTree !== this._tree ||
       this._lifted.size > 0
+    ) {
+      return undefined;
+    }
+    // Anything else stale lays out whole, and so does a tree no layout has
+    // laid out whole — but for the band a drag crossed, and the tree it
+    // built: a layout that stops measures what it sizes from all it holds
+    // (`probeWhole`), so it needs none of a whole layout's sizes.
+    if (
+      !crossing &&
+      (this._stale >= Stale.Layout ||
+        (this._wholeTree !== this._tree && this._crossedTree !== this._tree))
     ) {
       return undefined;
     }
