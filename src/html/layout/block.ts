@@ -302,6 +302,18 @@ function setAside(
   return Number.isFinite(span) && span > 0 ? span : 0;
 }
 
+/** A shrink-to-fit box's content laid out at no width limit, all of it:
+ *  a probe stops nowhere (`until`). */
+function probeWhole(box: Box, ctx: LayoutContext, floats: FloatContext): void {
+  const until = ctx.until;
+  ctx.until = undefined;
+  try {
+    layoutInternals(box, ctx, Infinity, 0, 0, floats);
+  } finally {
+    ctx.until = until;
+  }
+}
+
 /** Whether a box is a multicol container, or in one. */
 function multicolAround(box: Box): boolean {
   for (let at: Box | null = box; at; at = at.parent) {
@@ -1044,7 +1056,8 @@ function layoutChildren(
   // again from the whole list, and set aside again where it starts below.
   const until = ctx.until;
   let children = box.children;
-  const whole = until === undefined ? undefined : ctx.setAside!.get(box);
+  // a probe, which stops nowhere, lays out what was set aside too
+  const whole = ctx.setAside?.get(box);
   if (whole) {
     for (const child of whole) HELD_BACK.delete(child);
     ctx.setAside!.delete(box);
@@ -1932,8 +1945,16 @@ export function measureIntrinsicWidth(
 ): number {
   // not through `ctx.layoutSubtree`, which is this and one frame more on
   // the stack for every level of a document that measures what it holds
-  // (`layoutTable`)
-  layoutSubtree(box, ctx, available, undefined, true);
+  // (`layoutTable`) — and with no stop: a probe measures all of what the
+  // box holds, which a layout that stops (`until`) would leave out of a
+  // probe at no width, as tall as its words
+  const until = ctx.until;
+  ctx.until = undefined;
+  try {
+    layoutSubtree(box, ctx, available, undefined, true);
+  } finally {
+    ctx.until = until;
+  }
   const specified = box.style.width;
   if (!content && specified !== AUTO && Number.isFinite(box.width)) {
     return box.width;
@@ -3298,7 +3319,7 @@ function shrinkToFitWidth(
   let content = PREFERRED.get(box);
   let probed = false;
   if (content === undefined) {
-    layoutInternals(box, ctx, Infinity, 0, 0, probe);
+    probeWhole(box, ctx, probe);
     content = intrinsicWidth(box);
     PREFERRED.set(box, content);
     probed = true;
@@ -3319,7 +3340,7 @@ function shrinkToFitWidth(
     !probed
   ) {
     // the words the floor is read from are the probe's
-    layoutInternals(box, ctx, Infinity, 0, 0, probe);
+    probeWhole(box, ctx, probe);
   }
   // and where its content does not fit the room, its longest word is the
   // least it comes to: `min(max(min-content, room), max-content)`. That
