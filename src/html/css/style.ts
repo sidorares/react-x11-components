@@ -6970,18 +6970,47 @@ const GENERIC_FAMILY = new Set([
 ]);
 
 /** Structural equality for a computed value: a number, a string, or the
- *  plain objects and arrays a length or a shadow list is. */
+ *  plain objects, arrays and maps a length, a shadow list or a grid's
+ *  areas are. */
 export function sameValue(x: unknown, y: unknown): boolean {
   if (x === y) return true;
   if (typeof x === 'number' && typeof y === 'number') {
     return Number.isNaN(x) && Number.isNaN(y);
   }
   if (!x || !y || typeof x !== 'object' || typeof y !== 'object') return false;
+  // a map has no keys of its own to compare, and any two came out the same
+  if (x instanceof Map || y instanceof Map) {
+    if (!(x instanceof Map && y instanceof Map) || x.size !== y.size) {
+      return false;
+    }
+    for (const [key, value] of x) {
+      if (!y.has(key) || !sameValue(value, y.get(key))) return false;
+    }
+    return true;
+  }
   if (Array.isArray(x) !== Array.isArray(y)) return false;
   const a = x as Record<string, unknown>;
   const b = y as Record<string, unknown>;
   const keys = Object.keys(a);
   if (keys.length !== Object.keys(b).length) return false;
   for (const key of keys) if (!sameValue(a[key], b[key])) return false;
+  return true;
+}
+
+/**
+ * Whether two computed styles are the same, field for field: what tells an
+ * element a change styled again to the same style from one it changed,
+ * whose children's are then computed from another (`KeptStyles.follow`).
+ * The custom properties go by identity, as the cascade shares one set where
+ * they are the same (`Cascade._customFor`): a set's chain is long to walk.
+ */
+export function sameStyle(a: ComputedStyle, b: ComputedStyle): boolean {
+  if (a === b) return true;
+  if (a.custom !== b.custom) return false;
+  const x = a as unknown as Record<string, unknown>;
+  const y = b as unknown as Record<string, unknown>;
+  for (const key in y) {
+    if (key !== 'custom' && !sameValue(x[key], y[key])) return false;
+  }
   return true;
 }

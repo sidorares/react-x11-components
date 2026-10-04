@@ -14,6 +14,10 @@ import { HtmlSource } from '../../src/html/dom.js';
 import { animationClock } from '../../src/html/node.js';
 import { lightDark, usedColorScheme } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
+import { sameValue } from '../../src/html/css/style.js';
+import { Cascade } from '../../src/html/css/cascade.js';
+import type { HtmlViewNode } from '../../src/html/index.js';
+import type { Element } from 'domhandler';
 import {
   FONTS,
   boxOf,
@@ -22,6 +26,7 @@ import {
   render,
   render2x,
   renderScrolled,
+  treeOf,
   view,
 } from './harness.js';
 import { holdClock } from '../held-clock.js';
@@ -923,6 +928,147 @@ test('a document restyles across the widths an or and a not change their minds a
   assert.deepStrictEqual(heights(), [20, 20, 10, 10], 'at 550');
   await resize(300, 250);
   assert.deepStrictEqual(heights(), [20, 10, 20, 10], 'and back at 250');
+});
+
+/** Whether two computed styles are the same, their custom properties by
+ *  what they hold: a build that styles every element makes new sets. */
+function sameComputed(a: ComputedStyle, b: ComputedStyle): boolean {
+  type Props = { own: Map<string, string | null>; parent: Props | null };
+  const flat = (c: unknown): Map<string, string> => {
+    const out = new Map<string, string>();
+    const links: Props[] = [];
+    for (let at = c as Props | null; at; at = at.parent) links.push(at);
+    for (const link of links.reverse()) {
+      for (const [k, v] of link.own) {
+        if (v === null) out.delete(k);
+        else out.set(k, v);
+      }
+    }
+    return out;
+  };
+  const x = a as unknown as Record<string, unknown>;
+  const y = b as unknown as Record<string, unknown>;
+  for (const key in y) {
+    const same =
+      key === 'custom'
+        ? sameValue(flat(x[key]), flat(y[key]))
+        : sameValue(x[key], y[key]);
+    if (!same) return false;
+  }
+  return true;
+}
+
+/** Every element's style as a build that styles every element makes it:
+ *  how many of the element's differ, and which. */
+function againstWhole(el: HtmlViewNode): string[] {
+  type Node = {
+    _tree: { styles: Map<Element, { style: ComputedStyle }> };
+    _invalidate(stale: number): void;
+    _prepare(width: number): void;
+    _laidOutWidth: number;
+  };
+  const node = el as unknown as Node;
+  const partial = new Map(node._tree.styles);
+  node._invalidate(3);
+  node._prepare(node._laidOutWidth);
+  const differ: string[] = [];
+  for (const [element, { style }] of node._tree.styles) {
+    const had = partial.get(element);
+    if (!had || !sameComputed(had.style, style)) {
+      differ.push(element.attribs.id ?? element.name);
+    }
+  }
+  return differ;
+}
+
+test('a breakpoint whose rules match nothing in the document restyles nothing', async () => {
+  // Wikipedia's 1400px breakpoint turns two rules over, which match none of
+  // its elements: every element was styled again, and every box built again
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}div{height:10px}' +
+      '@media (max-width:300px){.absent{height:20px}}</style>' +
+      '<div id="a"></div>',
+    300,
+    400,
+  );
+  const tree = treeOf(el);
+  await resize(300, 250);
+  assert.ok(treeOf(el) === tree, 'no box built again');
+  await resize(300, 400);
+  assert.ok(treeOf(el) === tree, 'nor crossing back');
+  assert.deepStrictEqual(againstWhole(el), []);
+});
+
+test('a breakpoint restyles what its rules reach, and under it what is computed from a change, as a whole restyle does', async (t) => {
+  // Its 1120px breakpoint turns 55 rules over that match 27 elements, the
+  // grid of the page at the top of each subtree: every element under them
+  // was styled again, where only their children have a parent of another
+  // style, and those children's children one of the same
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}' +
+      '@media (max-width:300px){' +
+      '#flex{display:flex;color:rgb(255,0,0)}' +
+      '#plain{width:50px}' +
+      '.x::before{content:"a"}}</style>' +
+      '<div id="flex"><span id="f1"><b id="f2">x</b></span></div>' +
+      '<div id="plain"><p id="p1"><i id="p2">y</i></p></div>' +
+      '<div id="x" class="x">z</div>',
+    300,
+    400,
+  );
+  const styled: string[] = [];
+  const proto = Cascade.prototype as unknown as {
+    _computeStyle(el: Element, ...rest: unknown[]): unknown;
+  };
+  const compute = proto._computeStyle;
+  t.mock.method(
+    proto,
+    '_computeStyle',
+    function (this: unknown, element: Element, ...rest: unknown[]) {
+      styled.push(element.attribs?.id ?? element.name);
+      return compute.call(this, element, ...rest);
+    },
+  );
+  await resize(300, 250);
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+  assert.strictEqual(style('f1').display, 'block', 'a flex item, blockified');
+  assert.strictEqual(style('f2').color, '#ff0000', 'the colour inherited');
+  assert.strictEqual(boxOf(el, 'plain').width, 50);
+  assert.ok(styled.includes('f2'), 'under a colour that changed');
+  assert.ok(styled.includes('p1'), 'a child of a style that changed');
+  assert.ok(!styled.includes('p2'), 'and not under one that did not');
+  t.mock.restoreAll();
+  assert.deepStrictEqual(againstWhole(el), [], 'as a whole restyle');
+  await resize(300, 400);
+  assert.strictEqual(style('f1').display, 'inline', 'and back');
+  assert.deepStrictEqual(againstWhole(el), [], 'crossing back');
+});
+
+test('a breakpoint over @keyframes under a media query restyles the document whole', async () => {
+  // a rule's media are what `crossed` reads, and a `@keyframes`' are not
+  // a rule's: it answers that it cannot tell
+  const { el } = await renderScrolled(
+    '<style>@media (max-width:300px){@keyframes k{to{opacity:0}}}' +
+      '@media (max-width:300px){.absent{height:2px}}</style><div>a</div>',
+    300,
+    400,
+  );
+  const node = el as unknown as {
+    _cascade: Cascade;
+    _source: { document: { children: unknown[] } };
+  };
+  assert.strictEqual(
+    node._cascade.crossed(400, 250, node._source.document),
+    null,
+  );
+});
+
+test('a map is the same as another only with the same entries', () => {
+  assert.ok(sameValue(new Map([['a', 1]]), new Map([['a', 1]])));
+  assert.ok(!sameValue(new Map([['a', 1]]), new Map([['a', 2]])));
+  assert.ok(!sameValue(new Map([['a', 1]]), new Map()));
+  assert.ok(!sameValue(new Map(), {}));
 });
 
 test("a media feature's value may hold parentheses of its own", async () => {

@@ -530,10 +530,11 @@ test('a layout that stops measures the boxes it sizes from all they hold', async
 });
 
 test('a dragged width that crosses a breakpoint goes on laying out what can be seen after it', async (t) => {
-  // The band crossed builds the boxes again, which is laid out whole, and
-  // takes long on a long page: the width still moved then, and the step
-  // after it is the drag's, where it was taken for a first move, laid out
-  // whole a second time
+  // The band crossed builds the boxes again, and that takes long on a long
+  // page: the width still moved then, and the step after it is the drag's,
+  // where it was taken for a first move and laid out whole. The crossing
+  // itself styles only what the band changes (`Cascade.crossed`) and is
+  // laid out down to what can be seen, as every step of the drag is
   let time = 0;
   t.mock.method(resizeClock, 'now', () => time);
   t.mock.method(resizeClock, 'arm', () => ({}));
@@ -552,7 +553,7 @@ test('a dragged width that crosses a breakpoint goes on laying out what can be s
   time = 100;
   await resize(300, 380);
   assert.strictEqual(boxOf(el, 'r0').x, 10, 'across the breakpoint');
-  assert.ok(!partial(el), 'built again, and laid out whole');
+  assert.ok(partial(el), 'and laid out down to what can be seen');
   time = 250;
   await resize(300, 370);
   assert.ok(partial(el), 'and the step after it the drag’s');
