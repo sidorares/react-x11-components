@@ -115,6 +115,20 @@ export function fadeColor(color: string, by: number): string {
   return alpha > 0 ? serialize(read.rgb, alpha) : 'transparent';
 }
 
+/** A colour as straight sRGB, each channel and its alpha 0 to 1, or null
+ *  where this cannot read it: `currentColor`, say, which the caller
+ *  resolves first. */
+export function rgbaOf(value: string): [number, number, number, number] | null {
+  const read = readRgba(value);
+  if (!read) return null;
+  return [
+    clamp01(read.rgb[0]),
+    clamp01(read.rgb[1]),
+    clamp01(read.rgb[2]),
+    clamp01(read.a),
+  ];
+}
+
 function scaled(c: Triple, k: number): Triple {
   return [c[0] * k, c[1] * k, c[2] * k];
 }

@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.40.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.40.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.42.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.42.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -693,6 +693,15 @@ it up. **The floor is a running one and moves often** — every move since
   0.24.0 (#861, #865): the smoothing `<Html>` asks a perspective's tiles to
   be drawn with had reached no Mac, since core's range admitted no bridge
   with the verb, and now does.
+- `^2.42.0` — a sprite that is shadows alone (react-x11#883): CSS's outer
+  box-shadows, which the render server draws and blurs on the GPU from a
+  caster in a box masked to all but the part's rect, their blur, colour and
+  offset animated there. `<Html>` offers the shadows of a box whose
+  `box-shadow` is in transition as one (`shadowPartOf`), and leaves them
+  out of its paint and of the box's damage while they are lifted: a frame
+  of a Zen Garden card's hover went from 22 ms to 12 on macOS, and to 4
+  while its glow is on the layer. A core without it turns such a part down
+  as no sprite at all, warning, so the floor moves with the feature.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -2211,6 +2220,18 @@ transition does. A transition is never changed but replaced, and its
 layer from where the old one had come to. The restyle that turns it back
 is in place: the opacity is named in `will-change` on both sides of 1, and
 the paint order is what it was (`hoverChange`).
+
+**A box's shadows in transition go on a layer of their own, and the box
+stays the document's** (`shadowLiftOf`, `shadowPartOf`, react-x11's
+`Sprite.shadows`). A card's hover changes its border colour and its shadows
+together, so the box cannot be lifted, but its outer shadows can: they are
+a part with no `paint`, sampled from the timeline as a transform is, and
+the document leaves them out of its paint (`PaintOptions.shadowless`) and
+out of a box's ink (`_inkOf` answers its border box). **Anything new that
+reads a box's ink, or paints its outer shadows, asks `shadowless` first**,
+or a frame repaints the whole glow the layer already shows. The keys are
+apart from `_lifted` (`_offeredShadows`, `_shadowsLifted`): a box whose
+shadows are lifted is no hole, and its clock runs.
 
 **A box out of the plane is lifted with its whole 4×4, and one that is
 still is lifted too.** A part's matrix is then each frame's `matrix3d()`

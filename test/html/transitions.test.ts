@@ -663,6 +663,164 @@ const CARD = (more = '') =>
   ' box-shadow: 0 0 40px rgba(24, 160, 202, .25), 0 0 10px rgba(24, 160, 202, .5);' +
   ` transition: all 160ms linear }${more}</style><div id="a"></div>`;
 
+type ShadowSprite = {
+  key: string;
+  rect: { x: number; y: number; width: number; height: number };
+  rectRadius: number;
+  paint?: unknown;
+  shadows: { blur?: number; x?: number; y?: number; color: number[] }[];
+  animations: {
+    property: string;
+    shadow?: number;
+    values: unknown[];
+    duration: number;
+    delay: number;
+  }[];
+};
+
+test("a box's shadows in transition beside what no layer carries are offered as a part that is its shadows alone: each frame's, padded as CSS pads a list, resting where the transition ends", async (t) => {
+  const doc = await holding(t, CARD());
+  assert.strictEqual(doc.el.sprites(), null, 'nothing runs yet');
+  doc.hover('a');
+  await act();
+  const sprites = doc.el.sprites() as unknown as ShadowSprite[] | null;
+  assert.strictEqual(sprites?.length, 1);
+  const [part] = sprites!;
+  assert.strictEqual(part.paint, undefined, 'nothing painted');
+  // its border box with no transform, and its corners
+  const abs = (doc.el as unknown as DrawnNode).abs;
+  assert.deepStrictEqual(part.rect, {
+    x: abs.x + 80,
+    y: abs.y + 80,
+    width: 102,
+    height: 62,
+  });
+  assert.strictEqual(part.rectRadius, 8);
+  // where the transition leaves them, the glow first
+  const rest = part.shadows.map((s) => [s.blur, s.x ?? 0, s.y ?? 0]);
+  assert.ok(near(rest[0][0]!, 40, 0.1) && near(rest[1][0]!, 10, 0.1));
+  assert.deepStrictEqual(
+    part.shadows.map((s) => s.color.map((c) => Math.round(c * 1000) / 1000)),
+    [
+      [0.094, 0.627, 0.792, 0.25],
+      [0.094, 0.627, 0.792, 0.5],
+    ],
+  );
+  const runs = new Map(
+    part.animations.map((a) => [`${a.property}${a.shadow ?? ''}`, a]),
+  );
+  assert.deepStrictEqual(
+    [...runs.keys()].sort(),
+    [
+      'shadowBlur0',
+      'shadowBlur1',
+      'shadowColor0',
+      'shadowColor1',
+      'shadowOffset0',
+      'transform',
+    ],
+    'what changes, and nothing that does not',
+  );
+  for (const a of runs.values()) {
+    assert.deepStrictEqual([a.duration, a.delay], [160, 0]);
+  }
+  // from the small shadow, and the second from nothing, as CSS pads it
+  const blur = runs.get('shadowBlur0')!.values as number[];
+  assert.strictEqual(blur[0], 2);
+  assert.ok(near(blur[5], 21, 0.5), `${blur[5]}`);
+  assert.strictEqual((runs.get('shadowBlur1')!.values as number[])[0], 0);
+  assert.deepStrictEqual(
+    (runs.get('shadowColor1')!.values as number[][])[0],
+    [0, 0, 0, 0],
+  );
+  assert.deepStrictEqual(
+    (runs.get('shadowOffset0')!.values as number[][])[0],
+    [0, 3],
+  );
+  // over at its end: the document's again
+  await doc.at(176);
+  assert.strictEqual(doc.el.sprites(), null);
+});
+
+metric(
+  "a box's shadows on a layer are no paint and no damage of the document's: a frame of the box repaints its border box, and the glow is the layer's",
+  async (t) => {
+    const doc = await holding(t, CARD());
+    doc.hover('a');
+    await act();
+    const [part] = doc.el.sprites() as unknown as ShadowSprite[];
+    const abs = (doc.el as unknown as DrawnNode).abs;
+    // 8px right of the box, in the glow
+    const at = { x: 80 + 102 + 8, y: 110 };
+    const pixel = (shot: Uint8ClampedArray) => {
+      const i = (at.y * abs.width + at.x) * 4;
+      return [shot[i], shot[i + 1], shot[i + 2]];
+    };
+    await doc.at(80);
+    const drawn = pixel(await rebuilt(doc.result, doc.el));
+    assert.ok(drawn[0] < 250, `the document draws the glow: ${drawn}`);
+    doc.el.spritesLifted(new Set([part.key]));
+    const lifted = pixel(await rebuilt(doc.result, doc.el));
+    assert.deepStrictEqual(lifted, [255, 255, 255], 'the page under it');
+    // what a frame of the box repaints: its border box, through its
+    // transform, and not the glow's reach
+    const node = doc.el as unknown as {
+      invalidate(all: boolean, rect: unknown, why: string): void;
+    };
+    const rects: { x: number; y: number; width: number; height: number }[] = [];
+    const invalidate = node.invalidate;
+    node.invalidate = function (this: unknown, all, rect, why) {
+      if (rect && typeof rect === 'object') rects.push(rect as never);
+      return invalidate.call(this, all, rect, why);
+    };
+    try {
+      await doc.at(112);
+    } finally {
+      node.invalidate = invalidate;
+    }
+    assert.ok(rects.length > 0, 'the frame repainted the box');
+    for (const r of rects) {
+      assert.ok(
+        r.width < 120 && r.height < 80,
+        `no wider than the box: ${JSON.stringify(r)}`,
+      );
+    }
+  },
+);
+
+test("what the document paints after the box within its shadows' reach keeps them the document's", async (t) => {
+  // a box painted later, positioned as the card is, 20px under it: in
+  // the glow's reach
+  const doc = await holding(
+    t,
+    CARD(
+      ' #b { position: relative; margin-top: -60px; width: 20px;' +
+        ' height: 10px; background: #000 }',
+    ) + '<div id="b"></div>',
+  );
+  doc.hover('a');
+  await act();
+  assert.strictEqual(doc.el.sprites(), null);
+});
+
+test('an inset shadow, an outline, corners that are not one circle each, what is drawn past the border box and a fade keep a box’s shadows the document’s', async (t) => {
+  const cases = [
+    ' #a:hover { box-shadow: inset 0 0 10px #000 }',
+    ' #a:hover { outline: 2px solid #000 }',
+    ' #a { border-top-left-radius: 20px 6px }',
+    ' #a { overflow: visible } #a::before { content: ""; display: block;' +
+      ' width: 140px; height: 4px; background: #000 }',
+    ' #a:hover { opacity: .9 }',
+  ];
+  for (const more of cases) {
+    const doc = await holding(t, CARD(more));
+    doc.hover('a');
+    await act();
+    assert.strictEqual(doc.el.sprites(), null, more);
+    cleanup();
+  }
+});
+
 /** A palette to make an initial style from, every colour its own. */
 const LOOK = {
   color: '#010101',
