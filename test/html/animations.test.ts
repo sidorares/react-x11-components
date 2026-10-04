@@ -2352,6 +2352,51 @@ test('a lifted element is a hole in the document, and its animation is no frame 
   assert.strictEqual(own(after.fills), 1, 'drawn again');
 });
 
+test("a lifted ::before keeps its frames across a build that styles its element again the same, and a build that keeps its element keeps the document's time", async (t) => {
+  // Zen Garden 214's h1::before fades and grows over 36000 s: each
+  // breakpoint a resize crossed styled the h1 again, the same, and the
+  // part sampled the 600 frames of its cycle again, 80 ms a frame. The
+  // frames are styles at a fork's times, and `pseudoStyleFor` kept the
+  // last of them for the element's style, so a build that kept the h1
+  // gave its ::before the end of the cycle
+  const doc = await running(
+    t,
+    '<style>@keyframes k { from { opacity: .5 } to { opacity: 0 } }' +
+      'body { margin: 0 } #h { margin: 0 }' +
+      '#h::before { content: ""; display: block; width: 20px;' +
+      ' height: 20px; background: red;' +
+      ' animation: k 36000s linear infinite }' +
+      '</style><div id="p"><div id="h">x</div></div><div id="q">y</div>',
+  );
+  await doc.at(48);
+  const [part] = doc.el.sprites()!;
+  assert.strictEqual(part.animations[0].property, 'opacity');
+  const values = part.animations[0].values;
+  doc.el.spritesLifted(new Set([part.key]));
+  const node = doc.el as unknown as {
+    _invalidate(stale: number, restyle?: ReadonlySet<unknown>): void;
+  };
+  const before = () =>
+    (
+      boxOf(doc.el, 'h').children.find(
+        (box) => (box as LaidBox & { pseudo?: string }).pseudo === 'before',
+      ) as unknown as { style: ComputedStyle }
+    ).style;
+  // a build that styles #p and what it holds again, which come out the
+  // same: the part keeps the frames it sampled
+  node._invalidate(2, new Set([boxOf(doc.el, 'p').el]));
+  await doc.at(64);
+  const [again] = doc.el.sprites()!;
+  assert.strictEqual(again.key, part.key);
+  assert.ok(again.animations[0].values === values, 'not sampled again');
+  // a build that keeps #h: its ::before as the document has it, half way
+  // to nothing, not as the fork last sampled it, at the end of the cycle,
+  // nor as it is with no animation running
+  node._invalidate(2, new Set([boxOf(doc.el, 'q').el]));
+  await doc.at(80);
+  assert.ok(near(before().opacity, 0.5, 1e-3), `opacity ${before().opacity}`);
+});
+
 test('a `::before` or an `::after` whose animation a layer can carry is a sprite of its own, a hole in the document and no frame of its clock once lifted; one whose element is on a layer too goes in its element’s layer', async (t) => {
   const doc = await running(
     t,

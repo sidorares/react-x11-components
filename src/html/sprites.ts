@@ -533,6 +533,28 @@ export function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
  *  in, which the part's place decides (`solidFrames`). */
 type SampledMatrix = SpriteMatrix | Mat4;
 
+/** The style of a lift's element, or of its pseudo-element, with no
+ *  animation and no transition running: what its frames are sampled from
+ *  but the time. */
+function still(
+  host: SpriteHost,
+  parentStyle: ComputedStyle,
+  inFlex: boolean,
+  lift: Lift,
+): ComputedStyle {
+  const { el, box } = lift;
+  const cascade = host.cascade;
+  const was = cascade.timeline;
+  cascade.timeline = null;
+  try {
+    return lift.pseudo
+      ? (cascade.pseudoStyleFor(el, lift.pseudo, parentStyle) ?? box.style)
+      : cascade.styleFor(el, parentStyle, inFlex);
+  } finally {
+    cascade.timeline = was;
+  }
+}
+
 /** Each track's frames through one cycle of it, sampled from the
  *  element's style on a fork of the document's timeline — its opacities
  *  where it sets the opacity, its matrices where it moves — the style the
@@ -676,6 +698,10 @@ interface Sampled {
   id: string;
   style: ComputedStyle;
   parent: ComputedStyle;
+  /** The style with no animation running, and the cascade it is of: what
+   *  the frames are sampled from but the animations' time (`still`). */
+  base: ComputedStyle;
+  cascade: object;
   frames: { opacities: number[]; matrices: SampledMatrix[] }[];
   rest: ComputedStyle;
   /** Whether a frame, or the rest, is out of the plane. */
@@ -806,20 +832,41 @@ export function partOf(
   // style keeps them, though its boxes are new (`Lift.id` has the box's
   // size, which a percentage is of)
   // A style a build made again for the root box, which is no element's,
-  // is compared by what it holds.
+  // is compared by what it holds; and one made again for the element, by
+  // what it holds with no animation running, since the animations' own
+  // fields are at another time in it: Zen Garden 214's h1::before, which
+  // grows over 36000 s, sampled the 600 frames of its cycle again at every
+  // breakpoint a resize crossed, which styled the h1 again the same.
   const known = was?.sampled;
-  const sampled =
-    known &&
+  let base: ComputedStyle | null = null;
+  const alike =
+    !!known &&
     known.id === lift.id &&
-    known.style === box.style &&
-    (known.parent === parentStyle || sameValue(known.parent, parentStyle))
-      ? known
+    known.cascade === host.cascade &&
+    (known.parent === parentStyle || sameValue(known.parent, parentStyle)) &&
+    (known.style === box.style ||
+      sameValue(
+        known.base,
+        (base = still(host, parentStyle, kept.inFlex, lift)),
+      ));
+  const sampled: Sampled = alike
+    ? known!.style === box.style
+      ? known!
       : {
-          id: lift.id,
+          ...known!,
           style: box.style,
           parent: parentStyle,
-          ...sample(host, parentStyle, kept.inFlex, lift),
-        };
+          // a loop's rest is the style it has, wherever it is
+          rest: known!.rest === known!.style ? box.style : known!.rest,
+        }
+    : {
+        id: lift.id,
+        style: box.style,
+        parent: parentStyle,
+        base: base ?? still(host, parentStyle, kept.inFlex, lift),
+        cascade: host.cascade,
+        ...sample(host, parentStyle, kept.inFlex, lift),
+      };
   const { frames, rest } = sampled;
   const origin = box.style.transformOrigin;
   const ox = bx + resolve(origin[0], box.width, 0);
