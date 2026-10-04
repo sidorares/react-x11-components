@@ -1724,7 +1724,19 @@ function spacerRun(
           : ('italic' as const),
     };
     const run: TextRun = { text: '\u00a0', ...face };
-    spacer = { run, advance: fonts.layout([run], face, {}).width };
+    // its line's advance where the engine states one: a layout's width is
+    // whole pixels on some engines, and on react-x11's Windows engine was
+    // none at all \u2014 DirectWrite leaves a no-break space at the end of a
+    // line out of the text's width \u2014 so every edge was a space too wide
+    const laid = fonts.layout([run], face, {});
+    const line = laid.lines[0] as { advance?: number } | undefined;
+    spacer = {
+      run,
+      advance:
+        typeof line?.advance === 'number' && line.advance > 0
+          ? line.advance
+          : laid.width,
+    };
     byStyle.set(style, spacer);
   }
   return { ...spacer.run, letterSpacing: width - spacer.advance };
