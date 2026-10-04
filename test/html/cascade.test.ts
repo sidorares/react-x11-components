@@ -2,7 +2,14 @@
 // what a restyle costs.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { act, cleanup, renderX11, screen } from 'react-x11/test';
+import {
+  act,
+  cleanup,
+  pixelAt,
+  renderX11,
+  screen,
+  waitFor,
+} from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
@@ -10,8 +17,14 @@ import {
   parseStylesheet,
   supportsCondition,
 } from '../../src/html/css/parse.js';
-import { INHERITED, inherit, initialStyle } from '../../src/html/css/style.js';
+import {
+  INHERITED,
+  applyDeclaration,
+  inherit,
+  initialStyle,
+} from '../../src/html/css/style.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
+import { isTransparent } from '../../src/html/css/values.js';
 import {
   boxOf,
   edgesOf,
@@ -333,6 +346,129 @@ test('a style takes from its parent the fields INHERITED names, and no others', 
     'lineThroughThickness',
   ].sort();
   assert.deepStrictEqual(taken, expected);
+});
+
+test('all sets every field a property does, and not direction, unicode-bidi or a custom one', () => {
+  // CSS Cascade 4, 3.2.1. A field at a time, so this holds it to the whole
+  // style: a field added to it is one `all` sets unless it is said not to be
+  const look = {
+    color: '#010101',
+    fontFamily: 'sans-serif',
+    fontSize: 14,
+    monoFamily: 'monospace',
+    linkColor: '#020202',
+    borderColor: '#030303',
+    mutedColor: '#040404',
+    background: '#050505',
+    colorScheme: 'light' as const,
+    surface: '#060606',
+    controlPadY: 4,
+    controlBorder: 1,
+    controlRadius: 4,
+  };
+  const initial = initialStyle(look, 1);
+  const marked = (tag: string) => {
+    const out = { ...initial } as Record<string, unknown>;
+    for (const key of Object.keys(out)) out[key] = { [tag]: key };
+    return out as unknown as ComputedStyle;
+  };
+  const parent = marked('parent');
+  const ctx = { em: 14, rem: 14, vw: 0, vh: 0, scale: 1, initial };
+  const kept = [
+    'custom',
+    'direction',
+    'lineThrough',
+    'lineThroughStyle',
+    'lineThroughThickness',
+    'styledControl',
+    'underline',
+    'underlineOffset',
+    'underlineStyle',
+    'underlineThickness',
+    'unicodeBidi',
+  ];
+  const from = (value: string) => {
+    const style = marked('own');
+    applyDeclaration(style, parent, 'all', value, ctx);
+    const out = style as unknown as Record<string, unknown>;
+    const own = Object.keys(out).filter(
+      (key) => (out[key] as { own?: string })?.own === key,
+    );
+    return { out, own: own.sort() };
+  };
+  const inherited = from('inherit');
+  assert.deepStrictEqual(inherited.own, kept, 'inherit');
+  for (const key of Object.keys(initial)) {
+    if (kept.includes(key)) continue;
+    assert.strictEqual(inherited.out[key], (parent as never)[key], key);
+  }
+  const initialised = from('INITIAL');
+  assert.deepStrictEqual(initialised.own, kept, 'initial');
+  for (const key of Object.keys(initial)) {
+    if (kept.includes(key)) continue;
+    assert.strictEqual(initialised.out[key], (initial as never)[key], key);
+  }
+  // unset: what a child starts from, an inherited field its parent's and
+  // the rest initial
+  const unset = from('unset');
+  assert.deepStrictEqual(unset.own, kept, 'unset');
+  assert.strictEqual(unset.out.color, parent.color);
+  assert.strictEqual(unset.out.backgroundColor, initial.backgroundColor);
+  // and nothing else is a value of it
+  assert.strictEqual(from('red').own.length, Object.keys(initial).length);
+  assert.strictEqual(from('revert').own.length, Object.keys(initial).length);
+});
+
+metric('a button reset with all: unset draws none of its control', async () => {
+  // `button { all: unset }` is the first line of many a reset, and it was
+  // no declaration at all: the UA sheet's background stayed on the button,
+  // and asteriskmag.com's menu button, three 2px lines down a box 24px
+  // tall, was a box filled with the palette's surface round them
+  const { result, node } = await render(
+    '<style>body { margin: 0; background: #ffffff }' +
+      'button, input { all: unset; border: solid 1px #000000 }' +
+      '.menu { width: 32px; height: 24px; padding: 0; border: none;' +
+      ' display: flex; flex-direction: column; justify-content: space-between }' +
+      '.line { display: block; height: 2px; background: #000000 }' +
+      '#late { margin-top: 5px; all: unset } #early { all: unset; margin-top: 5px }' +
+      '#rtl { all: unset; color: var(--c) }</style>' +
+      '<div style="font-size: 20px; color: #00ff00; --c: #0000ff">' +
+      '<button id="menu" class="menu"><span class="line"></span>' +
+      '<span class="line"></span><span class="line"></span></button>' +
+      '<button id="label">Go</button><input id="field">' +
+      '<p id="late">x</p><p id="early">x</p><p id="rtl" dir="rtl">x</p></div>',
+  );
+  const el = view(node);
+  await waitFor(() => assert.ok(boxOf(el, 'menu').height > 0));
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+  for (const id of ['menu', 'label', 'field']) {
+    assert.ok(isTransparent(style(id).backgroundColor), `${id}'s ground`);
+  }
+  // the parent's size, not a control's
+  assert.strictEqual(style('label').fontSize, 20);
+  assert.strictEqual(style('label').color, '#00ff00');
+  assert.strictEqual(edgesOf(boxOf(el, 'label')).borderLeft, 1);
+  // in its place in the cascade
+  assert.strictEqual(style('late').marginTop, 0);
+  assert.strictEqual(style('early').marginTop, 5);
+  // with the direction the element had, and the custom properties it had
+  assert.strictEqual(style('rtl').direction, 'rtl');
+  assert.strictEqual(style('rtl').color, '#0000ff');
+  // the lines with the page's ground between them
+  const menu = boxOf(el, 'menu');
+  const rows: number[][] = [];
+  for (const y of [0, 5, 11, 17, 22]) {
+    const [r, g, b] = await pixelAt(result.ctx, menu.x + 16, menu.y + y);
+    rows.push([r, g, b]);
+  }
+  assert.deepStrictEqual(rows, [
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+  ]);
 });
 
 test('an append to a streamed document keeps its stylesheet parsed', async () => {
