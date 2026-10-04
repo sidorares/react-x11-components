@@ -2120,6 +2120,18 @@ box inside it. Its image is sized by the root element and repeated over the
 rest, so a gradient on a page shorter than the window repeats below it, in
 the stripes a browser shows.
 
+A large linear gradient that runs straight down or straight across is
+shaded once a strip and copied: its colours do not change along the other
+axis, so a strip 64 pixels wide is shaded on a surface and copied along it
+a whole pixel at a time, where nothing is drawn through a transform. A
+gradient is shaded a pixel at a time, some 3.6 ns a pixel on macOS at 2x,
+and copied a tenth of that: a body's `linear-gradient(to bottom, …)` was 6
+ms of a frame that repainted most of a window, and is 1.7. Where it is
+opaque the pixels are the ones it is shaded in; a translucent one is held
+in a strip rounded to a level before it is laid over what is under it, and
+may come out a level apart. A small one, a tile of one and one at a slant
+are shaded where they are.
+
 **Shadows:** `box-shadow`, outer and inset, with offsets, blur, spread and
 any number of them, under the box's background and over it: a card's,
 Tailwind's `shadow-*`, and its `ring-*`, which is a shadow that only

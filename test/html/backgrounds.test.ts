@@ -2084,3 +2084,94 @@ metric(
     }
   },
 );
+
+metric(
+  'a large gradient straight down or across is copied from a strip of it, the pixels it fills',
+  async () => {
+    // Shaded a pixel at a time, a page's body gradient was 7 ms of every
+    // frame that repainted most of a window on macOS at 2x. One that runs
+    // straight down does not change across, so a strip of it is shaded on
+    // a surface and copied along; and one straight across, down. A small
+    // one, a tile of one and one at a slant are filled as they were.
+    // Where it is opaque, the pixels are the ones the fill drew.
+    const page =
+      '<style>body{margin:0;background:linear-gradient(to bottom,' +
+      ' #102030, #e5ede8 120px, #ffffff)}' +
+      '#a{height:280px;margin:10px 7px;background:linear-gradient(90deg,' +
+      ' #ff0000, #00ff0080 30%, #0000ff)}' +
+      '#b{height:40px;margin:10px;background:linear-gradient(45deg,' +
+      ' #ff0000, #0000ff)}' +
+      '#c{width:200px;height:200px;margin:10px;background:' +
+      'linear-gradient(to top, #ff000080, #0000ff) 0 0/50px 50px}</style>' +
+      '<div id="a"></div><div id="b"></div><div id="c"></div>';
+    for (const scale of [1, 2]) {
+      const result = await renderX11(
+        h(
+          'box',
+          { style: { width: 400, flexDirection: 'column' } },
+          h(Html, { source: page, partial: false, 'data-testname': 'doc' }),
+        ),
+        { width: 440, height: 600, fonts: FONTS!, scale },
+      );
+      const el = view(screen.getByTestName('doc') as DrawnNode);
+      let proto = Object.getPrototypeOf(result.ctx);
+      while (!Object.prototype.hasOwnProperty.call(proto, 'getTransform')) {
+        proto = Object.getPrototypeOf(proto);
+      }
+      const get = proto.getTransform;
+      let draw = proto;
+      while (!Object.prototype.hasOwnProperty.call(draw, 'drawImage')) {
+        draw = Object.getPrototypeOf(draw);
+      }
+      const drawImage = draw.drawImage;
+      let copies = 0;
+      draw.drawImage = function (this: unknown, ...args: unknown[]) {
+        if (args.length === 9) copies += 1;
+        return drawImage.apply(this, args);
+      };
+      try {
+        const repaint = () => {
+          copies = 0;
+          (
+            el as unknown as {
+              invalidate(all: boolean, by: unknown, why: string): void;
+            }
+          ).invalidate(false, el, 'test');
+          return snapshot(result, el);
+        };
+        const strips = await repaint();
+        // the body's, 400 wide, and #a's, 280 down, at 64 a copy
+        const wide = 400 * scale;
+        const tall = 280 * scale;
+        assert.strictEqual(
+          copies,
+          Math.ceil(wide / 64) + Math.ceil(tall / 64),
+          `${scale}x: copied`,
+        );
+        // a context with no matrix to read fills each as it is
+        proto.getTransform = undefined;
+        const filled = await repaint();
+        assert.strictEqual(copies, 0, `${scale}x: filled`);
+        // the same pixels where the gradient is opaque; where it is not, a
+        // strip holds it rounded to a level before it is laid over what
+        // is under it, and may be a level off the fill
+        const a = boxOf(el, 'a');
+        const width = (el as unknown as DrawnNode).abs.width;
+        let off = Math.abs(strips.length - filled.length);
+        for (let i = 0; i < Math.min(strips.length, filled.length); i += 1) {
+          if (strips[i] === filled[i]) continue;
+          const x = Math.floor(i / 4) % width;
+          const y = Math.floor(i / 4 / width);
+          const inA =
+            x >= a.x && x < a.x + a.width && y >= a.y && y < a.y + a.height;
+          if (!inA || Math.abs(strips[i] - filled[i]) > 1) off += 1;
+        }
+        assert.strictEqual(off, 0, `${scale}x`);
+      } finally {
+        proto.getTransform = get;
+        draw.drawImage = drawImage;
+      }
+      cleanup();
+    }
+  },
+);
