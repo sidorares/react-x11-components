@@ -36,6 +36,8 @@ export class TextLayoutCache {
       layout: (content, style, options) =>
         this._layout(content, style, options),
       match: (family, style) => engine.match(family, style),
+      // the engine's, which a layout asked of the cache is laid out by
+      justifies: engine.justifies === true,
     };
   }
 
@@ -278,6 +280,7 @@ export const OPTION_FIELDS = [
   'overflowWrap',
   'wrap',
   'fit',
+  'justify',
 ] as const satisfies readonly (keyof Options)[];
 
 /** An option missing from `OPTION_FIELDS` names itself here. */
@@ -298,6 +301,7 @@ function sameOptions(a: Options, b: Options): boolean {
     a.overflow === b.overflow &&
     a.overflowWrap === b.overflowWrap &&
     a.wrap === b.wrap &&
+    a.justify === b.justify &&
     a.fit === b.fit
   );
 }
