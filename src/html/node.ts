@@ -507,6 +507,9 @@ export class HtmlViewNode extends Node {
   private _partial = false;
   private _wholeTree: BoxTree | null = null;
   private _widthMovedAt = -Infinity;
+  /** The width of the last layout, whatever was built since: a band a
+   *  drag crosses builds the boxes again, and the width still moved. */
+  private _widthLaid = -1;
   private _settleTimer: unknown = null;
   /** The viewport height the document was last laid out under, and whether
    *  that layout read it (`LayoutResult.readsViewportHeight`). */
@@ -1573,9 +1576,10 @@ export class HtmlViewNode extends Node {
         if (result.partial) this._armSettle();
         else this._wholeTree = this._tree;
         // from when the layout is done: one that took long is no rest
-        if (laidOutAt !== -1 && laidOutAt !== target) {
+        if (this._widthLaid !== -1 && this._widthLaid !== target) {
           this._widthMovedAt = resizeClock.now();
         }
+        this._widthLaid = target;
         // The same boxes, somewhere else and another size — but for the
         // layout a restyle in place asks for where what it moved reached the
         // document's end, to learn its height: at the width and under the

@@ -488,3 +488,72 @@ test('a dragged width lays a multicol container out whole', async (t) => {
   assert.strictEqual(boxOf(el, 'c20').y, 0, 'the second column at the top');
   assert.ok(!reached(el, 'end'));
 });
+
+test('a layout that stops measures the boxes it sizes from all they hold', async () => {
+  // A shrink-to-fit box's width is its content's, measured by laying the
+  // content out at no width limit: a probe, which a layout that stops
+  // would cut short as it cuts the flow, and the float would be as wide
+  // as its first blocks, not its widest
+  const blocks = Array.from(
+    { length: 30 },
+    (_, i) => `<div style="height:50px;width:${i === 29 ? 200 : 20}px"></div>`,
+  ).join('');
+  const { el } = await renderScrolled(
+    `<body style="margin:0"><div id="f" style="float:left">${blocks}</div>` +
+      '<div style="height:3000px"></div></body>',
+    300,
+    400,
+  );
+  const node = el as unknown as {
+    _source: { document: unknown };
+    _cascade: unknown;
+  };
+  const { buildBoxes } = await import('../../src/html/layout/boxes.js');
+  const { layoutDocument } = await import('../../src/html/layout/block.js');
+  // a tree no layout has measured, as a band a drag crosses builds
+  const tree = buildBoxes(node._source.document as never, {
+    cascade: node._cascade as never,
+    scale: 1,
+    imageSize: () => null,
+    urlSize: () => null,
+    controlSize: () => ({ width: 0, height: 0 }) as never,
+  });
+  const result = layoutDocument(tree, null, 400, 300, 1, 300);
+  assert.ok(result.partial, 'the layout stopped');
+  type B = { el?: { attribs?: { id?: string } }; width: number; children: B[] };
+  const find = (box: B): B | null =>
+    box.el?.attribs?.id === 'f'
+      ? box
+      : box.children.reduce<B | null>((hit, child) => hit ?? find(child), null);
+  const float = find(tree.root as unknown as B);
+  assert.strictEqual(float?.width, 200, 'as wide as its widest block');
+});
+
+test('a dragged width that crosses a breakpoint goes on laying out what can be seen after it', async (t) => {
+  // The band crossed builds the boxes again, which is laid out whole, and
+  // takes long on a long page: the width still moved then, and the step
+  // after it is the drag's, where it was taken for a first move, laid out
+  // whole a second time
+  let time = 0;
+  t.mock.method(resizeClock, 'now', () => time);
+  t.mock.method(resizeClock, 'arm', () => ({}));
+  t.mock.method(resizeClock, 'disarm', () => {});
+  const { el, resize } = await renderScrolled(
+    LONG.replace(
+      '<body style="margin:0">',
+      '<style>@media (max-width:385px){#r0{margin-left:10px}}</style>' +
+        '<body style="margin:0">',
+    ),
+    300,
+    400,
+  );
+  await resize(300, 390);
+  assert.ok(!partial(el), 'the first move');
+  time = 100;
+  await resize(300, 380);
+  assert.strictEqual(boxOf(el, 'r0').x, 10, 'across the breakpoint');
+  assert.ok(!partial(el), 'built again, and laid out whole');
+  time = 250;
+  await resize(300, 370);
+  assert.ok(partial(el), 'and the step after it the drag’s');
+});
