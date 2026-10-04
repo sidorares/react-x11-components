@@ -360,6 +360,65 @@ metric(
   },
 );
 
+metric(
+  "an engine that justifies only a paragraph's lines but its last is asked for that alone, as react-x11's Windows engine says it does",
+  async () => {
+    // DirectWrite justifies every line but a paragraph's last and cannot
+    // set a last line: the engine says `'rest'`. A `text-align: justify`
+    // paragraph is its to justify, at once; `justify-all` and
+    // `text-align-last` are spaced here, as on an engine that justifies
+    // nothing. Spaced here, every justified paragraph on Windows cost three
+    // layouts a width, 57% of a resize frame on Zen Garden 001
+    const words = 'the quick brown fox jumps over the lazy dog and back again ';
+    const { result, node } = await render(
+      '<style>body{margin:0}p{margin:0;width:200px}</style>' +
+        `<p style="text-align:justify">${words.repeat(3)}</p>` +
+        `<p style="text-align:justify-all">${words.repeat(2)}</p>` +
+        `<p style="text-align-last:justify">${words.repeat(4)}</p>`,
+      400,
+    );
+    const el = view(node);
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const asked: { text: string; justify: unknown; spaced: boolean }[] = [];
+    const rest: FontsLike = {
+      justifies: 'rest',
+      layout: (runs, style, options) => {
+        asked.push({
+          text: runs.map((run) => run.text).join(''),
+          justify: options.justify,
+          spaced: runs.some((run) => (run.letterSpacing ?? 0) > 0),
+        });
+        return fonts.layout(runs, style, options);
+      },
+      match: (...args) => fonts.match(...args),
+    };
+    const { layoutDocument } = await import('../../src/html/layout/block.js');
+    const tree = (el as unknown as { _tree: unknown })._tree;
+    layoutDocument(tree as never, rest, 400, 600);
+    const of = (text: string) =>
+      asked.filter((a) => a.text.replace(/\s+/g, ' ').trim() === text.trim());
+    assert.deepStrictEqual(
+      of(words.repeat(3)).map((a) => [a.justify, a.spaced]),
+      [[true, false]],
+      'justified by the engine, once',
+    );
+    for (const [label, text] of [
+      ['justify-all', words.repeat(2)],
+      ['text-align-last', words.repeat(4)],
+    ]) {
+      const laid = of(text);
+      assert.ok(
+        laid.every((a) => a.justify === undefined),
+        `${label}: never handed to the engine to justify`,
+      );
+      assert.ok(
+        asked.some((a) => a.spaced),
+        `${label}: spaced here instead`,
+      );
+    }
+  },
+);
+
 metric('text that does not wrap is aligned in its box', async () => {
   // the engine aligns lines it is given no width for within the widest of
   // them, which for one line is no alignment at all: a centred `<td

@@ -133,9 +133,12 @@ export interface FontsLike {
       justify?: boolean | 'last' | 'all';
     },
   ): TextLayoutLike;
-  /** Whether `layout` takes `justify`. Absent, a justified line is spaced
+  /** Whether `layout` takes `justify`: `true` for all three, `'rest'` for
+   *  `true` alone — every line but the paragraph's last, which is what
+   *  DirectWrite justifies, and react-x11's Windows engine says so. Absent,
+   *  or for a mode the engine does not take, a justified line is spaced
    *  through letter spacing here (`justifiedRuns`). */
-  readonly justifies?: boolean;
+  readonly justifies?: boolean | 'rest';
   match(
     family: string,
     style: Record<string, unknown>,
@@ -815,7 +818,12 @@ function linesOf(
       !clamp &&
       !cut &&
       !pretty &&
-      engineJustifies(fonts, layoutOptions, options.width);
+      engineJustifies(
+        fonts,
+        layoutOptions,
+        options.width,
+        justifyOption(justifyRest, justifyLast),
+      );
     if (justifiedAtOnce) {
       (layoutOptions as Parameters<FontsLike['layout']>[2]).justify =
         justifyOption(justifyRest, justifyLast);
@@ -5675,7 +5683,7 @@ function recording(fonts: FontsLike): FontsLike {
         return layout;
       },
       match: (family, style) => fonts.match(family, style),
-      justifies: fonts.justifies === true,
+      justifies: justifiesOf(fonts),
     };
     RECORDERS.set(fonts, recorder);
   }
@@ -6359,11 +6367,9 @@ function justifiedLayout(
   // the engine's own, where it has it: the lines it broke, spaced at their
   // separators, from the shaping the paragraph keeps — where spacing every
   // space through letter spacing shaped the text again at every width
-  if (engineJustifies(fonts, options, width) && !skip?.size) {
-    const out = fonts.layout(runs, base, {
-      ...options,
-      justify: justifyOption(rest, last),
-    });
+  const mode = justifyOption(rest, last);
+  if (engineJustifies(fonts, options, width, mode) && !skip?.size) {
+    const out = fonts.layout(runs, base, { ...options, justify: mode });
     LAYOUT_RUNS.set(out, runs);
     return { layout: out, runs };
   }
@@ -6382,12 +6388,21 @@ function engineJustifies(
   fonts: FontsLike,
   options: Parameters<FontsLike['layout']>[2],
   width: number,
+  mode: true | 'last' | 'all',
 ): boolean {
   return (
-    fonts.justifies === true &&
+    (fonts.justifies === true ||
+      (fonts.justifies === 'rest' && mode === true)) &&
     options.maxWidth !== undefined &&
     Math.abs(options.maxWidth - width) < 1e-9
   );
+}
+
+/** What an engine says it justifies, for a stand-in for it to say too. */
+export function justifiesOf(fonts: FontsLike): FontsLike['justifies'] {
+  return fonts.justifies === true || fonts.justifies === 'rest'
+    ? fonts.justifies
+    : false;
 }
 
 /** Which of a paragraph's lines are justified, as the engine takes it. */
