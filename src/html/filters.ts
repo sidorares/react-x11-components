@@ -49,6 +49,15 @@ export interface Filtered {
   height: number;
   /** The newest pixels read for it, unfiltered, null until one arrives. */
   raw: Pixels | null;
+  /** Where within a pixel the box's corner fell on the surface `raw` — or
+   *  the group, where a context runs the filter — was painted on, across
+   *  and down; and where it falls in the paint drawing it now (`placed`).
+   *  Where the two differ the box is drawn with that corner where the box's
+   *  is, resampled, until it has been still a while (`SETTLE_MS`). */
+  rawX: number;
+  rawY: number;
+  phaseX: number;
+  phaseY: number;
   /** Bumped each time `raw` changes, which the surface made of it names. */
   rawSerial: number;
   /** Whether `raw` was read under `key`, and nothing the box draws changed
@@ -105,6 +114,33 @@ interface Filtering {
   drawImage(image: unknown, x: number, y: number): void;
 }
 
+/** A timer, as the element's animation clock arms one: what a test holds. */
+export interface SettleClock {
+  arm(step: () => void, ms: number): unknown;
+  disarm(handle: unknown): void;
+}
+
+const TIMERS = globalThis as unknown as {
+  setTimeout(step: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+};
+
+const SYSTEM_CLOCK: SettleClock = {
+  arm: (step, ms) => TIMERS.setTimeout(step, ms),
+  disarm: (handle) => TIMERS.clearTimeout(handle),
+};
+
+/**
+ * How long a box drawn from pixels at another fraction of a pixel than its
+ * corner falls on now waits, still, before they are painted again where it
+ * is. A box moving under a transition or an animation moves a fraction a
+ * frame: asked for at each, the reads landed between frames and each drew
+ * the box crisp, at its place, between frames that drew it resampled, and
+ * ekazinich.com's turning phones shimmered. So it is resampled all the way,
+ * and sharpened once it stops, as a map is (`<Map>`'s settle).
+ */
+const SETTLE_MS = 120;
+
 /**
  * The element's kept pixels, the least recently drawn given up first once
  * the reads hold more than `budget` pixels.
@@ -113,6 +149,10 @@ export class FilterStore {
   private readonly kept = new Map<object, Map<string, Filtered>>();
   private pixels = 0;
   private unavailable = false;
+  /** The boxes drawn from pixels at another fraction than theirs since the
+   *  settle was last armed, and its timer. */
+  private readonly moving = new Set<Filtered>();
+  private settling: unknown = null;
 
   constructor(
     app: unknown,
@@ -125,7 +165,36 @@ export class FilterStore {
       width: number,
       height: number,
     ) => SurfaceLike | null = (width, height) => newSurface(app, width, height),
+    private readonly clock: SettleClock = SYSTEM_CLOCK,
   ) {}
+
+  /**
+   * Where the box's corner falls within a pixel in the paint drawing it
+   * now. Where the pixels it is drawn from were painted with it elsewhere,
+   * it is moving: the settle is armed again, and once nothing has moved for
+   * `SETTLE_MS` each box still drawn from pixels at another fraction is
+   * made stale and painted again, to be drawn from pixels at its own.
+   */
+  placed(kept: Filtered, fx: number, fy: number): void {
+    kept.phaseX = fx;
+    kept.phaseY = fy;
+    if (kept.rawX === fx && kept.rawY === fy) return;
+    this.moving.add(kept);
+    if (this.settling !== null) this.clock.disarm(this.settling);
+    this.settling = this.clock.arm(() => this._settle(), SETTLE_MS);
+  }
+
+  private _settle(): void {
+    this.settling = null;
+    const moved = [...this.moving];
+    this.moving.clear();
+    for (const kept of moved) {
+      if (kept.dropped) continue;
+      if (kept.rawX === kept.phaseX && kept.rawY === kept.phaseY) continue;
+      this._stale(kept);
+      this.arrived(kept.box);
+    }
+  }
 
   /** How many elements keep pixels. */
   get size(): number {
@@ -159,6 +228,10 @@ export class FilterStore {
         width,
         height,
         raw: null,
+        rawX: 0,
+        rawY: 0,
+        phaseX: 0,
+        phaseY: 0,
         rawSerial: 0,
         fresh: false,
         reading: false,
@@ -202,7 +275,14 @@ export class FilterStore {
    * for it. The surface is the store's to destroy. False where it cannot be
    * read.
    */
-  read(kept: Filtered, surface: SurfaceLike, from: unknown): boolean {
+  read(
+    kept: Filtered,
+    surface: SurfaceLike,
+    from: unknown,
+    /** Where within a pixel the box's corner falls on `surface`. */
+    fx = 0,
+    fy = 0,
+  ): boolean {
     const ctx = from as Partial<Readable> | null;
     if (this.unavailable || typeof ctx?.getImageData !== 'function') {
       this.unavailable = true;
@@ -229,13 +309,25 @@ export class FilterStore {
       }
       kept.fresh = kept.gen === gen;
       const was = kept.raw;
-      if (was && samePixels(was, pixels)) return;
+      if (
+        was &&
+        kept.rawX === fx &&
+        kept.rawY === fy &&
+        samePixels(was, pixels)
+      ) {
+        return;
+      }
       if (was) this.pixels -= was.width * was.height;
       kept.raw = pixels;
+      kept.rawX = fx;
+      kept.rawY = fy;
       kept.rawSerial += 1;
       this.pixels += width * height;
       this._trim(kept);
-      if (later) this.arrived(kept.box);
+      // a box that is moving takes it up at its next frame, and is painted
+      // again once it is still (`placed`): painted now, between frames, it
+      // was drawn crisp between frames drawn resampled
+      if (later && !this.moving.has(kept)) this.arrived(kept.box);
     };
     let answer: Promise<Pixels> | Pixels | undefined;
     try {
@@ -267,7 +359,12 @@ export class FilterStore {
    * not: a transition of the filter is the group drawn through each frame's
    * filter, and painted once. Null where no surface can be had.
    */
-  group(kept: Filtered): { surface: SurfaceLike; ctx: unknown } | null {
+  group(
+    kept: Filtered,
+    /** Where within a pixel the box's corner falls on it. */
+    fx = 0,
+    fy = 0,
+  ): { surface: SurfaceLike; ctx: unknown } | null {
     const { width, height } = kept;
     if (
       !kept.group ||
@@ -285,6 +382,8 @@ export class FilterStore {
     }
     kept.groupSerial += 1;
     kept.fresh = true;
+    kept.rawX = fx;
+    kept.rawY = fy;
     return { surface: kept.group, ctx: kept.groupCtx };
   }
 
@@ -397,6 +496,9 @@ export class FilterStore {
   }
 
   clear(): void {
+    if (this.settling !== null) this.clock.disarm(this.settling);
+    this.settling = null;
+    this.moving.clear();
     for (const slots of this.kept.values()) {
       for (const hit of slots.values()) this._drop(hit);
     }

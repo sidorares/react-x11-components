@@ -2156,7 +2156,11 @@ function filteredFor(
   if (through?.length === 6 && !fitsFixedPoint(through, x0, y0)) {
     return undefined;
   }
-  let key = spriteKey(box, options, through, left - x0, top - y0);
+  // what the box draws, and not where within a pixel its corner falls,
+  // which moves under it every frame of a transition (`placed`)
+  const fx = left - x0;
+  const fy = top - y0;
+  let key = spriteKey(box, options, through, 0, 0);
   // a background fixed to the viewport in it is where the viewport is
   if (drawsAgainstViewport(box)) {
     key += ` ${options.viewport?.x ?? 0} ${options.viewport?.y ?? 0}`;
@@ -2166,7 +2170,7 @@ function filteredFor(
   // `filter` — is handed the group this paint makes, and nothing lags
   if (!store.unfiltered && 'filter' in ctx) {
     if (!kept.fresh) {
-      const group = store.group(kept);
+      const group = store.group(kept, fx, fy);
       if (!group) return null;
       paintUnfaded(
         group.ctx as PaintContext,
@@ -2177,7 +2181,16 @@ function filteredFor(
       );
     }
     const out = store.through(kept, colour.css);
-    if (out) return { surface: out, x: x0, y: y0, width: w, height: h };
+    if (out) {
+      store.placed(kept, fx, fy);
+      return {
+        surface: out,
+        x: left - kept.rawX,
+        y: top - kept.rawY,
+        width: w,
+        height: h,
+      };
+    }
   }
   if (!kept.fresh && !kept.reading) {
     const surface = options.surface(w, h);
@@ -2190,13 +2203,25 @@ function filteredFor(
         ? onSurface(options, x0, y0, w, h)
         : inGroup(options, x0, y0, w, h),
     );
-    if (!store.read(kept, surface, on)) return null;
+    if (!store.read(kept, surface, on, fx, fy)) return null;
   }
   // the newest pixels read for it, through the filter it has now: a read
-  // under way lags what is drawn, and never the filter
+  // under way lags what is drawn, and never the filter. One read with the
+  // box's corner at another fraction of a pixel is drawn with that corner
+  // where the box's is now: drawn at the box's whole pixel, a phone that
+  // turned and rose on ekazinich.com's hover jumped a pixel at each frame
+  // drawn from a read and back at each drawn from the next
   if (!kept.raw) return undefined;
   const surface = store.filtered(kept, colour.matrices, colour.key);
-  return surface ? { surface, x: x0, y: y0, width: w, height: h } : undefined;
+  if (!surface) return undefined;
+  store.placed(kept, fx, fy);
+  return {
+    surface,
+    x: left - kept.rawX,
+    y: top - kept.rawY,
+    width: w,
+    height: h,
+  };
 }
 
 /** What a kept surface's drawing depends on beyond its box's: whether it
