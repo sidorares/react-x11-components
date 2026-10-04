@@ -1619,7 +1619,10 @@ under `display: 'none'`: a `<foreign>` in a hidden subtree stays mapped and
 is squeezed to one pixel, so the page inside would lay itself out again at
 that width on every switch of tab. Both are core's to fix — an embeddable
 window that selected no keys, a `<foreign>` that unmapped when hidden — and
-the example's workarounds say so where they are.
+the example's workarounds say so where they are. A pane kept aside is held
+at the size the window last held still at, not the size it is now: one that
+followed the window laid its page out again at every step of a drag, as
+often as the tab showing, for pixels nobody sees.
 
 **A document's fonts are registered under names nothing else has.**
 `@font-face` faces go through `onResource` as `kind: 'font'` and into

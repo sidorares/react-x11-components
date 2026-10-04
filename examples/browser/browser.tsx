@@ -48,6 +48,7 @@ import type {
   FrameError,
   FrameProps,
   KeyboardEvent as X11KeyboardEvent,
+  LayoutEvent,
   MouseEvent as X11MouseEvent,
   TextInputNode,
 } from 'react-x11';
@@ -810,8 +811,41 @@ function Stopped({
  * and the page inside would lay its whole document out again at that width
  * on every switch of tab, and again on the way back. X carries a window's
  * position in 16 bits, which is what bounds how far aside.
+ *
+ * Its full size is the size the window last held still at, not the size
+ * it is now (`useSettledSize`). A pane that followed the window would lay
+ * its page out again at every step of a drag — and on macOS draw it into a
+ * new set of surfaces — as much work for each tab aside as for the one
+ * showing, for pixels nobody sees. Brought to the window's size once the
+ * window stops, the tab shown next is that size already, and showing it
+ * lays nothing out.
  */
 const ASIDE = -30000;
+
+/** How long the window's size holds still before the tabs aside are
+ *  brought to it. */
+const SETTLE_MS = 200;
+
+interface Size {
+  width: number;
+  height: number;
+}
+
+/** The size the tabs' area last held still at — null until it has — and
+ *  the `onLayout` that watches the area. */
+function useSettledSize(): [Size | null, (ev: LayoutEvent) => void] {
+  const [size, setSize] = useState<Size | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const onLayout = useCallback((ev: LayoutEvent) => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(
+      () => setSize({ width: ev.width, height: ev.height }),
+      SETTLE_MS,
+    );
+  }, []);
+  return [size, onLayout];
+}
 
 // --- the window --------------------------------------------------------------
 
@@ -848,6 +882,7 @@ export function Browser({
 
   const active = state.tabs.find((t) => t.id === state.active) ?? state.tabs[0];
   const entry = active.entries[active.index];
+  const [settled, onAreaLayout] = useSettledSize();
 
   const open = useCallback(
     (url: string, background: boolean, post: PostData | null = null) => {
@@ -1016,6 +1051,7 @@ export function Browser({
             minHeight: 0,
             position: 'relative',
           }}
+          onLayout={onAreaLayout}
         >
           {state.tabs.map((tab) => (
             <box
@@ -1023,9 +1059,10 @@ export function Browser({
               style={{
                 position: 'absolute',
                 top: 0,
-                bottom: 0,
                 left: tab.id === active.id ? 0 : ASIDE,
-                width: '100%',
+                ...(tab.id === active.id || !settled
+                  ? { bottom: 0, width: '100%' }
+                  : settled),
                 flexDirection: 'column',
               }}
             >
