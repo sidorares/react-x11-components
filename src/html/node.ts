@@ -1533,6 +1533,7 @@ export class HtmlViewNode extends Node {
                 styles: this._tree.styles,
                 restyle: this._withAnimated(restyleOnly, this._tree),
                 follow,
+                root: this._tree.root.style,
               }
             : null;
         const timeline = this._clockIn(cascade);
@@ -1694,11 +1695,11 @@ export class HtmlViewNode extends Node {
    * boxes as they were and its height (`setAside`), and is laid out at the
    * width the drag rests at, `RESIZE_SETTLE_MS` later (`_armSettle`). What
    * can be seen is laid out at every step, and Wikipedia's longest articles
-   * reflow at the rate of their first screen. The first move of a drag lays
-   * out the whole, so a width set once is exact at once; so does anything
-   * else that lays out, a tree no layout has laid out whole, a document of
-   * layers the presenter runs, and a document less than two of those stops
-   * tall.
+   * reflow at the rate of their first screen. A width that jumps further
+   * than a drag's step lays out the whole, so a width set once is exact at
+   * once; so does anything else that lays out, a tree no layout has laid
+   * out whole, a document of layers the presenter runs, and a document less
+   * than two of those stops tall.
    */
   private _stopAt(
     target: number,
@@ -1707,8 +1708,13 @@ export class HtmlViewNode extends Node {
   ): number | undefined {
     const was = this._widthLaid;
     if (was === -1 || was === target) return undefined;
+    // a drag's first move is as small as the rest: the edge goes a few
+    // pixels an event, and the layout of the whole document it waited for
+    // was the drag catching at its start — where a width set once, a
+    // window maximized or a sidebar shown, jumps, and is exact at once
+    const small = Math.abs(target - was) <= DRAG_STEP_CSS_PX * this._scale;
     if (
-      resizeClock.now() - this._widthMovedAt >= RESIZE_BURST_MS ||
+      (!small && resizeClock.now() - this._widthMovedAt >= RESIZE_BURST_MS) ||
       viewportMoved ||
       this._lifted.size > 0
     ) {
@@ -5862,6 +5868,10 @@ const RESIZE_BURST_MS = 200;
 
 /** How long a dragged width rests before the document is laid out whole. */
 const RESIZE_SETTLE_MS = 150;
+
+/** The most a width moves, in CSS pixels, that is taken for a step of a
+ *  drag on its own, before the next one says so (`_stopAt`). */
+const DRAG_STEP_CSS_PX = 48;
 
 /**
  * The computed properties a pointer move may change in place: ink, which

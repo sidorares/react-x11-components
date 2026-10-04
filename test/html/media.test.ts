@@ -1045,6 +1045,41 @@ test('a breakpoint restyles what its rules reach, and under it what is computed 
   assert.deepStrictEqual(againstWhole(el), [], 'crossing back');
 });
 
+test('a breakpoint keeps the ::before and ::after of the elements it keeps', async (t) => {
+  // A crossing's build matched every element's `::before` and `::after`
+  // again, half the build on Wikipedia, where an element whose style it
+  // keeps keeps what its pseudo-elements were worked out from
+  const items = Array.from(
+    { length: 20 },
+    (_, i) => `<p id="i${i}" class="x">${i}</p>`,
+  ).join('');
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}.x::before{content:"\\2022"}' +
+      '@media (max-width:300px){#i3{margin-left:4px}}</style>' +
+      items,
+    300,
+    400,
+  );
+  const worked: string[] = [];
+  const proto = Cascade.prototype as unknown as {
+    _pseudoStyle(el: Element, ...rest: unknown[]): unknown;
+  };
+  const work = proto._pseudoStyle;
+  t.mock.method(
+    proto,
+    '_pseudoStyle',
+    function (this: unknown, element: Element, ...rest: unknown[]) {
+      worked.push(element.attribs?.id ?? element.name);
+      return work.call(this, element, ...rest);
+    },
+  );
+  await resize(300, 250);
+  assert.deepStrictEqual([...new Set(worked)], ['i3'], 'the one reached');
+  t.mock.restoreAll();
+  assert.strictEqual(boxOf(el, 'i3').x, 4);
+  assert.deepStrictEqual(againstWhole(el), []);
+});
+
 test('a breakpoint over @keyframes under a media query restyles the document whole', async () => {
   // a rule's media are what `crossed` reads, and a `@keyframes`' are not
   // a rule's: it answers that it cannot tell

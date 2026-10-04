@@ -381,14 +381,15 @@ const shown = (fills: Fill[], height: number): string[] =>
 test('a dragged width lays out what can be seen, and the rest once it rests', async (t) => {
   const clock = holdClock(t, resizeClock);
   const { el, resize } = await renderScrolled(LONG, 300, 400);
-  // the drag's first move is laid out whole, as a width set once is
-  await resize(300, 390);
-  assert.ok(!partial(el), 'the first move');
+  // a width that jumps — a window maximized, a sidebar shown — is laid out
+  // whole, as a width set once is exact at once
+  await resize(300, 330);
+  assert.ok(!partial(el), 'a jump');
   assert.ok(reached(el, 'end'));
-  // the next, within a frame of it, down to a viewport past the pane's
-  await resize(300, 380);
-  assert.ok(partial(el), 'the next');
-  assert.strictEqual(boxOf(el, 'r0').width, 304, '80% of the new width');
+  // a drag's step, down to a viewport past the pane's
+  await resize(300, 320);
+  assert.ok(partial(el), 'a step');
+  assert.strictEqual(boxOf(el, 'r0').width, 256, '80% of the new width');
   assert.ok(reached(el, 'r12'), 'what can be seen, and a viewport more');
   assert.ok(!reached(el, 'r20') && !reached(el, 'end'), 'and no further');
   assert.strictEqual(el.abs.height, 3010, 'as tall as it was');
@@ -398,12 +399,18 @@ test('a dragged width lays out what can be seen, and the rest once it rests', as
   await clock.finish();
   assert.ok(!partial(el), 'laid out whole');
   assert.strictEqual(boxOf(el, 'end').y, 3000);
-  assert.strictEqual(boxOf(el, 'r59').width, 190);
+  assert.strictEqual(boxOf(el, 'r59').width, 160);
   assert.deepStrictEqual(
     shown(await fillsOf(el), 300),
     seen,
     'what can be seen drawn as the whole layout draws it',
   );
+  // and the first step of the next drag is a step: laid out whole, it was
+  // the drag catching at its start
+  await resize(300, 310);
+  assert.ok(partial(el), 'the first step of a drag');
+  await clock.finish();
+  assert.ok(!partial(el));
 });
 
 test('a dragged width lays out whole a document whose fixed box is set aside', async (t) => {
@@ -549,7 +556,7 @@ test('a dragged width that crosses a breakpoint goes on laying out what can be s
     400,
   );
   await resize(300, 390);
-  assert.ok(!partial(el), 'the first move');
+  assert.ok(partial(el), 'the first step');
   time = 100;
   await resize(300, 380);
   assert.strictEqual(boxOf(el, 'r0').x, 10, 'across the breakpoint');
