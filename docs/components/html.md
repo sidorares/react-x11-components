@@ -2369,6 +2369,15 @@ no value. `:root` is the `<html>` element, the one a browser implies
 around a fragment too, so a fragment's `:root { --brand: … }` reaches all
 of it.
 
+**CSS-wide keywords:** `inherit`, `initial` and `unset` on any property,
+and `all`, which sets every property but `direction`, `unicode-bidi` and
+the custom properties to one of them at its place in the cascade (CSS
+Cascade 4, 3.2). `button { all: unset }`, the first line of many a reset,
+takes the UA sheet's ground, border and control font off a button, as it
+does in a browser, and the button is the page's to draw. `revert` leaves a
+property as the declarations before it had it, where a browser would take
+it back to the UA sheet's.
+
 **Colours:** the named colours, hex with three, four, six or eight digits,
 the system colours, and CSS Color 4's functions: `rgb()` and `hsl()` in
 either the comma or the space form, `hwb()`, `lab()`, `lch()`, `oklab()`,
@@ -2797,8 +2806,8 @@ declined, it is a button saying its `alt`, so it can be pressed either way.
 
 **A text field the page styled is the page's to draw.** Set any of the
 border or background properties of an `<input>`, a `<textarea>` or a
-`<select>`, a radius among them, or `appearance: none`, and the document
-paints that box, as a browser drops a field's native look for the author's;
+`<select>`, a radius among them, `appearance: none`, or an `all` that
+sets them all, and the document paints that box, as a browser drops a field's native look for the author's;
 the widget is mounted bare inside its content box, with no frame or fill,
 and writes in the element's own colour and font, which the author chose to
 go on that background. Its size is then its text's, a line as tall as its

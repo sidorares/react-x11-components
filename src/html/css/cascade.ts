@@ -3250,7 +3250,8 @@ export class Cascade {
     // `width: 10ex` in a sheet under an inline `font-weight: 900` was
     // measured in the family's regular face. The colour scheme goes ahead of
     // the rest for the same reason: every `light-dark()` among them is read
-    // by it.
+    // by it. An `all` sets each of them too, in its place among them: a
+    // `button { all: unset }` is the parent's size, not the UA sheet's.
     for (const c of candidates) {
       authored = !fromUserAgent(c.origin);
       for (const d of pick(c)) {
@@ -3261,7 +3262,8 @@ export class Cascade {
           d.prop === 'font-stretch' ||
           d.prop === 'color-scheme' ||
           d.prop === 'font-size' ||
-          d.prop === 'font'
+          d.prop === 'font' ||
+          d.prop === 'all'
         ) {
           this._apply(style, parentStyle, d, ctxParent);
         }
@@ -3323,7 +3325,11 @@ export class Cascade {
       for (const c of candidates) {
         authored = !fromUserAgent(c.origin);
         for (const d of pick(c)) {
-          if (d.prop === 'line-height' || d.prop === 'font') {
+          if (
+            d.prop === 'line-height' ||
+            d.prop === 'font' ||
+            d.prop === 'all'
+          ) {
             this._apply(style, parentStyle, d, ctx);
           }
         }
@@ -4145,6 +4151,9 @@ function stylesControl(candidates: readonly Candidate[]): boolean {
  *  (`stylesControl`). */
 function stylesChrome(d: Declaration): boolean {
   const prop = d.prop;
+  // every one of them, and `appearance` back to `none`, but where it
+  // takes the UA sheet's values back
+  if (prop === 'all') return !/^\s*revert/i.test(d.value);
   if (prop.startsWith('background')) {
     return prop !== 'background-repeat' && prop !== 'background-blend-mode';
   }

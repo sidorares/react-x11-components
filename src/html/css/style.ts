@@ -1725,6 +1725,10 @@ export function applyDeclaration(
 
   // CSS-wide keywords, before anything else parses the value.
   const lower = value.toLowerCase();
+  if (name === 'all') {
+    applyAll(style, parent, lower.replace(/\s*!\s*important$/, ''), ctx);
+    return;
+  }
   if (lower === 'inherit') {
     inheritOne(style, parent, name);
     return;
@@ -6336,6 +6340,71 @@ export function initialOne(
   for (const key of keys) {
     (style as unknown as Record<string, unknown>)[key] = initial[key];
   }
+}
+
+/**
+ * `all` (CSS Cascade 4, 3.2.1): every property but `direction` and
+ * `unicode-bidi` at the CSS-wide keyword it is given, which is the only
+ * value it takes, and the custom properties untouched. So it is a field at
+ * a time rather than a property at a time — `unset` is the style a child
+ * starts from (`inherit`), `initial` the initial style — less the fields
+ * `NOT_ALL` names. `revert` leaves the style as the cascade has it, as it
+ * does for any one property. A page's `button { all: unset }`, the usual
+ * first line of a reset, was no declaration at all: the UA sheet's
+ * background stayed, and asteriskmag.com's menu button, three 2px lines in
+ * a button 24px tall, was a box filled with the palette's surface around
+ * them.
+ */
+function applyAll(
+  style: ComputedStyle,
+  parent: ComputedStyle,
+  keyword: string,
+  ctx: UnitContext,
+): void {
+  let from: ComputedStyle;
+  if (keyword === 'inherit') from = parent;
+  else if (keyword === 'initial' && ctx.initial) from = ctx.initial;
+  else if (keyword === 'unset' && ctx.initial) {
+    from = inherit(parent, ctx.initial);
+  } else return;
+  AllCopy ??= allConstructor(Object.keys(from));
+  AllCopy(style, from);
+}
+
+/** The fields `all` leaves alone: the two properties it does not name,
+ *  the custom properties, and what is no property — the decorations an
+ *  ancestor propagates (`decorate`), and whether the page styled a
+ *  control, which the cascade works out after the declarations. */
+const NOT_ALL: ReadonlySet<string> = new Set<keyof ComputedStyle>([
+  'direction',
+  'unicodeBidi',
+  'custom',
+  'underline',
+  'underlineStyle',
+  'underlineThickness',
+  'underlineOffset',
+  'lineThrough',
+  'lineThroughStyle',
+  'lineThroughThickness',
+  'styledControl',
+]);
+
+type AllCopier = (to: ComputedStyle, from: ComputedStyle) => void;
+let AllCopy: AllCopier | null = null;
+
+/** `all`'s copy, written out a field at a time as `copyStyle`'s is: a
+ *  store through a computed name costs thirty times one through a written
+ *  one, and `* { all: unset }` is a reset some pages start with. */
+function allConstructor(fields: string[]): AllCopier {
+  const body = fields
+    .filter((field) => !NOT_ALL.has(field))
+    .map((field) => {
+      if (!/^[A-Za-z_$][\w$]*$/.test(field)) {
+        throw new Error(`a style field that is not a name: ${field}`);
+      }
+      return `to.${field} = from.${field};`;
+    });
+  return new Function('to', 'from', body.join('\n')) as AllCopier;
 }
 
 function inheritOne(
