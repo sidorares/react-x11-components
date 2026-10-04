@@ -858,7 +858,9 @@ export function paintDocument(
   ctx.save();
   const canvas = canvasBackground(tree);
   const scheme = rootScheme(tree);
-  if (scheme !== tree.paletteScheme) {
+  // under a canvas of a colour of its own with no transparency, which
+  // covers all of it, the scheme's is a fill nobody sees
+  if (scheme !== tree.paletteScheme && !coloursCanvas(canvas)) {
     // A document is drawn on the window's own ground, the palette's, as an
     // embedded one is on a transparent canvas. Where its root's colour
     // scheme is not the scheme of what it is embedded in, its canvas is
@@ -932,6 +934,28 @@ function canvasBackground(tree: BoxTree): CanvasBackground | null {
   return has(body.style)
     ? { style: body.style, source: body, anchor: top }
     : null;
+}
+
+/** Whether a canvas background paints the whole canvas in an opaque
+ *  colour (`paintCanvas`), which nothing under it shows through. */
+function coloursCanvas(canvas: CanvasBackground | null): boolean {
+  if (!canvas || canvas.style.visibility !== 'visible') return false;
+  const color = canvas.style.backgroundColor;
+  if (isTransparent(color)) return false;
+  return alphaOf(inkColor(color as string, canvas.style.color)) === 1;
+}
+
+/**
+ * Whether a document paints its canvas — every pixel of the element, before
+ * anything else — opaque: in the `Canvas` colour of a scheme of its own, or
+ * in an opaque colour of its own (`paintDocument`). What `<Html>` promises
+ * core in `opaqueRect()`, which skips every fill under the element.
+ */
+export function opaqueCanvas(tree: BoxTree): boolean {
+  return (
+    rootScheme(tree) !== tree.paletteScheme ||
+    coloursCanvas(canvasBackground(tree))
+  );
 }
 
 /** The used colour scheme of the document's root element: the `<html>`'s,
