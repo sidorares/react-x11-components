@@ -6102,6 +6102,21 @@ function justifiedRuns(
   return extra.size ? widenedAt(runs, extra) : null;
 }
 
+/** The runs' text before offset `end`, cut where it falls in one. */
+function runsBefore(runs: TextRun[], end: number): TextRun[] {
+  const out: TextRun[] = [];
+  let at = 0;
+  for (const run of runs) {
+    if (at >= end) break;
+    const length = run.text.length;
+    out.push(
+      at + length <= end ? run : { ...run, text: run.text.slice(0, end - at) },
+    );
+    at += length;
+  }
+  return out;
+}
+
 /** The runs with the character at each offset of `extra` a run of its
  *  own, spaced that much more. */
 function widenedAt(runs: TextRun[], extra: Map<number, number>): TextRun[] {
@@ -6211,8 +6226,13 @@ function justifyLine(open: OpenLine, free: number, how: LineJustify): number {
     if (!plan) continue;
     if (plan.inside.length) {
       const line = text.layout.lines[text.layoutLine];
+      // the text up to the line's end and no further: the piece is laid out
+      // from the rest of its paragraph (`fragmentLayout`), and laid out
+      // again whole to set one line of it, a paragraph beside a float was
+      // set again for each of its lines — on macOS, where letter spacing
+      // is shaped, as many times its text at every width of a resize
       const widened = widenedAt(
-        plan.runs,
+        runsBefore(plan.runs, line.end),
         new Map(plan.inside.map((at) => [at, share])),
       );
       // as wide as the piece is to be, and the piece alone: the text after
