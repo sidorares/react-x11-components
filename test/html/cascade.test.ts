@@ -12,7 +12,8 @@ import {
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
-import { HtmlViewNode } from '../../src/html/index.js';
+import { HtmlViewNode, removeNode } from '../../src/html/index.js';
+import type { Element } from '../../src/html/index.js';
 import {
   parseStylesheet,
   supportsCondition,
@@ -519,6 +520,51 @@ test('an append to a streamed document keeps its stylesheet parsed', async () =>
   );
   el().textContent();
   assert.notStrictEqual(cascadeOf(), before);
+});
+
+test("a :has() answers the tree as it is now, after a stream's next chunk and after refresh()", async () => {
+  // css-select keeps what a :has() answered for an element for as long as
+  // the matcher lives, and a tree that changed under the same sheets keeps
+  // the cascade and its matchers: the image the next chunk brought in, and
+  // the one an application took out, were not seen
+  const sheet =
+    '<style>div:has(img) { color: #00ff00 } ' +
+    'section:has(b) p { color: #0000ff }</style>';
+  const doc = (source: string) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, partial: true, 'data-testname': 'doc' }),
+    );
+  const head = sheet + '<div id="d"><span>x</span>';
+  const result = await renderX11(doc(head), { backend: 'mock' });
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  const color = (id: string): string => {
+    el().textContent();
+    return (boxOf(el(), id) as LaidBox & { style: { color: string } }).style
+      .color;
+  };
+  const cascade = (el() as unknown as { _cascade: unknown })._cascade;
+  assert.notStrictEqual(color('d'), '#00ff00');
+  const more = head + '<img alt="i"></div><section><p id="p">t</p>';
+  await act(() => result.rerender(doc(more)));
+  assert.strictEqual(color('d'), '#00ff00', 'the image the chunk brought');
+  // a descendant combinator under one kept what it found above `p` too
+  assert.notStrictEqual(color('p'), '#0000ff');
+  await act(() => result.rerender(doc(more + '<b>b</b></section>')));
+  assert.strictEqual(color('p'), '#0000ff', 'the <b> after it');
+  assert.strictEqual(
+    (el() as unknown as { _cascade: unknown })._cascade,
+    cascade,
+    'all under the one cascade',
+  );
+  // an application's change, and the refresh it asks for
+  const d = boxOf(el(), 'd').el as unknown as Element;
+  const img = d.children.find((n) => (n as Element).name === 'img')!;
+  removeNode(img);
+  el().touchDocument();
+  await act();
+  assert.notStrictEqual(color('d'), '#00ff00', 'the image taken out');
 });
 
 test('a pseudo-element no rule gives a content to is none, whatever reaches it', async () => {
