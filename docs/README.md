@@ -75,6 +75,13 @@ parts.
   are eligible, how an animated transform stops re-rasterizing its subtree
   (a retained sprite, a translate fast path, and where an offscreen GL
   renderer does and does not help), and the sprite seam to file in core.
+- [Scripts in the browser example](prd-html-scripts.md) — investigation:
+  a page's JavaScript in a hardened `node:vm` context in the tab's pane,
+  with a DOM facade bridged by id to `<Html>`'s own tree. It covers what
+  Node 26 and Bun 1.4 give a sandbox (ShadowRealm, workers, the permission
+  model), the escapes a DOM binding opens and how each is closed, the
+  seams `<Html>` would grow while still running nothing, and what core
+  would be asked for.
 - [`filter` in `<Html>`](prd-filter.md) — the colour functions run over a
   group read back, why what lags is the content and never the filter, and
   the `ctx.filter` seam core would need per backend — macOS, Wayland,
