@@ -43,6 +43,7 @@
 // holds, or the element's own value — and after a transition's, its end.
 
 import { progressAt, timingAt, tracksOf } from './css/animation.js';
+import { rgbaOf } from './css/color.js';
 import { animationTree } from './css/cascade.js';
 import type { Cascade } from './css/cascade.js';
 import { masked, sameValue } from './css/style.js';
@@ -57,18 +58,20 @@ import {
   translate4,
 } from './css/transform3d.js';
 import type { Mat4 } from './css/transform3d.js';
-import { resolve } from './css/values.js';
+import { inkColor, resolve } from './css/values.js';
 import { perspectiveAround, placedMatrix } from './layout/block.js';
 import { GENERATED_FROM } from './layout/boxes.js';
 import type { Box, BoxTree } from './layout/boxes.js';
 import {
   FIXED_BOXES,
   clipFor,
+  cornersOf,
   drawnAtViewport,
   drawsAgainstViewport,
   holds,
   ownBounds,
   paintedAfter,
+  spreadCorners,
 } from './paint.js';
 import type { Element } from 'domhandler';
 import type { Rect } from 'react-x11';
@@ -76,8 +79,10 @@ import type {
   Context2D,
   Sprite,
   SpriteAnimation,
+  SpriteColor,
   SpriteMatrix,
   SpriteMatrix3D,
+  SpriteShadow,
 } from 'react-x11/node';
 import { isElement } from './dom.js';
 
@@ -1054,6 +1059,473 @@ export function describe(
     ...(part.clip ? { clip: shift(part.clip) } : null),
     ...(part.clip && part.clipRadius ? { clipRadius: part.clipRadius } : null),
     opacity: part.opacity,
+    transform: part.transform,
+    origin: { x: part.origin.x + originX, y: part.origin.y + originY },
+    animations: part.animations.map((a, i) => ({
+      ...a,
+      delay: part.begins[i] - now,
+    })),
+  };
+}
+
+// --- shadows ----------------------------------------------------------------
+//
+// A box whose outer `box-shadow` is in transition is offered as a part that
+// is its shadows alone (react-x11's `Sprite.shadows`): the render server
+// draws and blurs them on the GPU, from frames sampled as an animation's
+// are, while the box itself stays the document's — its border, its colour
+// and whatever it holds change on the document's clock as they did. What
+// that saves is the shadows, which the document blurred a pixel at a time
+// over all of their reach at every frame: a card on the Zen Garden's
+// all-designs page brings in glows of 200, 100 and 6px as it is hovered,
+// and on macOS at 2x most of each frame was those, drawn over everything
+// under them. The document leaves the box's outer shadows out of its paint
+// and out of what a frame of the box repaints (`PaintOptions.shadowless`).
+//
+// A box is offered where its shadows are all a layer can show of them: a
+// box in the plane, with its corners one circle each, the same through
+// every frame and its spreads too, none of them inset, no outline, nothing
+// of it or what it holds drawn past its border box — under which none of
+// its shadow is drawn, and where the layer's mask leaves the document's
+// pixels — and inside nothing that fades, turns or masks. And nothing the
+// document paints after it reaches where its shadows do.
+
+/** A part that is a box's shadows, as react-x11's `Node.sprites()` takes
+ *  one: no `paint`, its shadows' and its transform's frames for the render
+ *  server. */
+export interface DocumentShadowSprite extends Sprite {
+  shadows: SpriteShadow[];
+  rectRadius: number;
+  opacity: number;
+  transform: SpriteMatrix;
+  origin: { x: number; y: number };
+  animations: DocumentSpriteAnimation[];
+}
+
+/** The fields of a style a transform is made of. */
+const TRANSFORMS = new Set(['transform', 'translate', 'rotate', 'scale']);
+
+/** An element whose outer shadows are in transition: from its transitions'
+ *  first start to their last end, on the document's clock. */
+export interface ShadowLift {
+  el: Element;
+  box: Box;
+  begin: number;
+  cycle: number;
+  /** What its frames are sampled from; its animations' ids start with it. */
+  id: string;
+}
+
+/**
+ * The element's shadows in transition, where a part can carry them, or
+ * null: its `box-shadow` under way, and with it no fade and no animation
+ * of the element's own, and no transition of what a transform is made of
+ * but its four fields, which the part's layer runs with the shadows. Cheap,
+ * and asked every frame; the frames are sampled once (`shadowPartOf`).
+ */
+export function shadowLiftOf(host: SpriteHost, el: Element): ShadowLift | null {
+  const box = host.boxes.get(el);
+  const style = host.tree.styles.get(el)?.style;
+  if (!style || !box || box.el !== el) return null;
+  // its own animations are the document's, or a layer's (`liftOf`)
+  if (style.animations.names.some((name) => name !== null)) return null;
+  const transits = host.timeline.transitsOf(el, '');
+  if (!transits) return null;
+  let shadows = false;
+  let begin = Infinity;
+  let end = -Infinity;
+  const serials: number[] = [];
+  for (const [field, run] of transits) {
+    if (host.now >= run.start + run.duration || !(run.duration > 0)) continue;
+    if (field === 'boxShadow') shadows = true;
+    // a fade fades the shadows with the box, and a moving origin moves
+    // them, neither of which the part's layer is told
+    else if (field === 'opacity' || field === 'transformOrigin') return null;
+    // anything else the box draws the document draws
+    else if (!TRANSFORMS.has(field)) continue;
+    begin = Math.min(begin, run.start);
+    end = Math.max(end, run.start + run.duration);
+    serials.push(run.serial);
+  }
+  if (!shadows) return null;
+  const id = ['shadows', ...serials, box.width, box.height].join('|');
+  if (host.ended(el, id)) return null;
+  return { el, box, begin, cycle: end - begin, id };
+}
+
+/** A box's shadows as a part, in the document's coordinates, untranslated
+ *  as a `Part` is (`partOf`). */
+export interface ShadowPart {
+  lift: ShadowLift;
+  /** The border box with no transform. */
+  rect: Rect;
+  radius: number;
+  /** Each where its transition leaves it. */
+  shadows: SpriteShadow[];
+  origin: { x: number; y: number };
+  translation: [number, number];
+  transform: SpriteMatrix;
+  animations: DocumentSpriteAnimation[];
+  begins: number[];
+  clip: Rect | null;
+  clipRadius: number;
+  /** Where the shadows can be while they run, in the document's
+   *  coordinates: what nothing painted after the box may reach. */
+  over: Rect;
+  /** What the frames are sampled from, kept while it is the same. */
+  sampled: ShadowSampled;
+}
+
+interface ShadowSampled {
+  id: string;
+  cascade: object;
+  parent: ComputedStyle;
+  /** Each frame's outer shadows, padded to as many as the most a frame
+   *  has, and its transform. */
+  shadows: SpriteShadowFrame[][];
+  matrices: SpriteMatrix[];
+}
+
+interface SpriteShadowFrame {
+  x: number;
+  y: number;
+  blur: number;
+  spread: number;
+  color: SpriteColor;
+}
+
+const CLEAR: SpriteColor = [0, 0, 0, 0];
+
+/**
+ * The part `lift` is, or null where its shadows cannot be one (`ShadowLift`
+ * says what can). Its frames are `was`'s where they were sampled from what
+ * they would be now. What the document paints after the box is asked
+ * apart, every frame (`shadowsCovered`).
+ */
+export function shadowPartOf(
+  host: SpriteHost,
+  lift: ShadowLift,
+  was: ShadowPart | null = null,
+): ShadowPart | null {
+  const { el, box } = lift;
+  const tree = host.tree;
+  const kept = tree.styles.get(el);
+  if (!kept || !liftableBox(host, box) || drawnAtViewport(box)) return null;
+  const style = box.style;
+  if (style.opacity < 1 || outOfPlane(style)) return null;
+  // what it draws besides its shadows stays inside its border box
+  if (!keptInside(box)) return null;
+  const up = isElement(el.parent) ? el.parent : null;
+  const parentStyle = up ? tree.styles.get(up)?.style : tree.root.style;
+  if (!parentStyle) return null;
+  const w = box.width;
+  const h = box.height;
+  // one circle at every corner, the same at every frame (`border-radius`
+  // is in the style it is sampled from)
+  const radius = circleOf(cornersOf(style, w, h));
+  if (radius === null) return null;
+  const known = was?.sampled;
+  let sampled: ShadowSampled | null =
+    known &&
+    known.id === lift.id &&
+    known.cascade === host.cascade &&
+    (known.parent === parentStyle || sameValue(known.parent, parentStyle))
+      ? known
+      : null;
+  if (!sampled) {
+    sampled = sampleShadows(host, parentStyle, kept.inFlex, lift, radius);
+    if (!sampled) return null;
+  }
+  const frames = sampled.shadows;
+  const n = frames[0].length;
+  if (!n) return null;
+  // where the box would be with no transform: layout moved it by the
+  // translation its style has now
+  const now = matrixOf(style, w, h);
+  const bx = box.x - now[4];
+  const by = box.y - now[5];
+  const origin = style.transformOrigin;
+  const ox = bx + resolve(origin[0], w, 0);
+  const oy = by + resolve(origin[1], h, 0);
+  const last = frames[frames.length - 1];
+  const shadows: SpriteShadow[] = last.map((f) =>
+    shadowOf(f, bx, by, w, h, radius),
+  );
+  // everywhere the shadows can be: each frame's, through its transform
+  let reach: Rect | null = null;
+  for (let k = 0; k < frames.length; k += 1) {
+    let at: Rect | null = null;
+    for (const f of frames[k]) {
+      const pad = Math.ceil(1.5 * f.blur) + 1;
+      at = unionRect(at ?? { x: bx, y: by, width: w, height: h }, {
+        x: bx - f.spread + f.x - pad,
+        y: by - f.spread + f.y - pad,
+        width: w + 2 * (f.spread + pad),
+        height: h + 2 * (f.spread + pad),
+      });
+    }
+    const m = sampled.matrices[k];
+    const seen = at && mapRect(at, m, ox, oy);
+    if (!seen) return null;
+    reach = reach ? unionRect(reach, seen) : seen;
+  }
+  if (!reach) return null;
+  if (reach.width > MAX_SIDE || reach.height > MAX_SIDE) return null;
+  const cut = clipFor(box, reach, host.scale, null);
+  if (cut === null) return null;
+  const shows = cut ? meet(reach, cut.rect) : reach;
+  if (!shows) return null;
+  // the frames as the layer's animations: each shadow's blur, colour and
+  // offset where they change, and the transform where it does
+  const animations: DocumentSpriteAnimation[] = [];
+  const begins: number[] = [];
+  const add = (
+    property: DocumentSpriteAnimation['property'],
+    values: DocumentSpriteAnimation['values'],
+    shadow?: number,
+  ): void => {
+    animations.push({
+      id: `${lift.id}|${property}${shadow ?? ''}`,
+      property,
+      ...(shadow !== undefined ? { shadow } : null),
+      values,
+      duration: lift.cycle,
+      delay: 0,
+      repeat: 1,
+    });
+    begins.push(lift.begin);
+  };
+  for (let i = 0; i < n; i += 1) {
+    const blurs = frames.map((f) => f[i].blur);
+    if (varies(blurs)) add('shadowBlur', blurs, i);
+    const colors = frames.map((f) => f[i].color);
+    if (colors.some((c) => !sameMatrix(c, colors[0]))) {
+      add('shadowColor', colors, i);
+    }
+    const offsets = frames.map((f) => [f[i].x, f[i].y] as [number, number]);
+    if (offsets.some((p) => p[0] !== offsets[0][0] || p[1] !== offsets[0][1])) {
+      add('shadowOffset', offsets, i);
+    }
+  }
+  const matrices = sampled.matrices;
+  if (matrices.some((m) => !sameMatrix(m, matrices[0]))) {
+    add('transform', matrices);
+  }
+  return {
+    lift,
+    rect: { x: bx, y: by, width: w, height: h },
+    radius,
+    shadows,
+    origin: { x: ox, y: oy },
+    translation: [now[4], now[5]],
+    transform: [...matrixOf(style, w, h)] as SpriteMatrix,
+    animations,
+    begins,
+    clip: cut ? cut.rect : null,
+    clipRadius: cut?.radius ?? 0,
+    over: shows,
+    sampled,
+  };
+}
+
+/** The frames of a box's shadows and its transform through its
+ *  transitions, on a fork of the document's timeline; null where a frame
+ *  has an inset shadow, an outline, a fade, corners that are not the
+ *  circle `radius`, a spread that changes, or a transform out of the
+ *  plane. */
+function sampleShadows(
+  host: SpriteHost,
+  parentStyle: ComputedStyle,
+  inFlex: boolean,
+  lift: ShadowLift,
+  radius: number,
+): ShadowSampled | null {
+  const { el, box } = lift;
+  const cascade = host.cascade;
+  const was = cascade.timeline;
+  const fork = host.timeline.fork(el);
+  const lists: SpriteShadowFrame[][] = [];
+  const matrices: SpriteMatrix[] = [];
+  const n = Math.max(
+    2,
+    Math.min(MAX_SAMPLES, Math.round(lift.cycle / SAMPLE_MS)),
+  );
+  try {
+    for (let k = 0; k <= n; k += 1) {
+      // the last a breath short of the end, where the transitions rest
+      const u = k === n ? lift.cycle - 1e-3 : (k / n) * lift.cycle;
+      fork.now = lift.begin + u;
+      cascade.timeline = fork;
+      const style = cascade.styleFor(el, parentStyle, inFlex);
+      if (style.opacity < 1 || style.outlineStyle !== 'none') return null;
+      if (outOfPlane(style)) return null;
+      if (circleOf(cornersOf(style, box.width, box.height)) !== radius) {
+        return null;
+      }
+      const list: SpriteShadowFrame[] = [];
+      for (const s of style.boxShadow ?? []) {
+        if (s.inset) return null;
+        const color = rgbaOf(inkColor(s.color, style.color));
+        if (!color) return null;
+        list.push({ x: s.x, y: s.y, blur: s.blur, spread: s.spread, color });
+      }
+      lists.push(list);
+      matrices.push([
+        ...matrixOf(style, box.width, box.height),
+      ] as SpriteMatrix);
+    }
+  } finally {
+    cascade.timeline = was;
+  }
+  // padded as CSS pads a shorter list to interpolate it: with shadows of
+  // nothing in a colour of nothing, which are the frames' own where a
+  // transition ran between two lists
+  let most = 0;
+  for (const list of lists) most = Math.max(most, list.length);
+  for (const list of lists) {
+    while (list.length < most) {
+      list.push({ x: 0, y: 0, blur: 0, spread: 0, color: CLEAR });
+    }
+  }
+  // a shadow's shape is its spread's, which a layer's caster keeps
+  for (let i = 0; i < most; i += 1) {
+    const spread = lists[0][i].spread;
+    if (lists.some((list) => list[i].spread !== spread)) return null;
+  }
+  return {
+    id: lift.id,
+    cascade,
+    parent: parentStyle,
+    shadows: lists,
+    matrices,
+  };
+}
+
+/** A frame's shadow as a part's: its shape the border box spread out, its
+ *  corners as a spread rounds them. */
+function shadowOf(
+  f: SpriteShadowFrame,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+): SpriteShadow {
+  const s = f.spread;
+  const corners = radius
+    ? spreadCorners(
+        {
+          x: [radius, radius, radius, radius],
+          y: [radius, radius, radius, radius],
+        },
+        w,
+        h,
+        s,
+        s,
+        s,
+        s,
+      )
+    : null;
+  return {
+    rect: { x: x - s, y: y - s, width: w + 2 * s, height: h + 2 * s },
+    radius: corners ? corners.x[0] : 0,
+    x: f.x,
+    y: f.y,
+    blur: f.blur,
+    color: f.color,
+  };
+}
+
+/** The radius of corners that are one circle each, all four alike; 0 for
+ *  square ones, and null for any other. */
+function circleOf(c: { x: number[]; y: number[] } | null): number | null {
+  if (!c) return 0;
+  const r = c.x[0];
+  for (let i = 0; i < 4; i += 1) {
+    if (c.x[i] !== r || c.y[i] !== r) return null;
+  }
+  return r;
+}
+
+/** Whether a box draws nothing past its border box but its shadows: it
+ *  clips what it holds, or what it holds is all inside it. */
+function keptInside(box: Box): boolean {
+  const style = box.style;
+  if (style.outlineStyle !== 'none') return false;
+  const clips = style.overflowX !== 'visible' && style.overflowY !== 'visible';
+  if (clips) return true;
+  const x1 = box.x + box.width;
+  const y1 = box.y + box.height;
+  for (const child of box.children) {
+    if (
+      child.boundsX < box.x ||
+      child.boundsY < box.y ||
+      child.boundsX + child.boundsWidth > x1 ||
+      child.boundsY + child.boundsHeight > y1
+    ) {
+      return false;
+    }
+  }
+  for (const line of box.lines ?? []) {
+    if (
+      line.x < box.x ||
+      line.y < box.y ||
+      line.x + line.width > x1 ||
+      line.y + line.height > y1
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+const varies = (values: number[]): boolean =>
+  values.some((v) => v !== values[0]);
+
+const sameMatrix = (a: readonly number[], b: readonly number[]): boolean =>
+  a.length === b.length && a.every((v, i) => v === b[i]);
+
+/**
+ * Whether the document paints anything after the box whose shadows `part`
+ * is that reaches where they can be (`paintedAfter`) — where that cannot be
+ * told, any ink but the box's own and its ancestors' (`crowded`) — but for
+ * the boxes in `above`, parts offered with it and painted after it.
+ */
+export function shadowsCovered(
+  tree: BoxTree,
+  part: ShadowPart,
+  above: ReadonlySet<Box> | null = null,
+): boolean {
+  const box = part.lift.box;
+  return (
+    paintedAfter(box, part.over, null, above) ?? crowded(tree, box, part.over)
+  );
+}
+
+/** The sprite a box's shadows are this frame, as `describe` makes one of a
+ *  `Part`: in the window's coordinates, with the document's origin at
+ *  (`originX`, `originY`), its animations' delays counted from `now`. */
+export function describeShadows(
+  part: ShadowPart,
+  key: string,
+  originX: number,
+  originY: number,
+  now: number,
+): DocumentShadowSprite {
+  const shift = (r: Rect): Rect => ({
+    x: r.x + originX,
+    y: r.y + originY,
+    width: r.width,
+    height: r.height,
+  });
+  return {
+    key,
+    rect: shift(part.rect),
+    rectRadius: part.radius,
+    shadows: part.shadows.map((sh) => ({ ...sh, rect: shift(sh.rect) })),
+    ...(part.clip ? { clip: shift(part.clip) } : null),
+    ...(part.clip && part.clipRadius ? { clipRadius: part.clipRadius } : null),
+    opacity: 1,
     transform: part.transform,
     origin: { x: part.origin.x + originX, y: part.origin.y + originY },
     animations: part.animations.map((a, i) => ({

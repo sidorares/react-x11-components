@@ -1932,6 +1932,26 @@ that builds the document again for a box laid out apart — 219's marquees,
 moved by `text-indent` — paints again the layer that box is in, and no
 other.
 
+A box whose outer `box-shadow` is in transition, beside what no layer
+carries — a colour, a border — puts its shadows alone on a layer, as a part
+that is its shadows (react-x11's `Sprite.shadows`), while the box stays the
+document's: the render server draws and blurs them on the GPU, their blur,
+colour and offset sampled at every frame of the transition as a transform's
+are, and they turn with the box's transform. The document leaves the box's
+outer shadows out of its paint, and a frame of the box repaints its border
+box rather than everywhere its shadows reach: a card on the Zen Garden's
+all-designs page brings in a glow of 200, 100 and 6px as it is hovered,
+and on macOS at 2x a frame of it took 22 ms of which most was the glow,
+blurred a pixel at a time over everything under it, and takes 4 once its
+shadows are on a layer. Only where that is all the box draws past its
+border box — it clips what it holds, or holds nothing that reaches out, and
+has no outline — under which no outer shadow is drawn and the layer shows
+the document; where its corners are one circle each and its spreads do not
+change; where it does not fade; and where nothing the document paints
+after it reaches its shadows. The last is what keeps the first half of the
+card's hover the document's: its `z-index` runs from 1 to 2 as a whole
+number, and until it is 2 the cards after it are painted over its glow.
+
 **Containment:** `contain` — `size`, `inline-size`, `layout`, `paint`,
 `style`, and `strict` and `content` for them — and `contain-intrinsic-size`
 (CSS Containment 2). A box with size containment is laid out as though it

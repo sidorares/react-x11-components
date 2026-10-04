@@ -377,6 +377,9 @@ export interface PaintOptions {
    *  each is a hole in the document, it and all it holds, where the layer
    *  shows through. */
   lifted?: ReadonlySet<Box> | null;
+  /** The boxes whose outer shadows a presenter draws on a layer of their
+   *  own (`shadowPartOf`): the document draws the box, but not them. */
+  shadowless?: ReadonlySet<Box> | null;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
   /** @internal The boxes clipping what is being painted, outermost first. */
@@ -3125,6 +3128,8 @@ function paintShadows(
 ): void {
   const shadows = box.style.boxShadow!;
   if (!ctx.beginPath || !ctx.fill || !ctx.roundRect) return;
+  // on a layer of their own, the render server's to draw
+  if (!inset && options.shadowless?.has(box as Box)) return;
   const style = box.style;
   const left = box.x + options.originX;
   const top = frameY(box) + options.originY;
@@ -4202,7 +4207,7 @@ function clipEdge(box: Box, options: ClipSpace): ClipEdge {
  * and so does one that comes to nothing either way. Null where none is
  * left rounded.
  */
-function spreadCorners(
+export function spreadCorners(
   c: Corners,
   width: number,
   height: number,
@@ -4953,7 +4958,11 @@ export interface Corners {
  * an ellipse and `calc(infinity * 1px)` a pill. Null where every corner is
  * square, which is almost every box and the first thing asked.
  */
-function cornersOf(style: ComputedStyle, w: number, h: number): Corners | null {
+export function cornersOf(
+  style: ComputedStyle,
+  w: number,
+  h: number,
+): Corners | null {
   const across = style.borderRadius;
   const down = style.borderRadiusY;
   if (

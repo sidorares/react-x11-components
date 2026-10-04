@@ -131,16 +131,23 @@ import { shapingSafe } from './layout/shaping.js';
 import {
   coveredAfter,
   describe,
+  describeShadows,
   liftOf,
   overLiftOf,
   partOf,
+  shadowLiftOf,
+  shadowPartOf,
+  shadowsCovered,
   stillLiftOf,
 } from './sprites.js';
 import type {
+  DocumentShadowSprite,
   DocumentSprite,
   Lift,
   Part,
   Pseudo,
+  ShadowLift,
+  ShadowPart,
   SpriteHost,
 } from './sprites.js';
 import { SpriteStore, SurfaceCache, newSurface } from './surfaces.js';
@@ -439,6 +446,24 @@ export class HtmlViewNode extends Node {
   private _liftedTargets = new Map<Element, Set<Pseudo>>();
   /** This frame's offers, by key: what a key the presenter names is. */
   private _offered = new Map<string, SpriteTarget>();
+  /** The boxes whose shadows are offered as parts of their own this frame
+   *  (`shadowLiftOf`), and those a presenter has on layers, by sprite key:
+   *  each an element whose outer shadows the document leaves out of its
+   *  paint and its damage, and whose box it draws as it always did. */
+  private _offeredShadows = new Map<string, Element>();
+  private _shadowsLifted = new Map<string, Element>();
+  /** What each element's shadows were last offered as, and what it was
+   *  made from. */
+  private _shadowOffers = new WeakMap<
+    Element,
+    { stamp: string; part: ShadowPart | null }
+  >();
+  /** The boxes `_shadowsLifted` names in a tree (`_shadowlessBoxes`). */
+  private _shadowlessCache: {
+    tree: BoxTree;
+    lifted: Map<string, Element>;
+    boxes: ReadonlySet<Box>;
+  } | null = null;
   /** Each sprite's key, the same for as long as its element lives. */
   private _spriteKeys = new WeakMap<Element, Partial<Record<Pseudo, string>>>();
   private _spriteSeq = 0;
@@ -3323,7 +3348,18 @@ export class HtmlViewNode extends Node {
    * only as a scroll repainted the viewport's fixed boxes.
    */
   private _inkOf(box: Box): Rect | null {
-    const ink = inkOf(box);
+    // a box whose shadows are on a layer draws nothing past its border box
+    // (`shadowPartOf`), and that is where it is drawn
+    const shadowless =
+      this._shadowsLifted.size !== 0 &&
+      this._tree !== null &&
+      this._shadowlessBoxes(this._tree)?.has(box) === true;
+    const ink = shadowless
+      ? throughTransforms(
+          { x: box.x, y: box.y, width: box.width, height: box.height },
+          box,
+        )
+      : inkOf(box);
     const shift = ink && this._fixedShift();
     if (!ink || !shift || !drawnAtViewport(box)) return ink;
     return { ...ink, x: ink.x + shift.x, y: ink.y + shift.y };
@@ -3557,8 +3593,9 @@ export class HtmlViewNode extends Node {
    * out as it did; what is made each frame is where it is and the delay
    * from now.
    */
-  override sprites(): DocumentSprite[] | null {
+  override sprites(): (DocumentSprite | DocumentShadowSprite)[] | null {
     this._offered.clear();
+    this._offeredShadows.clear();
     if (this.destroyed) return null;
     const animating = this._animating();
     // no animation, and no box turned out of the plane in the tree this
@@ -3612,6 +3649,9 @@ export class HtmlViewNode extends Node {
     // another's box goes in that part's layer, and the presenter takes a
     // parent before the parts in it
     const lifts: Lift[] = [];
+    // and the boxes whose shadows are in transition with what no layer
+    // carries, whose shadows alone go on one (`shadowLiftOf`)
+    const shadowLifts: ShadowLift[] = [];
     for (const { el, targets } of live) {
       const element = el as Element;
       for (const name of targets) {
@@ -3621,6 +3661,10 @@ export class HtmlViewNode extends Node {
         // element's layer, and its element's raster leaves it out
         const lift = liftOf(host, element, name);
         if (lift) lifts.push(lift);
+        else if (name === '') {
+          const shadows = shadowLiftOf(host, element);
+          if (shadows) shadowLifts.push(shadows);
+        }
       }
     }
     // and each box turned out of the plane and seen in a perspective that
@@ -3754,19 +3798,33 @@ export class HtmlViewNode extends Node {
     // frame it turns a later one down (react-x11's `Node.sprites()`). One
     // inside another is asked with the parts outside it the same way, and
     // goes where its parent does.
-    const tops = made
+    // and the shadows offered on their own, among them in the same order:
+    // where their box is painted, which they are the first of. Their box is
+    // the document's, so nothing painted before it may stay on a layer over
+    // it, and it is in no part's way above (`above`).
+    const tops: Top[] = made
       .filter((entry) => !entry.parent)
-      .sort((a, b) => byPaintOrder(b.order!, a.order!));
+      .map((entry) => ({ order: entry.order!, made: entry, shadow: null }));
+    for (const lift of shadowLifts) {
+      const part = this._shadowPartFor(host, lift, stamp);
+      const order = part && paintOrderOf(lift.box);
+      if (!part || !order) continue;
+      const key = `${this._spriteKeyOf(lift.el, '')}|shadows`;
+      tops.push({ order, made: null, shadow: { part, key } });
+    }
+    tops.sort((a, b) => byPaintOrder(b.order, a.order));
     const above = new Set<Box>();
-    const kept: Made[] = [];
-    for (const entry of tops) {
-      if (coveredAfter(tree, entry.part, above)) continue;
-      above.add(entry.lift.box);
-      kept.push(entry);
+    const kept: Top[] = [];
+    for (const top of tops) {
+      if (top.made) {
+        if (coveredAfter(tree, top.made.part, above)) continue;
+        above.add(top.made.lift.box);
+      } else if (shadowsCovered(tree, top.shadow!.part, above)) continue;
+      kept.push(top);
     }
     kept.reverse();
     let options: PaintOptions | null = null;
-    let out: DocumentSprite[] | null = null;
+    let out: (DocumentSprite | DocumentShadowSprite)[] | null = null;
     // each top part in the order it is painted, and the parts inside it
     // after it — a parent ahead of what is in its layer
     const offer = (entry: Made): void => {
@@ -3797,8 +3855,51 @@ export class HtmlViewNode extends Node {
       );
       for (const kid of entry.kids) offer(kid);
     };
-    for (const entry of kept) offer(entry);
+    for (const top of kept) {
+      if (top.made) {
+        offer(top.made);
+        continue;
+      }
+      const { part, key } = top.shadow!;
+      this._offeredShadows.set(key, part.lift.el);
+      (out ??= []).push(
+        describeShadows(part, key, this.abs.x, this.abs.y, now),
+      );
+    }
     return out;
+  }
+
+  /** The part `lift`'s shadows are, made again only where what it is made
+   *  from changed (`stamp`, and the lift's own id). */
+  private _shadowPartFor(
+    host: SpriteHost,
+    lift: ShadowLift,
+    stamp: string,
+  ): ShadowPart | null {
+    const stamped = `${stamp}|${lift.id}`;
+    const was = this._shadowOffers.get(lift.el);
+    if (was?.stamp === stamped) return was.part;
+    const part = shadowPartOf(host, lift, was?.part ?? null);
+    this._shadowOffers.set(lift.el, { stamp: stamped, part });
+    return part;
+  }
+
+  /** The boxes whose shadows are on layers, in `tree`: their outer shadows
+   *  are no ink of the document's (`PaintOptions.shadowless`). */
+  private _shadowlessBoxes(tree: BoxTree): ReadonlySet<Box> | null {
+    if (!this._shadowsLifted.size) return null;
+    const cache = this._shadowlessCache;
+    if (cache?.tree === tree && cache.lifted === this._shadowsLifted) {
+      return cache.boxes;
+    }
+    const first = this._firstBoxesOf(tree);
+    const boxes = new Set<Box>();
+    for (const el of this._shadowsLifted.values()) {
+      const box = first.get(el);
+      if (box) boxes.add(box);
+    }
+    this._shadowlessCache = { tree, lifted: this._shadowsLifted, boxes };
+    return boxes;
   }
 
   /**
@@ -3810,10 +3911,17 @@ export class HtmlViewNode extends Node {
    */
   override spritesLifted(keys: ReadonlySet<string>): void {
     const next = new Map<string, SpriteTarget>();
+    // a box's shadows on a layer: its paint and its damage leave them out,
+    // and the presenter claims where they reach as it lifts them and gives
+    // them back, which the document repaints
+    const shadows = new Map<string, Element>();
     for (const key of keys) {
       const target = this._lifted.get(key) ?? this._offered.get(key);
       if (target) next.set(key, target);
+      const el = this._shadowsLifted.get(key) ?? this._offeredShadows.get(key);
+      if (el) shadows.set(key, el);
     }
+    this._shadowsLifted = shadows;
     let dropped = false;
     for (const key of this._lifted.keys()) {
       if (!next.has(key)) dropped = true;
@@ -3848,7 +3956,10 @@ export class HtmlViewNode extends Node {
     finished: boolean,
   ): void {
     if (!finished) return;
-    const el = (this._lifted.get(key) ?? this._offered.get(key))?.el;
+    const el =
+      (this._lifted.get(key) ?? this._offered.get(key))?.el ??
+      this._shadowsLifted.get(key) ??
+      this._offeredShadows.get(key);
     if (!el) return;
     // `<the animation's id>|<property>`: the first is what `liftOf` asks
     const cut = id.lastIndexOf('|');
@@ -4320,6 +4431,7 @@ export class HtmlViewNode extends Node {
     paintDocument(ctx as PaintContext, tree, {
       ...this._paintOptions(range, damage),
       lifted: this._liftedBoxes(tree),
+      shadowless: this._shadowlessBoxes(tree),
     });
   }
 
@@ -6217,6 +6329,14 @@ function movable(box: Box, was: ComputedStyle, now: ComputedStyle): boolean {
 interface SpriteTarget {
   el: Element;
   pseudo: Pseudo;
+}
+
+/** A part offered above the document, in the order it is painted: one
+ *  `Made` of an element, or the shadows of a box (`shadowPartOf`). */
+interface Top {
+  order: readonly number[];
+  made: Made | null;
+  shadow: { part: ShadowPart; key: string } | null;
 }
 
 /** How many of an element's animations the render server ran to their end
