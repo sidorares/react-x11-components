@@ -27,6 +27,7 @@ import {
   h,
   metric,
   pathsOf,
+  pixelsPng,
   render,
   render2x,
   renderAsking,
@@ -826,6 +827,74 @@ test('a background is drawn at the size background-size gives it', async () => {
   assert.ok(tiles.length >= 25, `${tiles.length} tiles`);
   assert.ok(tiles.every((op) => op.w === 20 && op.h === 20));
 });
+
+/** `<Html>`'s paint options with no surface to keep a block of tiles on:
+ *  the document drawn a tile at a time. */
+function withoutTileBlocks(el: HtmlViewNode): void {
+  const node = el as unknown as {
+    _paintOptions(...a: unknown[]): Record<string, unknown>;
+  };
+  const options = node._paintOptions;
+  node._paintOptions = function (this: unknown, ...a: unknown[]) {
+    const out = options.apply(this, a);
+    delete out.tilesKept;
+    return out;
+  };
+}
+
+metric(
+  'a small image tiled at 2x is drawn from a block of its tiles, pixel for pixel as a tile at a time',
+  async () => {
+    // A tile is a drawImage of its own where the context has no pattern,
+    // on macOS and on X11 at any scale but 1, so the 4 by 4 GIF Zen Garden
+    // 008 lays across its boxes was thousands of calls a paint, 35 ms a
+    // frame of a resize. A block of tiles kept on a surface stands in for
+    // them, and has to draw what they drew: along both axes, along one, and
+    // from a position that is no multiple of the tile
+    const { result, el } = await renderWithBytes(
+      '<style>body{margin:0}div{width:200px;height:60px}</style>' +
+        '<div style="background:url(t.png)"></div>' +
+        '<div style="background:url(s.png) repeat-x 0 7px"></div>' +
+        '<div style="background:url(t.png) 5px 3px repeat-y"></div>' +
+        '<div style="background:url(t.png) 1px 1px;border:3px solid;' +
+        'border-radius:9px"></div>',
+      {
+        't.png': pixelsPng(3, 2, (x, y) => [x * 100, y * 200, 50]),
+        's.png': pixelsPng(1, 5, (_, y) => [200, y * 50, 0]),
+      },
+      240,
+      2,
+    );
+    const blocks = await snapshot(result, el);
+    const kept = (
+      el as unknown as { _tileBlocks: { kept: Map<string, unknown> } }
+    )._tileBlocks;
+    assert.ok(kept && kept.kept.size > 0, 'drawn from blocks');
+    withoutTileBlocks(el);
+    const tiles = await rebuilt(result, el);
+    assert.strictEqual(bytesApart(blocks, tiles), 0);
+  },
+);
+
+metric(
+  'a tile of a pixel covers a box it takes more than 4096 of',
+  async () => {
+    // a tile at a time stops at 4096 and draws the image once, at its
+    // place: a pixel square at the top left of a box it was to fill
+    const { result, el } = await renderWithBytes(
+      '<style>body{margin:0}div{width:200px;height:100px;' +
+        'background:url(p.png)}</style><div></div>',
+      { 'p.png': solidPng(1, 1, [0, 0, 255]) },
+      240,
+      2,
+    );
+    await act();
+    const { abs } = el as unknown as DrawnNode;
+    await expectPixel(result.ctx, abs.x + 390, abs.y + 190, '#0000ff', {
+      message: 'the far corner of the box',
+    });
+  },
+);
 
 // `image-set()`: recognised as an image and never resolved, so a layer that
 // named one drew nothing and asked for nothing (CSS Images 4, 2.4). Every
