@@ -112,6 +112,229 @@ metric(
   },
 );
 
+/** What a text field's widget was handed, found by its placeholder. */
+const fieldProps = (placeholder: string) =>
+  (
+    screen.getByPlaceholder(placeholder) as unknown as {
+      props: { placeholder?: string; placeholderColor?: string };
+    }
+  ).props;
+
+/** The darkest pixel inside a widget: the stem of a glyph it drew. */
+async function darkestIn(
+  ctx: unknown,
+  node: DrawnNode,
+): Promise<[number, number, number]> {
+  const { x, y, width, height } = (
+    node as unknown as { abs: Record<string, number> }
+  ).abs;
+  const data = await new Promise<Uint8ClampedArray>((ok, fail) =>
+    (
+      ctx as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+          cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+        ): void;
+      }
+    ).getImageData(x, y, width, height, (e, d) => (e ? fail(e) : ok(d.data))),
+  );
+  let best: [number, number, number] = [255, 255, 255];
+  for (let i = 0; i < data.length; i += 4) {
+    const px: [number, number, number] = [data[i], data[i + 1], data[i + 2]];
+    if (px[0] + px[1] + px[2] < best[0] + best[1] + best[2]) best = px;
+  }
+  return best;
+}
+
+/** A document under a palette whose muted ink says where it came from. */
+async function renderMuted(source: string) {
+  const result = await renderX11(
+    h(
+      ThemeProvider,
+      { value: { textMuted: '#654321' }, colorScheme: 'light' } as Record<
+        string,
+        unknown
+      >,
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, { source, partial: false, 'data-testname': 'doc' }),
+      ),
+    ),
+    FONTS
+      ? { width: 440, height: 400, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  return { result, node: screen.getByTestName('doc') as DrawnNode };
+}
+
+metric(
+  "a field's ::placeholder is what its widget draws the hint in",
+  async () => {
+    // asteriskmag.com's newsletter field, in a nested sheet: `input.email {
+    // &::placeholder { color: var(--c-text-dark) } }`. No `::placeholder`
+    // was styled, and the widget drew the hint in the palette's muted ink —
+    // black under the bench's palette — where Chrome draws it in the
+    // rule's grey.
+    const { result } = await render(
+      '<style>body{margin:0;--c-text-dark:#4c4c4c}' +
+        'input.email{margin:0;border:0;border-bottom:1px solid #000000;' +
+        'background:#ffffff;color:#000000;font-size:24px;width:300px;' +
+        '&::placeholder{color:var(--c-text-dark)}}' +
+        '.half{border:0;background:#ffffff;font-size:24px;width:300px}' +
+        '.half::placeholder{color:#0000ff;opacity:.5}</style>' +
+        '<input class="email" placeholder="Your email address">' +
+        '<p><input class="half" placeholder="Half"></p>',
+    );
+    const email = await screen.findByPlaceholder('Your email address');
+    assert.strictEqual(
+      fieldProps('Your email address').placeholderColor,
+      '#4c4c4c',
+    );
+    await waitFor(async () => {
+      const ink = await darkestIn(result.ctx, email as DrawnNode);
+      assert.ok(
+        ink.every((c) => Math.abs(c - 0x4c) <= 2),
+        `drawn in it: ${ink}`,
+      );
+    });
+    // its opacity fades the hint, and the field's text it leaves alone
+    assert.strictEqual(
+      fieldProps('Half').placeholderColor,
+      'rgba(0, 0, 255, 0.5)',
+    );
+    const half = screen.getByPlaceholder('Half') as DrawnNode;
+    await waitFor(async () => {
+      const ink = await darkestIn(result.ctx, half);
+      assert.ok(
+        Math.abs(ink[0] - 128) <= 2 &&
+          Math.abs(ink[1] - 128) <= 2 &&
+          ink[2] === 255,
+        `half blue over white: ${ink}`,
+      );
+    });
+  },
+);
+
+test("a hint no rule colours is the palette's muted ink, and Chrome's in the other scheme", async () => {
+  // The UA sheet's `::placeholder`, which is what core draws a field's hint
+  // in anyway: a document's form and the window's agree. A page in the
+  // scheme the palette is not is Chrome's grey, which it draws on a field
+  // of either scheme. A rule that sets only an opacity — Tailwind's
+  // preflight, putting back Firefox's old `opacity: 0.54` — keeps the
+  // colour, and one that fades it fades the palette's.
+  await renderMuted(
+    '<style>.drawn{border:1px solid #808080}' +
+      '.whole::placeholder{opacity:1} .faded::placeholder{opacity:.5}' +
+      '.dark{color-scheme:dark}</style>' +
+      '<input placeholder="palette">' +
+      '<input class="drawn" placeholder="drawn">' +
+      '<input class="whole" placeholder="whole">' +
+      '<input class="faded" placeholder="faded">' +
+      '<p class="dark"><input placeholder="dark"></p>' +
+      '<textarea placeholder="area"></textarea>',
+  );
+  assert.strictEqual(fieldProps('palette').placeholderColor, '#654321');
+  assert.strictEqual(
+    fieldProps('drawn').placeholderColor,
+    '#654321',
+    'on a field the page drew too',
+  );
+  assert.strictEqual(fieldProps('whole').placeholderColor, '#654321');
+  assert.strictEqual(
+    fieldProps('faded').placeholderColor,
+    'rgba(101, 67, 33, 0.5)',
+  );
+  assert.strictEqual(fieldProps('dark').placeholderColor, '#757575');
+  assert.strictEqual(
+    fieldProps('area').placeholderColor,
+    '#654321',
+    'and a text area has its hint',
+  );
+});
+
+test("a text area's hint keeps its line breaks, and a field's loses them", async () => {
+  // HTML 4.10.11 and 4.10.5.3.10. A `<textarea>`'s placeholder was not
+  // handed to its widget at all, which drew none.
+  await render(
+    '<textarea placeholder="one&#13;&#10;two"></textarea>' +
+      '<input placeholder="th&#10;ree">',
+  );
+  assert.ok(screen.getByPlaceholder('one\ntwo'), 'the text area has its hint');
+  assert.ok(
+    screen.getByPlaceholder('three'),
+    'the field has its own, on one line',
+  );
+});
+
+test("::-webkit-input-placeholder is ::placeholder, and another engine's name is nothing", async () => {
+  // Chrome and Safari take WebKit's name for it still, and a page written
+  // before the standard's uses it alone. Gecko's and Edge's match nothing
+  // in Chrome, and nothing here.
+  await renderMuted(
+    '<style>.wk::-webkit-input-placeholder{color:#00a000}' +
+      '.moz::-moz-placeholder{color:#ff0000}' +
+      '.ms:-ms-input-placeholder{color:#ff0000}</style>' +
+      '<input class="wk" placeholder="wk">' +
+      '<input class="moz" placeholder="moz">' +
+      '<input class="ms" placeholder="ms">',
+  );
+  assert.strictEqual(fieldProps('wk').placeholderColor, '#00a000');
+  assert.strictEqual(fieldProps('moz').placeholderColor, '#654321');
+  assert.strictEqual(fieldProps('ms').placeholderColor, '#654321');
+});
+
+test("a field's hint follows the rules that test its focus and the pointer, with no build", async () => {
+  // `input:focus::placeholder { color: transparent }` takes the hint away
+  // as the field is typed into, and is the one rule of the kind pages
+  // write. Where the field's own style does not change with it — the page
+  // took its ring off — no box is restyled, and nothing told the widget.
+  // The pointer the same, over the paragraph the field is in: one over the
+  // field is its widget's, and the document hears nothing of it.
+  const { node } = await renderMuted(
+    '<style>body{margin:0} p{margin:0;padding-right:100px}' +
+      'input{margin:0;outline:none;width:200px;height:30px}' +
+      'input:focus::placeholder{color:transparent}' +
+      'p:hover ::placeholder{color:#ff0000}</style>' +
+      '<p id="p"><input id="q" placeholder="q"></p>',
+  );
+  const el = view(node);
+  const built = (el as unknown as { _tree: unknown })._tree;
+  const field = screen.getByPlaceholder('q') as DrawnNode;
+  assert.strictEqual(fieldProps('q').placeholderColor, '#654321');
+  await act(async () => {
+    field.focus();
+  });
+  await waitFor(() =>
+    assert.strictEqual(fieldProps('q').placeholderColor, 'transparent'),
+  );
+  await act(async () => {
+    field.blur();
+  });
+  await waitFor(() =>
+    assert.strictEqual(fieldProps('q').placeholderColor, '#654321'),
+  );
+  // in the paragraph's padding, beside the field
+  const p = boxOf(el, 'p');
+  const target = el as unknown as DrawnNode;
+  await act(async () => {
+    fireEvent.mouseMove(target, {
+      dx: p.x + p.width - 50 - target.abs.width / 2,
+      dy: p.y + p.height / 2 - target.abs.height / 2,
+    });
+  });
+  await waitFor(() =>
+    assert.strictEqual(fieldProps('q').placeholderColor, '#ff0000'),
+  );
+  assert.ok(
+    (el as unknown as { _tree: unknown })._tree === built,
+    'restyled where it is',
+  );
+});
+
 metric(
   'a <button> is drawn with its content, and a press on it is reported',
   async () => {

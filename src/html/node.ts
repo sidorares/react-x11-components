@@ -1881,7 +1881,12 @@ export class HtmlViewNode extends Node {
     // The boxes are device pixels; each rect becomes the style of a widget
     // mounted beside this element, and a style is logical.
     const s = this._scale;
-    const rects = controlRectsOf(tree, s).map((r) =>
+    const cascade = this._cascade;
+    const placeholderOf = cascade
+      ? (el: Element, style: ComputedStyle) =>
+          cascade.placeholderStyle(el, style)
+      : undefined;
+    const rects = controlRectsOf(tree, s, placeholderOf).map((r) =>
       s === 1
         ? r
         : {
@@ -2673,6 +2678,9 @@ export class HtmlViewNode extends Node {
           cascade.hoverPseudo,
         )
       ) {
+        if (cascade.placeholderFollows('hoverSensitive')) {
+          this._reportControls();
+        }
         // an animation the move started, or let go of, wants its frames
         this._scheduleFrame();
         return;
@@ -2734,6 +2742,11 @@ export class HtmlViewNode extends Node {
           cascade.focusPseudo,
         )
       ) {
+        // what a field's placeholder is drawn in is its widget's, which no
+        // restyle of a box tells (`Cascade.placeholderFollows`)
+        if (cascade.placeholderFollows('focusSensitive')) {
+          this._reportControls();
+        }
         this._scheduleFrame();
         return true;
       }
@@ -4745,6 +4758,7 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.fontFamily !== q.fontFamily ||
       p.fontSize !== q.fontSize ||
       p.opacity !== q.opacity ||
+      p.placeholderColor !== q.placeholderColor ||
       !sameClip(p.clip, q.clip) ||
       !sameBare(p.bare, q.bare)
     ) {

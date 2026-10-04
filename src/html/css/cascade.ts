@@ -456,13 +456,22 @@ class RuleIndex {
 
 /** The pseudo-elements a rule can style here. */
 type PseudoElement =
-  'before' | 'after' | 'first-letter' | 'first-line' | 'marker' | 'selection';
+  | 'before'
+  | 'after'
+  | 'first-letter'
+  | 'first-line'
+  | 'marker'
+  | 'selection'
+  | 'placeholder';
 
 /** A selector's trailing `::before`, `::after`, `::first-letter`,
- *  `::first-line`, `::marker` or `::selection`, or CSS 2's single-colon
- *  spelling of any of its four. */
+ *  `::first-line`, `::marker`, `::selection` or `::placeholder`, or CSS 2's
+ *  single-colon spelling of any of its first four. `::-webkit-input-
+ *  placeholder` is `::placeholder` under the name WebKit gave it, which
+ *  Chrome and Safari still take, and pages written before the standard
+ *  name still use. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|-webkit-input-placeholder)$/i;
 
 /**
  * What a `::selection` makes of the text it covers (CSS Pseudo 4, 3.2): the
@@ -493,8 +502,11 @@ function splitPseudoElement(
     : head !== trimmed || /[>+~]$/.test(trimmed)
       ? `${trimmed} *`
       : trimmed;
+  const name = (m[1] ?? m[2]).toLowerCase();
   return {
-    which: (m[1] ?? m[2]).toLowerCase() as PseudoElement,
+    which: (name === '-webkit-input-placeholder'
+      ? 'placeholder'
+      : name) as PseudoElement,
     rule: { ...rule, selector },
   };
 }
@@ -1510,6 +1522,7 @@ export class Cascade {
     'first-line': new RuleIndex(),
     marker: new RuleIndex(),
     selection: new RuleIndex(),
+    placeholder: new RuleIndex(),
   };
   /** The author's rules that could style a shape in a drawing: the ones
    *  that declare a property a shape has (`shapes.ts`) and whose subject
@@ -1834,7 +1847,8 @@ export class Cascade {
       this._pseudo.after.hoverSensitive ||
       this._pseudo['first-letter'].hoverSensitive ||
       this._pseudo['first-line'].hoverSensitive ||
-      this._pseudo.marker.hoverSensitive
+      this._pseudo.marker.hoverSensitive ||
+      this._pseudo.placeholder.hoverSensitive
     );
   }
 
@@ -1851,7 +1865,8 @@ export class Cascade {
       this._pseudo.after.focusSensitive ||
       this._pseudo['first-letter'].focusSensitive ||
       this._pseudo['first-line'].focusSensitive ||
-      this._pseudo.marker.focusSensitive
+      this._pseudo.marker.focusSensitive ||
+      this._pseudo.placeholder.focusSensitive
     );
   }
 
@@ -1878,7 +1893,8 @@ export class Cascade {
    * (`HOVER_PSEUDO_GENERATED`), whose boxes a move restyles where they are
    * as it does an element's; or a `::first-line`'s, a `::first-letter`'s
    * or a `::marker`'s (`HOVER_PSEUDO_OTHER`), which layout styles and a
-   * move cannot.
+   * move cannot. A `::placeholder`'s is none of them: it is no box's
+   * (`placeholderFollows`).
    */
   get hoverPseudo(): 0 | 1 | 2 {
     return this._pseudoRules('hoverSensitive');
@@ -2962,6 +2978,55 @@ export class Cascade {
         : (parent?.background ?? null),
     };
   }
+
+  /**
+   * Whether a rule for a `::placeholder` tests the pointer
+   * (`hoverSensitive`) or the focus (`focusSensitive`). A move of either
+   * restyles no box for it, where one for any other pseudo-element does
+   * (`hoverPseudo`): what it changes is a widget's, which is told the look
+   * again (`HtmlViewNode._reportControls`). `input:focus::placeholder {
+   * color: transparent }`, which takes the hint away as the field is
+   * typed into, is the one pages write.
+   */
+  placeholderFollows(state: 'hoverSensitive' | 'focusSensitive'): boolean {
+    return this._pseudo.placeholder[state];
+  }
+
+  /**
+   * A text field's `::placeholder` style, inheriting from its own (CSS
+   * Pseudo 4), or null where no rule reaches it — and the UA sheet's
+   * reaches every field. Only the properties that apply to a `::first-line`
+   * apply to it, and the widget it is handed to draws the colour and the
+   * opacity of them (`controlRectsOf`).
+   *
+   * Kept by element, under the style it inherits from and the rules that
+   * matched: the controls are reported at every layout, and a focus that
+   * changes which rules match asks again and comes to another answer.
+   */
+  placeholderStyle(el: Element, style: ComputedStyle): ComputedStyle | null {
+    const index = this._pseudo.placeholder;
+    const indexed = index.size > 0 && index.reaches(el);
+    const edges = this._scoped && this._scopedPseudos.has('placeholder');
+    if (!indexed && !edges) return null;
+    const candidates: Candidate[] = [];
+    const matched: number[] = [];
+    if (indexed) this._matchInto(index, el, candidates, matched);
+    if (edges) this._scopedInto(el, 'placeholder', candidates, matched);
+    if (!candidates.length) return null;
+    const key = matched.join(',');
+    const kept = this._placeholders.get(el);
+    if (kept?.from === style && kept.key === key) return kept.style;
+    candidates.sort(byCascade);
+    const out = this._computeStyle(el, style, false, candidates);
+    this._placeholders.set(el, { from: style, key, style: out });
+    return out;
+  }
+
+  /** What `placeholderStyle` keeps, by element. */
+  private _placeholders = new WeakMap<
+    Element,
+    { from: ComputedStyle; key: string; style: ComputedStyle }
+  >();
 
   /**
    * An element's `::first-line` style, inheriting from its own, or null

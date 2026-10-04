@@ -689,6 +689,9 @@ function renderControl(
       // shown, a reset — starts from what `forms` kept of it.
       widget = hx('textarea', {
         defaultValue: forms.value(el),
+        // a text area's hint keeps its line breaks (HTML 4.10.11)
+        placeholder: attr(el, 'placeholder')?.replace(/\r\n?/g, '\n'),
+        placeholderColor: rect.placeholderColor,
         maxLength: maxLength(el),
         ...order,
         style: [field, FIELD_BOX],
@@ -701,7 +704,10 @@ function renderControl(
       const type = inputType(el);
       widget = hx('textinput', {
         defaultValue: forms.value(el),
-        placeholder: attr(el, 'placeholder'),
+        // a field's hint is one line, its breaks taken out (HTML
+        // 4.10.5.3.10)
+        placeholder: attr(el, 'placeholder')?.replace(/[\r\n]/g, ''),
+        placeholderColor: rect.placeholderColor,
         maxLength: maxLength(el),
         ...order,
         // Core's word for a password field: nothing in it reaches a

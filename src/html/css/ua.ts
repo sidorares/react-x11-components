@@ -81,7 +81,10 @@ function uaText(look: RootLook): string {
   const mono = look.monoFamily;
   // the theme's colour where the element's scheme is the theme's, and a
   // browser's own for the other scheme where it is not
-  const inScheme = (own: string, which: 'text' | 'link'): string =>
+  const inScheme = (
+    own: string,
+    which: 'text' | 'link' | 'placeholder',
+  ): string =>
     look.colorScheme === 'dark'
       ? `light-dark(${SCHEME_COLORS.light[which]}, ${own})`
       : `light-dark(${own}, ${SCHEME_COLORS.dark[which]})`;
@@ -274,6 +277,12 @@ input, select, button, textarea {
    draw their own ring and keep their focus to themselves. */
 :focus-visible { outline: auto 1px -webkit-focus-ring-color; }
 input:focus-visible, textarea:focus-visible { outline-offset: 0; }
+/* The hint a field shows while it is empty is in a muted ink, Chrome's
+   #757575 over a field of either scheme: the palette's own muted ink here,
+   which core's field draws a hint in where it is told none, and so the same
+   in a document and in the window around it. The widget is handed what
+   the rules make of it (\`Cascade.placeholderStyle\`). */
+::placeholder { color: ${inScheme(look.mutedColor, 'placeholder')}; }
 /* Chrome's own margins for the checkables and a range, which sit on their
    border box's bottom edge, the margin under the line */
 input[type=checkbox] { margin: 3px 3px 3px 4px; }
