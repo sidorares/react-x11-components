@@ -3344,6 +3344,27 @@ draws its backgrounds and panels from SVG, and every frame of its
 animations repaints some of them: on X11 a paint went from 9.4 to 1.9 ms
 with them running, and its hovers from 22–31 frames a second to 44–55.
 
+**A photograph drawn small is resampled once a size.** CoreGraphics reads
+all of an image for a draw that scales it, whatever part of it a paint
+reaches, so an `<img>` drawn at another size than its own cost its whole
+size at every paint that reached any of it. The element keeps a raster of
+it at the size it is drawn the second time it draws it there, in the same
+store as an SVG image's, and copies it after, wherever nothing is drawn
+through a transform. The Zen Garden's all-designs page draws its 1022 by
+1132 previews at a third of that, and a frame of a card's hover redraws
+nine of them: 2.5 ms each on macOS at 2x, and 0.15 copied.
+
+**An outer shadow is cut away from its box by rectangles.** What of a
+shadow falls under the box that casts it is not drawn (CSS Backgrounds 3,
+7.1.1). Cut away with the box's outline, a rounded box made a clip that
+CoreGraphics draws through as a mask the size of the shadow's whole
+reach, at four times what a rectangle costs: a card's 200px glow at 2x
+took 16 ms. It is drawn in the bands round the box instead, each a
+rectangle of whole pixels — an edge a fraction of a pixel in is a mask as
+well — and over the box clipped by its outline, so the mask is the box's
+size: 3 ms. With the previews kept, a frame of the hover that brings that
+glow in on the all-designs page went from 51 ms to 27 on macOS.
+
 **A turning box is painted once while it turns.** On X11 a turned box
 with text in it is painted on a surface, and the surface drawn through
 its matrix; every frame of an animation painted it again, a card and all

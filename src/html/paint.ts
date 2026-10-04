@@ -212,6 +212,24 @@ export interface PaintContext extends FillContext {
   /** ntk's X11 context has patterns; the Cocoa one does not, and tiles. */
   createPattern?(image: unknown, repetition: string): unknown;
   translate?(x: number, y: number): void;
+  /** The context's matrix, and the context's matrix set outright: a clip
+   *  laid on the surface's own pixels under a box's (`castOutside`). */
+  getTransform?(): {
+    a: number;
+    b: number;
+    c: number;
+    d: number;
+    e: number;
+    f: number;
+  };
+  setTransform?(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+  ): void;
   /** Multiplies the context's matrix: what a transformed box is drawn
    *  through (`paintTransformed`). */
   transform?(
@@ -336,9 +354,10 @@ export interface PaintOptions {
     height: number,
     draw: (ctx: PaintContext) => void,
   ): unknown;
-  /** An SVG image's raster at a size, made for its key on a surface `width`
-   *  by `height` and kept, to be drawn with `drawImage` (`drawSvg`); null
-   *  where it is not kept, and the drawing is set from its paths. */
+  /** An SVG image's raster at a size, or a raster image's at another than
+   *  its own, made for its key on a surface `width` by `height` and kept,
+   *  to be drawn with `drawImage` (`drawSvg`, `drawRaster`); null where it
+   *  is not kept, and the image is drawn itself. */
   drawingKept?(
     key: string,
     width: number,
@@ -3195,43 +3214,32 @@ function paintShadows(
         fillOutside(ctx, cut.rect, own ? overlapOf(cut.rect, own.rect) : null);
         continue;
       }
-      // what of the shadow falls under the box is not drawn
-      const clipped = !covered && ctx.clip && ctx.rect && ctx.save;
-      if (clipped) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect!(
-          x - reach - 1,
-          y - reach - 1,
-          width + 2 * reach + 2,
-          height + 2 * reach + 2,
+      const cast = () =>
+        fillShadow(
+          ctx,
+          options,
+          s,
+          color,
+          (mx, my) => {
+            shadowShape(ctx, x + mx, y + my, width, height, cut.corners);
+          },
+          { x, y, width, height },
         );
-        if (own) {
-          const { rect: r } = own;
-          roundedRect(
-            ctx,
-            r.x,
-            r.y,
-            r.width,
-            r.height,
-            own.corners,
-            true,
-            true,
-          );
-        }
-        ctx.clip!();
+      // what of the shadow falls under the box is not drawn
+      if (covered || !ctx.clip || !ctx.rect || !ctx.save) cast();
+      else {
+        castOutside(
+          ctx,
+          {
+            x: x - reach - 1,
+            y: y - reach - 1,
+            width: width + 2 * reach + 2,
+            height: height + 2 * reach + 2,
+          },
+          own,
+          cast,
+        );
       }
-      fillShadow(
-        ctx,
-        options,
-        s,
-        color,
-        (mx, my) => {
-          shadowShape(ctx, x + mx, y + my, width, height, cut.corners);
-        },
-        { x, y, width, height },
-      );
-      if (clipped) ctx.restore();
     }
     return;
   }
@@ -3335,6 +3343,85 @@ function paintShadows(
  * as the context's shadow of the shape drawn clear of the window, where
  * `aside` moves it from `bounds`, so that only the shadow lands.
  */
+/**
+ * `cast`, an outer shadow, drawn in `bounds` less `own`, the box it is cast
+ * from, which shows what falls under it (CSS Backgrounds 3, 7.1.1).
+ *
+ * Cut out of `bounds` with one clip, a rounded box makes the clip a mask
+ * the size of `bounds` on macOS, and CoreGraphics draws all of a shadow
+ * through it at four times what it costs through a rectangle: a card's
+ * 200px glow at 2x took 16 ms where it takes 4.5, at every frame of the
+ * hover that brings it in. So where the context's matrix only moves and
+ * scales, the shadow is drawn in the bands of `bounds` around the box,
+ * each clipped to a rectangle, and over the box itself clipped by its
+ * outline as well, so the mask is the box's size. Each rectangle is of
+ * whole pixels of the surface, rounded out from the box, since an edge a
+ * fraction of a pixel in is a mask too.
+ */
+function castOutside(
+  ctx: PaintContext,
+  bounds: Rect,
+  own: { rect: Rect; corners: Corners } | null,
+  cast: () => void,
+): void {
+  const outline = (): void => {
+    ctx.beginPath!();
+    ctx.rect!(bounds.x, bounds.y, bounds.width, bounds.height);
+    if (own) {
+      const { rect: r } = own;
+      roundedRect(ctx, r.x, r.y, r.width, r.height, own.corners, true, true);
+    }
+    ctx.clip!();
+  };
+  const m = ctx.getTransform?.();
+  if (
+    !own ||
+    !m ||
+    !ctx.setTransform ||
+    m.b !== 0 ||
+    m.c !== 0 ||
+    !(m.a > 0 && m.d > 0)
+  ) {
+    ctx.save!();
+    outline();
+    cast();
+    ctx.restore!();
+    return;
+  }
+  const r = own.rect;
+  const x0 = Math.floor(m.a * bounds.x + m.e);
+  const y0 = Math.floor(m.d * bounds.y + m.f);
+  const x1 = Math.ceil(m.a * (bounds.x + bounds.width) + m.e);
+  const y1 = Math.ceil(m.d * (bounds.y + bounds.height) + m.f);
+  const clampX = (v: number) => Math.min(x1, Math.max(x0, v));
+  const clampY = (v: number) => Math.min(y1, Math.max(y0, v));
+  const bx0 = clampX(Math.floor(m.a * r.x + m.e));
+  const by0 = clampY(Math.floor(m.d * r.y + m.f));
+  const bx1 = clampX(Math.ceil(m.a * (r.x + r.width) + m.e));
+  const by1 = clampY(Math.ceil(m.d * (r.y + r.height) + m.f));
+  // above, below, to the left, to the right, and over the box
+  const parts: [number, number, number, number][] = [
+    [x0, y0, x1, by0],
+    [x0, by1, x1, y1],
+    [x0, by0, bx0, by1],
+    [bx1, by0, x1, by1],
+    [bx0, by0, bx1, by1],
+  ];
+  for (let i = 0; i < parts.length; i += 1) {
+    const [px0, py0, px1, py1] = parts[i];
+    if (!(px1 > px0 && py1 > py0)) continue;
+    ctx.save!();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.beginPath!();
+    ctx.rect!(px0, py0, px1 - px0, py1 - py0);
+    ctx.clip!();
+    ctx.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
+    if (i === 4) outline();
+    cast();
+    ctx.restore!();
+  }
+}
+
 function fillShadow(
   ctx: PaintContext,
   options: PaintOptions,
@@ -6438,9 +6525,16 @@ const BLOCK_PIXELS = 1 << 20;
 const BLOCK_COPIES = 16;
 
 /** A number for a decoded image, the same while it lives: its part in the
- *  key of a block of its tiles. */
+ *  key of a block of its tiles (`tileBlock`), or of a raster kept of it at
+ *  a size (`drawRaster`). */
 const IMAGES = new WeakMap<object, number>();
 let images = 0;
+
+function imageId(image: object): number {
+  let id = IMAGES.get(image);
+  if (id === undefined) IMAGES.set(image, (id = ++images));
+  return id;
+}
 
 /** Whether a background's tiles repeat along an axis, by its mode, which
  *  keeps a block's key the same however much of a box a paint reaches: all
@@ -6475,8 +6569,7 @@ function tileBlock(
 ): { surface: unknown; width: number; height: number } | null {
   const keep = options.tilesKept;
   if (!keep || typeof image !== 'object' || image === null) return null;
-  let id = IMAGES.get(image);
-  if (id === undefined) IMAGES.set(image, (id = ++images));
+  const id = imageId(image);
   let source: unknown = image;
   let w = iw;
   let h = ih;
@@ -8425,7 +8518,7 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
         box.style.colorScheme,
         options,
       );
-    } else ctx.drawImage!(image, at.x, at.y, at.w, at.h);
+    } else drawRaster(ctx, image, at.x, at.y, at.w, at.h, options);
     if (clipped) ctx.restore();
     return;
   }
@@ -8602,6 +8695,52 @@ function drawSvg(
     }
   }
   svg.drawImage(ctx, x, y, w, h, scale, scheme, surfaceMaker(options));
+}
+
+/**
+ * A raster image, `w` by `h` device pixels at (`x`, `y`), drawn from a
+ * raster of it kept at that size (`drawingKept`) where the draw resamples
+ * it — the image is not that many pixels — and the context draws in whole
+ * pixels of its own: no matrix and a corner on the grid, where a raster
+ * copied is the image drawn there again, pixel for pixel, as an SVG
+ * image's is (`drawSvg`). Elsewhere, and where none is kept, the image
+ * itself. CoreGraphics reads all of a source for a draw that scales it,
+ * whatever the clip, so a photograph drawn small cost its whole size at
+ * every paint that reached any of it: the Zen Garden's all-designs page
+ * draws a preview of 1022 by 1132 pixels at a third of that, 2.5 ms a
+ * draw, nine of them in each frame of a card's hover.
+ */
+function drawRaster(
+  ctx: PaintContext,
+  image: unknown,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  options: PaintOptions,
+): void {
+  const own = image as { width?: unknown; height?: unknown };
+  if (
+    (own.width !== w || own.height !== h) &&
+    typeof own.width === 'number' &&
+    typeof own.height === 'number' &&
+    !options.matrix &&
+    options.drawingKept &&
+    Number.isInteger(x) &&
+    Number.isInteger(y)
+  ) {
+    const kept = options.drawingKept(
+      `image|${imageId(image as object)}|${w}x${h}`,
+      Math.ceil(w),
+      Math.ceil(h),
+      (sctx) => sctx.drawImage!(image, 0, 0, w, h),
+    );
+    if (kept) {
+      ctx.drawImage!(kept, x, y);
+      return;
+    }
+  }
+  ctx.drawImage!(image, x, y, w, h);
 }
 
 /** What makes the surface a masked element inside a drawing is drawn on:

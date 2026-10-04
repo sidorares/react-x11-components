@@ -15,6 +15,7 @@
 //            the middle and the bottom 300 of the page
 //   HOVER    x,y — a pointer parked there in logical window pixels, as a
 //            user's is while they scroll: over a card on /pages/alldesigns/
+//            (300,400; the middle of the window is the gap between two)
 //            its hover shadow is in every frame. Cocoa and Windows.
 //   STEP     pixels a step, default 20; DUR ms a region, default 3000
 //
@@ -224,7 +225,10 @@ const regions: [string, number, number][] = process.env.REGIONS
 
 // a pointer parked over the page, through the bridge's own entry for an
 // event — the Cocoa one's NSEvent, the Windows one's message, each in its
-// own shape — where X11 has no such thing to call without a server's input
+// own shape — where X11 has no such thing to call without a server's input.
+// A Mac keeps hover to the active window (react-x11#800), and a window a
+// script opens is not, so there it is made the active one first: the
+// pointer hovered nothing at all
 const hover = process.env.HOVER?.split(',').map(Number);
 const park = () => {
   const app = wref.current?.app as {
@@ -234,6 +238,9 @@ const park = () => {
   if (!hover || typeof app?._route !== 'function') return;
   const win = [...app._windows!.values()][0];
   const s = (wref.current as unknown as { scale?: number }).scale ?? 1;
+  if (process.platform !== 'win32') {
+    app._route({ type: 'window-focus', handle: win._key });
+  }
   for (const dx of [0, 1]) {
     app._route(
       process.platform === 'win32'
@@ -266,6 +273,11 @@ for (const [name, from, to] of regions) {
   await wait(300);
   park();
   await wait(600);
+  if (hover) {
+    const hovered = (view as unknown as { _hovered?: { name: string }[] })
+      ._hovered;
+    console.log(`${name}: the pointer is over <${hovered?.[0]?.name ?? ''}>`);
+  }
   const f0 = frames.length;
   const d0 = damages.length;
   const cpu0 = process.cpuUsage();

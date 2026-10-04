@@ -2031,6 +2031,22 @@ device size, the scale and the colour scheme — and a drawing that came to
 depend on anything else, the page's fonts or its rules, would have to
 join it.
 
+A raster image drawn at another size than its own is kept the same way
+(`drawRaster`), by the image and its device size: CoreGraphics reads all of
+a source for a draw that scales it, whatever the clip, so a preview drawn
+at a third of its size cost its whole size at every paint that reached it.
+
+**On macOS a clip that is not a rectangle of whole pixels is a mask**, and
+CoreGraphics draws through one at some four times the cost of a
+rectangle, over everything the draw covers: a rounded box cut out of a
+shadow's reach made a card's 200px glow 16 ms where it is 4.5. An edge a
+fraction of a pixel in counts, so a rectangle under a box's matrix is one
+too. So an outer shadow is cut away from a box that shows what is behind
+it by bands of whole pixels of the surface round the box, laid with the
+matrix set aside, and only over the box by its outline (`castOutside`).
+**Anything new that clips a large draw does the same**: rectangles of whole
+pixels for what is large, and the path only where it is small.
+
 **A group goes only to a context where it pays** (`groupsOnSurfaces`):
 ntk's, and a native one that says a faded surface is cheap
 (`fadesSurfacesCheaply`). CoreGraphics draws an image under an alpha below

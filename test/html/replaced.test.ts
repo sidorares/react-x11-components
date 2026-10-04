@@ -32,9 +32,11 @@ import {
   h,
   metric,
   pixelsIn,
+  pixelsPng,
   render,
   renderWithBytes,
   renderWithImages,
+  snapshot,
   solidPng,
   svgBytes,
   view,
@@ -2113,3 +2115,104 @@ metric("an SVG image's root background covers the image", async () => {
   await expectPixel(ctx, 50, 20, '#00ff00', { message: 'the middle' });
   await expectPixel(ctx, 5, 20, '#00ff00', { message: 'beside the viewBox' });
 });
+
+metric(
+  'an image drawn at another size than its own is copied from a raster of it, the pixels it draws',
+  async () => {
+    // CoreGraphics reads all of a source for a draw that scales it, so a
+    // photograph drawn small cost its whole size at every paint that
+    // reached any of it: nine previews of the Zen Garden's all-designs
+    // page at each frame of a card's hover. Its second drawing at a size
+    // keeps a raster, and every drawing after copies it.
+    const photo = pixelsPng(171, 129, (x, y) => [
+      (x * 37 + y * 11) % 256,
+      (x * x + y * 3) % 256,
+      (x ^ y) & 255,
+    ]);
+    const small = pixelsPng(20, 15, (x, y) => [x * 12, y * 17, (x + y) * 7]);
+    for (const scale of [1, 2]) {
+      const { result, el } = await renderWithBytes(
+        '<style>body{margin:0}img{display:block;margin:3px}</style>' +
+          '<img src="p.png" style="width:57px;height:43px;border-radius:6px">' +
+          '<img src="p.png" style="width:171px;height:129px">' +
+          '<img src="s.png" style="width:63px;height:47px">',
+        { 'p.png': photo, 's.png': small },
+        200,
+        scale,
+      );
+      // every image the document asks to be drawn at a size: those the
+      // context resamples
+      let proto = Object.getPrototypeOf(result.ctx);
+      while (!Object.prototype.hasOwnProperty.call(proto, 'drawImage')) {
+        proto = Object.getPrototypeOf(proto);
+      }
+      const draw = proto.drawImage;
+      let resampled = 0;
+      proto.drawImage = function (this: unknown, ...args: unknown[]) {
+        const [image, , , w, h] = args as [
+          { width?: number; height?: number },
+          number,
+          number,
+          number?,
+          number?,
+        ];
+        if (w !== undefined && (w !== image.width || h !== image.height)) {
+          resampled += 1;
+        }
+        return draw.apply(this, args);
+      };
+      const node = el as unknown as {
+        invalidate(all: boolean, by: unknown, why: string): void;
+        _drawings: { destroy(): void } | null;
+        _drawnOnce: Set<string>;
+      };
+      try {
+        const repaint = async () => {
+          resampled = 0;
+          node.invalidate(false, el, 'test');
+          return snapshot(result, el);
+        };
+        node._drawings?.destroy();
+        node._drawings = null;
+        node._drawnOnce.clear();
+        // the middle one is drawn at its own size, but at 1x only
+        const scaled = scale === 1 ? 2 : 3;
+        const first = await repaint();
+        assert.strictEqual(resampled, scaled, `${scale}x: drawn as they are`);
+        const second = await repaint();
+        assert.strictEqual(resampled, scaled, `${scale}x: rasters are made`);
+        const third = await repaint();
+        assert.strictEqual(resampled, 0, `${scale}x: and copied`);
+        // the same pixels, but where the rounded one's curve cuts it: there
+        // the copy is rounded to a level before the curve fades it, where
+        // the image drawn there is faded as it is resampled, and the two
+        // may be a level apart
+        const width = (el as unknown as DrawnNode).abs.width;
+        const [x0, y0, r] = [3 * scale, 3 * scale, 6 * scale];
+        const [x1, y1] = [x0 + 57 * scale, y0 + 43 * scale];
+        const apart = (a: Uint8ClampedArray, b: Uint8ClampedArray) => {
+          let n = Math.abs(a.length - b.length);
+          for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
+            if (a[i] === b[i]) continue;
+            const x = Math.floor(i / 4) % width;
+            const y = Math.floor(i / 4 / width);
+            const curve =
+              x >= x0 &&
+              x < x1 &&
+              y >= y0 &&
+              y < y1 &&
+              (x < x0 + r || x >= x1 - r) &&
+              (y < y0 + r || y >= y1 - r);
+            if (!curve || Math.abs(a[i] - b[i]) > 1) n += 1;
+          }
+          return n;
+        };
+        assert.strictEqual(apart(first, second), 0, `${scale}x: second`);
+        assert.strictEqual(apart(first, third), 0, `${scale}x: third`);
+      } finally {
+        proto.drawImage = draw;
+      }
+      cleanup();
+    }
+  },
+);
