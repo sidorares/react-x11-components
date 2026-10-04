@@ -3210,6 +3210,15 @@ set aside, since it would be missing from where it is drawn. On that
 article the browser example's page lays itself out at each step of a drag
 in some 10 ms, where it took 60, and keeps up with a 30 Hz drag.
 
+**An opaque canvas fills nothing under it.** The element paints its canvas
+over all of itself before anything else, so where the canvas is opaque — in
+the `Canvas` colour of a scheme of the page's own, or in an opaque colour
+its root or body sets — it answers core's `opaqueRect()` with its rect, and
+core skips the window's background and the background of every box around
+the element, which it filled whole at every repaint of the window. At 2x a
+window is three or four megapixels: a frame of a resize of a Wikipedia
+article filled it three and a half times, and fills it one and a half.
+
 **A style is computed once per kind of element.** An edit builds the box
 tree again, and building it matched every element against the stylesheets
 and computed its style: 9,039 of them for a 600 KB report. A document is a

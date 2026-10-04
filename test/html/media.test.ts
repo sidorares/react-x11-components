@@ -587,17 +587,85 @@ test('a document of the scheme the palette is not is drawn on that scheme’s ca
   assert.deepStrictEqual(ruled.canvas, []);
   assert.deepStrictEqual((await show(meta('only'), 'light')).canvas, []);
   // the page's own colours are over the scheme's: its background over
-  // the canvas, its text where it sets one
+  // the canvas — which leaves none of the scheme's to be seen where it is
+  // opaque, and is all that is filled — its text where it sets one
   assert.deepStrictEqual(
     await show(
       page('light', 'html{background:#ff0000}p{color:#010101}'),
       'dark',
     ),
     {
-      canvas: ['#ffffff', '#ff0000'],
+      canvas: ['#ff0000'],
       text: '#010101',
       link: '#0000ee',
     },
+  );
+  assert.deepStrictEqual(
+    (await show(page('light', 'html{background:#ff000080}'), 'dark')).canvas,
+    ['#ffffff', '#ff000080'],
+    'a translucent one over the scheme’s',
+  );
+});
+
+test('a document whose canvas is opaque says so to core, and only then', async () => {
+  // A page with a background of its own was drawn over the window's
+  // ground and the background of every box around the element, each
+  // filled whole at every repaint of the window. The element covers its
+  // rect with the canvas first (`opaqueCanvas`), so it answers core's
+  // `opaqueRect()` with it — where the canvas is opaque, and only there.
+  const doc = (css: string, palette: 'light' | 'dark') =>
+    h(
+      'window',
+      { width: 340, height: 200 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { colorScheme: palette },
+        h(
+          'box',
+          {
+            style: {
+              width: 300,
+              flexDirection: 'column',
+              backgroundColor: '#00ff00',
+            },
+          },
+          h(Html, {
+            source: `<style>body{margin:0}${css}</style><p>x</p>`,
+            partial: false,
+            'data-testname': 'doc',
+          }),
+        ),
+      ),
+    );
+  const result = await renderX11(
+    doc('', 'light'),
+    FONTS ? { fonts: FONTS, wrap: false } : { backend: 'mock', wrap: false },
+  );
+  const answer = async (css: string, palette: 'light' | 'dark') => {
+    await act(async () => {
+      result.root.render(doc(css, palette));
+    });
+    for (let i = 0; i < 4; i += 1) await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const rect = el.opaqueRect();
+    return rect && [rect.x, rect.y, rect.width, rect.height];
+  };
+  assert.strictEqual(await answer('', 'light'), null, 'the palette’s ground');
+  const whole = await answer('html{background:#ff0000}', 'light');
+  assert.ok(whole && whole[2] === 300, `a colour of its own: ${whole}`);
+  assert.strictEqual(
+    await answer('html{background:#ff000080}', 'light'),
+    null,
+    'a translucent one',
+  );
+  assert.strictEqual(
+    await answer('html{background:#ff0000;visibility:hidden}', 'light'),
+    null,
+    'one not drawn',
+  );
+  assert.ok(
+    await answer(':root{color-scheme:light}', 'dark'),
+    'the canvas of a scheme of its own',
   );
 });
 

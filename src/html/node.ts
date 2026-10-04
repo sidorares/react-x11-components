@@ -181,6 +181,7 @@ import {
   layered,
   layerOf,
   onLine,
+  opaqueCanvas,
   ownBounds,
   paintDocument,
   paintLiftedBox,
@@ -4145,12 +4146,43 @@ export class HtmlViewNode extends Node {
         damage = { x: 0, y: 0, width: window.width, height: window.height };
       }
     }
+    const promised = this._promisedOpaque;
+    this._promisedOpaque = false;
     try {
       this._paint(ctx, tree, range, damage);
     } catch (error) {
       this._fail(error, this._laidOutWidth);
+      // nothing under the element was filled: what it promised is the
+      // window's ground, where it leaves the document blank
+      if (promised) {
+        ctx.fillStyle = this._props().look.background;
+        ctx.fillRect(this.abs.x, this.abs.y, this.abs.width, this.abs.height);
+      }
     }
   }
+
+  /**
+   * What the document covers with opaque pixels, for core to fill nothing
+   * under it (`Node.opaqueRect`): the whole element, where its canvas is
+   * opaque — painted first, over all of it (`opaqueCanvas`). A page with a
+   * background of its own was drawn over the window's ground and the
+   * background of every box around the element, each filled whole at
+   * every repaint of the window: three fills of three or four megapixels
+   * at each frame of a resize at 2x, the size of the page's own paint.
+   * Asked before the paint, so the document is brought up to date first,
+   * as the paint would, and a paint that throws fills what it promised
+   * (`paint`).
+   */
+  override opaqueRect(): Rect | null {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (!tree || !opaqueCanvas(tree)) return null;
+    this._promisedOpaque = true;
+    return this.abs;
+  }
+
+  /** Whether the pass being painted was promised opaque (`opaqueRect`). */
+  private _promisedOpaque = false;
 
   /** A surface for the painter to draw a masked element on, asked of the
    *  backend until it is found to have none. */
