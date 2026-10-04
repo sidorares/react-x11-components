@@ -21,6 +21,7 @@
 import { blend } from './color.js';
 import { interpolateFilters } from './filter.js';
 import type { FilterFunction } from './filter.js';
+import type { BoxShadow } from './style.js';
 import {
   IDENTITY,
   multiply,
@@ -93,6 +94,12 @@ export function interpolateField(
       return interpolateRotate(a as Turn | null, b as Turn | null, q);
     case 'scale':
       return mix(a ?? NO_SCALE, b ?? NO_SCALE, q);
+    case 'boxShadow':
+      return interpolateShadows(
+        a as readonly BoxShadow[] | null,
+        b as readonly BoxShadow[] | null,
+        q,
+      );
     case 'fontSizeBasis':
       // a size part of the way between two is the length it comes to,
       // which no family scales, as Blink has an animated size; and the
@@ -105,6 +112,54 @@ export function interpolateField(
   if (INTEGERS.has(key)) return Math.round(value);
   return NOT_NEGATIVE.has(key) ? Math.max(0, value) : value;
 }
+
+/**
+ * Two lists of shadows `q` of the way between (CSS Backgrounds 3, 7.2): the
+ * shorter padded with shadows of nothing — no offset, blur or spread, in
+ * transparent, inset as the other end's is — and each pair by its parts,
+ * the colours as `color` mixes them, so a glow that comes from nothing
+ * keeps its hue as it fades in. Undefined where a pair is one inset and
+ * one not, or a colour cannot be read, and the list goes over whole.
+ * `none` is the empty list.
+ */
+function interpolateShadows(
+  a: readonly BoxShadow[] | null,
+  b: readonly BoxShadow[] | null,
+  q: number,
+): BoxShadow[] | null | undefined {
+  const from = a ?? [];
+  const to = b ?? [];
+  const n = Math.max(from.length, to.length);
+  if (!n) return null;
+  const out: BoxShadow[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const s = from[i] ?? nothingLike(to[i]);
+    const t = to[i] ?? nothingLike(from[i]);
+    if (s.inset !== t.inset) return undefined;
+    const color = s.color === t.color ? s.color : blend(s.color, t.color, q);
+    if (color === null) return undefined;
+    out.push({
+      x: s.x + (t.x - s.x) * q,
+      y: s.y + (t.y - s.y) * q,
+      blur: Math.max(0, s.blur + (t.blur - s.blur) * q),
+      spread: s.spread + (t.spread - s.spread) * q,
+      color,
+      inset: s.inset,
+    });
+  }
+  return out;
+}
+
+/** A shadow of nothing, inset as `like` is: what a shorter list of
+ *  shadows is padded with. */
+const nothingLike = (like: BoxShadow): BoxShadow => ({
+  x: 0,
+  y: 0,
+  blur: 0,
+  spread: 0,
+  color: 'transparent',
+  inset: like.inset,
+});
 
 /** The value a discrete property has `q` of the way between two. */
 export function discrete<T>(a: T, b: T, q: number): T {

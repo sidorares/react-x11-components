@@ -13,6 +13,7 @@ import {
   AnimationTimeline,
   noteAnimated,
 } from '../../src/html/css/timeline.js';
+import { interpolateField } from '../../src/html/css/interpolate.js';
 import { copyStyle, initialStyle } from '../../src/html/css/style.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
@@ -53,10 +54,11 @@ async function holding(
   props: Record<string, unknown> = {},
 ) {
   const clock = holdClock(t, animationClock);
-  const { node } = await render(source, 400, props);
+  const { node, result } = await render(source, 400, props);
   const el = view(node);
   return {
     node,
+    result,
     el,
     clock,
     style: (id: string) => styleOf(node, id),
@@ -598,6 +600,68 @@ test('a panel turned out of the plane is a part with no animation, and a transit
   await doc.at(176);
   assert.strictEqual(doc.el.sprites(), null);
 });
+
+test('box-shadow runs between two lists: the shorter padded with shadows of nothing, the colours mixed as `color` mixes them, and a pair inset at one end and not the other goes over whole', async (t) => {
+  // CSS Backgrounds 3, 7.2: what the all-designs page's cards do as they
+  // are hovered, a small shadow becoming a glow of three — which went over
+  // at once, a list of one and a list of three having nothing between
+  const one = { x: 0, y: 3, blur: 2, spread: 0, inset: false };
+  const glow = { x: 0, y: 0, blur: 40, spread: 4, inset: false };
+  const half = interpolateField(
+    'boxShadow',
+    [{ ...one, color: '#000000' }],
+    [
+      { ...glow, color: '#18a0ca' },
+      { ...glow, blur: 10, color: 'rgba(24, 160, 202, 0.5)' },
+    ],
+    0.5,
+  );
+  assert.deepStrictEqual(half, [
+    { x: 0, y: 1.5, blur: 21, spread: 2, color: '#0c5065', inset: false },
+    // from nothing, in transparent: the hue all the way, fading in
+    {
+      x: 0,
+      y: 0,
+      blur: 5,
+      spread: 2,
+      color: 'rgba(24, 160, 202, 0.25)',
+      inset: false,
+    },
+  ]);
+  // `none` is the empty list, and a blur that overshoots stops at nothing
+  assert.deepStrictEqual(
+    interpolateField('boxShadow', null, [{ ...one, color: '#000' }], -0.5),
+    [{ x: 0, y: -1.5, blur: 0, spread: 0, color: 'transparent', inset: false }],
+  );
+  assert.strictEqual(
+    interpolateField(
+      'boxShadow',
+      [{ ...one, color: '#000' }],
+      [{ ...one, inset: true, color: '#000' }],
+      0.5,
+    ),
+    undefined,
+  );
+  // and a document runs it: half way through the card's hover, the glow
+  // half grown
+  const doc = await holding(t, CARD());
+  doc.hover('a');
+  await doc.at(80);
+  const shadows = doc.style('a').boxShadow!;
+  assert.strictEqual(shadows.length, 2);
+  assert.ok(Math.abs(shadows[0].blur - 21) < 1, `${shadows[0].blur}`);
+});
+
+/** A card as the Zen Garden's all-designs page has one: a rounded box
+ *  that clips what it holds, whose small shadow becomes a glow as it is
+ *  hovered, with a border colour that changes beside it. */
+const CARD = (more = '') =>
+  '<style>body { margin: 0; background: #fff }' +
+  ' #a { margin: 80px; width: 100px; height: 60px; border: 1px solid #ccc;' +
+  ' border-radius: 8px; overflow: hidden; box-shadow: 0 3px 2px rgba(0, 0, 0, .1) }' +
+  ' #a:hover { border-color: #e5ede8; transform: scale(1.01) translateY(-1px);' +
+  ' box-shadow: 0 0 40px rgba(24, 160, 202, .25), 0 0 10px rgba(24, 160, 202, .5);' +
+  ` transition: all 160ms linear }${more}</style><div id="a"></div>`;
 
 /** A palette to make an initial style from, every colour its own. */
 const LOOK = {

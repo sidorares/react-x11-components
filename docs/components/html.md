@@ -1712,7 +1712,12 @@ at either end is a move by nothing, a scale by one, or a turn of none
 about the other end's axis. Two turns about axes of their own go as their
 matrices do, taken apart, the turn as a quaternion — halfway from
 `rotate: x 90deg` to `rotate: y 90deg` is a turn about the axis between
-them — and what that comes to is a turn still. What none of
+them — and what that comes to is a turn still. A `box-shadow` list goes
+shadow by shadow, its offsets, blur and spread as lengths and its colour as
+a colour, the shorter list padded with shadows of nothing in transparent
+(CSS Backgrounds 3, 7.2), so a card's small shadow becomes a glow of
+three that keeps its hue as it fades in; a pair inset at one end and not
+the other goes over whole. What none of
 that reads goes over half-way, as CSS has a discrete value go; so does a
 shorthand any of whose longhands does, a custom property and a logical
 one. A frame's `animation-timing-function` eases to the next frame, and
