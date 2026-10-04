@@ -18,7 +18,8 @@
 //   DESIGNS  001,002 or 001-050, default 001-221
 //   W, H     the window, default 1180x790; STEP px a step, default 4;
 //   STEPS    steps each way, default 40; EVERY ms a step, default 16
-//   TO       narrowed to this instead, and not widened back: a width, or a
+//   TO       narrowed to this instead, and not widened back (BACK=1 widens
+//            it back the same steps): a width, or a
 //            fraction of W — 0.25 is a quarter of it — in steps of STEP
 //   TRACE    a design's per-frame rows as well
 //   CACHE    the disk cache, default zengarden-results/cache
@@ -54,6 +55,11 @@ const widths = (): number[] => {
     const out: number[] = [];
     for (let w = W - STEP; w > to; w -= STEP) out.push(w);
     out.push(to);
+    // BACK=1: and widened back to where it started, the same steps
+    if (process.env.BACK === '1') {
+      for (let i = out.length - 2; i >= 0; i -= 1) out.push(out[i]);
+      out.push(W);
+    }
     return out;
   }
   return Array.from({ length: 2 * STEPS }, (_, i) =>
