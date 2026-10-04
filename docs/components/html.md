@@ -1333,7 +1333,10 @@ run over what was read; the read arrives a round trip after the paint that
 asked for it, which draws the box from the read before, or — the first
 time a box is drawn — not at all. What lags then is the box's content and
 never the filter: a transition of the filter, as a hover runs one, draws
-each frame at the amount it has then, from what was read once.
+each frame at the amount it has then, from what was read once. A box that
+moves a fraction of a pixel at a time — under a transform, a hover lifting
+a card — is drawn from what was read, moved with it and resampled, and
+read again where it is once it has been still for a moment.
 An inline box's filter is not drawn, nor are `blur()`, `drop-shadow()` and
 a `url()` to an SVG `<filter>`, which has the whole list ignored, as a
 reference to a filter that is not there has (Filter Effects 1, 4). A

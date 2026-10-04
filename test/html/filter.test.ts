@@ -11,6 +11,7 @@ import {
   pixelAt,
   renderX11,
   screen,
+  waitFor,
   waitForPixel,
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
@@ -445,10 +446,20 @@ test('a filtered box a hover moves a fraction of a pixel at a time is drawn at e
       return at.apply(this, args);
     },
   );
+  let reads = 0;
+  const read = FilterStore.prototype.read;
+  t.mock.method(
+    FilterStore.prototype,
+    'read',
+    function (this: FilterStore, ...args: Parameters<typeof read>) {
+      reads += 1;
+      return read.apply(this, args);
+    },
+  );
   const result = await drawn(
     '<style>#a { height: 20px; background: #ff0000; filter: grayscale();' +
       ' transition: filter 320ms linear, transform 320ms linear }' +
-      '#a:hover { filter: grayscale(0); transform: translateY(-3.7px) }' +
+      '#a:hover { filter: grayscale(0.5); transform: translateY(-3.7px) }' +
       '</style><div style="height:7px"></div><div id="a"></div>',
   );
   const ctx = result.ctx;
@@ -458,9 +469,12 @@ test('a filtered box a hover moves a fraction of a pixel at a time is drawn at e
   el.setHover(abs.x + 4, abs.y + 12);
   await act();
   const red = Uint8ClampedArray.of(255, 0, 0, 255);
+  let started = 0;
   for (let frame = 0; frame < 12; frame += 1) {
     await clock.frame();
     await act();
+    // the transition's start builds the boxes again, which reads
+    if (frame === 1) started = reads;
     const style = (boxOf(el, 'a') as unknown as { style: ComputedStyle }).style;
     const amount = style.filter!.map((f) => ('amount' in f ? f.amount : 0))[0];
     const want = new Uint8ClampedArray(4);
@@ -475,6 +489,34 @@ test('a filtered box a hover moves a fraction of a pixel at a time is drawn at e
     );
   }
   assert.deepStrictEqual([...sizes], ['201x21'], 'one size, moving or not');
+  // a move a fraction of a pixel at a time asks for no read: each frame
+  // drew the box from the last read, resampled, where reads landing between
+  // frames drew it crisp between them and it shimmered
+  const moving = reads;
+  assert.strictEqual(moving - started, 0, 'no read as it moved');
+  // and once it has been still a while it is read where it is
+  await clock.finish();
+  await act();
+  const store = (el as unknown as { _filtered: FilterStore })._filtered;
+  const kept = store.at(
+    boxOf(el, 'a').el as object,
+    '',
+    boxOf(el, 'a'),
+    201,
+    21,
+    (
+      store as unknown as { kept: Map<object, Map<string, { key: string }>> }
+    ).kept
+      .get(boxOf(el, 'a').el as object)!
+      .get('')!.key,
+  );
+  await waitFor(() => assert.ok(reads > moving, 'read again once still'));
+  await waitFor(() => assert.ok(kept.fresh, 'and drawn from it'));
+  assert.deepStrictEqual(
+    [kept.rawX, kept.rawY],
+    [kept.phaseX, kept.phaseY],
+    'from pixels at its own fraction',
+  );
 });
 
 test("a context that runs a filter itself is handed the group, kept and drawn through canvas's filter again only as it or the filter changes, and one that does not is remembered", () => {

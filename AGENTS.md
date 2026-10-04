@@ -2024,7 +2024,7 @@ the X server's, a round trip away — so the group is read back, and every
 paint runs the matrices the box has now over the newest pixels read for
 it. A context whose `filter` does not stick for a list sends every box to
 the read from then on (`unfiltered`), and is asked with `in` first, since
-assigning an unknown property sticks on any object. Four things about the
+assigning an unknown property sticks on any object. Five things about the
 read are load-bearing.
 **A read is made stale, never dropped** (`stale`, through
 `_dropSprites`): a page whose animations build the document every frame
@@ -2034,7 +2034,14 @@ amount they had, so its hover flashed between grey and colour. **The
 surface is the box's size and a pixel, wherever the box's corner falls**:
 sized from its edges it was one height and the next alternately as a
 hover lifted the card a fraction at a time, and a read of the other
-height drew nothing. **Anything new that changes what a box draws makes
+height drew nothing. **A move a fraction of a pixel at a time reads
+nothing**: where the box's corner falls within a pixel is out of the
+read's key, the read is drawn with its corner where the box's is now,
+resampled, and a read arriving while the box moves paints nothing of its
+own; once it has been still for `SETTLE_MS` it is read where it is
+(`placed`). Read at each frame, ekazinich.com's turning phones were drawn
+crisp by reads landing between frames and resampled at the frames, and
+shimmered. **Anything new that changes what a box draws makes
 the reads around it stale**, as it drops the surfaces kept around it —
 `_dropSprites` does both. And **a context from ntk's `getContext` is the
 caller's to destroy**: a surface kept and written each frame keeps the

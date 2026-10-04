@@ -4343,6 +4343,9 @@ export class HtmlViewNode extends Node {
       filters: (this._filtered ??= new FilterStore(
         this.app,
         this._filterArrived,
+        undefined,
+        undefined,
+        animationClock,
       )),
     };
   }
