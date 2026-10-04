@@ -1059,13 +1059,24 @@ export function usedColorScheme(
 
 /**
  * A browser's own colours in each scheme — the system colours `Canvas`,
- * `CanvasText` and `LinkText` (CSS Color 4, 6.2), as Chrome has them: what
+ * `CanvasText` and `LinkText` (CSS Color 4, 6.2), as Chrome has them, and
+ * the grey its UA sheet draws a `::placeholder` in, the same in both: what
  * a document is drawn in where its root's scheme is not the palette's,
  * which has the colours of its own scheme and of no other.
  */
 export const SCHEME_COLORS = {
-  light: { canvas: '#ffffff', text: '#000000', link: '#0000ee' },
-  dark: { canvas: '#121212', text: '#ffffff', link: '#9e9eff' },
+  light: {
+    canvas: '#ffffff',
+    text: '#000000',
+    link: '#0000ee',
+    placeholder: '#757575',
+  },
+  dark: {
+    canvas: '#121212',
+    text: '#ffffff',
+    link: '#9e9eff',
+    placeholder: '#757575',
+  },
 } as const;
 
 // --- system colours (CSS Color 4, 6.2) -------------------------------------

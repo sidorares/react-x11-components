@@ -28,6 +28,7 @@ import {
   optionValue,
   selectedOptions,
 } from './form.js';
+import { fadeColor } from './css/color.js';
 import type { ComputedStyle } from './css/style.js';
 import { invert } from './css/transform.js';
 import { heldBack, placedMatrix } from './layout/block.js';
@@ -92,6 +93,12 @@ export interface ControlRect {
    * still takes the keyboard's focus, as the element does in a browser.
    */
   clip?: { x: number; y: number; width: number; height: number };
+  /**
+   * A text field's: the colour its `placeholder` is drawn in, its
+   * `::placeholder`'s colour faded by its opacity (`placeholderInk`). Set
+   * where the field has a placeholder to draw.
+   */
+  placeholderColor?: string;
 }
 
 /** Where a styled field's widget goes, and how its text looks. */
@@ -114,8 +121,13 @@ export interface BareField {
 }
 
 /** The rectangles every control in a laid-out document landed on. `scale`
- *  is the document's device pixels to a CSS one. */
-export function controlRectsOf(tree: BoxTree, scale = 1): ControlRect[] {
+ *  is the document's device pixels to a CSS one, and `placeholderOf` a
+ *  text field's `::placeholder` style (`Cascade.placeholderStyle`). */
+export function controlRectsOf(
+  tree: BoxTree,
+  scale = 1,
+  placeholderOf?: (el: Element, style: ComputedStyle) => ComputedStyle | null,
+): ControlRect[] {
   const out: ControlRect[] = [];
   for (const box of tree.controls) {
     if (!box.el) continue;
@@ -170,9 +182,30 @@ export function controlRectsOf(tree: BoxTree, scale = 1): ControlRect[] {
         }),
       };
     }
+    if (
+      placeholderOf &&
+      (box.replaced === 'input' || box.replaced === 'textarea') &&
+      attr(box.el, 'placeholder')
+    ) {
+      const placeholder = placeholderOf(box.el, box.style);
+      if (placeholder) rect.placeholderColor = placeholderInk(placeholder);
+    }
     out.push(rect);
   }
   return out;
+}
+
+/**
+ * The colour a field's widget draws its placeholder in: its
+ * `::placeholder`'s, faded by the pseudo-element's opacity, which fades
+ * the hint and nothing else of the field — Chrome's own sheet is the
+ * colour and Firefox's was `opacity: 0.54`, so a page that sets one sets
+ * the other back (`opacity: 1`, Tailwind's preflight). Its face, size and
+ * weight are the field's: core's `<textinput>` lays the hint out in the
+ * style it lays the value out in, and takes nothing else for it.
+ */
+function placeholderInk(style: ComputedStyle): string {
+  return fadeColor(style.color, style.opacity);
 }
 
 type Rect = { x: number; y: number; width: number; height: number };

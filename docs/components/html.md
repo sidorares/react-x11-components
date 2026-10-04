@@ -644,6 +644,24 @@ and a submission carries it as a file with no name and no content, as a
 browser does when none was chosen. Reading a file is a host's business,
 through a dialog of its own; nothing here reaches the disk.
 
+**A field's hint is drawn as its `::placeholder` says.** The `placeholder`
+of an `<input>` or a `<textarea>` is drawn by the field's widget while the
+field is empty, in the colour the page's `::placeholder` rules give it —
+`::-webkit-input-placeholder` too, which Chrome and Safari still take for
+it — faded by their `opacity`, on a field the palette draws and on one the
+page drew alike. With no rule it is in the palette's muted ink, which is
+what core draws a hint in anyway, so an unstyled form in a document is the
+window's; in a document of the scheme the palette is not, it is Chrome's
+grey, `#757575`. A rule that tests the focus or the pointer is followed:
+`input:focus::placeholder { color: transparent }` takes the hint away while
+the field is typed into. A text area's hint keeps its line breaks and a
+field's loses them, as HTML has it. Only the colour and the opacity reach
+the widget. The rest of what applies to a `::first-line`, and so to a
+`::placeholder` — its font, size, weight, slant, spacing, decoration and
+shadow — is not drawn: core's `<textinput>` lays the hint out in the style
+it lays the value out in, and takes nothing else for it, so a rule that
+sets them sets the hint in the field's own font.
+
 **What was typed lives beside the DOM, not in it.** HTML's `value`
 attribute is a field's _default_ — what a reset puts back — and a
 `<textarea>`'s is its content, which is not an attribute at all, so the
@@ -2330,6 +2348,10 @@ the two leaves the other at none, so `::selection { color: blue }` draws no
 band, and text no rule reaches is drawn in `selectionColor`. Selected text
 keeps its own decorations and shadows. A selection over glyphs taller than
 their line covers them, and one over a tall line fills it.
+
+**Placeholders:** `::placeholder` (and `::-webkit-input-placeholder`) gives
+a text field's hint its colour and its opacity, which its widget draws:
+see [Forms](#forms).
 
 **Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `lh`, `rlh`, `vw`, `vh`,
 `vi`, `vb`, `vmin`, `vmax` — and the small, large and dynamic viewports'
