@@ -243,6 +243,56 @@ metric(
   },
 );
 
+metric('a justified line beside a float is set from its own text', async () => {
+  // A line beside a float is laid out from the rest of its paragraph, and
+  // justifying it laid all of that out again, widened, to set the one
+  // line: on macOS, where letter spacing is shaped, a paragraph beside a
+  // float was shaped again for each of its lines at every width of a
+  // resize, Zen Garden 016's frames 28 ms of layout where they take 18
+  const words = 'the quick brown fox jumps over the lazy dog and back again ';
+  const { result, node } = await render(
+    '<style>body{margin:0}p{margin:0;width:200px;text-align:justify}' +
+      '.f{float:left;width:60px;height:200px}</style>' +
+      `<div><div class="f"></div><p id="p">${words.repeat(4)}</p></div>`,
+    400,
+  );
+  const el = view(node);
+  const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+  const widened: number[] = [];
+  const counting: FontsLike = {
+    layout: (runs, style, options) => {
+      if (runs.some((run) => (run.letterSpacing ?? 0) > 0.01)) {
+        widened.push(runs.reduce((n, run) => n + run.text.length, 0));
+      }
+      return fonts.layout(runs, style, options);
+    },
+    match: (...args) => fonts.match(...args),
+  };
+  const { layoutDocument } = await import('../../src/html/layout/block.js');
+  const tree = (el as unknown as { _tree: unknown })._tree;
+  layoutDocument(tree as never, counting, 400, 600);
+  const lines = linesOf(el, 'p');
+  assert.ok(lines.length > 3, `${lines.length} lines`);
+  assert.ok(widened.length >= lines.length - 1, 'every line but the last');
+  const longest = Math.max(
+    ...lines.map((line) => {
+      const { textStart, textEnd } = line as unknown as {
+        textStart: number;
+        textEnd: number;
+      };
+      return textEnd - textStart;
+    }),
+  );
+  assert.ok(
+    widened.every((length) => length <= longest + 1),
+    `widened ${widened.join(', ')}, against lines of ${longest} at most`,
+  );
+  for (const line of lines.slice(0, -1)) {
+    const [from, to] = extentOf(line.texts[0]);
+    assert.ok(to > 199.5 && from >= 0, `a full line: ${from}..${to}`);
+  }
+});
+
 metric('text that does not wrap is aligned in its box', async () => {
   // the engine aligns lines it is given no width for within the widest of
   // them, which for one line is no alignment at all: a centred `<td
