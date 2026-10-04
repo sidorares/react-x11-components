@@ -2047,6 +2047,15 @@ matrix set aside, and only over the box by its outline (`castOutside`).
 **Anything new that clips a large draw does the same**: rectangles of whole
 pixels for what is large, and the path only where it is small.
 
+**A large gradient straight down or across is a strip copied**
+(`gradientStrip`): shaded 64 pixels wide on a scratch surface, copied along
+the axis it does not change on, only where the context draws in whole
+pixels of its own. CoreGraphics shades a gradient at some 3.6 ns a pixel
+and copies at a tenth of that; on X11 it measured even. A copy is the
+pixels the shading made, so an opaque gradient is drawn as it was and a
+translucent one may be a level apart, the store-and-composite rounding a
+kept raster has.
+
 **A group goes only to a context where it pays** (`groupsOnSurfaces`):
 ntk's, and a native one that says a faded surface is cheap
 (`fadesSurfacesCheaply`). CoreGraphics draws an image under an alpha below

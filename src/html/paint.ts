@@ -213,7 +213,8 @@ export interface PaintContext extends FillContext {
   createPattern?(image: unknown, repetition: string): unknown;
   translate?(x: number, y: number): void;
   /** The context's matrix, and the context's matrix set outright: a clip
-   *  laid on the surface's own pixels under a box's (`castOutside`). */
+   *  laid on the surface's own pixels under a box's (`castOutside`), and
+   *  whether a copy lands on them (`gradientStrip`). */
   getTransform?(): {
     a: number;
     b: number;
@@ -1096,6 +1097,7 @@ function paintCanvas(
         style.backgroundGradient,
         area,
         snapped(box.x, box.y, box.width, box.height),
+        options,
       );
     }
     if (style.backgroundImage) {
@@ -5817,7 +5819,7 @@ function paintBackground(
       ctx.beginPath!();
       roundedRect(ctx, rect.x, rect.y, rect.w, rect.h, rounded);
       ctx.clip();
-      paintGradient(ctx, style, gradient, rect, at);
+      paintGradient(ctx, style, gradient, rect, at, options);
       ctx.restore();
     } else if (rounded) {
       // one fill in the rounded shape; under the borders it carries on
@@ -5834,7 +5836,7 @@ function paintBackground(
         rect,
       );
       if (paint) fillGradient(ctx, paint, rect, rounded);
-    } else paintGradient(ctx, style, gradient, rect, at);
+    } else paintGradient(ctx, style, gradient, rect, at, options);
   }
 }
 
@@ -5866,6 +5868,7 @@ function paintGradient(
   gradient: Gradient,
   area: { x: number; y: number; w: number; h: number },
   at: Rect,
+  options: PaintOptions,
 ): void {
   // a gradient has no size of its own: the positioning area's, unless
   // `background-size` gives it one, and then `background-position` places
@@ -5912,8 +5915,7 @@ function paintGradient(
   ) {
     // a sliver of a root repeated down a long canvas: the one tile, and
     // its end colours on past it
-    const paint = gradientFill(ctx, gradient, x0, y0, w, h, style.color, area);
-    if (paint) fillGradient(ctx, paint, area);
+    gradientTile(ctx, gradient, x0, y0, w, h, style.color, area, options);
     return;
   }
   for (let y = fromY; y < toY; y += stepY) {
@@ -5925,9 +5927,98 @@ function paintGradient(
       const right = Math.min(x + w, area.x + area.w);
       if (right <= left) continue;
       const tile = { x: left, y: top, w: right - left, h: bottom - top };
-      const paint = gradientFill(ctx, gradient, x, y, w, h, style.color, tile);
-      if (paint) fillGradient(ctx, paint, tile);
+      gradientTile(ctx, gradient, x, y, w, h, style.color, tile, options);
     }
+  }
+}
+
+/** A gradient `w` by `h` at (`x`, `y`), filled in `part` of it. */
+function gradientTile(
+  ctx: PaintContext,
+  gradient: Gradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  currentColor: string,
+  part: { x: number; y: number; w: number; h: number },
+  options: PaintOptions,
+): void {
+  if (gradientStrip(ctx, gradient, x, y, w, h, currentColor, part, options)) {
+    return;
+  }
+  const paint = gradientFill(ctx, gradient, x, y, w, h, currentColor, part);
+  if (paint) fillGradient(ctx, paint, part);
+}
+
+/** How wide a strip of a gradient is shaded (`gradientStrip`). */
+const STRIP = 64;
+
+/** The least a gradient fills before it is shaded as a strip. */
+const STRIP_AREA = 64 * 1024;
+
+/**
+ * A linear gradient that runs straight down or straight across, filled in
+ * `part` from a strip of it `STRIP` pixels wide, shaded on a surface and
+ * copied along the axis its colours do not change on. A gradient is
+ * shaded a pixel at a time, which on macOS is some 3.6 ns a pixel at 2x,
+ * and a copy of pixels as they are a tenth of that: a page's body,
+ * `linear-gradient(to bottom, …)` from its top to its foot, took 7 ms of
+ * every frame that repainted most of a window. Only where the context
+ * draws in whole pixels of its own, a copy landing on the pixels the strip
+ * was shaded for, and only where a part is large enough to be worth a
+ * surface; false where it is not done, and the gradient is filled itself.
+ */
+function gradientStrip(
+  ctx: PaintContext,
+  gradient: Gradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  currentColor: string,
+  part: { x: number; y: number; w: number; h: number },
+  options: PaintOptions,
+): boolean {
+  if (gradient.kind !== 'linear' || gradient.corner) return false;
+  const down = Math.abs(Math.sin(gradient.angle)) < 1e-9;
+  if (!down && Math.abs(Math.cos(gradient.angle)) >= 1e-9) return false;
+  const { x: px, y: py, w: pw, h: ph } = part;
+  const long = down ? pw : ph;
+  if (long < 4 * STRIP || pw * ph < STRIP_AREA) return false;
+  if (!options.surface || !ctx.drawImage || !ctx.getTransform) return false;
+  if (![px, py, pw, ph].every(Number.isInteger)) return false;
+  const m = ctx.getTransform();
+  if (m.a !== 1 || m.b !== 0 || m.c !== 0 || m.d !== 1) return false;
+  if (!Number.isInteger(m.e) || !Number.isInteger(m.f)) return false;
+  const sw = down ? STRIP : pw;
+  const sh = down ? ph : STRIP;
+  const surface = options.surface(sw, sh);
+  if (!surface) return false;
+  try {
+    // the part's corner at the strip's
+    const on = surface.getContext('2d') as PaintContext;
+    const strip = { x: 0, y: 0, w: sw, h: sh };
+    const paint = gradientFill(
+      on,
+      gradient,
+      x - px,
+      y - py,
+      w,
+      h,
+      currentColor,
+      strip,
+    );
+    if (!paint) return false;
+    fillGradient(on, paint, strip);
+    for (let at = 0; at < long; at += STRIP) {
+      const n = Math.min(STRIP, long - at);
+      if (down) ctx.drawImage(surface, 0, 0, n, ph, px + at, py, n, ph);
+      else ctx.drawImage(surface, 0, 0, pw, n, px, py + at, pw, n);
+    }
+    return true;
+  } finally {
+    surface.destroy?.();
   }
 }
 
