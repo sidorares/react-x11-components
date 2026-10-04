@@ -30,6 +30,7 @@ import {
   shadowRootAround,
   shadowRootOf,
   tagOf,
+  treeGeneration,
 } from '../dom.js';
 import { systemColorTable, usedColorScheme } from './color.js';
 import {
@@ -1038,14 +1039,26 @@ const STATE_PSEUDO_AT =
 /** Any of them anywhere in a selector. */
 const STATE_PSEUDO = /:(?:hover|active|focus(?:-visible|-within)?)(?![\w-])/i;
 
+/** A selector whose matcher keeps answers (`cacheResults`): css-select
+ *  keeps what a `:has()`, a `:contains()` or an `:icontains()` answered for
+ *  an element, and in a selector with one, what a descendant combinator
+ *  found above it. Every other matcher keeps nothing. */
+const KEEPS_ANSWERS = /:(?:has|i?contains)\(/i;
+
 /**
  * A selector compiled to a matcher over this adapter. css-select keeps the
  * answers of a `:has()` above the subject, or of the ancestors a
  * descendant combinator tried under one, for as long as the matcher lives
- * (`cacheResults`) — which is the cascade's life, and a pointer move is no
- * new cascade. So a selector that tests the pointer or the focus keeps
- * none: with them, `#box:has(a:hover) .m` answered what it did before the
- * first move, for good.
+ * (`cacheResults`) — which is the cascade's life, and neither a pointer
+ * move nor a change to the tree is a new cascade while the sheets read as
+ * they did. So a selector that tests the pointer or the focus keeps none:
+ * with them, `#box:has(a:hover) .m` answered what it did before the first
+ * move, for good. And one that keeps answers is compiled again once a tree
+ * has changed (`treeGeneration`): `div:has(img)` answered what it did
+ * before a stream's next chunk brought the image in, before a checkbox
+ * under `label:has(:checked)` was ticked, and before an application's
+ * `refresh()`. Only those, and only once they are next asked: compiling
+ * one is a few microseconds, and a page's rules are mostly not them.
  */
 function compileSelector(
   selector: string,
@@ -1055,14 +1068,28 @@ function compileSelector(
    *  moves under it, as a `<use>`'s copy's does (`Cascade.shapeStyles`). */
   cache = true,
 ): (el: Element) => boolean {
-  return compile(noEmptyWords(selector), {
-    adapter,
-    xmlMode: false,
-    pseudos,
-    cacheResults: cache && !STATE_PSEUDO.test(selector),
-  } as unknown as Parameters<typeof compile>[1]) as unknown as (
-    node: Element,
-  ) => boolean;
+  const keep = cache && !STATE_PSEUDO.test(selector);
+  const make = () =>
+    compile(noEmptyWords(selector), {
+      adapter,
+      xmlMode: false,
+      pseudos,
+      cacheResults: keep,
+    } as unknown as Parameters<typeof compile>[1]) as unknown as (
+      node: Element,
+    ) => boolean;
+  // compiled here, so a selector css-select refuses throws to the caller
+  let match = make();
+  if (!keep || !KEEPS_ANSWERS.test(selector)) return match;
+  let at = treeGeneration();
+  return (el) => {
+    const now = treeGeneration();
+    if (now !== at) {
+      match = make();
+      at = now;
+    }
+    return match(el);
+  };
 }
 
 function mapBucket(

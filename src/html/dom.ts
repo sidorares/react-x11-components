@@ -268,6 +268,12 @@ export function treesChanged(): void {
   generation += 1;
 }
 
+/** Where `treesChanged` has got to: what was worked out from a tree as it
+ *  stood holds while this does (`compileSelector`'s kept answers). */
+export function treeGeneration(): number {
+  return generation;
+}
+
 /** `shadowrootmode`'s states (HTML 4.12.3), `open` and `closed` — any other
  *  value, or none, is no shadow root, and the template an ordinary one. */
 export type ShadowRootMode = 'open' | 'closed';

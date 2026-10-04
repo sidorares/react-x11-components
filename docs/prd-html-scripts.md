@@ -288,29 +288,32 @@ host or posts to it.
 In priority order. The first three are correctness and are worth doing
 whether or not scripts land.
 
-| #   | Seam                                       | Why a script host needs it                                                                                   | Today                                                                                                                                                                                         |
-| --- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | A script handed over whole, `src` resolved | the text it runs has to be the script                                                                        | a streaming `<script>` is handed to `onScript` before its end tag, truncated, and never again (`_sweep`, `node.ts:767`; checked); `src` is as written, not resolved                           |
-| 2   | `refresh()` that sees every mutation       | a page changes classes and attributes, and `:has()` rules have to follow                                     | css-select's `cacheResults` memoizes `:has()` per element for the Cascade's life (`cascade.ts:1062`); `ATTRIBUTE_VARS`, `PRAGMA_LANGUAGE`, inline SVG intrinsics assume nothing changes       |
-| 3   | `scripting`                                | with scripts on, `<noscript>` is not drawn, and what is in it is not fetched                                 | `scripting` is `none` in media queries (`css/parse.ts`); noscript is drawn, and a `<link>` in a head noscript applies                                                                         |
-| 4   | `onDomEvent`, cancellable, before defaults | `click` → `preventDefault()` on a link, `submit` handlers, `input`/`change`, `keydown`, `focusin`/`focusout` | `onLink` gets an href and no element; a button's press submits in the same call (`widgets.ts:187`); a checkbox is changed before it is reported; labels and summaries report nothing; no keys |
-| 5   | A control's live value, read and written   | `input.value`, `textarea.value`, `value` versus `defaultValue`                                               | typed text is in a private `FormState` (`form.ts:887`); widgets are uncontrolled; `<input>` writes `attribs.value` on every keystroke (`widgets.ts:722`)                                      |
-| 6   | `focus(el)`, `blur()`, `activeElement`     | `el.focus()`, `autofocus` on a drawn element, `document.activeElement`                                       | `setFocus` styles `:focus` but moves nothing (`node.ts:2698`); the paths that do move focus are private to the hooks; core checkboxes, selects and buttons report no focus                    |
-| 7   | Geometry and style on demand               | `getBoundingClientRect` after a mutation, `elementFromPoint`, `getComputedStyle`                             | `elementRect` lays out first (`node.ts:2427`), good; `elementAtPoint` reads the last tree (`node.ts:2569`); no computed-style accessor                                                        |
-| 8   | `onParsed`, `onLoaded`                     | `DOMContentLoaded`, `load`, `readyState`                                                                     | `onDocument` fires per chunk; no load signal, and resources a layout asks for late mean a host cannot know it has seen them all                                                               |
+| #   | Seam                                       | Why a script host needs it                                                                                   | Today                                                                                                                                                                                                                                                          |
+| --- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | A script handed over whole, `src` resolved | the text it runs has to be the script                                                                        | **fixed**: a streaming `<script>` was handed over before its end tag, truncated, and never again; it now waits for its end tag. `src` is still as written, not resolved                                                                                        |
+| 2   | `refresh()` that sees every mutation       | a page changes classes and attributes, and `:has()` rules have to follow                                     | **`:has()` fixed**: css-select kept a `:has()`'s answers for the Cascade's life, and a tree change keeps the Cascade; such matchers now recompile once a tree changed. `ATTRIBUTE_VARS`, `PRAGMA_LANGUAGE`, inline SVG intrinsics still assume nothing changes |
+| 3   | `scripting`                                | with scripts on, `<noscript>` is not drawn, and what is in it is not fetched                                 | `scripting` is `none` in media queries (`css/parse.ts`); noscript is drawn, and a `<link>` in a head noscript applies                                                                                                                                          |
+| 4   | `onDomEvent`, cancellable, before defaults | `click` → `preventDefault()` on a link, `submit` handlers, `input`/`change`, `keydown`, `focusin`/`focusout` | `onLink` gets an href and no element; a button's press submits in the same call (`widgets.ts:187`); a checkbox is changed before it is reported; labels and summaries report nothing; no keys                                                                  |
+| 5   | A control's live value, read and written   | `input.value`, `textarea.value`, `value` versus `defaultValue`                                               | typed text is in a private `FormState` (`form.ts:887`); widgets are uncontrolled; `<input>` writes `attribs.value` on every keystroke (`widgets.ts:722`)                                                                                                       |
+| 6   | `focus(el)`, `blur()`, `activeElement`     | `el.focus()`, `autofocus` on a drawn element, `document.activeElement`                                       | `setFocus` styles `:focus` but moves nothing (`node.ts:2698`); the paths that do move focus are private to the hooks; core checkboxes, selects and buttons report no focus                                                                                     |
+| 7   | Geometry and style on demand               | `getBoundingClientRect` after a mutation, `elementFromPoint`, `getComputedStyle`                             | `elementRect` lays out first (`node.ts:2427`), good; `elementAtPoint` reads the last tree (`node.ts:2569`); no computed-style accessor                                                                                                                         |
+| 8   | `onParsed`, `onLoaded`                     | `DOMContentLoaded`, `load`, `readyState`                                                                     | `onDocument` fires per chunk; no load signal, and resources a layout asks for late mean a host cannot know it has seen them all                                                                                                                                |
 
-**1. Scripts handed over whole.** Hand a `<script>` to `onScript` at its
-end tag (a hook on `Handler.onclosetag`, `dom.ts:903`), or at the end of
-the parse for one still open. Resolve `src` against the document's base,
+**1. Scripts handed over whole.** Done for the text: `_sweep` skips a
+`<script>` the parser still has open (`HtmlSource.isOpen`), so it is handed
+over at its end tag, or at the end of the parse for one still open. Left:
+resolve `src` against the document's base,
 as `onResource` and `onLink` already see absolute URLs. Keep the element:
 the host reads `async`, `defer`, `nomodule` and `type` off it. `onScript`
 is called inside `applyProps` and inside `refresh()`, so a host must queue
 the run rather than evaluate in the callback.
 
-**2. Refresh.** Phase 1 needs `refresh()` to be _right_. The cheapest fix
-is to compile matchers again (or build the Cascade again) after an app
-mutation, and to drop the per-element caches that assume attributes never
-change. Phase 2 needs it to be _cheap_. Today a refresh is a restyle of
+**2. Refresh.** Phase 1 needs `refresh()` to be _right_. The matchers are
+done: one that keeps answers (`:has()`, `:contains()`) is compiled again,
+when next asked, once a tree has changed (`compileSelector`, over
+`treeGeneration`). That was a bug without scripts too: a streamed chunk
+that brought an `<img>` in left `div:has(img)` answering as before. Left:
+the per-element caches that assume attributes never change. Phase 2 needs it to be _cheap_. Today a refresh is a restyle of
 every element, a box build and a whole-document layout (`touchDocument`,
 `node.ts:4120`, to `Stale.Style`). A page that animates with `setInterval`
 and `el.style.left` pays that every tick. The machinery for less is there:
@@ -530,8 +533,8 @@ that either is a change to the bridge and not to the facade.
 ## Phases
 
 0. **Seams that are correctness anyway:**
-   - scripts handed over whole, with `src` resolved;
-   - `refresh()` with no stale caches;
+   - scripts handed over whole (done), with `src` resolved;
+   - `refresh()` with no stale caches (`:has()` done);
    - `elementAtPoint` laying out first.
 1. **Classic scripts, basic DOM.** Engine and facade in the example. In
    `<Html>`: `scripting`, `onDomEvent`, control values, focus,
