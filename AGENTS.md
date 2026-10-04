@@ -1430,6 +1430,26 @@ things are load-bearing:
   its greedy lines. An engine option for break positions would lift this,
   and `balance` could use it too.
 
+**A justified paragraph is the text engine's to space, where it says it
+can.** An engine that takes `justify` (`fonts.justifies`: ntk's, and
+react-x11's macOS engine's over @windowkit/appkit) spaces the lines after
+it breaks them, from the shaping it keeps, so a paragraph laid out at
+another width is not shaped again. Spaced here instead — every space a run
+of its own (`spacedApart`), and the layout made again with each spaced by
+its line's share (`justifiedRuns`) — the last layout was a new text at
+every width, which CoreText shaped again: most of a resize's frame on the
+Zen Garden's justified designs. Three things are load-bearing. **The fast
+path lays a paragraph out justified at once only where nothing after it
+reads the lines unjustified** (`justifiedAtOnce`): kept spaces, a clamp, a
+cut and `text-wrap: pretty` go on through `justifiedLayout`, which hands
+the engine the runs a second time. **Spacers between inline boxes are no
+separators**, so a paragraph that has them (`layoutSpaced`'s `skip`) and a
+line beside a float (`justifyLine`, whose share runs across its pieces) are
+spaced here on every engine. And **anything that stands in for the engine
+answers `justifies` as the engine does** — `withLayout` forwards what an
+engine has, and the layout cache and the recorder say it themselves: a
+wrapper that dropped it would send every paragraph back to the spacing.
+
 **Nothing is fetched and nothing is executed, by construction.**
 `onResource` is the only way anything loads and `onScript` never runs
 anything. Both are the same call the desktop calendar makes about

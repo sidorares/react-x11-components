@@ -125,8 +125,17 @@ export interface FontsLike {
        *  holds it. What a paragraph's lines are laid out with; ntk's, from
        *  8.16.1, which an engine without it leaves at the advances' sum. */
       fit?: 'items';
+      /** The lines set to fill `maxWidth` at their word separators, after
+       *  they are broken: `true`, every line but the paragraph's last and
+       *  each a forced break ends; `'last'`, only those; `'all'`, every
+       *  line. ntk's, from 8.23.0, and the Cocoa engine's over
+       *  @windowkit/appkit 0.26 — where `justifies` says so. */
+      justify?: boolean | 'last' | 'all';
     },
   ): TextLayoutLike;
+  /** Whether `layout` takes `justify`. Absent, a justified line is spaced
+   *  through letter spacing here (`justifiedRuns`). */
+  readonly justifies?: boolean;
   match(
     family: string,
     style: Record<string, unknown>,
@@ -771,6 +780,22 @@ function linesOf(
       fit: PARAGRAPH_FIT,
       ...cut,
     };
+    // A paragraph the engine justifies is laid out justified at once, where
+    // nothing after needs it unjustified first: one layout of the shaping
+    // the paragraph keeps at each width, where it took three and shaped the
+    // text again for the last. Kept spaces, a clamp, a cut and
+    // `text-wrap: pretty` read the lines as they are before it.
+    const justifiedAtOnce =
+      (justifyRest || justifyLast) &&
+      !keepsSpaces &&
+      !clamp &&
+      !cut &&
+      !pretty &&
+      engineJustifies(fonts, layoutOptions, options.width);
+    if (justifiedAtOnce) {
+      (layoutOptions as Parameters<FontsLike['layout']>[2]).justify =
+        justifyOption(justifyRest, justifyLast);
+    }
     let layout = fonts.layout(runs, base, layoutOptions);
     LAYOUT_RUNS.set(layout, runs);
     const held = keepsSpaces
@@ -853,15 +878,17 @@ function linesOf(
       );
       if (better) ({ layout, runs } = better);
     }
-    layout = justifiedLayout(
-      fonts,
-      runs,
-      base,
-      layoutOptions,
-      layout,
-      options.width,
-      { rest: justifyRest, last: justifyLast },
-    ).layout;
+    if (!justifiedAtOnce) {
+      layout = justifiedLayout(
+        fonts,
+        runs,
+        base,
+        layoutOptions,
+        layout,
+        options.width,
+        { rest: justifyRest, last: justifyLast },
+      ).layout;
+    }
     const lines: LineBox[] = [];
     const widest = emitLayout(
       layout,
@@ -5612,6 +5639,7 @@ function recording(fonts: FontsLike): FontsLike {
         return layout;
       },
       match: (family, style) => fonts.match(family, style),
+      justifies: fonts.justifies === true,
     };
     RECORDERS.set(fonts, recorder);
   }
@@ -6292,6 +6320,17 @@ function justifiedLayout(
   ) {
     return { layout, runs };
   }
+  // the engine's own, where it has it: the lines it broke, spaced at their
+  // separators, from the shaping the paragraph keeps — where spacing every
+  // space through letter spacing shaped the text again at every width
+  if (engineJustifies(fonts, options, width) && !skip?.size) {
+    const out = fonts.layout(runs, base, {
+      ...options,
+      justify: justifyOption(rest, last),
+    });
+    LAYOUT_RUNS.set(out, runs);
+    return { layout: out, runs };
+  }
   const spaced = spacedApart(runs);
   const measured = fonts.layout(spaced, base, options);
   const justified = justifiedRuns(spaced, measured, width, rest, last, skip);
@@ -6299,6 +6338,25 @@ function justifiedLayout(
   const outRuns = justified ?? spaced;
   LAYOUT_RUNS.set(out, outRuns);
   return { layout: out, runs: outRuns };
+}
+
+/** Whether the engine sets a layout's lines to fill `width` itself: one
+ *  that says it takes `justify`, laying out at that width. */
+function engineJustifies(
+  fonts: FontsLike,
+  options: Parameters<FontsLike['layout']>[2],
+  width: number,
+): boolean {
+  return (
+    fonts.justifies === true &&
+    options.maxWidth !== undefined &&
+    Math.abs(options.maxWidth - width) < 1e-9
+  );
+}
+
+/** Which of a paragraph's lines are justified, as the engine takes it. */
+function justifyOption(rest: boolean, last: boolean): true | 'last' | 'all' {
+  return rest && last ? 'all' : rest ? true : 'last';
 }
 
 /** An alignment as the text engine takes it. It has no justification:

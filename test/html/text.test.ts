@@ -293,6 +293,73 @@ metric('a justified line beside a float is set from its own text', async () => {
   }
 });
 
+metric(
+  'a paragraph an engine justifies is laid out justified once, from the text as it is',
+  async () => {
+    // An engine that takes `justify` (`fonts.justifies`: ntk's, react-x11's
+    // macOS engine's) sets the lines itself after it breaks them. A
+    // justified paragraph was laid out three times at each width, the last
+    // with every space a run spaced by its line's share, which CoreText shaped
+    // again at every width a resize passed; the engine's is one layout of
+    // the text as written, at every width the shaping it kept
+    const words = 'the quick brown fox jumps over the lazy dog and back again ';
+    const { result, node } = await render(
+      '<style>body{margin:0}p{margin:0;width:200px}</style>' +
+        `<p id="j" style="text-align:justify">${words.repeat(3)}</p>` +
+        `<p id="all" style="text-align:justify-all">${words.repeat(2)}</p>` +
+        `<p id="last" style="text-align-last:justify">${words.repeat(2)}</p>` +
+        '<div><div style="float:left;width:60px;height:20px"></div>' +
+        `<p id="past" style="text-align:justify">${words.repeat(4)}</p></div>`,
+      400,
+    );
+    const el = view(node);
+    const fonts = (result.app as unknown as { fonts: FontsLike }).fonts;
+    const asked: {
+      text: string;
+      justify: unknown;
+      spaced: boolean;
+      lines?: number;
+    }[] = [];
+    const justifying: FontsLike = {
+      justifies: true,
+      layout: (runs, style, options) => {
+        asked.push({
+          text: runs.map((run) => run.text).join(''),
+          justify: options.justify,
+          spaced: runs.some((run) => (run.letterSpacing ?? 0) > 0),
+          lines: options.maxLines,
+        });
+        return fonts.layout(runs, style, options);
+      },
+      match: (...args) => fonts.match(...args),
+    };
+    const { layoutDocument } = await import('../../src/html/layout/block.js');
+    const tree = (el as unknown as { _tree: unknown })._tree;
+    layoutDocument(tree as never, justifying, 400, 600);
+    const of = (text: string) => asked.filter((a) => a.text === text);
+    // each paragraph laid out once, justified, and none of it spaced
+    const j = of(words.repeat(3).trimEnd());
+    assert.deepStrictEqual(
+      j.map((a) => [a.justify, a.spaced]),
+      [[true, false]],
+    );
+    // `justify-all` sets the last line too, and `text-align-last` alone only it
+    const both = of(words.repeat(2).trimEnd());
+    assert.deepStrictEqual(both.map((a) => [a.justify, a.spaced]).sort(), [
+      ['all', false],
+      ['last', false],
+    ]);
+    // the lines past a float, laid out at once, the engine's to justify
+    assert.ok(
+      asked.some(
+        (a) =>
+          a.justify === true && a.lines === undefined && a.text !== j[0].text,
+      ),
+      'the lines past the float',
+    );
+  },
+);
+
 metric('text that does not wrap is aligned in its box', async () => {
   // the engine aligns lines it is given no width for within the widest of
   // them, which for one line is no alignment at all: a centred `<td

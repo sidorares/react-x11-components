@@ -2186,8 +2186,14 @@ of a family list, at the smaller size a browser sets it at: see
 features: small capitals where the font has them, none synthesized),
 `text-shadow` (any number, blurred or hard), `line-height`, `text-align` (with
 `justify`: a line but a paragraph's last, or one a forced break ends, is
-widened at its spaces to fill its box; a line that does not wrap is
-aligned in its box as well, and one too long for it overflows its end),
+widened at its spaces to fill its box — by the text engine where it says
+it takes `justify` (`fonts.justifies`, ntk's and react-x11's macOS
+engine's), which spaces the lines after it breaks them, so a paragraph
+laid out at another width is not shaped again; elsewhere each
+space is spaced through letter spacing, and a paragraph beside a float is
+spaced a line at a time that way on every engine; a line that does not
+wrap is aligned in its box as well, and one too long for it overflows its
+end),
 `text-indent`, `text-transform`, `letter-spacing` and `word-spacing` (the
 first is the text engine's; the second is spacing added to each space and
 no-break space, so only text that asks for it is split into more runs),
