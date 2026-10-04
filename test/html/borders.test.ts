@@ -16,6 +16,7 @@ import {
   pixelsIn,
   render,
   render2x,
+  snapshot,
   view,
   windingAt,
 } from './harness.js';
@@ -1532,6 +1533,74 @@ metric(
     await at(100, 80, '#0000ff', 'and beside it');
     await at(50, 61, '#ffffff', 'no line inside its top');
     await at(11, 80, '#ffffff', 'nor inside its left');
+  },
+);
+
+metric(
+  'a blurred shadow round a rounded box with no background is drawn in bands of whole pixels round it, as one clip cut it',
+  async () => {
+    // Cut out of its reach with one clip, a rounded box made the clip a
+    // mask the size of the reach on macOS, and CoreGraphics drew all of a
+    // glow through it at four times what a rectangle costs: 16 ms a frame
+    // for a Zen Garden card's 200px hover glow at 2x. Drawn in the bands
+    // round the box, each a rectangle of whole pixels, and over the box
+    // clipped by its outline too, it is drawn as it was: off the pixel
+    // grid, and through a matrix that scales.
+    const page =
+      '<style>body{margin:0;display:flex;flex-wrap:wrap;background:#fff}' +
+      'div{width:40px;height:30px;margin:25px;border-radius:9px}</style>' +
+      '<div style="box-shadow:0 0 20px #0000ff"></div>' +
+      '<div style="margin:25.3px 21.6px;border-top-left-radius:14px 6px;' +
+      'box-shadow:3px 5px 12px 2px rgb(255 0 0 / 0.6), 0 0 18px #00ff0080">' +
+      '</div>' +
+      '<div style="transform:scale(1.01) translateY(-1px);' +
+      'background:rgb(0 0 0 / 0.2);box-shadow:0 0 16px #ff00ff"></div>';
+    for (const scale of [1, 2]) {
+      const { result, node } =
+        scale === 1 ? await render(page, 300) : await render2x(page, 300);
+      const el = view(node);
+      let proto = Object.getPrototypeOf(result.ctx);
+      while (!Object.prototype.hasOwnProperty.call(proto, 'getTransform')) {
+        proto = Object.getPrototypeOf(proto);
+      }
+      const get = proto.getTransform;
+      const set = proto.setTransform;
+      let banded = 0;
+      proto.setTransform = function (this: unknown, ...args: unknown[]) {
+        banded += 1;
+        return set.apply(this, args);
+      };
+      try {
+        const repaint = () => {
+          (
+            el as unknown as {
+              invalidate(all: boolean, by: unknown, why: string): void;
+            }
+          ).invalidate(false, el, 'test');
+          return snapshot(result, el);
+        };
+        const bands = await repaint();
+        assert.ok(banded >= 3 * 5 * 2, `${scale}x: in bands, each shadow`);
+        // a context with no matrix to read is cut with the one clip
+        proto.getTransform = undefined;
+        banded = 0;
+        const one = await repaint();
+        assert.strictEqual(banded, 0, `${scale}x: with one clip`);
+        // the in-process server rounds a composite through a mask a level
+        // or two from one through a rectangle, which is all the one clip's
+        // pixels come to apart; a band drawn twice, or one missing, or the
+        // glow drawn under the box, is tens of levels
+        let levels = Math.abs(bands.length - one.length);
+        for (let i = 0; i < Math.min(bands.length, one.length); i += 1) {
+          levels = Math.max(levels, Math.abs(bands[i] - one[i]));
+        }
+        assert.ok(levels <= 2, `${scale}x: ${levels} levels apart`);
+      } finally {
+        proto.getTransform = get;
+        proto.setTransform = set;
+      }
+      cleanup();
+    }
   },
 );
 

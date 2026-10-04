@@ -372,7 +372,8 @@ export class HtmlViewNode extends Node {
   private _shadowCache: SurfaceCache | null = null;
   /**
    * The rasters of the SVG images this has drawn at a size more than once
-   * (`drawSvg`), the least recently drawn given up first past the cache's
+   * (`drawSvg`), and of the raster images drawn at another size than their
+   * own (`drawRaster`), the least recently drawn given up first past the cache's
    * budget: what a single paint draws once is not kept, and a page painted
    * once keeps none. `_drawnOnce` is the keys drawn once.
    */
@@ -4288,7 +4289,7 @@ export class HtmlViewNode extends Node {
     return surface;
   }
 
-  /** The raster kept of an SVG image at a size (`_drawings`), made on its
+  /** The raster kept of an image at a size (`_drawings`), made on its
    *  second drawing there; null on its first, and where none can be. */
   private _drawingKept(
     key: string,
