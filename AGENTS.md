@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.39.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.39.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.40.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.40.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -681,6 +681,18 @@ it up. **The floor is a running one and moves often** — every move since
   a second to 54 at rest on macOS. A core without it has no
   `SpriteMatrix3D` to type one with, and turns down such a part as no
   sprite at all, warning, so the floor moves with the feature.
+- `^2.40.0` — `filter` on the native context (react-x11#866): canvas's own
+  property, the colour functions of a CSS filter list applied to everything
+  drawn after it. `<Html>` hands a filtered element's group to it and draws
+  it through, in the paint that draws the element (`through`), where on
+  macOS it read the group back and drew it from the read a round trip late,
+  and painted it a second time to read it at every frame a box moved. Read
+  at run time, so an older core, and X11 and Wayland, which run no colour
+  matrix, still draw it from a read. The same release carries
+  `imageSmoothingQuality` on the native context over @windowkit/appkit
+  0.24.0 (#861, #865): the smoothing `<Html>` asks a perspective's tiles to
+  be drawn with had reached no Mac, since core's range admitted no bridge
+  with the verb, and now does.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
