@@ -644,6 +644,22 @@ and a submission carries it as a file with no name and no content, as a
 browser does when none was chosen. Reading a file is a host's business,
 through a dialog of its own; nothing here reaches the disk.
 
+**A control is drawn in its element's colour scheme.** In the palette's
+scheme it is the palette's widget, so an unstyled form in a document looks
+like the window's own. In the other scheme it is drawn in Chrome's colours
+for that scheme, in the palette's shape. A text field gets a `Field`
+background, `FieldText` text and the grey edge Blink's UA sheet gives a text
+area. A button gets `ButtonFace`, `ButtonText` and `ButtonBorder`. A select,
+a checkbox and a radio get the hover and pressed fills and the accent of
+Blink's native theme. A native bezel takes that scheme's appearance. Hacker
+News names no scheme, so Chrome draws its comment box and its submit button
+light on a dark desktop. Under a dark palette, with `defaultColorScheme:
+'light'`, they were the palette's dark widgets on the page's beige, and now
+they are light. The UA sheet's own rules for controls use the same system
+colours, so a field or a button the page styles builds on the colours its
+scheme gives. A field's text is `FieldText`, not the page's text colour, unless
+the page sets one, as Blink's sheet has it.
+
 **A field's hint is drawn as its `::placeholder` says.** The `placeholder`
 of an `<input>` or a `<textarea>` is drawn by the field's widget while the
 field is empty, in the colour the page's `::placeholder` rules give it —
@@ -2496,9 +2512,10 @@ site is until its script runs — its canvas is opaque, in that scheme's
 whose scheme is not its embedder's; and the text and the links the page
 does not colour are a browser's for that scheme, black on white with
 `#0000ee` links or white on `#121212` with `#9e9eff`. So a page that sets
-dark text on no background is read on white, whatever the window is. The
-rest of what the palette gives stays the palette's: the UA sheet's borders
-and rules, and the widgets a form control is.
+dark text on no background is read on white, whatever the window is. Its
+form controls are a browser's in that scheme too (see [Forms](#forms)).
+The rest of what the palette gives stays the palette's: the UA sheet's
+borders and rules, and the shape of a control's widget.
 
 **Selectors:** everything [css-select] supports — combinators, attribute
 operators, `:nth-child(an+b)`, `:not()` — plus `:hover`, which is answered

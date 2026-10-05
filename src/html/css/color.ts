@@ -1123,6 +1123,16 @@ const SYSTEM_COLORS: Record<string, readonly [string, string]> = {
   visitedtext: ['#551a8b', '#d0adf0'],
 };
 
+/** A system colour as Chrome has it in a scheme, where no palette stands
+ *  for the platform: what a control in the scheme that is not the
+ *  palette's is drawn in. */
+export function browserSystemColor(
+  name: string,
+  scheme: 'light' | 'dark',
+): string {
+  return SYSTEM_COLORS[name][scheme === 'dark' ? 1 : 0];
+}
+
 /** The deprecated system colours, each the same as one of the rest
  *  (CSS Color 4, 6.3). */
 const DEPRECATED_COLORS: Record<string, string> = {

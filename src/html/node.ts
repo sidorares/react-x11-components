@@ -5021,6 +5021,7 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.height !== q.height ||
       p.fontFamily !== q.fontFamily ||
       p.fontSize !== q.fontSize ||
+      p.colorScheme !== q.colorScheme ||
       p.opacity !== q.opacity ||
       p.placeholderColor !== q.placeholderColor ||
       !sameClip(p.clip, q.clip) ||

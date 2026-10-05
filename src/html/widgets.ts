@@ -18,8 +18,15 @@
 // tree.
 import React from 'react';
 import type { ReactNode } from 'react';
-import { Button, Checkbox, Radio, RadioGroup, Select } from 'react-x11';
-import type { DrawnNode, MouseEvent as X11MouseEvent } from 'react-x11';
+import {
+  Button,
+  Checkbox,
+  Radio,
+  RadioGroup,
+  Select,
+  ThemeProvider,
+} from 'react-x11';
+import type { DrawnNode, Theme, MouseEvent as X11MouseEvent } from 'react-x11';
 import type { Style } from 'react-x11/style';
 
 import type {} from 'react-x11/jsx-runtime';
@@ -29,6 +36,7 @@ import { hx } from './hx.js';
 import { attr, isElement, tagOf } from './dom.js';
 import type { Document, Element } from './dom.js';
 import type { HtmlViewNode } from './node.js';
+import { browserSystemColor } from './css/color.js';
 import type { RootLook } from './css/style.js';
 import { between, buttonLabel, optionsOf, selectedOption } from './controls.js';
 import type { BareField, ControlRect } from './controls.js';
@@ -578,7 +586,14 @@ function renderControl(
     // drawn and still hit
     ...(rect.opacity !== undefined && { opacity: rect.opacity }),
   };
-  const field = rect.bare ? bareField(rect.bare) : fieldChrome(look);
+  // The scheme the control is drawn in, where it is not the palette's: a
+  // browser's control in that scheme, as the page around it is a
+  // browser's page in it (`BROWSER_CONTROLS`).
+  const browser =
+    rect.colorScheme && rect.colorScheme !== look.colorScheme
+      ? rect.colorScheme
+      : null;
+  const field = rect.bare ? bareField(rect.bare) : fieldChrome(look, browser);
   const order = tabOrder(el);
   // A button or a select whose font the page set is the drawn control: a
   // native bezel sets its title at AppKit's size, whatever it is handed,
@@ -768,9 +783,89 @@ function renderControl(
         // accessibility tree
         ...(ariaHidden(el) && { 'aria-hidden': true }),
       },
-      widget,
+      browser
+        ? h(
+            ThemeProvider,
+            {
+              value: BROWSER_CONTROLS[browser],
+              colorScheme: browser,
+              style: FILL,
+            },
+            widget,
+          )
+        : widget,
     ),
   );
+}
+
+const FILL: Style = { width: '100%', height: '100%' };
+
+/**
+ * Chrome's own controls in each scheme, for a control whose scheme is not
+ * the palette's: the system colours the document's are in that scheme
+ * (`browserSystemColor`), and the hover and pressed fills and the accent
+ * of Blink's native theme (`NativeThemeBase`'s control colours, light and
+ * dark). A control that says nothing of its scheme in a dark application
+ * is drawn as Chrome draws it on a dark desktop — light — on the page that
+ * is light for the same reason, where the palette's would be a dark well
+ * in it.
+ *
+ * Every colour a core widget reads is named, since what is left out is
+ * the palette's, in the other scheme: a light button's hover would be the
+ * dark palette's. The shape — radius, padding, the size of the text, the
+ * focus ring — stays the palette's, as it does for every control here.
+ * A `<Button>` with a native bezel takes its appearance from `scheme`.
+ */
+const BROWSER_CONTROLS: Record<'light' | 'dark', BrowserPalette> = {
+  light: browserControls('light', {
+    surfaceHover: '#e5e5e5',
+    surfaceActive: '#f5f5f5',
+    border: '#767676',
+    accent: '#0075ff',
+    accentHover: '#005cc8',
+    accentActive: '#3793ff',
+    accentText: '#ffffff',
+  }),
+  dark: browserControls('dark', {
+    surfaceHover: '#7b7b7b',
+    surfaceActive: '#616161',
+    border: '#858585',
+    accent: '#99c8ff',
+    accentHover: '#d1e6ff',
+    accentActive: '#61a9ff',
+    accentText: '#3b3b3b',
+  }),
+};
+
+/**
+ * A palette with the scheme it is in. Every palette core builds has
+ * `scheme`, and a native bezel reads its appearance from it, but core's
+ * `Theme` declaration leaves it out — narrower than its runtime, so it is
+ * written here rather than patched there.
+ */
+type BrowserPalette = Partial<Theme> & { scheme: 'light' | 'dark' };
+
+function browserControls(
+  scheme: 'light' | 'dark',
+  native: Partial<Theme>,
+): BrowserPalette {
+  const text = browserSystemColor('buttontext', scheme);
+  return {
+    scheme,
+    background: browserSystemColor('field', scheme),
+    surface: browserSystemColor('buttonface', scheme),
+    text,
+    textMuted: browserSystemColor('graytext', scheme),
+    textMutedActive: text,
+    track: browserSystemColor('buttonface', scheme),
+    hoverBackground: native.accent,
+    hoverText: native.accentText,
+    borderFocus: native.accent,
+    selection: browserSystemColor('highlight', scheme),
+    // `caret-color: auto`, the text's own
+    caret: null,
+    ...native,
+  };
 }
 
 /**
@@ -883,17 +978,21 @@ function renderMessage(
  * The values are the palette's, so a field in a document and a `<Select>`
  * beside it are the same height with the same corner and the same edge.
  * Its text is in the face and at the size of the frame around it, which
- * are the element's (`renderControl`).
+ * are the element's (`renderControl`). A field in the scheme that is not
+ * the palette's keeps the palette's shape in Blink's colours for that
+ * scheme: a `Field` ground, `FieldText` ink, and the grey edge Blink's
+ * UA sheet gives a text area.
  */
-function fieldChrome(look: RootLook): Style {
+function fieldChrome(look: RootLook, browser: 'light' | 'dark' | null): Style {
+  const palette = browser && BROWSER_CONTROLS[browser];
   return {
-    backgroundColor: look.surface,
+    backgroundColor: palette ? palette.background : look.surface,
     borderWidth: look.controlBorder,
-    borderColor: look.borderColor,
+    borderColor: palette ? palette.border : look.borderColor,
     borderRadius: look.controlRadius,
     paddingLeft: 6,
     paddingRight: 6,
-    color: look.color,
+    color: browser ? browserSystemColor('fieldtext', browser) : look.color,
   };
 }
 

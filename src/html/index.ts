@@ -130,7 +130,9 @@ export interface HtmlProps {
    * the palette is this renderer's look, so a document dropped into a dark
    * application is drawn dark. A host that shows the web as a browser does
    * sets `'light'`: every browser draws a page that says nothing about its
-   * scheme light, on white, whatever the reader prefers. The palette still
+   * scheme light, on white, whatever the reader prefers — and its form
+   * controls light, in a browser's colours rather than a dark palette's
+   * widgets. The palette still
    * answers `@media (prefers-color-scheme)` and the scheme `light dark`
    * takes, which are the reader's preference.
    */

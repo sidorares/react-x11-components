@@ -88,6 +88,12 @@ function uaText(look: RootLook): string {
     look.colorScheme === 'dark'
       ? `light-dark(${SCHEME_COLORS.light[which]}, ${own})`
       : `light-dark(${own}, ${SCHEME_COLORS.dark[which]})`;
+  // Blink's edge round a field, a text area and a select, which is not
+  // `ButtonBorder` in the dark: the theme's in its own scheme
+  const fieldEdge =
+    look.colorScheme === 'dark'
+      ? `light-dark(#767676, ${look.borderColor})`
+      : `light-dark(${look.borderColor}, #858585)`;
   return `
 html, body, div, p, h1, h2, h3, h4, h5, h6, ol, ul, li, dl, dt, dd,
 blockquote, pre, hr, table, form, fieldset, figure, figcaption, address,
@@ -299,12 +305,18 @@ input[type=hidden] { display: none; }
    and a colour well on a button's. The checkables, a range, a file and an
    image have none, as in Blink's sheet, and neither has an input button,
    which is the palette's button whatever the page does. A field the page
-   left alone is the palette's widget, framed by itself (\`chromeText\`). */
+   left alone is the palette's widget, framed by itself (\`chromeText\`).
+   The colours are the system colours Blink's sheet names, the theme's in
+   its own scheme and Chrome's in the other, so a field on a page that says
+   nothing of its scheme is a light one in a dark application, as Chrome
+   draws it on a dark desktop. Its text is \`FieldText\`, not the page's
+   text around it, unless the page says otherwise. */
+input, textarea, select { color: FieldText; }
 input {
   padding-block: 1px;
   padding-inline: 2px;
-  border: 2px inset ${look.borderColor};
-  background-color: ${look.background};
+  border: 2px inset ${fieldEdge};
+  background-color: Field;
 }
 input[type=checkbox], input[type=radio], input[type=range], input[type=file],
 input[type=image], input[type=button], input[type=submit], input[type=reset] {
@@ -314,18 +326,18 @@ input[type=image], input[type=button], input[type=submit], input[type=reset] {
 }
 input[type=color] {
   padding: 1px 2px;
-  border: 1px solid ${look.borderColor};
-  background-color: ${look.surface};
+  border: 1px solid ButtonBorder;
+  background-color: ButtonFace;
 }
 textarea {
   padding: 2px;
-  border: 1px solid ${look.borderColor};
-  background-color: ${look.background};
+  border: 1px solid ${fieldEdge};
+  background-color: Field;
 }
 select {
-  border: 1px solid ${look.borderColor};
+  border: 1px solid ${fieldEdge};
   border-radius: 0;
-  background-color: ${look.background};
+  background-color: Field;
 }
 /* A <button> is drawn rather than mounted: its content is the document's —
    an icon, a label in spans, a pill of the page's own design, which is what
@@ -339,13 +351,13 @@ button {
   vertical-align: baseline;
   box-sizing: border-box;
   padding: 1px 6px;
-  border: 2px outset ${look.borderColor};
-  background-color: ${look.surface};
-  color: ${look.color};
+  border: 2px outset ButtonBorder;
+  background-color: ButtonFace;
+  color: ButtonText;
   text-align: center;
   cursor: pointer;
 }
-button[disabled] { color: ${look.mutedColor}; cursor: default; }
+button[disabled] { color: GrayText; cursor: default; }
 fieldset { margin: 0 2px; padding: 0.35em 0.75em 0.6em; border: 1px solid ${look.borderColor}; }
 legend { display: block; padding: 0 2px; }
 label { cursor: pointer; }
@@ -381,7 +393,7 @@ function chromeText(look: RootLook): string {
   return `
 button {
   padding: ${look.controlPadY}px 0.75em;
-  border: ${look.controlBorder}px solid ${look.borderColor};
+  border: ${look.controlBorder}px solid ButtonBorder;
   border-radius: ${look.controlRadius}px;
 }
 input, input[type], textarea, select {

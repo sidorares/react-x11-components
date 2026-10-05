@@ -1413,6 +1413,16 @@ field the page styled — a border, a background, or `appearance: none`
 (`styledField`) — whose box the document draws, the widget mounted bare in
 its content box. A design system restyles every control it has, and a
 palette frame inside the page's drew two boxes where it designed one.
+And a widget is the palette's only in the palette's colour scheme: one
+whose element is in the other (`ControlRect.colorScheme`) is drawn in
+Chrome's control colours for that scheme, under a `ThemeProvider` of
+them (`BROWSER_CONTROLS`), in the palette's shape. A browser host draws
+a page that names no scheme light, so in a dark application Hacker
+News's comment box was a dark well on a light page. **Anything new a
+widget draws in reads its colours from the theme in force, or from
+`fieldChrome`'s scheme**, never from `look` directly, and the UA sheet's
+control rules name system colours rather than the look's values, so a
+control the page styles builds on its scheme's colours as well.
 
 **A button's content is centred in whatever height the button comes to.**
 HTML's button layout (15.5.5) puts it in a box of its own, centred down the
