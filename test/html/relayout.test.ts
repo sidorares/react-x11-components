@@ -7,6 +7,8 @@ import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
 import type { FontsLike } from '../../src/html/layout/inline.js';
 import { resizeClock } from '../../src/html/node.js';
+import { heldBack, layoutDocument } from '../../src/html/layout/block.js';
+import type { BoxTree } from '../../src/html/layout/boxes.js';
 import { holdClock } from '../held-clock.js';
 import {
   boxOf,
@@ -601,4 +603,314 @@ test('a dragged width that crosses a breakpoint goes on laying out what can be s
   time = 250;
   await resize(300, 370);
   assert.ok(partial(el), 'and the step after it the drag’s');
+});
+
+// A dragged width lays out from the top of what can be seen: the blocks
+// that ended above it keep their boxes and their place, and what follows is
+// laid out from where they ended (`keepAbove`). The pane that scrolls the
+// document keeps what is at its top where it is on screen while the text
+// above it comes to more or less (`_keepAnchor`, react-x11's
+// `anchorScrollBy`), and the blocks kept are laid out once the width rests.
+
+/** Forty sections of a heading and a paragraph that wraps, one with
+ *  `extra` in it. */
+const textLong = (extra = '', at = -1): string =>
+  '<body style="margin:0">' +
+  Array.from(
+    { length: 40 },
+    (_, i) =>
+      `<section id="s${i}"><h2 id="h${i}" style="margin:8px 0">Part ${i}</h2>` +
+      (i === at ? extra : '') +
+      `<p id="p${i}" style="margin:0 0 8px">` +
+      'the quick brown fox jumps over the lazy dog '.repeat(6) +
+      '</p></section>',
+  ).join('') +
+  '</body>';
+
+type Laid = ReturnType<typeof boxOf>;
+
+/** Lay the element's tree out again, at `width`, keeping what ended above
+ *  `above` and setting aside what starts below `until`. */
+function layOut(
+  el: HtmlViewNode,
+  width: number,
+  above?: number,
+  until?: number,
+): { partial: boolean } {
+  const node = el as unknown as {
+    _tree: BoxTree;
+    _layoutFonts(): FontsLike;
+  };
+  return layoutDocument(
+    node._tree,
+    node._layoutFonts(),
+    width,
+    300,
+    1,
+    until,
+    above,
+  );
+}
+
+const held = (el: HtmlViewNode, box: Laid): boolean =>
+  heldBack((el as unknown as { _tree: BoxTree })._tree, box as never);
+
+const geometry = (box: Laid) => [box.x, box.y, box.width, box.height];
+
+metric(
+  'a layout from the top of what can be seen keeps the blocks above it as they were, and lays out what follows from where they ended',
+  async () => {
+    const { el } = await renderScrolled(textLong(), 300, 400);
+    const sections = Array.from({ length: 40 }, (_, i) => boxOf(el, `s${i}`));
+    const was = sections.map(geometry);
+    const top = sections[20].y + 1;
+    const result = layOut(el, 300, top, top + 600);
+    assert.ok(result.partial, 'it stopped');
+    for (let i = 0; i < 20; i += 1) {
+      assert.ok(held(el, sections[i]), `s${i} kept`);
+      assert.deepStrictEqual(geometry(sections[i]), was[i], `s${i} as it was`);
+    }
+    // the first laid out where it was, at the new width, and taller for it
+    assert.ok(!held(el, sections[20]));
+    assert.strictEqual(sections[20].y, was[20][1], 'where it was');
+    assert.strictEqual(sections[20].width, 300, 'at the new width');
+    assert.ok(sections[20].height > was[20][3], 'its text broken again');
+    assert.strictEqual(
+      sections[21].y - (sections[20].y + sections[20].height),
+      was[21][1] - (was[20][1] + was[20][3]),
+      'and what follows after it, with the margin between them',
+    );
+    assert.ok(held(el, sections[39]), 'and the rest set aside below');
+    // laid out whole after, it is what a layout of the whole always was
+    layOut(el, 300);
+    const whole = sections.map(geometry);
+    layOut(el, 400);
+    layOut(el, 300);
+    assert.deepStrictEqual(sections.map(geometry), whole);
+  },
+);
+
+metric(
+  'a block above whose float reaches past where the layout starts is laid out, and what is above it kept',
+  async () => {
+    const float =
+      '<div style="float:right;width:40px;height:2000px;background:#08f"></div>';
+    const { el } = await renderScrolled(textLong(float, 5), 300, 400);
+    const sections = Array.from({ length: 40 }, (_, i) => boxOf(el, `s${i}`));
+    const top = sections[10].y + 1;
+    assert.ok(sections[5].y + 2000 > top, 'the float reaches past it');
+    layOut(el, 300, top, top + 600);
+    for (let i = 0; i < 5; i += 1) assert.ok(held(el, sections[i]), `s${i}`);
+    for (let i = 5; i <= 10; i += 1) {
+      assert.ok(!held(el, sections[i]), `s${i} laid out, beside the float`);
+    }
+  },
+);
+
+metric(
+  'a block above that holds a box placed against one outside it is laid out',
+  async () => {
+    const placed =
+      '<div style="position:absolute;top:4px;right:4px;width:10px;height:10px"></div>';
+    const { el } = await renderScrolled(textLong(placed, 3), 300, 400);
+    const sections = Array.from({ length: 40 }, (_, i) => boxOf(el, `s${i}`));
+    const top = sections[10].y + 1;
+    layOut(el, 300, top, top + 600);
+    for (let i = 0; i < 3; i += 1) assert.ok(held(el, sections[i]), `s${i}`);
+    assert.ok(!held(el, sections[3]), 'the one that holds it');
+    assert.ok(!held(el, sections[9]), 'and all after it');
+  },
+);
+
+metric(
+  'what a box as tall as the viewport holds past its bottom is kept in it',
+  async () => {
+    const { el } = await renderScrolled(
+      textLong().replace(
+        '<body style="margin:0">',
+        '<style>html,body{height:100%}</style><body style="margin:0">',
+      ),
+      300,
+      400,
+    );
+    const sections = Array.from({ length: 40 }, (_, i) => boxOf(el, `s${i}`));
+    assert.ok(sections[20].y > 300, 'past the body’s bottom');
+    const top = sections[20].y + 1;
+    layOut(el, 300, top, top + 600);
+    assert.ok(held(el, sections[0]) && held(el, sections[19]));
+    assert.ok(!held(el, sections[20]));
+  },
+);
+
+metric(
+  'the column of a grid what can be seen is in keeps what is above it, beside the one that holds nothing there',
+  async () => {
+    const { el } = await renderScrolled(
+      textLong()
+        .replace(
+          '<body style="margin:0">',
+          '<body style="margin:0"><div style="display:grid;' +
+            'grid-template-columns:60px 1fr"><nav id="nav">menu</nav><main>',
+        )
+        .replace('</body>', '</main></div></body>'),
+      300,
+      400,
+    );
+    const sections = Array.from({ length: 40 }, (_, i) => boxOf(el, `s${i}`));
+    const top = sections[20].y + 1;
+    layOut(el, 300, top, top + 600);
+    assert.ok(held(el, sections[0]) && held(el, sections[19]));
+    assert.ok(!held(el, sections[20]));
+    assert.ok(!held(el, boxOf(el, 'nav')), 'the menu beside it');
+  },
+);
+
+interface Pane {
+  scrollTo(y: number): void;
+  scrollY: number;
+  isScroller?(): boolean;
+  parent: Pane | null;
+}
+
+/** The pane that scrolls the element in `renderScrolled`. */
+function paneOf(el: HtmlViewNode): Pane {
+  let pane = (el as unknown as { parent: Pane | null }).parent;
+  while (pane && !pane.isScroller?.()) pane = pane.parent;
+  assert.ok(pane, 'a pane scrolls it');
+  return pane;
+}
+
+/** Where a block of the document is in the window: what the reader sees. */
+const onScreen = (el: HtmlViewNode, box: Laid): number =>
+  (el as unknown as { contentBox(): { y: number } }).contentBox().y + box.y;
+
+metric(
+  'a dragged width keeps the block at the top of the pane where it is on screen, and lays out from it, at every step and once it rests',
+  async (t) => {
+    const clock = holdClock(t, resizeClock);
+    const { el, resize } = await renderScrolled(textLong(), 300, 400);
+    const pane = paneOf(el);
+    const anchor = boxOf(el, 's20');
+    pane.scrollTo(anchor.y + 10);
+    await act();
+    const at = onScreen(el, anchor);
+    const first = boxOf(el, 's0');
+    for (let width = 390; width >= 310; width -= 10) {
+      await resize(300, width);
+      assert.ok(partial(el), `${width}: a step`);
+      assert.ok(held(el, first), `${width}: what is above kept`);
+      assert.strictEqual(onScreen(el, anchor), at, `${width}: in place`);
+    }
+    // rested: laid out whole, the text above it broken into more lines,
+    // and the pane's offset moved by as much
+    const scrolled = pane.scrollY;
+    await clock.finish();
+    assert.ok(!partial(el), 'laid out whole');
+    assert.ok(!held(el, first));
+    assert.strictEqual(onScreen(el, anchor), at, 'still in place');
+    assert.ok(pane.scrollY > scrolled, 'further down a longer document');
+  },
+);
+
+metric(
+  'a dragged width with the document at its top keeps its top there',
+  async (t) => {
+    const clock = holdClock(t, resizeClock);
+    const { el, resize } = await renderScrolled(textLong(), 300, 400);
+    const pane = paneOf(el);
+    await resize(300, 390);
+    await resize(300, 380);
+    await clock.finish();
+    assert.strictEqual(pane.scrollY, 0);
+  },
+);
+
+metric(
+  'a layout that answers a question about the document’s size moves nothing on screen',
+  async (t) => {
+    // core's content floors ask what the document comes to with no room on
+    // offer, and it is laid out a pixel or two wide to answer: no layout
+    // it is drawn at. Taken for one, the pane went to the end of a document as
+    // long as that made it, and back to its top from there
+    const clock = holdClock(t, resizeClock);
+    const { el, resize } = await renderScrolled(textLong(), 300, 400);
+    const pane = paneOf(el);
+    const anchor = boxOf(el, 's20');
+    pane.scrollTo(anchor.y + 10);
+    await act();
+    const at = onScreen(el, anchor);
+    await resize(300, 390);
+    // a while after the drag rested, where the question is answered by a
+    // layout of the whole, and the block moves as far as that makes it
+    await clock.finish();
+    for (let i = 0; i < 20; i += 1) await clock.frame();
+    (
+      el as unknown as {
+        measureContent(c: Record<string, unknown>): unknown;
+        invalidate(all: boolean, by: unknown, why: string): void;
+      }
+    ).measureContent({
+      width: 2,
+      height: Infinity,
+      widthMode: 'exactly',
+      heightMode: 'unconstrained',
+    });
+    await resize(300, 380);
+    assert.strictEqual(onScreen(el, anchor), at, 'in place after it');
+    await clock.finish();
+    assert.strictEqual(onScreen(el, anchor), at, 'and once it rests');
+  },
+);
+
+metric(
+  'a dragged width that crosses a breakpoint keeps the block at the top of the pane where it is',
+  async (t) => {
+    // the band a drag crosses builds the boxes again: the block is found
+    // again by its element, and laid out whole so it is not set aside
+    const clock = holdClock(t, resizeClock);
+    const { el, resize } = await renderScrolled(
+      textLong().replace(
+        '<body style="margin:0">',
+        '<style>@media (max-width:375px){p{font-size:18px}}</style>' +
+          '<body style="margin:0">',
+      ),
+      300,
+      400,
+    );
+    const pane = paneOf(el);
+    const at = () => onScreen(el, boxOf(el, 's20'));
+    pane.scrollTo(boxOf(el, 's20').y + 10);
+    await act();
+    const was = at();
+    await resize(300, 390);
+    await resize(300, 380);
+    await resize(300, 370);
+    assert.strictEqual(at(), was, 'across the breakpoint');
+    await resize(300, 360);
+    await clock.finish();
+    assert.strictEqual(at(), was, 'and once it rests');
+  },
+);
+
+test('a dragged width rests once the window says the drag is over, not at a pause in it', async (t) => {
+  // AppKit brackets a drag of a window's edge (`liveResizing`): a pause in
+  // it is no rest, and the whole document laid out at every pause held the
+  // frame after it
+  const clock = holdClock(t, resizeClock);
+  const { el, resize } = await renderScrolled(LONG, 300, 400);
+  const wnd = (
+    el as unknown as { root: { window: { liveResizing?: boolean } } }
+  ).root.window;
+  wnd.liveResizing = true;
+  try {
+    await resize(300, 390);
+    await resize(300, 380);
+    assert.ok(partial(el), 'a step');
+    for (let i = 0; i < 40; i += 1) await clock.frame();
+    assert.ok(partial(el), 'a pause in the drag lays out nothing more');
+  } finally {
+    wnd.liveResizing = false;
+  }
+  await clock.finish();
+  assert.ok(!partial(el), 'laid out whole once it is over');
 });

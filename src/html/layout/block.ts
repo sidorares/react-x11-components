@@ -180,6 +180,24 @@ export interface LayoutContext {
    *  (`HELD_BACK`). */
   setAside?: Map<Box, Box[]>;
   pass?: number;
+  /**
+   * How many of a box's first children a layout made while the width is
+   * still moving keeps above where it starts (`keepAbove`), by box: they
+   * are not laid out, keep their boxes and their place in the flow, and
+   * are set aside as what is below where it stops is (`setAside`), until a
+   * layout lays them out again.
+   */
+  keep?: Map<Box, number>;
+  /**
+   * The box what can be seen starts at, in a tree no layout has laid out:
+   * a layout that stops does not stop before it is laid out, and then stops
+   * `below` past where it landed (`layoutDocument`'s `reach`).
+   */
+  reach?: { box: Box; below: number };
+  /** Whether this lays a box out to measure it, rather than where it goes
+   *  (`probeWhole`, `measureIntrinsicWidth`): a probe keeps nothing, stops
+   *  nowhere, and leaves the places the flow keeps by (`FLOW_PLACE`). */
+  probing?: boolean;
 }
 
 /**
@@ -236,6 +254,11 @@ const HELD_BACK = new WeakMap<Box, number>();
 
 /** Passes that set boxes aside, counted, for `HELD_BACK`. */
 let setAsidePasses = 0;
+
+/** The pass a box's flow was last probed in (`LayoutContext.probing`): a
+ *  probe lays out the children a layout would keep, and leaves them where
+ *  it measured them, so a flow probed in a pass keeps none of them. */
+const PROBED = new WeakMap<Box, number>();
 
 /** Trees with a box set aside that something laid out is placed against
  *  (`escapes`): laid out whole from then on. */
@@ -305,12 +328,16 @@ function setAside(
 /** A shrink-to-fit box's content laid out at no width limit, all of it:
  *  a probe stops nowhere (`until`). */
 function probeWhole(box: Box, ctx: LayoutContext, floats: FloatContext): void {
-  const until = ctx.until;
+  const { until, probing, reach } = ctx;
   ctx.until = undefined;
+  ctx.reach = undefined;
+  ctx.probing = true;
   try {
     layoutInternals(box, ctx, Infinity, 0, 0, floats);
   } finally {
     ctx.until = until;
+    ctx.reach = reach;
+    ctx.probing = probing;
   }
 }
 
@@ -329,6 +356,18 @@ function multicolAround(box: Box): boolean {
  * the flow would have it is below where the layout stopped.
  */
 function escapes(tree: BoxTree): boolean {
+  for (const box of outOfFlowOf(tree)) {
+    if (!heldBack(tree, box)) continue;
+    if (box.style.position === 'fixed') return true;
+    if (box.style.top === AUTO && box.style.bottom === AUTO) continue;
+    const containing = containingBlockFor(box);
+    if (containing && !heldBack(tree, containing)) return true;
+  }
+  return false;
+}
+
+/** Every out-of-flow box in a tree, found once. */
+function outOfFlowOf(tree: BoxTree): Box[] {
   let boxes = OUT_OF_FLOW.get(tree);
   if (!boxes) {
     boxes = [];
@@ -340,18 +379,248 @@ function escapes(tree: BoxTree): boolean {
     }
     OUT_OF_FLOW.set(tree, boxes);
   }
-  for (const box of boxes) {
-    if (!heldBack(tree, box)) continue;
-    if (box.style.position === 'fixed') return true;
-    if (box.style.top === AUTO && box.style.bottom === AUTO) continue;
-    const containing = containingBlockFor(box);
-    if (containing && !heldBack(tree, containing)) return true;
-  }
-  return false;
+  return boxes;
 }
 
-/** Lay the whole document out at a width — or, given `until`, what starts
- *  above it, with the rest set aside (`setAside`). */
+/**
+ * Where a block-level child was last laid out in its parent's flow,
+ * against the parent's content top then — which holds wherever the parent
+ * has moved since, as long as the child has not been laid out again
+ * (`FLOW_GEN`). A layout that keeps the child (`keepAbove`) resumes the
+ * flow after it from here: as far below the content top as it ended, with
+ * the margin it left hanging, and the floats as low as they reached.
+ */
+interface FlowPlace {
+  /** The parent's flow it was laid out in, or kept by (`FLOW_GEN`). */
+  gen: number;
+  /** Its border box's top and bottom, against the content top. */
+  top: number;
+  bottom: number;
+  /** The margin hanging below it, for the next sibling to collapse with. */
+  hanging: MarginStrut;
+  /** How low the floats of the flow it is in reached once it was laid out,
+   *  against the content top; -Infinity where none had. */
+  floats: number;
+  /** Whether its margins collapsed through it, empty: the flow does not
+   *  resume after one, where the margins hanging are more than its own. */
+  through: boolean;
+}
+
+const FLOW_PLACE = new WeakMap<Box, FlowPlace>();
+
+/** How many times each box's flow was laid out, not counting probes: what a
+ *  child's place is current against (`FlowPlace.gen`). */
+const FLOW_GEN = new WeakMap<Box, number>();
+
+/**
+ * The blocks a layout made while the width is still moving keeps above
+ * where it starts, by the box whose flow they lead (`LayoutContext.keep`):
+ * the run of first children of each box on the way down to what is at
+ * `top` — the top of what can be seen, in document coordinates — that
+ * ended above it when last laid out, with their ink. What is kept is not
+ * laid out: it keeps its boxes and its height, so what can be seen is laid
+ * out where it was, whatever a page above it comes to at the new width,
+ * and a layout at the width the drag rests at lays it out again
+ * (`layoutDocument`, `_stopAt`). Wikipedia's longest articles reflowed at
+ * the rate of all of the article above the paragraph being read, and laid
+ * out whole at every step of a drag past half way down.
+ *
+ * A run stops before a box laid out as no part of its parent's flow — out
+ * of the flow, or not since the parent's last layout — and before one
+ * that holds a box placed against something outside it, a fixed box or
+ * an absolute one with offsets, which would be left where it was. And it
+ * ends with a block the flow can resume after: not a float, not an empty
+ * block its margins collapse through, and none whose floats reach down to
+ * the first child laid out, since the floats of what is kept are not in
+ * the flow that is laid out. The walk goes on down into the block after
+ * the run that reaches below `top` — by its ink, since a box as tall as the
+ * viewport, `html { height: 100% }`, holds a document that runs on below
+ * it — and into each item of a flex, grid or table container that does,
+ * since a grid's columns are side by side: a page's column of text, and
+ * the menu beside it. A multicol container, an inline formatting context
+ * and a line-clamp container are laid out whole.
+ */
+function keepAbove(tree: BoxTree, top: number): Map<Box, number> | null {
+  const keep = new Map<Box, number>();
+  const root = tree.root;
+  keepIn(root, root.contentY, 0, top, escapingHolders(tree), keep, 0);
+  return keep.size ? keep : null;
+}
+
+/**
+ * `keepAbove` in one box: `contentTop` is where its content starts now, in
+ * document coordinates, and `drift` how far that is from the coordinates
+ * its last layout gave it — a box kept is not moved with its parent, and
+ * neither is anything in it, so what it holds is off by as much.
+ */
+function keepIn(
+  box: Box,
+  contentTop: number,
+  drift: number,
+  top: number,
+  escaping: Set<Box>,
+  keep: Map<Box, number>,
+  depth: number,
+): void {
+  if (depth > MAX_KEEP_DEPTH) return;
+  if (box.style.columns || box.style.lineClamp !== null) return;
+  if (box.kind === 'flex' || box.kind === 'table') {
+    // placed by their container's algorithm, and laid out with it
+    for (const item of box.children) {
+      if (item.outOfFlow || item.kind === 'text') continue;
+      const at = item.y + drift;
+      if (at > top || at + reachOf(item) <= top) continue;
+      const inner = item.contentY + drift;
+      keepIn(item, inner, drift, top, escaping, keep, depth + 1);
+    }
+    return;
+  }
+  if (box.kind !== 'block' || establishesInlineContext(box)) return;
+  const children = box.children;
+  const gen = FLOW_GEN.get(box);
+  // the run that ended above `top`, ink and all, and the last block in it
+  // the flow can resume after
+  let resume = 0;
+  for (let run = 0; run < children.length; run += 1) {
+    const child = children[run];
+    if (child.outOfFlow || child.kind === 'text' || escaping.has(child)) break;
+    const place = FLOW_PLACE.get(child);
+    if (!place || place.gen !== gen) break;
+    if (
+      contentTop + place.bottom > top ||
+      contentTop + place.top + reachOf(child) > top
+    ) {
+      break;
+    }
+    if (!child.isFloat && !place.through) resume = run + 1;
+  }
+  // …whose floats end above the first child laid out
+  for (; resume > 0; resume -= 1) {
+    const next = FLOW_PLACE.get(children[resume]);
+    if (!next || next.gen !== gen) continue;
+    const last = FLOW_PLACE.get(children[resume - 1])!;
+    if (
+      !children[resume - 1].isFloat &&
+      !last.through &&
+      last.floats <= next.top
+    ) {
+      break;
+    }
+  }
+  if (resume > 0 && resume < children.length) keep.set(box, resume);
+  // on down into the block what can be seen starts in, past what ends
+  // above it after the run, which is laid out
+  for (let i = resume; i < children.length; i += 1) {
+    const child = children[i];
+    if (child.outOfFlow || child.isFloat || child.kind === 'text') continue;
+    const place = FLOW_PLACE.get(child);
+    if (!place || place.gen !== gen) return;
+    const at = contentTop + place.top;
+    if (at > top) return;
+    if (at + reachOf(child) <= top) continue;
+    const inner = at + child.borderTop + child.padTop;
+    keepIn(child, inner, at - child.y, top, escaping, keep, depth + 1);
+    return;
+  }
+}
+
+/** How deep `keepAbove` goes before it stops looking: deeper than any
+ *  document nests the paragraph it is reading in. */
+const MAX_KEEP_DEPTH = 64;
+
+/** How far below its own top what a box draws reaches, as last laid out
+ *  and drawn: its height, or its ink where what it holds overflows it. */
+function reachOf(box: Box): number {
+  const ink = box.boundsHeight > 0 ? box.boundsY + box.boundsHeight - box.y : 0;
+  return Math.max(box.height, ink);
+}
+
+/**
+ * The box at the top of what can be seen, as the tree was last laid out —
+ * what a layout at another width keeps where it is on screen: CSS Scroll
+ * Anchoring 1's anchor node (6.2), but for floats, which do not move with
+ * the flow. Walked in tree order from the root: a block that starts at or
+ * below `top`, in document coordinates, is the anchor; one that reaches
+ * across it is looked in, and is the anchor where it holds no block but
+ * lines of text; one in which nothing reaches below `top` — a menu column
+ * beside the text, its links at the page's top — is passed over for the
+ * next. Null for a document with no block reaching below `top`.
+ */
+export function anchorAt(tree: BoxTree, top: number): Box | null {
+  return anchorIn(tree.root, top, 0);
+}
+
+function anchorIn(box: Box, top: number, depth: number): Box | null {
+  if (depth > MAX_KEEP_DEPTH) return null;
+  for (const child of box.children) {
+    if (child.outOfFlow || child.isFloat || child.kind === 'text') continue;
+    if (isInlineLevel(child) || !(child.height > 0)) continue;
+    if (child.y + reachOf(child) <= top) continue;
+    if (child.y >= top) return child;
+    const inside = anchorIn(child, top, depth + 1);
+    if (inside) return inside;
+    if (establishesInlineContext(child) || child.kind === 'replaced') {
+      return child;
+    }
+  }
+  return null;
+}
+
+/** Note where a child of a flow was laid out (`FLOW_PLACE`), against the
+ *  flow's content top. *//** Note where a child of a flow was laid out (`FLOW_PLACE`), against the
+ *  flow's content top. */
+function placed(
+  child: Box,
+  gen: number,
+  contentTop: number,
+  hanging: MarginStrut,
+  floats: FloatContext,
+  through: boolean,
+): void {
+  const reach = floats.bottom;
+  FLOW_PLACE.set(child, {
+    gen,
+    top: child.y - contentTop,
+    bottom: child.y + child.height - contentTop,
+    hanging,
+    floats: reach === -Infinity ? -Infinity : reach - contentTop,
+    through,
+  });
+}
+
+/**
+ * The boxes that hold a box placed against something outside them: a
+ * fixed box, drawn where the viewport is wherever the flow has it, or an
+ * absolute one whose offsets put it against a containing block further
+ * out. Kept (`keepAbove`), the box would be left where it was, wherever
+ * what it is placed against went.
+ */
+function escapingHolders(tree: BoxTree): Set<Box> {
+  const holders = new Set<Box>();
+  for (const box of outOfFlowOf(tree)) {
+    const fixed = box.style.position === 'fixed';
+    if (!fixed && box.style.top === AUTO && box.style.bottom === AUTO) {
+      continue;
+    }
+    const containing = fixed ? null : containingBlockFor(box);
+    for (let at = box.parent; at && at !== containing; at = at.parent) {
+      if (holders.has(at)) break;
+      holders.add(at);
+    }
+  }
+  return holders;
+}
+
+/**
+ * Lay the whole document out at a width — or, given `until`, what starts
+ * above it, with the rest set aside (`setAside`); and given `above`, the
+ * top of what can be seen, what ends below it, with the blocks that ended
+ * above it kept as they were (`keepAbove`). Given `seenAt`, a box of a tree
+ * no layout has laid out, where what can be seen starts, it stops nowhere
+ * before that box is laid out, and `below` past where it lands: the boxes
+ * a breakpoint built have no places to keep, and the text above the box
+ * may come to more at the new band than `until` allowed for.
+ */
 export function layoutDocument(
   tree: BoxTree,
   fonts: FontsLike | null,
@@ -359,11 +628,15 @@ export function layoutDocument(
   viewportHeight: number,
   scale = 1,
   until?: number,
+  above?: number,
+  seenAt?: { box: Box; below: number },
 ): LayoutResult {
   // what the last layout set aside is laid out, or set aside again
   putBack(tree);
-  const cuts = until !== undefined && !LAID_WHOLE.has(tree);
+  const cuts =
+    (until !== undefined || above !== undefined) && !LAID_WHOLE.has(tree);
   if (cuts && !OUT_OF_FLOW.has(tree)) escapes(tree);
+  const keep = cuts && above !== undefined ? keepAbove(tree, above) : null;
   const ctx: LayoutContext = {
     fonts,
     scale,
@@ -377,7 +650,13 @@ export function layoutDocument(
     nestedOutOfLine: tree.nestedOutOfLine,
     clipText: tree.clipText,
     ...(cuts
-      ? { until, setAside: new Map<Box, Box[]>(), pass: ++setAsidePasses }
+      ? {
+          until,
+          setAside: new Map<Box, Box[]>(),
+          pass: ++setAsidePasses,
+          ...(keep ? { keep } : null),
+          ...(seenAt ? { reach: seenAt } : null),
+        }
       : null),
   };
   const root = tree.root;
@@ -1054,7 +1333,6 @@ function layoutChildren(
   // where it stops, and sets it aside. One this pass set aside already, in
   // a layout of this box at another width or another place, is laid out
   // again from the whole list, and set aside again where it starts below.
-  const until = ctx.until;
   let children = box.children;
   // a probe, which stops nowhere, lays out what was set aside too
   const whole = ctx.setAside?.get(box);
@@ -1068,14 +1346,54 @@ function layoutChildren(
    *  one strip, all of it, and balanced in its columns (`layoutColumns`),
    *  it is laid out whole. Asked once, where the layout would stop. */
   let inColumns: boolean | null = null;
+  // The places this flow puts its children in are kept against this
+  // layout of it (`FLOW_PLACE`); a probe's are no place at all
+  const probing = ctx.probing === true;
+  const gen = probing ? 0 : (FLOW_GEN.get(box) ?? 0) + 1;
+  if (probing) PROBED.set(box, ctx.pass ?? 0);
+  else FLOW_GEN.set(box, gen);
+  // A layout that keeps what is above where it starts (`keepAbove`) lays
+  // out none of the first children it keeps, and resumes the flow after
+  // them where it was: as far below the content top as they reached, with
+  // the margin they left hanging. What they place in the flow — their
+  // floats, the first line, a marker's room — is all above it.
+  const keeps = probing ? undefined : ctx.keep?.get(box);
+  if (
+    keeps !== undefined &&
+    keeps < children.length &&
+    clamp === null &&
+    PROBED.get(box) !== ctx.pass &&
+    !(inColumns ??= multicolAround(box))
+  ) {
+    const last = FLOW_PLACE.get(children[keeps - 1]);
+    if (last) {
+      if (!ctx.setAside!.has(box)) ctx.setAside!.set(box, children);
+      for (let i = 0; i < keeps; i += 1) {
+        const child = children[i];
+        HELD_BACK.set(child, ctx.pass!);
+        const place = FLOW_PLACE.get(child);
+        if (place) place.gen = gen;
+      }
+      box.children = children = children.slice(keeps);
+      y = contentTop + last.bottom;
+      pendingMargin = last.hanging;
+      first = false;
+      open = false;
+      openFloats = Infinity;
+      firstLine = null;
+      marked = null;
+      pushed = null;
+    }
+  }
 
   for (let index = 0; index < children.length; index += 1) {
     const child = children[index];
     if (stopped) {
       if (!child.outOfFlow) continue;
     } else if (
-      until !== undefined &&
-      y > until &&
+      ctx.until !== undefined &&
+      y > ctx.until &&
+      ctx.reach === undefined &&
       !(inColumns ??= multicolAround(box))
     ) {
       // the rest as tall as it was, after the margin hanging above it
@@ -1135,6 +1453,8 @@ function layoutChildren(
         contentLeft,
         contentWidth,
       );
+      if (!probing)
+        placed(child, gen, contentTop, pendingMargin, floats, false);
       continue;
     }
 
@@ -1226,6 +1546,8 @@ function layoutChildren(
       // or, where the walk took them all into this box's top margin, spent
       if (absorbed === 2) {
         pendingMargin = collapsed;
+        if (!probing)
+          placed(child, gen, contentTop, pendingMargin, floats, true);
         continue;
       }
       open = false;
@@ -1233,6 +1555,7 @@ function layoutChildren(
       if (cleared) {
         afterClear = joinStruts(joinStruts(afterClear, top), bottomOf(child));
       }
+      if (!probing) placed(child, gen, contentTop, pendingMargin, floats, true);
       continue;
     }
     open = false;
@@ -1244,6 +1567,9 @@ function layoutChildren(
     cleared = moved && collapsesThrough(child);
     afterClear = cleared ? joinStruts(top, bottomOf(child)) : NO_MARGIN;
     clearTop = cleared ? marginOf(top) : 0;
+    if (!probing) {
+      placed(child, gen, contentTop, pendingMargin, floats, cleared);
+    }
   }
 
   // The last child's bottom margin collapses through the parent's bottom
@@ -1875,6 +2201,12 @@ function layoutBlockLevel(
   box.width = width;
   placeBlock(box, contentLeft, y, containingWidth);
   layoutInternals(box, ctx, width, box.x, box.y, outerFloats);
+  // what can be seen starts here: the layout stops as far past it as it
+  // was asked to (`LayoutContext.reach`)
+  if (ctx.reach?.box === box) {
+    ctx.until = box.y + ctx.reach.below;
+    ctx.reach = undefined;
+  }
   if (
     box.kind === 'table' &&
     box.width !== width &&
@@ -1948,12 +2280,16 @@ export function measureIntrinsicWidth(
   // (`layoutTable`) — and with no stop: a probe measures all of what the
   // box holds, which a layout that stops (`until`) would leave out of a
   // probe at no width, as tall as its words
-  const until = ctx.until;
+  const { until, probing, reach } = ctx;
   ctx.until = undefined;
+  ctx.reach = undefined;
+  ctx.probing = true;
   try {
     layoutSubtree(box, ctx, available, undefined, true);
   } finally {
     ctx.until = until;
+    ctx.reach = reach;
+    ctx.probing = probing;
   }
   const specified = box.style.width;
   if (!content && specified !== AUTO && Number.isFinite(box.width)) {
