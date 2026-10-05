@@ -1511,9 +1511,17 @@ links to, or one it imports, holds the first rendering until it is in
 document was built, laid out and painted unstyled and built again for
 each sheet. An image only a background, a border image or a mask paints
 is painted where it lands (`_imagePainted`), the store having been told
-so where it was asked for (`request`'s `paintOnly`); one whose size lays
-something out still builds the boxes. Over a network, the Zen Garden's
-designs took eleven builds a page before these and take one.
+so where it was asked for (`request`'s `paintOnly`). An `<img>` built
+before its image was in takes the image's size in place (`awaiting`,
+`_imageArrived`), and the document is laid out again only where a size
+moves; only an element whose box is another kind with its image
+(`awaitingKind`), or a marker or generated content sized by it, builds the
+boxes. **Anything new that a box takes from an image as it is built joins
+one of those lists**, or an arrival leaves the box as the image was not.
+Over a network, the Zen Garden's designs took eleven builds a page before
+these and take one; Wikipedia's X Window System article was built eleven
+times as its images came in, at some 180 ms a time on a Mac, and is
+painted.
 `htmlsweep.mjs`'s `LATENCY` is how that is measured: answered at once,
 arrivals coalesce into a frame and none of it shows. **A sheet declined
 or failed after it was asked for is news too** (`'declined'`, in

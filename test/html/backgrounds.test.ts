@@ -2036,12 +2036,12 @@ metric(
 );
 
 metric(
-  'an image that arrives to be painted only is painted, the boxes kept; one an image is sized by builds them again',
+  'an image that arrives to be painted only is painted, the boxes kept; one an image is sized by lays them out again',
   async () => {
     // A page's backgrounds arrive one at a time over a network, after the
     // build that asked for them. None of them is a box's size, and each was a
     // build and a layout of the whole document; an <img> without a size is
-    // one, and still is.
+    // one, and is laid out again at it, on the same boxes (`_imageArrived`).
     const BLUE = solidPng(30, 16, [0, 0, 255]);
     const waiting = new Map<string, () => void>();
     const { result } = await (async () => {
@@ -2092,17 +2092,24 @@ metric(
       0,
       'as a build of the whole document draws it',
     );
-    // the image without a size: built again, at its size
+    // the image without a size: laid out again at its size
     const built = treeOf(el);
     assert.deepStrictEqual(
       [boxOf(el, 'im').width, boxOf(el, 'im').height],
       [0, 0],
     );
     waiting.get('im.png')!();
-    await waitFor(() => assert.notStrictEqual(treeOf(el), built));
-    assert.deepStrictEqual(
-      [boxOf(el, 'im').width, boxOf(el, 'im').height],
-      [30, 16],
+    await waitFor(() =>
+      assert.deepStrictEqual(
+        [boxOf(el, 'im').width, boxOf(el, 'im').height],
+        [30, 16],
+      ),
+    );
+    assert.strictEqual(treeOf(el), built, 'on the same boxes');
+    assert.strictEqual(
+      bytesApart(await snapshot(result, el), await rebuilt(result, el)),
+      0,
+      'as a build of the whole document draws it',
     );
   },
 );

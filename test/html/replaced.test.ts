@@ -14,6 +14,7 @@ import * as ntk from 'react-x11/ntk';
 import type { Element } from 'domhandler';
 import { parseDocument } from 'htmlparser2';
 import { Html } from '../../src/index.js';
+import type { HtmlViewNode } from '../../src/html/index.js';
 import { decodesImageType } from '../../src/html/image-types.js';
 import {
   allowsAutoSizes,
@@ -213,6 +214,76 @@ test('an object is its image once its data is one, and its content until then', 
   assert.strictEqual((boxOf(el, 'f') as ReplacedBox).replaced, 'none');
   assert.ok(el.textContent().includes('still here'), 'the fallback content');
   assert.ok(!el.textContent().includes('fallback'), 'not the loaded one');
+});
+
+// An image that arrives after the boxes were built takes its size in place:
+// it builds no boxes, and lays the document out again only where a size
+// moves — an `<img>` its attributes size whatever its image is is painted.
+
+/** The box tree the element holds: a build makes another. */
+const treeOf = (el: HtmlViewNode): unknown =>
+  (el as unknown as { _tree: unknown })._tree;
+
+test('an image the size its attributes said is painted where it arrives, and builds nothing', async () => {
+  const doc = await choosing(
+    '<img id="a" width="20" height="10" src="small.png">' +
+      '<img id="b" width="30" height="30" src="small.png">',
+    { 'small.png': SMALL },
+    { later: true },
+  );
+  await waitFor(() => assert.deepStrictEqual(doc.size('a'), [20, 10]));
+  const tree = treeOf(doc.el());
+  await doc.release();
+  assert.strictEqual(treeOf(doc.el()), tree, 'the same boxes');
+  assert.deepStrictEqual(doc.size('a'), [20, 10]);
+  assert.deepStrictEqual(
+    doc.size('b'),
+    [30, 30],
+    'the size its attributes give',
+  );
+  assert.strictEqual(
+    (boxOf(doc.el(), 'b') as unknown as { intrinsic: { ratio: number } })
+      .intrinsic.ratio,
+    2,
+    "the image's ratio, which object-fit fits it by",
+  );
+});
+
+test('an image its own size lays out lays the document out again where it arrives, and builds nothing', async () => {
+  const doc = await choosing(
+    '<img id="a" src="large.png"><img id="b" width="20" height="20" ' +
+      'style="height:auto" src="small.png"><p id="p">after</p>',
+    { 'small.png': SMALL, 'large.png': LARGE },
+    { later: true },
+  );
+  await waitFor(() => assert.deepStrictEqual(doc.size('b'), [20, 20]));
+  const tree = treeOf(doc.el());
+  const before = boxOf(doc.el(), 'p').y;
+  await doc.release();
+  await waitFor(() => assert.deepStrictEqual(doc.size('a'), [40, 20]));
+  assert.deepStrictEqual(
+    doc.size('b'),
+    [20, 10],
+    "an auto height, its ratio's",
+  );
+  assert.strictEqual(treeOf(doc.el()), tree, 'the same boxes');
+  assert.strictEqual(boxOf(doc.el(), 'p').y, before + 20 - 10, 'what follows');
+});
+
+test('an object built before its image arrived is built again as one', async () => {
+  const doc = await choosing(
+    '<object id="o" data="small.png" type="image/png">fallback</object>',
+    { 'small.png': SMALL },
+    { later: true },
+  );
+  await waitFor(() =>
+    assert.strictEqual((boxOf(doc.el(), 'o') as ReplacedBox).replaced, 'none'),
+  );
+  await doc.release();
+  await waitFor(() =>
+    assert.strictEqual((boxOf(doc.el(), 'o') as ReplacedBox).replaced, 'image'),
+  );
+  assert.deepStrictEqual(doc.size('o'), [20, 10]);
 });
 
 // --- choosing an image's source ----------------------------------------------

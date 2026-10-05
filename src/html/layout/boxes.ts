@@ -24,6 +24,7 @@ import {
   childrenOf,
   flatChildrenOf,
   flatParentOf,
+  imageUrlOf,
   isElement,
   isText,
   inImpliedHead,
@@ -908,6 +909,15 @@ export interface BoxTree {
    *  pseudo-element names it, for the host to be asked for, and whether its
    *  size was known when the box was built. */
   contentImages: { url: string; element: Element; sized: boolean }[];
+  /** Every `<img>` box built before its image arrived — at the size its
+   *  element's attributes say, or the image it showed before — and what an
+   *  image arriving is checked against, since one that sizes nothing anew
+   *  changes no box (`HtmlViewNode._imageArrived`). */
+  awaiting: Box[];
+  /** Every element whose box is another kind once its image is in — an
+   *  `<object>`, an `<embed>`, a `<video>`'s poster, an image button —
+   *  built before it was. */
+  awaitingKind: Element[];
   /** Whether any box is relatively positioned: where none is, layout skips
    *  the walk that moves them. */
   relative: boolean;
@@ -977,6 +987,10 @@ export interface BuildOptions {
    *  image's own pixels. `null` when it has not: the box takes the attribute
    *  size, or a placeholder. */
   imageSize(el: Element): IntrinsicSize | null;
+  /** Whether the image an element chose is still on its way, whatever it
+   *  shows meanwhile — the one it chose before, where that is in: the box
+   *  it is built with waits for it (`BoxTree.awaiting`). */
+  imagePending?(el: Element): boolean;
   /** The same for an image named by url — generated content's. */
   urlSize?(url: string): IntrinsicSize | null;
   /** How far a style's first face reaches above its baseline, in device
@@ -1081,6 +1095,8 @@ class Builder {
     element: Element;
     sized: boolean;
   }[] = [];
+  private _awaiting: Box[] = [];
+  private _awaitingKind: Element[] = [];
   private _relative = false;
   private _tilted = false;
   private _negative = false;
@@ -1158,6 +1174,8 @@ class Builder {
       focusables: this._focusables,
       backgrounds: this._backgrounds,
       contentImages: this._contentImages,
+      awaiting: this._awaiting,
+      awaitingKind: this._awaitingKind,
       relative: this._relative || isRelative(rootStyle),
       tilted: this._tilted || outOfPlane(rootStyle),
       negative: this._negative,
@@ -1401,6 +1419,16 @@ class Builder {
               ? 'image'
               : 'button'
             : replacedKind(el, tag);
+    if (
+      replaced !== 'image' &&
+      (tag === 'object' ||
+        tag === 'embed' ||
+        tag === 'video' ||
+        isImageButton(el, tag)) &&
+      imageUrlOf(el)
+    ) {
+      this._awaitingKind.push(el);
+    }
     if (replaced !== 'none') {
       this._replaced(el, tag, replaced, style, into);
       return;
@@ -1582,6 +1610,7 @@ class Builder {
       const loaded = this._options.imageSize(el);
       if (loaded) {
         setIntrinsics(box, loaded, scale);
+        if (this._options.imagePending?.(el)) this._awaiting.push(box);
       } else {
         // An image that has not arrived still needs a box, or the document
         // reflows under the reader when it does. The attributes are the
@@ -1597,6 +1626,7 @@ class Builder {
           missing: 0,
           ratio: width > 0 && height > 0 ? width / height : 0,
         };
+        this._awaiting.push(box);
       }
       // The alt text joins the document text, so a document read with the
       // images blocked still copies as prose.
@@ -2831,7 +2861,16 @@ function boxKindFor(display: ComputedStyle['display']): BoxKind {
 /** A replaced box's intrinsic size from what its content says, in CSS
  *  pixels: an axis it does not give takes the default object size. */
 function setIntrinsics(box: Box, size: IntrinsicSize, scale: number): void {
-  box.intrinsic = {
+  box.intrinsic = intrinsicsOf(size, scale);
+}
+
+/** A replaced box's intrinsic size from its image's, which is in CSS
+ *  pixels: the default object size on a side it has none of. */
+export function intrinsicsOf(
+  size: IntrinsicSize,
+  scale: number,
+): NonNullable<Box['intrinsic']> {
+  return {
     width: (size.width ?? 300) * scale,
     height: (size.height ?? 150) * scale,
     missing: (size.width === null ? 1 : 0) | (size.height === null ? 2 : 0),
