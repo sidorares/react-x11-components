@@ -118,6 +118,7 @@ import type {
   TextLayoutLike,
 } from './layout/boxes.js';
 import { layoutDocument, placedMatrix, retranslate } from './layout/block.js';
+import { layoutShape, shapesEqual } from './layout/shape.js';
 import {
   invert,
   mapPoint,
@@ -418,6 +419,7 @@ export class HtmlViewNode extends Node {
         height,
         key,
         animated,
+        layoutShape(box),
       ),
   };
   // --- sprites (`sprites()`, src/html/sprites.ts) ---
@@ -1661,7 +1663,11 @@ export class HtmlViewNode extends Node {
         // it was laid out at, where it keeps them
         const from = this._carryingFrom ?? laidOutAt;
         if (target !== from || viewportMoved) {
-          this._sprites?.clear();
+          // what a box laid out as it was when drawn still draws, wherever
+          // the layout moved it; the rest is drawn again (`relaid`)
+          this._sprites?.relaid((box, shape) =>
+            shapesEqual(shape, layoutShape(box as Box)),
+          );
           this._filtered?.staleAll();
         }
         this._documentWidth = result.width;
@@ -2238,7 +2244,7 @@ export class HtmlViewNode extends Node {
     this._drawnOnce.clear();
     this._tileBlocks?.destroy();
     this._tileBlocks = null;
-    this._sprites?.clear();
+    this._sprites?.destroy();
     this._sprites = null;
     this._filtered?.clear();
     this._filtered = null;
@@ -4517,6 +4523,9 @@ export class HtmlViewNode extends Node {
         ctx.fillRect(this.abs.x, this.abs.y, this.abs.width, this.abs.height);
       }
     }
+    // the surfaces given up since the last paint that this one did not
+    // draw on again
+    this._sprites?.trim();
   }
 
   /**

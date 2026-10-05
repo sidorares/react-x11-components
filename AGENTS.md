@@ -2050,10 +2050,23 @@ box animates, or something inside it does (`animatesWithin`), or while it
 is no larger than a card's, and each paint draws
 it through the matrix and at the opacity it has then — the Box-keyed
 cache the hover paragraph warns of, on a still page as much as a moving
-one, so it is forgotten wherever what a box draws can change. A build
-clears the store, and so does a
-layout at another width or under another viewport — **but for a frame's
-build that changed only what is out of the flow** (`_rebuildFrame`): each
+one, so it is forgotten wherever what a box draws can change. A layout at
+another width or under another viewport keeps a surface **whose box laid
+out as it did when the surface was drawn** — the place, size and ink of
+everything in it and every line and piece of text, relative to the box's
+corner (`layoutShape`, `src/html/layout/shape.ts`), taken as the surface is
+made and compared after the layout (`relaid`) — and forgets the rest. A
+card of a fixed width that a narrower column only moves draws what it
+drew: Zen Garden 101's eleven faded panels were each drawn again at every
+step of a drag, which went from 29 seconds to 8.5 on Wayland. The record
+reads no inline box's rect, which no layout sets (see "A probe of an
+unbounded width"): what an inline box holds is in its block's lines.
+**Anything new a layout can change in what a box draws joins
+`layoutShape`'s record**, or a surface kept across a width draws it as it
+was. A surface given up is kept, by its size, until the paint ends, for a
+box that asks for one that size to be drawn on again rather than one made
+(`release`, `reuse`, `trim`). A build clears the store — **but for a
+frame's build that changed only what is out of the flow** (`_rebuildFrame`): each
 surface moves to the box that draws its element now, where that box is
 where the old one was and styled as it was, with the ink of what changed
 inside it marked to be cleared and painted again on it (`_carrySprites`,
