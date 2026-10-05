@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.43.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.43.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.44.1` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.44.1` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -718,6 +718,17 @@ it up. **The floor is a running one and moves often** — every move since
   coverage is rasterized in the process and its mask kept across restores
   (#536), where glamor read back a pixmap for every clip's traps — the
   rounded rows of 219's marquees cost Xwayland 53 ms a frame and cost 1.2.
+- `^2.44.1` — a `<Frame>` pane's last frame shown at its size while the
+  frame of a new size is on its way, on a Mac. Core's range had admitted
+  only @windowkit/appkit 0.25.0 since 2.42.0, a bridge that does not read
+  the `contentsRect` and `contentsCenter` the anchoring is set with, so a
+  page in the browser example was stretched at every step of a drag
+  (react-x11#897, over windowkit/appkit#117). That is why the floor moves.
+  The same release stretches a pane that fell behind across only and
+  never down (#898), since a height moves nothing a page lays out, and
+  makes a pane's buffers as frames take them, one a size, where a drag
+  made and cleared three at every step (#899): with #714 here, a frame of
+  Zen Garden 101's drag in the browser example went from 16 ms to 9.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
