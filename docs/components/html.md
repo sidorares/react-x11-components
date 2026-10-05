@@ -3317,7 +3317,9 @@ and its layouts stop a viewport past the bottom of the one the pane shows.
 A block's children that start below that are set aside: not laid out, and
 reached by nothing that reads the layout — the paint, the hit test, the
 form controls and the videos mounted over the document — while the block is
-as tall as they were when last laid out. 150 ms after the width rests the
+as tall as they were when last laid out. A field with the focus keeps its
+widget where it was, which is out of sight, since a widget unmounted takes
+the focus and the caret with it. 150 ms after the width rests the
 document is laid out whole. What can be seen is laid out as the whole
 layout lays it out, so the one thing on screen that differs is the scroll
 bar's thumb, sized to the guess. The first move of a drag is laid out
