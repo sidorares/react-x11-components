@@ -471,6 +471,43 @@ test('a dragged width mounts no control past where the layout stops', async (t) 
   assert.ok(mounted(), 'and mounted again once the width rests');
 });
 
+test('a dragged width keeps the widget of a field with the focus where it was', async (t) => {
+  // Unmounted, the field would take the focus with it, and the caret: a
+  // field focused and scrolled away from lost both to the first step of a
+  // drag. Set aside is out of sight, below what can be seen, and so is
+  // where the field was a width ago.
+  const clock = holdClock(t, resizeClock);
+  const { el, resize } = await renderScrolled(
+    LONG.replace('</body>', '<input id="field" placeholder="field"></body>'),
+    300,
+    400,
+  );
+  const field = screen.getByPlaceholder('field') as DrawnNode;
+  await act(async () => {
+    field.focus();
+  });
+  // scrolled away from it, whether or not the focus brought it into view
+  type Pane = { scrollTo(y: number): void; isScroller?(): boolean };
+  let pane = (el as unknown as { parent: Pane & { parent: unknown } }).parent;
+  while (pane && !pane.isScroller?.()) {
+    pane = pane.parent as Pane & { parent: unknown };
+  }
+  await act(() => pane.scrollTo(0));
+  await act();
+  assert.strictEqual(el.focusedElement?.attribs.id, 'field', 'focused');
+  await resize(300, 390);
+  await resize(300, 380);
+  assert.ok(partial(el), 'set aside');
+  // the same widget, mounted, with the focus
+  const held = () =>
+    screen.queryByPlaceholder('field') === field && field.focused;
+  assert.ok(held(), 'its widget, still focused');
+  assert.strictEqual(el.focusedElement?.attribs.id, 'field', "and the page's");
+  await clock.finish();
+  assert.ok(!partial(el));
+  assert.ok(held(), 'and once the width rests');
+});
+
 test('a dragged width lays a multicol container out whole', async (t) => {
   // its content is one strip, balanced in its columns: what a layout set
   // aside of it would move the columns of what can be seen

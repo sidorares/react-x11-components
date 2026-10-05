@@ -117,7 +117,12 @@ import type {
   ReplacedKind,
   TextLayoutLike,
 } from './layout/boxes.js';
-import { layoutDocument, placedMatrix, retranslate } from './layout/block.js';
+import {
+  heldBack,
+  layoutDocument,
+  placedMatrix,
+  retranslate,
+} from './layout/block.js';
 import { layoutShape, shapesEqual } from './layout/shape.js';
 import {
   invert,
@@ -1955,6 +1960,22 @@ export class HtmlViewNode extends Node {
             }),
           },
     );
+    // A field with the focus that a drag set aside keeps its widget where
+    // it was: unmounted, the focus would go with it, and the caret
+    // (`WidgetBoxes`). Set aside is out of sight, above what can be seen or
+    // below it, and so is where the field was a width ago.
+    const focus = this._focus.element;
+    if (focus && !rects.some((r) => r.element === focus)) {
+      const kept = this._controls.find((r) => r.element === focus);
+      const box = kept && tree.controls.find((b) => b.el === focus);
+      if (box && heldBack(tree, box)) {
+        const order = tree.controls.indexOf(box);
+        const at = rects.findIndex(
+          (r) => tree.controls.findIndex((b) => b.el === r.element) > order,
+        );
+        rects.splice(at === -1 ? rects.length : at, 0, kept!);
+      }
+    }
     if (sameRects(rects, this._controls)) return;
     this._controls = rects;
     report(rects);
