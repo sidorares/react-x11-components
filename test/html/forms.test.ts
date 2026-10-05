@@ -256,6 +256,124 @@ test("a hint no rule colours is the palette's muted ink, and Chrome's in the oth
   );
 });
 
+test("a control in the scheme the palette is not is Chrome's control in that scheme", async () => {
+  // Hacker News names no colour scheme, so Chrome draws its comment box
+  // and its submit button light on a dark desktop: `normal` is the
+  // browser's default, which is light, and a control's colours are the
+  // system colours Blink's UA sheet names, in the element's scheme. The
+  // browser example draws such a page light (`defaultColorScheme`), and
+  // its controls were the dark palette's widgets on it: a black well and a
+  // black button on HN's beige.
+  const source =
+    '<style>body{color:#828282} .own{border-radius:4px}</style>' +
+    '<form><textarea placeholder="area"></textarea>' +
+    '<input placeholder="plain"><input class="own" placeholder="own">' +
+    '<input type="submit" value="add comment">' +
+    '<button id="drawn" style="border-radius:0">b</button></form>' +
+    '<p style="color-scheme:dark"><textarea placeholder="dark">' +
+    '</textarea></p>';
+  const doc = (light: boolean) =>
+    h(
+      'window',
+      { width: 440, height: 400 } as Record<string, unknown>,
+      h(
+        ThemeProvider,
+        { colorScheme: 'dark' },
+        h(
+          'box',
+          { style: { width: 400, flexDirection: 'column' } },
+          h(Html, {
+            source,
+            partial: false,
+            ...(light && { defaultColorScheme: 'light' as const }),
+            'data-testname': 'doc',
+          }),
+        ),
+      ),
+    );
+  const result = await renderX11(
+    doc(true),
+    FONTS ? { fonts: FONTS, wrap: false } : { backend: 'mock', wrap: false },
+  );
+  type Styled = { props: { style?: unknown; theme?: Record<string, unknown> } };
+  const styleOf = (node: unknown) =>
+    Object.assign(
+      {},
+      ...[(node as Styled).props.style].flat(Infinity).filter(Boolean),
+    ) as Record<string, unknown>;
+  const field = (placeholder: string) => {
+    const style = styleOf(screen.getByPlaceholder(placeholder));
+    return [style.backgroundColor, style.color, style.borderColor];
+  };
+  const button = () => {
+    const label = screen.getByText('add comment', {
+      selector: 'text',
+      exact: true,
+    }) as unknown as { parent: (Styled & { parent: unknown }) | null };
+    let at = label.parent;
+    while (at && (at.props as { role?: string }).role !== 'button') {
+      at = at.parent as typeof at;
+    }
+    assert.ok(at, 'the submit button is a widget');
+    const style = styleOf(at);
+    return [style.backgroundColor, style.color, style.borderColor];
+  };
+  await waitFor(() => screen.getByPlaceholder('area'));
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const schemes = (
+    el as unknown as { _controls: { colorScheme?: string }[] }
+  )._controls.map((r) => r.colorScheme);
+  assert.deepStrictEqual(
+    schemes,
+    ['light', 'light', 'light', 'light', 'dark'],
+    "each control's rect says the scheme its element is in",
+  );
+  assert.deepStrictEqual(
+    field('area'),
+    ['#ffffff', '#000000', '#767676'],
+    'Field, FieldText and the edge Blink gives a text area',
+  );
+  assert.deepStrictEqual(field('plain'), field('area'), 'and a field');
+  assert.deepStrictEqual(
+    button(),
+    ['#efefef', '#000000', '#767676'],
+    'ButtonFace, ButtonText and ButtonBorder',
+  );
+  // A field the page drew is the page's, with FieldText for its text
+  // where the page set none, as Blink's sheet has it — not the grey the
+  // page sets its prose in.
+  assert.strictEqual(styleOf(screen.getByPlaceholder('own')).color, '#000000');
+  const drawn = boxOf(el, 'drawn') as unknown as {
+    style: Record<string, string>;
+  };
+  assert.deepStrictEqual(
+    [
+      drawn.style.backgroundColor,
+      drawn.style.color,
+      drawn.style.borderTopColor,
+    ],
+    ['#efefef', '#000000', '#767676'],
+    'a <button> the document draws is in the system colours too',
+  );
+  // in the palette's own scheme a control is the palette's widget
+  const palette = field('dark');
+  assert.notDeepStrictEqual(palette, field('area'));
+  await act(async () => {
+    result.root.render(doc(false));
+  });
+  for (let i = 0; i < 4; i += 1) await act();
+  assert.deepStrictEqual(
+    field('area'),
+    palette,
+    'a page in the palette’s scheme has the palette’s controls',
+  );
+  assert.deepStrictEqual(
+    styleOf(screen.getByPlaceholder('own')).color,
+    // DarkTheme's text
+    '#e6e9ed',
+  );
+});
+
 test("a text area's hint keeps its line breaks, and a field's loses them", async () => {
   // HTML 4.10.11 and 4.10.5.3.10. A `<textarea>`'s placeholder was not
   // handed to its widget at all, which drew none.

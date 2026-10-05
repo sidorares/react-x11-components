@@ -66,6 +66,14 @@ export interface ControlRect {
   fontFamily: string;
   fontSize: number;
   /**
+   * The element's used colour scheme (CSS Color Adjust 1, 2.2). A control
+   * in the palette's scheme is the palette's widget; one in the other — a
+   * page that says nothing of its scheme, which a browser draws light, in
+   * a dark application — is drawn in a browser's colours for that scheme,
+   * as the page around it is. Missing is the palette's.
+   */
+  colorScheme?: 'light' | 'dark';
+  /**
    * Set on a text field or a `<select>` whose own box the author styled —
    * gave it a border or a background (`styledField`). The document draws
    * that box, and the widget goes bare inside its content box, here, with
@@ -146,6 +154,7 @@ export function controlRectsOf(
       height: box.height,
       fontFamily: box.style.fontFamily,
       fontSize: box.style.fontSize,
+      colorScheme: box.style.colorScheme,
     };
     let opacity = 1;
     // A box scaled to nothing draws nothing of what it holds (CSS
