@@ -3328,8 +3328,16 @@ reached by nothing that reads the layout — the paint, the hit test, the
 form controls and the videos mounted over the document — while the block is
 as tall as they were when last laid out. A field with the focus keeps its
 widget where it was, which is out of sight, since a widget unmounted takes
-the focus and the caret with it. 150 ms after the width rests the
-document is laid out whole. What can be seen is laid out as the whole
+the focus and the caret with it. Where the pane that scrolls the document
+can follow what it shows (react-x11 2.45.0), the block at the top of its
+viewport stays where it is on screen at every width — the pane's offset
+moves by as far as a layout moved the block, in the same pass — and the
+blocks that ended above it are kept as they were, so a drag half way down
+a long page lays out what can be seen and not everything above it. 150 ms
+after the width rests the document is laid out whole, and where the window
+says a drag of its edge is under way — a Mac's does, and a `<Frame>`'s pane
+hears it from its host — only once the drag ends, since a hand that pauses
+is still dragging. What can be seen is laid out as the whole
 layout lays it out, so the one thing on screen that differs is the scroll
 bar's thumb, sized to the guess. The first move of a drag is laid out
 whole, so a width set once is exact at once, and so is everything else that

@@ -119,6 +119,7 @@ import type {
   TextLayoutLike,
 } from './layout/boxes.js';
 import {
+  anchorAt,
   heldBack,
   layoutDocument,
   placedMatrix,
@@ -349,6 +350,16 @@ const ABSOLUTE_URL = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
  *  `FontManager#prewarm`, which names faces from the release that added
  *  them (8.14) and warms the family's four before it. An engine without it
  *  has nothing to look up. */
+/** What was at the top of what can be seen before a layout, and where
+ *  (`_anchorBefore`): its box in the tree it was in, and its element, to
+ *  find it by in a tree built since. */
+interface Anchor {
+  tree: BoxTree;
+  box: Box;
+  el: Element | null;
+  y: number;
+}
+
 interface WarmingFonts {
   prewarm?(family: string, faces?: { weight: number; style: string }[]): void;
 }
@@ -1548,6 +1559,10 @@ export class HtmlViewNode extends Node {
       this._stale === Stale.Nothing && this._laidOutWidth === target;
     const wasWidth = this._documentWidth;
     const wasHeight = this._documentHeight;
+    // What is at the top of what can be seen, where a layout at another
+    // width, or the one that lays out what a drag kept, is about to move
+    // it (`_keepAnchor`): taken before a build, whose boxes have no place
+    if (this._laidOutWidth !== target || this._partial) this._anchorFrame();
 
     // the styles a build may keep (`_restyleOnly`), unless something
     // found below changes them all
@@ -1708,14 +1723,31 @@ export class HtmlViewNode extends Node {
       if (this._tree && laysOut) {
         const laidOutAt = this._laidOutWidth;
         if (crossing) this._crossedTree = this._tree;
+        // A layout at a fraction of the width the document is drawn at
+        // answers a question about its size: core's content floors lay a
+        // tree out with no room on offer, to learn its min-content width.
+        // It lays out whole, and so does the one after it: the places the
+        // flow keeps its blocks by (`keepAbove`) are the question's then,
+        // and the document is drawn at none of them. It moves nothing on
+        // screen (`_keepAnchor`).
+        const question = target * 2 < this.abs.width;
+        const stop =
+          question || this._questioned
+            ? undefined
+            : this._stopAt(target, viewportMoved, crossing);
         const result = layoutDocument(
           this._tree,
           this._layoutFonts(),
           target,
           viewport,
           this._scale,
-          this._stopAt(target, viewportMoved, crossing),
+          stop?.until,
+          stop?.above,
+          stop?.reach,
         );
+        this._questioned = question;
+        // what was at the top of what can be seen stays there on screen
+        if (!question) this._keepAnchor();
         // A tree a crossing built and laid out down to where the layout
         // stops: what it set aside was never laid out, and is no height
         // to guess the document's from, so it is as tall as it was.
@@ -1827,7 +1859,13 @@ export class HtmlViewNode extends Node {
     target: number,
     viewportMoved: boolean,
     crossing: boolean,
-  ): number | undefined {
+  ):
+    | {
+        until: number;
+        above: number | undefined;
+        reach: { box: Box; below: number } | undefined;
+      }
+    | undefined {
     const was = this._widthLaid;
     if (was === -1 || was === target) return undefined;
     // a drag's first move is as small as the rest: the edge goes a few
@@ -1854,7 +1892,155 @@ export class HtmlViewNode extends Node {
       return undefined;
     }
     const until = this._seenBottom() + this._viewportHeight();
-    return until * 2 < this._documentHeight ? until : undefined;
+    // and from the top of what can be seen, what ends above it kept as it
+    // was, where the pane that scrolls the document keeps what is at its
+    // top where it is on screen once that is laid out (`_keepAnchor`)
+    const above = this._anchors() ? this._seenTop() : undefined;
+    // A tree a breakpoint built has no places to keep, and laid out down to
+    // where the layout stops, it could set aside what is at the top of what
+    // can be seen, where the text above it came to more at the new band:
+    // it is laid out down to that, wherever it lands, and as far past it
+    // as the layout would have gone (`LayoutContext.reach`)
+    let reach: { box: Box; below: number } | undefined;
+    const anchor = this._frameAnchor;
+    const tree = this._tree;
+    if (crossing && anchor && tree && tree !== anchor.tree) {
+      const box = anchor.el ? this._firstBoxesOf(tree).get(anchor.el) : null;
+      if (!box) return undefined;
+      reach = { box, below: until - (anchor.y + anchor.asked) };
+    }
+    return (until - (above ?? 0)) * 2 < this._documentHeight
+      ? { until, above: reach ? undefined : above, reach }
+      : undefined;
+  }
+
+  /** How far down the document the top of what can be seen is: the top of
+   *  the pane that scrolls it, or of the window, less where the document
+   *  starts. */
+  private _seenTop(): number {
+    const viewport = this._viewport();
+    const top = (viewport ? viewport.y : 0) - this.contentBox().y;
+    // and where the pane will have it once it shifts by what this frame's
+    // layouts asked of it (`_keepAnchor`), which the layout pass lands
+    return Math.max(0, top + this._pendingShift());
+  }
+
+  /** What this frame's layouts asked the pane to shift by that it has not
+   *  landed yet: all of it before the pane places its content, in the
+   *  layout pass, and none after, in the paint. */
+  private _pendingShift(): number {
+    return this._painting ? 0 : (this._frameAnchor?.asked ?? 0);
+  }
+
+  /**
+   * Whether a pane scrolls the document that can keep what is at the top
+   * of its viewport where it is on screen while the document moves under
+   * it: react-x11's `anchorScrollBy`, which a core before it has not.
+   */
+  private _anchors(): boolean {
+    return (
+      typeof (this as { anchorScrollBy?: unknown }).anchorScrollBy ===
+        'function' && this._viewport() !== null
+    );
+  }
+
+  /**
+   * What is at the top of what the pane that scrolls the document shows,
+   * and where, as the document was last laid out (`anchorAt`): for a
+   * layout at another width, which moves it by what the text above it
+   * comes to there, to keep it where it is on screen (`_keepAnchor`). Null
+   * where nothing above the viewport could move it — the document scrolled
+   * to its top — where no pane scrolls the document, and where the pane
+   * cannot follow it (`_anchors`).
+   */
+  private _anchorFrame(): void {
+    if (this._frameAnchor) return;
+    const shown = this._shown;
+    if (!shown || !this._anchors()) return;
+    this._frameAnchor = { ...shown, asked: 0 };
+    // A frame's layout and paint are one synchronous call, so the frame is
+    // over by the first microtask after it, and the pane has landed what
+    // it was asked
+    const end = () => {
+      this._frameAnchor = null;
+    };
+    if (timers.queueMicrotask) timers.queueMicrotask(end);
+    else void Promise.resolve().then(end);
+  }
+
+  /** What was at the top of what can be seen when this frame started to
+   *  lay out, and how far the pane was asked to move to keep it there
+   *  (`_anchorFrame`, `_keepAnchor`). */
+  private _frameAnchor: (Anchor & { asked: number }) | null = null;
+
+  /**
+   * What was at the top of what can be seen when the document was last
+   * drawn, and where (`anchorAt`): what a layout at another width keeps
+   * where it is on screen. Taken as it is drawn, where the boxes are what
+   * the screen shows — a layout since may have been one to answer a
+   * question about the document's size, at a width it is not drawn at, and
+   * moved them all (`_keepAnchor`). Null where nothing above the viewport
+   * could move it — the document scrolled to its top — and where no pane
+   * can follow it (`_anchors`).
+   */
+  private _shown: Anchor | null = null;
+
+  /** Whether the paint is running, after the pane placed what it holds:
+   *  what the frame asked it to shift by has landed (`_pendingShift`). */
+  private _painting = false;
+
+  /** Whether the last layout answered a question about the document's
+   *  size, at a width it is not drawn at (`_update`): the next lays out
+   *  whole. A pane asked for what a document a pixel wide came to clamps
+   *  it to its end, and the shift back from there lands at its top. */
+  private _questioned = false;
+
+  private _noteShown(tree: BoxTree): void {
+    this._painting = true;
+    try {
+      if (!this._anchors()) {
+        this._shown = null;
+        return;
+      }
+      const top = this._seenTop();
+      const box = top > 0 ? anchorAt(tree, top) : null;
+      this._shown = box ? { tree, box, el: box.el, y: box.y } : null;
+    } finally {
+      this._painting = false;
+    }
+  }
+
+  /**
+   * Keep what was at the top of what can be seen there on screen, now the
+   * document is laid out: the pane that scrolls it moves its offset by as
+   * far as the layout moved it, in the pass it was laid out in (react-x11's
+   * `anchorScrollBy`, CSS Scroll Anchoring 1). A window dragged narrower
+   * breaks the text above into more lines, and the paragraph being read
+   * went down the page by as many, a page or two down a long article.
+   * Found again by its element where a breakpoint built the boxes again.
+   */
+  private _keepAnchor(): void {
+    const anchor = this._frameAnchor;
+    const tree = this._tree;
+    if (!anchor || !tree) return;
+    const box =
+      tree === anchor.tree
+        ? anchor.box
+        : anchor.el
+          ? this._firstBoxesOf(tree).get(anchor.el)
+          : undefined;
+    if (!box || heldBack(tree, box)) return;
+    // A frame may lay the document out more than once — a breakpoint's
+    // build and the width a content floor asks about — and each moves the
+    // anchor from where the last left it: the pane is asked for what it
+    // has not been asked yet
+    const moved = box.y - anchor.y;
+    const shift = moved - anchor.asked;
+    if (shift === 0 || !Number.isFinite(shift)) return;
+    anchor.asked = moved;
+    (
+      this as unknown as { anchorScrollBy(dx: number, dy: number): boolean }
+    ).anchorScrollBy(0, shift);
   }
 
   /** How far down the document what can be seen of it reaches: the bottom
@@ -1865,18 +2051,38 @@ export class HtmlViewNode extends Node {
     const bottom = viewport
       ? viewport.y + viewport.height
       : (this.root?.abs?.height ?? 0);
-    return Math.max(0, bottom - this.contentBox().y);
+    return Math.max(0, bottom - this.contentBox().y + this._pendingShift());
   }
 
-  /** Lay the document out whole once the width has rested. */
+  /**
+   * Lay the document out whole once the width has rested — and where the
+   * window says a drag of its edge is still under way (`liveResizing`,
+   * from AppKit's begin of the drag to its end, which a `<Frame>`'s pane
+   * hears from its host), once the drag is over: a hand that pauses a
+   * drag is still dragging, and the whole of a long document, laid out at
+   * every pause, held the frame that came after it — Wikipedia's longest
+   * articles 60 to 100 ms, at every pause of a drag. A window that says
+   * nothing of it — X11's, a window not being dragged — rests when its
+   * width does.
+   */
   private _armSettle(): void {
     if (this._settleTimer !== null) resizeClock.disarm(this._settleTimer);
     this._settleTimer = resizeClock.arm(() => {
       this._settleTimer = null;
       if (this.destroyed || !this._partial) return;
+      if (this._liveResizing()) {
+        this._armSettle();
+        return;
+      }
       this._widthMovedAt = -Infinity;
       this._invalidate(Stale.Layout);
     }, RESIZE_SETTLE_MS);
+  }
+
+  /** Whether the window this is in is being resized live (`_armSettle`). */
+  private _liveResizing(): boolean {
+    const root = this.root as { window?: { liveResizing?: unknown } } | null;
+    return root?.window?.liveResizing === true;
   }
 
   /**
@@ -4585,6 +4791,9 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
     if (!tree) return;
+    // what is at the top of the viewport as it is drawn, for a layout at
+    // another width to keep it there (`_anchorFrame`)
+    this._noteShown(tree);
     // a scroll moves the boxes fixed to the viewport over the players and
     // lays nothing out: where they are is asked as it is painted
     if (this._mediaLaid.length && FIXED_BOXES.has(tree)) this._publishMedia();
@@ -6236,6 +6445,7 @@ const PAINT_WAIT_MS = 250;
 const timers = globalThis as {
   setTimeout?(fn: () => void, ms: number): unknown;
   clearTimeout?(id: unknown): void;
+  queueMicrotask?(fn: () => void): void;
 };
 
 /**

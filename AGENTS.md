@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.44.1` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.44.1` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.45.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.45.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -729,6 +729,19 @@ it up. **The floor is a running one and moves often** — every move since
   makes a pane's buffers as frames take them, one a size, where a drag
   made and cleared three at every step (#899): with #714 here, a frame of
   Zen Garden 101's drag in the browser example went from 16 ms to 9.
+- `^2.45.0` — a scroll pane's offsets follow content an element moved
+  under its viewport, in the same layout pass (`anchorScrollBy`,
+  react-x11#900). `<Html>` keeps the block at the top of what a pane shows
+  where it is on screen when a layout at another width moves it, and keeps
+  what ended above it as it was while the width is dragged, so a drag half
+  way down Wikipedia's article on the X Window System lays out what can be
+  seen and not the article above it. A `<Frame>`'s pane hears that the
+  window it is in is being resized live (#901), and the whole layout a drag
+  owes waits for the drag to end. Both are read at run time, so an older
+  core lays out as before. The same release has the content floors leave a
+  document in a scroller unshaped where nothing reads its width (#902): a
+  page in the browser example's pane was set a word to a line at every
+  breakpoint a drag crossed, 220 ms of a frame.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -2070,6 +2083,31 @@ tree's first, whole layout found**, which a box keeps for its lifetime: one
 no whole layout has laid out is laid out whole (`_wholeTree`), since a
 measure taken after a descendant was set aside would see less than is
 there.
+
+**What is above the viewport is kept as well, and the viewport holds
+still.** A pane that can follow what it shows (`anchorScrollBy`, react-x11
+2.45.0, CSS Scroll Anchoring 1) keeps the block at the top of its viewport
+where it is on screen: `anchorAt` finds the block as the document is drawn
+(`_shown`), and after a layout at another width `_keepAnchor` asks the pane
+to move its offset by as far as the layout moved the block, in the same
+pass. So a drag keeps the blocks that ended above the viewport as they were
+(`keepAbove`, by the place each child of a flow was last laid out at,
+`FLOW_PLACE`) and lays out from there. The text above a paragraph half way
+down an article comes to more lines or fewer at every step, and laying it
+out was most of the step. Three things are load-bearing. **A layout at a
+fraction of the width the document is drawn at is a question about its
+size**, core's content floors asking, so it is laid out whole, and so is
+the layout after it: the places a question leaves belong to no layout that
+is drawn (`_questioned`). **A frame may lay the document out more than
+once**, so the anchor is the one drawn last and the pane is asked only for
+what it has not been asked yet (`_frameAnchor.asked`). And **a breakpoint's
+fresh tree has no places to keep**, so it is laid out from the top down to
+where the anchor lands, and as far past it as the layout would have gone
+(`LayoutContext.reach`). The whole layout a drag owes waits for the drag to
+end where the window says one is under way (`liveResizing`, which a
+`<Frame>`'s pane hears from its host, react-x11 2.45.0): a hand that pauses
+is still dragging, and a long document laid out whole at each pause held
+the next frame 60 to 100 ms.
 
 **A box drawn on a surface of its own keeps the surface, keyed on its
 `Box`.** X11 draws a turned box with text in it on a surface
