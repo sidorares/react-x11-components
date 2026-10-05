@@ -6945,18 +6945,23 @@ function paintBackgroundImage(
     }
   } else if (tiles <= MAX_TILES) {
     // each tile's edges on the pixels they fall nearest, so tiles `space`
-    // sets apart or `round` sizes to a fraction meet without a seam
+    // sets apart or `round` sizes to a fraction meet without a seam; and
+    // one at another size than the image's from a raster kept at it
+    // (`drawRaster`), as an `<img>` is: at 2x every tile is
     for (let y = fromY; y < toY; y += stepY) {
       const top = Math.round(y);
       const height = Math.round(y + ih) - top;
       for (let x = fromX; x < toX; x += stepX) {
         const left = Math.round(x);
-        ctx.drawImage!(
+        drawRaster(
+          ctx,
           loaded.image,
           left,
           top,
           Math.round(x + iw) - left,
           height,
+          options,
+          area,
         );
       }
     }
@@ -8723,7 +8728,20 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
         box.style.colorScheme,
         options,
       );
-    } else drawRaster(ctx, image, at.x, at.y, at.w, at.h, options);
+    } else {
+      // what of a large one is drawn: its box within the damage
+      const damage = options.damage;
+      const within = damage
+        ? {
+            x: Math.max(x, damage.x),
+            y: Math.max(y, damage.y),
+            w: Math.min(x + w, damage.x + damage.width) - Math.max(x, damage.x),
+            h:
+              Math.min(y + h, damage.y + damage.height) - Math.max(y, damage.y),
+          }
+        : { x, y, w, h };
+      drawRaster(ctx, image, at.x, at.y, at.w, at.h, options, within);
+    }
     if (clipped) ctx.restore();
     return;
   }
@@ -8923,6 +8941,7 @@ function drawRaster(
   w: number,
   h: number,
   options: PaintOptions,
+  within: { x: number; y: number; w: number; h: number } | null = null,
 ): void {
   const own = image as { width?: unknown; height?: unknown };
   if (
@@ -8934,6 +8953,14 @@ function drawRaster(
     Number.isInteger(x) &&
     Number.isInteger(y)
   ) {
+    if (
+      w * h > RASTER_TILE * RASTER_TILE &&
+      Number.isInteger(w) &&
+      Number.isInteger(h)
+    ) {
+      drawRasterTiles(ctx, image, x, y, w, h, options, within);
+      return;
+    }
     const kept = options.drawingKept(
       `image|${imageId(image as object)}|${w}x${h}`,
       Math.ceil(w),
@@ -8946,6 +8973,78 @@ function drawRaster(
     }
   }
   ctx.drawImage!(image, x, y, w, h);
+}
+
+/** The side of a tile a large raster is kept in (`drawRasterTiles`), in
+ *  device pixels: a tile is a quarter of what the kept drawings' cache
+ *  takes in one surface. */
+const RASTER_TILE = 1024;
+
+/**
+ * A raster image too large to keep on one surface at the size it is drawn
+ * at, kept a tile of `RASTER_TILE` device pixels at a time, and only the
+ * tiles that reach `within` drawn — each the image drawn at its whole size
+ * on the tile's surface, moved by the tile's corner, so a tile copied is
+ * the image drawn there again, pixel for pixel. A tile not kept yet is the
+ * image drawn under a clip to it, and where none is, the image drawn once.
+ * Zen Garden 101's page is a 1972 by 667 GIF behind the whole document,
+ * and at 2x CoreGraphics resampled all of it at every paint: 4 to 6 ms of
+ * each frame of a resize, which copies of its tiles take a fraction of.
+ */
+function drawRasterTiles(
+  ctx: PaintContext,
+  image: unknown,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  options: PaintOptions,
+  within: { x: number; y: number; w: number; h: number } | null,
+): void {
+  const id = imageId(image as object);
+  // the tiles that reach what is painted, of those that make the image
+  let left = 0;
+  let top = 0;
+  let right = Math.ceil(w / RASTER_TILE);
+  let bottom = Math.ceil(h / RASTER_TILE);
+  if (within) {
+    left = Math.max(left, Math.floor((within.x - x) / RASTER_TILE));
+    top = Math.max(top, Math.floor((within.y - y) / RASTER_TILE));
+    right = Math.min(right, Math.ceil((within.x + within.w - x) / RASTER_TILE));
+    bottom = Math.min(
+      bottom,
+      Math.ceil((within.y + within.h - y) / RASTER_TILE),
+    );
+  }
+  const missed: { x: number; y: number; w: number; h: number }[] = [];
+  let tiles = 0;
+  for (let j = top; j < bottom; j += 1) {
+    for (let i = left; i < right; i += 1) {
+      tiles += 1;
+      const tx = i * RASTER_TILE;
+      const ty = j * RASTER_TILE;
+      const tw = Math.min(RASTER_TILE, w - tx);
+      const th = Math.min(RASTER_TILE, h - ty);
+      const kept = options.drawingKept!(
+        `image|${id}|${w}x${h}|${i},${j}`,
+        tw,
+        th,
+        (sctx) => sctx.drawImage!(image, -tx, -ty, w, h),
+      );
+      if (kept) ctx.drawImage!(kept, x + tx, y + ty);
+      else missed.push({ x: x + tx, y: y + ty, w: tw, h: th });
+    }
+  }
+  if (missed.length === 0) return;
+  if (missed.length === tiles || !canClip(ctx)) {
+    ctx.drawImage!(image, x, y, w, h);
+    return;
+  }
+  for (const tile of missed) {
+    pushClip(ctx, tile, null);
+    ctx.drawImage!(image, x, y, w, h);
+    ctx.restore();
+  }
 }
 
 /** What makes the surface a masked element inside a drawing is drawn on:
