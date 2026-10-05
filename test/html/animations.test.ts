@@ -743,6 +743,55 @@ metric(
 );
 
 metric(
+  'a frame of the animations waits once the paint it is owed is two frames late, and is made anyway a quarter of a second on',
+  async (t) => {
+    const doc = await running(
+      t,
+      '<style>body { margin: 0; font: 14px sans-serif }' +
+        '@keyframes m { from { text-indent: 100% } to { text-indent: -100% } }' +
+        '#a { position: absolute; top: 30px; width: 150px; height: 20px;' +
+        ' overflow: hidden; white-space: nowrap;' +
+        ' animation: m 1600ms linear infinite }</style>' +
+        '<div id="a">a marquee name</div>',
+      300,
+    );
+    const el = doc.el as unknown as {
+      _rebuildFrame(reach: unknown): void;
+      paint(ctx: unknown): void;
+    };
+    const built = t.mock.method(el, '_rebuildFrame');
+    // a window that paints nothing: a server slower than the clock
+    const paint = t.mock.method(el, 'paint', () => {});
+    await doc.at(16);
+    assert.strictEqual(built.mock.callCount(), 1, 'the first frame is made');
+    await doc.at(32);
+    assert.strictEqual(built.mock.callCount(), 2, 'and one ahead of the paint');
+    await doc.at(208);
+    assert.strictEqual(
+      built.mock.callCount(),
+      2,
+      'and none while its paint is late',
+    );
+    await doc.at(272);
+    assert.strictEqual(
+      built.mock.callCount(),
+      3,
+      'until a quarter of a second has gone by',
+    );
+    await doc.at(304);
+    const waiting = built.mock.callCount();
+    await doc.at(400);
+    assert.strictEqual(built.mock.callCount(), waiting, 'and it waits again');
+    // the window paints again: the next frame is made at the clock's next
+    paint.mock.restore();
+    el.paint(doc.result.ctx);
+    await doc.at(432);
+    const before = waiting;
+    assert.ok(built.mock.callCount() > before, 'a paint lets the next one go');
+  },
+);
+
+metric(
   'a frame that lays out a box in the flow again repaints the document',
   async (t) => {
     const doc = await running(
