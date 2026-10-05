@@ -1951,7 +1951,18 @@ scroll, as the paint and the hit test move it; and a `::before` or an
 `::after` has no element in `styles`, so `_changedOutOfFlow` compares its
 own box. Zen Garden 215's starburst turns and its robot rises, both fixed
 pseudo-elements, and neither showed a frame until a scroll repainted them.
-`animate={false}` draws each animation at rest, which is how the Zen
+**A frame waits for the window once it is two frames behind.** The clock
+asks for a frame every 16 ms; a server slower than that painted 219's
+every sixth, and the document built its boxes for the five between, which
+nobody saw. So a frame that asked for a repaint notes when
+(`_owedSince`, counted through an `invalidate` override), the frame after
+it is made anyway, one ahead being a pipeline, and the next waits for the
+paint, which asks for it, or a quarter of a second, for a document nothing
+paints. Made only after each paint, 219 lost a third of its frames on a
+Wayland window that kept up; one ahead, it lost none and built half as
+often on the slow one. **Anything new that a frame claims damage through
+goes through `invalidate`**, which it does unless it reaches past the
+node. `animate={false}` draws each animation at rest, which is how the Zen
 Garden bench runs `<Html>`.
 
 **And what an animation sets acts as though `will-change` named it**,

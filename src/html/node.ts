@@ -4105,6 +4105,31 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     // a build is coming, and styles every animated element at its time
     if (!this._cascade || !tree || this._stale !== Stale.Nothing) return;
+    // A repaint a frame asked for two frames ago is not painted yet: the
+    // window is drawing slower than the clock, and a frame made now would
+    // be made again before anyone saw it. On a slow server most frames were
+    // — the Zen Garden's 219 built its boxes 53 times a second and was
+    // shown 9. So it waits for the paint, which asks for the next frame. One
+    // frame ahead of the window is no waste, but a pipeline, and a window
+    // that keeps up never waits: made only after each paint, 219 ran at 18
+    // frames a second on Wayland where it ran at 35. And it waits no longer
+    // than `PAINT_WAIT_MS`: a document scrolled out of its pane, or in a
+    // window nothing draws, paints nothing, and runs on at that pace.
+    const owed = this._owedSince;
+    const late = owed >= 0 ? animationClock.now() - owed : 0;
+    if (late >= PAINT_LATE_MS && late < PAINT_WAIT_MS) {
+      this._waitingForPaint = true;
+      this._frameAt = owed + PAINT_WAIT_MS;
+      this._frameTimer = animationClock.arm(
+        this._frame,
+        Math.max(1, this._frameAt - animationClock.now()),
+      );
+      return;
+    }
+    // made anyway: what it owes is counted from this frame
+    if (late >= PAINT_WAIT_MS) this._owedSince = -1;
+    this._waitingForPaint = false;
+    const claims = this._claims;
     const { reach, generated } = this._animationReach(tree);
     if (
       reach.size &&
@@ -4116,8 +4141,29 @@ export class HtmlViewNode extends Node {
     ) {
       this._rebuildFrame(reach);
     }
+    if (this._claims !== claims && this._owedSince < 0) {
+      this._owedSince = animationClock.now();
+    }
     this._scheduleFrame();
   };
+
+  /** When a frame of the animations first asked for a repaint the window
+   *  has not painted since, on the animation clock; -1 where none is owed
+   *  (`_frame`). */
+  private _owedSince = -1;
+  /** Whether a frame is waiting for that paint (`_frame`, `paint`). */
+  private _waitingForPaint = false;
+  /** Repaints asked for, which a frame compares across its work. */
+  private _claims = 0;
+
+  override invalidate(
+    layout?: boolean,
+    damage?: Node | Rect | null,
+    reason?: string,
+  ): void {
+    this._claims += 1;
+    super.invalidate(layout, damage, reason);
+  }
 
   /**
    * A frame that changed what layout reads: the boxes built again around
@@ -4430,6 +4476,13 @@ export class HtmlViewNode extends Node {
 
   override paint(ctx: Context2D): void {
     super.paint(ctx); // background, border, clip to `abs`
+    // what a frame of the animations asked for is being painted: the next
+    // is made as soon as the clock has one (`_frame`)
+    this._owedSince = -1;
+    if (this._waitingForPaint) {
+      this._waitingForPaint = false;
+      this._scheduleFrame();
+    }
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
     if (!tree) return;
@@ -6039,6 +6092,15 @@ const HOVER_RESTYLE_LIMIT = 300;
  *  tenth of a second, which is what WebKit waits after a scroll before it
  *  sends the mouse move that updates its own. */
 const HOVER_REST_MS = 100;
+
+/** How late the paint a frame of the animations asked for may be before
+ *  the next waits for it — two frames: one ahead of the window is a
+ *  pipeline (`_frame`). */
+const PAINT_LATE_MS = 32;
+
+/** How long a frame of the animations waits for an owed paint before it is
+ *  made anyway (`_frame`). */
+const PAINT_WAIT_MS = 250;
 
 const timers = globalThis as {
   setTimeout?(fn: () => void, ms: number): unknown;
