@@ -209,6 +209,8 @@ export interface PaintContext extends FillContext {
   shadowOffsetX?: number;
   shadowOffsetY?: number;
   drawImage?(image: unknown, ...args: number[]): void;
+  /** Transparent again, where the context draws on a surface. */
+  clearRect?(x: number, y: number, width: number, height: number): void;
   /** An image drawn through a 3×3 projection, row-major, in one draw, its
    *  pixel (u, v) where the projection takes it and the matrix then: the
    *  Wayland context's, which interpolates in perspective on the GPU, and
@@ -287,6 +289,12 @@ export interface SpriteSource {
   kept(box: Box, width: number, height: number, key: string): Offscreen | null;
   /** Whether an animation is under way on `box`'s element. */
   animates(box: Box): boolean;
+  /** Whether an animation is under way on what the box holds, which paints
+   *  it again at each of its frames: it keeps a surface however large. */
+  animatesWithin?(box: Box): boolean;
+  /** What a kept surface holds that a build since changed, in the
+   *  document's coordinates, handed over once (`SpriteStore.carry`). */
+  stale?(box: Box): Rect[] | null;
   /** A transparent surface to keep for `box` from now on, to be drawn under
    *  `key` — while it animates, where `animated`, and otherwise until what
    *  it draws changes: null where the surface would not fit, and the box is
@@ -1717,6 +1725,12 @@ function drawProjected(
   Y0 = Math.max(Math.floor(Y0), -FIXED_LIMIT);
   X1 = Math.min(Math.ceil(X1), FIXED_LIMIT);
   Y1 = Math.min(Math.ceil(Y1), FIXED_LIMIT);
+  // The tiles are cut from all of it, whatever the bound, and those the
+  // bound misses are passed over before they are cut again: a paint of part
+  // of the box draws the very tiles a paint of all of it does there. Cut
+  // from the bound instead, a repaint drew it through other matrices, a
+  // level or a few apart from what was around it.
+  const whole = [X0, Y0, X1, Y1];
   if (bound) {
     X0 = Math.max(X0, Math.floor(bound.x));
     Y0 = Math.max(Y0, Math.floor(bound.y));
@@ -1766,13 +1780,14 @@ function drawProjected(
   // at 'low' (react-x11's `imageSmoothingQuality`, windowkit/appkit#109).
   if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'low';
   const area = { x0, y0, x1: x0 + width, y1: y0 + height };
-  const tiles = [X0, Y0, X1, Y1];
+  const tiles = whole;
   let made = 1;
   while (tiles.length) {
     const by = tiles.pop()!;
     const bx = tiles.pop()!;
     const ay = tiles.pop()!;
     const ax = tiles.pop()!;
+    if (bx <= X0 || ax >= X1 || by <= Y0 || ay >= Y1) continue;
     const last = made >= TILES_MOST;
     const fit = tileFit(p, back, ax, ay, bx, by, area, tolerance, last);
     if (fit === MISSES) continue;
@@ -1788,9 +1803,12 @@ function drawProjected(
       }
       continue;
     }
+    // what of the tile the bound holds
+    const cx = Math.max(ax, X0);
+    const cy = Math.max(ay, Y0);
     ctx.save();
     ctx.beginPath!();
-    ctx.rect!(ax, ay, bx - ax, by - ay);
+    ctx.rect!(cx, cy, Math.min(bx, X1) - cx, Math.min(by, Y1) - cy);
     ctx.clip!();
     ctx.transform!(fit[0], fit[1], fit[2], fit[3], fit[4], fit[5]);
     ctx.drawImage!(surface, x0, y0);
@@ -2138,21 +2156,73 @@ function spriteFor(
   if (through?.length === 6 && !fitsFixedPoint(through, x0, y0)) return null;
   const key = spriteKey(box, options, through, left - x0, top - y0);
   let surface = sprites.kept(box, w, h, key);
-  if (!surface) {
-    const animated = sprites.animates(box);
+  const on = (): PaintOptions =>
+    through ? onSurface(options, x0, y0, w, h) : inGroup(options, x0, y0, w, h);
+  if (surface) {
+    const stale = sprites.stale?.(box);
+    if (stale?.length) {
+      repaintStale(surface, box, on(), options, x0, y0, w, h, stale);
+    }
+  } else {
+    // A box painted again at every frame of an animation inside it keeps
+    // its surface however large, while the animation runs: what changes is
+    // painted again on it, and the rest is not (`repaintStale`).
+    const animated =
+      sprites.animates(box) || (sprites.animatesWithin?.(box) ?? false);
     if (!animated && w * h > KEPT_STILL) return null;
     if (drawsAgainstViewport(box)) return null;
     surface = sprites.keep(box, w, h, key, animated);
     if (!surface) return null;
-    paintUnfaded(
-      surface.getContext('2d') as PaintContext,
-      box,
-      through
-        ? onSurface(options, x0, y0, w, h)
-        : inGroup(options, x0, y0, w, h),
-    );
+    paintUnfaded(surface.getContext('2d') as PaintContext, box, on());
   }
   return { surface, x: x0, y: y0, width: w, height: h };
+}
+
+/**
+ * The part of a box's kept surface a build said changed — the ink, before
+ * and after, of what moved inside the box, in the document's coordinates —
+ * cleared and painted again, and the rest left as it is. One region round
+ * them all: the boxes a damage reaches are painted whole, and what is
+ * outside it is clipped away.
+ */
+function repaintStale(
+  surface: Offscreen,
+  box: Box,
+  on: PaintOptions,
+  options: PaintOptions,
+  x0: number,
+  y0: number,
+  width: number,
+  height: number,
+  stale: Rect[],
+): void {
+  const ctx = surface.getContext('2d') as PaintContext;
+  if (!ctx.clearRect || !ctx.beginPath || !ctx.rect || !ctx.clip) return;
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  for (const r of stale) {
+    x1 = Math.min(x1, r.x);
+    y1 = Math.min(y1, r.y);
+    x2 = Math.max(x2, r.x + r.width);
+    y2 = Math.max(y2, r.y + r.height);
+  }
+  // a pixel round it: what is drawn at the edge of a box is sampled from
+  // beside it
+  const ax = Math.max(0, Math.floor(x1 + options.originX) - x0 - 1);
+  const ay = Math.max(0, Math.floor(y1 + options.originY) - y0 - 1);
+  const bx = Math.min(width, Math.ceil(x2 + options.originX) - x0 + 1);
+  const by = Math.min(height, Math.ceil(y2 + options.originY) - y0 + 1);
+  if (!(bx > ax && by > ay)) return;
+  const area = { x: ax, y: ay, width: bx - ax, height: by - ay };
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.x, area.y, area.width, area.height);
+  ctx.clip();
+  ctx.clearRect(area.x, area.y, area.width, area.height);
+  paintUnfaded(ctx, box, { ...on, damage: area });
+  ctx.restore();
 }
 
 /**
