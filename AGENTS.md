@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.42.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.42.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.43.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.43.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -702,6 +702,22 @@ it up. **The floor is a running one and moves often** — every move since
   of a Zen Garden card's hover went from 22 ms to 12 on macOS, and to 4
   while its glow is on the layer. A core without it turns such a part down
   as no sprite at all, warning, so the floor moves with the feature.
+- `^2.43.0` — a surface on Wayland drawn as it was when it is destroyed
+  straight after (react-x11#887): the draw was still in the window's batch
+  when its texture went, and sampled nothing, so a surface `<Html>` drew
+  and let go in one paint came out an opaque black box — Zen Garden 219's
+  header was one. That is why the floor moves. The same release has
+  `drawImageProjected` on the Wayland context (#888), an image drawn
+  through a 3×3 projection as one quad, and `drawProjected` hands a box in
+  perspective to it where it was a few hundred clipped tiles, each a GL
+  batch: 219's sidebar went from 12 frames a second to 25 there. It is
+  read at run time, so a context without it still tiles. The lockfile
+  holds ntk at 8.23.2 with it: an image read through a transform keeps the
+  picture state it was read with (sidorares/ntk#534), which halved the
+  requests a surface drawn a tile at a time costs, and a path clip's
+  coverage is rasterized in the process and its mask kept across restores
+  (#536), where glamor read back a pixmap for every clip's traps — the
+  rounded rows of 219's marquees cost Xwayland 53 ms a frame and cost 1.2.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
