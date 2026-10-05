@@ -573,6 +573,13 @@ export class ImageSources {
     return choice.chosen;
   }
 
+  /** Whether the image an element chose is on its way: what it shows
+   *  meanwhile, if anything, is the one it chose before. */
+  pending(el: Element): boolean {
+    const chosen = this._choices.get(el)?.chosen;
+    return !!chosen && this._store.state(chosen.url) === 'pending';
+  }
+
   /**
    * The element whose `width` and `height` size an `<img>` (HTML 15.4.3):
    * the `<source>` it chose, where that has either, and the `<img>`

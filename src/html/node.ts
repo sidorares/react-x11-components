@@ -107,6 +107,7 @@ import {
   SHIFTED_LINES,
   TEXT_SHIFTS,
   columned,
+  intrinsicsOf,
   textFade,
 } from './layout/boxes.js';
 import type {
@@ -631,6 +632,7 @@ export class HtmlViewNode extends Node {
           // nothing to restyle, but a first rendering may have waited on it
           if (!this._tree) this._invalidate(Stale.Style);
         } else if (what === 'image' && !layout) this._imagePainted();
+        else if (what === 'image') this._imageArrived();
         else
           this._invalidate(what === 'stylesheet' ? Stale.Style : Stale.Boxes);
       },
@@ -896,6 +898,75 @@ export class HtmlViewNode extends Node {
       this.spritesChanged();
     }
     this.invalidate(false, this, 'content');
+  }
+
+  /**
+   * An image arrived that something's size may be laid out from, after the
+   * boxes were built. An `<img>` built before its image was in, at the size
+   * its attributes said, takes its image's size in place: what a layout
+   * reads, and what `object-fit` fits the picture by. Where that moves no
+   * box — the same size, or a width and a height of the box's own, which
+   * the attributes give it unless a rule says otherwise — it is painted
+   * again, as an image a background names is, and laid out again where it
+   * can. Only an element whose box is another kind with its image
+   * (`awaitingKind`), or a marker or generated content sized by it, is
+   * built again. Wikipedia says how big each image of an article is, and
+   * its article on the X Window System was built and laid out again eleven
+   * times as they came in, at some 180 ms a time on a Mac.
+   */
+  private _imageArrived(): void {
+    const tree = this._tree;
+    if (
+      !tree ||
+      this._stale >= Stale.Boxes ||
+      this._contentImagesArrived(tree) ||
+      tree.awaitingKind.some((el) => this._imageSize(el))
+    ) {
+      this._invalidate(Stale.Boxes);
+      return;
+    }
+    let moves = false;
+    const s = this._scale;
+    // A box takes the size of what its element shows now, unless what it
+    // chose is still on its way, which it shows the one before in place of.
+    const take = (box: Box): boolean => {
+      const el = box.el!;
+      const size = this._imageSize(el);
+      if (!size || this._imagePending(el)) return false;
+      const next = intrinsicsOf(size, s);
+      if (!sameIntrinsic(box.intrinsic, next) && !sizedAnyway(box)) {
+        moves = true;
+      }
+      box.intrinsic = next;
+      return true;
+    };
+    let kept = 0;
+    for (const box of tree.awaiting) {
+      if (!take(box)) tree.awaiting[kept++] = box;
+    }
+    tree.awaiting.length = kept;
+    // and an image that chose another source since it was built, at a
+    // resize or a laid-out `sizes`, and showed the one before until now
+    const pictures = this._source.facts().pictures;
+    if (pictures.length) {
+      const boxes = this._firstBoxesOf(tree);
+      for (const el of pictures) {
+        const box = boxes.get(el);
+        if (box?.kind === 'replaced' && !tree.awaiting.includes(box)) {
+          take(box);
+        }
+      }
+    }
+    this._imagePainted();
+    if (moves) this._invalidate(Stale.Layout);
+  }
+
+  /** Whether the image an element shows is still to come: its own, or the
+   *  one it chose, which it shows the one before in place of until then. */
+  private _imagePending(el: Element): boolean {
+    return choosesSource(el)
+      ? this._images.pending(el)
+      : this._resources.state(imageUrlOf(el) ?? '') === 'pending';
   }
 
   /** Whether an image generated content names arrived as it was asked for,
@@ -1584,6 +1655,7 @@ export class HtmlViewNode extends Node {
             kept,
             scale: this._scale,
             imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
+            imagePending: (el) => this._imagePending(el),
             urlSize: (url) => this._resources.imageSize(url),
             faceAscent: (style) => {
               const fonts = this._fonts();
@@ -5036,6 +5108,34 @@ function sameRect(a: Rect | null, b: Rect | null): boolean {
   return (
     a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
   );
+}
+
+/** Whether two intrinsic sizes are one. */
+function sameIntrinsic(a: Box['intrinsic'], b: Box['intrinsic']): boolean {
+  return (
+    a === b ||
+    (!!a &&
+      !!b &&
+      a.width === b.width &&
+      a.height === b.height &&
+      a.missing === b.missing &&
+      a.ratio === b.ratio)
+  );
+}
+
+/**
+ * Whether a replaced box is the size its style names whatever its image's
+ * is: a width and a height that are lengths, as an `<img>`'s attributes
+ * make them, where nothing takes either as a share or a suggestion. A
+ * percentage is a share of something a shrink-to-fit width is measured
+ * from the image to find, and a flex or grid item's automatic minimum is
+ * its content's size (CSS Flexbox 1, 4.5).
+ */
+function sizedAnyway(box: Box): boolean {
+  const { width, height } = box.style;
+  if (typeof width !== 'number' || typeof height !== 'number') return false;
+  const parent = box.parent;
+  return !parent || (parent.kind !== 'flex' && !parent.style.grid);
 }
 
 function sameRects(a: ControlRect[], b: ControlRect[]): boolean {

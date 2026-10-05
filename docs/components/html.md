@@ -124,12 +124,21 @@ things to know about when:
   late sheet restyles the document. A host that never answers a head sheet
   leaves the document undrawn, as a browser that never hears back does; a
   host that cannot fetch one returns `null`.
-- **An image changes the boxes only where its size lays something out**: an
-  `<img>` and the like, a list's marker, generated content. Arriving, such
-  an image builds the boxes again. One only painted — a background, a
-  border image, a mask — is painted where it lands, and the boxes stay as
-  they are: a page's backgrounds arriving one at a time over a network had
-  each built and laid out the whole document again.
+- **An image moves the boxes only where its size lays something out.** An
+  `<img>` built before its image arrived is the size its `width` and
+  `height` attributes say, and takes its image's size where it lands, in
+  place: where that moves no box — the size the attributes said, or a
+  width and a height the box has whatever its image is, which the
+  attributes give it unless a rule says otherwise — it is painted, and
+  elsewhere the document is laid out again. An element whose box is another
+  kind once its image is in — an `<object>`, an `<embed>`, a `<video>`'s
+  poster, an image button — and a list's marker or generated content sized
+  by one build the boxes again. One only painted — a background, a border
+  image, a mask — is painted where it lands. A page's backgrounds arriving
+  one at a time over a network had each built and laid out the whole
+  document again, and so did a Wikipedia article's images, which it says
+  the size of: eleven builds as they came in, some 180 ms each on a Mac,
+  where they are painted now.
 
 `@import` is asked for through the same seam, an import inside an import
 too, each sheet's rules standing where its `@import` does; a sheet that
