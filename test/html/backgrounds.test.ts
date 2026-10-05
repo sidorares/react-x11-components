@@ -877,6 +877,88 @@ metric(
 );
 
 metric(
+  'a large image drawn at another size is copied from tiles of a raster kept at it, pixel for pixel as the image drawn there',
+  async () => {
+    // Zen Garden 101's page is a 1972 by 667 GIF behind the whole
+    // document, which CoreGraphics resampled whole at 2x at every paint: 4
+    // to 6 ms of each frame of a resize. Too large for one kept surface,
+    // it is kept a tile at a time, and only the tiles that reach the paint
+    // are made. A background and an <img>, each placed so the window cuts
+    // it and reaches four of its tiles, two of them a few pixels wide.
+    const photo = pixelsPng(600, 600, (x, y) => [
+      (x * 37 + y * 11) % 256,
+      (x * x + y * 3) % 256,
+      (x ^ y) & 255,
+    ]);
+    const { result, el } = await renderWithBytes(
+      '<style>body{margin:0;height:620px;' +
+        'background:url(p.png) no-repeat -400px -300px}' +
+        'img{position:absolute;left:-200px;top:-250px;' +
+        'width:520px;height:520px}</style><img src="p.png">',
+      { 'p.png': photo },
+      600,
+      2,
+    );
+    let proto = Object.getPrototypeOf(result.ctx);
+    while (!Object.prototype.hasOwnProperty.call(proto, 'drawImage')) {
+      proto = Object.getPrototypeOf(proto);
+    }
+    const draw = proto.drawImage;
+    let resampled = 0;
+    proto.drawImage = function (this: unknown, ...args: unknown[]) {
+      const [image, , , w, h] = args as [
+        { width?: number; height?: number },
+        number,
+        number,
+        number?,
+        number?,
+      ];
+      if (w !== undefined && (w !== image.width || h !== image.height)) {
+        resampled += 1;
+      }
+      return draw.apply(this, args);
+    };
+    const node = el as unknown as {
+      invalidate(all: boolean, by: unknown, why: string): void;
+      _drawings: {
+        kept: Map<string, { surface: { destroy?(): void } }>;
+        destroy(): void;
+      } | null;
+      _drawnOnce: Set<string>;
+    };
+    try {
+      const repaint = async () => {
+        resampled = 0;
+        node.invalidate(false, el, 'test');
+        return snapshot(result, el);
+      };
+      node._drawings?.destroy();
+      node._drawings = null;
+      node._drawnOnce.clear();
+      const first = await repaint();
+      assert.strictEqual(resampled, 2, 'drawn as they are, once each');
+      const second = await repaint();
+      assert.strictEqual(resampled, 8, 'four tiles of each are made');
+      const keys = [...node._drawings!.kept.keys()];
+      assert.strictEqual(keys.length, 8, keys.join(' '));
+      const third = await repaint();
+      assert.strictEqual(resampled, 0, 'and copied');
+      assert.strictEqual(bytesApart(first, second), 0, 'second');
+      assert.strictEqual(bytesApart(first, third), 0, 'third');
+      // a tile given up is drawn under a clip to it, beside the copies
+      const corner = keys.find((k) => k.endsWith('|1040x1040|1,1'))!;
+      node._drawings!.kept.get(corner)!.surface.destroy?.();
+      node._drawings!.kept.delete(corner);
+      const fourth = await repaint();
+      assert.strictEqual(resampled, 1, 'the one tile drawn itself');
+      assert.strictEqual(bytesApart(first, fourth), 0, 'fourth');
+    } finally {
+      proto.drawImage = draw;
+    }
+  },
+);
+
+metric(
   'a tile of a pixel covers a box it takes more than 4096 of',
   async () => {
     // a tile at a time stops at 4096 and draws the image once, at its
