@@ -110,6 +110,14 @@ export class SurfaceCache {
   }
 }
 
+/** A rectangle in the document's coordinates. */
+export interface StaleRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 interface Sprite {
   surface: SurfaceLike;
   width: number;
@@ -117,6 +125,8 @@ interface Sprite {
   key: string;
   /** Kept while its box animates, and given up once it does not. */
   animated: boolean;
+  /** What it holds that a build since changed, to paint again (`carry`). */
+  stale: StaleRect[] | null;
 }
 
 /**
@@ -191,13 +201,49 @@ export class SpriteStore {
       this.unavailable = true;
       return null;
     }
-    this.kept.set(box, { surface, width, height, key, animated });
+    this.kept.set(box, { surface, width, height, key, animated, stale: null });
     this.pixels += width * height;
     for (const oldest of this.kept.keys()) {
       if (this.pixels <= this.budget || oldest === box) break;
       this.drop(oldest);
     }
     return surface;
+  }
+
+  /**
+   * After a build that made every box again for a document that changed
+   * only where `move` says: each surface goes to the box that draws what it
+   * holds now, with what changed inside it marked to be painted again
+   * (`takeStale`), or is given up where `move` answers null. A box's
+   * surface is kept across the frames of an animation inside it rather
+   * than painted whole at each: Zen Garden 219's sidebar, turned in a
+   * perspective, was painted whole every frame for the eight marquees in
+   * it.
+   */
+  carry(
+    move: (box: object) => { box: object; stale: StaleRect[] } | null,
+  ): void {
+    for (const [box, sprite] of [...this.kept]) {
+      const to = move(box);
+      this.kept.delete(box);
+      if (!to) {
+        this.pixels -= sprite.width * sprite.height;
+        sprite.surface.destroy?.();
+        continue;
+      }
+      if (to.stale.length) {
+        sprite.stale = sprite.stale ? [...sprite.stale, ...to.stale] : to.stale;
+      }
+      this.kept.set(to.box, sprite);
+    }
+  }
+
+  /** What the surface kept for `box` holds out of date, handed over once. */
+  takeStale(box: object): StaleRect[] | null {
+    const sprite = this.kept.get(box);
+    const stale = sprite?.stale ?? null;
+    if (sprite) sprite.stale = null;
+    return stale;
   }
 
   /** Give up the surface kept for `box`, where one is. */

@@ -1900,7 +1900,11 @@ twice over, which shows as a seam, and tiles that overlap draw a fade
 twice. A tile is cut until its matrix is within a quarter of a logical
 pixel of the projection at its corners, across the way it bends; 219's
 panel at 35° is some 440 tiles, and they cost a repaint a few
-milliseconds. Behind the viewer is nothing (`inFront`). The tiles are drawn
+milliseconds. The tiles are cut from all of the box, whatever the damage,
+and those the damage misses are passed over before they are cut again, so
+a repaint of part of it draws the tiles a paint of all of it does there:
+cut from the damage, a repaint drew it a level or a few apart from what
+was around it. Behind the viewer is nothing (`inFront`). The tiles are drawn
 at `imageSmoothingQuality = 'low'`, bilinear, where the context has the
 setting: each tile's matrix is within a fraction of a pixel of the plane's,
 and on macOS a context's own `'medium'` resamples the whole surface for
@@ -2008,12 +2012,27 @@ there.
 `Box`.** X11 draws a turned box with text in it on a surface
 (`paintRaster`), and X11 and Wayland draw an element an opacity fades as a
 group on one (`paintGroup`). The surface is kept (`SpriteStore`) while the
-box animates, or while it is no larger than a card's, and each paint draws
+box animates, or something inside it does (`animatesWithin`), or while it
+is no larger than a card's, and each paint draws
 it through the matrix and at the opacity it has then — the Box-keyed
 cache the hover paragraph warns of, on a still page as much as a moving
 one, so it is forgotten wherever what a box draws can change. A build
 clears the store, and so does a
-layout at another width or under another viewport; `_restyleInPlace` drops
+layout at another width or under another viewport — **but for a frame's
+build that changed only what is out of the flow** (`_rebuildFrame`): each
+surface moves to the box that draws its element now, where that box is
+where the old one was and styled as it was, with the ink of what changed
+inside it marked to be cleared and painted again on it (`_carrySprites`,
+`repaintStale`), and the rest of it left as it is. Zen Garden 219's sidebar,
+turned in a perspective with eight marquees in it, was painted whole at
+every frame; where the context draws it as one quad (`drawImageProjected`),
+keeping it took 219 from 25 frames a second on Wayland to 35, and where it
+is drawn in tiles, the tiles are most of the frame and it gains little. Such a
+build lays a new tree out at the width the one before was laid out at
+(`_carryingFrom`), which the check for another width has to be told.
+**Anything new that a frame's build can change inside a box joins what
+`_carrySprites` marks stale**, or a kept surface shows it as it was.
+`_restyleInPlace` drops
 the surface of every box around one that draws something else now
 (`_restyledSprites`), and leaves a box its own where only its transform,
 opacity or `z-index` changed; the fraction of a pixel its corner falls on
