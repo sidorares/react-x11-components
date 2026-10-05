@@ -1674,7 +1674,16 @@ resampled, as a browser draws a layer in perspective — bilinearly, where
 the context can be asked to (`imageSmoothingQuality`), which on macOS
 costs each tile its own pixels where the context's own quality resampled
 the whole surface — and no line off by more than a quarter of a pixel
-where it crosses from one tile to the next.
+where it crosses from one tile to the next. A context that does draw an
+image through a perspective — react-x11's Wayland one, whose
+`drawImageProjected` is a single quad interpolated in perspective on the
+GPU — is handed the surface once instead, over the pixels the tiles would
+have covered, and the tiles are kept for one that declines it, where a
+corner of the box is behind the viewer. Zen Garden 219's sidebar, repainted
+at every frame by the marquees in it, was some 260 tiles a frame there: 12
+frames a second against 25 drawn whole, on a VM's GPU. X11 has no such
+call, since glamor draws RENDER's projective transform folded along its
+diagonal.
 On macOS such a box goes on a layer of its own instead, which the render
 server draws through the whole matrix on the GPU, still or moving (see
 "On macOS an animation a layer can carry runs in the render server").
