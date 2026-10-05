@@ -1827,8 +1827,11 @@ card's is kept while nothing animates it too, and a repaint draws it as
 it was. Whatever else changes what is on it paints it again: a hover
 inside it, a colour animating in it or with its turn, a box in it that
 turns on its own, a selection across its text, a translation that moves
-it by a fraction of a pixel, a resize. One kept for an animation is given
-up when the animation is over. The native contexts on macOS and Windows
+it by a fraction of a pixel, a resize that lays out what it holds
+otherwise. A resize that only moves it — a card of a fixed width in a
+column that narrows — keeps it, since everything in it, line for line,
+is where it was relative to its corner. One kept for an animation is
+given up when the animation is over. The native contexts on macOS and Windows
 draw a turned box through the matrix every frame, as they draw any box. A
 faded element's group, and a fade's kept one, are macOS's where its
 context says a faded surface is cheap, and on Windows each thing it draws

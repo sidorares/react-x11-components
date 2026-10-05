@@ -18,6 +18,7 @@ import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
+import { SpriteStore } from '../../src/html/surfaces.js';
 import {
   FONTS,
   SVG_NS,
@@ -32,6 +33,7 @@ import {
   rebuilt,
   render,
   render2x,
+  renderScrolled,
   renderWithBytes,
   snapshot,
   svgBytes,
@@ -620,6 +622,107 @@ metric(
       message: 'the border, half over the page',
     });
     assert.ok((await surfacesOfRepaint(t, node)) > 0, 'drawn on surfaces');
+  },
+);
+
+metric(
+  'a faded card a resize only moves keeps the surface it was drawn on',
+  async (t) => {
+    // A layout at another width threw every kept surface away, so a group
+    // was drawn again at each width of a drag. A card of a fixed width that
+    // a narrower column only moves is laid out as it was, line for line,
+    // relative to its corner, and its surface draws what it drew (`relaid`).
+    const { el, resize, result } = await renderScrolled(
+      '<style>body{margin:0}html{background:#ffffff}' +
+        '#c{opacity:.5;width:120px;margin:0 auto;padding:8px;' +
+        'background:#0000ff;color:#ffffff}</style>' +
+        '<div id="c"><div style="height:20px;background:#ff0000"></div>' +
+        '<p style="margin:0">a card</p></div>',
+      300,
+    );
+    const kept = () =>
+      (el as unknown as { _sprites: { size: number } | null })._sprites?.size ??
+      0;
+    assert.ok(kept() > 0, 'drawn on a kept surface');
+    const make = t.mock.method(SpriteStore.prototype, 'make');
+    await resize(300, 360);
+    assert.strictEqual(make.mock.callCount(), 0, 'and not drawn again');
+    assert.ok(kept() > 0, 'which it still has');
+    const moved = await snapshot(result, el);
+    assert.strictEqual(
+      bytesApart(moved, await rebuilt(result, el)),
+      0,
+      'where a build draws it',
+    );
+  },
+);
+
+metric(
+  'a faded box whose text a resize wraps again is drawn again',
+  async (t) => {
+    const { el, resize, result } = await renderScrolled(
+      '<style>body{margin:0}html{background:#ffffff}' +
+        '#c{opacity:.5;width:50%;background:#0000ff;color:#ffffff}</style>' +
+        '<div id="c">a line of words that wraps at one width and not at ' +
+        'the other</div>',
+      300,
+    );
+    const make = t.mock.method(SpriteStore.prototype, 'make');
+    await resize(300, 300);
+    assert.ok(make.mock.callCount() > 0, 'drawn again');
+    assert.strictEqual(
+      bytesApart(await snapshot(result, el), await rebuilt(result, el)),
+      0,
+      'as a build draws it',
+    );
+  },
+);
+
+metric(
+  'a surface given up is drawn on again at its size, transparent',
+  async () => {
+    // what a layout or a restyle gives up is kept until the paint ends, for
+    // a box asking for a surface the size it had to be drawn on again
+    // rather than one made (`release`, `reuse`), and destroyed then (`trim`)
+    const { result } = await render('<p>x</p>');
+    const store = new SpriteStore((result as unknown as { app: unknown }).app);
+    const first = store.make({}, 16, 16, 'k')!;
+    const ctx = first.getContext('2d') as {
+      fillStyle: string;
+      fillRect(x: number, y: number, w: number, h: number): void;
+      getImageData(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+        cb: (e: unknown, d: { data: Uint8ClampedArray }) => void,
+      ): void;
+    };
+    ctx.fillStyle = '#ff0000';
+    ctx.fillRect(0, 0, 16, 16);
+    store.clear();
+    const again = store.make({}, 16, 16, 'k');
+    assert.strictEqual(again, first, 'the surface given up');
+    const pixels = await new Promise<Uint8ClampedArray>((ok, fail) =>
+      ctx.getImageData(0, 0, 16, 16, (e, d) => (e ? fail(e) : ok(d.data))),
+    );
+    assert.ok(
+      pixels.every((v) => v === 0),
+      'transparent again',
+    );
+    assert.strictEqual(
+      store.make({}, 8, 8, 'k') === first,
+      false,
+      'not at another size',
+    );
+    store.clear();
+    store.trim();
+    assert.notStrictEqual(
+      store.make({}, 16, 16, 'k'),
+      first,
+      'and what no paint took is gone once one ends',
+    );
+    store.destroy();
   },
 );
 

@@ -528,7 +528,7 @@ export async function renderScrolled(
     await act(() => result.rerender(doc(height, w)));
     await act();
   };
-  return { el, resize };
+  return { el, resize, result };
 }
 
 /** The clips standing when a fill of this colour was made, innermost last. */

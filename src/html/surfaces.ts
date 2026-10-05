@@ -15,6 +15,8 @@ import { Surface } from 'react-x11/ntk';
 /** ntk's `Surface`, as this uses it. */
 export interface SurfaceLike {
   getContext(kind: '2d'): unknown;
+  /** Every pixel transparent again: what lets one be drawn on twice. */
+  clear?(): unknown;
   destroy?(): void;
 }
 
@@ -127,6 +129,8 @@ interface Sprite {
   animated: boolean;
   /** What it holds that a build since changed, to paint again (`carry`). */
   stale: StaleRect[] | null;
+  /** Where what the box holds was laid out when it was drawn, for `relaid`. */
+  shape: readonly number[] | null;
 }
 
 /**
@@ -145,6 +149,14 @@ export class SpriteStore {
   private readonly kept = new Map<object, Sprite>();
   private pixels = 0;
   private unavailable = false;
+  /**
+   * Surfaces given up since the last paint ended, by size, for `make` to
+   * draw on again rather than make one: a box laid out again at the same
+   * size, or restyled, asks for one the size it had. What no paint took is
+   * destroyed as it ends (`trim`).
+   */
+  private readonly free = new Map<string, SurfaceLike[]>();
+  private freePixels = 0;
 
   constructor(
     private readonly app: unknown,
@@ -190,18 +202,28 @@ export class SpriteStore {
     height: number,
     key: string,
     animated = false,
+    shape: readonly number[] | null = null,
   ): SurfaceLike | null {
     this.drop(box);
     const pixels = width * height;
     if (this.unavailable || !(width > 0 && height > 0)) return null;
     if (pixels > this.budget / 4) return null;
     // a new surface is transparent: ntk clears its pixmap as it makes it
-    const surface = newSurface(this.app, width, height);
+    const surface =
+      this.reuse(width, height) ?? newSurface(this.app, width, height);
     if (!surface) {
       this.unavailable = true;
       return null;
     }
-    this.kept.set(box, { surface, width, height, key, animated, stale: null });
+    this.kept.set(box, {
+      surface,
+      width,
+      height,
+      key,
+      animated,
+      stale: null,
+      shape,
+    });
     this.pixels += width * height;
     for (const oldest of this.kept.keys()) {
       if (this.pixels <= this.budget || oldest === box) break;
@@ -228,7 +250,7 @@ export class SpriteStore {
       this.kept.delete(box);
       if (!to) {
         this.pixels -= sprite.width * sprite.height;
-        sprite.surface.destroy?.();
+        this.release(sprite.surface, sprite.width, sprite.height);
         continue;
       }
       if (to.stale.length) {
@@ -246,13 +268,69 @@ export class SpriteStore {
     return stale;
   }
 
+  /**
+   * After a layout at another width, or under another viewport: the
+   * surfaces whose boxes `same` says laid out as they were when drawn are
+   * kept, and the rest given up. A layout that moves a box and leaves what
+   * it holds as it was — a card of a fixed width in a column a resize
+   * narrows — leaves its surface right, where every surface was thrown
+   * away and each box drawn again at each width of the drag.
+   */
+  relaid(same: (box: object, shape: readonly number[]) => boolean): void {
+    for (const [box, sprite] of [...this.kept]) {
+      if (!sprite.shape || !same(box, sprite.shape)) this.drop(box);
+    }
+  }
+
   /** Give up the surface kept for `box`, where one is. */
   drop(box: object): void {
     const sprite = this.kept.get(box);
     if (!sprite) return;
     this.kept.delete(box);
     this.pixels -= sprite.width * sprite.height;
-    sprite.surface.destroy?.();
+    this.release(sprite.surface, sprite.width, sprite.height);
+  }
+
+  /** A surface given up, kept for this paint to draw on again where it can
+   *  be made transparent and there is room, and destroyed where not. */
+  private release(surface: SurfaceLike, width: number, height: number): void {
+    const pixels = width * height;
+    if (!surface.clear || this.freePixels + pixels > this.budget) {
+      surface.destroy?.();
+      return;
+    }
+    const key = `${width}x${height}`;
+    const list = this.free.get(key);
+    if (list) list.push(surface);
+    else this.free.set(key, [surface]);
+    this.freePixels += pixels;
+  }
+
+  /** A surface given up at this size, transparent again; null where none. */
+  private reuse(width: number, height: number): SurfaceLike | null {
+    const key = `${width}x${height}`;
+    const list = this.free.get(key);
+    const surface = list?.pop();
+    if (!surface) return null;
+    if (!list!.length) this.free.delete(key);
+    this.freePixels -= width * height;
+    try {
+      surface.clear!();
+    } catch {
+      surface.destroy?.();
+      return null;
+    }
+    return surface;
+  }
+
+  /** Destroy what was given up and no paint drew on again: called as a
+   *  paint ends, so nothing outlives the frame that could have used it. */
+  trim(): void {
+    for (const list of this.free.values()) {
+      for (const surface of list) surface.destroy?.();
+    }
+    this.free.clear();
+    this.freePixels = 0;
   }
 
   /** Give up each surface kept for an animation whose box `animates` says
@@ -264,8 +342,16 @@ export class SpriteStore {
   }
 
   clear(): void {
-    for (const sprite of this.kept.values()) sprite.surface.destroy?.();
+    for (const sprite of this.kept.values()) {
+      this.release(sprite.surface, sprite.width, sprite.height);
+    }
     this.kept.clear();
     this.pixels = 0;
+  }
+
+  /** Every surface, kept or given up, destroyed: the element is going. */
+  destroy(): void {
+    this.clear();
+    this.trim();
   }
 }
