@@ -743,6 +743,53 @@ metric(
 );
 
 metric(
+  'a box turned in a perspective keeps its surface across the frames of an animation inside it, painting again only what moved, to the pixels a build draws',
+  async (t) => {
+    // Zen Garden 219's sidebar: a panel turned in a perspective, larger
+    // than a still surface is kept for, with marquees in it that build the
+    // document at every frame; and a box outside it moving too
+    const doc = await running(
+      t,
+      '<style>body { margin: 0; font: 14px sans-serif }' +
+        '@keyframes m { from { text-indent: 100% } to { text-indent: -100% } }' +
+        '@keyframes s { from { left: 0 } to { left: 100px } }' +
+        '#s { position: relative; width: 600px; height: 380px;' +
+        ' perspective: 800px }' +
+        '#w { position: absolute; left: 40px; top: 30px; width: 500px;' +
+        ' height: 300px; background: #224466; transform: rotateY(30deg) }' +
+        '#a { position: absolute; left: 20px; top: 40px; width: 300px;' +
+        ' height: 24px; overflow: hidden; white-space: nowrap;' +
+        ' color: #ffffff; background: #333333;' +
+        ' animation: m 160ms linear infinite }' +
+        '#c { position: absolute; left: 20px; top: 200px; width: 200px;' +
+        ' height: 40px; background: #aa0000 }' +
+        '#b { position: absolute; top: 360px; width: 30px; height: 15px;' +
+        ' background: #00aa00; animation: s 160ms linear infinite }</style>' +
+        '<div id="s"><div id="w"><div id="a">a marquee name</div>' +
+        '<div id="c"></div></div><div id="b"></div></div>',
+      640,
+    );
+    // a surface made for one paint, as the panel was painted at every frame
+    const fresh = t.mock.method(
+      doc.el as unknown as { _surface(w: number, h: number): unknown },
+      '_surface',
+    );
+    const carried = t.mock.method(SpriteStore.prototype, 'carry');
+    const { frames } = await framesAgainstBuilds(doc, [48, 96, 144]);
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[1][i]),
+      'it moved',
+    );
+    assert.ok(carried.mock.callCount() > 0, 'its surface was carried');
+    assert.strictEqual(
+      fresh.mock.callCount(),
+      0,
+      'and no surface made for a paint alone',
+    );
+  },
+);
+
+metric(
   'a frame of the animations waits once the paint it is owed is two frames late, and is made anyway a quarter of a second on',
   async (t) => {
     const doc = await running(

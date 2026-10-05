@@ -409,6 +409,8 @@ export class HtmlViewNode extends Node {
     kept: (box, width, height, key) =>
       this._sprites?.get(box, width, height, key) ?? null,
     animates: (box) => !!box.el && !box.pseudo && this._timeline.isLive(box.el),
+    animatesWithin: (box) => this._animatesWithin(box),
+    stale: (box) => this._sprites?.takeStale(box) ?? null,
     keep: (box, width, height, key, animated) =>
       (this._sprites ??= new SpriteStore(this.app)).make(
         box,
@@ -1609,7 +1611,9 @@ export class HtmlViewNode extends Node {
           again = true;
         }
         if (again) this._tree = build();
-        this._sprites?.clear();
+        // a frame's build keeps them, for `_rebuildFrame` to move to the new
+        // boxes or give up (`_carrySprites`)
+        if (this._carryingFrom === null) this._sprites?.clear();
         this._filtered?.staleAll();
         this._warmFaces(this._tree);
         this._textPoints = null;
@@ -1653,7 +1657,10 @@ export class HtmlViewNode extends Node {
         // changed, they come out where they were, and the surfaces kept for
         // them still hold them. A small document whose card turns at its
         // foot is laid out every frame of the turn.
-        if (target !== laidOutAt || viewportMoved) {
+        // a frame's build lays out a new tree, at the width the one before
+        // it was laid out at, where it keeps them
+        const from = this._carryingFrom ?? laidOutAt;
+        if (target !== from || viewportMoved) {
           this._sprites?.clear();
           this._filtered?.staleAll();
         }
@@ -3546,7 +3553,9 @@ export class HtmlViewNode extends Node {
     // keeps one from now on only where it is small enough to keep still
     this._sprites?.sweep((box) => {
       const el = (box as Box).el;
-      return !!el && this._timeline.isLive(el);
+      return (
+        !!el && (this._timeline.isLive(el) || this._animatesWithin(box as Box))
+      );
     });
     const next = this._animating()
       ? this._timeline.nextFrame(this._skipLifted)
@@ -4174,7 +4183,12 @@ export class HtmlViewNode extends Node {
     const beforeBoxes = this._firstBoxesOf(before);
     this._stale = Stale.Boxes;
     this._restyleOnly = new Set(reach);
-    this._prepare(width);
+    this._carryingFrom = width;
+    try {
+      this._prepare(width);
+    } finally {
+      this._carryingFrom = null;
+    }
     const after = this._tree;
     const changes =
       after &&
@@ -4184,6 +4198,7 @@ export class HtmlViewNode extends Node {
         ? this._changedOutOfFlow(before, beforeBoxes, after, reach)
         : null;
     if (changes) {
+      this._carrySprites(after!, changes);
       this._quietBuild = {
         before: serialOf(before),
         after: serialOf(after!),
@@ -4207,8 +4222,91 @@ export class HtmlViewNode extends Node {
       this._repaintInk(inks);
       return;
     }
+    this._sprites?.clear();
     this.invalidateMeasure('content');
     this.invalidate(true, this, 'props');
+  }
+
+  /** Where `_prepare` builds for a frame, the width the tree before it was
+   *  laid out at: the build and its layout keep the surfaces kept for
+   *  boxes, for `_carrySprites` to move or give up, rather than forgetting
+   *  them. Null otherwise. */
+  private _carryingFrom: number | null = null;
+
+  /**
+   * After a frame's build that changed only what `changes` names, out of the
+   * flow: each kept surface moves to the box that draws its element now,
+   * where that box is where the old one was and styled as it was, with the
+   * ink of what changed inside it, before and after, to be painted again on
+   * it (`repaintStale`); and the rest are given up, as a build gives up all
+   * of them. A change of the element itself gives its surface up.
+   */
+  private _carrySprites(after: BoxTree, changes: OutOfFlowChange[]): void {
+    const sprites = this._sprites;
+    if (!sprites?.size) return;
+    const afterBoxes = this._firstBoxesOf(after);
+    const inkOfBox = (b: Box): Rect => ({
+      x: b.boundsX,
+      y: b.boundsY,
+      width: b.boundsWidth,
+      height: b.boundsHeight,
+    });
+    sprites.carry((key) => {
+      const was = key as Box;
+      const el = was.el;
+      const which = was.pseudo;
+      if (!el || (which && which !== 'before' && which !== 'after'))
+        return null;
+      const now = which
+        ? this._pseudoBoxOf(after, el, which)
+        : afterBoxes.get(el);
+      if (
+        !now ||
+        now.style !== was.style ||
+        now.x !== was.x ||
+        now.y !== was.y ||
+        now.width !== was.width ||
+        now.height !== was.height
+      ) {
+        return null;
+      }
+      const stale: Rect[] = [];
+      for (const change of changes) {
+        const pseudo = change.now?.pseudo || change.was?.pseudo || '';
+        if (change.el === el) {
+          // the element itself, or the pseudo-element the surface is of
+          if (!pseudo || pseudo === was.pseudo) return null;
+          // a `::before` or an `::after` inside its element's box
+          if (was.pseudo) continue;
+        } else {
+          if (was.pseudo) continue;
+          let inside = false;
+          for (let at = flatParentOf(change.el); at; at = flatParentOf(at)) {
+            if (at === el) {
+              inside = true;
+              break;
+            }
+          }
+          if (!inside) continue;
+        }
+        for (const b of [change.was, change.now])
+          if (b) stale.push(inkOfBox(b));
+      }
+      return { box: now, stale };
+    });
+  }
+
+  /** Whether an animation is under way on an element inside `box`'s own,
+   *  which paints it again at each frame (`SpriteSource.animatesWithin`). */
+  private _animatesWithin(box: Box): boolean {
+    const el = box.el;
+    if (!el || box.pseudo || !this._animating()) return false;
+    for (const { el: at } of this._timeline.live(this._skipLifted)) {
+      for (let p = flatParentOf(at as Element); p; p = flatParentOf(p)) {
+        if (p === el) return true;
+      }
+    }
+    return false;
   }
 
   /**
