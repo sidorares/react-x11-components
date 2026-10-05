@@ -1875,8 +1875,8 @@ left of itself on macOS, where every box is drawn through its matrix.
 `PaintOptions.matrix` is the matrix the context draws through, and a box
 painted on a surface as it was laid out (`onSurface`) has none.
 
-**Out of the plane, `placedMatrix` is a projection, and no context draws
-through one.** A style out of the plane — by a function of its list,
+**Out of the plane, `placedMatrix` is a projection, and only one context
+draws through one.** A style out of the plane — by a function of its list,
 `translate`'s or `scale`'s depth, or `rotate` about an axis in the page —
 is a 4×4 (`css/transform3d.ts`). **Ask `outOfPlane`, and `drawnThrough`
 for whether a box is painted through a matrix at all, never the fields**:
@@ -1904,7 +1904,14 @@ milliseconds. The tiles are cut from all of the box, whatever the damage,
 and those the damage misses are passed over before they are cut again, so
 a repaint of part of it draws the tiles a paint of all of it does there:
 cut from the damage, a repaint drew it a level or a few apart from what
-was around it. Behind the viewer is nothing (`inFront`). The tiles are drawn
+was around it. Behind the viewer is nothing (`inFront`). Where the context
+has `drawImageProjected` — react-x11's Wayland one, a quad interpolated in
+perspective on the GPU — the surface is handed to it once instead, clipped
+to the pixels the tiles would cover, and tiled only where it answers false
+for a corner behind the viewer: a tile there is a GL batch of its own,
+since each is clipped, and 219's sidebar ran at 12 frames a second in tiles
+and 25 drawn whole. **Anything new that draws a surface through a
+projection goes through `drawProjected`**, so it gets both. The tiles are drawn
 at `imageSmoothingQuality = 'low'`, bilinear, where the context has the
 setting: each tile's matrix is within a fraction of a pixel of the plane's,
 and on macOS a context's own `'medium'` resamples the whole surface for

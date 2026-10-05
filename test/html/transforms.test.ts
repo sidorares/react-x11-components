@@ -1017,6 +1017,95 @@ metric(
   },
 );
 
+/** A context that records how a box in perspective reaches it: tiles, each a
+ *  `drawImage`, or one `drawImageProjected` answering `projects`. */
+function projectingContext(projects: boolean) {
+  const tiles: unknown[] = [];
+  const projected: { image: { width: number; height: number }; m: number[] }[] =
+    [];
+  const own = {
+    drawImage(image: unknown) {
+      tiles.push(image);
+    },
+    drawImageProjected(image: { width: number; height: number }, m: number[]) {
+      projected.push({ image, m: [...m] });
+      return projects;
+    },
+  };
+  const ctx = new Proxy(own, {
+    get: (target, key) =>
+      key in target ? Reflect.get(target, key) : () => undefined,
+  });
+  return { ctx, tiles, projected };
+}
+
+metric(
+  'a box in perspective is one projected draw where the context has one, its surface placed where the box is drawn, and no tiles',
+  async () => {
+    const { node } = await render(
+      PAGE +
+        '<style>#s{position:relative;width:400px;height:400px;' +
+        'perspective:500px}#w{position:absolute;left:50px;top:100px;' +
+        'width:300px;height:200px;background:#ff0000;' +
+        'transform:rotateY(40deg)}</style>' +
+        '<div id="s"><div id="w"></div></div>',
+    );
+    await act();
+    const el = view(node);
+    const { ctx, tiles, projected } = projectingContext(true);
+    el.paint(ctx as never);
+    assert.strictEqual(projected.length, 1, 'one draw');
+    assert.strictEqual(tiles.length, 0, 'and no tiles');
+    // the surface's corners land on the corners of where the box is drawn
+    const { image, m } = projected[0];
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const [u, v] of [
+      [0, 0],
+      [image.width, 0],
+      [image.width, image.height],
+      [0, image.height],
+    ]) {
+      const w = m[6] * u + m[7] * v + m[8];
+      assert.ok(w > 0, 'in front of the viewer');
+      xs.push((m[0] * u + m[1] * v + m[2]) / w);
+      ys.push((m[3] * u + m[4] * v + m[5]) / w);
+    }
+    const want = el.elementRect(findById(el.document, 'w')!)!;
+    // the surface is the box's ink to the whole pixel round it
+    assert.ok(Math.abs(Math.min(...xs) - want.x) <= 1.5, `left ${xs}`);
+    assert.ok(Math.abs(Math.min(...ys) - want.y) <= 1.5, `top ${ys}`);
+    assert.ok(
+      Math.abs(Math.max(...xs) - (want.x + want.width)) <= 1.5,
+      `right ${xs}`,
+    );
+    assert.ok(
+      Math.abs(Math.max(...ys) - (want.y + want.height)) <= 1.5,
+      `bottom ${ys}`,
+    );
+  },
+);
+
+metric(
+  'a box in perspective is drawn in tiles where the context declines the projected draw, as for a corner behind the viewer',
+  async () => {
+    const { node } = await render(
+      PAGE +
+        '<style>#s{position:relative;width:400px;height:400px;' +
+        'perspective:500px}#w{position:absolute;left:50px;top:100px;' +
+        'width:300px;height:200px;background:#ff0000;' +
+        'transform:rotateY(40deg)}</style>' +
+        '<div id="s"><div id="w"></div></div>',
+    );
+    await act();
+    const el = view(node);
+    const { ctx, tiles, projected } = projectingContext(false);
+    el.paint(ctx as never);
+    assert.strictEqual(projected.length, 1, 'asked once');
+    assert.ok(tiles.length > 1, `then ${tiles.length} tiles`);
+  },
+);
+
 metric(
   "a box's perspective is the nearest up its containing blocks, through a positioned box and not through one with a transform, from its perspective-origin; and transform-origin's depth is the turn's",
   async () => {

@@ -211,6 +211,12 @@ export interface PaintContext extends FillContext {
   drawImage?(image: unknown, ...args: number[]): void;
   /** Transparent again, where the context draws on a surface. */
   clearRect?(x: number, y: number, width: number, height: number): void;
+  /** An image drawn through a 3×3 projection, row-major, in one draw, its
+   *  pixel (u, v) where the projection takes it and the matrix then: the
+   *  Wayland context's, which interpolates in perspective on the GPU, and
+   *  no other's. False, having drawn nothing, where a corner of the image
+   *  is behind the viewer (`drawProjected`). */
+  drawImageProjected?(image: unknown, matrix: readonly number[]): boolean;
   /** ntk's X11 context has patterns; the Cocoa one does not, and tiles. */
   createPattern?(image: unknown, repetition: string): unknown;
   translate?(x: number, y: number): void;
@@ -1737,6 +1743,35 @@ function drawProjected(
   ctx.save();
   if (opacity < 1 && typeof ctx.globalAlpha === 'number') {
     ctx.globalAlpha *= opacity;
+  }
+  // One draw where the context draws in perspective — the Wayland one, on
+  // the GPU — over the pixels the tiles would cover. Zen Garden 219's tilted
+  // sidebar was 258 tiles a frame there, each a batch of its own since each
+  // is clipped, at 11 frames a second on a virgl VM where 7 tiles ran at 25.
+  // Tiles where the context has no such draw, or declines one for a corner
+  // behind the viewer.
+  if (ctx.drawImageProjected && ctx.beginPath && ctx.rect && ctx.clip) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(X0, Y0, X1 - X0, Y1 - Y0);
+    ctx.clip();
+    // the surface's pixel (u, v) is the point (x0 + u, y0 + v) `p` takes
+    const drawn = ctx.drawImageProjected(surface, [
+      p[0],
+      p[1],
+      p[0] * x0 + p[1] * y0 + p[2],
+      p[3],
+      p[4],
+      p[3] * x0 + p[4] * y0 + p[5],
+      p[6],
+      p[7],
+      p[6] * x0 + p[7] * y0 + p[8],
+    ]);
+    ctx.restore();
+    if (drawn) {
+      ctx.restore();
+      return;
+    }
   }
   // Bilinear, as a layer in perspective is drawn: each tile's matrix is
   // within a fraction of a pixel of the plane's, and on macOS a context's
