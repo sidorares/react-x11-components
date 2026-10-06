@@ -664,6 +664,58 @@ export function ease(easing: Easing, t: number): number {
   }
 }
 
+/**
+ * The most an easing's output moves for its input, anywhere between 0 and
+ * 1: what bounds how soon an animation it eases changes by some amount
+ * (`Cascade._animatedDeclarations`). Infinity for steps, which jump, and for
+ * a curve as steep as one.
+ */
+export function steepest(easing: Easing): number {
+  switch (easing.type) {
+    case 'linear':
+      return 1;
+    case 'steps':
+      return Infinity;
+    case 'points': {
+      let most = 0;
+      const points = easing.points;
+      for (let i = 1; i < points.length; i += 1) {
+        const dx = points[i].input - points[i - 1].input;
+        const dy = Math.abs(points[i].output - points[i - 1].output);
+        if (dy === 0) continue;
+        if (!(dx > 0)) return Infinity;
+        most = Math.max(most, dy / dx);
+      }
+      return most;
+    }
+    case 'cubic': {
+      let most = STEEPEST.get(easing);
+      if (most !== undefined) return most;
+      // dy/dx along the curve's parameter, which is where it is steepest
+      const { x1, y1, x2, y2 } = easing;
+      const d = (p1: number, p2: number, s: number) =>
+        3 * (1 - s) * (1 - s) * p1 +
+        6 * (1 - s) * s * (p2 - p1) +
+        3 * s * s * (1 - p2);
+      most = 0;
+      for (let i = 0; i <= 64; i += 1) {
+        const s = i / 64;
+        const dx = d(x1, x2, s);
+        const dy = Math.abs(d(y1, y2, s));
+        if (dy < 1e-9) continue;
+        most = dx < 1e-3 ? Infinity : Math.max(most, dy / dx);
+        if (most === Infinity) break;
+      }
+      // as steep as a step is a step
+      if (most > 64) most = Infinity;
+      STEEPEST.set(easing, most);
+      return most;
+    }
+  }
+}
+
+const STEEPEST = new WeakMap<Easing, number>();
+
 /** A cubic Bézier from (0, 0) to (1, 1): the y where its x is `t`, the
  *  curve's parameter found by Newton's method, and by halving where that
  *  does not settle. */
@@ -779,7 +831,14 @@ export type Phase = 'before' | 'active' | 'after';
 export function progressAt(
   timing: Timing,
   time: number,
-): { progress: number | null; phase: Phase } {
+): {
+  progress: number | null;
+  phase: Phase;
+  /** Whether the progress grows as time passes, at `time`. */
+  forwards: boolean;
+  /** How long from `time` the active phase goes on: 0 outside it. */
+  left: number;
+} {
   const { duration, delay, iterations, direction, fill } = timing;
   const active = duration === 0 || iterations === 0 ? 0 : duration * iterations;
   const end = Math.max(delay + active, 0);
@@ -801,7 +860,10 @@ export function progressAt(
         ? Math.max(Math.min(time - delay, active), 0)
         : null;
   }
-  if (activeTime === null) return { progress: null, phase };
+  const left = phase === 'active' ? activeAfter - time : 0;
+  if (activeTime === null) {
+    return { progress: null, phase, forwards: true, left };
+  }
   const overall =
     duration === 0
       ? phase === 'before'
@@ -826,7 +888,7 @@ export function progressAt(
     const turn = direction === 'alternate-reverse' ? iteration + 1 : iteration;
     forwards = turn === Infinity || turn % 2 === 0;
   }
-  return { progress: forwards ? simple : 1 - simple, phase };
+  return { progress: forwards ? simple : 1 - simple, phase, forwards, left };
 }
 
 /** One frame of a property's: where it is, the declaration it gives the
@@ -888,7 +950,16 @@ export function spanAt(
   frames: readonly TrackFrame[],
   progress: number,
   easing: Easing,
-): { from: TrackFrame | null; to: TrackFrame | null; q: number } {
+): {
+  from: TrackFrame | null;
+  to: TrackFrame | null;
+  q: number;
+  /** Where in the iteration the span between the two starts and ends. */
+  start: number;
+  end: number;
+  /** What eases it. */
+  easing: Easing;
+} {
   const points: { offset: number; frame: TrackFrame | null }[] = [];
   if (frames[0].offset > 0) points.push({ offset: 0, frame: null });
   for (const frame of frames) points.push({ offset: frame.offset, frame });
@@ -904,5 +975,13 @@ export function spanAt(
   const width = b.offset - a.offset;
   const local = width > 0 ? (progress - a.offset) / width : 1;
   const t = local < 0 ? 0 : local > 1 ? 1 : local;
-  return { from: a.frame, to: b.frame, q: ease(a.frame?.easing ?? easing, t) };
+  const eases = a.frame?.easing ?? easing;
+  return {
+    from: a.frame,
+    to: b.frame,
+    q: ease(eases, t),
+    start: a.offset,
+    end: b.offset,
+    easing: eases,
+  };
 }

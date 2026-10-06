@@ -1770,7 +1770,8 @@ at rest, as below.
 A frame restyles the elements an animation is under way on, and what they
 hold where it animates an inherited property. Where all it changes is
 what a hover may change in place — a colour, an opacity, a visibility, a
-transform, a `z-index` — it repaints their ink and nothing else. Anything
+transform, a `z-index` — it repaints their ink and nothing else, an
+element's box and a `::before`'s or an `::after`'s alike. Anything
 else, a length that moves something, builds the boxes again around every
 other element's kept style and lays the document out; where each element
 that changed is positioned absolutely or fixed, or inside one that is, as
@@ -1778,6 +1779,20 @@ a marquee or a slideshow's panel is, nothing around it moved, and only
 what those boxes drew before and draw now is repainted. Nothing ticks while
 nothing changes: a frame is asked for while an animation is under way, at
 the end of a delay, and not at all once each is over or paused.
+
+And a frame waits for a change anyone sees. An animation under way asks
+for its next frame when what it draws next moves by an eighth of a device
+pixel, or a colour or an opacity by a level of 255, worked out from the
+values its frames run between, its duration and its easing at its
+steepest — and no later than the span of its frames it is in, or the
+animation, ends. A fade or a turn of a second still has a frame at every
+one; a slow one has as many as show. Zen Garden 214's enso scales from 1
+to 3 over ten hours, and had a frame forty times a second that moved its
+edge a hundred-millionth of a pixel and repainted the whole window; it has
+one every half second, which repaints the enso, and the page at rest went
+from more than a core of a Mac to 4% of one. A property this does not
+measure — a length, a shadow, a filter — and an animation that steps or
+eases as steeply as a step still has a frame at every frame.
 
 `animate={false}` runs none, and a document is drawn as it stands once
 each of its animations has run one iteration at no length. One that fills

@@ -2023,6 +2023,40 @@ goes through `invalidate`**, which it does unless it reaches past the
 node. `animate={false}` draws each animation at rest, which is how the Zen
 Garden bench runs `<Html>`.
 
+**A frame waits for a change anyone sees.** An animation under way asks for
+its next frame when what it draws next changes by the least anyone sees —
+an eighth of a device pixel in where something is drawn (`SEEN_PX`), a
+level of 255 in a colour or an opacity — and not a frame from now
+(`AnimationTimeline.pace`). The cascade knows the values a span of the
+animation's frames runs between (`visibleSpan`), the timeline its duration,
+its direction and how long it goes on, and the easing bounds how fast it
+moves at its steepest (`steepest`): a span that holds its values waits for
+its end, and no wait outlasts the span or the animation. Zen Garden 214's
+enso scales from 1 to 3 in ten hours, and had a frame forty times a second
+that moved its edge a hundred-millionth of a pixel; it has one every half
+second, and the page at rest went from more than a core to 4% of one.
+Three things are load-bearing. **A field `visibleSpan` cannot measure is a
+frame from now**, as every one was — a length, a shadow, a filter, a step,
+a curve as steep as a step — so measuring a new one is a decision about
+what counts as seen, not a default. **A transform is measured by what it
+does, not by its matrix**: a turn of ten whole turns between two frames
+has the same matrix at both ends, so turns are counted by their angles,
+scales by their factors and moves by their lengths, as
+`interpolateTransforms` runs them, each scaled by how far from where it
+turns the box reaches (`reach`); a list it interpolates as matrices is a
+frame from now. And **only an animation in its active phase is paced**: one
+paused, in its delay or filling holds its value, and the delay's end is
+the timeline's own to wake for.
+
+**A `::before` or an `::after` an animation turns, scales or fades is
+restyled where it is**, as an element's box is (`_restyleInPlace`): its new
+translation moved in (`retranslate`), how far it reaches and the order its
+layer paints in worked out again, and what it drew before and draws after
+repainted. It had been refused, and each frame of one built the document
+again and repainted all of it, since a box in the flow is not one a
+frame's build can repaint apart (`_changedOutOfFlow`): the enso's frames
+were 4.2 megapixels at 2x, and are its tenth of one.
+
 **And what an animation sets acts as though `will-change` named it**,
 from the start of its delay to its end, or for good where it fills
 forwards (Web Animations 1, 5.6): the timeline keeps each element's bits

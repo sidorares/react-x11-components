@@ -40,6 +40,13 @@ export interface Sample {
   rule: KeyframesRule;
   progress: number;
   easing: Easing;
+  /** Milliseconds an iteration takes, whether the progress grows as time
+   *  passes, and how long the animation goes on from now, 0 for one that
+   *  holds where it is: what says how soon a frame of it changes anything
+   *  (`pace`). */
+  duration: number;
+  forwards: boolean;
+  left: number;
 }
 
 export interface Running {
@@ -59,6 +66,10 @@ interface Target {
    *  end of a delay before one starts, and never once each is over or
    *  paused. */
   next: number;
+  /** When a delay of one ends, and whether one is under way, which is a
+   *  frame from now until it says otherwise (`pace`). */
+  timed: number;
+  active: boolean;
   /** Whether a property it animates is inherited, which reaches what the
    *  element holds. */
   inherits: boolean;
@@ -129,7 +140,8 @@ export class AnimationTimeline {
     const taken = new Set<Running>();
     const running: (Running | null)[] = [];
     const now = this.now;
-    let next = Infinity;
+    let timed = Infinity;
+    let active = false;
     let inherits = false;
     let willChange = 0;
     let out: Sample[] | null = null;
@@ -155,7 +167,7 @@ export class AnimationTimeline {
       if (!rule) continue;
       if (!inherits) inherits = animatesInherited(rule);
       const timing = timingAt(animations, i);
-      const { progress, phase } = progressAt(
+      const { progress, phase, forwards, left } = progressAt(
         timing,
         run.hold ?? now - run.start,
       );
@@ -165,9 +177,9 @@ export class AnimationTimeline {
         willChange |= animatedWillChange(rule);
       }
       if (!paused) {
-        if (phase === 'active') next = Math.min(next, now + FRAME_MS);
+        if (phase === 'active') active = true;
         else if (phase === 'before') {
-          next = Math.min(next, run.start + timing.delay);
+          timed = Math.min(timed, run.start + timing.delay);
         }
       }
       if (progress === null) continue;
@@ -175,6 +187,10 @@ export class AnimationTimeline {
         rule,
         progress,
         easing: easings[i % easings.length],
+        duration: timing.duration,
+        forwards,
+        // a paused one, or one before or after its active phase, holds
+        left: !paused && phase === 'active' ? left : 0,
       });
     }
     if (!taken.size) {
@@ -182,10 +198,33 @@ export class AnimationTimeline {
       return null;
     }
     if (!targets) this._targets.set(el, (targets = new Map()));
-    const target: Target = { running, next, inherits, willChange };
+    const next = Math.min(timed, active ? now + FRAME_MS : Infinity);
+    const target: Target = {
+      running,
+      next,
+      timed,
+      active,
+      inherits,
+      willChange,
+    };
     targets.set(pseudo, target);
     this._seen?.add(target);
     return out;
+  }
+
+  /**
+   * An element's animations under way, or a pseudo-element's, change
+   * nothing anyone sees until `at` (`Cascade._animatedDeclarations`, from
+   * the values each one's frames run between): its next frame is then,
+   * rather than a frame from now, unless a delay ends sooner — and a frame
+   * from now at the soonest. Zen Garden 214's enso turns from a scale of 1
+   * to one of 3 in ten hours, which moves its edge an eighth of a pixel in
+   * two seconds, and it had a frame forty times a second.
+   */
+  pace(el: object, pseudo: string, at: number): void {
+    const target = this._targets.get(el)?.get(pseudo);
+    if (!target?.active) return;
+    target.next = Math.min(target.timed, Math.max(this.now + FRAME_MS, at));
   }
 
   /** What an element's animations make of it, or a pseudo-element's, as
