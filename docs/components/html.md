@@ -425,7 +425,8 @@ h1 {
 ```
 
 Until `GeistSans` arrives the list is `Arial`, and after it the private name
-of the loaded face, then `Arial`. CSS has `local()` name one face, by its
+of the loaded face, then `Arial` — each `Arial` marked as the fallback's,
+since its rule adjusts its size (below). CSS has `local()` name one face, by its
 full name or its PostScript name; a font manager finds fonts by family, so
 the name is matched as one, and counts as found only when the face that
 comes back carries it — a guess at a name nobody has is not a match. The
@@ -437,10 +438,22 @@ list. What the list gets is the family, and the text engine picks the face
 in it by the weight and slant of the text: bold text in the family above is
 set in Arial Bold, where a browser emboldens the one face the rule named.
 
-The descriptors that adjust a face's metrics — `size-adjust`,
-`ascent-override`, `descent-override`, `line-gap-override` — are not read,
-so a fallback tuned to take the room of the font it stands in for takes its
-own.
+**A face is set at its rule's size and stands in lines of its rule's
+height** (CSS Fonts 5, 4.11, 4.12). `size-adjust` scales the face's glyphs,
+its advances and its metrics, so the text above is set at 106.28% of its
+`font-size` while an `em` stays the font size; `ascent-override`,
+`descent-override` and `line-gap-override` put a percentage of the size,
+scaled by `size-adjust` too, in place of the face's own ascent, descent and
+line gap, which is what a `line-height: normal` line is made of and what the
+text stands on its line by. So a fallback tuned to take the room of the font
+it stands in for takes that room, and a page does not move when the font
+arrives. A face from a `url()` is registered under a name of its own, and
+its text is known by it. A `local()` face is the system's family under the
+system's name, which another list may name too, so the list carries the
+face's private name after it — no engine has the name, and the layout takes
+it out again — and `Arial, serif` written elsewhere is Arial as Arial is. A
+line of text in faces of more than one rule's metrics, the face whose lines
+are overridden beside another, stands on its line as the engine set it.
 
 **A variable face is set at the weight its rule has for a style's.** The
 weight a style asks for is a place on a variable font's `wght` axis, clamped

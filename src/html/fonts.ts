@@ -438,6 +438,12 @@ export class WebFonts implements FontFamilies {
         for (const face of ready) {
           if (face.local !== null && !out.includes(face.local)) {
             out.push(face.local);
+            // and a face that sets the alias at another size or its lines
+            // at another height says so by its group's name after it,
+            // which no engine has, and `setting` takes out again
+            if (metricsOf(face.rule) && !out.includes(face.name)) {
+              out.push(face.name);
+            }
           }
         }
       }
@@ -479,7 +485,9 @@ export class WebFonts implements FontFamilies {
       this._active = false;
       for (const group of this._groups.values()) {
         for (const face of group.faces) {
-          if (face.state !== 'ready' || face.local !== null) continue;
+          if (face.state !== 'ready') continue;
+          if (metricsOf(face.rule)) this._active = true;
+          if (face.local !== null) continue;
           if (ranged(face) || face.wdth || face.name !== group.name) {
             this._active = true;
           }
@@ -533,8 +541,8 @@ export class WebFonts implements FontFamilies {
     let setting = byWidth.get(stretch);
     if (setting === undefined) {
       setting = null;
-      const comma = list.indexOf(',');
-      const first = (comma < 0 ? list : list.slice(0, comma)).trim();
+      const names = list.split(',').map((n) => n.trim());
+      const first = names[0];
       const face = bestFace(
         // the faces registered under the name, or the group's other widths
         this._groups
@@ -547,7 +555,30 @@ export class WebFonts implements FontFamilies {
       if (face) {
         const family = face.name === first ? list : leading(face.name, list);
         const variations = variationsOf(face, weight, stretch);
-        if (family !== list || variations) setting = { family, variations };
+        const metrics = metricsOf(face.rule);
+        if (family !== list || variations || metrics) {
+          setting = { family, variations, metrics };
+        }
+      } else if (names.length > 1 && this._groups.has(names[1])) {
+        // the system's family a `local()` came to, and after it the name
+        // `map` marked it with: the face's metrics, and the list without
+        // the name
+        const local = bestFace(
+          this._groups
+            .get(names[1])!
+            .faces.filter((f) => f.state === 'ready' && f.local === first),
+          weight,
+          italic,
+          stretch,
+        );
+        const metrics = local && metricsOf(local.rule);
+        if (metrics) {
+          setting = {
+            family: names.filter((_, i) => i !== 1).join(', '),
+            variations: null,
+            metrics,
+          };
+        }
       }
       byWidth.set(stretch, setting);
     }
@@ -886,11 +917,54 @@ function arrive(face: Face, registry: Registry): void {
 }
 
 /** How text in a family list is set (`WebFonts.setting`): the list it is
- *  handed to the engine as, and the point on its face's axes, as an engine
- *  takes one with a run — its `variations` — or null for none. */
+ *  handed to the engine as, the point on its face's axes, as an engine
+ *  takes one with a run — its `variations` — or null for none, and the
+ *  size and the line metrics its rule gives it, or null or absent for its
+ *  own. */
 export interface FaceSetting {
   family: string;
   variations: Variations | null;
+  metrics?: FaceMetrics | null;
+}
+
+/**
+ * What a `@font-face` rule says of its face's size and lines (CSS Fonts 5,
+ * 4.11, 4.12): `size-adjust`, what the face is drawn at for a size — its
+ * glyphs, its advances and its metrics, overridden ones too — and the
+ * ascent, the descent and the line gap, each a fraction of the size in the
+ * place of the face's own, or null for its own.
+ */
+export interface FaceMetrics {
+  scale: number;
+  ascent: number | null;
+  descent: number | null;
+  lineGap: number | null;
+}
+
+/** One object a rule: what keys a face's setting keeps it by identity. */
+const FACE_METRICS = new WeakMap<FontFaceRule, FaceMetrics | null>();
+
+/** A rule's size and line metrics, or null where it gives the face its
+ *  own. */
+export function metricsOf(rule: FontFaceRule): FaceMetrics | null {
+  let metrics = FACE_METRICS.get(rule);
+  if (metrics === undefined) {
+    const scale = rule.sizeAdjust ?? 1;
+    metrics =
+      scale !== 1 ||
+      rule.ascentOverride !== undefined ||
+      rule.descentOverride !== undefined ||
+      rule.lineGapOverride !== undefined
+        ? {
+            scale,
+            ascent: rule.ascentOverride ?? null,
+            descent: rule.descentOverride ?? null,
+            lineGap: rule.lineGapOverride ?? null,
+          }
+        : null;
+    FACE_METRICS.set(rule, metrics);
+  }
+  return metrics;
 }
 
 /** A point on a face's weight and width axes. */

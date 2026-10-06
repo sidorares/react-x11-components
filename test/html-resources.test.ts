@@ -1033,19 +1033,129 @@ withFonts(
       ['r.woff2'],
       'a local() asks the host nothing',
     );
-    // and the list ends in the document's own family, having no generic
-    assert.strictEqual(
+    // and the list ends in the document's own family, having no generic —
+    // the system's, and after it the name that marks it as the face whose
+    // metrics its rule adjusts, which no engine has
+    assert.match(
       boxOf(node, 'p').style.fontFamily,
-      `${LOCAL}, sans-serif`,
+      new RegExp(`^${LOCAL}, html webfont [a-z]+, sans-serif$`),
     );
     arrive({ kind: 'font', bytes: REGULAR! });
     await settle(node);
     const p = boxOf(node, 'p').style;
     assert.match(
       p.fontFamily,
-      new RegExp(`^html webfont [a-z]+, ${LOCAL}, sans-serif$`),
+      new RegExp(
+        `^html webfont [a-z]+, ${LOCAL}, html webfont [a-z]+, sans-serif$`,
+      ),
     );
     assert.strictEqual(familyOf(result.app as never, p), 'KaTeX_Main');
+  },
+);
+
+test("@font-face's size-adjust and metric overrides are percentages, an override's `normal` its face's own", () => {
+  const faces = parseStylesheet(
+    '@font-face { font-family: A; src: local(Arial); size-adjust: 280%;' +
+      '  ascent-override: 92%; descent-override: 300%; line-gap-override: 0% }' +
+      '@font-face { font-family: B; src: local(Arial); size-adjust: 100%;' +
+      '  ascent-override: 90%; ascent-override: normal;' +
+      // none below nought, and no `normal` for a size
+      '  descent-override: -5%; size-adjust: normal; line-gap-override: 1px }',
+  ).fontFaces;
+  const metrics = (f: FontFaceRule) => [
+    f.sizeAdjust,
+    f.ascentOverride,
+    f.descentOverride,
+    f.lineGapOverride,
+  ];
+  assert.deepStrictEqual(metrics(faces[0]), [2.8, 0.92, 3, 0]);
+  assert.deepStrictEqual(metrics(faces[1]), [
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+  ]);
+});
+
+/** Each line's width, height and baseline under an element, from its
+ *  top. */
+function linesUnder(node: HtmlViewNode, id: string) {
+  const box = boxOf(node, id) as unknown as {
+    y: number;
+    lines: { width: number; height: number; y: number; baseline: number }[];
+  };
+  return box.lines.map((l) => ({
+    width: Math.round(l.width * 10) / 10,
+    height: Math.round(l.height * 10) / 10,
+    baseline: Math.round((l.y + l.baseline - box.y) * 10) / 10,
+  }));
+}
+
+withFonts(
+  "a face's size-adjust scales its glyphs and its metrics overrides set its lines, as Chromium sets them",
+  async () => {
+    const { node } = await mount(
+      `<style>@font-face { font-family: Big; src: local("${LOCAL}"); size-adjust: 200% }` +
+        `@font-face { font-family: Lined; src: local("${LOCAL}");` +
+        '  ascent-override: 150%; descent-override: 50%; line-gap-override: 0% }' +
+        `@font-face { font-family: Deep; src: local("${LOCAL}"); descent-override: 300% }` +
+        'div { font-size: 18px; line-height: normal; white-space: nowrap }' +
+        `#big { font-family: Big } #plain, #own { font-family: ${LOCAL}, serif }` +
+        '#lined { font-family: Lined } #deep { font-family: Deep; line-height: 1.4 }' +
+        '</style><div id="big">0 0</div><div id="plain">0 0</div>' +
+        '<div id="own">0 0</div><div id="lined">0 0</div><div id="deep">0 0</div>',
+      () => null,
+      {},
+      true,
+    );
+    await settle(node);
+    const [big] = linesUnder(node, 'big');
+    const [plain] = linesUnder(node, 'plain');
+    // twice the size, to the 64th of a pixel each run's advance rounds to
+    assert.ok(
+      Math.abs(big.width / plain.width - 2) < 0.01,
+      `${big.width} against ${plain.width}`,
+    );
+    // an author's own list naming the family the face came to is not the
+    // face, and is set at its own size
+    assert.deepStrictEqual(linesUnder(node, 'own'), [plain]);
+    // `normal` lines are the overrides' together: 150% and 50% of 18px
+    assert.deepStrictEqual(
+      linesUnder(node, 'lined').map((l) => [l.height, l.baseline]),
+      [[36, 27]],
+    );
+    // and under a line height of its own the line is that tall, the text
+    // standing where its metrics put it: a descent of three ems takes the
+    // baseline over the line's top, as Chromium draws it
+    const [deep] = linesUnder(node, 'deep');
+    assert.strictEqual(deep.height, 25.2);
+    assert.ok(deep.baseline < 0, `baseline ${deep.baseline}`);
+  },
+);
+
+withFonts(
+  "a face from a url() is set at its size-adjust, and an override answers the layout's metrics",
+  async () => {
+    const { node } = await mount(
+      '<style>@font-face { font-family: Doc; src: url(r.woff2); size-adjust: 150%;' +
+        '  ascent-override: 100%; descent-override: 0%; line-gap-override: 0% }' +
+        '@font-face { font-family: Same; src: url(r.woff2) }' +
+        'div { font-size: 20px; line-height: normal; white-space: nowrap }' +
+        '#a { font-family: Doc } #b { font-family: Same }' +
+        '</style><div id="a">Plain</div><div id="b">Plain</div>',
+      () => ({ kind: 'font', bytes: REGULAR! }),
+      {},
+      true,
+    );
+    await settle(node);
+    const [a] = linesUnder(node, 'a');
+    const [b] = linesUnder(node, 'b');
+    assert.ok(
+      Math.abs(a.width / b.width - 1.5) < 0.01,
+      `${a.width} against ${b.width}`,
+    );
+    // all of a line is its ascent, a hundred percent of 20px half again
+    assert.deepStrictEqual([a.height, a.baseline], [30, 30]);
   },
 );
 

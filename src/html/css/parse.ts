@@ -145,6 +145,15 @@ export interface FontFaceRule {
   unicodeRange: [number, number][] | null;
   /** The `@media` blocks the rule sits under, as a style rule's. */
   media: MediaCondition[][] | null;
+  /** `size-adjust` (CSS Fonts 5, 4.12): what the face's glyphs and metrics
+   *  are scaled by, a fraction — absent for 100%. */
+  sizeAdjust?: number;
+  /** `ascent-override`, `descent-override` and `line-gap-override` (CSS
+   *  Fonts 5, 4.11): the metric as a fraction of the font size, in place
+   *  of the face's own — absent for `normal`, the face's own. */
+  ascentOverride?: number;
+  descentOverride?: number;
+  lineGapOverride?: number;
 }
 
 export type FontFaceSource =
@@ -2033,9 +2042,23 @@ function parseFontFace(
   let style: 'normal' | 'italic' = 'normal';
   let stretch: [number, number] | null = null;
   let unicodeRange: [number, number][] | null = null;
+  const metrics: Pick<
+    FontFaceRule,
+    'sizeAdjust' | 'ascentOverride' | 'descentOverride' | 'lineGapOverride'
+  > = {};
   // a descriptor that is not one is dropped, as a declaration is, and the
   // one before it stands
   for (const d of parseDeclarations(block)) {
+    const metric = FACE_METRICS[d.prop];
+    if (metric) {
+      const v = d.value.trim().toLowerCase();
+      // a percentage of no less than nought, or for an override `normal`
+      const pct = /^(\d*\.?\d+(?:e[+-]?\d+)?)%$/.exec(v);
+      if (pct) metrics[metric] = Number(pct[1]) / 100;
+      else if (v === 'normal' && metric !== 'sizeAdjust')
+        delete metrics[metric];
+      continue;
+    }
     if (d.prop === 'font-family') {
       family = faceFamily(d.value) ?? family;
     } else if (d.prop === 'src') {
@@ -2078,8 +2101,39 @@ function parseFontFace(
     sources.push({ url: resolveUrl(url, base), format });
   }
   if (!sources.length) return null;
-  return { family, sources, weight, style, stretch, unicodeRange, media };
+  return {
+    family,
+    sources,
+    weight,
+    style,
+    stretch,
+    unicodeRange,
+    media,
+    ...(metrics.sizeAdjust !== undefined &&
+      metrics.sizeAdjust !== 1 && { sizeAdjust: metrics.sizeAdjust }),
+    ...(metrics.ascentOverride !== undefined && {
+      ascentOverride: metrics.ascentOverride,
+    }),
+    ...(metrics.descentOverride !== undefined && {
+      descentOverride: metrics.descentOverride,
+    }),
+    ...(metrics.lineGapOverride !== undefined && {
+      lineGapOverride: metrics.lineGapOverride,
+    }),
+  };
 }
+
+/** The descriptors that say how big a face's glyphs are drawn and how tall
+ *  its lines stand (CSS Fonts 5, 4.11 and 4.12), and the rule's fields. */
+const FACE_METRICS: Record<
+  string,
+  'sizeAdjust' | 'ascentOverride' | 'descentOverride' | 'lineGapOverride'
+> = {
+  'size-adjust': 'sizeAdjust',
+  'ascent-override': 'ascentOverride',
+  'descent-override': 'descentOverride',
+  'line-gap-override': 'lineGapOverride',
+};
 
 /** A `@font-face`'s one family name: a string, or identifiers, which one
  *  space joins. Not a list, and not a generic family's name. */
