@@ -308,6 +308,29 @@ export interface SpriteSource {
   ): Offscreen | null;
 }
 
+/**
+ * A paint of a drag of the window's edge (`PaintOptions.drag`), which a
+ * drag that falls behind it draws cheaper (`HtmlViewNode._behind`), with
+ * the document's animations paused: a background image whose size moves
+ * with the drag is drawn at the nearest of sizes `SIZE_STEP` apart
+ * (`steppedTile`), and a box a paused animation turns or scales from the
+ * surface kept for it (`paintTransformed`), so that each is copied at the
+ * frames of the drag rather than drawn again.
+ */
+export interface DragPaint {
+  /** Whether the drag is drawn cheaper. */
+  readonly cheap: boolean;
+  /** Whether a background layer, its tile `width` by `height` now, was
+   *  another size at a frame of the drag before: one whose size moves
+   *  with it. Asked at every frame, so that it knows. */
+  moved(layer: object, width: number, height: number): boolean;
+  /** Whether an animation of the box's own is under way, and paused. */
+  paused(box: Box): boolean;
+  /** Called as anything is drawn cheaper, for the paint once the drag
+   *  rests to draw it as at rest. */
+  drawn(): void;
+}
+
 export interface PaintOptions {
   /** Where the document's origin sits in the window. Scrolling is this. */
   originX: number;
@@ -394,6 +417,8 @@ export interface PaintOptions {
   /** The boxes whose outer shadows a presenter draws on a layer of their
    *  own (`shadowPartOf`): the document draws the box, but not them. */
   shadowless?: ReadonlySet<Box> | null;
+  /** Set while the window's edge is dragged (`liveResizing`). */
+  drag?: DragPaint | null;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
   /** @internal The boxes clipping what is being painted, outermost first. */
@@ -1489,6 +1514,22 @@ function paintTransformed(
   }
   const opacity = opacityOf(box);
   if (opacity <= 0) return;
+  // A drag drawn cheaper pauses the document's animations, and a box one
+  // of them turns or scales draws at each frame of the drag what it drew
+  // at the one before: from the surface kept for it, through its matrix,
+  // as X11 draws it at every frame — where the context could draw it
+  // through the matrix itself, and set Zen Garden 214's enso from its
+  // paths at every frame of a drag.
+  const drag = options.drag;
+  if (
+    drag?.cheap &&
+    drag.paused(box) &&
+    options.sprites &&
+    paintSprite(ctx, box, inside, through, opacity)
+  ) {
+    drag.drawn();
+    return;
+  }
   if (
     opacity < 1 &&
     paintGroupThrough(ctx, box, options, inside, through, opacity)
@@ -6836,12 +6877,15 @@ function paintBackgroundImage(
   const scale = options.scale ?? 1;
   const repeat = style.backgroundRepeat;
   const natural = atDensity(loaded, densityOf(style.backgroundImage));
-  const [iw, ih] = roundedTile(
-    style.backgroundSize,
-    repeat,
-    sizedTile(style.backgroundSize, natural, at, scale),
-    at,
-  );
+  let tile = sizedTile(style.backgroundSize, natural, at, scale);
+  const drag = options.drag;
+  const stepped =
+    drag && steppedTile(style.backgroundSize, tile, natural.ratio);
+  if (stepped && drag.moved(style, tile[0], tile[1]) && drag.cheap) {
+    tile = stepped;
+    drag.drawn();
+  }
+  const [iw, ih] = roundedTile(style.backgroundSize, repeat, tile, at);
   if (!(iw > 0 && ih > 0)) return;
   const offset = (len: Len, extent: number, size: number): number =>
     resolve(len, extent - size);
@@ -7072,6 +7116,59 @@ function sizedTile(
     return [image.width === null ? area.width : image.width * scale, h];
   }
   return concreteSize(image, area.width, area.height, scale);
+}
+
+/** How far apart, as a fraction, the sizes are that a drag drawn cheaper
+ *  draws a scaled background at (`steppedTile`): the most an image is
+ *  drawn larger than at rest, or smaller where it is to fit. */
+const SIZE_STEP = 0.04;
+const STEP_LOG = Math.log1p(SIZE_STEP);
+
+/** `n` on the nearest of the sizes `SIZE_STEP` apart — a whole power of
+ *  `1 + SIZE_STEP` — above it, or below. */
+function onStep(n: number, up: boolean): number {
+  const k = Math.log(n) / STEP_LOG;
+  return Math.exp((up ? Math.ceil(k) : Math.floor(k)) * STEP_LOG);
+}
+
+/**
+ * A background tile `sizedTile` sized from its area, on the nearest of the
+ * sizes `SIZE_STEP` apart, for a drag drawn cheaper (`DragPaint`); null
+ * where its size is none of the area's. Each width of a drag sized a
+ * `cover` photograph anew, and drew it, resampled, at every frame; a size
+ * on a step holds across the frames of a few per cent of the drag, and the
+ * raster kept of it is copied. `cover` and a percentage step up, so the
+ * image still covers what it covered, and `contain` down, so it still
+ * fits; a side `auto` keeps the image's ratio to the side that stepped.
+ * Whole pixels, from the step alone, so every width on one step draws the
+ * same.
+ */
+function steppedTile(
+  size: ComputedStyle['backgroundSize'],
+  [w, h]: [number, number],
+  ratio: number,
+): [number, number] | null {
+  if (size === 'auto' || !(w > 0 && h > 0)) return null;
+  if (size === 'cover' || size === 'contain') {
+    if (!(ratio > 0)) return null;
+    const up = size === 'cover';
+    const across = onStep(w, up);
+    const whole = up ? Math.ceil : Math.floor;
+    return [whole(across), whole(across / ratio)];
+  }
+  const [sw, sh] = size;
+  const pw = typeof sw === 'object';
+  const ph = typeof sh === 'object';
+  if (!pw && !ph) return null;
+  const across = pw ? Math.ceil(onStep(w, true)) : w;
+  const down = ph ? Math.ceil(onStep(h, true)) : h;
+  if (pw && sh === 'auto' && ratio > 0) {
+    return [across, Math.ceil(across / ratio)];
+  }
+  if (ph && sw === 'auto' && ratio > 0) {
+    return [Math.ceil(down * ratio), down];
+  }
+  return [across, down];
 }
 
 /**

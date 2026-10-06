@@ -3352,6 +3352,30 @@ set aside, since it would be missing from where it is drawn. On that
 article the browser example's page lays itself out at each step of a drag
 in some 10 ms, where it took 60, and keeps up with a 30 Hz drag.
 
+**A drag the document cannot keep up with is drawn cheaper while it
+moves.** Where the window says a drag of its edge is under way, the
+element times its own work at each frame of the drag — the layout, a
+build, a frame of its animations and the paint — and once two of the last
+three ran past 12 ms, most of a frame at 60 Hz, the frames after are drawn
+cheaper. A background image whose size moves with the drag — `cover`,
+`contain`, a percentage — is drawn at the nearest of sizes 4% apart, over
+where it covers and under where it fits, so the raster kept of it is
+copied across a few per cent of the drag rather than resampled at every
+step; one whose box keeps its size is drawn at its own. And the document's
+clock makes no frame of its animations, a box one of them turns or scales
+drawn from a surface kept for it: their time runs on, and they are drawn
+where it has got to once the drag rests. A frame drawn cheaper says
+nothing of what one drawn as at rest would cost, so it decides nothing:
+the drag is drawn cheaper at every step until it ends, and from the first
+step after a pause, rather than one way and the other at alternate
+frames. A hand that holds still for 300 ms, or lets go, has the page drawn
+as at rest, pixel for pixel. A window that says nothing of a drag — X11's
+— is drawn as at rest. Zen Garden 214's photographs each cover their box,
+and an animation its clock made a frame of forty times a second runs over
+its header: in the browser example a size a drag asked for was on screen
+in 26 ms at the median, where it took 37, and the pane fell behind its
+window at none of 96 steps, where it did at 12.
+
 **An opaque canvas fills nothing under it.** The element paints its canvas
 over all of itself before anything else, so where the canvas is opaque — in
 the `Canvas` colour of a scheme of the page's own, or in an opaque colour

@@ -564,6 +564,31 @@ export class HtmlViewNode extends Node {
    *  drag crosses builds the boxes again, and the width still moved. */
   private _widthLaid = -1;
   private _settleTimer: unknown = null;
+  /**
+   * A drag the document cannot keep up with is drawn cheaper while it
+   * moves (`_behind`): the document's clock makes no frame of its
+   * animations, which play on from where their time has got to once it
+   * rests, and what is drawn at each frame of it is copied where it can
+   * be (`DragPaint`). Whether it is; the element's own work
+   * since the last paint, timed on `frameClock` (`_counted`), and whether
+   * a timed call is under way; whether a layout at another width came
+   * since; of the last frames of the drag drawn as at rest, newest last,
+   * whether each ran past `FRAME_BUDGET_MS`; and whether anything was
+   * drawn cheaper, for the paint once the drag rests to draw as at rest.
+   */
+  private _cheap = false;
+  private _work = 0;
+  private _timing = false;
+  private _laidSincePaint = false;
+  private _overBudget: boolean[] = [];
+  private _drawnCheaper = false;
+  /** When the last frame of the drag under way was painted. */
+  private _dragFrameAt = -Infinity;
+  /** The tile each background layer was drawn at in the drag under way, by
+   *  the layer's style, or true for one drawn at two sizes: whose size
+   *  moves with the drag, and which a drag drawn cheaper steps
+   *  (`DragPaint.moved`). */
+  private _tileSizes = new WeakMap<object, [number, number] | true>();
   /** The viewport height the document was last laid out under, and whether
    *  that layout read it (`LayoutResult.readsViewportHeight`). */
   private _laidOutUnder = -1;
@@ -1493,10 +1518,27 @@ export class HtmlViewNode extends Node {
     const target = Math.max(1, Math.floor(width));
     if (this._failedAt === target && this._stale === Stale.Nothing) return;
     try {
-      this._update(target);
+      this._counted(() => this._update(target));
       this._failedAt = -1;
     } catch (error) {
       this._fail(error, target);
+    }
+  }
+
+  /**
+   * `work`, its time added to the element's own since the last paint
+   * (`_work`): a layout, a build, a frame of the animations, the sprites
+   * offered and the paint, each once where one reaches another.
+   */
+  private _counted<T>(work: () => T): T {
+    if (this._timing) return work();
+    this._timing = true;
+    const from = frameClock.now();
+    try {
+      return work();
+    } finally {
+      this._timing = false;
+      this._work += frameClock.now() - from;
     }
   }
 
@@ -1759,6 +1801,10 @@ export class HtmlViewNode extends Node {
         // from when the layout is done: one that took long is no rest
         if (this._widthLaid !== -1 && this._widthLaid !== target) {
           this._widthMovedAt = resizeClock.now();
+          this._laidSincePaint = true;
+          // a drag the frames before fell behind is drawn cheaper from the
+          // frame this layout is for
+          if (!this._cheap && this._behind()) this._cheapen();
         }
         this._widthLaid = target;
         // The same boxes, somewhere else and another size — but for the
@@ -2069,14 +2115,70 @@ export class HtmlViewNode extends Node {
     if (this._settleTimer !== null) resizeClock.disarm(this._settleTimer);
     this._settleTimer = resizeClock.arm(() => {
       this._settleTimer = null;
-      if (this.destroyed || !this._partial) return;
-      if (this._liveResizing()) {
-        this._armSettle();
+      if (this.destroyed) return;
+      const live = this._liveResizing();
+      // a drag drawn cheaper is drawn as at rest once it is over, and once
+      // the hand that drags it holds still (`DRAG_REST_MS`)
+      if (
+        this._cheap &&
+        (!live || resizeClock.now() - this._dragFrameAt >= DRAG_REST_MS)
+      ) {
+        this._drawAtRest();
+      }
+      if (live) {
+        if (this._partial || this._cheap || this._overBudget.length) {
+          this._armSettle();
+        }
         return;
       }
+      // what the drag's frames cost, and which sizes it moved, are its own
+      this._overBudget.length = 0;
+      this._tileSizes = new WeakMap();
+      if (!this._partial) return;
       this._widthMovedAt = -Infinity;
       this._invalidate(Stale.Layout);
     }, RESIZE_SETTLE_MS);
+  }
+
+  /**
+   * Whether the drag under way fell behind its edge: two of its last three
+   * frames drawn as at rest ran past `FRAME_BUDGET_MS`, and the window
+   * says it is being dragged (`liveResizing`). A frame drawn cheaper is
+   * none of the three — it is cheap because it is drawn so, and says
+   * nothing of what a frame drawn as at rest would cost — so a drag that
+   * fell behind is drawn cheaper at every step until it ends, and from the
+   * first step after a rest, rather than at rest every other frame. A
+   * window that says nothing of a drag — X11's — is drawn as at rest.
+   */
+  private _behind(): boolean {
+    let over = 0;
+    for (const was of this._overBudget) if (was) over += 1;
+    return over >= 2 && this._liveResizing();
+  }
+
+  /** A drag drawn cheaper from now (`_behind`), until it rests. */
+  private _cheapen(): void {
+    this._cheap = true;
+    // the document's clock makes no frame while it is
+    this._disarmFrame();
+    this._armSettle();
+  }
+
+  /**
+   * A drag drawn cheaper drawn as at rest: what was drawn cheaper at its
+   * frames is drawn again — and so is each surface kept for a box, which a
+   * frame may have drawn something cheaper on — and the document's clock
+   * makes the frame its animations have got to.
+   */
+  private _drawAtRest(): void {
+    this._cheap = false;
+    if (this._drawnCheaper) {
+      this._drawnCheaper = false;
+      this._sprites?.clear();
+      this._filtered?.staleAll();
+      this.invalidate(false, this, 'content');
+    }
+    this._scheduleFrame();
   }
 
   /** Whether the window this is in is being resized live (`_armSettle`). */
@@ -3862,9 +3964,11 @@ export class HtmlViewNode extends Node {
         !!el && (this._timeline.isLive(el) || this._animatesWithin(box as Box))
       );
     });
-    const next = this._animating()
-      ? this._timeline.nextFrame(this._skipLifted)
-      : null;
+    // and none while a drag is drawn cheaper (`_behind`)
+    const next =
+      this._animating() && !this._cheap
+        ? this._timeline.nextFrame(this._skipLifted)
+        : null;
     if (next === null) {
       this._disarmFrame();
       return;
@@ -3908,6 +4012,10 @@ export class HtmlViewNode extends Node {
    * from now.
    */
   override sprites(): (DocumentSprite | DocumentShadowSprite)[] | null {
+    return this._counted(() => this._offerSprites());
+  }
+
+  private _offerSprites(): (DocumentSprite | DocumentShadowSprite)[] | null {
     this._offered.clear();
     this._offeredShadows.clear();
     if (this.destroyed) return null;
@@ -4406,7 +4514,12 @@ export class HtmlViewNode extends Node {
   private readonly _frame = (): void => {
     this._frameTimer = null;
     this._frameAt = Infinity;
-    if (this.destroyed || !this._animating()) return;
+    if (this.destroyed || !this._animating() || this._cheap) return;
+    this._counted(this._makeFrame);
+  };
+
+  /** What a frame of the animations does, timed (`_counted`). */
+  private readonly _makeFrame = (): void => {
     const tree = this._tree;
     // a build is coming, and styles every animated element at its time
     if (!this._cascade || !tree || this._stale !== Stale.Nothing) return;
@@ -4781,6 +4894,12 @@ export class HtmlViewNode extends Node {
 
   override paint(ctx: Context2D): void {
     super.paint(ctx); // background, border, clip to `abs`
+    this._counted(() => this._paintContent(ctx));
+    this._noteFrame();
+  }
+
+  /** The document, over what core painted for the element (`paint`). */
+  private _paintContent(ctx: Context2D): void {
     // what a frame of the animations asked for is being painted: the next
     // is made as soon as the clock has one (`_frame`)
     this._owedSince = -1;
@@ -4894,7 +5013,71 @@ export class HtmlViewNode extends Node {
       ...this._paintOptions(range, damage),
       lifted: this._liftedBoxes(tree),
       shadowless: this._shadowlessBoxes(tree),
+      drag: this._liveResizing()
+        ? {
+            cheap: this._cheap,
+            moved: this._tileMoved,
+            paused: this._paused,
+            drawn: this._noteCheaper,
+          }
+        : null,
     });
+  }
+
+  /** `DragPaint.moved`: a background layer's tile size, the first it was
+   *  drawn at in the drag under way, or true once it was drawn at another
+   *  (`_tileSizes`). */
+  private readonly _tileMoved = (
+    layer: object,
+    width: number,
+    height: number,
+  ): boolean => {
+    const was = this._tileSizes.get(layer);
+    if (was === true) return true;
+    if (!was) {
+      this._tileSizes.set(layer, [width, height]);
+      return false;
+    }
+    if (was[0] === width && was[1] === height) return false;
+    this._tileSizes.set(layer, true);
+    return true;
+  };
+
+  /** `DragPaint.paused`: an animation of the box's own, an element's or a
+   *  pseudo-element's, under way on the clock a drag drawn cheaper pauses. */
+  private readonly _paused = (box: Box): boolean => {
+    const el = box.el ?? GENERATED_FROM.get(box);
+    return !!el && this._timeline.isLive(el, box.el ? '' : (box.pseudo ?? ''));
+  };
+
+  private readonly _noteCheaper = (): void => {
+    this._drawnCheaper = true;
+  };
+
+  /**
+   * After a paint: what the element's own work came to since the paint
+   * before, where the window says a drag of its edge is under way
+   * (`liveResizing`) and a layout at another width came in that time — a
+   * frame of the drag, which a drag drawn as at rest notes for `_behind`.
+   * Zen Garden 214's photographs, sized to cover their boxes, were each
+   * drawn again at every width of a drag, under an animation the
+   * document's clock made a frame of forty times a second, and a frame of
+   * the drag cost the document 18 to 30 ms.
+   */
+  private _noteFrame(): void {
+    const work = this._work;
+    this._work = 0;
+    const laid = this._laidSincePaint;
+    this._laidSincePaint = false;
+    if (!laid || !this._liveResizing()) return;
+    // a rest of the drag is the settle's to find, from the end of its last
+    // frame, and its end
+    this._dragFrameAt = resizeClock.now();
+    this._armSettle();
+    if (this._cheap) return;
+    const over = this._overBudget;
+    over.push(work > FRAME_BUDGET_MS);
+    if (over.length > 3) over.shift();
   }
 
   /** What the document is painted with, but for the boxes a presenter has
@@ -6446,6 +6629,7 @@ const timers = globalThis as {
   setTimeout?(fn: () => void, ms: number): unknown;
   clearTimeout?(id: unknown): void;
   queueMicrotask?(fn: () => void): void;
+  performance?: { now?(): number };
 };
 
 /**
@@ -6515,6 +6699,28 @@ const RESIZE_SETTLE_MS = 150;
 /** The most a width moves, in CSS pixels, that is taken for a step of a
  *  drag on its own, before the next one says so (`_stopAt`). */
 const DRAG_STEP_CSS_PX = 48;
+
+/**
+ * The clock the element's own work is timed on, for a drag it cannot keep
+ * up with (`_noteFrame`): through `globalThis`, and exported for a test to
+ * make a frame cost what it says.
+ */
+export const frameClock = {
+  now(): number {
+    return timers.performance?.now?.() ?? Date.now();
+  },
+};
+
+/** What the element's own work in a frame of a drag may come to before the
+ *  drag is drawn cheaper (`_noteFrame`): most of a frame at 60Hz, where
+ *  core's layout and the window's own paint and present take the rest. */
+const FRAME_BUDGET_MS = 12;
+
+/** How long the hand that drags a window's edge holds still before a drag
+ *  drawn cheaper is drawn as at rest (`_behind`): longer than the gaps a
+ *  slow drag's steps come at, so that it is not drawn one way and the
+ *  other at each of them. */
+const DRAG_REST_MS = 300;
 
 /**
  * The computed properties a pointer move may change in place: ink, which

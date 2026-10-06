@@ -38,6 +38,9 @@
 //            scripts/bench/sweep/cpuprofile.ts reads (ALL=1 for them all)
 //   SNAP     a path prefix: the window as the page settled, before the drag,
 //            written to <SNAP>-<design>.png where the backend snapshots
+//   LIVE     1: the drag bracketed as AppKit brackets a drag of a window's
+//            edge (`liveResizing`, from the first step to the last), which
+//            core and <Html> both lay out and draw a drag by
 //
 //   REACT_X11_BACKEND=cocoa npx tsx scripts/zengarden/resize.tsx
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -321,6 +324,13 @@ for (const design of designs) {
   const resizeProfile = profiles ? await profiler() : null;
   const steps = widths();
   const f0 = frames.length;
+  const live =
+    process.env.LIVE === '1'
+      ? (windowNode as unknown as { window?: { liveResizing?: boolean } })
+          .window
+      : undefined;
+  if (live) live.liveResizing = true;
+  const cpu0 = process.cpuUsage();
   const t0 = performance.now();
   for (const next of steps) {
     width = next;
@@ -328,12 +338,14 @@ for (const design of designs) {
     await wait(EVERY);
   }
   const dragEnd = performance.now();
+  if (live) live.liveResizing = false;
   if (session) {
     const { profile } = await session.post('Profiler.stop');
     writeFileSync(process.env.PROFILE!, JSON.stringify(profile));
     session.disconnect();
   }
   await wait(700);
+  const cpu = process.cpuUsage(cpu0);
   await resizeProfile?.('resize');
   const all = frames.slice(f0);
   const drag = all.filter((f) => f.t < dragEnd);
@@ -373,6 +385,9 @@ for (const design of designs) {
         cpuBuild: r1(sum(all, (f) => f.build)),
         cpuLayout: r1(sum(all, (f) => f.update - f.build)),
         cpuPaint: r1(sum(all, (f) => f.paint)),
+        // and all the process did, the frames and what runs between them —
+        // a frame of the animations made on its own timer
+        process: r1((cpu.user + cpu.system) / 1000),
         steps: steps.length,
         frames: drag.length,
         laid: laid.length,
