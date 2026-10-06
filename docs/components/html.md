@@ -649,7 +649,9 @@ submits nothing.
 Enter submits as a browser's does (HTML 4.10.21.2): by the form's first
 submit button, and with none only when the form has at most one text field,
 since Enter in one of several would be a guess. A reset button puts every
-control the form owns back as its markup had it, typed text included. A
+control the form owns back as its markup had it, typed text included, and
+does it in place: no widget is mounted again, so the button pressed keeps
+the focus, and a field in another form is left as it was. A
 press on a `<label>` is one on its control: a box is toggled, a radio
 checked, a button pressed and a field focused. The first control with
 `autofocus` is focused once the document is up — where nothing else in the

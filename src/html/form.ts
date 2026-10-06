@@ -923,8 +923,9 @@ export class FormState {
 
   /**
    * Put every control `form` owns back as its markup had it (HTML 4.10.21.5,
-   * "reset"). True when anything changed — the widgets then mount again, to
-   * show it.
+   * "reset"). True when anything changed — a mounted field's text is then
+   * the caller's to set, since its widget holds it, and the rest follow
+   * their attributes.
    */
   reset(form: Element): boolean {
     let changed = false;

@@ -26,7 +26,12 @@ import {
   Select,
   ThemeProvider,
 } from 'react-x11';
-import type { DrawnNode, Theme, MouseEvent as X11MouseEvent } from 'react-x11';
+import type {
+  DrawnNode,
+  TextInputNode,
+  Theme,
+  MouseEvent as X11MouseEvent,
+} from 'react-x11';
 import type { Style } from 'react-x11/style';
 
 import type {} from 'react-x11/jsx-runtime';
@@ -43,6 +48,7 @@ import type { BareField, ControlRect } from './controls.js';
 import {
   FormState,
   buttonType,
+  controlsOf,
   firstInvalid,
   formOwner,
   formSubmission,
@@ -113,12 +119,9 @@ export function useForms(options: FormsOptions): Forms {
   const { view, baseUrl, onControlChange, onSubmit, touch } = options;
 
   // What the controls hold that the markup does not, for the widgets'
-  // next mount, a submission and a reset. A reset bumps `resets`, which is
-  // in every widget's key: an uncontrolled field shows its markup's value
-  // again only by mounting again.
+  // next mount, a submission and a reset.
   const forms = React.useMemo(() => new FormState(), []);
   const live = (el: Element) => forms.typed(el);
-  const [resets, setResets] = React.useState(0);
   const [invalid, setInvalid] = React.useState<{
     element: Element;
     message: string;
@@ -129,7 +132,7 @@ export function useForms(options: FormsOptions): Forms {
   // loading, a resize — is the same widget, and keeps its focus, its caret
   // and its undo. Keyed by position, each move mounted a new one, and a
   // page whose stylesheet landed while someone was typing lost the field
-  // from under them.
+  // from under them. Nor by how many resets there have been: see `press`.
   const widgets = React.useMemo(
     () =>
       new WidgetBoxes((el) => {
@@ -200,7 +203,16 @@ export function useForms(options: FormsOptions): Forms {
     if (kind === 'submit') submit(form, button, point);
     else if (forms.reset(form)) {
       setInvalid(null);
-      setResets((n) => n + 1);
+      // A field's text is its widget's, which the markup only starts it
+      // with, so a reset sets it in place, as a browser's sets each field's
+      // value; the rest follow the attributes the reset put back. Mounting
+      // the widgets again instead, by a count of resets in every key, took
+      // the focus from the button pressed, and the caret, the scroll and the
+      // undo from every field in the document, other forms' included.
+      for (const el of controlsOf(form)) {
+        const field = widgets.fieldOf(el);
+        if (field) field.value = forms.value(el);
+      }
       touch();
     }
   };
@@ -338,7 +350,6 @@ export function useForms(options: FormsOptions): Forms {
 
   const ctx: ControlContext = {
     forms,
-    generation: resets,
     widgets,
     changed,
     setChecked,
@@ -482,6 +493,21 @@ class WidgetBoxes {
     return null;
   }
 
+  /** The text field `el`'s widget is, where it is one and is mounted: the
+   *  `<textinput>` or `<textarea>` in its box. */
+  fieldOf(el: Element): TextInputNode | null {
+    const box = this._boxes.get(el);
+    const stack: DrawnNode[] = box ? [box] : [];
+    while (stack.length) {
+      const node = stack.pop()!;
+      if (node.kind === 'textinput' || node.kind === 'textarea') {
+        return node as TextInputNode;
+      }
+      stack.push(...(node.children as DrawnNode[]));
+    }
+    return null;
+  }
+
   /** Focus `el`'s widget: the first node in its box that takes the focus. */
   focus(el: Element): boolean {
     const box = this._boxes.get(el);
@@ -523,9 +549,6 @@ function takesFocus(node: DrawnNode): boolean {
  *  one changes or is pressed. */
 interface ControlContext {
   forms: FormState;
-  /** How many resets there have been — in every widget's key, so a reset
-   *  mounts each again with the value its markup has. */
-  generation: number;
   widgets: WidgetBoxes;
   changed: (el: Element, value: string | boolean, restyle: boolean) => void;
   setChecked: (el: Element, checked: boolean) => void;
@@ -547,7 +570,7 @@ function renderControl(
 ): ReactNode {
   const { forms } = ctx;
   const el = rect.element;
-  const key = `${rect.kind}:${ctx.widgets.idOf(el)}#${ctx.generation}`;
+  const key = `${rect.kind}:${ctx.widgets.idOf(el)}`;
   const disabled = isDisabled(el);
   const readOnly = attr(el, 'readonly') !== undefined;
   // a field whose box the document draws takes its content box
@@ -701,7 +724,8 @@ function renderControl(
     case 'textarea':
       // Uncontrolled on purpose: the widget owns the live text the way a
       // browser's does, and one mounted again — its element hidden and
-      // shown, a reset — starts from what `forms` kept of it.
+      // shown — starts from what `forms` kept of it. A reset sets the text
+      // of the one mounted (`press`).
       widget = hx('textarea', {
         defaultValue: forms.value(el),
         // a text area's hint keeps its line breaks (HTML 4.10.11)

@@ -1632,7 +1632,9 @@ are load-bearing: typed text lives in `FormState` beside the DOM — the
 **a widget is keyed by its element, not by where it is.** Keyed by
 position, every relayout that moved a field (a stylesheet landing while
 someone typed) mounted a new widget, and the focus and the caret went with
-the old one.
+the old one. Nor by a count of resets: a reset sets a field's text through
+core's `value` setter, since a counter in every key mounted each control in
+the document again, and the focus went with the button pressed.
 
 **What the document draws takes the focus through a box mounted over it.**
 A link, a `<button>`, a summary or a `tabindex` element is a drawing, and
