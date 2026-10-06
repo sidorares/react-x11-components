@@ -400,10 +400,17 @@ export class HtmlViewNode extends Node {
    * (`drawSvg`), and of the raster images drawn at another size than their
    * own (`drawRaster`), the least recently drawn given up first past the cache's
    * budget: what a single paint draws once is not kept, and a page painted
-   * once keeps none. `_drawnOnce` is the keys drawn once.
+   * once keeps none. `_drawnOnce` is the keys drawn once. While the width
+   * moves, a raster is made only of a key the paint before drew as well
+   * (`_drawnLast`, and `_drawnNow` this paint's): each width of a drag is
+   * a size of its own for whatever is sized from it, and one drawn again
+   * later in the drag — a hand going back over the widths it came
+   * through — was made into a raster that nothing copied.
    */
   private _drawings: SurfaceCache | null = null;
   private _drawnOnce = new Set<string>();
+  private _drawnLast = new Set<string>();
+  private _drawnNow = new Set<string>();
   /** Blocks of the tiles of small repeating backgrounds (`tileBlock`). */
   private _tileBlocks: SurfaceCache | null = null;
   /** Whether the backend was found to have no offscreen surface. */
@@ -5002,14 +5009,21 @@ export class HtmlViewNode extends Node {
   ): SurfaceLike | null {
     const cache = (this._drawings ??= new SurfaceCache(this.app));
     if (!cache.has(key)) {
-      if (!this._drawnOnce.has(key)) {
+      if (
+        this._liveResizing() ||
+        resizeClock.now() - this._widthMovedAt < RESIZE_BURST_MS
+      ) {
+        this._drawnNow.add(key);
+        if (!this._drawnLast.has(key)) return null;
+      } else if (!this._drawnOnce.has(key)) {
         // keys drawn once are cheap, and a long life of them is forgotten
         // wholesale
         if (this._drawnOnce.size >= 4096) this._drawnOnce.clear();
         this._drawnOnce.add(key);
         return null;
+      } else {
+        this._drawnOnce.delete(key);
       }
-      this._drawnOnce.delete(key);
     }
     return cache.get(key, width, height, draw);
   }
@@ -5020,6 +5034,11 @@ export class HtmlViewNode extends Node {
     range: { start: number; end: number } | null,
     damage: { x: number; y: number; width: number; height: number } | null,
   ): void {
+    // the keys this paint draws, against the ones the paint before drew
+    const last = this._drawnLast;
+    last.clear();
+    this._drawnLast = this._drawnNow;
+    this._drawnNow = last;
     paintDocument(ctx as PaintContext, tree, {
       ...this._paintOptions(range, damage),
       lifted: this._liftedBoxes(tree),

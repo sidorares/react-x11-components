@@ -2233,6 +2233,87 @@ metric(
 );
 
 metric(
+  'a gradient straight across or down is filled a run of one colour at a time, the pixels its shading draws',
+  async () => {
+    // Zen Garden 214's page is `linear-gradient(to right, #fff 66%,
+    // #e5ede8 66%)` behind its sidebar, two colours, which was shaded and
+    // copied down the window at every frame of a resize. Each opaque run is
+    // filled, a transparent one is not drawn, and what runs between two
+    // colours is shaded as it was: across, back across, down, mixed, and a
+    // stop on a pixel's centre, which is left to the shading
+    const page =
+      '<style>body{margin:0}div{height:50px;margin:6px 0}' +
+      '#a{width:333px;background:linear-gradient(to right,#ffffff 66%,#e5ede8 66%)}' +
+      '#b{width:301px;background:linear-gradient(to left,#ff0000 30%,#0000ff 30%)}' +
+      '#c{width:120px;height:150px;background:linear-gradient(to bottom,' +
+      '#00aa00 0 40px,#aa0000 40px 62%,#0000aa 62%)}' +
+      '#d{width:316px;background:linear-gradient(to right,#ffffff 0 25%,' +
+      '#000000 75% 100%)}' +
+      '#e{width:290px;background:linear-gradient(to right,' +
+      'rgba(255,255,255,0) 50%,rgba(0,0,255,.5) 50%,rgba(0,0,255,0))}' +
+      '#f{width:200px;background:linear-gradient(to right,#ff0000 50.25%,' +
+      '#00ff00 50.25%)}' +
+      '#g{width:333px;background:linear-gradient(to right,' +
+      '#11aa44 50%,#fafa00 50%)}</style>' +
+      '<div id="a"></div><div id="b"></div><div id="c"></div>' +
+      '<div id="d"></div><div id="e"></div><div id="f"></div>' +
+      '<div id="g"></div>';
+    for (const scale of [1, 2]) {
+      const result = await renderX11(
+        h(
+          'box',
+          { style: { width: 400, flexDirection: 'column' } },
+          h(Html, { source: page, partial: false, 'data-testname': 'doc' }),
+        ),
+        { width: 440, height: 600, fonts: FONTS!, scale },
+      );
+      const el = view(screen.getByTestName('doc') as DrawnNode);
+      let proto = Object.getPrototypeOf(result.ctx);
+      while (!Object.prototype.hasOwnProperty.call(proto, 'getTransform')) {
+        proto = Object.getPrototypeOf(proto);
+      }
+      const get = proto.getTransform;
+      let shades = 0;
+      let draw = proto;
+      while (
+        !Object.prototype.hasOwnProperty.call(draw, 'createLinearGradient')
+      ) {
+        draw = Object.getPrototypeOf(draw);
+      }
+      const create = draw.createLinearGradient;
+      draw.createLinearGradient = function (this: unknown, ...a: unknown[]) {
+        shades += 1;
+        return create.apply(this, a);
+      };
+      try {
+        const repaint = () => {
+          shades = 0;
+          (
+            el as unknown as {
+              invalidate(all: boolean, by: unknown, why: string): void;
+            }
+          ).invalidate(false, el, 'props');
+          return snapshot(result, el);
+        };
+        const runs = await repaint();
+        // #a and #b are two colours each, and #c three: shaded nothing; #d
+        // and #e shade what runs between, and #f and #g, whose stops fall
+        // on a pixel's centre, all of it
+        assert.ok(shades <= 4, `${scale}x: ${shades} shaded`);
+        // a context with no matrix to read shades all of each, as it was
+        proto.getTransform = undefined;
+        const shaded = await repaint();
+        assert.strictEqual(bytesApart(runs, shaded), 0, `${scale}x`);
+      } finally {
+        proto.getTransform = get;
+        draw.createLinearGradient = create;
+      }
+      cleanup();
+    }
+  },
+);
+
+metric(
   'a large gradient straight down or across is copied from a strip of it, the pixels it fills',
   async () => {
     // Shaded a pixel at a time, a page's body gradient was 7 ms of every

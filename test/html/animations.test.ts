@@ -1013,6 +1013,34 @@ metric(
 );
 
 metric(
+  'a faded box drawn through its matrix keeps its group across the frames of an animation inside it, painting it again where they changed it, to the pixels a build draws',
+  async (t) => {
+    // a bar a frame moves inside a turned panel: the group kept for the
+    // panel holds the bar where it was, until the frame says it moved
+    const doc = await running(
+      t,
+      '<style>body { margin: 0 }' +
+        '@keyframes s { from { left: 0 } to { left: 140px } }' +
+        '#w { position: relative; width: 300px; height: 120px; margin: 30px;' +
+        ' background: #224466; transform: rotate(8deg); opacity: .8 }' +
+        '#a { position: absolute; left: 0; top: 40px; width: 60px;' +
+        ' height: 24px; background: #ffcc00;' +
+        ' animation: s 160ms linear infinite }</style>' +
+        '<div id="w"><div id="a"></div></div>',
+      400,
+    );
+    await doc.at(16);
+    const made = surfacesMade(t);
+    const { frames } = await framesAgainstBuilds(doc, [48, 96, 144]);
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[1][i]),
+      'it moved',
+    );
+    assert.ok(made() > 0, 'drawn from a group kept for it');
+  },
+);
+
+metric(
   'a frame of the animations waits once the paint it is owed is two frames late, and is made anyway a quarter of a second on',
   async (t) => {
     const doc = await running(

@@ -110,6 +110,13 @@ export function shapesEqual(
   b: readonly number[],
 ): boolean {
   if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i] && !(Math.abs(a[i] - b[i]) < SAME_PLACE)) return false;
+  }
   return true;
 }
+
+/** How close two places in a record are that are one: a box a drag moves
+ *  a fraction of a pixel at a time has its parts' places from its corner
+ *  worked out in other last bits at each. */
+const SAME_PLACE = 1e-6;

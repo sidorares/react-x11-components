@@ -3391,6 +3391,22 @@ its header: in the browser example a size a drag asked for was on screen
 in 26 ms at the median, where it took 37, and the pane fell behind its
 window at none of 96 steps, where it did at 12.
 
+**A drag draws what it draws again from what it kept.** While the width
+moves, a raster is made only of an image at a size the frame before drew
+it at as well — each width of a drag is a size of its own for a photograph
+that covers its box, and one the drag came back to was made into a raster
+nobody copied. A gradient whose stops hold one colour over a run is filled
+a run at a time, and only what runs between two colours is shaded: Zen
+Garden 214's sidebar, a `linear-gradient` of two colours at 66%, is two
+fills where it was shaded and copied down the window at every frame. And a
+faded box drawn through a transform keeps the group it is drawn on while
+its matrix holds, across a resize that moves it by a fraction of a pixel:
+214's enso, an image scaled and faded by an animation, was set from its
+paths at every frame. A frame of a resize of 214's wide layout went from
+32 ms of paint to 20 on a Mac at 2x, with the page's own pixels, but for
+the enso's edges a level or two of 255 apart, and the stop of a hard
+gradient that CoreGraphics puts a column either side as it pleases.
+
 **An opaque canvas fills nothing under it.** The element paints its canvas
 over all of itself before anything else, so where the canvas is opaque — in
 the `Canvas` colour of a scheme of the page's own, or in an opaque colour
