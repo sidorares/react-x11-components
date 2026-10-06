@@ -354,6 +354,59 @@ metric(
   },
 );
 
+metric(
+  'an if() takes the first branch whose condition holds, as a var() is replaced',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<html><head><style>' +
+        ':root { --one: 1; --n: 3; --mode: dark }' +
+        'body { color: #00ff00 } p { color: #000000 }' +
+        '#a { color: red; color: if(style(--one: 1): #0000ff; else: red) }' +
+        // the first that holds, `else` holding always
+        '#b { color: if(style(--one: 2): red; style(--one): #0000ff; else: red) }' +
+        // none holds: nothing, which leaves the property unset
+        '#c { color: if(style(--one: 2): red) }' +
+        // white space around a value is no part of it, and inside one is,
+        // as written; `initial` is a property nothing set
+        '#d { --pair: a  b; color: if(style(--pair:a b): red; ' +
+        'style(--pair: a  b ): #0000ff; else: red) }' +
+        '#k { color: if(style(--none: initial): #0000ff; else: red) }' +
+        // a branch's value has its var()s replaced, and a custom property
+        // takes one as well
+        '#e { --c: if(style(--mode: dark): var(--blue); else: red); ' +
+        '--blue: #0000ff; color: var(--c) }' +
+        // not, and, or; media() and supports(); a range — and a `not`
+        // beside an `and` in no brackets is no condition, which makes its
+        // if() none as it is parsed, and the declaration before it stands,
+        // as one of a branch with no `:` does
+        '#f { color: if((not style(--one: 2)) and media(width >= 1px): #0000ff; else: red) }' +
+        '#j { color: #0000ff; color: if(not style(--one: 2) and media(width >= 1px): red; else: red) }' +
+        '#l { color: #0000ff; color: if(style(--one: 1): red; else red) }' +
+        '#g { color: if(media(width > 100000px) or style(--n > 4): red; ' +
+        'supports(display: grid): #0000ff) }' +
+        '#h { color: if(style(--n > 2): #0000ff; else: red) }' +
+        // and if() inside a function
+        '#i { background-color: rgb(if(style(--one: 1): 0 0 255; else: 255 0 0)) }' +
+        '</style></head><body>' +
+        '<p id="a">a</p><p id="b">b</p><p id="c">c</p><p id="d">d</p>' +
+        '<p id="e">e</p><p id="f">f</p><p id="g">g</p><p id="h">h</p>' +
+        '<p id="i">i</p><p id="j">j</p><p id="k">k</p><p id="l">l</p>' +
+        '</body></html>',
+      {},
+    );
+    const style = (id: string) =>
+      (boxOf(el, id) as unknown as { style: Record<string, unknown> }).style;
+    assert.strictEqual(style('a').color, '#0000ff');
+    assert.strictEqual(style('b').color, '#0000ff');
+    // `color` inherits, so unset is the body's
+    assert.strictEqual(style('c').color, '#00ff00');
+    for (const id of ['d', 'e', 'f', 'g', 'h', 'j', 'k', 'l']) {
+      assert.strictEqual(style(id).color, '#0000ff', id);
+    }
+    assert.strictEqual(style('i').backgroundColor, '#0000ff');
+  },
+);
+
 test('color-mix() mixes in the space it names, premultiplied and weighted', () => {
   const cases: [string, string | null][] = [
     ['color-mix(in srgb, red, blue)', '#800080'],
@@ -404,6 +457,29 @@ test('a relative colour takes its origin into its function and reads its channel
     ['rgb(from nope r g b)', null],
     // and a calculation stands for a number in an absolute colour too
     ['rgb(calc(255 / 2) 0 0)', '#800000'],
+  ];
+  for (const [value, want] of cases) {
+    assert.strictEqual(parseColor(value), want, value);
+  }
+});
+
+test('a math function in a channel comes to a percentage or an angle as well as a number', () => {
+  const cases: [string, string | null][] = [
+    // a percentage of a percentage's own type, resolved with no basis
+    ['hsl(140 clamp(30%,45%,60%) 42%)', '#3b9b5b'],
+    ['hsl(140 min(45%, 60%) 42%)', '#3b9b5b'],
+    ['rgb(calc(50% + 10%) 0 0)', '#990000'],
+    ['rgb(calc(100% / 2) 0 0 / calc(50%))', 'rgba(128, 0, 0, 0.5)'],
+    // an angle in any of its units, in degrees
+    ['hsl(calc(90deg + 50deg) 45% 42%)', '#3b9b5b'],
+    ['hsl(calc(0.25turn + 50deg) 45% 42%)', '#3b9b5b'],
+    // a comma inside a function is not the legacy form's
+    ['rgb(min(255, 300) 0 0)', '#ff0000'],
+    ['hsl(140, max(10%, 45%), 42%)', '#3b9b5b'],
+    // one type throughout, and none a length
+    ['hsl(140 clamp(30%, 45, 60%) 42%)', null],
+    ['hsl(calc(90deg + 50%) 45% 42%)', null],
+    ['rgb(calc(10px) 0 0)', null],
   ];
   for (const [value, want] of cases) {
     assert.strictEqual(parseColor(value), want, value);

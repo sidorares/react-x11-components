@@ -55,6 +55,7 @@ import {
   flatParentOf,
   HtmlSource,
   imageUrlOf,
+  indicatedElement,
   isElement,
   isText,
   tagOf,
@@ -613,6 +614,9 @@ export class HtmlViewNode extends Node {
   private _hovered: Element[] = [];
   /** Which element's widget holds the focus (`setFocus`). */
   private _focus: FocusState = NO_FOCUS;
+  /** The element the fragment of the document's URL names, `:target`
+   *  (`_updateBase`). */
+  private _target: Element | null = null;
   /** Where the pointer last moved to, in logical window pixels, while it
    *  is over the element (`defaultMouseMove`). */
   private _pointerAt: { x: number; y: number } | null = null;
@@ -826,13 +830,31 @@ export class HtmlViewNode extends Node {
    * `baseUrl` prop, or the prop — and only an absolute one, since a relative
    * base resolves nothing. Everything resolved against the old one is
    * stale when it moves, the sheets' URLs with it, so the cascade is.
+   *
+   * And the element the prop's fragment names, which is `:target`: the
+   * document's URL is the prop, and a link to `#section` the host follows
+   * is the same URL with another fragment — which resolves nothing
+   * differently, so it restyles only where a rule tests `:target`.
    */
   private _updateBase(): void {
-    const given = this._props().baseUrl || null;
+    const url = this._props().baseUrl || null;
+    const hash = url ? url.indexOf('#') : -1;
+    const given = url && hash >= 0 ? url.slice(0, hash) : url;
     const href = this._source.facts().base;
     let base = href ? resolveUrl(href, given) : given;
     if (base && !ABSOLUTE_URL.test(base)) base = null;
+    if (base) base = base.split('#')[0];
     if (this._urls.setBase(base)) this._invalidate(Stale.Style);
+    const target = indicatedElement(
+      this._source.document,
+      url && hash >= 0 ? url.slice(hash + 1) : '',
+    );
+    if (target !== this._target) {
+      this._target = target;
+      const cascade = this._cascade;
+      cascade?.setTarget(target);
+      if (cascade?.targetSensitive) this._invalidate(Stale.Boxes);
+    }
   }
 
   /**
@@ -1295,6 +1317,7 @@ export class HtmlViewNode extends Node {
       active: EMPTY_SET,
     });
     this._cascade.setFocus(this._focus);
+    this._cascade.setTarget(this._target);
     this._mediaBand = this._cascade.mediaBand(width);
   }
 

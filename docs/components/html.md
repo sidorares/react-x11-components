@@ -223,6 +223,17 @@ exactly what it saw before. Nothing is fetched because of a base: it says
 where a URL points, and `onResource` still decides whether anything goes
 there.
 
+`baseUrl`'s fragment is the document's: the element whose id it is, or
+failing one the `<a>` it is the name of — as written, then percent-decoded
+— is `:target` (HTML's indicated part). The component does not navigate, so
+a link to `#section` reaches `onLink` like any other, and a host that
+follows it hands back the same URL with the new fragment, which resolves
+nothing differently and restyles only where a rule tests `:target`. Where
+to scroll is the host's, as the scroller is: `handle.elementRect` says
+where the element is. A document with no URL of its own can be given a
+fragment alone, `baseUrl="#section"`, which names a target and resolves
+nothing.
+
 ### Responsive images
 
 An `<img srcset>`, or an `<img>` in a `<picture>`, asks for the one image
@@ -2484,6 +2495,22 @@ no value. `:root` is the `<html>` element, the one a browser implies
 around a fragment too, so a fragment's `:root { --brand: … }` reaches all
 of it.
 
+**`if()`** (CSS Values 5): a value chosen by the first branch whose
+condition holds, `if(style(--size: big): 2rem; media(width < 40rem): 1rem;
+else: 1.5rem)`, replaced when a `var()` is and with the same consequences —
+it works anywhere in a value, a custom property's included, and one whose
+branches all fail comes to nothing, which leaves its property `unset`. A
+condition is `style()`, `media()` or `supports()`, with `not`, `and` and
+`or` as `@media` has them. `style()` asks the element's own custom
+properties: `--name: value`, which compares the value as written but for
+white space at either end, so `1` is not `1.0`; `--name`, set at all;
+`--name: initial`, set by nothing; and a range, `--n > 2`, over numbers or
+dimensions in one unit. `media()` is answered for the viewport, and a
+document that asks one is styled again when the viewport moves, as one with
+a `vw` in it is; `supports()` as a `@supports` block's condition is. A
+branch that is no condition, or has no `:`, makes the declaration none as
+it is parsed, and the one before it stands.
+
 **CSS-wide keywords:** `inherit`, `initial` and `unset` on any property,
 and `all`, which sets every property but `direction`, `unicode-bidi` and
 the custom properties to one of them at its place in the cascade (CSS
@@ -2508,7 +2535,9 @@ var(--brand) calc(l + 0.1) c h / 50%)`. The names are numbers in the
 function's own range (`r` up to 255, `s` and `l` up to 100, a hue in
 degrees), and an alpha left out is the origin's. A mix or a relative colour
 with `currentColor` in it is worked out where the colour is used. A channel
-of any colour function may be a `calc()`. A system colour (CSS Color 4) is
+of any colour function may be a math function — `calc()`, `min()`, `max()`,
+`clamp()` — of numbers, of percentages or of angles, one of the three
+throughout: `hsl(140 clamp(30%, 45%, 60%) 42%)`. A system colour (CSS Color 4) is
 the palette's where the element's colour scheme is the palette's — `Canvas`
 its ground, `CanvasText` its text, `LinkText` and `AccentColor` its accent,
 `ButtonFace`, `ButtonText` and `ButtonBorder` its controls', `GrayText` its
@@ -2553,7 +2582,8 @@ field's says so (see [Forms](#forms)), and a link, a button or a summary
 has a box that takes it for it (see [Focus and the
 keyboard](#focus-and-the-keyboard)) — so Wikipedia's skip link, hidden with
 `:not(:focus)`, shows when Tab reaches it. `:target` is the
-element an SVG image's URL names by its fragment, and none in a document.
+element the fragment of the document's URL names — `baseUrl`'s, see [Base
+URLs](#base-urls) — and the one an SVG image's URL names by its.
 Specificity is Selectors 4's: `:where()` counts nothing, `:is()`, `:not()`
 and `:has()` count the most specific selector in their list, and
 `:nth-child(2n of .a)` a class and the most specific in its list, so a

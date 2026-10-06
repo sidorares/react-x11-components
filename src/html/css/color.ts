@@ -1,5 +1,5 @@
 import * as ntk from 'react-x11/ntk';
-import { parseMathNumber } from './calc.js';
+import { parseMathChannel } from './calc.js';
 import { closingParen, topLevelComma } from './vars.js';
 
 // CSS Color 4's functional colours: read here, and written back in the one
@@ -185,7 +185,8 @@ function readRgbaFunction(value: string): Rgba | null {
   let channels: Component[];
   let alpha: Component | null = null;
   let space = '';
-  if (body.includes(',')) {
+  // a comma inside a channel's math, `clamp(30%, 45%, 60%)`, is not one
+  if (topLevelComma(body) >= 0) {
     // the legacy comma form, which only these four have
     if (!LEGACY.has(name)) return null;
     const parts = topLevelParts(body, ',');
@@ -248,11 +249,11 @@ function words(text: string): string[] {
 }
 
 /** A channel: a number, a percentage, an angle or `none`, or a math
- *  function standing for a number — `rgb(calc(255 / 2) 0 0)`. */
+ *  function standing for one of the first three — `rgb(calc(255 / 2) 0
+ *  0)`, `hsl(140 clamp(30%, 45%, 60%) 42%)`. */
 function channel(token: string): Component | null {
   if (!token.includes('(')) return component(token);
-  const n = parseMathNumber(token);
-  return n === null ? null : { value: n, unit: '' };
+  return parseMathChannel(token);
 }
 
 // --- relative colours (CSS Color 5, 4) -------------------------------------

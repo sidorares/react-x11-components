@@ -240,6 +240,40 @@ export function* elementsIn(
   }
 }
 
+/**
+ * The element a URL's fragment names in a document, its indicated part
+ * (HTML 7.4.6.3, "find a potential indicated element"): the first element
+ * in tree order whose id is the fragment, or failing one, the first `<a>`
+ * it is the name of — the fragment as written, and then percent-decoded.
+ * A shadow tree's ids are its own, and no fragment reaches them. Null for
+ * none, and for no fragment.
+ */
+export function indicatedElement(
+  document: AnyNode,
+  fragment: string,
+): Element | null {
+  if (!fragment) return null;
+  const find = (name: string): Element | null => {
+    let anchor: Element | null = null;
+    for (const el of elementsIn(document)) {
+      if (attr(el, 'id') === name) return el;
+      if (!anchor && tagOf(el) === 'a' && attr(el, 'name') === name) {
+        anchor = el;
+      }
+    }
+    return anchor;
+  };
+  const found = find(fragment);
+  if (found) return found;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(fragment);
+  } catch {
+    return null;
+  }
+  return decoded === fragment ? null : find(decoded);
+}
+
 // --- shadow trees ------------------------------------------------------------
 //
 // A declarative shadow root (HTML 13.2.6.4.4, "a start tag whose tag name is

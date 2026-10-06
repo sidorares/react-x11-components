@@ -437,7 +437,12 @@ export default function Page(props: PageProps): ReactElement {
               source={page.source}
               partial={page.partial}
               charset={page.charset}
-              baseUrl={page.baseUrl}
+              // with the fragment this step is at, which is `:target`
+              baseUrl={
+                page.baseUrl && fragment
+                  ? `${withoutHash(page.baseUrl)}#${fragment}`
+                  : page.baseUrl
+              }
               onResource={onResource}
               onDocument={onDocument}
               onLink={onLink}

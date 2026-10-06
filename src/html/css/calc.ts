@@ -58,13 +58,53 @@ export function parseMathNumber(value: string): number | null {
   return censor(term.px);
 }
 
+/**
+ * A math function standing for a colour's channel (CSS Color 4, 4.1): a
+ * number, a percentage or an angle, and one of them throughout —
+ * `hsl(140 clamp(30%, 45%, 60%) 42%)`. A percentage here is a value of a
+ * type of its own, not a share of something layout knows, so `min(30%,
+ * 45%)` comes to 30% where a length's waits for what it is a share of.
+ * An angle comes to degrees. Null where it is none of the three.
+ */
+export function parseMathChannel(
+  value: string,
+): { value: number; unit: '' | '%' | 'deg' } | null {
+  let kind: '%' | 'deg' | null = null;
+  const term = parseTerm(
+    value,
+    (token) => {
+      const m = /^(.*?)(%|deg|grad|rad|turn)$/i.exec(token);
+      if (!m) return null;
+      const unit = m[2].toLowerCase();
+      const of = unit === '%' ? '%' : 'deg';
+      if (kind !== null && kind !== of) return null;
+      kind = of;
+      const n = Number(m[1]);
+      return unit === 'grad'
+        ? n * 0.9
+        : unit === 'rad'
+          ? (n * 180) / Math.PI
+          : unit === 'turn'
+            ? n * 360
+            : n;
+    },
+    true,
+  );
+  if (!term || term.kind !== 'linear' || term.hasPct) return null;
+  if (!term.length) return { value: censor(term.px), unit: '' };
+  return kind === null ? null : { value: censor(term.px), unit: kind };
+}
+
 function parseTerm(
   value: string,
   dimension: (token: string) => number | null,
+  /** Whether a percentage is a dimension `dimension` reads, as it is in a
+   *  colour's channel, rather than a share of a length. */
+  percentages = false,
 ): Term | null {
   const tokens = tokenize(value);
   if (!tokens) return null;
-  const parser = new Parser(tokens, dimension);
+  const parser = new Parser(tokens, dimension, percentages);
   const term = parser.value();
   return term && parser.pos === tokens.length ? term : null;
 }
@@ -183,6 +223,7 @@ class Parser {
   constructor(
     private tokens: Token[],
     private dimension: (token: string) => number | null,
+    private percentages = false,
   ) {}
 
   private peek(): Token | undefined {
@@ -298,7 +339,9 @@ class Parser {
     if (token.t !== 'num') return null;
     this.pos += 1;
     if (token.unit === '') return linear(false, token.value, 0, false);
-    if (token.unit === '%') return linear(true, 0, token.value, true);
+    if (token.unit === '%' && !this.percentages) {
+      return linear(true, 0, token.value, true);
+    }
     const px = this.dimension(`${token.value}${token.unit}`);
     return px === null ? null : linear(true, px, 0, false);
   }
