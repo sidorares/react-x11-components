@@ -2637,6 +2637,34 @@ holds nowhere. A feature nothing knows, or a value its feature does not
 take — a size that is no length, `(min-width: 0\0)` — is neither true nor
 false, as Media Queries 4 has it: it holds nowhere under a `not` as well,
 and `(unknown: 1) or (min-width: 600px)` holds where the width does.
+
+**Container queries** (CSS Conditional 5): `container-type`,
+`container-name` and the `container` shorthand, and `@container` rules,
+nested in a rule or around one, as `@media` nests. A rule under one holds
+where its query holds of the element's query container: the nearest
+ancestor in the flat tree of the name the rule gives, if it gives one, and
+that is a size container of the axes its features read — `width`,
+`inline-size`, `height`, `block-size`, `aspect-ratio` and `orientation`, in
+the plain, `min-` and `max-` forms and Media Queries 4's ranges — under
+`not`, `and` and `or`. A `::before` or an `::after` asks its own element
+first, and the element never asks itself. A query's lengths are measured
+against the container's content box, and its `em` is the container's own.
+`style()` asks a container's custom properties as `if()` does (see
+`if()`), of any element, since every element is a style container. Where
+none is the container a query asks for, the query holds nowhere.
+`container-type: inline-size` applies inline-size containment and `size`
+size containment, both with style containment, and makes the box a
+formatting context of its own: it holds its floats and keeps its
+children's margins. It is no containing block for what is positioned in
+it, as in Chrome. An inline box takes no size containment, and is no size
+container. `cqw`, `cqh`, `cqi`, `cqb`, `cqmin` and `cqmax` are hundredths
+of the nearest size container's content box that has the axis, or the
+viewport's where none has. A container's size is layout's, so a query is
+answered for the size the last layout gave its container: the first layout
+of a document whose queries hold is followed by a second, for the elements
+they answer for, and each level of containers whose size a query moves
+adds one more, up to four. See [the decisions](#the-decisions).
+
 `@import` goes through the resource seam, its media queries kept as the
 conditions of what it imports, and a `<link>`'s or a `<style>`'s `media`
 attribute as the conditions of its sheet. Cascade layers are read (CSS
@@ -3292,14 +3320,15 @@ Mutation is supported; it is not where the performance budget went.
 The pipeline is staged so that the two things that happen most often cost the
 least:
 
-| What changed       | What re-runs                                     |
-| ------------------ | ------------------------------------------------ |
-| `source`           | parse (incrementally), style, box, layout, paint |
-| a stylesheet       | style, box, layout, paint                        |
-| the DOM            | box, layout, paint                               |
-| the width          | layout, paint                                    |
-| a `@media` band    | style of what it reaches, box, layout, paint     |
-| an expose / scroll | paint, culled to the damage rect                 |
+| What changed               | What re-runs                                     |
+| -------------------------- | ------------------------------------------------ |
+| `source`                   | parse (incrementally), style, box, layout, paint |
+| a stylesheet               | style, box, layout, paint                        |
+| the DOM                    | box, layout, paint                               |
+| the width                  | layout, paint                                    |
+| a `@media` band            | style of what it reaches, box, layout, paint     |
+| a container query's answer | style of what it answers for, box, layout, paint |
+| an expose / scroll         | paint, culled to the damage rect                 |
 
 Nothing in a computed style depends on the width — percentages and `auto`
 survive unresolved into layout — which is what makes a resize skip the
@@ -3361,6 +3390,24 @@ elements, page grids at the top of every subtree; every element was
 styled again there, and a crossing's build went from 130 ms to 53 ms at 2x
 on macOS. A document with a `@keyframes` or a `@font-face` under a media
 query, or a shadow tree, is styled again whole, as before.
+
+**A container's query restyles what it answers for, after the layout
+that sized it.** A container's size is layout's, and layout comes after
+the styles, so the cascade answers a container query for the size the last
+layout gave the container, and notes, for each element, which container
+each of its queries and container units asked and what it came to. Each
+layout then measures the containers asked, and the elements whose answers
+it moved, and no others, are styled again, the boxes built around every
+other element's kept style, and laid out again. A width that moves a
+container across no query's answer restyles nothing, as a width across no
+`@media` breakpoint does. An element a container rule could reach, or
+whose style holds a container unit, computes its own style rather than
+sharing one with the elements alike in every other way, since they can be
+in containers of other sizes. A layout that only asks the document's least
+width, core's content floors, asks no container: size containment leaves a
+container's inline size its own whatever its queries make of what is in
+it. A container a dragged width's layout set aside keeps the size it had
+until the drag ends.
 
 **A width that keeps moving lays out what can be seen.** A window edge
 dragged moves the width a frame at a time, and a long page laid out whole

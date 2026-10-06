@@ -110,6 +110,10 @@ export interface UnitContext {
    *  a sheet that only mentions one, in a rule nothing matches, holds
    *  none (`Cascade.readsViewportWidth`). */
   viewport?: (unit: 'vw' | 'vh' | 'vmin' | 'vmax') => void;
+  /** The content box of the element's nearest size container of an axis,
+   *  in device pixels, for `cqw`, `cqh` and their kin (CSS Conditional 5,
+   *  3.4) — the viewport's where there is none. Absent, the viewport's. */
+  cq?: (axis: 'inline' | 'block') => number;
   /** Device pixels per CSS pixel — the display scale. */
   scale: number;
   /** The x-height of the font the lengths are in, asked only for a length
@@ -155,7 +159,7 @@ export interface UnitContext {
 const NUMBER_SRC = '[+-]?(?:\\d*\\.\\d+|\\d+)(?:e[+-]?\\d+)?';
 
 const LENGTH_RE = new RegExp(
-  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|lh|rlh|[sld]?v(?:w|h|i|b|min|max)|q|%)?$`,
+  `^(${NUMBER_SRC})(px|em|rem|pt|pc|in|cm|mm|ex|ch|lh|rlh|[sld]?v(?:w|h|i|b|min|max)|cq(?:w|h|i|b|min|max)|q|%)?$`,
 );
 
 /**
@@ -281,9 +285,36 @@ function unitScale(unit: string, ctx: UnitContext): number {
     case 'vmax':
       ctx.viewport?.('vmax');
       return Math.max(ctx.vw, ctx.vh) / 100;
+    // a hundredth of the nearest size container's content box in an axis,
+    // the width being the inline one, as every document here is laid out
+    // horizontally
+    case 'cqw':
+    case 'cqi':
+      return containerAxis(ctx, 'inline') / 100;
+    case 'cqh':
+    case 'cqb':
+      return containerAxis(ctx, 'block') / 100;
+    case 'cqmin':
+      return (
+        Math.min(containerAxis(ctx, 'inline'), containerAxis(ctx, 'block')) /
+        100
+      );
+    case 'cqmax':
+      return (
+        Math.max(containerAxis(ctx, 'inline'), containerAxis(ctx, 'block')) /
+        100
+      );
     default:
       return 1;
   }
+}
+
+/** A size container's content box in an axis, or the viewport's where
+ *  the context knows of none. */
+function containerAxis(ctx: UnitContext, axis: 'inline' | 'block'): number {
+  if (ctx.cq) return ctx.cq(axis);
+  ctx.viewport?.(axis === 'inline' ? 'vw' : 'vh');
+  return axis === 'inline' ? ctx.vw : ctx.vh;
 }
 
 /** A plain number — `flex-grow`, `opacity`, `z-index`, `line-height`. */

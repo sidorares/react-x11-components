@@ -1417,6 +1417,26 @@ decides _after_ the element was measured — so a document that reads it (a
 block; `LayoutResult.readsViewportHeight`) finds the move at paint and asks
 to be measured again, which costs a frame per resize and only for those.
 
+**A container query is the third exception, and it is answered after the
+layout.** A container's size is layout's, so the cascade answers an
+`@container` query, and a `cqw` or its kin, for the content box the last
+layout gave the container (`Cascade._containerSizes`), and notes for each
+element which container each read and what it came to
+(`_containerReads`). Every layout then hands the containers' boxes back
+(`HtmlViewNode._containersMoved`), and the elements whose answers moved are
+built again around everyone else's kept style and laid out again, at most
+`CONTAINER_PASSES` times. Three things are load-bearing. **A read is noted
+only where the selector matched**, so a query is a cost of the elements it
+styles and not of its bucket. **An element a container rule reaches, or
+whose style holds a container unit, shares no style** (`UNSHAREABLE`'s
+buckets, `_containerUnitRead`): a sharing key is the element's ancestors'
+and attributes, and two elements alike in all of them can be in containers
+of other sizes. And **the containers are measured from boxes taken as the
+tree was built** (`BoxTree.containers`), since a dragged width sets boxes
+aside from the root's walk. Anything new that makes a style read a
+container's size goes through `_containerReads`, or a layout that moves the
+container leaves the style as it was.
+
 **Form controls are real widgets, mounted beside the element.** `<Flow>`'s
 escape hatch, and the same reason: a drawn control takes no focus, says
 nothing to an assistive technology, blinks no caret and opens no menu. The

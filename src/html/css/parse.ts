@@ -15,6 +15,8 @@
 // stylesheet is easy; matching `li:nth-child(2n+1) > a[href^="/"]` correctly
 // and quickly is not, and that is the part worth importing.
 import { resolveUrl } from '../url.js';
+import { parseContainerPrelude } from './containers.js';
+import type { ContainerQuery } from './containers.js';
 import { parseLength, parseStretch, splitValue } from './values.js';
 import { hasVar, unbalanced, validVars } from './vars.js';
 
@@ -52,6 +54,10 @@ export interface StyleRule {
    *  layer on its path, outermost first, in the order the document first
    *  names them. Null for a rule in no layer, which outranks every layer. */
   layer: readonly number[] | null;
+  /** The `@container` blocks the rule sits under, outermost first, as its
+   *  `@media` blocks are: each block's list ORs, and the blocks AND. Absent
+   *  for a rule under none — which is every rule of most documents. */
+  containers?: ContainerQuery[][];
 }
 
 export interface Stylesheet {
@@ -76,6 +82,8 @@ export interface Stylesheet {
    *  breakpoint can change: the document restyles as one with a `vw`
    *  does. */
   readsWidth?: boolean;
+  /** Whether a rule in it is under an `@container`. */
+  containers?: boolean;
   /** The `@font-face` rules, in order (see `fonts.ts`). */
   fontFaces: FontFaceRule[];
   /** `@counter-style` rules, in order: a name and its descriptors, which
@@ -299,6 +307,7 @@ export function parseStylesheet(
     media: MediaCondition[][] | null,
     layer: readonly number[] | null = null,
     path = '',
+    containers: ContainerQuery[][] | null = null,
   ): void => {
     let i = 0;
     const n = source.length;
@@ -338,14 +347,28 @@ export function parseStylesheet(
             media ? [...media, conditions] : [conditions],
             layer,
             path,
+            containers,
           );
+        } else if (name === 'container' && at.block !== null) {
+          // a level of its own, as a nested `@media` is
+          const queries = parseContainerPrelude(at.prelude);
+          if (queries) {
+            sheet.containers = true;
+            walk(
+              at.block,
+              media,
+              layer,
+              path,
+              containers ? [...containers, queries] : [queries],
+            );
+          }
         } else if (name === 'supports' && at.block !== null) {
           // Everything in a `@supports` block is markup this renderer either
           // understands or ignores per-declaration, so entering it is closer
           // to right than skipping it — but for a condition it can answer
           // false (`supportsCondition`)
           if (supportsCondition(at.prelude) !== false) {
-            walk(at.block, media, layer, path);
+            walk(at.block, media, layer, path, containers);
           }
         } else if (name === 'layer') {
           // `@layer a, b;` names layers, and so fixes their order, and
@@ -364,7 +387,7 @@ export function parseStylesheet(
               layer,
               path,
             );
-            walk(at.block, media, ranks, full);
+            walk(at.block, media, ranks, full, containers);
           }
         } else if (name === 'font-face' && at.block !== null) {
           const face = parseFontFace(at.block, base, media);
@@ -404,7 +427,7 @@ export function parseStylesheet(
       const selectors = rawSelectors(prelude);
       if (!selectors) continue;
       importsAllowed = false;
-      styleRule(selectors, block.body, media, layer, path, 0);
+      styleRule(selectors, block.body, media, layer, path, 0, containers);
     }
   };
 
@@ -426,19 +449,28 @@ export function parseStylesheet(
     layer: readonly number[] | null,
     path: string,
     depth: number,
+    containers: ContainerQuery[][] | null = null,
   ): void => {
     // the plain case, a block with nothing nested in it
     if (!body.includes('{')) {
-      emit(selectors, parseDeclarations(body), media, layer);
+      emit(selectors, parseDeclarations(body), media, layer, containers);
       return;
     }
     const { declarations, nested } = splitNested(body);
-    emit(selectors, parseDeclarations(declarations), media, layer);
+    emit(selectors, parseDeclarations(declarations), media, layer, containers);
     if (depth >= MAX_NESTING) return;
+    const deeper = (
+      at: string[],
+      block: string,
+      within: MediaCondition[][] | null,
+      ranks: readonly number[] | null,
+      named: string,
+      under: ContainerQuery[][] | null,
+    ): void => styleRule(at, block, within, ranks, named, depth + 1, under);
     for (const item of nested) {
       if (item.kind === 'rule') {
         const inner = nestedSelectors(item.prelude, selectors);
-        if (inner) styleRule(inner, item.body, media, layer, path, depth + 1);
+        if (inner) deeper(inner, item.body, media, layer, path, containers);
         continue;
       }
       const name = item.name.toLowerCase();
@@ -446,21 +478,34 @@ export function parseStylesheet(
       if (name === 'media') {
         const conditions = parseMediaQuery(item.prelude);
         note(conditions);
-        styleRule(
+        deeper(
           selectors,
           item.block,
           media ? [...media, conditions] : [conditions],
           layer,
           path,
-          depth + 1,
+          containers,
         );
+      } else if (name === 'container') {
+        const queries = parseContainerPrelude(item.prelude);
+        if (queries) {
+          sheet.containers = true;
+          deeper(
+            selectors,
+            item.block,
+            media,
+            layer,
+            path,
+            containers ? [...containers, queries] : [queries],
+          );
+        }
       } else if (name === 'supports') {
         if (supportsCondition(item.prelude) !== false) {
-          styleRule(selectors, item.block, media, layer, path, depth + 1);
+          deeper(selectors, item.block, media, layer, path, containers);
         }
       } else if (name === 'layer' && LAYER_NAME.test(item.prelude.trim())) {
         const [ranks, full] = enter(item.prelude.trim(), layer, path);
-        styleRule(selectors, item.block, media, ranks, full, depth + 1);
+        deeper(selectors, item.block, media, ranks, full, containers);
       }
     }
   };
@@ -470,6 +515,7 @@ export function parseStylesheet(
     declarations: Declaration[],
     media: MediaCondition[][] | null,
     layer: readonly number[] | null,
+    containers: ContainerQuery[][] | null,
   ): void => {
     if (!declarations.length) return;
     if (base !== null) {
@@ -477,14 +523,16 @@ export function parseStylesheet(
     }
     for (const raw of selectors) {
       const selector = raw.includes('\\') ? forMatcher(raw) : raw;
-      sheet.rules.push({
+      const rule: StyleRule = {
         selector,
         specificity: specificityOf(selector),
         order: order++,
         declarations,
         media,
         layer,
-      });
+      };
+      if (containers) rule.containers = containers;
+      sheet.rules.push(rule);
     }
   };
 

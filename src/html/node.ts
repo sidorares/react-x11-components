@@ -84,6 +84,7 @@ import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
 import type { ComputedStyle, RootLook } from './css/style.js';
 import {
+  CONTAIN_INLINE_SIZE,
   sameValue,
   urlOf,
   WILL_HOLD_FIXED,
@@ -94,6 +95,7 @@ import {
 import {
   BOX_RAISES,
   buildBoxes,
+  containerBoxes,
   CONTENT_IMAGES,
   CLEARED_FROM,
   COLUMN_LINES,
@@ -121,6 +123,7 @@ import type {
 } from './layout/boxes.js';
 import {
   anchorAt,
+  containmentApplies,
   heldBack,
   layoutDocument,
   placedMatrix,
@@ -324,6 +327,13 @@ export function registerHtmlView(): void {
     childrenAllowed: false,
   });
 }
+
+/** How many times a layout's container sizes may build the boxes again
+ *  (`HtmlViewNode._containersMoved`): once for each level of containers
+ *  inside containers whose sizes their queries move, which documents do
+ *  not nest deep, and never more — an answer that keeps changing its
+ *  container's size is a cycle size containment is there to rule out. */
+const CONTAINER_PASSES = 4;
 
 /** How many widths' sizes a document keeps (`HtmlViewNode._sizeAt`): the
  *  two a frame of a resize asks, and a little slack for a drag that turns
@@ -1719,6 +1729,9 @@ export class HtmlViewNode extends Node {
     // such an image (the UA sheet) lays it out the same whichever candidate
     // it holds, so the second layout leaves every width as the first did,
     // and the candidates picked again for them are the same.
+    // whether the last layout asked the document's least width, which core's
+    // content floors do (`question` below)
+    let question = false;
     for (let pass = 0; ; pass += 1) {
       if (this._stale >= Stale.Boxes || !this._tree) {
         const look = this._deviceLook();
@@ -1802,7 +1815,7 @@ export class HtmlViewNode extends Node {
         // flow keeps its blocks by (`keepAbove`) are the question's then,
         // and the document is drawn at none of them. It moves nothing on
         // screen (`_keepAnchor`).
-        const question = target * 2 < this.abs.width;
+        question = target * 2 < this.abs.width;
         const stop =
           question || this._questioned
             ? undefined
@@ -1869,16 +1882,22 @@ export class HtmlViewNode extends Node {
         this._reportMedia();
         this._reportStops();
       }
-      if (
-        pass > 0 ||
-        !laysOut ||
-        !this._tree ||
-        !this._chooseLaidOut(this._tree)
-      ) {
-        break;
-      }
+      if (!laysOut || !this._tree) break;
+      const chose = pass === 0 && this._chooseLaidOut(this._tree);
+      // And where the container queries answer otherwise for the sizes the
+      // layout gave their containers, built again restyling the elements
+      // they answer for, and laid out again — but for a layout that asked
+      // the document's least width, which no answer moves: a container's
+      // inline size is its own, whatever is in it, and nothing outside one
+      // is under its query.
+      const queried =
+        pass < CONTAINER_PASSES && !question
+          ? this._containersMoved(this._tree)
+          : null;
+      if (!chose && !queried) break;
       this._stale = Stale.Boxes;
-      restyleOnly = new Set<Element>();
+      restyleOnly = queried ?? new Set<Element>();
+      if (queried) follow = true;
     }
     this._stale = Stale.Nothing;
     // Read after core's layout pass — the viewport is the box around this
@@ -3743,6 +3762,28 @@ export class HtmlViewNode extends Node {
   /** An element's first box in document order, for the tree it was asked
    *  of: made on the first move over a tree, which is one walk of it. */
   private _firstBoxes: { tree: BoxTree; of: Map<Element, Box> } | null = null;
+
+  /**
+   * The elements whose container queries answer otherwise for the content
+   * boxes the layout just gave their containers (`Cascade.containersMoved`)
+   * — in device pixels, as a query's lengths are read — or null for none.
+   * A container a partial layout set aside keeps the size it had, and one
+   * its box takes no size containment of, a table's, has none.
+   */
+  private _containersMoved(tree: BoxTree): Set<Element> | null {
+    const cascade = this._cascade;
+    if (!cascade?.readsContainers) return null;
+    // a tree built before any style read one — a restyle in place read the
+    // first — has none taken, and takes them now
+    const boxes = (tree.containers ??= containerBoxes(tree.root));
+    return cascade.containersMoved((el) => {
+      const box = boxes.get(el);
+      if (!box) return null;
+      if (heldBack(tree, box)) return undefined;
+      if (!containmentApplies(box, CONTAIN_INLINE_SIZE)) return null;
+      return { width: box.contentWidth, height: box.contentHeight };
+    });
+  }
 
   private _firstBoxesOf(tree: BoxTree): Map<Element, Box> {
     let index = this._firstBoxes;

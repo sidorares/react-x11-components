@@ -26,12 +26,15 @@ import {
   ShadowRoot,
   assignedSlot,
   attr,
+  flatParentOf,
   isElement,
   shadowRootAround,
   shadowRootOf,
   tagOf,
   treeGeneration,
 } from '../dom.js';
+import { BLOCK_AXIS, INLINE_AXIS, containerHolds } from './containers.js';
+import type { ContainerQuery, ContainerSize } from './containers.js';
 import { systemColorTable, usedColorScheme } from './color.js';
 import {
   asciiLower,
@@ -71,6 +74,7 @@ import {
   blockify,
   settleAlign,
   settleButton,
+  settleContainer,
   settleContentVisibility,
   settleOverflow,
   settleOutline,
@@ -91,7 +95,7 @@ import { CounterStyles, counterStyleRule } from './counter-styles.js';
 import type { CounterStyleRule } from './counter-styles.js';
 import { PALETTE_CHROME } from './ua.js';
 import type { UnitContext } from './values.js';
-import { FIXED_SIZE, keywordFontSize } from './values.js';
+import { FIXED_SIZE, keywordFontSize, parseLength } from './values.js';
 import { customProperties, hasVar, substituteIn, validVars } from './vars.js';
 import type { CustomProps, IfEnvironment } from './vars.js';
 import {
@@ -293,6 +297,20 @@ const POINTER_PSEUDO_ELEMENTS = [
   'marker',
 ] as const;
 
+/** What a length in a container's units asks of the containers above
+ *  an element: the nearest that has the axis, by no name (`_containerUnit`).
+ *  Its answer is a size, which these are told apart by. */
+const CQ_INLINE: ContainerQuery = {
+  name: null,
+  condition: '',
+  axes: INLINE_AXIS,
+};
+const CQ_BLOCK: ContainerQuery = {
+  name: null,
+  condition: '',
+  axes: BLOCK_AXIS,
+};
+
 /** A compiled matcher, kept beside the rule it came from. */
 interface IndexedRule {
   rule: StyleRule;
@@ -380,6 +398,11 @@ class RuleIndex {
   readonly withMedia: IndexedRule[] = [];
   private _nextId = 0;
 
+  /** `self`: whether the index is a pseudo-element's, whose element is
+   *  one of the containers its `@container` rules may ask — a `::before`
+   *  asks the element it is in (CSS Conditional 5, 3.1). */
+  constructor(readonly self = false) {}
+
   /** A rule of another index, filed here under its key as it is. */
   adopt(indexed: IndexedRule): void {
     this.size += 1;
@@ -441,7 +464,9 @@ class RuleIndex {
     const focus = FOCUS.test(rule.selector);
     if (focus) this.focusSensitive = true;
     if (rule.selector.includes(':target')) this.targetSensitive = true;
-    if (UNSHAREABLE.test(rule.selector)) {
+    // and one under `@container`, whose answer is the container's an
+    // element finds above it, which no sharing key says
+    if (UNSHAREABLE.test(rule.selector) || rule.containers) {
       if (key.kind === 'id') this.ownStyleIds.add(key.name);
       else if (key.kind === 'class') this.ownStyleClasses.add(key.name);
       else if (key.kind === 'tag') this.ownStyleTags.add(key.name);
@@ -450,7 +475,7 @@ class RuleIndex {
     this._bucket(key).push(indexed);
     if (rule.media) this.withMedia.push(indexed);
     if (focus || HOVER.test(rule.selector)) {
-      this.pointer ??= new RuleIndex();
+      this.pointer ??= new RuleIndex(this.self);
       this.pointer.size += 1;
       this.pointer._bucket(key).push(indexed);
     }
@@ -1529,13 +1554,13 @@ export class Cascade {
   /** The rules for pseudo-elements, kept apart: they never style the
    *  element itself, and a document with none of them asks nothing. */
   private _pseudo: Record<PseudoElement, RuleIndex> = {
-    before: new RuleIndex(),
-    after: new RuleIndex(),
-    'first-letter': new RuleIndex(),
-    'first-line': new RuleIndex(),
-    marker: new RuleIndex(),
-    selection: new RuleIndex(),
-    placeholder: new RuleIndex(),
+    before: new RuleIndex(true),
+    after: new RuleIndex(true),
+    'first-letter': new RuleIndex(true),
+    'first-line': new RuleIndex(true),
+    marker: new RuleIndex(true),
+    selection: new RuleIndex(true),
+    placeholder: new RuleIndex(true),
   };
   /** The author's rules that could style a shape in a drawing: the ones
    *  that declare a property a shape has (`shapes.ts`) and whose subject
@@ -2190,6 +2215,8 @@ export class Cascade {
     // the kept styles' custom properties are the sets in here, which the
     // elements styled under them find again
     if (!kept) this._customs.clear();
+    // and every element's container queries are about to be asked again
+    if (!kept) this._containerReads.clear();
     this._kept = kept;
     this._keptShared.clear();
   }
@@ -2544,7 +2571,11 @@ export class Cascade {
     if (shadow) {
       const inner = this._rootInfo(shadow);
       for (const r of inner.rules.host) {
-        if (r.pseudo !== pseudo || !this._holds(r.rule) || !r.host(el)) {
+        if (
+          r.pseudo !== pseudo ||
+          !this._holds(r.rule, el, pseudo !== '') ||
+          !r.host(el)
+        ) {
           continue;
         }
         matched?.push(r.id);
@@ -2556,7 +2587,7 @@ export class Cascade {
       for (const r of where.rules.slotted) {
         if (
           r.pseudo !== pseudo ||
-          !this._holds(r.rule) ||
+          !this._holds(r.rule, el, pseudo !== '') ||
           !r.el(el) ||
           !r.slot(slot)
         ) {
@@ -2601,7 +2632,7 @@ export class Cascade {
       if (
         r.inner !== inner ||
         r.pseudo !== pseudo ||
-        !this._holds(r.rule) ||
+        !this._holds(r.rule, el, pseudo !== '') ||
         !r.names.every((name) => names.includes(name)) ||
         (r.el !== null && !r.el(el)) ||
         !r.host(host)
@@ -2613,16 +2644,237 @@ export class Cascade {
     }
   }
 
-  /** Whether a rule's media queries hold now. */
-  private _holds(rule: StyleRule): boolean {
-    return mediaMatches(
-      rule.media,
-      this.viewportWidth / this.scale,
-      this.look.colorScheme,
-      this.viewportHeight / this.scale,
-      this.scale,
-      this.reducedMotion,
+  /** Whether a rule's media queries hold now, and its container queries
+   *  for `el` — or its pseudo-element, for `self`. */
+  private _holds(rule: StyleRule, el: Element, self: boolean): boolean {
+    return (
+      mediaMatches(
+        rule.media,
+        this.viewportWidth / this.scale,
+        this.look.colorScheme,
+        this.viewportHeight / this.scale,
+        this.scale,
+        this.reducedMotion,
+      ) &&
+      (!rule.containers || this._containersHold(rule.containers, el, self))
     );
+  }
+
+  // --- container queries ----------------------------------------------------
+  //
+  // An `@container` rule holds for an element where its query holds of the
+  // element's query container (CSS Conditional 5, 3): the nearest ancestor
+  // in the flat tree that can answer it — a size container of the axes its
+  // size features read, of the name it gives — or for a pseudo-element its
+  // element. A size is layout's, and layout comes after the styles, so a
+  // query is answered for the size the last layout left the container
+  // (`_containerSizes`) and each answer is noted (`_containerReads`); a
+  // layout then says which elements' answers it changed
+  // (`containersMoved`), and only those are styled again, as a browser
+  // styles a container's contents once it knows the container's size. A
+  // container no layout has sized yet — the first — answers no size query,
+  // so a document whose queries hold is laid out twice the first time.
+
+  /** The styles of the elements styled so far, by element: a build's as it
+   *  goes, which is the tree's once it is built (`BoxBuilder.run`), and a
+   *  container's style is what a query finds it by — its type, its names,
+   *  its font, its custom properties. */
+  stylesOf: ((el: Element) => ComputedStyle | undefined) | null = null;
+  /** Each size container's content box as the last layout left it, in
+   *  device pixels, or null for one it gave no box. */
+  private _containerSizes = new Map<Element, ContainerSize | null>();
+  /** What each element's style read of size containers: for each query,
+   *  the container it found and how it answered — and for a length in
+   *  `cqw` or its kin, the size it was read as (`CQ_INLINE`, `CQ_BLOCK`). */
+  private _containerReads = new Map<
+    Element,
+    Map<ContainerQuery, { container: Element; answer: boolean | number }>
+  >();
+  /** Whether the style being computed holds a length in a container's
+   *  units, which is the element's alone: two elements of one key and one
+   *  set of rules are in containers of other sizes (`sharedStyleFor`). */
+  private _containerUnitRead = false;
+
+  /**
+   * A container unit's basis for `el`, or its pseudo-element for `self`:
+   * the content box in `axis` of the nearest size container that has the
+   * axis (CSS Conditional 5, 3.4), in device pixels — the viewport's where
+   * there is none, or where no layout has sized it yet — noted as a query's
+   * answer is, for the layout after to say whether it still holds.
+   */
+  private _containerUnit(
+    el: Element,
+    self: boolean,
+    axis: 'inline' | 'block',
+  ): number {
+    const query = axis === 'inline' ? CQ_INLINE : CQ_BLOCK;
+    const found = this._containerFor(query, el, self);
+    this._containerUnitRead = true;
+    const value = this._unitBasis(
+      query,
+      found ? (this._containerSizes.get(found[0]) ?? null) : null,
+    );
+    if (found) {
+      let reads = this._containerReads.get(el);
+      if (!reads) this._containerReads.set(el, (reads = new Map()));
+      reads.set(query, { container: found[0], answer: value });
+    }
+    return value;
+  }
+
+  /** What a container unit of `query`'s axis is a hundredth of, for a
+   *  container of `size`: the viewport's side where it has none. */
+  private _unitBasis(
+    query: ContainerQuery,
+    size: ContainerSize | null,
+  ): number {
+    const inline = query === CQ_INLINE;
+    if (size) return inline ? size.width : size.height;
+    this._viewportRead(inline ? 'vw' : 'vh');
+    return inline ? this.viewportWidth : this.viewportHeight;
+  }
+
+  /** Whether a rule's `@container` blocks all hold for `el`: one query of
+   *  each block's list. */
+  private _containersHold(
+    blocks: ContainerQuery[][],
+    el: Element,
+    self: boolean,
+  ): boolean {
+    for (const queries of blocks) {
+      let any = false;
+      for (const query of queries) {
+        if (this._queryHolds(query, el, self)) {
+          any = true;
+          break;
+        }
+      }
+      if (!any) return false;
+    }
+    return true;
+  }
+
+  private _queryHolds(
+    query: ContainerQuery,
+    el: Element,
+    self: boolean,
+  ): boolean {
+    const found = this._containerFor(query, el, self);
+    // no container is an unknown, and holds nowhere
+    if (!found) return false;
+    const [container, style] = found;
+    const size = query.axes
+      ? (this._containerSizes.get(container) ?? null)
+      : null;
+    const answer = this._ask(query, size, style);
+    if (query.axes) {
+      let reads = this._containerReads.get(el);
+      if (!reads) this._containerReads.set(el, (reads = new Map()));
+      reads.set(query, { container, answer });
+    }
+    return answer;
+  }
+
+  /** A query's answer for a container of a size and a style. */
+  private _ask(
+    query: ContainerQuery,
+    size: ContainerSize | null,
+    style: ComputedStyle,
+  ): boolean {
+    return containerHolds(
+      query,
+      size,
+      (name) => style.custom?.get(name),
+      (text) => {
+        // a query's relative lengths are the container's (3.2)
+        const ctx: UnitContext = {
+          em: style.fontSize,
+          rem: this._root?.fontSize ?? style.fontSize,
+          vw: this.viewportWidth,
+          vh: this.viewportHeight,
+          scale: this.scale,
+        };
+        const len = parseLength(text, ctx);
+        return typeof len === 'number' ? len : null;
+      },
+    );
+  }
+
+  /** The container a query asks for `el`, and its style: the nearest
+   *  ancestor in the flat tree — or `el`, for its pseudo-element — of the
+   *  query's name, if it gives one, and that is a size container of the
+   *  axes it reads. An inline box takes no size containment, and is no
+   *  size container; an element of no box is none at all. */
+  private _containerFor(
+    query: ContainerQuery,
+    el: Element,
+    self: boolean,
+  ): [Element, ComputedStyle] | null {
+    const stylesOf = this.stylesOf;
+    if (!stylesOf) return null;
+    for (let at = self ? el : flatParentOf(el); at; at = flatParentOf(at)) {
+      const style = stylesOf(at);
+      if (!style || style.display === 'contents') continue;
+      if (
+        query.name !== null &&
+        !` ${style.containerName} `.includes(` ${query.name} `)
+      ) {
+        continue;
+      }
+      if (query.axes) {
+        const type = style.containerType;
+        if (type === 'normal' || style.display === 'inline') continue;
+        if (query.axes & BLOCK_AXIS && type !== 'size') continue;
+      }
+      return [at, style];
+    }
+    return null;
+  }
+
+  /** Whether any rule is under an `@container` whose answer is a size's. */
+  get readsContainers(): boolean {
+    return this._containerReads.size > 0;
+  }
+
+  /**
+   * A layout came to these sizes: `sizeOf` a size container's content box,
+   * in device pixels, null for one it gave no box, or undefined where it
+   * did not lay the container out and its size stands. The elements whose
+   * container queries answer otherwise for them, which the boxes are
+   * built again for, keeping every other element's style — or null for
+   * none, which is a layout most of the time: a width a query does not
+   * turn on changes no answer.
+   */
+  containersMoved(
+    sizeOf: (el: Element) => ContainerSize | null | undefined,
+  ): Set<Element> | null {
+    if (!this._containerReads.size) return null;
+    const sizes = new Map<Element, ContainerSize | null | undefined>();
+    const moved = new Set<Element>();
+    for (const [el, reads] of this._containerReads) {
+      for (const [query, read] of reads) {
+        let size = sizes.get(read.container);
+        if (!sizes.has(read.container)) {
+          size = sizeOf(read.container);
+          sizes.set(read.container, size);
+        }
+        if (size === undefined) continue;
+        const style = this.stylesOf?.(read.container);
+        if (!style) continue;
+        const now =
+          query === CQ_INLINE || query === CQ_BLOCK
+            ? this._unitBasis(query, size)
+            : this._ask(query, size, style);
+        if (now !== read.answer) {
+          moved.add(el);
+          break;
+        }
+      }
+    }
+    for (const [container, size] of sizes) {
+      if (size !== undefined) this._containerSizes.set(container, size);
+    }
+    return moved.size ? moved : null;
   }
 
   /**
@@ -2773,6 +3025,7 @@ export class Cascade {
       key += `\u0001${matched.join(',')}`;
       let shared = this._sharedByMatch.get(key);
       if (shared === undefined) {
+        this._containerUnitRead = false;
         shared = {
           style: this._computeStyle(
             el,
@@ -2784,7 +3037,7 @@ export class Cascade {
           ),
           key: this._nextShareKey++,
         };
-        if (!this._running(shared.style, el)) {
+        if (!this._running(shared.style, el) && !this._containerUnitRead) {
           this._sharedByMatch.set(key, shared);
         }
       }
@@ -2792,11 +3045,14 @@ export class Cascade {
     }
     let shared = this._shared.get(key);
     if (shared === undefined) {
+      this._containerUnitRead = false;
       shared = {
         style: this.styleFor(el, parentStyle, inFlexContainer),
         key: this._nextShareKey++,
       };
-      if (!this._running(shared.style, el)) this._shared.set(key, shared);
+      if (!this._running(shared.style, el) && !this._containerUnitRead) {
+        this._shared.set(key, shared);
+      }
     }
     return shared;
   }
@@ -3409,6 +3665,7 @@ export class Cascade {
       vw: this.viewportWidth,
       vh: this.viewportHeight,
       viewport: this._viewportRead,
+      cq: (axis) => this._containerUnit(el, !own, axis),
       scale: this.scale,
       ex: () => this._exOf(parentStyle),
       ch: () => this._chOf(parentStyle),
@@ -3566,6 +3823,7 @@ export class Cascade {
     }
     settleOverflow(style);
     settleOutline(style, this.look, this.scale);
+    settleContainer(style);
     settleContentVisibility(style);
     // after the containment, which keeps a body's `overflow` its own
     if (own && el.name.length === 4) propagateOverflow(el, style, parentStyle);
@@ -4138,9 +4396,19 @@ export class Cascade {
         ) {
           continue;
         }
+        // (its container queries are asked last, below: only of an element
+        // the selector is the element's, since each is a read of a container
+        // the layout after has to measure, `containersMoved`)
         // filed under the class or the id that is all it asks
         if (indexed.keyOnly && !inCopy) {
           if (indexed.host !== null && !indexed.host(tree.root!.host)) {
+            continue;
+          }
+          if (
+            rule.containers !== undefined &&
+            !anyMedia &&
+            !this._containersHold(rule.containers, el, index.self)
+          ) {
             continue;
           }
           matched?.push(indexed.id);
@@ -4193,6 +4461,13 @@ export class Cascade {
         }
         if (!match || !match(el)) continue;
         if (indexed.host !== null && !indexed.host(tree.root!.host)) continue;
+        if (
+          rule.containers !== undefined &&
+          !anyMedia &&
+          !this._containersHold(rule.containers, el, index.self)
+        ) {
+          continue;
+        }
         matched?.push(indexed.id);
         if (out === null) continue;
         const origin = rule.order < 0 ? Origin.UserAgent : Origin.Author;

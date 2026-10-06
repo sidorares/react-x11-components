@@ -5325,8 +5325,16 @@ export function establishesBFC(box: Box): boolean {
   const style = box.style;
   if (scrolls(style)) return true;
   if (style.flowRoot) return true;
-  // layout and paint containment make an independent formatting context
+  // layout and paint containment make an independent formatting context,
+  // and so does being a size container (CSS Conditional 5, 3.1), where
+  // its containment applies
   if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
+  if (
+    style.containerType !== 'normal' &&
+    containmentApplies(box, CONTAIN_WIDTH)
+  ) {
+    return true;
+  }
   // `continue: collapse` makes a block container a formatting context of
   // its own (CSS Overflow 4, 5.3)
   if (style.lineClamp !== null) return true;
