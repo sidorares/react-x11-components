@@ -1167,3 +1167,73 @@ metric(
     }
   },
 );
+
+metric(
+  'a dragged width makes a raster of an image drawn at another size only where the paint before drew that size too',
+  async (t) => {
+    // Each width of a drag draws a background sized from it at a size of
+    // its own, and one the drag comes back to was made into a raster that
+    // nothing copied: Zen Garden 214's photographs, at every step of a drag
+    // that went back over its widths. A size that holds is kept from its
+    // second paint, as at rest.
+    const clock = holdClock(t, resizeClock);
+    const photo = pixelsPng(64, 48, (x, y) => [x * 4, y * 5, 90]);
+    const doc = (width: number) =>
+      h(
+        'box',
+        { style: { width, height: 300, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}' +
+            '#p{height:100px;background:url(p.png) 0 0/50% auto no-repeat}' +
+            '#q{width:60px;height:45px;background:url(p.png) 0 0/60px 45px' +
+            ' no-repeat}</style><div id="p"></div><div id="q"></div>',
+          partial: false,
+          'data-testname': 'doc',
+          onResource: (r: { kind: string }) =>
+            r.kind === 'image'
+              ? { kind: 'image' as const, bytes: photo }
+              : null,
+        }),
+      );
+    const result = await renderX11(doc(300), {
+      width: 400,
+      height: 400,
+      fonts: FONTS!,
+    });
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const resize = async (width: number) => {
+      await act(() => result.rerender(doc(width)));
+      await act();
+    };
+    const kept = () => [
+      ...((
+        el as unknown as { _drawings: { kept: Map<string, unknown> } | null }
+      )._drawings?.kept.keys() ?? []),
+    ];
+    const sizes = (keys: string[]) =>
+      keys.map((key) => key.split('|')[2]).sort();
+    for (const width of [296, 292, 288, 292, 296]) await resize(width);
+    assert.deepStrictEqual(
+      sizes(kept()),
+      ['60x45'],
+      'only the size that held, not the halves of five widths, one of them twice',
+    );
+    // at rest, a size is kept from its second paint
+    void clock;
+    t.mock.method(resizeClock, 'now', () => 1e9);
+    const repaint = async () => {
+      (
+        el as unknown as {
+          invalidate(all: boolean, by: unknown, why: string): void;
+        }
+      ).invalidate(false, el, 'props');
+      await act();
+    };
+    await repaint();
+    assert.strictEqual(sizes(kept()).length, 1, 'not at its first at rest');
+    await repaint();
+    assert.strictEqual(sizes(kept()).length, 2, 'and at its second');
+  },
+);

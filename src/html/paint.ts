@@ -33,7 +33,13 @@ import {
   isTransparent,
   resolve,
 } from './css/values.js';
-import { SCHEME_COLORS, blend, borderShades, fadeColor } from './css/color.js';
+import {
+  SCHEME_COLORS,
+  blend,
+  borderShades,
+  fadeColor,
+  rgbaOf,
+} from './css/color.js';
 import type { Len } from './css/values.js';
 import type {
   BackgroundClip,
@@ -2531,12 +2537,20 @@ function paintGroupThrough(
   opacity: number,
 ): boolean {
   if (!options.surface || !groupsOnSurfaces(ctx)) return false;
-  if (!drawsOverItself(ctx, box, options)) return false;
+  // A box that does not draw over itself is faded a thing at a time, and
+  // one faded as a group is the same but for how each edge pixel rounds, a
+  // level or two of 255 apart: drawn from a group kept for it, not one made
+  // at every paint. Not one with text in it, which CoreGraphics sets
+  // otherwise on a surface with nothing under it.
+  const over = drawsOverItself(ctx, box, options);
+  if (!over && box.subtreeTextEnd > box.subtreeTextStart) return false;
   // a box that turns has its own ink bounds where it is drawn
   let x0 = Math.floor(box.boundsX + options.originX);
   let y0 = Math.floor(box.boundsY + options.originY);
   let x1 = Math.ceil(box.boundsX + box.boundsWidth + options.originX);
   let y1 = Math.ceil(box.boundsY + box.boundsHeight + options.originY);
+  if (groupKept(ctx, box, options, inside, through, opacity)) return true;
+  if (!over) return false;
   const damage = options.damage;
   if (damage) {
     x0 = Math.max(x0, Math.floor(damage.x));
@@ -2575,6 +2589,85 @@ function paintGroupThrough(
   } finally {
     surface.destroy?.();
   }
+}
+
+/**
+ * A group drawn through its matrix (`paintGroupThrough`) from the surface
+ * kept for its box (`PaintOptions.sprites`), painted whole once and drawn
+ * again for as long as the matrix — and the fraction of a pixel it puts the
+ * box at — is what it was: the surface a paint of the group would make,
+ * made once. Zen Garden 214's enso, an image an animation scales and fades
+ * and whose matrix moves a step every half second, was set from its paths
+ * at every frame of a resize that only moved it. Kept as a box drawn on a
+ * surface is kept (`spriteFor`): a still one no larger than a card, and
+ * none that draws against the viewport. False where it keeps none.
+ */
+function groupKept(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  inside: PaintOptions,
+  through: Matrix,
+  opacity: number,
+): boolean {
+  const sprites = options.sprites;
+  if (!sprites) return false;
+  // where it is drawn: its corner on the pixel it is drawn from
+  // (`paintTransformed`), and its ink moved as far
+  const left = box.x + options.originX;
+  const top = box.y + options.originY;
+  const bx = Math.round(left);
+  const by = Math.round(top);
+  const x0 = Math.floor(box.boundsX + options.originX + bx - left);
+  const y0 = Math.floor(box.boundsY + options.originY + by - top);
+  const x1 = Math.ceil(
+    box.boundsX + box.boundsWidth + options.originX + bx - left,
+  );
+  const y1 = Math.ceil(
+    box.boundsY + box.boundsHeight + options.originY + by - top,
+  );
+  const w = x1 - x0;
+  const h = y1 - y0;
+  if (!(w > 0 && h > 0)) return false;
+  if (w > RASTER_SIDE || h > RASTER_SIDE || w * h > RASTER_LIMIT) return false;
+  const animated =
+    sprites.animates(box) || (sprites.animatesWithin?.(box) ?? false);
+  if (!animated && w * h > KEPT_STILL) return false;
+  if (!box.parent || box === options.canvasSource) return false;
+  if (drawsAgainstViewport(box)) return false;
+  // the matrix, and where it puts the box's corner from the surface's,
+  // which a move of the box leaves where it was
+  const at = (n: number): number => Math.round(n * 1e6) / 1e6;
+  const key =
+    `through|${through[0]},${through[1]},${through[2]},${through[3]},` +
+    `${at(through[0] * bx + through[2] * by + through[4] - x0)},` +
+    `${at(through[1] * bx + through[3] * by + through[5] - y0)}`;
+  let surface = sprites.kept(box, w, h, key);
+  // what a build since changed inside it is painted again, with the rest
+  if (surface && sprites.stale?.(box)?.length) surface = null;
+  if (!surface) {
+    surface = sprites.keep(box, w, h, key, animated);
+    if (!surface) return false;
+    const on = surface.getContext('2d') as PaintContext;
+    on.save();
+    on.translate!(-x0, -y0);
+    on.transform!(
+      through[0],
+      through[1],
+      through[2],
+      through[3],
+      through[4],
+      through[5],
+    );
+    paintUnfaded(on, box, {
+      ...inside,
+      damage: null,
+      matrix: multiply([1, 0, 0, 1, -x0, -y0], through),
+    });
+    on.restore();
+  }
+  drawThrough(ctx, surface, null, x0, y0, opacity);
+  return true;
 }
 
 /**
@@ -6099,11 +6192,165 @@ function gradientTile(
   part: { x: number; y: number; w: number; h: number },
   options: PaintOptions,
 ): void {
+  if (gradientRuns(ctx, gradient, x, y, w, h, currentColor, part, options)) {
+    return;
+  }
+  shadedPart(ctx, gradient, x, y, w, h, currentColor, part, options);
+}
+
+/** A gradient shaded in `part`: from a strip of it where that pays
+ *  (`gradientStrip`), and filled where it does not. */
+function shadedPart(
+  ctx: PaintContext,
+  gradient: Gradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  currentColor: string,
+  part: { x: number; y: number; w: number; h: number },
+  options: PaintOptions,
+): void {
   if (gradientStrip(ctx, gradient, x, y, w, h, currentColor, part, options)) {
     return;
   }
   const paint = gradientFill(ctx, gradient, x, y, w, h, currentColor, part);
   if (paint) fillGradient(ctx, paint, part);
+}
+
+/**
+ * A gradient straight across or down whose stops hold one colour over a
+ * run, drawn a run at a time: an opaque run filled with the one colour it
+ * is, a transparent one not at all, and what runs between two colours — or
+ * is translucent, whose alpha a fill and a shading may round a level
+ * apart — shaded as before. A page paints a column with one:
+ * `linear-gradient(to right, #fff 66%, #e5ede8 66%)` behind Zen Garden
+ * 214's sidebar was shaded and copied down the window at every frame of a
+ * resize. A pixel takes the colour at its centre, which is where ntk's
+ * shading samples, pixel for pixel; CoreGraphics puts a hard stop a column
+ * either side of a pixel's centre, as the rectangle and the clip it shades
+ * through have it, so a repaint of part of such a gradient could move the
+ * stop by a column there before, and a run filled holds it where its centre
+ * is. Only where the context draws in whole pixels of its own. False where
+ * it is not drawn so.
+ */
+function gradientRuns(
+  ctx: PaintContext,
+  gradient: Gradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  currentColor: string,
+  part: { x: number; y: number; w: number; h: number },
+  options: PaintOptions,
+): boolean {
+  if (gradient.kind !== 'linear' || gradient.corner) return false;
+  const across = Math.abs(Math.cos(gradient.angle)) < 1e-9;
+  if (!across && Math.abs(Math.sin(gradient.angle)) >= 1e-9) return false;
+  if (options.matrix || !ctx.getTransform || !canClip(ctx)) return false;
+  const { x: px, y: py, w: pw, h: ph } = part;
+  if (![px, py, pw, ph].every(Number.isInteger)) return false;
+  const m = ctx.getTransform();
+  if (m.a !== 1 || m.b !== 0 || m.c !== 0 || m.d !== 1) return false;
+  if (!Number.isInteger(m.e) || !Number.isInteger(m.f)) return false;
+  const length = across ? w : h;
+  if (!(length > 0)) return false;
+  // where each stop is along the axis, as `linearGradient` lays its line
+  const stops = gradient.stops;
+  const dir = across ? Math.sin(gradient.angle) : -Math.cos(gradient.angle);
+  const start = across ? x + w / 2 - (dir * w) / 2 : y + h / 2 - (dir * h) / 2;
+  const at = stopOffsets(stops, length);
+  const colors = stops.map((stop) => inkColor(stop.color, currentColor));
+  const rgba = colors.map((color) => rgbaOf(color));
+  if (rgba.some((c) => c === null)) return false;
+  const same = (i: number, j: number): boolean =>
+    rgba[i]!.every((v, k) => v === rgba[j]![k]);
+  // The runs between stops along the line, and the ends past the first
+  // stop and the last, as the pixels whose centres they hold: one colour
+  // where it is opaque or transparent — a fill and a shading may round a
+  // translucent one's alpha a level apart — and shaded otherwise.
+  const lo = across ? px : py;
+  const hi = lo + (across ? pw : ph);
+  const edge = (t: number): number => start + dir * length * t;
+  const pieces: { a: number; b: number; flat: number | null }[] = [];
+  const n = stops.length;
+  const runs: [number, number, number | null][] = [[-Infinity, at[0], 0]];
+  for (let i = 0; i + 1 < n; i += 1) {
+    if (at[i + 1] > at[i])
+      runs.push([at[i], at[i + 1], same(i, i + 1) ? i : null]);
+  }
+  runs.push([at[n - 1], Infinity, n - 1]);
+  for (const [from, to, run] of runs) {
+    // the ends past the first and the last stop go off the way the line does
+    let p = edge(from);
+    let q = edge(to);
+    if (p > q) [p, q] = [q, p];
+    // a pixel whose centre a stop is on is either run's, as the floating
+    // point of the two has it: left to the shading
+    for (const e of [p, q]) {
+      if (
+        Number.isFinite(e) &&
+        Math.abs(e - 0.5 - Math.round(e - 0.5)) < 1e-6
+      ) {
+        return false;
+      }
+    }
+    const a = Math.max(lo, Math.ceil(p - 0.5));
+    const b = Math.min(hi, Math.ceil(q - 0.5));
+    if (b <= a) continue;
+    // a translucent run is shaded with the rest: CoreGraphics fills one a
+    // level apart from where it shades it
+    const alpha = run === null ? 0.5 : rgba[run]![3];
+    const flat = alpha === 0 || alpha === 1 ? run : null;
+    pieces.push({ a, b, flat });
+  }
+  pieces.sort((u, v) => u.a - v.a);
+  // a run of one colour next to another of the same is one run
+  const merged: { a: number; b: number; flat: number | null }[] = [];
+  for (const piece of pieces) {
+    const last = merged[merged.length - 1];
+    if (
+      last &&
+      last.b === piece.a &&
+      (last.flat === piece.flat ||
+        (last.flat !== null &&
+          piece.flat !== null &&
+          same(last.flat, piece.flat)))
+    ) {
+      last.b = piece.b;
+    } else merged.push({ ...piece });
+  }
+  const fills: { a: number; b: number; flat: number }[] = [];
+  for (const { a, b, flat } of merged)
+    if (flat !== null) fills.push({ a, b, flat });
+  if (!fills.length) return false;
+  const span = (a: number, b: number) =>
+    across
+      ? { x: a, y: py, w: b - a, h: ph }
+      : { x: px, y: a, w: pw, h: b - a };
+  // what is shaded is the part shaded whole, as before, cut to what is not
+  // filled, as a repaint of part of it is
+  const shaded = (a: number, b: number): void => {
+    pushClip(ctx, span(a, b), null);
+    if (b - a < 4 * STRIP) {
+      const paint = gradientFill(ctx, gradient, x, y, w, h, currentColor, part);
+      if (paint) fillGradient(ctx, paint, part);
+    } else shadedPart(ctx, gradient, x, y, w, h, currentColor, part, options);
+    ctx.restore();
+  };
+  let from = lo;
+  for (const fill of fills) {
+    if (fill.a > from) shaded(from, fill.a);
+    if (rgba[fill.flat]![3] > 0) {
+      const r = span(fill.a, fill.b);
+      ctx.fillStyle = colors[fill.flat];
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+    }
+    from = fill.b;
+  }
+  if (hi > from) shaded(from, hi);
+  return true;
 }
 
 /** How wide a strip of a gradient is shaded (`gradientStrip`). */

@@ -626,6 +626,150 @@ metric(
 );
 
 metric(
+  'a faded box a context turns itself keeps the surface its group is drawn through while its matrix holds, to the pixels a surface made for the paint draws',
+  async (t) => {
+    // A context that turns a box itself — macOS's — draws a faded one's
+    // group through its matrix on a surface, which was made at every
+    // paint: Zen Garden 214's enso, an image an animation scales and
+    // fades, was set from its paths at every frame of a resize that only
+    // moved it
+    const { result, node } = await render(
+      '<style>body{margin:0}html{background:#ffffff}' +
+        '#t{width:60px;height:40px;margin:30px;background:#c00000;' +
+        'border:4px solid #0000c0;transform:rotate(12deg) scale(1.1);' +
+        'opacity:.6}#t div{height:16px;margin:6px;background:#00a000}' +
+        '</style><div id="t"><div></div></div>',
+    );
+    const el = view(node);
+    const own = el as unknown as {
+      root: { _ctx: object };
+      invalidate(all: boolean, by: unknown, why: string): void;
+    };
+    // and fades a surface as cheaply as it draws one
+    for (const name of ['scalesText', 'fadesSurfacesCheaply']) {
+      Object.defineProperty(own.root._ctx, name, {
+        value: true,
+        configurable: true,
+      });
+    }
+    try {
+      const repaint = () => {
+        own.invalidate(false, el, 'props');
+        return snapshot(result, el);
+      };
+      const store = () =>
+        (el as unknown as { _sprites: { clear(): void } | null })._sprites;
+      const make = t.mock.method(SpriteStore.prototype, 'make');
+      store()?.clear();
+      const kept = await repaint();
+      assert.strictEqual(make.mock.callCount(), 1, 'made once');
+      const again = await repaint();
+      assert.strictEqual(make.mock.callCount(), 1, 'and drawn again from');
+      assert.strictEqual(bytesApart(kept, again), 0);
+      // a surface made for the paint alone, as every one was
+      make.mock.mockImplementation(() => null);
+      store()?.clear();
+      const alone = await repaint();
+      assert.strictEqual(bytesApart(kept, alone), 0, 'the pixels it draws');
+    } finally {
+      const ctx = own.root._ctx as {
+        scalesText?: boolean;
+        fadesSurfacesCheaply?: boolean;
+      };
+      delete ctx.scalesText;
+      delete ctx.fadesSurfacesCheaply;
+    }
+  },
+);
+
+metric(
+  'a faded box that draws nothing over itself, turned by a context that turns it itself, is drawn from a group kept for it, a level or two of the edges apart from fading each thing',
+  async (t) => {
+    // Zen Garden 214's enso: one image an animation scales and fades, which
+    // was faded and set from its paths at every paint. A group of it kept
+    // is the same but for how an edge pixel rounds.
+    const { result, node } = await render(
+      '<style>body{margin:0}html{background:#ffffff}' +
+        '#t{width:60px;height:40px;margin:30px;background:#c00000;' +
+        'transform:rotate(12deg) scale(1.1);opacity:.6}</style>' +
+        '<div id="t"></div>',
+    );
+    const el = view(node);
+    const own = el as unknown as {
+      root: { _ctx: object };
+      invalidate(all: boolean, by: unknown, why: string): void;
+      _sprites: { clear(): void } | null;
+    };
+    for (const name of ['scalesText', 'fadesSurfacesCheaply']) {
+      Object.defineProperty(own.root._ctx, name, {
+        value: true,
+        configurable: true,
+      });
+    }
+    try {
+      const repaint = () => {
+        own.invalidate(false, el, 'props');
+        return snapshot(result, el);
+      };
+      const make = t.mock.method(SpriteStore.prototype, 'make');
+      own._sprites?.clear();
+      const kept = await repaint();
+      assert.strictEqual(make.mock.callCount(), 1, 'kept');
+      make.mock.mockImplementation(() => null);
+      own._sprites?.clear();
+      const each = await repaint();
+      let most = 0;
+      for (let i = 0; i < kept.length; i += 1) {
+        most = Math.max(most, Math.abs(kept[i] - each[i]));
+      }
+      assert.ok(most <= 2, `${most} levels apart`);
+    } finally {
+      const ctx = own.root._ctx as {
+        scalesText?: boolean;
+        fadesSurfacesCheaply?: boolean;
+      };
+      delete ctx.scalesText;
+      delete ctx.fadesSurfacesCheaply;
+    }
+  },
+);
+
+metric(
+  'a faded box a context turns itself keeps its group across a resize that moves it a fraction of a pixel',
+  async (t) => {
+    // a drag moved Zen Garden 214's header a fraction of a pixel at each
+    // step, and what is inside it was laid out again in other last bits
+    const { el, resize } = await renderScrolled(
+      '<style>body{margin:0}html{background:#ffffff}' +
+        '#t{width:60px;height:40px;margin:30px auto;background:#c00000;' +
+        'transform:rotate(12deg);opacity:.6}#t div{height:16px;margin:6px;' +
+        'background:#00a000}</style><div id="t"><div></div></div>',
+      300,
+    );
+    const own = el as unknown as { root: { _ctx: object } };
+    for (const name of ['scalesText', 'fadesSurfacesCheaply']) {
+      Object.defineProperty(own.root._ctx, name, {
+        value: true,
+        configurable: true,
+      });
+    }
+    try {
+      await resize(300, 401);
+      const make = t.mock.method(SpriteStore.prototype, 'make');
+      for (const width of [399, 397, 396]) await resize(300, width);
+      assert.strictEqual(make.mock.callCount(), 0, 'not drawn again');
+    } finally {
+      const ctx = own.root._ctx as {
+        scalesText?: boolean;
+        fadesSurfacesCheaply?: boolean;
+      };
+      delete ctx.scalesText;
+      delete ctx.fadesSurfacesCheaply;
+    }
+  },
+);
+
+metric(
   'a faded card a resize only moves keeps the surface it was drawn on',
   async (t) => {
     // A layout at another width threw every kept surface away, so a group

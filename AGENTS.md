@@ -2191,7 +2191,10 @@ reads no inline box's rect, which no layout sets (see "A probe of an
 unbounded width"): what an inline box holds is in its block's lines.
 **Anything new a layout can change in what a box draws joins
 `layoutShape`'s record**, or a surface kept across a width draws it as it
-was. A surface given up is kept, by its size, until the paint ends, for a
+was. Two records are compared to a millionth of a pixel (`SAME_PLACE`): a
+box a drag moves a fraction of a pixel at a time has the places from its
+corner of all it holds worked out in other last bits at each step, and
+Zen Garden 214's enso was drawn again at every one. A surface given up is kept, by its size, until the paint ends, for a
 box that asks for one that size to be drawn on again rather than one made
 (`release`, `reuse`, `trim`). A build clears the store — **but for a
 frame's build that changed only what is out of the flow** (`_rebuildFrame`): each
@@ -2238,6 +2241,12 @@ A raster image drawn at another size than its own is kept the same way
 (`drawRaster`), by the image and its device size: CoreGraphics reads all of
 a source for a draw that scales it, whatever the clip, so a preview drawn
 at a third of its size cost its whole size at every paint that reached it.
+**While the width moves, a raster is made only of a size the paint before
+drew as well** (`_drawnLast`): each width of a drag draws whatever is sized
+from it at a size of its own, and one drawn a second time later in the
+drag — a hand going back over the widths it came through — was made into a
+raster that nothing copied. Zen Garden 214's photographs were 278 of them
+in a drag of the bench's, and a frame's paint went from 17 ms to 10.
 
 **On macOS a clip that is not a rectangle of whole pixels is a mask**, and
 CoreGraphics draws through one at some four times the cost of a
@@ -2257,7 +2266,20 @@ pixels of its own. CoreGraphics shades a gradient at some 3.6 ns a pixel
 and copies at a tenth of that; on X11 it measured even. A copy is the
 pixels the shading made, so an opaque gradient is drawn as it was and a
 translucent one may be a level apart, the store-and-composite rounding a
-kept raster has.
+kept raster has. **And one whose stops hold a colour over a run is filled a
+run at a time** (`gradientRuns`): an opaque run filled with its one
+colour, a transparent one not drawn, and what runs between two colours —
+or is translucent — shaded as before, cut to its run. Zen Garden 214's
+sidebar is `linear-gradient(to right, #fff 66%, #e5ede8 66%)`, two fills
+where it was a strip shaded and copied down the window at every frame of
+a resize. A pixel takes the colour at its centre, as ntk's shading has it,
+pixel for pixel, and a gradient with a stop on a pixel's centre, which the
+floating point of the two gives either run, is left to the shading; CoreGraphics puts a hard stop a column either side of a
+pixel's centre, as the rectangle and the clip it shades through have it —
+a repaint of part of such a gradient could move its stop a column there
+before — so on macOS a stop between two runs filled holds where its
+centre is. **Shade a run as the whole is shaded, cut to the run**: shaded
+on its own, a narrower rectangle put a stop in another column.
 
 **A group goes only to a context where it pays** (`groupsOnSurfaces`):
 ntk's, and a native one that says a faded surface is cheap
@@ -2274,6 +2296,22 @@ in-process server's here, and the first guess at why — the image path, a
 flip, the interpolation — was wrong too: measure a new surface on macOS,
 in a benchmark that varies one thing at a time, before taking a composite
 for the cheap side or a cause for the cost.
+
+**A group drawn through a matrix is kept while the matrix holds**
+(`groupKept`): painted whole on a surface kept for its box, by the matrix
+and where it puts the box's corner from the surface's, and drawn again from
+there — the surface a paint of the group would make, made once. A box that
+draws nothing over itself, faded a thing at a time before, is drawn as a
+group so too where it has no text in it, and comes out a level or two of
+255 apart on the edges of what it draws: Zen Garden 214's enso, an image
+an animation scales and fades, was set from its paths at every paint, and
+a frame of a resize of the page's wide layout went from 24 ms of paint to 20. Two things are load-bearing. **The box is drawn from the pixel its
+corner is snapped to** (`paintTransformed`), so its place on the surface
+and the surface's own are worked out from there, and a move of a fraction
+of a pixel finds the surface it drew; from the box as laid out, a drag
+moving it 0.8 of a pixel a step found none. And **what a frame's build
+changed inside it** (`SpriteSource.stale`) **has the group painted again
+whole**, as a surface kept for a box takes it.
 
 **A filter's colour functions are run over pixels read back, and what
 lags is the content, never the filter** (`paintFiltered`,
