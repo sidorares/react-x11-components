@@ -240,6 +240,13 @@ export async function fillsOf(
     /** A context whose surfaces cost about the same drawn under an alpha:
      *  react-x11's macOS one over a bridge that scales them. */
     fadesSurfacesCheaply?: boolean;
+    /** A paint of a drag of the window's edge (`DragPaint`). */
+    drag?: {
+      cheap: boolean;
+      moved(layer: object, width: number, height: number): boolean;
+      paused(box: never): boolean;
+      drawn(): void;
+    };
   },
 ): Promise<Fill[]> {
   const { paintDocument } = await import('../../src/html/paint.js');

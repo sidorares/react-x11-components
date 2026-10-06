@@ -2109,6 +2109,33 @@ end where the window says one is under way (`liveResizing`, which a
 is still dragging, and a long document laid out whole at each pause held
 the next frame 60 to 100 ms.
 
+**A drag the document cannot keep up with is drawn cheaper while it
+moves, and as at rest when it does not.** Where the window says its edge is
+being dragged (`liveResizing`), the element times its own work between
+paints (`_counted`, on `frameClock`): a layout, a build, a frame of its
+animations, the sprites it offers and the paint. Two of the last three
+frames of the drag past `FRAME_BUDGET_MS` draw the next one cheaper
+(`_behind`): a background whose size moves with the drag on a step of
+sizes 4% apart (`steppedTile`), the document's clock making no frame of
+its animations, and a box a paused animation turns or scales from the
+surface kept for it (`DragPaint`). A hand that holds still for
+`DRAG_REST_MS`, or lets go, has the page drawn as at rest. Four things
+are load-bearing. **A frame drawn cheaper decides nothing**: it is cheap
+because it is drawn so, and counted it would draw the next one as at rest,
+and the one after cheaper, one way and the other at alternate frames — so
+`_overBudget` holds frames drawn as at rest alone, and a drag that fell
+behind is drawn cheaper from the first step after a pause. **Only a size
+that moved in the drag steps** (`DragPaint.moved`, by the layer's style):
+an avatar's photograph that covers a box of its own size gains nothing
+from a step, and would be drawn 4% off for nothing. **Anything new drawn
+cheaper calls `DragPaint.drawn`**, or the paint at rest leaves it as the
+drag drew it; and that paint clears every surface kept for a box, since a
+frame of the drag may have drawn something cheaper on one. And **anything
+new that asks for an animation frame honours `_cheap`** as it honours
+`_skipLifted`, and anything that does a frame's work from a timer or a
+core hook times itself with `_counted`, or a drag behind its edge is not
+seen to be.
+
 **A box drawn on a surface of its own keeps the surface, keyed on its
 `Box`.** X11 draws a turned box with text in it on a surface
 (`paintRaster`), and X11 and Wayland draw an element an opacity fades as a

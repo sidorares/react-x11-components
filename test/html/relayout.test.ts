@@ -1,23 +1,33 @@
 // <Html> — layouts kept across passes.
 import { afterEach, test } from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, renderX11, screen, waitFor } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { HtmlViewNode } from '../../src/html/index.js';
 import type { FontsLike } from '../../src/html/layout/inline.js';
-import { resizeClock } from '../../src/html/node.js';
+import {
+  animationClock,
+  frameClock,
+  resizeClock,
+} from '../../src/html/node.js';
+import { SpriteStore } from '../../src/html/surfaces.js';
 import { heldBack, layoutDocument } from '../../src/html/layout/block.js';
 import type { BoxTree } from '../../src/html/layout/boxes.js';
-import { holdClock } from '../held-clock.js';
+import { FRAME_MS, holdClock } from '../held-clock.js';
 import {
   boxOf,
+  bytesApart,
   FONTS,
   fillsOf,
   h,
   metric,
+  pixelsPng,
+  rebuilt,
   render,
   renderScrolled,
+  snapshot,
   view,
 } from './harness.js';
 import type { Fill } from './harness.js';
@@ -914,3 +924,246 @@ test('a dragged width rests once the window says the drag is over, not at a paus
   await clock.finish();
   assert.ok(!partial(el), 'laid out whole once it is over');
 });
+
+// A drag the document cannot keep up with is drawn cheaper while it moves
+// (`_behind`): its frames are timed (`frameClock`), and where two of the
+// last three drawn as at rest ran past the budget, the next is drawn
+// cheaper — where the window says its edge is being dragged
+// (`liveResizing`), and until the hand holds still or lets go.
+
+/** The window a document is in, whose edge a drag moves. */
+const windowOf = (el: HtmlViewNode) =>
+  (el as unknown as { root: { window: { liveResizing?: boolean } } }).root
+    .window;
+
+const cheap = (el: HtmlViewNode): boolean =>
+  (el as unknown as { _cheap: boolean })._cheap;
+
+/** Each stretch of the document's own work timed at `ms.value`. */
+function costing(t: TestContext, ms: { value: number }): void {
+  let now = 0;
+  t.mock.method(frameClock, 'now', () => (now += ms.value));
+}
+
+test('a live drag that falls behind is drawn cheaper from its third frame, at every step after, and as at rest once the hand holds still', async (t) => {
+  const clock = holdClock(t, resizeClock);
+  const cost = { value: 20 };
+  costing(t, cost);
+  const { el, resize } = await renderScrolled(LONG, 300, 400);
+  const wnd = windowOf(el);
+  wnd.liveResizing = true;
+  try {
+    await resize(300, 396);
+    await resize(300, 392);
+    assert.ok(!cheap(el), 'two frames past the budget');
+    await resize(300, 388);
+    assert.ok(cheap(el), 'and the third is drawn cheaper');
+    // a frame drawn cheaper is cheap because it is, and says nothing of
+    // what one drawn as at rest would cost
+    cost.value = 0;
+    for (const width of [384, 380, 376, 372]) await resize(300, width);
+    assert.ok(cheap(el), 'as is every step after');
+    let frames = 0;
+    while (cheap(el) && frames < 40) {
+      await clock.frame();
+      frames += 1;
+    }
+    assert.ok(!cheap(el), 'drawn as at rest once the hand holds still');
+    assert.ok(frames * FRAME_MS >= 300, `and not before: ${frames} frames`);
+    // the frames before it fell behind
+    await resize(300, 368);
+    assert.ok(cheap(el), 'and cheaper again from the next step');
+  } finally {
+    wnd.liveResizing = false;
+  }
+  await clock.finish();
+  assert.ok(!cheap(el), 'and as at rest once the drag is over');
+});
+
+test('a drag the document keeps up with, and one the window does not say is live, are drawn as at rest', async (t) => {
+  holdClock(t, resizeClock);
+  const cost = { value: 0 };
+  costing(t, cost);
+  const { el, resize } = await renderScrolled(LONG, 300, 400);
+  const wnd = windowOf(el);
+  wnd.liveResizing = true;
+  try {
+    for (const width of [396, 392, 388, 384]) await resize(300, width);
+    assert.ok(!cheap(el), 'frames inside the budget');
+    // two frames past the budget, and the drag let go of
+    cost.value = 20;
+    await resize(300, 380);
+    await resize(300, 376);
+  } finally {
+    wnd.liveResizing = false;
+  }
+  await resize(300, 372);
+  assert.ok(!cheap(el), 'a width set once the drag is over');
+  // X11's window says nothing of a drag
+  for (const width of [368, 364, 360, 356]) await resize(300, width);
+  assert.ok(!cheap(el), 'a window that says nothing of a drag');
+});
+
+test('a drag drawn cheaper makes no frame of the animations, which play on from where their time has got to once it rests', async (t) => {
+  const clock = holdClock(t, resizeClock);
+  costing(t, { value: 20 });
+  // the animations' clock, held apart from the frames it asks for, so that
+  // its time can pass while it asks for none
+  let time = 0;
+  const armed = new Map<object, { step: () => void; at: number }>();
+  t.mock.method(animationClock, 'now', () => time);
+  t.mock.method(animationClock, 'arm', (step: () => void, ms: number) => {
+    const handle = {};
+    armed.set(handle, { step, at: time + ms });
+    return handle;
+  });
+  t.mock.method(animationClock, 'disarm', (handle: object) => {
+    armed.delete(handle);
+  });
+  const { el, resize } = await renderScrolled(
+    '<style>@keyframes slide { from { margin-left: 0 } to { margin-left: 100px } }' +
+      '#a { animation: slide 1600ms linear }</style><p id="a">x</p>',
+    300,
+    400,
+  );
+  const left = () =>
+    Math.round(
+      (boxOf(el, 'a') as unknown as { style: { marginLeft: number } }).style
+        .marginLeft,
+    );
+  assert.ok(armed.size > 0, 'a frame is asked for');
+  const wnd = windowOf(el);
+  wnd.liveResizing = true;
+  try {
+    for (const width of [396, 392, 388]) await resize(300, width);
+    assert.ok(cheap(el));
+    assert.strictEqual(armed.size, 0, 'and none while the drag is cheaper');
+    time = 800;
+    await resize(300, 384);
+    assert.strictEqual(armed.size, 0, 'whatever the time');
+    assert.ok(left() < 50, 'where it was');
+    for (let i = 0; i < 40 && cheap(el); i += 1) await clock.frame();
+    assert.ok(!cheap(el), 'drawn as at rest once the hand holds still');
+    assert.ok(armed.size > 0, 'and a frame asked for');
+    time = 816;
+    for (const [handle, { step, at }] of [...armed]) {
+      if (at > time) continue;
+      armed.delete(handle);
+      step();
+    }
+    await act();
+    assert.strictEqual(left(), 51, 'where its time has got to');
+  } finally {
+    wnd.liveResizing = false;
+  }
+});
+
+metric(
+  'a drag drawn cheaper draws a photograph that covers its box on a step, and once it rests what a paint at rest draws',
+  async (t) => {
+    const clock = holdClock(t, resizeClock);
+    costing(t, { value: 20 });
+    const photo = pixelsPng(64, 48, (x, y) => [
+      x * 4,
+      y * 5,
+      ((x ^ y) * 3) & 255,
+    ]);
+    const doc = (width: number) =>
+      h(
+        'box',
+        { style: { width, height: 200, flexDirection: 'column' } },
+        h(
+          'box',
+          { style: { flexGrow: 1, overflow: 'scroll' } },
+          h(Html, {
+            source:
+              '<style>body{margin:0}' +
+              '#p{height:120px;background:url(p.png) center/cover}</style>' +
+              '<div id="p"></div>',
+            partial: false,
+            'data-testname': 'doc',
+            onResource: (r: { kind: string }) =>
+              r.kind === 'image'
+                ? { kind: 'image' as const, bytes: photo }
+                : null,
+          }),
+        ),
+      );
+    const result = await renderX11(doc(300), {
+      width: 400,
+      height: 300,
+      fonts: FONTS!,
+    });
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const resize = async (width: number) => {
+      await act(() => result.rerender(doc(width)));
+      await act();
+    };
+    const wnd = windowOf(el);
+    wnd.liveResizing = true;
+    let during: Uint8ClampedArray;
+    try {
+      for (const width of [296, 292, 288, 284]) await resize(width);
+      assert.ok(cheap(el));
+      during = await snapshot(result, el);
+    } finally {
+      wnd.liveResizing = false;
+    }
+    await clock.finish();
+    assert.ok(!cheap(el));
+    const after = await snapshot(result, el);
+    assert.ok(bytesApart(during, after) > 0, 'drawn on a step in the drag');
+    assert.strictEqual(
+      bytesApart(after, await rebuilt(result, el)),
+      0,
+      'and as a paint at rest draws it once it rests',
+    );
+  },
+);
+
+metric(
+  'a drag drawn cheaper draws a box its paused animation turns from the surface kept for it, where the context would turn it itself',
+  async (t) => {
+    const clock = holdClock(t, resizeClock);
+    holdClock(t, animationClock);
+    costing(t, { value: 20 });
+    const { el, resize, result } = await renderScrolled(
+      '<style>body{margin:0}html{background:#ffffff}' +
+        '@keyframes turn { to { transform: rotate(90deg) } }' +
+        '#t { width: 40px; height: 40px; margin: 20px; background: #c00000;' +
+        ' transform: rotate(10deg); animation: turn 4s linear infinite }' +
+        '</style><div id="t"></div>',
+      300,
+      400,
+    );
+    // react-x11's macOS context turns a box itself: X11's is said to
+    const root = (el as unknown as { root: { _ctx: object } }).root;
+    Object.defineProperty(root._ctx, 'scalesText', {
+      value: true,
+      configurable: true,
+    });
+    const kept = () =>
+      (el as unknown as { _sprites: { size: number } | null })._sprites?.size ??
+      0;
+    try {
+      await rebuilt(result, el);
+      assert.strictEqual(kept(), 0, 'turned through its matrix at rest');
+      const make = t.mock.method(SpriteStore.prototype, 'make');
+      const wnd = windowOf(el);
+      wnd.liveResizing = true;
+      try {
+        for (const width of [396, 392, 388, 384, 380]) await resize(300, width);
+        assert.ok(cheap(el));
+        assert.ok(kept() > 0, 'from a surface kept in the drag');
+        assert.strictEqual(make.mock.callCount(), 1, 'made once');
+      } finally {
+        wnd.liveResizing = false;
+      }
+      await clock.finish();
+      assert.strictEqual(kept(), 0, 'and through its matrix once it rests');
+    } finally {
+      delete (root._ctx as { scalesText?: boolean }).scalesText;
+    }
+  },
+);

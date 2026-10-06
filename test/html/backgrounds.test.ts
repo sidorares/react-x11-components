@@ -154,6 +154,64 @@ test('background-size is in CSS pixels at 2x', async () => {
   );
 });
 
+test('a drag drawn cheaper draws a background whose size moves with it on a step: over where it covers, under where it fits, and its own size where it holds', async () => {
+  // Each width of a drag sized a photograph that covers its box anew, and
+  // drew it resampled at every frame. Sizes 4% apart hold across a few per
+  // cent of the drag, and the raster kept of one is copied (`steppedTile`):
+  // two widths on one step draw the same size, a side `auto` keeps the
+  // image's ratio, and a size the area does not decide is left alone.
+  const { node } = await render(
+    '<style>body{margin:0}div{height:80px;' +
+      'background:url(x.png) center no-repeat}</style>' +
+      '<div style="width:300px;background-size:cover"></div>' +
+      '<div style="width:302px;background-size:cover"></div>' +
+      '<div style="width:300px;background-size:contain"></div>' +
+      '<div style="width:300px;background-size:50% auto"></div>' +
+      '<div style="width:300px;background-size:30px 20px"></div>',
+  );
+  let drawn = 0;
+  const sizes = async (cheap?: boolean, moved = true) => {
+    const ops: PaintOp[] = [];
+    await fillsOf(view(node), ops, {
+      backgroundImageFor: () => ({
+        image: {},
+        width: 50,
+        height: 40,
+        ratio: 1.25,
+      }),
+      ...(cheap !== undefined && {
+        drag: {
+          cheap,
+          moved: () => moved,
+          paused: () => false,
+          drawn: () => {
+            drawn += 1;
+          },
+        },
+      }),
+    });
+    return ops.flatMap((op) => (op.op === 'image' ? [[op.w, op.h]] : []));
+  };
+  const exact = await sizes();
+  assert.deepStrictEqual(await sizes(false), exact, 'a drag at rest');
+  assert.deepStrictEqual(await sizes(true, false), exact, 'sizes that hold');
+  assert.strictEqual(drawn, 0);
+  const [cover, wider, contain, half, fixed] = await sizes(true);
+  assert.strictEqual(drawn, 4, 'told of each drawn on a step');
+  const [w, h] = exact[0];
+  assert.ok(cover[0] >= w && cover[1] >= h, `still covers: ${cover}`);
+  assert.ok(cover[0] <= w * 1.04 + 1, `within a step: ${cover}`);
+  assert.ok(Math.abs(cover[0] / cover[1] - 1.25) < 0.02, 'in its ratio');
+  assert.deepStrictEqual(wider, cover, 'a width on the same step');
+  assert.ok(
+    contain[0] <= exact[2][0] && contain[1] <= exact[2][1],
+    `still fits: ${contain}`,
+  );
+  assert.ok(contain[0] >= exact[2][0] / 1.04 - 1, `within a step: ${contain}`);
+  assert.ok(half[0] >= exact[3][0] && half[0] <= exact[3][0] * 1.04 + 1);
+  assert.deepStrictEqual(fixed, exact[4], 'a size of its own');
+});
+
 metric(
   "an inline box's background image is drawn, as its colour is",
   async () => {
