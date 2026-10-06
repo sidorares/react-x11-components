@@ -3,8 +3,16 @@
 // any other declaration is replaced by it before the declaration is read,
 // so a shorthand, a `calc()` or a colour function sees the value it names.
 //
+// `if()` (CSS Values 5, 7.3) is replaced the same way and at the same time:
+// it is a substitution function as `var()` is, its branches chosen by what
+// the element's custom properties are, `style()`, and by `media()` and
+// `supports()`. So a declaration with one waits, unread, for the element's
+// custom properties, as one with a `var()` does.
+//
 // A document with none of either pays nothing: the cascade asks only when
 // some declaration has one (`Declaration.custom`, `Declaration.vars`).
+
+import { evaluateCondition, styleQuery } from './conditions.js';
 
 /**
  * An element's custom properties: its own over those it inherits, with
@@ -60,6 +68,7 @@ const FOLD_DEPTH = 16;
 export function customProperties(
   own: ReadonlyMap<string, string>,
   parent: CustomProps | null,
+  env: IfEnvironment | null = null,
 ): CustomProps {
   const out = new CustomProps(parent);
   for (const [name, value] of own) {
@@ -98,7 +107,7 @@ export function customProperties(
     stack.push(name);
     const raw = out.own.get(name);
     if (raw && hasVar(raw)) {
-      const value = substitute(raw, visit);
+      const value = substitute(raw, visit, env);
       out.own.set(name, value === null || cyclic.has(name) ? null : value);
     }
     stack.pop();
@@ -119,8 +128,12 @@ export function customProperties(
 export function substituteIn(
   value: string,
   props: CustomProps | null,
+  env: IfEnvironment | null = null,
 ): string | null {
-  if (!props) return substitute(value, null);
+  // what a `media()` answers is the viewport's, which the properties do
+  // not say
+  if (!props || (env && MEDIA.test(value)))
+    return substitute(value, props, env);
   let memo = SUBSTITUTED.get(props);
   if (!memo) {
     memo = new Map();
@@ -128,16 +141,29 @@ export function substituteIn(
   }
   const hit = memo.get(value);
   if (hit !== undefined) return hit;
-  const out = substitute(value, props);
+  const out = substitute(value, props, env);
   memo.set(value, out);
   return out;
 }
 
 const SUBSTITUTED = new WeakMap<CustomProps, Map<string, string | null>>();
 
-/** Whether a value has a `var()` in it. */
+const MEDIA = /(?:^|[^\w-])media\(/i;
+
+/** Whether a value has a `var()` or an `if()` in it: whether it is read
+ *  only once the element's custom properties are known. */
 export function hasVar(value: string): boolean {
   return VAR.test(value);
+}
+
+/**
+ * What an `if()` asks beyond the element's custom properties: whether a
+ * media query holds, for `media()`, and a `@supports` condition, for
+ * `supports()`. Without one, both are unknown, and hold nowhere.
+ */
+export interface IfEnvironment {
+  media(query: string): boolean;
+  supports(condition: string): boolean;
 }
 
 /**
@@ -145,17 +171,24 @@ export function hasVar(value: string): boolean {
  * and with a fallback, if it has one, that could be a declaration's value —
  * no `;` or `!` outside its brackets, no string a newline cuts off. One that
  * is not makes its declaration invalid as it is parsed, not as it is used,
- * so the declaration before it stands (CSS Custom Properties 1 3).
+ * so the declaration before it stands (CSS Custom Properties 1 3). An
+ * `if()` has to close, and the `var()`s in its branches be ones.
  */
 export function validVars(value: string): boolean {
   let i = 0;
   for (;;) {
     const at = findVar(value, i);
     if (at < 0) return true;
-    const open = at + 4;
+    const isIf = value[at] === 'i' || value[at] === 'I';
+    const open = at + (isIf ? 3 : 4);
     const close = closingParen(value, open);
     if (close < 0) return false;
     const inner = value.slice(open, close);
+    if (isIf) {
+      if (!validIf(inner)) return false;
+      i = close + 1;
+      continue;
+    }
     const comma = topLevelComma(inner);
     const name = (comma < 0 ? inner : inner.slice(0, comma)).trim();
     if (!NAME.test(name)) return false;
@@ -192,7 +225,7 @@ function unescapeName(name: string): string {
   );
 }
 
-const VAR = /(?:^|[^\w-])var\(/i;
+const VAR = /(?:^|[^\w-])(?:var|if)\(/i;
 
 /**
  * `value` with each `var()` in it replaced by the custom property it names,
@@ -204,6 +237,7 @@ const VAR = /(?:^|[^\w-])var\(/i;
 export function substitute(
   value: string,
   lookup: CustomProps | ((name: string) => string | undefined) | null,
+  env: IfEnvironment | null = null,
 ): string | null {
   const get =
     typeof lookup === 'function' ? lookup : (name: string) => lookup?.get(name);
@@ -212,20 +246,29 @@ export function substitute(
   for (;;) {
     const at = findVar(value, i);
     if (at < 0) break;
-    const open = at + 4;
+    const isIf = value[at] === 'i' || value[at] === 'I';
+    const open = at + (isIf ? 3 : 4);
     const close = closingParen(value, open);
     if (close < 0) return null;
     const inner = value.slice(open, close);
-    const comma = topLevelComma(inner);
-    const name = (comma < 0 ? inner : inner.slice(0, comma)).trim();
-    if (!NAME.test(name)) return null;
-    let replacement = get(unescapeName(name));
-    if (replacement === undefined) {
-      if (comma < 0) return null;
-      const fallback = inner.slice(comma + 1);
-      const resolved = hasVar(fallback) ? substitute(fallback, get) : fallback;
-      if (resolved === null) return null;
-      replacement = resolved;
+    let replacement: string | undefined | null;
+    if (isIf) {
+      replacement = chooseBranch(inner, get, env);
+      if (replacement === null) return null;
+    } else {
+      const comma = topLevelComma(inner);
+      const name = (comma < 0 ? inner : inner.slice(0, comma)).trim();
+      if (!NAME.test(name)) return null;
+      replacement = get(unescapeName(name));
+      if (replacement === undefined) {
+        if (comma < 0) return null;
+        const fallback = inner.slice(comma + 1);
+        const resolved = hasVar(fallback)
+          ? substitute(fallback, get, env)
+          : fallback;
+        if (resolved === null) return null;
+        replacement = resolved;
+      }
     }
     out += `${value.slice(i, at)} ${replacement.trim()} `;
     i = close + 1;
@@ -233,14 +276,103 @@ export function substitute(
   return (out + value.slice(i)).trim();
 }
 
-/** Where the next `var(` that is a function of its own starts, from `from`. */
+/**
+ * The value an `if()` stands for: the first branch whose condition holds,
+ * its own `var()`s and `if()`s replaced — or nothing where none holds, so
+ * that a declaration of nothing else is invalid at computed-value time —
+ * or null where it is no `if()`, or the branch it takes has a `var()` with
+ * nothing to stand for it. Branches are `condition: value`, separated by
+ * `;`, and `else` holds always.
+ */
+function chooseBranch(
+  inner: string,
+  get: (name: string) => string | undefined,
+  env: IfEnvironment | null,
+): string | null {
+  const fill = (text: string): string | null =>
+    hasVar(text) ? substitute(text, get, env) : text;
+  for (const branch of topLevelSplit(inner, ';')) {
+    if (!branch.trim()) continue;
+    const colon = topLevel(branch, ':');
+    if (colon < 0) return null;
+    const test = branch.slice(0, colon).trim();
+    const holds = /^else$/i.test(test)
+      ? true
+      : evaluateCondition(test, (name, query) => {
+          if (name === 'style') return styleQuery(query, get, fill);
+          if (name === 'media') {
+            if (!env) return undefined;
+            const condition =
+              query.startsWith('(') || /^not\s/i.test(query)
+                ? query
+                : `(${query})`;
+            return env.media(condition);
+          }
+          if (name === 'supports') {
+            if (!env) return undefined;
+            // `supports(display: grid)` is a declaration in no brackets
+            const condition = /^[a-z-]+\s*:/i.test(query)
+              ? `(${query})`
+              : query;
+            return env.supports(condition);
+          }
+          return undefined;
+        });
+    if (holds === null) return null;
+    if (holds) return fill(branch.slice(colon + 1));
+  }
+  return '';
+}
+
+/** Whether an `if()`'s branches are ones as it is parsed: each a
+ *  condition, or `else`, a `:` and a value, and the `var()`s in them
+ *  ones. Which branch holds is the element's to say. */
+function validIf(inner: string): boolean {
+  for (const branch of topLevelSplit(inner, ';')) {
+    if (!branch.trim()) continue;
+    const colon = topLevel(branch, ':');
+    if (colon < 0) return false;
+    const test = branch.slice(0, colon).trim();
+    if (
+      !/^else$/i.test(test) &&
+      evaluateCondition(test, () => undefined) === null
+    ) {
+      return false;
+    }
+  }
+  return !hasVar(inner) || validVars(inner);
+}
+
+/** `value` cut at each `sep` outside brackets and strings. */
+function topLevelSplit(value: string, sep: string): string[] {
+  const out: string[] = [];
+  let rest = value;
+  for (;;) {
+    const at = topLevel(rest, sep);
+    if (at < 0) break;
+    out.push(rest.slice(0, at));
+    rest = rest.slice(at + 1);
+  }
+  out.push(rest);
+  return out;
+}
+
+/** Where the next `var(` or `if(` that is a function of its own starts,
+ *  from `from`. */
 function findVar(value: string, from: number): number {
   const lower = value.toLowerCase();
-  let at = lower.indexOf('var(', from);
-  while (at > 0 && /[\w-]/.test(value[at - 1])) {
-    at = lower.indexOf('var(', at + 4);
-  }
-  return at;
+  const next = (at: number, name: string): number => {
+    let found = lower.indexOf(name, at);
+    while (found > 0 && /[\w-]/.test(value[found - 1])) {
+      found = lower.indexOf(name, found + name.length);
+    }
+    return found;
+  };
+  const v = next(from, 'var(');
+  const f = next(from, 'if(');
+  if (v < 0) return f;
+  if (f < 0) return v;
+  return Math.min(v, f);
 }
 
 /** The `)` that closes a bracket opened just before `from`, strings and

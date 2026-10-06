@@ -37,9 +37,12 @@ import {
   asciiLower,
   escapeEnd,
   mediaMatches,
+  parseMediaQuery,
   readIdent,
   startsIdent,
+  supportsCondition,
 } from './parse.js';
+import type { MediaCondition } from './parse.js';
 import type {
   Declaration,
   KeyframesRule,
@@ -90,7 +93,7 @@ import { PALETTE_CHROME } from './ua.js';
 import type { UnitContext } from './values.js';
 import { FIXED_SIZE, keywordFontSize } from './values.js';
 import { customProperties, hasVar, substituteIn, validVars } from './vars.js';
-import type { CustomProps } from './vars.js';
+import type { CustomProps, IfEnvironment } from './vars.js';
 import {
   ROOT_BOX_PROPS,
   SHAPE_TAGS,
@@ -1653,6 +1656,32 @@ export class Cascade {
     if (unit !== 'vh') this._heldWidth = true;
     if (unit !== 'vw') this._heldHeight = true;
   };
+  /**
+   * What an `if()` asks beyond the element's custom properties (`vars.ts`):
+   * a `media()` is answered for the viewport, and read as a `vmin` is, so a
+   * style that took a branch by one is computed again when the viewport
+   * moves; a `supports()` as a `@supports` block's condition is.
+   */
+  private _ifEnv: IfEnvironment = {
+    media: (query) => {
+      this._viewportRead('vmin');
+      let conditions = this._ifMedia.get(query);
+      if (!conditions) {
+        conditions = parseMediaQuery(query);
+        this._ifMedia.set(query, conditions);
+      }
+      return mediaMatches(
+        [conditions],
+        this.viewportWidth / this.scale,
+        this.look.colorScheme,
+        this.viewportHeight / this.scale,
+        this.scale,
+        this.reducedMotion,
+      );
+    },
+    supports: (condition) => supportsCondition(condition) !== false,
+  };
+  private _ifMedia = new Map<string, MediaCondition[]>();
   /** The families the document loads itself (`fonts.ts`), or null for a
    *  document with no `@font-face`. */
   private _families: FontFamilies | null;
@@ -2601,7 +2630,7 @@ export class Cascade {
     for (const c of candidates) {
       for (const d of pick(c)) if (d.custom) own.set(d.prop, d.value);
     }
-    const made = customProperties(own, parent);
+    const made = customProperties(own, parent, this._ifEnv);
     this._customs.set(key, made);
     return made;
   }
@@ -3564,7 +3593,7 @@ export class Cascade {
     } else {
       initialOne(style, this.initial, d.prop);
     }
-    const value = substituteIn(d.value, style.custom);
+    const value = substituteIn(d.value, style.custom, this._ifEnv);
     if (value !== null)
       applyDeclaration(style, parentStyle, d.prop, value, ctx);
   }
@@ -3830,7 +3859,7 @@ export class Cascade {
           // computed-value time, and the property as though `unset`
           let value: string | null;
           if (d.vars) {
-            const raw = substituteIn(d.value, custom);
+            const raw = substituteIn(d.value, custom, this._ifEnv);
             value =
               (raw === null ? null : shapeValue(d.prop, raw, ctx)) ??
               shapeValue(d.prop, 'unset', ctx);
