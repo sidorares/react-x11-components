@@ -436,6 +436,130 @@ test('an animation runs its frames as time passes, and is over at its end', asyn
   assert.strictEqual(doc.clock.pending, false, 'no frame is asked for');
 });
 
+/**
+ * A document whose animations' clock is held, and says how long each frame
+ * it asks for waits: `next()` runs the frame asked for soonest, at its time.
+ */
+async function asking(t: TestContext, source: string) {
+  let time = 0;
+  const armed = new Map<object, { step: () => void; at: number }>();
+  const waits: number[] = [];
+  t.mock.method(animationClock, 'now', () => time);
+  t.mock.method(animationClock, 'arm', (step: () => void, ms: number) => {
+    const handle = {};
+    armed.set(handle, { step, at: time + ms });
+    waits.push(ms);
+    return handle;
+  });
+  t.mock.method(animationClock, 'disarm', (handle: object) => {
+    armed.delete(handle);
+  });
+  const { node } = await render(source);
+  await act();
+  return {
+    node,
+    /** How long the frame asked for last waits. */
+    wait: () => waits[waits.length - 1],
+    async next(): Promise<number | null> {
+      let soonest: [object, { step: () => void; at: number }] | null = null;
+      for (const entry of armed) {
+        if (!soonest || entry[1].at < soonest[1].at) soonest = entry;
+      }
+      if (!soonest) return null;
+      armed.delete(soonest[0]);
+      time = soonest[1].at;
+      soonest[1].step();
+      await act();
+      return time;
+    },
+  };
+}
+
+test('a slow fade asks for its next frame a level of opacity on, and not a frame from now', async (t) => {
+  // Zen Garden 214's enso scales from 1 to 3 in ten hours, and had a frame
+  // forty times a second that moved its edge a hundred-millionth of a pixel
+  const doc = await asking(
+    t,
+    '<style>@keyframes f { from { opacity: 1 } to { opacity: 0 } }' +
+      '#a { animation: f 255s linear }</style><p id="a">x</p>',
+  );
+  assert.strictEqual(doc.wait(), 1000, 'a level of 255 a second');
+  assert.strictEqual(await doc.next(), 1000);
+  assert.strictEqual(round(styleOf(doc.node, 'a').opacity * 255), 254);
+  assert.strictEqual(doc.wait(), 1000, 'and the next a second on');
+});
+
+test('a slow scale asks for its next frame an eighth of a pixel on, as far from where it scales about as the box reaches', async (t) => {
+  // a 100px box scaled by a thousandth in ten seconds: its sides, twice
+  // over, are 400px of reach, which the two factors move 0.8px — 6.4
+  // eighths of a pixel, one every 1562.5 ms
+  const doc = await asking(
+    t,
+    '<style>@keyframes g { from { transform: scale(1) }' +
+      ' to { transform: scale(1.001) } }' +
+      '#b { width: 100px; height: 100px; animation: g 10s linear }</style>' +
+      '<div id="b"></div>',
+  );
+  assert.strictEqual(Math.round(doc.wait() * 10) / 10, 1562.5);
+});
+
+test('an animation over and filling forwards holds its value, and hurries no frame of one under way beside it', async (t) => {
+  const doc = await asking(
+    t,
+    '<style>@keyframes done { to { color: #ff0000 } }' +
+      '@keyframes f { from { opacity: 1 } to { opacity: 0 } }' +
+      '#a { animation: done 8ms forwards, f 255s linear }</style>' +
+      '<p id="a">x</p>',
+  );
+  // a frame from now, while the first runs, and then the second's pace
+  assert.strictEqual(doc.wait(), 16);
+  assert.strictEqual(await doc.next(), 16);
+  assert.strictEqual(styleOf(doc.node, 'a').color, '#ff0000', 'filling');
+  assert.strictEqual(doc.wait(), 1000, 'a level of opacity on');
+});
+
+test('a frame where an animation holds its values waits for them to move, and one that moves quickly is a frame from now', async (t) => {
+  const doc = await asking(
+    t,
+    '<style>@keyframes h { from { opacity: .5 } 50% { opacity: .5 }' +
+      ' to { opacity: 1 } }' +
+      '#a { animation: h 2s linear }</style><p id="a">x</p>',
+  );
+  assert.strictEqual(doc.wait(), 1000, 'to the end of the hold');
+  assert.strictEqual(await doc.next(), 1000);
+  assert.strictEqual(doc.wait(), 16, 'a level of 255 every 8 ms after it');
+});
+
+test('a turn, a step and the end of a slow animation each have their frame', async (t) => {
+  const turn = await asking(
+    t,
+    '<style>@keyframes r { to { transform: rotate(360deg) } }' +
+      '#a { width: 40px; height: 40px; animation: r 1s linear infinite }' +
+      '</style><div id="a"></div>',
+  );
+  assert.strictEqual(turn.wait(), 16, 'a turn of a second');
+  cleanup();
+  const steps = await asking(
+    t,
+    '<style>@keyframes f { from { opacity: 1 } to { opacity: 0 } }' +
+      '#a { animation: f 255s steps(4) }</style><p id="a">x</p>',
+  );
+  assert.strictEqual(steps.wait(), 16, 'steps, which jump');
+  cleanup();
+  // a thousandth of its opacity over four seconds, of which it runs two:
+  // a level of 255 would take longer than it runs, and it is over at two
+  // seconds, half way through its frames
+  const ends = await asking(
+    t,
+    '<style>@keyframes f { from { opacity: 1 } to { opacity: .999 } }' +
+      '#a { opacity: .5; animation: f 4s linear .5 }</style><p id="a">x</p>',
+  );
+  assert.strictEqual(ends.wait(), 2000, 'to its end');
+  assert.strictEqual(await ends.next(), 2000);
+  assert.strictEqual(styleOf(ends.node, 'a').opacity, 0.5, 'and over then');
+  assert.strictEqual(await ends.next(), null, 'with nothing more to ask');
+});
+
 test('a delay, a fill, iterations and a direction', async (t) => {
   const doc = await running(
     t,
@@ -738,6 +862,105 @@ metric(
     assert.ok(
       frames[0].some((v, i) => v !== frames[1][i]),
       'it moved',
+    );
+  },
+);
+
+metric(
+  'a frame that turns, scales or fades a ::before in the flow restyles it where it is and repaints what it draws, to the pixels a build draws',
+  async (t) => {
+    // Zen Garden 214's enso: an `h1::before` an animation scales and
+    // fades, in the flow, built the document again and repainted all of
+    // it at every frame — forty times a second, for a change no one saw
+    const doc = await running(
+      t,
+      '<style>body { margin: 0; font: 14px sans-serif }' +
+        '@keyframes k { from { transform: scale(1); opacity: 1 }' +
+        ' to { transform: scale(1.5) rotate(45deg); opacity: .4 } }' +
+        'h1 { margin: 20px; font-size: 20px }' +
+        'h1::before { content: ""; display: inline-block; width: 30px;' +
+        ' height: 30px; margin-right: 10px; vertical-align: middle;' +
+        ' background: #aa0000; animation: k 320ms linear infinite }' +
+        '@keyframes t { from { transform: translateX(0) }' +
+        ' to { transform: translateX(30px) } }' +
+        'p { margin: 20px }' +
+        'p::before { content: ""; display: inline-block; width: 20px;' +
+        ' height: 10px; margin: 0 6px; background: #0000aa;' +
+        ' animation: t 320ms linear infinite }</style>' +
+        '<h1>A heading</h1><p>flow text stays where it is</p>',
+      300,
+    );
+    const rebuilt = t.mock.method(
+      doc.el as unknown as { _rebuildFrame(reach: unknown): void },
+      '_rebuildFrame',
+    );
+    const { repainted, frames } = await framesAgainstBuilds(doc, [48, 96]);
+    assert.strictEqual(rebuilt.mock.callCount(), 0, 'restyled where it is');
+    assert.ok(repainted.length > 0, 'something was repainted');
+    assert.ok(
+      repainted.every((r) => r !== doc.el),
+      'only what it draws was repainted',
+    );
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[1][i]),
+      'it moved',
+    );
+  },
+);
+
+metric(
+  'a frame that grows a ::after’s shadow repaints as far as the shadow reaches now, to the pixels a build draws',
+  async (t) => {
+    const doc = await running(
+      t,
+      '<style>body { margin: 0; font: 14px sans-serif }' +
+        '@keyframes g { from { box-shadow: 0 0 0 #000 }' +
+        ' to { box-shadow: 12px 12px 0 #000 } }' +
+        'p { margin: 20px }' +
+        'p::after { content: ""; display: inline-block; width: 20px;' +
+        ' height: 10px; margin-left: 6px; background: #0000aa;' +
+        ' animation: g 320ms linear infinite }</style>' +
+        '<p>flow text stays where it is</p>',
+      300,
+    );
+    const rebuilt = t.mock.method(
+      doc.el as unknown as { _rebuildFrame(reach: unknown): void },
+      '_rebuildFrame',
+    );
+    const { frames } = await framesAgainstBuilds(doc, [48, 96, 144]);
+    assert.strictEqual(rebuilt.mock.callCount(), 0, 'restyled where it is');
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[1][i]),
+      'it grew',
+    );
+  },
+);
+
+metric(
+  'a frame that takes a ::after over a box it lies under paints it in its new place among its layers, to the pixels a build draws',
+  async (t) => {
+    const doc = await running(
+      t,
+      '<style>body { margin: 0 }' +
+        '@keyframes z { from { z-index: 0 } to { z-index: 2 } }' +
+        '#p { position: relative; height: 60px }' +
+        '#p::after { content: ""; position: relative; display: block;' +
+        ' width: 40px; height: 40px; background: #0000aa;' +
+        ' animation: z 160ms linear }' +
+        '#over { position: absolute; left: 20px; top: 20px; width: 40px;' +
+        ' height: 40px; background: #aa0000; z-index: 1 }</style>' +
+        '<div id="p"><div id="over"></div></div>',
+      300,
+    );
+    const rebuilt = t.mock.method(
+      doc.el as unknown as { _rebuildFrame(reach: unknown): void },
+      '_rebuildFrame',
+    );
+    const { frames } = await framesAgainstBuilds(doc, [32, 128]);
+    assert.strictEqual(rebuilt.mock.callCount(), 0, 'restyled where it is');
+    assert.ok(
+      frames[0].some((v, i) => v !== frames[1][i]),
+      'it went over',
     );
   },
 );
@@ -2794,13 +3017,19 @@ test('progress through an iteration: phases, fills, directions', () => {
     fill: 'none',
     ...over,
   });
+  // and which way the progress is going, and how long the active phase
+  // goes on
   assert.deepStrictEqual(progressAt(timing({}), 25), {
     progress: 0.25,
     phase: 'active',
+    forwards: true,
+    left: 75,
   });
   assert.deepStrictEqual(progressAt(timing({ delay: 50 }), 25), {
     progress: null,
     phase: 'before',
+    forwards: true,
+    left: 0,
   });
   assert.strictEqual(
     progressAt(timing({ delay: 50, fill: 'both' }), 25).progress,
@@ -2824,6 +3053,15 @@ test('progress through an iteration: phases, fills, directions', () => {
     0.25,
   );
   assert.strictEqual(
+    progressAt(timing({ iterations: 3, direction: 'alternate' }), 175).forwards,
+    false,
+    'back the other way',
+  );
+  assert.strictEqual(
+    progressAt(timing({ iterations: Infinity }), 175).left,
+    Infinity,
+  );
+  assert.strictEqual(
     progressAt(timing({ direction: 'alternate-reverse' }), 25).progress,
     0.75,
   );
@@ -2831,6 +3069,8 @@ test('progress through an iteration: phases, fills, directions', () => {
   assert.deepStrictEqual(progressAt(timing({ duration: 0, fill: 'both' }), 0), {
     progress: 1,
     phase: 'after',
+    forwards: true,
+    left: 0,
   });
   assert.strictEqual(
     round(progressAt(timing({ iterations: Infinity }), 1e6 + 30).progress!),

@@ -3364,6 +3364,9 @@ export class HtmlViewNode extends Node {
     let reaches = false;
     let reorders = false;
     const moving = new Set<Element>();
+    /** The `::before` and `::after` boxes whose translation may have
+     *  changed, which have no element of their own to be found by. */
+    const movingBoxes = new Set<Box>();
     /** The elements whose opacity changed, which an inline box's cannot
      *  here where blocks broke it: they took it (`FADED_BLOCKS`). */
     const fading = new Set<Element>();
@@ -3506,8 +3509,13 @@ export class HtmlViewNode extends Node {
         const diff = hoverChange(box.style, made);
         if (diff === false) return false;
         if (!diff) continue;
-        if (diff.reach || diff.order || diff.move) return false;
+        if (diff.move && !movable(box, box.style, made)) return false;
         if (diff.fade && brokenAround(box)) return false;
+        // how far it reaches, the order its layer paints in and where it
+        // is are worked out again as they are for an element's box
+        if (diff.reach) reaches = true;
+        if (diff.order) reorders = true;
+        if (diff.move) movingBoxes.add(box);
         style = made;
         ink = diff.ink;
       } else if (box.pseudo) {
@@ -3633,7 +3641,10 @@ export class HtmlViewNode extends Node {
         this._spriteGen += 1;
         reoffer = true;
       }
-      if (box.el && moving.has(box.el) && box.kind !== 'text') {
+      if (
+        (box.el && moving.has(box.el) && box.kind !== 'text') ||
+        movingBoxes.has(box)
+      ) {
         moved.push([box, was]);
       }
     }

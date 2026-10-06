@@ -18,7 +18,7 @@
 // of that reads goes over at the half-way point, as CSS has a discrete
 // value go.
 
-import { blend } from './color.js';
+import { blend, rgbaOf } from './color.js';
 import { interpolateFilters } from './filter.js';
 import type { FilterFunction } from './filter.js';
 import type { BoxShadow } from './style.js';
@@ -626,4 +626,138 @@ export function interpolateMatrix(a: Matrix, b: Matrix, q: number): Matrix {
     m21: at(x.m21, y.m21),
     m22: at(x.m22, y.m22),
   });
+}
+
+/** The least change anyone sees in where something is drawn, in device
+ *  pixels: what an animation's next frame waits for (`visibleSpan`). */
+export const SEEN_PX = 1 / 8;
+
+/**
+ * How far apart two values of a field are in what is drawn, counted in the
+ * least changes anyone sees: the most a point it moves goes, in
+ * `SEEN_PX`, and the most a colour or an opacity goes, in levels of 255.
+ * Between the two the field runs as `interpolateField` mixes it, evenly
+ * near enough — a turn by its angle, a scale by its factors, a move by its
+ * lengths — so a span `q` of the way across is that part of it. `reach` is
+ * how far from the point a transform turns or scales about anything it
+ * moves can be. Infinity for a field this does not measure, and for one
+ * that goes over at once rather than running between; 0 for two the same.
+ */
+export function visibleSpan(
+  key: string,
+  a: unknown,
+  b: unknown,
+  reach: number,
+): number {
+  if (same(a, b)) return 0;
+  switch (key) {
+    case 'opacity':
+      return typeof a === 'number' && typeof b === 'number'
+        ? Math.abs(b - a) * 255
+        : Infinity;
+    case 'transform':
+      return (
+        transformsApart(
+          a as readonly TransformFunction[] | null,
+          b as readonly TransformFunction[] | null,
+          reach,
+        ) / SEEN_PX
+      );
+    case 'translate': {
+      const x = (a ?? NO_MOVE) as readonly Len[];
+      const y = (b ?? NO_MOVE) as readonly Len[];
+      let px = 0;
+      for (let i = 0; i < 3; i += 1) {
+        px += lengthsApart(x[i] ?? 0, y[i] ?? 0, reach);
+      }
+      return px / SEEN_PX;
+    }
+    case 'scale': {
+      const x = (a ?? NO_SCALE) as readonly number[];
+      const y = (b ?? NO_SCALE) as readonly number[];
+      let by = 0;
+      for (let i = 0; i < 3; i += 1) by += Math.abs((y[i] ?? 1) - (x[i] ?? 1));
+      return (by * reach) / SEEN_PX;
+    }
+    case 'rotate': {
+      const turn = turnsApart(
+        (a as Turn | null) ?? NO_TURN,
+        (b as Turn | null) ?? NO_TURN,
+      );
+      return (turn * reach) / SEEN_PX;
+    }
+  }
+  // a colour: the most a channel or its alpha goes
+  if (typeof a === 'string' && typeof b === 'string') {
+    const x = rgbaOf(a);
+    const y = rgbaOf(b);
+    if (!x || !y) return Infinity;
+    let most = 0;
+    for (let i = 0; i < 4; i += 1) most = Math.max(most, Math.abs(y[i] - x[i]));
+    return most * 255;
+  }
+  return Infinity;
+}
+
+/** How far two lists of transform functions move a point `reach` from
+ *  where they turn or scale about, in device pixels, paired as
+ *  `interpolateTransforms` pairs them; Infinity where it interpolates
+ *  them as matrices, or out of the plane. */
+function transformsApart(
+  a: readonly TransformFunction[] | null,
+  b: readonly TransformFunction[] | null,
+  reach: number,
+): number {
+  if (!a && !b) return 0;
+  const x = a ?? b!.map(identityOf);
+  const y = b ?? a!.map(identityOf);
+  if (x.length !== y.length) return Infinity;
+  let px = 0;
+  for (let i = 0; i < x.length; i += 1) {
+    const f = x[i];
+    const g = y[i];
+    if ('by' in f && 'by' in g) {
+      px +=
+        lengthsApart(f.by[0], g.by[0], reach) +
+        lengthsApart(f.by[1], g.by[1], reach) +
+        Math.abs((g.z ?? 0) - (f.z ?? 0));
+      continue;
+    }
+    const p = 'matrix' in f ? f.fn : undefined;
+    const q = 'matrix' in g ? g.fn : undefined;
+    if (!p || !q || p.kind !== q.kind) return Infinity;
+    if (p.kind === 'scale' && q.kind === 'scale') {
+      px +=
+        (Math.abs(q.x - p.x) +
+          Math.abs(q.y - p.y) +
+          Math.abs((q.z ?? 1) - (p.z ?? 1))) *
+        reach;
+    } else if (
+      (p.kind === 'rotate' || p.kind === 'rotate3d') &&
+      (q.kind === 'rotate' || q.kind === 'rotate3d')
+    ) {
+      px += turnsApart(p, q) * reach;
+    } else {
+      return Infinity;
+    }
+  }
+  return px;
+}
+
+/** Two lengths' distance in device pixels, a percentage of `reach`. */
+function lengthsApart(a: Len | 'auto', b: Len | 'auto', reach: number): number {
+  if (typeof a === 'number' && typeof b === 'number') return Math.abs(b - a);
+  const x = linear(a);
+  const y = linear(b);
+  if (!x || !y) return Infinity;
+  return (Math.abs(y.pct - x.pct) / 100) * reach + Math.abs(y.px - x.px);
+}
+
+/** How far apart two turns are, in radians: by their angles about one
+ *  axis, as `turnBetween` runs them, every whole turn counted. */
+function turnsApart(a: Turn, b: Turn): number {
+  const u = axisOf(a);
+  const v = axisOf(b);
+  if (u[3] !== 0 && v[3] !== 0 && !sameAxis(u, v)) return Infinity;
+  return (Math.abs(v[3] - u[3]) * Math.PI) / 180;
 }

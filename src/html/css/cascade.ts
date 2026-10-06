@@ -46,10 +46,16 @@ import type {
   StyleRule,
   Stylesheet,
 } from './parse.js';
-import { NO_ANIMATIONS, restingFrames, spanAt, tracksOf } from './animation.js';
+import {
+  NO_ANIMATIONS,
+  restingFrames,
+  spanAt,
+  steepest as steepestOf,
+  tracksOf,
+} from './animation.js';
 import type { Animations } from './animation.js';
 import type { Keyframe } from './parse.js';
-import { discrete, interpolateField } from './interpolate.js';
+import { discrete, interpolateField, visibleSpan } from './interpolate.js';
 import type { AnimationTimeline, Sample } from './timeline.js';
 import {
   animatedWillChange,
@@ -3158,22 +3164,22 @@ export class Cascade {
       );
       animated = fieldsAnimatedBy(samples);
       if (samples) {
+        const animatedDeclarations = this._animatedDeclarations(
+          el,
+          parentStyle,
+          inFlexContainer,
+          candidates,
+          own,
+          style,
+          samples,
+        );
+        // its next frame is when what they draw next changes
+        timeline.pace(el, target!, timeline.now + this._unchangedFor);
         style = this._cascadeStyle(
           el,
           parentStyle,
           inFlexContainer,
-          withAnimations(
-            candidates,
-            this._animatedDeclarations(
-              el,
-              parentStyle,
-              inFlexContainer,
-              candidates,
-              own,
-              style,
-              samples,
-            ),
-          ),
+          withAnimations(candidates, animatedDeclarations),
           own,
         );
       }
@@ -3237,6 +3243,17 @@ export class Cascade {
     base: ComputedStyle,
     samples: readonly Sample[],
   ): Declaration[][] {
+    // how long from now what they draw changes by nothing anyone sees
+    // (`_unchangedFor`), and how far from where a transform turns or scales
+    // what it moves can be: twice the box's sides where its style says
+    // them, and twice the viewport's longer side where it does not
+    let unchanged = Infinity;
+    const w = base.width;
+    const h = base.height;
+    const reach =
+      typeof w === 'number' && typeof h === 'number'
+        ? 2 * (w + h)
+        : 2 * Math.max(this.viewportWidth, this.viewportHeight, 2048);
     const styles = new Map<Keyframe, ComputedStyle>();
     const styleAt = (frame: Keyframe | null): ComputedStyle => {
       if (!frame) return base;
@@ -3254,16 +3271,19 @@ export class Cascade {
       return style;
     };
     const out: Declaration[][] = [];
-    for (const { rule, progress, easing } of samples) {
+    for (const sample of samples) {
+      const { rule, progress, easing } = sample;
       const declarations: Declaration[] = [];
       for (const [prop, frames] of tracksOf(rule)) {
-        const { from, to, q } = spanAt(frames, progress, easing);
+        const span = spanAt(frames, progress, easing);
+        const { from, to, q } = span;
         const fields = animatedFields(prop);
         if (!fields) {
           // a property whose values this cannot read goes over half-way,
           // as its declaration: the element's own, where that end is it
           const at = discrete(from, to, q);
           if (at) declarations.push(at.declaration);
+          unchanged = 0;
           continue;
         }
         const a = styleAt(from?.frame ?? null) as unknown as Record<
@@ -3287,13 +3307,25 @@ export class Cascade {
         if (flips) {
           const at = discrete(a, b, q);
           for (const key of fields) computed[key] = at[key];
+          unchanged = 0;
+        } else if (unchanged > 0 && sample.left > 0) {
+          let most = 0;
+          for (const key of fields) {
+            most = Math.max(most, visibleSpan(key, a[key], b[key], reach));
+          }
+          unchanged = Math.min(unchanged, unchangedFor(sample, span, most));
         }
         declarations.push({ prop, value: '', important: false, computed });
       }
       if (declarations.length) out.push(declarations);
     }
+    this._unchangedFor = unchanged;
     return out;
   }
+
+  /** How long from now the animations `_animatedDeclarations` last worked
+   *  out change nothing anyone sees. */
+  private _unchangedFor = 0;
 
   /** The style the candidates come to, in their order. */
   private _cascadeStyle(
@@ -5243,4 +5275,29 @@ function restingWillChange(
     if (rule) bits |= animatedWillChange(rule);
   }
   return bits;
+}
+
+/**
+ * How long from now an animation's span between two frames changes nothing
+ * anyone sees, where all it changes across the span is `visible` of the
+ * least changes anyone sees (`visibleSpan`): as long as the easing at its
+ * steepest takes to move it one of them, and no longer than the span, or
+ * the animation, goes on — where another span's values, or none, begin. 0
+ * where it changes as soon as it can, at a frame from now.
+ */
+function unchangedFor(
+  sample: Sample,
+  span: ReturnType<typeof spanAt>,
+  visible: number,
+): number {
+  const { duration, forwards, left, progress } = sample;
+  if (!(duration > 0)) return 0;
+  // to the end of the span, the way the progress is going
+  const across = forwards ? span.end - progress : progress - span.start;
+  const out = Math.min(Math.max(0, across) * duration, left);
+  if (visible === 0) return out;
+  const steepest = steepestOf(span.easing);
+  if (!(visible < Infinity) || !(steepest < Infinity)) return 0;
+  const width = span.end - span.start;
+  return Math.min(out, (width * duration) / (visible * steepest));
 }
