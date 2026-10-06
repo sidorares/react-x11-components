@@ -156,6 +156,12 @@ export interface HtmlProps {
    *
    * Nothing is fetched because of it: it says where relative URLs point,
    * and `onResource` still decides whether anything goes there.
+   *
+   * Its fragment names the document's `:target`: the element whose id it
+   * is, or the `<a>` it is the name of. A host that follows a link to
+   * `#section` passes the same URL with that fragment, which resolves
+   * nothing differently and restyles only where a rule tests `:target`;
+   * a document with no URL can be given a fragment alone, `'#section'`.
    */
   baseUrl?: string | null;
   /**

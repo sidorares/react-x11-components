@@ -522,6 +522,68 @@ test('an append to a streamed document keeps its stylesheet parsed', async () =>
   assert.notStrictEqual(cascadeOf(), before);
 });
 
+test(":target is the element the fragment of the document's URL names, and moves with it", async () => {
+  const source =
+    '<style>p { color: #000000 } :target { color: #00ff00 } ' +
+    'section:not(:target) b { color: #0000ff }</style>' +
+    '<p id="a">a</p><p><a id="n" name="b">b</a></p>' +
+    '<p id="caf\u00e9">c</p><section id="s"><b id="x">x</b></section>' +
+    '<img src="i.png" alt="i">';
+  const asked: string[] = [];
+  const doc = (baseUrl: string | null) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, {
+        source,
+        baseUrl,
+        onResource: (request: { url: string }) => {
+          asked.push(request.url);
+          return null;
+        },
+        'data-testname': 'doc',
+      }),
+    );
+  const result = await renderX11(doc('https://x.test/page'), {
+    backend: 'mock',
+  });
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  const color = (id: string): string => {
+    el().textContent();
+    return (boxOf(el(), id) as LaidBox & { style: { color: string } }).style
+      .color;
+  };
+  const green = (): string[] =>
+    ['a', 'n', 'caf\u00e9', 's'].filter((id) => color(id) === '#00ff00');
+  assert.deepStrictEqual(green(), []);
+  assert.strictEqual(color('x'), '#0000ff');
+  const cascade = (el() as unknown as { _cascade: unknown })._cascade;
+  const resources = asked.length;
+  // a link the host follows to `#a`: the same document at another fragment
+  await act(() => result.rerender(doc('https://x.test/page#a')));
+  assert.deepStrictEqual(green(), ['a']);
+  // which resolves nothing differently: the same cascade, nothing asked
+  assert.strictEqual(
+    (el() as unknown as { _cascade: unknown })._cascade,
+    cascade,
+  );
+  assert.strictEqual(asked.length, resources);
+  // an id first, and then the `<a>` the fragment is the name of
+  await act(() => result.rerender(doc('https://x.test/page#b')));
+  assert.deepStrictEqual(green(), ['n']);
+  // percent-decoded where it names nothing as written
+  await act(() => result.rerender(doc('https://x.test/page#caf%C3%A9')));
+  assert.deepStrictEqual(green(), ['caf\u00e9']);
+  await act(() => result.rerender(doc('https://x.test/page#s')));
+  assert.deepStrictEqual(green(), ['s']);
+  assert.notStrictEqual(color('x'), '#0000ff');
+  // and a fragment of a document with no URL of its own
+  await act(() => result.rerender(doc('#a')));
+  assert.deepStrictEqual(green(), ['a']);
+  await act(() => result.rerender(doc(null)));
+  assert.deepStrictEqual(green(), []);
+});
+
 test("a :has() answers the tree as it is now, after a stream's next chunk and after refresh()", async () => {
   // css-select keeps what a :has() answered for an element for as long as
   // the matcher lives, and a tree that changed under the same sheets keeps

@@ -358,6 +358,9 @@ class RuleIndex {
   hoverSensitive = false;
   /** …and focus-sensitive, for a widget taking the focus or giving it up. */
   focusSensitive = false;
+  /** …and whether one tests `:target`, for the document's URL taking
+   *  another fragment (`Cascade.setTarget`). */
+  targetSensitive = false;
   /** The rules that test `:hover` or the focus, in buckets of their own:
    *  the ones whose answers a pointer move or a focus change can change,
    *  which is all that is asked to know whether an element's did
@@ -437,6 +440,7 @@ class RuleIndex {
     }
     const focus = FOCUS.test(rule.selector);
     if (focus) this.focusSensitive = true;
+    if (rule.selector.includes(':target')) this.targetSensitive = true;
     if (UNSHAREABLE.test(rule.selector)) {
       if (key.kind === 'id') this.ownStyleIds.add(key.name);
       else if (key.kind === 'class') this.ownStyleClasses.add(key.name);
@@ -1558,6 +1562,7 @@ export class Cascade {
   private _focusRules = new StateRules(FOCUS_STATE);
   private _pointer: PointerState = NO_POINTER;
   private _focus: FocusState = NO_FOCUS;
+  private _target: Element | null = null;
   readonly initial: ComputedStyle;
   readonly look: RootLook;
   /** Viewport width the media queries were evaluated at, in device pixels
@@ -1729,7 +1734,8 @@ export class Cascade {
      *  `<svg>`, which is `:root` there (Selectors 4, 14.1). */
     documentElement: Element | null = null,
     /** The element the document's URL names by its fragment, which is
-     *  `:target` (Selectors 4, 9.1): an SVG image's, `image.svg#icon`. */
+     *  `:target` (Selectors 4, 9.1): an SVG image's, `image.svg#icon`. A
+     *  document's moves with its URL (`setTarget`). */
     target: Element | null = null,
     /** The shadow trees' sheets, a set for each way they read: what each
      *  styles is in the trees bound to it (`bindShadows`). */
@@ -1742,12 +1748,13 @@ export class Cascade {
       ...(documentElement && {
         root: (el: Element) => el === documentElement,
       }),
-      ...(target && { target: (el: Element) => el === target }),
+      target: (el: Element) => el === this._target,
       focus: (el: Element) => this._focus.element === el,
       'focus-visible': (el: Element) =>
         this._focus.visible && this._focus.element === el,
       'focus-within': (el: Element) => this._focus.within.has(el),
     };
+    this._target = target;
     this._xHeightOf = xHeight;
     this._zeroWidthOf = zeroWidth;
     this._normalLineOf = normalLine;
@@ -1907,6 +1914,21 @@ export class Cascade {
 
   setFocus(focus: FocusState): void {
     this._focus = focus;
+  }
+
+  /** The element the fragment of the document's URL names, `:target`
+   *  (Selectors 4, 9.1), or null for none. */
+  setTarget(target: Element | null): void {
+    this._target = target;
+  }
+
+  /** Whether a rule tests `:target`: whether a new one can restyle
+   *  anything. */
+  get targetSensitive(): boolean {
+    return (
+      this._index.targetSensitive ||
+      Object.values(this._pseudo).some((index) => index.targetSensitive)
+    );
   }
 
   /** Whether a pointer move can be restyled where it happened
@@ -4372,7 +4394,8 @@ const PSEUDOS = {
   'focus-visible': (_el: Element) => false,
   'focus-within': (_el: Element) => false,
   // css-select has none, and threw on one, so `:not(:target)` matched
-  // nothing: a document is drawn at no fragment, an SVG image at its own
+  // nothing; the element the URL's fragment names is the cascade's to say
+  // (`setTarget`)
   target: (_el: Element) => false,
   // css-select's, but its ranges and tags lower-cased as ASCII has it, and
   // no other script (CSS 2.1 4.1.3): Unicode's took `:lang(\u212Al)`, a
