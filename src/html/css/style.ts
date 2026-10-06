@@ -37,6 +37,7 @@ import { decodesImageType } from '../image-types.js';
 import { pick } from '../srcset.js';
 import type { ImageSource } from '../srcset.js';
 import { closingParen } from './vars.js';
+import { validName } from './containers.js';
 import {
   parseContent,
   parseCounterList,
@@ -618,6 +619,15 @@ export interface ComputedStyle {
   contain: number;
   /** `content-visibility`: `hidden` skips painting what the box holds. */
   contentVisibility: 'visible' | 'auto' | 'hidden';
+  /** `container-type` (CSS Conditional 5, 3.1): whether the element is a
+   *  query container for size queries, and in which axes — which applies
+   *  the size containment of those axes and style containment to it, and
+   *  makes it a formatting context of its own (`settleContainer`). Every
+   *  element is one for `style()` queries, whatever this says. */
+  containerType: 'normal' | 'size' | 'inline-size';
+  /** `container-name`: the names an `@container` rule finds the element by,
+   *  each with one space between, or '' for `none`. */
+  containerName: string;
   /** `overflow-clip-margin`: the box an `overflow: clip` box cuts what it
    *  holds at, and how far out from it (CSS Overflow 3, 3.2). */
   overflowClipBox: VisualBox;
@@ -1245,6 +1255,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     flowRoot: false,
     contain: 0,
     contentVisibility: 'visible',
+    containerType: 'normal',
+    containerName: '',
     overflowClipBox: 'padding-box',
     overflowClipMargin: 0,
     containIntrinsicWidth: null,
@@ -2082,6 +2094,28 @@ export function applyDeclaration(
       if (v === 'visible' || v === 'auto' || v === 'hidden') {
         style.contentVisibility = v;
       }
+      return;
+    }
+    case 'container-type': {
+      const type = containerTypeOf(value);
+      if (type !== null) style.containerType = type;
+      return;
+    }
+    case 'container-name': {
+      const names = containerNamesOf(value);
+      if (names !== null) style.containerName = names;
+      return;
+    }
+    case 'container': {
+      // `<container-name> [ / <container-type> ]?`, the type `normal` where
+      // it gives none
+      const slash = value.indexOf('/');
+      const names = containerNamesOf(slash < 0 ? value : value.slice(0, slash));
+      const type =
+        slash < 0 ? 'normal' : containerTypeOf(value.slice(slash + 1));
+      if (names === null || type === null) return;
+      style.containerName = names;
+      style.containerType = type;
       return;
     }
     case 'contain-intrinsic-size':
@@ -3747,6 +3781,55 @@ function overflowKeyword(
     return s;
   }
   return null;
+}
+
+/** A `container-type` value as the type it computes to, or null where it
+ *  is none: `normal`, or `size` or `inline-size` — either beside
+ *  `scroll-state`, which no query here reads. */
+function containerTypeOf(value: string): ComputedStyle['containerType'] | null {
+  const words = value.trim().toLowerCase().split(/\s+/);
+  if (words.length === 1 && words[0] === 'normal') return 'normal';
+  let type: ComputedStyle['containerType'] = 'normal';
+  let scroll = false;
+  for (const word of words) {
+    if (word === 'scroll-state' && !scroll) scroll = true;
+    else if ((word === 'size' || word === 'inline-size') && type === 'normal') {
+      type = word;
+    } else return null;
+  }
+  return type;
+}
+
+/** A `container-name` value as the names it gives, one space between, ''
+ *  for `none`; null where it is none. */
+function containerNamesOf(value: string): string | null {
+  const words = value.trim().split(/\s+/);
+  if (words.length === 1 && words[0].toLowerCase() === 'none') return '';
+  for (const word of words) {
+    if (!/^-?[_a-zA-Z\u0080-\uffff][\w\u0080-\uffff-]*$/.test(word)) {
+      return null;
+    }
+    if (!validName(word)) return null;
+  }
+  return words.join(' ');
+}
+
+/**
+ * What `container-type` makes of an element (CSS Conditional 5, 3.1): a
+ * size container is size-contained in the axes it answers for —
+ * `inline-size` in the inline one, `size` in both — and style-contained,
+ * and its box is a formatting context of its own (`establishesBFC`). It
+ * is not layout-contained: what is positioned inside it is placed against
+ * whatever it would be without it, as in Chrome.
+ */
+export function settleContainer(style: ComputedStyle): void {
+  if (style.containerType === 'normal') return;
+  style.contain |= CONTAIN_STYLE;
+  if (style.containerType === 'size') {
+    style.contain = (style.contain & ~CONTAIN_INLINE_SIZE) | CONTAIN_SIZE;
+  } else if (!(style.contain & CONTAIN_SIZE)) {
+    style.contain |= CONTAIN_INLINE_SIZE;
+  }
 }
 
 /** `contain`'s containments (CSS Containment 2, 3). */
@@ -6739,6 +6822,9 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   '-moz-appearance': ['appearance'],
   contain: ['contain'],
   'content-visibility': ['contentVisibility'],
+  'container-type': ['containerType'],
+  'container-name': ['containerName'],
+  container: ['containerName', 'containerType'],
   'overflow-clip-margin': ['overflowClipBox', 'overflowClipMargin'],
   'contain-intrinsic-size': ['containIntrinsicWidth', 'containIntrinsicHeight'],
   'contain-intrinsic-width': ['containIntrinsicWidth'],

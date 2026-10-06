@@ -866,6 +866,28 @@ export function textFade(
 }
 
 /** What the builder produced, plus the document-wide text it indexed. */
+/** The first box of each element that is a size container, in a tree as
+ *  it was built. */
+export function containerBoxes(root: Box): Map<Element, Box> {
+  const out = new Map<Element, Box>();
+  const stack: Box[] = [root];
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (
+      box.el &&
+      box.style.containerType !== 'normal' &&
+      box.pseudo === null &&
+      !out.has(box.el)
+    ) {
+      out.set(box.el, box);
+    }
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      stack.push(box.children[i]);
+    }
+  }
+  return out;
+}
+
 export interface BoxTree {
   root: Box;
   /** The document's text as it will be drawn, which is what `textContent()`
@@ -885,6 +907,11 @@ export interface BoxTree {
    *  was a flex container: what a pointer move restyles an element from
    *  where it did not change the rest (`HtmlViewNode._hoverInPlace`). */
   styles: Map<Element, { style: ComputedStyle; inFlex: boolean }>;
+  /** Each size container's box (`container-type`), where some style read
+   *  one's size: what a layout measures the containers by
+   *  (`HtmlViewNode._containersMoved`). Taken as the tree is built, since a
+   *  layout may set boxes aside from the root's walk. */
+  containers?: Map<Element, Box>;
   /** Every replaced box that needs a real widget, in document order. */
   controls: Box[];
   /** Every `<video>`'s box, in document order: what a player may be
@@ -1128,6 +1155,11 @@ class Builder {
   run(root: Element): BoxTree {
     const cascade = this._options.cascade;
     cascade.beginSharing(this._options.kept ?? null);
+    // the styles of an element's ancestors, which an `@container` rule
+    // finds its container among: this build's as it goes, and the tree's
+    // once it is the tree's
+    const styles = this._styles;
+    cascade.stylesOf = (el) => styles.get(el)?.style;
     cascade.pageColorScheme = metaColorScheme(root);
     const body = hasBody(root);
     const html = hasHtml(root);
@@ -1161,6 +1193,7 @@ class Builder {
     // of ids is made only if a `<use>` asks it
     const copies = new ShapeCopies(idIndex(root));
     return {
+      ...(cascade.readsContainers && { containers: containerBoxes(rootBox) }),
       root: rootBox,
       anonymous,
       text: this._chunks.join(''),
