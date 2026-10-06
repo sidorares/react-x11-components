@@ -410,6 +410,29 @@ test('a relative colour takes its origin into its function and reads its channel
   }
 });
 
+test('a math function in a channel comes to a percentage or an angle as well as a number', () => {
+  const cases: [string, string | null][] = [
+    // a percentage of a percentage's own type, resolved with no basis
+    ['hsl(140 clamp(30%,45%,60%) 42%)', '#3b9b5b'],
+    ['hsl(140 min(45%, 60%) 42%)', '#3b9b5b'],
+    ['rgb(calc(50% + 10%) 0 0)', '#990000'],
+    ['rgb(calc(100% / 2) 0 0 / calc(50%))', 'rgba(128, 0, 0, 0.5)'],
+    // an angle in any of its units, in degrees
+    ['hsl(calc(90deg + 50deg) 45% 42%)', '#3b9b5b'],
+    ['hsl(calc(0.25turn + 50deg) 45% 42%)', '#3b9b5b'],
+    // a comma inside a function is not the legacy form's
+    ['rgb(min(255, 300) 0 0)', '#ff0000'],
+    ['hsl(140, max(10%, 45%), 42%)', '#3b9b5b'],
+    // one type throughout, and none a length
+    ['hsl(140 clamp(30%, 45, 60%) 42%)', null],
+    ['hsl(calc(90deg + 50%) 45% 42%)', null],
+    ['rgb(calc(10px) 0 0)', null],
+  ];
+  for (const [value, want] of cases) {
+    assert.strictEqual(parseColor(value), want, value);
+  }
+});
+
 metric(
   'a relative colour from currentColor is worked out where it is used',
   async () => {
