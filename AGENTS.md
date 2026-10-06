@@ -1792,6 +1792,21 @@ slant alone, so faces of several widths in one family are registered a name
 per width, and the same layer hands a run the list with its width's name
 first.
 
+**A face's rule sets its size and its lines, in the same layer.**
+`size-adjust` scales the run's size there, and `layout/axes.ts` answers
+`match` with a face whose metrics are the rule's — its own at the scaled
+size, or the overrides' — so every line height, strut and `ex` the layout
+asks for is the rule's without a caller knowing. Text in one face whose
+lines are overridden is laid out with the engine's multiplier made the
+engine's and its lines' ascent and descent the rule's (`linedLayout`),
+since `lineHeightMultiplier` worked it out against the overridden face and
+`lineAscent` stands text on its line by the engine's lines. A `local()`
+face is the system's name, which any list may name, so `map` puts the
+group's private name after the alias and `setting` takes it out: **the
+marker is never first in a list**, since a name nobody has, first, is
+answered with a guess (see `local()` above), and it reaches a widget's
+`fontFamily` as written.
+
 **A probe of an unbounded width places nothing at infinity.** A
 shrink-to-fit probe lays a subtree out in infinite room, where sharing room
 out — auto margins, a table's columns — comes to `Infinity`; the pass after
