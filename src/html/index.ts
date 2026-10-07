@@ -28,6 +28,7 @@ import type { Document, Element } from './dom.js';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
 import type { HtmlViewProps, ScriptRequest } from './node.js';
 import type { RootLook } from './css/style.js';
+import type { ViewportOverflow } from './css/cascade.js';
 import type { ControlRect } from './controls.js';
 import type { FormSubmission } from './form.js';
 import { useForms } from './widgets.js';
@@ -56,6 +57,7 @@ export type {
 } from './form.js';
 export { formSubmission } from './form.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
+export type { ViewportOverflow } from './css/cascade.js';
 export type {
   AnyNode,
   ChildNode,
@@ -219,6 +221,22 @@ export interface HtmlProps {
    * component never sends anything by itself, any more than it navigates.
    */
   onSubmit?: (submission: FormSubmission) => void;
+  /**
+   * How the document asks to be scrolled: the `overflow` its root element
+   * gives the viewport, or its `<body>` where the root's is `visible` (CSS
+   * Overflow 3, 3.3), as a viewport uses it — `visible` is `auto` there and
+   * `clip` is `hidden`. Reported once the document is first laid out, and
+   * again when a build changes it.
+   *
+   * The viewport is the host's: whatever box scrolls this component. The
+   * element lays the root and the body out as `visible` either way, and
+   * does nothing with the answer itself. A host that shows the web as a
+   * browser does hides the scrollbar of an axis that is `hidden` and lets
+   * the reader scroll it with neither the wheel nor the keys, though a
+   * link to a fragment still scrolls there — what Acid2's `html { overflow:
+   * hidden }` asks of it.
+   */
+  onViewportOverflow?: (overflow: ViewportOverflow) => void;
   /** Base text style. Defaults: theme `fontSize` (14), `sans-serif`. */
   fontSize?: number;
   fontFamily?: string;
@@ -367,6 +385,7 @@ export function Html(props: HtmlProps): ReactElement {
     onDocument,
     onControlChange,
     onSubmit,
+    onViewportOverflow,
     style,
   } = props;
 
@@ -466,6 +485,7 @@ export function Html(props: HtmlProps): ReactElement {
     onMedia: videos.onMedia,
     onFocusStops: stops.onFocusStops,
     watchStops: stops.watch,
+    onViewportOverflow,
     domRevision,
     animate,
     reducedMotion,

@@ -31,13 +31,20 @@ import {
   NON_RENDERED,
   tagOf,
 } from '../dom.js';
-import { ShapeCopies, languageOf, metaColorScheme } from '../css/cascade.js';
+import {
+  ShapeCopies,
+  VIEWPORT_AUTO,
+  languageOf,
+  metaColorScheme,
+  overflowGivenToViewport,
+} from '../css/cascade.js';
 import { outOfPlane } from '../css/transform.js';
 import type {
   Cascade,
   FirstLetterRules,
   KeptStyles,
   SelectionStyle,
+  ViewportOverflow,
 } from '../css/cascade.js';
 import type { CollapsedTable } from './collapse.js';
 import { quoteAt } from '../css/content.js';
@@ -999,6 +1006,10 @@ export interface BoxTree {
    *  in is of: where the root element's is the other, the canvas is that
    *  scheme's and opaque (`paintDocument`). */
   paletteScheme: 'light' | 'dark';
+  /** The `overflow` the root element, or the `<body>`, gave the viewport
+   *  (`propagateOverflow`): what the host that scrolls the document is
+   *  told it asks of it. */
+  viewportOverflow: ViewportOverflow;
 }
 
 export interface BuildOptions {
@@ -1223,6 +1234,11 @@ class Builder {
       impliedHtml,
       impliedRoot: body && !html,
       paletteScheme: cascade.look.colorScheme,
+      viewportOverflow: viewportOverflowOf(
+        root,
+        [impliedHtml, rootStyle],
+        this._styles,
+      ),
     };
   }
 
@@ -2505,6 +2521,37 @@ interface CounterPlace {
    *  container: what its later siblings' styles are computed from. Null
    *  for the root. */
   parent: { style: ComputedStyle; key: number; inFlex: boolean } | null;
+}
+
+/**
+ * What the document gives its viewport (`propagateOverflow`): the root
+ * element's `overflow`, or the first `<body>`'s where the root's went
+ * nowhere — whichever of them the markup has, and else the `<html>` and the
+ * `<body>` the cascade implies, whose styles the root box took (`implied`).
+ * Only one of them ever gives anything.
+ */
+function viewportOverflowOf(
+  root: Element,
+  implied: (ComputedStyle | null)[],
+  styles: Map<Element, { style: ComputedStyle }>,
+): ViewportOverflow {
+  for (const style of implied) {
+    const given = overflowGivenToViewport(style);
+    if (given) return given;
+  }
+  for (const child of childrenOf(root)) {
+    if (!isElement(child)) continue;
+    const tag = tagOf(child);
+    if (tag !== 'html' && tag !== 'body') continue;
+    const given = overflowGivenToViewport(styles.get(child)?.style);
+    if (given) return given;
+    if (tag !== 'html') continue;
+    for (const inner of childrenOf(child)) {
+      if (!isElement(inner) || tagOf(inner) !== 'body') continue;
+      return overflowGivenToViewport(styles.get(inner)?.style) ?? VIEWPORT_AUTO;
+    }
+  }
+  return VIEWPORT_AUTO;
 }
 
 /** Whether the parsed document has a `<body>`. htmlparser2 does not

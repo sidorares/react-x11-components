@@ -76,6 +76,7 @@ import type {
   KeptStyles,
   MetricFace,
   ShadowSheets,
+  ViewportOverflow,
 } from './css/cascade.js';
 import { mediaMatches, parseStylesheet } from './css/parse.js';
 import type { MediaCondition, Stylesheet } from './css/parse.js';
@@ -294,6 +295,10 @@ export interface HtmlViewProps {
   /** The stops whose rectangles `onFocusStops` keeps watch on: the few a
    *  component mounts a box over (`stops.ts`). */
   watchStops?: readonly Element[];
+  /** What the document asks of the box that scrolls it
+   *  (`BoxTree.viewportOverflow`): reported after the first layout, and
+   *  after a build that changed it. */
+  onViewportOverflow?: (overflow: ViewportOverflow) => void;
   /** The parsed document, once per parse — the DOM handle. */
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
@@ -1881,6 +1886,7 @@ export class HtmlViewNode extends Node {
         this._reportControls();
         this._reportMedia();
         this._reportStops();
+        this._reportViewport();
       }
       if (!laysOut || !this._tree) break;
       const chose = pass === 0 && this._chooseLaidOut(this._tree);
@@ -2522,6 +2528,23 @@ export class HtmlViewNode extends Node {
    * `inert`, and — for a control — with a widget mounted for it, since the
    * widget is what takes the focus.
    */
+  /** What `onViewportOverflow` was last told, or null before the first
+   *  layout. */
+  private _viewportOverflow: ViewportOverflow | null = null;
+
+  /** What the document asks of the box that scrolls it, to
+   *  `onViewportOverflow` where it changed. */
+  private _reportViewport(): void {
+    const tree = this._tree;
+    const report = this._props().onViewportOverflow;
+    if (!tree || !report) return;
+    const now = tree.viewportOverflow;
+    const was = this._viewportOverflow;
+    if (was && was.x === now.x && was.y === now.y) return;
+    this._viewportOverflow = now;
+    report(now);
+  }
+
   private _reportStops(): void {
     const tree = this._tree;
     const report = this._props().onFocusStops;

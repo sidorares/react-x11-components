@@ -5517,9 +5517,41 @@ function isRootElement(el: Element): boolean {
   return !el.parent || el.parent.type === 'root';
 }
 
-/** The styles of root elements whose `overflow` went to the viewport other
- *  than `visible` (`propagateOverflow`). */
-const VIEWPORT_OVERFLOW = new WeakSet<ComputedStyle>();
+/**
+ * The `overflow` a document gives the box that scrolls it, on each axis, as
+ * a viewport uses it: `visible` is `auto` there, and `clip` is `hidden`
+ * (CSS Overflow 3, 3.3).
+ */
+export interface ViewportOverflow {
+  x: 'auto' | 'hidden' | 'scroll';
+  y: 'auto' | 'hidden' | 'scroll';
+}
+
+/** What a document whose root and body leave `overflow` alone gives its
+ *  viewport. */
+export const VIEWPORT_AUTO: ViewportOverflow = Object.freeze({
+  x: 'auto',
+  y: 'auto',
+});
+
+/** The `overflow` that went to the viewport other than `visible`, by the
+ *  style of the root element or the `<body>` it went from
+ *  (`propagateOverflow`). */
+const VIEWPORT_OVERFLOW = new WeakMap<ComputedStyle, ViewportOverflow>();
+
+/** What an element's style gave the viewport (`propagateOverflow`), or
+ *  undefined where it gave nothing. */
+export function overflowGivenToViewport(
+  style: ComputedStyle | null | undefined,
+): ViewportOverflow | undefined {
+  return style ? VIEWPORT_OVERFLOW.get(style) : undefined;
+}
+
+function viewportValue(
+  value: ComputedStyle['overflowX'],
+): ViewportOverflow['x'] {
+  return value === 'visible' ? 'auto' : value === 'clip' ? 'hidden' : value;
+}
 
 /**
  * The root element's `overflow` is the viewport's, and so is the first
@@ -5535,9 +5567,11 @@ const VIEWPORT_OVERFLOW = new WeakSet<ComputedStyle>();
  * the body (CSS Containment 2, 3), and a body that makes no box has none to
  * give.
  *
- * The root's is `visible` afterwards whatever it was, so whether it went
- * is kept beside its style (`VIEWPORT_OVERFLOW`): the body's goes only
- * where the root's did not.
+ * The element's is `visible` afterwards whatever it was, so what went is
+ * kept beside its style (`VIEWPORT_OVERFLOW`): the body's goes only where
+ * the root's did not, and the host that scrolls the document is told what
+ * the viewport has (`BoxTree.viewportOverflow`) — Acid2's `html { overflow:
+ * hidden }` is there to hide a browser's scrollbars.
  */
 function propagateOverflow(
   el: Element,
@@ -5547,9 +5581,6 @@ function propagateOverflow(
   const tag = tagOf(el);
   if (tag === 'html') {
     if (!isRootElement(el)) return;
-    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
-      VIEWPORT_OVERFLOW.add(style);
-    }
   } else if (tag === 'body') {
     // the root `<html>`'s, or one written with none, in the `<html>` the
     // cascade supplies
@@ -5570,6 +5601,12 @@ function propagateOverflow(
     if (style.display === 'none' || style.display === 'contents') return;
   } else {
     return;
+  }
+  if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+    VIEWPORT_OVERFLOW.set(style, {
+      x: viewportValue(style.overflowX),
+      y: viewportValue(style.overflowY),
+    });
   }
   style.overflowX = 'visible';
   style.overflowY = 'visible';

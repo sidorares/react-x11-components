@@ -42,6 +42,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                            |
 | `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                             |
 | `onSubmit`           | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                                     |
+| `onViewportOverflow` | `(overflow: ViewportOverflow) => void`           | The `overflow` the root, or the `<body>`, gave the viewport, `{ x, y }` of `'auto' \| 'hidden' \| 'scroll'`, for the host's scroll pane — see [What renders](#what-renders).                          |
 | `fontSize`           | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                                                  |
 | `fontFamily`         | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                                            |
 | `monoFamily`         | `string`                                         | Code font, and a `<textarea>`'s: the generic `monospace` where the UA sheet names it — see [Fonts](#fonts). Default `'monospace'` — there is no theme token for it.                                   |
@@ -2716,7 +2717,13 @@ collapses through it. A body under a root that gave the viewport its own,
 or with containment on either, keeps its `overflow` and clips. What the
 viewport does with the value is the host's: the element is as tall as
 its content whatever it says, and a `hidden` there does not stop the box
-around it scrolling. A document that reads the viewport's height — a
+around it scrolling by itself. The host hears it through
+`onViewportOverflow` — `{ x, y }`, as a viewport uses them, `visible`
+coming as `auto` and `clip` as `hidden` — once the document is first laid
+out and again when a build changes it. The browser example hides the
+pane's scrollbar for a `hidden` down and keeps the wheel and the keys from
+scrolling it, while a link to a fragment still scrolls there; Acid2's `html { overflow: hidden }` is there to hide
+those scrollbars. A document that reads the viewport's height — a
 `vh`, a percentage height on the root, a box placed against the initial
 containing block — follows it when the window is resized, a frame behind
 the scroll box it is measured by; one that reads none is not laid out again
