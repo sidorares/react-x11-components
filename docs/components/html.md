@@ -3797,8 +3797,15 @@ its body, with the `Origin` and `Referer` of the page it was on, and becomes
 a step of the history that Reload sends again. A tab shows the page's
 `<title>` and its icon; Ctrl+T (⌘T on macOS) opens one. It is where the
 component's policy — nothing fetched, nothing
-run — meets an application's: the browser fetches what a page asks for and
-runs none of its scripts.
+run — meets an application's: the browser fetches what a page asks for, and
+runs a page's scripts only where its toolbar's **JS** switch is on for the
+site, every site with `BROWSER_SCRIPTS=1`. Then `examples/browser/script/` is
+the engine those seams were made for: a `node:vm` context a document,
+hardened as [the PRD](../prd-html-scripts.md) says, a DOM in it over this
+component's tree, and `scripting`, `onDomEvent`, the handle and the
+lifecycle as its way to the page. A script that runs past two seconds is
+stopped and the page goes on; it is no boundary against a page that sets
+out to attack the machine, which is why the switch is off by default.
 
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils
