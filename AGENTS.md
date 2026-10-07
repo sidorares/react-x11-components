@@ -1820,6 +1820,14 @@ closes a way out a DOM binding opens by accident:
   `--experimental-vm-modules`, so the engine runs nothing without it
   (`SCRIPTS_CONTAINED`). **An escape test reads what a refusal hands the
   page**, not only that it was refused.
+- **A module is linked once and evaluated once** (`_linked`, `_evaluated`),
+  however many `import()`s wait on it — the runtime allows each only once,
+  and two concurrent imports handed a module mid-evaluation read its
+  bindings before they were set. **What settles a page's promise from the
+  host runs only at the next entry** (`microtaskMode: 'afterEvaluate'`), so
+  an `import()` drains the context once it settles (`_drainLater`). And
+  **the host never reads what a page threw**: a module's error goes to the
+  page through `__thrown` to be reported there, under the timeout.
 - **Run it on Bun too.** `test/browser-scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its

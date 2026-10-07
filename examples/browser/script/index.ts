@@ -11,7 +11,11 @@
 // then `load` once `<Html>` says everything the document asked for is in.
 // A script a page puts in later runs when its source is here, as a browser
 // runs one a script inserts; one `innerHTML` put in never runs, as in a
-// browser. A module is not run, and says so.
+// browser. A module script runs in the same order, its imports fetched and
+// linked first, and a `nomodule` script does not run. Every runtime the
+// engine is made on has modules: the flag that makes Node keep a page's
+// `import()` in its context is the one that makes `vm.SourceTextModule`
+// (`SCRIPTS_CONTAINED`), and where it is not given, nothing runs.
 import { useCallback, useEffect, useRef } from 'react';
 
 import type {
@@ -66,6 +70,7 @@ const CLASSIC = new Set([
 interface Queued {
   request: ScriptRequest;
   source: Promise<string | null>;
+  module: boolean;
 }
 
 /** One document's scripts: its engine, its host, and where it has got to. */
@@ -77,7 +82,6 @@ export class ScriptRunner {
   private _loaded = false;
   private _ready: 'loading' | 'interactive' | 'complete' = 'loading';
   private _disposed = false;
-  private _toldModules = false;
 
   constructor(
     document: Document,
@@ -90,6 +94,8 @@ export class ScriptRunner {
       onTimeout: _options.onTimeout,
       log: _options.log,
       settled: () => this.host.flush(),
+      load: (url) => _options.load(url).catch(() => null),
+      base: () => this.host.url,
     });
     this.host.entries = this.engine;
   }
@@ -98,21 +104,15 @@ export class ScriptRunner {
    *  the element reads its props. */
   add(request: ScriptRequest): void {
     if (this._disposed || this.host.inert.has(request.element)) return;
-    const type = request.type.split(';')[0].trim();
-    if (!CLASSIC.has(type)) {
-      if (type === 'module' && !this._toldModules) {
-        this._toldModules = true;
-        this._options.log(
-          'warn',
-          'Module scripts are not run by this browser; a page that offers a nomodule fallback gets that.',
-        );
-      }
-      return;
-    }
+    const type = request.type.split(';')[0].trim().toLowerCase();
+    const module = type === 'module';
+    if (!module && !CLASSIC.has(type)) return;
+    // a browser with modules runs no `nomodule` script (HTML 4.12.1)
+    if (!module && request.element.attribs.nomodule !== undefined) return;
     const source = request.src
       ? this._options.load(request.src).catch(() => null)
       : Promise.resolve(request.text);
-    const queued = { request, source };
+    const queued = { request, source, module };
     if (!this._parsed) this._queue.push(queued);
     else void source.then((code) => this._run(queued, code));
   }
@@ -124,7 +124,7 @@ export class ScriptRunner {
     for (const queued of this._queue) {
       const code = await queued.source;
       if (this._disposed) return;
-      this._run(queued, code);
+      await this._run(queued, code);
     }
     this._queue = [];
     this._advance('interactive');
@@ -154,13 +154,27 @@ export class ScriptRunner {
     this.engine.dispose();
   }
 
-  private _run(queued: Queued, code: string | null): void {
+  private async _run(queued: Queued, code: string | null): Promise<void> {
     if (this._disposed) return;
     const { request } = queued;
     const element = this.host.idOf(request.element);
     if (code === null) {
       this._options.log('error', `Failed to load the script ${request.src}.`);
       this.engine.call('__fire', [element, 'error']);
+      return;
+    }
+    if (queued.module) {
+      // linked before it runs, its imports fetched; an inline one is at the
+      // document's address, which `import.meta.url` and its imports read
+      const ran = await this.engine.module(
+        code,
+        request.src ?? this.host.url,
+        !!request.src,
+      );
+      if (this._disposed) return;
+      if (request.src) {
+        this.engine.call('__fire', [element, ran ? 'load' : 'error']);
+      }
       return;
     }
     const url = request.src ?? `${this.host.url} (inline)`;

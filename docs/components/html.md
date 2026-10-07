@@ -3862,8 +3862,9 @@ site, every site with `BROWSER_SCRIPTS=1`. Then `examples/browser/script/` is
 the engine those seams were made for: a `node:vm` context a document,
 hardened as [the PRD](../prd-html-scripts.md) says, a DOM in it over this
 component's tree, and `scripting`, `onDomEvent`, the handle and the
-lifecycle as its way to the page. A script that runs past two seconds is
-stopped and the page goes on; it is no boundary against a page that sets
+lifecycle as its way to the page — classic scripts and module scripts,
+`MutationObserver` and `XMLHttpRequest` among what it gives them. A script
+that runs past two seconds is stopped and the page goes on; it is no boundary against a page that sets
 out to attack the machine, which is why the switch is off by default.
 
 [domhandler]: https://github.com/fb55/domhandler

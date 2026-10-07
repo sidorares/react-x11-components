@@ -305,6 +305,20 @@ host or posts to it.
 
 ## What building it found
 
+- **A page's error names the host's frames.** What a page throws is
+  captured with the whole stack, and below the context's frames are the
+  engine's, with the host's file paths in them. That tells a page where
+  the browser is installed and nothing more; filtering a stack is the
+  follow-up, and the errors the host makes for a page already carry none
+  (`_pageError`).
+- **What a module throws is read only by the page.** A module's error, a
+  failed link and a timeout reach the host from `evaluate()`, where an
+  `instanceof`, a `.code` or a `String()` of a page's thrown proxy, or of
+  an error whose prototype's `toString` the page replaced, runs the page's
+  code with no timeout. The host tells its own errors apart by walking the
+  prototype chain with `util.types.isProxy` at every link, and hands
+  anything else to the page through a data slot (`__thrown`), to be read
+  and reported under the timeout.
 - **A failed `import()` reached the host** (leak 5 above). The escape test
   imported `fs` and checked only that it did not resolve; what the promise
   rejected with went unread. A test that reaches for `process` through
@@ -542,7 +556,7 @@ markup do not.
 **Out:**
 
 - shadow DOM and custom elements;
-- modules: `vm.SourceTextModule` needs a flag on Node;
+- modules: `vm.SourceTextModule` needs a flag on Node (phase 2 — built);
 - workers;
 - `MutationObserver` (phase 2, from the same dirty set — built);
 - `IntersectionObserver`, `ResizeObserver`;
@@ -627,7 +641,13 @@ that either is a change to the bridge and not to the facade.
      `refresh(changes)`);
    - `MutationObserver`, `XMLHttpRequest` (built: the host records each
      change once, for `refresh` and for the observers watching it);
-   - modules (`vm.SourceTextModule`);
+   - modules (`vm.SourceTextModule`) — built: `<script type="module">` in
+     document order, its imports fetched through the browser's network and
+     linked, one module a URL, `import.meta.url`, and `import()` from a
+     classic script or a module. A `nomodule` script does not run. Bun 1.4
+     runs static imports and refuses `import()`: its runtime hands a page
+     a namespace with none of the module's exports, which it is asked once
+     (`askDynamicImport`);
    - the watchdog;
    - a worker per page for a hard stop and a heap bound, with the mirror
      `docs/prd-html.md` describes.
