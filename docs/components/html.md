@@ -3838,8 +3838,10 @@ npm run examples:browser -- [url]
 
 The other end of the seams: a tabbed web browser, and a network. `<Tabs>`
 is its strip, and each tab a toolbar over a page that runs in a process of
-its own — core's `<Frame>`, with `page.tsx` as the pane — so a page that
-throws, wedges or grows without bound costs its own tab and nothing else.
+its own — core's `<Frame>`, with `page.tsx` as the pane, started with a heap
+bound of its own (`--max-old-space-size`) — so a page that throws or grows
+without bound costs its own tab and nothing else. Tab goes from the toolbar
+into the page, through its links and fields, and out to the tab strip.
 In the pane an `<Html>` is given the page's URL as `baseUrl`, and
 [`examples/browser/`](../../examples/browser/) is the host a document's
 requests go to — the page streamed in as it arrives, then every stylesheet,

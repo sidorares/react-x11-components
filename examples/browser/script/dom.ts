@@ -26,9 +26,9 @@
 // them lets a page's exception out: a script's, a listener's and a timer's
 // are reported, as a browser reports them, and the page goes on.
 //
-// Phase 1 of the PRD: classic scripts over a basic DOM. Shadow DOM, custom
-// elements, `MutationObserver`, `XMLHttpRequest`, workers, canvas and
-// `document.write` are not here.
+// Classic scripts over a basic DOM, phase 1 of the PRD, and phase 2's
+// `MutationObserver` and `XMLHttpRequest`. Shadow DOM, custom elements,
+// workers, canvas and `document.write` are not here.
 
 /** What crosses the bridge: nothing that has a `constructor`. */
 export type Primitive = string | number | boolean | null | undefined;
@@ -66,8 +66,22 @@ export function installDom(bridge: Bridge): void {
       const parts = r.split('\u0001');
       throw new DOMException(parts[2] ?? '', parts[1] || 'Error');
     }
+    if (MUTATES.has(op)) mutated();
     return r;
   };
+  /** The ops that change the tree, which the host records
+   *  (`host.ts`, "what changed"). */
+  const MUTATES = new Set([
+    'setText',
+    'insert',
+    'remove',
+    'setAttr',
+    'delAttr',
+    'setStyle',
+    'setHtml',
+    'adjacent',
+    'setTitle',
+  ]);
   const idList = (s: Any): number[] =>
     typeof s === 'string' && s ? s.split(',').map(Number) : [];
 
@@ -2845,6 +2859,248 @@ export function installDom(bridge: Bridge): void {
       );
     });
 
+  /** What an `XMLHttpRequest` tells of its progress (XHR 6). */
+  class ProgressEvent extends Event {
+    readonly lengthComputable: boolean;
+    readonly loaded: number;
+    readonly total: number;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this.lengthComputable = !!init.lengthComputable;
+      this.loaded = Number(init.loaded ?? 0);
+      this.total = Number(init.total ?? 0);
+    }
+  }
+
+  /**
+   * `XMLHttpRequest`, over `fetch`: the same origin's, through the same
+   * network, and asynchronous only — a synchronous one would hold the
+   * page's thread for the network, which here is the tab's, and no `vm`
+   * timeout covers a wait on a socket. What `responseType` reads is text,
+   * JSON or an `ArrayBuffer`; a `document` and a `Blob` are not here.
+   */
+  class XMLHttpRequest extends EventTarget {
+    static readonly UNSENT = 0;
+    static readonly OPENED = 1;
+    static readonly HEADERS_RECEIVED = 2;
+    static readonly LOADING = 3;
+    static readonly DONE = 4;
+    readonly UNSENT = 0;
+    readonly OPENED = 1;
+    readonly HEADERS_RECEIVED = 2;
+    readonly LOADING = 3;
+    readonly DONE = 4;
+    readyState = 0;
+    status = 0;
+    statusText = '';
+    responseURL = '';
+    responseType = '';
+    timeout = 0;
+    withCredentials = false;
+    readonly upload = new EventTarget();
+    _method = 'GET';
+    _url = '';
+    _headers = new Headers();
+    _response: Any = null;
+    _text = '';
+    _sent = false;
+    /** Which `send()` is under way: one an `abort()` or an `open()` left
+     *  behind answers nothing. */
+    _attempt = 0;
+    _controller: Any = null;
+    open(method: Any, url: Any, async: Any = true): void {
+      if (arguments.length > 2 && !async) {
+        throw new DOMException(
+          'A synchronous XMLHttpRequest would hold the page for the network; this page has only asynchronous ones.',
+          'InvalidAccessError',
+        );
+      }
+      this._attempt += 1;
+      this._controller?.abort();
+      this._controller = null;
+      this._method = str(method).toUpperCase();
+      this._url = str(url);
+      this._headers = new Headers();
+      this._response = null;
+      this._text = '';
+      this._sent = false;
+      this.status = 0;
+      this.statusText = '';
+      this.responseURL = '';
+      this._state(1);
+    }
+    setRequestHeader(name: Any, value: Any): void {
+      if (this.readyState !== 1 || this._sent) {
+        throw new DOMException(
+          "Failed to execute 'setRequestHeader' on 'XMLHttpRequest': The object's state must be OPENED.",
+          'InvalidStateError',
+        );
+      }
+      this._headers.append(name, value);
+    }
+    send(body: Any = null): void {
+      if (this.readyState !== 1 || this._sent) {
+        throw new DOMException(
+          "Failed to execute 'send' on 'XMLHttpRequest': The object's state must be OPENED.",
+          'InvalidStateError',
+        );
+      }
+      this._sent = true;
+      const attempt = this._attempt;
+      const controller = new AbortController();
+      this._controller = controller;
+      const bodyless = this._method === 'GET' || this._method === 'HEAD';
+      this._progress('loadstart');
+      let timer = 0;
+      if (this.timeout > 0) {
+        timer = setTimer(
+          () => {
+            if (attempt !== this._attempt || this.readyState === 4) return;
+            this._attempt += 1;
+            controller.abort();
+            this._fail('timeout');
+          },
+          this.timeout,
+          [],
+          false,
+        );
+      }
+      fetch(this._url, {
+        method: this._method,
+        headers: this._headers,
+        body: bodyless ? null : body,
+        signal: controller.signal,
+      }).then(
+        (response: Any) => {
+          if (attempt !== this._attempt) return undefined;
+          this._response = response;
+          this.status = response.status;
+          this.statusText = response.statusText;
+          this.responseURL = response.url;
+          this._state(2);
+          return response.text().then((text: string) => {
+            if (attempt !== this._attempt) return;
+            this._text = text;
+            this._state(3);
+            const size = {
+              lengthComputable: true,
+              loaded: text.length,
+              total: text.length,
+            };
+            this._progress('progress', size);
+            clearTimer(timer);
+            this._state(4);
+            this._progress('load', size);
+            this._progress('loadend', size);
+          });
+        },
+        () => {
+          if (attempt !== this._attempt) return;
+          clearTimer(timer);
+          this._fail('error');
+        },
+      );
+    }
+    abort(): void {
+      const under = this._sent && this.readyState !== 4;
+      this._attempt += 1;
+      this._controller?.abort();
+      this._controller = null;
+      if (under) this._fail('abort');
+      // where it ends, after the events (XHR 3.6.7)
+      if (this.readyState === 4) {
+        this.readyState = 0;
+        this._sent = false;
+      }
+    }
+    getResponseHeader(name: Any): string | null {
+      if (this.readyState < 2 || !this._response) return null;
+      return this._response.headers.get(name);
+    }
+    getAllResponseHeaders(): string {
+      if (this.readyState < 2 || !this._response) return '';
+      const lines: string[] = [];
+      this._response.headers.forEach((value: string, name: string) => {
+        lines.push(`${name}: ${value}\r\n`);
+      });
+      return lines.sort().join('');
+    }
+    overrideMimeType(): void {}
+    get responseText(): string {
+      if (this.responseType !== '' && this.responseType !== 'text') {
+        throw new DOMException(
+          "Failed to read 'responseText': the value is only accessible if the object's 'responseType' is '' or 'text'.",
+          'InvalidStateError',
+        );
+      }
+      return this.readyState >= 3 ? this._text : '';
+    }
+    get response(): Any {
+      const type = this.responseType;
+      if (type === '' || type === 'text') return this.responseText;
+      if (this.readyState !== 4) return null;
+      if (type === 'json') {
+        try {
+          return JSON.parse(this._text);
+        } catch {
+          return null;
+        }
+      }
+      if (type === 'arraybuffer') {
+        const bytes = new Uint8Array(this._text.length);
+        for (let i = 0; i < this._text.length; i += 1) {
+          bytes[i] = this._text.charCodeAt(i) & 255;
+        }
+        return bytes.buffer;
+      }
+      return null;
+    }
+    get responseXML(): null {
+      return null;
+    }
+    /** The request failed, timed out or was aborted: done, and said so. */
+    _fail(type: 'error' | 'timeout' | 'abort'): void {
+      this.status = 0;
+      this.statusText = '';
+      this._response = null;
+      this._text = '';
+      this._state(4);
+      this._progress(type);
+      this._progress('loadend');
+    }
+    _state(state: number): void {
+      this.readyState = state;
+      const ev = new Event('readystatechange');
+      ev.isTrusted = true;
+      dispatch(this, ev);
+    }
+    _progress(type: string, init: Any = {}): void {
+      const ev = new ProgressEvent(type, init);
+      ev.isTrusted = true;
+      dispatch(this, ev);
+    }
+  }
+  for (const type of [
+    'readystatechange',
+    'loadstart',
+    'progress',
+    'load',
+    'error',
+    'abort',
+    'timeout',
+    'loadend',
+  ]) {
+    Object.defineProperty(XMLHttpRequest.prototype, `on${type}`, {
+      get(this: Any): Any {
+        return this._handlers[type] ?? null;
+      },
+      set(this: Any, fn: Any) {
+        this._handlers[type] = typeof fn === 'function' ? fn : null;
+      },
+      configurable: true,
+    });
+  }
+
   /** `localStorage` and `sessionStorage`, kept by the host per origin. */
   const storage = (kind: 'local' | 'session'): Any => {
     const api = {
@@ -3094,8 +3350,7 @@ export function installDom(bridge: Bridge): void {
 
   /** Observers a page makes at its start. `IntersectionObserver` and
    *  `ResizeObserver` report what they observe once, as in view and at its
-   *  size — what a lazy loader waits for; `MutationObserver` observes
-   *  nothing (phase 2). */
+   *  size — what a lazy loader waits for. `MutationObserver` is below. */
   class IntersectionObserver {
     _fn: Any;
     constructor(fn: Any) {
@@ -3157,12 +3412,137 @@ export function installDom(bridge: Bridge): void {
     unobserve(): void {}
     disconnect(): void {}
   }
+  /** What a `MutationObserver` is handed (DOM 4.3.4). */
+  class MutationRecord {
+    readonly type: string;
+    readonly target: Any;
+    readonly addedNodes: Any;
+    readonly removedNodes: Any;
+    readonly previousSibling: Any;
+    readonly nextSibling: Any;
+    readonly attributeName: string | null;
+    readonly attributeNamespace = null;
+    readonly oldValue: string | null;
+    constructor(raw: Any[]) {
+      this.type = raw[0];
+      this.target = wrap(raw[1]);
+      this.addedNodes = list(raw[2].map(wrap));
+      this.removedNodes = list(raw[3].map(wrap));
+      this.previousSibling = wrap(raw[4]);
+      this.nextSibling = wrap(raw[5]);
+      this.attributeName = raw[6];
+      this.oldValue = raw[7];
+    }
+  }
+
+  /** The observers observing, by id, which the host queues records for as
+   *  the tree changes (`host.ts`, `_queue`). */
+  let observerSeq = 0;
+  const observing = new Map<number, Any>();
+  /** Whether the microtask that hands the observers their records is
+   *  queued (DOM 4.3, "queue a mutation observer microtask"). */
+  let notifying = false;
+  /** After an op that changed the tree: a microtask that hands each
+   *  observer what it was queued, in the order they were made. A callback
+   *  that changes the tree again queues the next. */
+  const mutated = (): void => {
+    if (notifying || !observing.size) return;
+    notifying = true;
+    Promise.resolve().then(() => {
+      notifying = false;
+      for (const id of idList(call('observed'))) {
+        const observer = observing.get(id);
+        if (!observer) continue;
+        const records = observer.takeRecords();
+        if (!records.length) continue;
+        try {
+          observer._fn.call(observer, records, observer);
+        } catch (e) {
+          report(e);
+        }
+      }
+    });
+  };
+
   class MutationObserver {
-    constructor(_fn: Any) {}
-    observe(): void {}
-    disconnect(): void {}
+    _fn: Any;
+    readonly _id = ++observerSeq;
+    constructor(fn: Any) {
+      if (typeof fn !== 'function') {
+        throw new TypeError(
+          "Failed to construct 'MutationObserver': parameter 1 is not of type 'Function'.",
+        );
+      }
+      this._fn = fn;
+    }
+    observe(target: Any, options: Any = {}): void {
+      const id = idOf(target, 'parameter 1');
+      let { attributes, characterData } = options;
+      // implied by what asks for them (DOM 4.3.1, `observe()`)
+      if (
+        attributes === undefined &&
+        (options.attributeOldValue !== undefined ||
+          options.attributeFilter !== undefined)
+      ) {
+        attributes = true;
+      }
+      if (
+        characterData === undefined &&
+        options.characterDataOldValue !== undefined
+      ) {
+        characterData = true;
+      }
+      const fail = (why: string) => {
+        throw new TypeError(
+          `Failed to execute 'observe' on 'MutationObserver': ${why}`,
+        );
+      };
+      if (!options.childList && !attributes && !characterData) {
+        fail(
+          "The options object must set at least one of 'attributes', 'characterData', or 'childList' to true.",
+        );
+      }
+      if (options.attributeOldValue && !attributes) {
+        fail(
+          "The options object may only set 'attributeOldValue' to true when 'attributes' is true or not present.",
+        );
+      }
+      if (options.attributeFilter !== undefined && !attributes) {
+        fail(
+          "The options object may only set 'attributeFilter' when 'attributes' is true or not present.",
+        );
+      }
+      if (options.characterDataOldValue && !characterData) {
+        fail(
+          "The options object may only set 'characterDataOldValue' to true when 'characterData' is true or not present.",
+        );
+      }
+      observing.set(this._id, this);
+      call(
+        'observe',
+        this._id,
+        id,
+        JSON.stringify({
+          childList: !!options.childList,
+          attributes: !!attributes,
+          characterData: !!characterData,
+          subtree: !!options.subtree,
+          attributeOldValue: !!options.attributeOldValue,
+          characterDataOldValue: !!options.characterDataOldValue,
+          attributeFilter:
+            options.attributeFilter === undefined
+              ? null
+              : Array.from(options.attributeFilter, (n: Any) => str(n)),
+        }),
+      );
+    }
+    disconnect(): void {
+      observing.delete(this._id);
+      call('disconnect', this._id);
+    }
     takeRecords(): Any[] {
-      return [];
+      const raw = JSON.parse(String(call('takeRecords', this._id)));
+      return raw.map((r: Any[]) => new MutationRecord(r));
     }
   }
 
@@ -3304,6 +3684,9 @@ export function installDom(bridge: Bridge): void {
     IntersectionObserver,
     ResizeObserver,
     MutationObserver,
+    MutationRecord,
+    XMLHttpRequest,
+    ProgressEvent,
   };
   for (const [name, value] of Object.entries(classes)) define(name, value);
 

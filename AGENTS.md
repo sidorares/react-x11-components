@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.45.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.45.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.46.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.46.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -742,6 +742,17 @@ it up. **The floor is a running one and moves often** — every move since
   document in a scroller unshaped where nothing reads its width (#902): a
   page in the browser example's pane was set a word to a line at every
   breakpoint a drag crossed, 220 ms of a frame.
+
+- `^2.46.0` — `<Frame execArgv env>` (react-x11#923): the browser example
+  starts each tab's page process with a heap bound of its own,
+  `--max-old-space-size`, so a page whose script allocates without end —
+  which no `node:vm` context bounds — ends its own tab rather than taking
+  the machine's memory, where a pane could only inherit the browser's
+  flags. Node enforces it and Bun 1.4 does not. The same range carries
+  Tab through a `<Frame>` pane (2.45.3, react-x11#920): into the page at
+  its first stop and out past its last, where the host cycled its own focus
+  as well and on X11 Tab never left the pane, so the browser's Tab goes
+  toolbar, page, strip.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

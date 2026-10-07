@@ -360,6 +360,173 @@ test('fetch is the page’s own origin’s, and answers as the network does', as
   );
 });
 
+test('a MutationObserver is handed what changed, after the script, in order', async () => {
+  const doc = await hosted(
+    '<div id="root"><p id="a" class="x">a</p></div><p id="out"></p><script>' +
+      "var log = []; var root = document.getElementById('root');" +
+      'var seen = new MutationObserver(function (records, observer) {' +
+      '  records.forEach(function (r) {' +
+      '    log.push([r.type, r.target.id || r.target.nodeName, r.attributeName, r.oldValue,' +
+      '      r.addedNodes.length, r.removedNodes.length,' +
+      "      r.previousSibling ? (r.previousSibling.id || r.previousSibling.nodeName) : '-'].join(':'));" +
+      '  });' +
+      "  log.push(observer === seen ? 'same' : 'other');" +
+      '});' +
+      'seen.observe(root, { childList: true, subtree: true, attributes: true, attributeOldValue: true, characterData: true, characterDataOldValue: true });' +
+      "var a = document.getElementById('a');" +
+      "a.className = 'y';" +
+      "var b = document.createElement('p'); b.id = 'b'; root.appendChild(b);" +
+      "a.firstChild.data = 'changed';" +
+      'root.removeChild(a);' +
+      "log.push('script end');" +
+      "Promise.resolve().then(function () { document.getElementById('out').textContent = log.join(' | '); });" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      'script end',
+      // made outside and so unobserved, `b.id` is no record
+      'attributes:a:class:x:0:0:-',
+      'childList:root:::1:0:a',
+      'characterData:#text::a:0:0:-',
+      'childList:root:::0:1:-',
+      'same',
+    ].join(' | '),
+  );
+});
+
+test("an observer's filter, takeRecords and disconnect, and a change its callback makes", async () => {
+  const doc = await hosted(
+    '<div id="t" title="t"></div><p id="out"></p><script>' +
+      "var t = document.getElementById('t'); var log = [];" +
+      'var filtered = new MutationObserver(function (records) {' +
+      "  records.forEach(function (r) { log.push('f:' + r.attributeName + ':' + r.oldValue); });" +
+      "  if (!t.hasAttribute('data-again')) t.setAttribute('data-again', '1');" +
+      '});' +
+      "filtered.observe(t, { attributeFilter: ['title', 'data-again'] });" +
+      "t.setAttribute('title', 'u'); t.setAttribute('lang', 'en');" +
+      'var taken = new MutationObserver(function () { log.push("taken called"); });' +
+      'taken.observe(t, { attributes: true });' +
+      "t.setAttribute('dir', 'rtl');" +
+      "log.push('took ' + taken.takeRecords().map(function (r) { return r.attributeName; }).join(','));" +
+      'var gone = new MutationObserver(function () { log.push("gone called"); });' +
+      'gone.observe(t, { childList: true }); gone.disconnect();' +
+      "t.appendChild(document.createElement('i'));" +
+      "setTimeout(function () { document.getElementById('out').textContent = log.join(' '); }, 0);" +
+      'try { new MutationObserver(function () {}).observe(t, {}); } catch (e) { log.push(e.name); }' +
+      '</script>',
+  );
+  await settle(60);
+  assert.equal(
+    doc.text('out'),
+    // `taken` made after the lang was set, and its records taken; `{}`
+    // asks for nothing; the filter's: the title, and not the lang or the
+    // dir; the change its callback made a second round, which `taken`
+    // hears; and `gone` nothing
+    'took dir TypeError f:title:null f:data-again:null taken called',
+  );
+});
+
+metric(
+  "what a page's scripts change is told to <Html> as records, once a task",
+  async () => {
+    const doc = await hosted(
+      '<div id="box" class="a"><span id="s">s</span></div>' +
+        '<input type="button" id="go" value="go"><script>' +
+        "document.getElementById('go').addEventListener('click', function () {" +
+        "  var box = document.getElementById('box'); box.classList.add('b');" +
+        "  box.appendChild(document.createElement('em'));" +
+        "  document.getElementById('s').firstChild.data = 't';" +
+        '});</script>',
+    );
+    const told: unknown[] = [];
+    const refresh = doc.handle.refresh;
+    doc.handle.refresh = (changes) => {
+      told.push(changes);
+      refresh(changes);
+    };
+    await userEvent.click(screen.getByRole('button') as DrawnNode);
+    await settle();
+    assert.equal(told.length, 1, 'one refresh for the task');
+    const changes = told[0] as {
+      type: string;
+      target: DocElement;
+      attributeName?: string;
+      oldValue?: string | null;
+      addedNodes?: { name?: string }[];
+    }[];
+    assert.deepEqual(
+      changes.map((c) => [
+        c.type,
+        c.target.attribs?.id ?? c.target.type,
+        c.attributeName ?? null,
+        c.oldValue ?? null,
+        c.addedNodes?.map((n) => n.name) ?? null,
+      ]),
+      [
+        ['attributes', 'box', 'class', 'a', null],
+        ['childList', 'box', null, null, ['em']],
+        ['characterData', 'text', null, null, null],
+      ],
+    );
+    assert.equal(doc.byId('box').attribs.class, 'a b');
+  },
+);
+
+test('XMLHttpRequest is fetch with its states, its events and its headers', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      "var log = []; var done = function () { document.getElementById('out').textContent = log.join(' '); };" +
+      'var x = new XMLHttpRequest();' +
+      "x.onreadystatechange = function () { log.push('rs' + x.readyState); };" +
+      "x.addEventListener('loadstart', function () { log.push('start'); });" +
+      "x.onload = function (e) { log.push('load:' + x.status + ':' + x.response.ok + ':' + x.getResponseHeader('Content-Type') + ':' + e.loaded); };" +
+      "x.onloadend = function () { log.push('end'); posted(); };" +
+      "x.open('GET', 'data.json'); x.responseType = 'json'; x.send();" +
+      'function posted() {' +
+      '  var p = new XMLHttpRequest();' +
+      "  p.open('POST', 'data.json'); p.setRequestHeader('X-Test', 'yes');" +
+      "  p.onload = function () { log.push('post:' + p.responseText.length); aborted(); };" +
+      "  p.send('q=1');" +
+      '}' +
+      'function aborted() {' +
+      '  var a = new XMLHttpRequest();' +
+      "  a.open('GET', 'data.json');" +
+      "  a.onabort = function () { log.push('abort:' + a.readyState + ':' + a.status); };" +
+      "  a.onload = function () { log.push('never'); };" +
+      '  a.send(); a.abort();' +
+      "  log.push('after:' + a.readyState);" +
+      "  try { a.open('GET', 'data.json', false); } catch (e) { log.push(e.name); }" +
+      '  setTimeout(done, 20);' +
+      '}' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [['content-type', 'application/json']],
+        body: '{"ok":"yes"}',
+      }),
+    },
+  );
+  await settle(120);
+  assert.equal(
+    doc.text('out'),
+    'rs1 start rs2 rs3 rs4 load:200:yes:application/json:12 end ' +
+      'post:12 abort:4:0 after:0 InvalidAccessError',
+  );
+  assert.deepEqual(
+    doc.fetched.slice(0, 2).map((r) => [r.method, r.body, r.headers]),
+    [
+      ['GET', null, []],
+      ['POST', 'q=1', [['x-test', 'yes']]],
+    ],
+  );
+});
+
 test('storage keeps what a page puts in it', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

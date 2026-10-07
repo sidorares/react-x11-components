@@ -523,9 +523,9 @@ markup do not.
 - shadow DOM and custom elements;
 - modules: `vm.SourceTextModule` needs a flag on Node;
 - workers;
-- `MutationObserver` (phase 2, from the same dirty set);
+- `MutationObserver` (phase 2, from the same dirty set — built);
 - `IntersectionObserver`, `ResizeObserver`;
-- `XMLHttpRequest` (phase 2);
+- `XMLHttpRequest` (phase 2 — built, asynchronous only);
 - WebSocket, IndexedDB, canvas, `document.write`.
 
 Be honest about what that reaches. A framework-built application touches
@@ -544,7 +544,8 @@ a tutorial.
 
    That is how a page gets `--max-old-space-size`, the bound `node:vm`
    cannot give, and later Node's `--permission` flags, without the browser
-   taking them too.
+   taking them too. **Done** in react-x11 2.46.0 (react-x11#923), and the
+   browser starts every tab's pane with a heap bound (`PANE_FLAGS`).
 
 2. **A watchdog.** Nothing in `<Frame>` notices a pane whose event loop is
    stuck. It stays `running`, keeps being sent updates it never reads,
@@ -553,7 +554,8 @@ a tutorial.
    and offers to reload". Today it does not. A timed-out script cannot
    wedge the pane, but the engine is not the only thing that can. What is
    wanted is a heartbeat and a `FrameError` phase for a pane that stopped
-   answering. Until then, the header should say what is true.
+   answering. Until then, the header says what is true: that nothing
+   notices.
 3. **A frame clock a pane can reach.** `requestAnimationFrame` is on
    core's window (`NtkWindow.requestAnimationFrame`). In a pane, though,
    that window is made by core's child bridge, and a `DrawnNode` does not
@@ -574,7 +576,8 @@ page that sets out to attack the machine. Node says so of `vm`, and the
 leaks above are the reason. The process is the boundary against that, and
 today it is a weak one:
 
-- a pane has no flags of its own;
+- a pane's flags are a heap bound, and Node's `--permission` flags are
+  still to come;
 - under `BROWSER_INLINE=1`, and wherever no pane can be shown, every tab
   shares the browser's process;
 - Bun has no permission model.
@@ -591,17 +594,18 @@ that either is a change to the bridge and not to the facade.
    - `refresh()` with no stale caches: `:has()`, the pragma language, a
      shape's attribute `var()`s and the inline drawings;
    - `elementAtPoint` laying out first.
-1. **Classic scripts, basic DOM** (built, but core's pane options). Engine
+1. **Classic scripts, basic DOM** (built). Engine
    and facade in the example. In `<Html>`: `scripting`, `onDomEvent`,
    control values, focus, `onParsed`/`onLoaded`, and `computedStyle`, plus
    `activate`, `submitForm`, `reportValidity` and `resetForm` for a
    script's `el.click()` and a form's methods. In the example: `fetch`,
-   the switch, and the timeout notice. Core: pane options (for the heap
-   bound), not done.
+   the switch, and the timeout notice. Core: pane options, for the heap
+   bound (react-x11 2.46.0).
 2. **Cheap mutation and more of the web:**
    - scoped refresh from attribute and child-list records (built:
      `refresh(changes)`);
-   - `MutationObserver`, `XMLHttpRequest`;
+   - `MutationObserver`, `XMLHttpRequest` (built: the host records each
+     change once, for `refresh` and for the observers watching it);
    - modules (`vm.SourceTextModule`);
    - the watchdog;
    - a worker per page for a hard stop and a heap bound, with the mirror
