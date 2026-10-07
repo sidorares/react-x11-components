@@ -8,7 +8,7 @@
 // is called with and the context's own built-ins. That is what keeps every
 // object a page touches the context's — a host object handed in has the
 // host's `Function` as its `constructor.constructor`, and that reaches the
-// host's `process` (docs/prd-html-scripts.md, "the four leaks"). Types are
+// host's `process` (docs/prd-html-scripts.md, "the five leaks"). Types are
 // imported for the type checker and are gone at run time. A `__name` helper
 // is the one name the transpiler may call that is not here, and the engine
 // gives the context one.

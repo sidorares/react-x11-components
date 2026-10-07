@@ -20,7 +20,7 @@ import type {
   HtmlHandle,
   ScriptRequest,
 } from '../../../src/html/index.js';
-import { ScriptEngine } from './engine.js';
+import { SCRIPTS_CONTAINED, ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import type { HostSeams } from './host.js';
 
@@ -242,7 +242,19 @@ export function useScripts(
   // the document's scripts stop when the page goes
   useEffect(() => () => runner.current?.dispose(), []);
 
-  if (!enabled) return { scripting: false };
+  // where a page's `import()` would reach the host, nothing of the page's
+  // runs, and the page is one with scripts off (`SCRIPTS_CONTAINED`)
+  const refused = enabled && !SCRIPTS_CONTAINED;
+  useEffect(() => {
+    if (refused) {
+      latest.current.log(
+        'warn',
+        "This page's scripts are not run: in this process its import() would reach the browser. Node runs them with --experimental-vm-modules.",
+      );
+    }
+  }, [refused]);
+
+  if (!enabled || refused) return { scripting: false };
   return {
     scripting: true,
     onDocument,

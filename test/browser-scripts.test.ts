@@ -3,6 +3,7 @@
 // the host's is reachable from them. docs/prd-html-scripts.md is the
 // design; these run it against an `<Html>` in the in-process X server, with
 // a network and a pane that are stand-ins.
+import { spawnSync } from 'node:child_process';
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -154,9 +155,21 @@ test('nothing of the host is reachable from a page', async () => {
       "document.body.addEventListener('x', function f() { r.push(String(f.caller)) });" +
       "document.body.dispatchEvent(new Event('x'));" +
       "document.getElementById('out').textContent = r.join(',');" +
-      "import('fs').then(function () { document.getElementById('out').textContent = 'imported' }, function () {});" +
-      '</script>',
+      // what an `import()` is refused with is the page's own error, from
+      // wherever it is called: it was the host's, and reached `process`
+      'var reached = [];' +
+      'function refused(how) { return function (e) {' +
+      "  reached.push(how + ':' + (e instanceof TypeError) + ':' + e.constructor.constructor('return typeof process')());" +
+      "  document.getElementById('reached').textContent = reached.sort().join(','); } }" +
+      "import('fs').then(function () { reached.push('imported') }, refused('script'));" +
+      "(0, eval)(\"import('fs').catch(refused('eval'))\");" +
+      "new Function(\"return import('fs')\")().catch(refused('function'));" +
+      "setTimeout(\"import('fs').catch(refused('timer'))\", 0);" +
+      "document.getElementById('b').click();" +
+      '</script><p id="reached"></p>' +
+      '<button id="b" onclick="import(\'fs\').catch(refused(\'attribute\'))">b</button>',
   );
+  await settle(60);
   assert.equal(
     doc.text('out'),
     [
@@ -171,10 +184,45 @@ test('nothing of the host is reachable from a page', async () => {
       'null',
     ].join(','),
   );
+  assert.equal(
+    doc.text('reached'),
+    [
+      'attribute:true:undefined',
+      'eval:true:undefined',
+      'function:true:undefined',
+      'script:true:undefined',
+      'timer:true:undefined',
+    ].join(','),
+  );
+});
+
+test('where a page’s import() would reach the host, no engine is made', () => {
+  // Node without --experimental-vm-modules ignores the callback that keeps
+  // an `import()` in the page, and refuses one with an error of its own
+  const child = spawnSync(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '-e',
+      "import { SCRIPTS_CONTAINED, ScriptEngine } from './examples/browser/script/engine.ts';" +
+        'let made = true;' +
+        'try { new ScriptEngine(() => null, { timeout: 1, onTimeout() {}, log() {}, settled() {} }); }' +
+        'catch { made = false; }' +
+        'console.log(JSON.stringify({ contained: SCRIPTS_CONTAINED, made }));',
+    ],
+    { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } },
+  );
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout.trim().split('\n').at(-1)!), {
+    contained: false,
+    made: false,
+  });
 });
 
 for (const global of ['own', 'object'] as const) {
-  test(`nothing of the host is reachable over either kind of global: ${global}`, () => {
+  test(`nothing of the host is reachable over either kind of global: ${global}`, async () => {
     // The engine takes the context's own global where the runtime keeps a
     // script's `var`s in it, Node's, and one over an object with no
     // prototype where it does not, Bun's: the escapes are asked of both,
@@ -227,15 +275,19 @@ for (const global of ['own', 'object'] as const) {
         'r.push(String(Error.prepareStackTrace), typeof __bridge, typeof globalThis.__in);' +
         "document.body.addEventListener('x', function f() { r.push(String(f.caller)) });" +
         "document.body.dispatchEvent(new Event('x'));" +
+        "import('fs').catch(function (e) { r.push(e.constructor.constructor(reach)()) });" +
         'var shared = 1;',
       'a',
       0,
     );
+    // what the host's refusal settles runs at the next entry
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    engine.call('__drain', null);
     engine.exec("console.log(r.join(','), typeof shared)", 'b', 0);
     assert.deepEqual(logs, [
       'log: undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefinedundefinedundefined,undefinedundefinedundefined,' +
-        'undefined,undefined,string,null number',
+        'undefined,undefined,string,null,undefinedundefinedundefined number',
     ]);
     engine.dispose();
   });

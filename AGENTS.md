@@ -1808,6 +1808,18 @@ closes a way out a DOM binding opens by accident:
   dirty; the outermost entry's end refreshes (`settled`), and an op that
   asks the layout anything flushes first, since it has to answer from the
   change.
+- **Every script compiled into the context has an `import()` callback**,
+  rejecting with the context's own `TypeError` (`refuseImport`), the
+  facade's installation included: a page's `eval`, `new Function`, string
+  timers and `on…` attributes run from inside it, and an `import()` in
+  them is found from it. Without one, the runtime refuses an `import()`
+  with an error of the host's, and its `constructor.constructor` is the
+  host's `Function` — which shipped in phase 1, because the escape test
+  checked that `import('fs')` did not resolve and never read what it was
+  refused with. Node calls the callback only under
+  `--experimental-vm-modules`, so the engine runs nothing without it
+  (`SCRIPTS_CONTAINED`). **An escape test reads what a refusal hands the
+  page**, not only that it was refused.
 - **Run it on Bun too.** `test/browser-scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its

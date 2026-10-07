@@ -16,6 +16,15 @@
 //   4. Every function of the host's that calls into the context is strict
 //      ESM, and it calls only through a `vm.Script`, never a page function
 //      directly, so no `caller` leads out.
+//   5. Every script compiled into the context has a host callback for
+//      `import()`, and what it rejects with is the context's own
+//      `TypeError`. Where a page's `import()` finds none — and where the
+//      runtime ignores one, Node without `--experimental-vm-modules` — it
+//      rejects with an error of the host's, whose `constructor.constructor`
+//      is the host's `Function`: `import('x').catch((e) =>
+//      e.constructor.constructor('return process')())` was the host's
+//      `process`, on Node and on Bun. So scripts run only where the runtime
+//      honours the callback (`SCRIPTS_CONTAINED`).
 //
 // A runaway page is stopped by the timeout, microtasks included
 // (`microtaskMode: 'afterEvaluate'`), and the page is usable after it. That
@@ -48,6 +57,18 @@ export interface EngineOptions {
   global?: 'auto' | 'own' | 'object';
 }
 
+/**
+ * Whether this runtime can keep a page's `import()` in its context: Bun,
+ * and Node with `--experimental-vm-modules` — what `vm.SourceTextModule`
+ * being there says on both, since the flag that makes the class is the one
+ * that makes Node call a script's `importModuleDynamically` at all. The
+ * browser starts every pane with it (`PANE_FLAGS`), and its own process
+ * from `npm run examples:browser`. Where it is false, no engine is made,
+ * and a page is a browser's with scripts off.
+ */
+export const SCRIPTS_CONTAINED = !!(vm as { SourceTextModule?: unknown })
+  .SourceTextModule;
+
 /** The facade's source, made once, with the one name a transpiler may call
  *  that the facade does not define: tsx keeps a function's name with a
  *  `__name` helper at the module's top, which the context has to have. */
@@ -62,17 +83,6 @@ const INSTALL = `(function () {
   delete globalThis.__bridge;
   install(bridge);
 })()`;
-
-/** The entries, compiled once and run in any context. */
-const SCRIPTS = new Map<string, vm.Script>();
-function entryScript(name: string): vm.Script {
-  let script = SCRIPTS.get(name);
-  if (!script) {
-    script = new vm.Script(`${name}()`, { filename: `engine:${name}` });
-    SCRIPTS.set(name, script);
-  }
-  return script;
-}
 
 /** The engines alive in this process, by their context's
  *  `Promise.prototype`: what tells a page's unhandled rejection from the
@@ -104,6 +114,32 @@ function watchRejections(): void {
   }
 }
 
+/** The context's own `TypeError`, by the context, for what an `import()` is
+ *  refused with (`refuseImport`). */
+const TYPE_ERRORS = new WeakMap<vm.Context, new (message: string) => object>();
+
+/** An `import()` refused, with the context's own `TypeError`: the callback
+ *  every script compiled into a page's context has, and the context itself
+ *  for code with no script to be found from. */
+function refuseImport(
+  context: vm.Context,
+): (specifier: string) => Promise<never> {
+  return (specifier) => {
+    let PageTypeError = TYPE_ERRORS.get(context);
+    if (!PageTypeError) {
+      PageTypeError = new vm.Script('TypeError').runInContext(context) as new (
+        message: string,
+      ) => object;
+      TYPE_ERRORS.set(context, PageTypeError);
+    }
+    return Promise.reject(
+      new PageTypeError(
+        `Failed to fetch dynamically imported module: ${String(specifier)}. Modules are not run by this browser.`,
+      ),
+    );
+  };
+}
+
 const CONTEXT_OPTIONS: vm.CreateContextOptions = {
   name: 'page',
   microtaskMode: 'afterEvaluate',
@@ -129,22 +165,33 @@ let dontContextifyKeepsVars: boolean | null = null;
 function createPageContext(
   global: 'auto' | 'own' | 'object' = 'auto',
 ): vm.Context {
+  // An `import()` in code no script of the host's is found from is refused
+  // by the context's own callback, handed nothing of which context it is.
+  const make = (
+    sandbox: object | typeof vm.constants.DONT_CONTEXTIFY,
+  ): vm.Context => {
+    let context: vm.Context | null = null;
+    const refuse = (specifier: string) => refuseImport(context!)(specifier);
+    context = vm.createContext(sandbox, {
+      ...CONTEXT_OPTIONS,
+      importModuleDynamically: refuse as never,
+    });
+    return context;
+  };
   const constant = vm.constants?.DONT_CONTEXTIFY;
-  if (constant !== undefined && global === 'own') {
-    return vm.createContext(constant, CONTEXT_OPTIONS);
-  }
+  if (constant !== undefined && global === 'own') return make(constant);
   if (
     constant !== undefined &&
     global === 'auto' &&
     dontContextifyKeepsVars !== false
   ) {
-    const context = vm.createContext(constant, CONTEXT_OPTIONS);
+    const context = make(constant);
     dontContextifyKeepsVars ??=
       new vm.Script('var __probe = 1; typeof __probe').runInContext(context) ===
       'number';
     if (dontContextifyKeepsVars) return context;
   }
-  return vm.createContext(Object.create(null), CONTEXT_OPTIONS);
+  return make(Object.create(null));
 }
 
 export class ScriptEngine {
@@ -154,13 +201,28 @@ export class ScriptEngine {
   private _broken = false;
   private _disposed = false;
 
+  /** The entries, compiled for this context: what an `import()` in what
+   *  they run is refused with is this context's (`refuseImport`). */
+  private readonly _entries = new Map<string, vm.Script>();
+  private readonly _refuse: (specifier: string) => Promise<never>;
+
   constructor(
     bridge: Bridge,
     private readonly _options: EngineOptions,
   ) {
+    if (!SCRIPTS_CONTAINED) {
+      throw new Error(
+        "A page's scripts are not run where its import() would reach the host: run Node with --experimental-vm-modules.",
+      );
+    }
     this._context = createPageContext(this._options.global);
+    this._refuse = refuseImport(this._context);
+    // the facade is compiled with the callback too: a page's `eval`, `new
+    // Function` and string timers run from inside it, and are found from it
     const run = (code: string): unknown =>
-      new vm.Script(code).runInContext(this._context, {
+      new vm.Script(code, {
+        importModuleDynamically: this._refuse as never,
+      }).runInContext(this._context, {
         timeout: this._options.timeout,
       });
     run(
@@ -174,6 +236,19 @@ export class ScriptEngine {
     this._promises = run('Promise.prototype') as object;
     ENGINES.set(this._promises, this);
     watchRejections();
+  }
+
+  /** An entry's script, compiled once for this context. */
+  private _entry(name: string): vm.Script {
+    let script = this._entries.get(name);
+    if (!script) {
+      script = new vm.Script(`${name}()`, {
+        filename: `engine:${name}`,
+        importModuleDynamically: this._refuse as never,
+      });
+      this._entries.set(name, script);
+    }
+    return script;
   }
 
   /** A page's classic script, run in the global scope, as `currentScript`
@@ -197,7 +272,7 @@ export class ScriptEngine {
     }
     this._depth += 1;
     try {
-      const out = entryScript(name).runInContext(this._context, {
+      const out = this._entry(name).runInContext(this._context, {
         timeout: this._options.timeout,
       });
       return out === null || typeof out !== 'object'
