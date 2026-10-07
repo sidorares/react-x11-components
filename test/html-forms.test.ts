@@ -15,7 +15,7 @@ import {
   userEvent,
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
-import { XK_RETURN } from 'react-x11/keysyms';
+import { XK_RETURN, XK_SPACE } from 'react-x11/keysyms';
 
 import { Html } from '../src/html/index.js';
 import type { FormSubmission, HtmlViewNode } from '../src/html/index.js';
@@ -592,6 +592,10 @@ async function renderForm(
   return { submitted, doc: root.children[0] };
 }
 
+/** The button widget that says `label`. */
+const button = (label: string) =>
+  screen.getByRole('button', { name: label, exact: true }) as DrawnNode;
+
 const DDG =
   '<form action="/lite/" method="post">' +
   '<input class="query" type="text" size="40" name="q" value="" autofocus>' +
@@ -667,20 +671,70 @@ metric('a reset button puts the typed text back to the markup', async () => {
       '<input type="reset" value="Clear"><input type="submit" value="Go"></form>',
   );
   await userEvent.type(screen.getByRole('textbox') as DrawnNode, ' more');
-  const [clear, go] = screen.getAllByRole('button') as DrawnNode[];
-  await userEvent.click(clear);
+  await userEvent.click(button('Clear'));
   await act();
   assert.strictEqual(
     (screen.getByRole('textbox') as unknown as { value: string }).value,
     'orig',
     'the field shows its markup again',
   );
-  await userEvent.click(go);
+  // asked for where it is pressed, not held from before the reset: a node a
+  // render replaced is nowhere on screen to press
+  await userEvent.click(button('Go'));
   assert.deepStrictEqual(
     submitted.map((s) => s.body),
     ['q=orig'],
   );
 });
+
+metric(
+  'a reset puts the text back in place, and every widget keeps its node and the focus',
+  async () => {
+    // A reset was in the key every widget was mounted under, so it mounted
+    // every control in the document again: the button pressed lost the
+    // focus, every field its caret, its scroll and its undo — a field in
+    // another form too, which a reset does not touch.
+    const { submitted } = await renderForm(
+      '<form method="post"><input name="q" value="orig">' +
+        '<textarea name="t">start</textarea>' +
+        '<input type="reset" value="Clear"><input type="submit" value="Go">' +
+        '</form><form><input name="other"></form>',
+    );
+    const fields = screen.getAllByRole('textbox') as DrawnNode[];
+    const buttons = screen.getAllByRole('button') as DrawnNode[];
+    const [field, area, other] = fields;
+    await userEvent.type(field, ' more');
+    await userEvent.type(area, '!');
+    await userEvent.type(other, 'kept');
+    // from the keyboard, as a browser's reset button is pressed with the
+    // focus on it, and keeps it
+    const clear = button('Clear');
+    await act(() => clear.focus());
+    await userEvent.key(XK_SPACE, { target: clear });
+    await act();
+    const same = (now: DrawnNode[], before: DrawnNode[]) =>
+      now.length === before.length && now.every((n, i) => n === before[i]);
+    assert.ok(
+      same(screen.getAllByRole('textbox') as DrawnNode[], fields),
+      'the fields are the widgets they were',
+    );
+    assert.ok(
+      same(screen.getAllByRole('button') as DrawnNode[], buttons),
+      'and so are the buttons',
+    );
+    assert.ok(clear.focused, 'the reset button keeps the focus');
+    assert.deepStrictEqual(
+      fields.map((node) => (node as unknown as { value: string }).value),
+      ['orig', 'start', 'kept'],
+      'its own form back to the markup, and the other left as it was',
+    );
+    await userEvent.click(button('Go'));
+    assert.deepStrictEqual(
+      submitted.map((s) => s.body),
+      ['q=orig&t=start'],
+    );
+  },
+);
 
 metric(
   'a field that layout moves is the same widget, and keeps its focus',
