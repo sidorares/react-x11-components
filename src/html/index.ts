@@ -30,7 +30,7 @@ import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
 import { flatParentOf, isElement, tagOf } from './dom.js';
-import type { Document, Element } from './dom.js';
+import type { Document, Element, HtmlChange } from './dom.js';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
 import type {
   DocumentInteraction,
@@ -92,6 +92,7 @@ export type {
   ChildNode,
   Document,
   Element,
+  HtmlChange,
   ParentNode,
   ShadowRoot,
   ShadowRootMode,
@@ -331,10 +332,17 @@ export interface HtmlHandle {
    * Explicit rather than observed, and that is the trade the component makes
    * on purpose: watching a plain object graph for mutations costs a proxy per
    * node, which would tax the static render that this is built to make fast
-   * in order to speed up the path it is not. Mutation is supported; it is not
-   * what the performance budget was spent on.
+   * in order to speed up the path it is not.
+   *
+   * Told what changed — every change since the last `refresh`, shaped as a
+   * `MutationObserver` reports them (`HtmlChange`) — it restyles only the
+   * elements a selector that tests what changed can reach: a class
+   * toggled on a menu restyles the menu and what is in it, and an inline
+   * style moving a box positioned out of the flow repaints where it was
+   * and is. Without them, every element is styled again, which is always
+   * right and costs what a first rendering does.
    */
-  refresh(): void;
+  refresh(changes?: readonly HtmlChange[]): void;
   /** The element under a point, in the window's coordinates — of the
    *  document as it is now: one changed and `refresh()`ed is laid out
    *  first, as `elementRect` lays it out. */
@@ -729,8 +737,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       get base() {
         return nodeRef.current?.documentBase ?? null;
       },
-      refresh: () => {
-        nodeRef.current?.touchDocument();
+      refresh: (changes?: readonly HtmlChange[]) => {
+        nodeRef.current?.touchDocument(changes ?? null);
         force();
       },
       elementAt: (x: number, y: number) =>

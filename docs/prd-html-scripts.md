@@ -9,7 +9,8 @@ and form controls. It leaves out shadow DOM, modules, workers, canvas and
 `document.write`.
 
 Status: investigation, 2026-10-04; phase 0 built, 2026-10-07; phase 1
-built, 2026-10-08, but for core's pane options (see "Phases"). The engine
+built, 2026-10-08, and core's pane options released in react-x11 2.46.0;
+phase 2 under way (see "Phases"). The engine
 is `examples/browser/script/`, behind the toolbar's JS switch and
 `BROWSER_SCRIPTS=1`. The probes it quotes ran on Node
 26.0.0 and Bun 1.4.0 on macOS; they were scratch scripts and are not in the
@@ -357,22 +358,26 @@ itself what a chunk added to it, so throwing them away at every chunk
 would buy nothing. A drawing has to be made again rather than handed its
 tree: `SvgView` reads a root's `viewBox` and the ids its `url()`s name as
 it is handed the tree, so a `viewBox` changed and refreshed was drawn
-through as the old one. Phase 2 needs it to be _cheap_. Today a refresh is a restyle of
-every element, a box build and a whole-document layout (`touchDocument`,
-`node.ts:4120`, to `Stale.Style`). A page that animates with `setInterval`
-and `el.style.left` pays that every tick. The machinery for less is there:
+through as the old one.
 
-- `_restyleInPlace` takes an attribute change that only inks;
-- kept styles with a restyle set, and `follow`, take one that moves
-  layout;
-- `Cascade.crossed` is the worked example of building the restyle set from
-  the rules a change can reach.
-
-What is missing is a rule index keyed on the class, the id and the
-attribute a rule tests. The host already has the input for it: the
-facade's dirty set, split into attribute records and child-list records.
-Coalescing is the host's in either phase: one `refresh()` per task, after
-the microtasks, never per op.
+Phase 2 needs it to be _cheap_, and it is, where the host says what
+changed. A refresh with no argument restyled every element, built every
+box and laid out the whole document, and a page that animates with
+`setInterval` and `el.style.left` paid that every tick. `refresh(changes)`
+takes `MutationRecord`-shaped records (`HtmlChange`) and restyles what a
+selector testing the change reaches. The cascade reads every selector once
+for where it tests each class, id, attribute and what an element holds
+(`MutationRules`). What only inks is restyled in place, as a hover is
+(`_restyleInPlace`); a box out of the flow that moved goes through an
+animation frame's build (`_rebuildFrame`); anything else is a build keeping
+every other element's style, with `follow`. On a page of 600 cards on
+X11, a class that colours one paragraph went from 106 ms to 3.5, an
+absolute box's `left` from 66 to 38, a class that changes a card's font
+size from 59 to 27 and a text from 66 to 21. What is left is layout, which
+a build still does whole: the next step for the `left` case is moving an
+out-of-flow box whose size does not depend on its offsets, in place, as a
+transform is moved. Coalescing is the host's: one `refresh()` per task,
+after the microtasks, never per op.
 
 **3. `scripting`.** One boolean prop. When it is true:
 
@@ -594,7 +599,8 @@ that either is a change to the bridge and not to the facade.
    the switch, and the timeout notice. Core: pane options (for the heap
    bound), not done.
 2. **Cheap mutation and more of the web:**
-   - scoped refresh from attribute and child-list records;
+   - scoped refresh from attribute and child-list records (built:
+     `refresh(changes)`);
    - `MutationObserver`, `XMLHttpRequest`;
    - modules (`vm.SourceTextModule`);
    - the watchdog;

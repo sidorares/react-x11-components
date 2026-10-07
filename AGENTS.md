@@ -1582,6 +1582,32 @@ it was — which `test/html/replaced.test.ts` finds for a drawing only by
 changing what `SvgView` reads once, since what it reads at each draw
 passes either way.
 
+**A refresh told what changed restyles what a selector testing it
+reaches** (`refresh(changes)`, `HtmlChange`, a `MutationRecord`'s shape).
+The cascade reads every selector once for where it tests each class, id,
+attribute and what an element holds (`MutationRules`, `scanChanges`): its
+subject, before a descendant or a child combinator, before a sibling
+combinator, or in a `:has()` (`CHANGES_*`); and the element finds the
+elements those reach from each change (`_changeScope`, `spreadChange`).
+What only inks is restyled in place, as a hover is; a box out of the flow
+that moved goes through a frame's build (`_rebuildFrame`); anything else
+is a build keeping every other element's style with `follow`, so what is
+under a restyled element is styled again only where its parent's style
+came out other than it was. Three things are load-bearing. **A
+pseudo-class css-select knows is in `PSEUDO_READS` with what it reads**:
+one missing there reads nothing, which is right only for one css-select
+refuses, since that drops the rule. **An attribute anything but the
+cascade reads is out of `STYLE_ONLY_ATTRIBUTE`** — a source, a value, a
+label, a hint whose style reaches the element's descendants — and builds
+the boxes, restyling the element and what is in it. And **a `:has()` that
+reaches past its anchors, a shadow tree, or a sheet, a `<meta>` or a
+`<base>` changing is a refresh of everything**: the scope says null, and
+nothing is skipped. `test/html/refresh.test.ts` holds a refresh told what
+changed to one of everything, computed style by computed style, over
+random documents, rules and changes, and fails if none of them went in
+place, through a frame or through a build; every way a reach was dropped
+on purpose was caught by it or by a test beside it.
+
 **An image's source is chosen where the viewport is known, and stays
 chosen.** An `<img srcset>`, or an `<img>` in a `<picture>`, is chosen in
 `_update`, for the width the boxes are about to be built at

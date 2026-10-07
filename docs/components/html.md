@@ -72,7 +72,7 @@ handle.refresh();
 | Member                                                                                  | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `document`                                                                              | The live DOM — [domhandler]'s tree, which [domutils] speaks natively.                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `refresh()`                                                                             | The DOM changed — its nodes, attributes or text: restyle, re-lay-out, repaint, every element read as it is now.                                                                                                                                                                                                                                                                                                                                                          |
+| `refresh(changes?)`                                                                     | The DOM changed — its nodes, attributes or text: restyle, re-lay-out, repaint, every element read as it is now. Told what changed, shaped as `MutationObserver` records (`HtmlChange`), it restyles only what a selector that tests the change reaches — see [Telling it what changed](#telling-it-what-changed).                                                                                                                                                        |
 | `elementAt(x, y)`                                                                       | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry — in the document as it is now: one changed since the last paint is laid out first, as `elementRect` lays it out. In whichever tree it is: one in a shadow tree is that element, not its host.                                                                                                                                                                   |
 | `hrefAt(x, y)`                                                                          | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                                                                                                                                                                                                                                                                                                                                                      |
 | `elementRect(element)`                                                                  | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. Null for an element with no box. |
@@ -3429,20 +3429,77 @@ the language a `<meta http-equiv="content-language">` sets — is worked out
 again. So a `viewBox`, a gradient's `id` or a `<meta>`'s `content` changed
 anywhere in the tree is drawn as it is now.
 
+### Telling it what changed
+
+A refresh with no argument styles every element again, which is always
+right and costs what a first rendering does: some 60 to 100 ms on a page of
+600 cards on X11, whatever changed. A host that knows what it changed — a
+script engine keeping `MutationObserver` records does — hands the records to
+`refresh`, and pays for the change:
+
+```ts
+el.attribs.class = 'menu open';
+handle.refresh([
+  {
+    type: 'attributes',
+    target: el,
+    attributeName: 'class',
+    oldValue: 'menu',
+  },
+]);
+```
+
+`HtmlChange` is a `MutationRecord`'s shape, so the same list feeds both:
+
+| `type`          | What it says                                                                                                                                                                                    |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `attributes`    | `target`'s attribute `attributeName` was set or removed. `oldValue` is what it was, `null` for none; left out, a `class` or an `id` change is taken for a change of every one a selector tests. |
+| `childList`     | Nodes were added to `target` or taken from it, every one of them listed in `addedNodes` and `removedNodes` — which is how a `<style>` coming or going is found.                                 |
+| `characterData` | A text's or a comment's data changed.                                                                                                                                                           |
+
+The list has to hold every change since the last refresh. From it the
+component works out which elements' styles can have changed, from where each
+selector tests what changed: in its subject, the element changed; before a
+descendant or a child combinator, what is in it; before a sibling
+combinator, its later siblings; in a `:has()`, the elements around it. Then:
+
+- **Where all that changed is ink** — a colour, a background, an opacity, a
+  transform — the boxes take their new styles where they are, as a hover
+  does: a class that colours one paragraph of those 600 cards costs 3.5 ms
+  where it cost 106.
+- **Where it moved a box positioned out of the flow** — an inline `left`
+  stepping a box across the page — the boxes are built again, keeping every
+  other element's style, and what is repainted is where the box was and is.
+- **Otherwise** the boxes are built again keeping every other element's
+  style, and the document is laid out: a class that changes a card's font
+  size went from 59 ms to 27, and a text changed from 66 to 21.
+
+Some changes are refreshes of everything however they are told: a
+stylesheet, a `<meta>` or a `<base>` changing; a document with a shadow
+tree; and a `:has()` whose element is not itself the one restyled —
+`.card:has(.x) .title`, `:has(+ .x)` — which reaches everything around its
+anchors. A change under an element that is `display: none`, a comment, a
+change to what is not in the document yet — a fragment a script fills
+before it appends it — and an attribute nothing reads but a selector that
+names none (a `data-` attribute no rule tests) restyle nothing at all. The
+inside of an inline `<svg>` has no boxes: a change there draws the drawing
+again.
+
 ## Performance
 
 The pipeline is staged so that the two things that happen most often cost the
 least:
 
-| What changed               | What re-runs                                     |
-| -------------------------- | ------------------------------------------------ |
-| `source`                   | parse (incrementally), style, box, layout, paint |
-| a stylesheet               | style, box, layout, paint                        |
-| the DOM                    | box, layout, paint                               |
-| the width                  | layout, paint                                    |
-| a `@media` band            | style of what it reaches, box, layout, paint     |
-| a container query's answer | style of what it answers for, box, layout, paint |
-| an expose / scroll         | paint, culled to the damage rect                 |
+| What changed               | What re-runs                                                                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `source`                   | parse (incrementally), style, box, layout, paint                                                                                                 |
+| a stylesheet               | style, box, layout, paint                                                                                                                        |
+| the DOM                    | style, box, layout, paint                                                                                                                        |
+| the DOM, told what changed | style of what it reaches; box and layout only where that moved something; paint of only what changed where that was ink or a box out of the flow |
+| the width                  | layout, paint                                                                                                                                    |
+| a `@media` band            | style of what it reaches, box, layout, paint                                                                                                     |
+| a container query's answer | style of what it answers for, box, layout, paint                                                                                                 |
+| an expose / scroll         | paint, culled to the damage rect                                                                                                                 |
 
 Nothing in a computed style depends on the width — percentages and `auto`
 survive unresolved into layout — which is what makes a resize skip the

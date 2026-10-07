@@ -45,7 +45,7 @@ import type {
 } from 'react-x11/node';
 import type { MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import type { Style } from 'react-x11/style';
-import type { ChildNode, Element } from 'domhandler';
+import type { AnyNode, ChildNode, Element } from 'domhandler';
 
 import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
 import {
@@ -58,14 +58,21 @@ import {
   indicatedElement,
   isElement,
   isText,
+  ShadowRoot,
   tagOf,
 } from './dom.js';
-import type { Document, ShadowRoot, SheetRef } from './dom.js';
+import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { resolve as resolveLength } from './css/values.js';
 import type { Len } from './css/values.js';
 import { cssomStyle } from './computed.js';
 import {
   Cascade,
+  CHANGES_BELOW,
+  CHANGES_HAS_BELOW,
+  CHANGES_HAS_LATER,
+  CHANGES_HAS_SELF,
+  CHANGES_LATER,
+  CHANGES_SELF,
   HOVER_FOLLOWED,
   HOVER_PSEUDO_GENERATED,
   HOVER_PSEUDO_NONE,
@@ -690,6 +697,11 @@ export class HtmlViewNode extends Node {
    * a `vw` reads, a face that arrived.
    */
   private _restyleOnly: Set<Element> | null = null;
+  /** Whether `_restyleOnly` names the elements whose own styles a change
+   *  may have changed and not what is under them, which is styled again
+   *  where its parent's style came out other than it was (`KeptStyles.
+   *  follow`) — what a change to the tree says (`_restyleChanged`). */
+  private _restyleFollows = false;
   private _scriptsSeen = new WeakSet<Element>();
   private _controls: ControlRect[] = [];
   /** The players mounted over the document (`media.ts`): where layout put
@@ -851,13 +863,18 @@ export class HtmlViewNode extends Node {
   private _invalidate(
     stale: Stale,
     restyle: ReadonlySet<Element> | null = null,
+    follow = false,
   ): void {
     if (stale >= Stale.Boxes) {
       const only = stale === Stale.Boxes ? restyle : null;
       if (this._stale < Stale.Boxes) {
         this._restyleOnly = only ? new Set(only) : null;
+        this._restyleFollows = follow;
       } else if (this._restyleOnly && only) {
         for (const el of only) this._restyleOnly.add(el);
+        // styling what follows a change of its parent's style again as
+        // well styles more, and never less, than either asked
+        if (follow) this._restyleFollows = true;
       } else {
         this._restyleOnly = null;
       }
@@ -1751,9 +1768,10 @@ export class HtmlViewNode extends Node {
     // found below changes them all
     let restyleOnly = this._stale === Stale.Boxes ? this._restyleOnly : null;
     this._restyleOnly = null;
-    // whether `restyleOnly` names only what a crossing reached, and
-    // whether a crossing is what restyles (`_stopAt`)
-    let follow = false;
+    // whether `restyleOnly` names only what a crossing or a change to the
+    // tree reached, and whether a crossing is what restyles (`_stopAt`)
+    let follow = restyleOnly !== null && this._restyleFollows;
+    this._restyleFollows = false;
     let crossing = false;
     if (this._stale >= Stale.Style || !this._cascade) {
       this._restyle(target);
@@ -3859,6 +3877,12 @@ export class HtmlViewNode extends Node {
       }
     }
     if (!restyled.length) {
+      // An element that draws no box — `display: none`, or one whose box
+      // the fix-up dissolved — still has the style a script reads, and the
+      // one a later build keeps for it (`KeptStyles`).
+      for (const [el, style] of changed) {
+        tree.styles.set(el, { style, inFlex: tree.styles.get(el)!.inFlex });
+      }
       this._repaintInk(redraw());
       return true;
     }
@@ -4900,13 +4924,14 @@ export class HtmlViewNode extends Node {
    * That is repainted, and anything else repaints the whole element. Zen
    * Garden 219's marquees and panels are all positioned so.
    */
-  private _rebuildFrame(reach: ReadonlySet<Element>): void {
+  private _rebuildFrame(reach: ReadonlySet<Element>, follow = false): void {
     const before = this._tree!;
     const width = this._laidOutWidth;
     const size = [this._documentWidth, this._documentHeight];
     const beforeBoxes = this._firstBoxesOf(before);
     this._stale = Stale.Boxes;
     this._restyleOnly = new Set(reach);
+    this._restyleFollows = follow;
     this._carryingFrom = width;
     try {
       this._prepare(width);
@@ -5085,8 +5110,11 @@ export class HtmlViewNode extends Node {
     // and its box is no element's: the rest found nothing of it, and a frame
     // that moved one alone repainted nothing. Zen Garden 215's robot rises
     // into the page as an `aside::after` fixed to the viewport, and was not
-    // seen until a scroll repainted it.
-    for (const el of reach) {
+    // seen until a scroll repainted it. An element styled again because
+    // its parent's style changed (`KeptStyles.follow`) is in `changed`
+    // where its own did, and its pseudo-elements, styled over it, can
+    // have changed only then.
+    for (const el of changed.length ? new Set([...reach, ...changed]) : reach) {
       for (const [which] of GENERATED_BITS) {
         const was = generatedIn(beforeBoxes.get(el), el, which);
         const now = generatedIn(afterBoxes.get(el), el, which);
@@ -5112,13 +5140,191 @@ export class HtmlViewNode extends Node {
    * repaints — everything but the parse, which nothing that happened to the
    * tree can invalidate.
    *
+   * Told what changed (`changes`), it restyles what the change can reach
+   * and no more (`_changeScope`): the elements a selector that tests what
+   * changed can match, where every element was styled again. Where all
+   * that changed is ink, in place, as a hover is (`_restyleInPlace`);
+   * where it is positioned out of the flow, built again and repainted
+   * where it was and is, as an animation's frame is (`_rebuildFrame`);
+   * and otherwise built again keeping every other element's style.
+   *
    * Explicit rather than observed: see `HtmlHandle.refresh`.
    */
-  touchDocument(): void {
+  touchDocument(changes: readonly HtmlChange[] | null = null): void {
     this._source.touch();
     this._updateBase();
     this._sweep();
-    this._invalidate(Stale.Style);
+    const scope = changes ? this._changeScope(changes) : null;
+    if (!scope) {
+      this._invalidate(Stale.Style);
+      return;
+    }
+    this._restyleChanged(scope);
+  }
+
+  /**
+   * What a list of changes to the tree can restyle: the elements whose own
+   * styles may have changed (`own`), whether the boxes have to be built
+   * again (`boxes`), the inline drawings to draw again, and which
+   * pseudo-elements' rules read what changed. Null where that cannot be
+   * said, and where the change is one to the cascade itself — a sheet
+   * coming, going or changing, a `<meta>` or a `<base>` — so every
+   * element is styled again.
+   */
+  private _changeScope(changes: readonly HtmlChange[]): ChangeScope | null {
+    const cascade = this._cascade;
+    const tree = this._tree;
+    if (!cascade || !tree || this._stale >= Stale.Style) return null;
+    const scope: ChangeScope = {
+      own: new Set(),
+      boxes: false,
+      drawings: new Set(),
+      pseudo: HOVER_PSEUDO_NONE,
+    };
+    for (const change of changes) {
+      if (!this._scopeOf(change, cascade, tree, scope)) return null;
+    }
+    return scope;
+  }
+
+  /** One change into `scope` (`_changeScope`); false where it cannot be
+   *  said what the change reaches. */
+  private _scopeOf(
+    change: HtmlChange,
+    cascade: Cascade,
+    tree: BoxTree,
+    scope: ChangeScope,
+  ): boolean {
+    // What is not in the document draws nothing, and no selector reads it:
+    // a fragment a script builds before it puts it in, an element it took
+    // out. Its coming in is a change to the document, and says so.
+    if (!inDocument(change.target, this._source.document)) return true;
+    // What is inside a drawing has no box and no style of its own: the
+    // drawing is drawn again. A `:has()` around it may ask it something.
+    const drawing = drawingAround(change.target);
+    if (drawing) {
+      if (cascade.asksWhatElementsHold) return false;
+      scope.drawings.add(drawing);
+      return true;
+    }
+    if (change.type === 'attributes') {
+      const el = change.target;
+      if (CASCADE_TAGS.has(tagOf(el))) return false;
+      const name = change.attributeName.toLowerCase();
+      const reach = cascade.attributeChange(
+        name,
+        change.oldValue,
+        attr(el, name) ?? null,
+      );
+      if (!reach) return false;
+      let bits = reach.bits;
+      // Something the boxes read of the element besides its style — a
+      // source, a value, a span, a label — or a hint its style takes, or
+      // what is in it takes: a table's `cellpadding` is its cells'.
+      const quiet = STYLE_ONLY_ATTRIBUTE.test(name);
+      if (!quiet) bits |= CHANGES_SELF | CHANGES_BELOW;
+      else if (name === 'style') bits |= CHANGES_SELF;
+      if (!bits) return true;
+      // under an element nothing draws, nothing it reaches is drawn
+      if (!(bits & CHANGES_AROUND) && el.parent && isElement(el.parent)) {
+        if (undrawn(el.parent, tree)) return true;
+      }
+      if (!quiet) scope.boxes = true;
+      if (reach.pseudo > scope.pseudo) scope.pseudo = reach.pseudo;
+      return spreadChange(el, bits, false, scope.own);
+    }
+    // What an element holds: its children, or a text's data. A comment is
+    // nothing a selector counts — not an element, and no text — and draws
+    // nothing; a script draws nothing either, but is an element, which a
+    // `:first-child` or a sibling combinator counts.
+    const parent =
+      change.type === 'childList' ? change.target : change.target.parent;
+    if (!parent || !isElement(parent)) return false;
+    if (CASCADE_TAGS.has(tagOf(parent))) return false;
+    let drawn = false;
+    if (change.type === 'childList') {
+      let counted = false;
+      for (const nodes of [change.addedNodes, change.removedNodes]) {
+        for (const node of nodes) {
+          if (holdsCascade(node)) return false;
+          if (node.type !== 'comment') counted = true;
+          if (drawsSomething(node)) drawn = true;
+        }
+      }
+      if (!counted) return true;
+    } else if (change.target.type === 'comment') {
+      return true;
+    } else drawn = true;
+    const bits = cascade.treeChange(change.type === 'characterData');
+    if (bits === null) return false;
+    if (!drawn && !bits) return true;
+    if (!(bits & CHANGES_AROUND) && undrawn(parent, tree)) return true;
+    if (drawn) scope.boxes = true;
+    if (change.type === 'childList') {
+      // what came in is styled whole, and so is what moved here from
+      // elsewhere, under parents it was not styled under
+      for (const node of change.addedNodes) {
+        if (isElement(node)) addSubtree(node, scope.own);
+      }
+    }
+    return spreadChange(parent, bits, true, scope.own);
+  }
+
+  /**
+   * The changes `_changeScope` found restyled: in place where all that
+   * changed is ink, in a frame's build where it is out of the flow, and in
+   * a build keeping every other element's style otherwise.
+   */
+  private _restyleChanged(scope: ChangeScope): void {
+    if (scope.drawings.size) this._drawAgain(scope.drawings);
+    if (!scope.own.size && !scope.boxes) return;
+    if (!scope.boxes) {
+      const reach = withDescendants(scope.own, HOVER_RESTYLE_LIMIT);
+      if (
+        reach &&
+        this._restyleInPlace(reach, (el) => scope.own.has(el), scope.pseudo)
+      ) {
+        // a transition the change started wants its frames
+        this._scheduleFrame();
+        return;
+      }
+      if (
+        this._stale === Stale.Nothing &&
+        this._tree &&
+        this._laidOutWidth >= 0
+      ) {
+        this._rebuildFrame(scope.own, true);
+        return;
+      }
+    }
+    this._invalidate(Stale.Boxes, scope.own, true);
+  }
+
+  /**
+   * Inline drawings whose insides changed: what the rules give their
+   * shapes is asked again at their next paint, the surfaces kept around
+   * them are let go, and where nothing else is due to repaint the whole
+   * element, what they draw is repainted.
+   */
+  private _drawAgain(drawings: ReadonlySet<Element>): void {
+    const tree = this._tree;
+    if (!tree) return;
+    const boxes = this._firstBoxesOf(tree);
+    const inks: Rect[] = [];
+    for (const el of drawings) {
+      const box = boxes.get(el);
+      if (!box) continue;
+      SHAPE_STYLES.delete(box);
+      this._dropSprites(box, true);
+      // a lifted box's pixels are its layer's, painted again in a frame
+      if (this._lifted.size && this._insideLifted(box)) {
+        this.spritesChanged();
+        continue;
+      }
+      const ink = this._inkOf(box);
+      if (ink) inks.push(ink);
+    }
+    if (this._stale === Stale.Nothing) this._repaintInk(inks);
   }
 
   /** The document's `<title>`, when it had one. */
@@ -6927,6 +7133,150 @@ function compareKeys(a: readonly number[], b: readonly number[]): number {
  *  is built again instead: a link's subtree is a handful, and a compound
  *  that matches a container reaches everything in it. */
 const HOVER_RESTYLE_LIMIT = 300;
+
+/** What a list of changes to the tree can restyle (`_changeScope`). */
+interface ChangeScope {
+  own: Set<Element>;
+  boxes: boolean;
+  drawings: Set<Element>;
+  pseudo: 0 | 1 | 2;
+}
+
+/** The elements whose changes are changes to the cascade: a sheet's, what
+ *  the root's colour scheme and the document's language are read from,
+ *  and what every URL resolves against. */
+const CASCADE_TAGS = new Set(['style', 'link', 'meta', 'base']);
+
+/** The attributes nothing reads but the cascade, where a selector tests
+ *  them, and an inline style: a change of one builds no box where it
+ *  changes no style. Everything else may be read by the boxes, a widget, a
+ *  focus stop or a presentational hint. */
+const STYLE_ONLY_ATTRIBUTE = /^(?:class|id|style|data-[^]*|on[a-z]+)$/;
+
+/** A change's reach through a `:has()`: past what is in the element that
+ *  changed and what follows it. */
+const CHANGES_AROUND = CHANGES_HAS_SELF | CHANGES_HAS_BELOW | CHANGES_HAS_LATER;
+
+/** Whether a node is in `document`, or in a shadow tree of an element that
+ *  is. */
+function inDocument(node: AnyNode, document: Document): boolean {
+  let at: AnyNode | null = node;
+  while (at) {
+    if (at === document) return true;
+    at = at instanceof ShadowRoot ? at.host : at.parent;
+  }
+  return false;
+}
+
+/** The outermost inline `<svg>` a node is inside, or null — not the root
+ *  itself, whose own attributes size its box. */
+function drawingAround(node: AnyNode): Element | null {
+  let found: Element | null = null;
+  for (let at = node.parent; at && isElement(at); at = at.parent) {
+    if (tagOf(at) === 'svg') found = at;
+  }
+  return found;
+}
+
+/** Whether a node is, or holds, an element whose change is the cascade's
+ *  (`CASCADE_TAGS`). */
+function holdsCascade(node: AnyNode): boolean {
+  if (!isElement(node)) return false;
+  const stack: Element[] = [node];
+  while (stack.length) {
+    const el = stack.pop()!;
+    if (CASCADE_TAGS.has(tagOf(el))) return true;
+    for (const child of el.children) if (isElement(child)) stack.push(child);
+  }
+  return false;
+}
+
+/** Whether a node coming or going changes what is drawn: anything but a
+ *  comment, or an element nothing draws whatever the sheets say. A text
+ *  of white space alone may be nothing too, but where it is, only layout
+ *  knows. */
+function drawsSomething(node: AnyNode): boolean {
+  if (node.type === 'comment') return false;
+  if (!isElement(node)) return true;
+  const tag = tagOf(node);
+  return tag !== 'script' && tag !== 'template' && tag !== 'title';
+}
+
+/** Whether `el`, or the nearest element around it the last build styled,
+ *  is `display: none` — or none is, outside the document. */
+function undrawn(el: Element, tree: BoxTree): boolean {
+  for (let at: AnyNode | null = el; at && isElement(at); at = at.parent) {
+    const kept = tree.styles.get(at);
+    if (kept) return kept.style.display === 'none';
+  }
+  return true;
+}
+
+/** An element and everything in it into `into`. */
+function addSubtree(el: Element, into: Set<Element>): void {
+  const stack: Element[] = [el];
+  while (stack.length) {
+    const at = stack.pop()!;
+    into.add(at);
+    for (const child of at.children) if (isElement(child)) stack.push(child);
+  }
+}
+
+/** The elements and everything in them, or null past `limit` of them. */
+function withDescendants(
+  els: ReadonlySet<Element>,
+  limit: number,
+): Set<Element> | null {
+  const out = new Set<Element>();
+  const stack: Element[] = [...els];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (out.has(at)) continue;
+    out.add(at);
+    if (out.size > limit) return null;
+    for (const child of at.children) if (isElement(child)) stack.push(child);
+  }
+  return out;
+}
+
+/**
+ * The elements a change can restyle, by where a selector tests what
+ * changed (`CHANGES_*`), into `own`: from `el`, whose attribute changed, or
+ * whose children or text did where `holder` — for which a selector's
+ * subject is `el` itself (`:empty`) or each of its children
+ * (`:first-child`). False where a `:has()` reaches past its anchors, which
+ * would be everything around them.
+ */
+function spreadChange(
+  el: Element,
+  bits: number,
+  holder: boolean,
+  own: Set<Element>,
+): boolean {
+  if (bits & (CHANGES_HAS_BELOW | CHANGES_HAS_LATER)) return false;
+  if (bits & CHANGES_SELF) {
+    own.add(el);
+    if (holder) {
+      for (const child of el.children) if (isElement(child)) own.add(child);
+    }
+  }
+  if (bits & CHANGES_BELOW) addSubtree(el, own);
+  if (bits & CHANGES_LATER) {
+    if (holder) {
+      for (const child of el.children) {
+        if (isElement(child)) addSubtree(child, own);
+      }
+    }
+    for (let s = el.next; s; s = s.next) if (isElement(s)) addSubtree(s, own);
+  }
+  if (bits & CHANGES_HAS_SELF) {
+    // the anchors are around what changed: an attribute's element is no
+    // `:has()`'s anchor for itself, and a holder is for what it holds
+    if (holder) own.add(el);
+    for (let at = el.parent; at && isElement(at); at = at.parent) own.add(at);
+  }
+  return true;
+}
 
 /** How long the content under a still pointer has to have stopped moving
  *  before the hover is asked for again (`HtmlViewNode._holdHover`): a
