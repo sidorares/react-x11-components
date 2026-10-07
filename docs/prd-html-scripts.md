@@ -8,8 +8,9 @@ scripts, a W3C DOM over the document `<Html>` already draws, events, timers
 and form controls. It leaves out shadow DOM, modules, workers, canvas and
 `document.write`.
 
-Status: investigation, 2026-10-04; phase 0 built, 2026-10-07 (see
-"Phases"). Nothing of phase 1 is built. The probes it quotes ran on Node
+Status: investigation, 2026-10-04; phase 0 built, 2026-10-07, and phase
+1's seams in `<Html>` (see "Phases"). The engine in the example is not
+built yet. The probes it quotes ran on Node
 26.0.0 and Bun 1.4.0 on macOS; they were scratch scripts and are not in the
 repository.
 
@@ -289,16 +290,16 @@ host or posts to it.
 In priority order. The first three are correctness and are worth doing
 whether or not scripts land.
 
-| #   | Seam                                       | Why a script host needs it                                                                                   | Today                                                                                                                                                                                                                                         |
-| --- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | A script handed over whole, `src` resolved | the text it runs has to be the script                                                                        | **fixed**: a streaming `<script>` was handed over before its end tag, truncated, and never again; it now waits for its end tag. `src` is resolved against the document's base, as `onResource`'s and `onLink`'s URLs are                      |
-| 2   | `refresh()` that sees every mutation       | a page changes classes and attributes, and `:has()` rules have to follow                                     | **fixed**: `:has()` matchers recompile once a tree changed; `PRAGMA_LANGUAGE` is found again then too, and `ATTRIBUTE_VARS` and the inline drawings (`SvgView` reads a root's `viewBox` and ids once) once an application says it changed one |
-| 3   | `scripting`                                | with scripts on, `<noscript>` is not drawn, and what is in it is not fetched                                 | `scripting` is `none` in media queries (`css/parse.ts`); noscript is drawn, and a `<link>` in a head noscript applies                                                                                                                         |
-| 4   | `onDomEvent`, cancellable, before defaults | `click` → `preventDefault()` on a link, `submit` handlers, `input`/`change`, `keydown`, `focusin`/`focusout` | `onLink` gets an href and no element; a button's press submits in the same call (`widgets.ts:187`); a checkbox is changed before it is reported; labels and summaries report nothing; no keys                                                 |
-| 5   | A control's live value, read and written   | `input.value`, `textarea.value`, `value` versus `defaultValue`                                               | typed text is in a private `FormState` (`form.ts:887`); widgets are uncontrolled; `<input>` writes `attribs.value` on every keystroke (`widgets.ts:722`)                                                                                      |
-| 6   | `focus(el)`, `blur()`, `activeElement`     | `el.focus()`, `autofocus` on a drawn element, `document.activeElement`                                       | `setFocus` styles `:focus` but moves nothing (`node.ts:2698`); the paths that do move focus are private to the hooks; core checkboxes, selects and buttons report no focus                                                                    |
-| 7   | Geometry and style on demand               | `getBoundingClientRect` after a mutation, `elementFromPoint`, `getComputedStyle`                             | `elementRect` and `elementAtPoint` lay out first; the hover still hit-tests the tree last drawn, on purpose (see 7 below); no computed-style accessor                                                                                         |
-| 8   | `onParsed`, `onLoaded`                     | `DOMContentLoaded`, `load`, `readyState`                                                                     | `onDocument` fires per chunk; no load signal, and resources a layout asks for late mean a host cannot know it has seen them all                                                                                                               |
+| #   | Seam                                       | Why a script host needs it                                                                                   | Today                                                                                                                                                                                                                                                                            |
+| --- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | A script handed over whole, `src` resolved | the text it runs has to be the script                                                                        | **fixed**: a streaming `<script>` was handed over before its end tag, truncated, and never again; it now waits for its end tag. `src` is resolved against the document's base, as `onResource`'s and `onLink`'s URLs are                                                         |
+| 2   | `refresh()` that sees every mutation       | a page changes classes and attributes, and `:has()` rules have to follow                                     | **fixed**: `:has()` matchers recompile once a tree changed; `PRAGMA_LANGUAGE` is found again then too, and `ATTRIBUTE_VARS` and the inline drawings (`SvgView` reads a root's `viewBox` and ids once) once an application says it changed one                                    |
+| 3   | `scripting`                                | with scripts on, `<noscript>` is not drawn, and what is in it is not fetched                                 | **built**: the prop draws a `<noscript>` as nothing (a UA `!important` rule under `@media (scripting: enabled)`), keeps the scan out of it, and answers the media feature live                                                                                                   |
+| 4   | `onDomEvent`, cancellable, before defaults | `click` → `preventDefault()` on a link, `submit` handlers, `input`/`change`, `keydown`, `focusin`/`focusout` | **built**, in `dom-events.ts`: the root's capture phase tells pointer and key events first, a widget tells its own click, a cancelled click puts a box back, and a submit is told before the entry list is built. Checkbox, select and button widgets tell no focus (a core ask) |
+| 5   | A control's live value, read and written   | `input.value`, `textarea.value`, `value` versus `defaultValue`                                               | **built**: `controlValue` and `setControlValue` on the handle; a set value goes to the mounted field in place, and typing no longer writes `attribs.value`                                                                                                                       |
+| 6   | `focus(el)`, `blur()`, `activeElement`     | `el.focus()`, `autofocus` on a drawn element, `document.activeElement`                                       | **built**: `focus`, `blur` and `activeElement` on the handle; `activeElement` is read from the window's focus, so it answers for every widget                                                                                                                                    |
+| 7   | Geometry and style on demand               | `getBoundingClientRect` after a mutation, `elementFromPoint`, `getComputedStyle`                             | **built**: `elementRect` and `elementAtPoint` lay out first, and `computedStyle(el, pseudo?)` serializes the properties a script reads (`computed.ts`)                                                                                                                           |
+| 8   | `onParsed`, `onLoaded`                     | `DOMContentLoaded`, `load`, `readyState`                                                                     | **built**: each once a document; `onLoaded` waits for the first complete layout, the store's pending requests and the faces loading                                                                                                                                              |
 
 **1. Scripts handed over whole.** Done: `_sweep` skips a `<script>` the
 parser still has open (`HtmlSource.isOpen`), so it is handed over at its
@@ -556,8 +557,10 @@ that either is a change to the bridge and not to the facade.
      shape's attribute `var()`s and the inline drawings;
    - `elementAtPoint` laying out first.
 1. **Classic scripts, basic DOM.** Engine and facade in the example. In
-   `<Html>`: `scripting`, `onDomEvent`, control values, focus,
-   `onParsed`/`onLoaded`, and `computedStyle`. In the example: `fetch`, the
+   `<Html>` (built): `scripting`, `onDomEvent`, control values, focus,
+   `onParsed`/`onLoaded`, and `computedStyle`, plus `activate`,
+   `submitForm`, `reportValidity` and `resetForm` for a script's
+   `el.click()` and a form's methods. In the example: `fetch`, the
    switch, and the timeout notice. Core: pane options (for the heap
    bound).
 2. **Cheap mutation and more of the web:**

@@ -6,6 +6,7 @@ import { createHtmlElement, parseHtmlFragment } from '../../src/index.js';
 import type {
   HtmlControlRect,
   HtmlDocument,
+  HtmlDomEvent,
   HtmlElement,
   HtmlProps,
   HtmlResourceRequest,
@@ -105,3 +106,46 @@ export const withBytes = (
     }
   />
 );
+
+// A host that runs the scripts: it says so, hears what happens before it
+// happens, and cancels with false.
+export const scripted = (
+  <Html
+    source="<a href=/x>x</a>"
+    scripting
+    onDomEvent={(event: HtmlDomEvent) => {
+      void event.target.attribs.href;
+      void event.x;
+      void event.key;
+      void event.submitter;
+      if (event.type === 'click' && event.cancelable) return false;
+    }}
+    onParsed={() => {}}
+    onLoaded={() => {}}
+  />
+);
+
+// What the handle gives a script host.
+export function ScriptHost(): React.ReactElement {
+  const handle = useHtmlHandle();
+  const doc = handle.document;
+  const el = doc && (doc.children[0] as HtmlElement);
+  if (el) {
+    const value: string | boolean | null = handle.controlValue(el);
+    void value;
+    const set: boolean = handle.setControlValue(el, 'x');
+    void set;
+    void handle.focus(el);
+    handle.blur();
+    const active: HtmlElement | null = handle.activeElement;
+    void active;
+    void handle.activate(el);
+    handle.submitForm(el, null);
+    const valid: boolean = handle.reportValidity(el);
+    void valid;
+    handle.resetForm(el);
+    const style = handle.computedStyle(el, 'before');
+    void style?.color;
+  }
+  return <Html source="<p>x</p>" ref={handle.ref} />;
+}

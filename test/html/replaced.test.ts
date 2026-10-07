@@ -354,6 +354,7 @@ test('sizes: the first entry whose condition holds, past entries that are none, 
     scale: 1,
     scheme: 'light' as const,
     reducedMotion: false,
+    scripting: false,
     decodes: () => true,
   });
   const size = (sizes: string, width = 1000) =>

@@ -1654,6 +1654,25 @@ the old one. Nor by a count of resets: a reset sets a field's text through
 core's `value` setter, since a counter in every key mounted each control in
 the document again, and the focus went with the button pressed.
 
+**What happens to a document is told before what it does**
+(`onDomEvent`, `dom-events.ts`), and a host's `false` stops it — the seam a
+script engine over the DOM stands on, which runs nothing here. Three things
+are load-bearing. **Anything new that does something on a user's action
+asks first**: a click before a link is followed or a button pressed, a key
+before a field types it, a `submit` before the entry list is built — built
+before, a handler that filled in a hidden field sent it empty. **A default
+that changes state before it is asked about puts it back when it is
+cancelled**, as a checkbox's tick and a radio's group do (HTML's
+legacy-pre-activation), and only one that went on is an `input` and a
+`change`. And **an event is told once, by whoever knows it happened**: the
+root's capture phase tells presses, releases and keys before any widget
+hears them, the root tells the click on what the document draws, and a
+checkbox's, a radio's and a button's widget tell their own as they tick or
+press, which the root then leaves alone. The handle's `interactive` reaches
+the hooks' state through one object made once and a ref every render sets
+(`documentInteraction`), so a host calling it between renders is answered
+from the last one.
+
 **What the document draws takes the focus through a box mounted over it.**
 A link, a `<button>`, a summary or a `tabindex` element is a drawing, and
 a drawing takes no focus, so `stops.ts` mounts a **stop** over it — a

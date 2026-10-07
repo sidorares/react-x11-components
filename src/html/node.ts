@@ -61,6 +61,9 @@ import {
   tagOf,
 } from './dom.js';
 import type { Document, ShadowRoot, SheetRef } from './dom.js';
+import { resolve as resolveLength } from './css/values.js';
+import type { Len } from './css/values.js';
+import { cssomStyle } from './computed.js';
 import {
   Cascade,
   HOVER_FOLLOWED,
@@ -314,7 +317,34 @@ export interface HtmlViewProps {
   /** Whether the desktop has asked for less motion: what
    *  `prefers-reduced-motion` is answered from. Default false. */
   reducedMotion?: boolean;
+  /** Whether the host runs the document's scripts: a `<noscript>` is then
+   *  drawn as nothing and nothing in it is asked for, and `@media
+   *  (scripting: enabled)` holds. This runs none. Default false. */
+  scripting?: boolean;
+  /** The parse has ended: every element is in the tree, once a document. */
+  onParsed?: () => void;
+  /** Everything the document asked for has arrived or failed, counted
+   *  from its first complete layout, once a document. */
+  onLoaded?: () => void;
   style?: Style | Style[];
+}
+
+/**
+ * What the component holds that the element does not — the controls'
+ * widgets, the focus's boxes — reached through the element, where the
+ * handle reaches it (`HtmlHandle`). Set by `<Html>`; null for an element
+ * mounted without it.
+ */
+export interface DocumentInteraction {
+  controlValue(el: Element): string | boolean | null;
+  setControlValue(el: Element, value: string | boolean): boolean;
+  focus(el: Element): boolean;
+  blur(): void;
+  activeElement(): Element | null;
+  activate(el: Element): boolean;
+  submit(form: Element, submitter: Element | null): void;
+  reportValidity(form: Element, submitter: Element | null): boolean;
+  reset(form: Element): void;
 }
 
 export function registerHtmlView(): void {
@@ -396,6 +426,8 @@ const enum Stale {
 }
 
 export class HtmlViewNode extends Node {
+  /** What `<Html>` holds, for the handle (`DocumentInteraction`). */
+  interactive: DocumentInteraction | null = null;
   private _source = new HtmlSource();
   /** Where the document's relative URLs resolve: its `<base href>` against
    *  the `baseUrl` prop, or the prop, or nowhere (`url.ts`). */
@@ -706,6 +738,9 @@ export class HtmlViewNode extends Node {
       },
       this._urls,
     );
+    // a request that came to nothing changes nothing the layout reads, and
+    // still counts to the document's `load`
+    this._resources.settled = () => this._lifecycle();
     this._images = new ImageSources({
       request: (url, element) =>
         this._resources.request({ url, kind: 'image', element }),
@@ -724,6 +759,9 @@ export class HtmlViewNode extends Node {
       },
       'sans-serif',
     );
+    // before the first scan: a document that runs scripts asks for nothing
+    // in a `<noscript>`, from its first render on
+    this._source.setScripting(this._props().scripting ?? false);
     this._read();
   }
 
@@ -844,6 +882,7 @@ export class HtmlViewNode extends Node {
     }
     this._updateBase();
     this._sweep();
+    this._lifecycle();
   }
 
   /**
@@ -1317,6 +1356,8 @@ export class HtmlViewNode extends Node {
     // over the sheets as they were parsed, as a width across a breakpoint is
     const reducedMotion = props.reducedMotion ?? false;
     this._cascade.reducedMotion = reducedMotion;
+    const scripting = props.scripting ?? false;
+    this._cascade.scripting = scripting;
     // The faces this width and scheme declare: a `@font-face` may sit in a
     // `@media` block like any rule.
     const cssWidth = width / this._scale;
@@ -1331,6 +1372,7 @@ export class HtmlViewNode extends Node {
           cssHeight,
           this._scale,
           reducedMotion,
+          scripting,
         ),
       ),
     );
@@ -1575,6 +1617,53 @@ export class HtmlViewNode extends Node {
     } catch (error) {
       this._fail(error, target);
     }
+    this._lifecycle();
+  }
+
+  /** The document `onParsed` and `onLoaded` were last told of. */
+  private _parsedOf: Document | null = null;
+  private _loadedOf: Document | null = null;
+
+  /**
+   * Tell the host where the document has got to, each once a document:
+   * `onParsed` once its parse has ended, and `onLoaded` once, after that,
+   * it has been laid out whole and nothing it asked for is on its way — a
+   * sheet, an image and its decode, a face. Counted from a layout because
+   * a background, a font and an image's chosen source are asked for only
+   * as a layout finds them. Told a microtask later, never from inside a
+   * paint or a commit: a host runs a page's scripts from them.
+   */
+  private _lifecycle(): void {
+    if (!this._source.complete || this.destroyed) return;
+    const doc = this._source.document;
+    const props = this._props();
+    if (this._parsedOf !== doc) {
+      this._parsedOf = doc;
+      if (props.onParsed) {
+        void Promise.resolve().then(() => {
+          if (this._source.document === doc && !this.destroyed) {
+            this._props().onParsed?.();
+          }
+        });
+      }
+    }
+    if (
+      this._loadedOf === doc ||
+      !this._tree ||
+      this._stale !== Stale.Nothing ||
+      this._partial ||
+      this._resources.pending > 0 ||
+      this._webFonts.loading
+    ) {
+      return;
+    }
+    this._loadedOf = doc;
+    if (!props.onLoaded) return;
+    void Promise.resolve().then(() => {
+      if (this._source.document === doc && !this.destroyed) {
+        this._props().onLoaded?.();
+      }
+    });
   }
 
   /**
@@ -2305,7 +2394,8 @@ export class HtmlViewNode extends Node {
     const props = this._props();
     const scheme = props.look.colorScheme;
     const reducedMotion = props.reducedMotion ?? false;
-    const key = `${target}|${viewport}|${s}|${scheme}|${reducedMotion}|${this._source.revision}`;
+    const scripting = props.scripting ?? false;
+    const key = `${target}|${viewport}|${s}|${scheme}|${reducedMotion}|${scripting}|${this._source.revision}`;
     if (key === this._choseIn) return null;
     this._choseIn = key;
     return this._images.choose(facts.pictures, {
@@ -2314,6 +2404,7 @@ export class HtmlViewNode extends Node {
       scale: s,
       scheme,
       reducedMotion,
+      scripting,
       decodes: decodesImageType,
     });
   }
@@ -2675,6 +2766,10 @@ export class HtmlViewNode extends Node {
     super.applyProps(nextProps, prevProps);
     const next = nextProps as unknown as HtmlViewProps;
     const prev = prevProps as unknown as HtmlViewProps;
+    // what the scan finds — a `<noscript>`'s images and sheets — before the
+    // source is read, so a document that runs scripts never asks for them
+    const scripted = this._source.setScripting(next.scripting ?? false);
+    if (scripted) this._invalidate(Stale.Style);
     if (
       next.look !== prev.look ||
       next.stylesheet !== prev.stylesheet ||
@@ -2691,6 +2786,8 @@ export class HtmlViewNode extends Node {
     }
     if (next.source !== prev.source || next.complete !== prev.complete) {
       this._read();
+    } else if (scripted) {
+      this._sweep();
     } else if ((next.domRevision ?? 0) !== (prev.domRevision ?? 0)) {
       this._invalidate(Stale.Style);
     } else if ((next.baseUrl ?? null) !== (prev.baseUrl ?? null)) {
@@ -2955,6 +3052,83 @@ export class HtmlViewNode extends Node {
   elementRect(element: Element): Rect | null {
     this._prepare(this.abs.width || 1);
     return this._rectOf(element);
+  }
+
+  /**
+   * An element's style as `getComputedStyle` reads it (`computed.ts`), by
+   * property name, laid out first as `elementRect` is: lengths in CSS
+   * pixels, colours as `rgb()`, and the size and the edges of its box the
+   * ones its layout came to where it has a box. `pseudo` is a `::before`
+   * or an `::after`, null where no rule gives the element one. Null for an
+   * element the document has not styled — not in it, or in a
+   * `<template>`.
+   */
+  computedStyle(
+    element: Element,
+    pseudo: 'before' | 'after' | null = null,
+  ): Record<string, string> | null {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    const cascade = this._cascade;
+    if (!tree || !cascade) return null;
+    const style = this._styleOf(element);
+    if (!style) return null;
+    if (pseudo) {
+      const own = cascade.pseudoStyleFor(element, pseudo, style);
+      return own ? cssomStyle(own, this._scale, null) : null;
+    }
+    const box = boxFor(tree.root, element);
+    if (!box) return cssomStyle(style, this._scale, null);
+    // margins are no part of a box: worked out again, as layout did, from
+    // the width of the block that holds it
+    const across = box.parent ? box.parent.contentWidth : this.abs.width;
+    const margin = (len: Len) => resolveLength(len, across);
+    return cssomStyle(style, this._scale, {
+      width: box.width,
+      height: box.height,
+      margin: [
+        margin(style.marginTop),
+        margin(style.marginRight),
+        margin(style.marginBottom),
+        margin(style.marginLeft),
+      ],
+      border: [
+        box.borderTop,
+        box.borderRight,
+        box.borderBottom,
+        box.borderLeft,
+      ],
+      padding: [box.padTop, box.padRight, box.padBottom, box.padLeft],
+    });
+  }
+
+  /**
+   * An element's computed style: the build's, or where the build gave it
+   * none — it is inside an element that is `display: none` — the cascade's
+   * for it, from the nearest element around it that has one, as a
+   * browser's `getComputedStyle` answers for an element with no box.
+   */
+  private _styleOf(element: Element): ComputedStyle | null {
+    const tree = this._tree;
+    const cascade = this._cascade;
+    if (!tree || !cascade) return null;
+    const known = tree.styles.get(element)?.style;
+    if (known) return known;
+    const chain: Element[] = [];
+    let style: ComputedStyle | undefined;
+    for (let at: Element | null = element; at;) {
+      chain.push(at);
+      const parent = flatParentOf(at);
+      if (!parent) return null;
+      style = tree.styles.get(parent)?.style;
+      if (style) break;
+      at = parent;
+    }
+    if (!style) return null;
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      style = cascade.styleFor(chain[i], style, false);
+    }
+    return style;
   }
 
   /**

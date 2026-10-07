@@ -198,6 +198,10 @@ export interface MediaCondition {
   /** `prefers-reduced-motion`, answered from the desktop's setting
    *  (`mediaMatches`' `reducedMotion`). */
   motion?: 'reduce' | 'no-preference';
+  /** `scripting`, answered from whether the host runs the document's
+   *  scripts (`mediaMatches`' `scripting`): `enabled` or `none`, since
+   *  `initial-only` holds for neither. */
+  scripting?: 'enabled' | 'none';
   /** Set when the query could not be evaluated as any of these tests:
    *  `true` keeps the rule, `false` drops it, and neither depends on the
    *  viewport or the theme. */
@@ -2571,6 +2575,12 @@ function meet(a: MediaCondition, b: MediaCondition): MediaCondition | null {
     if (out.motion !== undefined && out.motion !== b.motion) return null;
     out.motion = b.motion;
   }
+  if (b.scripting !== undefined) {
+    if (out.scripting !== undefined && out.scripting !== b.scripting) {
+      return null;
+    }
+    out.scripting = b.scripting;
+  }
   return out;
 }
 
@@ -2589,6 +2599,9 @@ function opposites(test: MediaCondition): MediaCondition[] {
   }
   if (test.motion) {
     out.push({ motion: test.motion === 'reduce' ? 'no-preference' : 'reduce' });
+  }
+  if (test.scripting) {
+    out.push({ scripting: test.scripting === 'none' ? 'enabled' : 'none' });
   }
   return out;
 }
@@ -2633,6 +2646,8 @@ function featureTest(term: string): MediaCondition | boolean | null {
     }
     // true where it is anything but `no-preference`, which is `reduce`
     if (key === 'prefers-reduced-motion') return { motion: 'reduce' };
+    // and anything but `none`, which is `enabled`
+    if (key === 'scripting') return { scripting: 'enabled' };
     return desktopFeature(key, null);
   }
   const key = feature[1].toLowerCase();
@@ -2675,6 +2690,18 @@ function featureTest(term: string): MediaCondition | boolean | null {
     const motion = value.trim().toLowerCase();
     return motion === 'reduce' || motion === 'no-preference'
       ? { motion }
+      : null;
+  }
+  if (key === 'scripting') {
+    // Answered live, from whether the host runs the document's scripts —
+    // `<Html scripting>` — which this never does itself: `enabled` with
+    // it on, `none` with it off, and `initial-only` with neither, since a
+    // page that runs scripts runs them after the first paint too (Media
+    // Queries 5, 9.1).
+    const scripting = value.trim().toLowerCase();
+    if (scripting === 'initial-only') return false;
+    return scripting === 'enabled' || scripting === 'none'
+      ? { scripting }
       : null;
   }
   if (key === 'orientation') {
@@ -2845,8 +2872,8 @@ const BOOLEAN_TRUE = new Set([
  * its feature does not take, which is unknown (Media Queries 4, 3.2): it
  * holds no more under `not` than without it, so each feature lists every
  * value it takes. `value` is null in the boolean context. The colour is
- * eight bits a component on no palette and no grid; scripts never run
- * here, so `scripting` is `none`.
+ * eight bits a component on no palette and no grid. `scripting` is the
+ * host's to say, and answered live (`featureTest`).
  */
 function desktopFeature(key: string, value: string | null): boolean | null {
   const v = value?.trim().toLowerCase() ?? null;
@@ -2898,11 +2925,6 @@ function desktopFeature(key: string, value: string | null): boolean | null {
       return keyword({ 'no-preference': true, reduce: false }, false);
     case 'forced-colors':
       return keyword({ none: true, active: false }, false);
-    case 'scripting':
-      return keyword(
-        { none: true, 'initial-only': false, enabled: false },
-        false,
-      );
     case 'display-mode':
       return keyword(
         {
@@ -2965,6 +2987,9 @@ export function mediaMatches(
   /** Whether the desktop has asked for less motion: what
    *  `prefers-reduced-motion` is answered from. */
   reducedMotion = false,
+  /** Whether the host runs the document's scripts: what `scripting` is
+   *  answered from. */
+  scripting = false,
 ): boolean {
   if (!media) return true;
   for (const block of media) {
@@ -2984,7 +3009,8 @@ export function mediaMatches(
         (c.maxAspect === undefined || width <= c.maxAspect * height) &&
         (c.maxResolution === undefined || resolution <= c.maxResolution) &&
         (c.scheme === undefined || c.scheme === scheme) &&
-        (c.motion === undefined || (c.motion === 'reduce') === reducedMotion)
+        (c.motion === undefined || (c.motion === 'reduce') === reducedMotion) &&
+        (c.scripting === undefined || (c.scripting === 'enabled') === scripting)
       ) {
         any = true;
       }

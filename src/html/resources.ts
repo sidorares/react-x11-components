@@ -152,6 +152,25 @@ export class ResourceStore {
     this._urls = urls;
   }
 
+  /** Told when a request that was on its way is not any more: arrived,
+   *  declined, failed, or decoded — whatever it came to, and whether or
+   *  not it changed anything (`HtmlViewNode`'s `onLoaded`). */
+  settled: (() => void) | null = null;
+
+  /** How many of the requests are on their way: asked for, and neither
+   *  answered nor failed, an image's decode included. */
+  get pending(): number {
+    let n = 0;
+    for (const entry of this._entries.values()) {
+      if (entry.state === 'pending') n += 1;
+    }
+    return n;
+  }
+
+  private _done(): void {
+    if (!this._destroyed) this.settled?.();
+  }
+
   /** A URL as the document wrote it, as the store keys it. */
   private _key(url: string): string {
     return this._urls ? this._urls.resolve(url) : url;
@@ -183,8 +202,14 @@ export class ResourceStore {
     }
     if (isPromise(answer)) {
       answer.then(
-        (result) => this._settle(url, entry, result, false, request.kind),
-        () => this._settle(url, entry, null, false, request.kind),
+        (result) => {
+          this._settle(url, entry, result, false, request.kind);
+          if (entry.state !== 'pending') this._done();
+        },
+        () => {
+          this._settle(url, entry, null, false, request.kind);
+          this._done();
+        },
       );
       return;
     }
@@ -249,9 +274,11 @@ export class ResourceStore {
           entry.size = rasterSize(image.width, image.height);
           entry.state = 'ready';
           this._changed('image', entry.layout !== false);
+          this._done();
         },
         () => {
           entry.state = 'failed';
+          this._done();
         },
       );
       return;
