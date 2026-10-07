@@ -17,9 +17,11 @@
 //   - **No mixed content.** A secure page's stylesheets and fonts come over
 //     a secure connection or not at all, and its images are asked for over
 //     one (`mixedContent`), as a browser has it.
-//   - **No cookies, no scripts, no downloads.** Nothing is stored between
-//     requests, and anything that is not a document, an image, a stylesheet
-//     or a font is not fetched at all.
+//   - **No cookies, no downloads.** Nothing is stored between requests.
+//     Anything that is not a document, an image, a stylesheet or a font is
+//     not fetched at all — but a script, and a script's own `fetch`, where
+//     the browser's switch runs a page's scripts (`script/`), the `fetch`
+//     only of the page's own origin.
 //   - **A form's POST says where it came from.** Its `Origin` and `Referer`
 //     are the page's, as a browser's are, because a server tells a form's
 //     POST from a forged one by them. What it cannot send is a session: with
@@ -58,9 +60,13 @@ const ACCEPT = {
     'image/webp,image/png,image/jpeg,image/gif,image/svg+xml,image/*;q=0.5,*/*;q=0.1',
   stylesheet: 'text/css,*/*;q=0.1',
   font: 'font/woff2,font/woff,font/ttf,font/otf,*/*;q=0.5',
+  script: '*/*',
 } as const;
 
-export type ResourceKind = 'image' | 'stylesheet' | 'font';
+/** What a page asks for. A script is asked for only where the browser runs
+ *  the page's scripts (`script/`), and is blocked on a secure page over an
+ *  insecure connection, as a stylesheet is. */
+export type ResourceKind = 'image' | 'stylesheet' | 'font' | 'script';
 
 /** A response's body, and what the server said about it. */
 export interface Fetched {
@@ -326,6 +332,85 @@ export class Network {
       type,
       charset,
       body: bodyOf(response, MAX_DOCUMENT),
+    };
+  }
+
+  /**
+   * A page's `fetch`: any method, its headers and body, and the response's
+   * status, headers and body, whatever the status — a 404 is an answer. Not
+   * cached, and over HTTP alone. The caller has kept it to the page's
+   * origin; this keeps the browser's own headers on it.
+   */
+  async request(
+    request: {
+      url: string;
+      method: string;
+      headers: [string, string][];
+      body: string | null;
+    },
+    page: string,
+    signal: AbortSignal,
+  ): Promise<{
+    url: string;
+    status: number;
+    statusText: string;
+    redirected: boolean;
+    headers: [string, string][];
+    charset: string | null;
+    bytes: Uint8Array;
+  }> {
+    const scheme = schemeOf(request.url);
+    if (scheme !== 'http' && scheme !== 'https') {
+      throw new NetworkError(
+        `A script cannot fetch ${scheme}: URLs.`,
+        'ERR_FAILED',
+      );
+    }
+    const headers: Record<string, string> = {};
+    for (const [name, value] of request.headers) {
+      // what a browser sets itself, and a page may not (Fetch 2.2.2)
+      if (
+        /^(host|origin|referer|cookie|user-agent|content-length|connection)$/i.test(
+          name,
+        )
+      ) {
+        continue;
+      }
+      headers[name.toLowerCase()] = value;
+    }
+    headers['user-agent'] = USER_AGENT;
+    headers['accept-language'] ??= this._language;
+    headers.accept ??= '*/*';
+    headers.origin = originOf(page);
+    const referrer = referrerFor(page, request.url);
+    if (referrer) headers.referer = referrer;
+    const method = request.method.toUpperCase();
+    const timer = AbortSignal.timeout(TIMEOUT);
+    log('fetch', method, request.url);
+    const response = await this._paced(request.url, signal, () =>
+      fetch(request.url, {
+        method,
+        headers,
+        body:
+          method === 'GET' || method === 'HEAD'
+            ? undefined
+            : (request.body ?? undefined),
+        signal: AbortSignal.any([signal, timer]),
+        redirect: 'follow',
+      }),
+    );
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of bodyOf(response, MAX_RESOURCE))
+      chunks.push(chunk);
+    const { charset } = contentType(response.headers.get('content-type'));
+    return {
+      url: response.url || request.url,
+      status: response.status,
+      statusText: response.statusText,
+      redirected: response.redirected,
+      headers: [...response.headers.entries()],
+      charset,
+      bytes: concat(chunks),
     };
   }
 

@@ -1750,6 +1750,34 @@ at the size the window last held still at, not the size it is now: one that
 followed the window laid its page out again at every step of a drag, as
 often as the tab showing, for pixels nobody sees.
 
+**The browser runs a page's scripts in a context of their own, and what
+keeps them there is a few rules** (`examples/browser/script/`,
+docs/prd-html-scripts.md). `<Html>` runs nothing; the example's engine is a
+`node:vm` context a document, behind the toolbar's JS switch. Each rule
+closes a way out a DOM binding opens by accident:
+
+- **The facade is source text.** `installDom` (`dom.ts`) is handed to the
+  context by `toString()` and closes over nothing, so every object a page
+  touches is the context's. Anything new it needs comes over the bridge as
+  an op; an import there is unreachable at run time, and a host object
+  handed in has the host's `Function` for its `constructor.constructor`.
+- **Only primitives cross.** The bridge answers primitives and a host
+  error as a coded string the facade throws as its own `DOMException`; the
+  host hands an entry its input as a JSON string through `__in`, a
+  non-configurable data property, so no page puts a setter where the host
+  writes; and no entry lets a page's exception out, so the host never reads
+  a page's object. An op that answered an object would be a way out.
+- **The tree changes are `<Html>`'s once a task.** An op marks the host
+  dirty; the outermost entry's end refreshes (`settled`), and an op that
+  asks the layout anything flushes first, since it has to answer from the
+  change.
+- **Run it on Bun too.** `test/browser-scripts.test.ts` runs on Node, and
+  Bun's `vm` differs in ways no probe found until the whole browser ran
+  there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its
+  `console` cannot be replaced, and its error stacks have no message line.
+  The engine feature-detects the first; a change to the engine is checked
+  by running the browser under `bun` before it is believed.
+
 **A document's fonts are registered under names nothing else has.**
 `@font-face` faces go through `onResource` as `kind: 'font'` and into
 react-x11's font manager with `loadFont` — the application's manager, so

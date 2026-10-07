@@ -18,9 +18,14 @@
 // and the keys. Where no pane can be shown, the same page runs in this
 // process instead, and `BROWSER_INLINE=1` asks for that anywhere.
 //
-// Nothing a page contains runs. `<Html>` hands scripts to `onScript` and
-// executes none, and this browser has no engine to give them; a page that
-// only draws itself with JavaScript shows what it has without it.
+// Nothing a page contains runs unless you say so. `<Html>` hands scripts to
+// `onScript` and executes none; this browser has an engine to give them
+// (`script/`, docs/prd-html-scripts.md) and runs it only on a site whose JS
+// switch, in the toolbar, is on — every site with `BROWSER_SCRIPTS=1`. The
+// engine keeps a page's scripts in a `vm` context of their own and stops
+// one that runs away, but it is no boundary against a page that sets out
+// to attack the machine: the tab's process is, and it is a weak one. A page
+// that only draws itself with JavaScript shows what it has without it.
 //
 // Keys, on the platform's shortcut modifier — Ctrl on X11, Cmd on macOS:
 //
@@ -523,6 +528,9 @@ interface ToolbarProps {
   active: boolean;
   dispatch: (action: Action) => void;
   register: (id: string, input: TextInputNode | null) => void;
+  /** Whether the page's site runs its scripts, and a flip of that. */
+  scripts: boolean;
+  onScripts: (on: boolean) => void;
 }
 
 function Toolbar({
@@ -530,6 +538,8 @@ function Toolbar({
   active,
   dispatch,
   register,
+  scripts,
+  onScripts,
 }: ToolbarProps): ReactElement {
   const entry = tab.entries[tab.index] ?? null;
   const input = useRef<TextInputNode | null>(null);
@@ -643,8 +653,32 @@ function Toolbar({
           {`${Math.round(tab.zoom * 100)}%`}
         </Button>
       ) : null}
+      {entry && /^(https?|file):/.test(entry.url) ? (
+        // the site's switch: its scripts run where it is on
+        <Button
+          variant={scripts ? 'solid' : 'ghost'}
+          size="small"
+          aria-label={
+            scripts
+              ? 'Scripts run on this site: turn them off'
+              : 'Scripts do not run on this site: turn them on'
+          }
+          onPress={() => onScripts(!scripts)}
+        >
+          JS
+        </Button>
+      ) : null}
     </box>
   );
+}
+
+/** A site, as its scripts' switch is kept: the origin of its pages. */
+function siteOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
 }
 
 // --- one tab's page ------------------------------------------------------------
@@ -655,6 +689,8 @@ interface TabPageProps {
   tab: Tab;
   /** Whether it is the tab showing, the only one whose page Tab goes to. */
   active: boolean;
+  /** Whether the page's scripts run (`PageProps.scripts`). */
+  scripts: boolean;
   /** Run the page in this process rather than a pane of its own. */
   inline: boolean;
   transport?: PaneTransport;
@@ -673,6 +709,7 @@ interface TabPageProps {
 function TabPage({
   tab,
   active,
+  scripts,
   inline,
   transport,
   dispatch,
@@ -732,6 +769,7 @@ function TabPage({
     loadFresh: tab.loading?.fresh ?? false,
     loadPost: tab.loading?.post ?? null,
     zoom: tab.zoom,
+    scripts,
     docs: [...new Set(tab.entries.map((e) => e.doc))].join(','),
     onCommit,
     onFinish,
@@ -866,6 +904,9 @@ export interface BrowserProps {
   /** How a page's pane is started — `<Frame transport>`, the seam a test
    *  runs panes through without forking. */
   paneTransport?: PaneTransport;
+  /** Whether a site's scripts run where nobody switched them on or off for
+   *  it. Default: `BROWSER_SCRIPTS=1`. */
+  scripts?: boolean;
 }
 
 export function Browser({
@@ -873,6 +914,7 @@ export function Browser({
   colorScheme = 'system',
   inline = false,
   paneTransport,
+  scripts = process.env.BROWSER_SCRIPTS === '1',
 }: BrowserProps): ReactElement {
   const [state, dispatch] = useReducer(reducer, start, (url) => {
     const tab = newTab(url, url === HOME);
@@ -890,6 +932,13 @@ export function Browser({
   const active = state.tabs.find((t) => t.id === state.active) ?? state.tabs[0];
   const entry = active.entries[active.index];
   const [settled, onAreaLayout] = useSettledSize();
+
+  // Which sites run their scripts: each site's switch, where someone
+  // flipped it, and `scripts` for the rest. A site is an origin, as a
+  // browser's site settings are kept.
+  const [sites, setSites] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const scriptsFor = (url: string): boolean =>
+    sites.get(siteOf(url)) ?? scripts;
 
   const open = useCallback(
     (url: string, background: boolean, post: PostData | null = null) => {
@@ -1043,6 +1092,19 @@ export function Browser({
                 active={tab.id === active.id}
                 dispatch={dispatch}
                 register={register}
+                scripts={scriptsFor(tab.entries[tab.index]?.url ?? '')}
+                onScripts={(on) => {
+                  const shown = tab.entries[tab.index];
+                  if (!shown) return;
+                  setSites((all) => new Map(all).set(siteOf(shown.url), on));
+                  // a document's scripts are run or not as it is made: the
+                  // switch takes on the page loaded again
+                  dispatch({
+                    type: 'navigate',
+                    id: tab.id,
+                    nav: navigation(shown.url, true, false, shown.post),
+                  });
+                }}
               />
             </TabsContent>
           ))}
@@ -1076,6 +1138,9 @@ export function Browser({
               <TabPage
                 tab={tab}
                 active={tab.id === active.id}
+                scripts={scriptsFor(
+                  tab.loading?.url ?? tab.entries[tab.index]?.url ?? '',
+                )}
                 inline={inline}
                 transport={paneTransport}
                 dispatch={dispatch}

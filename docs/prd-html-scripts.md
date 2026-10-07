@@ -8,9 +8,10 @@ scripts, a W3C DOM over the document `<Html>` already draws, events, timers
 and form controls. It leaves out shadow DOM, modules, workers, canvas and
 `document.write`.
 
-Status: investigation, 2026-10-04; phase 0 built, 2026-10-07, and phase
-1's seams in `<Html>` (see "Phases"). The engine in the example is not
-built yet. The probes it quotes ran on Node
+Status: investigation, 2026-10-04; phase 0 built, 2026-10-07; phase 1
+built, 2026-10-08, but for core's pane options (see "Phases"). The engine
+is `examples/browser/script/`, behind the toolbar's JS switch and
+`BROWSER_SCRIPTS=1`. The probes it quotes ran on Node
 26.0.0 and Bun 1.4.0 on macOS; they were scratch scripts and are not in the
 repository.
 
@@ -18,7 +19,8 @@ repository.
 
 - **The engine is `node:vm`.** Each document gets one context, hardened as
   described below, in the page's own process (the tab's `<Frame>` pane). It
-  behaves the same on Node and Bun. ShadowRealm would be the right boundary
+  behaves the same on Node and Bun, once three of Bun's differences are
+  worked around (see "What building it found"). ShadowRealm would be the right boundary
   and is unusable today: it sits behind a flag on Node, and on Bun the
   realm carries the host's whole global, `process` included. Workers are
   phase 2.
@@ -284,6 +286,34 @@ what a worker would send over a channel, and what `docs/prd-html.md`'s
 isolated mode calls the operation log. Phase 1 does not paint phase 2
 into a corner: the facade stays the same, and the bridge either calls the
 host or posts to it.
+
+## What building it found
+
+Phase 1 was built after the probes above, and running a page in the whole
+browser on both runtimes found what they had not:
+
+- **Bun drops a `DONT_CONTEXTIFY` context's `var`s.** `var a = 5; typeof
+a` answers `'undefined'` there, so a classic script's globals vanish and
+  every script that shares one with the next breaks. A context over an
+  object with no prototype keeps them, and closes leak 1 as well. The
+  engine asks the runtime once (`createPageContext`) and takes that one
+  where `DONT_CONTEXTIFY` loses the `var`, so it moves back the day Bun
+  fixes it. Every escape above was checked again over it, on both.
+- **Bun's context has a `console` no definition replaces.** It is an own
+  property of the global, and a page reads it whatever is defined over it,
+  but its methods can be set: the facade sets them.
+- **An unhandled rejection in a context reaches `process`**, on both, and
+  its default ends the process — the tab. A page's is told apart from the
+  host's by its prototype, the context's `Promise.prototype`, read without
+  running anything of the page's, and reported in the page; any other is
+  thrown again (`engine.ts`).
+- **The transpiler's `__name`.** tsx keeps a function's name by calling a
+  `__name` helper defined at the module's top, so `toString()` of the
+  facade calls a name the context does not have. The engine gives it one.
+  Bun's transpiler calls none.
+- **A timeout's error is the context's on Node**, so it is no `instanceof
+Error` in the host, and the host's on Bun. Its `code` says which it is on
+  both, and a page's own `try` cannot catch it.
 
 ## The seams `<Html>` needs
 
@@ -556,13 +586,13 @@ that either is a change to the bridge and not to the facade.
    - `refresh()` with no stale caches: `:has()`, the pragma language, a
      shape's attribute `var()`s and the inline drawings;
    - `elementAtPoint` laying out first.
-1. **Classic scripts, basic DOM.** Engine and facade in the example. In
-   `<Html>` (built): `scripting`, `onDomEvent`, control values, focus,
-   `onParsed`/`onLoaded`, and `computedStyle`, plus `activate`,
-   `submitForm`, `reportValidity` and `resetForm` for a script's
-   `el.click()` and a form's methods. In the example: `fetch`, the
-   switch, and the timeout notice. Core: pane options (for the heap
-   bound).
+1. **Classic scripts, basic DOM** (built, but core's pane options). Engine
+   and facade in the example. In `<Html>`: `scripting`, `onDomEvent`,
+   control values, focus, `onParsed`/`onLoaded`, and `computedStyle`, plus
+   `activate`, `submitForm`, `reportValidity` and `resetForm` for a
+   script's `el.click()` and a form's methods. In the example: `fetch`,
+   the switch, and the timeout notice. Core: pane options (for the heap
+   bound), not done.
 2. **Cheap mutation and more of the web:**
    - scoped refresh from attribute and child-list records;
    - `MutationObserver`, `XMLHttpRequest`;

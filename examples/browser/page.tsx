@@ -12,9 +12,15 @@
 // count of resources still in flight — is drawn here, because it sits over
 // the page and a host can draw nothing over a pane.
 //
+// A page's scripts run here too where the browser's switch says so for its
+// site (`scripts`): `script/` is the engine, one `node:vm` context a
+// document over `<Html>`'s DOM, and the process is what bounds it — a page
+// that runs away is stopped by a timeout and says so in the bubble, and one
+// that grows without bound costs this tab.
+//
 // What crosses the boundary is small on purpose. In: which history step to
-// show, what to load, the zoom — numbers and strings, so a browser re-render
-// that changed none of them sends nothing. Out, through callbacks that
+// show, what to load, the zoom, whether scripts run — numbers, strings and a
+// flag, so a browser re-render that changed none of them sends nothing. Out, through callbacks that
 // arrive as one-way messages: a document to make a history step of, its
 // title and icon, a link followed or a form submitted — which is a link
 // with, for a POST, a body. The history is the browser's; the
@@ -69,10 +75,13 @@ import type { TabIcon } from './favicon.js';
 import {
   Network,
   NetworkError,
+  USER_AGENT,
   resourceResult,
   schemeOf,
   videoSource,
 } from './network.js';
+import { useScripts } from './script/index.js';
+import type { ScriptsOptions } from './script/index.js';
 import type { DocumentResponse, PostData, ResourceKind } from './network.js';
 import {
   BLANK,
@@ -122,6 +131,10 @@ export interface PageProps {
    *  reload of the page one answered. */
   loadPost: PostData | null;
   zoom: number;
+  /** Whether the page's scripts run: the browser's switch, for the site
+   *  the page is from. Read as a document is made; the browser reloads the
+   *  page when it changes. */
+  scripts: boolean;
   /** The documents the tab's history still holds, comma-separated. Any
    *  other is let go. */
   docs: string;
@@ -354,7 +367,11 @@ export default function Page(props: PageProps): ReactElement {
 
   const onLink = (href: string, ev: X11MouseEvent<DrawnNode>) => {
     if (/^javascript:/i.test(href)) {
-      setNotice('Scripts do not run in this browser.');
+      setNotice(
+        props.scripts
+          ? 'javascript: links are not run by this browser.'
+          : 'Scripts do not run on this site; the toolbar’s JS switch turns them on.',
+      );
       return;
     }
     if (!/^(?:https?|file|data|about|view-source):/i.test(href)) {
@@ -397,6 +414,62 @@ export default function Page(props: PageProps): ReactElement {
         : null;
     live.current.onLink(action, target === '_blank' ? 'tab' : 'here', post);
   };
+
+  // The page's scripts, where they run: the engine reads the pane it is
+  // shown in and the network through these, the latest of each.
+  const scriptSeams: ScriptsOptions = {
+    userAgent: USER_AGENT,
+    language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
+    viewport: () => {
+      const pane = scroller.current;
+      const box = pane?.getClientRects()[0];
+      return {
+        width: (box?.width ?? 0) / zoom,
+        height: (box?.height ?? 0) / zoom,
+        scrollX: (pane?.scrollX ?? 0) / zoom,
+        scrollY: (pane?.scrollY ?? 0) / zoom,
+        zoom,
+        dpr: (pane?.scale ?? 1) * zoom,
+        left: box?.x ?? 0,
+        top: box?.y ?? 0,
+      };
+    },
+    scrollTo: (x, y) =>
+      scroller.current?.scrollTo({ x: x * zoom, y: y * zoom }),
+    navigate: (to, how) =>
+      live.current.onLink(to, how === 'tab' ? 'tab' : 'here', null),
+    reload: () => live.current.onCommand('reload'),
+    go: (delta) => {
+      if (delta) live.current.onCommand(delta < 0 ? 'back' : 'forward');
+    },
+    log: (level, text) => {
+      if (process.env.BROWSER_DEBUG) console.error(`[page ${level}]`, text);
+    },
+    title: (title) => live.current.onMeta(doc, title, undefined),
+    fetch: async (request, signal) => {
+      const response = await network.request(request, pageUrl, signal);
+      return { ...response, body: decode(response.bytes, response.charset) };
+    },
+    load: async (src) => {
+      const fetched = await network.resource(
+        src,
+        'script',
+        pageUrl,
+        requests.signal,
+      );
+      return fetched ? decode(fetched.bytes, fetched.charset) : null;
+    },
+    onTimeout: () =>
+      setNotice('A script on this page ran too long, and was stopped.'),
+    // the browser's own chords stay the browser's, whatever a page's
+    // listener says: a page cancels a key, never the shortcut to close it
+    reserved: (event) =>
+      (event.type === 'keydown' || event.type === 'keyup') &&
+      ((cocoa ? event.metaKey : event.ctrlKey) ||
+        (event.altKey && /^Arrow(Left|Right)$/.test(event.key ?? '')) ||
+        /^F[56]$/.test(event.key ?? '')),
+  };
+  const scripts = useScripts(props.scripts, handle, url, scriptSeams);
 
   useEffect(() => {
     if (!notice) return;
@@ -509,9 +582,17 @@ export default function Page(props: PageProps): ReactElement {
                   : page.baseUrl
               }
               onResource={onResource}
-              onDocument={onDocument}
               onLink={onLink}
               onSubmit={onSubmit}
+              scripting={scripts.scripting}
+              onScript={scripts.onScript}
+              onParsed={scripts.onParsed}
+              onLoaded={scripts.onLoaded}
+              onDomEvent={scripts.onDomEvent}
+              onDocument={(document: Document) => {
+                scripts.onDocument?.(document);
+                onDocument(document);
+              }}
               onViewportOverflow={(next) =>
                 setViewport({ doc, overflow: next })
               }
