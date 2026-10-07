@@ -1564,6 +1564,24 @@ host refuses, and the bench's harness measured it a viewport tall until a
 query built it; anything new that holds the first rendering has to be told
 when what it waits on will never come.
 
+**A cache kept by an element is dropped by what can make it stale.** A
+`refresh()` is an application saying it changed the tree — anything in it,
+an attribute or the middle of a drawing — and a stream's chunk is the
+parser adding to it. Two clocks in `dom.ts` tell them apart:
+`treeGeneration` moves at both, `mutationGeneration` at a `refresh()`
+alone. A matcher that keeps answers (`compileSelector`) and the pragma
+language go at the first, since a chunk can change what they read; a
+shape's attribute `var()`s and the inline drawings at the second, since the
+parser sets no attribute of an element it made before and a drawing sees
+for itself what a chunk added to it. `SvgView` is a cache of this kind
+too: it reads a root's `viewBox` and the ids its `url()`s name as it is
+handed the tree, so a drawing is made again rather than kept. **Anything
+new that keeps what it read off an element, by the element, drops it at
+one of the two**, or an application's change and `refresh()` leave it as
+it was — which `test/html/replaced.test.ts` finds for a drawing only by
+changing what `SvgView` reads once, since what it reads at each draw
+passes either way.
+
 **An image's source is chosen where the viewport is known, and stays
 chosen.** An `<img srcset>`, or an `<img>` in a `<picture>`, is chosen in
 `_update`, for the width the boxes are about to be built at

@@ -308,6 +308,23 @@ export function treeGeneration(): number {
   return generation;
 }
 
+/** Bumped when an application says it changed a tree (`HtmlSource.touch`),
+ *  and not as the parser writes: a stream's next chunk adds to what an
+ *  element holds, where a cache of it can see (an inline drawing's own
+ *  check), and sets no attribute of an element it made before but a
+ *  second `<body>`'s, on the first — where an application may have
+ *  changed anything, an attribute or the middle of a drawing. Kept apart
+ *  from `generation` so that a cache only an application can make stale
+ *  is not thrown away at every chunk. */
+let mutations = 0;
+
+/** Where `touch` has got to: what was worked out from an element's
+ *  attributes, or from what is under it, holds while this does — the
+ *  `var()`s in a shape's presentation attributes, an inline drawing. */
+export function mutationGeneration(): number {
+  return mutations;
+}
+
 /** `shadowrootmode`'s states (HTML 4.12.3), `open` and `closed` — any other
  *  value, or none, is no shadow root, and the template an ordinary one. */
 export type ShadowRootMode = 'open' | 'closed';
@@ -657,6 +674,7 @@ export class HtmlSource {
     this.revision += 1;
     this._facts = freshFacts();
     treesChanged();
+    mutations += 1;
   }
 
   /** Whether the parser has yet to meet an element's end tag. A chunk of a

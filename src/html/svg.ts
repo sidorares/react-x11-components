@@ -16,7 +16,7 @@ import { parseDocument } from 'htmlparser2';
 import { Element, Text } from 'domhandler';
 import type { ChildNode, ParentNode } from 'domhandler';
 import * as ntk from 'react-x11/ntk';
-import { isSvgRoot, rawTextOf } from './dom.js';
+import { isSvgRoot, mutationGeneration, rawTextOf } from './dom.js';
 import { Cascade, drawingVars } from './css/cascade.js';
 import { parseMediaQuery, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
@@ -833,10 +833,28 @@ export function quotedFamilies(list: string): string {
 
 /** Drawings of inline `<svg>` elements, per element: the element is the
  *  document's, and outlives the box trees built over it. */
-const INLINE = new WeakMap<Element, SvgDrawing>();
+let INLINE = new WeakMap<Element, SvgDrawing>();
+let inlineAt = -1;
 
-/** The drawing of an inline `<svg>`. */
+/**
+ * The drawing of an inline `<svg>`. Kept until an application says it
+ * changed the DOM (`mutationGeneration`), and made again then, at its
+ * next paint. A drawing hands `SvgView` its tree again only where a
+ * stream's chunk added to it (`_viewFor`), and `SvgView` reads what it is
+ * handed as it is handed it — the root's `viewBox` and size, the ids a
+ * `url(#…)` names, the paints it scans — where a shape's own attributes it
+ * reads at each draw: a `viewBox` an application changed, and a
+ * `refresh()`, was fitted to the box as the new one and drawn through as
+ * the old, and a gradient given an id was no paint server, for good. A
+ * `refresh()` is a restyle, a build and a layout of the whole document
+ * already, and making each drawing again is the same order of work.
+ */
 export function inlineDrawing(el: Element): SvgDrawing {
+  const at = mutationGeneration();
+  if (at !== inlineAt) {
+    INLINE = new WeakMap();
+    inlineAt = at;
+  }
   let drawing = INLINE.get(el);
   if (!drawing) {
     drawing = new SvgDrawing(el, svgIntrinsics(el));

@@ -2,7 +2,10 @@
 // keeps.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { cleanup } from 'react-x11/test';
+import { act, cleanup, renderX11, screen } from 'react-x11/test';
+import type { DrawnNode } from 'react-x11';
+import type { Element } from 'domhandler';
+import { Html } from '../../src/index.js';
 import {
   parseDeclarations,
   parseStylesheet,
@@ -13,7 +16,15 @@ import {
   parseLength,
   parseNumber,
 } from '../../src/html/css/values.js';
-import { boxOf, metric, render, renderWithBytes, view } from './harness.js';
+import {
+  boxOf,
+  findById,
+  h,
+  metric,
+  render,
+  renderWithBytes,
+  view,
+} from './harness.js';
 import type { LaidBox } from './harness.js';
 
 afterEach(cleanup);
@@ -64,6 +75,39 @@ test("a document's language is its meta's, where no element says", async () => {
     (boxOf(el, id) as LaidBox & { style: { color: string } }).style.color;
   assert.strictEqual(color('a'), '#00ff00', "the document's");
   assert.strictEqual(color('b'), '#0000ff', "an element's own wins");
+});
+
+test("the document's language follows a meta a stream brings and one an application changes", async () => {
+  // what the meta said was kept by the document for good: a `:lang()` asked
+  // before the chunk that brought it in answered no language from then on,
+  // and so did one asked before an application gave it another and called
+  // refresh()
+  const sheet =
+    '<style>:lang(fr) { color: #00ff00 } :lang(de) { color: #0000ff }</style>';
+  const doc = (source: string) =>
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(Html, { source, partial: true, 'data-testname': 'doc' }),
+    );
+  const head = sheet + '<p id="a">a</p>';
+  const result = await renderX11(doc(head), { backend: 'mock' });
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  const color = (id: string): string => {
+    el().textContent();
+    return (boxOf(el(), id) as LaidBox & { style: { color: string } }).style
+      .color;
+  };
+  assert.notStrictEqual(color('a'), '#00ff00');
+  const more =
+    head + '<meta id="m" http-equiv="content-language" content="fr">';
+  await act(() => result.rerender(doc(more)));
+  assert.strictEqual(color('a'), '#00ff00', 'the meta the chunk brought');
+  const meta = findById(el().document, 'm') as unknown as Element;
+  meta.attribs.content = 'de';
+  el().touchDocument();
+  await act();
+  assert.strictEqual(color('a'), '#0000ff', 'and the language it was given');
 });
 
 test("a meta inside a <template> does not set the document's language", async () => {

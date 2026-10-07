@@ -28,6 +28,7 @@ import {
   attr,
   flatParentOf,
   isElement,
+  mutationGeneration,
   shadowRootAround,
   shadowRootOf,
   tagOf,
@@ -4731,9 +4732,16 @@ function noEmptyWords(selector: string): string {
  * A document's language as a `<meta http-equiv="content-language">` sets
  * it — HTML's pragma-set default language, the last such `<meta>`'s
  * `content` up to its first white space, and none where it lists more
- * than one — by the document's root element, found once.
+ * than one — by the document's root element, found once while the tree
+ * holds still (`treeGeneration`): a stream's next chunk may bring the
+ * `<meta>`, and an application change its `content` and `refresh()`.
  */
 function pragmaLanguage(root: { children: unknown[] }): string {
+  const at = treeGeneration();
+  if (at !== pragmaLanguageAt) {
+    PRAGMA_LANGUAGE = new WeakMap();
+    pragmaLanguageAt = at;
+  }
   let lang = PRAGMA_LANGUAGE.get(root);
   if (lang !== undefined) return lang;
   lang = '';
@@ -4762,7 +4770,8 @@ function pragmaLanguage(root: { children: unknown[] }): string {
   return lang;
 }
 
-const PRAGMA_LANGUAGE = new WeakMap<object, string>();
+let PRAGMA_LANGUAGE = new WeakMap<object, string>();
+let pragmaLanguageAt = -1;
 
 /**
  * The page's supported colour schemes: the content of the first `<meta
@@ -4886,9 +4895,16 @@ export function drawingVars(
 /** An element's presentation attributes of a shape's properties that have
  *  a `var()` in them, as declarations to substitute, or null for none. One
  *  whose `var()` is no `var()` is invalid as it is parsed, and left out as
- *  an invalid declaration is. Kept by the element, whose attributes do not
- *  change. */
+ *  an invalid declaration is. Kept by the element until an application
+ *  says it changed the DOM (`mutationGeneration`): the parser sets an
+ *  element's attributes once, and a `setAttribute` and a `refresh()` left
+ *  a `fill="var(--brand)"` made `fill="#00f"` painting the brand colour. */
 function attributeVars(el: Element): Declaration[] | null {
+  const at = mutationGeneration();
+  if (at !== attributeVarsAt) {
+    ATTRIBUTE_VARS = new WeakMap();
+    attributeVarsAt = at;
+  }
   let found = ATTRIBUTE_VARS.get(el);
   if (found !== undefined) return found;
   found = null;
@@ -4902,7 +4918,8 @@ function attributeVars(el: Element): Declaration[] | null {
   ATTRIBUTE_VARS.set(el, found);
   return found;
 }
-const ATTRIBUTE_VARS = new WeakMap<Element, Declaration[] | null>();
+let ATTRIBUTE_VARS = new WeakMap<Element, Declaration[] | null>();
+let attributeVarsAt = -1;
 
 /** The custom properties an element's `style` sets, in order, or null for
  *  none. */

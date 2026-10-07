@@ -30,6 +30,7 @@ import {
   SVG_NS,
   boxOf,
   fillsOf,
+  findById,
   h,
   metric,
   pixelsIn,
@@ -1424,6 +1425,59 @@ metric(
     for (const [i, [, colour, message, x = 5]] of rows.entries()) {
       await expectPixel(ctx, x, i * 10 + 5, colour, { message });
     }
+  },
+);
+
+metric(
+  'an inline SVG an application changed is drawn as it is now after refresh()',
+  async () => {
+    // A drawing was kept by its element, and handed `SvgView` its tree
+    // again only where a stream had added to it — and `SvgView` reads the
+    // root's `viewBox` and the ids its `url()`s name as it is handed the
+    // tree. So a `viewBox` an application changed, and a `refresh()`, was
+    // fitted to the box as the new one and drawn through as the old, and a
+    // gradient given an id was no paint server; and what of a shape's
+    // attributes had a `var()` in it was kept by the element as well: one
+    // taken out was still substituted, and one put in was not.
+    const rect = (id: string, fill: string) =>
+      `<svg width="10" height="10">` +
+      `<rect id="${id}" width="10" height="10" fill="${fill}"/></svg>`;
+    const { result, el } = await renderWithBytes(
+      '<style>body{margin:0} svg{display:block} :root{--g:#00aa00}</style>' +
+        rect('a', '#ff0000') +
+        rect('b', 'var(--g)') +
+        rect('c', '#ff0000') +
+        '<svg id="d" width="10" height="10" viewBox="0 0 20 20">' +
+        '<rect width="10" height="10" fill="#00aa00"/></svg>' +
+        '<svg width="10" height="10"><defs><linearGradient id="x">' +
+        '<stop offset="0" stop-color="#00aa00"/>' +
+        '<stop offset="1" stop-color="#00aa00"/></linearGradient></defs>' +
+        '<rect id="e" width="10" height="10" fill="#ff0000"/></svg>',
+      {},
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 5, 5, '#ff0000');
+    await expectPixel(ctx, 5, 15, '#00aa00');
+    await expectPixel(ctx, 5, 25, '#ff0000');
+    await expectPixel(ctx, 7, 37, '#ffffff');
+    await expectPixel(ctx, 5, 45, '#ff0000');
+    const set = (id: string, name: string, value: string) => {
+      (findById(el.document, id) as unknown as Element).attribs[name] = value;
+    };
+    set('a', 'fill', '#0000ff');
+    set('b', 'fill', '#0000ff');
+    set('c', 'fill', 'var(--g)');
+    // the parser lowercased it, as an HTML parse does
+    set('d', 'viewbox', '0 0 10 10');
+    set('x', 'id', 'g');
+    set('e', 'fill', 'url(#g)');
+    el.touchDocument();
+    await act();
+    await expectPixel(ctx, 5, 5, '#0000ff', { message: 'a shape changed' });
+    await expectPixel(ctx, 5, 15, '#0000ff', { message: 'a var() taken out' });
+    await expectPixel(ctx, 5, 25, '#00aa00', { message: 'and one put in' });
+    await expectPixel(ctx, 7, 37, '#00aa00', { message: 'its viewBox' });
+    await expectPixel(ctx, 5, 45, '#00aa00', { message: 'a paint server' });
   },
 );
 
