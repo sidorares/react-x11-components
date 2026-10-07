@@ -653,6 +653,8 @@ type PaneTransport = FrameComponentProps['transport'];
 
 interface TabPageProps {
   tab: Tab;
+  /** Whether it is the tab showing, the only one whose page Tab goes to. */
+  active: boolean;
   /** Run the page in this process rather than a pane of its own. */
   inline: boolean;
   transport?: PaneTransport;
@@ -670,6 +672,7 @@ interface TabPageProps {
  */
 function TabPage({
   tab,
+  active,
   inline,
   transport,
   dispatch,
@@ -744,6 +747,10 @@ function TabPage({
       src={PAGE}
       props={props as unknown as FrameProps}
       transport={transport}
+      // A tab aside is still in the window, so its pane would be a stop in
+      // the window's order, between the page showing and the tab strip:
+      // Tab off the end of a page went on into the next tab's, off screen.
+      focusable={active}
       style={{ flexGrow: 1, backgroundColor: '$background' }}
       // A backend with no way to show a pane says so before anything is
       // spawned, as an `embed` failure: the page runs here instead. Any
@@ -1068,6 +1075,7 @@ export function Browser({
             >
               <TabPage
                 tab={tab}
+                active={tab.id === active.id}
                 inline={inline}
                 transport={paneTransport}
                 dispatch={dispatch}
