@@ -5,7 +5,7 @@ import React from 'react';
 import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
-import type { HtmlViewNode } from '../../src/html/index.js';
+import type { HtmlViewNode, ViewportOverflow } from '../../src/html/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import {
   FONTS,
@@ -163,6 +163,104 @@ test('the body keeps its overflow where the root gives the viewport its own, or 
 const bare = (css: string, body: string): string =>
   `<!DOCTYPE html><title>t</title><style>${css}</style>` +
   `<body id="body">${body}</body>`;
+
+/** Hidden both ways, and hidden down alone. */
+const H: ViewportOverflow = { x: 'hidden', y: 'hidden' };
+const YH: ViewportOverflow = { x: 'auto', y: 'hidden' };
+
+/** What `onViewportOverflow` was told, in order, for a document. */
+async function viewportReports(
+  source: string,
+  props: Record<string, unknown> = {},
+) {
+  const reports: ViewportOverflow[] = [];
+  const onViewportOverflow = (overflow: ViewportOverflow) =>
+    reports.push(overflow);
+  const rendered = await render(source, 300, { onViewportOverflow, ...props });
+  await act();
+  return { reports, onViewportOverflow, ...rendered };
+}
+
+test('the host is told what the root or the body gave the viewport', async () => {
+  // CSS Overflow 3, 3.3: the viewport takes them, `visible` as `auto` and
+  // `clip` as `hidden`, and the host's pane is the viewport. Acid2 hides a
+  // browser's scrollbars with `html { overflow: hidden }`, and the pane
+  // that scrolled the document showed its own
+  const tall = '<div style="height:600px"></div>';
+  const cases: [string, string, ViewportOverflow][] = [
+    ['nothing said', page('', tall), { x: 'auto', y: 'auto' }],
+    ['the root', page('html{overflow:hidden}', tall), H],
+    ['the body', page('body{overflow:hidden}', tall), H],
+    [
+      'one axis, the other auto',
+      page('body{overflow-x:hidden}', tall),
+      { x: 'hidden', y: 'auto' },
+    ],
+    ['clip is hidden', page('html{overflow:clip}', tall), H],
+    [
+      "the root's over the body's",
+      page('html{overflow:scroll}body{overflow:hidden}', tall),
+      { x: 'scroll', y: 'scroll' },
+    ],
+    [
+      'a contained body keeps its own',
+      page('body{overflow:hidden;contain:paint}', tall),
+      { x: 'auto', y: 'auto' },
+    ],
+    ['a body with no html', bare('html{overflow:hidden}', tall), H],
+    ["that body's own", bare('body{overflow-y:hidden}', tall), YH],
+    [
+      'a fragment, through the html implied around it',
+      `<style>html{overflow:hidden}</style>${tall}`,
+      H,
+    ],
+    [
+      'a fragment, through the body the root box stands in for',
+      `<style>body{overflow-y:hidden}</style>${tall}`,
+      YH,
+    ],
+  ];
+  for (const [name, source, want] of cases) {
+    const { reports } = await viewportReports(source);
+    assert.deepStrictEqual(reports, [want], name);
+    await cleanup();
+  }
+});
+
+test('the host is told again where a build changes what the viewport has, and only then', async () => {
+  const source = page('', '<p>a</p>');
+  const { reports, onViewportOverflow, result } = await viewportReports(
+    source,
+    { stylesheet: 'html{overflow:hidden}' },
+  );
+  assert.deepStrictEqual(reports, [H]);
+  const again = async (stylesheet: string) => {
+    await act(() =>
+      result.rerender(
+        h(
+          'box',
+          { style: { width: 300, flexDirection: 'column' } },
+          h(Html, {
+            source,
+            partial: false,
+            stylesheet,
+            onViewportOverflow,
+            'data-testname': 'doc',
+          }),
+        ),
+      ),
+    );
+    await act();
+  };
+  // restyled, and the same: nothing to tell
+  await again('html{overflow:hidden;color:red}');
+  assert.deepStrictEqual(reports, [H]);
+  await again('body{overflow-x:hidden}');
+  assert.deepStrictEqual(reports, [H, { x: 'hidden', y: 'auto' }]);
+  await again('');
+  assert.deepStrictEqual(reports.at(-1), { x: 'auto', y: 'auto' });
+  assert.strictEqual(reports.length, 3);
+});
 
 test('a body with no html around it takes its percentage height of the viewport', async () => {
   // The root box stands in for the `<html>` HTML implies around the body,

@@ -38,9 +38,20 @@ import {
 } from 'react-x11';
 import type {
   DrawnNode,
+  KeyboardEvent as X11KeyboardEvent,
   MouseEvent as X11MouseEvent,
   ScrollableNode,
+  WheelEvent as X11WheelEvent,
 } from 'react-x11';
+import {
+  XK_DOWN,
+  XK_END,
+  XK_HOME,
+  XK_PAGE_DOWN,
+  XK_PAGE_UP,
+  XK_SPACE,
+  XK_UP,
+} from 'react-x11/keysyms';
 
 import { Html, useHtmlHandle } from '../../src/html/index.js';
 import type {
@@ -49,6 +60,7 @@ import type {
   FormSubmission,
   ResourceRequest,
   ResourceResult,
+  ViewportOverflow,
 } from '../../src/html/index.js';
 import { decodeIcon, iconCandidates } from './favicon.js';
 import { shortcuts } from './keys.js';
@@ -73,6 +85,18 @@ import {
   textPage,
   unsupportedPage,
 } from './pages.js';
+
+/** The keys a scroll pane moves its offset down or up with (core's
+ *  `Scrollable.defaultKeyDown`). */
+const VERTICAL_SCROLL_KEYS = new Set<number>([
+  XK_UP,
+  XK_DOWN,
+  XK_PAGE_UP,
+  XK_PAGE_DOWN,
+  XK_HOME,
+  XK_END,
+  XK_SPACE,
+]);
 
 /** One process's network: a tab's own cache, where each tab is a process. */
 const network = new Network();
@@ -154,6 +178,15 @@ export default function Page(props: PageProps): ReactElement {
   const [pending, setPending] = useState(0);
   /** Where each history step was scrolled to, for Back and Forward. */
   const scrolls = useRef(new Map<number, number>());
+  // What the document asks of the pane that scrolls it, by the document
+  // that asked: a new one says nothing until it has been laid out.
+  const [viewport, setViewport] = useState<{
+    doc: number;
+    overflow: ViewportOverflow;
+  } | null>(null);
+  // Only down: the document is as wide as the pane, which never scrolls
+  // across.
+  const hidden = viewport?.doc === doc && viewport.overflow.y === 'hidden';
   // The latest callbacks, for the effects that outlive a render: across a
   // process they are stubs that may be new ones with every update.
   const live = useRef(props);
@@ -396,6 +429,38 @@ export default function Page(props: PageProps): ReactElement {
       <box
         ref={scroller}
         style={{ overflow: 'scroll', flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+        // A document whose root or body is `overflow: hidden` gave that to
+        // the viewport, and the reader is not to scroll it: no bar, no wheel,
+        // no keys — though a link to a fragment, and Back and Forward, still
+        // scroll there, which is why the pane still scrolls.
+        scrollbar={!hidden}
+        onWheel={(ev: X11WheelEvent<DrawnNode>) => {
+          if (!hidden || !ev.deltaY) return;
+          // what scrolls inside the document, a text area's widget, scrolls
+          for (let n = ev.target as DrawnNode | null; n; n = n.parent) {
+            if (n === scroller.current) break;
+            const inner = n as {
+              canScroll?: (x: number, y: number) => boolean;
+            };
+            if (inner.canScroll?.(ev.deltaX, ev.deltaY)) return;
+          }
+          ev.preventDefault();
+        }}
+        onKeyDown={(ev: X11KeyboardEvent<DrawnNode>) => {
+          // the pane's own keys, where it has the focus; with a modifier
+          // they are the browser's chords
+          if (
+            hidden &&
+            ev.target === scroller.current &&
+            ev.keysym !== undefined &&
+            VERTICAL_SCROLL_KEYS.has(ev.keysym) &&
+            !ev.ctrlKey &&
+            !ev.metaKey &&
+            !ev.altKey
+          ) {
+            ev.preventDefault();
+          }
+        }}
         onScroll={(ev) => {
           if (entryId) scrolls.current.set(entryId, ev.scrollY);
         }}
@@ -447,6 +512,9 @@ export default function Page(props: PageProps): ReactElement {
               onDocument={onDocument}
               onLink={onLink}
               onSubmit={onSubmit}
+              onViewportOverflow={(next) =>
+                setViewport({ doc, overflow: next })
+              }
               style={{ flexGrow: 1 }}
             />
           </box>
