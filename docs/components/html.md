@@ -68,8 +68,8 @@ handle.refresh();
 | Member                 | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `document`             | The live DOM — [domhandler]'s tree, which [domutils] speaks natively.                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `refresh()`            | The DOM changed: restyle, re-lay-out, repaint.                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `elementAt(x, y)`      | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry. In whichever tree it is: one in a shadow tree is that element, not its host.                                                                                                                                                                                                                                                                                    |
+| `refresh()`            | The DOM changed — its nodes, attributes or text: restyle, re-lay-out, repaint, every element read as it is now.                                                                                                                                                                                                                                                                                                                                                          |
+| `elementAt(x, y)`      | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry — in the document as it is now: one changed since the last paint is laid out first, as `elementRect` lays it out. In whichever tree it is: one in a shadow tree is that element, not its host.                                                                                                                                                                   |
 | `hrefAt(x, y)`         | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                                                                                                                                                                                                                                                                                                                                                      |
 | `elementRect(element)` | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. Null for an element with no box. |
 | `title`                | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -167,8 +167,10 @@ then UTF-8. The referrer is a `<link charset>` and the `charset` prop for a
 linked sheet, and the importing sheet's encoding for an `@import`. A host
 that decodes its stylesheets itself hands over text and is not second-guessed.
 
-**`onScript` never runs anything.** It is handed the `type`, the `src`, the
-element and its text verbatim, and nothing in this package reads any of it —
+**`onScript` never runs anything.** It is handed the `type`, the `src` —
+resolved against the document's base where it has one, as every other URL
+is (see [Base URLs](#base-urls)) — the element and its text verbatim, and
+nothing in this package reads any of it —
 there is no parser, no sandbox and no partial evaluation, because a renderer
 that half-runs a script is one nobody can reason about. An application that
 wants scripting brings its own engine, and drives the result through the DOM
@@ -216,7 +218,9 @@ itself, as a browser does, and hands every URL over absolute:
   result may carry `url`, where the host was redirected — `{ kind:
 'stylesheet', text, url }` — and the sheet's URLs resolve against where
   it came from in the end;
-- the `href` handed to `onLink`, and the one `handle.hrefAt` answers.
+- the `href` handed to `onLink`, and the one `handle.hrefAt` answers;
+- a `<script src>` handed to `onScript`. An empty `src` is handed over
+  empty, since it names no script, and resolved it would be the page.
 
 An absolute `<base href>` in the document is a base without the prop. With
 neither, nothing is resolved, and a host rendering mail or a help page sees
@@ -3179,10 +3183,13 @@ element for the point as the pointer moves (`cursorAt`, react-x11#757): a
 document is one node with a cursor for each part of it. A `url()` cursor
 is not loaded, and falls back as its list would.
 
-**What is under the pointer is what was painted there last.** The cursor,
-the hover, `elementAt` and `hrefAt` share one hit test. It reaches every
-place a box draws, including what overflows it, as long as the box does
-not clip. So a page that sets `html, body { height: 100% }` and runs longer
+**What is under the pointer is what was painted there last**, for the
+cursor and the hover. `elementAt` and `hrefAt` lay out first a document
+that changed since — a `refresh()`, a sheet that arrived — as `elementRect`
+does, so a host that changed the DOM and asks what is under a point before
+the next frame is answered from the change. All four share one hit test,
+which reaches every place a box draws, including what overflows it, as
+long as the box does not clip. So a page that sets `html, body { height: 100% }` and runs longer
 than that still has links below the first screen. A clip hides only what
 it holds, not a positioned box whose containing block is outside it, and
 paint draws such a box past the edge. The hit test finds it there too:
@@ -3334,6 +3341,13 @@ After mutating, call `handle.refresh()`. That is explicit on purpose:
 observing a plain object graph would cost a proxy per node and tax the static
 render this is built to make fast, in order to speed up the path it is not.
 Mutation is supported; it is not where the performance budget went.
+
+A refresh reads the document again whole, attributes included: what is
+worked out once for an element and kept — the drawing of an inline `<svg>`,
+the `var()`s in a shape's presentation attributes, what a `:has()` answered,
+the language a `<meta http-equiv="content-language">` sets — is worked out
+again. So a `viewBox`, a gradient's `id` or a `<meta>`'s `content` changed
+anywhere in the tree is drawn as it is now.
 
 ## Performance
 

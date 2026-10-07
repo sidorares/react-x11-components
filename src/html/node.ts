@@ -248,7 +248,13 @@ export type NtkApp = ConstructorParameters<typeof Node>[2];
 export interface ScriptRequest {
   /** The `type` attribute, lowercased; `'text/javascript'` when absent. */
   type: string;
-  /** `src`, for an external script. */
+  /**
+   * `src`, for an external script: resolved against the document's base
+   * where it has one (`baseUrl`, a `<base href>`), as the URLs `onResource`
+   * and `onLink` see are, and as written where it has none. An empty one
+   * is handed over empty, since it names no script to fetch — HTML fires
+   * the element's `error` for it — and resolved it would be the document.
+   */
   src: string | null;
   /** The element's text, for an inline one. Handed over verbatim. */
   text: string;
@@ -892,9 +898,10 @@ export class HtmlViewNode extends Node {
         // its text: it is handed over once, whole, after its end tag
         if (this._source.isOpen(el)) continue;
         this._scriptsSeen.add(el);
+        const src = attr(el, 'src') ?? null;
         props.onScript({
           type: (attr(el, 'type') ?? 'text/javascript').toLowerCase(),
-          src: attr(el, 'src') ?? null,
+          src: src ? this._urls.resolve(src) : src,
           text: textOf(el),
           element: el,
         });
@@ -3086,8 +3093,28 @@ export class HtmlViewNode extends Node {
     return hit.box?.style.userSelect !== 'none';
   }
 
-  /** The deepest element whose box contains a logical window point. */
+  /**
+   * The deepest element whose box contains a logical window point, in the
+   * document as it is now: a layout it owes — after a `refresh()`, a sheet
+   * or an image that arrived — is done first, as `elementRect`'s is, so a
+   * host that changed the DOM and asks what is under a point before the
+   * next paint is answered from the change, as `elementFromPoint` is, and
+   * not with an element the change took out.
+   */
   elementAtPoint(x: number, y: number): Element | null {
+    this._prepare(this.abs.width || 1);
+    return this._drawnAt(x, y);
+  }
+
+  /**
+   * The deepest element under a logical window point as the document was
+   * last laid out — what the hover asks (`setHover`). Laid out first, each
+   * pointer move between two frames on a page whose hover builds the boxes
+   * would build them, where the restyles of all of them are one build at
+   * the frame; and core asks the hover again after a frame that laid out
+   * (react-x11#793), which brings it up to the tree that frame drew.
+   */
+  private _drawnAt(x: number, y: number): Element | null {
     this._followLifted();
     const tree = this._tree;
     if (!tree) return null;
@@ -3147,7 +3174,7 @@ export class HtmlViewNode extends Node {
     // flat tree (Selectors 4, 9.2): a host and a slot are hovered over
     // what is drawn in them
     const chain: Element[] = [];
-    let node = this.elementAtPoint(x, y);
+    let node = this._drawnAt(x, y);
     while (node) {
       chain.push(node);
       node = flatParentOf(node);

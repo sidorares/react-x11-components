@@ -274,7 +274,9 @@ export interface HtmlHandle {
    * what the performance budget was spent on.
    */
   refresh(): void;
-  /** The element under a point, in the window's coordinates. */
+  /** The element under a point, in the window's coordinates — of the
+   *  document as it is now: one changed and `refresh()`ed is laid out
+   *  first, as `elementRect` lays it out. */
   elementAt(x: number, y: number): Element | null;
   /** The link under a point, in the window's coordinates — resolved, as
    *  `onLink` is handed one — for a status bar, or a menu on a link. */

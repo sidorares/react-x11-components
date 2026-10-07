@@ -16,7 +16,7 @@ import {
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
-import { HtmlViewNode } from '../../src/html/index.js';
+import { HtmlViewNode, removeNode } from '../../src/html/index.js';
 import { hoverClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { holdClock } from '../held-clock.js';
@@ -741,6 +741,52 @@ metric(
     const hovered = await snapshot(result, el);
     assert.notStrictEqual(treeOf(el), tree);
     assert.deepStrictEqual(hovered, await rebuilt(result, el));
+  },
+);
+
+metric(
+  'the element at a point is of the document as it is now, before a frame paints it',
+  async () => {
+    // A host that changed the DOM and asks what is under a point — a
+    // script's `elementFromPoint` — was answered from the tree the last
+    // frame drew, with the element it had just taken out.
+    const { node } = await render(
+      '<style>body{margin:0} p{margin:0;height:20px}</style>' +
+        '<p id="a">a</p><p id="b">b</p>',
+      300,
+    );
+    const el = view(node);
+    const [x, y] = pointIn(el, 'a');
+    assert.strictEqual(el.elementAtPoint(x, y)?.attribs.id, 'a');
+    removeNode(findById(el.document, 'a')!);
+    el.touchDocument();
+    // no frame between the two
+    assert.strictEqual(
+      el.elementAtPoint(x, y)?.attribs.id,
+      'b',
+      'the element taken out',
+    );
+  },
+);
+
+metric(
+  'two hovers between two frames are one build, at the frame',
+  async () => {
+    // what the hover asks is the tree the last frame drew: laid out first,
+    // the second move would build what the first restyled, before the frame
+    // built it again for the second
+    const { result, node } = await render(HOVER_PAGE, 300);
+    const el = view(node);
+    await snapshot(result, el);
+    const li = pointIn(el, 'li');
+    const q = pointIn(el, 'q');
+    const tree = treeOf(el);
+    el.setHover(...li);
+    el.setHover(...q);
+    // compared by hand: the assertion would print the cyclic tree it failed on
+    assert.ok(treeOf(el) === tree, 'a move built the boxes');
+    await snapshot(result, el);
+    assert.ok(treeOf(el) !== tree, 'and the frame did not');
   },
 );
 

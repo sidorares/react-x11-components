@@ -684,6 +684,47 @@ test('a <base href> moves the base, and without either nothing resolves', async 
   assert.deepStrictEqual(asked.sort(), ['a.png', 's.css'], 'as written');
 });
 
+test("a script's src reaches onScript resolved as every other reference is", async () => {
+  // the script a host fetches has to be the one the page named: handed
+  // over as written, `app.js` in a page under /docs/ was whatever the host
+  // resolved it against, which is not what `onResource` was handed
+  const seen: (string | null)[] = [];
+  const onScript = (s: { src: string | null }) => seen.push(s.src);
+  const source =
+    '<script src="app.js"></script><script src="//cdn.test/lib.js"></script>' +
+    '<script>inline()</script><script src=""></script>';
+  await mount(source, () => null, {
+    baseUrl: 'https://example.test/docs/page.html#top',
+    onScript,
+  });
+  assert.deepStrictEqual(seen, [
+    'https://example.test/docs/app.js',
+    'https://cdn.test/lib.js',
+    null,
+    // names no script, where resolved it would be the page itself
+    '',
+  ]);
+  cleanup();
+  seen.length = 0;
+  await mount('<base href="/js/">' + source, () => null, {
+    baseUrl: 'https://example.test/docs/page.html',
+    onScript,
+  });
+  assert.deepStrictEqual(
+    seen.slice(0, 2),
+    ['https://example.test/js/app.js', 'https://cdn.test/lib.js'],
+    'a <base href> moves it',
+  );
+  cleanup();
+  seen.length = 0;
+  await mount(source, () => null, { onScript });
+  assert.deepStrictEqual(
+    seen,
+    ['app.js', '//cdn.test/lib.js', null, ''],
+    'and without a base, as written',
+  );
+});
+
 test("a linked sheet's URLs resolve against it — or where it said it came from", async () => {
   const asked: string[] = [];
   const { node } = await mount(
