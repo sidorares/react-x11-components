@@ -331,6 +331,34 @@ export function mutationGeneration(): number {
   return mutations;
 }
 
+/**
+ * A change an application made to the tree, shaped as a `MutationObserver`
+ * reports one (DOM 4.3.3), so a host that keeps records for one hands the
+ * same list to `refresh` (`HtmlHandle.refresh`):
+ *
+ *  - `attributes`: an attribute of `target` was set or removed. `oldValue`
+ *    is what it was, `null` for none; left out, a change of `class` or
+ *    `id` is taken for one of every class or id a selector tests.
+ *  - `childList`: nodes were added to `target`, or taken out of it — every
+ *    one of them, which is how a `<style>` or a `<link>` coming or going
+ *    is found.
+ *  - `characterData`: a text's or a comment's data changed.
+ */
+export type HtmlChange =
+  | {
+      type: 'attributes';
+      target: Element;
+      attributeName: string;
+      oldValue?: string | null;
+    }
+  | {
+      type: 'childList';
+      target: ParentNode;
+      addedNodes: readonly AnyNode[];
+      removedNodes: readonly AnyNode[];
+    }
+  | { type: 'characterData'; target: AnyNode };
+
 /** `shadowrootmode`'s states (HTML 4.12.3), `open` and `closed` — any other
  *  value, or none, is no shadow root, and the template an ordinary one. */
 export type ShadowRootMode = 'open' | 'closed';

@@ -396,6 +396,7 @@ export type {
   Document as HtmlDocument,
   Element as HtmlElement,
   FormSubmission as HtmlFormSubmission,
+  HtmlChange,
   HtmlDomEvent,
   HtmlDomEventType,
   HtmlHandle,

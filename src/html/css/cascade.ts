@@ -1499,6 +1499,372 @@ class StateRules {
   }
 }
 
+// --- what a change to the DOM can restyle ---------------------------------
+//
+// An application that changed the tree and says how (`refresh(changes)`)
+// restyles what the change can reach, where every element was styled again.
+// What it can reach is the selectors': a class, an id or an attribute a
+// selector tests, or what an element holds, is something a change makes
+// another answer for, and where in the selector it is tested says for which
+// elements — the one changed, what is in it, its later siblings, or,
+// through a `:has()`, those around it. `Cascade.crossed` is the same
+// question asked of a width, and `StateRules` of the pointer.
+
+/** A change can restyle the element it was made to: a selector tests what
+ *  changed in its subject. */
+export const CHANGES_SELF = 1;
+/** …what is in it: tested in a compound a descendant or a child combinator
+ *  follows. */
+export const CHANGES_BELOW = 2;
+/** …its later siblings and what is in them: tested in a compound a sibling
+ *  combinator follows. */
+export const CHANGES_LATER = 4;
+/** Through a `:has()`, an element around it whose answer to the `:has()`
+ *  changed — any ancestor — and that element itself… */
+export const CHANGES_HAS_SELF = 8;
+/** …what is in that one… */
+export const CHANGES_HAS_BELOW = 16;
+/** …and that one's later siblings and what is in them. */
+export const CHANGES_HAS_LATER = 32;
+/** Elements this cannot say: a `:has()` whose argument starts at a sibling,
+ *  or what `:nth-child(… of …)` counts by. */
+export const CHANGES_ANYWHERE = 64;
+
+/** The `:has()` bits for a `:has()` in a compound at `bits`. */
+function hasBitsOf(bits: number): number {
+  if (bits & CHANGES_ANYWHERE) return CHANGES_ANYWHERE;
+  // a `:has()` inside another's argument: the outer one's anchor is around
+  // the inner one's, so the outer's are what it reaches
+  if (bits >= CHANGES_HAS_SELF) return bits;
+  return bits << 3;
+}
+
+/**
+ * What a simple pseudo-class reads that a change to the DOM can change: the
+ * attributes it is answered from (`a:`), or what an element holds (`s`),
+ * and none for one answered from something else — the pointer, the focus,
+ * the URL's fragment's target as the cascade is told it. One not here is
+ * one css-select refuses, which drops the rule out of the cascade (a
+ * vendor's `:-moz-focusring`), so it reads nothing either.
+ */
+const PSEUDO_READS: Record<string, readonly string[]> = {
+  root: [],
+  scope: [],
+  hover: [],
+  active: [],
+  focus: [],
+  'focus-visible': [],
+  'focus-within': [],
+  defined: [],
+  modal: [],
+  fullscreen: [],
+  autofill: [],
+  '-webkit-autofill': [],
+  host: [],
+  '-rx-top': [],
+  'has-slotted': [],
+  // what the URL's fragment names, which an `id` or a link's `name` is
+  target: ['a:id', 'a:name'],
+  checked: ['a:checked', 'a:selected', 'a:type'],
+  selected: ['a:selected'],
+  default: ['a:checked', 'a:selected', 'a:type', 's'],
+  indeterminate: ['a:indeterminate', 'a:type', 'a:checked', 'a:name'],
+  disabled: ['a:disabled', 'a:type'],
+  enabled: ['a:disabled', 'a:type'],
+  required: ['a:required'],
+  optional: ['a:required'],
+  'read-only': ['a:readonly', 'a:disabled', 'a:contenteditable', 'a:type'],
+  'read-write': ['a:readonly', 'a:disabled', 'a:contenteditable', 'a:type'],
+  'placeholder-shown': ['a:placeholder', 'a:value', 'a:type'],
+  link: ['a:href'],
+  'any-link': ['a:href'],
+  'local-link': ['a:href'],
+  visited: ['a:href'],
+  open: ['a:open'],
+  closed: ['a:open'],
+  'popover-open': ['a:popover'],
+  'in-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
+  'out-of-range': ['a:min', 'a:max', 'a:value', 'a:type', 'a:step'],
+  empty: ['s'],
+  blank: ['s'],
+  parent: ['s'],
+  'first-child': ['s'],
+  'last-child': ['s'],
+  'only-child': ['s'],
+  'first-of-type': ['s'],
+  'last-of-type': ['s'],
+  'only-of-type': ['s'],
+  // css-select's own, after jQuery's
+  header: [],
+  checkbox: ['a:type'],
+  file: ['a:type'],
+  password: ['a:type'],
+  radio: ['a:type'],
+  reset: ['a:type'],
+  image: ['a:type'],
+  submit: ['a:type'],
+  button: ['a:type'],
+  input: [],
+  text: ['a:type'],
+};
+
+/** The pseudo-classes whose answer an element's descendants take from it —
+ *  a fieldset's `disabled`, an editing host's — so a change of what they
+ *  read reaches what is in the element too. */
+const PSEUDO_INHERITED = new Set([
+  'disabled',
+  'enabled',
+  'read-only',
+  'read-write',
+]);
+
+/** A selector's keys and where each is tested, as `MutationRules.note`
+ *  takes them. */
+type NoteChange = (key: string, bits: number) => void;
+
+/**
+ * The keys a complex selector tests, each with where (`CHANGES_*`): `at`
+ * for its subject compound, and `has` in place of every position where the
+ * selector is a `:has()`'s argument, which reaches only that `:has()`'s
+ * anchor whatever compound tests it.
+ */
+function scanChanges(
+  selector: string,
+  at: number,
+  has: number | null,
+  note: NoteChange,
+): void {
+  const parts = compoundsOf(selector);
+  for (let i = 0; i < parts.length; i += 1) {
+    const { text, next } = parts[i];
+    const bits =
+      has ??
+      (i === parts.length - 1
+        ? at
+        : next === '+' || next === '~'
+          ? CHANGES_LATER
+          : CHANGES_BELOW);
+    if (has === null && (next === '+' || next === '~')) note('+', bits);
+    scanCompoundChanges(text, bits, has, note);
+  }
+}
+
+/** The keys one compound tests (`scanChanges`). */
+function scanCompoundChanges(
+  text: string,
+  bits: number,
+  has: number | null,
+  note: NoteChange,
+): void {
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '\\') {
+      i = escapeEnd(text, i);
+    } else if (c === '.' || c === '#') {
+      const name = readIdent(text, i + 1);
+      note(`${c === '.' ? 'c' : 'i'}:${name.value}`, bits);
+      i = Math.max(name.end, i + 1);
+    } else if (c === '[') {
+      const close = bracketEnd(text, i);
+      note(`a:${attributeNameOf(text.slice(i + 1, close))}`, bits);
+      i = close + 1;
+    } else if (c === ':' && text[i + 1] === ':') {
+      // a pseudo-element left in a compound — `::slotted()`, `::part()` —
+      // is a shadow tree's, which a document with one restyles whole
+      i += 2;
+      while (i < text.length && /[\w-]/.test(text[i])) i += 1;
+      if (text[i] === '(') i = closeOf(text, i) + 1;
+    } else if (c === ':') {
+      const fn = FUNCTION_AT.exec(text.slice(i));
+      if (fn) {
+        const open = i + fn[0].length - 1;
+        const close = closeOf(text, open);
+        scanFunctionChanges(
+          fn[1].toLowerCase(),
+          text.slice(open + 1, close),
+          bits,
+          has,
+          note,
+        );
+        i = close + 1;
+        continue;
+      }
+      const m = /^:([\w-]+)/.exec(text.slice(i));
+      const name = (m?.[1] ?? '').toLowerCase();
+      const reads = PSEUDO_READS[name] ?? [];
+      const reach =
+        has === null && PSEUDO_INHERITED.has(name)
+          ? bits | CHANGES_BELOW
+          : bits;
+      for (const key of reads) note(key, reach);
+      i += m ? m[0].length : 1;
+    } else {
+      // a type, `*`, or what is between: no change to the DOM can make an
+      // element another type
+      i += 1;
+    }
+  }
+}
+
+/** The keys a functional pseudo-class tests (`scanCompoundChanges`). */
+function scanFunctionChanges(
+  name: string,
+  arg: string,
+  bits: number,
+  has: number | null,
+  note: NoteChange,
+): void {
+  if (name === 'has') {
+    const anchored = has ?? hasBitsOf(bits);
+    for (const entry of selectorsOf(arg)) {
+      // one that starts at a sibling has anchors before the element
+      // changed, which this does not look for
+      const sibling = /^\s*[+~]/.test(entry);
+      const at = sibling ? CHANGES_ANYWHERE : anchored;
+      scanChanges(entry.replace(/^\s*[>+~]\s*/, ''), at, at, note);
+      // and what an element holds is what a `:has()` asks
+      note('s', at);
+    }
+  } else if (MATCHES_ANY.test(name)) {
+    // the element it is written on, as the compound it is in
+    for (const entry of selectorsOf(arg)) scanChanges(entry, bits, has, note);
+  } else if (name === 'lang' || name === 'dir') {
+    // what the nearest element up that says one says: a change to one
+    // reaches what is in it
+    const reach = has ?? bits | CHANGES_BELOW;
+    if (name === 'lang') {
+      note('a:lang', reach);
+      note('a:xml:lang', reach);
+    } else note('a:dir', reach);
+  } else if (/^nth-(?:last-)?(?:child|of-type)$/.test(name)) {
+    note('s', bits);
+    // `of S`: what S tests decides where an element's siblings count it
+    const of = /\bof\b/i.exec(arg);
+    if (of) {
+      const list = arg.slice(of.index + 2);
+      for (const entry of selectorsOf(list)) {
+        scanChanges(entry, CHANGES_ANYWHERE, CHANGES_ANYWHERE, note);
+      }
+    }
+  } else if (name === 'contains' || name === 'icontains') {
+    // the text of everything in the element
+    note('t', has ?? bits | hasBitsOf(bits));
+  }
+  // `:host()` and `:host-context()` are a shadow tree's, which a document
+  // with one restyles whole; any other css-select refuses
+}
+
+/** Where the attribute selector opened at `open` closes. */
+function bracketEnd(text: string, open: number): number {
+  let quote = '';
+  for (let i = open + 1; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote && text[i - 1] !== '\\') quote = '';
+    } else if (c === '\\') i = escapeEnd(text, i) - 1;
+    else if (c === '"' || c === "'") quote = c;
+    else if (c === ']') return i;
+  }
+  return text.length;
+}
+
+/** The name an attribute selector's body tests, lower-cased as HTML's
+ *  attribute names are, and without a namespace: `[xlink|href]` tests
+ *  `href`, and `[lang|=en]` tests `lang`. */
+function attributeNameOf(body: string): string {
+  let name = '';
+  for (let i = 0; i < body.length; i += 1) {
+    const c = body[i];
+    if (c === '|' && body[i + 1] !== '=') {
+      name = '';
+      continue;
+    }
+    if (/[\s=~|^$*\]]/.test(c)) {
+      if (name) break;
+      continue;
+    }
+    name += c;
+  }
+  return asciiLower(name);
+}
+
+/** An element's classes as its `class` lists them, split at HTML's white
+ *  space. */
+function classesOf(value: string | null): string[] {
+  return value ? value.split(/[\t\n\f\r ]+/).filter(Boolean) : [];
+}
+
+/** The names a declaration's `attr()`s read. */
+const ATTR_FUNCTION = /\battr\(\s*([^\s,)]+)/gi;
+
+/**
+ * Every rule's selector, read for what a change to the DOM can make another
+ * answer for (`Cascade.attributeChange`, `treeChange`): by key — `c:` a
+ * class, `i:` an id, `a:` an attribute, `s` what an element holds, `t` its
+ * text — where it is tested, and the pseudo-elements whose rules test it.
+ */
+class MutationRules {
+  private _bits = new Map<string, number>();
+  private _pseudo = new Map<string, 0 | 1 | 2>();
+  /** Every class's, and every id's, for a change whose old value is not
+   *  known: what any class a selector tests can reach. */
+  anyClass = 0;
+  anyId = 0;
+  anyClassPseudo: 0 | 1 | 2 = 0;
+  anyIdPseudo: 0 | 1 | 2 = 0;
+  /** Every `:has()`'s, for a change to what an element holds, which any of
+   *  them may ask of whatever was added or taken away. */
+  hasBits = 0;
+  /** Whether a sibling combinator is in a selector outside a `:has()`: a
+   *  child added or taken away is another element's earlier sibling. */
+  siblings = false;
+
+  /** A rule's selector — its origin's, for a pseudo-element's (`pseudo`
+   *  1 for a `::before`'s or an `::after`'s, 2 for any other's) — and the
+   *  attributes its declarations read with `attr()`. */
+  note(
+    selector: string,
+    pseudo: 0 | 1 | 2,
+    declarations: readonly Declaration[],
+  ): void {
+    const note: NoteChange = (key, bits) => {
+      if (key === '+') {
+        this.siblings = true;
+        return;
+      }
+      this._bits.set(key, (this._bits.get(key) ?? 0) | bits);
+      if (bits >= CHANGES_HAS_SELF) this.hasBits |= bits;
+      if (key[0] === 'c' && key[1] === ':') {
+        this.anyClass |= bits;
+        if (pseudo > this.anyClassPseudo) this.anyClassPseudo = pseudo;
+      } else if (key[0] === 'i' && key[1] === ':') {
+        this.anyId |= bits;
+        if (pseudo > this.anyIdPseudo) this.anyIdPseudo = pseudo;
+      }
+      if (pseudo > (this._pseudo.get(key) ?? 0)) this._pseudo.set(key, pseudo);
+    };
+    scanChanges(selector, CHANGES_SELF, null, note);
+    for (const declaration of declarations) {
+      if (!declaration.value.includes('attr(')) continue;
+      for (const m of declaration.value.matchAll(ATTR_FUNCTION)) {
+        note(`a:${asciiLower(m[1])}`, CHANGES_SELF);
+      }
+    }
+  }
+
+  /** Where a key is tested, as `CHANGES_*` bits; 0 for nowhere. */
+  bits(key: string): number {
+    return this._bits.get(key) ?? 0;
+  }
+
+  /** The pseudo-elements whose rules test a key: 0 none, 1 a `::before`
+   *  or an `::after` only, 2 another. */
+  pseudo(key: string): 0 | 1 | 2 {
+    return this._pseudo.get(key) ?? 0;
+  }
+}
+
 /**
  * The face a style's font-relative units are measured in: its family list,
  * size, weight, slant and width, the five that pick one. A family's faces
@@ -1586,6 +1952,9 @@ export class Cascade {
    *  focus, say of the elements a change of it reaches. */
   private _hoverRules = new StateRules(HOVER_STATE);
   private _focusRules = new StateRules(FOCUS_STATE);
+  /** …and the ones that test what a change to the DOM can change
+   *  (`attributeChange`, `treeChange`). */
+  private _changeRules = new MutationRules();
   private _pointer: PointerState = NO_POINTER;
   private _focus: FocusState = NO_FOCUS;
   private _target: Element | null = null;
@@ -1892,6 +2261,15 @@ export class Cascade {
       const selector = (pseudo?.rule ?? rule).selector;
       this._hoverRules.note(selector);
       this._focusRules.note(selector);
+      this._changeRules.note(
+        selector,
+        !pseudo
+          ? 0
+          : pseudo.which === 'before' || pseudo.which === 'after'
+            ? 1
+            : 2,
+        rule.declarations,
+      );
     }
     for (const rule of sheet.keyframes ?? []) {
       let named = rules.keyframes.get(rule.name);
@@ -2040,6 +2418,78 @@ export class Cascade {
   /** `hoverAnchors` for the focus: `form:has(input:focus)`'s form. */
   focusAnchors(el: Element, into: Map<Element, HoverTouch>): void {
     this._focusRules.anchors(el, into, (selector) => this._compile(selector));
+  }
+
+  /**
+   * What a change to an element's attribute can restyle (`CHANGES_*`), and
+   * which pseudo-elements' rules test it — or null where that cannot be
+   * said: in a document with a shadow tree, whose rules at its edges no
+   * index here reads, or where a selector tests the attribute somewhere a
+   * change reaches elements no compound names (`CHANGES_ANYWHERE`).
+   *
+   * A class's or an id's change is the tokens that came or went, where the
+   * old value is known (`was`), and every class's or id's where it is not
+   * (`undefined`): a class a selector tests that the element lost is as
+   * much a change as one it took.
+   */
+  attributeChange(
+    name: string,
+    was: string | null | undefined,
+    now: string | null,
+  ): { bits: number; pseudo: 0 | 1 | 2 } | null {
+    if (this._scoped) return null;
+    const rules = this._changeRules;
+    let bits = 0;
+    let pseudo: 0 | 1 | 2 = 0;
+    const add = (key: string): void => {
+      bits |= rules.bits(key);
+      const p = rules.pseudo(key);
+      if (p > pseudo) pseudo = p;
+    };
+    add(`a:${name}`);
+    if (name === 'class') {
+      if (was === undefined) {
+        bits |= rules.anyClass;
+        if (rules.anyClassPseudo > pseudo) pseudo = rules.anyClassPseudo;
+      } else {
+        const before = new Set(classesOf(was));
+        const after = new Set(classesOf(now));
+        for (const c of before) if (!after.has(c)) add(`c:${c}`);
+        for (const c of after) if (!before.has(c)) add(`c:${c}`);
+      }
+    } else if (name === 'id') {
+      if (was === undefined) {
+        bits |= rules.anyId;
+        if (rules.anyIdPseudo > pseudo) pseudo = rules.anyIdPseudo;
+      } else {
+        if (was) add(`i:${was}`);
+        if (now) add(`i:${now}`);
+      }
+    }
+    return bits & CHANGES_ANYWHERE ? null : { bits, pseudo };
+  }
+
+  /** Whether a `:has()` is in any rule: what an element holds, wherever it
+   *  is — inside a drawing too — may be what one asks. */
+  get asksWhatElementsHold(): boolean {
+    return this._changeRules.hasBits !== 0;
+  }
+
+  /**
+   * What a change to what an element holds can restyle, from that element
+   * (`CHANGES_*`): the selectors that read what an element holds —
+   * `:empty`, `:first-child` and their kin — or its text, `:contains()`,
+   * where `text` says the change was a text's; every `:has()`, which may
+   * ask anything of what came or went; and its children's later siblings,
+   * where a sibling combinator is in play. Null as `attributeChange`.
+   */
+  treeChange(text = false): number | null {
+    if (this._scoped) return null;
+    const rules = this._changeRules;
+    let bits = rules.bits('s') | rules.hasBits;
+    if (text) bits |= rules.bits('t');
+    if (rules.siblings) bits |= CHANGES_LATER;
+    return bits & CHANGES_ANYWHERE ? null : bits;
   }
 
   /** A selector compiled as a rule's is, or null where css-select refuses
