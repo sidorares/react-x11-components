@@ -1600,6 +1600,9 @@ export class Cascade {
    *  the viewport is, so a change of it restyles over the sheets as they
    *  were parsed. */
   reducedMotion = false;
+  /** Whether the host runs the document's scripts: what a `scripting`
+   *  media query is answered from (`<Html scripting>`). */
+  scripting = false;
   /** Device pixels per CSS pixel. Every computed length is device; a
    *  `@media` width is the one CSS-pixel comparison left, and it divides. */
   readonly scale: number;
@@ -1708,6 +1711,7 @@ export class Cascade {
         this.viewportHeight / this.scale,
         this.scale,
         this.reducedMotion,
+        this.scripting,
       );
     },
     supports: (condition) => supportsCondition(condition) !== false,
@@ -2074,6 +2078,7 @@ export class Cascade {
         this.viewportHeight / this.scale,
         this.scale,
         this.reducedMotion,
+        this.scripting,
       );
     const turned = new RuleIndex();
     for (const index of [this._index, ...Object.values(this._pseudo)]) {
@@ -2154,6 +2159,7 @@ export class Cascade {
           height,
           this.scale,
           this.reducedMotion,
+          this.scripting,
         )
       ) {
         continue;
@@ -2656,6 +2662,7 @@ export class Cascade {
         this.viewportHeight / this.scale,
         this.scale,
         this.reducedMotion,
+        this.scripting,
       ) &&
       (!rule.containers || this._containersHold(rule.containers, el, self))
     );
@@ -4393,6 +4400,7 @@ export class Cascade {
             height,
             this.scale,
             this.reducedMotion,
+            this.scripting,
           )
         ) {
           continue;

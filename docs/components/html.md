@@ -25,29 +25,33 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 
 ## Props
 
-| Prop                 | Type                                             | What it does                                                                                                                                                                                          |
-| -------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `source`             | `string`                                         | The HTML. Required.                                                                                                                                                                                   |
-| `partial`            | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming).                          |
-| `selectable`         | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                              |
-| `animate`            | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                                            |
-| `reducedMotion`      | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                                  |
-| `defaultColorScheme` | `'light' \| 'dark'`                              | The scheme a page that names none (`color-scheme: normal`) is drawn in. Default: the palette's. A host that shows the web names `'light'`, as every browser draws one — see [Colours](#what-renders). |
-| `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                                            |
-| `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                                 |
-| `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                 |
-| `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.**             |
-| `onScript`           | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                                         |
-| `onLink`             | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.                                   |
-| `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                            |
-| `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                             |
-| `onSubmit`           | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                                     |
-| `onViewportOverflow` | `(overflow: ViewportOverflow) => void`           | The `overflow` the root, or the `<body>`, gave the viewport, `{ x, y }` of `'auto' \| 'hidden' \| 'scroll'`, for the host's scroll pane — see [What renders](#what-renders).                          |
-| `fontSize`           | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                                                  |
-| `fontFamily`         | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                                            |
-| `monoFamily`         | `string`                                         | Code font, and a `<textarea>`'s: the generic `monospace` where the UA sheet names it — see [Fonts](#fonts). Default `'monospace'` — there is no theme token for it.                                   |
-| `selectionColor`     | `string`                                         | Selection band fill where no `::selection` rule reaches the text. Default: theme accent at 35% opacity.                                                                                               |
-| `style`              | `Style \| Style[]`                               | The root `<box>`'s style.                                                                                                                                                                             |
+| Prop                 | Type                                             | What it does                                                                                                                                                                                                                      |
+| -------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `source`             | `string`                                         | The HTML. Required.                                                                                                                                                                                                               |
+| `partial`            | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming).                                                      |
+| `selectable`         | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                                                          |
+| `animate`            | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                                                                        |
+| `reducedMotion`      | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                                                              |
+| `defaultColorScheme` | `'light' \| 'dark'`                              | The scheme a page that names none (`color-scheme: normal`) is drawn in. Default: the palette's. A host that shows the web names `'light'`, as every browser draws one — see [Colours](#what-renders).                             |
+| `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                                                                        |
+| `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                                                             |
+| `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                                             |
+| `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.**                                         |
+| `onScript`           | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                                                                     |
+| `scripting`          | `boolean`                                        | Whether the host runs the document's scripts — this runs none either way. True draws a `<noscript>` as nothing, asks for nothing in it and makes `@media (scripting: enabled)` hold — see [The seams](#the-seams). Default false. |
+| `onDomEvent`         | `(event: HtmlDomEvent) => boolean \| void`       | Something happened to the document, told before this does anything about it; `false` cancels it — see [Events before their defaults](#events-before-their-defaults).                                                              |
+| `onParsed`           | `() => void`                                     | The parse has ended. Once a document, a microtask later.                                                                                                                                                                          |
+| `onLoaded`           | `() => void`                                     | Everything the document asked for has arrived or failed, counted from its first complete layout. Once a document.                                                                                                                 |
+| `onLink`             | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.                                                               |
+| `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                                                        |
+| `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                                                         |
+| `onSubmit`           | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                                                                 |
+| `onViewportOverflow` | `(overflow: ViewportOverflow) => void`           | The `overflow` the root, or the `<body>`, gave the viewport, `{ x, y }` of `'auto' \| 'hidden' \| 'scroll'`, for the host's scroll pane — see [What renders](#what-renders).                                                      |
+| `fontSize`           | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                                                                              |
+| `fontFamily`         | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                                                                        |
+| `monoFamily`         | `string`                                         | Code font, and a `<textarea>`'s: the generic `monospace` where the UA sheet names it — see [Fonts](#fonts). Default `'monospace'` — there is no theme token for it.                                                               |
+| `selectionColor`     | `string`                                         | Selection band fill where no `::selection` rule reaches the text. Default: theme accent at 35% opacity.                                                                                                                           |
+| `style`              | `Style \| Style[]`                               | The root `<box>`'s style.                                                                                                                                                                                                         |
 
 ## The handle
 
@@ -65,15 +69,22 @@ links[0].attribs.href = '#changed';
 handle.refresh();
 ```
 
-| Member                 | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `document`             | The live DOM — [domhandler]'s tree, which [domutils] speaks natively.                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `refresh()`            | The DOM changed — its nodes, attributes or text: restyle, re-lay-out, repaint, every element read as it is now.                                                                                                                                                                                                                                                                                                                                                          |
-| `elementAt(x, y)`      | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry — in the document as it is now: one changed since the last paint is laid out first, as `elementRect` lays it out. In whichever tree it is: one in a shadow tree is that element, not its host.                                                                                                                                                                   |
-| `hrefAt(x, y)`         | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                                                                                                                                                                                                                                                                                                                                                      |
-| `elementRect(element)` | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. Null for an element with no box. |
-| `title`                | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `base`                 | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                           |
+| Member                                                                                  | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `document`                                                                              | The live DOM — [domhandler]'s tree, which [domutils] speaks natively.                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `refresh()`                                                                             | The DOM changed — its nodes, attributes or text: restyle, re-lay-out, repaint, every element read as it is now.                                                                                                                                                                                                                                                                                                                                                          |
+| `elementAt(x, y)`                                                                       | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry — in the document as it is now: one changed since the last paint is laid out first, as `elementRect` lays it out. In whichever tree it is: one in a shadow tree is that element, not its host.                                                                                                                                                                   |
+| `hrefAt(x, y)`                                                                          | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                                                                                                                                                                                                                                                                                                                                                      |
+| `elementRect(element)`                                                                  | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. Null for an element with no box. |
+| `title`                                                                                 | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                           |
+| `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours as `rgb()`, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'`.                                                                                                                                                                                                                                         |
+| `controlValue(el)`                                                                      | What a control holds: typed text, or its markup's value where nothing was typed; the option a `<select>` shows; whether a box or a radio is checked. Null for what is no control.                                                                                                                                                                                                                                                                                        |
+| `setControlValue(el, v)`                                                                | Set it, as a script sets `value` or `checked`: no event, and a field's widget shows it in place, its focus and caret kept.                                                                                                                                                                                                                                                                                                                                               |
+| `focus(el)` / `blur()`                                                                  | Give an element the focus, as Tab would — a control, a link, a button, a `tabindex` — or take it off the document. `focus` answers false where the element takes none.                                                                                                                                                                                                                                                                                                   |
+| `activeElement`                                                                         | The element whose widget or stop has the focus, or null.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `activate(el)`                                                                          | What a click on it does, with no click told of: a link followed through `onLink`, a button pressed, a `<details>` opened.                                                                                                                                                                                                                                                                                                                                                |
+| `submitForm(form, submitter?)` / `reportValidity(form, submitter?)` / `resetForm(form)` | A form sent as `form.submit()` sends it, validated as a submission validates it, or put back as `form.reset()` does after its event.                                                                                                                                                                                                                                                                                                                                     |
 
 `refresh()` is explicit rather than observed, and that is a decision — see
 [Manipulating the DOM](#manipulating-the-dom).
@@ -181,7 +192,14 @@ the parse, since what it holds before then is not the script.
 Inline event attributes (`onclick="…"`) are likewise left in the DOM as
 attributes and never invoked.
 
-**So `<noscript>` is drawn.** With scripting off a noscript represents its
+**So `<noscript>` is drawn** — unless the host says it runs scripts, with
+`scripting`. Then a noscript represents nothing, as it does where a browser
+runs JavaScript: it is drawn as nothing whatever the page's sheets say, no
+image or stylesheet in it is asked for, no `<script>` in it is handed over,
+and `@media (scripting: enabled)` holds. The component still runs nothing;
+the prop is the host's word that something does.
+
+With scripting off a noscript represents its
 children (HTML 4.12.2), so a page's fallback for a browser without
 JavaScript — a link to the plain version, a notice that the site needs a
 script — is what this draws, as Firefox and Chrome with JavaScript turned
@@ -722,11 +740,12 @@ sets them sets the hint in the field's own font.
 attribute is a field's _default_ — what a reset puts back — and a
 `<textarea>`'s is its content, which is not an attribute at all, so the
 typed text is kept by the component, per element, and a widget mounted
-again (its element hidden and shown) comes back with it. An `<input>`'s is
-also written to its `value` attribute, as it always was, for a handler that
-reads it off the element. A checkbox, a radio and a `<select>` do keep what
-they hold in the DOM — `checked` and `selected` — because `:checked` is a
-selector documents really use.
+again (its element hidden and shown) comes back with it. The `value`
+attribute stays what the markup wrote, so `[value=…]` matches the markup and
+a script tells `value` from `defaultValue`; `handle.controlValue(el)` reads
+what was typed, and `onControlChange` is handed it. A checkbox, a radio and a
+`<select>` do keep what they hold in the DOM — `checked` and `selected` —
+because `:checked` is a selector documents really use.
 
 ## Video
 
@@ -875,6 +894,65 @@ next itself, in the markup's order; one it goes to that is not mounted is
 mounted and then focused. Where it runs off the end, the window's own order
 takes it on out of the document. The cost is the accessibility tree's: an
 assistive technology finds the stops that are mounted, not every link.
+
+## Events before their defaults
+
+**Something that happens to a document is told to the host before this does
+anything about it**, through `onDomEvent` — one synchronous callback, handed
+an `HtmlDomEvent` with its `type`, its `target` in the DOM and what the
+event carries, and whose `false` cancels an event that can be, as
+`preventDefault()` does. Nothing is dispatched to anything: a document has
+no listeners, since nothing runs in it. A host that has some — a script
+engine over the DOM, as the browser example's is, or an application wiring
+behaviour onto a document with `domutils` — dispatches them, and answers.
+
+| `type`                 | When                                                                      | Cancelling it                                    |
+| ---------------------- | ------------------------------------------------------------------------- | ------------------------------------------------ |
+| `mousedown`, `mouseup` | A press and a release, on the element under them or a control's element   | a press neither focuses nor starts a selection   |
+| `click`, `dblclick`    | The two together, on the nearest element both were on; or Enter on a link | no link followed, no button pressed, no box kept |
+| `keydown`, `keyup`     | A key, at the control or the stop with the focus, or the `<body>`         | the key is not typed, nor does Tab move          |
+| `input`                | A field typed into, a box ticked, an option chosen                        | —                                                |
+| `change`               | A field left, or submitted from, with another value; a box; an option     | —                                                |
+| `submit`               | A form validated and about to be sent, with its `submitter`               | nothing is sent                                  |
+| `reset`                | A reset button pressed                                                    | nothing is put back                              |
+| `focusin`, `focusout`  | The focus moved, with the other element as `relatedTarget`                | —                                                |
+| `toggle`               | A `<details>` opened or closed                                            | —                                                |
+
+The order is HTML's and UI Events', and three places in it are worth knowing:
+
+- **A checkbox is ticked before its click is asked about**, and a cancelled
+  click puts it back — the widget shown as it was — as a browser's does
+  (HTML 4.10.5.1.15). A radio checks itself and unchecks its group the same
+  way, and a cancelled click checks the one that was. Only a click that went
+  on is an `input` and a `change`.
+- **A form is validated, then its `submit` is asked about, and its entries
+  are built after.** A handler that fills in a hidden field has it sent;
+  built before, as they were, it went empty. A form that would not validate
+  is told no `submit`.
+- **A key is told before the widget types it.** The root hears it in the
+  capture phase, before a field does, so a `keydown` cancelled is never
+  typed, and a cancelled Tab moves nothing. A key a composition takes is the
+  composition's, and is told nothing.
+
+A click on a control's widget — a checkbox, a radio, a button — is the
+widget's to tell, as it ticks or presses; a click on what the document draws
+is the root's. A press on a `<label>` is a click on the label and then one on
+its control, as HTML's activation behaviour is; Enter on a link is a click
+whose `detail` is 0. `x` and `y` are in the document's coordinates in
+logical pixels, as `elementRect` is, and `button` is the DOM's numbering.
+
+A host that runs a page's scripts has what it needs from the handle as well:
+`controlValue` and `setControlValue` for `value` and `checked`, `focus`,
+`blur` and `activeElement`, `activate` for a script's `el.click()` once its
+own click went on, `submitForm`, `reportValidity` and `resetForm` for a
+form's methods, and `computedStyle` for `getComputedStyle`. `onParsed` is
+`DOMContentLoaded`'s moment and `onLoaded` `load`'s.
+
+**A checkbox, a `<select>` and a button's widget tell no `focusin`.** Core's
+widgets take an `onFocus` that replaces their own rather than one beside it,
+so the component cannot hear them take the focus: `activeElement` still
+answers for them, from the window's focus, and a text field, a link and a
+drawn button tell theirs.
 
 ## What renders
 

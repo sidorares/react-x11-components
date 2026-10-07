@@ -63,6 +63,9 @@ export interface SourceEnv {
   /** Whether the desktop has asked for less motion: a `media` query's
    *  `prefers-reduced-motion`. */
   reducedMotion: boolean;
+  /** Whether the host runs the document's scripts, which a `media` may
+   *  ask (`scripting`). */
+  scripting: boolean;
   /** Whether an image of this MIME type decodes here: a `<source type>`'s
    *  question (`decodesImageType`). */
   decodes(type: string): boolean;
@@ -293,6 +296,7 @@ export function sourceSize(
         env.height,
         env.scale,
         env.reducedMotion,
+        env.scripting,
       )
     ) {
       continue;
@@ -712,6 +716,7 @@ export class ImageSources {
       env.height,
       env.scale,
       env.reducedMotion,
+      env.scripting,
     );
   }
 }
@@ -728,7 +733,7 @@ function readsHeight(media: MediaCondition[]): boolean {
 }
 
 function envKey(env: SourceEnv): string {
-  return `${env.width}|${env.height}|${env.scale}|${env.scheme}|${env.reducedMotion}`;
+  return `${env.width}|${env.height}|${env.scale}|${env.scheme}|${env.reducedMotion}|${env.scripting}`;
 }
 
 /** What an `<img>`'s choice reads, as one string: a choice is made again

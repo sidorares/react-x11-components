@@ -396,6 +396,8 @@ export type {
   Document as HtmlDocument,
   Element as HtmlElement,
   FormSubmission as HtmlFormSubmission,
+  HtmlDomEvent,
+  HtmlDomEventType,
   HtmlHandle,
   HtmlProps,
   MediaRect as HtmlMediaRect,

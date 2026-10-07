@@ -45,6 +45,12 @@ import { browserSystemColor } from './css/color.js';
 import type { RootLook } from './css/style.js';
 import { between, buttonLabel, optionsOf, selectedOption } from './controls.js';
 import type { BareField, ControlRect } from './controls.js';
+import { fireDomEvent, modifiersOf } from './dom-events.js';
+import type {
+  DomEventHandler,
+  DomEventInit,
+  HtmlDomEventType,
+} from './dom-events.js';
 import {
   FormState,
   buttonType,
@@ -75,6 +81,8 @@ export interface FormsOptions {
   baseUrl: string | null | undefined;
   onControlChange?: (element: Element, value: string | boolean) => void;
   onSubmit?: (submission: FormSubmission) => void;
+  /** What happened, before what it does: `onDomEvent` (`dom-events.ts`). */
+  onDomEvent?: DomEventHandler;
   /** Restyle and lay out again: a change a selector can see. */
   touch: () => void;
 }
@@ -106,6 +114,21 @@ export interface Forms {
    * change to the document.
    */
   focused(el: Element, on: boolean): void;
+  /** What a control holds, as a script reads `value` or `checked`: typed
+   *  text, the option a `<select>` shows, whether a box is ticked. Null for
+   *  what is no control. */
+  value(el: Element): string | boolean | null;
+  /** Set what a control holds as a script sets it: no event, and a field's
+   *  widget shows it where it is, caret and focus kept. False for what is
+   *  no control. */
+  setValue(el: Element, value: string | boolean): boolean;
+  /** HTML's interactive validation: true where the form may go, and else
+   *  false, with the reason shown at the first control that is wrong. */
+  validate(form: Element, submitter: Element | null): boolean;
+  /** Send a form as `form.submit()` does: no validation, no `submit`. */
+  submitNow(form: Element, submitter: Element | null): void;
+  /** Put a form back as `form.reset()` does, after its `reset` event. */
+  resetNow(form: Element): void;
 }
 
 /** How far a press may travel and still be a click — `useLinkClicks`'s
@@ -116,7 +139,14 @@ const CLICK_SLOP = 4;
 const MESSAGE_MS = 5000;
 
 export function useForms(options: FormsOptions): Forms {
-  const { view, baseUrl, onControlChange, onSubmit, touch } = options;
+  const { view, baseUrl, onControlChange, onSubmit, onDomEvent, touch } =
+    options;
+  /** Tell the host what happened; whether the default goes on. */
+  const fire = (
+    type: HtmlDomEventType,
+    target: Element,
+    init?: DomEventInit,
+  ): boolean => fireDomEvent(onDomEvent, type, target, init);
 
   // What the controls hold that the markup does not, for the widgets'
   // next mount, a submission and a reset.
@@ -149,10 +179,28 @@ export function useForms(options: FormsOptions): Forms {
   // where no field took the focus in the meantime: core blurs one field
   // and then focuses the next, and a move from one to the other is one
   // change to the document, not two.
+  //
+  // The host hears it as the DOM tells it: `focusout` on the one that had
+  // it, then `focusin` on the one that took it, each naming the other —
+  // so a move tells the one leaving first, though core's blur comes to
+  // this after the focus. And a text field that lost the focus with
+  // another value than it took it with has a `change` (HTML 4.10.5.5).
   const blurred = React.useRef<Element | null>(null);
+  const holder = React.useRef<Element | null>(null);
+  const leave = (el: Element, to: Element | null) => {
+    commit(el);
+    fire('focusout', el, { relatedTarget: to });
+  };
   const focused = (el: Element, on: boolean) => {
     if (on) {
       blurred.current = null;
+      const was = holder.current;
+      holder.current = el;
+      if (was !== el) {
+        if (was) leave(was, el);
+        if (isTextField(el)) values.current.set(el, forms.value(el));
+        fire('focusin', el, { relatedTarget: was });
+      }
       view.current?.setFocus(el, true);
       return;
     }
@@ -160,9 +208,26 @@ export function useForms(options: FormsOptions): Forms {
     void Promise.resolve().then(() => {
       if (blurred.current !== el) return;
       blurred.current = null;
+      if (holder.current === el) {
+        holder.current = null;
+        leave(el, null);
+      }
       const node = view.current;
       if (node?.focusedElement === el) node.setFocus(null);
     });
+  };
+
+  // What each text field held when it took the focus, or at its last
+  // `change`: a field that leaves the focus, or is submitted from, with
+  // something else has a `change`.
+  const values = React.useRef(new WeakMap<Element, string>());
+  const commit = (el: Element) => {
+    if (!isTextField(el)) return;
+    const was = values.current.get(el);
+    const now = forms.value(el);
+    if (was === undefined || was === now) return;
+    values.current.set(el, now);
+    fire('change', el);
   };
 
   React.useEffect(() => {
@@ -171,17 +236,22 @@ export function useForms(options: FormsOptions): Forms {
     return () => cancelLater(timer);
   }, [invalid]);
 
-  const submit = (form: Element, submitter: Element | null, point?: Point) => {
-    if (!onSubmit) return;
-    // a form that would send what its own constraints refuse says why, at
-    // the first control that is wrong, and sends nothing
+  /** A form that would send what its own constraints refuse says why, at
+   *  the first control that is wrong, and sends nothing. */
+  const validate = (form: Element, submitter: Element | null): boolean => {
     const wrong = firstInvalid(form, submitter, live);
     if (wrong) {
       setInvalid(wrong);
       widgets.focus(wrong.element);
-      return;
+      return false;
     }
     setInvalid(null);
+    return true;
+  };
+
+  /** The entry list, built as the form is now, and sent. */
+  const send = (form: Element, submitter: Element | null, point?: Point) => {
+    if (!onSubmit) return;
     const node = view.current;
     const submission = formSubmission(form, submitter, {
       base: node?.documentBase ?? baseUrl ?? null,
@@ -190,6 +260,36 @@ export function useForms(options: FormsOptions): Forms {
       point,
     });
     if (submission) onSubmit(submission);
+  };
+
+  /**
+   * HTML's order (4.10.21.3, "form submission algorithm"): the form is
+   * validated, then its `submit` is asked about, and the entry list is
+   * built after it — so a handler that fills in a hidden field has it
+   * sent. Built before, as it was, the field went empty.
+   */
+  const submit = (form: Element, submitter: Element | null, point?: Point) => {
+    if (!onSubmit && !onDomEvent) return;
+    if (!validate(form, submitter)) return;
+    if (!fire('submit', form, { submitter })) return;
+    send(form, submitter, point);
+  };
+
+  /** Put a form back as its markup has it (HTML 4.10.21.5). */
+  const resetNow = (form: Element) => {
+    if (!forms.reset(form)) return;
+    setInvalid(null);
+    // A field's text is its widget's, which the markup only starts it
+    // with, so a reset sets it in place, as a browser's sets each field's
+    // value; the rest follow the attributes the reset put back. Mounting
+    // the widgets again instead, by a count of resets in every key, took
+    // the focus from the button pressed, and the caret, the scroll and the
+    // undo from every field in the document, other forms' included.
+    for (const el of controlsOf(form)) {
+      const field = widgets.fieldOf(el);
+      if (field) field.value = forms.value(el);
+    }
+    touch();
   };
 
   /** A button's activation behaviour (HTML 4.10.6): a submit button
@@ -201,20 +301,7 @@ export function useForms(options: FormsOptions): Forms {
     const form = kind && kind !== 'button' ? formOwner(button) : null;
     if (!form) return;
     if (kind === 'submit') submit(form, button, point);
-    else if (forms.reset(form)) {
-      setInvalid(null);
-      // A field's text is its widget's, which the markup only starts it
-      // with, so a reset sets it in place, as a browser's sets each field's
-      // value; the rest follow the attributes the reset put back. Mounting
-      // the widgets again instead, by a count of resets in every key, took
-      // the focus from the button pressed, and the caret, the scroll and the
-      // undo from every field in the document, other forms' included.
-      for (const el of controlsOf(form)) {
-        const field = widgets.fieldOf(el);
-        if (field) field.value = forms.value(el);
-      }
-      touch();
-    }
+    else if (fire('reset', form)) resetNow(form);
   };
 
   /** A control's value changed: tell the application, and let a message
@@ -234,26 +321,60 @@ export function useForms(options: FormsOptions): Forms {
     if (restyle) touch();
   };
 
-  const setChecked = (el: Element, checked: boolean) => {
+  const tick = (el: Element, checked: boolean) => {
     forms.remember(el);
     if (checked) el.attribs.checked = '';
     else delete el.attribs.checked;
+  };
+
+  /**
+   * A box ticked or unticked as a click does it (HTML 4.10.5.1.15): the
+   * box changes first, then the click is asked about, and a cancelled click
+   * puts it back — the widget shown as it was. One that was not is an
+   * `input` and a `change`.
+   */
+  const setChecked = (el: Element, checked: boolean, init?: DomEventInit) => {
+    const was = attr(el, 'checked') !== undefined;
+    tick(el, checked);
+    if (!fire('click', el, { detail: 1, ...init })) {
+      tick(el, was);
+      touch();
+      return;
+    }
     changed(el, checked, true);
+    fire('input', el);
+    fire('change', el);
   };
 
   // Core's radio is a group member and HTML's is a free-standing input that
   // happens to share a `name`. Each one is therefore its own one-member
   // `RadioGroup`, and the exclusivity that makes it a group is done where
   // HTML keeps it: in the DOM, across the radios of its name in its form.
-  const checkRadio = (el: Element) => {
-    for (const other of radioGroup(el)) {
-      if (attr(other, 'checked') === undefined) continue;
-      forms.remember(other);
-      delete other.attribs.checked;
+  // Checked first and asked about after, as a box is, and a cancelled click
+  // checks the one that was again (HTML 4.10.5.1.18).
+  const checkRadio = (el: Element, init?: DomEventInit) => {
+    const own = attr(el, 'checked') !== undefined;
+    const before = radioGroup(el).filter(
+      (other) => attr(other, 'checked') !== undefined,
+    );
+    for (const other of before) tick(other, false);
+    tick(el, true);
+    if (!fire('click', el, { detail: 1, ...init })) {
+      tick(el, own);
+      for (const other of before) tick(other, true);
+      touch();
+      return;
     }
-    forms.remember(el);
-    el.attribs.checked = '';
     changed(el, attr(el, 'value') ?? 'on', true);
+    if (own) return;
+    fire('input', el);
+    fire('change', el);
+  };
+
+  /** A click on what a click activates, asked about first: what is run
+   *  only where it was not cancelled. */
+  const click = (el: Element, init: DomEventInit, then: () => void) => {
+    if (fire('click', el, { detail: 1, ...init })) then();
   };
 
   /** A summary's activation behaviour (HTML 4.11.2): its details open, or
@@ -264,10 +385,12 @@ export function useForms(options: FormsOptions): Forms {
     if (attr(details, 'open') !== undefined) delete details.attribs.open;
     else details.attribs.open = '';
     touch();
+    fire('toggle', details);
   };
 
-  /** A press on a `<label>` is one on its control (HTML 4.10.4): a box is
-   *  toggled, a radio checked, a button pressed, and a field focused. */
+  /** A press on a `<label>` is a click on its control (HTML 4.10.4): a
+   *  box is toggled, a radio checked, a button pressed, and a field
+   *  focused — each after a click on the control the host may cancel. */
   const activateLabel = (control: Element) => {
     if (isDisabled(control)) return;
     const tag = tagOf(control);
@@ -276,9 +399,12 @@ export function useForms(options: FormsOptions): Forms {
       setChecked(control, attr(control, 'checked') === undefined);
     } else if (type === 'radio') {
       if (attr(control, 'checked') === undefined) checkRadio(control);
+      else fire('click', control, { detail: 1 });
     } else if (tag === 'button' || buttonType(control) !== null) {
-      press(control, type === 'image' ? { x: 0, y: 0 } : undefined);
-    } else {
+      click(control, {}, () =>
+        press(control, type === 'image' ? { x: 0, y: 0 } : undefined),
+      );
+    } else if (fire('click', control, { detail: 1 })) {
       widgets.focus(control);
     }
   };
@@ -355,8 +481,17 @@ export function useForms(options: FormsOptions): Forms {
     setChecked,
     checkRadio,
     press,
+    click,
     focused,
+    input: (el) => fire('input', el),
+    selected: (el) => {
+      fire('input', el);
+      fire('change', el);
+    },
     submitFrom: (field) => {
+      // what was typed is committed before the form goes, as Enter
+      // commits it in a browser
+      commit(field);
       const plan = implicitSubmission(field);
       if (plan) submit(plan.form, plan.submitter);
     },
@@ -379,6 +514,38 @@ export function useForms(options: FormsOptions): Forms {
     },
     focusControl: (el) => widgets.focus(el),
     controlOf: (node) => widgets.elementOf(node),
+    value: (el) => controlState(el, forms),
+    setValue: (el, value) => {
+      const tag = tagOf(el);
+      const type = tag === 'input' ? inputType(el) : '';
+      if (type === 'checkbox' || type === 'radio') {
+        const on = value === true || value === 'true';
+        if (on && type === 'radio') {
+          for (const other of radioGroup(el)) tick(other, false);
+        }
+        tick(el, on);
+        touch();
+        return true;
+      }
+      if (tag === 'select') {
+        forms.remember(el);
+        setSelectedOption(el, String(value));
+        touch();
+        return true;
+      }
+      if (!isTextField(el)) return false;
+      const text = String(value);
+      forms.setTyped(el, text);
+      // a value set is no change the user made: what the field held when
+      // it took the focus is this now, as a browser's is
+      if (values.current.has(el)) values.current.set(el, text);
+      const field = widgets.fieldOf(el);
+      if (field) field.value = text;
+      return true;
+    },
+    validate,
+    submitNow: (form, submitter) => send(form, submitter),
+    resetNow,
     activate: (el) => {
       const tag = tagOf(el);
       if (tag === 'summary') {
@@ -555,8 +722,14 @@ interface ControlContext {
   checkRadio: (el: Element) => void;
   /** A button was pressed: what it does to its form. */
   press: (button: Element) => void;
+  /** A click on a widget, asked about before `then` runs. */
+  click: (el: Element, init: DomEventInit, then: () => void) => void;
   /** A field's widget took the focus, or gave it up. */
   focused: (el: Element, on: boolean) => void;
+  /** Something was typed into a field: its `input`. */
+  input: (el: Element) => void;
+  /** A `<select>` was given another option: its `input` and `change`. */
+  selected: (el: Element) => void;
   /** Enter in a text field: its form's implicit submission. */
   submitFrom: (field: Element) => void;
 }
@@ -632,6 +805,7 @@ function renderControl(
   const typed = (value: string) => {
     forms.setTyped(el, value);
     ctx.changed(el, value, false);
+    ctx.input(el);
   };
 
   let widget: ReactNode;
@@ -669,7 +843,7 @@ function renderControl(
         ...order,
         ...(ownFont && { native: false }),
         style: { width: '100%', height: '100%' },
-        onPress: () => ctx.press(el),
+        onPress: (ev) => ctx.click(el, modifiersOf(ev), () => ctx.press(el)),
       });
       break;
     case 'select': {
@@ -717,6 +891,7 @@ function renderControl(
           forms.remember(el);
           setSelectedOption(el, next);
           ctx.changed(el, next, true);
+          ctx.selected(el);
         },
       });
       break;
@@ -757,15 +932,11 @@ function renderControl(
         // palette's own field keeps the palette's caret
         ...(rect.bare && { caretColor: rect.bare.color }),
         style: [field, FIELD_BOX],
-        onChange: readOnly
-          ? undefined
-          : (ev) => {
-              typed(ev.value);
-              // echoed where it always was, for a handler that reads it
-              // back off the element — after `typed`, which keeps what the
-              // attribute said before for a reset
-              el.attribs.value = ev.value;
-            },
+        // What is typed is the field's value and not its `value`
+        // attribute, which is its default (HTML 4.10.5.4): a script tells
+        // `value` from `defaultValue`, and `[value=…]` matches the markup.
+        // An application reads it with the handle's `controlValue`.
+        onChange: readOnly ? undefined : (ev) => typed(ev.value),
         // Enter submits the field's form, as it does in a browser
         onSubmit: () => ctx.submitFrom(el),
         onFocus: () => ctx.focused(el, true),
@@ -1080,4 +1251,29 @@ function setSelectedOption(el: Element, value: string): void {
       delete option.attribs.selected;
     }
   }
+}
+
+/** Whether a control is a text field: one whose value is what is typed,
+ *  and whose `change` is when it is left (HTML 4.10.5.5). */
+function isTextField(el: Element): boolean {
+  const tag = tagOf(el);
+  if (tag === 'textarea') return true;
+  return (
+    tag === 'input' && buttonType(el) === null && !CHECKABLE.has(inputType(el))
+  );
+}
+
+const CHECKABLE = new Set(['checkbox', 'radio', 'hidden', 'file', 'image']);
+
+/** A control's value as a script reads it (`Forms.value`). */
+function controlState(el: Element, forms: FormState): string | boolean | null {
+  const tag = tagOf(el);
+  if (tag === 'select') return selectedOption(el) ?? '';
+  if (tag === 'textarea') return forms.value(el);
+  if (tag !== 'input') return null;
+  const type = inputType(el);
+  if (type === 'checkbox' || type === 'radio') {
+    return attr(el, 'checked') !== undefined;
+  }
+  return forms.value(el);
 }

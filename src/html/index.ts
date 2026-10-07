@@ -15,7 +15,12 @@
 import React from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { useSystemAppearance, useTheme } from 'react-x11';
-import type { DrawnNode, MouseEvent as X11MouseEvent, Rect } from 'react-x11';
+import type {
+  DrawnNode,
+  KeyboardEvent as X11KeyboardEvent,
+  MouseEvent as X11MouseEvent,
+  Rect,
+} from 'react-x11';
 import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 
@@ -24,16 +29,35 @@ import type {} from 'react-x11/jsx-runtime';
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
+import { flatParentOf, isElement, tagOf } from './dom.js';
 import type { Document, Element } from './dom.js';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
-import type { HtmlViewProps, ScriptRequest } from './node.js';
+import type {
+  DocumentInteraction,
+  HtmlViewProps,
+  ScriptRequest,
+} from './node.js';
+import {
+  documentPoint,
+  domButton,
+  domKey,
+  fireDomEvent,
+  modifiersOf,
+  NO_MODIFIERS,
+} from './dom-events.js';
+import type {
+  DomEventHandler,
+  DomEventInit,
+  HtmlDomEventType,
+} from './dom-events.js';
+import { inputType, isDisabled } from './form.js';
 import type { RootLook } from './css/style.js';
 import type { ViewportOverflow } from './css/cascade.js';
 import type { ControlRect } from './controls.js';
 import type { FormSubmission } from './form.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
-import { useFocusStops, useFocusableMarkup } from './stops.js';
+import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
 export {
@@ -42,6 +66,11 @@ export {
   registerHtmlView,
 } from './node.js';
 export type { HtmlViewProps, ScriptRequest } from './node.js';
+export type {
+  DomEventHandler,
+  HtmlDomEvent,
+  HtmlDomEventType,
+} from './dom-events.js';
 export type {
   ResourceRequest,
   ResourceResult,
@@ -194,9 +223,41 @@ export interface HtmlProps {
   /**
    * A `<script>` was found. Handed over **unparsed and unevaluated** — the
    * type, the `src`, the text, the element — for an application that brings
-   * its own engine. Nothing here reads it.
+   * its own engine. Nothing here reads it. Called while the element is
+   * reading its props, so a host queues the script and runs it later —
+   * after `onParsed`, say — rather than in the callback.
    */
   onScript?: (script: ScriptRequest) => void;
+  /**
+   * Whether the host runs the document's scripts: an application that
+   * brings an engine says so, and the document is drawn as a browser draws
+   * one that runs JavaScript — a `<noscript>` is drawn as nothing, nothing
+   * in it is asked for through `onResource` or handed to `onScript`, and
+   * `@media (scripting: enabled)` holds. **This component runs nothing
+   * either way.** Default false: a `<noscript>` is drawn, as it is with
+   * JavaScript off.
+   */
+  scripting?: boolean;
+  /**
+   * Something happened to the document, before this component does what it
+   * does about it: a `click` before a link is followed, a button pressed or
+   * a box ticked; a `keydown` before a field types it; a `submit` before
+   * the entries are built and `onSubmit` is called; `input`, `change`,
+   * `focusin`, `focusout`, `toggle` as they happen. Synchronous, and
+   * returning `false` from it cancels an event that can be — the page's
+   * `preventDefault()`. "Events before their defaults" in the docs has
+   * the order.
+   */
+  onDomEvent?: DomEventHandler;
+  /** The parse has ended: every element is in the tree. Once a document,
+   *  a microtask after the source that ended it — `DOMContentLoaded`'s
+   *  moment, when a host runs the scripts it was handed. */
+  onParsed?: () => void;
+  /** Everything the document asked for has arrived or failed — counted
+   *  from its first complete layout, since a background, a font or a
+   *  chosen image source is asked for only as one finds it. Once a
+   *  document: `load`'s moment. */
+  onLoaded?: () => void;
   /**
    * A link was activated. Absent means clicks do nothing: this component
    * never navigates by itself. The `href` is resolved against the
@@ -295,6 +356,53 @@ export interface HtmlHandle {
   /** The URL the document's relative URLs resolve against — its
    *  `<base href>`, or `baseUrl` — or null where it has none. */
   readonly base: string | null;
+  /**
+   * An element's style as `getComputedStyle` reads it, laid out first:
+   * the properties a script reads, by name, lengths in CSS pixels and
+   * colours as `rgb()`. `pseudo` asks for a `::before` or an `::after`, and
+   * is null where no rule gives the element one.
+   */
+  computedStyle(
+    element: Element,
+    pseudo?: 'before' | 'after' | null,
+  ): Record<string, string> | null;
+  /**
+   * What a form control holds, as a script reads it: what was typed into a
+   * field or its markup's value where nothing was, the option a `<select>`
+   * shows, whether a checkbox or a radio is checked. Null for what is no
+   * control. The `value` attribute is the field's default, and stays as the
+   * markup wrote it.
+   */
+  controlValue(element: Element): string | boolean | null;
+  /** Set what a control holds, as a script sets `value` or `checked`: no
+   *  event, and a field's widget shows it where it is, its focus kept.
+   *  False for what is no control. */
+  setControlValue(element: Element, value: string | boolean): boolean;
+  /** Give an element the focus, as Tab gives it: a control's widget, a
+   *  link, a button, an element with a `tabindex`. False where it takes
+   *  none. */
+  focus(element: Element): boolean;
+  /** Take the focus off whatever of the document's has it. */
+  blur(): void;
+  /** The document's element whose widget or stop has the focus, or null. */
+  readonly activeElement: Element | null;
+  /**
+   * Run what a click on an element does, with no click told of: follow a
+   * link through `onLink`, press a button — a submit button submits, its
+   * `submit` asked about first — open or close a `<details>`. A host's
+   * `el.click()` calls it once its own click was not cancelled. False
+   * where a click does nothing. A checkbox's and a radio's state are
+   * `setControlValue`'s.
+   */
+  activate(element: Element): boolean;
+  /** Send a form as `form.submit()` does: no validation, no `submit`. */
+  submitForm(form: Element, submitter?: Element | null): void;
+  /** HTML's interactive validation of a form: true where it may go, and
+   *  else false, with the reason shown at its first wrong control. */
+  reportValidity(form: Element, submitter?: Element | null): boolean;
+  /** Put a form's controls back as their markup has them, as
+   *  `form.reset()` does after its `reset`. */
+  resetForm(form: Element): void;
 }
 
 // --- the look ---------------------------------------------------------------
@@ -388,6 +496,7 @@ export function Html(props: HtmlProps): ReactElement {
     onControlChange,
     onSubmit,
     onViewportOverflow,
+    onDomEvent,
     style,
   } = props;
 
@@ -400,16 +509,24 @@ export function Html(props: HtmlProps): ReactElement {
   const menu = useSelectionMenu(selectable);
 
   // The element, for the document's base when a form is submitted, as well
-  // as wherever the application's `ref` wants it.
+  // as wherever the application's `ref` wants it — and the handle's way to
+  // what this component holds, the widgets and the focus (`interactive`).
   const viewNode = React.useRef<HtmlViewNode | null>(null);
+  const rootNode = React.useRef<DrawnNode | null>(null);
+  const live = React.useRef<Live | null>(null);
+  const interactive = React.useMemo(
+    () => documentInteraction(viewNode, rootNode, live),
+    [],
+  );
   const outerRef = props.ref;
   const viewRef = React.useCallback(
     (node: HtmlViewNode | null) => {
       viewNode.current = node;
+      if (node) node.interactive = interactive;
       if (typeof outerRef === 'function') outerRef(node);
       else if (outerRef) (outerRef as React.RefObject<unknown>).current = node;
     },
-    [outerRef],
+    [outerRef, interactive],
   );
 
   const look = React.useMemo(
@@ -435,23 +552,26 @@ export function Html(props: HtmlProps): ReactElement {
     baseUrl,
     onControlChange,
     onSubmit,
+    onDomEvent,
     touch: () => setDomRevision((n) => n + 1),
   });
 
   // The keyboard's way through what the document draws: a box that takes
   // the focus for each link, button and summary Tab reaches (`stops.ts`).
-  const rootNode = React.useRef<DrawnNode | null>(null);
   const stops = useFocusStops({
     view: viewNode,
     root: rootNode,
     forms,
     selectable,
     onLink,
+    onDomEvent,
   });
   const mayHaveStops = useFocusableMarkup(source);
   // core's `<video>` over each video the document can show one over
   // (`videos.ts`)
   const videos = useVideos(viewNode);
+  live.current = { forms, stops, onLink };
+  const events = useDocumentEvents(onDomEvent, viewNode, forms, stops);
 
   const handleDocument = React.useCallback(
     (doc: Document) => {
@@ -491,6 +611,9 @@ export function Html(props: HtmlProps): ReactElement {
     domRevision,
     animate,
     reducedMotion,
+    scripting: props.scripting ?? false,
+    onParsed: props.onParsed,
+    onLoaded: props.onLoaded,
     ref: viewRef as React.Ref<unknown>,
     // grown with the component, where an application grows it: the root's
     // background covers the whole of it, as a page's covers the window
@@ -541,6 +664,12 @@ export function Html(props: HtmlProps): ReactElement {
       ref: rootNode,
       selectionColor: props.selectionColor,
       ...links,
+      // what the page hears first, before anything in the document — a
+      // widget included — does what it does (`useDocumentEvents`)
+      onMouseDownCapture: events.onMouseDownCapture,
+      onMouseUpCapture: events.onMouseUpCapture,
+      onKeyDownCapture: events.onKeyDownCapture,
+      onKeyUpCapture: events.onKeyUpCapture,
       onMouseDown: (ev: X11MouseEvent<DrawnNode>) => {
         links.onMouseDown(ev);
         forms.onMouseDown(ev);
@@ -561,6 +690,9 @@ export function Html(props: HtmlProps): ReactElement {
       },
       onKeyDown: stops.onKeyDown,
       onMouseUp: (ev: X11MouseEvent<DrawnNode>) => {
+        // the click the press and the release made, which the page may
+        // cancel: then no link is followed and no button pressed
+        if (!events.clicked(ev)) return;
         links.onMouseUp(ev);
         forms.onMouseUp(ev);
       },
@@ -607,9 +739,249 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.hrefAtPoint(x, y) ?? null,
       elementRect: (element: Element) =>
         nodeRef.current?.elementRect(element) ?? null,
+      computedStyle: (element: Element, pseudo?: 'before' | 'after' | null) =>
+        nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
+      controlValue: (element: Element) =>
+        nodeRef.current?.interactive?.controlValue(element) ?? null,
+      setControlValue: (element: Element, value: string | boolean) =>
+        nodeRef.current?.interactive?.setControlValue(element, value) ?? false,
+      focus: (element: Element) =>
+        nodeRef.current?.interactive?.focus(element) ?? false,
+      blur: () => nodeRef.current?.interactive?.blur(),
+      get activeElement() {
+        return nodeRef.current?.interactive?.activeElement() ?? null;
+      },
+      activate: (element: Element) =>
+        nodeRef.current?.interactive?.activate(element) ?? false,
+      submitForm: (form: Element, submitter?: Element | null) =>
+        nodeRef.current?.interactive?.submit(form, submitter ?? null),
+      reportValidity: (form: Element, submitter?: Element | null) =>
+        nodeRef.current?.interactive?.reportValidity(form, submitter ?? null) ??
+        true,
+      resetForm: (form: Element) => nodeRef.current?.interactive?.reset(form),
     }),
     [],
   );
+}
+
+// --- what happens to the document --------------------------------------------
+
+/** What the handle reaches through `interactive`, as this render has it. */
+interface Live {
+  forms: ReturnType<typeof useForms>;
+  stops: ReturnType<typeof useFocusStops>;
+  onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
+}
+
+/** The node core's window has focused, where the element is in a window. */
+function focusedNode(view: HtmlViewNode | null): DrawnNode | null {
+  // core's node has its window's event manager on its `root`, which its
+  // declarations leave out
+  const root = (view as unknown as { root?: unknown } | null)?.root as
+    { events?: { focused?: DrawnNode | null } } | null | undefined;
+  return root?.events?.focused ?? null;
+}
+
+/**
+ * The element's `interactive`: what the handle asks of the widgets and the
+ * focus, through `live`, which every render sets — so one object, made
+ * once, answers from the render the handle is called after.
+ */
+function documentInteraction(
+  view: React.RefObject<HtmlViewNode | null>,
+  root: React.RefObject<DrawnNode | null>,
+  live: React.RefObject<Live | null>,
+): DocumentInteraction {
+  /** The document's element a node takes the focus for. */
+  const owner = (node: DrawnNode | null): Element | null => {
+    const now = live.current;
+    if (!node || !now) return null;
+    return now.forms.controlOf(node) ?? now.stops.elementOf(node);
+  };
+  return {
+    controlValue: (el) => live.current?.forms.value(el) ?? null,
+    setControlValue: (el, value) =>
+      live.current?.forms.setValue(el, value) ?? false,
+    focus: (el) => {
+      const now = live.current;
+      if (!now) return false;
+      return now.forms.focusControl(el) || now.stops.focus(el);
+    },
+    blur: () => {
+      const node = focusedNode(view.current);
+      if (node && owner(node)) node.blur();
+    },
+    activeElement: () => owner(focusedNode(view.current)),
+    activate: (el) => {
+      const node = view.current;
+      const now = live.current;
+      if (!node || !now) return false;
+      const href = node.hrefOf(el);
+      if (href !== null) {
+        now.onLink?.(
+          href,
+          syntheticClick(NO_MODIFIERS, node, root.current, el),
+        );
+        return true;
+      }
+      return now.forms.activate(el);
+    },
+    submit: (form, submitter) => live.current?.forms.submitNow(form, submitter),
+    reportValidity: (form, submitter) =>
+      live.current?.forms.validate(form, submitter) ?? true,
+    reset: (form) => live.current?.forms.resetNow(form),
+  };
+}
+
+/** The form controls a disabled one hears nothing at: no press reaches
+ *  it, as none reaches one in a browser. */
+const CONTROLS = new Set(['button', 'input', 'select', 'textarea']);
+
+/** What a press on a control's widget ticks or presses: its click is the
+ *  widget's to tell, after the box changes (`widgets.ts`). */
+const CLICKS_ITSELF = new Set([
+  'checkbox',
+  'radio',
+  'submit',
+  'reset',
+  'button',
+]);
+
+/**
+ * The document's pointer and key events, told to the host before anything
+ * else does anything about them: the root's capture phase, which runs
+ * before a widget's own handlers. A press's `mousedown`, cancelled, keeps
+ * the press from focusing or selecting, as `preventDefault()` keeps it in
+ * a browser, and a `keydown` keeps the key from the field it was typed in.
+ * The `click` is the press and the release together, on the nearest
+ * element both were on (UI Events 3.5), and `clicked` answers whether its
+ * default — a link followed, a button pressed — goes on.
+ */
+function useDocumentEvents(
+  onDomEvent: DomEventHandler | undefined,
+  view: React.RefObject<HtmlViewNode | null>,
+  forms: ReturnType<typeof useForms>,
+  stops: ReturnType<typeof useFocusStops>,
+) {
+  const pressed = React.useRef<Element | null>(null);
+  const released = React.useRef<Element | null>(null);
+  const fire = (
+    type: HtmlDomEventType,
+    target: Element,
+    init?: DomEventInit,
+  ): boolean => fireDomEvent(onDomEvent, type, target, init);
+
+  /** The element a pointer event is on: the control whose widget it is in,
+   *  or what the document draws under it. A disabled control hears none. */
+  const pointedAt = (ev: X11MouseEvent<DrawnNode>): Element | null => {
+    const node = view.current;
+    const control = forms.controlOf(ev.target as DrawnNode);
+    const at =
+      control ??
+      (node && ev.target === (node as unknown)
+        ? node.elementAtPoint(ev.x, ev.y)
+        : null);
+    if (at && CONTROLS.has(tagOf(at)) && isDisabled(at)) return null;
+    return at;
+  };
+  const mouse = (ev: X11MouseEvent<DrawnNode>): DomEventInit => ({
+    ...documentPoint(ev, view.current?.getClientRects()[0]),
+    button: domButton(ev.button),
+    ...modifiersOf(ev),
+  });
+  /** What a key is typed at: a control's widget, a stop's element, or the
+   *  document's body where the document itself has the focus. */
+  const keyedAt = (target: DrawnNode): Element | null => {
+    const node = view.current;
+    if (!node) return null;
+    const owner = forms.controlOf(target) ?? stops.elementOf(target);
+    if (owner) return owner;
+    return node.document ? bodyOf(node.document) : null;
+  };
+  const key =
+    (type: 'keydown' | 'keyup') => (ev: X11KeyboardEvent<DrawnNode>) => {
+      // a key a composition takes is the composition's, which types its text
+      if (!onDomEvent || ev.composing) return;
+      const target = keyedAt(ev.target as DrawnNode);
+      if (!target) return;
+      const names = domKey(ev);
+      const go = fire(type, target, {
+        key: names.key,
+        code: names.code,
+        ...modifiersOf(ev),
+      });
+      if (!go) ev.preventDefault();
+    };
+  return {
+    onMouseDownCapture: (ev: X11MouseEvent<DrawnNode>) => {
+      pressed.current = null;
+      if (!onDomEvent) return;
+      const target = pointedAt(ev);
+      if (!target) return;
+      pressed.current = target;
+      if (!fire('mousedown', target, mouse(ev))) ev.preventDefault();
+    },
+    onMouseUpCapture: (ev: X11MouseEvent<DrawnNode>) => {
+      released.current = null;
+      if (!onDomEvent) return;
+      const target = pointedAt(ev);
+      if (!target) return;
+      released.current = target;
+      // nothing to keep from happening: a cancelled release still clicks
+      fire('mouseup', target, mouse(ev));
+    },
+    onKeyDownCapture: key('keydown'),
+    onKeyUpCapture: key('keyup'),
+    clicked: (ev: X11MouseEvent<DrawnNode>): boolean => {
+      const down = pressed.current;
+      const up = released.current;
+      pressed.current = null;
+      released.current = null;
+      if (!onDomEvent || ev.button !== 1 || !down || !up) return true;
+      const target = sharedAncestor(down, up);
+      if (!target) return true;
+      // a checkbox's, a radio's and a button's widget tell their own click
+      // as they tick or press (`widgets.ts`)
+      if (
+        tagOf(target) === 'input' &&
+        CLICKS_ITSELF.has(inputType(target)) &&
+        forms.controlOf(ev.target as DrawnNode)
+      ) {
+        return true;
+      }
+      const init = { ...mouse(ev), detail: ev.detail };
+      const go = fire('click', target, init);
+      if (ev.detail === 2) fire('dblclick', target, init);
+      return go;
+    },
+  };
+}
+
+/** The nearest element two are both in, themselves included. */
+function sharedAncestor(a: Element, b: Element): Element | null {
+  const around = new Set<Element>();
+  for (let at: Element | null = a; at; at = flatParentOf(at)) around.add(at);
+  for (let at: Element | null = b; at; at = flatParentOf(at)) {
+    if (around.has(at)) return at;
+  }
+  return null;
+}
+
+/** The document's `<body>`, or its first element where it has none: what a
+ *  key typed with the document itself focused is typed at, as
+ *  `document.activeElement` is the body then. */
+function bodyOf(doc: Document): Element | null {
+  let first: Element | null = null;
+  for (const child of doc.children) {
+    if (!isElement(child)) continue;
+    first ??= child;
+    if (tagOf(child) !== 'html') continue;
+    for (const inner of child.children) {
+      if (isElement(inner) && tagOf(inner) === 'body') return inner;
+    }
+    return child;
+  }
+  return first;
 }
 
 declare module 'react-x11/jsx-runtime' {

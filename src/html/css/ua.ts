@@ -102,12 +102,16 @@ summary, dir, menu, center, marquee {
   display: block;
 }
 /* <map> is inline (HTML 15.3.1), so an <area> in it the author gives a
-   display of its own is drawn. <noscript> is not here: nothing runs a
-   script, and with scripting off a noscript represents its children (HTML
-   4.12.2), an inline element like any the sheet has no rule for — a
-   browser hides it only where JavaScript runs */
+   display of its own is drawn. <noscript> is not here: with scripting off
+   a noscript represents its children (HTML 4.12.2), an inline element like
+   any the sheet has no rule for */
 head, link, meta, style, script, title, base, template, param,
 source, track, col, colgroup, datalist, area, rp { display: none; }
+
+/* …and where the host runs the document's scripts (<Html scripting>) it
+   represents nothing, as a browser that runs JavaScript hides it: Chrome's
+   sheet for a scripted document, which no page's rule shows again */
+@media (scripting: enabled) { noscript { display: none !important; } }
 
 /* a slot is where what is assigned to it is drawn, and makes no box of its
    own (HTML 15.3.1) */

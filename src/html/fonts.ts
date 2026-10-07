@@ -894,6 +894,12 @@ export class WebFonts implements FontFamilies {
   /** A face arrived, or will not. Either way the boxes are built again: an
    *  arrival changes the lists, and a failure has the next face asked for,
    *  by a family that has to be asked again to ask it. */
+  /** Whether a face is on its way: asked for, and not yet registered or
+   *  given up on (`HtmlViewNode`'s `onLoaded`). */
+  get loading(): boolean {
+    return this._faces.some((face) => face.state === 'loading');
+  }
+
   private _settled(face: Face, ok: boolean): void {
     if (this._destroyed) return;
     if (ok && this._app) arrive(face, registryOf(this._app));

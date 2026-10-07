@@ -44,6 +44,8 @@ import { attr, flatChildrenOf, isElement, isText, tagOf } from './dom.js';
 import type { Element } from './dom.js';
 import { stepFrom } from './focus.js';
 import type { FocusStop } from './focus.js';
+import { fireDomEvent, modifiersOf } from './dom-events.js';
+import type { DomEventHandler } from './dom-events.js';
 import type { HtmlViewNode } from './node.js';
 import type { Forms } from './widgets.js';
 
@@ -54,6 +56,9 @@ export interface StopsOptions {
   forms: Forms;
   selectable: boolean;
   onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
+  /** Told of the click a key makes, before the link is followed or the
+   *  button pressed (`dom-events.ts`). */
+  onDomEvent?: DomEventHandler;
 }
 
 export interface Stops {
@@ -70,13 +75,18 @@ export interface Stops {
   /** Whether the document has stops of its own, which Tab goes to rather
    *  than to the document's surface; null until it has been laid out. */
   hasStops: boolean | null;
+  /** Give a focusable area the focus, as Tab gives it: false where the
+   *  element is none, or has no box. */
+  focus(el: Element): boolean;
+  /** The element whose stop `node` is, or null. */
+  elementOf(node: DrawnNode | null): Element | null;
 }
 
 const NONE: readonly FocusStop[] = [];
 const NO_ELEMENTS: readonly Element[] = [];
 
 export function useFocusStops(options: StopsOptions): Stops {
-  const { view, root, forms, selectable, onLink } = options;
+  const { view, root, forms, selectable, onLink, onDomEvent } = options;
   const clipboard = useClipboard();
   const [stops, setStops] = React.useState<readonly FocusStop[]>(NONE);
   const reported = stops !== NONE;
@@ -194,11 +204,25 @@ export function useFocusStops(options: StopsOptions): Stops {
     const node = view.current;
     if (!node || !(enter || space)) return;
     const href = node.hrefOf(el);
-    if (href !== null) {
-      // a link is followed by Enter alone: Space is the page's
-      if (!enter) return;
+    // a link is followed by Enter alone: Space is the page's
+    if (href !== null && !enter) return;
+    // what a key activates is a click, which the host is asked about first
+    // (HTML 6.5.6, a keyboard's activation behaviour): at the element's
+    // point, with no count
+    const point = node.focusPoint(el);
+    const clicked = fireDomEvent(onDomEvent, 'click', el, {
+      ...modifiersOf(ev),
+      ...(point && { x: point.x, y: point.y }),
+      button: 0,
+      detail: 0,
+    });
+    if (!clicked) {
       ev.preventDefault();
-      onLink?.(href, keyboardClick(ev, node, root.current, el));
+      return;
+    }
+    if (href !== null) {
+      ev.preventDefault();
+      onLink?.(href, syntheticClick(ev, node, root.current, el));
       return;
     }
     if (forms.activate(el)) ev.preventDefault();
@@ -258,6 +282,13 @@ export function useFocusStops(options: StopsOptions): Stops {
     onKeyDown,
     onMouseDown,
     hasStops,
+    focus: (el) => {
+      const stop = stops[index.get(el) ?? -1];
+      if (!stop) return false;
+      go(stop);
+      return true;
+    },
+    elementOf: (node) => boxes.elementOf(node),
   };
 }
 
@@ -327,15 +358,19 @@ function mountedStops(
 }
 
 /**
- * The click a link is followed with from the keyboard, as a browser's
- * keyboard activation is one (HTML 6.5.6): a `MouseEvent` with `detail` 0,
- * the key's modifiers — Ctrl+Enter opens a link in the background where
- * Ctrl+click does — and its point on the link, the middle of its first
- * fragment, so a handler asking what is under the click (`elementAt`)
- * finds the link.
+ * The click a link is followed with where no pointer clicked it — from the
+ * keyboard, as a browser's keyboard activation is one (HTML 6.5.6), or as
+ * an application activates it: a `MouseEvent` with `detail` 0, the key's
+ * modifiers where a key made it — Ctrl+Enter opens a link in the
+ * background where Ctrl+click does — and its point on the link, the middle
+ * of its first fragment, so a handler asking what is under the click
+ * (`elementAt`) finds the link.
  */
-function keyboardClick(
-  ev: X11KeyboardEvent<DrawnNode>,
+export function syntheticClick(
+  ev: Pick<
+    X11KeyboardEvent<DrawnNode>,
+    'shiftKey' | 'ctrlKey' | 'altKey' | 'metaKey'
+  > & { nativeEvent?: unknown },
   node: HtmlViewNode,
   root: DrawnNode | null,
   el: Element,
@@ -356,7 +391,11 @@ function keyboardClick(
     y,
     localX: x - (origin?.x ?? 0),
     localY: y - (origin?.y ?? 0),
-    nativeEvent: { ...ev.nativeEvent, x: x * scale, y: y * scale },
+    nativeEvent: {
+      ...(ev.nativeEvent as object | undefined),
+      x: x * scale,
+      y: y * scale,
+    } as X11MouseEvent<DrawnNode>['nativeEvent'],
     shiftKey: ev.shiftKey,
     ctrlKey: ev.ctrlKey,
     altKey: ev.altKey,

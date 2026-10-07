@@ -47,6 +47,12 @@ const RAW_TEXT = new Set(['script', 'style', 'textarea', 'title']);
  *  a `<meta>`'s `::before` a line of the page. */
 export const NON_RENDERED = new Set(['template']);
 
+/** The same, where the host runs the document's scripts: a `<noscript>`'s
+ *  content is then no part of what is rendered either (HTML 4.12.2), so
+ *  the scan asks for none of its images or sheets and hands over none of
+ *  its scripts (`HtmlSource.scripting`). */
+const NON_RENDERED_SCRIPTING = new Set(['template', 'noscript']);
+
 /** What the HTML parser puts in `<head>`. Where the markup has no `<head>`
  *  around it, at the top of the document, it is still the head's, which a
  *  browser implies and the UA sheet hides: `* { display: block }` shows no
@@ -604,6 +610,9 @@ export class HtmlSource {
   revision = 0;
   /** True once `end()` has been called and the tree is final. */
   complete = false;
+  /** Whether the host runs the document's scripts: the scan then skips
+   *  what a `<noscript>` holds. Set with `setScripting`, which scans again. */
+  scripting = false;
 
   private _parser: Parser;
   private _handler: Handler;
@@ -677,6 +686,16 @@ export class HtmlSource {
     mutations += 1;
   }
 
+  /** Run scripts or not: what the scan finds changes with it. True when
+   *  it changed. */
+  setScripting(on: boolean): boolean {
+    if (on === this.scripting) return false;
+    this.scripting = on;
+    this.revision += 1;
+    this._facts = freshFacts();
+    return true;
+  }
+
   /** Whether the parser has yet to meet an element's end tag. A chunk of a
    *  stream that ends inside a `<script>` leaves it in the tree holding the
    *  text written so far, which is not the script. */
@@ -707,8 +726,12 @@ export class HtmlSource {
       // 4.12.3), out of the document until a script stamps it in, which
       // here none does. A sheet in it styles nothing, an image in it loads
       // nothing, a script in it runs nothing, and its `<title>` and
-      // `<base>` are not the document's.
-      for (const el of elementsIn(root, NON_RENDERED)) {
+      // `<base>` are not the document's. Nor into a `<noscript>` where the
+      // host runs scripts, which is drawn as nothing then.
+      for (const el of elementsIn(
+        root,
+        this.scripting ? NON_RENDERED_SCRIPTING : NON_RENDERED,
+      )) {
         const hosted = SHADOW_ROOTS.get(el);
         if (hosted) {
           const tree = { root: hosted, sheets: [] };
