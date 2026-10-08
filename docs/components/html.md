@@ -1509,7 +1509,25 @@ a `url()` to an SVG `<filter>`, which has the whole list ignored, as a
 reference to a filter that is not there has (Filter Effects 1, 4). A
 filtered element is never lifted onto a layer of its own on macOS, nor is
 anything in it, and a `<video>` in one shows its poster, filtered, rather
-than a player — `isolation` — `isolate` makes a box a stacking context, positioned
+than a player — `backdrop-filter` (and `-webkit-backdrop-filter`) — a
+list makes a box a stacking context and the containing block of the
+absolute and the fixed boxes in it, as `filter` does (Filter Effects 2,
+2), and what is painted behind the box is drawn through the list, cut to
+the box's border box and rounded as it is, before the box paints its own
+background: the frosted glass of a card over a page. The backdrop is the
+document painted from its canvas up to the box, over the box's border box,
+at a scale that keeps the blur's standard deviation two pixels across —
+the blur takes everything finer away, and a 64-pixel blur at 2x paints a
+thirty-second of it — with its edges mirrored out as far as the blur
+reaches, as Chrome reads one, so what the page has just outside the box
+does not bleed in; then drawn through canvas's `filter`, `blur()` and the
+colour functions, which react-x11's native context runs, onto a surface the
+box's size, kept for the paint: a later box's backdrop draws an earlier
+one's from it. It is drawn only where a surface runs the filter — macOS,
+and Windows — and not on X11 or Wayland, whose contexts run none; nor
+where the box's own background is opaque, which hides it, or the box is
+drawn through a transform. A box with a backdrop filter is never lifted
+onto a layer of its own — `isolation` — `isolate` makes a box a stacking context, positioned
 or not, painted whole among the positioned boxes as one under full
 opacity is, so a box in it with a negative `z-index` goes over its
 background and under its text (CSS Compositing 1, 3.2) — `will-change` —
@@ -2305,9 +2323,17 @@ wherever a linear one is: a layer, a mask, a border image. One with no
 width or no height is its last colour, as Chrome draws it, and one whose
 circle or centre is further off than a context carries is drawn as the
 part of it the box sees. **Radial
-gradients are drawn on X11 and Wayland**, whose contexts have them;
-react-x11's macOS and Windows contexts paint one flat, in a single colour,
-so there it is drawn as nothing, over the colour. Conic and repeating
+gradients are drawn on X11, Wayland and macOS**, whose contexts have them
+— macOS since react-x11's context fills one through @windowkit/appkit's
+`ctxFillRadialGradient`; react-x11's Windows context paints one flat, in
+a single colour, so there it is drawn as nothing, over the colour, and an
+older core's macOS one does the same, found by its `createRadialGradient`
+taking no circles. A gradient's colours are interpolated premultiplied,
+as CSS has it, where a context interpolates them straight, as canvas
+specifies and CoreGraphics does: a stop with no alpha takes the colour of
+each stop beside it, and two partly transparent stops of other alphas are
+cut into steps — a colour fading to `transparent` fades out, not through
+grey. Conic and repeating
 gradients, and the prefixed spellings of all of them, are drawn as nothing
 everywhere. The root's background covers the whole canvas, as CSS 2.1
 has it: `<html>`'s, or `<body>`'s where `<html>` has none, over the body's
@@ -2328,6 +2354,17 @@ opaque the pixels are the ones it is shaded in; a translucent one is held
 in a strip rounded to a level before it is laid over what is under it, and
 may come out a level apart. A small one, a tile of one and one at a slant
 are shaded where they are.
+
+A large radial gradient whose colours change slowly — no two stops of
+other colours fewer than 24 of its pixels apart, sampled every 4 to 16 —
+is drawn on the native contexts from a raster of its tile made that much
+smaller and kept, by its value and its tile's size and not where the tile
+is, so a layer an animation moves draws the raster it has. And a canvas
+whose every layer is such a gradient, over a colour, is painted small on
+a surface of its own and drawn up once: an image drawn larger is some 2 ns
+a pixel on macOS, and melbcss.com's liquid glass, six orbs the size of the
+window moved by an animation, was 65 ms of every frame of it at 2x shaded
+and is 8. A hard stop is drawn as it is.
 
 **Shadows:** `box-shadow`, outer and inset, with offsets, blur, spread and
 any number of them, under the box's background and over it: a card's,

@@ -789,6 +789,134 @@ test('a context that paints a radial gradient flat is not asked for one', async 
   );
 });
 
+test('a stop with no alpha is drawn in the colour beside it, and one of another alpha in steps, so a context that interpolates straight fades as CSS does', async () => {
+  // CSS interpolates a gradient's colours premultiplied (CSS Images 3,
+  // 3.5.2); canvas specifies straight RGBA, and CoreGraphics follows it, so
+  // an orb fading to `transparent` faded through grey, the colour of
+  // transparent black, on a Mac. A transparent stop takes each neighbour's
+  // colour, which interpolates the same in either; partly transparent ones
+  // of other alphas are cut into steps worked out premultiplied
+  const stopsOf = async (gradient: string) => {
+    const { node } = await render(radial(gradient));
+    const [g] = radialFills(await fillsOf(view(node)));
+    cleanup();
+    return g.stops;
+  };
+  assert.deepStrictEqual(await stopsOf('#ff0000, transparent'), [
+    [0, parseColor('#ff0000')],
+    [1, 'rgba(255, 0, 0, 0)'],
+  ]);
+  assert.deepStrictEqual(
+    await stopsOf('#ff0000, transparent, #0000ff'),
+    [
+      [0, parseColor('#ff0000')],
+      [0.5, 'rgba(255, 0, 0, 0)'],
+      [0.5, 'rgba(0, 0, 255, 0)'],
+      [1, parseColor('#0000ff')],
+    ],
+    'a transparent stop between two colours is each of them, at no alpha',
+  );
+  const steps = await stopsOf('#ff0000, rgba(0, 0, 255, 0.5)');
+  assert.strictEqual(steps.length, 9, 'seven steps between the two');
+  assert.deepStrictEqual(
+    steps[4],
+    [0.5, blend(parseColor('#ff0000')!, 'rgba(0, 0, 255, 0.5)', 0.5)],
+    'each worked out premultiplied',
+  );
+  assert.deepStrictEqual(
+    await stopsOf('#ff0000, #0000ff'),
+    [
+      [0, parseColor('#ff0000')],
+      [1, parseColor('#0000ff')],
+    ],
+    'opaque stops are as they were',
+  );
+});
+
+test('a radial gradient that changes slowly is drawn from a raster of it made small and kept, on a context that draws through a matrix', async () => {
+  // CoreGraphics shades a radial gradient a pixel at a time: six orbs the
+  // size of the window an animation moves were 65 ms of every frame on a
+  // Mac. Two stops 400px apart are smooth to a sample every 16 pixels
+  const big =
+    '<style>body{margin:0}</style><div style="width:1000px;height:600px;' +
+    'background:radial-gradient(#ff0000, #0000ff)"></div>';
+  const { node } = await render(big);
+  const kept: { key: string; width: number; height: number }[] = [];
+  const cached = (
+    key: string,
+    width: number,
+    height: number,
+    draw: (ctx: never) => void,
+  ) => {
+    kept.push({ key, width, height });
+    void draw;
+    return { raster: key };
+  };
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, { scalesText: true, cached });
+  assert.deepStrictEqual(
+    kept.map((k) => [k.width, k.height]),
+    [[63, 38]],
+    'a sixteenth of the tile each way',
+  );
+  const images = ops.filter((o) => o.op === 'image');
+  assert.deepStrictEqual(
+    images.map((o) => (o.op === 'image' ? [o.x, o.y, o.w, o.h] : null)),
+    [[0, 0, 1000, 600]],
+    'drawn back up over the tile',
+  );
+  assert.strictEqual(radialFills(await fillsOf(view(node))).length, 1);
+  // drawn as it is where the context shades in the server, and where a
+  // hard stop would be blurred by a sample
+  kept.length = 0;
+  await fillsOf(view(node), undefined, { cached });
+  assert.strictEqual(kept.length, 0, 'not on ntk');
+  cleanup();
+  const { node: hard } = await render(
+    big.replace('#ff0000, #0000ff', '#ff0000 50%, #0000ff 50%'),
+  );
+  await fillsOf(view(hard), undefined, { scalesText: true, cached });
+  assert.strictEqual(kept.length, 0, 'nor with a hard stop');
+});
+
+test('a canvas of slowly changing radial gradients over a colour is painted small on a surface of its own and drawn up once', async () => {
+  // drawn up one layer at a time, six orbs were still 43 ms of a frame at
+  // 2x: an image drawn larger is some 2 ns a pixel on a Mac
+  const { node } = await render(
+    '<style>html{background:radial-gradient(#ff0000, transparent) fixed,' +
+      'radial-gradient(#00ff00, transparent) fixed #e5eefb}</style><p>x</p>',
+  );
+  const made: [number, number][] = [];
+  const surface = (width: number, height: number) => {
+    made.push([width, height]);
+    return {
+      getContext: () => ({
+        transform() {},
+        fillRect() {},
+        drawImage() {},
+        save() {},
+        restore() {},
+      }),
+    };
+  };
+  const cached = () => ({});
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, {
+    scalesText: true,
+    cached,
+    surface,
+    canvas: { x: 0, y: 0, width: 1000, height: 600 },
+    viewport: { x: 0, y: 0, width: 1000, height: 600 },
+  });
+  assert.deepStrictEqual(made, [[63, 38]], 'one surface, a sixteenth');
+  const images = ops.filter((o) => o.op === 'image');
+  assert.deepStrictEqual(
+    images.map((o) => (o.op === 'image' ? [o.x, o.y, o.w, o.h] : null)),
+    [[0, 0, 1000, 600]],
+    'drawn once over the canvas',
+  );
+});
+
 metric(
   'a radial gradient is drawn as an ellipse, not as a circle',
   async () => {

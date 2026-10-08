@@ -401,6 +401,9 @@ function liftableBox(
   // a filter's colour functions are run over the box's pixels as the
   // document draws them (`paintFiltered`), which a layer does not do
   if (box.style.filter !== null) return false;
+  // and what is behind a backdrop filter is filtered as the document draws
+  // it, which moves under a layer
+  if (box.style.backdropFilter !== null) return false;
   // one fixed to the viewport in it is drawn where the viewport is, which
   // a layer the document scrolls does not follow
   if (!drawnAtViewport(box)) {

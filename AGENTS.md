@@ -2519,6 +2519,27 @@ nor in one, and no video is mounted in one: neither runs the matrices.
 The core seam that lifts the round trip — `ctx.filter` — is planned in
 `docs/prd-filter.md`.
 
+**A backdrop is painted again, not read** (`paintBackdrop`,
+`makeBackdrop`): `backdrop-filter` draws the document behind a box — from
+its canvas up to the box, over the box's border box, at a scale that keeps
+the blur's deviation two pixels across, its edges mirrored out — through a
+surface's `filter`, `blur()` and all, which react-x11's native context runs
+and ntk's does not. Three things are load-bearing. **A paint that makes a
+backdrop stops at its box**: `paintBox` returns there, and `stoppingAt`
+drops every draw after it, so a thing painted after the box from outside
+`paintBox` — the root box's outline is one — stays out. **A backdrop is
+made once a paint** (`BackdropPaint.made`) and a later box's draws it
+again, or each box would paint every earlier one's, twice over. And **a
+large draw on macOS is clipped by whole-pixel rectangles where it can be**
+(`inBorderBox`, `castOutside`'s rule): through its rounded outline alone,
+a glass card's backdrop cost a quarter of a frame. Anything new that
+gives a box a filtered surface of what is under it starts from here.
+
+**A gradient's stops are handed over as CSS mixes them** (`addStops`):
+premultiplied, where canvas — and CoreGraphics — mixes them straight, and
+a stop of no alpha faded a colour through grey. Anything new that adds
+colour stops to a context's gradient goes through it.
+
 **An animation a layer can carry is handed to core as a sprite**
 (`src/html/sprites.ts`; react-x11's `sprites()`, sidorares/react-x11#819).
 On macOS the surface presenter lifts it onto a layer of its own and the

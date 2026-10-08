@@ -741,6 +741,12 @@ export interface ComputedStyle {
    *  box as well (Filter Effects 1, 2), and paints it as a group, whose
    *  pixels the colour functions are run over (`paintFiltered`). */
   filter: FilterFunction[] | null;
+  /** `backdrop-filter`: its functions in the order written; null for
+   *  `none`. Applied to what is painted behind the box, cut to its border
+   *  box, before the box paints (Filter Effects 2, `paintBackdrop`); any
+   *  list makes the box a stacking context and the containing block of the
+   *  absolute and the fixed boxes in it, as `filter` does (2). */
+  backdropFilter: FilterFunction[] | null;
   /** `isolation: isolate` makes the element a stacking context (CSS
    *  Compositing 1, 3.2): what it holds with a `z-index` is ordered inside
    *  it, a negative one over its own background. */
@@ -1306,6 +1312,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     clipPath: null,
     opacity: 1,
     filter: null,
+    backdropFilter: null,
     isolation: 'auto',
     willChange: 0,
     translate: null,
@@ -1705,6 +1712,9 @@ const PREFIXED_ALIASES: Record<string, string> = {
   // sets it writes beside the standard one, or alone
   '-webkit-user-select': 'user-select',
   '-webkit-filter': 'filter',
+  // Safari's name for it until 18, which pages still write beside the
+  // standard one
+  '-webkit-backdrop-filter': 'backdrop-filter',
 };
 
 /**
@@ -2203,6 +2213,11 @@ export function applyDeclaration(
     case 'filter': {
       const list = parseFilter(value, ctx);
       if (list !== undefined) style.filter = list;
+      return;
+    }
+    case 'backdrop-filter': {
+      const list = parseFilter(value, ctx);
+      if (list !== undefined) style.backdropFilter = list;
       return;
     }
     case 'isolation': {
@@ -6859,6 +6874,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'overflow-y': ['overflowY'],
   opacity: ['opacity'],
   filter: ['filter'],
+  'backdrop-filter': ['backdropFilter'],
   isolation: ['isolation'],
   'will-change': ['willChange'],
   translate: ['translate'],

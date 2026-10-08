@@ -269,6 +269,33 @@ export function colourFilter(
   };
 }
 
+/**
+ * A `backdrop-filter` list as what a 2d context's `filter` takes — canvas's,
+ * which react-x11's native context runs, `blur()` among it: the standard
+ * deviation of the blur the list's blurs come to, the root of the sum of
+ * their squares, in device pixels, and the rest of it, its colour functions
+ * and an `opacity()`, as a list (`colours`). Null for a list that draws
+ * nothing, or names a `url()`, which has the whole list ignored (Filter
+ * Effects 1, 4); a `drop-shadow()`, which reaches past the backdrop, is
+ * left out.
+ */
+export function backdropFilter(
+  list: readonly FilterFunction[],
+): { colours: string; blur: number } | null {
+  if (list.some((f) => f.fn === 'url')) return null;
+  const colour = colourFilter(
+    list.filter((f) => f.fn !== 'blur' && f.fn !== 'drop-shadow'),
+  );
+  let blur2 = 0;
+  for (const f of list) if (f.fn === 'blur') blur2 += f.radius * f.radius;
+  const blur = Math.sqrt(blur2);
+  const parts: string[] = [];
+  if (colour?.css) parts.push(colour.css);
+  if (colour && colour.alpha < 1) parts.push(`opacity(${colour.alpha})`);
+  if (!(blur > 0) && !parts.length) return null;
+  return { colours: parts.join(' '), blur };
+}
+
 /** One colour function's matrix, null where it leaves every colour as it
  *  is (Filter Effects 1, 13). */
 function matrixOf(f: FilterFunction): ColourMatrix | null {

@@ -149,7 +149,7 @@ import {
 } from './svg.js';
 import type { IntrinsicSize, SurfaceMaker } from './svg.js';
 import type { CollapsedBorder } from './layout/collapse.js';
-import { colourFilter } from './css/filter.js';
+import { backdropFilter, colourFilter } from './css/filter.js';
 import type { ColourFilter, FilterFunction } from './css/filter.js';
 import type { FilterStore } from './filters.js';
 
@@ -427,6 +427,13 @@ export interface PaintOptions {
   drag?: DragPaint | null;
   /** @internal The box whose background went to the canvas instead. */
   canvasSource?: Box | null;
+  /** @internal What a box with a `backdrop-filter` paints what is behind
+   *  it from (`paintBackdrop`). */
+  backdrop?: BackdropPaint;
+  /** @internal Where the surface being painted on is in the window, for
+   *  one painted on a surface of its own (`onSurface`). */
+  surfaceX?: number;
+  surfaceY?: number;
   /** @internal The boxes clipping what is being painted, outermost first. */
   clips?: ClipLevel[];
   /** @internal Whether the tree has a layer below the flow (`hoistNegative`). */
@@ -961,7 +968,16 @@ export function paintDocument(
       ctx.fillRect(area.x, area.y, area.w, area.h);
     }
   }
-  if (canvas) paintCanvas(ctx, canvas, tree, options);
+  // the backdrops this paint makes, kept to its end: a box's holds every
+  // box with one painted before it, drawn from here
+  const backdrop: BackdropPaint = options.backdrop ?? {
+    tree,
+    root: options,
+    made: new Map<Box, Backdrop | null>(),
+    until: null,
+    matrix: options.matrix,
+  };
+  if (canvas) paintCanvas(ctx, canvas, tree, { ...options, backdrop });
   paintBox(ctx, tree.root, {
     ...options,
     canvasSource: canvas?.source,
@@ -969,8 +985,13 @@ export function paintDocument(
     fixed: FIXED_BOXES.get(tree) ?? null,
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
+    backdrop,
   });
   ctx.restore();
+  if (!options.backdrop) {
+    for (const made of backdrop.made.values()) made?.surface.destroy?.();
+    backdrop.canvas?.surface.destroy?.();
+  }
 }
 
 /** What covers the canvas: a style's background, the box that would have
@@ -1125,6 +1146,20 @@ function paintCanvas(
   if (!area) return;
   const layers = layersOf(source) ?? [source];
   const visible = source.visibility === 'visible';
+  if (keptCanvas(ctx, area, options)) return;
+  if (smoothCanvas(ctx, layers, anchor, area, visible, options)) return;
+  paintCanvasLayers(ctx, layers, anchor, area, visible, options);
+}
+
+/** The canvas's background layers, bottom first, over `area`. */
+function paintCanvasLayers(
+  ctx: PaintContext,
+  layers: readonly ComputedStyle[],
+  anchor: Frame,
+  area: { x: number; y: number; w: number; h: number },
+  visible: boolean,
+  options: PaintOptions,
+): void {
   for (let i = layers.length - 1; i >= 0; i -= 1) {
     const style = layers[i];
     if (!isTransparent(style.backgroundColor) && visible) {
@@ -1158,6 +1193,162 @@ function paintCanvas(
       );
     }
   }
+}
+
+/**
+ * A canvas whose every layer is a gradient that changes slowly across its
+ * tile, over a colour (`smoothApart`): painted on a surface made smaller by
+ * as much as the least smooth of them allows, and drawn back up once,
+ * smoothed. CoreGraphics draws an image scaled up at some 2 ns a pixel, so
+ * a page of six orbs the size of the window, each drawn from a raster of
+ * its own (`gradientRaster`), was still 43 ms of every frame of the
+ * animation moving them on a Mac at 2x; drawn small, the six are a few
+ * thousand pixels each, and the window is drawn once. Only on a context
+ * that draws through a matrix as it draws anything (`scalesText`), and not
+ * in one painted through a matrix already. False where it is not painted
+ * so.
+ */
+function smoothCanvas(
+  ctx: PaintContext,
+  layers: readonly ComputedStyle[],
+  anchor: Frame,
+  area: { x: number; y: number; w: number; h: number },
+  visible: boolean,
+  options: PaintOptions,
+): boolean {
+  if (ctx.scalesText !== true || options.matrix || !visible) return false;
+  if (!options.surface || !ctx.drawImage) return false;
+  if (area.w * area.h < STRIP_AREA) return false;
+  let k = SMOOTH_MOST;
+  let gradients = 0;
+  for (const style of layers) {
+    if (style.backgroundImage) return false;
+    const gradient = style.backgroundGradient;
+    if (!gradient) continue;
+    if (gradient.kind !== 'radial') return false;
+    const [w, h] = canvasTile(style, anchor, options);
+    k = Math.min(k, smoothScale(gradient, w, h));
+    gradients += 1;
+  }
+  if (!gradients || !(k >= 4)) return false;
+  const x = Math.floor(area.x);
+  const y = Math.floor(area.y);
+  const w = Math.ceil(area.x + area.w) - x;
+  const h = Math.ceil(area.y + area.h) - y;
+  const across = Math.max(1, Math.ceil(w / k));
+  const down = Math.max(1, Math.ceil(h / k));
+  const surface = options.surface(across, down);
+  if (!surface) return false;
+  let kept = false;
+  try {
+    const on = surface.getContext('2d') as PaintContext;
+    if (!on.transform) return false;
+    const matrix: Matrix = [1 / k, 0, 0, 1 / k, -x / k, -y / k];
+    on.transform(...matrix);
+    paintCanvasLayers(on, layers, anchor, { x, y, w, h }, visible, {
+      ...options,
+      matrix,
+    });
+    // cut to the area where it is not whole pixels, which a clip of whole
+    // pixels it is drawn in already is
+    const whole = x === area.x && y === area.y && w === area.w && h === area.h;
+    ctx.save();
+    if (!whole) {
+      ctx.beginPath!();
+      ctx.rect!(area.x, area.y, area.w, area.h);
+      ctx.clip!();
+    }
+    ctx.drawImage(surface, 0, 0, w / k, h / k, x, y, w, h);
+    ctx.restore();
+    // kept to the paint's end, for what is behind a box with a backdrop
+    // filter, where the paint has one — and in the window's coordinates
+    const bp = options.backdrop;
+    if (bp && !bp.until && !bp.canvas) {
+      const sx = options.surfaceX ?? 0;
+      const sy = options.surfaceY ?? 0;
+      bp.canvas = {
+        surface,
+        across: w / k,
+        down: h / k,
+        x: x + sx,
+        y: y + sy,
+        width: w,
+        height: h,
+      };
+      kept = true;
+    }
+    return true;
+  } finally {
+    if (!kept) surface.destroy?.();
+  }
+}
+
+/**
+ * The canvas in a paint of what is behind a box (`makeBackdrop`), drawn
+ * from the one the window's paint drew small (`smoothCanvas`) where that
+ * covers all of `area`. False where it does not, and the canvas is painted.
+ */
+function keptCanvas(
+  ctx: PaintContext,
+  area: { x: number; y: number; w: number; h: number },
+  options: PaintOptions,
+): boolean {
+  const bp = options.backdrop;
+  const kept = bp?.until ? bp.canvas : undefined;
+  if (!kept || !ctx.drawImage) return false;
+  const sx = options.surfaceX ?? 0;
+  const sy = options.surfaceY ?? 0;
+  // the part of it this paint reaches, in the window
+  const damage = options.damage ?? {
+    x: area.x,
+    y: area.y,
+    width: area.w,
+    height: area.h,
+  };
+  const x0 = Math.max(area.x, damage.x) + sx;
+  const y0 = Math.max(area.y, damage.y) + sy;
+  const x1 = Math.min(area.x + area.w, damage.x + damage.width) + sx;
+  const y1 = Math.min(area.y + area.h, damage.y + damage.height) + sy;
+  if (
+    x0 < kept.x ||
+    y0 < kept.y ||
+    x1 > kept.x + kept.width ||
+    y1 > kept.y + kept.height
+  ) {
+    return false;
+  }
+  ctx.drawImage(
+    kept.surface,
+    0,
+    0,
+    kept.across,
+    kept.down,
+    kept.x - sx,
+    kept.y - sy,
+    kept.width,
+    kept.height,
+  );
+  return true;
+}
+
+/** The size of a canvas layer's tile: its gradient's, which is the box it
+ *  is positioned against, unless `background-size` gives it another. */
+function canvasTile(
+  style: ComputedStyle,
+  anchor: Frame,
+  options: PaintOptions,
+): [number, number] {
+  const box =
+    style.backgroundAttachment === 'fixed' && options.canvas
+      ? (options.viewport ?? options.canvas)
+      : originBox(anchor, options, style);
+  const at = snapped(box.x, box.y, box.width, box.height);
+  return roundedTile(
+    style.backgroundSize,
+    style.backgroundRepeat,
+    sizedTile(style.backgroundSize, NO_SIZE, at, 1),
+    at,
+  );
 }
 
 const LAYERS = new WeakMap<ComputedStyle, ComputedStyle[]>();
@@ -1364,6 +1555,15 @@ function frameHeight(box: Frame): number {
 }
 
 function paintBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
+  // a paint of what is behind a box with a backdrop filter ends at the box
+  const until = options.backdrop?.until;
+  if (until) {
+    if (until.reached) return;
+    if (box === until.box) {
+      until.reached = true;
+      return;
+    }
+  }
   if (
     options.lifted?.has(box) ||
     !intersects(box, options) ||
@@ -2686,6 +2886,362 @@ function groupsOnSurfaces(ctx: PaintContext): boolean {
   return ctx.scalesText !== true || ctx.fadesSurfacesCheaply === true;
 }
 
+/** What a paint of the document hands the boxes with a `backdrop-filter`
+ *  in it (`paintBackdrop`): the tree and the options it began with, the
+ *  matrix those draw through, each backdrop made in it so far — a later
+ *  box's backdrop holds an earlier box, which draws its own from here
+ *  rather than painting the document again — and, in the paint that makes
+ *  one, the box it stops at. */
+interface BackdropPaint {
+  tree: BoxTree;
+  root: PaintOptions;
+  made: Map<Box, Backdrop | null>;
+  until: { box: Box; reached: boolean } | null;
+  matrix: Matrix | undefined;
+  /** The canvas the paint drew small (`smoothCanvas`), which what is
+   *  behind a box is drawn from where it covers it. */
+  canvas?: Backdrop;
+}
+
+/** What is behind a box, filtered, on a surface `across` by `down` that is
+ *  drawn over the window's rectangle at (`x`, `y`), `width` by `height`. */
+interface Backdrop {
+  surface: Offscreen;
+  across: number;
+  down: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** How many pixels across a blur's standard deviation is when what it
+ *  blurs is painted for it (`makeBackdrop`): a Gaussian leaves nothing
+ *  finer, so painting it finer is work the blur throws away. */
+const BACKDROP_PX = 2;
+
+/**
+ * What is painted behind a box with a `backdrop-filter`, filtered, cut to
+ * the box's border box, rounded as the box is, before the box paints
+ * (Filter Effects 2, 3) — the frosted glass of a card over a page. Made
+ * once a paint (`makeBackdrop`), where a later box's backdrop draws it
+ * again. Nothing where no surface runs the filter — ntk's, on X11 and
+ * Wayland, and the headless mock's — or the box is drawn through a matrix,
+ * or its own background hides all of it.
+ */
+function paintBackdrop(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const bp = options.backdrop;
+  if (
+    !bp ||
+    !options.surface ||
+    !ctx.drawImage ||
+    !canClip(ctx) ||
+    box.kind === 'inline' ||
+    options.matrix !== bp.matrix ||
+    hidesBackdrop(box.style)
+  ) {
+    return;
+  }
+  const filter = backdropFilter(box.style.backdropFilter!);
+  if (!filter) return;
+  const x = box.x + options.originX;
+  const y = box.y + options.originY;
+  const w = box.width;
+  const h = box.height;
+  if (!(w > 0 && h > 0)) return;
+  // where the box is in the window, which the document is painted in
+  const sx = options.surfaceX ?? 0;
+  const sy = options.surfaceY ?? 0;
+  let made = bp.made.get(box);
+  if (made === undefined) {
+    made = makeBackdrop(box, bp, x + sx, y + sy, w, h, filter);
+    bp.made.set(box, made);
+  }
+  if (!made) return;
+  const backdrop = made;
+  inBorderBox(ctx, x, y, w, h, cornersOf(box.style, w, h), () =>
+    ctx.drawImage!(
+      backdrop.surface,
+      0,
+      0,
+      backdrop.across,
+      backdrop.down,
+      backdrop.x - sx,
+      backdrop.y - sy,
+      backdrop.width,
+      backdrop.height,
+    ),
+  );
+}
+
+/**
+ * `draw` cut to a border box at (`x`, `y`), `w` by `h`, rounded at
+ * `corners`: the square inside of it through a rectangle of whole pixels,
+ * and only the bands round its edge — under its rounded corners, and the
+ * fraction of a pixel its sides may fall on — through its outline. On
+ * macOS a clip that is not a rectangle of whole pixels is a mask, which
+ * costs a draw some four times what a rectangle does over all of it
+ * (`castOutside`); a glass card the size of half the window was 28 ms of
+ * every frame of melbcss.com's animation through its outline alone.
+ */
+function inBorderBox(
+  ctx: PaintContext,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  corners: Corners | null,
+  draw: () => void,
+): void {
+  const outline = () => {
+    ctx.beginPath!();
+    if (corners && ctx.roundRect) roundedRect(ctx, x, y, w, h, corners);
+    else ctx.rect!(x, y, w, h);
+    ctx.clip!();
+  };
+  const left = Math.ceil(x);
+  const right = Math.floor(x + w);
+  const top = Math.ceil(
+    y + (corners ? Math.max(corners.y[0], corners.y[1]) : 0),
+  );
+  const bottom = Math.floor(
+    y + h - (corners ? Math.max(corners.y[2], corners.y[3]) : 0),
+  );
+  if (!(right > left && bottom > top)) {
+    ctx.save();
+    outline();
+    draw();
+    ctx.restore();
+    return;
+  }
+  const part = (
+    px: number,
+    py: number,
+    pw: number,
+    ph: number,
+    round: boolean,
+  ) => {
+    if (!(pw > 0 && ph > 0)) return;
+    ctx.save();
+    if (round) outline();
+    ctx.beginPath!();
+    ctx.rect!(px, py, pw, ph);
+    ctx.clip!();
+    draw();
+    ctx.restore();
+  };
+  part(left, top, right - left, bottom - top, false);
+  part(x, y, w, top - y, true);
+  part(x, bottom, w, y + h - bottom, true);
+  part(x, top, left - x, bottom - top, true);
+  part(right, top, x + w - right, bottom - top, true);
+}
+
+/** Whether a box's own background is a colour nothing shows through. */
+function hidesBackdrop(style: ComputedStyle): boolean {
+  const color = style.backgroundColor;
+  if (isTransparent(color)) return false;
+  return alphaOf(inkColor(color as string, style.color)) === 1;
+}
+
+/**
+ * What is behind a box, filtered: the document painted from its canvas up
+ * to the box and no further (`BackdropPaint.until`, and `stoppingAt` for
+ * what a later box draws from inside an earlier one's paint) over the
+ * box's border box at (`x`, `y`) in the window, `w` by `h`, at a scale
+ * that keeps a deviation of the blur `BACKDROP_PX` across; its edges
+ * mirrored out as far as the blur reaches, which is what the blur reads
+ * there, rather than what the page has, as Chrome reads a backdrop — a
+ * glass card beside a dark frame does not darken at its edge; and drawn
+ * through the filter, at that scale, onto a surface the box's size. Null
+ * where there is no surface to be had, or none runs the filter.
+ */
+function makeBackdrop(
+  box: Box,
+  bp: BackdropPaint,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  filter: { colours: string; blur: number },
+): Backdrop | null {
+  const root = bp.root;
+  const k = Math.max(1, Math.floor(filter.blur / BACKDROP_PX));
+  const across = Math.max(1, Math.ceil(w / k));
+  const down = Math.max(1, Math.ceil(h / k));
+  const pad = Math.ceil((3 * filter.blur) / k);
+  const outW = across + 2 * pad;
+  const outH = down + 2 * pad;
+  if (outW > RASTER_SIDE || outH > RASTER_SIDE) return null;
+  if (outW * outH > RASTER_LIMIT) return null;
+  const surfaces: Offscreen[] = [];
+  const surface = (width: number, height: number) => {
+    const made = root.surface?.(width, height) ?? null;
+    if (made) surfaces.push(made);
+    return made;
+  };
+  const inner = surface(across, down);
+  const out = surface(across, down);
+  const padded = pad ? surface(outW, outH) : inner;
+  if (!inner || !out || !padded) {
+    for (const s of surfaces) s.destroy?.();
+    return null;
+  }
+  const on = inner.getContext('2d') as PaintContext;
+  const to = out.getContext('2d') as PaintContext & { filter?: string };
+  const css = [
+    filter.blur > 0
+      ? `blur(${Math.round((filter.blur / k) * 1000) / 1000}px)`
+      : '',
+    filter.colours,
+  ]
+    .filter(Boolean)
+    .join(' ');
+  // a context with no `filter` of its own takes the property and does
+  // nothing with it: asked first, as `FilterStore` asks
+  if ('filter' in to) to.filter = css;
+  if (!on.transform || !to.drawImage || to.filter !== css) {
+    for (const s of surfaces) s.destroy?.();
+    return null;
+  }
+  const matrix: Matrix = [1 / k, 0, 0, 1 / k, -x / k, -y / k];
+  const until = { box, reached: false };
+  on.save();
+  on.transform(...matrix);
+  paintDocument(stoppingAt(on, until), bp.tree, {
+    ...root,
+    damage: { x, y, width: w, height: h },
+    matrix: root.matrix ? multiply(matrix, root.matrix) : matrix,
+    // what is kept from paint to paint is kept for the window's paint
+    sprites: null,
+    filters: null,
+    drawingKept: undefined,
+    backdrop: { ...bp, until, matrix },
+  });
+  on.restore();
+  if (pad) {
+    mirrorEdges(
+      padded.getContext('2d') as PaintContext,
+      inner,
+      across,
+      down,
+      pad,
+    );
+  }
+  to.drawImage(padded, -pad, -pad);
+  for (const s of surfaces) if (s !== out) s.destroy?.();
+  return {
+    surface: out,
+    across,
+    down,
+    x,
+    y,
+    width: across * k,
+    height: down * k,
+  };
+}
+
+/**
+ * A surface `across` by `down` drawn `pad` in from the corner of one
+ * `pad` larger all round, and each edge of it and each corner mirrored out
+ * into that margin, flipped about the edge it meets: what a blur of it
+ * reads past its edge.
+ */
+function mirrorEdges(
+  on: PaintContext,
+  inner: Offscreen,
+  across: number,
+  down: number,
+  pad: number,
+): void {
+  if (!on.drawImage || !on.transform) return;
+  const mx = Math.min(pad, across);
+  const my = Math.min(pad, down);
+  for (const ix of [-1, 0, 1]) {
+    for (const iy of [-1, 0, 1]) {
+      // the part of the surface a cell is, drawn where it is and flipped
+      // about the edge the cell meets
+      const sx = ix > 0 ? across - mx : 0;
+      const sy = iy > 0 ? down - my : 0;
+      const sw = ix === 0 ? across : mx;
+      const sh = iy === 0 ? down : my;
+      const ex = ix < 0 ? pad : pad + across;
+      const ey = iy < 0 ? pad : pad + down;
+      on.save();
+      on.transform(
+        ix ? -1 : 1,
+        0,
+        0,
+        iy ? -1 : 1,
+        ix ? 2 * ex : 0,
+        iy ? 2 * ey : 0,
+      );
+      on.drawImage(inner, sx, sy, sw, sh, pad + sx, pad + sy, sw, sh);
+      on.restore();
+    }
+  }
+}
+
+/**
+ * A context that draws until a paint reaches the box `until` names and
+ * nothing after: everything a later box paints, from wherever in the paint
+ * it comes, is dropped, and what keeps the context's state — its saves,
+ * paths, clips, matrix and the gradients made for it — goes on.
+ */
+function stoppingAt(
+  ctx: PaintContext,
+  until: { reached: boolean },
+): PaintContext {
+  return new Proxy(ctx, {
+    get(target, key) {
+      const value: unknown = Reflect.get(target, key);
+      if (typeof value !== 'function') return value;
+      if (typeof key === 'string' && KEEPS_STATE.has(key)) {
+        return value.bind(target);
+      }
+      return (...args: unknown[]) =>
+        until.reached ? undefined : value.apply(target, args);
+    },
+    set: (target, key, value) => Reflect.set(target, key, value),
+  });
+}
+
+/** What a stopped context still does (`stoppingAt`): nothing it draws. */
+const KEEPS_STATE = new Set([
+  'save',
+  'restore',
+  'beginPath',
+  'moveTo',
+  'lineTo',
+  'bezierCurveTo',
+  'quadraticCurveTo',
+  'arc',
+  'arcTo',
+  'ellipse',
+  'rect',
+  'roundRect',
+  'closePath',
+  'clip',
+  'transform',
+  'setTransform',
+  'getTransform',
+  'resetTransform',
+  'translate',
+  'scale',
+  'rotate',
+  'setLineDash',
+  'getLineDash',
+  'createLinearGradient',
+  'createRadialGradient',
+  'createConicGradient',
+  'createPattern',
+  'measureText',
+]);
+
 /** `onSurface` for a group: what escapes a clip around the box is painted
  *  where that clip ends, by the box painting the clip, as it was. */
 function inGroup(
@@ -2700,7 +3256,6 @@ function inGroup(
 
 /** How many boxes `drawsOverItself` looks through before it takes the box
  *  for one that does. */
-const OVERLAP_PROBE = 64;
 
 /**
  * Whether two things a box draws can fall on one pixel — a background under
@@ -2708,7 +3263,6 @@ const OVERLAP_PROBE = 64;
  * fading each thing on its own shows the one under it through it. One thing
  * drawn — a background alone, text alone, an image alone, the backdrop a
  * dialog dims a page with — is faded the same either way, and needs no
- * surface. A box with more than `OVERLAP_PROBE` in it is taken for one
  * that does.
  *
  * An inline box's text, its background and borders, and what is on its
@@ -2743,7 +3297,6 @@ function drawsOverItself(
   while (stack.length) {
     const at = stack.pop()!;
     looked += 1;
-    if (looked > OVERLAP_PROBE) return true;
     things += thingsDrawn(at);
     if (things > 1) return true;
     for (const child of at.children) stack.push(child);
@@ -2821,6 +3374,8 @@ function onSurface(
     ...options,
     originX: options.originX - x0,
     originY: options.originY - y0,
+    surfaceX: (options.surfaceX ?? 0) + x0,
+    surfaceY: (options.surfaceY ?? 0) + y0,
     damage: { x: 0, y: 0, width, height },
     canvas: options.canvas && {
       ...options.canvas,
@@ -3069,6 +3624,7 @@ function paintContent(
   options: PaintOptions,
 ): void {
   const visible = box.style.visibility === 'visible';
+  if (visible && box.style.backdropFilter) paintBackdrop(ctx, box, options);
   if (visible) paintOwnBackground(ctx, box, options);
   // `content-visibility: hidden` skips what the box holds, its own
   // background, borders and outline drawn (CSS Containment 2, 4)
@@ -5672,8 +6228,9 @@ export function stacksLayers(box: Box): boolean {
   const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
   if (style.opacity < 1) return true;
-  // and a filter, which is applied to the group (Filter Effects 1, 2)
-  if (style.filter !== null) return true;
+  // and a filter, which is applied to the group (Filter Effects 1, 2), and
+  // a backdrop filter (Filter Effects 2, 2)
+  if (style.filter !== null || style.backdropFilter !== null) return true;
   // and so does a mask, which is applied to the group (CSS Masking 1, 7),
   // and a clip path, which cuts it (5.1)
   if (masked(style) || pathClips(box)) return true;
@@ -6214,6 +6771,9 @@ function shadedPart(
   if (gradientStrip(ctx, gradient, x, y, w, h, currentColor, part, options)) {
     return;
   }
+  if (gradientRaster(ctx, gradient, x, y, w, h, currentColor, part, options)) {
+    return;
+  }
   const paint = gradientFill(ctx, gradient, x, y, w, h, currentColor, part);
   if (paint) fillGradient(ctx, paint, part);
 }
@@ -6424,6 +6984,85 @@ function gradientStrip(
   }
 }
 
+/** How many device pixels apart two stops of other colours are, at least,
+ *  for each pixel of a smooth gradient's raster (`gradientRaster`), and
+ *  the most it is made smaller than its tile. */
+const SMOOTH_PX = 24;
+const SMOOTH_MOST = 16;
+
+/**
+ * How much smaller than its tile, `w` by `h`, a radial gradient may be drawn
+ * and lose nothing a pixel would show: no two of its stops of other colours
+ * nearer than `SMOOTH_PX` of its pixels, and no more than `SMOOTH_MOST`. 0
+ * for one that is drawn as it is — a hard stop, a radius of nothing.
+ */
+function smoothScale(gradient: RadialGradient, w: number, h: number): number {
+  const { rx, ry } = radialShape(gradient, w, h);
+  if (!(rx > 0 && ry > 0)) return 0;
+  const at = stopOffsets(gradient.stops, rx);
+  let apart = Infinity;
+  for (let i = 1; i < at.length; i += 1) {
+    if (gradient.stops[i].color === gradient.stops[i - 1].color) continue;
+    apart = Math.min(apart, (at[i] - at[i - 1]) * Math.min(rx, ry));
+  }
+  return Math.min(SMOOTH_MOST, Math.floor(apart / SMOOTH_PX));
+}
+
+/**
+ * A radial gradient whose colours change slowly across its tile, drawn from
+ * a raster of the tile made smaller and kept (`PaintOptions.cached`),
+ * scaled up smoothed: no two stops of other colours are fewer than
+ * `SMOOTH_PX` raster pixels' worth apart, so a sample a few pixels apart
+ * misses nothing a pixel would show. CoreGraphics shades a radial gradient
+ * a pixel at a time, and melbcss.com's liquid glass, six orbs the size of
+ * the window that an animation moves, was 65 ms of every frame of it on a
+ * Mac at 2x. Kept by the gradient's value and its tile's size, and not
+ * where the tile is, so a layer an animation moves draws the raster it
+ * has. Only on a context that draws through a matrix as it draws anything
+ * (`scalesText`): ntk's shades a gradient in the server, and draws one
+ * where it is. False where it is not drawn so.
+ */
+function gradientRaster(
+  ctx: PaintContext,
+  gradient: Gradient,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  currentColor: string,
+  part: { x: number; y: number; w: number; h: number },
+  options: PaintOptions,
+): boolean {
+  if (gradient.kind !== 'radial' || ctx.scalesText !== true) return false;
+  if (!options.cached || !ctx.drawImage) return false;
+  if (part.w * part.h < STRIP_AREA) return false;
+  const k = smoothScale(gradient, w, h);
+  if (!(k >= 4)) return false;
+  const sw = Math.max(1, Math.ceil(w / k));
+  const sh = Math.max(1, Math.ceil(h / k));
+  const key = `radial ${JSON.stringify(gradient)} ${currentColor} ${w} ${h} ${sw} ${sh}`;
+  const raster = options.cached(key, sw, sh, (on) => {
+    if (!on.transform) return;
+    on.transform(sw / w, 0, 0, sh / h, 0, 0);
+    const tile = { x: 0, y: 0, w, h };
+    const paint = gradientFill(on, gradient, 0, 0, w, h, currentColor, tile);
+    if (paint) fillGradient(on, paint, tile);
+  });
+  if (!raster) return false;
+  ctx.drawImage(
+    raster,
+    ((part.x - x) * sw) / w,
+    ((part.y - y) * sh) / h,
+    (part.w * sw) / w,
+    (part.h * sh) / h,
+    part.x,
+    part.y,
+    part.w,
+    part.h,
+  );
+  return true;
+}
+
 /**
  * A `linear-gradient()` across a box (CSS Images 3, 3.1.1): its line
  * through the box's centre at its angle, as long as the box is across at
@@ -6493,10 +7132,63 @@ function linearGradient(
     );
   }
   const g = ctx.createLinearGradient!(x0, y0, x1, y1);
-  for (let i = 0; i < stops.length; i += 1) {
-    g.addColorStop((at[i] - from) / (to - from), colors[i]);
-  }
+  addStops(
+    g,
+    (at as number[]).map((t) => (t - from) / (to - from)),
+    colors,
+  );
   return g;
+}
+
+/** What a run between two partly transparent colours of other alphas is
+ *  cut into, for a context that interpolates straight (`addStops`). */
+const ALPHA_STEPS = 8;
+
+/**
+ * A gradient's stops, added so that it comes out as CSS has it — its
+ * colours interpolated premultiplied (CSS Images 3, 3.5.2, "Coloring the
+ * Gradient Line") — whatever the context interpolates in. Canvas specifies
+ * straight RGBA, and CoreGraphics follows it: there an orb fading to
+ * `transparent` faded through grey, the colour of transparent black. A
+ * stop with no alpha is given the colour of each stop beside it, twice at
+ * its offset where both have one, which interpolates to the same in either
+ * space; and a run between two partly transparent colours of other alphas
+ * is cut into steps worked out premultiplied (`blend`). ntk interpolates
+ * premultiplied, and draws what it drew.
+ */
+function addStops(
+  g: { addColorStop(offset: number, color: string): void },
+  offsets: readonly number[],
+  colors: readonly string[],
+): void {
+  const rgba = colors.map((c) => rgbaOf(c));
+  const clear = (i: number): string | null => {
+    const c = rgba[i];
+    if (!c || !(c[3] > 0)) return null;
+    const [r, gr, b] = c.map((v) => Math.round(v * 255));
+    return `rgba(${r}, ${gr}, ${b}, 0)`;
+  };
+  for (let i = 0; i < offsets.length; i += 1) {
+    const here = rgba[i];
+    if (here && !(here[3] > 0)) {
+      const before = i > 0 ? clear(i - 1) : null;
+      const after = i + 1 < offsets.length ? clear(i + 1) : null;
+      if (before) g.addColorStop(offsets[i], before);
+      if (after && after !== before) g.addColorStop(offsets[i], after);
+      if (!before && !after) g.addColorStop(offsets[i], colors[i]);
+      continue;
+    }
+    const was = i > 0 ? rgba[i - 1] : null;
+    if (here && was && was[3] > 0 && was[3] !== here[3]) {
+      const from = offsets[i - 1];
+      const span = offsets[i] - from;
+      for (let k = 1; k < ALPHA_STEPS; k += 1) {
+        const step = blend(colors[i - 1], colors[i], k / ALPHA_STEPS);
+        if (step) g.addColorStop(from + (span * k) / ALPHA_STEPS, step);
+      }
+    }
+    g.addColorStop(offsets[i], colors[i]);
+  }
 }
 
 /**
@@ -6589,27 +7281,7 @@ function radialGradient(
   const colors = gradient.stops.map((stop) =>
     inkColor(stop.color, currentColor),
   );
-  const cx = resolve(gradient.at[0], w);
-  const cy = resolve(gradient.at[1], h);
-  let rx: number;
-  let ry: number;
-  if (gradient.radii) {
-    rx = resolve(gradient.radii[0], w);
-    ry = resolve(gradient.radii[1], h);
-  } else {
-    const extent = gradient.extent ?? 'farthest-corner';
-    const side = extent.startsWith('closest') ? Math.min : Math.max;
-    const sx = side(Math.abs(cx), Math.abs(w - cx));
-    const sy = side(Math.abs(cy), Math.abs(h - cy));
-    const corner = extent.endsWith('corner');
-    if (gradient.circle) {
-      rx = ry = corner ? Math.hypot(sx, sy) : side(sx, sy);
-    } else {
-      // through the corner, in the shape the sides give it
-      rx = corner ? sx * Math.SQRT2 : sx;
-      ry = corner ? sy * Math.SQRT2 : sy;
-    }
-  }
+  const { cx, cy, rx, ry } = radialShape(gradient, w, h);
   if (!(rx > 0 && ry > 0)) {
     return { style: colors[colors.length - 1], matrix: null };
   }
@@ -6656,12 +7328,49 @@ function radialGradient(
   const g = circle
     ? ctx.createRadialGradient!(ax, ay, 0, ax, ay, r * to)
     : ctx.createRadialGradient!(0, 0, 0, 0, 0, r * to);
-  for (let i = 0; i < at.length; i += 1) {
-    g.addColorStop(at[i] / to, inks[i]);
-  }
+  addStops(
+    g,
+    at.map((t) => t / to),
+    inks,
+  );
   return {
     style: g,
     matrix: circle ? null : [rx / r, 0, 0, ry / r, ax, ay],
+  };
+}
+
+/** A radial gradient's centre and radii across a box `w` by `h`
+ *  (`radialGradient`): its radii as written, or as its keyword says. */
+function radialShape(
+  gradient: RadialGradient,
+  w: number,
+  h: number,
+): { cx: number; cy: number; rx: number; ry: number } {
+  const cx = resolve(gradient.at[0], w);
+  const cy = resolve(gradient.at[1], h);
+  if (gradient.radii) {
+    return {
+      cx,
+      cy,
+      rx: resolve(gradient.radii[0], w),
+      ry: resolve(gradient.radii[1], h),
+    };
+  }
+  const extent = gradient.extent ?? 'farthest-corner';
+  const side = extent.startsWith('closest') ? Math.min : Math.max;
+  const sx = side(Math.abs(cx), Math.abs(w - cx));
+  const sy = side(Math.abs(cy), Math.abs(h - cy));
+  const corner = extent.endsWith('corner');
+  if (gradient.circle) {
+    const r = corner ? Math.hypot(sx, sy) : side(sx, sy);
+    return { cx, cy, rx: r, ry: r };
+  }
+  // through the corner, in the shape the sides give it
+  return {
+    cx,
+    cy,
+    rx: corner ? sx * Math.SQRT2 : sx,
+    ry: corner ? sy * Math.SQRT2 : sy,
   };
 }
 
@@ -6821,13 +7530,17 @@ function clippedGradient(
     cx + (t1 - tc) * lx,
     cy + (t1 - tc) * ly,
   );
-  g.addColorStop(0, colorAlong(at, colors, t0));
+  const offsets = [0];
+  const inks = [colorAlong(at, colors, t0)];
   for (let i = 0; i < at.length; i += 1) {
     if (at[i] > t0 && at[i] < t1) {
-      g.addColorStop((at[i] - t0) / (t1 - t0), colors[i]);
+      offsets.push((at[i] - t0) / (t1 - t0));
+      inks.push(colors[i]);
     }
   }
-  g.addColorStop(1, colorAlong(at, colors, t1));
+  offsets.push(1);
+  inks.push(colorAlong(at, colors, t1));
+  addStops(g, offsets, inks);
   return g;
 }
 

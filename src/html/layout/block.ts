@@ -5077,14 +5077,17 @@ export function containmentApplies(box: Box, bits: number): boolean {
  * Whether a filter, or what `will-change` names, makes a box the containing
  * block of the fixed boxes in it (`fixed`), or of the absolute ones. A
  * filter makes any box one of both, an inline box as well (Filter Effects
- * 1, 2). A name in `will-change` makes a box what a value of its property
+ * 1, 2), and so does a backdrop filter (Filter Effects 2, 2). A name in `will-change` makes a box what a value of its property
  * would, on the boxes the property applies to (CSS Will Change 1, 2;
  * `WILL_CHANGES`) — a filter on any box, a transform on a box that is not
  * inline, containment where it applies, and `position`, every value of
  * which but `static` holds absolute boxes and none fixed ones.
  */
 export function holdsOutOfFlow(box: Box, fixed: boolean): boolean {
-  if (box.style.filter !== null) return true;
+  // a backdrop filter as a filter does (Filter Effects 2, 2)
+  if (box.style.filter !== null || box.style.backdropFilter !== null) {
+    return true;
+  }
   const bits = box.style.willChange;
   if (!bits) return false;
   if (bits & WILL_HOLD_FIXED) return true;
