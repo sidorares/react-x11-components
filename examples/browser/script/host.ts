@@ -5,11 +5,12 @@
 // `Function` (docs/prd-html-scripts.md, "the four leaks").
 //
 // The tree is the one `<Html>` draws, so a mutation here is a mutation of
-// the page: the ops change domhandler's nodes, mark the document dirty, and
-// `flush` hands it to the handle's `refresh()` — once a task, after the
-// script that made the changes is done (`ScriptEngine`), and before
-// anything asks the layout a question (`rect`, `computed`, `at`), which has
-// to answer from the change.
+// the page: the ops change domhandler's nodes and record each change, and
+// `flush` hands the records to the handle's `refresh(changes)` — once a
+// task, after the script that made the changes is done (`ScriptEngine`),
+// and before anything asks the layout a question (`rect`, `computed`,
+// `at`), which has to answer from the change. The same records are what a
+// page's `MutationObserver` is handed.
 //
 // What the page cannot do here is anything the browser does not let it: a
 // `fetch` is the same origin's, through the browser's network; storage is
@@ -21,7 +22,11 @@ import { is, selectAll, selectOne } from 'css-select';
 import { Comment, Document, Element, Text } from 'domhandler';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 
-import type { HtmlDomEvent, HtmlHandle } from '../../../src/html/index.js';
+import type {
+  HtmlChange,
+  HtmlDomEvent,
+  HtmlHandle,
+} from '../../../src/html/index.js';
 import { parseFragment } from '../../../src/html/index.js';
 import {
   mediaMatches,
@@ -96,6 +101,39 @@ const STORAGE = {
   session: new Map<string, Map<string, string>>(),
 };
 
+/** A change as an observer is handed it (DOM 4.3.4), by node. */
+interface Mutation {
+  type: 'attributes' | 'childList' | 'characterData';
+  target: AnyNode;
+  added: readonly AnyNode[];
+  removed: readonly AnyNode[];
+  previous: AnyNode | null;
+  next: AnyNode | null;
+  attributeName: string | null;
+  oldValue: string | null;
+}
+
+/** What `observe()` asked to see (DOM 4.3.1), its defaults filled in. */
+interface ObserveOptions {
+  childList: boolean;
+  attributes: boolean;
+  characterData: boolean;
+  subtree: boolean;
+  attributeOldValue: boolean;
+  characterDataOldValue: boolean;
+  attributeFilter: string[] | null;
+}
+
+/** A page's `MutationObserver`, as the host keeps it. */
+interface Observer {
+  on: Map<AnyNode, ObserveOptions>;
+  queue: Mutation[];
+}
+
+/** How many changes a task may make before `<Html>` is told to restyle
+ *  everything rather than what they reach. */
+const CHANGES_TOLD = 4000;
+
 /** What an entry into the page answers: the engine's `call`. */
 export interface Entries {
   call(entry: string, input: unknown): Primitive;
@@ -108,8 +146,11 @@ export class DomHost {
   private _timers = new Map<number, ReturnType<typeof setTimeout>>();
   private _fetches = new Map<number, AbortController>();
   private _contents = new Map<number, number>();
-  /** Whether the tree changed since `<Html>` was last told. */
-  dirty = false;
+  /** The changes since `<Html>` was last told, as `refresh` takes them. */
+  private _changes: HtmlChange[] = [];
+  /** The page's `MutationObserver`s, by id in the order they were made: the
+   *  nodes each watches and how, and the records queued for it. */
+  private _observers = new Map<number, Observer>();
   /** The address the document is at, which `history.pushState` moves. */
   url: string;
   /** Scripts that are never run: what `innerHTML` and
@@ -159,9 +200,14 @@ export class DomHost {
   /** Hand the tree's changes to `<Html>`: a restyle, a layout and a paint
    *  of the document as the page left it. */
   flush(): void {
-    if (!this.dirty || this._disposed) return;
-    this.dirty = false;
-    this._seams.handle.refresh();
+    if (!this._changes.length || this._disposed) return;
+    const changes = this._changes;
+    this._changes = [];
+    // past a few thousand, working out what they reach costs what styling
+    // everything does
+    this._seams.handle.refresh(
+      changes.length > CHANGES_TOLD ? undefined : changes,
+    );
   }
 
   /** An event `<Html>` told of, dispatched in the page; whether its default
@@ -192,6 +238,7 @@ export class DomHost {
     this._timers.clear();
     for (const fetch of this._fetches.values()) fetch.abort();
     this._fetches.clear();
+    this._observers.clear();
     this.entries = null;
   }
 
@@ -295,14 +342,14 @@ export class DomHost {
       }
       case 'setText': {
         const node = this._node(a);
-        this.dirty = true;
         if (node instanceof Text || node instanceof Comment) {
+          const oldValue = node.data;
           node.data = text(b);
+          this._changed(node, 'characterData', null, oldValue);
           return null;
         }
         const parent = this._parent(a);
-        for (const kid of parent.children.slice()) DomUtils.removeElement(kid);
-        if (text(b)) DomUtils.appendChild(parent, new Text(text(b)));
+        this._replaceAll(parent, text(b) ? [new Text(text(b))] : []);
         return null;
       }
       case 'create': {
@@ -317,11 +364,8 @@ export class DomHost {
         this._insert(this._parent(a), this._node(b), c ? this._node(c) : null);
         return null;
       case 'remove': {
-        const node = this._node(a);
-        if (node.parent) {
-          DomUtils.removeElement(node as ChildNode);
-          this.dirty = true;
-        }
+        const node = this._node(a) as ChildNode;
+        if (node.parent) this._take(node);
         return null;
       }
       case 'clone': {
@@ -336,15 +380,19 @@ export class DomHost {
         return Object.keys(this._element(a).attribs).join('\u0000');
       case 'setAttr': {
         const el = this._element(a);
-        el.attribs[text(b)] = text(c);
-        this.dirty = true;
+        const name = text(b);
+        const oldValue = el.attribs[name] ?? null;
+        el.attribs[name] = text(c);
+        this._changed(el, 'attributes', name, oldValue);
         return null;
       }
       case 'delAttr': {
         const el = this._element(a);
-        if (text(b) in el.attribs) {
-          delete el.attribs[text(b)];
-          this.dirty = true;
+        const name = text(b);
+        if (name in el.attribs) {
+          const oldValue = el.attribs[name];
+          delete el.attribs[name];
+          this._changed(el, 'attributes', name, oldValue);
         }
         return null;
       }
@@ -376,9 +424,10 @@ export class DomHost {
             (x) => `${x.prop}: ${x.value}${x.important ? ' !important' : ''}`,
           )
           .join('; ');
+        const oldValue = el.attribs.style ?? null;
         if (written) el.attribs.style = written;
         else delete el.attribs.style;
-        this.dirty = true;
+        this._changed(el, 'attributes', 'style', oldValue);
         return null;
       }
 
@@ -388,11 +437,7 @@ export class DomHost {
         return b ? DomUtils.getOuterHTML(node) : DomUtils.getInnerHTML(node);
       }
       case 'setHtml': {
-        const parent = this._parent(a);
-        for (const kid of parent.children.slice()) DomUtils.removeElement(kid);
-        for (const kid of this._parse(text(b)))
-          DomUtils.appendChild(parent, kid);
-        this.dirty = true;
+        this._replaceAll(this._parent(a), this._parse(text(b)));
         return null;
       }
       case 'adjacent': {
@@ -402,21 +447,14 @@ export class DomHost {
         if (where === 'beforebegin' || where === 'afterend') {
           if (!node.parent) throw hierarchy('The element has no parent.');
           const before = where === 'beforebegin' ? node : node.next;
-          for (const kid of kids) {
-            if (before) DomUtils.prepend(before, kid);
-            else DomUtils.appendChild(node.parent, kid);
-          }
+          this._put(node.parent, kids, before);
         } else if (where === 'afterbegin' || where === 'beforeend') {
           const parent = this._parent(a);
           const first = where === 'afterbegin' ? parent.children[0] : null;
-          for (const kid of kids) {
-            if (first) DomUtils.prepend(first, kid);
-            else DomUtils.appendChild(parent, kid);
-          }
+          this._put(parent, kids, first ?? null);
         } else {
           throw new DomError('SyntaxError', `'${where}' is not a position.`);
         }
-        this.dirty = true;
         return null;
       }
       case 'content': {
@@ -535,11 +573,9 @@ export class DomHost {
               Element | undefined);
           if (!head) return null;
           title = new Element('title', {}, []);
-          DomUtils.appendChild(head, title);
+          this._put(head, [title], null);
         }
-        for (const kid of title.children.slice()) DomUtils.removeElement(kid);
-        DomUtils.appendChild(title, new Text(text(a)));
-        this.dirty = true;
+        this._replaceAll(title, [new Text(text(a))]);
         this._seams.title(text(a) || null);
         return null;
       }
@@ -708,6 +744,57 @@ export class DomHost {
         }
         return null;
       }
+      // --- observers
+      case 'observe': {
+        let observer = this._observers.get(Number(a));
+        if (!observer) {
+          observer = { on: new Map(), queue: [] };
+          this._observers.set(Number(a), observer);
+        }
+        const raw = JSON.parse(text(c)) as Partial<ObserveOptions>;
+        observer.on.set(this._node(b), {
+          childList: !!raw.childList,
+          attributes: !!raw.attributes,
+          characterData: !!raw.characterData,
+          subtree: !!raw.subtree,
+          attributeOldValue: !!raw.attributeOldValue,
+          characterDataOldValue: !!raw.characterDataOldValue,
+          attributeFilter: Array.isArray(raw.attributeFilter)
+            ? raw.attributeFilter.map(String)
+            : null,
+        });
+        return null;
+      }
+      case 'disconnect':
+        this._observers.delete(Number(a));
+        return null;
+      case 'observed':
+        // the observers with records, in the order they were made
+        return [...this._observers]
+          .filter(([, o]) => o.queue.length)
+          .map(([id]) => id)
+          .join(',');
+      case 'takeRecords': {
+        const observer = this._observers.get(Number(a));
+        if (!observer?.queue.length) return '[]';
+        const queue = observer.queue;
+        observer.queue = [];
+        const ids = (nodes: readonly AnyNode[]) =>
+          nodes.map((n) => this.idOf(n));
+        return JSON.stringify(
+          queue.map((r) => [
+            r.type,
+            this.idOf(r.target),
+            ids(r.added),
+            ids(r.removed),
+            this.idOf(r.previous),
+            this.idOf(r.next),
+            r.attributeName,
+            r.oldValue,
+          ]),
+        );
+      }
+
       case 'fetch':
         this._fetch(Number(a), text(b));
         return null;
@@ -744,11 +831,137 @@ export class DomHost {
     const moving = this._isFragment(node)
       ? (node as Document).children.slice()
       : [node as ChildNode];
-    for (const kid of moving) {
-      if (before) DomUtils.prepend(before as ChildNode, kid);
-      else DomUtils.appendChild(parent, kid);
+    this._put(parent, moving, before as ChildNode | null);
+  }
+
+  // --- what changed -----------------------------------------------------------
+  //
+  // Every change the ops make goes through these, as one record each: told
+  // `<Html>` at the next `flush`, which restyles what it reaches
+  // (`refresh(changes)`), and queued for the observers that watch it, as
+  // DOM 4.3.2's "queue a mutation record" has them.
+
+  /** An attribute's or a text's change, recorded. */
+  private _changed(
+    target: AnyNode,
+    type: 'attributes' | 'characterData',
+    name: string | null,
+    oldValue: string | null,
+  ): void {
+    if (type === 'attributes') {
+      this._changes.push({
+        type,
+        target: target as Element,
+        attributeName: name!,
+        oldValue,
+      });
+    } else this._changes.push({ type, target });
+    if (this._observers.size) {
+      this._queue(target, {
+        type,
+        target,
+        added: [],
+        removed: [],
+        previous: null,
+        next: null,
+        attributeName: name,
+        oldValue,
+      });
     }
-    this.dirty = true;
+  }
+
+  /** Nodes put into `parent` before `before`, or at its end, each taken
+   *  from wherever it was first: a record of each taking, and one of the
+   *  putting. */
+  private _put(
+    parent: ParentNode,
+    nodes: readonly ChildNode[],
+    before: ChildNode | null,
+  ): void {
+    for (const node of nodes) if (node.parent) this._take(node);
+    if (!nodes.length) return;
+    const previous = before ? before.prev : (parent.children.at(-1) ?? null);
+    for (const node of nodes) {
+      if (before) DomUtils.prepend(before, node);
+      else DomUtils.appendChild(parent, node);
+    }
+    this._childList(parent, nodes, [], previous, before);
+  }
+
+  /** A node taken out of its parent, recorded. */
+  private _take(node: ChildNode): void {
+    const parent = node.parent!;
+    const previous = node.prev;
+    const next = node.next;
+    DomUtils.removeElement(node);
+    this._childList(parent, [], [node], previous, next);
+  }
+
+  /** What `parent` holds replaced by `nodes`, as one record (DOM 4.2.3,
+   *  "replace all"). */
+  private _replaceAll(parent: ParentNode, nodes: readonly ChildNode[]): void {
+    for (const node of nodes) if (node.parent) this._take(node);
+    const removed = parent.children.slice();
+    for (const kid of removed) DomUtils.removeElement(kid);
+    for (const node of nodes) DomUtils.appendChild(parent, node);
+    if (removed.length || nodes.length) {
+      this._childList(parent, nodes, removed, null, null);
+    }
+  }
+
+  private _childList(
+    parent: ParentNode,
+    added: readonly AnyNode[],
+    removed: readonly AnyNode[],
+    previous: AnyNode | null,
+    next: AnyNode | null,
+  ): void {
+    this._changes.push({
+      type: 'childList',
+      target: parent,
+      addedNodes: added,
+      removedNodes: removed,
+    });
+    if (this._observers.size) {
+      this._queue(parent, {
+        type: 'childList',
+        target: parent,
+        added,
+        removed,
+        previous,
+        next,
+        attributeName: null,
+        oldValue: null,
+      });
+    }
+  }
+
+  /** A record queued for each observer interested in it: one watching the
+   *  target, or an ancestor with `subtree`, for what it asked to see — with
+   *  the old value only where it asked for that (DOM 4.3.2). */
+  private _queue(target: AnyNode, record: Mutation): void {
+    const interested = new Map<Observer, string | null>();
+    for (let at: AnyNode | null = target; at; at = at.parent) {
+      for (const observer of this._observers.values()) {
+        const options = observer.on.get(at);
+        if (!options || (at !== target && !options.subtree)) continue;
+        if (record.type === 'attributes') {
+          if (!options.attributes) continue;
+          const filter = options.attributeFilter;
+          if (filter && !filter.includes(record.attributeName!)) continue;
+        } else if (record.type === 'characterData') {
+          if (!options.characterData) continue;
+        } else if (!options.childList) continue;
+        const old =
+          (record.type === 'attributes' && options.attributeOldValue) ||
+          (record.type === 'characterData' && options.characterDataOldValue);
+        if (old) interested.set(observer, record.oldValue);
+        else if (!interested.has(observer)) interested.set(observer, null);
+      }
+    }
+    for (const [observer, oldValue] of interested) {
+      observer.queue.push({ ...record, oldValue });
+    }
   }
 
   /** Markup as `innerHTML` reads it; its scripts never run. */

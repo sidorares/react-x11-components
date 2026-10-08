@@ -12,9 +12,10 @@
 //
 // Each tab's page runs in a process of its own, through core's `<Frame>`:
 // `page.tsx` is that pane, and everything a page needs is in it. A page that
-// throws, wedges its event loop or grows without bound costs its own tab —
-// which says so, and offers to reload — and never the strip, the toolbar or
-// another tab. This file is the rest: the history, the strip, the toolbar
+// throws, or grows past its heap (`PANE_FLAGS`), costs its own tab — which
+// says so, and offers to reload — and never the strip, the toolbar or
+// another tab. One that wedges its event loop is not noticed yet: nothing
+// in `<Frame>` asks a pane whether it is still answering. This file is the rest: the history, the strip, the toolbar
 // and the keys. Where no pane can be shown, the same page runs in this
 // process instead, and `BROWSER_INLINE=1` asks for that anywhere.
 //
@@ -76,6 +77,18 @@ import { HOME, fileName } from './pages.js';
 
 /** The pane each tab's page runs in: `page.tsx`'s default export. */
 const PAGE = new URL('./page.tsx', import.meta.url);
+
+/**
+ * What a page's process may hold, in megabytes of V8's old space: a page
+ * whose script allocates without end — which no `node:vm` context bounds —
+ * ends its own tab there, and not the machine's memory. The browser's own
+ * flags reach the pane first and these after them, so they win. Node
+ * enforces it; Bun 1.4 passes the flag on and enforces nothing (core's
+ * `docs/frame.md`). `BROWSER_PANE_HEAP_MB` sets it.
+ */
+const PANE_FLAGS = [
+  `--max-old-space-size=${Number(process.env.BROWSER_PANE_HEAP_MB) || 1024}`,
+];
 
 // --- the model ---------------------------------------------------------------
 
@@ -785,6 +798,7 @@ function TabPage({
       src={PAGE}
       props={props as unknown as FrameProps}
       transport={transport}
+      execArgv={PANE_FLAGS}
       // A tab aside is still in the window, so its pane would be a stop in
       // the window's order, between the page showing and the tab strip:
       // Tab off the end of a page went on into the next tab's, off screen.
