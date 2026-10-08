@@ -16,6 +16,7 @@
 // `fetch` is the same origin's, through the browser's network; storage is
 // memory, per origin, gone with the process; a navigation is a link the
 // browser follows.
+import { randomBytes, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import * as DomUtils from 'domutils';
 import { is, selectAll, selectOne } from 'css-select';
@@ -82,6 +83,9 @@ export interface HostSeams {
   fetch(request: FetchRequest, signal: AbortSignal): Promise<FetchResponse>;
   userAgent: string;
   language: string;
+  /** The sheets the document adopted (`document.adoptedStyleSheets`),
+   *  each its text, for `<Html>` to apply after the document's own. */
+  adopt?(sheets: string[]): void;
 }
 
 /** An error the facade throws by name: `DOMException`'s. */
@@ -94,6 +98,61 @@ class DomError extends Error {
   }
 }
 const hierarchy = (what: string) => new DomError('HierarchyRequestError', what);
+
+/**
+ * A sheet's text as CSSOM's list of rules, each its text (CSS Syntax 3,
+ * "consume a list of rules", as far as where each ends): at the `}` that
+ * closes a block at the top level, or the `;` that ends an at-rule with
+ * none, past comments, strings and escapes. A rule is trimmed and the
+ * comments before it left out; `<!--` and `-->` are not rules, and
+ * neither is what a `;` ends that is no at-rule, which CSS drops.
+ */
+export function cssRulesOf(css: string): string[] {
+  const out: string[] = [];
+  const n = css.length;
+  let depth = 0;
+  let start = 0;
+  const end = (at: number, statement: boolean): void => {
+    const rule = css.slice(start, at).trim();
+    start = at;
+    if (!rule || rule === '<!--' || rule === '-->') return;
+    if (statement && !rule.startsWith('@')) return;
+    out.push(rule);
+  };
+  for (let i = 0; i < n; i++) {
+    const ch = css[i];
+    if (ch === '/' && css[i + 1] === '*') {
+      const close = css.indexOf('*/', i + 2);
+      const after = close < 0 ? n : close + 2;
+      // a comment before a rule is not the rule's
+      if (!css.slice(start, i).trim()) start = after;
+      i = after - 1;
+    } else if (ch === '"' || ch === "'") {
+      for (i += 1; i < n && css[i] !== ch && css[i] !== '\n'; i++) {
+        if (css[i] === '\\') i += 1;
+      }
+    } else if (ch === '\\') {
+      i += 1;
+    } else if (ch === '{' || ch === '(' || ch === '[') {
+      depth += 1;
+    } else if (ch === '}' || ch === ')' || ch === ']') {
+      if (depth > 0) depth -= 1;
+      if (depth === 0 && ch === '}') end(i + 1, false);
+    } else if (ch === ';' && depth === 0) {
+      end(i + 1, true);
+    }
+  }
+  // an unclosed block is closed where the text ends
+  end(n, false);
+  return out;
+}
+
+/** A `<style>`'s rules as CSSOM has them (`sheetRules`), and which edit of
+ *  them this is, so the page asks for them again only when they change. */
+interface SheetState {
+  rules: string[];
+  version: number;
+}
 
 /** The page's storage: memory, by origin, for as long as the process. */
 const STORAGE = {
@@ -156,6 +215,14 @@ export class DomHost {
   /** Scripts that are never run: what `innerHTML` and
    *  `insertAdjacentHTML` put in, which HTML does not run either. */
   readonly inert = new WeakSet<Element>();
+  /** The rules of each `<style>` a page asked the sheet of, and those a
+   *  page changed since the last `flush` (`_writeSheets`). */
+  private _sheets = new WeakMap<Element, SheetState>();
+  private _sheetsChanged = new Set<Element>();
+  private _sheetVersion = 0;
+  /** The documents a page made of its own (`_documentOf`), which are
+   *  documents and not fragments, though the tree has one kind of root. */
+  private _documents = new WeakSet<Document>();
   /** Where timers and fetches call back into the page. */
   entries: Entries | null = null;
   private _disposed = false;
@@ -200,6 +267,7 @@ export class DomHost {
   /** Hand the tree's changes to `<Html>`: a restyle, a layout and a paint
    *  of the document as the page left it. */
   flush(): void {
+    if (this._sheetsChanged.size) this._writeSheets();
     if (!this._changes.length || this._disposed) return;
     const changes = this._changes;
     this._changes = [];
@@ -263,7 +331,11 @@ export class DomHost {
   }
   /** A fragment: a `Document` node that is not the document. */
   private _isFragment(node: AnyNode): boolean {
-    return node instanceof Document && node !== this.document;
+    return (
+      node instanceof Document &&
+      node !== this.document &&
+      !this._documents.has(node)
+    );
   }
 
   private _op(
@@ -281,14 +353,18 @@ export class DomHost {
         if (node instanceof Element) return `1|${node.name}`;
         if (node instanceof Text) return '3|#text';
         if (node instanceof Comment) return '8|#comment';
-        if (node === this.document) return '9|#document';
+        if (node === this.document || this._documents.has(node as Document)) {
+          return '9|#document';
+        }
         if (node instanceof Document) return '11|#document-fragment';
         if (node.type === 'directive') return '10|html';
         return '3|#text';
       }
       case 'parent': {
         const node = this._node(a);
-        return node === this.document ? 0 : this.idOf(node.parent);
+        return node === this.document || this._documents.has(node as Document)
+          ? 0
+          : this.idOf(node.parent);
       }
       case 'kids': {
         const node = this._node(a);
@@ -544,11 +620,110 @@ export class DomHost {
           .join(',');
       }
 
-      // --- the document
-      case 'root':
-        return this.idOf(
-          this.document.children.find((k) => k instanceof Element) ?? null,
+      // --- the sheets
+      // a `<style>`'s rules, where they are not the edit the page has
+      case 'sheetRules': {
+        const state = this._sheetOf(this._element(a));
+        return state.version === b
+          ? ''
+          : `${state.version}\u0000${JSON.stringify(state.rules)}`;
+      }
+      case 'sheetInsert': {
+        const el = this._element(a);
+        const state = this._sheetOf(el);
+        const rules = cssRulesOf(text(b));
+        if (rules.length !== 1) {
+          throw new DomError(
+            'SyntaxError',
+            `Failed to parse the rule '${text(b)}'.`,
+          );
+        }
+        const index = Number(c);
+        if (!(index >= 0 && index <= state.rules.length)) {
+          throw new DomError(
+            'IndexSizeError',
+            `The index provided (${index}) is larger than the maximum index (${state.rules.length}).`,
+          );
+        }
+        const was = state.version;
+        state.rules.splice(index, 0, rules[0]);
+        state.version = this._sheetVersion += 1;
+        this._sheetsChanged.add(el);
+        return `${was}\u0000${state.version}\u0000${rules[0]}`;
+      }
+      case 'sheetDelete': {
+        const el = this._element(a);
+        const state = this._sheetOf(el);
+        const index = Number(b);
+        if (!(index >= 0 && index < state.rules.length)) {
+          throw new DomError(
+            'IndexSizeError',
+            `The index provided (${index}) is outside the range [0, ${state.rules.length}).`,
+          );
+        }
+        const was = state.version;
+        state.rules.splice(index, 1);
+        state.version = this._sheetVersion += 1;
+        this._sheetsChanged.add(el);
+        return `${was}\u0000${state.version}`;
+      }
+      // the sheets the document adopted, each its text, in order
+      case 'adopt': {
+        const sheets: unknown = JSON.parse(text(a) || '[]');
+        if (Array.isArray(sheets)) {
+          this._seams.adopt?.(sheets.map((sheet) => String(sheet)));
+        }
+        return null;
+      }
+      // a sheet's text as rules, for a sheet of the page's own and what a
+      // grouping rule holds
+      case 'cssRules':
+        return JSON.stringify(cssRulesOf(text(a)));
+      // the document's sheets, in tree order: its `<style>`s and the
+      // `<link>`s that are a stylesheet
+      case 'sheets':
+        return (
+          DomUtils.findAll(
+            (el) =>
+              el.name === 'style' ||
+              (el.name === 'link' &&
+                /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '') &&
+                !/(?:^|\s)alternate(?:\s|$)/i.test(el.attribs.rel ?? '')),
+            this.document.children,
+          )
+            // what a `<template>` holds is no part of the document
+            .filter((el) => {
+              for (let at = el.parent; at; at = at.parent) {
+                if (at instanceof Element && at.name === 'template')
+                  return false;
+              }
+              return true;
+            })
+            .map((el) => this.idOf(el))
+            .join(',')
         );
+
+      // --- the document
+      case 'root': {
+        // the document asked of: this one, or one a page made of its own
+        const doc = a ? (this._node(a) as ParentNode) : this.document;
+        return this.idOf(
+          doc.children.find((k) => k instanceof Element) ?? null,
+        );
+      }
+      // a document of a page's own, out of the one drawn
+      case 'newDocument': {
+        // its `<title>` the text given, where one was
+        const title =
+          a === null || a === undefined
+            ? ''
+            : `<title>${DomUtils.getOuterHTML(new Text(text(a)))}</title>`;
+        return this.idOf(
+          this._documentOf(`<html><head>${title}</head><body></body></html>`),
+        );
+      }
+      case 'parseDocument':
+        return this.idOf(this._documentOf(text(a)));
       case 'title': {
         const title = DomUtils.findOne(
           (el) => el.name === 'title',
@@ -795,6 +970,13 @@ export class DomHost {
         );
       }
 
+      // a page's randomness, `crypto`'s: hex, a primitive
+      case 'random':
+        return randomBytes(
+          Math.min(65536, Math.max(0, Number(a) || 0)),
+        ).toString('hex');
+      case 'uuid':
+        return randomUUID();
       case 'fetch':
         this._fetch(Number(a), text(b));
         return null;
@@ -855,7 +1037,10 @@ export class DomHost {
         attributeName: name!,
         oldValue,
       });
-    } else this._changes.push({ type, target });
+    } else {
+      this._changes.push({ type, target });
+      if (target.parent) this._sheetText(target.parent);
+    }
     if (this._observers.size) {
       this._queue(target, {
         type,
@@ -922,6 +1107,7 @@ export class DomHost {
       addedNodes: added,
       removedNodes: removed,
     });
+    this._sheetText(parent);
     if (this._observers.size) {
       this._queue(parent, {
         type: 'childList',
@@ -962,6 +1148,82 @@ export class DomHost {
     for (const [observer, oldValue] of interested) {
       observer.queue.push({ ...record, oldValue });
     }
+  }
+
+  /** A `<style>`'s rules as CSSOM has them: read from its text the first
+   *  time they are asked for, and kept as the page edits them. */
+  private _sheetOf(el: Element): SheetState {
+    let state = this._sheets.get(el);
+    if (!state) {
+      state = {
+        rules: cssRulesOf(DomUtils.textContent(el)),
+        version: (this._sheetVersion += 1),
+      };
+      this._sheets.set(el, state);
+    }
+    return state;
+  }
+
+  /** A page set a `<style>`'s text: its sheet is that text's now, and the
+   *  rules it inserted before are gone, as CSSOM has them. */
+  private _sheetText(node: AnyNode): void {
+    if (!(node instanceof Element) || !this._sheets.has(node)) return;
+    this._sheets.delete(node);
+    this._sheetsChanged.delete(node);
+  }
+
+  /**
+   * The rules a page inserted into a `<style>` or deleted from it, written
+   * as the element's text, so that `<Html>`, which reads a sheet from its
+   * text, draws them. A browser leaves the text as it was; here a page
+   * that reads it back after an edit reads the rules, which is what keeps
+   * the edit, and no observer is told, since a sheet's edit is no change
+   * to the tree. Once a flush, so a library that inserts a rule at a time
+   * — styled-components, emotion — writes the text once a task.
+   */
+  private _writeSheets(): void {
+    for (const el of this._sheetsChanged) {
+      const state = this._sheets.get(el);
+      if (!state) continue;
+      const removed = el.children.slice();
+      for (const kid of removed) DomUtils.removeElement(kid);
+      const written = new Text(state.rules.join('\n'));
+      DomUtils.appendChild(el, written);
+      this._changes.push({
+        type: 'childList',
+        target: el,
+        addedNodes: [written],
+        removedNodes: removed,
+      });
+    }
+    this._sheetsChanged.clear();
+  }
+
+  /** A document of its own made of markup, as `DOMParser` and
+   *  `createHTMLDocument` make one: with an `<html>`, a `<head>` and a
+   *  `<body>` where the markup has none, as HTML's parser makes them, and
+   *  none of its scripts ever run. */
+  private _documentOf(markup: string): Document {
+    const kids = this._parse(markup);
+    const doc = new Document([]);
+    let html = kids.find((k) => k instanceof Element && k.name === 'html') as
+      Element | undefined;
+    if (!html) {
+      html = new Element('html', {}, []);
+      const head = new Element('head', {}, []);
+      const body = new Element('body', {}, []);
+      DomUtils.appendChild(html, head);
+      DomUtils.appendChild(html, body);
+      for (const kid of kids) {
+        const inHead =
+          kid instanceof Element &&
+          ['title', 'meta', 'link', 'style', 'base'].includes(kid.name);
+        DomUtils.appendChild(inHead ? head : body, kid);
+      }
+    }
+    DomUtils.appendChild(doc, html);
+    this._documents.add(doc);
+    return doc;
   }
 
   /** Markup as `innerHTML` reads it; its scripts never run. */

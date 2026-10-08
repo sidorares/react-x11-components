@@ -568,6 +568,20 @@ hundreds of these, so phase 1 is for pages that enhance what they already
 draw: menus, tabs, disclosure, form validation, a counter, the snippets in
 a tutorial.
 
+**Added in phase 2, from what thirty sites' scripts read as they load:**
+the window's `name` and its kin, `crypto`, `TextEncoder` and
+`TextDecoder`, `Image`, `Option` and `Audio`, `TreeWalker` and
+`NodeIterator`, `DOMParser`, performance marks, `MessageChannel` and
+`postMessage`, `Blob`, `File` and `FormData`, a structured clone, media
+elements at rest, and CSSOM. A `<style>`'s sheet is its rules' text,
+which the host keeps as the page edits it and writes back as the
+element's text once a flush, so the rules styled-components and emotion
+insert with `insertRule` are drawn; a sheet the page constructs and
+adopts reaches `<Html>` as its `stylesheet`, after the document's own.
+An interface that is not here is absent, never `undefined` under its
+name: a page asks with `in`, and takes one that is there for one it can
+use.
+
 ## What core would be asked
 
 1. **Options for a pane's process.** `<Frame>` forks its child with the

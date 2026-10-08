@@ -141,6 +141,20 @@ async function settle(ms = 20) {
   }
 }
 
+/** Let the scripts' turns run until `done` holds of what the page shows,
+ *  for what finishes after an `import()`, a fetch or a timer, however long
+ *  the machine takes; and the text either way. */
+async function settled(
+  doc: Hosted,
+  id: string,
+  done: (text: string) => boolean,
+  ms = 3000,
+): Promise<string> {
+  const end = Date.now() + ms;
+  while (!done(doc.text(id)) && Date.now() < end) await settle(20);
+  return doc.text(id);
+}
+
 test('nothing of the host is reachable from a page', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -590,9 +604,9 @@ test('module scripts run in order with the classic ones, their imports linked, a
       '</script>' +
       "<script nomodule>order.push('nomodule');</script>" +
       '<script type="module" src="lib/main.js"></script>' +
-      // read after `load`: a top-level `await` goes on past it, as a
-      // browser's does
-      "<script>window.addEventListener('load', function () { setTimeout(function () { document.getElementById('out').textContent = order.join(' | '); }, 30); });</script>",
+      // told by main.js once its `import()` is in: a top-level `await`
+      // goes on past `load`, as a browser's does
+      "<script>function report() { document.getElementById('out').textContent = order.join(' | '); }</script>",
     {
       scripts: {
         'https://example.test/dir/lib/twice.js':
@@ -602,11 +616,11 @@ test('module scripts run in order with the classic ones, their imports linked, a
         'https://example.test/dir/lib/main.js':
           "import { seen } from './twice.js'; order.push('main ' + seen() + ' ' + import.meta.url);" +
           // what a static import linked and evaluated, imported again
-          "const again = await import('./twice.js'); order.push('again ' + again.seen());",
+          "const again = await import('./twice.js'); order.push('again ' + again.seen()); report();",
       },
     },
   );
-  await settle(60);
+  await settled(doc, 'out', (text) => text.includes('again'));
   assert.equal(
     doc.text('out'),
     [
@@ -616,6 +630,7 @@ test('module scripts run in order with the classic ones, their imports linked, a
       'main 2 https://example.test/dir/lib/main.js',
       'again 3',
     ].join(' | '),
+    doc.logs.join('\n'),
   );
 });
 
@@ -646,6 +661,71 @@ test('import() is the page’s, from a classic script and a module, and fails as
     'missing true',
     'module 7',
   ]);
+});
+
+test('an import map names the modules a page imports by name, by prefix and by scope', async () => {
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      '<script type="importmap">' +
+      JSON.stringify({
+        imports: {
+          react: './vendor/react.js',
+          'lib/': './lib/',
+        },
+        scopes: {
+          './lib/old/': { react: './vendor/react-old.js' },
+        },
+      }) +
+      '</script>' +
+      '<script type="module">' +
+      "import React from 'react';" +
+      "import { twice } from 'lib/twice.js';" +
+      "import { version } from 'lib/old/uses.js';" +
+      "const missing = await import('nowhere').then(() => 'found', (e) => e.name);" +
+      "document.getElementById('out').textContent = [React, twice(2), version, missing].join(' ');" +
+      '</script>',
+    {
+      scripts: {
+        'https://example.test/dir/vendor/react.js': "export default 'react';",
+        'https://example.test/dir/vendor/react-old.js':
+          "export default 'react-old';",
+        'https://example.test/dir/lib/twice.js':
+          'export function twice(n) { return n * 2; }',
+        'https://example.test/dir/lib/old/uses.js':
+          "import r from 'react'; export const version = r;",
+      },
+    },
+  );
+  await settled(doc, 'out', (text) => text !== '');
+  assert.equal(
+    doc.text('out'),
+    'react 4 react-old TypeError',
+    doc.logs.join('\n'),
+  );
+});
+
+test('two import()s whose modules share one are both linked, the shared one once', async () => {
+  // linked at once, the second was handed a module the first was linking
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      "Promise.all([import('./lib/a.js'), import('./lib/b.js')]).then(" +
+      "  function (m) { document.getElementById('out').textContent = m[0].a + ' ' + m[1].b + ' ' + m[0].count(); }," +
+      "  function (e) { document.getElementById('out').textContent = 'failed: ' + e.message; });" +
+      '</script>',
+    {
+      scripts: {
+        'https://example.test/dir/lib/a.js':
+          "import { d, count } from './d.js'; export const a = d + 1; export { count };",
+        'https://example.test/dir/lib/b.js':
+          "import { d } from './d.js'; export const b = d + 2;",
+        'https://example.test/dir/lib/d.js':
+          "import { e } from './e.js'; var runs = 0; runs += 1; export const d = e * 10; export function count() { return runs; }",
+        'https://example.test/dir/lib/e.js': 'export const e = 1;',
+      },
+    },
+  );
+  await settle(120);
+  assert.equal(doc.text('out'), '11 12 1');
 });
 
 test('a module that throws, runs away or does not parse is reported, and the page goes on', async () => {
@@ -682,6 +762,346 @@ test('a module that throws, runs away or does not parse is reported, and the pag
   );
   assert.ok(out.includes('gone'), `the module not found: ${out}`);
   assert.equal(out.length, 3, `${out}`);
+});
+
+test('the window has what scripts read of it: name, crypto, text encodings, Image', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      // `window.name.match(…)`, the commonest error a page met here
+      'r.push(typeof window.name.match, JSON.stringify(window.name));' +
+      'var name = 7; r.push(typeof name, window.name);' +
+      'window.status = 1; r.push(typeof window.status, window.closed, window.length, typeof screenX);' +
+      'var a = new Uint8Array(16); crypto.getRandomValues(a);' +
+      'r.push(a.some(function (b) { return b !== 0; }), /^[0-9a-f-]{36}$/.test(crypto.randomUUID()));' +
+      'try { crypto.getRandomValues(new Float32Array(1)); } catch (e) { r.push(e.name); }' +
+      "var bytes = new TextEncoder().encode('aé€😀\\ud800');" +
+      "r.push(Array.prototype.join.call(bytes, ' '));" +
+      'r.push(new TextDecoder().decode(bytes));' +
+      'var d = new TextDecoder(); var part = d.decode(bytes.subarray(0, 4), { stream: true }) + d.decode(bytes.subarray(4));' +
+      'r.push(part === new TextDecoder().decode(bytes));' +
+      'r.push(new TextDecoder().decode(new Uint8Array([0xef, 0xbb, 0xbf, 0x61, 0xc3, 0x28])));' +
+      "try { new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array([0xc3])); } catch (e) { r.push(e.name); }" +
+      "r.push(new TextDecoder('latin1').decode(new Uint8Array([0x80, 0xe9])));" +
+      "var img = new Image(4, 5); r.push(img instanceof HTMLImageElement, img.tagName, img.getAttribute('width'));" +
+      "var o = new Option('t', 'v'); r.push(o.tagName, o.value, o.textContent);" +
+      'r.push(visualViewport.width === innerWidth);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      'function',
+      '""',
+      'string',
+      '7',
+      'string',
+      'false',
+      '0',
+      'number',
+      'true',
+      'true',
+      'TypeMismatchError',
+      '97 195 169 226 130 172 240 159 152 128 239 191 189',
+      'aé€😀\ufffd',
+      'true',
+      'a\ufffd(',
+      'TypeError',
+      '€é',
+      'true',
+      'IMG',
+      '4',
+      'OPTION',
+      'v',
+      't',
+      'true',
+    ].join('|'),
+  );
+});
+
+test('a page edits a <style>’s rules as CSS-in-JS does, and what it inserts is drawn', async () => {
+  const doc = await hosted(
+    '<style id="s">/* lead */ p { margin: 0 } @media (min-width: 1px) { .m { color: blue } }</style>' +
+      '<p id="x">x</p><p id="out"></p><script>' +
+      'var r = []; var el = document.getElementById("s");' +
+      // how styled-components finds its tag's sheet
+      'var sheet = [].slice.call(document.styleSheets).filter(function (s) { return s.ownerNode === el; })[0];' +
+      'r.push(document.styleSheets.length, sheet === el.sheet, sheet instanceof CSSStyleSheet);' +
+      'var rules = sheet.cssRules;' +
+      'r.push(rules.length, rules[0].selectorText, rules[0].style.margin, rules[1].type, rules[1].conditionText, rules[1].cssRules[0].selectorText);' +
+      // emotion's: at the end, by the list's length
+      'sheet.insertRule("#x { color: rgb(255, 0, 0) }", sheet.cssRules.length);' +
+      'sheet.insertRule(".a { color: red }", 0); sheet.deleteRule(0);' +
+      'r.push(rules === sheet.cssRules, sheet.cssRules.length, sheet.cssRules[2].cssText);' +
+      'r.push(getComputedStyle(document.getElementById("x")).color);' +
+      'try { sheet.insertRule("a {} b {}"); } catch (e) { r.push(e.name); }' +
+      'try { sheet.insertRule("a {}", 9); } catch (e) { r.push(e.name); }' +
+      'r.push(document.createElement("style").sheet);' +
+      'var made = new CSSStyleSheet(); made.replaceSync("@import url(a.css); b { c: d }");' +
+      'r.push(made.cssRules.length, made.ownerNode, document.styleSheets.length);' +
+      // a text the page sets is the sheet from then on
+      'el.textContent = "p { color: rgb(0, 0, 255) }";' +
+      'r.push(el.sheet.cssRules.length, getComputedStyle(document.getElementById("x")).color);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>' +
+      // a rule inserted and nothing asked: drawn from the flush at the end
+      '<p id="y">y</p><script>document.getElementById("s").sheet.insertRule("#y { color: rgb(0, 128, 0) }", 1)</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      '1',
+      'true',
+      'true',
+      '2',
+      'p',
+      '0',
+      '4',
+      '(min-width: 1px)',
+      '.m',
+      'true',
+      '3',
+      '#x { color: rgb(255, 0, 0) }',
+      'rgb(255, 0, 0)',
+      'SyntaxError',
+      'IndexSizeError',
+      '',
+      '1',
+      '',
+      '1',
+      '1',
+      'rgb(0, 0, 255)',
+    ].join('|'),
+  );
+  assert.equal(doc.view.computedStyle(doc.byId('y'))?.color, 'rgb(0, 128, 0)');
+});
+
+test('what a polyfill or a tag manager feature-tests is there, or absent, but never undefined', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'r.push(navigator.plugins.length, navigator.mimeTypes.length, "clipboard" in navigator, "serviceWorker" in navigator);' +
+      'r.push(document.createElement("_").localName, document.createElement("é-x").localName);' +
+      'try { document.createElement("1a"); } catch (e) { r.push(e.name); }' +
+      'try { document.createElement("_ a"); } catch (e) { r.push(e.name); }' +
+      'r.push(typeof CDATASection.prototype, Object.getPrototypeOf(CDATASection.prototype) === Text.prototype, typeof ProcessingInstruction.prototype);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    '0|0|false|false|_|é-x|InvalidCharacterError|InvalidCharacterError|object|true|object',
+  );
+});
+
+test('messages are tasks of their own, and a clone is a copy of what can be copied', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var out = document.getElementById("out");' +
+      'var c = new MessageChannel();' +
+      'c.port1.onmessage = function (e) { r.push("port " + e.data.n + " " + (e.data !== sent)); };' +
+      'var sent = { n: 1 }; c.port2.postMessage(sent);' +
+      'addEventListener("message", function (e) { r.push("window " + e.data + " " + (e.source === window) + " " + e.origin); out.textContent = r.join("|"); });' +
+      'postMessage("hi", "*"); postMessage("other", "https://elsewhere.test");' +
+      'Promise.resolve().then(function () { r.push("microtask"); });' +
+      'r.push("sync");' +
+      'r.push(window instanceof Window, document instanceof Window, Object.prototype.toString.call(window));' +
+      'var m = new Map([[1, { d: new Date(5) }]]); var o = { m: m, a: new Uint8Array([1, 2]) }; o.self = o;' +
+      'var k = structuredClone(o);' +
+      'r.push(k !== o, k.self === k, k.m.get(1).d.getTime(), k.a[1], k.a instanceof Uint8Array);' +
+      'try { structuredClone(function () {}); } catch (e) { r.push(e.name); }' +
+      'try { structuredClone(document.body); } catch (e) { r.push(e.name); }' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t.includes('window'));
+  assert.equal(
+    text,
+    [
+      'sync',
+      'true',
+      'false',
+      '[object Window]',
+      'true',
+      'true',
+      '5',
+      '2',
+      'true',
+      'DataCloneError',
+      'DataCloneError',
+      'microtask',
+      'port 1 true',
+      'window hi true https://example.test',
+    ].join('|'),
+  );
+});
+
+test('blobs, files, form data and the media a page reads at rest', async () => {
+  const doc = await hosted(
+    '<form id="f"><input name="a" value="1"><input type="checkbox" name="b" checked>' +
+      '<input type="checkbox" name="c"><select name="d"><option>x<option selected>y</select>' +
+      '<input name="e" disabled value="no"><button name="g" value="h">go</button></form>' +
+      '<video id="v" muted></video><p id="out"></p><script>' +
+      'var r = [];' +
+      'var b = new Blob(["aé", new Uint8Array([33])], { type: "Text/Plain" });' +
+      'r.push(b.size, b.type, b.slice(1, 3).size);' +
+      'var f = new File([b], "n.txt"); r.push(f.name, f instanceof Blob, f.size);' +
+      'var fd = new FormData(document.getElementById("f"));' +
+      'r.push(JSON.stringify(Array.from(fd.entries())));' +
+      'fd.append("a", "2"); fd.set("b", "z"); r.push(fd.getAll("a").join(","), fd.get("b"), fd.has("e"));' +
+      'var v = document.getElementById("v");' +
+      'r.push(v instanceof HTMLVideoElement, v.paused, isNaN(v.duration), v.muted, v.textTracks.length, v.buffered.length);' +
+      'v.textTracks.addEventListener("addtrack", function () {});' +
+      'r.push(document.createElement("source") instanceof HTMLSourceElement, new Audio() instanceof HTMLAudioElement);' +
+      'var keys = []; for (var k in navigator.plugins) keys.push(k); r.push(keys.length);' +
+      'b.text().then(function (t) { r.push(t); document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      '4',
+      'text/plain',
+      '2',
+      'n.txt',
+      'true',
+      '4',
+      '[["a","1"],["b","on"],["d","y"]]',
+      '1,2',
+      'z',
+      'false',
+      'true',
+      'true',
+      'true',
+      'true',
+      '0',
+      '0',
+      'true',
+      'true',
+      '0',
+      'aé!',
+    ].join('|'),
+  );
+});
+
+test('a sheet a page constructs and adopts is drawn after the document’s own, and as it is edited', async () => {
+  const doc = await hosted(
+    '<style>#z { color: rgb(0, 0, 0) }</style><p id="z">z</p>' +
+      '<input type="button" id="go" value="go"><p id="out"></p><script>' +
+      'var sheet = new CSSStyleSheet(); sheet.replaceSync("#z { color: rgb(1, 2, 3) }");' +
+      'document.adoptedStyleSheets = [sheet];' +
+      'var refused = "";' +
+      'try { document.adoptedStyleSheets = [document.styleSheets[0]]; } catch (e) { refused = e.name; }' +
+      'document.getElementById("go").addEventListener("click", function () {' +
+      '  sheet.insertRule("#z { color: rgb(4, 5, 6) }", 1);' +
+      '  var more = new CSSStyleSheet(); more.replaceSync("#z { background-color: rgb(7, 8, 9) }");' +
+      '  document.adoptedStyleSheets.push(more);' +
+      '  document.getElementById("out").textContent = refused + " " + document.adoptedStyleSheets.length;' +
+      '});</script>',
+  );
+  const z = doc.byId('z');
+  await settle();
+  assert.equal(doc.view.computedStyle(z)?.color, 'rgb(1, 2, 3)');
+  await userEvent.click(screen.getByRole('button') as DrawnNode);
+  await settle();
+  assert.equal(doc.text('out'), 'NotAllowedError 2');
+  assert.equal(doc.view.computedStyle(z)?.color, 'rgb(4, 5, 6)');
+  assert.equal(doc.view.computedStyle(z)?.['background-color'], 'rgb(7, 8, 9)');
+});
+
+test('a page walks its tree, parses markup into documents of its own, and marks and measures', async () => {
+  const doc = await hosted(
+    '<div id="root"><p>a<b>b</b></p><!--c--><span>d</span></div><p id="out"></p><script>' +
+      'var r = []; var root = document.getElementById("root");' +
+      'var w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);' +
+      'var names = []; while (w.nextNode()) names.push(w.currentNode.localName);' +
+      'r.push(names.join(","));' +
+      'var t = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT,' +
+      '  function (n) { return n.nodeType === 8 ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT; });' +
+      'var texts = []; while (t.nextNode()) texts.push(t.currentNode.data);' +
+      'while (t.previousNode()) texts.push(t.currentNode.nodeType === 3 ? t.currentNode.data.toUpperCase() : "?");' +
+      'r.push(texts.join(""));' +
+      'var it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, { acceptNode: function (n) { return n.localName === "b" ? 2 : 1; } });' +
+      'var seen = []; for (var n; (n = it.nextNode());) seen.push(n.localName);' +
+      'r.push(seen.join(","));' +
+      // a sanitizer's document, and a parser's: out of the page, scripts inert
+      'var made = document.implementation.createHTMLDocument("x");' +
+      'made.body.innerHTML = "<i>in</i>";' +
+      'r.push(made.body.firstChild.localName, made.documentElement.localName, document.getElementById("root").contains(made.body));' +
+      'var parsed = new DOMParser().parseFromString("<p class=q>parsed</p>", "text/html");' +
+      'r.push(parsed.body.querySelector(".q").textContent, parsed.head !== null);' +
+      'performance.mark("a"); performance.mark("b");' +
+      'var m = performance.measure("ab", "a", "b");' +
+      'r.push(m.entryType, performance.getEntriesByType("mark").length);' +
+      'performance.clearMarks("a"); r.push(performance.getEntriesByName("a").length);' +
+      'new PerformanceObserver(function (list) { r.push("observed " + list.getEntries()[0].name);' +
+      '  document.getElementById("out").textContent = r.join("|"); }).observe({ entryTypes: ["mark"] });' +
+      'performance.mark("c");' +
+      '</script>',
+  );
+  await settle(60);
+  assert.equal(
+    doc.text('out'),
+    [
+      'p,b,span',
+      // forward, then back from the last to the first
+      'abdBA',
+      // an iterator starts at its root, and a rejected node's children
+      // are still visited, as a skipped one's are
+      'div,p,span',
+      'i',
+      'html',
+      'false',
+      'parsed',
+      'true',
+      'measure',
+      '2',
+      '0',
+      'observed c',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('document.currentScript is the script through the microtasks it queued, and null after', async () => {
+  // Turbopack's chunks read it from a promise's callback, as a browser
+  // runs those before it puts `currentScript` back
+  const doc = await hosted(
+    '<p id="out"></p><script id="s">' +
+      'var seen = [];' +
+      'Promise.resolve().then(function () { seen.push(document.currentScript && document.currentScript.id); })' +
+      '  .then(function () { seen.push(document.currentScript && document.currentScript.id); });' +
+      'setTimeout(function () { seen.push(String(document.currentScript));' +
+      "  document.getElementById('out').textContent = seen.join(' '); }, 0);" +
+      '</script>',
+  );
+  await settle(60);
+  assert.equal(doc.text('out'), 's s null');
+});
+
+test('a promise nothing catches is told as unhandledrejection and reported with its reason', async (t) => {
+  // node:test listens for unhandled rejections too: set aside, as above
+  const others = process.listeners('unhandledRejection');
+  for (const l of others) process.off('unhandledRejection', l);
+  t.after(() => {
+    for (const l of others) process.on('unhandledRejection', l);
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      "var heard = []; window.addEventListener('unhandledrejection', function (e) {" +
+      "  heard.push(e.reason.message + ':' + (e.promise instanceof Promise));" +
+      "  if (e.reason.message === 'kept') e.preventDefault(); });" +
+      "Promise.reject(new TypeError('told'));" +
+      "Promise.reject(new Error('kept'));" +
+      "setTimeout(function () { document.getElementById('out').textContent = heard.sort().join(' '); }, 30);" +
+      '</script>',
+  );
+  await settle(80);
+  assert.equal(doc.text('out'), 'kept:true told:true');
+  const reported = doc.logs.filter((l) => l.includes('Uncaught (in promise)'));
+  assert.equal(reported.length, 1, reported.join('\n'));
+  assert.match(reported[0], /TypeError: told/);
 });
 
 test('storage keeps what a page puts in it', async () => {

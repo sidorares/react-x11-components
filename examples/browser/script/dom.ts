@@ -97,6 +97,8 @@ export function installDom(bridge: Bridge): void {
     InvalidStateError: 11,
     SyntaxError: 12,
     InvalidAccessError: 15,
+    TypeMismatchError: 17,
+    QuotaExceededError: 22,
     TimeoutError: 23,
     DataCloneError: 25,
     AbortError: 20,
@@ -113,7 +115,9 @@ export function installDom(bridge: Bridge): void {
   /** A page's exception, reported as a browser reports one it caught: on
    *  the console, and as an `error` event at the window. */
   let reporting = false;
-  const report = (error: Any): void => {
+  /** What a thrown value says of itself: its message, and its stack where
+   *  it has one. */
+  const describe = (error: Any): { message: string; text: string } => {
     let message: string;
     try {
       message =
@@ -127,7 +131,11 @@ export function installDom(bridge: Bridge): void {
     try {
       stack = typeof error?.stack === 'string' ? error.stack : '';
     } catch {}
-    bridge('log', 'error', `Uncaught ${stack || message}`);
+    return { message, text: stack || message };
+  };
+  const report = (error: Any): void => {
+    const { message, text } = describe(error);
+    bridge('log', 'error', `Uncaught ${text}`);
     if (reporting) return;
     reporting = true;
     try {
@@ -380,6 +388,17 @@ export function installDom(bridge: Bridge): void {
       this.colno = Number(init.colno ?? 0);
     }
   }
+  /** `unhandledrejection` (HTML 8.1.6.3): the promise and its reason. */
+  class PromiseRejectionEvent extends Event {
+    readonly promise: Any;
+    readonly reason: Any;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this.promise = init.promise;
+      this.reason = init.reason;
+    }
+  }
+
   class HashChangeEvent extends Event {
     readonly oldURL: string;
     readonly newURL: string;
@@ -387,6 +406,21 @@ export function installDom(bridge: Bridge): void {
       super(type, init);
       this.oldURL = String(init.oldURL ?? '');
       this.newURL = String(init.newURL ?? '');
+    }
+  }
+  class MessageEvent extends Event {
+    readonly data: Any;
+    readonly origin: string;
+    readonly lastEventId: string;
+    readonly source: Any;
+    readonly ports: Any[];
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this.data = init.data === undefined ? null : init.data;
+      this.origin = String(init.origin ?? '');
+      this.lastEventId = String(init.lastEventId ?? '');
+      this.source = init.source ?? null;
+      this.ports = Array.from(init.ports ?? []);
     }
   }
   class PopStateEvent extends Event {
@@ -890,6 +924,14 @@ export function installDom(bridge: Bridge): void {
   }
   Object.defineProperty(Text.prototype, 'nodeType', nodeTypeOf(3));
   class Comment extends CharacterData {}
+  // never made here — HTML has no CDATA outside foreign content, and no
+  // processing instruction — but a polyfill patches their prototypes
+  class CDATASection extends Text {}
+  class ProcessingInstruction extends CharacterData {
+    get target(): string {
+      return '';
+    }
+  }
   Object.defineProperty(Comment.prototype, 'nodeType', nodeTypeOf(8));
 
   class DocumentType extends Node {
@@ -2084,6 +2126,65 @@ export function installDom(bridge: Bridge): void {
     }
   }
   class HTMLMediaElement extends HTMLElement {
+    static readonly NETWORK_EMPTY = 0;
+    static readonly HAVE_NOTHING = 0;
+    // a media element here never loads: at rest, before its first frame,
+    // as a browser has one that has not started (HTML 4.8.11)
+    get paused(): boolean {
+      return true;
+    }
+    get ended(): boolean {
+      return false;
+    }
+    get seeking(): boolean {
+      return false;
+    }
+    get readyState(): number {
+      return 0;
+    }
+    get networkState(): number {
+      return 0;
+    }
+    get duration(): number {
+      return NaN;
+    }
+    get currentTime(): number {
+      return 0;
+    }
+    set currentTime(_v: Any) {}
+    volume = 1;
+    playbackRate = 1;
+    defaultPlaybackRate = 1;
+    get muted(): boolean {
+      return this.hasAttribute('muted');
+    }
+    set muted(v: Any) {
+      this.toggleAttribute('muted', !!v);
+    }
+    get currentSrc(): string {
+      return '';
+    }
+    get error(): Any {
+      return null;
+    }
+    get buffered(): Any {
+      return noTimeRanges;
+    }
+    get played(): Any {
+      return noTimeRanges;
+    }
+    get seekable(): Any {
+      return noTimeRanges;
+    }
+    get textTracks(): Any {
+      return trackListOf(this, TextTrackList);
+    }
+    get audioTracks(): Any {
+      return trackListOf(this, AudioTrackList);
+    }
+    get videoTracks(): Any {
+      return trackListOf(this, VideoTrackList);
+    }
     play(): Promise<void> {
       return Promise.reject(
         new DOMException(
@@ -2099,6 +2200,107 @@ export function installDom(bridge: Bridge): void {
     }
   }
 
+  for (const name of ['autoplay', 'controls', 'loop', 'playsInline']) {
+    Object.defineProperty(
+      HTMLMediaElement.prototype,
+      name,
+      flag(name.toLowerCase()),
+    );
+  }
+  for (const name of ['preload', 'crossOrigin']) {
+    Object.defineProperty(
+      HTMLMediaElement.prototype,
+      name,
+      reflect(name.toLowerCase()),
+    );
+  }
+  Object.defineProperty(HTMLMediaElement.prototype, 'src', urlProperty('src'));
+  class HTMLVideoElement extends HTMLMediaElement {
+    get videoWidth(): number {
+      return 0;
+    }
+    get videoHeight(): number {
+      return 0;
+    }
+  }
+  Object.defineProperty(
+    HTMLVideoElement.prototype,
+    'poster',
+    urlProperty('poster'),
+  );
+  class HTMLAudioElement extends HTMLMediaElement {}
+  /** A media element's list of tracks: none, since nothing loads. */
+  class TrackList extends EventTarget {
+    get length(): number {
+      return 0;
+    }
+    getTrackById(): Any {
+      return null;
+    }
+    [Symbol.iterator](): Iterator<Any> {
+      return [][Symbol.iterator]();
+    }
+  }
+  class TextTrackList extends TrackList {}
+  class AudioTrackList extends TrackList {}
+  class VideoTrackList extends TrackList {}
+  const trackLists = new WeakMap<object, Map<Any, Any>>();
+  const trackListOf = (media: Any, Kind: Any): Any => {
+    let lists = trackLists.get(media);
+    if (!lists) trackLists.set(media, (lists = new Map()));
+    let list = lists.get(Kind);
+    if (!list) lists.set(Kind, (list = new Kind()));
+    return list;
+  };
+  /** A `TimeRanges` with no range in it. */
+  const noTimeRanges: Any = {
+    length: 0,
+    start: () => {
+      throw new DOMException('There is no range.', 'IndexSizeError');
+    },
+    end: () => {
+      throw new DOMException('There is no range.', 'IndexSizeError');
+    },
+  };
+  class HTMLSourceElement extends HTMLElement {}
+  Object.defineProperty(HTMLSourceElement.prototype, 'src', urlProperty('src'));
+  for (const name of ['type', 'media', 'sizes', 'srcset']) {
+    Object.defineProperty(HTMLSourceElement.prototype, name, reflect(name));
+  }
+  class HTMLTrackElement extends HTMLElement {}
+  class HTMLPictureElement extends HTMLElement {}
+  class HTMLPreElement extends HTMLElement {}
+  class HTMLBRElement extends HTMLElement {}
+  class HTMLHRElement extends HTMLElement {}
+  class HTMLTitleElement extends HTMLElement {}
+  class HTMLBaseElement extends HTMLElement {}
+  class HTMLTimeElement extends HTMLElement {}
+  Object.defineProperty(
+    HTMLTimeElement.prototype,
+    'dateTime',
+    reflect('datetime'),
+  );
+  class HTMLQuoteElement extends HTMLElement {}
+  class HTMLDListElement extends HTMLElement {}
+  class HTMLTableSectionElement extends HTMLElement {}
+  class HTMLTableCaptionElement extends HTMLElement {}
+  class HTMLTableColElement extends HTMLElement {}
+  class HTMLLegendElement extends HTMLElement {}
+  class HTMLOptGroupElement extends HTMLElement {}
+  class HTMLDataListElement extends HTMLElement {}
+  class HTMLProgressElement extends HTMLElement {}
+  class HTMLMeterElement extends HTMLElement {}
+  class HTMLOutputElement extends HTMLElement {}
+  class HTMLObjectElement extends HTMLElement {}
+  class HTMLEmbedElement extends HTMLElement {}
+  class HTMLSlotElement extends HTMLElement {
+    assignedNodes(): Any[] {
+      return [];
+    }
+    assignedElements(): Any[] {
+      return [];
+    }
+  }
   class HTMLBodyElement extends HTMLElement {}
   class HTMLHeadElement extends HTMLElement {}
   class HTMLHtmlElement extends HTMLElement {}
@@ -2112,7 +2314,455 @@ export function installDom(bridge: Bridge): void {
   class HTMLTableElement extends HTMLElement {}
   class HTMLTableRowElement extends HTMLElement {}
   class HTMLTableCellElement extends HTMLElement {}
-  class HTMLStyleElement extends HTMLElement {}
+  // --- CSSOM ---------------------------------------------------------------------
+  //
+  // A sheet is its rules' text. A `<style>`'s are the host's (`sheetRules`):
+  // read from its text the first time they are asked for, kept as the page
+  // edits them, and written back as the element's text at the next flush,
+  // so `<Html>` draws what a CSS-in-JS library inserts — styled-components
+  // and emotion insert every rule with `insertRule` in production, and
+  // read `document.styleSheets` to find the sheet to insert into. A
+  // `<link>`'s rules are refused where it is another origin's, as a
+  // browser refuses them, and are none of the rules it has where it is
+  // not; a sheet a page constructs draws nothing, since nothing here
+  // adopts one.
+
+  class CSSRuleList extends Array {
+    item(i: Any): Any {
+      return this[Number(i)] ?? null;
+    }
+  }
+  class StyleSheetList extends Array {
+    item(i: Any): Any {
+      return this[Number(i)] ?? null;
+    }
+  }
+
+  /** What a rule's text says before its block, or all of a statement. */
+  const preludeOf = (text: string): string => {
+    const open = text.indexOf('{');
+    return (open < 0 ? text.replace(/;\s*$/, '') : text.slice(0, open)).trim();
+  };
+  /** What is inside a rule's block. */
+  const blockOf = (text: string): string => {
+    const open = text.indexOf('{');
+    if (open < 0) return '';
+    const close = text.lastIndexOf('}');
+    return text.slice(open + 1, close > open ? close : text.length);
+  };
+  /** A media query list, as `MediaList` reads one. */
+  const mediaList = (text: string): Any => {
+    const items = text
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean);
+    const list: Any = {
+      mediaText: items.join(', '),
+      length: items.length,
+      item: (i: Any) => items[Number(i)] ?? null,
+      toString: () => items.join(', '),
+    };
+    items.forEach((m, i) => (list[i] = m));
+    return list;
+  };
+  /** A block's declarations, as a rule's `style` reads them: by name, by
+   *  index and camel-cased. Read only. */
+  const declarationsOf = (block: string): Any => {
+    const values = new Map<string, string>();
+    for (const part of block.split(/;(?![^(]*\))/)) {
+      const colon = part.indexOf(':');
+      if (colon < 0) continue;
+      const name = part.slice(0, colon).trim();
+      if (!name) continue;
+      values.set(
+        name.startsWith('--') ? name : name.toLowerCase(),
+        part.slice(colon + 1).trim(),
+      );
+    }
+    const names = [...values.keys()];
+    const plain = (name: string): string =>
+      (values.get(name) ?? '').replace(/\s*!\s*important$/i, '');
+    const style: Any = {
+      cssText: block.trim(),
+      length: names.length,
+      item: (i: Any) => names[Number(i)] ?? '',
+      getPropertyValue: (name: Any) => plain(str(name)),
+      getPropertyPriority: (name: Any) =>
+        /!\s*important$/i.test(values.get(str(name)) ?? '') ? 'important' : '',
+    };
+    names.forEach((name, i) => {
+      style[i] = name;
+      if (!name.startsWith('--')) {
+        style[name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] =
+          plain(name);
+      }
+    });
+    return style;
+  };
+
+  class CSSRule {
+    static readonly STYLE_RULE = 1;
+    static readonly CHARSET_RULE = 2;
+    static readonly IMPORT_RULE = 3;
+    static readonly MEDIA_RULE = 4;
+    static readonly FONT_FACE_RULE = 5;
+    static readonly PAGE_RULE = 6;
+    static readonly KEYFRAMES_RULE = 7;
+    static readonly KEYFRAME_RULE = 8;
+    static readonly NAMESPACE_RULE = 10;
+    static readonly SUPPORTS_RULE = 12;
+    _type = 0;
+    _text: string;
+    parentStyleSheet: Any;
+    parentRule: Any = null;
+    constructor(text: string, sheet: Any) {
+      this._text = text;
+      this.parentStyleSheet = sheet;
+    }
+    get cssText(): string {
+      return this._text;
+    }
+    get type(): number {
+      return this._type;
+    }
+  }
+  class CSSStyleRule extends CSSRule {
+    override _type = 1;
+    get selectorText(): string {
+      return preludeOf(this._text);
+    }
+    get style(): Any {
+      return declarationsOf(blockOf(this._text));
+    }
+  }
+  class CSSGroupingRule extends CSSRule {
+    get cssRules(): Any {
+      return ruleList(
+        JSON.parse(String(call('cssRules', blockOf(this._text)))),
+        this.parentStyleSheet,
+        this,
+      );
+    }
+    insertRule(): number {
+      throw new DOMException(
+        'A rule inside another is not edited here.',
+        'NotSupportedError',
+      );
+    }
+    deleteRule(): void {
+      this.insertRule();
+    }
+  }
+  /** An at-rule's prelude with its name left out: a condition. */
+  const conditionOf = (text: string): string =>
+    preludeOf(text).replace(/^@[\w-]+\s*/, '');
+  class CSSMediaRule extends CSSGroupingRule {
+    override _type = 4;
+    get conditionText(): string {
+      return conditionOf(this._text);
+    }
+    get media(): Any {
+      return mediaList(conditionOf(this._text));
+    }
+  }
+  class CSSSupportsRule extends CSSGroupingRule {
+    override _type = 12;
+    get conditionText(): string {
+      return conditionOf(this._text);
+    }
+  }
+  class CSSImportRule extends CSSRule {
+    override _type = 3;
+    readonly styleSheet = null;
+    get href(): string {
+      const m = /^(?:url\(\s*)?(["']?)([^"')]*)\1/i.exec(
+        conditionOf(this._text),
+      );
+      return m ? m[2] : '';
+    }
+    get media(): Any {
+      return mediaList(
+        conditionOf(this._text).replace(
+          /^(?:url\([^)]*\)|"[^"]*"|'[^']*')/i,
+          '',
+        ),
+      );
+    }
+  }
+  class CSSFontFaceRule extends CSSRule {
+    override _type = 5;
+    get style(): Any {
+      return declarationsOf(blockOf(this._text));
+    }
+  }
+  class CSSKeyframesRule extends CSSRule {
+    override _type = 7;
+    get name(): string {
+      return conditionOf(this._text).replace(/^["']|["']$/g, '');
+    }
+  }
+  const RULE_CLASSES: Record<string, Any> = {
+    media: CSSMediaRule,
+    supports: CSSSupportsRule,
+    import: CSSImportRule,
+    'font-face': CSSFontFaceRule,
+    keyframes: CSSKeyframesRule,
+  };
+  const AT_RULE_TYPES: Record<string, number> = {
+    charset: 2,
+    page: 6,
+    namespace: 10,
+  };
+  const ruleOf = (text: string, sheet: Any, parent: Any = null): Any => {
+    const at = /^@(?:-[a-z]+-)?([a-z-]+)/i.exec(text);
+    const kind = at ? at[1].toLowerCase() : '';
+    const Rule = RULE_CLASSES[kind] ?? (at ? CSSRule : CSSStyleRule);
+    const rule = new Rule(text, sheet);
+    if (Rule === CSSRule) rule._type = AT_RULE_TYPES[kind] ?? 0;
+    rule.parentRule = parent;
+    return rule;
+  };
+  const ruleList = (texts: string[], sheet: Any, parent: Any): Any => {
+    const list = new CSSRuleList();
+    for (const text of texts) list.push(ruleOf(text, sheet, parent));
+    return list;
+  };
+  /** The one rule a text is, for `insertRule`. */
+  const oneRule = (text: string): string => {
+    const rules = JSON.parse(String(call('cssRules', text))) as string[];
+    if (rules.length !== 1) {
+      throw new DOMException(
+        `Failed to parse the rule '${text}'.`,
+        'SyntaxError',
+      );
+    }
+    return rules[0];
+  };
+
+  class CSSStyleSheet {
+    /** The `<style>` or `<link>` it is the sheet of, or none. */
+    _owner: Any = null;
+    /** Its rules, where they are not the host's: a constructed sheet's, or
+     *  a `<link>`'s. */
+    _rules: string[] | null = [];
+    /** The host's edit of a `<style>`'s rules `_list` is. */
+    _version: Any = null;
+    _list: Any = null;
+    _media = '';
+    disabled = false;
+    readonly parentStyleSheet = null;
+    readonly ownerRule = null;
+    readonly type = 'text/css';
+    constructor(options: Any = {}) {
+      const media = options?.media;
+      this._media =
+        media === undefined || media === null
+          ? ''
+          : String(media.mediaText ?? media);
+      this.disabled = !!options?.disabled;
+    }
+    get ownerNode(): Any {
+      return this._owner;
+    }
+    get href(): Any {
+      return this._owner instanceof HTMLLinkElement
+        ? (this._owner as Any).href
+        : null;
+    }
+    get title(): Any {
+      return this._owner?.getAttribute('title') ?? null;
+    }
+    get media(): Any {
+      return mediaList(
+        this._owner ? (this._owner.getAttribute('media') ?? '') : this._media,
+      );
+    }
+    get cssRules(): Any {
+      const owner = this._owner;
+      if (owner instanceof HTMLLinkElement) {
+        let origin = '';
+        try {
+          origin = new URL((owner as Any).href).origin;
+        } catch {
+          // no address: no origin
+        }
+        if (origin !== location.origin) {
+          throw new DOMException(
+            "Failed to read the 'cssRules' property from 'CSSStyleSheet': Cannot access rules",
+            'SecurityError',
+          );
+        }
+      }
+      if (this._rules) {
+        this._list ??= ruleList(this._rules, this, null);
+        return this._list;
+      }
+      const answer = String(call('sheetRules', owner._id, this._version));
+      if (answer) {
+        const cut = answer.indexOf('\u0000');
+        this._version = Number(answer.slice(0, cut));
+        this._list = ruleList(JSON.parse(answer.slice(cut + 1)), this, null);
+      }
+      return this._list;
+    }
+    get rules(): Any {
+      return this.cssRules;
+    }
+    insertRule(rule: Any, index?: Any): number {
+      const at = index === undefined ? 0 : Number(index) >>> 0;
+      const text = str(rule);
+      if (this._rules) {
+        const one = oneRule(text);
+        if (at > this._rules.length) {
+          throw new DOMException(
+            `The index provided (${at}) is larger than the maximum index (${this._rules.length}).`,
+            'IndexSizeError',
+          );
+        }
+        this._rules.splice(at, 0, one);
+        this._list = null;
+        if (!this._owner) readopt(this);
+        return at;
+      }
+      const answer = String(call('sheetInsert', this._owner._id, text, at));
+      const first = answer.indexOf('\u0000');
+      const second = answer.indexOf('\u0000', first + 1);
+      // the list kept, edited as the host's rules were, where it was the
+      // rules before the edit: a library that inserts a rule and reads
+      // `cssRules.length` for the next one reads no list again
+      if (this._list && this._version === Number(answer.slice(0, first))) {
+        this._list.splice(at, 0, ruleOf(answer.slice(second + 1), this));
+        this._version = Number(answer.slice(first + 1, second));
+      }
+      return at;
+    }
+    deleteRule(index: Any): void {
+      const at = Number(index) >>> 0;
+      if (this._rules) {
+        if (at >= this._rules.length) {
+          throw new DOMException(
+            `The index provided (${at}) is outside the range [0, ${this._rules.length}).`,
+            'IndexSizeError',
+          );
+        }
+        this._rules.splice(at, 1);
+        this._list = null;
+        if (!this._owner) readopt(this);
+        return;
+      }
+      const answer = String(call('sheetDelete', this._owner._id, at));
+      const cut = answer.indexOf('\u0000');
+      if (this._list && this._version === Number(answer.slice(0, cut))) {
+        this._list.splice(at, 1);
+        this._version = Number(answer.slice(cut + 1));
+      }
+    }
+    addRule(selector: Any, block: Any, index?: Any): number {
+      this.insertRule(
+        `${str(selector)} { ${str(block)} }`,
+        index === undefined ? this.cssRules.length : index,
+      );
+      return -1;
+    }
+    removeRule(index: Any = 0): void {
+      this.deleteRule(index);
+    }
+    replaceSync(text: Any): void {
+      if (this._owner) {
+        throw new DOMException(
+          "Failed to execute 'replaceSync' on 'CSSStyleSheet': Can't call replaceSync on non-constructed CSSStyleSheets.",
+          'NotAllowedError',
+        );
+      }
+      // a constructed sheet imports nothing (CSSOM 6.1.2)
+      this._rules = (
+        JSON.parse(String(call('cssRules', str(text)))) as string[]
+      ).filter((rule) => !/^@import\b/i.test(rule));
+      this._list = null;
+      readopt(this);
+    }
+    replace(text: Any): Promise<Any> {
+      try {
+        this.replaceSync(text);
+        return Promise.resolve(this);
+      } catch (e) {
+        return Promise.reject(e);
+      }
+    }
+  }
+  const StyleSheet = CSSStyleSheet;
+
+  /** The sheet of a `<style>` or a `<link>`: one object for as long as the
+   *  element is. */
+  const ownedSheets = new WeakMap<object, Any>();
+  const sheetOf = (el: Any): Any => {
+    let sheet = ownedSheets.get(el);
+    if (!sheet) {
+      sheet = new CSSStyleSheet();
+      sheet._owner = el;
+      sheet._rules = el instanceof HTMLLinkElement ? [] : null;
+      ownedSheets.set(el, sheet);
+    }
+    return sheet;
+  };
+
+  /** `document.adoptedStyleSheets`: the sheets, and the array a page
+   *  edits them in, which tells the host as it changes. */
+  const adoptedSheets: Any[] = [];
+  const adoptable = (sheet: Any): void => {
+    if (!(sheet instanceof CSSStyleSheet) || sheet._owner) {
+      throw new DOMException(
+        "Failed to set the 'adoptedStyleSheets' property on 'Document': Sharing constructed stylesheets in multiple documents is not allowed",
+        'NotAllowedError',
+      );
+    }
+  };
+  const adopt = (): void => {
+    call(
+      'adopt',
+      JSON.stringify(
+        adoptedSheets
+          .filter((sheet) => !sheet.disabled)
+          .map((sheet) => (sheet._rules as string[]).join('\n')),
+      ),
+    );
+  };
+  const adopted: Any = new Proxy(adoptedSheets, {
+    set(target: Any, key: Any, value: Any): boolean {
+      if (typeof key === 'string' && /^\d+$/.test(key)) adoptable(value);
+      target[key] = value;
+      adopt();
+      return true;
+    },
+    deleteProperty(target: Any, key: Any): boolean {
+      delete target[key];
+      adopt();
+      return true;
+    },
+  });
+  /** A constructed sheet changed: the document's adopted sheets again,
+   *  where it is one of them. */
+  const readopt = (sheet: Any): void => {
+    if (adoptedSheets.includes(sheet)) adopt();
+  };
+
+  class HTMLStyleElement extends HTMLElement {
+    get sheet(): Any {
+      return this.isConnected ? sheetOf(this) : null;
+    }
+  }
+  for (const name of ['media', 'type']) {
+    Object.defineProperty(HTMLStyleElement.prototype, name, reflect(name));
+  }
+  Object.defineProperty(HTMLLinkElement.prototype, 'sheet', {
+    get(this: Any): Any {
+      return this.isConnected &&
+        /(?:^|\s)stylesheet(?:\s|$)/i.test(this.getAttribute('rel') ?? '')
+        ? sheetOf(this)
+        : null;
+    },
+    configurable: true,
+  });
   class HTMLMetaElement extends HTMLElement {}
   class HTMLUnknownElement extends HTMLElement {}
 
@@ -2135,8 +2785,35 @@ export function installDom(bridge: Bridge): void {
     form: HTMLFormElement,
     iframe: HTMLIFrameElement,
     canvas: HTMLCanvasElement,
-    video: HTMLMediaElement,
-    audio: HTMLMediaElement,
+    video: HTMLVideoElement,
+    audio: HTMLAudioElement,
+    source: HTMLSourceElement,
+    track: HTMLTrackElement,
+    picture: HTMLPictureElement,
+    pre: HTMLPreElement,
+    br: HTMLBRElement,
+    hr: HTMLHRElement,
+    title: HTMLTitleElement,
+    base: HTMLBaseElement,
+    time: HTMLTimeElement,
+    q: HTMLQuoteElement,
+    blockquote: HTMLQuoteElement,
+    dl: HTMLDListElement,
+    thead: HTMLTableSectionElement,
+    tbody: HTMLTableSectionElement,
+    tfoot: HTMLTableSectionElement,
+    caption: HTMLTableCaptionElement,
+    col: HTMLTableColElement,
+    colgroup: HTMLTableColElement,
+    legend: HTMLLegendElement,
+    optgroup: HTMLOptGroupElement,
+    datalist: HTMLDataListElement,
+    progress: HTMLProgressElement,
+    meter: HTMLMeterElement,
+    output: HTMLOutputElement,
+    object: HTMLObjectElement,
+    embed: HTMLEmbedElement,
+    slot: HTMLSlotElement,
     body: HTMLBodyElement,
     head: HTMLHeadElement,
     html: HTMLHtmlElement,
@@ -2228,7 +2905,7 @@ export function installDom(bridge: Bridge): void {
     _ready = 'loading';
     _current: Any = null;
     get documentElement(): Any {
-      return wrap(Number(call('root')));
+      return wrap(Number(call('root', this._id)));
     }
     get head(): Any {
       return this.querySelector('head');
@@ -2244,6 +2921,29 @@ export function installDom(bridge: Bridge): void {
     }
     get readyState(): string {
       return this._ready;
+    }
+    /** The sheets a page constructed and adopted, which `<Html>` applies
+     *  after the document's own, as CSSOM orders them: an array a page
+     *  may set whole or edit in place, as Chrome's is. */
+    get adoptedStyleSheets(): Any {
+      return this === document ? adopted : [];
+    }
+    set adoptedStyleSheets(sheets: Any) {
+      if (this !== document) return;
+      const list = Array.from(sheets ?? []);
+      for (const sheet of list) adoptable(sheet);
+      adoptedSheets.splice(0, adoptedSheets.length, ...list);
+      adopt();
+    }
+    get styleSheets(): Any {
+      const list = new StyleSheetList();
+      // a document a page made of its own draws nothing, and has no sheet
+      if (this !== document) return list;
+      const ids = String(call('sheets'));
+      for (const id of ids ? ids.split(',') : []) {
+        list.push(sheetOf(wrap(Number(id))));
+      }
+      return list;
     }
     get currentScript(): Any {
       return this._current;
@@ -2315,9 +3015,14 @@ export function installDom(bridge: Bridge): void {
     get implementation(): Any {
       return {
         hasFeature: () => true,
-        createHTMLDocument: () => {
-          throw new DOMException('Not supported here.', 'NotSupportedError');
-        },
+        // a document of its own, out of the one drawn: what a sanitizer
+        // parses markup into, whose scripts nothing runs
+        createHTMLDocument: (title?: Any) =>
+          wrap(
+            Number(
+              call('newDocument', title === undefined ? null : str(title)),
+            ),
+          ),
       };
     }
     get fonts(): Any {
@@ -2338,7 +3043,14 @@ export function installDom(bridge: Bridge): void {
     }
     createElement(tag: Any): Any {
       const name = str(tag).toLowerCase();
-      if (!/^[a-z][^\s"'>/=]*$/i.test(name)) {
+      // a valid element local name (DOM 4.9): one that starts with a
+      // letter and has no white space, NUL, `/` or `>` in it, or one that
+      // starts with `:`, `_` or past ASCII and has nothing in it but
+      // those, letters, digits, `-` and `.` — `_` is one
+      if (
+        !/^[a-z][^\s\0/>]*$/.test(name) &&
+        !/^[:_\u0080-\uffff][\w\-.:\u0080-\uffff]*$/.test(name)
+      ) {
         throw new DOMException(
           `The tag name provided ('${name}') is not a valid name.`,
           'InvalidCharacterError',
@@ -2388,11 +3100,19 @@ export function installDom(bridge: Bridge): void {
         },
       };
     }
-    createTreeWalker(): never {
-      throw new DOMException(
-        'TreeWalker is not supported here.',
-        'NotSupportedError',
+    createTreeWalker(root: Any, whatToShow?: Any, filter?: Any): Any {
+      idOf(
+        root,
+        "Failed to execute 'createTreeWalker' on 'Document': parameter 1",
       );
+      return new TreeWalker(root, whatToShow, filter);
+    }
+    createNodeIterator(root: Any, whatToShow?: Any, filter?: Any): Any {
+      idOf(
+        root,
+        "Failed to execute 'createNodeIterator' on 'Document': parameter 1",
+      );
+      return new NodeIterator(root, whatToShow, filter);
     }
     importNode(node: Any, deep = false): Any {
       return node.cloneNode(deep);
@@ -3101,6 +3821,926 @@ export function installDom(bridge: Bridge): void {
     });
   }
 
+  // --- traversal (DOM 6) ---------------------------------------------------
+
+  const NodeFilter = {
+    FILTER_ACCEPT: 1,
+    FILTER_REJECT: 2,
+    FILTER_SKIP: 3,
+    SHOW_ALL: 0xffffffff,
+    SHOW_ELEMENT: 0x1,
+    SHOW_ATTRIBUTE: 0x2,
+    SHOW_TEXT: 0x4,
+    SHOW_CDATA_SECTION: 0x8,
+    SHOW_ENTITY_REFERENCE: 0x10,
+    SHOW_ENTITY: 0x20,
+    SHOW_PROCESSING_INSTRUCTION: 0x40,
+    SHOW_COMMENT: 0x80,
+    SHOW_DOCUMENT: 0x100,
+    SHOW_DOCUMENT_TYPE: 0x200,
+    SHOW_DOCUMENT_FRAGMENT: 0x400,
+    SHOW_NOTATION: 0x800,
+  };
+
+  /** What a traversal's `whatToShow` and `filter` say of a node (DOM 6.1,
+   *  "filter"): shown or not by its type, and then the filter's answer. */
+  class Traversal {
+    readonly root: Any;
+    readonly whatToShow: number;
+    readonly filter: Any;
+    _active = false;
+    constructor(root: Any, whatToShow: Any, filter: Any) {
+      this.root = root;
+      this.whatToShow =
+        whatToShow === undefined
+          ? NodeFilter.SHOW_ALL
+          : Number(whatToShow) >>> 0;
+      this.filter = filter ?? null;
+    }
+    _accept(node: Any): number {
+      if (this._active) {
+        throw new DOMException(
+          'A traversal is already running.',
+          'InvalidStateError',
+        );
+      }
+      if (!((1 << (node.nodeType - 1)) & this.whatToShow)) return 3;
+      const filter = this.filter;
+      if (!filter) return 1;
+      this._active = true;
+      try {
+        const answer =
+          typeof filter === 'function'
+            ? filter.call(undefined, node)
+            : filter.acceptNode(node);
+        return Number(answer);
+      } finally {
+        this._active = false;
+      }
+    }
+  }
+
+  class TreeWalker extends Traversal {
+    currentNode: Any;
+    constructor(root: Any, whatToShow: Any, filter: Any) {
+      super(root, whatToShow, filter);
+      this.currentNode = root;
+    }
+    parentNode(): Any {
+      let node = this.currentNode;
+      while (node && node !== this.root) {
+        node = node.parentNode;
+        if (node && this._accept(node) === 1) return (this.currentNode = node);
+      }
+      return null;
+    }
+    _children(first: boolean): Any {
+      let node = first
+        ? this.currentNode.firstChild
+        : this.currentNode.lastChild;
+      while (node) {
+        const result = this._accept(node);
+        if (result === 1) return (this.currentNode = node);
+        if (result === 3) {
+          const child = first ? node.firstChild : node.lastChild;
+          if (child) {
+            node = child;
+            continue;
+          }
+        }
+        while (node) {
+          const sibling = first ? node.nextSibling : node.previousSibling;
+          if (sibling) {
+            node = sibling;
+            break;
+          }
+          const parent = node.parentNode;
+          if (!parent || parent === this.root || parent === this.currentNode) {
+            return null;
+          }
+          node = parent;
+        }
+      }
+      return null;
+    }
+    firstChild(): Any {
+      return this._children(true);
+    }
+    lastChild(): Any {
+      return this._children(false);
+    }
+    _siblings(next: boolean): Any {
+      let node = this.currentNode;
+      if (node === this.root) return null;
+      for (;;) {
+        let sibling = next ? node.nextSibling : node.previousSibling;
+        while (sibling) {
+          node = sibling;
+          const result = this._accept(node);
+          if (result === 1) return (this.currentNode = node);
+          sibling = next ? node.firstChild : node.lastChild;
+          if (result === 2 || !sibling) {
+            sibling = next ? node.nextSibling : node.previousSibling;
+          }
+        }
+        node = node.parentNode;
+        if (!node || node === this.root) return null;
+        if (this._accept(node) === 1) return null;
+      }
+    }
+    nextSibling(): Any {
+      return this._siblings(true);
+    }
+    previousSibling(): Any {
+      return this._siblings(false);
+    }
+    previousNode(): Any {
+      let node = this.currentNode;
+      while (node !== this.root) {
+        let sibling = node.previousSibling;
+        while (sibling) {
+          node = sibling;
+          let result = this._accept(node);
+          while (result !== 2 && node.lastChild) {
+            node = node.lastChild;
+            result = this._accept(node);
+          }
+          if (result === 1) return (this.currentNode = node);
+          sibling = node.previousSibling;
+        }
+        if (node === this.root || !node.parentNode) return null;
+        node = node.parentNode;
+        if (this._accept(node) === 1) return (this.currentNode = node);
+      }
+      return null;
+    }
+    nextNode(): Any {
+      let node = this.currentNode;
+      let result = 1;
+      for (;;) {
+        while (result !== 2 && node.firstChild) {
+          node = node.firstChild;
+          result = this._accept(node);
+          if (result === 1) return (this.currentNode = node);
+        }
+        let sibling = null;
+        let at = node;
+        while (at) {
+          if (at === this.root) return null;
+          sibling = at.nextSibling;
+          if (sibling) break;
+          at = at.parentNode;
+        }
+        if (!sibling) return null;
+        node = sibling;
+        result = this._accept(node);
+        if (result === 1) return (this.currentNode = node);
+      }
+    }
+  }
+
+  /** `NodeIterator` (DOM 6.1): the tree in document order from `root`,
+   *  with a reference node it is before or after. */
+  class NodeIterator extends Traversal {
+    referenceNode: Any;
+    pointerBeforeReferenceNode = true;
+    constructor(root: Any, whatToShow: Any, filter: Any) {
+      super(root, whatToShow, filter);
+      this.referenceNode = root;
+    }
+    _following(node: Any): Any {
+      if (node.firstChild) return node.firstChild;
+      for (let at = node; at && at !== this.root; at = at.parentNode) {
+        if (at.nextSibling) return at.nextSibling;
+      }
+      return null;
+    }
+    _preceding(node: Any): Any {
+      if (node === this.root) return null;
+      let at = node.previousSibling;
+      if (!at) return node.parentNode;
+      while (at.lastChild) at = at.lastChild;
+      return at;
+    }
+    _traverse(next: boolean): Any {
+      let node = this.referenceNode;
+      let before = this.pointerBeforeReferenceNode;
+      for (;;) {
+        if (next) {
+          if (!before) {
+            node = this._following(node);
+            if (!node) return null;
+          } else before = false;
+        } else if (before) {
+          node = this._preceding(node);
+          if (!node) return null;
+        } else before = true;
+        if (this._accept(node) === 1) break;
+      }
+      this.referenceNode = node;
+      this.pointerBeforeReferenceNode = before;
+      return node;
+    }
+    nextNode(): Any {
+      return this._traverse(true);
+    }
+    previousNode(): Any {
+      return this._traverse(false);
+    }
+    detach(): void {}
+  }
+
+  /** `DOMParser`: markup made a document of its own, as
+   *  `createHTMLDocument` makes one — HTML only, and its scripts never run. */
+  class DOMParser {
+    parseFromString(markup: Any, type: Any): Any {
+      const kind = str(type);
+      if (kind !== 'text/html') {
+        throw new DOMException(
+          `Only text/html is parsed here, not ${kind}.`,
+          'NotSupportedError',
+        );
+      }
+      return wrap(Number(call('parseDocument', str(markup))));
+    }
+  }
+
+  /** `performance`'s marks and measures, and what observes them. */
+  const entries: Any[] = [];
+  const observers = new Set<Any>();
+  const noteEntry = (entry: Any): Any => {
+    entries.push(entry);
+    for (const observer of observers) {
+      if (!observer._types.has(entry.entryType)) continue;
+      observer._queue.push(entry);
+      if (observer._queue.length === 1) {
+        Promise.resolve().then(() => observer._deliver());
+      }
+    }
+    return entry;
+  };
+  const entryList = (list: Any[]) => ({
+    getEntries: () => list.slice(),
+    getEntriesByType: (type: Any) =>
+      list.filter((e) => e.entryType === str(type)),
+    getEntriesByName: (name: Any, type?: Any) =>
+      list.filter(
+        (e) =>
+          e.name === str(name) &&
+          (type === undefined || e.entryType === str(type)),
+      ),
+  });
+  class PerformanceObserver {
+    static readonly supportedEntryTypes = ['mark', 'measure'];
+    _fn: Any;
+    _types = new Set<string>();
+    _queue: Any[] = [];
+    constructor(fn: Any) {
+      if (typeof fn !== 'function') {
+        throw new TypeError(
+          "Failed to construct 'PerformanceObserver': parameter 1 is not of type 'Function'.",
+        );
+      }
+      this._fn = fn;
+    }
+    observe(options: Any = {}): void {
+      for (const type of options.entryTypes ?? [options.type]) {
+        if (type !== undefined) this._types.add(str(type));
+      }
+      observers.add(this);
+      if (options.buffered) {
+        for (const entry of entries) {
+          if (this._types.has(entry.entryType)) this._queue.push(entry);
+        }
+        if (this._queue.length) Promise.resolve().then(() => this._deliver());
+      }
+    }
+    disconnect(): void {
+      observers.delete(this);
+      this._queue = [];
+    }
+    takeRecords(): Any[] {
+      const taken = this._queue;
+      this._queue = [];
+      return taken;
+    }
+    _deliver(): void {
+      const list = this.takeRecords();
+      if (!list.length) return;
+      try {
+        this._fn.call(this, entryList(list), this);
+      } catch (e) {
+        report(e);
+      }
+    }
+  }
+
+  /** UTF-8, as `TextEncoder` writes it: a lone surrogate is U+FFFD. */
+  const utf8Of = (code: number, out: number[]): void => {
+    if (code < 0x80) out.push(code);
+    else if (code < 0x800) out.push(0xc0 | (code >> 6), 0x80 | (code & 63));
+    else if (code < 0x10000) {
+      out.push(
+        0xe0 | (code >> 12),
+        0x80 | ((code >> 6) & 63),
+        0x80 | (code & 63),
+      );
+    } else {
+      out.push(
+        0xf0 | (code >> 18),
+        0x80 | ((code >> 12) & 63),
+        0x80 | ((code >> 6) & 63),
+        0x80 | (code & 63),
+      );
+    }
+  };
+  /** The code point at `i` in a string, and how many units it takes. */
+  const scalarAt = (s: string, i: number): [number, number] => {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+      const d = s.charCodeAt(i + 1);
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        return [0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00), 2];
+      }
+    }
+    return [c >= 0xd800 && c <= 0xdfff ? 0xfffd : c, 1];
+  };
+
+  /** `TextEncoder` (Encoding 8.2): UTF-8, the only encoding it writes. */
+  class TextEncoder {
+    get encoding(): string {
+      return 'utf-8';
+    }
+    encode(input: Any = ''): Uint8Array {
+      const s = str(input);
+      const out: number[] = [];
+      for (let i = 0; i < s.length;) {
+        const [code, units] = scalarAt(s, i);
+        utf8Of(code, out);
+        i += units;
+      }
+      return new Uint8Array(out);
+    }
+    encodeInto(
+      input: Any,
+      dest: Uint8Array,
+    ): { read: number; written: number } {
+      const s = str(input);
+      let read = 0;
+      let written = 0;
+      const bytes: number[] = [];
+      while (read < s.length) {
+        const [code, units] = scalarAt(s, read);
+        bytes.length = 0;
+        utf8Of(code, bytes);
+        if (written + bytes.length > dest.length) break;
+        for (const b of bytes) dest[written++] = b;
+        read += units;
+      }
+      return { read, written };
+    }
+  }
+
+  /** windows-1252's bytes 0x80 to 0x9F, where it is not latin-1. */
+  const CP1252 =
+    '\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f' +
+    '\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178';
+
+  /**
+   * `TextDecoder` (Encoding 8.1): UTF-8, with WHATWG's replacement of a
+   * malformed sequence by its maximal subpart, streaming, `fatal` and the
+   * BOM; UTF-16LE; and windows-1252, which `latin1` and `ascii` name.
+   */
+  class TextDecoder {
+    readonly encoding: string;
+    readonly fatal: boolean;
+    readonly ignoreBOM: boolean;
+    _pending: number[] = [];
+    _started = false;
+    constructor(label: Any = 'utf-8', options: Any = {}) {
+      const name = str(label).trim().toLowerCase();
+      if (['utf-8', 'utf8', 'unicode-1-1-utf-8'].includes(name)) {
+        this.encoding = 'utf-8';
+      } else if (['utf-16le', 'utf-16'].includes(name)) {
+        this.encoding = 'utf-16le';
+      } else if (
+        ['windows-1252', 'latin1', 'iso-8859-1', 'ascii', 'us-ascii'].includes(
+          name,
+        )
+      ) {
+        this.encoding = 'windows-1252';
+      } else {
+        throw new RangeError(
+          `Failed to construct 'TextDecoder': The encoding label provided ('${str(label)}') is invalid.`,
+        );
+      }
+      this.fatal = !!options?.fatal;
+      this.ignoreBOM = !!options?.ignoreBOM;
+    }
+    decode(input?: Any, options: Any = {}): string {
+      let bytes: Uint8Array;
+      if (input === undefined || input === null) bytes = new Uint8Array(0);
+      else if (ArrayBuffer.isView(input)) {
+        bytes = new Uint8Array(
+          input.buffer,
+          input.byteOffset,
+          input.byteLength,
+        );
+      } else if (input instanceof ArrayBuffer) bytes = new Uint8Array(input);
+      else {
+        throw new TypeError(
+          "Failed to execute 'decode' on 'TextDecoder': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.",
+        );
+      }
+      const stream = !!options?.stream;
+      const all = this._pending.length
+        ? Uint8Array.from([...this._pending, ...bytes])
+        : bytes;
+      this._pending = [];
+      const units: number[] = [];
+      const bad = (): void => {
+        if (this.fatal) {
+          throw new TypeError(
+            "Failed to execute 'decode' on 'TextDecoder': The encoded data was not valid.",
+          );
+        }
+        units.push(0xfffd);
+      };
+      const push = (code: number): void => {
+        if (code > 0xffff) {
+          code -= 0x10000;
+          units.push(0xd800 + (code >> 10), 0xdc00 + (code & 1023));
+        } else units.push(code);
+      };
+      const n = all.length;
+      let i = 0;
+      if (this.encoding === 'windows-1252') {
+        for (; i < n; i += 1) {
+          const b = all[i];
+          units.push(b >= 0x80 && b < 0xa0 ? CP1252.charCodeAt(b - 0x80) : b);
+        }
+      } else if (this.encoding === 'utf-16le') {
+        for (; i + 1 < n; i += 2) units.push(all[i] | (all[i + 1] << 8));
+        if (i < n) {
+          if (stream) this._pending = [all[i]];
+          else bad();
+        }
+      } else {
+        while (i < n) {
+          const b = all[i];
+          if (b < 0x80) {
+            units.push(b);
+            i += 1;
+            continue;
+          }
+          let need = 0;
+          let code = 0;
+          let lower = 0x80;
+          let upper = 0xbf;
+          if (b >= 0xc2 && b <= 0xdf) {
+            need = 1;
+            code = b & 0x1f;
+          } else if (b >= 0xe0 && b <= 0xef) {
+            need = 2;
+            code = b & 0xf;
+            if (b === 0xe0) lower = 0xa0;
+            if (b === 0xed) upper = 0x9f;
+          } else if (b >= 0xf0 && b <= 0xf4) {
+            need = 3;
+            code = b & 0x7;
+            if (b === 0xf0) lower = 0x90;
+            if (b === 0xf4) upper = 0x8f;
+          } else {
+            bad();
+            i += 1;
+            continue;
+          }
+          let j = 1;
+          for (; j <= need && i + j < n; j += 1) {
+            const c = all[i + j];
+            if (c < lower || c > upper) break;
+            lower = 0x80;
+            upper = 0xbf;
+            code = (code << 6) | (c & 0x3f);
+          }
+          if (j > need) {
+            push(code);
+            i += j;
+          } else if (i + j >= n && stream) {
+            // a sequence the next chunk finishes
+            this._pending = Array.from(all.subarray(i));
+            break;
+          } else {
+            // the bytes that began well, as one replacement
+            bad();
+            i += j;
+          }
+        }
+      }
+      if (!stream && this._pending.length) {
+        this._pending = [];
+        bad();
+      }
+      let text = '';
+      for (let k = 0; k < units.length; k += 8192) {
+        text += String.fromCharCode(...units.slice(k, k + 8192));
+      }
+      if (
+        !this._started &&
+        text &&
+        !this.ignoreBOM &&
+        text.charCodeAt(0) === 0xfeff
+      ) {
+        text = text.slice(1);
+      }
+      this._started = stream ? this._started || text.length > 0 : false;
+      return text;
+    }
+  }
+
+  /** `crypto`, its randomness the host's: no `subtle`, which a page that
+   *  wants one asks for and does without. */
+  const crypto = {
+    getRandomValues(array: Any): Any {
+      if (
+        !ArrayBuffer.isView(array) ||
+        array instanceof Float32Array ||
+        array instanceof Float64Array ||
+        array instanceof DataView
+      ) {
+        throw new DOMException(
+          "Failed to execute 'getRandomValues' on 'Crypto': The provided ArrayBufferView is of type 'Float32', which is not an integer array type.",
+          'TypeMismatchError',
+        );
+      }
+      if (array.byteLength > 65536) {
+        throw new DOMException(
+          `Failed to execute 'getRandomValues' on 'Crypto': The ArrayBufferView's byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (65536).`,
+          'QuotaExceededError',
+        );
+      }
+      const hex = String(call('random', array.byteLength));
+      const bytes = new Uint8Array(
+        array.buffer,
+        array.byteOffset,
+        array.byteLength,
+      );
+      for (let i = 0; i < bytes.length; i += 1) {
+        bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return array;
+    },
+    randomUUID: (): string => String(call('uuid')),
+    subtle: undefined,
+  };
+
+  /** `visualViewport`: the pane's, as `innerWidth` is, at a scale of 1. */
+  class VisualViewport extends EventTarget {
+    get width(): number {
+      return viewport().width;
+    }
+    get height(): number {
+      return viewport().height;
+    }
+    get offsetLeft(): number {
+      return 0;
+    }
+    get offsetTop(): number {
+      return 0;
+    }
+    get pageLeft(): number {
+      return viewport().scrollX;
+    }
+    get pageTop(): number {
+      return viewport().scrollY;
+    }
+    get scale(): number {
+      return 1;
+    }
+  }
+
+  /** The window's interface. The global is no instance of it — a page's
+   *  context has a global of its own — so `instanceof` asks for that
+   *  global, and its methods are the window's. */
+  class Window extends EventTarget {
+    static override [Symbol.hasInstance](value: Any): boolean {
+      return value === G;
+    }
+  }
+  for (const name of [
+    'addEventListener',
+    'removeEventListener',
+    'dispatchEvent',
+  ]) {
+    Object.defineProperty(Window.prototype, name, {
+      value(...args: Any[]): Any {
+        return G[name](...args);
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  /**
+   * A structured clone (HTML 2.7.3), of what this context makes: a
+   * primitive as it is; a date, a pattern, a buffer, a view, a map, a set,
+   * an array, an error and a plain object as one of its own kind, a blob
+   * as itself, since it never changes; what was met before as the copy made
+   * of it then, so a cycle is a cycle. A function, a node, a symbol and the
+   * rest are a `DataCloneError`.
+   */
+  const structuredCopy = (value: Any, seen: Map<Any, Any>): Any => {
+    if (value === null || typeof value !== 'object') {
+      if (typeof value === 'function' || typeof value === 'symbol') {
+        throw new DOMException(
+          `${String(typeof value === 'symbol' ? 'Symbol()' : value).slice(0, 40)} could not be cloned.`,
+          'DataCloneError',
+        );
+      }
+      return value;
+    }
+    if (seen.has(value)) return seen.get(value);
+    const tag = Object.prototype.toString.call(value).slice(8, -1);
+    let out: Any;
+    if (value instanceof Blob) return value;
+    // a node, a window's object, an event: the platform's, and none of
+    // them is serializable
+    if (value instanceof EventTarget || value instanceof Event) {
+      throw new DOMException(
+        `${value.constructor?.name ?? 'The object'} object could not be cloned.`,
+        'DataCloneError',
+      );
+    }
+    if (tag === 'Date') out = new Date(value.getTime());
+    else if (tag === 'RegExp') out = new RegExp(value.source, value.flags);
+    else if (tag === 'ArrayBuffer') out = value.slice(0);
+    else if (ArrayBuffer.isView(value)) {
+      const buffer = structuredCopy(value.buffer, seen);
+      const View = value.constructor as Any;
+      out =
+        tag === 'DataView'
+          ? new DataView(buffer, value.byteOffset, value.byteLength)
+          : new View(buffer, value.byteOffset, (value as Any).length);
+    } else if (tag === 'Map') {
+      out = new Map();
+      seen.set(value, out);
+      for (const [k, v] of value) {
+        out.set(structuredCopy(k, seen), structuredCopy(v, seen));
+      }
+      return out;
+    } else if (tag === 'Set') {
+      out = new Set();
+      seen.set(value, out);
+      for (const v of value) out.add(structuredCopy(v, seen));
+      return out;
+    } else if (tag === 'Error') {
+      out = new Error(value.message);
+      out.name = value.name;
+    } else if (
+      tag === 'Boolean' ||
+      tag === 'Number' ||
+      tag === 'String' ||
+      tag === 'BigInt'
+    ) {
+      out = Object(value.valueOf());
+    } else if (Array.isArray(value)) {
+      out = new Array(value.length);
+    } else if (tag === 'Object') {
+      out = {};
+    } else {
+      throw new DOMException(
+        `${tag} object could not be cloned.`,
+        'DataCloneError',
+      );
+    }
+    seen.set(value, out);
+    if (Array.isArray(value) || tag === 'Object') {
+      for (const key of Object.keys(value)) {
+        out[key] = structuredCopy(value[key], seen);
+      }
+    }
+    return out;
+  };
+  /** A message as it crosses: a copy, the page's structured clone. */
+  const cloneOf = (value: Any): Any => structuredCopy(value, new Map());
+
+  /** One end of a `MessageChannel` (HTML 9.4.4): what is posted to it is a
+   *  task of its own, after the one that posted it, once it is started —
+   *  which setting `onmessage` does. React's scheduler is one of these. */
+  class MessagePort extends EventTarget {
+    _other: Any = null;
+    _started = false;
+    _closed = false;
+    _waiting: Any[] = [];
+    postMessage(message: Any): void {
+      const other = this._other;
+      if (this._closed || !other || other._closed) return;
+      const data = cloneOf(message);
+      setTimer(() => other._deliver(data), 0, [], false);
+    }
+    _deliver(data: Any): void {
+      if (this._closed) return;
+      if (!this._started) {
+        this._waiting.push(data);
+        return;
+      }
+      const ev = new MessageEvent('message', { data });
+      ev.isTrusted = true;
+      dispatch(this, ev);
+    }
+    start(): void {
+      if (this._started) return;
+      this._started = true;
+      for (const data of this._waiting.splice(0)) {
+        setTimer(() => this._deliver(data), 0, [], false);
+      }
+    }
+    close(): void {
+      this._closed = true;
+    }
+    get onmessage(): Any {
+      return this._handlers.message ?? null;
+    }
+    set onmessage(fn: Any) {
+      this._handlers.message = typeof fn === 'function' ? fn : null;
+      this.start();
+    }
+  }
+  class MessageChannel {
+    readonly port1 = new MessagePort();
+    readonly port2 = new MessagePort();
+    constructor() {
+      this.port1._other = this.port2;
+      this.port2._other = this.port1;
+    }
+  }
+
+  /** A `PluginArray` or a `MimeTypeArray` with nothing in it, its methods
+   *  on its prototype, so a page that enumerates it meets none of them. */
+  class PluginArray {
+    get length(): number {
+      return 0;
+    }
+    item(): Any {
+      return null;
+    }
+    namedItem(): Any {
+      return null;
+    }
+    refresh(): void {}
+    [Symbol.iterator](): Iterator<Any> {
+      return [][Symbol.iterator]();
+    }
+  }
+  class MimeTypeArray extends PluginArray {}
+
+  /** The bytes of what a `Blob` is made of: a string as UTF-8, a buffer or
+   *  a view as its bytes, a `Blob` as its own. */
+  const blobBytes = (parts: Any): Uint8Array => {
+    const chunks: Uint8Array[] = [];
+    for (const part of parts ?? []) {
+      if (part instanceof Blob) chunks.push(part._bytes);
+      else if (part instanceof ArrayBuffer) chunks.push(new Uint8Array(part));
+      else if (ArrayBuffer.isView(part)) {
+        chunks.push(
+          new Uint8Array(part.buffer, part.byteOffset, part.byteLength),
+        );
+      } else chunks.push(new TextEncoder().encode(str(part)));
+    }
+    const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+    let at = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, at);
+      at += chunk.length;
+    }
+    return out;
+  };
+  class Blob {
+    _bytes: Uint8Array;
+    readonly type: string;
+    constructor(parts: Any = [], options: Any = {}) {
+      this._bytes = blobBytes(parts);
+      const type = str(options?.type ?? '');
+      this.type = /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
+    }
+    get size(): number {
+      return this._bytes.length;
+    }
+    slice(start?: Any, end?: Any, type?: Any): Any {
+      const blob = new Blob([], { type: type ?? '' });
+      blob._bytes = this._bytes.slice(
+        start === undefined ? 0 : Number(start),
+        end === undefined ? this._bytes.length : Number(end),
+      );
+      return blob;
+    }
+    text(): Promise<string> {
+      return Promise.resolve(new TextDecoder().decode(this._bytes));
+    }
+    arrayBuffer(): Promise<ArrayBuffer> {
+      return Promise.resolve(this._bytes.slice().buffer);
+    }
+    bytes(): Promise<Uint8Array> {
+      return Promise.resolve(this._bytes.slice());
+    }
+  }
+  class File extends Blob {
+    readonly name: string;
+    readonly lastModified: number;
+    constructor(parts: Any, name: Any, options: Any = {}) {
+      super(parts, options);
+      this.name = str(name);
+      this.lastModified = Number(options?.lastModified ?? Date.now());
+    }
+  }
+
+  /** `FormData` (XHR 4): name and value pairs, in order; made from a form,
+   *  what the form would submit of its text, its ticked boxes and its
+   *  chosen options — its files, of which there are none here, aside. */
+  class FormData {
+    _entries: [string, Any][] = [];
+    constructor(form?: Any) {
+      if (form === undefined || form === null) return;
+      if (!(form instanceof HTMLFormElement)) {
+        throw new TypeError(
+          "Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormElement'.",
+        );
+      }
+      for (const el of Array.from((form as Any).elements) as Any[]) {
+        const name = el.getAttribute('name');
+        if (!name || isDisabled(el)) continue;
+        if (el instanceof HTMLSelectElement) {
+          for (const option of Array.from((el as Any).options) as Any[]) {
+            if (option.selected) this.append(name, option.value);
+          }
+          continue;
+        }
+        const type = el instanceof HTMLInputElement ? (el as Any).type : '';
+        if (type === 'checkbox' || type === 'radio') {
+          if ((el as Any).checked) this.append(name, (el as Any).value || 'on');
+        } else if (
+          !['submit', 'reset', 'button', 'image', 'file'].includes(type) &&
+          !(el instanceof HTMLButtonElement)
+        ) {
+          this.append(name, (el as Any).value);
+        }
+      }
+    }
+    _value(value: Any, filename?: Any): Any {
+      if (value instanceof Blob) {
+        return value instanceof File && filename === undefined
+          ? value
+          : new File([value], filename === undefined ? 'blob' : str(filename), {
+              type: value.type,
+            });
+      }
+      return str(value);
+    }
+    append(name: Any, value: Any, filename?: Any): void {
+      this._entries.push([str(name), this._value(value, filename)]);
+    }
+    set(name: Any, value: Any, filename?: Any): void {
+      const key = str(name);
+      const at = this._entries.findIndex(([k]) => k === key);
+      const entry: [string, Any] = [key, this._value(value, filename)];
+      if (at < 0) {
+        this._entries.push(entry);
+        return;
+      }
+      this._entries[at] = entry;
+      this._entries = this._entries.filter(([k], i) => i <= at || k !== key);
+    }
+    get(name: Any): Any {
+      return this._entries.find(([k]) => k === str(name))?.[1] ?? null;
+    }
+    getAll(name: Any): Any[] {
+      return this._entries.filter(([k]) => k === str(name)).map(([, v]) => v);
+    }
+    has(name: Any): boolean {
+      return this._entries.some(([k]) => k === str(name));
+    }
+    delete(name: Any): void {
+      this._entries = this._entries.filter(([k]) => k !== str(name));
+    }
+    forEach(fn: Any, self?: Any): void {
+      for (const [k, v] of this._entries) fn.call(self, v, k, this);
+    }
+    entries(): Iterator<[string, Any]> {
+      return this._entries
+        .map((e) => [e[0], e[1]] as [string, Any])
+        [Symbol.iterator]();
+    }
+    keys(): Iterator<string> {
+      return this._entries.map(([k]) => k)[Symbol.iterator]();
+    }
+    values(): Iterator<Any> {
+      return this._entries.map(([, v]) => v)[Symbol.iterator]();
+    }
+    [Symbol.iterator](): Iterator<[string, Any]> {
+      return this.entries();
+    }
+  }
+
   /** `localStorage` and `sessionStorage`, kept by the host per origin. */
   const storage = (kind: 'local' | 'session'): Any => {
     const api = {
@@ -3562,8 +5202,12 @@ export function installDom(bridge: Bridge): void {
     maxTouchPoints: 0,
     webdriver: false,
     pdfViewerEnabled: false,
-    clipboard: undefined,
-    serviceWorker: undefined,
+    // none, as a browser that shows no PDF has none: what a script counts
+    plugins: new PluginArray(),
+    mimeTypes: new MimeTypeArray(),
+    // `clipboard` and `serviceWorker` are left out rather than undefined:
+    // a page asks for them with `in`, and takes one that is there for one
+    // it can use
     sendBeacon: () => false,
     javaEnabled: () => false,
   };
@@ -3627,6 +5271,8 @@ export function installDom(bridge: Bridge): void {
     CharacterData,
     Text,
     Comment,
+    CDATASection,
+    ProcessingInstruction,
     DocumentType,
     DocumentFragment,
     Document,
@@ -3653,8 +5299,34 @@ export function installDom(bridge: Bridge): void {
     HTMLIFrameElement,
     HTMLCanvasElement,
     HTMLMediaElement,
-    HTMLVideoElement: HTMLMediaElement,
-    HTMLAudioElement: HTMLMediaElement,
+    HTMLVideoElement,
+    HTMLAudioElement,
+    HTMLSourceElement,
+    HTMLTrackElement,
+    HTMLPictureElement,
+    HTMLPreElement,
+    HTMLBRElement,
+    HTMLHRElement,
+    HTMLTitleElement,
+    HTMLBaseElement,
+    HTMLTimeElement,
+    HTMLQuoteElement,
+    HTMLDListElement,
+    HTMLTableSectionElement,
+    HTMLTableCaptionElement,
+    HTMLTableColElement,
+    HTMLLegendElement,
+    HTMLOptGroupElement,
+    HTMLDataListElement,
+    HTMLProgressElement,
+    HTMLMeterElement,
+    HTMLOutputElement,
+    HTMLObjectElement,
+    HTMLEmbedElement,
+    HTMLSlotElement,
+    TextTrackList,
+    AudioTrackList,
+    VideoTrackList,
     HTMLBodyElement,
     HTMLHeadElement,
     HTMLHtmlElement,
@@ -3687,6 +5359,36 @@ export function installDom(bridge: Bridge): void {
     MutationRecord,
     XMLHttpRequest,
     ProgressEvent,
+    TextEncoder,
+    TextDecoder,
+    VisualViewport,
+    PromiseRejectionEvent,
+    NodeFilter,
+    TreeWalker,
+    NodeIterator,
+    DOMParser,
+    PerformanceObserver,
+    MessageEvent,
+    MessageChannel,
+    MessagePort,
+    Window,
+    PluginArray,
+    MimeTypeArray,
+    Blob,
+    File,
+    FormData,
+    CSSStyleSheet,
+    StyleSheet,
+    StyleSheetList,
+    CSSRuleList,
+    CSSRule,
+    CSSStyleRule,
+    CSSGroupingRule,
+    CSSMediaRule,
+    CSSSupportsRule,
+    CSSImportRule,
+    CSSFontFaceRule,
+    CSSKeyframesRule,
   };
   for (const [name, value] of Object.entries(classes)) define(name, value);
 
@@ -3738,13 +5440,81 @@ export function installDom(bridge: Bridge): void {
     whenDefined: () => new Promise(() => {}),
     upgrade() {},
   });
+  const timeOrigin = Date.now() - now();
   define('performance', {
     now,
-    timeOrigin: Date.now() - now(),
-    mark() {},
-    measure() {},
-    getEntriesByType: () => [],
-    getEntriesByName: () => [],
+    timeOrigin,
+    mark(name: Any, options: Any = {}) {
+      return noteEntry({
+        name: str(name),
+        entryType: 'mark',
+        startTime: Number(options?.startTime ?? now()),
+        duration: 0,
+        detail: options?.detail ?? null,
+      });
+    },
+    measure(name: Any, start?: Any, end?: Any) {
+      const at = (mark: Any, otherwise: number): number => {
+        if (typeof mark === 'number') return mark;
+        if (mark === undefined || mark === null) return otherwise;
+        const found = entries.filter((e) => e.name === str(mark)).at(-1);
+        return found ? found.startTime : otherwise;
+      };
+      const options = start && typeof start === 'object' ? start : null;
+      const from = at(options ? options.start : start, 0);
+      const to = at(options ? options.end : end, now());
+      return noteEntry({
+        name: str(name),
+        entryType: 'measure',
+        startTime: from,
+        duration: to - from,
+        detail: options?.detail ?? null,
+      });
+    },
+    clearMarks(name?: Any) {
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        const e = entries[i];
+        if (
+          e.entryType === 'mark' &&
+          (name === undefined || e.name === str(name))
+        ) {
+          entries.splice(i, 1);
+        }
+      }
+    },
+    clearMeasures(name?: Any) {
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        const e = entries[i];
+        if (
+          e.entryType === 'measure' &&
+          (name === undefined || e.name === str(name))
+        ) {
+          entries.splice(i, 1);
+        }
+      }
+    },
+    clearResourceTimings() {},
+    setResourceTimingBufferSize() {},
+    getEntries: () => entries.slice(),
+    getEntriesByType: (type: Any) => entryList(entries).getEntriesByType(type),
+    getEntriesByName: (name: Any, type?: Any) =>
+      entryList(entries).getEntriesByName(name, type),
+    // the legacy timing, where a page reads how long it took to load
+    timing: {
+      navigationStart: timeOrigin,
+      fetchStart: timeOrigin,
+      responseStart: timeOrigin,
+      responseEnd: timeOrigin,
+      domLoading: timeOrigin,
+      domInteractive: 0,
+      domContentLoadedEventStart: 0,
+      domContentLoadedEventEnd: 0,
+      domComplete: 0,
+      loadEventStart: 0,
+      loadEventEnd: 0,
+    },
+    navigation: { type: 0, redirectCount: 0 },
+    toJSON: () => ({ timeOrigin }),
   });
   define('screen', {
     get width() {
@@ -3773,6 +5543,68 @@ export function installDom(bridge: Bridge): void {
   getter('devicePixelRatio', () => viewport().dpr);
   getter('isSecureContext', () => location.protocol === 'https:');
   getter('origin', () => location.origin);
+  // The window's own strings, made strings as they are set, as a
+  // browser's are: a classic script's `var name = 1` sets the window's
+  // name, and `typeof name` is a string after it, as it is there.
+  let windowName = '';
+  let windowStatus = '';
+  Object.defineProperty(G, 'name', {
+    get: () => windowName,
+    set: (v: Any) => {
+      windowName = str(v);
+    },
+    configurable: true,
+    enumerable: false,
+  });
+  Object.defineProperty(G, 'status', {
+    get: () => windowStatus,
+    set: (v: Any) => {
+      windowStatus = str(v);
+    },
+    configurable: true,
+    enumerable: false,
+  });
+  getter('closed', () => false);
+  // no frames, which is what `length` counts
+  getter('length', () => 0);
+  for (const at of ['screenX', 'screenY', 'screenLeft', 'screenTop']) {
+    getter(at, () => 0);
+  }
+  define('visualViewport', new VisualViewport());
+  define('crypto', crypto);
+  // `new Image()`, `new Option()` and `new Audio()`: the elements, made
+  // as `createElement` makes them (HTML 4.8.4.1, 4.10.10, 4.8.10)
+  const Image = function (width?: Any, height?: Any): Any {
+    const img = document.createElement('img');
+    if (width !== undefined) img.setAttribute('width', str(width));
+    if (height !== undefined) img.setAttribute('height', str(height));
+    return img;
+  } as Any;
+  Image.prototype = HTMLImageElement.prototype;
+  const Option = function (
+    text?: Any,
+    value?: Any,
+    defaultSelected?: Any,
+    selected?: Any,
+  ): Any {
+    const option = document.createElement('option');
+    if (text !== undefined) option.textContent = str(text);
+    if (value !== undefined) option.setAttribute('value', str(value));
+    if (defaultSelected) option.setAttribute('selected', '');
+    if (selected) option.selected = true;
+    return option;
+  } as Any;
+  Option.prototype = HTMLOptionElement.prototype;
+  const Audio = function (src?: Any): Any {
+    const audio = document.createElement('audio');
+    audio.setAttribute('preload', 'auto');
+    if (src !== undefined) audio.setAttribute('src', str(src));
+    return audio;
+  } as Any;
+  Audio.prototype = HTMLAudioElement.prototype;
+  define('Image', Image);
+  define('Option', Option);
+  define('Audio', Audio);
   define('scrollTo', (x: Any, y?: Any) => {
     const to = typeof x === 'object' && x ? x : { left: x, top: y };
     const v = viewport();
@@ -3822,9 +5654,7 @@ export function installDom(bridge: Bridge): void {
       }
     });
   });
-  define('structuredClone', (v: Any) =>
-    v === undefined ? undefined : JSON.parse(JSON.stringify(v)),
-  );
+  define('structuredClone', (value: Any) => structuredCopy(value, new Map()));
   define('reportError', report);
   define('alert', (message?: Any) =>
     bridge(
@@ -3858,7 +5688,47 @@ export function installDom(bridge: Bridge): void {
   define('blur', () => {});
   define('print', () => {});
   define('stop', () => {});
-  define('postMessage', () => {});
+  // a message to this window: a task of its own, after this one, where
+  // the origin it is meant for is this one's (HTML 9.4.3)
+  define('postMessage', (message: Any, options?: Any) => {
+    const target =
+      options && typeof options === 'object'
+        ? (options.targetOrigin ?? '/')
+        : options === undefined
+          ? '/'
+          : str(options);
+    if (target !== '*' && target !== '/') {
+      let origin: string;
+      try {
+        origin = new URL(target).origin;
+      } catch {
+        throw new DOMException(
+          `Invalid target origin '${target}' in a call to 'postMessage'.`,
+          'SyntaxError',
+        );
+      }
+      if (origin !== location.origin) return;
+    }
+    const data = cloneOf(message);
+    setTimer(
+      () => {
+        const ev = new MessageEvent('message', {
+          data,
+          origin: location.origin,
+          source: G,
+        });
+        ev.isTrusted = true;
+        dispatch(windowTarget, ev);
+      },
+      0,
+      [],
+      false,
+    );
+  });
+  Object.defineProperty(G, Symbol.toStringTag, {
+    value: 'Window',
+    configurable: true,
+  });
   define('getSelection', () => ({
     rangeCount: 0,
     isCollapsed: true,
@@ -3892,6 +5762,12 @@ export function installDom(bridge: Bridge): void {
     'blur',
     'keydown',
     'click',
+    'unhandledrejection',
+    'rejectionhandled',
+    'pageshow',
+    'pagehide',
+    'online',
+    'offline',
   ]) {
     Object.defineProperty(G, `on${type}`, {
       get: () => windowTarget._handlers[type] ?? null,
@@ -3936,6 +5812,11 @@ export function installDom(bridge: Bridge): void {
 
   // a page's script, run as a classic script is: in the global scope, its
   // declarations the window's
+  // `currentScript` stays the script's through the microtasks it queued,
+  // which run as this entry ends (`microtaskMode: 'afterEvaluate'`), and
+  // is put back by the entry after (`__ran`): HTML runs the microtask
+  // checkpoint inside running the script, before it puts `currentScript`
+  // back (8.1.4.6). Turbopack's chunks read it from a promise's callback.
   entry('__exec', () => {
     const [code, url, script] = input();
     document._current = script ? wrap(script) : null;
@@ -3945,9 +5826,11 @@ export function installDom(bridge: Bridge): void {
     } catch (error) {
       report(error);
       return false;
-    } finally {
-      document._current = null;
     }
+  });
+  entry('__ran', () => {
+    document._current = null;
+    return true;
   });
 
   // an event `<Html>` was told of, dispatched as the browser would, and
@@ -4145,6 +6028,32 @@ export function installDom(bridge: Bridge): void {
     configurable: false,
     enumerable: false,
   });
+  Object.defineProperty(G, '__promise', {
+    value: undefined,
+    writable: true,
+    configurable: false,
+    enumerable: false,
+  });
+  // A promise of the page's rejected with nothing to catch it, handed in
+  // through `__thrown` and `__promise` as a module's error is: told as
+  // `unhandledrejection`, which a page can cancel, and reported as a
+  // browser reports it where none does.
+  entry('__rejected', () => {
+    const reason = G.__thrown;
+    const promise = G.__promise;
+    G.__thrown = undefined;
+    G.__promise = undefined;
+    const ev = new PromiseRejectionEvent('unhandledrejection', {
+      promise,
+      reason,
+      cancelable: true,
+    });
+    ev.isTrusted = true;
+    if (!dispatch(windowTarget, ev)) return true;
+    bridge('log', 'error', `Uncaught (in promise) ${describe(reason).text}`);
+    return true;
+  });
+
   entry('__fault', () => {
     const error = G.__thrown;
     G.__thrown = undefined;
