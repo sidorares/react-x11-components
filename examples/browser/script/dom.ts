@@ -101,6 +101,7 @@ export function installDom(bridge: Bridge): void {
     QuotaExceededError: 22,
     TimeoutError: 23,
     DataCloneError: 25,
+    InUseAttributeError: 10,
     AbortError: 20,
   };
   class DOMException extends Error {
@@ -576,7 +577,9 @@ export function installDom(bridge: Bridge): void {
   const dispatch = (target: Any, event: Any): boolean => {
     const path: Any[] = [target];
     if (target instanceof Node) {
-      for (let at = target.parentNode; at; at = at.parentNode) path.push(at);
+      for (let at = parentFor(target, event); at; at = parentFor(at, event)) {
+        path.push(at);
+      }
       if (path[path.length - 1] === document && event.type !== 'load') {
         path.push(windowTarget);
       }
@@ -624,7 +627,9 @@ export function installDom(bridge: Bridge): void {
               ? Document
               : type === 10
                 ? DocumentType
-                : DocumentFragment;
+                : name === '#shadow-root'
+                  ? ShadowRoot
+                  : DocumentFragment;
     node = Object.create(Kind.prototype);
     Object.assign(node, new EventTarget());
     node._id = id;
@@ -734,10 +739,13 @@ export function installDom(bridge: Bridge): void {
     hasChildNodes(): boolean {
       return !!call('first', this._id);
     }
-    getRootNode(): Any {
+    getRootNode(options?: Any): Any {
       let at: Any = this;
-      for (let p = at.parentNode; p; p = p.parentNode) at = p;
-      return at;
+      for (;;) {
+        for (let p = at.parentNode; p; p = p.parentNode) at = p;
+        if (!(options?.composed && at instanceof ShadowRoot)) return at;
+        at = at.host;
+      }
     }
     contains(other: Any): boolean {
       if (!other) return false;
@@ -949,6 +957,41 @@ export function installDom(bridge: Bridge): void {
     }
   }
   Object.defineProperty(DocumentFragment.prototype, 'nodeType', nodeTypeOf(11));
+  class ShadowRoot extends DocumentFragment {
+    get host(): Any {
+      return wrap(Number(call('shadowHost', this._id)));
+    }
+    get mode(): string {
+      return String(call('shadowMode', this._id));
+    }
+    get delegatesFocus(): boolean {
+      return call('shadowDelegates', this._id) === true;
+    }
+    get slotAssignment(): string {
+      return 'named';
+    }
+    get innerHTML(): string {
+      return String(call('html', this._id, false));
+    }
+    set innerHTML(v: Any) {
+      call('setHtml', this._id, v === null ? '' : str(v));
+    }
+    get activeElement(): Any {
+      return null;
+    }
+    get adoptedStyleSheets(): Any[] {
+      return [];
+    }
+    set adoptedStyleSheets(_v: Any) {}
+  }
+  /** Where an event goes from a node: its parent, and out of a shadow tree
+   *  to its host where the event is composed, as most a user makes are. */
+  const parentFor = (node: Any, event: Any): Any =>
+    node instanceof ShadowRoot
+      ? event.composed
+        ? node.host
+        : null
+      : node.parentNode;
 
   // --- elements ------------------------------------------------------------------
 
@@ -1151,6 +1194,179 @@ export function installDom(bridge: Bridge): void {
     return typeof r === 'string' && r ? r.split(',').map(Number) : null;
   };
 
+  // --- attribute nodes ---------------------------------------------------------------
+  //
+  // An `Attr` is one object for as long as its element has the attribute,
+  // as DOM has it, so `el.attributes[0] === el.getAttributeNode(name)`; its
+  // value is the element's, read as it is asked. Taken off, it keeps the
+  // value it had. `attributes` is live: React empties an element with
+  // `while (attributes.length) removeAttributeNode(attributes[0])`.
+
+  class Attr {
+    _el: Any;
+    _name: string;
+    _value: string;
+    constructor(name: string, el: Any, value = '') {
+      this._name = name;
+      this._el = el;
+      this._value = value;
+    }
+    get nodeType(): number {
+      return 2;
+    }
+    get nodeName(): string {
+      return this._name;
+    }
+    get name(): string {
+      return this._name;
+    }
+    get localName(): string {
+      return this._name;
+    }
+    get namespaceURI(): Any {
+      return null;
+    }
+    get prefix(): Any {
+      return null;
+    }
+    get specified(): boolean {
+      return true;
+    }
+    get ownerElement(): Any {
+      return this._el;
+    }
+    get ownerDocument(): Any {
+      return document;
+    }
+    get value(): string {
+      return this._el ? (this._el.getAttribute(this._name) ?? '') : this._value;
+    }
+    set value(v: Any) {
+      this._value = str(v);
+      if (this._el) this._el.setAttribute(this._name, this._value);
+    }
+    get nodeValue(): string {
+      return this.value;
+    }
+    set nodeValue(v: Any) {
+      this.value = v;
+    }
+    get textContent(): string {
+      return this.value;
+    }
+    set textContent(v: Any) {
+      this.value = v;
+    }
+    cloneNode(): Any {
+      return new Attr(this._name, null, this.value);
+    }
+  }
+  const attrNodes = new WeakMap<object, Map<string, Any>>();
+  const attrsOf = (el: Any): Map<string, Any> => {
+    let attrs = attrNodes.get(el);
+    if (!attrs) attrNodes.set(el, (attrs = new Map()));
+    return attrs;
+  };
+  const attrOf = (el: Any, name: string): Any => {
+    const attrs = attrsOf(el);
+    let attr = attrs.get(name);
+    if (!attr) attrs.set(name, (attr = new Attr(name, el)));
+    return attr;
+  };
+  /** An attribute node off its element, keeping the value it had. */
+  const detachAttr = (attr: Any): void => {
+    const el = attr._el;
+    if (!el) return;
+    attr._value = el.getAttribute(attr._name) ?? attr._value;
+    attr._el = null;
+    attrNodes.get(el)?.delete(attr._name);
+  };
+
+  class NamedNodeMap {
+    _el: Any;
+    constructor(el: Any) {
+      this._el = el;
+    }
+    get length(): number {
+      return this._el.getAttributeNames().length;
+    }
+    item(i: Any): Any {
+      const name = this._el.getAttributeNames()[Number(i)];
+      return name === undefined ? null : attrOf(this._el, name);
+    }
+    getNamedItem(name: Any): Any {
+      return this._el.getAttributeNode(name);
+    }
+    getNamedItemNS(_ns: Any, name: Any): Any {
+      return this._el.getAttributeNode(name);
+    }
+    setNamedItem(attr: Any): Any {
+      return this._el.setAttributeNode(attr);
+    }
+    setNamedItemNS(attr: Any): Any {
+      return this._el.setAttributeNode(attr);
+    }
+    removeNamedItem(name: Any): Any {
+      const attr = this._el.getAttributeNode(name);
+      if (!attr) {
+        throw new DOMException(
+          `No item with name '${str(name)}' was found.`,
+          'NotFoundError',
+        );
+      }
+      return this._el.removeAttributeNode(attr);
+    }
+    removeNamedItemNS(_ns: Any, name: Any): Any {
+      return this.removeNamedItem(name);
+    }
+    [Symbol.iterator](): Iterator<Any> {
+      return this._el
+        .getAttributeNames()
+        .map((name: string) => attrOf(this._el, name))
+        [Symbol.iterator]();
+    }
+  }
+  /** An element's `attributes`: one map for the element, indexed live. */
+  const attributeMaps = new WeakMap<object, Any>();
+  const INDEX = /^(?:0|[1-9]\d*)$/;
+  const namedNodeMapOf = (el: Any): Any => {
+    let map = attributeMaps.get(el);
+    if (map) return map;
+    map = new Proxy(new NamedNodeMap(el), {
+      get(target: Any, key: Any): Any {
+        if (typeof key === 'string' && INDEX.test(key)) {
+          return target.item(Number(key)) ?? undefined;
+        }
+        return Reflect.get(target, key, target);
+      },
+      has(target: Any, key: Any): boolean {
+        if (typeof key === 'string' && INDEX.test(key)) {
+          return Number(key) < target.length;
+        }
+        return Reflect.has(target, key);
+      },
+      ownKeys(target: Any): Any[] {
+        return [
+          ...target._el
+            .getAttributeNames()
+            .map((_: Any, i: number) => String(i)),
+          ...Reflect.ownKeys(target),
+        ];
+      },
+      getOwnPropertyDescriptor(target: Any, key: Any): Any {
+        if (typeof key === 'string' && INDEX.test(key)) {
+          const value = target.item(Number(key));
+          return value
+            ? { value, enumerable: true, configurable: true, writable: false }
+            : undefined;
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    attributeMaps.set(el, map);
+    return map;
+  };
+
   class Element extends ParentNode {
     _classList: Any;
     _dataset: Any;
@@ -1189,19 +1405,45 @@ export function installDom(bridge: Bridge): void {
       return this.getAttribute('slot') ?? '';
     }
     get attributes(): Any {
-      const names = this.getAttributeNames();
-      const attrs = names.map((name: string) => ({
-        name,
-        localName: name,
-        value: this.getAttribute(name),
-        ownerElement: this,
-        specified: true,
-        namespaceURI: null,
-      }));
-      const out: Any = list(attrs);
-      out.getNamedItem = (n: string) =>
-        attrs.find((a: Any) => a.name === n.toLowerCase()) ?? null;
-      return out;
+      return namedNodeMapOf(this);
+    }
+    getAttributeNode(name: Any): Any {
+      const n = str(name).toLowerCase();
+      return this.hasAttribute(n) ? attrOf(this, n) : null;
+    }
+    getAttributeNodeNS(_ns: Any, name: Any): Any {
+      return this.getAttributeNode(name);
+    }
+    setAttributeNode(attr: Any): Any {
+      if (!(attr instanceof Attr)) {
+        throw new TypeError("parameter 1 is not of type 'Attr'.");
+      }
+      if (attr._el === this) return attr;
+      if (attr._el) {
+        throw new DOMException(
+          'The node provided is an attribute node that is already an attribute of another Element; attribute nodes must be explicitly cloned.',
+          'InUseAttributeError',
+        );
+      }
+      const old = this.getAttributeNode(attr.name);
+      if (old) detachAttr(old);
+      this.setAttribute(attr.name, attr._value);
+      attr._el = this;
+      attrsOf(this).set(attr.name, attr);
+      return old;
+    }
+    setAttributeNodeNS(attr: Any): Any {
+      return this.setAttributeNode(attr);
+    }
+    removeAttributeNode(attr: Any): Any {
+      if (!(attr instanceof Attr) || attr._el !== this) {
+        throw new DOMException(
+          'The node provided is owned by another element.',
+          'NotFoundError',
+        );
+      }
+      this.removeAttribute(attr.name);
+      return attr;
     }
     getAttributeNames(): string[] {
       const names = call('attrs', this._id);
@@ -1234,7 +1476,10 @@ export function installDom(bridge: Bridge): void {
       this.setAttribute(String(name).replace(/^.*:/, ''), value);
     }
     removeAttribute(name: Any): void {
-      call('delAttr', this._id, str(name).toLowerCase());
+      const n = str(name).toLowerCase();
+      const attr = attrNodes.get(this)?.get(n);
+      if (attr) detachAttr(attr);
+      call('delAttr', this._id, n);
     }
     removeAttributeNS(_ns: Any, name: Any): void {
       this.removeAttribute(name);
@@ -1326,14 +1571,22 @@ export function installDom(bridge: Bridge): void {
     scroll(): void {}
     scrollTo(): void {}
     scrollBy(): void {}
-    get shadowRoot(): null {
-      return null;
-    }
-    attachShadow(): never {
-      throw new DOMException(
-        'Shadow DOM is not supported by this browser.',
-        'NotSupportedError',
+    /** A shadow root `<Html>` draws, as it draws a declarative one: the
+     *  host's boxes are the tree's, with the host's children in its
+     *  slots. */
+    attachShadow(init: Any): Any {
+      const mode = init?.mode;
+      if (mode !== 'open' && mode !== 'closed') {
+        throw new TypeError(
+          `Failed to execute 'attachShadow' on 'Element': The provided value '${String(mode)}' is not a valid enum value of type ShadowRootMode.`,
+        );
+      }
+      return wrap(
+        Number(call('attachShadow', this._id, mode, !!init?.delegatesFocus)),
       );
+    }
+    get shadowRoot(): Any {
+      return wrap(Number(call('shadowRoot', this._id)));
     }
     animate(): Any {
       return {
@@ -3064,6 +3317,19 @@ export function installDom(bridge: Bridge): void {
     createTextNode(data: Any): Any {
       return wrap(Number(call('create', 'text', str(data))));
     }
+    createAttribute(name: Any): Any {
+      const n = str(name).toLowerCase();
+      if (!/^[^\s\0/=>"']+$/.test(n)) {
+        throw new DOMException(
+          `The localName provided ('${n}') contains an invalid character.`,
+          'InvalidCharacterError',
+        );
+      }
+      return new Attr(n, null);
+    }
+    createAttributeNS(_ns: Any, name: Any): Any {
+      return this.createAttribute(String(name).replace(/^.*:/, ''));
+    }
     createComment(data: Any): Any {
       return wrap(Number(call('create', 'comment', str(data))));
     }
@@ -3530,6 +3796,26 @@ export function installDom(bridge: Bridge): void {
         return bytes.buffer;
       });
     }
+    blob(): Promise<Any> {
+      return this.text().then(
+        (t) => new Blob([t], { type: this.headers.get('content-type') ?? '' }),
+      );
+    }
+    /** The body as a stream of its bytes, read once, as the methods read
+     *  it: what the app router of Next.js reads a server's payload with. */
+    get body(): Any {
+      if (this._stream) return this._stream;
+      const response = this;
+      this._stream = new ReadableStream({
+        pull(controller: Any) {
+          const text = response._read();
+          if (text) controller.enqueue(new TextEncoder().encode(text));
+          controller.close();
+        },
+      });
+      return this._stream;
+    }
+    _stream: Any = null;
     clone(): Any {
       return new Response(this._body, this);
     }
@@ -4741,6 +5027,582 @@ export function installDom(bridge: Bridge): void {
     }
   }
 
+  // --- streams -------------------------------------------------------------------
+  //
+  // WHATWG Streams' default kinds: a readable stream that a source starts,
+  // pulls and cancels, read by one reader at a time; a writable one whose
+  // sink is written one chunk after the last; and a transform between the
+  // two. What it is for is the app router of Next.js, whose first module
+  // makes one of the flight data the server inlined, and the libraries
+  // that pipe a fetch through a decoder. Byte streams are default ones of
+  // bytes, and a reader that brings its own buffer is refused.
+
+  class ReadableStreamDefaultController {
+    _stream: Any;
+    constructor(stream: Any) {
+      this._stream = stream;
+    }
+    get desiredSize(): number | null {
+      const stream = this._stream;
+      if (stream._state === 'errored') return null;
+      if (stream._state === 'closed') return 0;
+      return stream._hwm - stream._queue.length;
+    }
+    enqueue(chunk: Any): void {
+      const stream = this._stream;
+      if (stream._closing || stream._state !== 'readable') {
+        throw new TypeError(
+          'The stream is not in a state that permits enqueue.',
+        );
+      }
+      const read = stream._reads.shift();
+      if (read) read.resolve({ value: chunk, done: false });
+      else stream._queue.push(chunk);
+      stream._pullIfNeeded();
+    }
+    close(): void {
+      const stream = this._stream;
+      if (stream._closing || stream._state !== 'readable') {
+        throw new TypeError('The stream is not in a state that permits close.');
+      }
+      stream._closing = true;
+      if (!stream._queue.length) stream._finish();
+    }
+    error(reason: Any): void {
+      this._stream._fail(reason);
+    }
+  }
+
+  class ReadableStream {
+    _state: 'readable' | 'closed' | 'errored' = 'readable';
+    _queue: Any[] = [];
+    _reads: { resolve: Any; reject: Any }[] = [];
+    _reader: Any = null;
+    _error: Any = undefined;
+    _closing = false;
+    _source: Any;
+    _controller: Any;
+    _hwm: number;
+    _started = false;
+    _pulling = false;
+    _pullAgain = false;
+    constructor(source: Any = {}, strategy: Any = {}) {
+      this._source = source ?? {};
+      const hwm = Number(strategy?.highWaterMark ?? 1);
+      this._hwm = Number.isNaN(hwm) ? 1 : hwm;
+      this._controller = new ReadableStreamDefaultController(this);
+      const started = this._source.start
+        ? this._source.start.call(this._source, this._controller)
+        : undefined;
+      Promise.resolve(started).then(
+        () => {
+          this._started = true;
+          this._pullIfNeeded();
+        },
+        (e) => this._fail(e),
+      );
+    }
+    static from(iterable: Any): Any {
+      const it = iterable[Symbol.asyncIterator]
+        ? iterable[Symbol.asyncIterator]()
+        : iterable[Symbol.iterator]();
+      return new ReadableStream({
+        pull(controller: Any) {
+          return Promise.resolve(it.next()).then((r: Any) => {
+            if (r.done) controller.close();
+            else controller.enqueue(r.value);
+          });
+        },
+        cancel(reason: Any) {
+          return it.return?.(reason);
+        },
+      });
+    }
+    _pullIfNeeded(): void {
+      if (!this._started || this._state !== 'readable' || this._closing) {
+        return;
+      }
+      if (!this._source.pull) return;
+      if (this._queue.length >= this._hwm && !this._reads.length) return;
+      if (this._pulling) {
+        this._pullAgain = true;
+        return;
+      }
+      this._pulling = true;
+      Promise.resolve()
+        .then(() => this._source.pull.call(this._source, this._controller))
+        .then(
+          () => {
+            this._pulling = false;
+            if (this._pullAgain) {
+              this._pullAgain = false;
+              this._pullIfNeeded();
+            }
+          },
+          (e: Any) => this._fail(e),
+        );
+    }
+    _finish(): void {
+      if (this._state !== 'readable') return;
+      this._state = 'closed';
+      for (const read of this._reads.splice(0)) {
+        read.resolve({ value: undefined, done: true });
+      }
+      this._reader?._settle();
+    }
+    _fail(reason: Any): void {
+      if (this._state !== 'readable') return;
+      this._state = 'errored';
+      this._error = reason;
+      this._queue = [];
+      for (const read of this._reads.splice(0)) read.reject(reason);
+      this._reader?._settle();
+    }
+    _read(): Promise<Any> {
+      if (this._queue.length) {
+        const value = this._queue.shift();
+        if (this._closing && !this._queue.length) this._finish();
+        else this._pullIfNeeded();
+        return Promise.resolve({ value, done: false });
+      }
+      if (this._state === 'closed') {
+        return Promise.resolve({ value: undefined, done: true });
+      }
+      if (this._state === 'errored') return Promise.reject(this._error);
+      return new Promise((resolve, reject) => {
+        this._reads.push({ resolve, reject });
+        this._pullIfNeeded();
+      });
+    }
+    _cancel(reason: Any): Promise<void> {
+      if (this._state === 'closed') return Promise.resolve();
+      if (this._state === 'errored') return Promise.reject(this._error);
+      this._queue = [];
+      this._finish();
+      return Promise.resolve(
+        this._source.cancel?.call(this._source, reason),
+      ).then(() => undefined);
+    }
+    get locked(): boolean {
+      return !!this._reader;
+    }
+    getReader(options?: Any): Any {
+      if (options?.mode === 'byob') {
+        throw new TypeError(
+          'A reader that brings its own buffer is not supported here.',
+        );
+      }
+      return new ReadableStreamDefaultReader(this);
+    }
+    cancel(reason?: Any): Promise<void> {
+      if (this._reader) {
+        return Promise.reject(
+          new TypeError('The stream is locked to a reader.'),
+        );
+      }
+      return this._cancel(reason);
+    }
+    tee(): Any[] {
+      const reader = this.getReader();
+      const controllers: Any[] = [];
+      let reading: Promise<void> | null = null;
+      const pull = (): Promise<void> =>
+        (reading ??= reader.read().then(
+          (r: Any) => {
+            reading = null;
+            for (const c of controllers) {
+              try {
+                if (r.done) c.close();
+                else c.enqueue(r.value);
+              } catch {
+                // that branch was cancelled
+              }
+            }
+          },
+          (e: Any) => {
+            for (const c of controllers) c.error(e);
+          },
+        ));
+      const branch = (): Any =>
+        new ReadableStream({
+          start(c: Any) {
+            controllers.push(c);
+          },
+          pull,
+        });
+      return [branch(), branch()];
+    }
+    pipeTo(dest: Any, options: Any = {}): Promise<void> {
+      const reader = this.getReader();
+      const writer = dest.getWriter();
+      const signal = options.signal;
+      return new Promise<void>((resolve, reject) => {
+        let done = false;
+        const finish = (error?: Any, failed = false): void => {
+          if (done) return;
+          done = true;
+          reader.releaseLock();
+          writer.releaseLock();
+          if (failed) reject(error);
+          else resolve();
+        };
+        if (signal) {
+          const abort = (): void => {
+            const reason =
+              signal.reason ?? new DOMException('Aborted.', 'AbortError');
+            if (!options.preventCancel) reader.cancel(reason).catch(() => {});
+            if (!options.preventAbort) writer.abort(reason).catch(() => {});
+            finish(reason, true);
+          };
+          if (signal.aborted) {
+            abort();
+            return;
+          }
+          signal.addEventListener('abort', abort, { once: true });
+        }
+        const step = (): void => {
+          if (done) return;
+          reader.read().then(
+            (r: Any) => {
+              if (done) return;
+              if (r.done) {
+                const closed = options.preventClose
+                  ? Promise.resolve()
+                  : writer.close();
+                closed.then(
+                  () => finish(),
+                  (e: Any) => finish(e, true),
+                );
+                return;
+              }
+              writer.write(r.value).then(step, (e: Any) => {
+                if (!options.preventCancel) reader.cancel(e).catch(() => {});
+                finish(e, true);
+              });
+            },
+            (e: Any) => {
+              if (!options.preventAbort) writer.abort(e).catch(() => {});
+              finish(e, true);
+            },
+          );
+        };
+        step();
+      });
+    }
+    pipeThrough(transform: Any, options?: Any): Any {
+      this.pipeTo(transform.writable, options).catch(() => {});
+      return transform.readable;
+    }
+    values(options: Any = {}): Any {
+      const reader = this.getReader();
+      return {
+        next: () =>
+          reader.read().then((r: Any) => {
+            if (r.done) reader.releaseLock();
+            return r;
+          }),
+        return: (value: Any) => {
+          const cancelled = options.preventCancel
+            ? Promise.resolve()
+            : reader.cancel(value);
+          return cancelled.then(() => {
+            reader.releaseLock();
+            return { value, done: true };
+          });
+        },
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+      };
+    }
+    [Symbol.asyncIterator](options?: Any): Any {
+      return this.values(options);
+    }
+  }
+
+  class ReadableStreamDefaultReader {
+    _stream: Any;
+    _closed: Promise<void>;
+    _resolveClosed!: () => void;
+    _rejectClosed!: (e: Any) => void;
+    constructor(stream: Any) {
+      if (!(stream instanceof ReadableStream)) {
+        throw new TypeError('A reader is made of a ReadableStream.');
+      }
+      if (stream._reader) {
+        throw new TypeError('The stream is locked to a reader.');
+      }
+      this._stream = stream;
+      stream._reader = this;
+      this._closed = new Promise<void>((resolve, reject) => {
+        this._resolveClosed = resolve;
+        this._rejectClosed = reject;
+      });
+      // a reader nobody asks `closed` of rejects quietly
+      this._closed.catch(() => {});
+      this._settle();
+    }
+    _settle(): void {
+      const stream = this._stream;
+      if (stream?._state === 'closed') this._resolveClosed();
+      else if (stream?._state === 'errored') this._rejectClosed(stream._error);
+    }
+    get closed(): Promise<void> {
+      return this._closed;
+    }
+    read(): Promise<Any> {
+      if (!this._stream) {
+        return Promise.reject(new TypeError('The reader has been released.'));
+      }
+      return this._stream._read();
+    }
+    cancel(reason?: Any): Promise<void> {
+      if (!this._stream) {
+        return Promise.reject(new TypeError('The reader has been released.'));
+      }
+      return this._stream._cancel(reason);
+    }
+    releaseLock(): void {
+      const stream = this._stream;
+      if (!stream) return;
+      const released = new TypeError('The reader was released.');
+      for (const read of stream._reads.splice(0)) read.reject(released);
+      if (stream._state === 'readable') this._rejectClosed(released);
+      stream._reader = null;
+      this._stream = null;
+    }
+  }
+
+  class WritableStream {
+    _sink: Any;
+    _state: 'writable' | 'closing' | 'closed' | 'errored' = 'writable';
+    _error: Any = undefined;
+    _writer: Any = null;
+    _chain: Promise<Any>;
+    _controller: Any;
+    constructor(sink: Any = {}, _strategy: Any = {}) {
+      this._sink = sink ?? {};
+      const aborts = new AbortController();
+      this._controller = {
+        error: (e: Any) => this._fail(e),
+        signal: aborts.signal,
+        _abort: aborts,
+      };
+      this._chain = Promise.resolve(
+        this._sink.start?.call(this._sink, this._controller),
+      );
+      this._chain.catch((e: Any) => this._fail(e));
+    }
+    _fail(reason: Any): void {
+      if (this._state === 'errored' || this._state === 'closed') return;
+      this._state = 'errored';
+      this._error = reason;
+    }
+    _write(chunk: Any): Promise<void> {
+      if (this._state !== 'writable') {
+        return Promise.reject(
+          this._error ?? new TypeError('The stream is closed.'),
+        );
+      }
+      const written = this._chain.then(() =>
+        this._sink.write?.call(this._sink, chunk, this._controller),
+      );
+      this._chain = written.catch((e: Any) => this._fail(e));
+      return written.then(() => undefined);
+    }
+    _close(): Promise<void> {
+      if (this._state !== 'writable') {
+        return Promise.reject(
+          this._error ?? new TypeError('The stream is closed.'),
+        );
+      }
+      this._state = 'closing';
+      const closed = this._chain
+        .then(() => this._sink.close?.call(this._sink))
+        .then(() => {
+          this._state = 'closed';
+        });
+      this._chain = closed.catch((e: Any) => this._fail(e));
+      return closed;
+    }
+    _abort(reason: Any): Promise<void> {
+      if (this._state === 'closed' || this._state === 'errored') {
+        return Promise.resolve();
+      }
+      this._fail(reason);
+      this._controller._abort.abort(reason);
+      return Promise.resolve(this._sink.abort?.call(this._sink, reason)).then(
+        () => undefined,
+      );
+    }
+    get locked(): boolean {
+      return !!this._writer;
+    }
+    getWriter(): Any {
+      return new WritableStreamDefaultWriter(this);
+    }
+    close(): Promise<void> {
+      if (this._writer) {
+        return Promise.reject(
+          new TypeError('The stream is locked to a writer.'),
+        );
+      }
+      return this._close();
+    }
+    abort(reason?: Any): Promise<void> {
+      if (this._writer) {
+        return Promise.reject(
+          new TypeError('The stream is locked to a writer.'),
+        );
+      }
+      return this._abort(reason);
+    }
+  }
+
+  class WritableStreamDefaultWriter {
+    _stream: Any;
+    constructor(stream: Any) {
+      if (!(stream instanceof WritableStream)) {
+        throw new TypeError('A writer is made of a WritableStream.');
+      }
+      if (stream._writer) {
+        throw new TypeError('The stream is locked to a writer.');
+      }
+      this._stream = stream;
+      stream._writer = this;
+    }
+    get desiredSize(): number | null {
+      return this._stream?._state === 'errored' ? null : 1;
+    }
+    get ready(): Promise<void> {
+      return Promise.resolve();
+    }
+    get closed(): Promise<void> {
+      const stream = this._stream;
+      return stream ? stream._chain.then(() => undefined) : Promise.resolve();
+    }
+    write(chunk: Any): Promise<void> {
+      if (!this._stream) {
+        return Promise.reject(new TypeError('The writer has been released.'));
+      }
+      return this._stream._write(chunk);
+    }
+    close(): Promise<void> {
+      if (!this._stream) {
+        return Promise.reject(new TypeError('The writer has been released.'));
+      }
+      return this._stream._close();
+    }
+    abort(reason?: Any): Promise<void> {
+      if (!this._stream) {
+        return Promise.reject(new TypeError('The writer has been released.'));
+      }
+      return this._stream._abort(reason);
+    }
+    releaseLock(): void {
+      if (!this._stream) return;
+      this._stream._writer = null;
+      this._stream = null;
+    }
+  }
+
+  class TransformStream {
+    readonly readable: Any;
+    readonly writable: Any;
+    constructor(transformer: Any = {}, _writable?: Any, _readable?: Any) {
+      const t = transformer ?? {};
+      let out!: Any;
+      this.readable = new ReadableStream({
+        start(c: Any) {
+          out = c;
+        },
+        cancel(reason: Any) {
+          return t.cancel?.call(t, reason);
+        },
+      });
+      const controller = {
+        enqueue: (chunk: Any) => out.enqueue(chunk),
+        error: (e: Any) => out.error(e),
+        terminate: () => {
+          try {
+            out.close();
+          } catch {
+            // closed already
+          }
+        },
+        get desiredSize() {
+          return out.desiredSize;
+        },
+      };
+      const started = Promise.resolve(t.start?.call(t, controller));
+      this.writable = new WritableStream({
+        write: (chunk: Any) =>
+          started.then(() =>
+            t.transform
+              ? t.transform.call(t, chunk, controller)
+              : controller.enqueue(chunk),
+          ),
+        close: () =>
+          started
+            .then(() => t.flush?.call(t, controller))
+            .then(() => controller.terminate()),
+        abort: (reason: Any) => out.error(reason),
+      });
+    }
+  }
+
+  class TextDecoderStream extends TransformStream {
+    readonly encoding: string;
+    readonly fatal: boolean;
+    readonly ignoreBOM: boolean;
+    constructor(label?: Any, options?: Any) {
+      const decoder = new TextDecoder(label, options);
+      super({
+        transform(chunk: Any, c: Any) {
+          const text = decoder.decode(chunk, { stream: true });
+          if (text) c.enqueue(text);
+        },
+        flush(c: Any) {
+          const text = decoder.decode();
+          if (text) c.enqueue(text);
+        },
+      });
+      this.encoding = decoder.encoding;
+      this.fatal = decoder.fatal;
+      this.ignoreBOM = decoder.ignoreBOM;
+    }
+  }
+  class TextEncoderStream extends TransformStream {
+    readonly encoding = 'utf-8';
+    constructor() {
+      const encoder = new TextEncoder();
+      super({
+        transform(chunk: Any, c: Any) {
+          const bytes = encoder.encode(str(chunk));
+          if (bytes.length) c.enqueue(bytes);
+        },
+      });
+    }
+  }
+  class CountQueuingStrategy {
+    readonly highWaterMark: number;
+    constructor(init: Any = {}) {
+      this.highWaterMark = Number(init.highWaterMark);
+    }
+    size(): number {
+      return 1;
+    }
+  }
+  class ByteLengthQueuingStrategy {
+    readonly highWaterMark: number;
+    constructor(init: Any = {}) {
+      this.highWaterMark = Number(init.highWaterMark);
+    }
+    size(chunk: Any): number {
+      return chunk?.byteLength ?? 0;
+    }
+  }
+
   /** `localStorage` and `sessionStorage`, kept by the host per origin. */
   const storage = (kind: 'local' | 'session'): Any => {
     const api = {
@@ -5273,8 +6135,11 @@ export function installDom(bridge: Bridge): void {
     Comment,
     CDATASection,
     ProcessingInstruction,
+    Attr,
+    NamedNodeMap,
     DocumentType,
     DocumentFragment,
+    ShadowRoot,
     Document,
     HTMLDocument: Document,
     Element,
@@ -5377,6 +6242,16 @@ export function installDom(bridge: Bridge): void {
     Blob,
     File,
     FormData,
+    ReadableStream,
+    ReadableStreamDefaultReader,
+    ReadableStreamDefaultController,
+    WritableStream,
+    WritableStreamDefaultWriter,
+    TransformStream,
+    TextDecoderStream,
+    TextEncoderStream,
+    CountQueuingStrategy,
+    ByteLengthQueuingStrategy,
     CSSStyleSheet,
     StyleSheet,
     StyleSheetList,

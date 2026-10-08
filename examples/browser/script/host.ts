@@ -28,7 +28,12 @@ import type {
   HtmlDomEvent,
   HtmlHandle,
 } from '../../../src/html/index.js';
-import { parseFragment } from '../../../src/html/index.js';
+import {
+  attachShadow,
+  parseFragment,
+  shadowRootOf,
+} from '../../../src/html/index.js';
+import { ShadowRoot } from '../../../src/html/dom.js';
 import {
   mediaMatches,
   parseDeclarations,
@@ -220,6 +225,9 @@ export class DomHost {
   private _sheets = new WeakMap<Element, SheetState>();
   private _sheetsChanged = new Set<Element>();
   private _sheetVersion = 0;
+  /** A change no list says the reach of — a shadow tree attached — so
+   *  the next flush refreshes the whole document. */
+  private _refreshAll = false;
   /** The documents a page made of its own (`_documentOf`), which are
    *  documents and not fragments, though the tree has one kind of root. */
   private _documents = new WeakSet<Document>();
@@ -268,6 +276,13 @@ export class DomHost {
    *  of the document as the page left it. */
   flush(): void {
     if (this._sheetsChanged.size) this._writeSheets();
+    if (this._refreshAll && !this._disposed) {
+      // a shadow tree came: every element is styled again
+      this._refreshAll = false;
+      this._changes = [];
+      this._seams.handle.refresh();
+      return;
+    }
     if (!this._changes.length || this._disposed) return;
     const changes = this._changes;
     this._changes = [];
@@ -352,6 +367,7 @@ export class DomHost {
         const node = this._node(a);
         if (node instanceof Element) return `1|${node.name}`;
         if (node instanceof Text) return '3|#text';
+        if (node instanceof ShadowRoot) return '11|#shadow-root';
         if (node instanceof Comment) return '8|#comment';
         if (node === this.document || this._documents.has(node as Document)) {
           return '9|#document';
@@ -506,6 +522,40 @@ export class DomHost {
         this._changed(el, 'attributes', 'style', oldValue);
         return null;
       }
+
+      // --- shadow trees, which `<Html>` draws: one attached builds the
+      // document again at the next flush, as a new tree to draw
+      case 'attachShadow': {
+        const host = this._element(a);
+        if (shadowRootOf(host)) {
+          throw new DomError(
+            'NotSupportedError',
+            "Failed to execute 'attachShadow' on 'Element': Shadow root cannot be created on a host which already hosts a shadow tree.",
+          );
+        }
+        const root = attachShadow(host, {
+          mode: b === 'closed' ? 'closed' : 'open',
+          delegatesFocus: c === true,
+        });
+        if (!root) {
+          throw new DomError(
+            'NotSupportedError',
+            "Failed to execute 'attachShadow' on 'Element': This element does not support attachShadow",
+          );
+        }
+        this._refreshAll = true;
+        return this.idOf(root);
+      }
+      case 'shadowRoot': {
+        const root = shadowRootOf(this._element(a));
+        return root && root.mode === 'open' ? this.idOf(root) : 0;
+      }
+      case 'shadowHost':
+        return this.idOf((this._node(a) as ShadowRoot).host);
+      case 'shadowMode':
+        return (this._node(a) as ShadowRoot).mode;
+      case 'shadowDelegates':
+        return (this._node(a) as ShadowRoot).delegatesFocus;
 
       // --- markup
       case 'html': {
