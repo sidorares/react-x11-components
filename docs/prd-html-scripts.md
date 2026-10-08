@@ -555,13 +555,14 @@ markup do not.
 
 **Out:**
 
-- shadow DOM and custom elements;
+- custom elements (phase 3); shadow DOM came in phase 2 — see below;
 - modules: `vm.SourceTextModule` needs a flag on Node (phase 2 — built);
 - workers;
 - `MutationObserver` (phase 2, from the same dirty set — built);
 - `IntersectionObserver`, `ResizeObserver`;
 - `XMLHttpRequest` (phase 2 — built, asynchronous only);
-- WebSocket, IndexedDB, canvas, `document.write`.
+- WebSocket, canvas, `document.write` (IndexedDB came in phase 2 — see
+  below).
 
 Be honest about what that reaches. A framework-built application touches
 hundreds of these, so phase 1 is for pages that enhance what they already
@@ -581,6 +582,20 @@ adopts reaches `<Html>` as its `stylesheet`, after the document's own.
 An interface that is not here is absent, never `undefined` under its
 name: a page asks with `in`, and takes one that is there for one it can
 use.
+
+**And what the app router of Next.js hydrates with:** streams, and
+`attachShadow`, through `<Html>`'s own, so a shadow tree a page attaches
+is drawn as a declarative one is — its route announcer is one on every
+page, and refreshing a document with one whole at every change was what
+`refresh(changes)` had to stop doing first — and attribute nodes in a
+live `NamedNodeMap`. Markup set as a `<script>`'s or a `<style>`'s
+`innerHTML` is its text, as fragment parsing in that context makes it:
+`next/script` sets an inline script's source so. And **IndexedDB**, in
+memory for the document's life, as an empty profile has it each load:
+stores, key paths and generators, indexes, cursors, key ranges, and
+transactions that commit once a round leaves no request queued after the
+microtasks its callbacks queued, which is where a promise wrapper's next
+request comes from.
 
 ## What core would be asked
 
