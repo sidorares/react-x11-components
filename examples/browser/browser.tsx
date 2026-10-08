@@ -79,15 +79,25 @@ import { HOME, fileName } from './pages.js';
 const PAGE = new URL('./page.tsx', import.meta.url);
 
 /**
- * What a page's process may hold, in megabytes of V8's old space: a page
- * whose script allocates without end — which no `node:vm` context bounds —
- * ends its own tab there, and not the machine's memory. The browser's own
- * flags reach the pane first and these after them, so they win. Node
- * enforces it; Bun 1.4 passes the flag on and enforces nothing (core's
- * `docs/frame.md`). `BROWSER_PANE_HEAP_MB` sets it.
+ * How a page's process is started, after the browser's own flags, so these
+ * win where the two disagree:
+ *
+ *  - `--max-old-space-size`: what it may hold, in megabytes of V8's old
+ *    space. A page whose script allocates without end — which no `node:vm`
+ *    context bounds — ends its own tab there, and not the machine's
+ *    memory. Node enforces it; Bun 1.4 passes the flag on and enforces
+ *    nothing (core's `docs/frame.md`). `BROWSER_PANE_HEAP_MB` sets it.
+ *  - `--experimental-vm-modules`: what makes Node call the host for a
+ *    page's `import()`, which is refused there with the page's own error;
+ *    without it Node refuses it with one of the host's, which reaches the
+ *    host's `Function`, and the engine runs no script
+ *    (`SCRIPTS_CONTAINED`). Bun needs no flag. The warning the flag prints
+ *    in every pane is left out.
  */
 const PANE_FLAGS = [
   `--max-old-space-size=${Number(process.env.BROWSER_PANE_HEAP_MB) || 1024}`,
+  '--experimental-vm-modules',
+  '--disable-warning=ExperimentalWarning',
 ];
 
 // --- the model ---------------------------------------------------------------

@@ -82,14 +82,12 @@ asked").
 | A process (pane)      | `--permission`: fs read/write, child process, worker, addons; `--allow-net` (experimental) | no permission model                                        | crash containment per tab, which the browser already has                              | a watchdog (none today); flags per pane (inherits the browser's `execArgv`)              |
 | `vm.SourceTextModule` | `--experimental-vm-modules`                                                                | built in                                                   | ES modules in a context, for phase 2                                                  | —                                                                                        |
 
-### `node:vm`, and the four leaks a DOM binding has to close
+### `node:vm`, and the five leaks a DOM binding has to close
 
 A bare `vm.createContext({})` has none of the host's globals: no
-`process`, `require`, `fetch`, `setTimeout` or `queueMicrotask`. A dynamic
-`import()` with no loader is refused (`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING`)
-on both runtimes. That is not the same as being a boundary. Four ways
-across were found, and every one is the kind a DOM binding opens by
-accident:
+`process`, `require`, `fetch`, `setTimeout` or `queueMicrotask`. That is
+not the same as being a boundary. Five ways across were found, and every
+one is the kind a DOM binding opens by accident:
 
 1. **The sandbox object.** `this.constructor.constructor('return process')()`
    reaches the host on both runtimes. `createContext({})` makes the
@@ -117,10 +115,27 @@ accident:
    code that calls into the context is strict: ESM, which everything this
    package and the example emit already is. It also means calling page
    functions only through a `vm.Script`, never directly.
+5. **`import()`.** A dynamic import in code with no host loader is
+   refused, and the probes stopped there. What it is refused with is the
+   host's: `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` is a host-realm
+   `TypeError`, so `import('x').catch((e) =>
+e.constructor.constructor('return process')())` is the host's `process`,
+   on Node and on Bun. Phase 1 shipped with it open (found 2026-10-08,
+   building modules). The fix is a host callback,
+   `importModuleDynamically`, on every script compiled into the context,
+   the facade's own included — a page's `eval`, `new Function`, string
+   timers and `on…` attributes all run from inside it and are found from
+   it — and on the context itself, rejecting with the context's own
+   `TypeError`. Node calls that callback only under
+   `--experimental-vm-modules` and refuses with its own error otherwise,
+   so without the flag nothing makes `import()` safe: the engine runs no
+   script there (`SCRIPTS_CONTAINED`, keyed on `vm.SourceTextModule`,
+   which the same flag makes), and the browser starts every pane, and its
+   own process, with it. Bun honours the callback with no flag.
 
 With those closed, `this.constructor`, `document.constructor`, a caught
-bridge error, `prepareStackTrace` and `import()` all stayed inside, on both
-runtimes.
+bridge error, `prepareStackTrace` and a refused `import()` all stayed
+inside, on both runtimes.
 
 **Timeouts cover what matters.** `runInContext(..., { timeout })` stops a
 `while (true)` in the time asked for, on both runtimes. Calling a stored
@@ -289,6 +304,12 @@ into a corner: the facade stays the same, and the bridge either calls the
 host or posts to it.
 
 ## What building it found
+
+- **A failed `import()` reached the host** (leak 5 above). The escape test
+  imported `fs` and checked only that it did not resolve; what the promise
+  rejected with went unread. A test that reaches for `process` through
+  whatever a refusal hands the page, from every way page code is compiled,
+  is what holds it closed now.
 
 Phase 1 was built after the probes above, and running a page in the whole
 browser on both runtimes found what they had not:

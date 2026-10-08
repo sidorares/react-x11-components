@@ -2,7 +2,7 @@
 // in the page's context (`dom.ts`). Every op takes primitives and answers
 // one; an error is a string the facade throws as a `DOMException`, never a
 // host object, whose `constructor.constructor` would be the host's
-// `Function` (docs/prd-html-scripts.md, "the four leaks").
+// `Function` (docs/prd-html-scripts.md, "the five leaks").
 //
 // The tree is the one `<Html>` draws, so a mutation here is a mutation of
 // the page: the ops change domhandler's nodes and record each change, and
