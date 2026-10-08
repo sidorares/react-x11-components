@@ -886,12 +886,16 @@ test('what a polyfill or a tag manager feature-tests is there, or absent, but ne
       'try { document.createElement("1a"); } catch (e) { r.push(e.name); }' +
       'try { document.createElement("_ a"); } catch (e) { r.push(e.name); }' +
       'r.push(typeof CDATASection.prototype, Object.getPrototypeOf(CDATASection.prototype) === Text.prototype, typeof ProcessingInstruction.prototype);' +
+      'r.push(location instanceof Location, history instanceof History, navigator instanceof Navigator, screen instanceof Screen, String(location) === location.href);' +
+      'var wrote = []; var set = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) { wrote.push(k); return set.call(this, k, v); };' +
+      'localStorage.setItem("a", 1); localStorage.b = 2; r.push(localStorage instanceof Storage, wrote.join(","), localStorage.a + localStorage.getItem("b"), "a" in localStorage, Object.keys(localStorage).sort().join(""), localStorage.length);' +
+      'Storage.prototype.setItem = set; localStorage.removeItem("a"); delete localStorage.b; r.push(localStorage.length);' +
       "document.getElementById('out').textContent = r.join('|');" +
       '</script>',
   );
   assert.equal(
     doc.text('out'),
-    '0|0|false|false|_|é-x|InvalidCharacterError|InvalidCharacterError|object|true|object',
+    '0|0|false|false|_|é-x|InvalidCharacterError|InvalidCharacterError|object|true|object|true|true|true|true|true|true|a|12|true|ab|2|0',
   );
 });
 
@@ -1179,6 +1183,84 @@ test('CSS.supports answers as an @supports does, an address assigned to location
       `--${boundary}\r\nContent-Disposition: form-data; name="f"; filename="f.txt"\r\nContent-Type: text/plain\r\n\r\nx\r\n` +
       `--${boundary}--\r\n`,
   );
+});
+
+test('indexedDB keeps a page’s records for the document: stores, keys, indexes, cursors and transactions', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var out = document.getElementById("out");' +
+      'function p(req) { return new Promise(function (res, rej) { req.onsuccess = function () { res(req.result); }; req.onerror = function () { rej(req.error); }; }); }' +
+      'var open = indexedDB.open("db", 2);' +
+      'open.onupgradeneeded = function (e) {' +
+      '  var db = open.result; r.push("up " + e.oldVersion + ">" + e.newVersion);' +
+      '  var s = db.createObjectStore("things", { keyPath: "id" }); s.createIndex("by-tag", "tags", { multiEntry: true });' +
+      // mazda.com.au's analytics queue
+      '  db.createObjectStore("events", { autoIncrement: true });' +
+      '};' +
+      'open.onsuccess = function () {' +
+      '  var db = open.result; r.push(db.version, db.objectStoreNames.join(","));' +
+      '  var tx = db.transaction(["things", "events"], "readwrite"); var things = tx.objectStore("things");' +
+      '  things.put({ id: 2, tags: ["b", "c"], when: new Date(5) }); things.put({ id: 1, tags: ["a", "b"] });' +
+      '  tx.objectStore("events").add({ e: "x" }); tx.objectStore("events").add({ e: "y" }).onsuccess = function (e) { r.push("key " + e.target.result); };' +
+      '  things.add({ id: 1 }).onerror = function (e) { r.push(e.target.error.name); e.preventDefault(); };' +
+      '  tx.oncomplete = function () {' +
+      '    var read = db.transaction("things").objectStore("things");' +
+      '    read.get(2).onsuccess = function (e) { r.push(e.target.result.when instanceof Date); };' +
+      '    read.index("by-tag").getAllKeys("b").onsuccess = function (e) { r.push(e.target.result.join(",")); };' +
+      '    try { read.put({ id: 3 }); } catch (e) { r.push(e.name); }' +
+      '    var seen = []; read.openCursor(null, "prev").onsuccess = function (e) { var c = e.target.result; if (c) { seen.push(c.key); c.continue(); } else { r.push(seen.join(",")); next(db); } };' +
+      '  };' +
+      '};' +
+      // a promise wrapper, awaiting between two requests of one transaction
+      'async function next(db) {' +
+      '  var tx = db.transaction("events", "readwrite"); var s = tx.objectStore("events");' +
+      '  var n = await p(s.count()); await p(s.add({ e: "z" })); var m = await p(s.count());' +
+      '  var c = await p(s.openCursor()); await p(c.delete()); r.push(n + ">" + m + ">" + await p(s.count()));' +
+      '  var undo = db.transaction("things", "readwrite"); undo.objectStore("things").delete(1); undo.abort();' +
+      '  undo.onabort = function () { db.transaction("things").objectStore("things").count().onsuccess = function (e) { r.push("kept " + e.target.result);' +
+      '    var old = indexedDB.open("db", 1); old.onerror = function () { r.push(old.error.name); out.textContent = r.join("|"); }; }; };' +
+      '}' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'up 0>2',
+      '2',
+      'events,things',
+      'key 2',
+      'ConstraintError',
+      // the read-only store's put throws before the reads are answered
+      'ReadOnlyError',
+      'true',
+      '1,2',
+      '2,1',
+      '2>3>2',
+      'kept 2',
+      'VersionError',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('markup set inside a script, a style or a textarea is its text, as HTML parses it there', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><textarea id="t"></textarea><script>' +
+      'var r = [];' +
+      // next/script's way with an inline script
+      'var s = document.createElement("script"); s.innerHTML = "for (var i = 0, n = 0; i<n; i++) {} window.ran = \'<b>\' + 1;";' +
+      'document.body.appendChild(s); r.push(s.childNodes.length);' +
+      'var st = document.createElement("style"); st.innerHTML = "a > b { color: red }"; r.push(st.textContent);' +
+      'var t = document.getElementById("t"); t.innerHTML = "x &amp; <b>y</b>"; r.push(t.textContent);' +
+      'var d = document.createElement("div"); d.innerHTML = "a<b>b</b>"; r.push(d.childNodes.length);' +
+      'var s2 = document.createElement("script"); s2.textContent = "x"; s2.insertAdjacentHTML("beforeend", "<i>"); r.push(s2.textContent);' +
+      // an appended script runs a turn after the append, here
+      "setTimeout(function () { r.push(window.ran); document.getElementById('out').textContent = r.join('|'); }, 0);" +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(text, '1|a > b { color: red }|x & <b>y</b>|2|x<i>|<b>1');
 });
 
 test('a page walks its tree, parses markup into documents of its own, and marks and measures', async () => {

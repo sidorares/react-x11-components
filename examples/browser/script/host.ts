@@ -105,6 +105,20 @@ class DomError extends Error {
 }
 const hierarchy = (what: string) => new DomError('HierarchyRequestError', what);
 
+/** The elements whose content HTML's parser reads as text, whatever it
+ *  holds (HTML 13.4, the fragment case): `<noscript>` among them where
+ *  scripts run, as they do in a document this host serves. */
+const RAW_TEXT = new Set([
+  'script',
+  'style',
+  'xmp',
+  'iframe',
+  'noembed',
+  'noframes',
+  'noscript',
+  'plaintext',
+]);
+
 /**
  * A sheet's text as CSSOM's list of rules, each its text (CSS Syntax 3,
  * "consume a list of rules", as far as where each ends): at the `}` that
@@ -564,13 +578,15 @@ export class DomHost {
         return b ? DomUtils.getOuterHTML(node) : DomUtils.getInnerHTML(node);
       }
       case 'setHtml': {
-        this._replaceAll(this._parent(a), this._parse(text(b)));
+        const parent = this._parent(a);
+        this._replaceAll(parent, this._parseIn(parent, text(b)));
         return null;
       }
       case 'adjacent': {
         const node = this._node(a) as ChildNode;
-        const kids = this._parse(text(c));
         const where = text(b);
+        const inside = where === 'afterbegin' || where === 'beforeend';
+        const kids = this._parseIn(inside ? node : node.parent, text(c));
         if (where === 'beforebegin' || where === 'afterend') {
           if (!node.parent) throw hierarchy('The element has no parent.');
           const before = where === 'beforebegin' ? node : node.next;
@@ -1284,6 +1300,28 @@ export class DomHost {
     DomUtils.appendChild(doc, html);
     this._documents.add(doc);
     return doc;
+  }
+
+  /**
+   * Markup parsed as HTML's fragment parsing parses it in `context` (HTML
+   * 13.4): inside a `<script>`, a `<style>` and the other raw text elements
+   * it is their text, whatever it holds, and inside a `<textarea>` or a
+   * `<title>` their text with its character references read; anywhere
+   * else, nodes. `next/script` sets an inline script's source as its
+   * `innerHTML`, and yahoo.com's had `s<e` in it, which parsed as markup
+   * cut the script off at a tag.
+   */
+  private _parseIn(context: AnyNode | null, markup: string): ChildNode[] {
+    const name = context instanceof Element ? context.name : '';
+    if (RAW_TEXT.has(name)) return markup ? [new Text(markup)] : [];
+    if (name === 'textarea' || name === 'title') {
+      const held = parseFragment(`<${name}>${markup}</${name}>`).find(
+        (k) => k instanceof Element && k.name === name,
+      );
+      const data = held ? DomUtils.textContent(held) : '';
+      return data ? [new Text(data)] : [];
+    }
+    return this._parse(markup);
   }
 
   /** Markup as `innerHTML` reads it; its scripts never run. */

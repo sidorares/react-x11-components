@@ -5700,46 +5700,1357 @@ export function installDom(bridge: Bridge): void {
     }
   }
 
-  /** `localStorage` and `sessionStorage`, kept by the host per origin. */
-  const storage = (kind: 'local' | 'session'): Any => {
-    const api = {
-      getItem: (k: Any) => call('storage', kind, 'get', str(k)) ?? null,
-      setItem: (k: Any, v: Any) =>
-        void call('storage', kind, 'set', str(k), str(v)),
-      removeItem: (k: Any) => void call('storage', kind, 'remove', str(k)),
-      clear: () => void call('storage', kind, 'clear'),
-      key: (i: number) => keys()[i] ?? null,
-      get length(): number {
-        return keys().length;
-      },
-    } as Any;
-    const keys = (): string[] => {
-      const s = call('storage', kind, 'keys');
-      return typeof s === 'string' && s ? s.split('\u0000') : [];
+  // --- IndexedDB -------------------------------------------------------------------
+  //
+  // IndexedDB 3, in memory, for as long as the document: a page's databases
+  // are an empty profile's each time it loads, as a private window's are.
+  // Sites open one whether or not they check for it — an analytics queue,
+  // a cache, a framework's persistence — and a missing `indexedDB` threw
+  // where an empty one is what a new visitor has. Values are structured
+  // clones, keys are ordered as the standard orders them, and a
+  // transaction runs its requests in order, a task each round, and commits
+  // once a round leaves none queued — after the microtasks its callbacks
+  // queued, which is where a promise wrapper's next request comes from.
+  // Transactions are not held back for one another, as a browser holds two
+  // that write the same store: a page here has no other tab.
+
+  /** A key's type, in the standard's order; 0 for no valid key. */
+  const keyType = (key: Any, seen: Set<Any> = new Set()): number => {
+    if (typeof key === 'number') return Number.isNaN(key) ? 0 : 1;
+    if (key instanceof Date) return Number.isNaN(key.getTime()) ? 0 : 2;
+    if (typeof key === 'string') return 3;
+    if (key instanceof ArrayBuffer || ArrayBuffer.isView(key)) return 4;
+    if (Array.isArray(key)) {
+      if (seen.has(key)) return 0;
+      seen.add(key);
+      return key.every((k) => keyType(k, seen) > 0) ? 5 : 0;
+    }
+    return 0;
+  };
+  const validKey = (key: Any): boolean => keyType(key) > 0;
+  const bytesOf = (key: Any): Uint8Array =>
+    key instanceof ArrayBuffer
+      ? new Uint8Array(key)
+      : new Uint8Array(key.buffer, key.byteOffset, key.byteLength);
+  /** Two keys compared (IndexedDB 3, 2.4.3). */
+  const cmpKey = (a: Any, b: Any): number => {
+    const ta = keyType(a);
+    const tb = keyType(b);
+    if (ta !== tb) return ta < tb ? -1 : 1;
+    if (ta === 1 || ta === 3) return a < b ? -1 : a > b ? 1 : 0;
+    if (ta === 2) return cmpKey(a.getTime(), b.getTime());
+    if (ta === 4) {
+      const x = bytesOf(a);
+      const y = bytesOf(b);
+      for (let i = 0; i < Math.min(x.length, y.length); i += 1) {
+        if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+      }
+      return cmpKey(x.length, y.length);
+    }
+    for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
+      const c = cmpKey(a[i], b[i]);
+      if (c) return c;
+    }
+    return cmpKey(a.length, b.length);
+  };
+  /** A key as a key is handed out: its own copy. */
+  const copyKey = (key: Any): Any =>
+    key instanceof Date
+      ? new Date(key.getTime())
+      : Array.isArray(key)
+        ? key.map(copyKey)
+        : key instanceof ArrayBuffer || ArrayBuffer.isView(key)
+          ? bytesOf(key).slice().buffer
+          : key;
+  const dataError = (message: string): Any =>
+    new DOMException(message, 'DataError');
+  const checkKey = (key: Any): Any => {
+    if (!validKey(key)) {
+      throw dataError('The parameter is not a valid key.');
+    }
+    return copyKey(key);
+  };
+
+  /** What a key path names in a value (IndexedDB 3, 2.5.1), or undefined. */
+  const atKeyPath = (value: Any, path: Any): Any => {
+    if (Array.isArray(path)) {
+      const keys = path.map((p) => atKeyPath(value, p));
+      return keys.includes(undefined) ? undefined : keys;
+    }
+    if (path === '') return value;
+    let at = value;
+    for (const part of String(path).split('.')) {
+      if (at === null || at === undefined) return undefined;
+      if (typeof at === 'string' && part === 'length') at = at.length;
+      else if (typeof at !== 'object' || !(part in at)) return undefined;
+      else at = at[part];
+    }
+    return at;
+  };
+  /** A generated key put in a value at its key path. */
+  const atKeyPathSet = (value: Any, path: string, key: Any): void => {
+    const parts = path.split('.');
+    let at = value;
+    for (const part of parts.slice(0, -1)) {
+      if (at[part] === undefined) at[part] = {};
+      at = at[part];
+    }
+    at[parts[parts.length - 1]] = key;
+  };
+  const validKeyPath = (path: Any): boolean =>
+    Array.isArray(path)
+      ? path.length > 0 &&
+        path.every((p) => typeof p === 'string' && validKeyPath(p))
+      : typeof path === 'string' &&
+        (path === '' ||
+          path
+            .split('.')
+            .every((part) => /^[A-Za-z_$\u0080-￿][\w$\u0080-￿]*$/.test(part)));
+
+  class IDBKeyRange {
+    readonly lower: Any;
+    readonly upper: Any;
+    readonly lowerOpen: boolean;
+    readonly upperOpen: boolean;
+    constructor(
+      lower: Any,
+      upper: Any,
+      lowerOpen: boolean,
+      upperOpen: boolean,
+    ) {
+      this.lower = lower;
+      this.upper = upper;
+      this.lowerOpen = lowerOpen;
+      this.upperOpen = upperOpen;
+    }
+    static only(key: Any): Any {
+      const k = checkKey(key);
+      return new IDBKeyRange(k, k, false, false);
+    }
+    static lowerBound(key: Any, open = false): Any {
+      return new IDBKeyRange(checkKey(key), undefined, !!open, true);
+    }
+    static upperBound(key: Any, open = false): Any {
+      return new IDBKeyRange(undefined, checkKey(key), true, !!open);
+    }
+    static bound(
+      lower: Any,
+      upper: Any,
+      lowerOpen = false,
+      upperOpen = false,
+    ): Any {
+      const l = checkKey(lower);
+      const u = checkKey(upper);
+      const c = cmpKey(l, u);
+      if (c > 0 || (c === 0 && (lowerOpen || upperOpen))) {
+        throw dataError('The lower key is greater than the upper key.');
+      }
+      return new IDBKeyRange(l, u, !!lowerOpen, !!upperOpen);
+    }
+    includes(key: Any): boolean {
+      const k = checkKey(key);
+      if (this.lower !== undefined) {
+        const c = cmpKey(k, this.lower);
+        if (c < 0 || (c === 0 && this.lowerOpen)) return false;
+      }
+      if (this.upper !== undefined) {
+        const c = cmpKey(k, this.upper);
+        if (c > 0 || (c === 0 && this.upperOpen)) return false;
+      }
+      return true;
+    }
+  }
+  /** A query as a range: all of them for none, the one a key names. */
+  const rangeOf = (query: Any, required = false): Any => {
+    if (query instanceof IDBKeyRange) return query;
+    if (query === undefined || query === null) {
+      if (required) throw dataError('No key or key range specified.');
+      return null;
+    }
+    return IDBKeyRange.only(query);
+  };
+  const inRange = (range: Any, key: Any): boolean =>
+    !range || range.includes(key);
+
+  class DOMStringList extends Array {
+    item(i: Any): Any {
+      return this[Number(i)] ?? null;
+    }
+    contains(name: Any): boolean {
+      return this.includes(str(name));
+    }
+  }
+  const stringList = (names: Iterable<string>): Any => {
+    const list = new DOMStringList();
+    for (const name of [...names].sort()) list.push(name);
+    return list;
+  };
+
+  class IDBVersionChangeEvent extends Event {
+    readonly oldVersion: number;
+    readonly newVersion: number | null;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this.oldVersion = Number(init.oldVersion ?? 0);
+      this.newVersion =
+        init.newVersion === undefined || init.newVersion === null
+          ? null
+          : Number(init.newVersion);
+    }
+  }
+
+  /** An event fired at a request and on, as IndexedDB fires one: at its
+   *  transaction and its database after it, where it bubbles. Whether
+   *  nothing cancelled it. */
+  const fireAt = (targets: Any[], event: Any): boolean => {
+    event.isTrusted = true;
+    event.target = targets[0];
+    event._path = targets;
+    event._stop = false;
+    event._stopNow = false;
+    invoke(targets[0], event, AT_TARGET);
+    if (event.bubbles) {
+      for (let i = 1; i < targets.length && !event._stop; i += 1) {
+        if (targets[i]) invoke(targets[i], event, BUBBLING_PHASE);
+      }
+    }
+    event.eventPhase = NONE;
+    event.currentTarget = null;
+    return !event.defaultPrevented;
+  };
+  /** `on…` properties for the events a class fires. */
+  const handlers = (Class: Any, types: string[]): void => {
+    for (const type of types) {
+      Object.defineProperty(Class.prototype, `on${type}`, {
+        get(this: Any): Any {
+          return this._handlers[type] ?? null;
+        },
+        set(this: Any, fn: Any) {
+          this._handlers[type] = typeof fn === 'function' ? fn : null;
+        },
+        configurable: true,
+      });
+    }
+  };
+
+  class IDBRequest extends EventTarget {
+    _result: Any = undefined;
+    _error: Any = null;
+    _done = false;
+    source: Any = null;
+    transaction: Any = null;
+    get readyState(): string {
+      return this._done ? 'done' : 'pending';
+    }
+    get result(): Any {
+      if (!this._done) {
+        throw new DOMException(
+          'The request has not finished.',
+          'InvalidStateError',
+        );
+      }
+      return this._result;
+    }
+    get error(): Any {
+      if (!this._done) {
+        throw new DOMException(
+          'The request has not finished.',
+          'InvalidStateError',
+        );
+      }
+      return this._error;
+    }
+  }
+  handlers(IDBRequest, ['success', 'error']);
+  class IDBOpenDBRequest extends IDBRequest {}
+  handlers(IDBOpenDBRequest, ['blocked', 'upgradeneeded']);
+
+  interface IdbIndex {
+    name: string;
+    keyPath: Any;
+    unique: boolean;
+    multiEntry: boolean;
+  }
+  interface IdbStore {
+    name: string;
+    keyPath: Any;
+    autoIncrement: boolean;
+    current: number;
+    records: { key: Any; value: Any }[];
+    indexes: Map<string, IdbIndex>;
+  }
+  interface IdbData {
+    name: string;
+    version: number;
+    stores: Map<string, IdbStore>;
+    connections: Set<Any>;
+  }
+  const idbDatabases = new Map<string, IdbData>();
+
+  /** Where a key is in a store's records, or would go. */
+  const findKey = (
+    store: IdbStore,
+    key: Any,
+  ): { i: number; found: boolean } => {
+    let lo = 0;
+    let hi = store.records.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const c = cmpKey(store.records[mid].key, key);
+      if (c === 0) return { i: mid, found: true };
+      if (c < 0) lo = mid + 1;
+      else hi = mid;
+    }
+    return { i: lo, found: false };
+  };
+  /** The keys a value has in an index. */
+  const indexKeys = (index: IdbIndex, value: Any): Any[] => {
+    const key = atKeyPath(value, index.keyPath);
+    if (key === undefined) return [];
+    if (index.multiEntry && Array.isArray(key)) {
+      const out: Any[] = [];
+      for (const k of key) {
+        if (validKey(k) && !out.some((o) => cmpKey(o, k) === 0)) out.push(k);
+      }
+      return out;
+    }
+    return validKey(key) ? [key] : [];
+  };
+  /** An index's entries, in its order: by key, then by the record's. */
+  const indexEntries = (store: IdbStore, index: IdbIndex): Any[] => {
+    const out: Any[] = [];
+    for (const record of store.records) {
+      for (const key of indexKeys(index, record.value)) {
+        out.push({ key, primaryKey: record.key, value: record.value });
+      }
+    }
+    return out.sort(
+      (a, b) => cmpKey(a.key, b.key) || cmpKey(a.primaryKey, b.primaryKey),
+    );
+  };
+  const storeEntries = (store: IdbStore): Any[] =>
+    store.records.map((r) => ({
+      key: r.key,
+      primaryKey: r.key,
+      value: r.value,
+    }));
+  const copyStore = (store: IdbStore): IdbStore => ({
+    ...store,
+    records: store.records.map((r) => ({ ...r })),
+    indexes: new Map([...store.indexes].map(([k, v]) => [k, { ...v }])),
+  });
+
+  class IDBDatabase extends EventTarget {
+    _data: IdbData;
+    _closed = false;
+    _upgrade: Any = null;
+    constructor(data: IdbData) {
+      super();
+      this._data = data;
+    }
+    get name(): string {
+      return this._data.name;
+    }
+    get version(): number {
+      return this._data.version;
+    }
+    get objectStoreNames(): Any {
+      return stringList(this._data.stores.keys());
+    }
+    createObjectStore(name: Any, options: Any = {}): Any {
+      const tx = this._upgrade;
+      if (!tx || tx._finished) {
+        throw new DOMException(
+          'A store is made only while the database is upgraded.',
+          'InvalidStateError',
+        );
+      }
+      const storeName = str(name);
+      if (this._data.stores.has(storeName)) {
+        throw new DOMException(
+          `An object store named '${storeName}' already exists.`,
+          'ConstraintError',
+        );
+      }
+      const keyPath = options?.keyPath ?? null;
+      if (keyPath !== null && !validKeyPath(keyPath)) {
+        throw new DOMException('The key path is not valid.', 'SyntaxError');
+      }
+      const autoIncrement = !!options?.autoIncrement;
+      if (autoIncrement && (keyPath === '' || Array.isArray(keyPath))) {
+        throw new DOMException(
+          'A key generator takes no empty or array key path.',
+          'InvalidAccessError',
+        );
+      }
+      this._data.stores.set(storeName, {
+        name: storeName,
+        keyPath: Array.isArray(keyPath) ? keyPath.map(str) : keyPath,
+        autoIncrement,
+        current: 1,
+        records: [],
+        indexes: new Map(),
+      });
+      return tx.objectStore(storeName);
+    }
+    deleteObjectStore(name: Any): void {
+      if (!this._upgrade || this._upgrade._finished) {
+        throw new DOMException(
+          'A store is deleted only while the database is upgraded.',
+          'InvalidStateError',
+        );
+      }
+      if (!this._data.stores.delete(str(name))) {
+        throw new DOMException(
+          `No object store named '${str(name)}'.`,
+          'NotFoundError',
+        );
+      }
+    }
+    transaction(names: Any, mode: Any = 'readonly'): Any {
+      if (this._closed) {
+        throw new DOMException(
+          'The database connection is closed.',
+          'InvalidStateError',
+        );
+      }
+      if (this._upgrade && !this._upgrade._finished) {
+        throw new DOMException(
+          'A transaction waits for the upgrade to finish.',
+          'InvalidStateError',
+        );
+      }
+      const list =
+        typeof names === 'string' ? [names] : Array.from(names ?? [], str);
+      if (!list.length) {
+        throw new DOMException(
+          'No object store was named.',
+          'InvalidAccessError',
+        );
+      }
+      for (const name of list) {
+        if (!this._data.stores.has(name)) {
+          throw new DOMException(
+            `No object store named '${name}'.`,
+            'NotFoundError',
+          );
+        }
+      }
+      if (mode !== 'readonly' && mode !== 'readwrite') {
+        throw new TypeError(`'${str(mode)}' is not a valid transaction mode.`);
+      }
+      return new IDBTransaction(this, [...new Set(list)], mode);
+    }
+    close(): void {
+      this._closed = true;
+      this._data.connections.delete(this);
+    }
+  }
+  handlers(IDBDatabase, ['abort', 'close', 'error', 'versionchange']);
+
+  class IDBTransaction extends EventTarget {
+    _db: Any;
+    _names: string[];
+    readonly mode: string;
+    readonly durability = 'default';
+    error: Any = null;
+    _queue: { request: Any; op: () => Any }[] = [];
+    _finished = false;
+    _scheduled = false;
+    _settling = false;
+    _stores = new Map<string, Any>();
+    _undo: () => void;
+    _onDone: ((ok: boolean) => void) | null = null;
+    constructor(db: Any, names: string[], mode: string) {
+      super();
+      this._db = db;
+      this._names = names;
+      this.mode = mode;
+      // what a write is undone to where the transaction aborts
+      const data: IdbData = db._data;
+      if (mode === 'versionchange') {
+        const version = data.version;
+        const stores = new Map(
+          [...data.stores].map(([k, v]) => [k, copyStore(v)]),
+        );
+        this._undo = () => {
+          data.version = version;
+          data.stores = stores;
+        };
+      } else if (mode === 'readwrite') {
+        const kept = names.map((name) => copyStore(data.stores.get(name)!));
+        this._undo = () => {
+          for (const store of kept) data.stores.set(store.name, store);
+        };
+      } else this._undo = () => {};
+      // one with nothing asked of it commits at its first round
+      this._schedule();
+    }
+    get db(): Any {
+      return this._db;
+    }
+    get objectStoreNames(): Any {
+      return stringList(
+        this.mode === 'versionchange'
+          ? this._db._data.stores.keys()
+          : this._names,
+      );
+    }
+    objectStore(name: Any): Any {
+      const storeName = str(name);
+      if (this._finished) {
+        throw new DOMException(
+          'The transaction has finished.',
+          'InvalidStateError',
+        );
+      }
+      const known =
+        this.mode === 'versionchange'
+          ? this._db._data.stores.has(storeName)
+          : this._names.includes(storeName);
+      if (!known) {
+        throw new DOMException(
+          `No object store named '${storeName}' in this transaction.`,
+          'NotFoundError',
+        );
+      }
+      let store = this._stores.get(storeName);
+      if (!store)
+        this._stores.set(
+          storeName,
+          (store = new IDBObjectStore(this, storeName)),
+        );
+      return store;
+    }
+    abort(): void {
+      if (this._finished) {
+        throw new DOMException(
+          'The transaction has finished.',
+          'InvalidStateError',
+        );
+      }
+      this._abort(
+        new DOMException('The transaction was aborted.', 'AbortError'),
+      );
+    }
+    commit(): void {
+      if (this._finished) {
+        throw new DOMException(
+          'The transaction has finished.',
+          'InvalidStateError',
+        );
+      }
+      this._settling = true;
+      this._schedule();
+    }
+    /** A request this transaction runs in its turn: `op` answers its
+     *  result or throws its error. */
+    _request(source: Any, op: () => Any, into?: Any): Any {
+      if (this._finished) {
+        throw new DOMException(
+          'The transaction has finished.',
+          'TransactionInactiveError',
+        );
+      }
+      const request = into ?? new IDBRequest();
+      request.source = source;
+      request.transaction = this;
+      request._done = false;
+      this._queue.push({ request, op });
+      this._settling = false;
+      this._schedule();
+      return request;
+    }
+    _answer(request: Any, op: () => Any): void {
+      let result: Any;
+      try {
+        result = op();
+      } catch (error) {
+        request._done = true;
+        request._result = undefined;
+        request._error = error;
+        const go = fireAt(
+          [request, this, this._db],
+          new Event('error', { bubbles: true, cancelable: true }),
+        );
+        if (go) this._abort(error);
+        return;
+      }
+      request._done = true;
+      request._result = result;
+      request._error = null;
+      fireAt([request], new Event('success'));
+    }
+    _schedule(): void {
+      if (this._scheduled || this._finished) return;
+      this._scheduled = true;
+      setTimer(() => this._run(), 0, [], false);
+    }
+    /** A round: every request queued, in order, and those their callbacks
+     *  queue; then, where a round left none, one more after the
+     *  microtasks, and the commit. */
+    _run(): void {
+      this._scheduled = false;
+      if (this._finished) return;
+      while (this._queue.length && !this._finished) {
+        const { request, op } = this._queue.shift()!;
+        this._answer(request, op);
+      }
+      if (this._finished) return;
+      if (this._queue.length) {
+        this._schedule();
+        return;
+      }
+      if (!this._settling) {
+        this._settling = true;
+        this._schedule();
+        return;
+      }
+      this._finished = true;
+      fireAt([this], new Event('complete'));
+      this._onDone?.(true);
+    }
+    /** Aborted: what it wrote undone at once, and what is told of it —
+     *  each request still queued failing, then the abort — a task later,
+     *  as a browser queues them, so a handler set after `abort()` hears
+     *  it. */
+    _abort(error: Any): void {
+      if (this._finished) return;
+      this._finished = true;
+      this._undo();
+      this.error = error;
+      const pending = this._queue;
+      this._queue = [];
+      setTimer(
+        () => {
+          for (const { request } of pending) {
+            request._done = true;
+            request._result = undefined;
+            request._error = new DOMException(
+              'The transaction was aborted.',
+              'AbortError',
+            );
+            fireAt(
+              [request, this, this._db],
+              new Event('error', { bubbles: true, cancelable: true }),
+            );
+          }
+          fireAt([this, this._db], new Event('abort', { bubbles: true }));
+          this._onDone?.(false);
+        },
+        0,
+        [],
+        false,
+      );
+    }
+  }
+  handlers(IDBTransaction, ['abort', 'complete', 'error']);
+
+  /** Where a request reads or writes: an object store or an index, and the
+   *  entries it orders. */
+  const sourceEntries = (source: Any): Any[] =>
+    source instanceof IDBIndex
+      ? indexEntries(source._store._data, source._data)
+      : storeEntries(source._data);
+
+  class IDBObjectStore {
+    _tx: Any;
+    _name: string;
+    constructor(tx: Any, name: string) {
+      this._tx = tx;
+      this._name = name;
+    }
+    get _data(): IdbStore {
+      const data = this._tx._db._data.stores.get(this._name);
+      if (!data) {
+        throw new DOMException(
+          'The object store was deleted.',
+          'InvalidStateError',
+        );
+      }
+      return data;
+    }
+    get name(): string {
+      return this._name;
+    }
+    get keyPath(): Any {
+      const path = this._data.keyPath;
+      return Array.isArray(path) ? [...path] : path;
+    }
+    get autoIncrement(): boolean {
+      return this._data.autoIncrement;
+    }
+    get indexNames(): Any {
+      return stringList(this._data.indexes.keys());
+    }
+    get transaction(): Any {
+      return this._tx;
+    }
+    _writable(): void {
+      if (this._tx.mode === 'readonly') {
+        throw new DOMException(
+          'The transaction is read-only.',
+          'ReadOnlyError',
+        );
+      }
+    }
+    put(value: Any, key?: Any): Any {
+      return this._write(value, key, false);
+    }
+    add(value: Any, key?: Any): Any {
+      return this._write(value, key, true);
+    }
+    _write(value: Any, key: Any, add: boolean): Any {
+      this._writable();
+      const data = this._data;
+      const clone = structuredCopy(value, new Map());
+      let theKey: Any = undefined;
+      if (data.keyPath !== null) {
+        if (key !== undefined) {
+          throw dataError('A store with in-line keys takes no key argument.');
+        }
+        theKey = atKeyPath(clone, data.keyPath);
+        if (theKey === undefined) {
+          if (!data.autoIncrement) {
+            throw dataError('The key path names nothing in the value.');
+          }
+        } else theKey = checkKey(theKey);
+      } else if (key === undefined) {
+        if (!data.autoIncrement) {
+          throw dataError('No key was given, and the store makes none.');
+        }
+      } else theKey = checkKey(key);
+      return this._tx._request(this, () => {
+        let k = theKey;
+        if (k === undefined) {
+          if (data.current > 2 ** 53) {
+            throw new DOMException(
+              'The key generator is spent.',
+              'ConstraintError',
+            );
+          }
+          k = data.current;
+          data.current += 1;
+          if (data.keyPath !== null) atKeyPathSet(clone, data.keyPath, k);
+        } else if (
+          data.autoIncrement &&
+          typeof k === 'number' &&
+          k >= data.current
+        ) {
+          data.current = Math.floor(k) + 1;
+        }
+        const at = findKey(data, k);
+        if (at.found && add) {
+          throw new DOMException(
+            'A record with that key is in the store already.',
+            'ConstraintError',
+          );
+        }
+        for (const index of data.indexes.values()) {
+          if (!index.unique) continue;
+          for (const ik of indexKeys(index, clone)) {
+            const taken = data.records.some(
+              (r) =>
+                cmpKey(r.key, k) !== 0 &&
+                indexKeys(index, r.value).some((x) => cmpKey(x, ik) === 0),
+            );
+            if (taken) {
+              throw new DOMException(
+                `Index '${index.name}' takes each key once.`,
+                'ConstraintError',
+              );
+            }
+          }
+        }
+        if (at.found) data.records[at.i] = { key: k, value: clone };
+        else data.records.splice(at.i, 0, { key: k, value: clone });
+        return copyKey(k);
+      });
+    }
+    get(query: Any): Any {
+      const range = rangeOf(query, true);
+      return this._tx._request(this, () => {
+        const record = this._data.records.find((r) => inRange(range, r.key));
+        return record ? structuredCopy(record.value, new Map()) : undefined;
+      });
+    }
+    getKey(query: Any): Any {
+      const range = rangeOf(query, true);
+      return this._tx._request(this, () => {
+        const record = this._data.records.find((r) => inRange(range, r.key));
+        return record ? copyKey(record.key) : undefined;
+      });
+    }
+    getAll(query?: Any, count?: Any): Any {
+      return readAll(this, query, count, (e) =>
+        structuredCopy(e.value, new Map()),
+      );
+    }
+    getAllKeys(query?: Any, count?: Any): Any {
+      return readAll(this, query, count, (e) => copyKey(e.primaryKey));
+    }
+    count(query?: Any): Any {
+      const range = rangeOf(query);
+      return this._tx._request(
+        this,
+        () => this._data.records.filter((r) => inRange(range, r.key)).length,
+      );
+    }
+    delete(query: Any): Any {
+      this._writable();
+      const range = rangeOf(query, true);
+      return this._tx._request(this, () => {
+        const data = this._data;
+        data.records = data.records.filter((r) => !inRange(range, r.key));
+        return undefined;
+      });
+    }
+    clear(): Any {
+      this._writable();
+      return this._tx._request(this, () => {
+        this._data.records = [];
+        return undefined;
+      });
+    }
+    openCursor(query?: Any, direction?: Any): Any {
+      return openCursor(this, query, direction, true);
+    }
+    openKeyCursor(query?: Any, direction?: Any): Any {
+      return openCursor(this, query, direction, false);
+    }
+    createIndex(name: Any, keyPath: Any, options: Any = {}): Any {
+      if (this._tx.mode !== 'versionchange') {
+        throw new DOMException(
+          'An index is made only while the database is upgraded.',
+          'InvalidStateError',
+        );
+      }
+      const data = this._data;
+      const indexName = str(name);
+      if (data.indexes.has(indexName)) {
+        throw new DOMException(
+          `An index named '${indexName}' already exists.`,
+          'ConstraintError',
+        );
+      }
+      if (!validKeyPath(keyPath)) {
+        throw new DOMException('The key path is not valid.', 'SyntaxError');
+      }
+      if (options?.multiEntry && Array.isArray(keyPath)) {
+        throw new DOMException(
+          'A multiEntry index takes no array key path.',
+          'InvalidAccessError',
+        );
+      }
+      const index: IdbIndex = {
+        name: indexName,
+        keyPath: Array.isArray(keyPath) ? keyPath.map(str) : keyPath,
+        unique: !!options?.unique,
+        multiEntry: !!options?.multiEntry,
+      };
+      data.indexes.set(indexName, index);
+      return this.index(indexName);
+    }
+    deleteIndex(name: Any): void {
+      if (this._tx.mode !== 'versionchange') {
+        throw new DOMException(
+          'An index is deleted only while the database is upgraded.',
+          'InvalidStateError',
+        );
+      }
+      if (!this._data.indexes.delete(str(name))) {
+        throw new DOMException(
+          `No index named '${str(name)}'.`,
+          'NotFoundError',
+        );
+      }
+    }
+    index(name: Any): Any {
+      const indexName = str(name);
+      if (!this._data.indexes.has(indexName)) {
+        throw new DOMException(
+          `No index named '${indexName}'.`,
+          'NotFoundError',
+        );
+      }
+      return new IDBIndex(this, indexName);
+    }
+  }
+
+  class IDBIndex {
+    _store: Any;
+    _name: string;
+    constructor(store: Any, name: string) {
+      this._store = store;
+      this._name = name;
+    }
+    get _data(): IdbIndex {
+      const data = this._store._data.indexes.get(this._name);
+      if (!data) {
+        throw new DOMException('The index was deleted.', 'InvalidStateError');
+      }
+      return data;
+    }
+    get _tx(): Any {
+      return this._store._tx;
+    }
+    get objectStore(): Any {
+      return this._store;
+    }
+    get name(): string {
+      return this._name;
+    }
+    get keyPath(): Any {
+      const path = this._data.keyPath;
+      return Array.isArray(path) ? [...path] : path;
+    }
+    get unique(): boolean {
+      return this._data.unique;
+    }
+    get multiEntry(): boolean {
+      return this._data.multiEntry;
+    }
+    get(query: Any): Any {
+      const range = rangeOf(query, true);
+      return this._tx._request(this, () => {
+        const entry = sourceEntries(this).find((e) => inRange(range, e.key));
+        return entry ? structuredCopy(entry.value, new Map()) : undefined;
+      });
+    }
+    getKey(query: Any): Any {
+      const range = rangeOf(query, true);
+      return this._tx._request(this, () => {
+        const entry = sourceEntries(this).find((e) => inRange(range, e.key));
+        return entry ? copyKey(entry.primaryKey) : undefined;
+      });
+    }
+    getAll(query?: Any, count?: Any): Any {
+      return readAll(this, query, count, (e) =>
+        structuredCopy(e.value, new Map()),
+      );
+    }
+    getAllKeys(query?: Any, count?: Any): Any {
+      return readAll(this, query, count, (e) => copyKey(e.primaryKey));
+    }
+    count(query?: Any): Any {
+      const range = rangeOf(query);
+      return this._tx._request(
+        this,
+        () => sourceEntries(this).filter((e) => inRange(range, e.key)).length,
+      );
+    }
+    openCursor(query?: Any, direction?: Any): Any {
+      return openCursor(this, query, direction, true);
+    }
+    openKeyCursor(query?: Any, direction?: Any): Any {
+      return openCursor(this, query, direction, false);
+    }
+  }
+
+  /** `getAll` and `getAllKeys`, of a store or an index. */
+  const readAll = (
+    source: Any,
+    query: Any,
+    count: Any,
+    out: (e: Any) => Any,
+  ): Any => {
+    const range = rangeOf(query);
+    const most =
+      count === undefined || Number(count) === 0
+        ? Infinity
+        : Number(count) >>> 0;
+    return source._tx._request(source, () =>
+      sourceEntries(source)
+        .filter((e) => inRange(range, e.key))
+        .slice(0, most)
+        .map(out),
+    );
+  };
+
+  const DIRECTIONS = ['next', 'nextunique', 'prev', 'prevunique'];
+  /** The entry a cursor goes to next (IndexedDB 3, "iterate a cursor"):
+   *  past where it is, at or past `key` where one is asked for, and in
+   *  `primaryKey`'s order past that key where one is. */
+  const nextEntry = (cursor: Any, key: Any, primaryKey: Any): Any => {
+    const entries = sourceEntries(cursor._source).filter((e: Any) =>
+      inRange(cursor._range, e.key),
+    );
+    const at = cursor._position;
+    const forward = cursor.direction.startsWith('next');
+    const unique = cursor.direction.endsWith('unique');
+    const after = (e: Any): boolean => {
+      if (at) {
+        const c = cmpKey(e.key, at.key);
+        if (forward ? c < 0 : c > 0) return false;
+        if (c === 0) {
+          if (unique) return false;
+          const p = cmpKey(e.primaryKey, at.primaryKey);
+          if (forward ? p <= 0 : p >= 0) return false;
+        }
+      }
+      if (key !== undefined) {
+        const c = cmpKey(e.key, key);
+        if (forward ? c < 0 : c > 0) return false;
+        if (c === 0 && primaryKey !== undefined) {
+          const p = cmpKey(e.primaryKey, primaryKey);
+          if (forward ? p < 0 : p > 0) return false;
+        }
+      }
+      return true;
     };
-    return new Proxy(api, {
-      get(t, key) {
-        if (typeof key !== 'string' || key in t) return t[key as Any];
-        return t.getItem(key) ?? undefined;
+    const found = (forward ? entries : entries.slice().reverse()).filter(after);
+    if (!found.length) return null;
+    // `prevunique` lands on the first of the records under the key it finds
+    if (!forward && unique) {
+      return entries.find((e: Any) => cmpKey(e.key, found[0].key) === 0);
+    }
+    return found[0];
+  };
+
+  class IDBCursor {
+    _source: Any;
+    _range: Any;
+    _request: Any;
+    _position: Any = null;
+    _value: Any = undefined;
+    _got = false;
+    readonly direction: string;
+    constructor(source: Any, range: Any, direction: string, request: Any) {
+      this._source = source;
+      this._range = range;
+      this.direction = direction;
+      this._request = request;
+    }
+    get source(): Any {
+      return this._source;
+    }
+    get request(): Any {
+      return this._request;
+    }
+    get key(): Any {
+      return this._position ? copyKey(this._position.key) : undefined;
+    }
+    get primaryKey(): Any {
+      return this._position ? copyKey(this._position.primaryKey) : undefined;
+    }
+    _step(key?: Any, primaryKey?: Any, count = 1): void {
+      if (!this._got) {
+        throw new DOMException(
+          'The cursor is being iterated or has iterated past its end.',
+          'InvalidStateError',
+        );
+      }
+      this._got = false;
+      this._source._tx._request(
+        this._source,
+        () => {
+          let entry: Any = null;
+          for (let i = 0; i < count; i += 1) {
+            entry = nextEntry(
+              this,
+              i === 0 ? key : undefined,
+              i === 0 ? primaryKey : undefined,
+            );
+            if (!entry) break;
+            this._position = entry;
+          }
+          if (!entry) {
+            this._position = null;
+            return null;
+          }
+          this._value = entry.value;
+          this._got = true;
+          return this;
+        },
+        this._request,
+      );
+    }
+    continue(key?: Any): void {
+      this._step(key === undefined ? undefined : checkKey(key));
+    }
+    continuePrimaryKey(key: Any, primaryKey: Any): void {
+      this._step(checkKey(key), checkKey(primaryKey));
+    }
+    advance(count: Any): void {
+      const n = Number(count) >>> 0;
+      if (!n) throw new TypeError('A cursor advances by one or more.');
+      this._step(undefined, undefined, n);
+    }
+    _store(): Any {
+      return this._source instanceof IDBIndex
+        ? this._source._store
+        : this._source;
+    }
+    update(value: Any): Any {
+      if (!this._got || !(this instanceof IDBCursorWithValue)) {
+        throw new DOMException(
+          'The cursor has no record.',
+          'InvalidStateError',
+        );
+      }
+      const store = this._store();
+      const primaryKey = this._position.primaryKey;
+      if (store._data.keyPath !== null) {
+        const k = atKeyPath(value, store._data.keyPath);
+        if (k === undefined || cmpKey(k, primaryKey) !== 0) {
+          throw dataError('The value names another key than the record has.');
+        }
+        return store.put(value);
+      }
+      return store.put(value, primaryKey);
+    }
+    delete(): Any {
+      if (!this._got || !(this instanceof IDBCursorWithValue)) {
+        throw new DOMException(
+          'The cursor has no record.',
+          'InvalidStateError',
+        );
+      }
+      return this._store().delete(this._position.primaryKey);
+    }
+  }
+  class IDBCursorWithValue extends IDBCursor {
+    get value(): Any {
+      return structuredCopy(this._value, new Map());
+    }
+  }
+  const openCursor = (
+    source: Any,
+    query: Any,
+    direction: Any,
+    withValue: boolean,
+  ): Any => {
+    const dir = direction === undefined ? 'next' : str(direction);
+    if (!DIRECTIONS.includes(dir)) {
+      throw new TypeError(`'${dir}' is not a valid cursor direction.`);
+    }
+    const range = rangeOf(query);
+    const request = new IDBRequest();
+    const Cursor = withValue ? IDBCursorWithValue : IDBCursor;
+    const cursor = new Cursor(source, range, dir, request);
+    cursor._got = true;
+    cursor._step();
+    return request;
+  };
+
+  class IDBFactory {
+    open(name: Any, version?: Any): Any {
+      const dbName = str(name);
+      let wanted: number | undefined;
+      if (version !== undefined) {
+        wanted = Number(version);
+        if (!Number.isInteger(wanted) || wanted < 1 || wanted > 2 ** 53 - 1) {
+          throw new TypeError('The version is not a whole number from 1.');
+        }
+      }
+      const request = new IDBOpenDBRequest();
+      setTimer(
+        () => {
+          let data = idbDatabases.get(dbName);
+          const old = data ? data.version : 0;
+          const target = wanted ?? (data ? data.version : 1);
+          if (target < old) {
+            request._done = true;
+            request._error = new DOMException(
+              `The requested version (${target}) is less than the existing version (${old}).`,
+              'VersionError',
+            );
+            fireAt(
+              [request],
+              new Event('error', { bubbles: true, cancelable: true }),
+            );
+            return;
+          }
+          if (!data) {
+            data = {
+              name: dbName,
+              version: 0,
+              stores: new Map(),
+              connections: new Set(),
+            };
+            idbDatabases.set(dbName, data);
+          }
+          const db = new IDBDatabase(data);
+          data.connections.add(db);
+          if (target === old) {
+            request._done = true;
+            request._result = db;
+            fireAt([request], new Event('success'));
+            return;
+          }
+          // the other connections are told, and this one is upgraded
+          for (const other of data.connections) {
+            if (other !== db && !other._closed) {
+              fireAt(
+                [other],
+                new IDBVersionChangeEvent('versionchange', {
+                  oldVersion: old,
+                  newVersion: target,
+                }),
+              );
+            }
+          }
+          const tx = new IDBTransaction(db, [], 'versionchange');
+          data.version = target;
+          db._upgrade = tx;
+          request.transaction = tx;
+          request._done = true;
+          request._result = db;
+          tx._onDone = (ok: boolean) => {
+            db._upgrade = null;
+            request.transaction = null;
+            if (ok) {
+              fireAt([request], new Event('success'));
+              return;
+            }
+            db.close();
+            if (!old) idbDatabases.delete(dbName);
+            request._result = undefined;
+            request._error = new DOMException(
+              'The upgrade was aborted.',
+              'AbortError',
+            );
+            fireAt(
+              [request],
+              new Event('error', { bubbles: true, cancelable: true }),
+            );
+          };
+          fireAt(
+            [request],
+            new IDBVersionChangeEvent('upgradeneeded', {
+              oldVersion: old,
+              newVersion: target,
+            }),
+          );
+        },
+        0,
+        [],
+        false,
+      );
+      return request;
+    }
+    deleteDatabase(name: Any): Any {
+      const dbName = str(name);
+      const request = new IDBOpenDBRequest();
+      setTimer(
+        () => {
+          const data = idbDatabases.get(dbName);
+          const old = data ? data.version : 0;
+          for (const other of data?.connections ?? []) {
+            if (!other._closed) {
+              fireAt(
+                [other],
+                new IDBVersionChangeEvent('versionchange', {
+                  oldVersion: old,
+                  newVersion: null,
+                }),
+              );
+            }
+          }
+          idbDatabases.delete(dbName);
+          request._done = true;
+          request._result = undefined;
+          fireAt(
+            [request],
+            new IDBVersionChangeEvent('success', {
+              oldVersion: old,
+              newVersion: null,
+            }),
+          );
+        },
+        0,
+        [],
+        false,
+      );
+      return request;
+    }
+    databases(): Promise<Any[]> {
+      return Promise.resolve(
+        [...idbDatabases.values()].map((d) => ({
+          name: d.name,
+          version: d.version,
+        })),
+      );
+    }
+    cmp(a: Any, b: Any): number {
+      checkKey(a);
+      checkKey(b);
+      return cmpKey(a, b);
+    }
+  }
+
+  /** `localStorage` and `sessionStorage`, kept by the host per origin. */
+  /** Which storage a `Storage` is: the object and the proxy a page holds
+   *  both, since the methods are the prototype's and run with either. */
+  const storageKinds = new WeakMap<object, 'local' | 'session'>();
+  const kindOf = (store: Any): 'local' | 'session' => {
+    const kind = storageKinds.get(store);
+    if (!kind) throw new TypeError('Illegal invocation');
+    return kind;
+  };
+  const storageKeys = (kind: 'local' | 'session'): string[] => {
+    const s = call('storage', kind, 'keys');
+    return typeof s === 'string' && s ? s.split('\u0000') : [];
+  };
+  /** `Storage` (HTML 12.2.1): its methods on its prototype, where a page
+   *  patches `setItem` to watch what is written. */
+  class Storage {
+    getItem(k: Any): Any {
+      return call('storage', kindOf(this), 'get', str(k)) ?? null;
+    }
+    setItem(k: Any, v: Any): void {
+      call('storage', kindOf(this), 'set', str(k), str(v));
+    }
+    removeItem(k: Any): void {
+      call('storage', kindOf(this), 'remove', str(k));
+    }
+    clear(): void {
+      call('storage', kindOf(this), 'clear');
+    }
+    key(i: Any): Any {
+      return storageKeys(kindOf(this))[Number(i)] ?? null;
+    }
+    get length(): number {
+      return storageKeys(kindOf(this)).length;
+    }
+  }
+  /** `localStorage` and `sessionStorage`: a `Storage` whose other
+   *  properties are its items, as a browser's is. */
+  const storage = (kind: 'local' | 'session'): Any => {
+    const target = Object.create(Storage.prototype);
+    storageKinds.set(target, kind);
+    const item = (key: string): Any =>
+      call('storage', kind, 'get', key) ?? undefined;
+    const proxy = new Proxy(target, {
+      get(t, key, receiver) {
+        if (typeof key !== 'string' || key in t) {
+          return Reflect.get(t, key, receiver);
+        }
+        return item(key);
       },
       set(t, key, value) {
-        if (typeof key !== 'string') return false;
-        t.setItem(key, value);
+        if (typeof key !== 'string') return Reflect.set(t, key, value);
+        call('storage', kind, 'set', key, str(value));
         return true;
       },
-      deleteProperty(t, key) {
-        if (typeof key === 'string') t.removeItem(key);
+      has(t, key) {
+        return key in t || (typeof key === 'string' && item(key) !== undefined);
+      },
+      deleteProperty(_t, key) {
+        if (typeof key === 'string') call('storage', kind, 'remove', key);
         return true;
       },
-      ownKeys: () => keys(),
-      getOwnPropertyDescriptor(t, key) {
+      ownKeys: () => storageKeys(kind),
+      getOwnPropertyDescriptor(_t, key) {
         if (typeof key !== 'string') return undefined;
-        const value = t.getItem(key);
-        return value === null
+        const value = item(key);
+        return value === undefined
           ? undefined
           : { value, writable: true, enumerable: true, configurable: true };
       },
     });
+    storageKinds.set(proxy, kind);
+    return proxy;
   };
 
   /** `console`, to the host's log. */
@@ -6340,6 +7651,19 @@ export function installDom(bridge: Bridge): void {
     File,
     FormData,
     Request,
+    Storage,
+    IDBFactory,
+    IDBDatabase,
+    IDBTransaction,
+    IDBObjectStore,
+    IDBIndex,
+    IDBCursor,
+    IDBCursorWithValue,
+    IDBKeyRange,
+    IDBRequest,
+    IDBOpenDBRequest,
+    IDBVersionChangeEvent,
+    DOMStringList,
     ReadableStream,
     ReadableStreamDefaultReader,
     ReadableStreamDefaultController,
@@ -6400,6 +7724,7 @@ export function installDom(bridge: Bridge): void {
   } else {
     define('console', console);
   }
+  define('indexedDB', new IDBFactory());
   define('localStorage', storage('local'));
   define('sessionStorage', storage('session'));
   define('fetch', fetch);
@@ -6523,6 +7848,23 @@ export function installDom(bridge: Bridge): void {
     colorDepth: 24,
     pixelDepth: 24,
   });
+  // The interfaces of the window's own objects, which a page asks
+  // `instanceof` of and reads prototypes from — mazda.com.au's scripts ask
+  // for `Location` — each object made the one instance of its own.
+  for (const [name, object] of [
+    ['Location', location],
+    ['History', history],
+    ['Navigator', navigator],
+    ['Screen', G.screen],
+  ] as [string, Any][]) {
+    const Interface = { [name]: class {} }[name];
+    Object.defineProperty(Interface.prototype, Symbol.toStringTag, {
+      value: name,
+      configurable: true,
+    });
+    Object.setPrototypeOf(object, Interface.prototype);
+    define(name, Interface);
+  }
   getter('innerWidth', () => viewport().width);
   getter('innerHeight', () => viewport().height);
   getter('outerWidth', () => viewport().width);
