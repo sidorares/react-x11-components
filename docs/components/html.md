@@ -3481,9 +3481,14 @@ tree; and a `:has()` whose element is not itself the one restyled —
 anchors. A change under an element that is `display: none`, a comment, a
 change to what is not in the document yet — a fragment a script fills
 before it appends it — and an attribute nothing reads but a selector that
-names none (a `data-` attribute no rule tests) restyle nothing at all. The
-inside of an inline `<svg>` has no boxes: a change there draws the drawing
-again.
+names none (a `data-` attribute no rule tests) restyle nothing at all. Nor
+does an attribute that is as it was before the first of the list's changes
+to it said it was — set to the value it had, or set and set back: DOM makes
+a record for each, a `classList.remove` of a class the element does not
+have, a `style.setProperty` of the value it holds, and a page that writes
+them at every frame built the boxes at each, where a browser compares and
+restyles nothing. The inside of an inline `<svg>` has no boxes: a change
+there draws the drawing again.
 
 ## Performance
 
