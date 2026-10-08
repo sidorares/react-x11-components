@@ -120,6 +120,31 @@ const INSTALL = `(function () {
   install(bridge);
 })()`;
 
+/**
+ * A promise the context's own queue settles, awaited by entering the
+ * context until it has. A module's `evaluate()` answers one: on Node 20, and
+ * on 22 before its later releases, it settles only as the context's queue
+ * runs, which under `microtaskMode: 'afterEvaluate'` runs only as the host
+ * enters the context — and what would enter it next was the `import()` that
+ * waited on it, so every `import()` waited for ever. A later Node settles it
+ * from outside, and the first turn finds it settled. `enter` answers false
+ * where there is nothing to enter any more.
+ */
+async function settledIn<T>(
+  promise: Promise<T>,
+  enter: () => boolean,
+): Promise<T> {
+  let settled = false;
+  const mark = (): void => {
+    settled = true;
+  };
+  promise.then(mark, mark);
+  for (let wait = 0; ; wait = Math.min(50, wait ? wait * 2 : 1)) {
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    if (settled || !enter()) return promise;
+  }
+}
+
 /** Whether a module `import()` hands over is the module: Bun 1.4 calls the
  *  host for one in a context and resolves the page's promise with a
  *  namespace that has none of its exports, which a page cannot tell from a
@@ -139,7 +164,11 @@ function askDynamicImport(): Promise<boolean> {
         importModuleDynamically: () => Promise.reject(new Error('none')),
       });
       await probe.link(() => Promise.reject(new Error('none')));
-      await probe.evaluate();
+      const drain = new vm.Script('0');
+      await settledIn(probe.evaluate(), () => {
+        drain.runInContext(context);
+        return true;
+      });
       new vm.Script('import("probe:").then((m) => { globalThis.ok = m.ok; })', {
         importModuleDynamically: (async () => probe) as never,
       }).runInContext(context);
@@ -288,14 +317,8 @@ export class ScriptEngine {
         "A page's scripts are not run where its import() would reach the host: run Node with --experimental-vm-modules.",
       );
     }
-    this._importer = (specifier) => {
-      const done = this._dynamic(specifier, this._options.base?.() ?? '');
-      // The page's promise settles in the context's own queue, which runs
-      // only as the host enters the context (`microtaskMode`): an entry,
-      // once what settled it has.
-      done.then(this._drainLater, this._drainLater);
-      return done;
-    };
+    this._importer = (specifier) =>
+      this._imported(this._dynamic(specifier, this._options.base?.() ?? ''));
     this._context = createPageContext(
       this._options.global ?? 'auto',
       this._importer,
@@ -373,8 +396,21 @@ export class ScriptEngine {
         meta.url = module.identifier;
       },
       importModuleDynamically: (specifier, referrer) =>
-        this._dynamic(specifier, referrer.identifier ?? url),
+        this._imported(this._dynamic(specifier, referrer.identifier ?? url)),
     });
+  }
+
+  /**
+   * An `import()`'s answer, with the context entered once it is settled:
+   * the page's promise settles in the context's own queue, which runs only
+   * as the host enters it (`microtaskMode`). A module's `import()` as much
+   * as a classic script's — on Node 22 before its later releases, a
+   * module's top-level `await` of one went on only where something else
+   * entered the context after it.
+   */
+  private _imported(done: Promise<PageModule>): Promise<PageModule> {
+    done.then(this._drainLater, this._drainLater);
+    return done;
   }
 
   /** The module at a URL, fetched and compiled once (`_modules`). */
@@ -456,7 +492,11 @@ export class ScriptEngine {
       this._evaluated.set(module, evaluated);
     }
     try {
-      await evaluated;
+      await settledIn(evaluated, () => {
+        if (this._disposed || this._broken) return false;
+        this.call('__drain', null);
+        return true;
+      });
     } catch (error) {
       if (ownData(error, 'code') === TIMEOUT) {
         this._options.onTimeout();
