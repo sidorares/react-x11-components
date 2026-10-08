@@ -16,7 +16,7 @@
 // engine is made on has modules: the flag that makes Node keep a page's
 // `import()` in its context is the one that makes `vm.SourceTextModule`
 // (`SCRIPTS_CONTAINED`), and where it is not given, nothing runs.
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type {
   Document,
@@ -34,7 +34,7 @@ import type { HostSeams } from './host.js';
 export const SCRIPT_TIMEOUT_MS = 2000;
 
 /** What the page around a document gives its scripts. */
-export interface ScriptsOptions extends Omit<HostSeams, 'handle'> {
+export interface ScriptsOptions extends Omit<HostSeams, 'handle' | 'adopt'> {
   /** A script's source, by its URL — through the browser's network — or
    *  null where there is none. */
   load(url: string): Promise<string | null>;
@@ -44,6 +44,10 @@ export interface ScriptsOptions extends Omit<HostSeams, 'handle'> {
    *  the page cannot keep from the browser. */
   reserved?(event: HtmlDomEvent): boolean;
 }
+
+/** What a runner is made with: the options, the handle, and where the
+ *  sheets the page adopts go. */
+type RunnerSeams = ScriptsOptions & Pick<HostSeams, 'handle' | 'adopt'>;
 
 /** The MIME types a classic script is (HTML 4.12.1.1, "JavaScript MIME
  *  type essence match"), and no type at all. */
@@ -86,7 +90,7 @@ export class ScriptRunner {
   constructor(
     document: Document,
     url: string,
-    private readonly _options: ScriptsOptions & { handle: HtmlHandle },
+    private readonly _options: RunnerSeams,
   ) {
     this.host = new DomHost(document, _options, url);
     this.engine = new ScriptEngine(this.host.bridge, {
@@ -218,8 +222,11 @@ export function useScripts(
   onParsed?: () => void;
   onLoaded?: () => void;
   onDomEvent?: (event: HtmlDomEvent) => boolean | void;
+  stylesheet?: string[];
 } {
   const runner = useRef<ScriptRunner | null>(null);
+  // the sheets the page adopted, applied after the document's own
+  const [adopted, setAdopted] = useState<string[]>(NO_SHEETS);
   const latest = useRef(options);
   latest.current = options;
   const address = useRef(url);
@@ -227,8 +234,9 @@ export function useScripts(
 
   // the seams the host is made with read the latest options, so a render
   // that made new callbacks reaches a document already running
-  const seams = useRef<ScriptsOptions & { handle: HtmlHandle }>({
+  const seams = useRef<RunnerSeams>({
     handle,
+    adopt: (sheets) => setAdopted(sheets.length ? sheets : NO_SHEETS),
     get userAgent() {
       return latest.current.userAgent;
     },
@@ -251,6 +259,7 @@ export function useScripts(
   const onDocument = useCallback((document: Document) => {
     if (runner.current?.host.document === document) return;
     runner.current?.dispose();
+    setAdopted(NO_SHEETS);
     runner.current = new ScriptRunner(document, address.current, seams.current);
   }, []);
   const onScript = useCallback(
@@ -287,5 +296,10 @@ export function useScripts(
     onParsed,
     onLoaded,
     onDomEvent,
+    ...(adopted.length ? { stylesheet: adopted } : {}),
   };
 }
+
+/** No sheet adopted: one array, so that a page that adopts none renders
+ *  nothing again. */
+const NO_SHEETS: string[] = [];

@@ -408,6 +408,21 @@ export function installDom(bridge: Bridge): void {
       this.newURL = String(init.newURL ?? '');
     }
   }
+  class MessageEvent extends Event {
+    readonly data: Any;
+    readonly origin: string;
+    readonly lastEventId: string;
+    readonly source: Any;
+    readonly ports: Any[];
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this.data = init.data === undefined ? null : init.data;
+      this.origin = String(init.origin ?? '');
+      this.lastEventId = String(init.lastEventId ?? '');
+      this.source = init.source ?? null;
+      this.ports = Array.from(init.ports ?? []);
+    }
+  }
   class PopStateEvent extends Event {
     readonly state: Any;
     constructor(type: string, init: Any = {}) {
@@ -909,6 +924,14 @@ export function installDom(bridge: Bridge): void {
   }
   Object.defineProperty(Text.prototype, 'nodeType', nodeTypeOf(3));
   class Comment extends CharacterData {}
+  // never made here — HTML has no CDATA outside foreign content, and no
+  // processing instruction — but a polyfill patches their prototypes
+  class CDATASection extends Text {}
+  class ProcessingInstruction extends CharacterData {
+    get target(): string {
+      return '';
+    }
+  }
   Object.defineProperty(Comment.prototype, 'nodeType', nodeTypeOf(8));
 
   class DocumentType extends Node {
@@ -2103,6 +2126,65 @@ export function installDom(bridge: Bridge): void {
     }
   }
   class HTMLMediaElement extends HTMLElement {
+    static readonly NETWORK_EMPTY = 0;
+    static readonly HAVE_NOTHING = 0;
+    // a media element here never loads: at rest, before its first frame,
+    // as a browser has one that has not started (HTML 4.8.11)
+    get paused(): boolean {
+      return true;
+    }
+    get ended(): boolean {
+      return false;
+    }
+    get seeking(): boolean {
+      return false;
+    }
+    get readyState(): number {
+      return 0;
+    }
+    get networkState(): number {
+      return 0;
+    }
+    get duration(): number {
+      return NaN;
+    }
+    get currentTime(): number {
+      return 0;
+    }
+    set currentTime(_v: Any) {}
+    volume = 1;
+    playbackRate = 1;
+    defaultPlaybackRate = 1;
+    get muted(): boolean {
+      return this.hasAttribute('muted');
+    }
+    set muted(v: Any) {
+      this.toggleAttribute('muted', !!v);
+    }
+    get currentSrc(): string {
+      return '';
+    }
+    get error(): Any {
+      return null;
+    }
+    get buffered(): Any {
+      return noTimeRanges;
+    }
+    get played(): Any {
+      return noTimeRanges;
+    }
+    get seekable(): Any {
+      return noTimeRanges;
+    }
+    get textTracks(): Any {
+      return trackListOf(this, TextTrackList);
+    }
+    get audioTracks(): Any {
+      return trackListOf(this, AudioTrackList);
+    }
+    get videoTracks(): Any {
+      return trackListOf(this, VideoTrackList);
+    }
     play(): Promise<void> {
       return Promise.reject(
         new DOMException(
@@ -2118,6 +2200,107 @@ export function installDom(bridge: Bridge): void {
     }
   }
 
+  for (const name of ['autoplay', 'controls', 'loop', 'playsInline']) {
+    Object.defineProperty(
+      HTMLMediaElement.prototype,
+      name,
+      flag(name.toLowerCase()),
+    );
+  }
+  for (const name of ['preload', 'crossOrigin']) {
+    Object.defineProperty(
+      HTMLMediaElement.prototype,
+      name,
+      reflect(name.toLowerCase()),
+    );
+  }
+  Object.defineProperty(HTMLMediaElement.prototype, 'src', urlProperty('src'));
+  class HTMLVideoElement extends HTMLMediaElement {
+    get videoWidth(): number {
+      return 0;
+    }
+    get videoHeight(): number {
+      return 0;
+    }
+  }
+  Object.defineProperty(
+    HTMLVideoElement.prototype,
+    'poster',
+    urlProperty('poster'),
+  );
+  class HTMLAudioElement extends HTMLMediaElement {}
+  /** A media element's list of tracks: none, since nothing loads. */
+  class TrackList extends EventTarget {
+    get length(): number {
+      return 0;
+    }
+    getTrackById(): Any {
+      return null;
+    }
+    [Symbol.iterator](): Iterator<Any> {
+      return [][Symbol.iterator]();
+    }
+  }
+  class TextTrackList extends TrackList {}
+  class AudioTrackList extends TrackList {}
+  class VideoTrackList extends TrackList {}
+  const trackLists = new WeakMap<object, Map<Any, Any>>();
+  const trackListOf = (media: Any, Kind: Any): Any => {
+    let lists = trackLists.get(media);
+    if (!lists) trackLists.set(media, (lists = new Map()));
+    let list = lists.get(Kind);
+    if (!list) lists.set(Kind, (list = new Kind()));
+    return list;
+  };
+  /** A `TimeRanges` with no range in it. */
+  const noTimeRanges: Any = {
+    length: 0,
+    start: () => {
+      throw new DOMException('There is no range.', 'IndexSizeError');
+    },
+    end: () => {
+      throw new DOMException('There is no range.', 'IndexSizeError');
+    },
+  };
+  class HTMLSourceElement extends HTMLElement {}
+  Object.defineProperty(HTMLSourceElement.prototype, 'src', urlProperty('src'));
+  for (const name of ['type', 'media', 'sizes', 'srcset']) {
+    Object.defineProperty(HTMLSourceElement.prototype, name, reflect(name));
+  }
+  class HTMLTrackElement extends HTMLElement {}
+  class HTMLPictureElement extends HTMLElement {}
+  class HTMLPreElement extends HTMLElement {}
+  class HTMLBRElement extends HTMLElement {}
+  class HTMLHRElement extends HTMLElement {}
+  class HTMLTitleElement extends HTMLElement {}
+  class HTMLBaseElement extends HTMLElement {}
+  class HTMLTimeElement extends HTMLElement {}
+  Object.defineProperty(
+    HTMLTimeElement.prototype,
+    'dateTime',
+    reflect('datetime'),
+  );
+  class HTMLQuoteElement extends HTMLElement {}
+  class HTMLDListElement extends HTMLElement {}
+  class HTMLTableSectionElement extends HTMLElement {}
+  class HTMLTableCaptionElement extends HTMLElement {}
+  class HTMLTableColElement extends HTMLElement {}
+  class HTMLLegendElement extends HTMLElement {}
+  class HTMLOptGroupElement extends HTMLElement {}
+  class HTMLDataListElement extends HTMLElement {}
+  class HTMLProgressElement extends HTMLElement {}
+  class HTMLMeterElement extends HTMLElement {}
+  class HTMLOutputElement extends HTMLElement {}
+  class HTMLObjectElement extends HTMLElement {}
+  class HTMLEmbedElement extends HTMLElement {}
+  class HTMLSlotElement extends HTMLElement {
+    assignedNodes(): Any[] {
+      return [];
+    }
+    assignedElements(): Any[] {
+      return [];
+    }
+  }
   class HTMLBodyElement extends HTMLElement {}
   class HTMLHeadElement extends HTMLElement {}
   class HTMLHtmlElement extends HTMLElement {}
@@ -2131,7 +2314,455 @@ export function installDom(bridge: Bridge): void {
   class HTMLTableElement extends HTMLElement {}
   class HTMLTableRowElement extends HTMLElement {}
   class HTMLTableCellElement extends HTMLElement {}
-  class HTMLStyleElement extends HTMLElement {}
+  // --- CSSOM ---------------------------------------------------------------------
+  //
+  // A sheet is its rules' text. A `<style>`'s are the host's (`sheetRules`):
+  // read from its text the first time they are asked for, kept as the page
+  // edits them, and written back as the element's text at the next flush,
+  // so `<Html>` draws what a CSS-in-JS library inserts — styled-components
+  // and emotion insert every rule with `insertRule` in production, and
+  // read `document.styleSheets` to find the sheet to insert into. A
+  // `<link>`'s rules are refused where it is another origin's, as a
+  // browser refuses them, and are none of the rules it has where it is
+  // not; a sheet a page constructs draws nothing, since nothing here
+  // adopts one.
+
+  class CSSRuleList extends Array {
+    item(i: Any): Any {
+      return this[Number(i)] ?? null;
+    }
+  }
+  class StyleSheetList extends Array {
+    item(i: Any): Any {
+      return this[Number(i)] ?? null;
+    }
+  }
+
+  /** What a rule's text says before its block, or all of a statement. */
+  const preludeOf = (text: string): string => {
+    const open = text.indexOf('{');
+    return (open < 0 ? text.replace(/;\s*$/, '') : text.slice(0, open)).trim();
+  };
+  /** What is inside a rule's block. */
+  const blockOf = (text: string): string => {
+    const open = text.indexOf('{');
+    if (open < 0) return '';
+    const close = text.lastIndexOf('}');
+    return text.slice(open + 1, close > open ? close : text.length);
+  };
+  /** A media query list, as `MediaList` reads one. */
+  const mediaList = (text: string): Any => {
+    const items = text
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean);
+    const list: Any = {
+      mediaText: items.join(', '),
+      length: items.length,
+      item: (i: Any) => items[Number(i)] ?? null,
+      toString: () => items.join(', '),
+    };
+    items.forEach((m, i) => (list[i] = m));
+    return list;
+  };
+  /** A block's declarations, as a rule's `style` reads them: by name, by
+   *  index and camel-cased. Read only. */
+  const declarationsOf = (block: string): Any => {
+    const values = new Map<string, string>();
+    for (const part of block.split(/;(?![^(]*\))/)) {
+      const colon = part.indexOf(':');
+      if (colon < 0) continue;
+      const name = part.slice(0, colon).trim();
+      if (!name) continue;
+      values.set(
+        name.startsWith('--') ? name : name.toLowerCase(),
+        part.slice(colon + 1).trim(),
+      );
+    }
+    const names = [...values.keys()];
+    const plain = (name: string): string =>
+      (values.get(name) ?? '').replace(/\s*!\s*important$/i, '');
+    const style: Any = {
+      cssText: block.trim(),
+      length: names.length,
+      item: (i: Any) => names[Number(i)] ?? '',
+      getPropertyValue: (name: Any) => plain(str(name)),
+      getPropertyPriority: (name: Any) =>
+        /!\s*important$/i.test(values.get(str(name)) ?? '') ? 'important' : '',
+    };
+    names.forEach((name, i) => {
+      style[i] = name;
+      if (!name.startsWith('--')) {
+        style[name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] =
+          plain(name);
+      }
+    });
+    return style;
+  };
+
+  class CSSRule {
+    static readonly STYLE_RULE = 1;
+    static readonly CHARSET_RULE = 2;
+    static readonly IMPORT_RULE = 3;
+    static readonly MEDIA_RULE = 4;
+    static readonly FONT_FACE_RULE = 5;
+    static readonly PAGE_RULE = 6;
+    static readonly KEYFRAMES_RULE = 7;
+    static readonly KEYFRAME_RULE = 8;
+    static readonly NAMESPACE_RULE = 10;
+    static readonly SUPPORTS_RULE = 12;
+    _type = 0;
+    _text: string;
+    parentStyleSheet: Any;
+    parentRule: Any = null;
+    constructor(text: string, sheet: Any) {
+      this._text = text;
+      this.parentStyleSheet = sheet;
+    }
+    get cssText(): string {
+      return this._text;
+    }
+    get type(): number {
+      return this._type;
+    }
+  }
+  class CSSStyleRule extends CSSRule {
+    override _type = 1;
+    get selectorText(): string {
+      return preludeOf(this._text);
+    }
+    get style(): Any {
+      return declarationsOf(blockOf(this._text));
+    }
+  }
+  class CSSGroupingRule extends CSSRule {
+    get cssRules(): Any {
+      return ruleList(
+        JSON.parse(String(call('cssRules', blockOf(this._text)))),
+        this.parentStyleSheet,
+        this,
+      );
+    }
+    insertRule(): number {
+      throw new DOMException(
+        'A rule inside another is not edited here.',
+        'NotSupportedError',
+      );
+    }
+    deleteRule(): void {
+      this.insertRule();
+    }
+  }
+  /** An at-rule's prelude with its name left out: a condition. */
+  const conditionOf = (text: string): string =>
+    preludeOf(text).replace(/^@[\w-]+\s*/, '');
+  class CSSMediaRule extends CSSGroupingRule {
+    override _type = 4;
+    get conditionText(): string {
+      return conditionOf(this._text);
+    }
+    get media(): Any {
+      return mediaList(conditionOf(this._text));
+    }
+  }
+  class CSSSupportsRule extends CSSGroupingRule {
+    override _type = 12;
+    get conditionText(): string {
+      return conditionOf(this._text);
+    }
+  }
+  class CSSImportRule extends CSSRule {
+    override _type = 3;
+    readonly styleSheet = null;
+    get href(): string {
+      const m = /^(?:url\(\s*)?(["']?)([^"')]*)\1/i.exec(
+        conditionOf(this._text),
+      );
+      return m ? m[2] : '';
+    }
+    get media(): Any {
+      return mediaList(
+        conditionOf(this._text).replace(
+          /^(?:url\([^)]*\)|"[^"]*"|'[^']*')/i,
+          '',
+        ),
+      );
+    }
+  }
+  class CSSFontFaceRule extends CSSRule {
+    override _type = 5;
+    get style(): Any {
+      return declarationsOf(blockOf(this._text));
+    }
+  }
+  class CSSKeyframesRule extends CSSRule {
+    override _type = 7;
+    get name(): string {
+      return conditionOf(this._text).replace(/^["']|["']$/g, '');
+    }
+  }
+  const RULE_CLASSES: Record<string, Any> = {
+    media: CSSMediaRule,
+    supports: CSSSupportsRule,
+    import: CSSImportRule,
+    'font-face': CSSFontFaceRule,
+    keyframes: CSSKeyframesRule,
+  };
+  const AT_RULE_TYPES: Record<string, number> = {
+    charset: 2,
+    page: 6,
+    namespace: 10,
+  };
+  const ruleOf = (text: string, sheet: Any, parent: Any = null): Any => {
+    const at = /^@(?:-[a-z]+-)?([a-z-]+)/i.exec(text);
+    const kind = at ? at[1].toLowerCase() : '';
+    const Rule = RULE_CLASSES[kind] ?? (at ? CSSRule : CSSStyleRule);
+    const rule = new Rule(text, sheet);
+    if (Rule === CSSRule) rule._type = AT_RULE_TYPES[kind] ?? 0;
+    rule.parentRule = parent;
+    return rule;
+  };
+  const ruleList = (texts: string[], sheet: Any, parent: Any): Any => {
+    const list = new CSSRuleList();
+    for (const text of texts) list.push(ruleOf(text, sheet, parent));
+    return list;
+  };
+  /** The one rule a text is, for `insertRule`. */
+  const oneRule = (text: string): string => {
+    const rules = JSON.parse(String(call('cssRules', text))) as string[];
+    if (rules.length !== 1) {
+      throw new DOMException(
+        `Failed to parse the rule '${text}'.`,
+        'SyntaxError',
+      );
+    }
+    return rules[0];
+  };
+
+  class CSSStyleSheet {
+    /** The `<style>` or `<link>` it is the sheet of, or none. */
+    _owner: Any = null;
+    /** Its rules, where they are not the host's: a constructed sheet's, or
+     *  a `<link>`'s. */
+    _rules: string[] | null = [];
+    /** The host's edit of a `<style>`'s rules `_list` is. */
+    _version: Any = null;
+    _list: Any = null;
+    _media = '';
+    disabled = false;
+    readonly parentStyleSheet = null;
+    readonly ownerRule = null;
+    readonly type = 'text/css';
+    constructor(options: Any = {}) {
+      const media = options?.media;
+      this._media =
+        media === undefined || media === null
+          ? ''
+          : String(media.mediaText ?? media);
+      this.disabled = !!options?.disabled;
+    }
+    get ownerNode(): Any {
+      return this._owner;
+    }
+    get href(): Any {
+      return this._owner instanceof HTMLLinkElement
+        ? (this._owner as Any).href
+        : null;
+    }
+    get title(): Any {
+      return this._owner?.getAttribute('title') ?? null;
+    }
+    get media(): Any {
+      return mediaList(
+        this._owner ? (this._owner.getAttribute('media') ?? '') : this._media,
+      );
+    }
+    get cssRules(): Any {
+      const owner = this._owner;
+      if (owner instanceof HTMLLinkElement) {
+        let origin = '';
+        try {
+          origin = new URL((owner as Any).href).origin;
+        } catch {
+          // no address: no origin
+        }
+        if (origin !== location.origin) {
+          throw new DOMException(
+            "Failed to read the 'cssRules' property from 'CSSStyleSheet': Cannot access rules",
+            'SecurityError',
+          );
+        }
+      }
+      if (this._rules) {
+        this._list ??= ruleList(this._rules, this, null);
+        return this._list;
+      }
+      const answer = String(call('sheetRules', owner._id, this._version));
+      if (answer) {
+        const cut = answer.indexOf('\u0000');
+        this._version = Number(answer.slice(0, cut));
+        this._list = ruleList(JSON.parse(answer.slice(cut + 1)), this, null);
+      }
+      return this._list;
+    }
+    get rules(): Any {
+      return this.cssRules;
+    }
+    insertRule(rule: Any, index?: Any): number {
+      const at = index === undefined ? 0 : Number(index) >>> 0;
+      const text = str(rule);
+      if (this._rules) {
+        const one = oneRule(text);
+        if (at > this._rules.length) {
+          throw new DOMException(
+            `The index provided (${at}) is larger than the maximum index (${this._rules.length}).`,
+            'IndexSizeError',
+          );
+        }
+        this._rules.splice(at, 0, one);
+        this._list = null;
+        if (!this._owner) readopt(this);
+        return at;
+      }
+      const answer = String(call('sheetInsert', this._owner._id, text, at));
+      const first = answer.indexOf('\u0000');
+      const second = answer.indexOf('\u0000', first + 1);
+      // the list kept, edited as the host's rules were, where it was the
+      // rules before the edit: a library that inserts a rule and reads
+      // `cssRules.length` for the next one reads no list again
+      if (this._list && this._version === Number(answer.slice(0, first))) {
+        this._list.splice(at, 0, ruleOf(answer.slice(second + 1), this));
+        this._version = Number(answer.slice(first + 1, second));
+      }
+      return at;
+    }
+    deleteRule(index: Any): void {
+      const at = Number(index) >>> 0;
+      if (this._rules) {
+        if (at >= this._rules.length) {
+          throw new DOMException(
+            `The index provided (${at}) is outside the range [0, ${this._rules.length}).`,
+            'IndexSizeError',
+          );
+        }
+        this._rules.splice(at, 1);
+        this._list = null;
+        if (!this._owner) readopt(this);
+        return;
+      }
+      const answer = String(call('sheetDelete', this._owner._id, at));
+      const cut = answer.indexOf('\u0000');
+      if (this._list && this._version === Number(answer.slice(0, cut))) {
+        this._list.splice(at, 1);
+        this._version = Number(answer.slice(cut + 1));
+      }
+    }
+    addRule(selector: Any, block: Any, index?: Any): number {
+      this.insertRule(
+        `${str(selector)} { ${str(block)} }`,
+        index === undefined ? this.cssRules.length : index,
+      );
+      return -1;
+    }
+    removeRule(index: Any = 0): void {
+      this.deleteRule(index);
+    }
+    replaceSync(text: Any): void {
+      if (this._owner) {
+        throw new DOMException(
+          "Failed to execute 'replaceSync' on 'CSSStyleSheet': Can't call replaceSync on non-constructed CSSStyleSheets.",
+          'NotAllowedError',
+        );
+      }
+      // a constructed sheet imports nothing (CSSOM 6.1.2)
+      this._rules = (
+        JSON.parse(String(call('cssRules', str(text)))) as string[]
+      ).filter((rule) => !/^@import\b/i.test(rule));
+      this._list = null;
+      readopt(this);
+    }
+    replace(text: Any): Promise<Any> {
+      try {
+        this.replaceSync(text);
+        return Promise.resolve(this);
+      } catch (e) {
+        return Promise.reject(e);
+      }
+    }
+  }
+  const StyleSheet = CSSStyleSheet;
+
+  /** The sheet of a `<style>` or a `<link>`: one object for as long as the
+   *  element is. */
+  const ownedSheets = new WeakMap<object, Any>();
+  const sheetOf = (el: Any): Any => {
+    let sheet = ownedSheets.get(el);
+    if (!sheet) {
+      sheet = new CSSStyleSheet();
+      sheet._owner = el;
+      sheet._rules = el instanceof HTMLLinkElement ? [] : null;
+      ownedSheets.set(el, sheet);
+    }
+    return sheet;
+  };
+
+  /** `document.adoptedStyleSheets`: the sheets, and the array a page
+   *  edits them in, which tells the host as it changes. */
+  const adoptedSheets: Any[] = [];
+  const adoptable = (sheet: Any): void => {
+    if (!(sheet instanceof CSSStyleSheet) || sheet._owner) {
+      throw new DOMException(
+        "Failed to set the 'adoptedStyleSheets' property on 'Document': Sharing constructed stylesheets in multiple documents is not allowed",
+        'NotAllowedError',
+      );
+    }
+  };
+  const adopt = (): void => {
+    call(
+      'adopt',
+      JSON.stringify(
+        adoptedSheets
+          .filter((sheet) => !sheet.disabled)
+          .map((sheet) => (sheet._rules as string[]).join('\n')),
+      ),
+    );
+  };
+  const adopted: Any = new Proxy(adoptedSheets, {
+    set(target: Any, key: Any, value: Any): boolean {
+      if (typeof key === 'string' && /^\d+$/.test(key)) adoptable(value);
+      target[key] = value;
+      adopt();
+      return true;
+    },
+    deleteProperty(target: Any, key: Any): boolean {
+      delete target[key];
+      adopt();
+      return true;
+    },
+  });
+  /** A constructed sheet changed: the document's adopted sheets again,
+   *  where it is one of them. */
+  const readopt = (sheet: Any): void => {
+    if (adoptedSheets.includes(sheet)) adopt();
+  };
+
+  class HTMLStyleElement extends HTMLElement {
+    get sheet(): Any {
+      return this.isConnected ? sheetOf(this) : null;
+    }
+  }
+  for (const name of ['media', 'type']) {
+    Object.defineProperty(HTMLStyleElement.prototype, name, reflect(name));
+  }
+  Object.defineProperty(HTMLLinkElement.prototype, 'sheet', {
+    get(this: Any): Any {
+      return this.isConnected &&
+        /(?:^|\s)stylesheet(?:\s|$)/i.test(this.getAttribute('rel') ?? '')
+        ? sheetOf(this)
+        : null;
+    },
+    configurable: true,
+  });
   class HTMLMetaElement extends HTMLElement {}
   class HTMLUnknownElement extends HTMLElement {}
 
@@ -2154,8 +2785,35 @@ export function installDom(bridge: Bridge): void {
     form: HTMLFormElement,
     iframe: HTMLIFrameElement,
     canvas: HTMLCanvasElement,
-    video: HTMLMediaElement,
-    audio: HTMLMediaElement,
+    video: HTMLVideoElement,
+    audio: HTMLAudioElement,
+    source: HTMLSourceElement,
+    track: HTMLTrackElement,
+    picture: HTMLPictureElement,
+    pre: HTMLPreElement,
+    br: HTMLBRElement,
+    hr: HTMLHRElement,
+    title: HTMLTitleElement,
+    base: HTMLBaseElement,
+    time: HTMLTimeElement,
+    q: HTMLQuoteElement,
+    blockquote: HTMLQuoteElement,
+    dl: HTMLDListElement,
+    thead: HTMLTableSectionElement,
+    tbody: HTMLTableSectionElement,
+    tfoot: HTMLTableSectionElement,
+    caption: HTMLTableCaptionElement,
+    col: HTMLTableColElement,
+    colgroup: HTMLTableColElement,
+    legend: HTMLLegendElement,
+    optgroup: HTMLOptGroupElement,
+    datalist: HTMLDataListElement,
+    progress: HTMLProgressElement,
+    meter: HTMLMeterElement,
+    output: HTMLOutputElement,
+    object: HTMLObjectElement,
+    embed: HTMLEmbedElement,
+    slot: HTMLSlotElement,
     body: HTMLBodyElement,
     head: HTMLHeadElement,
     html: HTMLHtmlElement,
@@ -2264,6 +2922,29 @@ export function installDom(bridge: Bridge): void {
     get readyState(): string {
       return this._ready;
     }
+    /** The sheets a page constructed and adopted, which `<Html>` applies
+     *  after the document's own, as CSSOM orders them: an array a page
+     *  may set whole or edit in place, as Chrome's is. */
+    get adoptedStyleSheets(): Any {
+      return this === document ? adopted : [];
+    }
+    set adoptedStyleSheets(sheets: Any) {
+      if (this !== document) return;
+      const list = Array.from(sheets ?? []);
+      for (const sheet of list) adoptable(sheet);
+      adoptedSheets.splice(0, adoptedSheets.length, ...list);
+      adopt();
+    }
+    get styleSheets(): Any {
+      const list = new StyleSheetList();
+      // a document a page made of its own draws nothing, and has no sheet
+      if (this !== document) return list;
+      const ids = String(call('sheets'));
+      for (const id of ids ? ids.split(',') : []) {
+        list.push(sheetOf(wrap(Number(id))));
+      }
+      return list;
+    }
     get currentScript(): Any {
       return this._current;
     }
@@ -2362,7 +3043,14 @@ export function installDom(bridge: Bridge): void {
     }
     createElement(tag: Any): Any {
       const name = str(tag).toLowerCase();
-      if (!/^[a-z][^\s"'>/=]*$/i.test(name)) {
+      // a valid element local name (DOM 4.9): one that starts with a
+      // letter and has no white space, NUL, `/` or `>` in it, or one that
+      // starts with `:`, `_` or past ASCII and has nothing in it but
+      // those, letters, digits, `-` and `.` — `_` is one
+      if (
+        !/^[a-z][^\s\0/>]*$/.test(name) &&
+        !/^[:_\u0080-\uffff][\w\-.:\u0080-\uffff]*$/.test(name)
+      ) {
         throw new DOMException(
           `The tag name provided ('${name}') is not a valid name.`,
           'InvalidCharacterError',
@@ -3731,6 +4419,328 @@ export function installDom(bridge: Bridge): void {
     }
   }
 
+  /** The window's interface. The global is no instance of it — a page's
+   *  context has a global of its own — so `instanceof` asks for that
+   *  global, and its methods are the window's. */
+  class Window extends EventTarget {
+    static override [Symbol.hasInstance](value: Any): boolean {
+      return value === G;
+    }
+  }
+  for (const name of [
+    'addEventListener',
+    'removeEventListener',
+    'dispatchEvent',
+  ]) {
+    Object.defineProperty(Window.prototype, name, {
+      value(...args: Any[]): Any {
+        return G[name](...args);
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  /**
+   * A structured clone (HTML 2.7.3), of what this context makes: a
+   * primitive as it is; a date, a pattern, a buffer, a view, a map, a set,
+   * an array, an error and a plain object as one of its own kind, a blob
+   * as itself, since it never changes; what was met before as the copy made
+   * of it then, so a cycle is a cycle. A function, a node, a symbol and the
+   * rest are a `DataCloneError`.
+   */
+  const structuredCopy = (value: Any, seen: Map<Any, Any>): Any => {
+    if (value === null || typeof value !== 'object') {
+      if (typeof value === 'function' || typeof value === 'symbol') {
+        throw new DOMException(
+          `${String(typeof value === 'symbol' ? 'Symbol()' : value).slice(0, 40)} could not be cloned.`,
+          'DataCloneError',
+        );
+      }
+      return value;
+    }
+    if (seen.has(value)) return seen.get(value);
+    const tag = Object.prototype.toString.call(value).slice(8, -1);
+    let out: Any;
+    if (value instanceof Blob) return value;
+    // a node, a window's object, an event: the platform's, and none of
+    // them is serializable
+    if (value instanceof EventTarget || value instanceof Event) {
+      throw new DOMException(
+        `${value.constructor?.name ?? 'The object'} object could not be cloned.`,
+        'DataCloneError',
+      );
+    }
+    if (tag === 'Date') out = new Date(value.getTime());
+    else if (tag === 'RegExp') out = new RegExp(value.source, value.flags);
+    else if (tag === 'ArrayBuffer') out = value.slice(0);
+    else if (ArrayBuffer.isView(value)) {
+      const buffer = structuredCopy(value.buffer, seen);
+      const View = value.constructor as Any;
+      out =
+        tag === 'DataView'
+          ? new DataView(buffer, value.byteOffset, value.byteLength)
+          : new View(buffer, value.byteOffset, (value as Any).length);
+    } else if (tag === 'Map') {
+      out = new Map();
+      seen.set(value, out);
+      for (const [k, v] of value) {
+        out.set(structuredCopy(k, seen), structuredCopy(v, seen));
+      }
+      return out;
+    } else if (tag === 'Set') {
+      out = new Set();
+      seen.set(value, out);
+      for (const v of value) out.add(structuredCopy(v, seen));
+      return out;
+    } else if (tag === 'Error') {
+      out = new Error(value.message);
+      out.name = value.name;
+    } else if (
+      tag === 'Boolean' ||
+      tag === 'Number' ||
+      tag === 'String' ||
+      tag === 'BigInt'
+    ) {
+      out = Object(value.valueOf());
+    } else if (Array.isArray(value)) {
+      out = new Array(value.length);
+    } else if (tag === 'Object') {
+      out = {};
+    } else {
+      throw new DOMException(
+        `${tag} object could not be cloned.`,
+        'DataCloneError',
+      );
+    }
+    seen.set(value, out);
+    if (Array.isArray(value) || tag === 'Object') {
+      for (const key of Object.keys(value)) {
+        out[key] = structuredCopy(value[key], seen);
+      }
+    }
+    return out;
+  };
+  /** A message as it crosses: a copy, the page's structured clone. */
+  const cloneOf = (value: Any): Any => structuredCopy(value, new Map());
+
+  /** One end of a `MessageChannel` (HTML 9.4.4): what is posted to it is a
+   *  task of its own, after the one that posted it, once it is started —
+   *  which setting `onmessage` does. React's scheduler is one of these. */
+  class MessagePort extends EventTarget {
+    _other: Any = null;
+    _started = false;
+    _closed = false;
+    _waiting: Any[] = [];
+    postMessage(message: Any): void {
+      const other = this._other;
+      if (this._closed || !other || other._closed) return;
+      const data = cloneOf(message);
+      setTimer(() => other._deliver(data), 0, [], false);
+    }
+    _deliver(data: Any): void {
+      if (this._closed) return;
+      if (!this._started) {
+        this._waiting.push(data);
+        return;
+      }
+      const ev = new MessageEvent('message', { data });
+      ev.isTrusted = true;
+      dispatch(this, ev);
+    }
+    start(): void {
+      if (this._started) return;
+      this._started = true;
+      for (const data of this._waiting.splice(0)) {
+        setTimer(() => this._deliver(data), 0, [], false);
+      }
+    }
+    close(): void {
+      this._closed = true;
+    }
+    get onmessage(): Any {
+      return this._handlers.message ?? null;
+    }
+    set onmessage(fn: Any) {
+      this._handlers.message = typeof fn === 'function' ? fn : null;
+      this.start();
+    }
+  }
+  class MessageChannel {
+    readonly port1 = new MessagePort();
+    readonly port2 = new MessagePort();
+    constructor() {
+      this.port1._other = this.port2;
+      this.port2._other = this.port1;
+    }
+  }
+
+  /** A `PluginArray` or a `MimeTypeArray` with nothing in it, its methods
+   *  on its prototype, so a page that enumerates it meets none of them. */
+  class PluginArray {
+    get length(): number {
+      return 0;
+    }
+    item(): Any {
+      return null;
+    }
+    namedItem(): Any {
+      return null;
+    }
+    refresh(): void {}
+    [Symbol.iterator](): Iterator<Any> {
+      return [][Symbol.iterator]();
+    }
+  }
+  class MimeTypeArray extends PluginArray {}
+
+  /** The bytes of what a `Blob` is made of: a string as UTF-8, a buffer or
+   *  a view as its bytes, a `Blob` as its own. */
+  const blobBytes = (parts: Any): Uint8Array => {
+    const chunks: Uint8Array[] = [];
+    for (const part of parts ?? []) {
+      if (part instanceof Blob) chunks.push(part._bytes);
+      else if (part instanceof ArrayBuffer) chunks.push(new Uint8Array(part));
+      else if (ArrayBuffer.isView(part)) {
+        chunks.push(
+          new Uint8Array(part.buffer, part.byteOffset, part.byteLength),
+        );
+      } else chunks.push(new TextEncoder().encode(str(part)));
+    }
+    const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+    let at = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, at);
+      at += chunk.length;
+    }
+    return out;
+  };
+  class Blob {
+    _bytes: Uint8Array;
+    readonly type: string;
+    constructor(parts: Any = [], options: Any = {}) {
+      this._bytes = blobBytes(parts);
+      const type = str(options?.type ?? '');
+      this.type = /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
+    }
+    get size(): number {
+      return this._bytes.length;
+    }
+    slice(start?: Any, end?: Any, type?: Any): Any {
+      const blob = new Blob([], { type: type ?? '' });
+      blob._bytes = this._bytes.slice(
+        start === undefined ? 0 : Number(start),
+        end === undefined ? this._bytes.length : Number(end),
+      );
+      return blob;
+    }
+    text(): Promise<string> {
+      return Promise.resolve(new TextDecoder().decode(this._bytes));
+    }
+    arrayBuffer(): Promise<ArrayBuffer> {
+      return Promise.resolve(this._bytes.slice().buffer);
+    }
+    bytes(): Promise<Uint8Array> {
+      return Promise.resolve(this._bytes.slice());
+    }
+  }
+  class File extends Blob {
+    readonly name: string;
+    readonly lastModified: number;
+    constructor(parts: Any, name: Any, options: Any = {}) {
+      super(parts, options);
+      this.name = str(name);
+      this.lastModified = Number(options?.lastModified ?? Date.now());
+    }
+  }
+
+  /** `FormData` (XHR 4): name and value pairs, in order; made from a form,
+   *  what the form would submit of its text, its ticked boxes and its
+   *  chosen options — its files, of which there are none here, aside. */
+  class FormData {
+    _entries: [string, Any][] = [];
+    constructor(form?: Any) {
+      if (form === undefined || form === null) return;
+      if (!(form instanceof HTMLFormElement)) {
+        throw new TypeError(
+          "Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormElement'.",
+        );
+      }
+      for (const el of Array.from((form as Any).elements) as Any[]) {
+        const name = el.getAttribute('name');
+        if (!name || isDisabled(el)) continue;
+        if (el instanceof HTMLSelectElement) {
+          for (const option of Array.from((el as Any).options) as Any[]) {
+            if (option.selected) this.append(name, option.value);
+          }
+          continue;
+        }
+        const type = el instanceof HTMLInputElement ? (el as Any).type : '';
+        if (type === 'checkbox' || type === 'radio') {
+          if ((el as Any).checked) this.append(name, (el as Any).value || 'on');
+        } else if (
+          !['submit', 'reset', 'button', 'image', 'file'].includes(type) &&
+          !(el instanceof HTMLButtonElement)
+        ) {
+          this.append(name, (el as Any).value);
+        }
+      }
+    }
+    _value(value: Any, filename?: Any): Any {
+      if (value instanceof Blob) {
+        return value instanceof File && filename === undefined
+          ? value
+          : new File([value], filename === undefined ? 'blob' : str(filename), {
+              type: value.type,
+            });
+      }
+      return str(value);
+    }
+    append(name: Any, value: Any, filename?: Any): void {
+      this._entries.push([str(name), this._value(value, filename)]);
+    }
+    set(name: Any, value: Any, filename?: Any): void {
+      const key = str(name);
+      const at = this._entries.findIndex(([k]) => k === key);
+      const entry: [string, Any] = [key, this._value(value, filename)];
+      if (at < 0) {
+        this._entries.push(entry);
+        return;
+      }
+      this._entries[at] = entry;
+      this._entries = this._entries.filter(([k], i) => i <= at || k !== key);
+    }
+    get(name: Any): Any {
+      return this._entries.find(([k]) => k === str(name))?.[1] ?? null;
+    }
+    getAll(name: Any): Any[] {
+      return this._entries.filter(([k]) => k === str(name)).map(([, v]) => v);
+    }
+    has(name: Any): boolean {
+      return this._entries.some(([k]) => k === str(name));
+    }
+    delete(name: Any): void {
+      this._entries = this._entries.filter(([k]) => k !== str(name));
+    }
+    forEach(fn: Any, self?: Any): void {
+      for (const [k, v] of this._entries) fn.call(self, v, k, this);
+    }
+    entries(): Iterator<[string, Any]> {
+      return this._entries
+        .map((e) => [e[0], e[1]] as [string, Any])
+        [Symbol.iterator]();
+    }
+    keys(): Iterator<string> {
+      return this._entries.map(([k]) => k)[Symbol.iterator]();
+    }
+    values(): Iterator<Any> {
+      return this._entries.map(([, v]) => v)[Symbol.iterator]();
+    }
+    [Symbol.iterator](): Iterator<[string, Any]> {
+      return this.entries();
+    }
+  }
+
   /** `localStorage` and `sessionStorage`, kept by the host per origin. */
   const storage = (kind: 'local' | 'session'): Any => {
     const api = {
@@ -4192,8 +5202,12 @@ export function installDom(bridge: Bridge): void {
     maxTouchPoints: 0,
     webdriver: false,
     pdfViewerEnabled: false,
-    clipboard: undefined,
-    serviceWorker: undefined,
+    // none, as a browser that shows no PDF has none: what a script counts
+    plugins: new PluginArray(),
+    mimeTypes: new MimeTypeArray(),
+    // `clipboard` and `serviceWorker` are left out rather than undefined:
+    // a page asks for them with `in`, and takes one that is there for one
+    // it can use
     sendBeacon: () => false,
     javaEnabled: () => false,
   };
@@ -4257,6 +5271,8 @@ export function installDom(bridge: Bridge): void {
     CharacterData,
     Text,
     Comment,
+    CDATASection,
+    ProcessingInstruction,
     DocumentType,
     DocumentFragment,
     Document,
@@ -4283,8 +5299,34 @@ export function installDom(bridge: Bridge): void {
     HTMLIFrameElement,
     HTMLCanvasElement,
     HTMLMediaElement,
-    HTMLVideoElement: HTMLMediaElement,
-    HTMLAudioElement: HTMLMediaElement,
+    HTMLVideoElement,
+    HTMLAudioElement,
+    HTMLSourceElement,
+    HTMLTrackElement,
+    HTMLPictureElement,
+    HTMLPreElement,
+    HTMLBRElement,
+    HTMLHRElement,
+    HTMLTitleElement,
+    HTMLBaseElement,
+    HTMLTimeElement,
+    HTMLQuoteElement,
+    HTMLDListElement,
+    HTMLTableSectionElement,
+    HTMLTableCaptionElement,
+    HTMLTableColElement,
+    HTMLLegendElement,
+    HTMLOptGroupElement,
+    HTMLDataListElement,
+    HTMLProgressElement,
+    HTMLMeterElement,
+    HTMLOutputElement,
+    HTMLObjectElement,
+    HTMLEmbedElement,
+    HTMLSlotElement,
+    TextTrackList,
+    AudioTrackList,
+    VideoTrackList,
     HTMLBodyElement,
     HTMLHeadElement,
     HTMLHtmlElement,
@@ -4326,6 +5368,27 @@ export function installDom(bridge: Bridge): void {
     NodeIterator,
     DOMParser,
     PerformanceObserver,
+    MessageEvent,
+    MessageChannel,
+    MessagePort,
+    Window,
+    PluginArray,
+    MimeTypeArray,
+    Blob,
+    File,
+    FormData,
+    CSSStyleSheet,
+    StyleSheet,
+    StyleSheetList,
+    CSSRuleList,
+    CSSRule,
+    CSSStyleRule,
+    CSSGroupingRule,
+    CSSMediaRule,
+    CSSSupportsRule,
+    CSSImportRule,
+    CSSFontFaceRule,
+    CSSKeyframesRule,
   };
   for (const [name, value] of Object.entries(classes)) define(name, value);
 
@@ -4538,7 +5601,7 @@ export function installDom(bridge: Bridge): void {
     if (src !== undefined) audio.setAttribute('src', str(src));
     return audio;
   } as Any;
-  Audio.prototype = HTMLMediaElement.prototype;
+  Audio.prototype = HTMLAudioElement.prototype;
   define('Image', Image);
   define('Option', Option);
   define('Audio', Audio);
@@ -4591,9 +5654,7 @@ export function installDom(bridge: Bridge): void {
       }
     });
   });
-  define('structuredClone', (v: Any) =>
-    v === undefined ? undefined : JSON.parse(JSON.stringify(v)),
-  );
+  define('structuredClone', (value: Any) => structuredCopy(value, new Map()));
   define('reportError', report);
   define('alert', (message?: Any) =>
     bridge(
@@ -4627,7 +5688,47 @@ export function installDom(bridge: Bridge): void {
   define('blur', () => {});
   define('print', () => {});
   define('stop', () => {});
-  define('postMessage', () => {});
+  // a message to this window: a task of its own, after this one, where
+  // the origin it is meant for is this one's (HTML 9.4.3)
+  define('postMessage', (message: Any, options?: Any) => {
+    const target =
+      options && typeof options === 'object'
+        ? (options.targetOrigin ?? '/')
+        : options === undefined
+          ? '/'
+          : str(options);
+    if (target !== '*' && target !== '/') {
+      let origin: string;
+      try {
+        origin = new URL(target).origin;
+      } catch {
+        throw new DOMException(
+          `Invalid target origin '${target}' in a call to 'postMessage'.`,
+          'SyntaxError',
+        );
+      }
+      if (origin !== location.origin) return;
+    }
+    const data = cloneOf(message);
+    setTimer(
+      () => {
+        const ev = new MessageEvent('message', {
+          data,
+          origin: location.origin,
+          source: G,
+        });
+        ev.isTrusted = true;
+        dispatch(windowTarget, ev);
+      },
+      0,
+      [],
+      false,
+    );
+  });
+  Object.defineProperty(G, Symbol.toStringTag, {
+    value: 'Window',
+    configurable: true,
+  });
   define('getSelection', () => ({
     rangeCount: 0,
     isCollapsed: true,

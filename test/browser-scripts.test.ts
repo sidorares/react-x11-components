@@ -820,6 +820,196 @@ test('the window has what scripts read of it: name, crypto, text encodings, Imag
   );
 });
 
+test('a page edits a <style>’s rules as CSS-in-JS does, and what it inserts is drawn', async () => {
+  const doc = await hosted(
+    '<style id="s">/* lead */ p { margin: 0 } @media (min-width: 1px) { .m { color: blue } }</style>' +
+      '<p id="x">x</p><p id="out"></p><script>' +
+      'var r = []; var el = document.getElementById("s");' +
+      // how styled-components finds its tag's sheet
+      'var sheet = [].slice.call(document.styleSheets).filter(function (s) { return s.ownerNode === el; })[0];' +
+      'r.push(document.styleSheets.length, sheet === el.sheet, sheet instanceof CSSStyleSheet);' +
+      'var rules = sheet.cssRules;' +
+      'r.push(rules.length, rules[0].selectorText, rules[0].style.margin, rules[1].type, rules[1].conditionText, rules[1].cssRules[0].selectorText);' +
+      // emotion's: at the end, by the list's length
+      'sheet.insertRule("#x { color: rgb(255, 0, 0) }", sheet.cssRules.length);' +
+      'sheet.insertRule(".a { color: red }", 0); sheet.deleteRule(0);' +
+      'r.push(rules === sheet.cssRules, sheet.cssRules.length, sheet.cssRules[2].cssText);' +
+      'r.push(getComputedStyle(document.getElementById("x")).color);' +
+      'try { sheet.insertRule("a {} b {}"); } catch (e) { r.push(e.name); }' +
+      'try { sheet.insertRule("a {}", 9); } catch (e) { r.push(e.name); }' +
+      'r.push(document.createElement("style").sheet);' +
+      'var made = new CSSStyleSheet(); made.replaceSync("@import url(a.css); b { c: d }");' +
+      'r.push(made.cssRules.length, made.ownerNode, document.styleSheets.length);' +
+      // a text the page sets is the sheet from then on
+      'el.textContent = "p { color: rgb(0, 0, 255) }";' +
+      'r.push(el.sheet.cssRules.length, getComputedStyle(document.getElementById("x")).color);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>' +
+      // a rule inserted and nothing asked: drawn from the flush at the end
+      '<p id="y">y</p><script>document.getElementById("s").sheet.insertRule("#y { color: rgb(0, 128, 0) }", 1)</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      '1',
+      'true',
+      'true',
+      '2',
+      'p',
+      '0',
+      '4',
+      '(min-width: 1px)',
+      '.m',
+      'true',
+      '3',
+      '#x { color: rgb(255, 0, 0) }',
+      'rgb(255, 0, 0)',
+      'SyntaxError',
+      'IndexSizeError',
+      '',
+      '1',
+      '',
+      '1',
+      '1',
+      'rgb(0, 0, 255)',
+    ].join('|'),
+  );
+  assert.equal(doc.view.computedStyle(doc.byId('y'))?.color, 'rgb(0, 128, 0)');
+});
+
+test('what a polyfill or a tag manager feature-tests is there, or absent, but never undefined', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'r.push(navigator.plugins.length, navigator.mimeTypes.length, "clipboard" in navigator, "serviceWorker" in navigator);' +
+      'r.push(document.createElement("_").localName, document.createElement("é-x").localName);' +
+      'try { document.createElement("1a"); } catch (e) { r.push(e.name); }' +
+      'try { document.createElement("_ a"); } catch (e) { r.push(e.name); }' +
+      'r.push(typeof CDATASection.prototype, Object.getPrototypeOf(CDATASection.prototype) === Text.prototype, typeof ProcessingInstruction.prototype);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    '0|0|false|false|_|é-x|InvalidCharacterError|InvalidCharacterError|object|true|object',
+  );
+});
+
+test('messages are tasks of their own, and a clone is a copy of what can be copied', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var out = document.getElementById("out");' +
+      'var c = new MessageChannel();' +
+      'c.port1.onmessage = function (e) { r.push("port " + e.data.n + " " + (e.data !== sent)); };' +
+      'var sent = { n: 1 }; c.port2.postMessage(sent);' +
+      'addEventListener("message", function (e) { r.push("window " + e.data + " " + (e.source === window) + " " + e.origin); out.textContent = r.join("|"); });' +
+      'postMessage("hi", "*"); postMessage("other", "https://elsewhere.test");' +
+      'Promise.resolve().then(function () { r.push("microtask"); });' +
+      'r.push("sync");' +
+      'r.push(window instanceof Window, document instanceof Window, Object.prototype.toString.call(window));' +
+      'var m = new Map([[1, { d: new Date(5) }]]); var o = { m: m, a: new Uint8Array([1, 2]) }; o.self = o;' +
+      'var k = structuredClone(o);' +
+      'r.push(k !== o, k.self === k, k.m.get(1).d.getTime(), k.a[1], k.a instanceof Uint8Array);' +
+      'try { structuredClone(function () {}); } catch (e) { r.push(e.name); }' +
+      'try { structuredClone(document.body); } catch (e) { r.push(e.name); }' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t.includes('window'));
+  assert.equal(
+    text,
+    [
+      'sync',
+      'true',
+      'false',
+      '[object Window]',
+      'true',
+      'true',
+      '5',
+      '2',
+      'true',
+      'DataCloneError',
+      'DataCloneError',
+      'microtask',
+      'port 1 true',
+      'window hi true https://example.test',
+    ].join('|'),
+  );
+});
+
+test('blobs, files, form data and the media a page reads at rest', async () => {
+  const doc = await hosted(
+    '<form id="f"><input name="a" value="1"><input type="checkbox" name="b" checked>' +
+      '<input type="checkbox" name="c"><select name="d"><option>x<option selected>y</select>' +
+      '<input name="e" disabled value="no"><button name="g" value="h">go</button></form>' +
+      '<video id="v" muted></video><p id="out"></p><script>' +
+      'var r = [];' +
+      'var b = new Blob(["aé", new Uint8Array([33])], { type: "Text/Plain" });' +
+      'r.push(b.size, b.type, b.slice(1, 3).size);' +
+      'var f = new File([b], "n.txt"); r.push(f.name, f instanceof Blob, f.size);' +
+      'var fd = new FormData(document.getElementById("f"));' +
+      'r.push(JSON.stringify(Array.from(fd.entries())));' +
+      'fd.append("a", "2"); fd.set("b", "z"); r.push(fd.getAll("a").join(","), fd.get("b"), fd.has("e"));' +
+      'var v = document.getElementById("v");' +
+      'r.push(v instanceof HTMLVideoElement, v.paused, isNaN(v.duration), v.muted, v.textTracks.length, v.buffered.length);' +
+      'v.textTracks.addEventListener("addtrack", function () {});' +
+      'r.push(document.createElement("source") instanceof HTMLSourceElement, new Audio() instanceof HTMLAudioElement);' +
+      'var keys = []; for (var k in navigator.plugins) keys.push(k); r.push(keys.length);' +
+      'b.text().then(function (t) { r.push(t); document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      '4',
+      'text/plain',
+      '2',
+      'n.txt',
+      'true',
+      '4',
+      '[["a","1"],["b","on"],["d","y"]]',
+      '1,2',
+      'z',
+      'false',
+      'true',
+      'true',
+      'true',
+      'true',
+      '0',
+      '0',
+      'true',
+      'true',
+      '0',
+      'aé!',
+    ].join('|'),
+  );
+});
+
+test('a sheet a page constructs and adopts is drawn after the document’s own, and as it is edited', async () => {
+  const doc = await hosted(
+    '<style>#z { color: rgb(0, 0, 0) }</style><p id="z">z</p>' +
+      '<input type="button" id="go" value="go"><p id="out"></p><script>' +
+      'var sheet = new CSSStyleSheet(); sheet.replaceSync("#z { color: rgb(1, 2, 3) }");' +
+      'document.adoptedStyleSheets = [sheet];' +
+      'var refused = "";' +
+      'try { document.adoptedStyleSheets = [document.styleSheets[0]]; } catch (e) { refused = e.name; }' +
+      'document.getElementById("go").addEventListener("click", function () {' +
+      '  sheet.insertRule("#z { color: rgb(4, 5, 6) }", 1);' +
+      '  var more = new CSSStyleSheet(); more.replaceSync("#z { background-color: rgb(7, 8, 9) }");' +
+      '  document.adoptedStyleSheets.push(more);' +
+      '  document.getElementById("out").textContent = refused + " " + document.adoptedStyleSheets.length;' +
+      '});</script>',
+  );
+  const z = doc.byId('z');
+  await settle();
+  assert.equal(doc.view.computedStyle(z)?.color, 'rgb(1, 2, 3)');
+  await userEvent.click(screen.getByRole('button') as DrawnNode);
+  await settle();
+  assert.equal(doc.text('out'), 'NotAllowedError 2');
+  assert.equal(doc.view.computedStyle(z)?.color, 'rgb(4, 5, 6)');
+  assert.equal(doc.view.computedStyle(z)?.['background-color'], 'rgb(7, 8, 9)');
+});
+
 test('a page walks its tree, parses markup into documents of its own, and marks and measures', async () => {
   const doc = await hosted(
     '<div id="root"><p>a<b>b</b></p><!--c--><span>d</span></div><p id="out"></p><script>' +
