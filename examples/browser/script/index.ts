@@ -105,6 +105,17 @@ export class ScriptRunner {
   add(request: ScriptRequest): void {
     if (this._disposed || this.host.inert.has(request.element)) return;
     const type = request.type.split(';')[0].trim().toLowerCase();
+    // the specifiers the page's modules import by name, from here on: as
+    // the parser meets it, and inline only, as HTML has it
+    if (type === 'importmap') {
+      if (!request.src) {
+        this.engine.importMap(
+          request.text,
+          this._options.handle.base ?? this.host.url,
+        );
+      }
+      return;
+    }
     const module = type === 'module';
     if (!module && !CLASSIC.has(type)) return;
     // a browser with modules runs no `nomodule` script (HTML 4.12.1)

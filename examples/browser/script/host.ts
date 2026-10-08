@@ -16,6 +16,7 @@
 // `fetch` is the same origin's, through the browser's network; storage is
 // memory, per origin, gone with the process; a navigation is a link the
 // browser follows.
+import { randomBytes, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import * as DomUtils from 'domutils';
 import { is, selectAll, selectOne } from 'css-select';
@@ -156,6 +157,9 @@ export class DomHost {
   /** Scripts that are never run: what `innerHTML` and
    *  `insertAdjacentHTML` put in, which HTML does not run either. */
   readonly inert = new WeakSet<Element>();
+  /** The documents a page made of its own (`_documentOf`), which are
+   *  documents and not fragments, though the tree has one kind of root. */
+  private _documents = new WeakSet<Document>();
   /** Where timers and fetches call back into the page. */
   entries: Entries | null = null;
   private _disposed = false;
@@ -263,7 +267,11 @@ export class DomHost {
   }
   /** A fragment: a `Document` node that is not the document. */
   private _isFragment(node: AnyNode): boolean {
-    return node instanceof Document && node !== this.document;
+    return (
+      node instanceof Document &&
+      node !== this.document &&
+      !this._documents.has(node)
+    );
   }
 
   private _op(
@@ -281,14 +289,18 @@ export class DomHost {
         if (node instanceof Element) return `1|${node.name}`;
         if (node instanceof Text) return '3|#text';
         if (node instanceof Comment) return '8|#comment';
-        if (node === this.document) return '9|#document';
+        if (node === this.document || this._documents.has(node as Document)) {
+          return '9|#document';
+        }
         if (node instanceof Document) return '11|#document-fragment';
         if (node.type === 'directive') return '10|html';
         return '3|#text';
       }
       case 'parent': {
         const node = this._node(a);
-        return node === this.document ? 0 : this.idOf(node.parent);
+        return node === this.document || this._documents.has(node as Document)
+          ? 0
+          : this.idOf(node.parent);
       }
       case 'kids': {
         const node = this._node(a);
@@ -545,10 +557,26 @@ export class DomHost {
       }
 
       // --- the document
-      case 'root':
+      case 'root': {
+        // the document asked of: this one, or one a page made of its own
+        const doc = a ? (this._node(a) as ParentNode) : this.document;
         return this.idOf(
-          this.document.children.find((k) => k instanceof Element) ?? null,
+          doc.children.find((k) => k instanceof Element) ?? null,
         );
+      }
+      // a document of a page's own, out of the one drawn
+      case 'newDocument': {
+        // its `<title>` the text given, where one was
+        const title =
+          a === null || a === undefined
+            ? ''
+            : `<title>${DomUtils.getOuterHTML(new Text(text(a)))}</title>`;
+        return this.idOf(
+          this._documentOf(`<html><head>${title}</head><body></body></html>`),
+        );
+      }
+      case 'parseDocument':
+        return this.idOf(this._documentOf(text(a)));
       case 'title': {
         const title = DomUtils.findOne(
           (el) => el.name === 'title',
@@ -795,6 +823,13 @@ export class DomHost {
         );
       }
 
+      // a page's randomness, `crypto`'s: hex, a primitive
+      case 'random':
+        return randomBytes(
+          Math.min(65536, Math.max(0, Number(a) || 0)),
+        ).toString('hex');
+      case 'uuid':
+        return randomUUID();
       case 'fetch':
         this._fetch(Number(a), text(b));
         return null;
@@ -962,6 +997,33 @@ export class DomHost {
     for (const [observer, oldValue] of interested) {
       observer.queue.push({ ...record, oldValue });
     }
+  }
+
+  /** A document of its own made of markup, as `DOMParser` and
+   *  `createHTMLDocument` make one: with an `<html>`, a `<head>` and a
+   *  `<body>` where the markup has none, as HTML's parser makes them, and
+   *  none of its scripts ever run. */
+  private _documentOf(markup: string): Document {
+    const kids = this._parse(markup);
+    const doc = new Document([]);
+    let html = kids.find((k) => k instanceof Element && k.name === 'html') as
+      Element | undefined;
+    if (!html) {
+      html = new Element('html', {}, []);
+      const head = new Element('head', {}, []);
+      const body = new Element('body', {}, []);
+      DomUtils.appendChild(html, head);
+      DomUtils.appendChild(html, body);
+      for (const kid of kids) {
+        const inHead =
+          kid instanceof Element &&
+          ['title', 'meta', 'link', 'style', 'base'].includes(kid.name);
+        DomUtils.appendChild(inHead ? head : body, kid);
+      }
+    }
+    DomUtils.appendChild(doc, html);
+    this._documents.add(doc);
+    return doc;
   }
 
   /** Markup as `innerHTML` reads it; its scripts never run. */

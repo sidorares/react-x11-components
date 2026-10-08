@@ -186,21 +186,114 @@ function askDynamicImport(): Promise<boolean> {
   return dynamicImportWorks;
 }
 
-/** A module specifier as a URL (HTML 8.1.5.5, "resolve a module
- *  specifier"): one that starts with `/`, `./` or `../`, against `base`, or
- *  a whole URL. A bare one — `lodash` — is an import map's, which there is
- *  none of here. */
-function resolveSpecifier(specifier: string, base: string): string {
+/** A specifier as a URL where it is one (HTML 8.1.5.5, "resolve a
+ *  URL-like module specifier"): one that starts with `/`, `./` or `../`,
+ *  against `base`, or a whole URL; null for a bare one, `lodash`. */
+function urlLike(specifier: string, base: string): string | null {
   if (/^(?:\/|\.\/|\.\.\/)/.test(specifier)) {
-    return new URL(specifier, base).href;
+    try {
+      return new URL(specifier, base).href;
+    } catch {
+      return null;
+    }
   }
   try {
     return new URL(specifier).href;
   } catch {
-    throw new TypeError(
-      `Failed to resolve module specifier "${specifier}". Relative references must start with either "/", "./", or "../".`,
-    );
+    return null;
   }
+}
+
+/** An import map's specifier map, its keys as specifiers match them and
+ *  its values URLs, the longest key first (HTML 8.1.5.6). */
+type SpecifierMap = [string, string | null][];
+
+/** A document's import map: the top-level imports, and the scopes, the
+ *  most specific first. */
+interface ImportMap {
+  imports: SpecifierMap;
+  scopes: [string, SpecifierMap][];
+}
+
+/** A specifier map as an import map's JSON writes it, normalized against
+ *  the map's base URL (HTML 8.1.5.6, "sort and normalize a specifier
+ *  map"): a value that is no URL maps its key to nothing. */
+function specifierMap(raw: unknown, base: string): SpecifierMap {
+  if (!raw || typeof raw !== 'object') return [];
+  const out: SpecifierMap = [];
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!key) continue;
+    const normalized = urlLike(key, base) ?? key;
+    const address = typeof value === 'string' ? urlLike(value, base) : null;
+    // a key ending in `/` maps a prefix, and only to one
+    out.push([
+      normalized,
+      key.endsWith('/') && address && !address.endsWith('/') ? null : address,
+    ]);
+  }
+  return out.sort((a, b) => b[0].length - a[0].length);
+}
+
+/** What a specifier map says a specifier is: its exact key's address, or
+ *  the address of the longest prefix key it starts with, with the rest
+ *  of it after; undefined where no key matches, null where one maps it to
+ *  nothing (HTML 8.1.5.5, "resolve an imports match"). */
+function mapped(
+  specifier: string,
+  url: string | null,
+  map: SpecifierMap,
+): string | null | undefined {
+  for (const [key, address] of map) {
+    if (key === specifier) return address;
+    if (
+      key.endsWith('/') &&
+      specifier.startsWith(key) &&
+      (url === null || !/^[a-z][a-z0-9+.-]*:/i.test(key) || url.startsWith(key))
+    ) {
+      if (address === null) return null;
+      try {
+        const out = new URL(specifier.slice(key.length), address).href;
+        return out.startsWith(address) ? out : null;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * A module specifier as a URL (HTML 8.1.5.5, "resolve a module
+ * specifier"): through the document's import map where it has one — the
+ * scopes the importing module is under first, the most specific first,
+ * and then the top-level imports — and where it says nothing, one that is
+ * a URL already. A bare one no map names is a `TypeError`.
+ */
+function resolveSpecifier(
+  specifier: string,
+  base: string,
+  map: ImportMap | null = null,
+): string {
+  const url = urlLike(specifier, base);
+  const normalized = url ?? specifier;
+  if (map) {
+    for (const [scope, imports] of map.scopes) {
+      if (scope === base || (scope.endsWith('/') && base.startsWith(scope))) {
+        const found = mapped(normalized, url, imports);
+        if (found === null) break;
+        if (found !== undefined) return found;
+      }
+    }
+    const found = mapped(normalized, url, map.imports);
+    if (found === null) {
+      throw new TypeError(`The import map blocks "${specifier}".`);
+    }
+    if (found !== undefined) return found;
+  }
+  if (url !== null) return url;
+  throw new TypeError(
+    `Failed to resolve module specifier "${specifier}". Relative references must start with either "/", "./", or "../".`,
+  );
 }
 /** The engines alive in this process, by their context's
  *  `Promise.prototype`: what tells a page's unhandled rejection from the
@@ -219,7 +312,7 @@ const ENGINES = new Map<object, ScriptEngine>();
 const onRejection = (reason: unknown, promise: Promise<unknown>): void => {
   const engine = ENGINES.get(Object.getPrototypeOf(promise) as object);
   if (engine) {
-    engine.rejected();
+    engine.rejected(reason, promise);
     return;
   }
   throw reason;
@@ -296,6 +389,10 @@ export class ScriptEngine {
    *  waiting on it at the same time. */
   private readonly _modules = new Map<string, Promise<PageModule>>();
   private readonly _linked = new WeakMap<PageModule, Promise<void>>();
+  /** The document's import map (`importMap`), where it has one. */
+  private _importMap: ImportMap | null = null;
+  /** The link under way, which the next waits for (`_link`). */
+  private _linking: Promise<void> = Promise.resolve();
   private readonly _evaluated = new WeakMap<PageModule, Promise<void>>();
   /** The entries, compiled for this context, so that an `import()` in what
    *  they run is this document's (`_dynamic`). */
@@ -433,19 +530,9 @@ export class ScriptEngine {
     specifier: string,
     referencing: PageModule,
   ): Promise<PageModule> => {
-    const module = await this._fetch(
-      resolveSpecifier(specifier, referencing.identifier),
+    return this._fetch(
+      resolveSpecifier(specifier, referencing.identifier, this._importMap),
     );
-    // Linked with the module that imports it, when that one is: an
-    // `import()` of it later links nothing again, which the runtime
-    // refuses, and waits for that link where it is still going.
-    if (!this._linked.has(module)) {
-      this._linked.set(
-        module,
-        this._linked.get(referencing) ?? Promise.resolve(),
-      );
-    }
-    return module;
   };
 
   /**
@@ -463,7 +550,9 @@ export class ScriptEngine {
           'import() is not supported in this runtime; a static import is.',
         );
       }
-      module = await this._fetch(resolveSpecifier(specifier, base));
+      module = await this._fetch(
+        resolveSpecifier(specifier, base, this._importMap),
+      );
       await this._link(module);
     } catch (error) {
       // the runtime's parse or link error is the context's already
@@ -507,18 +596,23 @@ export class ScriptEngine {
     return module;
   }
 
-  /** A module linked, once. */
+  /**
+   * A module linked, once, and one graph at a time. Two graphs linked at
+   * once that share a module — two `import()`s of pages that both import
+   * the same helper — had the runtime hand the second a module the first
+   * was still linking, and refuse it as one "that is not linked". One at a
+   * time, the later graph finds what they share linked already, and a
+   * cycle inside one graph is the runtime's own to link.
+   */
   private _link(module: PageModule): Promise<void> {
     let linked = this._linked.get(module);
     if (!linked) {
-      // noted before linking starts, so what it imports finds it
-      // (`_linker`): the runtime asks for those from inside `link()`
-      let start!: () => void;
-      linked = new Promise<void>((resolve, reject) => {
-        start = () => module.link(this._linker).then(resolve, reject);
-      });
+      linked = this._linking.then(() =>
+        // linked already, as a module an earlier graph imports
+        module.status === 'unlinked' ? module.link(this._linker) : undefined,
+      );
       this._linked.set(module, linked);
-      start();
+      this._linking = linked.catch(() => {});
     }
     return linked;
   }
@@ -535,10 +629,23 @@ export class ScriptEngine {
     return error;
   }
 
+  /**
+   * The context entered once the host has settled an `import()`, so that
+   * the page's promise and what waits on it run. More than once: the
+   * runtime hands the namespace over in steps that go through the
+   * context's own queue, which runs only as the host enters it, and one
+   * entry ran the first step alone — a module's top-level `await` of a
+   * module evaluated already went on only when a timer of the page's
+   * happened to enter the context after it.
+   */
   private readonly _drainLater = (): void => {
-    setTimeout(() => {
-      if (!this._disposed) this.call('__drain', null);
-    }, 0);
+    let turns = 0;
+    const drain = (): void => {
+      if (this._disposed) return;
+      this.call('__drain', null);
+      if ((turns += 1) < DRAIN_TURNS) setTimeout(drain, 0);
+    };
+    setTimeout(drain, 0);
   };
 
   /** A linked module evaluated as an entry is run: with the timeout, and
@@ -594,11 +701,52 @@ export class ScriptEngine {
     if (this.call('__fault', null) === 'timeout') this._options.onTimeout();
   }
 
+  /**
+   * A `<script type="importmap">`'s JSON (HTML 8.1.5.6), its URLs against
+   * `base`: what a bare specifier, `react`, resolves to from then on. A
+   * second map's imports go under the first's, which keeps every key it
+   * has, as HTML merges them; one that is not JSON is reported and left.
+   */
+  importMap(json: string, base: string): void {
+    let raw: { imports?: unknown; scopes?: unknown };
+    try {
+      raw = JSON.parse(json) as typeof raw;
+    } catch {
+      this._options.log(
+        'error',
+        'An import map that is not JSON was left out.',
+      );
+      return;
+    }
+    const imports = specifierMap(raw?.imports, base);
+    const scopes: [string, SpecifierMap][] = [];
+    if (raw?.scopes && typeof raw.scopes === 'object') {
+      for (const [scope, map] of Object.entries(raw.scopes)) {
+        const prefix = urlLike(scope, base);
+        if (prefix) scopes.push([prefix, specifierMap(map, base)]);
+      }
+    }
+    scopes.sort((a, b) => b[0].length - a[0].length);
+    const was = this._importMap;
+    if (!was) {
+      this._importMap = { imports, scopes };
+      return;
+    }
+    const kept = new Set(was.imports.map(([key]) => key));
+    was.imports.push(...imports.filter(([key]) => !kept.has(key)));
+    was.imports.sort((a, b) => b[0].length - a[0].length);
+    was.scopes.push(...scopes);
+    was.scopes.sort((a, b) => b[0].length - a[0].length);
+  }
+
   /** A page's classic script, run in the global scope, as `currentScript`
    *  the element with `script`'s id (0 for none). Whether it ran to its
    *  end; what it threw is reported in the page. */
   exec(code: string, url: string, script: number): boolean {
-    return this.call('__exec', [code, url, script]) === true;
+    const ran = this.call('__exec', [code, url, script]) === true;
+    // after the microtasks it queued, which ran as the entry ended
+    this.call('__ran', null);
+    return ran;
   }
 
   /** Run an entry of the facade's with its input, and answer what it
@@ -645,9 +793,19 @@ export class ScriptEngine {
     }
   }
 
-  /** A promise of the page's rejected and nothing caught it. */
-  rejected(): void {
-    this._options.log('error', 'Uncaught (in promise)');
+  /** A promise of the page's rejected and nothing caught it: told in the
+   *  page, as `unhandledrejection`, and reported there with its reason, as
+   *  a browser reports one — read by the page, under the timeout, since the
+   *  reason is the page's object (`__thrown`). */
+  rejected(reason: unknown, promise: unknown): void {
+    if (this._broken || this._disposed) return;
+    try {
+      (this._context as Record<string, unknown>).__thrown = reason;
+      (this._context as Record<string, unknown>).__promise = promise;
+    } catch {
+      return;
+    }
+    this.call('__rejected', null);
   }
 
   dispose(): void {
@@ -656,6 +814,10 @@ export class ScriptEngine {
     ENGINES.delete(this._promises);
   }
 }
+
+/** How many turns of the host's the context is entered on after an
+ *  `import()` settles (`_drainLater`). */
+const DRAIN_TURNS = 4;
 
 /** The code of the error a `vm` timeout throws. */
 const TIMEOUT = 'ERR_SCRIPT_EXECUTION_TIMEOUT';

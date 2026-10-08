@@ -97,6 +97,8 @@ export function installDom(bridge: Bridge): void {
     InvalidStateError: 11,
     SyntaxError: 12,
     InvalidAccessError: 15,
+    TypeMismatchError: 17,
+    QuotaExceededError: 22,
     TimeoutError: 23,
     DataCloneError: 25,
     AbortError: 20,
@@ -113,7 +115,9 @@ export function installDom(bridge: Bridge): void {
   /** A page's exception, reported as a browser reports one it caught: on
    *  the console, and as an `error` event at the window. */
   let reporting = false;
-  const report = (error: Any): void => {
+  /** What a thrown value says of itself: its message, and its stack where
+   *  it has one. */
+  const describe = (error: Any): { message: string; text: string } => {
     let message: string;
     try {
       message =
@@ -127,7 +131,11 @@ export function installDom(bridge: Bridge): void {
     try {
       stack = typeof error?.stack === 'string' ? error.stack : '';
     } catch {}
-    bridge('log', 'error', `Uncaught ${stack || message}`);
+    return { message, text: stack || message };
+  };
+  const report = (error: Any): void => {
+    const { message, text } = describe(error);
+    bridge('log', 'error', `Uncaught ${text}`);
     if (reporting) return;
     reporting = true;
     try {
@@ -380,6 +388,17 @@ export function installDom(bridge: Bridge): void {
       this.colno = Number(init.colno ?? 0);
     }
   }
+  /** `unhandledrejection` (HTML 8.1.6.3): the promise and its reason. */
+  class PromiseRejectionEvent extends Event {
+    readonly promise: Any;
+    readonly reason: Any;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this.promise = init.promise;
+      this.reason = init.reason;
+    }
+  }
+
   class HashChangeEvent extends Event {
     readonly oldURL: string;
     readonly newURL: string;
@@ -2228,7 +2247,7 @@ export function installDom(bridge: Bridge): void {
     _ready = 'loading';
     _current: Any = null;
     get documentElement(): Any {
-      return wrap(Number(call('root')));
+      return wrap(Number(call('root', this._id)));
     }
     get head(): Any {
       return this.querySelector('head');
@@ -2315,9 +2334,14 @@ export function installDom(bridge: Bridge): void {
     get implementation(): Any {
       return {
         hasFeature: () => true,
-        createHTMLDocument: () => {
-          throw new DOMException('Not supported here.', 'NotSupportedError');
-        },
+        // a document of its own, out of the one drawn: what a sanitizer
+        // parses markup into, whose scripts nothing runs
+        createHTMLDocument: (title?: Any) =>
+          wrap(
+            Number(
+              call('newDocument', title === undefined ? null : str(title)),
+            ),
+          ),
       };
     }
     get fonts(): Any {
@@ -2388,11 +2412,19 @@ export function installDom(bridge: Bridge): void {
         },
       };
     }
-    createTreeWalker(): never {
-      throw new DOMException(
-        'TreeWalker is not supported here.',
-        'NotSupportedError',
+    createTreeWalker(root: Any, whatToShow?: Any, filter?: Any): Any {
+      idOf(
+        root,
+        "Failed to execute 'createTreeWalker' on 'Document': parameter 1",
       );
+      return new TreeWalker(root, whatToShow, filter);
+    }
+    createNodeIterator(root: Any, whatToShow?: Any, filter?: Any): Any {
+      idOf(
+        root,
+        "Failed to execute 'createNodeIterator' on 'Document': parameter 1",
+      );
+      return new NodeIterator(root, whatToShow, filter);
     }
     importNode(node: Any, deep = false): Any {
       return node.cloneNode(deep);
@@ -3101,6 +3133,604 @@ export function installDom(bridge: Bridge): void {
     });
   }
 
+  // --- traversal (DOM 6) ---------------------------------------------------
+
+  const NodeFilter = {
+    FILTER_ACCEPT: 1,
+    FILTER_REJECT: 2,
+    FILTER_SKIP: 3,
+    SHOW_ALL: 0xffffffff,
+    SHOW_ELEMENT: 0x1,
+    SHOW_ATTRIBUTE: 0x2,
+    SHOW_TEXT: 0x4,
+    SHOW_CDATA_SECTION: 0x8,
+    SHOW_ENTITY_REFERENCE: 0x10,
+    SHOW_ENTITY: 0x20,
+    SHOW_PROCESSING_INSTRUCTION: 0x40,
+    SHOW_COMMENT: 0x80,
+    SHOW_DOCUMENT: 0x100,
+    SHOW_DOCUMENT_TYPE: 0x200,
+    SHOW_DOCUMENT_FRAGMENT: 0x400,
+    SHOW_NOTATION: 0x800,
+  };
+
+  /** What a traversal's `whatToShow` and `filter` say of a node (DOM 6.1,
+   *  "filter"): shown or not by its type, and then the filter's answer. */
+  class Traversal {
+    readonly root: Any;
+    readonly whatToShow: number;
+    readonly filter: Any;
+    _active = false;
+    constructor(root: Any, whatToShow: Any, filter: Any) {
+      this.root = root;
+      this.whatToShow =
+        whatToShow === undefined
+          ? NodeFilter.SHOW_ALL
+          : Number(whatToShow) >>> 0;
+      this.filter = filter ?? null;
+    }
+    _accept(node: Any): number {
+      if (this._active) {
+        throw new DOMException(
+          'A traversal is already running.',
+          'InvalidStateError',
+        );
+      }
+      if (!((1 << (node.nodeType - 1)) & this.whatToShow)) return 3;
+      const filter = this.filter;
+      if (!filter) return 1;
+      this._active = true;
+      try {
+        const answer =
+          typeof filter === 'function'
+            ? filter.call(undefined, node)
+            : filter.acceptNode(node);
+        return Number(answer);
+      } finally {
+        this._active = false;
+      }
+    }
+  }
+
+  class TreeWalker extends Traversal {
+    currentNode: Any;
+    constructor(root: Any, whatToShow: Any, filter: Any) {
+      super(root, whatToShow, filter);
+      this.currentNode = root;
+    }
+    parentNode(): Any {
+      let node = this.currentNode;
+      while (node && node !== this.root) {
+        node = node.parentNode;
+        if (node && this._accept(node) === 1) return (this.currentNode = node);
+      }
+      return null;
+    }
+    _children(first: boolean): Any {
+      let node = first
+        ? this.currentNode.firstChild
+        : this.currentNode.lastChild;
+      while (node) {
+        const result = this._accept(node);
+        if (result === 1) return (this.currentNode = node);
+        if (result === 3) {
+          const child = first ? node.firstChild : node.lastChild;
+          if (child) {
+            node = child;
+            continue;
+          }
+        }
+        while (node) {
+          const sibling = first ? node.nextSibling : node.previousSibling;
+          if (sibling) {
+            node = sibling;
+            break;
+          }
+          const parent = node.parentNode;
+          if (!parent || parent === this.root || parent === this.currentNode) {
+            return null;
+          }
+          node = parent;
+        }
+      }
+      return null;
+    }
+    firstChild(): Any {
+      return this._children(true);
+    }
+    lastChild(): Any {
+      return this._children(false);
+    }
+    _siblings(next: boolean): Any {
+      let node = this.currentNode;
+      if (node === this.root) return null;
+      for (;;) {
+        let sibling = next ? node.nextSibling : node.previousSibling;
+        while (sibling) {
+          node = sibling;
+          const result = this._accept(node);
+          if (result === 1) return (this.currentNode = node);
+          sibling = next ? node.firstChild : node.lastChild;
+          if (result === 2 || !sibling) {
+            sibling = next ? node.nextSibling : node.previousSibling;
+          }
+        }
+        node = node.parentNode;
+        if (!node || node === this.root) return null;
+        if (this._accept(node) === 1) return null;
+      }
+    }
+    nextSibling(): Any {
+      return this._siblings(true);
+    }
+    previousSibling(): Any {
+      return this._siblings(false);
+    }
+    previousNode(): Any {
+      let node = this.currentNode;
+      while (node !== this.root) {
+        let sibling = node.previousSibling;
+        while (sibling) {
+          node = sibling;
+          let result = this._accept(node);
+          while (result !== 2 && node.lastChild) {
+            node = node.lastChild;
+            result = this._accept(node);
+          }
+          if (result === 1) return (this.currentNode = node);
+          sibling = node.previousSibling;
+        }
+        if (node === this.root || !node.parentNode) return null;
+        node = node.parentNode;
+        if (this._accept(node) === 1) return (this.currentNode = node);
+      }
+      return null;
+    }
+    nextNode(): Any {
+      let node = this.currentNode;
+      let result = 1;
+      for (;;) {
+        while (result !== 2 && node.firstChild) {
+          node = node.firstChild;
+          result = this._accept(node);
+          if (result === 1) return (this.currentNode = node);
+        }
+        let sibling = null;
+        let at = node;
+        while (at) {
+          if (at === this.root) return null;
+          sibling = at.nextSibling;
+          if (sibling) break;
+          at = at.parentNode;
+        }
+        if (!sibling) return null;
+        node = sibling;
+        result = this._accept(node);
+        if (result === 1) return (this.currentNode = node);
+      }
+    }
+  }
+
+  /** `NodeIterator` (DOM 6.1): the tree in document order from `root`,
+   *  with a reference node it is before or after. */
+  class NodeIterator extends Traversal {
+    referenceNode: Any;
+    pointerBeforeReferenceNode = true;
+    constructor(root: Any, whatToShow: Any, filter: Any) {
+      super(root, whatToShow, filter);
+      this.referenceNode = root;
+    }
+    _following(node: Any): Any {
+      if (node.firstChild) return node.firstChild;
+      for (let at = node; at && at !== this.root; at = at.parentNode) {
+        if (at.nextSibling) return at.nextSibling;
+      }
+      return null;
+    }
+    _preceding(node: Any): Any {
+      if (node === this.root) return null;
+      let at = node.previousSibling;
+      if (!at) return node.parentNode;
+      while (at.lastChild) at = at.lastChild;
+      return at;
+    }
+    _traverse(next: boolean): Any {
+      let node = this.referenceNode;
+      let before = this.pointerBeforeReferenceNode;
+      for (;;) {
+        if (next) {
+          if (!before) {
+            node = this._following(node);
+            if (!node) return null;
+          } else before = false;
+        } else if (before) {
+          node = this._preceding(node);
+          if (!node) return null;
+        } else before = true;
+        if (this._accept(node) === 1) break;
+      }
+      this.referenceNode = node;
+      this.pointerBeforeReferenceNode = before;
+      return node;
+    }
+    nextNode(): Any {
+      return this._traverse(true);
+    }
+    previousNode(): Any {
+      return this._traverse(false);
+    }
+    detach(): void {}
+  }
+
+  /** `DOMParser`: markup made a document of its own, as
+   *  `createHTMLDocument` makes one — HTML only, and its scripts never run. */
+  class DOMParser {
+    parseFromString(markup: Any, type: Any): Any {
+      const kind = str(type);
+      if (kind !== 'text/html') {
+        throw new DOMException(
+          `Only text/html is parsed here, not ${kind}.`,
+          'NotSupportedError',
+        );
+      }
+      return wrap(Number(call('parseDocument', str(markup))));
+    }
+  }
+
+  /** `performance`'s marks and measures, and what observes them. */
+  const entries: Any[] = [];
+  const observers = new Set<Any>();
+  const noteEntry = (entry: Any): Any => {
+    entries.push(entry);
+    for (const observer of observers) {
+      if (!observer._types.has(entry.entryType)) continue;
+      observer._queue.push(entry);
+      if (observer._queue.length === 1) {
+        Promise.resolve().then(() => observer._deliver());
+      }
+    }
+    return entry;
+  };
+  const entryList = (list: Any[]) => ({
+    getEntries: () => list.slice(),
+    getEntriesByType: (type: Any) =>
+      list.filter((e) => e.entryType === str(type)),
+    getEntriesByName: (name: Any, type?: Any) =>
+      list.filter(
+        (e) =>
+          e.name === str(name) &&
+          (type === undefined || e.entryType === str(type)),
+      ),
+  });
+  class PerformanceObserver {
+    static readonly supportedEntryTypes = ['mark', 'measure'];
+    _fn: Any;
+    _types = new Set<string>();
+    _queue: Any[] = [];
+    constructor(fn: Any) {
+      if (typeof fn !== 'function') {
+        throw new TypeError(
+          "Failed to construct 'PerformanceObserver': parameter 1 is not of type 'Function'.",
+        );
+      }
+      this._fn = fn;
+    }
+    observe(options: Any = {}): void {
+      for (const type of options.entryTypes ?? [options.type]) {
+        if (type !== undefined) this._types.add(str(type));
+      }
+      observers.add(this);
+      if (options.buffered) {
+        for (const entry of entries) {
+          if (this._types.has(entry.entryType)) this._queue.push(entry);
+        }
+        if (this._queue.length) Promise.resolve().then(() => this._deliver());
+      }
+    }
+    disconnect(): void {
+      observers.delete(this);
+      this._queue = [];
+    }
+    takeRecords(): Any[] {
+      const taken = this._queue;
+      this._queue = [];
+      return taken;
+    }
+    _deliver(): void {
+      const list = this.takeRecords();
+      if (!list.length) return;
+      try {
+        this._fn.call(this, entryList(list), this);
+      } catch (e) {
+        report(e);
+      }
+    }
+  }
+
+  /** UTF-8, as `TextEncoder` writes it: a lone surrogate is U+FFFD. */
+  const utf8Of = (code: number, out: number[]): void => {
+    if (code < 0x80) out.push(code);
+    else if (code < 0x800) out.push(0xc0 | (code >> 6), 0x80 | (code & 63));
+    else if (code < 0x10000) {
+      out.push(
+        0xe0 | (code >> 12),
+        0x80 | ((code >> 6) & 63),
+        0x80 | (code & 63),
+      );
+    } else {
+      out.push(
+        0xf0 | (code >> 18),
+        0x80 | ((code >> 12) & 63),
+        0x80 | ((code >> 6) & 63),
+        0x80 | (code & 63),
+      );
+    }
+  };
+  /** The code point at `i` in a string, and how many units it takes. */
+  const scalarAt = (s: string, i: number): [number, number] => {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+      const d = s.charCodeAt(i + 1);
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        return [0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00), 2];
+      }
+    }
+    return [c >= 0xd800 && c <= 0xdfff ? 0xfffd : c, 1];
+  };
+
+  /** `TextEncoder` (Encoding 8.2): UTF-8, the only encoding it writes. */
+  class TextEncoder {
+    get encoding(): string {
+      return 'utf-8';
+    }
+    encode(input: Any = ''): Uint8Array {
+      const s = str(input);
+      const out: number[] = [];
+      for (let i = 0; i < s.length;) {
+        const [code, units] = scalarAt(s, i);
+        utf8Of(code, out);
+        i += units;
+      }
+      return new Uint8Array(out);
+    }
+    encodeInto(
+      input: Any,
+      dest: Uint8Array,
+    ): { read: number; written: number } {
+      const s = str(input);
+      let read = 0;
+      let written = 0;
+      const bytes: number[] = [];
+      while (read < s.length) {
+        const [code, units] = scalarAt(s, read);
+        bytes.length = 0;
+        utf8Of(code, bytes);
+        if (written + bytes.length > dest.length) break;
+        for (const b of bytes) dest[written++] = b;
+        read += units;
+      }
+      return { read, written };
+    }
+  }
+
+  /** windows-1252's bytes 0x80 to 0x9F, where it is not latin-1. */
+  const CP1252 =
+    '\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f' +
+    '\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178';
+
+  /**
+   * `TextDecoder` (Encoding 8.1): UTF-8, with WHATWG's replacement of a
+   * malformed sequence by its maximal subpart, streaming, `fatal` and the
+   * BOM; UTF-16LE; and windows-1252, which `latin1` and `ascii` name.
+   */
+  class TextDecoder {
+    readonly encoding: string;
+    readonly fatal: boolean;
+    readonly ignoreBOM: boolean;
+    _pending: number[] = [];
+    _started = false;
+    constructor(label: Any = 'utf-8', options: Any = {}) {
+      const name = str(label).trim().toLowerCase();
+      if (['utf-8', 'utf8', 'unicode-1-1-utf-8'].includes(name)) {
+        this.encoding = 'utf-8';
+      } else if (['utf-16le', 'utf-16'].includes(name)) {
+        this.encoding = 'utf-16le';
+      } else if (
+        ['windows-1252', 'latin1', 'iso-8859-1', 'ascii', 'us-ascii'].includes(
+          name,
+        )
+      ) {
+        this.encoding = 'windows-1252';
+      } else {
+        throw new RangeError(
+          `Failed to construct 'TextDecoder': The encoding label provided ('${str(label)}') is invalid.`,
+        );
+      }
+      this.fatal = !!options?.fatal;
+      this.ignoreBOM = !!options?.ignoreBOM;
+    }
+    decode(input?: Any, options: Any = {}): string {
+      let bytes: Uint8Array;
+      if (input === undefined || input === null) bytes = new Uint8Array(0);
+      else if (ArrayBuffer.isView(input)) {
+        bytes = new Uint8Array(
+          input.buffer,
+          input.byteOffset,
+          input.byteLength,
+        );
+      } else if (input instanceof ArrayBuffer) bytes = new Uint8Array(input);
+      else {
+        throw new TypeError(
+          "Failed to execute 'decode' on 'TextDecoder': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.",
+        );
+      }
+      const stream = !!options?.stream;
+      const all = this._pending.length
+        ? Uint8Array.from([...this._pending, ...bytes])
+        : bytes;
+      this._pending = [];
+      const units: number[] = [];
+      const bad = (): void => {
+        if (this.fatal) {
+          throw new TypeError(
+            "Failed to execute 'decode' on 'TextDecoder': The encoded data was not valid.",
+          );
+        }
+        units.push(0xfffd);
+      };
+      const push = (code: number): void => {
+        if (code > 0xffff) {
+          code -= 0x10000;
+          units.push(0xd800 + (code >> 10), 0xdc00 + (code & 1023));
+        } else units.push(code);
+      };
+      const n = all.length;
+      let i = 0;
+      if (this.encoding === 'windows-1252') {
+        for (; i < n; i += 1) {
+          const b = all[i];
+          units.push(b >= 0x80 && b < 0xa0 ? CP1252.charCodeAt(b - 0x80) : b);
+        }
+      } else if (this.encoding === 'utf-16le') {
+        for (; i + 1 < n; i += 2) units.push(all[i] | (all[i + 1] << 8));
+        if (i < n) {
+          if (stream) this._pending = [all[i]];
+          else bad();
+        }
+      } else {
+        while (i < n) {
+          const b = all[i];
+          if (b < 0x80) {
+            units.push(b);
+            i += 1;
+            continue;
+          }
+          let need = 0;
+          let code = 0;
+          let lower = 0x80;
+          let upper = 0xbf;
+          if (b >= 0xc2 && b <= 0xdf) {
+            need = 1;
+            code = b & 0x1f;
+          } else if (b >= 0xe0 && b <= 0xef) {
+            need = 2;
+            code = b & 0xf;
+            if (b === 0xe0) lower = 0xa0;
+            if (b === 0xed) upper = 0x9f;
+          } else if (b >= 0xf0 && b <= 0xf4) {
+            need = 3;
+            code = b & 0x7;
+            if (b === 0xf0) lower = 0x90;
+            if (b === 0xf4) upper = 0x8f;
+          } else {
+            bad();
+            i += 1;
+            continue;
+          }
+          let j = 1;
+          for (; j <= need && i + j < n; j += 1) {
+            const c = all[i + j];
+            if (c < lower || c > upper) break;
+            lower = 0x80;
+            upper = 0xbf;
+            code = (code << 6) | (c & 0x3f);
+          }
+          if (j > need) {
+            push(code);
+            i += j;
+          } else if (i + j >= n && stream) {
+            // a sequence the next chunk finishes
+            this._pending = Array.from(all.subarray(i));
+            break;
+          } else {
+            // the bytes that began well, as one replacement
+            bad();
+            i += j;
+          }
+        }
+      }
+      if (!stream && this._pending.length) {
+        this._pending = [];
+        bad();
+      }
+      let text = '';
+      for (let k = 0; k < units.length; k += 8192) {
+        text += String.fromCharCode(...units.slice(k, k + 8192));
+      }
+      if (
+        !this._started &&
+        text &&
+        !this.ignoreBOM &&
+        text.charCodeAt(0) === 0xfeff
+      ) {
+        text = text.slice(1);
+      }
+      this._started = stream ? this._started || text.length > 0 : false;
+      return text;
+    }
+  }
+
+  /** `crypto`, its randomness the host's: no `subtle`, which a page that
+   *  wants one asks for and does without. */
+  const crypto = {
+    getRandomValues(array: Any): Any {
+      if (
+        !ArrayBuffer.isView(array) ||
+        array instanceof Float32Array ||
+        array instanceof Float64Array ||
+        array instanceof DataView
+      ) {
+        throw new DOMException(
+          "Failed to execute 'getRandomValues' on 'Crypto': The provided ArrayBufferView is of type 'Float32', which is not an integer array type.",
+          'TypeMismatchError',
+        );
+      }
+      if (array.byteLength > 65536) {
+        throw new DOMException(
+          `Failed to execute 'getRandomValues' on 'Crypto': The ArrayBufferView's byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (65536).`,
+          'QuotaExceededError',
+        );
+      }
+      const hex = String(call('random', array.byteLength));
+      const bytes = new Uint8Array(
+        array.buffer,
+        array.byteOffset,
+        array.byteLength,
+      );
+      for (let i = 0; i < bytes.length; i += 1) {
+        bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return array;
+    },
+    randomUUID: (): string => String(call('uuid')),
+    subtle: undefined,
+  };
+
+  /** `visualViewport`: the pane's, as `innerWidth` is, at a scale of 1. */
+  class VisualViewport extends EventTarget {
+    get width(): number {
+      return viewport().width;
+    }
+    get height(): number {
+      return viewport().height;
+    }
+    get offsetLeft(): number {
+      return 0;
+    }
+    get offsetTop(): number {
+      return 0;
+    }
+    get pageLeft(): number {
+      return viewport().scrollX;
+    }
+    get pageTop(): number {
+      return viewport().scrollY;
+    }
+    get scale(): number {
+      return 1;
+    }
+  }
+
   /** `localStorage` and `sessionStorage`, kept by the host per origin. */
   const storage = (kind: 'local' | 'session'): Any => {
     const api = {
@@ -3687,6 +4317,15 @@ export function installDom(bridge: Bridge): void {
     MutationRecord,
     XMLHttpRequest,
     ProgressEvent,
+    TextEncoder,
+    TextDecoder,
+    VisualViewport,
+    PromiseRejectionEvent,
+    NodeFilter,
+    TreeWalker,
+    NodeIterator,
+    DOMParser,
+    PerformanceObserver,
   };
   for (const [name, value] of Object.entries(classes)) define(name, value);
 
@@ -3738,13 +4377,81 @@ export function installDom(bridge: Bridge): void {
     whenDefined: () => new Promise(() => {}),
     upgrade() {},
   });
+  const timeOrigin = Date.now() - now();
   define('performance', {
     now,
-    timeOrigin: Date.now() - now(),
-    mark() {},
-    measure() {},
-    getEntriesByType: () => [],
-    getEntriesByName: () => [],
+    timeOrigin,
+    mark(name: Any, options: Any = {}) {
+      return noteEntry({
+        name: str(name),
+        entryType: 'mark',
+        startTime: Number(options?.startTime ?? now()),
+        duration: 0,
+        detail: options?.detail ?? null,
+      });
+    },
+    measure(name: Any, start?: Any, end?: Any) {
+      const at = (mark: Any, otherwise: number): number => {
+        if (typeof mark === 'number') return mark;
+        if (mark === undefined || mark === null) return otherwise;
+        const found = entries.filter((e) => e.name === str(mark)).at(-1);
+        return found ? found.startTime : otherwise;
+      };
+      const options = start && typeof start === 'object' ? start : null;
+      const from = at(options ? options.start : start, 0);
+      const to = at(options ? options.end : end, now());
+      return noteEntry({
+        name: str(name),
+        entryType: 'measure',
+        startTime: from,
+        duration: to - from,
+        detail: options?.detail ?? null,
+      });
+    },
+    clearMarks(name?: Any) {
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        const e = entries[i];
+        if (
+          e.entryType === 'mark' &&
+          (name === undefined || e.name === str(name))
+        ) {
+          entries.splice(i, 1);
+        }
+      }
+    },
+    clearMeasures(name?: Any) {
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        const e = entries[i];
+        if (
+          e.entryType === 'measure' &&
+          (name === undefined || e.name === str(name))
+        ) {
+          entries.splice(i, 1);
+        }
+      }
+    },
+    clearResourceTimings() {},
+    setResourceTimingBufferSize() {},
+    getEntries: () => entries.slice(),
+    getEntriesByType: (type: Any) => entryList(entries).getEntriesByType(type),
+    getEntriesByName: (name: Any, type?: Any) =>
+      entryList(entries).getEntriesByName(name, type),
+    // the legacy timing, where a page reads how long it took to load
+    timing: {
+      navigationStart: timeOrigin,
+      fetchStart: timeOrigin,
+      responseStart: timeOrigin,
+      responseEnd: timeOrigin,
+      domLoading: timeOrigin,
+      domInteractive: 0,
+      domContentLoadedEventStart: 0,
+      domContentLoadedEventEnd: 0,
+      domComplete: 0,
+      loadEventStart: 0,
+      loadEventEnd: 0,
+    },
+    navigation: { type: 0, redirectCount: 0 },
+    toJSON: () => ({ timeOrigin }),
   });
   define('screen', {
     get width() {
@@ -3773,6 +4480,68 @@ export function installDom(bridge: Bridge): void {
   getter('devicePixelRatio', () => viewport().dpr);
   getter('isSecureContext', () => location.protocol === 'https:');
   getter('origin', () => location.origin);
+  // The window's own strings, made strings as they are set, as a
+  // browser's are: a classic script's `var name = 1` sets the window's
+  // name, and `typeof name` is a string after it, as it is there.
+  let windowName = '';
+  let windowStatus = '';
+  Object.defineProperty(G, 'name', {
+    get: () => windowName,
+    set: (v: Any) => {
+      windowName = str(v);
+    },
+    configurable: true,
+    enumerable: false,
+  });
+  Object.defineProperty(G, 'status', {
+    get: () => windowStatus,
+    set: (v: Any) => {
+      windowStatus = str(v);
+    },
+    configurable: true,
+    enumerable: false,
+  });
+  getter('closed', () => false);
+  // no frames, which is what `length` counts
+  getter('length', () => 0);
+  for (const at of ['screenX', 'screenY', 'screenLeft', 'screenTop']) {
+    getter(at, () => 0);
+  }
+  define('visualViewport', new VisualViewport());
+  define('crypto', crypto);
+  // `new Image()`, `new Option()` and `new Audio()`: the elements, made
+  // as `createElement` makes them (HTML 4.8.4.1, 4.10.10, 4.8.10)
+  const Image = function (width?: Any, height?: Any): Any {
+    const img = document.createElement('img');
+    if (width !== undefined) img.setAttribute('width', str(width));
+    if (height !== undefined) img.setAttribute('height', str(height));
+    return img;
+  } as Any;
+  Image.prototype = HTMLImageElement.prototype;
+  const Option = function (
+    text?: Any,
+    value?: Any,
+    defaultSelected?: Any,
+    selected?: Any,
+  ): Any {
+    const option = document.createElement('option');
+    if (text !== undefined) option.textContent = str(text);
+    if (value !== undefined) option.setAttribute('value', str(value));
+    if (defaultSelected) option.setAttribute('selected', '');
+    if (selected) option.selected = true;
+    return option;
+  } as Any;
+  Option.prototype = HTMLOptionElement.prototype;
+  const Audio = function (src?: Any): Any {
+    const audio = document.createElement('audio');
+    audio.setAttribute('preload', 'auto');
+    if (src !== undefined) audio.setAttribute('src', str(src));
+    return audio;
+  } as Any;
+  Audio.prototype = HTMLMediaElement.prototype;
+  define('Image', Image);
+  define('Option', Option);
+  define('Audio', Audio);
   define('scrollTo', (x: Any, y?: Any) => {
     const to = typeof x === 'object' && x ? x : { left: x, top: y };
     const v = viewport();
@@ -3892,6 +4661,12 @@ export function installDom(bridge: Bridge): void {
     'blur',
     'keydown',
     'click',
+    'unhandledrejection',
+    'rejectionhandled',
+    'pageshow',
+    'pagehide',
+    'online',
+    'offline',
   ]) {
     Object.defineProperty(G, `on${type}`, {
       get: () => windowTarget._handlers[type] ?? null,
@@ -3936,6 +4711,11 @@ export function installDom(bridge: Bridge): void {
 
   // a page's script, run as a classic script is: in the global scope, its
   // declarations the window's
+  // `currentScript` stays the script's through the microtasks it queued,
+  // which run as this entry ends (`microtaskMode: 'afterEvaluate'`), and
+  // is put back by the entry after (`__ran`): HTML runs the microtask
+  // checkpoint inside running the script, before it puts `currentScript`
+  // back (8.1.4.6). Turbopack's chunks read it from a promise's callback.
   entry('__exec', () => {
     const [code, url, script] = input();
     document._current = script ? wrap(script) : null;
@@ -3945,9 +4725,11 @@ export function installDom(bridge: Bridge): void {
     } catch (error) {
       report(error);
       return false;
-    } finally {
-      document._current = null;
     }
+  });
+  entry('__ran', () => {
+    document._current = null;
+    return true;
   });
 
   // an event `<Html>` was told of, dispatched as the browser would, and
@@ -4145,6 +4927,32 @@ export function installDom(bridge: Bridge): void {
     configurable: false,
     enumerable: false,
   });
+  Object.defineProperty(G, '__promise', {
+    value: undefined,
+    writable: true,
+    configurable: false,
+    enumerable: false,
+  });
+  // A promise of the page's rejected with nothing to catch it, handed in
+  // through `__thrown` and `__promise` as a module's error is: told as
+  // `unhandledrejection`, which a page can cancel, and reported as a
+  // browser reports it where none does.
+  entry('__rejected', () => {
+    const reason = G.__thrown;
+    const promise = G.__promise;
+    G.__thrown = undefined;
+    G.__promise = undefined;
+    const ev = new PromiseRejectionEvent('unhandledrejection', {
+      promise,
+      reason,
+      cancelable: true,
+    });
+    ev.isTrusted = true;
+    if (!dispatch(windowTarget, ev)) return true;
+    bridge('log', 'error', `Uncaught (in promise) ${describe(reason).text}`);
+    return true;
+  });
+
   entry('__fault', () => {
     const error = G.__thrown;
     G.__thrown = undefined;
