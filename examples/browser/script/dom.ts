@@ -4133,4 +4133,29 @@ export function installDom(bridge: Bridge): void {
   // nothing: run so that the microtasks a promise the host settled queued
   // run (`microtaskMode: 'afterEvaluate'`)
   entry('__drain', () => true);
+
+  // What a module threw, or failed to fetch, parse or link with, which the
+  // host hands in through `__thrown` without reading it
+  // (`ScriptEngine._fault`): a data slot no page can make a setter of, as
+  // `__in` is, and named apart from the entry that reads it. A timeout is the
+  // host's to report, and answered so.
+  Object.defineProperty(G, '__thrown', {
+    value: undefined,
+    writable: true,
+    configurable: false,
+    enumerable: false,
+  });
+  entry('__fault', () => {
+    const error = G.__thrown;
+    G.__thrown = undefined;
+    if (
+      error &&
+      typeof error === 'object' &&
+      error.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT'
+    ) {
+      return 'timeout';
+    }
+    report(error);
+    return true;
+  });
 }

@@ -88,9 +88,10 @@ const PAGE = new URL('./page.tsx', import.meta.url);
  *    memory. Node enforces it; Bun 1.4 passes the flag on and enforces
  *    nothing (core's `docs/frame.md`). `BROWSER_PANE_HEAP_MB` sets it.
  *  - `--experimental-vm-modules`: what makes Node call the host for a
- *    page's `import()`, which is refused there with the page's own error;
- *    without it Node refuses it with one of the host's, which reaches the
- *    host's `Function`, and the engine runs no script
+ *    page's `import()`, which fails there with the page's own error, and
+ *    `vm.SourceTextModule`, which its module scripts run on; without it
+ *    Node refuses an `import()` with an error of the host's, which reaches
+ *    the host's `Function`, and the engine runs no script
  *    (`SCRIPTS_CONTAINED`). Bun needs no flag. The warning the flag prints
  *    in every pane is left out.
  */

@@ -579,6 +579,111 @@ test('XMLHttpRequest is fetch with its states, its events and its headers', asyn
   );
 });
 
+test('module scripts run in order with the classic ones, their imports linked, and a nomodule script does not', async () => {
+  const doc = await hosted(
+    '<p id="out"></p>' +
+      "<script>var order = ['classic'];</script>" +
+      '<script type="module">' +
+      "import { twice, seen } from './lib/twice.js';" +
+      "import shout from './lib/shout.js';" +
+      "order.push('inline ' + twice(2) + ' ' + shout('a') + ' ' + seen() + ' ' + import.meta.url);" +
+      '</script>' +
+      "<script nomodule>order.push('nomodule');</script>" +
+      '<script type="module" src="lib/main.js"></script>' +
+      // read after `load`: a top-level `await` goes on past it, as a
+      // browser's does
+      "<script>window.addEventListener('load', function () { setTimeout(function () { document.getElementById('out').textContent = order.join(' | '); }, 30); });</script>",
+    {
+      scripts: {
+        'https://example.test/dir/lib/twice.js':
+          'var count = 0; export function twice(n) { return n * 2; } export function seen() { return ++count; }',
+        'https://example.test/dir/lib/shout.js':
+          "import { twice } from './twice.js'; export default function (s) { return s.toUpperCase() + twice(1); }",
+        'https://example.test/dir/lib/main.js':
+          "import { seen } from './twice.js'; order.push('main ' + seen() + ' ' + import.meta.url);" +
+          // what a static import linked and evaluated, imported again
+          "const again = await import('./twice.js'); order.push('again ' + again.seen());",
+      },
+    },
+  );
+  await settle(60);
+  assert.equal(
+    doc.text('out'),
+    [
+      'classic',
+      // one twice.js for both, whichever imported it
+      'inline 4 A2 1 https://example.test/dir/page.html',
+      'main 2 https://example.test/dir/lib/main.js',
+      'again 3',
+    ].join(' | '),
+  );
+});
+
+test('import() is the page’s, from a classic script and a module, and fails as the page’s own error', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var log = []; var done = function () { document.getElementById("out").textContent = log.join(" | "); };' +
+      "import('./lib/value.js').then(function (m) { log.push('classic ' + m.value); });" +
+      "import('lodash').catch(function (e) {" +
+      "  log.push(e.name + ' ' + (e instanceof TypeError) + ' ' + e.constructor.constructor('return typeof process')());" +
+      '});' +
+      "import('./lib/missing.js').catch(function (e) { log.push('missing ' + (e instanceof TypeError)); });" +
+      '</script><script type="module">' +
+      "const m = await import('./lib/value.js'); log.push('module ' + m.value);" +
+      'setTimeout(done, 20);' +
+      '</script>',
+    {
+      scripts: {
+        'https://example.test/dir/lib/value.js': 'export const value = 7;',
+      },
+    },
+  );
+  await settle(120);
+  const out = doc.text('out').split(' | ').sort();
+  assert.deepEqual(out, [
+    'TypeError true undefined',
+    'classic 7',
+    'missing true',
+    'module 7',
+  ]);
+});
+
+test('a module that throws, runs away or does not parse is reported, and the page goes on', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var seen = [];' +
+      "window.addEventListener('error', function (e) {" +
+      "  if (e.target && e.target.id === 'gone') { seen.push('gone'); return; }" +
+      "  seen.push(e.error && e.error.constructor === Error ? 'Error ' + e.error.message : String(e.message));" +
+      '}, true);' +
+      "window.addEventListener('load', function () { setTimeout(function () { document.getElementById('out').textContent = seen.sort().join(' | '); }, 30); });" +
+      '</script>' +
+      '<script type="module">throw new Error("from a module");</script>' +
+      '<script type="module">for (;;) {}</script>' +
+      '<script type="module">import { nothing } from "./lib/value.js";</script>' +
+      '<script type="module" src="lib/gone.js" id="gone"></script>' +
+      "<script>document.getElementById('out').textContent = 'after';</script>",
+    {
+      scripts: {
+        'https://example.test/dir/lib/value.js': 'export const value = 7;',
+      },
+    },
+  );
+  await settle(200);
+  assert.equal(doc.timeouts, 1, 'the runaway module was stopped');
+  const out = doc.text('out').split(' | ');
+  assert.ok(
+    out.includes('Error from a module'),
+    `the page's own error: ${out}`,
+  );
+  assert.ok(
+    out.some((s) => /nothing/.test(s)),
+    `the import that names nothing: ${out}`,
+  );
+  assert.ok(out.includes('gone'), `the module not found: ${out}`);
+  assert.equal(out.length, 3, `${out}`);
+});
+
 test('storage keeps what a page puts in it', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
