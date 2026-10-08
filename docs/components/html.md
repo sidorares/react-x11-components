@@ -3475,10 +3475,15 @@ combinator, its later siblings; in a `:has()`, the elements around it. Then:
   size went from 59 ms to 27, and a text changed from 66 to 21.
 
 Some changes are refreshes of everything however they are told: a
-stylesheet, a `<meta>` or a `<base>` changing; a document with a shadow
-tree; and a `:has()` whose element is not itself the one restyled —
-`.card:has(.x) .title`, `:has(+ .x)` — which reaches everything around its
-anchors. A change under an element that is `display: none`, a comment, a
+stylesheet, a `<meta>` or a `<base>` changing; a document whose sheets
+reach across a shadow tree's edge — `:host`, `::slotted()`, `::part()` —
+which no index of a change reads; and a `:has()` whose element is not
+itself the one restyled — `.card:has(.x) .title`, `:has(+ .x)` — which
+reaches everything around its anchors. A document with shadow trees whose
+rules stay inside them is told what changed as any other is: Next.js
+mounts one such tree on every page, its route announcer, and a page that
+paid for a refresh of everything at each change for it laid itself out
+again at every frame. A change under an element that is `display: none`, a comment, a
 change to what is not in the document yet — a fragment a script fills
 before it appends it — and an attribute nothing reads but a selector that
 names none (a `data-` attribute no rule tests) restyle nothing at all. Nor

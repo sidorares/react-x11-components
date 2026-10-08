@@ -5241,8 +5241,11 @@ export class HtmlViewNode extends Node {
     // `:first-child` or a sibling combinator counts.
     const parent =
       change.type === 'childList' ? change.target : change.target.parent;
-    if (!parent || !isElement(parent)) return false;
-    if (CASCADE_TAGS.has(tagOf(parent))) return false;
+    // the top of a shadow tree holds what is in it as an element does,
+    // with nothing above it in its tree for a selector to read
+    const root = parent instanceof ShadowRoot ? parent : null;
+    if (!parent || (!root && !isElement(parent))) return false;
+    if (!root && CASCADE_TAGS.has(tagOf(parent as Element))) return false;
     let drawn = false;
     if (change.type === 'childList') {
       let counted = false;
@@ -5260,7 +5263,8 @@ export class HtmlViewNode extends Node {
     const bits = cascade.treeChange(change.type === 'characterData');
     if (bits === null) return false;
     if (!drawn && !bits) return true;
-    if (!(bits & CHANGES_AROUND) && undrawn(parent, tree)) return true;
+    const holder = root ? root.host : (parent as Element);
+    if (!(bits & CHANGES_AROUND) && undrawn(holder, tree)) return true;
     if (drawn) scope.boxes = true;
     if (change.type === 'childList') {
       // what came in is styled whole, and so is what moved here from
@@ -5269,7 +5273,8 @@ export class HtmlViewNode extends Node {
         if (isElement(node)) addSubtree(node, scope.own);
       }
     }
-    return spreadChange(parent, bits, true, scope.own);
+    if (root) return spreadRootChange(root, bits, scope.own);
+    return spreadChange(parent as Element, bits, true, scope.own);
   }
 
   /**
@@ -7259,7 +7264,10 @@ function addSubtree(el: Element, into: Set<Element>): void {
   }
 }
 
-/** The elements and everything in them, or null past `limit` of them. */
+/** The elements and everything in them, or null past `limit` of them:
+ *  what is in them in the tree and in the flat tree both, since what
+ *  inherits from a host is its shadow tree, and from a slot what is
+ *  assigned to it. */
 function withDescendants(
   els: ReadonlySet<Element>,
   limit: number,
@@ -7272,6 +7280,10 @@ function withDescendants(
     out.add(at);
     if (out.size > limit) return null;
     for (const child of at.children) if (isElement(child)) stack.push(child);
+    const flat = flatChildrenOf(at);
+    if (flat !== at.children) {
+      for (const child of flat) if (isElement(child)) stack.push(child);
+    }
   }
   return out;
 }
@@ -7311,6 +7323,23 @@ function spreadChange(
     // `:has()`'s anchor for itself, and a holder is for what it holds
     if (holder) own.add(el);
     for (let at = el.parent; at && isElement(at); at = at.parent) own.add(at);
+  }
+  return true;
+}
+
+/** `spreadChange` for what the top of a shadow tree holds changing: each
+ *  thing in it is a selector's subject as a holder's children are, and
+ *  nothing is above it in its tree for a `:has()` to anchor at. */
+function spreadRootChange(
+  root: ShadowRoot,
+  bits: number,
+  own: Set<Element>,
+): boolean {
+  if (bits & (CHANGES_HAS_BELOW | CHANGES_HAS_LATER)) return false;
+  for (const child of root.children) {
+    if (!isElement(child)) continue;
+    if (bits & (CHANGES_BELOW | CHANGES_LATER)) addSubtree(child, own);
+    else if (bits & CHANGES_SELF) own.add(child);
   }
   return true;
 }
