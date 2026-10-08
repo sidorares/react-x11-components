@@ -142,12 +142,18 @@ const SAFELISTED_RESPONSE = new Set([
   'pragma',
 ]);
 
-/** A request header a page may not set (Fetch 2.2.2, "forbidden request-
- *  header"): the browser's own to set, or none at all. */
+/**
+ * A request header a page may not set (Fetch 2.2.2, "forbidden request-
+ * header"): the browser's own to set, or none at all. And `User-Agent`,
+ * which Fetch took off that list and Chrome still drops: a page that sets
+ * one sends Chrome's, and its preflight names no `user-agent`. The AI SDK
+ * sets one on its requests, and api.ekazinich.com, which allows only
+ * `Content-Type` and `Authorization`, refused the preflight that named it.
+ */
 function forbiddenRequestHeader(name: string): boolean {
   const n = name.toLowerCase();
   return (
-    /^(accept-charset|accept-encoding|access-control-request-headers|access-control-request-method|connection|content-length|cookie|cookie2|date|dnt|expect|host|keep-alive|origin|referer|set-cookie|te|trailer|transfer-encoding|upgrade|via)$/.test(
+    /^(accept-charset|accept-encoding|access-control-request-headers|access-control-request-method|connection|content-length|cookie|cookie2|date|dnt|expect|host|keep-alive|origin|referer|set-cookie|te|trailer|transfer-encoding|upgrade|user-agent|via)$/.test(
       n,
     ) || /^(proxy-|sec-)/.test(n)
   );

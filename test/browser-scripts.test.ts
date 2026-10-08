@@ -501,7 +501,8 @@ test('another origin answers a page where CORS lets it: simple requests, preflig
       'var r = [];' +
       'function step(p, name) { return p.then(function (x) { r.push(name + " " + x); }, function (e) { r.push(name + " " + e.name); }); }' +
       'var api = "https://api.example.test";' +
-      'step(fetch(api + "/chat", { method: "POST", headers: { "Content-Type": "application/json", "X-Key": "k" }, body: "{}" })' +
+      // the AI SDK names itself in a User-Agent, which Chrome drops
+      'step(fetch(api + "/chat", { method: "POST", headers: { "Content-Type": "application/json", "X-Key": "k", "User-Agent": "ai-sdk/5" }, body: "{}" })' +
       '  .then(function (res) { return res.type + ":" + res.headers.get("x-shown") + ":" + res.headers.get("x-hidden") + ":" + res.headers.get("content-type"); }), "chat")' +
       '.then(function () { return step(fetch(api + "/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then(function (res) { return res.status; }), "again"); })' +
       '.then(function () { return step(fetch(api + "/open").then(function (res) { return res.type; }), "open"); })' +
