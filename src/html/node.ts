@@ -46,6 +46,7 @@ import type {
 import type { MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import type { Style } from 'react-x11/style';
 import type { AnyNode, ChildNode, Element } from 'domhandler';
+import { compareDocumentPosition } from 'domutils';
 
 import { codePointAtOffset, codeUnitOffsets } from '../internal/text.js';
 import {
@@ -455,9 +456,16 @@ export class HtmlViewNode extends Node {
   private _webFonts: WebFonts;
   /** The sheets the last restyle read, and the cascade built from them. */
   private _sheetsRead: SheetsRead | null = null;
-  /** Each `<link>` whose sheet the cascade in force read, with the `href`
-   *  it was read from and what the sheet imports (`_noteSheetsInForce`). */
+  /** Each `<link>` and `<style>` whose sheet the cascade in force read,
+   *  with the `href` a link's was read from and what the sheet imports
+   *  (`_noteSheetsInForce`). */
   private _sheetsInForce = new Map<Element, SheetInForce>();
+  /** The elements of the sheets the document had when its parse ended:
+   *  the parser's, which alone hold a script back (`_blocksScripts`). */
+  private _parserSheets: ReadonlySet<Element> = new Set();
+  /** The scripts a host waits to run on the sheets before them
+   *  (`scriptsUnblocked`). */
+  private _scriptWaits: ScriptWait[] = [];
   /** The `href` each `<link>` was last told a `load` or an `error` for
    *  (`_tellSheets`). */
   private _sheetTold = new WeakMap<Element, string>();
@@ -1670,6 +1678,11 @@ export class HtmlViewNode extends Node {
     const props = this._props();
     if (this._parsedOf !== doc) {
       this._parsedOf = doc;
+      // what is there now the parser made: a sheet a script puts in from
+      // here on holds no script back
+      this._parserSheets = new Set(
+        this._source.facts().sheets.map((ref) => ref.element),
+      );
       if (props.onParsed) {
         void Promise.resolve().then(() => {
           if (this._source.document === doc && !this.destroyed) {
@@ -1679,6 +1692,8 @@ export class HtmlViewNode extends Node {
       }
     }
     this._tellSheets();
+    // after: a sheet's `load` is the page's before the script it held runs
+    this._wakeScripts();
     if (
       this._loadedOf === doc ||
       !this._tree ||
@@ -1699,10 +1714,12 @@ export class HtmlViewNode extends Node {
   }
 
   /**
-   * Note which `<link>`s the cascade just made or kept read, each with the
-   * `href` it was read from and what its sheet imports: what a `load` is
-   * told from (`_tellSheets`). Every shadow tree's, not only the one its
-   * set of sheets was read for: they read alike and are other elements.
+   * Note which `<link>`s and `<style>`s the cascade just made or kept read,
+   * each with what its sheet imports, and a link's with the `href` it was
+   * read from: what a `load` is told from (`_tellSheets`), and what holds a
+   * script back (`_blocksScripts`). Every shadow tree's, not only the one
+   * its set of sheets was read for: they read alike and are other
+   * elements.
    */
   private _noteSheetsInForce(
     read: readonly SheetText[],
@@ -1716,7 +1733,6 @@ export class HtmlViewNode extends Node {
     ) => {
       for (let i = 0; i < own.length; i += 1) {
         const { element, href } = own[i];
-        if (href === undefined) continue;
         inForce.set(element, { href, imports: imports?.[i] ?? [] });
       }
     };
@@ -1778,15 +1794,93 @@ export class HtmlViewNode extends Node {
       // reads, and which has loaded all there is of it
       return this._resources.stylesheet(href)?.text ? null : 'load';
     }
+    return this._importsOutcome(read.imports);
+  }
+
+  /** What a sheet's imports came to, as `_sheetOutcome` answers. */
+  private _importsOutcome(
+    imports: readonly ImportRead[],
+  ): 'load' | 'error' | null {
     // an import read as nothing failed, or is on its way, or arrived since
     // and waits for the restyle that reads it
     let failed = false;
-    for (const { url, text } of read.imports) {
+    for (const { url, text } of imports) {
       if (text !== null) continue;
       if (this._resources.state(url) !== 'failed') return null;
       failed = true;
     }
     return failed ? 'error' : 'load';
+  }
+
+  /**
+   * Settled once the document has no style sheet that is blocking scripts
+   * (HTML, "has a style sheet that is blocking scripts") — of the ones
+   * before `script` in it, or with no `script` all of them. A sheet the
+   * parser made holds a script back while its `media` holds and it has
+   * not come to anything: a `<link>` until it is told as `load` or
+   * `error`, which is after the restyle that applied it and what it
+   * imports, and a `<style>` until what it imports has. One a script put
+   * in holds nothing. A host runs a script the parser met once this
+   * settles, so one after a head's `<link>` reads the document as styled
+   * by it, and one before it runs while it is on its way, as a browser
+   * runs it on meeting it; a deferred script, a module, waits on them all,
+   * as a browser runs it after the parse.
+   */
+  scriptsUnblocked(script: Element | null = null): Promise<void> {
+    if (this.destroyed || !this._blocksScripts(script)) {
+      return Promise.resolve();
+    }
+    const doc = this._source.document;
+    return new Promise((resolve) =>
+      this._scriptWaits.push({ script, doc, resolve }),
+    );
+  }
+
+  /** Whether a sheet holds a script back, as `scriptsUnblocked` says. */
+  private _blocksScripts(script: Element | null): boolean {
+    // until the parse ends every sheet is the parser's
+    const made =
+      this._parsedOf === this._source.document ? this._parserSheets : null;
+    for (const ref of this._source.facts().sheets) {
+      if (made && !made.has(ref.element)) continue;
+      // one after the script the parser had not met when it got to it
+      if (script && !(compareDocumentPosition(ref.element, script) & BEFORE)) {
+        continue;
+      }
+      if (ref.media && !this._mediaHolds([ref.media])) continue;
+      if (ref.kind === 'link') {
+        if (!this._sheetOutcome(ref.element, ref.href)) return true;
+        continue;
+      }
+      const read = this._sheetsInForce.get(ref.element);
+      // not read yet, by the restyle a change to the tree has coming
+      if (!read) {
+        if (/@import/i.test(ref.text)) return true;
+        continue;
+      }
+      if (!this._importsOutcome(read.imports)) return true;
+    }
+    return false;
+  }
+
+  /** Let a host run the scripts the sheets before them no longer hold
+   *  back, and those of a document that went. */
+  private _wakeScripts(): void {
+    if (!this._scriptWaits.length) return;
+    const doc = this._source.document;
+    const waiting: ScriptWait[] = [];
+    for (const wait of this._scriptWaits) {
+      if (
+        wait.doc === doc &&
+        !this.destroyed &&
+        this._blocksScripts(wait.script)
+      ) {
+        waiting.push(wait);
+      } else {
+        wait.resolve();
+      }
+    }
+    this._scriptWaits = waiting;
   }
 
   /**
@@ -2955,6 +3049,9 @@ export class HtmlViewNode extends Node {
     this._sheetsRead = null;
     this._tree = null;
     this._cascade = null;
+    // a host waiting to run a script goes on, to find its document gone
+    for (const wait of this._scriptWaits) wait.resolve();
+    this._scriptWaits = [];
     super.destroySubtree();
   }
 
@@ -3186,11 +3283,17 @@ export class HtmlViewNode extends Node {
    * and its sheets never disagree about which side of a query it is on.
    */
   matchMedia(query: string): boolean {
+    return this._mediaHolds([parseMediaQuery(query)]);
+  }
+
+  /** Whether media conditions hold, as the document's `@media` rules are
+   *  matched (`matchMedia`). */
+  private _mediaHolds(conditions: MediaCondition[][]): boolean {
     const props = this._props();
     const s = this._scale;
     const width = this.abs.width || this._cascade?.viewportWidth || 1;
     return mediaMatches(
-      [parseMediaQuery(query)],
+      conditions,
       Math.max(1, Math.floor(width)) / s,
       props.look.colorScheme,
       this._viewportHeight() / s,
@@ -5858,11 +5961,24 @@ interface ImportRead {
   base: string | null;
 }
 
-/** A `<link>`'s sheet as the cascade in force read it. */
+/** A `<link>`'s or a `<style>`'s sheet as the cascade in force read it:
+ *  a link's from its `href`. */
 interface SheetInForce {
-  href: string;
+  href: string | undefined;
   imports: readonly ImportRead[];
 }
+
+/** A script a host waits to run (`scriptsUnblocked`). */
+interface ScriptWait {
+  script: Element | null;
+  doc: Document;
+  resolve: () => void;
+}
+
+/** `compareDocumentPosition`'s answer where the first comes before the
+ *  second: domutils' `DocumentPosition` is a `const enum`, which an
+ *  isolated module cannot read. */
+const BEFORE = 2;
 
 /** What a cascade was built from, to tell whether the next would be the
  *  same one: the look, scale and fonts, each sheet's text, encoding, base

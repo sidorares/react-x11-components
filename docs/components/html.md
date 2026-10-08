@@ -80,6 +80,7 @@ handle.refresh();
 | `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                           |
 | `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours as `rgb()`, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'`.                                                                                                                                                                                                                                         |
 | `matchMedia(query)`                                                                     | Whether a media query holds, as `matchMedia` answers: from the same width, viewport height, scale, colour scheme, preference for motion and scripting the document's own `@media` rules are matched against, so a page's script and its sheets never disagree.                                                                                                                                                                                                           |
+| `scriptsUnblocked(script?)`                                                             | Settled once no style sheet holds back a script the parser met, as HTML's "style sheet that is blocking scripts" does: of the sheets the parse made, the ones before `script`, or all of them for a deferred script or a module, each while its `media` holds — a `<link>` until its `load` or `error` is told, a `<style>` until what it imports is in. A host runs the script then, so it reads the document as those sheets style it.                                 |
 | `controlValue(el)`                                                                      | What a control holds: typed text, or its markup's value where nothing was typed; the option a `<select>` shows; whether a box or a radio is checked. Null for what is no control.                                                                                                                                                                                                                                                                                        |
 | `setControlValue(el, v)`                                                                | Set it, as a script sets `value` or `checked`: no event, and a field's widget shows it in place, its focus and caret kept.                                                                                                                                                                                                                                                                                                                                               |
 | `focus(el)` / `blur()`                                                                  | Give an element the focus, as Tab would — a control, a link, a button, a `tabindex` — or take it off the document. `focus` answers false where the element takes none.                                                                                                                                                                                                                                                                                                   |
@@ -956,8 +957,25 @@ A host that runs a page's scripts has what it needs from the handle as well:
 own click went on, `submitForm`, `reportValidity` and `resetForm` for a
 form's methods, `computedStyle` for `getComputedStyle` — `color-scheme`
 read as Chrome reads it, the schemes as written, or `normal` — and
-`matchMedia` for `matchMedia`. `onParsed` is `DOMContentLoaded`'s moment
-and `onLoaded` `load`'s.
+`matchMedia` for `matchMedia`. `onParsed` is when the parse has ended, and
+`onLoaded` is `load`'s moment.
+
+**A script waits for the style sheets before it.** A browser holds a script
+it meets until the sheets the parser met before it are in, so a script
+after a head's `<link>` reads `getComputedStyle` and layout as that sheet
+has them. `scriptsUnblocked(script)` is when such a script may run. Until
+then the document holds its first rendering for the sheet, and has no
+style or layout to answer with. A `<link>` is in once its `load` or `error`
+is told, so its `load` reaches the page first, and a `<style>` once what it
+imports is in. A sheet under a `media` that does not hold blocks nothing,
+and nor does one a script put in. A deferred script or a module asks with
+no `script`, and waits for all of them, as a browser runs it after the
+parse. An `async` script waits for none, and its host does not ask. A
+script ahead of the sheet runs while the sheet is on its way, as a browser
+runs it: a head's theme script sets its class on the root before the first
+rendering, as it is written to. `getComputedStyle` answers nothing there
+yet, where a browser answers from the sheets it has so far.
+`DOMContentLoaded` is told after the last script.
 
 **A checkbox, a `<select>` and a button's widget tell no `focusin`.** Core's
 widgets take an `onFocus` that replaces their own rather than one beside it,

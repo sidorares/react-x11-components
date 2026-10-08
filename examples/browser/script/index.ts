@@ -9,6 +9,9 @@
 // the parser met runs once the parse has ended, in document order, as if it
 // were `defer` — `async` ones in the same pass — then `DOMContentLoaded`,
 // then `load` once `<Html>` says everything the document asked for is in.
+// Each waits first for the style sheets a browser would have held it for
+// (`scriptsUnblocked`): those before it, so that one after a head's
+// `<link>` reads the document as the sheet styles it.
 // A script a page puts in later runs when its source is here, as a browser
 // runs one a script inserts; one `innerHTML` put in never runs, as in a
 // browser. A module script runs in the same order, its imports fetched and
@@ -132,12 +135,15 @@ export class ScriptRunner {
     else void source.then((code) => this._run(queued, code));
   }
 
-  /** The parse ended: the scripts it met, in order, then `DOMContentLoaded`. */
+  /** The parse ended: the scripts it met, in order, each once the sheets
+   *  that hold it back are in, then `DOMContentLoaded`. */
   async parsed(): Promise<void> {
     if (this._parsed || this._disposed) return;
     this._parsed = true;
     for (const queued of this._queue) {
       const code = await queued.source;
+      if (this._disposed) return;
+      await this._unblocked(queued);
       if (this._disposed) return;
       await this._run(queued, code);
     }
@@ -167,6 +173,28 @@ export class ScriptRunner {
     this._disposed = true;
     this.host.dispose();
     this.engine.dispose();
+  }
+
+  /**
+   * Settled once the style sheets that hold back a script the parser met
+   * are in (HTML, "has a style sheet that is blocking scripts"), so what it
+   * reads of the document's style and layout is theirs: the sheets before
+   * it, for a classic script, which a browser runs as the parser meets it;
+   * all of them for a deferred one or a module, which a browser runs once
+   * the parse has ended; none for an `async` one.
+   */
+  private _unblocked({ request, module }: Queued): Promise<void> {
+    const { attribs } = request.element;
+    // `async` is a module's, and a classic script's only where it has a
+    // `src`, as `defer` is
+    const sourced = request.src !== null;
+    if ((module || sourced) && attribs.async !== undefined) {
+      return Promise.resolve();
+    }
+    const deferred = module || (sourced && attribs.defer !== undefined);
+    return this._options.handle.scriptsUnblocked(
+      deferred ? null : request.element,
+    );
   }
 
   private async _run(queued: Queued, code: string | null): Promise<void> {

@@ -590,6 +590,91 @@ test("a <link>'s sheet is told as a load once it and what it imports are applied
   );
 });
 
+test('scriptsUnblocked settles once the sheets the parser met before a script are in, after their load; one under a media query that does not hold, and one a script put in, hold nothing', async () => {
+  const answers = new Map<string, (r: ResourceResult | null) => void>();
+  const onResource = (r: ResourceRequest) =>
+    new Promise<ResourceResult | null>((ok) =>
+      answers.set(r.url.slice(r.url.lastIndexOf('/') + 1), ok),
+    );
+  const sheet = (name: string, text: string | null) =>
+    answers.get(name)!(text === null ? null : { kind: 'stylesheet', text });
+  const doc = await hosted(
+    '<html><head><script id="s0"></script>' +
+      '<link id="a" rel="stylesheet" href="a.css">' +
+      '<link id="m" rel="stylesheet" href="m.css" media="(max-width: 10px)">' +
+      '<style>@import "i.css";</style><script id="s1"></script></head>' +
+      '<body><link id="b" rel="stylesheet" href="b.css">' +
+      '<p id="p">x</p><script id="s2"></script></body></html>',
+    { onResource },
+  );
+  const settle = async () => {
+    for (let i = 0; i < 4; i += 1) await act();
+  };
+  // the sheets told of and the scripts let go, in the order they were
+  const log: string[] = [];
+  doc.state.cancel = (e) => {
+    if (e.type === 'load' || e.type === 'error') {
+      log.push(`${e.type}:${e.target.attribs.id}`);
+    }
+    return false;
+  };
+  const wait = (id: string | null) =>
+    doc.el
+      .scriptsUnblocked(id === null ? null : doc.byId(id))
+      .then(() => void log.push(`run:${id ?? 'deferred'}`));
+  void wait('s0');
+  void wait('s1');
+  void wait('s2');
+  void wait(null);
+  await settle();
+  assert.deepStrictEqual(log, ['run:s0'], 'no sheet before the first');
+
+  await act(async () => sheet('a.css', '#p { color: #ff0000 }'));
+  await settle();
+  assert.deepStrictEqual(
+    log,
+    ['run:s0', 'load:a'],
+    'what a <style> imports holds what is after it as well',
+  );
+  await act(async () => sheet('i.css', '#p { background: #00ff00 }'));
+  await settle();
+  assert.deepStrictEqual(log, ['run:s0', 'load:a', 'run:s1']);
+  const p = doc.el.computedStyle(doc.byId('p'))!;
+  assert.strictEqual(p.color, 'rgb(255, 0, 0)');
+  assert.strictEqual(p['background-color'], 'rgb(0, 255, 0)');
+
+  // a sheet a script puts in, before the script still waiting, holds
+  // nothing; the body's link it comes after does
+  const head = findOne((e) => e.name === 'head', doc.el.document.children)!;
+  appendChild(
+    head,
+    new DomElement('link', { id: 'x', rel: 'stylesheet', href: 'x.css' }),
+  );
+  doc.el.touchDocument();
+  await settle();
+  assert.deepStrictEqual(log.slice(3), []);
+  await act(async () => sheet('b.css', null));
+  await settle();
+  assert.deepStrictEqual(
+    log.slice(3),
+    ['error:b', 'run:s2', 'run:deferred'],
+    'a sheet that failed holds nothing, and is told before what it held',
+  );
+
+  // a parser's link given another sheet holds a script until it comes,
+  // and a waiting host hears when the document goes
+  doc.byId('a').attribs.href = 'z.css';
+  doc.el.touchDocument();
+  await settle();
+  let gone = false;
+  void doc.el.scriptsUnblocked(doc.byId('s1')).then(() => (gone = true));
+  await settle();
+  assert.strictEqual(gone, false);
+  await cleanup();
+  await settle();
+  assert.strictEqual(gone, true);
+});
+
 // --- computed style ----------------------------------------------------------
 
 test('computedStyle answers in CSS pixels and rgb(), the box as laid out', async () => {

@@ -226,7 +226,8 @@ export interface HtmlProps {
    * type, the `src`, the text, the element — for an application that brings
    * its own engine. Nothing here reads it. Called while the element is
    * reading its props, so a host queues the script and runs it later —
-   * after `onParsed`, say — rather than in the callback.
+   * after `onParsed`, once the handle's `scriptsUnblocked` says the sheets
+   * before it are in — rather than in the callback.
    */
   onScript?: (script: ScriptRequest) => void;
   /**
@@ -251,8 +252,9 @@ export interface HtmlProps {
    */
   onDomEvent?: DomEventHandler;
   /** The parse has ended: every element is in the tree. Once a document,
-   *  a microtask after the source that ended it — `DOMContentLoaded`'s
-   *  moment, when a host runs the scripts it was handed. */
+   *  a microtask after the source that ended it — when a host runs the
+   *  scripts it was handed, each once the sheets before it are in
+   *  (`scriptsUnblocked`), and then tells `DOMContentLoaded`. */
   onParsed?: () => void;
   /** Everything the document asked for has arrived or failed — counted
    *  from its first complete layout, since a background, a font or a
@@ -381,6 +383,17 @@ export interface HtmlHandle {
    * False with no document.
    */
   matchMedia(query: string): boolean;
+  /**
+   * Settled once no style sheet holds back a script the parser met (HTML,
+   * "has a style sheet that is blocking scripts"): of the sheets the parse
+   * made, those before `script` in the document — or all of them, for a
+   * deferred script or a module — each while its `media` holds, a
+   * `<link rel=stylesheet>` until its `load` or `error` is told and a
+   * `<style>` until what it imports is in. A host runs such a script once
+   * this settles, so it reads the document as those sheets style it.
+   * Settled at once with no document.
+   */
+  scriptsUnblocked(script?: Element | null): Promise<void>;
   /**
    * What a form control holds, as a script reads it: what was typed into a
    * field or its markup's value where nothing was, the option a `<select>`
@@ -767,6 +780,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
       matchMedia: (query: string) =>
         nodeRef.current?.matchMedia(query) ?? false,
+      scriptsUnblocked: (script?: Element | null) =>
+        nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
       controlValue: (element: Element) =>
         nodeRef.current?.interactive?.controlValue(element) ?? null,
       setControlValue: (element: Element, value: string | boolean) =>
