@@ -3760,11 +3760,14 @@ export function installDom(bridge: Bridge): void {
     readonly url: string;
     readonly headers: Any;
     readonly redirected: boolean;
-    readonly type = 'basic';
+    /** `basic` for the page's own origin, `cors` for another's that let it
+     *  read, `opaque` for a `no-cors` request's, which it may not. */
+    readonly type: string;
     _body: string;
     bodyUsed = false;
     constructor(body: Any = '', init: Any = {}) {
       this._body = body === null ? '' : str(body);
+      this.type = init.type === undefined ? 'default' : str(init.type);
       this.status = Number(init.status ?? 200);
       this.statusText = String(init.statusText ?? '');
       this.headers = new Headers(init.headers ?? {});
@@ -3822,7 +3825,7 @@ export function installDom(bridge: Bridge): void {
   }
 
   // `fetch`: the request is the host's, which keeps the browser's network
-  // policy, and same-origin, since there is no CORS here to apply
+  // policy and CORS (`_fetchFor`)
   let fetchSeq = 0;
   const fetches = new Map<number, { resolve: Any; reject: Any }>();
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
@@ -3892,6 +3895,11 @@ export function installDom(bridge: Bridge): void {
           method: str(init.method ?? 'GET').toUpperCase(),
           headers: Array.from(headers._map.entries()),
           body,
+          // what the host checks another origin's answer against
+          mode: str(init.mode ?? request?.mode ?? 'cors'),
+          credentials: str(
+            init.credentials ?? request?.credentials ?? 'same-origin',
+          ),
         }),
       );
     });
@@ -3976,7 +3984,7 @@ export function installDom(bridge: Bridge): void {
   }
 
   /**
-   * `XMLHttpRequest`, over `fetch`: the same origin's, through the same
+   * `XMLHttpRequest`, over `fetch`: under the same CORS, through the same
    * network, and asynchronous only — a synchronous one would hold the
    * page's thread for the network, which here is the tab's, and no `vm`
    * timeout covers a wait on a socket. What `responseType` reads is text,
@@ -4073,6 +4081,7 @@ export function installDom(bridge: Bridge): void {
         headers: this._headers,
         body: bodyless ? null : body,
         signal: controller.signal,
+        credentials: this.withCredentials ? 'include' : 'same-origin',
       }).then(
         (response: Any) => {
           if (attempt !== this._attempt) return undefined;
@@ -8317,6 +8326,7 @@ export function installDom(bridge: Bridge): void {
           headers: answer.headers,
           url: answer.url,
           redirected: answer.redirected,
+          type: answer.type ?? 'basic',
         }),
       );
     }

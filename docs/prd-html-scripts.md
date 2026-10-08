@@ -502,8 +502,13 @@ is what the status bubble does now.
 - **`network.ts`:** a request method with a method, headers, a body and
   response headers. Today `Network.document` is the only method that can
   POST, and `load` and `resource` are GET with a fixed `Accept`. Phase 1
-  `fetch` is same-origin, since there is no CORS to apply. The cookie
-  string is empty because there is no jar.
+  `fetch` was same-origin; phase 2 applies CORS (`_fetchFor` in the
+  host): a simple request to another origin is sent and its answer read
+  where `Access-Control-Allow-Origin` lets the page, anything else is
+  preflighted, a `credentials: 'include'` one needs the origin named and
+  `Access-Control-Allow-Credentials`, and a page reads the safelisted and
+  exposed headers alone. The cookie string is empty because there is no
+  jar.
 - **A switch.** `BROWSER_SCRIPTS=1` first, then a per-site toggle in the
   toolbar. Off by default: the browser's header promises that nothing a
   page contains runs, and the switch is what makes that a choice.

@@ -13,9 +13,9 @@
 // page's `MutationObserver` is handed.
 //
 // What the page cannot do here is anything the browser does not let it: a
-// `fetch` is the same origin's, through the browser's network; storage is
-// memory, per origin, gone with the process; a navigation is a link the
-// browser follows.
+// `fetch` is its own origin's, or another's that lets it by CORS, through
+// the browser's network; storage is memory, per origin, gone with the
+// process; a navigation is a link the browser follows.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import * as DomUtils from 'domutils';
@@ -56,6 +56,26 @@ export interface FetchResponse {
   headers: [string, string][];
   /** The body, decoded as the response says. */
   body: string;
+  /** What the page may read of it (Fetch 2.2.6): `basic` its own
+   *  origin's, `cors` another's that let it, `opaque` none of it. */
+  type?: 'basic' | 'cors' | 'opaque';
+}
+
+/** A page's request as the facade hands it over, with what decides
+ *  whether another origin's answer is the page's to read. */
+interface PageRequest extends FetchRequest {
+  mode: 'cors' | 'no-cors' | 'same-origin';
+  credentials: 'omit' | 'same-origin' | 'include';
+}
+
+/** What CORS remembers of a preflight (Fetch 4.9, the CORS-preflight
+ *  cache): what the server allowed, until when. */
+interface PreflightEntry {
+  until: number;
+  methods: Set<string>;
+  headers: Set<string>;
+  anyMethod: boolean;
+  anyHeader: boolean;
 }
 
 /** What the page around the document gives the host: where it is shown,
@@ -102,6 +122,160 @@ class DomError extends Error {
   }
 }
 const hierarchy = (what: string) => new DomError('HierarchyRequestError', what);
+
+/** A request CORS refused, which the page sees as a failed fetch and the
+ *  console tells why. */
+class CorsError extends Error {}
+
+/** The methods a request may have and be a simple one (Fetch 2.2.1). */
+const SIMPLE_METHODS = new Set(['GET', 'HEAD', 'POST']);
+
+/** The response headers a page may read of another origin's answer
+ *  without its say (Fetch 2.2.2, "CORS-safelisted response-header name"). */
+const SAFELISTED_RESPONSE = new Set([
+  'cache-control',
+  'content-language',
+  'content-length',
+  'content-type',
+  'expires',
+  'last-modified',
+  'pragma',
+]);
+
+/** A request header a page may not set (Fetch 2.2.2, "forbidden request-
+ *  header"): the browser's own to set, or none at all. */
+function forbiddenRequestHeader(name: string): boolean {
+  const n = name.toLowerCase();
+  return (
+    /^(accept-charset|accept-encoding|access-control-request-headers|access-control-request-method|connection|content-length|cookie|cookie2|date|dnt|expect|host|keep-alive|origin|referer|set-cookie|te|trailer|transfer-encoding|upgrade|via)$/.test(
+      n,
+    ) || /^(proxy-|sec-)/.test(n)
+  );
+}
+
+/** A response's headers less what no page reads, its cookies. */
+function readable(headers: [string, string][]): [string, string][] {
+  return headers.filter(([k]) => !/^set-cookie2?$/i.test(k));
+}
+
+/** The bytes no CORS-safelisted header value may hold (Fetch 2.2.2). */
+const UNSAFE_BYTES = /[\u0000-\u0008\u000a-\u001f"():<>?@[\\\]{}\u007f]/;
+
+/** Whether a request header is one a simple request may have (Fetch
+ *  2.2.2, "CORS-safelisted request-header"). */
+function corsSafelisted(name: string, value: string): boolean {
+  if (value.length > 128) return false;
+  switch (name.toLowerCase()) {
+    case 'accept':
+      return !UNSAFE_BYTES.test(value);
+    case 'accept-language':
+    case 'content-language':
+      return /^[0-9A-Za-z *,\-.;=]*$/.test(value);
+    case 'content-type': {
+      if (UNSAFE_BYTES.test(value)) return false;
+      const essence = value.split(';')[0].trim().toLowerCase();
+      return (
+        essence === 'application/x-www-form-urlencoded' ||
+        essence === 'multipart/form-data' ||
+        essence === 'text/plain'
+      );
+    }
+    case 'range':
+      return /^bytes=\d+-\d*$/.test(value);
+    default:
+      return false;
+  }
+}
+
+/** Whether a `no-cors` request may have a header (Fetch 2.2.2). */
+function noCorsSafelisted(name: string, value: string): boolean {
+  return (
+    /^(accept|accept-language|content-language|content-type)$/i.test(name) &&
+    corsSafelisted(name, value)
+  );
+}
+
+/** The names of a request's headers that make it no simple one, as the
+ *  preflight names them: lower case, sorted, once each. */
+function unsafeRequestHeaders(headers: [string, string][]): string[] {
+  const names = new Set<string>();
+  let safelisted = 0;
+  for (const [name, value] of headers) {
+    if (corsSafelisted(name, value)) safelisted += value.length;
+    else names.add(name.toLowerCase());
+  }
+  // past 1024 bytes of them, every safelisted one is unsafe as well
+  if (safelisted > 1024) {
+    for (const [name] of headers) names.add(name.toLowerCase());
+  }
+  return [...names].sort();
+}
+
+/** A header's value, its last where there are several. */
+function headerOf(headers: [string, string][], name: string): string | null {
+  let value: string | null = null;
+  for (const [k, v] of headers) if (k.toLowerCase() === name) value = v;
+  return value;
+}
+
+/** A comma-separated list of tokens, lower-cased unless `fold` is false. */
+function listOf(value: string | null, fold = true): Set<string> {
+  const out = new Set<string>();
+  for (const part of (value ?? '').split(',')) {
+    const token = part.trim();
+    if (token) out.add(fold ? token.toLowerCase() : token);
+  }
+  return out;
+}
+
+/** The CORS check (Fetch 4.10): whether an answer lets `page` read it.
+ *  Throws why it does not. */
+function corsCheck(
+  headers: [string, string][],
+  credentials: string,
+  page: string,
+): void {
+  const allow = headerOf(headers, 'access-control-allow-origin');
+  if (allow === null) {
+    throw new CorsError(
+      "No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+    );
+  }
+  if (allow.includes(',')) {
+    throw new CorsError(
+      `The 'Access-Control-Allow-Origin' header contains multiple values '${allow}', but only one is allowed.`,
+    );
+  }
+  const include = credentials === 'include';
+  if (allow === '*' && !include) return;
+  if (allow === '*') {
+    throw new CorsError(
+      "The value of the 'Access-Control-Allow-Origin' header in the response must not be the wildcard '*' when the request's credentials mode is 'include'.",
+    );
+  }
+  if (allow !== page) {
+    throw new CorsError(
+      `The 'Access-Control-Allow-Origin' header has a value '${allow}' that is not equal to the supplied origin.`,
+    );
+  }
+  if (include) {
+    const credentialed = headerOf(headers, 'access-control-allow-credentials');
+    if (credentialed !== 'true') {
+      throw new CorsError(
+        `The value of the 'Access-Control-Allow-Credentials' header in the response is '${credentialed ?? ''}' which must be 'true' when the request's credentials mode is 'include'.`,
+      );
+    }
+  }
+}
+
+/** A URL's origin, or '' where it is none. */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '';
+  }
+}
 
 /** The elements whose content HTML's parser reads as text, whatever it
  *  holds (HTML 13.4, the fragment case): `<noscript>` among them where
@@ -1376,46 +1550,232 @@ export class DomHost {
     }
   }
 
-  /** A page's `fetch`: its own origin's, through the browser's network,
-   *  and its answer handed back through `__fetched`. */
+  /** A page's `fetch`: its own origin's, or another's where CORS lets it
+   *  (`_fetchFor`), and its answer handed back through `__fetched`. */
   private _fetch(id: number, json: string): void {
     const answer = (value: FetchResponse | string) => {
       if (!this._fetches.delete(id) || this._disposed) return;
       this.entries?.call('__fetched', [id, value]);
     };
-    let request: FetchRequest;
+    let request: PageRequest;
     try {
-      const raw = JSON.parse(json) as Partial<FetchRequest>;
+      const raw = JSON.parse(json) as Partial<PageRequest>;
       request = {
         url: this._resolve(String(raw.url ?? '')),
-        method: String(raw.method ?? 'GET'),
+        method: String(raw.method ?? 'GET').toUpperCase(),
+        // what a page may not set, which a browser drops (Fetch 2.2.2)
         headers: Array.isArray(raw.headers)
-          ? raw.headers.map(([k, v]) => [String(k), String(v)])
+          ? raw.headers
+              .map(([k, v]) => [String(k), String(v)] as [string, string])
+              .filter(([k]) => !forbiddenRequestHeader(k))
           : [],
         body: typeof raw.body === 'string' ? raw.body : null,
+        mode:
+          raw.mode === 'no-cors' || raw.mode === 'same-origin'
+            ? raw.mode
+            : 'cors',
+        credentials:
+          raw.credentials === 'omit' || raw.credentials === 'include'
+            ? raw.credentials
+            : 'same-origin',
       };
     } catch {
       return;
     }
     const controller = new AbortController();
     this._fetches.set(id, controller);
-    let origin = '';
-    try {
-      origin = new URL(request.url).origin;
-    } catch {}
-    if (origin !== this._origin() || origin === 'null') {
-      // no CORS here to let another origin answer
-      queueMicrotask(() => answer('Failed to fetch'));
-      this._seams.log(
-        'error',
-        `fetch of ${request.url} refused: this browser fetches only from the page's own origin.`,
+    this._fetchFor(request, controller.signal).then(answer, (error) => {
+      if (error instanceof CorsError) {
+        this._seams.log(
+          'error',
+          `Access to fetch at '${request.url}' from origin '${this._origin()}' has been blocked by CORS policy: ${error.message}`,
+        );
+      }
+      answer(
+        error instanceof CorsError || !(error instanceof TypeError)
+          ? 'Failed to fetch'
+          : error.message,
       );
-      return;
+    });
+  }
+
+  /** What CORS remembers of the preflights this page made. */
+  private _preflights = new Map<string, PreflightEntry>();
+
+  /**
+   * A page's request through the browser's network, under the same-origin
+   * policy and CORS (Fetch 4.1, "main fetch"). The page's own origin is
+   * answered whole, and so is another that says the page may read it —
+   * `Access-Control-Allow-Origin` — where a request that is not a simple
+   * one has asked it first with a preflight. ekazinich.com's chat posts
+   * JSON to api.ekazinich.com, which is such a request. A `no-cors`
+   * request is sent and its answer is opaque; a `same-origin` one goes
+   * nowhere else. What is refused is a `CorsError`, reported in the page
+   * as a browser reports it.
+   */
+  private async _fetchFor(
+    request: PageRequest,
+    signal: AbortSignal,
+  ): Promise<FetchResponse> {
+    const page = this._origin();
+    let target: string;
+    try {
+      target = new URL(request.url).origin;
+    } catch {
+      throw new TypeError('Failed to fetch');
     }
-    this._seams.fetch(request, controller.signal).then(
-      (response) => answer(response),
-      () => answer('Failed to fetch'),
+    const own = target === page && page !== 'null';
+    const plain: FetchRequest = {
+      url: request.url,
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+    };
+    if (own) {
+      const response = await this._seams.fetch(plain, signal);
+      // a redirect to another origin is that origin's to let the page read
+      if (originOf(response.url) === page) {
+        return {
+          ...response,
+          headers: readable(response.headers),
+          type: 'basic',
+        };
+      }
+      if (request.mode === 'same-origin') {
+        throw new CorsError('The request was redirected to another origin.');
+      }
+      return this._shared(response, request, page);
+    }
+    if (request.mode === 'same-origin') {
+      throw new TypeError(
+        `Fetch API cannot load ${request.url}. Request mode is "same-origin" but the URL's origin is not same as the request origin ${page}.`,
+      );
+    }
+    if (request.mode === 'no-cors') {
+      if (
+        !SIMPLE_METHODS.has(request.method) ||
+        !request.headers.every(([k, v]) => noCorsSafelisted(k, v))
+      ) {
+        throw new TypeError(
+          `'${request.method}' or a header is not allowed in 'no-cors' mode.`,
+        );
+      }
+      await this._seams.fetch(plain, signal);
+      return {
+        url: '',
+        status: 0,
+        statusText: '',
+        redirected: false,
+        headers: [],
+        body: '',
+        type: 'opaque',
+      };
+    }
+    const unsafe = unsafeRequestHeaders(request.headers);
+    if (!SIMPLE_METHODS.has(request.method) || unsafe.length) {
+      await this._preflight(request, unsafe, page, signal);
+    }
+    return this._shared(await this._seams.fetch(plain, signal), request, page);
+  }
+
+  /** Another origin's answer, where it lets the page read it (Fetch 4.10,
+   *  "CORS check"): with only the headers it lets the page read. */
+  private _shared(
+    response: FetchResponse,
+    request: PageRequest,
+    page: string,
+  ): FetchResponse {
+    corsCheck(response.headers, request.credentials, page);
+    const include = request.credentials === 'include';
+    const exposed = listOf(
+      headerOf(response.headers, 'access-control-expose-headers'),
     );
+    const all = exposed.has('*') && !include;
+    return {
+      ...response,
+      headers: readable(response.headers).filter(
+        ([k]) =>
+          all ||
+          SAFELISTED_RESPONSE.has(k.toLowerCase()) ||
+          exposed.has(k.toLowerCase()),
+      ),
+      type: 'cors',
+    };
+  }
+
+  /** Ask another origin whether a request that is not a simple one may be
+   *  made (Fetch 4.9, "CORS-preflight fetch"), unless it said so lately. */
+  private async _preflight(
+    request: PageRequest,
+    unsafe: string[],
+    page: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const include = request.credentials === 'include';
+    const key = `${request.url}\u0000${include}`;
+    const kept = this._preflights.get(key);
+    const allows = (entry: PreflightEntry): string | null => {
+      if (
+        !SIMPLE_METHODS.has(request.method) &&
+        !entry.methods.has(request.method) &&
+        !(entry.anyMethod && !include)
+      ) {
+        return `Method ${request.method} is not allowed by Access-Control-Allow-Methods in preflight response.`;
+      }
+      for (const name of unsafe) {
+        if (entry.headers.has(name)) continue;
+        if (entry.anyHeader && !include && name !== 'authorization') continue;
+        return `Request header field ${name} is not allowed by Access-Control-Allow-Headers in preflight response.`;
+      }
+      return null;
+    };
+    if (kept && kept.until > Date.now() && allows(kept) === null) return;
+    const headers: [string, string][] = [
+      ['access-control-request-method', request.method],
+    ];
+    if (unsafe.length) {
+      headers.push(['access-control-request-headers', unsafe.join(',')]);
+    }
+    const response = await this._seams.fetch(
+      { url: request.url, method: 'OPTIONS', headers, body: null },
+      signal,
+    );
+    const failed = (why: string) =>
+      new CorsError(
+        `Response to preflight request doesn't pass access control check: ${why}`,
+      );
+    if (response.redirected)
+      throw failed('Redirect is not allowed for a preflight request.');
+    try {
+      corsCheck(response.headers, request.credentials, page);
+    } catch (error) {
+      throw failed((error as Error).message);
+    }
+    if (response.status < 200 || response.status > 299) {
+      throw failed('It does not have HTTP ok status.');
+    }
+    const methods = listOf(
+      headerOf(response.headers, 'access-control-allow-methods'),
+      false,
+    );
+    const allowed = listOf(
+      headerOf(response.headers, 'access-control-allow-headers'),
+    );
+    const age = Number(
+      headerOf(response.headers, 'access-control-max-age') ?? 5,
+    );
+    const entry: PreflightEntry = {
+      until:
+        Date.now() +
+        Math.min(Number.isFinite(age) ? Math.max(0, age) : 5, 7200) * 1000,
+      methods,
+      headers: allowed,
+      anyMethod: methods.has('*'),
+      anyHeader: allowed.has('*'),
+    };
+    const refused = allows(entry);
+    if (refused) throw new CorsError(refused);
+    this._preflights.set(key, entry);
   }
 
   /** `compareDocumentPosition` (DOM 4.4), by the two nodes' paths. */
