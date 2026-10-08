@@ -29,6 +29,7 @@ import { holdClock } from '../held-clock.js';
 import {
   FONTS,
   boxOf,
+  fillsOf,
   h,
   render,
   render2x,
@@ -36,6 +37,8 @@ import {
   solidPng,
   view,
 } from './harness.js';
+import type { PaintOp } from './harness.js';
+import { parseColor } from '../../src/html/css/values.js';
 
 afterEach(cleanup);
 
@@ -588,4 +591,235 @@ test("a context that runs a filter itself is handed the group, kept and drawn th
   assert.ok(none.group(other));
   assert.strictEqual(none.through(other, colour.css), null);
   assert.strictEqual(none.unfiltered, true, 'no filter at all');
+});
+
+// --- backdrop-filter ---------------------------------------------------------
+
+test('a backdrop filter is read into its functions under either name, and makes a box a stacking context and the containing block of the absolute boxes in it', async () => {
+  const { node } = await render(
+    '<style>body { margin: 0 } .at { position: absolute; left: 0; top: 0;' +
+      ' width: 4px; height: 4px }</style>' +
+      '<div id="g" style="-webkit-backdrop-filter: blur(4px) saturate(2);' +
+      ' margin: 30px 0 0 50px; height: 10px"><div id="a" class="at"></div></div>' +
+      '<div id="n" style="backdrop-filter: none"></div>',
+  );
+  assert.deepStrictEqual(styleOf(node, 'g').backdropFilter, [
+    { fn: 'blur', radius: 4 },
+    { fn: 'saturate', amount: 2 },
+  ]);
+  assert.strictEqual(styleOf(node, 'n').backdropFilter, null);
+  const a = boxOf(view(node), 'a');
+  assert.deepStrictEqual([a.x, a.y], [50, 30], 'the absolute box in it');
+});
+
+interface Recorded {
+  name: string;
+  width: number;
+  height: number;
+  ops: string[];
+  destroyed: boolean;
+}
+
+/** Surfaces whose contexts record what they draw, and take canvas's
+ *  `filter`, `blur()` among it, as react-x11's native one does — or have
+ *  none, as ntk's do not. */
+function recordingSurfaces(log: Recorded[], filters = true) {
+  return (width: number, height: number) => {
+    const rec: Recorded = {
+      name: `s${log.length}`,
+      width,
+      height,
+      ops: [],
+      destroyed: false,
+    };
+    log.push(rec);
+    const ctx: Record<string, unknown> = {
+      fillStyle: '',
+      globalAlpha: 1,
+      shadowColor: 'rgba(0, 0, 0, 0)',
+      shadowBlur: 0,
+      shadowOffsetX: 0,
+      shadowOffsetY: 0,
+      save() {},
+      restore() {},
+      beginPath() {},
+      moveTo() {},
+      lineTo() {},
+      bezierCurveTo() {},
+      closePath() {},
+      rect() {},
+      roundRect() {},
+      clip() {},
+      transform(...m: number[]) {
+        rec.ops.push(`transform ${m.map((v) => +v.toFixed(3)).join(' ')}`);
+      },
+      fillRect(x: number, y: number, w: number, h: number) {
+        rec.ops.push(`fillRect ${ctx.fillStyle} ${x} ${y} ${w} ${h}`);
+      },
+      fill() {
+        rec.ops.push(`fill ${ctx.fillStyle}`);
+      },
+      drawImage(image: { name?: string }, ...args: number[]) {
+        rec.ops.push(`drawImage ${image.name} ${args.join(' ')}`);
+      },
+    };
+    if (filters) {
+      let filter = 'none';
+      Object.defineProperty(ctx, 'filter', {
+        get: () => filter,
+        set: (v: string) => {
+          filter = v;
+          rec.ops.push(`filter ${v}`);
+        },
+      });
+    }
+    return {
+      name: rec.name,
+      getContext: () => ctx,
+      destroy() {
+        rec.destroyed = true;
+      },
+    };
+  };
+}
+
+const GLASS =
+  '<style>body { margin: 0 } div { position: absolute }' +
+  // painted after every box in it, and not as a box is: a paint of what is
+  // behind a box stops at the box whatever paints after it
+  ' body { height: 200px; outline: 4px solid #00ff00; outline-offset: -4px }' +
+  ' #under { left: 0; top: 0; width: 100px; height: 100px; background: #ff0000 }' +
+  ' #glass { left: 20px; top: 10px; width: 200px; height: 100px;' +
+  ' border-radius: 20px; backdrop-filter: blur(10px) saturate(2);' +
+  ' background: rgba(255, 255, 255, 0.5) }' +
+  ' #over { left: 150px; top: 0; width: 50px; height: 50px; background: #0000ff }' +
+  '</style><div id="under"></div><div id="glass"></div><div id="over"></div>';
+
+test('what is painted behind a box with a backdrop filter is painted small, its edges mirrored out, drawn through the filter, and drawn under the box cut to its border box', async () => {
+  // Filter Effects 2, 3: the backdrop is what is painted before the box,
+  // filtered, under the box. Painted at a scale that keeps the blur's
+  // deviation two pixels across — ten pixels is a fifth — and its edges
+  // mirrored out as far as the blur reaches, three deviations, as Chrome
+  // reads a backdrop: what the page has round the box does not bleed in
+  const { node } = await render(GLASS);
+  const made: Recorded[] = [];
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, { surface: recordingSurfaces(made) });
+  const [inner, out, padded] = made;
+  assert.deepStrictEqual(
+    made.map((s) => [s.width, s.height]),
+    [
+      [40, 20],
+      [40, 20],
+      [52, 32],
+    ],
+    'the box a fifth, and six pixels round it',
+  );
+  assert.strictEqual(inner.ops[0], 'transform 0.2 0 0 0.2 -4 -2');
+  const fills = inner.ops.filter((o) => o.startsWith('fillRect'));
+  assert.ok(
+    fills.some((o) => o.includes(String(parseColor('#ff0000')))),
+    'what is under the box is in it',
+  );
+  assert.ok(
+    !inner.ops.some((o) => o.includes(String(parseColor('#0000ff')))),
+    'and what is painted after the box is not',
+  );
+  assert.ok(
+    !inner.ops.some((o) => o.includes(String(parseColor('#00ff00')))),
+    "nor the root box's outline, painted after all of it",
+  );
+  assert.ok(
+    ops.some(
+      (o) =>
+        o.op === 'fill' && String(o.style) === String(parseColor('#00ff00')),
+    ),
+    'which the window has',
+  );
+  assert.strictEqual(
+    padded.ops.filter((o) => o.startsWith(`drawImage ${inner.name}`)).length,
+    9,
+    'the inside and its edges and corners, mirrored',
+  );
+  assert.ok(padded.ops.includes('transform -1 0 0 1 12 0'), 'the left edge');
+  assert.deepStrictEqual(
+    out.ops,
+    ['filter blur(2px) saturate(2)', `drawImage ${padded.name} -6 -6`],
+    'through the filter, at the scale it was painted at',
+  );
+  assert.ok(inner.destroyed && padded.destroyed, 'let go once drawn');
+  assert.ok(out.destroyed, 'and that at the end of the paint');
+  // the window: under the box's own background, in its border box — the
+  // square inside through a rectangle, the rounded bands through its outline
+  const drawn = ops.filter(
+    (o) => o.op === 'image' && o.x === 20 && o.y === 10 && o.w === 200,
+  );
+  assert.strictEqual(
+    drawn.length,
+    3,
+    'the inside and the bands under its corners, its sides on whole pixels',
+  );
+  const clips = ops.filter((o) => o.op === 'clip');
+  assert.ok(
+    clips.some((o) => o.op === 'clip' && o.radii !== null),
+    'the bands cut to the rounded outline',
+  );
+  assert.ok(
+    clips.some(
+      (o) =>
+        o.op === 'clip' &&
+        o.radii === null &&
+        o.x === 20 &&
+        o.y === 30 &&
+        o.w === 200 &&
+        o.h === 60,
+    ),
+    'the inside to a rectangle under the corners',
+  );
+  const first = ops.findIndex((o) => o.op === 'image');
+  const own = ops.findIndex(
+    (o) =>
+      o.op === 'fill' && o.x === 20 && o.y === 10 && o.w === 200 && o.h === 100,
+  );
+  assert.ok(first >= 0 && own > first, 'before the box paints its own');
+});
+
+test('no backdrop is made where the box hides it, or no surface runs the filter', async () => {
+  const { node } = await render(
+    GLASS.replace('rgba(255, 255, 255, 0.5)', '#ffffff'),
+  );
+  const made: Recorded[] = [];
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, { surface: recordingSurfaces(made) });
+  assert.strictEqual(made.length, 0, 'an opaque background covers it');
+  cleanup();
+  const { node: plain } = await render(GLASS);
+  await fillsOf(view(plain), ops, {
+    surface: recordingSurfaces(made, false),
+  });
+  assert.ok(made.length > 0 && made.every((s) => s.destroyed), 'let go');
+  assert.ok(
+    !made.some((s) => s.ops.some((o) => o.startsWith('drawImage'))),
+    'and nothing drawn from them',
+  );
+});
+
+test("a box's backdrop holds the backdrop of a box with one painted before it, made once a paint", async () => {
+  const { node } = await render(
+    GLASS.replace(
+      '<div id="over">',
+      '<div id="second" style="left: 60px; top: 40px; width: 200px;' +
+        ' height: 100px; backdrop-filter: blur(10px);' +
+        ' background: rgba(0, 0, 0, 0.1)"></div><div id="over">',
+    ),
+  );
+  const made: Recorded[] = [];
+  await fillsOf(view(node), undefined, { surface: recordingSurfaces(made) });
+  assert.strictEqual(made.length, 6, 'three surfaces a box, and no more');
+  const firstOut = made[1];
+  const secondInner = made[3];
+  assert.ok(
+    secondInner.ops.some((o) => o.startsWith(`drawImage ${firstOut.name}`)),
+    "the first box's filtered backdrop drawn into the second's",
+  );
 });
