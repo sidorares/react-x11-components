@@ -16,7 +16,7 @@ import {
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 
-import { Html, useHtmlHandle } from '../src/html/index.js';
+import { Html, shadowRootOf, useHtmlHandle } from '../src/html/index.js';
 import type {
   FormSubmission,
   HtmlHandle,
@@ -1008,6 +1008,177 @@ test('a sheet a page constructs and adopts is drawn after the document’s own, 
   assert.equal(doc.text('out'), 'NotAllowedError 2');
   assert.equal(doc.view.computedStyle(z)?.color, 'rgb(4, 5, 6)');
   assert.equal(doc.view.computedStyle(z)?.['background-color'], 'rgb(7, 8, 9)');
+});
+
+test('streams read, pipe, tee and transform, and a response’s body is one', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var out = document.getElementById("out");' +
+      // Next.js's app router: a stream of what inline scripts push, read
+      // a chunk at a time
+      'var writer; var flight = new ReadableStream({ start: function (c) { writer = c; } });' +
+      'writer.enqueue("a"); setTimeout(function () { writer.enqueue("b"); writer.close(); }, 0);' +
+      'var reader = flight.getReader(); var got = "";' +
+      'function next() { return reader.read().then(function (x) { if (x.done) return got; got += x.value; return next(); }); }' +
+      'var pulled = 0; var counted = new ReadableStream({ pull: function (c) { pulled += 1; if (pulled > 3) c.close(); else c.enqueue(pulled); } });' +
+      'var upper = new TransformStream({ transform: function (chunk, c) { c.enqueue(String(chunk).toUpperCase()); } });' +
+      'var parts = counted.pipeThrough(upper).tee();' +
+      'function all(stream) { var seen = []; var rd = stream.getReader();' +
+      '  function go() { return rd.read().then(function (x) { if (x.done) return seen.join(""); seen.push(x.value); return go(); }); } return go(); }' +
+      'var bytes = new ReadableStream({ start: function (c) { c.enqueue(new Uint8Array([0xe2, 0x82])); c.enqueue(new Uint8Array([0xac, 0x21])); c.close(); } });' +
+      'var failing = new ReadableStream({ start: function (c) { c.error(new Error("no")); } });' +
+      'Promise.all([' +
+      '  next(), all(parts[0]), all(parts[1]),' +
+      '  all(bytes.pipeThrough(new TextDecoderStream())),' +
+      '  failing.getReader().read().catch(function (e) { return e.message; }),' +
+      '  new Response("héllo").body.getReader().read().then(function (x) { return new TextDecoder().decode(x.value); }),' +
+      ']).then(function (got) {' +
+      '  r = got; r.push(flight.locked, typeof ReadableStream.from([1]).getReader);' +
+      '  try { flight.getReader(); } catch (e) { r.push(e.name); }' +
+      '  out.textContent = r.join("|");' +
+      '});' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(text, 'ab|123|123|€!|no|héllo|true|function|TypeError');
+});
+
+test('attribute nodes are the element’s, one each, in a map that is live', async () => {
+  const doc = await hosted(
+    '<div id="d" class="c" title="t" data-x="1"></div><p id="out"></p><script>' +
+      'var r = []; var d = document.getElementById("d"); var map = d.attributes;' +
+      'r.push(map.length, map[1].name, map[1] === d.getAttributeNode("class"), map === d.attributes, map.getNamedItem("title").value);' +
+      'var title = d.getAttributeNode("title"); d.setAttribute("title", "u"); r.push(title.value);' +
+      'var names = []; for (var i = 0; i < map.length; i++) names.push(map[i].name); r.push(names.join(","));' +
+      'r.push(Array.from(map, function (a) { return a.value; }).join(","));' +
+      // React empties an element so
+      'var held = d.getAttributeNode("data-x");' +
+      'while (map.length) d.removeAttributeNode(map[0]);' +
+      'r.push(d.getAttributeNames().length, held.ownerElement, held.value);' +
+      'var a = document.createAttribute("lang"); a.value = "en"; r.push(d.setAttributeNode(a), d.getAttribute("lang"), a.ownerElement === d);' +
+      'try { document.getElementById("out").setAttributeNode(a); } catch (e) { r.push(e.name); }' +
+      'try { d.removeAttributeNode(held); } catch (e) { r.push(e.name); }' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    '4|class|true|true|t|u|id,class,title,data-x|d,c,u,1|0||1||en|true|InUseAttributeError|NotFoundError',
+  );
+});
+
+test('a shadow root a page attaches is drawn as a declarative one is, and events leave it composed', async () => {
+  const doc = await hosted(
+    '<div id="host"><b slot="s" id="light">light</b> unslotted</div><div id="shut"><i id="gone">gone</i></div><a id="a">a</a>' +
+      '<p id="out"></p><script>' +
+      'var r = []; var host = document.getElementById("host");' +
+      'var root = host.attachShadow({ mode: "open" });' +
+      'root.innerHTML = "<style>p { color: rgb(9, 9, 9) }</style><p id=in>shadow <slot name=s></slot></p>";' +
+      'var inner = root.getElementById("in");' +
+      'r.push(root instanceof ShadowRoot, root.nodeType, root.host === host, host.shadowRoot === root, root.mode, inner.textContent);' +
+      'r.push(inner.getRootNode() === root, inner.getRootNode({ composed: true }) === document, inner.parentNode === root, root.parentNode);' +
+      'var shut = document.getElementById("shut");' +
+      'r.push(shut.attachShadow({ mode: "closed" }) !== null, shut.shadowRoot);' +
+      'try { host.attachShadow({ mode: "open" }); } catch (e) { r.push(e.name); }' +
+      'try { document.getElementById("a").attachShadow({ mode: "open" }); } catch (e) { r.push(e.name); }' +
+      'try { host.attachShadow({}); } catch (e) { r.push(e.name); }' +
+      'var heard = []; document.addEventListener("ping", function (e) { heard.push(e.composed); });' +
+      'inner.dispatchEvent(new CustomEvent("ping", { bubbles: true, composed: true }));' +
+      'inner.dispatchEvent(new CustomEvent("ping", { bubbles: true }));' +
+      'r.push(heard.join(","));' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'true|11|true|true|open|shadow |true|true|true||true||NotSupportedError|NotSupportedError|TypeError|true',
+  );
+  await settle();
+  const root = shadowRootOf(doc.byId('host'));
+  assert.ok(root, 'no shadow root on the host');
+  const inner = findById(root as never, 'in') as DocElement;
+  assert.equal(doc.view.computedStyle(inner)?.color, 'rgb(9, 9, 9)');
+  // the light child the slot takes is drawn there, in the tree's flat order
+  assert.ok(
+    doc.view.computedStyle(doc.byId('light')),
+    'the slotted child is not drawn',
+  );
+  assert.equal(doc.view.computedStyle(doc.byId('gone')), null);
+});
+
+test('a shadow root attached with nothing in it hides the host’s children at the next flush', async () => {
+  const doc = await hosted(
+    '<div id="shut"><i id="gone">gone</i></div><input type="button" id="go" value="go"><script>' +
+      'document.getElementById("go").addEventListener("click", function () {' +
+      '  document.getElementById("shut").attachShadow({ mode: "closed" });' +
+      '});</script>',
+  );
+  assert.ok(doc.view.computedStyle(doc.byId('gone')), 'not drawn before');
+  await userEvent.click(screen.getByRole('button') as DrawnNode);
+  await settle();
+  assert.equal(doc.view.computedStyle(doc.byId('gone')), null);
+});
+
+test('CSS.supports answers as an @supports does, an address assigned to location navigates, and fetch takes a Request and form data', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      // vercel.com's test for an old browser
+      'r.push(CSS.supports("color", "var(--v)"), CSS.supports("(display: grid) and (gap: 1px)"), CSS.supports("display: flex"), CSS.supports("not (mask: none)"));' +
+      'var req = new Request("api", { method: "post", body: "b", headers: { "X-A": "1" } });' +
+      'r.push(req.url, req.method, req.headers.get("x-a"), req instanceof Request, req.clone().url === req.url);' +
+      'try { new Request("x", { body: "b" }); } catch (e) { r.push(e.name); }' +
+      'var fd = new FormData(); fd.append("a", "1"); fd.append("f", new File(["x"], "f.txt", { type: "text/plain" }));' +
+      'Promise.all([fetch(req), fetch("form", { method: "POST", body: fd })]).then(function () {' +
+      '  window.location = "elsewhere";' +
+      '  r.push(typeof location, location.href);' +
+      "  document.getElementById('out').textContent = r.join('|');" +
+      '});' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [],
+        body: '',
+      }),
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'true',
+      'true',
+      'true',
+      'false',
+      'https://example.test/dir/api',
+      'POST',
+      '1',
+      'true',
+      'true',
+      'TypeError',
+      'object',
+      PAGE,
+    ].join('|'),
+  );
+  assert.deepEqual(doc.links, ['https://example.test/dir/elsewhere']);
+  const [sent, form] = doc.fetched;
+  assert.deepEqual(
+    [sent.method, sent.url, sent.body],
+    ['POST', 'https://example.test/dir/api', 'b'],
+  );
+  const type = form.headers.find(([k]) => k === 'content-type')?.[1] ?? '';
+  const boundary = /boundary=(.+)$/.exec(type)?.[1];
+  assert.ok(boundary, type);
+  assert.equal(
+    form.body,
+    `--${boundary}\r\nContent-Disposition: form-data; name="a"\r\n\r\n1\r\n` +
+      `--${boundary}\r\nContent-Disposition: form-data; name="f"; filename="f.txt"\r\nContent-Type: text/plain\r\n\r\nx\r\n` +
+      `--${boundary}--\r\n`,
+  );
 });
 
 test('a page walks its tree, parses markup into documents of its own, and marks and measures', async () => {
