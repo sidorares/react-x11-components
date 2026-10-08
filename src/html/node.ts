@@ -5181,7 +5181,9 @@ export class HtmlViewNode extends Node {
       drawings: new Set(),
       pseudo: HOVER_PSEUDO_NONE,
     };
+    const unchanged = unchangedAttributes(changes);
     for (const change of changes) {
+      if (unchanged?.has(change)) continue;
       if (!this._scopeOf(change, cascade, tree, scope)) return null;
     }
     return scope;
@@ -7152,6 +7154,41 @@ const CASCADE_TAGS = new Set(['style', 'link', 'meta', 'base']);
  *  changes no style. Everything else may be read by the boxes, a widget, a
  *  focus stop or a presentational hint. */
 const STYLE_ONLY_ATTRIBUTE = /^(?:class|id|style|data-[^]*|on[a-z]+)$/;
+
+/**
+ * The attribute changes in a list that changed nothing: an attribute set to
+ * what it was, or set and set back, as the first change to it says it was.
+ * DOM makes a record for each — a `classList.remove` of a class the element
+ * does not have, a `style.setProperty` of the value it holds — and a page
+ * that writes them at every frame restyles nothing in a browser, which
+ * compares. Null where none did.
+ */
+function unchangedAttributes(
+  changes: readonly HtmlChange[],
+): Set<HtmlChange> | null {
+  let before: Map<Element, Map<string, string | null | undefined>> | null =
+    null;
+  for (const change of changes) {
+    if (change.type !== 'attributes') continue;
+    before ??= new Map();
+    let names = before.get(change.target);
+    if (!names) before.set(change.target, (names = new Map()));
+    const name = change.attributeName.toLowerCase();
+    if (!names.has(name)) names.set(name, change.oldValue);
+  }
+  if (!before) return null;
+  let out: Set<HtmlChange> | null = null;
+  for (const change of changes) {
+    if (change.type !== 'attributes') continue;
+    const name = change.attributeName.toLowerCase();
+    const was = before.get(change.target)!.get(name);
+    if (was === undefined || was !== (attr(change.target, name) ?? null)) {
+      continue;
+    }
+    (out ??= new Set()).add(change);
+  }
+  return out;
+}
 
 /** A change's reach through a `:has()`: past what is in the element that
  *  changed and what follows it. */

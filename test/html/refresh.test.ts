@@ -108,6 +108,48 @@ metric(
   },
 );
 
+test('an attribute set to what it was, or set and set back, restyles nothing', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} [class*=on]{color:#ff0000} .open{display:none}</style>' +
+      '<div id="a" class="on" style="--gap: 0px">a</div><p id="b">b</p>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const tree = treeOf(el);
+  const a = byId(el, 'a');
+  const style = (value: string): HtmlChange => {
+    const oldValue = a.attribs.style ?? null;
+    a.attribs.style = value;
+    return { type: 'attributes', target: a, attributeName: 'style', oldValue };
+  };
+  const b = byId(el, 'b');
+  // a page's frame that writes what is there: the same class, the same
+  // custom property, and a class put on and taken off again
+  const changes = [setClass(a, 'on'), style('--gap: 0px'), setClass(b, 'open')];
+  changes.push({
+    type: 'attributes',
+    target: b,
+    attributeName: 'class',
+    oldValue: b.attribs.class,
+  });
+  delete b.attribs.class;
+  let damage: unknown[] = [];
+  const computed = await stylesComputed(el, async () => {
+    damage = await damageOf(el, async () => {
+      el.touchDocument(changes);
+      await snapshot(result, el);
+    });
+  });
+  assert.strictEqual(computed, 0, `${computed} styles worked out`);
+  assert.ok(treeOf(el) === tree, 'the boxes were built again');
+  assert.deepStrictEqual(damage, [], 'something was repainted');
+  // and one that does change is still told
+  el.touchDocument([setClass(b, 'open')]);
+  await snapshot(result, el);
+  assert.ok(treeOf(el) !== tree, 'a box that went is still drawn');
+});
+
 metric(
   'a class that moves something builds the boxes again, styling only what it reaches',
   async () => {
