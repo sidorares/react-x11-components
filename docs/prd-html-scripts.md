@@ -131,7 +131,13 @@ e.constructor.constructor('return process')())` is the host's `process`,
    so without the flag nothing makes `import()` safe: the engine runs no
    script there (`SCRIPTS_CONTAINED`, keyed on `vm.SourceTextModule`,
    which the same flag makes), and the browser starts every pane, and its
-   own process, with it. Bun honours the callback with no flag.
+   own process, with it. Bun honours the callback with no flag. Node 21 to
+   23 honour it and still make the promise `import()` hands the page in
+   the host's realm, whatever the callback answers, so
+   `import('x').constructor.constructor('return process')()` was the
+   host's `process` there: `SCRIPTS_CONTAINED` asks a throwaway context of
+   that too (`importStaysInPage`), and a page runs no script on those
+   versions.
 
 With those closed, `this.constructor`, `document.constructor`, a caught
 bridge error, `prepareStackTrace` and a refused `import()` all stayed
@@ -342,7 +348,13 @@ a` answers `'undefined'` there, so a classic script's globals vanish and
   its default ends the process — the tab. A page's is told apart from the
   host's by its prototype, the context's `Promise.prototype`, read without
   running anything of the page's, and reported in the page; any other is
-  thrown again (`engine.ts`).
+  thrown again (`engine.ts`). Listening is not enough in a pane: every
+  listener hears every rejection, and core's pane registers one, before
+  it loads the page's module, that ends the process at the first. So the
+  engine takes over the listeners already there (`watchRejections`): a
+  page's rejection is the page's, and any other goes to them. Before it,
+  any page whose promise went uncaught closed its tab — x.com's refused
+  `import()`, react.dev's Sandpack reaching for a frame's `location`.
 - **The transpiler's `__name`.** tsx keeps a function's name by calling a
   `__name` helper defined at the module's top, so `toString()` of the
   facade calls a name the context does not have. The engine gives it one.
@@ -670,6 +682,20 @@ standards moved from what Acid3 expected):
   frame that tells its parent it loaded, short of an application built in
   one. Its styles are worked out with `<Html>`'s cascade for the frame's
   content box, so its media queries see the frame's size.
+- **A frame's window.** `contentWindow` is a WindowProxy: one for the
+  frame, whatever it has gone on to, which is the window of the document
+  it holds now, and there for another origin's frame too with only what
+  crosses origins (`location` to send it, `postMessage`, its relations;
+  the rest a `SecurityError`). Its `location` sends the frame elsewhere
+  without its `src` saying so, as Sandpack sends its frame to the bundler.
+  A frame has no realm of its own, so its window holds the page's globals
+  as they were before any page code ran: scripts take a "clean" `RegExp`,
+  `JSON`, `fetch` or `Node.prototype` accessor from a hidden frame —
+  Contentsquare's pure window, Sentry's unwrapped `fetch` — and get the
+  page's own, unwrapped, which is what they wanted. What they get is the
+  page's, so one that changes a prototype it took from a frame changes the
+  page's; core-js's, which would, deletes from it only from a script it
+  writes into the frame, and a written script does not run.
 
 ## What core would be asked
 
@@ -748,9 +774,9 @@ that either is a change to the bridge and not to the facade.
      document order, its imports fetched through the browser's network and
      linked, one module a URL, `import.meta.url`, and `import()` from a
      classic script or a module. A `nomodule` script does not run. Bun 1.4
-     runs static imports and refuses `import()`: its runtime hands a page
-     a namespace with none of the module's exports, which it is asked once
-     (`askDynamicImport`);
+     hands a page's `import()` whatever the host answers, and a module
+     answered whole was an object with none of its exports, so the engine
+     answers with the module's namespace, which Node takes as well;
    - scripts held for the style sheets that block them, as a browser holds
      them (built: `scriptsUnblocked`);
    - the watchdog;

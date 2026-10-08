@@ -2176,10 +2176,10 @@ export function installDom(bridge: Bridge): void {
    *  style says, in a frame's, which nothing here draws; and its
    *  attribute's elsewhere (HTML 4.8.4.3.15, the `width` IDL attribute). */
   const imageSize = (img: Any, side: 'width' | 'height'): number => {
-    if (img.isConnected) {
+    const doc = img.ownerDocument;
+    if (doc === document && img.isConnected) {
       return side === 'width' ? img.offsetWidth : img.offsetHeight;
     }
-    const doc = img.ownerDocument;
     if (doc && doc !== document && img.getRootNode() === doc) {
       const style = getComputedStyle(img);
       const px = /^([\d.]+)px$/.exec(style?.[side] ?? '');
@@ -2716,42 +2716,338 @@ export function installDom(bridge: Bridge): void {
     const id = Number(call('frameDocument', frame._id));
     return id ? wrap(id) : null;
   };
-  /** The window of a frame's document, which nothing here draws: its
-   *  document, its styles, where it is. One for each document. */
+
+  // --- a frame's window ------------------------------------------------------
+  //
+  // What `contentWindow` hands out is a WindowProxy (HTML 7.2.3): one for
+  // the frame, whatever it has gone on to, which is the window of the
+  // document it holds now — so a page that keeps it, as Sandpack does
+  // before it sends the frame to its bundler, still has it — and is there
+  // for another origin's frame too, with only what HTML lets a page reach
+  // across origins: `location` to send it somewhere, `postMessage`, and the
+  // window's relations. A frame has no realm of its own here, so its window
+  // holds the page's own globals as they were before any page code ran
+  // (`realmGlobals`): Contentsquare builds what it calls its pure window
+  // from a hidden frame's `RegExp`, `JSON` and `Node.prototype`, and Sentry
+  // takes `fetch` from one, for versions the page has not wrapped.
+
+  /** The globals a frame's window shares with the page: everything the
+   *  facade defined as a value, before any page code ran, but what is the
+   *  window's own (`OWN_PER_WINDOW`). Taken at the end of `installDom`. */
+  let realmGlobals: [string, Any][] = [];
+  const OWN_PER_WINDOW = new Set([
+    'window',
+    'self',
+    'frames',
+    'globalThis',
+    'top',
+    'parent',
+    'opener',
+    'frameElement',
+    'document',
+    'location',
+    'history',
+    'visualViewport',
+    'scrollTo',
+    'scroll',
+    'scrollBy',
+    'postMessage',
+    'addEventListener',
+    'removeEventListener',
+    'dispatchEvent',
+  ]);
+  const crossOrigin = (): Any =>
+    new DOMException(
+      `Blocked a frame with origin "${location.origin}" from accessing a cross-origin frame.`,
+      'SecurityError',
+    );
+  /** The window each frame's document has (HTML 7.2.2), made as it is
+   *  first reached. */
   const frameWindows = new WeakMap<object, Any>();
-  const frameWindowOf = (doc: Any): Any => {
+  /** Each frame's WindowProxy, and the frame each is of. */
+  const frameProxies = new WeakMap<object, Any>();
+  const proxiedFrames = new WeakMap<object, Any>();
+  /** The window a document is the document of: the page's, a frame's
+   *  where it is the frame's document now, and none for any other. */
+  const windowOfDocument = (doc: Any): Any => {
+    if (doc === document) return G;
+    const frame = wrap(Number(call('frameElement', doc._id)));
+    return frame && frameDocumentOf(frame) === doc ? frameProxyOf(frame) : null;
+  };
+  /** The window of a frame's document: the realm's globals, and its own
+   *  document, place, events and size. */
+  const frameWindowOf = (doc: Any, frame: Any): Any => {
     let win = frameWindows.get(doc);
-    if (!win) {
-      win = {
-        document: doc,
-        getComputedStyle,
-        get frameElement(): Any {
-          return wrap(Number(call('frameElement', doc._id)));
-        },
-        parent: G,
-        top: G,
-        opener: null,
-        closed: false,
-        length: 0,
-        setTimeout: G.setTimeout,
-        clearTimeout: G.clearTimeout,
-        addEventListener(): void {},
-        removeEventListener(): void {},
-        postMessage(): void {},
-      };
-      win.window = win;
-      win.self = win;
-      frameWindows.set(doc, win);
+    if (win) return win;
+    const proxy = frameProxyOf(frame);
+    const target = new EventTarget();
+    win = Object.create(Window.prototype);
+    for (const [name, value] of realmGlobals) {
+      Object.defineProperty(win, name, {
+        value,
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
     }
+    const size = (): number[] =>
+      String(call('frameSize', doc._id)).split(' ').map(Number);
+    const own: Record<string, () => Any> = {
+      window: () => proxy,
+      self: () => proxy,
+      frames: () => proxy,
+      globalThis: () => proxy,
+      parent: () => windowOfDocument(frame.ownerDocument) ?? proxy,
+      top: () => G,
+      opener: () => null,
+      frameElement: () => frame,
+      document: () => doc,
+      closed: () => false,
+      length: () => 0,
+      innerWidth: () => size()[0],
+      innerHeight: () => size()[1],
+      outerWidth: () => size()[0],
+      outerHeight: () => size()[1],
+      scrollX: () => 0,
+      scrollY: () => 0,
+      pageXOffset: () => 0,
+      pageYOffset: () => 0,
+      devicePixelRatio: () => viewport().dpr,
+    };
+    for (const [name, get] of Object.entries(own)) {
+      Object.defineProperty(win, name, {
+        get,
+        configurable: true,
+        enumerable: false,
+      });
+    }
+    // `location` set is a navigation, as the page's is
+    Object.defineProperty(win, 'location', {
+      get: () => frameLocationOf(frame),
+      set: (v: Any) => {
+        frameLocationOf(frame).href = v;
+      },
+      configurable: true,
+      enumerable: true,
+    });
+    let name = frame.getAttribute('name') ?? '';
+    Object.defineProperty(win, 'name', {
+      get: () => name,
+      set: (v: Any) => {
+        name = str(v);
+      },
+      configurable: true,
+    });
+    const methods: Record<string, Any> = {
+      addEventListener: (type: Any, fn: Any, options?: Any) =>
+        target.addEventListener(type, fn, options),
+      removeEventListener: (type: Any, fn: Any, options?: Any) =>
+        target.removeEventListener(type, fn, options),
+      dispatchEvent: (event: Any) => {
+        if (!(event instanceof Event)) throw new TypeError('not an Event');
+        event.isTrusted = false;
+        return dispatch(target, event);
+      },
+      postMessage: (message: Any, options?: Any) =>
+        postTo(target, message, options),
+      scrollTo() {},
+      scroll() {},
+      scrollBy() {},
+    };
+    for (const [key, value] of Object.entries(methods)) {
+      Object.defineProperty(win, key, {
+        value,
+        writable: true,
+        configurable: true,
+      });
+    }
+    for (const type of ['load', 'error', 'message', 'resize', 'unload']) {
+      Object.defineProperty(win, `on${type}`, {
+        get: () => target._handlers[type] ?? null,
+        set: (fn: Any) => {
+          target._handlers[type] = typeof fn === 'function' ? fn : null;
+        },
+        configurable: true,
+      });
+    }
+    Object.defineProperty(win, Symbol.toStringTag, {
+      value: 'Window',
+      configurable: true,
+    });
+    frameWindows.set(doc, win);
     return win;
+  };
+  /** What a page may reach of another origin's window (HTML 7.2.3.1,
+   *  CrossOriginProperties), and nothing else. */
+  const crossOriginWindow = (frame: Any, proxy: Any): Any => ({
+    window: proxy,
+    self: proxy,
+    frames: proxy,
+    get location() {
+      return frameLocationOf(frame);
+    },
+    set location(v: Any) {
+      frameLocationOf(frame).href = v;
+    },
+    get parent() {
+      return windowOfDocument(frame.ownerDocument) ?? proxy;
+    },
+    top: G,
+    opener: null,
+    closed: false,
+    length: 0,
+    close() {},
+    focus() {},
+    blur() {},
+    // nothing of another origin's runs here, so nothing hears it
+    postMessage() {},
+  });
+  /** A frame's WindowProxy: the window of the document it holds now where
+   *  that is the page's origin's, and else what may be reached across
+   *  origins, the rest of it a `SecurityError`. */
+  const frameProxyOf = (frame: Any): Any => {
+    let proxy = frameProxies.get(frame);
+    if (proxy) return proxy;
+    const current = (): Any => {
+      const doc = frameDocumentOf(frame);
+      return doc ? frameWindowOf(doc, frame) : null;
+    };
+    let cross: Any = null;
+    const across = (): Any => (cross ??= crossOriginWindow(frame, proxy));
+    // what a cross-origin window answers undefined to rather than throwing,
+    // so that `await` and `instanceof` do not (HTML 7.2.3.3)
+    const silent = (key: PropertyKey): boolean =>
+      key === 'then' ||
+      key === Symbol.toStringTag ||
+      key === Symbol.hasInstance ||
+      key === Symbol.isConcatSpreadable;
+    proxy = new Proxy(
+      {},
+      {
+        get(_t, key) {
+          const win = current();
+          if (win) return Reflect.get(win, key, win);
+          const others = across();
+          if (Object.prototype.hasOwnProperty.call(others, key)) {
+            return others[key as string];
+          }
+          if (silent(key)) return undefined;
+          throw crossOrigin();
+        },
+        set(_t, key, value) {
+          const win = current();
+          if (win) return Reflect.set(win, key, value, win);
+          if (key !== 'location') throw crossOrigin();
+          across().location = value;
+          return true;
+        },
+        has(_t, key) {
+          const win = current();
+          return win ? key in win : key in across();
+        },
+        ownKeys() {
+          const win = current();
+          return Reflect.ownKeys(win ?? across());
+        },
+        // every property a configurable one, since the target holds none
+        // of them and a proxy may not say otherwise of one it does not hold
+        getOwnPropertyDescriptor(_t, key) {
+          const win = current();
+          const found = Reflect.getOwnPropertyDescriptor(win ?? across(), key);
+          if (found) found.configurable = true;
+          else if (!win && !silent(key)) throw crossOrigin();
+          return found;
+        },
+        defineProperty(_t, key, descriptor) {
+          const win = current();
+          if (!win) throw crossOrigin();
+          return Reflect.defineProperty(win, key, {
+            ...descriptor,
+            configurable: true,
+          });
+        },
+        deleteProperty(_t, key) {
+          const win = current();
+          if (!win) throw crossOrigin();
+          return Reflect.deleteProperty(win, key);
+        },
+        getPrototypeOf() {
+          const win = current();
+          return win ? Object.getPrototypeOf(win) : null;
+        },
+        setPrototypeOf(_t, proto) {
+          const win = current();
+          return (win ? Object.getPrototypeOf(win) : null) === proto;
+        },
+        preventExtensions() {
+          return false;
+        },
+      },
+    );
+    frameProxies.set(frame, proxy);
+    proxiedFrames.set(proxy, frame);
+    return proxy;
+  };
+  /** Each frame's `location`: where its document is from, and a way to
+   *  send it elsewhere, which the page may do of any frame (HTML 7.10.1) —
+   *  only reading it is its origin's. */
+  const frameLocations = new WeakMap<object, Any>();
+  const frameLocationOf = (frame: Any): Any => {
+    let loc = frameLocations.get(frame);
+    if (loc) return loc;
+    const at = (): string => {
+      if (!frameDocumentOf(frame)) throw crossOrigin();
+      return String(call('frameLocation', frame._id));
+    };
+    const go = (url: Any): void => {
+      call('frameNavigate', frame._id, String(call('resolve', str(url))));
+    };
+    loc = Object.create(Object.getPrototypeOf(location), {
+      href: {
+        get: at,
+        set: go,
+        enumerable: true,
+      },
+      assign: {
+        value(url: Any) {
+          at();
+          go(url);
+        },
+      },
+      replace: { value: go },
+      reload: {
+        value() {
+          go(at());
+        },
+      },
+      toString: {
+        value(): string {
+          return at();
+        },
+      },
+    });
+    for (const part of URL_PARTS) {
+      Object.defineProperty(loc, part, {
+        get(): string {
+          return urlParts(at())?.[part] ?? '';
+        },
+        set(v: Any) {
+          const url = new URL(at());
+          (url as Any)[part] = v;
+          go(url.href);
+        },
+        enumerable: true,
+      });
+    }
+    frameLocations.set(frame, loc);
+    return loc;
   };
   class HTMLIFrameElement extends HTMLElement {
     get contentDocument(): Any {
-      return frameDocumentOf(this);
+      return this.isConnected ? frameDocumentOf(this) : null;
     }
     get contentWindow(): Any {
-      const doc = frameDocumentOf(this);
-      return doc ? frameWindowOf(doc) : null;
+      return this.isConnected ? frameProxyOf(this) : null;
     }
     /** SVG 1.1's `GetSVGDocument`, which every engine kept: the document
      *  the frame holds. */
@@ -2950,14 +3246,17 @@ export function installDom(bridge: Bridge): void {
   class HTMLOutputElement extends HTMLElement {}
   class HTMLObjectElement extends HTMLElement {
     get contentDocument(): Any {
-      return this.hasAttribute('data') ? frameDocumentOf(this) : null;
+      return this.hasAttribute('data') && this.isConnected
+        ? frameDocumentOf(this)
+        : null;
     }
     getSVGDocument(): Any {
       return this.contentDocument;
     }
     get contentWindow(): Any {
-      const doc = this.contentDocument;
-      return doc ? frameWindowOf(doc) : null;
+      return this.hasAttribute('data') && this.isConnected
+        ? frameProxyOf(this)
+        : null;
     }
   }
   Object.defineProperty(
@@ -3922,11 +4221,11 @@ export function installDom(bridge: Bridge): void {
       return '';
     }
     set cookie(_v: Any) {}
-    /** The window: the page's for its document, a frame's for a frame's
-     *  document, and none for one a page made of its own. */
+    /** The window: the page's for its document, a frame's for the
+     *  document it holds now, and none for one a page made of its own or one
+     *  a frame has gone on from. */
     get defaultView(): Any {
-      if (this === document) return G;
-      return call('frameElement', this._id) ? frameWindowOf(this) : null;
+      return windowOfDocument(this);
     }
     get characterSet(): string {
       return 'UTF-8';
@@ -5784,7 +6083,12 @@ export function installDom(bridge: Bridge): void {
    *  global, and its methods are the window's. */
   class Window extends EventTarget {
     static override [Symbol.hasInstance](value: Any): boolean {
-      return value === G;
+      return (
+        value === G ||
+        (value !== null &&
+          typeof value === 'object' &&
+          proxiedFrames.has(value))
+      );
     }
   }
   for (const name of [
@@ -8483,6 +8787,54 @@ export function installDom(bridge: Bridge): void {
     },
   };
 
+  // An accessor of a base interface answers for any node, as a browser's
+  // does, where a kind of node answers it its own way: a page that takes
+  // one off the prototype and calls it on a node — Contentsquare reads
+  // `nodeType` so, off a frame's `Node.prototype`, for a version no page
+  // has wrapped — gets what the node's own kind says, where the base's
+  // answered as no kind at all, 0 for every element.
+  for (const [Base, names] of [
+    [Node, ['nodeType', 'nodeName', 'nodeValue', 'textContent']],
+    [Element, ['tagName', 'namespaceURI']],
+  ] as [Any, string[]][]) {
+    for (const name of names) {
+      const base = Object.getOwnPropertyDescriptor(Base.prototype, name)!;
+      // by the node's prototype, since an element reads `textContent` and
+      // `tagName` through this one as often as a page reads them
+      const kinds = new WeakMap<object, PropertyDescriptor>();
+      const kind = (node: Any): PropertyDescriptor => {
+        const proto = Object.getPrototypeOf(node);
+        let found = kinds.get(proto);
+        if (found) return found;
+        found = base;
+        for (
+          let at = proto;
+          at && at !== Base.prototype;
+          at = Object.getPrototypeOf(at)
+        ) {
+          const own = Object.getOwnPropertyDescriptor(at, name);
+          if (own) {
+            found = own;
+            break;
+          }
+        }
+        if (proto) kinds.set(proto, found);
+        return found;
+      };
+      Object.defineProperty(Base.prototype, name, {
+        get() {
+          const found = kind(this);
+          return found.get ? found.get.call(this) : found.value;
+        },
+        set(v: Any) {
+          kind(this).set?.call(this, v);
+        },
+        configurable: true,
+        enumerable: base.enumerable,
+      });
+    }
+  }
+
   // --- the global ------------------------------------------------------------------
 
   const define = (name: string, value: Any): void => {
@@ -9010,9 +9362,10 @@ export function installDom(bridge: Bridge): void {
   define('blur', () => {});
   define('print', () => {});
   define('stop', () => {});
-  // a message to this window: a task of its own, after this one, where
-  // the origin it is meant for is this one's (HTML 9.4.3)
-  define('postMessage', (message: Any, options?: Any) => {
+  // a message to a window, this one's or a frame's: a task of its own,
+  // after this one, where the origin it is meant for is this one's (HTML
+  // 9.4.3), from the page, whose code is all that runs here
+  const postTo = (to: Any, message: Any, options?: Any): void => {
     const target =
       options && typeof options === 'object'
         ? (options.targetOrigin ?? '/')
@@ -9040,13 +9393,16 @@ export function installDom(bridge: Bridge): void {
           source: G,
         });
         ev.isTrusted = true;
-        dispatch(windowTarget, ev);
+        dispatch(to, ev);
       },
       0,
       [],
       false,
     );
-  });
+  };
+  define('postMessage', (message: Any, options?: Any) =>
+    postTo(windowTarget, message, options),
+  );
   Object.defineProperty(G, Symbol.toStringTag, {
     value: 'Window',
     configurable: true,
@@ -9099,6 +9455,14 @@ export function installDom(bridge: Bridge): void {
       configurable: true,
     });
   }
+
+  // What a frame's window shares with this one (`frameWindowOf`): every
+  // global defined as a value, as it is before any page code runs.
+  realmGlobals = Object.getOwnPropertyNames(G).flatMap((name) => {
+    if (OWN_PER_WINDOW.has(name) || name.startsWith('__')) return [];
+    const found = Object.getOwnPropertyDescriptor(G, name);
+    return found && 'value' in found ? [[name, found.value]] : [];
+  }) as [string, Any][];
 
   // --- the entries -------------------------------------------------------------------
   //
@@ -9338,7 +9702,8 @@ export function installDom(bridge: Bridge): void {
     const [id, code, url] = input();
     const doc = wrap(id);
     if (!doc) return false;
-    const win = frameWindowOf(doc);
+    const win = windowOfDocument(doc);
+    if (!win) return false;
     try {
       new Function(
         'window',

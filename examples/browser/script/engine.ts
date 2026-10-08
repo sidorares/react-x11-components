@@ -71,6 +71,8 @@ export interface EngineOptions {
 interface PageModule {
   readonly identifier: string;
   readonly status: string;
+  /** What `import()` hands a page: its exports. */
+  readonly namespace: object;
   link(
     linker: (specifier: string, referencing: PageModule) => Promise<PageModule>,
   ): Promise<void>;
@@ -88,22 +90,53 @@ type ModuleClass = new (
     importModuleDynamically(
       specifier: string,
       referrer: { identifier?: string },
-    ): Promise<PageModule>;
+    ): Promise<object>;
   },
 ) => PageModule;
 const SourceTextModule = (vm as unknown as { SourceTextModule?: ModuleClass })
   .SourceTextModule;
 
 /**
+ * Whether an `import()` in a context hands the page a promise of its own
+ * realm, asked once of a throwaway context of each kind the engine makes:
+ * Node 21 to 23 make it in the host's, whatever the callback answers, and
+ * its `constructor.constructor` is the host's `Function` —
+ * `import('x').constructor.constructor('return process')()` was the host's
+ * `process` there. Node 20, 24 and later, and Bun make it the page's.
+ */
+function importStaysInPage(): boolean {
+  const constant = vm.constants?.DONT_CONTEXTIFY;
+  const globals: object[] = [Object.create(null)];
+  if (constant !== undefined) globals.push(constant as unknown as object);
+  try {
+    return globals.every((global) => {
+      const context = vm.createContext(global as never);
+      const made = new vm.Script('import("probe:")', {
+        // answered never, so that nothing is left to reject
+        importModuleDynamically: (() => new Promise(() => {})) as never,
+      }).runInContext(context) as object;
+      return (
+        Object.getPrototypeOf(made) ===
+        new vm.Script('Promise.prototype').runInContext(context)
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether this runtime can keep a page's `import()` in its context: Bun,
  * and Node with `--experimental-vm-modules` — what `vm.SourceTextModule`
  * being there says on both, since the flag that makes the class is the one
- * that makes Node call a script's `importModuleDynamically` at all. The
- * browser starts every pane with it (`PANE_FLAGS`), and its own process
- * from `npm run examples:browser`. Where it is false, no engine is made,
- * and a page is a browser's with scripts off.
+ * that makes Node call a script's `importModuleDynamically` at all — where
+ * the promise an `import()` hands the page is the page's own
+ * (`importStaysInPage`). Where it is false, no engine is made, and a page
+ * is a browser's with scripts off. The browser starts every pane with the
+ * flag (`PANE_FLAGS`), and its own process from `npm run
+ * examples:browser`.
  */
-export const SCRIPTS_CONTAINED = !!SourceTextModule;
+export const SCRIPTS_CONTAINED = !!SourceTextModule && importStaysInPage();
 
 /** The facade's source, made once, with the one name a transpiler may call
  *  that the facade does not define: tsx keeps a function's name with a
@@ -143,47 +176,6 @@ async function settledIn<T>(
     await new Promise((resolve) => setTimeout(resolve, wait));
     if (settled || !enter()) return promise;
   }
-}
-
-/** Whether a module `import()` hands over is the module: Bun 1.4 calls the
- *  host for one in a context and resolves the page's promise with a
- *  namespace that has none of its exports, which a page cannot tell from a
- *  module that exports nothing. Asked once, of a throwaway context. */
-let dynamicImportWorks: Promise<boolean> | null = null;
-function askDynamicImport(): Promise<boolean> {
-  dynamicImportWorks ??= (async () => {
-    if (!SourceTextModule) return false;
-    try {
-      const context = vm.createContext(Object.create(null), {
-        microtaskMode: 'afterEvaluate',
-      });
-      const probe = new SourceTextModule('export const ok = 1;', {
-        context,
-        identifier: 'probe:',
-        initializeImportMeta() {},
-        importModuleDynamically: () => Promise.reject(new Error('none')),
-      });
-      await probe.link(() => Promise.reject(new Error('none')));
-      const drain = new vm.Script('0');
-      await settledIn(probe.evaluate(), () => {
-        drain.runInContext(context);
-        return true;
-      });
-      new vm.Script('import("probe:").then((m) => { globalThis.ok = m.ok; })', {
-        importModuleDynamically: (async () => probe) as never,
-      }).runInContext(context);
-      for (let i = 0; i < 4; i += 1) {
-        await new Promise((r) => setTimeout(r, 0));
-        if (new vm.Script('globalThis.ok').runInContext(context) === 1) {
-          return true;
-        }
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  })();
-  return dynamicImportWorks;
 }
 
 /** A specifier as a URL where it is one (HTML 8.1.5.5, "resolve a
@@ -300,26 +292,48 @@ function resolveSpecifier(
  *  host's (`watchRejections`). */
 const ENGINES = new Map<object, ScriptEngine>();
 
+/** The listeners for `unhandledRejection` there were before the engine's
+ *  (`watchRejections`), which hear every rejection that is not a page's. */
+type RejectionListener = (reason: unknown, promise: Promise<unknown>) => void;
+const LISTENED_BEFORE: RejectionListener[] = [];
+
 /**
  * A page's promise rejected with nothing to catch it is the page's to
  * report, as a browser reports one, and not the process's to die of: in a
  * `vm` context with its own microtask queue it reaches `process` as any
  * other would, and its default is to end the process — the tab. Which
  * context a promise is of is its prototype's, read without running anything
- * of the page's: a promise is no proxy. Anything else is thrown again, as
- * if this had not listened.
+ * of the page's: a promise is no proxy. Anything else goes to the listeners
+ * that were there before, or is thrown again where there were none, as if
+ * this had not listened.
  */
-const onRejection = (reason: unknown, promise: Promise<unknown>): void => {
+const onRejection: RejectionListener = (reason, promise) => {
   const engine = ENGINES.get(Object.getPrototypeOf(promise) as object);
   if (engine) {
     engine.rejected(reason, promise);
     return;
   }
-  throw reason;
+  if (!LISTENED_BEFORE.length) throw reason;
+  for (const listener of LISTENED_BEFORE) {
+    listener.call(process, reason, promise);
+  }
 };
 
-/** Listen, where nothing took the listener away since. */
+/**
+ * Listen, and alone: the listeners already there are taken off and hear
+ * from this one. Every listener hears every rejection, and core's pane
+ * registers one before it loads the page's module that ends the process at
+ * the first — so a page's rejection reached it ahead of this one, and closed
+ * the tab: x.com's refused `import()`, react.dev's Sandpack reaching for a
+ * frame's `location`. A listener added since is taken over at the next
+ * engine.
+ */
 function watchRejections(): void {
+  for (const listener of process.listeners('unhandledRejection')) {
+    if (listener === onRejection) continue;
+    process.off('unhandledRejection', listener);
+    LISTENED_BEFORE.push(listener as RejectionListener);
+  }
   if (!process.listeners('unhandledRejection').includes(onRejection)) {
     process.on('unhandledRejection', onRejection);
   }
@@ -399,7 +413,7 @@ export class ScriptEngine {
   private readonly _entries = new Map<string, vm.Script>();
   /** The callback every script compiled into the context has, and the
    *  context itself: a page's `import()`, resolved against the document. */
-  private readonly _importer: (specifier: string) => Promise<PageModule>;
+  private readonly _importer: (specifier: string) => Promise<object>;
   /** The context's own `TypeError`, taken before any page code runs: what a
    *  failed `import()` rejects with is the page's, never a host error, whose
    *  `constructor.constructor` is the host's `Function`. */
@@ -411,7 +425,7 @@ export class ScriptEngine {
   ) {
     if (!SCRIPTS_CONTAINED) {
       throw new Error(
-        "A page's scripts are not run where its import() would reach the host: run Node with --experimental-vm-modules.",
+        "A page's scripts are not run where its import() would reach the host: run Node 20, or 24 or later, with --experimental-vm-modules, or Bun.",
       );
     }
     this._importer = (specifier) =>
@@ -505,7 +519,7 @@ export class ScriptEngine {
    * module's top-level `await` of one went on only where something else
    * entered the context after it.
    */
-  private _imported(done: Promise<PageModule>): Promise<PageModule> {
+  private _imported(done: Promise<object>): Promise<object> {
     done.then(this._drainLater, this._drainLater);
     return done;
   }
@@ -536,20 +550,17 @@ export class ScriptEngine {
   };
 
   /**
-   * `import()`: the module, fetched and linked, for the runtime to evaluate
-   * and hand the page. What failed is the context's own `TypeError`, with
-   * the message read here from an error of ours; and where the runtime would
-   * hand over an empty namespace (`askDynamicImport`), it fails rather than
-   * lie to the page.
+   * `import()`: the module, fetched, linked and evaluated, and its namespace
+   * for the runtime to hand the page. Node takes a module or its namespace;
+   * Bun 1.4 hands the page whatever this answers, and made a module answered
+   * whole an object with none of its exports, so every `import()` there was
+   * refused until it was answered with the namespace. What failed is the
+   * context's own `TypeError`, with the message read here from an error of
+   * ours.
    */
-  private async _dynamic(specifier: string, base: string): Promise<PageModule> {
+  private async _dynamic(specifier: string, base: string): Promise<object> {
     let module: PageModule;
     try {
-      if (!(await askDynamicImport())) {
-        throw new TypeError(
-          'import() is not supported in this runtime; a static import is.',
-        );
-      }
       module = await this._fetch(
         resolveSpecifier(specifier, base, this._importMap),
       );
@@ -567,7 +578,7 @@ export class ScriptEngine {
     // evaluated already: run again it would be refused, and one still
     // evaluating is waiting on this very `import()` where it is the module
     // a top-level `await` is in.
-    if (!evaluated && module.status !== 'linked') return module;
+    if (!evaluated && module.status !== 'linked') return module.namespace;
     if (!evaluated) {
       this._depth += 1;
       try {
@@ -593,7 +604,7 @@ export class ScriptEngine {
       }
       throw isHostError(error) ? this._pageError(messageOf(error)) : error;
     }
-    return module;
+    return module.namespace;
   }
 
   /**
@@ -852,7 +863,11 @@ function ownData(value: unknown, key: string): unknown {
 }
 
 /** The message of an error of the host's own (`isHostError`), which the
- *  page's code cannot have changed. */
+ *  page's code cannot have changed, for the `TypeError` the page is handed:
+ *  with its kind where that is another, and without where it is the same,
+ *  which a page reported as `TypeError: TypeError: …`. */
 function messageOf(error: Error): string {
-  return `${error.name}: ${error.message}`;
+  return error.name === 'TypeError'
+    ? error.message
+    : `${error.name}: ${error.message}`;
 }

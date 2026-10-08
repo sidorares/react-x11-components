@@ -1856,8 +1856,25 @@ closes a way out a DOM binding opens by accident:
   checked that `import('fs')` did not resolve and never read what it was
   refused with. Node calls the callback only under
   `--experimental-vm-modules`, so the engine runs nothing without it
-  (`SCRIPTS_CONTAINED`). **An escape test reads what a refusal hands the
-  page**, not only that it was refused.
+  (`SCRIPTS_CONTAINED`), and Node 21 to 23 make the promise `import()`
+  hands the page in the host's realm whatever the callback does, so it
+  runs nothing there either (`importStaysInPage`). **An escape test reads
+  what a refusal hands the page**, and what `import()` hands it, not only
+  that it was refused.
+- **The process's `unhandledRejection` is the engine's** (`watchRejections`).
+  Every listener hears every rejection, and core's pane registers one that
+  ends the process before the page's module loads, so a page's uncaught
+  promise closed its tab though the engine listened too. The engine takes
+  the listeners already there off and hands them every rejection that is
+  not a page's. A test needs no setting node:test's listener aside: that
+  it fails no test is the check.
+- **A frame's window holds the page's realm.** `contentWindow` is a
+  WindowProxy over the window of the frame's current document, with the
+  page's globals as they were before page code ran (`realmGlobals`), since
+  scripts take a clean `RegExp` or `fetch` from a hidden frame. What it
+  hands out is the page's own, so a script that changes what it took from
+  a frame changes the page: a frame's script that is written into it never
+  runs (core-js's would empty `Object.prototype`).
 - **A module is linked once and evaluated once** (`_linked`, `_evaluated`),
   however many `import()`s wait on it — the runtime allows each only once,
   and two concurrent imports handed a module mid-evaluation read its

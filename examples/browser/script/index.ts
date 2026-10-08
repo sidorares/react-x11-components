@@ -331,7 +331,7 @@ export function useScripts(
     if (refused) {
       latest.current.log(
         'warn',
-        "This page's scripts are not run: in this process its import() would reach the browser. Node runs them with --experimental-vm-modules.",
+        "This page's scripts are not run: in this process its import() would reach the browser. Node 20, or 24 or later, runs them with --experimental-vm-modules, and Bun runs them as it is.",
       );
     }
   }, [refused]);

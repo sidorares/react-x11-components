@@ -4,7 +4,7 @@
 // design; these run it against an `<Html>` in the in-process X server, with
 // a network and a pane that are stand-ins.
 import { spawnSync } from 'node:child_process';
-import { afterEach, test } from 'node:test';
+import { afterEach, test as nodeTest } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   act,
@@ -27,7 +27,10 @@ import type {
 } from '../src/html/index.js';
 import type { Element as DocElement } from '../src/html/dom.js';
 import { useScripts } from '../examples/browser/script/index.js';
-import { ScriptEngine } from '../examples/browser/script/engine.js';
+import {
+  SCRIPTS_CONTAINED,
+  ScriptEngine,
+} from '../examples/browser/script/engine.js';
 import { DomHost } from '../examples/browser/script/host.js';
 import { HtmlSource } from '../src/html/dom.js';
 import type { ScriptsOptions } from '../examples/browser/script/index.js';
@@ -35,9 +38,15 @@ import type {
   FetchRequest,
   FetchResponse,
 } from '../examples/browser/script/host.js';
-import { FONTS, findById, h, metric } from './html/harness.js';
+import { FONTS, findById, h, metric as fontMetric } from './html/harness.js';
 
 afterEach(cleanup);
+
+/** Tests that run a page's scripts, skipped where this runtime runs none:
+ *  Node 21 to 23 hand a page's `import()` a promise of the host's realm, so
+ *  no engine is made there (`SCRIPTS_CONTAINED`). */
+const test = SCRIPTS_CONTAINED ? nodeTest : nodeTest.skip;
+const metric = SCRIPTS_CONTAINED ? fontMetric : nodeTest.skip;
 
 const PAGE = 'https://example.test/dir/page.html';
 
@@ -251,30 +260,33 @@ test('nothing of the host is reachable from a page', async () => {
   );
 });
 
-test('where a page’s import() would reach the host, no engine is made', () => {
-  // Node without --experimental-vm-modules ignores the callback that keeps
-  // an `import()` in the page, and refuses one with an error of its own
-  const child = spawnSync(
-    process.execPath,
-    [
-      '--import',
-      'tsx',
-      '--input-type=module',
-      '-e',
-      "import { SCRIPTS_CONTAINED, ScriptEngine } from './examples/browser/script/engine.ts';" +
-        'let made = true;' +
-        'try { new ScriptEngine(() => null, { timeout: 1, onTimeout() {}, log() {}, settled() {} }); }' +
-        'catch { made = false; }' +
-        'console.log(JSON.stringify({ contained: SCRIPTS_CONTAINED, made }));',
-    ],
-    { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } },
-  );
-  assert.equal(child.status, 0, child.stderr);
-  assert.deepEqual(JSON.parse(child.stdout.trim().split('\n').at(-1)!), {
-    contained: false,
-    made: false,
-  });
-});
+nodeTest(
+  'where a page’s import() would reach the host, no engine is made',
+  () => {
+    // Node without --experimental-vm-modules ignores the callback that keeps
+    // an `import()` in the page, and refuses one with an error of its own
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        "import { SCRIPTS_CONTAINED, ScriptEngine } from './examples/browser/script/engine.ts';" +
+          'let made = true;' +
+          'try { new ScriptEngine(() => null, { timeout: 1, onTimeout() {}, log() {}, settled() {} }); }' +
+          'catch { made = false; }' +
+          'console.log(JSON.stringify({ contained: SCRIPTS_CONTAINED, made }));',
+      ],
+      { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } },
+    );
+    assert.equal(child.status, 0, child.stderr);
+    assert.deepEqual(JSON.parse(child.stdout.trim().split('\n').at(-1)!), {
+      contained: false,
+      made: false,
+    });
+  },
+);
 
 for (const global of ['own', 'object'] as const) {
   test(`nothing of the host is reachable over either kind of global: ${global}`, async () => {
@@ -330,7 +342,10 @@ for (const global of ['own', 'object'] as const) {
         'r.push(String(Error.prepareStackTrace), typeof __bridge, typeof globalThis.__in);' +
         "document.body.addEventListener('x', function f() { r.push(String(f.caller)) });" +
         "document.body.dispatchEvent(new Event('x'));" +
-        "import('fs').catch(function (e) { r.push(e.constructor.constructor(reach)()) });" +
+        // and what it hands the page before it is refused: a promise of the
+        // host's realm on Node 21 to 23, where no engine is made
+        "var made = import('fs'); r.push(made.constructor.constructor(reach)());" +
+        'made.catch(function (e) { r.push(e.constructor.constructor(reach)()) });' +
         'var shared = 1;',
       'a',
       0,
@@ -342,7 +357,8 @@ for (const global of ['own', 'object'] as const) {
     assert.deepEqual(logs, [
       'log: undefinedundefinedundefined,undefinedundefinedundefined,' +
         'undefinedundefinedundefined,undefinedundefinedundefined,' +
-        'undefined,undefined,string,null,undefinedundefinedundefined number',
+        'undefined,undefined,string,null,undefinedundefinedundefined,' +
+        'undefinedundefinedundefined number',
     ]);
     engine.dispose();
   });
@@ -394,19 +410,49 @@ test('a script that runs away is stopped, and the page goes on', async () => {
   assert.equal(doc.text('out'), 'after');
 });
 
-test('a promise nothing catches is the page’s to report, not the process’s to die of', async (t) => {
-  // node:test listens for unhandled rejections too, and fails the test it
-  // hears one in: its listeners are set aside while the page's is out there
-  const others = process.listeners('unhandledRejection');
-  for (const l of others) process.off('unhandledRejection', l);
-  t.after(() => {
-    for (const l of others) process.on('unhandledRejection', l);
-  });
+test('a promise nothing catches is the page’s to report, not the process’s to die of', async () => {
+  // node:test listens for unhandled rejections too, from before any engine
+  // is made, and fails the test it hears one in: the page's never reaches it
   const doc = await hosted(
     "<script>Promise.reject(new Error('nobody catches this'));</script>",
   );
   await settle();
   assert.ok(doc.logs.some((l) => l.includes('Uncaught (in promise)')));
+});
+
+test('a listener there before the engine hears the host’s rejections and none of the page’s', () => {
+  // core's pane listens before it loads the page's module, and ends the
+  // process at the first rejection it hears: a page's reached it, and
+  // closed the tab, where the engine's listener came after it
+  const child = spawnSync(
+    process.execPath,
+    [
+      '--experimental-vm-modules',
+      '--disable-warning=ExperimentalWarning',
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '-e',
+      "import { ScriptEngine } from './examples/browser/script/engine.ts';" +
+        'const heard = []; const logged = [];' +
+        "process.on('unhandledRejection', (reason) => heard.push(reason.message));" +
+        'const engine = new ScriptEngine(' +
+        "  (op, level, text) => { if (op === 'log') logged.push(text.split('\\n')[0]); return null; }," +
+        '  { timeout: 1000, onTimeout() {}, log() {}, settled() {} });' +
+        "engine.exec(\"Promise.reject(new Error('page')); import('https://example.test/x.js')\", 'https://example.test/', 0);" +
+        "Promise.reject(new Error('host'));" +
+        'setTimeout(() => console.log(JSON.stringify({ heard, logged: logged.sort() })), 100);',
+    ],
+    { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } },
+  );
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout.trim().split('\n').at(-1)!), {
+    heard: ['host'],
+    logged: [
+      'Uncaught (in promise) Error: page',
+      'Uncaught (in promise) TypeError: Failed to fetch module https://example.test/x.js',
+    ],
+  });
 });
 
 test('timers run, and a cleared one does not', async () => {
@@ -1487,13 +1533,7 @@ test('document.currentScript is the script through the microtasks it queued, and
   assert.equal(doc.text('out'), 's s null');
 });
 
-test('a promise nothing catches is told as unhandledrejection and reported with its reason', async (t) => {
-  // node:test listens for unhandled rejections too: set aside, as above
-  const others = process.listeners('unhandledRejection');
-  for (const l of others) process.off('unhandledRejection', l);
-  t.after(() => {
-    for (const l of others) process.on('unhandledRejection', l);
-  });
+test('a promise nothing catches is told as unhandledrejection and reported with its reason', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
       "var heard = []; window.addEventListener('unhandledrejection', function (e) {" +
@@ -2056,6 +2096,93 @@ test('a frame’s document: XML read as XML, a malformed one an error, its scrip
       '2',
       'SCRIPT',
       'B',
+      'true',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('a frame’s window is one for the frame wherever it goes: its location sends it, it has the page’s globals, and another origin’s has only what crosses', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var mine = 1; var wrapped = function () {}; var kept = window.fetch; window.fetch = wrapped;' +
+      'function out() { document.getElementById("out").textContent = r.join("|"); }' +
+      'function step(f, next) { f.onload = function () { f.onload = null; next(); }; }' +
+      'r.push(document.createElement("iframe").contentWindow);' +
+      'var f = document.createElement("iframe"); document.body.appendChild(f);' +
+      'var w = f.contentWindow;' +
+      'r.push(w === f.contentWindow, w instanceof Window, w.window === w, w.self === w, w.parent === window, w.top === window, w.frameElement === f);' +
+      'r.push(w.location.href, w.document === f.contentDocument, f.contentDocument.defaultView === w);' +
+      // what Contentsquare and Sentry take from a frame: the page's own, unwrapped
+      'r.push(new w.RegExp("a+", "g").test("aa"), w.JSON.stringify([1]), w.fetch === kept, typeof w.mine,' +
+      '  Object.getOwnPropertyDescriptor(w.Node.prototype, "nodeType").get.call(document.body));' +
+      'var heard = []; w.addEventListener("message", function (e) { heard.push(e.data + ":" + (e.source === window)); });' +
+      'w.postMessage("hi", "*");' +
+      'setTimeout(function () { r.push(heard.join()); step(f, sent); w.location.replace("a.html"); }, 10);' +
+      'function sent() {' +
+      '  r.push(f.getAttribute("src"), f.contentWindow === w, w.location.pathname, w.document.title);' +
+      '  step(f, function () {' +
+      '    var blocked = function (read) { try { read(); return "read"; } catch (e) { return e.name; } };' +
+      '    r.push(f.contentWindow === w, f.contentDocument, blocked(function () { return w.document; }), blocked(function () { return w.location.href; }));' +
+      '    w.postMessage("across", "*");' +
+      '    step(f, function () { r.push(w.location.href, w.document.title === "" && w.document !== null); out(); });' +
+      '    w.location.replace("about:blank");' +
+      '  });' +
+      '  w.location.href = "https://elsewhere.test/";' +
+      '}' +
+      // in a closed shadow root, as Contentsquare keeps its frame
+      'var holder = document.createElement("div"); var root = holder.attachShadow({ mode: "closed" });' +
+      'root.innerHTML = "<iframe></iframe>"; document.body.appendChild(holder);' +
+      'r.push(typeof root.firstElementChild.contentWindow.Array.isArray);' +
+      '</script>',
+    {
+      answer: (request) =>
+        request.url.endsWith('/a.html')
+          ? {
+              url: request.url,
+              status: 200,
+              statusText: 'OK',
+              redirected: false,
+              headers: [['content-type', 'text/html']],
+              body: '<title>A</title>',
+            }
+          : null,
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      // one not in the document has none
+      '',
+      'true',
+      'true',
+      'true',
+      'true',
+      'true',
+      'true',
+      'true',
+      'about:blank',
+      'true',
+      'true',
+      'true',
+      '[1]',
+      'true',
+      'undefined',
+      '1',
+      'function',
+      'hi:true',
+      // `location` sent it, and its `src` says nothing of it
+      '',
+      'true',
+      '/dir/a.html',
+      'A',
+      // another origin's: the same window, with nothing of it to read
+      'true',
+      '',
+      'SecurityError',
+      'SecurityError',
+      'about:blank',
       'true',
     ].join('|'),
     doc.logs.join('\n'),
