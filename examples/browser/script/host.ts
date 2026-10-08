@@ -19,8 +19,16 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import * as DomUtils from 'domutils';
+import { Parser } from 'htmlparser2';
 import { is, selectAll, selectOne } from 'css-select';
-import { Comment, Document, Element, Text } from 'domhandler';
+import {
+  Comment,
+  Document,
+  DomHandler,
+  Element,
+  ProcessingInstruction,
+  Text,
+} from 'domhandler';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 
 import type {
@@ -33,13 +41,27 @@ import {
   parseFragment,
   shadowRootOf,
 } from '../../../src/html/index.js';
-import { ShadowRoot } from '../../../src/html/dom.js';
+import { HtmlSource, ShadowRoot, treesChanged } from '../../../src/html/dom.js';
+import { Cascade } from '../../../src/html/css/cascade.js';
+import { uaStylesheet } from '../../../src/html/css/ua.js';
+import { cssomStyle } from '../../../src/html/computed.js';
+import type { ComputedStyle, RootLook } from '../../../src/html/css/style.js';
+import type { Stylesheet } from '../../../src/html/css/parse.js';
 import {
   parseDeclarations,
+  parseStylesheet,
   supportsCondition,
 } from '../../../src/html/css/parse.js';
 import { isDisabled } from '../../../src/html/form.js';
 import type { Bridge, Primitive } from './dom.js';
+import {
+  LiveRange,
+  NodeIterators,
+  Ranges,
+  indexOf,
+  isDoctype,
+} from './ranges.js';
+import type { CharacterData } from './ranges.js';
 
 /** A request a page's `fetch` makes, and what it came to. */
 export interface FetchRequest {
@@ -122,6 +144,158 @@ class DomError extends Error {
   }
 }
 const hierarchy = (what: string) => new DomError('HierarchyRequestError', what);
+
+/** The look a frame's document is styled in, which nothing draws here: a
+ *  browser's defaults, in its light scheme. */
+const FRAME_LOOK: RootLook = {
+  color: '#000000',
+  fontFamily: 'serif',
+  fontSize: 16,
+  monoFamily: 'monospace',
+  linkColor: '#0000ee',
+  borderColor: '#000000',
+  mutedColor: '#808080',
+  background: '#ffffff',
+  colorScheme: 'light',
+  surface: '#ffffff',
+  controlPadY: 1,
+  controlBorder: 2,
+  controlRadius: 0,
+};
+
+/** A frame's viewport where it says nothing of its own: HTML's 300 by 150. */
+const FRAME_SIZE = { width: 300, height: 150 };
+
+/** The elements that hold a document of their own: a frame's. */
+const FRAME_TAGS = new Set(['iframe', 'frame', 'object']);
+
+/** The document an XML parser that met a fatal error makes: Gecko's. */
+function parserError(): Element {
+  const error = new Element('parsererror', {
+    xmlns: 'http://www.mozilla.org/newlayout/xml/parsererror.xml',
+  });
+  error.namespace = 'http://www.mozilla.org/newlayout/xml/parsererror.xml';
+  DomUtils.appendChild(error, new Text('XML Parsing Error: not well-formed'));
+  return error;
+}
+
+/** The content types a frame reads as XML (XML Media Types, 3). */
+const XML_TYPES = /^(?:text\/xml|application\/xml|[\w.+-]+\/[\w.-]+\+xml)$/;
+/** A script element's types that are JavaScript, the empty one among them
+ *  (HTML 4.12.1). */
+const JS_TYPES =
+  /^(?:|text\/javascript|application\/javascript|text\/ecmascript|application\/ecmascript|application\/x-javascript|text\/jscript)$/i;
+const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+
+/** What `_xmlTree` reads of htmlparser2's parser beyond its typed surface:
+ *  the names open, top first, and a tag's name. */
+interface XmlParserInternals {
+  readonly stack: string[];
+  getSlice(start: number, end: number): string;
+}
+
+/** The elements HTML's parser keeps in the head while no body content has
+ *  come (HTML 13.2.6.4.4). */
+const HEAD_CONTENT = new Set([
+  'base',
+  'basefont',
+  'bgsound',
+  'link',
+  'meta',
+  'noframes',
+  'noscript',
+  'script',
+  'style',
+  'template',
+  'title',
+]);
+
+/**
+ * A document's top as HTML's parser makes it (HTML 13.2.6.4.1–7): its
+ * doctype and the comments before it, then an `<html>` holding a head and
+ * a body, what goes in each sorted as the parser sorts it — where markup
+ * left any of them out, as `document.write`'s and a frame's often do, and
+ * as `<Html>`'s parser leaves a fragment. Acid3's test 71 writes a title, a
+ * span and a script, and counts what the document came to.
+ */
+function documentTree(kids: ChildNode[]): ChildNode[] {
+  const out: ChildNode[] = [];
+  let html: Element | null = null;
+  const content: ChildNode[] = [];
+  for (const kid of kids) {
+    if (kid instanceof Element && kid.name === 'html' && !html) {
+      html = kid;
+      content.push(...kid.children);
+      for (const inner of kid.children.slice()) DomUtils.removeElement(inner);
+    } else if (
+      !html &&
+      !content.length &&
+      (isDoctype(kid) || kid instanceof Comment)
+    ) {
+      out.push(kid);
+    } else if (
+      kid instanceof Text &&
+      !/[^ \t\n\f\r]/.test(kid.data) &&
+      !content.length
+    ) {
+      // white space before the document's content is no part of it
+    } else content.push(kid);
+  }
+  html ??= new Element('html', {}, []);
+  let head: Element | null = null;
+  let body: Element | null = null;
+  const headOf = (): Element => {
+    if (!head) {
+      head = new Element('head', {}, []);
+      DomUtils.appendChild(html!, head);
+    }
+    return head;
+  };
+  for (const node of content) {
+    if (node instanceof Element && node.name === 'head' && !head && !body) {
+      head = node;
+      DomUtils.appendChild(html, node);
+    } else if (
+      node instanceof Element &&
+      (node.name === 'body' || node.name === 'frameset')
+    ) {
+      if (!body) {
+        headOf();
+        body = node;
+        DomUtils.appendChild(html, node);
+      } else {
+        for (const key in node.attribs) body.attribs[key] ??= node.attribs[key];
+        for (const inner of node.children.slice()) {
+          DomUtils.appendChild(body, inner);
+        }
+      }
+    } else if (
+      !body &&
+      ((node instanceof Element && HEAD_CONTENT.has(node.name)) ||
+        node instanceof Comment ||
+        (node instanceof Text && !/[^ \t\n\f\r]/.test(node.data)))
+    ) {
+      DomUtils.appendChild(headOf(), node);
+    } else {
+      if (!body) {
+        headOf();
+        body = new Element('body', {}, []);
+        DomUtils.appendChild(html, body);
+      }
+      DomUtils.appendChild(body, node);
+    }
+  }
+  headOf();
+  if (!body) DomUtils.appendChild(html, new Element('body', {}, []));
+  out.push(html);
+  return out;
+}
+
+/** Text as it goes in markup, and an attribute's value. */
+const escapeText = (text: string): string =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const escapeAttribute = (text: string): string =>
+  escapeText(text).replace(/"/g, '&quot;');
 
 /** A request CORS refused, which the page sees as a failed fetch and the
  *  console tells why. */
@@ -413,6 +587,28 @@ export class DomHost {
   /** Scripts that are never run: what `innerHTML` and
    *  `insertAdjacentHTML` put in, which HTML does not run either. */
   readonly inert = new WeakSet<Element>();
+  /** A frame's document — an `<iframe>`'s, an `<object>`'s — and the frame
+   *  each document is, and the cascade its styles were last worked out
+   *  with, by its sheets' texts (`_frameStyle`). */
+  private _frames = new WeakMap<Element, Document>();
+  private _frameOf = new WeakMap<Document, Element>();
+  private _frameStyles = new WeakMap<
+    Document,
+    { key: string; cascade: Cascade }
+  >();
+  /** The script the parser met that is running, whose `document.write`
+   *  goes in after it (`write`), and the last node each wrote. */
+  writing: Element | null = null;
+  /** The boxes whose checkedness a script set (HTML's "dirty checkedness"),
+   *  each with the `checked` attribute the page has given it since: its
+   *  default, which is what a reset puts back and what the page reads as
+   *  the attribute, where `<Html>` keeps the box's state in the attribute
+   *  itself. Acid3's test 43 sets the attribute of a radio a click checked
+   *  and a script unchecked, and looks to see it stay unchecked. */
+  private _checkedDefaults = new WeakMap<Element, string | null>();
+  /** Each frame's navigations, counted: a load answers only the last. */
+  private _frameLoads = new WeakMap<Element, number>();
+  private _written = new WeakMap<Element, ChildNode>();
   /** The rules of each `<style>` a page asked the sheet of, and those a
    *  page changed since the last `flush` (`_writeSheets`). */
   private _sheets = new WeakMap<Element, SheetState>();
@@ -424,6 +620,43 @@ export class DomHost {
   /** The documents a page made of its own (`_documentOf`), which are
    *  documents and not fragments, though the tree has one kind of root. */
   private _documents = new WeakSet<Document>();
+  /** The XML documents a page made (`createDocument`), by their content
+   *  type: an element's name keeps its case in one. */
+  private _xml = new WeakMap<Document, string>();
+  /** A node's document where its tree does not say (DOM 4.4, "node
+   *  document"): one a page made in another document, or took out of one.
+   *  A node in a tree is its root's, where the root is a document; the
+   *  entry nearest it up the tree says otherwise. */
+  private _owners = new WeakMap<AnyNode, Document>();
+  /** A doctype's name and its two ids. */
+  private _doctypes = new WeakMap<AnyNode, [string, string, string]>();
+  /** The live ranges (`ranges.ts`), which every change below moves. */
+  private _ranges = new Ranges({
+    error: (kind, message) => new DomError(kind, message),
+    insert: (parent, node, before) => this._insert(parent, node, before),
+    check: (parent, node, before) =>
+      this._validInsert(parent, node, before, false),
+    remove: (node) => this._take(node),
+    replaceData: (node, offset, count, data) =>
+      this._replaceData(node, offset, count, data),
+    split: (node, offset) => this._splitText(node, offset),
+    clone: (node, deep) => this._clone(node, deep),
+    fragment: (node) => {
+      const fragment = new Document([]);
+      this._owners.set(fragment, this._ownerOf(node));
+      return fragment;
+    },
+    isFragment: (node) => this._isFragment(node),
+    isDocument: (node) => this._isDocument(node),
+  });
+  /** The page's node iterators, which a removal moves as it moves the
+   *  ranges. */
+  private _iterators = new NodeIterators();
+  /** Changes made to a page's own documents, counted, and the count a
+   *  frame's styles were last worked out at: a selector's kept answers
+   *  are good only while its tree holds still (`_frameStyle`). */
+  private _foreignChanges = 0;
+  private _foreignSeen = -1;
   /** Where timers and fetches call back into the page. */
   entries: Entries | null = null;
   private _disposed = false;
@@ -545,6 +778,127 @@ export class DomHost {
       !this._documents.has(node)
     );
   }
+  /** A document: the drawn one, or one a page made. */
+  private _isDocument(node: AnyNode): boolean {
+    return node === this.document || this._documents.has(node as Document);
+  }
+
+  /** The document a node is in (DOM 4.4, "node document"). */
+  private _ownerOf(node: AnyNode): Document {
+    for (let at: AnyNode | null = node; at; at = at.parent) {
+      if (this._isDocument(at)) return at as Document;
+      const owner = this._owners.get(at);
+      if (owner) return owner;
+    }
+    return this.document;
+  }
+
+  /** A node, and all it holds, made `doc`'s (DOM 4.5, "adopt"). */
+  private _adopt(node: AnyNode, doc: Document): void {
+    const forget = (at: AnyNode): void => {
+      for (const kid of (at as ParentNode).children ?? []) {
+        this._owners.delete(kid);
+        forget(kid);
+      }
+    };
+    forget(node);
+    if (doc === this.document && !node.parent) this._owners.delete(node);
+    else this._owners.set(node, doc);
+  }
+
+  /** A copy of a node, its document's (DOM 4.5, "clone"). */
+  private _clone(node: AnyNode, deep: boolean): ChildNode {
+    const clone = node.cloneNode(deep) as ChildNode;
+    const owner = this._ownerOf(node);
+    if (owner !== this.document) this._owners.set(clone, owner);
+    if (isDoctype(node)) this._doctypes.set(clone, this._doctypeOf(node));
+    const type = this._xml.get(node as Document);
+    if (this._isDocument(node)) {
+      this._documents.add(clone as unknown as Document);
+      if (type) this._xml.set(clone as unknown as Document, type);
+    }
+    return clone;
+  }
+
+  /** A dirty box's `checked` attribute set or taken away: its default
+   *  changed, its state not, and the page's observers told. */
+  private _defaultChecked(el: Element, value: string | null): void {
+    const oldValue = this._checkedDefaults.get(el) ?? null;
+    this._checkedDefaults.set(el, value);
+    if (this._observers.size) {
+      this._queue(el, {
+        type: 'attributes',
+        target: el,
+        added: [],
+        removed: [],
+        previous: null,
+        next: null,
+        attributeName: 'checked',
+        oldValue,
+      });
+    }
+  }
+
+  /** A doctype's name, public id and system id: those it was made with,
+   *  or what the markup it was parsed from says. */
+  private _doctypeOf(node: AnyNode): [string, string, string] {
+    const kept = this._doctypes.get(node);
+    if (kept) return kept;
+    const data = (node as ProcessingInstruction).data ?? '';
+    const m =
+      /^!doctype\s+([^\s>]+)(?:\s+public\s+(?:"([^"]*)"|'([^']*)'))?(?:\s+(?:system\s+)?(?:"([^"]*)"|'([^']*)'))?/i.exec(
+        data,
+      );
+    const out: [string, string, string] = m
+      ? [m[1].toLowerCase(), m[2] ?? m[3] ?? '', m[4] ?? m[5] ?? '']
+      : ['html', '', ''];
+    this._doctypes.set(node, out);
+    return out;
+  }
+
+  /** A node's data, from `offset`, `count` code units of it replaced by
+   *  `data` (DOM 4.10, "replace data"), the ranges in it moved. */
+  private _replaceData(
+    node: CharacterData,
+    offset: number,
+    count: number,
+    data: string,
+  ): void {
+    const length = node.data.length;
+    if (!(offset >= 0 && offset <= length)) {
+      throw new DomError(
+        'IndexSizeError',
+        `The offset ${offset} is greater than the node's length (${length}).`,
+      );
+    }
+    const taken = Math.max(0, Math.min(count, length - offset));
+    const oldValue = node.data;
+    node.data =
+      oldValue.slice(0, offset) + data + oldValue.slice(offset + taken);
+    this._ranges.replacedData(node, offset, taken, data.length);
+    this._changed(node, 'characterData', null, oldValue);
+  }
+
+  /** A text split at `offset`, its rest a text after it (DOM 4.11). */
+  private _splitText(node: Text, offset: number): Text {
+    const length = node.data.length;
+    if (!(offset >= 0 && offset <= length)) {
+      throw new DomError(
+        'IndexSizeError',
+        `The offset ${offset} is larger than the Text node's length.`,
+      );
+    }
+    const added = new Text(node.data.slice(offset));
+    const owner = this._ownerOf(node);
+    if (owner !== this.document) this._owners.set(added, owner);
+    const parent = node.parent;
+    if (parent) {
+      this._put(parent, [added], node.next);
+      this._ranges.split(node, offset, added);
+    }
+    this._replaceData(node, offset, length - offset, '');
+    return added;
+  }
 
   private _op(
     op: string,
@@ -558,23 +912,36 @@ export class DomHost {
       // --- the tree
       case 'info': {
         const node = this._node(a);
-        if (node instanceof Element) return `1|${node.name}`;
+        if (node instanceof Element) {
+          // a namespace the element was made in, where it says one: `~`
+          // for none
+          const ns = node.namespace;
+          return ns === undefined
+            ? `1|${node.name}`
+            : `1|${node.name}\u0000${ns || '~'}`;
+        }
         if (node instanceof Text) return '3|#text';
         if (node instanceof ShadowRoot) return '11|#shadow-root';
         if (node instanceof Comment) return '8|#comment';
-        if (node === this.document || this._documents.has(node as Document)) {
-          return '9|#document';
+        if (this._isDocument(node)) {
+          const type = this._xml.get(node as Document);
+          return type ? `9|#document\u0000${type}` : '9|#document';
         }
         if (node instanceof Document) return '11|#document-fragment';
-        if (node.type === 'directive') return '10|html';
+        if (isDoctype(node)) return `10|${this._doctypeOf(node)[0]}`;
         return '3|#text';
       }
       case 'parent': {
         const node = this._node(a);
-        return node === this.document || this._documents.has(node as Document)
-          ? 0
-          : this.idOf(node.parent);
+        return this._isDocument(node) ? 0 : this.idOf(node.parent);
       }
+      // the document a node is in, and none for a document
+      case 'owner': {
+        const node = this._node(a);
+        return this._isDocument(node) ? 0 : this.idOf(this._ownerOf(node));
+      }
+      case 'doctype':
+        return this._doctypeOf(this._node(a)).join('\u0000');
       case 'kids': {
         const node = this._node(a);
         if (!('children' in node)) return '';
@@ -628,52 +995,267 @@ export class DomHost {
       case 'setText': {
         const node = this._node(a);
         if (node instanceof Text || node instanceof Comment) {
-          const oldValue = node.data;
-          node.data = text(b);
-          this._changed(node, 'characterData', null, oldValue);
+          this._replaceData(node, 0, node.data.length, text(b));
           return null;
         }
         const parent = this._parent(a);
         this._replaceAll(parent, text(b) ? [new Text(text(b))] : []);
         return null;
       }
+      // a node made in a document — the drawn one where none is named —
+      // and an element in a namespace where one is: `~` for none
       case 'create': {
+        let node: AnyNode;
         if (a === 'element') {
-          return this.idOf(new Element(text(b).toLowerCase(), {}, []));
+          const el = new Element(text(b), {}, []);
+          if (typeof d === 'string' && d) el.namespace = d === '~' ? '' : d;
+          node = el;
+        } else if (a === 'text') node = new Text(text(b));
+        else if (a === 'comment') node = new Comment(text(b));
+        else node = new Document([]);
+        const doc = c ? this._node(c) : this.document;
+        if (doc !== this.document && this._isDocument(doc)) {
+          this._owners.set(node, doc as Document);
         }
-        if (a === 'text') return this.idOf(new Text(text(b)));
-        if (a === 'comment') return this.idOf(new Comment(text(b)));
-        return this.idOf(new Document([]));
+        return this.idOf(node);
+      }
+      case 'createDoctype': {
+        const name = text(a);
+        const publicId = text(b);
+        const systemId = text(c);
+        const node = new ProcessingInstruction(
+          '!doctype',
+          `!DOCTYPE ${name}${publicId ? ` PUBLIC "${publicId}"` : ''}${
+            systemId ? `${publicId ? '' : ' SYSTEM'} "${systemId}"` : ''
+          }`,
+        );
+        this._doctypes.set(node, [name, publicId, systemId]);
+        const doc = d ? this._node(d) : this.document;
+        if (doc !== this.document) this._owners.set(node, doc as Document);
+        return this.idOf(node);
+      }
+      // an XML document, empty: what `createDocument` fills
+      case 'newXml': {
+        const doc = new Document([]);
+        this._documents.add(doc);
+        this._xml.set(doc, text(a) || 'application/xml');
+        return this.idOf(doc);
       }
       case 'insert':
         this._insert(this._parent(a), this._node(b), c ? this._node(c) : null);
         return null;
+      case 'replace':
+        this._replace(this._parent(a), this._node(b), this._node(c));
+        return null;
+      // a node's data changed in place, and a text split in two, as the
+      // standard has them move the ranges in them
+      case 'replaceData': {
+        const node = this._node(a);
+        if (!(node instanceof Text || node instanceof Comment)) {
+          throw new DomError('InvalidNodeTypeError', 'Not character data.');
+        }
+        this._replaceData(node, Number(b), Number(c), text(d));
+        return null;
+      }
+      case 'splitText': {
+        const node = this._node(a);
+        if (!(node instanceof Text)) {
+          throw new DomError('InvalidNodeTypeError', 'Not a text.');
+        }
+        return this.idOf(this._splitText(node, Number(b)));
+      }
+      // a node taken into another document, out of wherever it was
+      // (`adoptNode`), and a copy of one made in it (`importNode`)
+      case 'adoptNode': {
+        const node = this._node(a);
+        if (this._isDocument(node)) {
+          throw new DomError(
+            'NotSupportedError',
+            'A document cannot be adopted.',
+          );
+        }
+        if (node instanceof ShadowRoot) {
+          throw hierarchy('A shadow root cannot be adopted.');
+        }
+        if (node.parent) this._take(node as ChildNode);
+        this._adopt(node, this._node(b) as Document);
+        return null;
+      }
+      case 'import': {
+        const node = this._node(a);
+        if (this._isDocument(node) || node instanceof ShadowRoot) {
+          throw new DomError(
+            'NotSupportedError',
+            'That node cannot be imported.',
+          );
+        }
+        const clone = this._clone(node, !!b);
+        this._adopt(clone, this._node(c) as Document);
+        return this.idOf(clone);
+      }
+
+      // --- node iterators, by id: the facade's runs the filter, and the
+      // host keeps where it is, which a removal moves
+      case 'iterNew':
+        return this._iterators.make(this._node(a));
+      case 'iterDrop':
+        this._iterators.drop(Number(a));
+        return null;
+      case 'iterGet': {
+        const it = this._iterators.get(Number(a));
+        return it
+          ? `${this.idOf(it.reference.node)},${it.reference.before}`
+          : '';
+      }
+      case 'iterStep': {
+        const it = this._iterators.get(Number(a));
+        return it ? this.idOf(this._iterators.step(it, b === true)) : 0;
+      }
+      case 'iterEnd': {
+        // the step the filter took, kept where it was accepted
+        const it = this._iterators.get(Number(a));
+        if (it && it.candidate && b === true) it.reference = it.candidate;
+        if (it) it.candidate = null;
+        return null;
+      }
+
+      // --- ranges (`ranges.ts`), by id: the facade's `Range` holds one
+      case 'rangeNew':
+        return this._ranges.make(a ? this._node(a) : this.document);
+      case 'rangeDrop':
+        this._ranges.drop(Number(a));
+        return null;
+      case 'rangeClone': {
+        const r = this._ranges.get(Number(a));
+        return this._ranges.add(new LiveRange(r.sc, r.so, r.ec, r.eo));
+      }
+      case 'rangeGet': {
+        const r = this._ranges.get(Number(a));
+        return `${this.idOf(r.sc)},${r.so},${this.idOf(r.ec)},${r.eo}`;
+      }
+      case 'rangeSet':
+        this._ranges.set(
+          this._ranges.get(Number(a)),
+          this._node(b),
+          Number(c),
+          d === true,
+        );
+        return null;
+      case 'rangeBeside': {
+        const how = text(c);
+        this._ranges.setBeside(
+          this._ranges.get(Number(a)),
+          this._node(b),
+          how.startsWith('start'),
+          how.endsWith('After'),
+        );
+        return null;
+      }
+      case 'rangeSelect': {
+        const r = this._ranges.get(Number(a));
+        if (c === true) this._ranges.selectNodeContents(r, this._node(b));
+        else this._ranges.selectNode(r, this._node(b));
+        return null;
+      }
+      case 'rangeCollapse':
+        this._ranges.collapse(this._ranges.get(Number(a)), b === true);
+        return null;
+      case 'rangeCompare':
+        return this._ranges.compare(
+          this._ranges.get(Number(a)),
+          Number(b),
+          this._ranges.get(Number(c)),
+        );
+      case 'rangeCommon':
+        return this.idOf(
+          this._ranges.commonAncestor(this._ranges.get(Number(a))),
+        );
+      case 'rangeDelete':
+        this._ranges.deleteContents(this._ranges.get(Number(a)));
+        return null;
+      case 'rangeContents':
+        return this.idOf(
+          this._ranges.contents(this._ranges.get(Number(a)), b === true),
+        );
+      case 'rangeInsert':
+        this._ranges.insertNode(
+          this._ranges.get(Number(a)),
+          this._node(b) as ChildNode,
+        );
+        return null;
+      case 'rangeSurround':
+        this._ranges.surround(
+          this._ranges.get(Number(a)),
+          this._node(b) as ChildNode,
+        );
+        return null;
+      case 'rangeText':
+        return this._ranges.text(this._ranges.get(Number(a)));
+      case 'rangePoint':
+        return this._ranges.point(
+          this._ranges.get(Number(a)),
+          this._node(b),
+          Number(c),
+          d === true,
+        );
+      case 'rangeIntersects':
+        return this._ranges.intersects(
+          this._ranges.get(Number(a)),
+          this._node(b),
+        );
       case 'remove': {
         const node = this._node(a) as ChildNode;
         if (node.parent) this._take(node);
         return null;
       }
-      case 'clone': {
-        const node = this._node(a);
-        return this.idOf(node.cloneNode(!!b));
-      }
+      case 'clone':
+        return this.idOf(this._clone(this._node(a), !!b));
 
       // --- attributes
-      case 'attr':
-        return this._element(a).attribs[text(b)] ?? null;
-      case 'attrs':
-        return Object.keys(this._element(a).attribs).join('\u0000');
+      case 'attr': {
+        const el = this._element(a);
+        const name = text(b);
+        if (name === 'checked' && this._checkedDefaults.has(el)) {
+          return this._checkedDefaults.get(el)!;
+        }
+        return el.attribs[name] ?? null;
+      }
+      case 'attrs': {
+        const el = this._element(a);
+        const names = Object.keys(el.attribs);
+        if (!this._checkedDefaults.has(el)) return names.join('\u0000');
+        // the default a dirty box's `checked` is, and not its state
+        const listed = names.filter((n) => n !== 'checked');
+        if (this._checkedDefaults.get(el) !== null) listed.push('checked');
+        return listed.join('\u0000');
+      }
       case 'setAttr': {
         const el = this._element(a);
         const name = text(b);
+        if (name === 'checked' && this._checkedDefaults.has(el)) {
+          this._defaultChecked(el, text(c));
+          return null;
+        }
         const oldValue = el.attribs[name] ?? null;
         el.attribs[name] = text(c);
         this._changed(el, 'attributes', name, oldValue);
+        // a frame given another address goes there
+        if (
+          this._frames.has(el) &&
+          name === (el.name === 'object' ? 'data' : 'src') &&
+          this._inDocument(el)
+        ) {
+          this._loadFrame(el);
+        }
         return null;
       }
       case 'delAttr': {
         const el = this._element(a);
         const name = text(b);
+        if (name === 'checked' && this._checkedDefaults.has(el)) {
+          this._defaultChecked(el, null);
+          return null;
+        }
         if (name in el.attribs) {
           const oldValue = el.attribs[name];
           delete el.attribs[name];
@@ -749,6 +1331,22 @@ export class DomHost {
         return (this._node(a) as ShadowRoot).mode;
       case 'shadowDelegates':
         return (this._node(a) as ShadowRoot).delegatesFocus;
+
+      // `document.write` from a script the parser met: the markup goes into
+      // the document after the script and after what it wrote before, as
+      // the parser would have read it there (HTML 8.4.3). Its scripts run,
+      // as a parser's do. False where no such script is running.
+      case 'write': {
+        const script = this.writing;
+        if (!script?.parent) return false;
+        const kids = parseFragment(text(a));
+        if (!kids.length) return true;
+        const after = this._written.get(script) ?? script;
+        const parent = after.parent ?? script.parent;
+        this._put(parent, kids, after.next);
+        this._written.set(script, kids[kids.length - 1]);
+        return true;
+      }
 
       // --- markup
       case 'html': {
@@ -837,7 +1435,7 @@ export class DomHost {
         return this.idOf(
           DomUtils.findOne(
             (el) => el.attribs.id === text(a),
-            this.document.children,
+            (b ? (this._node(b) as ParentNode) : this.document).children,
             true,
           ),
         );
@@ -943,7 +1541,7 @@ export class DomHost {
               (el.name === 'link' &&
                 /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '') &&
                 !/(?:^|\s)alternate(?:\s|$)/i.test(el.attribs.rel ?? '')),
-            this.document.children,
+            (a ? (this._node(a) as ParentNode) : this.document).children,
           )
             // what a `<template>` holds is no part of the document
             .filter((el) => {
@@ -956,6 +1554,16 @@ export class DomHost {
             .map((el) => this.idOf(el))
             .join(',')
         );
+
+      // --- frames
+      case 'frameDocument': {
+        const doc = this._frameDocument(this._element(a));
+        return doc ? this.idOf(doc) : 0;
+      }
+      case 'frameElement': {
+        const frame = this._frameOf.get(this._node(a) as Document);
+        return frame ? this.idOf(frame) : 0;
+      }
 
       // --- the document
       case 'root': {
@@ -978,34 +1586,39 @@ export class DomHost {
       }
       case 'parseDocument':
         return this.idOf(this._documentOf(text(a)));
+      // a page's own document made again of what it wrote between `open`
+      // and `close`
+      case 'fillDocument': {
+        const doc = this._node(a);
+        if (!this._documents.has(doc as Document)) {
+          throw new DomError('InvalidStateError', 'Not a document of its own.');
+        }
+        this._fill(doc as Document, text(b));
+        return null;
+      }
       case 'title': {
         const title = DomUtils.findOne(
           (el) => el.name === 'title',
-          this.document.children,
+          (a ? (this._node(a) as ParentNode) : this.document).children,
         );
         return title
           ? DomUtils.textContent(title).replace(/\s+/g, ' ').trim()
           : '';
       }
       case 'setTitle': {
-        let title = DomUtils.findOne(
-          (el) => el.name === 'title',
-          this.document.children,
-        );
+        const doc = b ? (this._node(b) as ParentNode) : this.document;
+        let title = DomUtils.findOne((el) => el.name === 'title', doc.children);
         if (!title) {
           const head =
-            DomUtils.findOne(
-              (el) => el.name === 'head',
-              this.document.children,
-            ) ??
-            (this.document.children.find((k) => k instanceof Element) as
+            DomUtils.findOne((el) => el.name === 'head', doc.children) ??
+            (doc.children.find((k) => k instanceof Element) as
               Element | undefined);
           if (!head) return null;
           title = new Element('title', {}, []);
           this._put(head, [title], null);
         }
         this._replaceAll(title, [new Text(text(a))]);
-        this._seams.title(text(a) || null);
+        if (doc === this.document) this._seams.title(text(a) || null);
         return null;
       }
       case 'disabled':
@@ -1020,6 +1633,11 @@ export class DomHost {
       case 'computed': {
         this.flush();
         const pseudo = b === 'before' || b === 'after' ? b : null;
+        // a frame's document's, which nothing draws
+        if (!this._inDocument(this._element(a))) {
+          const style = this._frameStyle(this._element(a), pseudo);
+          return style ? JSON.stringify(style) : '';
+        }
         const style = this._seams.handle.computedStyle(
           this._element(a),
           pseudo,
@@ -1058,11 +1676,23 @@ export class DomHost {
       // --- controls and the focus, which are `<Html>`'s
       case 'value':
         return this._seams.handle.controlValue(this._element(a));
-      case 'setValue':
+      case 'setValue': {
+        const el = this._element(a);
+        // checkedness a script set is the box's from then on, and its
+        // attribute only its default (HTML 4.10.5.4, "dirty checkedness")
+        if (
+          typeof b === 'boolean' &&
+          el.name === 'input' &&
+          /^(checkbox|radio)$/i.test(el.attribs.type ?? '') &&
+          !this._checkedDefaults.has(el)
+        ) {
+          this._checkedDefaults.set(el, el.attribs.checked ?? null);
+        }
         return this._seams.handle.setControlValue(
-          this._element(a),
+          el,
           typeof b === 'boolean' ? b : text(b),
         );
+      }
       case 'focus': {
         this.flush();
         const el = this._element(a);
@@ -1096,9 +1726,23 @@ export class DomHost {
           this._element(a),
           b ? this._element(b) : null,
         );
-      case 'reset':
-        this._seams.handle.resetForm(this._element(a));
+      case 'reset': {
+        const form = this._element(a);
+        this._seams.handle.resetForm(form);
+        // and a reset puts a dirty box back to its default, clean again
+        for (const el of DomUtils.findAll(
+          (e) => this._checkedDefaults.has(e),
+          form.children,
+        )) {
+          const value = this._checkedDefaults.get(el)!;
+          this._checkedDefaults.delete(el);
+          const oldValue = el.attribs.checked ?? null;
+          if (value === null) delete el.attribs.checked;
+          else el.attribs.checked = value;
+          this._changed(el, 'attributes', 'checked', oldValue);
+        }
         return null;
+      }
 
       // --- the window
       case 'log':
@@ -1242,24 +1886,97 @@ export class DomHost {
     node: AnyNode,
     before: AnyNode | null,
   ): void {
-    if (node === this.document)
-      throw hierarchy('The document cannot be moved.');
-    for (let at: AnyNode | null = parent; at; at = at.parent) {
-      if (at === node) {
-        throw hierarchy('The new child element contains the parent.');
-      }
-    }
-    if (before && before.parent !== parent) {
-      throw new DomError(
-        'NotFoundError',
-        'The node before which the new node is to be inserted is not a child of this node.',
-      );
-    }
+    this._validInsert(parent, node, before, false);
     if (before === node) return;
     const moving = this._isFragment(node)
       ? (node as Document).children.slice()
       : [node as ChildNode];
     this._put(parent, moving, before as ChildNode | null);
+  }
+
+  /** `child` replaced by `node` (DOM 4.2.3, "replace"). */
+  private _replace(parent: ParentNode, node: AnyNode, child: AnyNode): void {
+    this._validInsert(parent, node, child, true);
+    let reference = child.next;
+    if (reference === node) reference = node.next;
+    const moving = this._isFragment(node)
+      ? (node as Document).children.slice()
+      : [node as ChildNode];
+    if (child.parent && child !== node) this._take(child as ChildNode);
+    this._put(parent, moving, reference);
+  }
+
+  /**
+   * Whether `node` may go into `parent` before `child`, or in its place
+   * (DOM 4.2.3, "ensure pre-insert validity" and "replace", steps 1–6):
+   * never into itself, and into a document only what a document holds —
+   * one element, one doctype before it, no text.
+   */
+  private _validInsert(
+    parent: ParentNode,
+    node: AnyNode,
+    child: AnyNode | null,
+    replacing: boolean,
+  ): void {
+    if (this._isDocument(node)) throw hierarchy('A document cannot be moved.');
+    for (let at: AnyNode | null = parent; at; at = at.parent) {
+      if (at === node) {
+        throw hierarchy('The new child element contains the parent.');
+      }
+    }
+    if (child && child.parent !== parent) {
+      throw new DomError(
+        'NotFoundError',
+        replacing
+          ? 'The node to be replaced is not a child of this node.'
+          : 'The node before which the new node is to be inserted is not a child of this node.',
+      );
+    }
+    const fragment = this._isFragment(node);
+    const doctype = isDoctype(node);
+    if (
+      !fragment &&
+      !doctype &&
+      !(node instanceof Element) &&
+      !(node instanceof Text) &&
+      !(node instanceof Comment)
+    ) {
+      throw hierarchy('That node cannot be inserted.');
+    }
+    const intoDocument = this._isDocument(parent);
+    if (node instanceof Text && intoDocument) {
+      throw hierarchy('A document cannot hold text.');
+    }
+    if (doctype && !intoDocument) {
+      throw hierarchy('Only a document holds a doctype.');
+    }
+    if (!intoDocument) return;
+    const kids = parent.children;
+    const at = child ? kids.indexOf(child as ChildNode) : kids.length;
+    const others = replacing ? kids.filter((k) => k !== child) : kids;
+    const hasElement = others.some((k) => k instanceof Element);
+    // a doctype at the child or after it, where a new element would go
+    // before it: a replaced child's place is its own
+    const doctypeAfter = kids
+      .slice(replacing ? at + 1 : at)
+      .some((k) => isDoctype(k));
+    const refused = (): never => {
+      throw hierarchy('A document holds one element, after its doctype.');
+    };
+    if (fragment) {
+      const held = (node as Document).children;
+      const elements = held.filter((k) => k instanceof Element).length;
+      if (elements > 1 || held.some((k) => k instanceof Text)) refused();
+      if (elements === 1 && (hasElement || doctypeAfter)) refused();
+    } else if (node instanceof Element) {
+      if (hasElement || doctypeAfter) refused();
+    } else if (doctype) {
+      const elementBefore = kids
+        .slice(0, at)
+        .some((k) => k instanceof Element && k !== child);
+      if (others.some((k) => isDoctype(k)) || elementBefore) refused();
+      if (!child && hasElement) refused();
+    }
   }
 
   // --- what changed -----------------------------------------------------------
@@ -1276,15 +1993,18 @@ export class DomHost {
     name: string | null,
     oldValue: string | null,
   ): void {
+    const drawn = this._drawn(target);
     if (type === 'attributes') {
-      this._changes.push({
-        type,
-        target: target as Element,
-        attributeName: name!,
-        oldValue,
-      });
+      if (drawn) {
+        this._changes.push({
+          type,
+          target: target as Element,
+          attributeName: name!,
+          oldValue,
+        });
+      }
     } else {
-      this._changes.push({ type, target });
+      if (drawn) this._changes.push({ type, target });
       if (target.parent) this._sheetText(target.parent);
     }
     if (this._observers.size) {
@@ -1312,11 +2032,16 @@ export class DomHost {
     for (const node of nodes) if (node.parent) this._take(node);
     if (!nodes.length) return;
     const previous = before ? before.prev : (parent.children.at(-1) ?? null);
+    const index = before ? indexOf(before) : parent.children.length;
+    const owner = this._ownerOf(parent);
     for (const node of nodes) {
+      if (this._ownerOf(node) !== owner) this._adopt(node, owner);
       if (before) DomUtils.prepend(before, node);
       else DomUtils.appendChild(parent, node);
     }
+    this._ranges.inserted(parent, index, nodes.length);
     this._childList(parent, nodes, [], previous, before);
+    this._framesIn(nodes);
   }
 
   /** A node taken out of its parent, recorded. */
@@ -1324,6 +2049,13 @@ export class DomHost {
     const parent = node.parent!;
     const previous = node.prev;
     const next = node.next;
+    // out of its tree, it is still its document's
+    if (!this._owners.has(node)) {
+      const owner = this._ownerOf(node);
+      if (owner !== this.document) this._owners.set(node, owner);
+    }
+    this._ranges.removing(node);
+    this._iterators.removing(node);
     DomUtils.removeElement(node);
     this._childList(parent, [], [node], previous, next);
   }
@@ -1333,8 +2065,18 @@ export class DomHost {
   private _replaceAll(parent: ParentNode, nodes: readonly ChildNode[]): void {
     for (const node of nodes) if (node.parent) this._take(node);
     const removed = parent.children.slice();
-    for (const kid of removed) DomUtils.removeElement(kid);
-    for (const node of nodes) DomUtils.appendChild(parent, node);
+    const owner = this._ownerOf(parent);
+    for (const kid of removed) {
+      if (owner !== this.document) this._owners.set(kid, owner);
+      this._ranges.removing(kid);
+      this._iterators.removing(kid);
+      DomUtils.removeElement(kid);
+    }
+    for (const node of nodes) {
+      if (this._ownerOf(node) !== owner) this._adopt(node, owner);
+      DomUtils.appendChild(parent, node);
+    }
+    this._ranges.inserted(parent, 0, nodes.length);
     if (removed.length || nodes.length) {
       this._childList(parent, nodes, removed, null, null);
     }
@@ -1347,12 +2089,14 @@ export class DomHost {
     previous: AnyNode | null,
     next: AnyNode | null,
   ): void {
-    this._changes.push({
-      type: 'childList',
-      target: parent,
-      addedNodes: added,
-      removedNodes: removed,
-    });
+    if (this._drawn(parent)) {
+      this._changes.push({
+        type: 'childList',
+        target: parent,
+        addedNodes: added,
+        removedNodes: removed,
+      });
+    }
     this._sheetText(parent);
     if (this._observers.size) {
       this._queue(parent, {
@@ -1366,6 +2110,19 @@ export class DomHost {
         oldValue: null,
       });
     }
+  }
+
+  /** Whether a change to a node is one `<Html>` is told of: anywhere but
+   *  in a document a page made, a frame's among them, which nothing here
+   *  draws. Those are counted instead, for the styles a frame works out. */
+  private _drawn(node: AnyNode): boolean {
+    let at: AnyNode = node;
+    while (at.parent) at = at.parent;
+    if (at === this.document || !this._documents.has(at as Document)) {
+      return true;
+    }
+    this._foreignChanges += 1;
+    return false;
   }
 
   /** A record queued for each observer interested in it: one watching the
@@ -1445,29 +2202,346 @@ export class DomHost {
     this._sheetsChanged.clear();
   }
 
+  // --- frames ---------------------------------------------------------------
+  //
+  // An `<iframe>` holds a document of its own, which a page reads and
+  // writes and asks styles of, and which nothing here draws: it starts as
+  // `about:blank`'s, and where its `src` is the page's own origin it is
+  // loaded through the browser's network as it goes into the document —
+  // HTML parsed, text in a `<pre>`, an image in an `<img>`, as a browser
+  // shows them — and the frame hears `load`. Another origin's is never
+  // read: its frame has no `contentDocument`, as a browser keeps it from
+  // the page, and hears `load` all the same. Acid3's tests make their
+  // documents in its `selectors` frame.
+
+  /** A frame's document, made where it has none: null where it is another
+   *  origin's, which the page may not read. */
+  private _frameDocument(frame: Element): Document | null {
+    let doc = this._frames.get(frame);
+    if (!doc) {
+      // `about:blank`'s, until what it loads is in
+      doc = this._documentOf('');
+      this._frames.set(frame, doc);
+      this._frameOf.set(doc, frame);
+      this._loadFrame(frame);
+    }
+    const src = this._frameSrc(frame);
+    return src && originOf(src) !== this._origin() ? null : doc;
+  }
+
+  /** The address a frame loads, or null for `about:blank`. */
+  private _frameSrc(frame: Element): string | null {
+    const raw =
+      (frame.name === 'object' ? frame.attribs.data : frame.attribs.src) ?? '';
+    if (!raw.trim() || raw.trim() === 'about:blank') return null;
+    return this._resolve(raw.trim());
+  }
+
+  /**
+   * A frame navigated to what its `src` names: fetched, made a document of
+   * its own — HTML parsed, XML parsed as XML (an SVG drawing, XHTML), an
+   * image in an `<img>`, text in a `<pre>`, as a browser shows each — its
+   * scripts run, and its `load` told. A navigation is a new document, put
+   * in the frame once it is in; one the frame has gone on from by then is
+   * dropped.
+   */
+  private _loadFrame(frame: Element): void {
+    const serial = (this._frameLoads.get(frame) ?? 0) + 1;
+    this._frameLoads.set(frame, serial);
+    const loaded = (): void => {
+      if (this._disposed || !this.entries) return;
+      if (this._frameLoads.get(frame) !== serial) return;
+      this.entries.call('__fire', [this.idOf(frame), 'load']);
+    };
+    const src = this._frameSrc(frame);
+    if (!src || originOf(src) !== this._origin()) {
+      setTimeout(loaded, 0);
+      return;
+    }
+    this._seams
+      .fetch(
+        { url: src, method: 'GET', headers: [], body: null },
+        new AbortController().signal,
+      )
+      .then((response) => {
+        if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        const type = (headerOf(response.headers, 'content-type') ?? '')
+          .split(';')[0]
+          .trim()
+          .toLowerCase();
+        let doc: Document;
+        let scripts = true;
+        if (type === 'text/html') doc = this._documentOf(response.body, true);
+        else if (XML_TYPES.test(type)) {
+          const xml = this._xmlTree(response.body);
+          // one that is not well-formed is the error and nothing of it, as
+          // Firefox shows it: Acid3's test 70 looks for what came after a
+          // byte UTF-8 has no character for
+          const kids = xml.wellFormed ? xml.kids : [parserError()];
+          doc = new Document(kids);
+          for (const kid of kids) kid.parent = doc;
+          this._documents.add(doc);
+          this._xml.set(doc, type);
+          // a document that is not well-formed runs none of its scripts
+          scripts = xml.wellFormed;
+        } else {
+          doc = this._documentOf(
+            type.startsWith('image/')
+              ? `<img src="${escapeAttribute(response.url || src)}">`
+              : `<pre>${escapeText(response.body)}</pre>`,
+            true,
+          );
+          scripts = false;
+        }
+        this._frames.set(frame, doc);
+        this._frameOf.set(doc, frame);
+        if (scripts) this._frameScripts(doc, response.url || src);
+        loaded();
+      })
+      .catch((error: unknown) => {
+        // a frame whose document could not be had still hears `load`, as
+        // a browser's showing its error page does
+        this._seams.log(
+          'error',
+          `The frame's ${src} could not be loaded: ${String((error as Error)?.message ?? error)}`,
+        );
+        loaded();
+      });
+  }
+
+  /**
+   * A frame's scripts, in tree order: the inline ones of HTML's (or of
+   * XHTML's, in an XML document), run in the page's realm with the frame's
+   * window and document for their globals (`__frameScript`). A frame here
+   * has no realm of its own, so what one declares is its function's and not
+   * a window's — enough for a frame that tells its parent it loaded, which
+   * is what Acid3's XHTML frames do, and short of a page that builds an
+   * application in one.
+   */
+  private _frameScripts(doc: Document, url: string): void {
+    const xml = this._xml.has(doc);
+    const scripts = DomUtils.findAll(
+      (el) =>
+        el.name === 'script' &&
+        (xml ? el.namespace === HTML_NAMESPACE : !el.namespace) &&
+        !el.attribs.src &&
+        JS_TYPES.test(el.attribs.type ?? ''),
+      doc.children,
+    );
+    for (const script of scripts) {
+      if (this._disposed || !this.entries) return;
+      this.entries.call('__frameScript', [
+        this.idOf(doc),
+        DomUtils.textContent(script),
+        url,
+      ]);
+    }
+  }
+
+  /**
+   * XML parsed into nodes, each element in the namespace its `xmlns`
+   * attributes put it in (Namespaces in XML 1.0, 6), and whether it was
+   * well-formed: every end tag the one open, every element closed, one
+   * root, no character a decoder had to replace. htmlparser2 reads XML
+   * leniently, and a document that is not well-formed must run nothing —
+   * Acid3's second XHTML frame has a stray `</strong>`.
+   */
+  private _xmlTree(text: string): { kids: ChildNode[]; wellFormed: boolean } {
+    const handler = new DomHandler(null, {
+      withStartIndices: false,
+      withEndIndices: false,
+    });
+    let wellFormed = !text.includes('\ufffd');
+    const parser = new (class extends Parser {
+      override onclosetag(start: number, endIndex: number): void {
+        const self = this as unknown as XmlParserInternals;
+        if (self.stack[0] !== self.getSlice(start, endIndex)) {
+          wellFormed = false;
+        }
+        super.onclosetag(start, endIndex);
+      }
+    })(handler, { xmlMode: true, decodeEntities: true });
+    parser.write(text);
+    if ((parser as unknown as XmlParserInternals).stack.length) {
+      wellFormed = false;
+    }
+    parser.end();
+    const kids = handler.root.children.slice();
+    for (const kid of kids) kid.parent = null;
+    const roots = kids.filter((k) => k instanceof Element);
+    if (
+      roots.length !== 1 ||
+      kids.some((k) => k instanceof Text && /[^ \t\n\r]/.test(k.data))
+    ) {
+      wellFormed = false;
+    }
+    const resolve = (el: Element, scope: Map<string, string>): void => {
+      let own = scope;
+      for (const [name, value] of Object.entries(el.attribs)) {
+        if (name !== 'xmlns' && !name.startsWith('xmlns:')) continue;
+        if (own === scope) own = new Map(scope);
+        own.set(name === 'xmlns' ? '' : name.slice(6), value);
+      }
+      const colon = el.name.indexOf(':');
+      el.namespace = own.get(colon < 0 ? '' : el.name.slice(0, colon)) ?? '';
+      for (const kid of el.children) {
+        if (kid instanceof Element) resolve(kid, own);
+      }
+    };
+    for (const root of roots) resolve(root as Element, new Map());
+    return { kids, wellFormed };
+  }
+
+  /** A document's content made again of markup, by the parser `<Html>`
+   *  reads a document with, the document itself kept: `document.open`,
+   *  `write` and `close`'s. */
+  private _fill(doc: Document, markup: string): void {
+    this._replaceAll(doc, this._htmlTree(markup));
+  }
+
+  /** Markup read as a document is, by the parser `<Html>` reads one with,
+   *  and made a document's tree; its scripts never run where it goes. */
+  private _htmlTree(markup: string): ChildNode[] {
+    const source = new HtmlSource();
+    source.setSource(markup, true);
+    const kids = source.document.children.slice();
+    for (const kid of kids) DomUtils.removeElement(kid);
+    for (const el of DomUtils.findAll((e) => e.name === 'script', kids)) {
+      this.inert.add(el);
+    }
+    return documentTree(kids);
+  }
+
+  /** The frames in what went into the document, each given its document
+   *  — and so loaded — as a browser loads a frame as it is put in. */
+  private _framesIn(nodes: readonly AnyNode[]): void {
+    for (const node of nodes) {
+      if (!(node instanceof Element)) continue;
+      const frames = DomUtils.findAll((el) => FRAME_TAGS.has(el.name), [node]);
+      if (FRAME_TAGS.has(node.name)) frames.unshift(node);
+      for (const frame of frames) {
+        if (frame.name === 'object' && !frame.attribs.data) continue;
+        if (!this._frames.has(frame) && this._inDocument(frame)) {
+          this._frameDocument(frame);
+        }
+      }
+    }
+  }
+
+  /** Whether a node is in the document drawn. */
+  private _inDocument(node: AnyNode): boolean {
+    let at: AnyNode = node;
+    while (at.parent) at = at.parent;
+    return at === this.document;
+  }
+
+  /**
+   * An element's computed style in a frame's document, which nothing here
+   * draws: worked out by `<Html>`'s cascade from the user agent's sheet and
+   * the document's own `<style>`s, at the frame's size, and read as
+   * `getComputedStyle` reads the document's. The cascade is kept while
+   * the sheets read the same — Acid3's selector tests add a rule and ask
+   * at once. Null for a node in no frame's document.
+   */
+  private _frameStyle(
+    el: Element,
+    pseudo: 'before' | 'after' | null,
+  ): Record<string, string> | null {
+    let top: AnyNode = el;
+    while (top.parent) top = top.parent;
+    const doc = top as Document;
+    if (!this._frameOf.has(doc)) return null;
+    const styles = DomUtils.findAll((e) => e.name === 'style', doc.children);
+    const texts = styles.map((s) => DomUtils.textContent(s));
+    // its viewport is the frame's content box, where the frame is drawn:
+    // Acid3's media queries ask a frame of 0 by 0, then of 100 by 100
+    const size = this._frameSize(doc);
+    const key = `${size.width}x${size.height}\u0000${texts.join('\u0000')}`;
+    let kept = this._frameStyles.get(doc);
+    if (!kept || kept.key !== key) {
+      const sheets: Stylesheet[] = [uaStylesheet(FRAME_LOOK)];
+      const layers = new Map<string, number>();
+      let order = 0;
+      for (const text of texts) {
+        const sheet = parseStylesheet(text, 0, layers);
+        for (const rule of sheet.rules) rule.order = order++;
+        order += 1;
+        sheets.push(sheet);
+      }
+      const cascade = new Cascade(sheets, FRAME_LOOK, size.width, size.height);
+      kept = { key, cascade };
+      this._frameStyles.set(doc, kept);
+    }
+    const { cascade } = kept;
+    // what css-select kept of a tree is good while no tree changed
+    if (this._foreignSeen !== this._foreignChanges) {
+      this._foreignSeen = this._foreignChanges;
+      treesChanged();
+    }
+    const styleOf = (e: Element): ComputedStyle =>
+      cascade.styleFor(
+        e,
+        e.parent instanceof Element ? styleOf(e.parent) : cascade.initial,
+        false,
+      );
+    const style = styleOf(el);
+    if (pseudo) {
+      const own = cascade.pseudoStyleFor(el, pseudo, style);
+      return own ? cssomStyle(own, 1, null) : null;
+    }
+    return cssomStyle(style, 1, null);
+  }
+
+  /** The size of a frame's viewport: its element's content box in the
+   *  document drawn, and HTML's default where it is in none. */
+  private _frameSize(doc: Document): { width: number; height: number } {
+    const frame = this._frameOf.get(doc);
+    if (!frame || !this._inDocument(frame)) return FRAME_SIZE;
+    this.flush();
+    const rect = this._seams.handle.elementRect(frame);
+    const style = this._seams.handle.computedStyle(frame, null);
+    if (!rect || !style) return FRAME_SIZE;
+    const px = (...names: string[]): number =>
+      names.reduce(
+        (sum, name) => sum + (parseFloat(style[name] ?? '') || 0),
+        0,
+      );
+    return {
+      width: Math.max(
+        0,
+        rect.width -
+          px(
+            'border-left-width',
+            'border-right-width',
+            'padding-left',
+            'padding-right',
+          ),
+      ),
+      height: Math.max(
+        0,
+        rect.height -
+          px(
+            'border-top-width',
+            'border-bottom-width',
+            'padding-top',
+            'padding-bottom',
+          ),
+      ),
+    };
+  }
+
   /** A document of its own made of markup, as `DOMParser` and
    *  `createHTMLDocument` make one: with an `<html>`, a `<head>` and a
    *  `<body>` where the markup has none, as HTML's parser makes them, and
    *  none of its scripts ever run. */
-  private _documentOf(markup: string): Document {
-    const kids = this._parse(markup);
+  private _documentOf(markup: string, document = false): Document {
+    // what a frame loads is a document's markup, and `DOMParser`'s is read
+    // as a fragment is, attaching no shadow root a template declares
+    const tree = document
+      ? this._htmlTree(markup)
+      : documentTree(this._parse(markup));
     const doc = new Document([]);
-    let html = kids.find((k) => k instanceof Element && k.name === 'html') as
-      Element | undefined;
-    if (!html) {
-      html = new Element('html', {}, []);
-      const head = new Element('head', {}, []);
-      const body = new Element('body', {}, []);
-      DomUtils.appendChild(html, head);
-      DomUtils.appendChild(html, body);
-      for (const kid of kids) {
-        const inHead =
-          kid instanceof Element &&
-          ['title', 'meta', 'link', 'style', 'base'].includes(kid.name);
-        DomUtils.appendChild(inHead ? head : body, kid);
-      }
-    }
-    DomUtils.appendChild(doc, html);
+    for (const kid of tree) DomUtils.appendChild(doc, kid);
     this._documents.add(doc);
     return doc;
   }

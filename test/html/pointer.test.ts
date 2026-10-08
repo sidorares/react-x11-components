@@ -1517,11 +1517,15 @@ metric(
     // what core asks a drawn element for as the pointer moves (`cursorAt`,
     // react-x11#757), in device pixels — at a scale of 1, the window's
     const { node } = await render(
-      '<style>body{margin:0} .m{cursor:move} .u{cursor:url(x.cur)}</style>' +
+      '<style>body{margin:0} .m{cursor:move} .u{cursor:url(x.cur)}' +
+        '.f{cursor:url(x.cur) 2 3, -webkit-image-set(url(y.png) 1x), grab}' +
+        '.b{cursor:help} .b{cursor:bogus}</style>' +
         '<p><span id="t">plain text here</span></p>' +
         '<p><a id="a" href="#x">a <b id="ab">link</b></a></p>' +
         '<p><span class="m" id="m">moving</span></p>' +
         '<p><span class="u" id="u">unloaded</span></p>' +
+        '<p><span class="f" id="f">falling back</span></p>' +
+        '<p><span class="b" id="b">bogus</span></p>' +
         '<div id="e" style="height:40px"></div>',
       300,
     );
@@ -1531,7 +1535,11 @@ metric(
     assert.strictEqual(at('ab'), 'pointer', "and the link's own elements");
     assert.strictEqual(at('t'), 'text');
     assert.strictEqual(at('m'), 'move');
+    // an image with no keyword after it is no cursor, and the declaration
+    // is dropped (CSS UI 4, 5.1), as is a keyword there is none of
     assert.strictEqual(at('u'), 'text', 'a cursor it cannot load');
+    assert.strictEqual(at('f'), 'grab', 'the keyword images fall back on');
+    assert.strictEqual(at('b'), 'help', 'the cursor before one it has not');
     assert.strictEqual(at('e'), 'default', 'and over nothing, the arrow');
   },
 );

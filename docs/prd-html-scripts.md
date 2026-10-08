@@ -543,12 +543,20 @@ Two consequences of the "after parse, in order" rule for phase 1:
   is still a parser-blocking script's: the style sheets before it, so a
   script ahead of a head's `<link>` runs while the sheet is on its way. A
   deferred script or a module waits for all of them.
-- **`document.write` is ignored, with a console warning**, as Chrome
-  ignores one from an async script.
+- **`document.write` writes where the parser was**, from a script the
+  parser met: what it writes goes into the document after the script, and
+  after what it wrote before, as the parser would have read it there, and
+  a script in it runs, as a parser's does. From anything else — an async
+  script, a timer — it is ignored with a warning, as Chrome ignores one
+  from an async script. A document of the page's own, a frame's among
+  them, takes `open`, `write` and `close` whole: what is written between
+  them is its markup at `close`, made a document's tree as HTML's parser
+  makes one.
 
 Pages written for parser-blocking scripts mostly still work, because what
-they look up exists by the time they run. Pages that write their own
-markup do not.
+they look up exists by the time they run. A page that writes markup as it
+loads, as Acid3 writes its frames and its table, gets it where it wrote
+it.
 
 ## The DOM in phase 1
 
@@ -592,8 +600,7 @@ markup do not.
 - `MutationObserver` (phase 2, from the same dirty set — built);
 - `IntersectionObserver`, `ResizeObserver`;
 - `XMLHttpRequest` (phase 2 — built, asynchronous only);
-- WebSocket, canvas, `document.write` (IndexedDB came in phase 2 — see
-  below).
+- WebSocket, canvas (IndexedDB came in phase 2 — see below).
 
 Be honest about what that reaches. A framework-built application touches
 hundreds of these, so phase 1 is for pages that enhance what they already
@@ -627,6 +634,42 @@ stores, key paths and generators, indexes, cursors, key ranges, and
 transactions that commit once a round leaves no request queued after the
 microtasks its callbacks queued, which is where a promise wrapper's next
 request comes from.
+
+**And what Acid3 asks of the DOM**, which takes it to 96 of 100, the four
+Chrome fails as well (22, 23, 25 and 35, where today's DOM and Selectors
+standards moved from what Acid3 expected):
+
+- **Live ranges** (`ranges.ts`): the host keeps each range's boundary
+  points, and every insertion, removal and change of a text's data moves
+  them as DOM 5 has it, a split text's too; extracting, cloning, deleting,
+  inserting and surrounding are the standard's algorithms, step for step,
+  and change the tree through the host, so they are recorded, observed and
+  drawn as a page's own edits are. A **node iterator**'s place is the
+  host's in the same way, moved off a node its own filter takes out, as
+  Blink moves it.
+- **DOM Core's rules**: DOM's insertion checks — one element in a
+  document, a doctype before it, no text — every node's own document,
+  adopted with what it holds as it moves between them, `createDocument`,
+  `createDocumentType` and `XMLDocument`, elements in a namespace, with a
+  prefix and a case of their own, doctypes' ids, `DOMException`'s legacy
+  codes and the node constants on every node.
+- **HTML's DOM**: a table's caption, head, foot, bodies, rows and cells,
+  made and taken; a form's controls by name, wherever the form is; an
+  option's `defaultSelected`; a submit button's click submitting its form;
+  `initUIEvent`; `cssFloat`. And checkedness a script set is the box's:
+  its `checked` attribute is its default from then on (HTML's dirty
+  checkedness), kept beside the element, where `<Html>` keeps a box's state
+  in the attribute itself.
+- **Frames.** A same-origin frame is a document of its own, which nothing
+  draws: loaded as it goes into the document and again when its `src`
+  changes — a new document each time — HTML parsed, XML parsed as XML with
+  its namespaces, and one that is not well-formed the error and nothing of
+  it, as Firefox shows it. Its scripts run, but in the page's realm, with
+  the frame's window and document for the names a script reaches them by:
+  what one declares is its function's and not a window's — enough for a
+  frame that tells its parent it loaded, short of an application built in
+  one. Its styles are worked out with `<Html>`'s cascade for the frame's
+  content box, so its media queries see the frame's size.
 
 ## What core would be asked
 

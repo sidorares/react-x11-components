@@ -1101,6 +1101,22 @@ function createParser(declarative = true): {
   return { parser, handler };
 }
 
+/** What `DocumentParser` reads of htmlparser2's parser beyond its typed
+ *  surface: the stack of open tag names, top first, and the two steps an
+ *  open tag is made in. Held to htmlparser2 12 by `test/html/document.test.ts`. */
+interface ParserInternals {
+  readonly stack: string[];
+  readTagName(start: number, endIndex: number): string;
+  emitOpenTag(name: string): void;
+  endOpenTag(isImplied: boolean): void;
+  popElement(implied: boolean): void;
+}
+
+/** A table's row groups, where a cell opens a row; and what may be open
+ *  where a table's rows imply something. */
+const SECTIONS = new Set(['tbody', 'thead', 'tfoot']);
+const IN_TABLE = new Set(['table', 'colgroup', ...SECTIONS]);
+
 /**
  * htmlparser2's parser, deciding a `/>` from the context its tag was read
  * in, as HTML's does. htmlparser2 decides from the context the tag opens,
@@ -1118,7 +1134,41 @@ class DocumentParser extends Parser {
 
   override onopentagname(start: number, endIndex: number): void {
     this._foreignTag = this.isInForeignContext();
+    if (!this._foreignTag) this._impliedBy(start, endIndex);
     super.onopentagname(start, endIndex);
+  }
+
+  /**
+   * The elements HTML's parser opens in a table before a row or a cell
+   * that has none to go in (HTML 13.2.6.4.9, "in table": a `<tr>`, a `<td>`
+   * or a `<th>` opens a `<tbody>`, and a cell in a section a `<tr>`; a
+   * `<col>` a `<colgroup>`). htmlparser2 opens none, so a table's rows
+   * were its children, and `table.tBodies`, `tbody > tr` and a walk of the
+   * tree all found another tree than a browser's. They are opened on the
+   * parser's own stack, as it opens what it implies, so that its end tags
+   * close them: `</tbody>` in a cell closes the cell and the row, as
+   * Acid3's table has it.
+   */
+  private _impliedBy(start: number, endIndex: number): void {
+    const self = this as unknown as ParserInternals;
+    // asked only where a table is open, since every tag comes through here
+    if (!IN_TABLE.has(self.stack[0])) return;
+    const name = self.readTagName(start, endIndex);
+    // a column group holds columns and nothing else
+    if (self.stack[0] === 'colgroup' && name !== 'col') self.popElement(true);
+    if (name !== 'tr' && name !== 'td' && name !== 'th' && name !== 'col') {
+      return;
+    }
+    const open = (tag: string): void => {
+      self.emitOpenTag(tag);
+      self.endOpenTag(true);
+    };
+    if (name === 'col') {
+      if (self.stack[0] === 'table') open('colgroup');
+      return;
+    }
+    if (self.stack[0] === 'table') open('tbody');
+    if (name !== 'tr' && SECTIONS.has(self.stack[0])) open('tr');
   }
 
   override onselfclosingtag(endIndex: number): void {

@@ -2753,7 +2753,14 @@ and `:has()` count the most specific selector in their list, and
 `:nth-child(2n of .a)` a class and the most specific in its list, so a
 library's `.prose :where(p)` is a class and gives way to a page's
 `.intro p`. Escapes are read wherever they stand,
-so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A group
+so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A
+`class` is split at ASCII white space alone, as HTML splits it, so a name
+with an em space or a no-break space in it is one class, and `.f\2003g`
+matches it — css-select refuses a `~=` word with any of JavaScript's white
+space in it, so such a class is asked another way. `:empty` is an element
+with no children but comments, as every engine has it: white space makes
+one other than empty, where css-select takes the Selectors 4 draft's
+reading, which none ships. A group
 with a selector in it that is not one — an unknown pseudo-class, a name that
 starts with a digit — is dropped whole, as CSS 2.1 drops it. Rules nest
 (CSS Nesting 1): a rule inside a rule's block is relative to it, `&`
@@ -3327,7 +3334,10 @@ what the page wrote, and where nothing says, it is the text I-beam over
 text and the arrow elsewhere, as a browser shows them. Core asks the
 element for the point as the pointer moves (`cursorAt`, react-x11#757): a
 document is one node with a cursor for each part of it. A `url()` cursor
-is not loaded, and falls back as its list would.
+is not loaded, and falls back on the keyword its list ends with, which CSS
+UI 4 requires: a `cursor` with no keyword after its images, or one no list
+names (`cursor: bogus`), is dropped, as a browser drops it, and the cursor
+before it stands.
 
 **What is under the pointer is what was painted there last**, for the
 cursor and the hover. `elementAt` and `hrefAt` lay out first a document
@@ -3413,6 +3423,15 @@ where Chrome would break it there; so do lines beside a float or around an
 image or an inline-block. An inline box in a font or a line height of its
 own, or a `text-indent`, has its lines made a piece at a time, and they are
 scored and made again with the breaks asked for.
+
+**A table's rows go in the row group HTML's parser implies.** A `<tr>`
+straight in a `<table>` opens a `<tbody>` round it, as does a cell, which
+opens the row too; a cell in a section opens its row, and a `<col>` its
+`<colgroup>` (HTML 13.2.6.4.9). htmlparser2 opens none of them, so a
+table's rows were its children, and `tbody > tr`, `table.tBodies` and a
+script's walk of the tree found another tree than a browser's. They go on
+the parser's own stack, so its end tags close them — a `</tbody>` in a cell
+ends the cell and the row, as Acid3's table has it.
 
 **Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
 Everything from the cascade to paint recurses on tree depth, so a

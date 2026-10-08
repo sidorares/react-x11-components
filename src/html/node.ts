@@ -3577,9 +3577,11 @@ export class HtmlViewNode extends Node {
       hit,
       this._fixedShift(),
     );
-    const cursor = el ? tree.styles.get(el)?.style.cursor : null;
-    // a keyword; a `url()` this cannot load falls back, as its list would
-    if (cursor && cursor !== 'auto' && /^[a-z-]+$/.test(cursor)) return cursor;
+    const list = el ? tree.styles.get(el)?.style.cursor : null;
+    // the keyword a list of images ends on: none is loaded here, so it
+    // falls back as it would on images that failed
+    const cursor = list?.slice(list.lastIndexOf(',') + 1).trim();
+    if (cursor && cursor !== 'auto') return cursor;
     return hit.text ? 'text' : 'default';
   }
 

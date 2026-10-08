@@ -431,7 +431,7 @@ class RuleIndex {
     if (this.byClass.size) {
       const className = attr(el, 'class');
       if (className) {
-        for (const name of className.split(/\s+/)) {
+        for (const name of className.split(CLASS_SPACE)) {
           if (name && this.byClass.has(name)) return true;
         }
       }
@@ -1121,7 +1121,7 @@ function compileSelector(
 ): (el: Element) => boolean {
   const keep = cache && !STATE_PSEUDO.test(selector);
   const make = () =>
-    compile(noEmptyWords(selector), {
+    compile(classesBeyondAscii(noEmptyWords(selector)), {
       adapter,
       xmlMode: false,
       pseudos,
@@ -1789,10 +1789,14 @@ function attributeNameOf(body: string): string {
   return asciiLower(name);
 }
 
+/** The white space a `class` lists names between: HTML's, which is ASCII's
+ *  — an em space is part of a name, and Acid3 asks for `f\2003g`. */
+const CLASS_SPACE = /[\t\n\f\r ]+/;
+
 /** An element's classes as its `class` lists them, split at HTML's white
  *  space. */
 function classesOf(value: string | null): string[] {
-  return value ? value.split(/[\t\n\f\r ]+/).filter(Boolean) : [];
+  return value ? value.split(CLASS_SPACE).filter(Boolean) : [];
 }
 
 /** The names a declaration's `attr()`s read. */
@@ -2768,7 +2772,7 @@ export class Cascade {
     if (this._askedClasses.size) {
       const className = attr(el, 'class');
       if (className) {
-        for (const name of className.split(/\s+/)) {
+        for (const name of className.split(CLASS_SPACE)) {
           if (name && this._askedClasses.has(name)) {
             (own ??= []).push(`.${name}`);
           }
@@ -3556,7 +3560,7 @@ export class Cascade {
     if (index.ownStyleClasses.size) {
       const className = attr(el, 'class');
       if (className) {
-        for (const name of className.split(/\s+/)) {
+        for (const name of className.split(CLASS_SPACE)) {
           if (name && index.ownStyleClasses.has(name)) return false;
         }
       }
@@ -4480,7 +4484,7 @@ export class Cascade {
       if (needs.classes.size) {
         const className = attr(el, 'class');
         if (className) {
-          for (const name of className.split(/\s+/)) {
+          for (const name of className.split(CLASS_SPACE)) {
             if (needs.classes.has(name)) found.add(`.${name}`);
           }
         }
@@ -4955,7 +4959,7 @@ export class Cascade {
     if (id) consider(index.byId.get(id));
     const className = attr(el, 'class');
     if (className) {
-      for (const name of className.split(/\s+/)) {
+      for (const name of className.split(CLASS_SPACE)) {
         if (name) consider(index.byClass.get(name));
       }
     }
@@ -5149,6 +5153,27 @@ const PSEUDOS = {
   // white space included, as a text node is assigned like any other —
   // and not its own fallback (CSS Scoping 1, 3.2.3)
   'has-slotted': (el: Element) => el.name === 'slot' && hasSlotted(el),
+  // a class name `classesBeyondAscii` read out of a selector, as code
+  // points in hex
+  '-rx-class': (el: Element, points: string | null): boolean => {
+    const value = el.attribs.class;
+    if (!value || !points) return false;
+    const name = points
+      .split(' ')
+      .map((hex) => String.fromCodePoint(parseInt(hex, 16)))
+      .join('');
+    return value.split(CLASS_SPACE).includes(name);
+  },
+  // no child but a comment, as every engine has it: css-select 7 takes an
+  // element of white space for an empty one, the Selectors 4 draft's
+  // reading, which none ships, and Acid3's test 38 asks the difference
+  empty: (el: Element) =>
+    el.children.every(
+      (k) =>
+        k.type === 'comment' ||
+        k.type === 'directive' ||
+        (k.type === 'text' && (k as unknown as { data: string }).data === ''),
+    ),
   focus: (_el: Element) => false,
   'focus-visible': (_el: Element) => false,
   'focus-within': (_el: Element) => false,
@@ -5196,6 +5221,39 @@ export function languageOf(el: Element): string {
   }
   return pragmaLanguage(root.parent ?? root);
 }
+
+/**
+ * A selector with each class name that has white space in it beyond
+ * ASCII's — an em space, a no-break space — asked by `:-rx-class()`
+ * instead: css-select refuses any `~=` word with `\s` in it, which takes
+ * the class selector with it, though HTML splits a `class` at ASCII white
+ * space alone and such a name is one class (Acid3's test 33,
+ * `.f\2003g\3000h`). The name goes over as its code points in hex, so
+ * nothing in it is read again as a selector. Asked only of a selector
+ * with an escape or a character past ASCII in it.
+ */
+function classesBeyondAscii(selector: string): string {
+  if (!/[\\\u0080-\uffff]/.test(selector)) return selector;
+  return selector.replace(CLASS_TOKEN, (token, raw: string) => {
+    const name = raw.replace(
+      /\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\([^])/g,
+      (_m, hex: string | undefined, char: string | undefined) => {
+        if (!hex) return char!;
+        // what CSS Syntax 3 (4.3.7) reads no code point as is U+FFFD
+        const n = parseInt(hex, 16);
+        return n && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff)
+          ? String.fromCodePoint(n)
+          : '\ufffd';
+      },
+    );
+    if (!/\s/.test(name) || /[\t\n\f\r ]/.test(name)) return token;
+    const points = Array.from(name, (c) => c.codePointAt(0)!.toString(16));
+    return `:-rx-class(${points.join(' ')})`;
+  });
+}
+/** A class selector, its name with any escapes in it. */
+const CLASS_TOKEN =
+  /\.((?:[A-Za-z0-9_-]|[^\x00-\x7f]|\\(?:[0-9a-fA-F]{1,6}[ \t\n\r\f]?|[^\n\r\f0-9a-fA-F]))+)/g;
 
 /**
  * A selector with its `[attr~=""]` made one that matches nothing: an empty

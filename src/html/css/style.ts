@@ -3269,7 +3269,19 @@ export function applyDeclaration(
       return;
     }
     case 'cursor': {
-      style.cursor = splitCommas(value)[0]?.trim().toLowerCase() || null;
+      // images to try, each with its hot spot, and a keyword to fall back
+      // on, which is not optional (CSS UI 4, 5.1): anything else is no
+      // cursor, and the declaration is dropped — Acid3's `cursor: bogus`
+      const items = splitCommas(value).map((item) => item.trim());
+      const keyword = items[items.length - 1]?.toLowerCase();
+      if (
+        !keyword ||
+        !CURSORS.has(keyword) ||
+        !items.slice(0, -1).every((item) => CURSOR_IMAGE.test(item))
+      ) {
+        return;
+      }
+      style.cursor = [...items.slice(0, -1), keyword].join(', ');
       return;
     }
     case 'user-select': {
@@ -5979,6 +5991,53 @@ function splitTopLevelSlash(value: string): string[] {
 
 /** `pointer-events`' values besides `none` (CSS UI 4, SVG 2 15.6). */
 const USER_SELECT = new Set(['auto', 'text', 'none', 'contain', 'all']);
+
+/** The cursors CSS UI 4 names (5.1), and the prefixed ones Chrome takes. */
+const CURSORS = new Set([
+  'auto',
+  'default',
+  'none',
+  'context-menu',
+  'help',
+  'pointer',
+  'progress',
+  'wait',
+  'cell',
+  'crosshair',
+  'text',
+  'vertical-text',
+  'alias',
+  'copy',
+  'move',
+  'no-drop',
+  'not-allowed',
+  'grab',
+  'grabbing',
+  'e-resize',
+  'n-resize',
+  'ne-resize',
+  'nw-resize',
+  's-resize',
+  'se-resize',
+  'sw-resize',
+  'w-resize',
+  'ew-resize',
+  'ns-resize',
+  'nesw-resize',
+  'nwse-resize',
+  'col-resize',
+  'row-resize',
+  'all-scroll',
+  'zoom-in',
+  'zoom-out',
+  '-webkit-grab',
+  '-webkit-grabbing',
+  '-webkit-zoom-in',
+  '-webkit-zoom-out',
+]);
+/** A cursor's image, and the hot spot after it. */
+const CURSOR_IMAGE =
+  /^(?:url\(.*\)|(?:-webkit-)?image-set\(.*\))(?:\s+[-+]?[\d.]+\s+[-+]?[\d.]+)?$/is;
 
 const POINTER_EVENTS = new Set([
   'auto',

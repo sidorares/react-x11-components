@@ -655,6 +655,31 @@ test('a pseudo-element no rule gives a content to is none, whatever reaches it',
   );
 });
 
+test('an element of white space is not :empty, and a class name is split at ASCII white space alone', async () => {
+  // css-select 7 takes white space for empty, the Selectors 4 draft's
+  // reading, which no engine ships; and an em space is part of a class
+  // name, which the index split it at (Acid3's tests 38 and 33)
+  const { node } = await render(
+    '<style>p{margin:0;height:5px}p:empty{height:20px}' +
+      '.f\\2003g{height:30px}.a.f\\2003g{height:40px}</style>' +
+      '<p id="none"></p><p id="comment"><!-- c --></p><p id="space"> </p>' +
+      '<p id="em" class="f\u2003g">x</p><p id="both" class="a f\u2003g">x</p>' +
+      '<p id="split" class="a f g">x</p>',
+  );
+  const el = view(node);
+  const height = (id: string): number => boxOf(el, id).height;
+  assert.deepStrictEqual(
+    ['none', 'comment', 'space'].map(height),
+    [20, 20, 5],
+    'only no children but comments is empty',
+  );
+  assert.strictEqual(height('em'), 30, 'the name with an em space in it');
+  // a compound goes to css-select, which refuses a `~=` word with `\s`
+  // in it, an em space included
+  assert.strictEqual(height('both'), 40, 'and with another class beside it');
+  assert.strictEqual(height('split'), 5, 'and not two names split at it');
+});
+
 test('`:focus` matches no element, and a rule that names it stays in the cascade', async () => {
   // css-select has no `:focus`, and threw on one: every rule naming it was
   // dropped, `:not(:focus)` among them, and Wikipedia's skip link stood in
