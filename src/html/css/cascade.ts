@@ -1999,6 +1999,10 @@ export class Cascade {
    *  document's: where there is none, nothing asks which tree an element
    *  is in, and a document styles as it did before there were any. */
   private _scoped = false;
+  /** Whether a rule says something across a shadow tree's edge — `:host`,
+   *  `::slotted()`, `::part()` — which the change index does not hold, so
+   *  what a change reaches cannot be said (`attributeChange`). */
+  private _edgeRules = false;
   /** The ids of the rules of the trees' edges in a sharing key, below
    *  every index's. */
   private _scopedId = -1;
@@ -2243,6 +2247,7 @@ export class Cascade {
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
         if (rule.media) this._mediaOutsideRules = true;
+        this._edgeRules = true;
         continue;
       }
       const pseudo = splitPseudoElement(rule);
@@ -2423,9 +2428,16 @@ export class Cascade {
   /**
    * What a change to an element's attribute can restyle (`CHANGES_*`), and
    * which pseudo-elements' rules test it — or null where that cannot be
-   * said: in a document with a shadow tree, whose rules at its edges no
-   * index here reads, or where a selector tests the attribute somewhere a
-   * change reaches elements no compound names (`CHANGES_ANYWHERE`).
+   * said: where a rule reaches across a shadow tree's edge (`_edgeRules`),
+   * which no index here reads, or where a selector tests the attribute
+   * somewhere a change reaches elements no compound names
+   * (`CHANGES_ANYWHERE`).
+   *
+   * A document with shadow trees whose rules stay inside them is answered
+   * as one without: every tree's other rules are noted in the one index,
+   * so what a change reaches is said of all of them at once, and a tree's
+   * element is restyled by its tree's rules alone. Next.js mounts one such
+   * tree on every page, its route announcer, which no sheet styles.
    *
    * A class's or an id's change is the tokens that came or went, where the
    * old value is known (`was`), and every class's or id's where it is not
@@ -2437,7 +2449,7 @@ export class Cascade {
     was: string | null | undefined,
     now: string | null,
   ): { bits: number; pseudo: 0 | 1 | 2 } | null {
-    if (this._scoped) return null;
+    if (this._edgeRules) return null;
     const rules = this._changeRules;
     let bits = 0;
     let pseudo: 0 | 1 | 2 = 0;
@@ -2484,7 +2496,7 @@ export class Cascade {
    * where a sibling combinator is in play. Null as `attributeChange`.
    */
   treeChange(text = false): number | null {
-    if (this._scoped) return null;
+    if (this._edgeRules) return null;
     const rules = this._changeRules;
     let bits = rules.bits('s') | rules.hasBits;
     if (text) bits |= rules.bits('t');
@@ -2676,6 +2688,9 @@ export class Cascade {
     if (!kept) this._containerReads.clear();
     this._kept = kept;
     this._keptShared.clear();
+    // which tree each element is in, found again: an element a script
+    // moved into another tree since the last build is styled by its rules
+    this._trees = new WeakMap();
   }
 
   /** Whether an element's parent has the style it had before the build,
@@ -2685,7 +2700,9 @@ export class Cascade {
     parentStyle: ComputedStyle,
     kept: KeptStyles,
   ): boolean {
-    const parent = elementParent(el);
+    // the parent a style inherits from: the host above a shadow tree's
+    // top, the slot a light child is assigned to
+    const parent = flatParentOf(el);
     const was = parent ? kept.styles.get(parent)?.style : kept.root;
     return (
       was !== undefined && (was === parentStyle || sameStyle(was, parentStyle))

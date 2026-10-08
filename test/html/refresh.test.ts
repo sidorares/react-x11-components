@@ -10,6 +10,7 @@ import {
   createHtmlElement as createElement,
   createText,
   removeNode,
+  shadowRootOf,
 } from '../../src/html/index.js';
 import type {
   ChildNode,
@@ -512,7 +513,7 @@ const CLASSES = ['a', 'b', 'c', 'd'];
 const TAGS = ['div', 'p', 'span', 'li', 'section'];
 const INKS = ['#ff0000', '#00aa00', '#0000ff', '#aa00aa'];
 
-function rulesFor(next: () => number): string {
+function rulesFor(next: () => number, around = true): string {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const c = () => pick(CLASSES);
@@ -539,7 +540,7 @@ function rulesFor(next: () => number): string {
   ];
   // what a `:has()` reaches past its anchors, which is everything around
   // them: such a sheet styles every element again, as one in a few does
-  const around: (() => string)[] = [
+  const reaching: (() => string)[] = [
     () => `.${c()}:has(+ .${c()})`,
     () => `.${c()}:has(.${c()}) span`,
     () => `section:has(.${c()}) + *`,
@@ -555,7 +556,9 @@ function rulesFor(next: () => number): string {
   const rules: string[] = [];
   const count = 6 + Math.floor(next() * 8);
   for (let i = 0; i < count; i += 1) {
-    const shape = next() < 0.04 ? pick(around) : pick(shapes);
+    // in a shadow tree's sheet, none: the index is one for every sheet, and
+    // a document of several sheets would have one almost always
+    const shape = next() < 0.04 && around ? pick(reaching) : pick(shapes);
     rules.push(`${shape()} { ${pick(declarations)()} }`);
   }
   if (next() < 0.5) {
@@ -564,9 +567,27 @@ function rulesFor(next: () => number): string {
   return rules.join('\n');
 }
 
-function markupFor(next: () => number): string {
+function markupFor(next: () => number, shadows = false): string {
   let id = 0;
   const element = (depth: number): string => {
+    // a host: a shadow tree of its own, with sheets that stay inside it,
+    // a slot for its children and one named, and its light children
+    if (shadows && depth === 0 && next() < 0.6) {
+      let tree = `<style>${rulesFor(next, false)}</style>`;
+      tree += element(1) + '<slot></slot>' + element(1);
+      if (next() < 0.5) tree += '<slot name="n"></slot>';
+      let light = '';
+      for (let i = Math.floor(next() * 3); i >= 0; i -= 1) {
+        light += element(1).replace(/^<(\w+)/, (m) =>
+          next() < 0.3 ? `${m} slot="n"` : m,
+        );
+      }
+      const cls = CLASSES.filter(() => next() < 0.3).join(' ');
+      return (
+        `<div${cls ? ` class="${cls}"` : ''}>` +
+        `<template shadowrootmode="open">${tree}</template>${light}</div>`
+      );
+    }
     const tag = TAGS[Math.floor(next() * TAGS.length)];
     const classes = CLASSES.filter(() => next() < 0.3).join(' ');
     let attrs = classes ? ` class="${classes}"` : '';
@@ -584,12 +605,16 @@ function markupFor(next: () => number): string {
   return body;
 }
 
-/** The body's elements, in document order. */
+/** The body's elements, in document order, and those of each shadow
+ *  tree after its host's. */
 function elementsIn(root: Element): Element[] {
   const out: Element[] = [];
   const walk = (el: Element) => {
     out.push(el);
     for (const child of el.children) {
+      if ((child as Element).attribs) walk(child as Element);
+    }
+    for (const child of shadowRootOf(el)?.children ?? []) {
       if ((child as Element).attribs) walk(child as Element);
     }
   };
@@ -721,6 +746,23 @@ function changeOne(
       },
     ];
   }
+  if (kind === 7 && next() < 0.3) {
+    // a light child to another slot, or to none
+    const light = all.filter(
+      (e) =>
+        (e.parent as Element | null)?.attribs &&
+        shadowRootOf(e.parent as Element),
+    );
+    if (light.length) {
+      const target = pick(light);
+      const was = target.attribs.slot ?? null;
+      if (was === null) target.attribs.slot = next() < 0.5 ? 'n' : 'none';
+      else delete target.attribs.slot;
+      return [
+        { type: 'attributes', target, attributeName: 'slot', oldValue: was },
+      ];
+    }
+  }
   // a text changed, or an inline style set
   const target = pick(all);
   if (next() < 0.5) {
@@ -739,13 +781,90 @@ function changeOne(
 }
 
 test('a refresh told what changed comes to the styles of a refresh of everything', async () => {
-  // which way each refresh went, so the comparison is known to be of the
-  // scoped ways and not only of the refresh of everything they fall back to
+  const ways = await refreshesAgree(40, false);
+  const scoped = ways.inPlace + ways.frame + ways.build;
+  assert.ok(scoped > ways.whole, `${JSON.stringify(ways)}`);
+  for (const way of ['inPlace', 'frame', 'build'] as const) {
+    if (way === 'inPlace' && !FONTS) continue;
+    assert.ok(ways[way] > 0, `no refresh went ${way}: ${JSON.stringify(ways)}`);
+  }
+});
+
+test('in a document with shadow trees whose rules stay inside them, a refresh told what changed comes to the same styles', async () => {
+  const ways = await refreshesAgree(30, true);
+  const scoped = ways.inPlace + ways.frame + ways.build;
+  assert.ok(scoped > ways.whole, `${JSON.stringify(ways)}`);
+  for (const way of ['inPlace', 'build'] as const) {
+    if (way === 'inPlace' && !FONTS) continue;
+    assert.ok(ways[way] > 0, `no refresh went ${way}: ${JSON.stringify(ways)}`);
+  }
+});
+
+test('a host’s colour reaches its shadow tree in place, and what its top holds is told', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .on{color:#ff0000}</style>' +
+      '<div id="h"><template shadowrootmode="open"><p>in</p><b>b</b></template></div>',
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  const host = byId(el, 'h');
+  const root = shadowRootOf(host)!;
+  const inner = root.children.find(
+    (n) => (n as Element).name === 'p',
+  ) as Element;
+  const tree = treeOf(el);
+  el.touchDocument([setClass(host, 'on')]);
+  await snapshot(result, el);
+  assert.ok(treeOf(el) === tree, 'the boxes were built again');
+  assert.equal(el.computedStyle(inner)?.color, 'rgb(255, 0, 0)');
+  // an element taken from the top of the tree is a change its root holds
+  const b = root.children.find((n) => (n as Element).name === 'b') as Element;
+  removeNode(b as unknown as ChildNode);
+  const scope = (
+    el as unknown as { _changeScope(c: HtmlChange[]): unknown }
+  )._changeScope([
+    {
+      type: 'childList',
+      target: root as never,
+      addedNodes: [],
+      removedNodes: [b],
+    },
+  ]);
+  assert.ok(scope, 'the change was a refresh of everything');
+});
+
+test('a rule across a shadow tree’s edge makes every change a refresh of everything', async () => {
+  const { node } = await render(
+    '<div class="a"><template shadowrootmode="open">' +
+      '<style>:host(.on) p { color: #ff0000 }</style><p>p</p></template></div>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const host = el.document.children
+    .flatMap((n) => elementsIn(n as Element))
+    .find((e) => e.attribs?.class === 'a')!;
+  const scope = (
+    el as unknown as { _changeScope(c: HtmlChange[]): unknown }
+  )._changeScope([setClass(host, 'a on')]);
+  assert.strictEqual(scope, null);
+});
+
+/** Random documents, each changed a step at a time, its styles after a
+ *  refresh told what changed held to those after a refresh of everything;
+ *  which way each scoped refresh went, so the comparison is known to be of
+ *  the scoped ways and not only of the refresh of everything they fall
+ *  back to. */
+async function refreshesAgree(
+  seeds: number,
+  shadows: boolean,
+): Promise<{ whole: number; inPlace: number; frame: number; build: number }> {
   const ways = { whole: 0, inPlace: 0, frame: 0, build: 0 };
-  for (let seed = 1; seed <= 40; seed += 1) {
+  for (let seed = 1; seed <= seeds; seed += 1) {
     const next = random(seed);
     const css = rulesFor(next);
-    const source = `<style>body{margin:0}\n${css}</style><body>${markupFor(next)}</body>`;
+    const source = `<style>body{margin:0}\n${css}</style><body>${markupFor(next, shadows)}</body>`;
     // real fonts where the machine has them: the mock backend lays out no
     // text, and a restyle in place remakes the text it inks
     const { result, node } = await render(source, 320);
@@ -788,19 +907,32 @@ test('a refresh told what changed comes to the styles of a refresh of everything
       el.touchDocument();
       const whole = stylesOf(el, bodyEl);
       const at = scoped.findIndex((s, i) => s !== whole[i]);
+      // the fields two lines of `stylesOf` differ in, which a style's
+      // hundred fields hide
+      const apart = (a = '', b = ''): string => {
+        const bs = new Set(b.split(/,(?=")/));
+        return a
+          .split(/,(?=")/)
+          .filter((f) => !bs.has(f))
+          .join(', ');
+      };
       assert.ok(
         at < 0 && scoped.length === whole.length,
-        `seed ${seed}, step ${step}: told what changed\n${scoped[at]}\n` +
-          `styled whole\n${whole[at]}\nrules\n${css}\nchanges ` +
-          changes.map((c) => c.type).join(', '),
+        `seed ${seed}, step ${step}: told what changed\n` +
+          `${apart(scoped[at], whole[at]).slice(0, 600)}\n` +
+          `styled whole\n${apart(whole[at], scoped[at]).slice(0, 600)}\n` +
+          `${(scoped[at] ?? '').slice(0, 80)}\nrules\n${css}\nchanges ` +
+          changes
+            .map((c) =>
+              c.type === 'attributes'
+                ? `${c.attributeName} of <${c.target.name} ${JSON.stringify(c.target.attribs)}> was ${JSON.stringify(c.oldValue)}`
+                : c.type,
+            )
+            .join(', ') +
+          ` (${way})`,
       );
     }
     result.unmount();
   }
-  const scoped = ways.inPlace + ways.frame + ways.build;
-  assert.ok(scoped > ways.whole, `${JSON.stringify(ways)}`);
-  for (const way of ['inPlace', 'frame', 'build'] as const) {
-    if (way === 'inPlace' && !FONTS) continue;
-    assert.ok(ways[way] > 0, `no refresh went ${way}: ${JSON.stringify(ways)}`);
-  }
-});
+  return ways;
+}
