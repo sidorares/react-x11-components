@@ -55,13 +55,15 @@ interface Hosted {
 
 /** A page whose scripts run, with stand-ins for the network and the pane:
  *  `scripts` answers a script's URL, `answer` a `fetch`, `sheets` a
- *  stylesheet's, by its file's name; `scheme` is the palette's. */
+ *  stylesheet's, by its file's name, or `held` when the test lets it go;
+ *  `scheme` is the palette's. */
 async function hosted(
   source: string,
   options: {
     scripts?: Record<string, string>;
     answer?: (request: FetchRequest) => FetchResponse | null;
     sheets?: Record<string, string>;
+    held?: HeldSheets;
     scheme?: 'light' | 'dark';
   } = {},
 ): Promise<Hosted> {
@@ -114,6 +116,9 @@ async function hosted(
       onLink: (href: string) => void out.links.push(href),
       onSubmit: (s: FormSubmission) => void out.submitted.push(s),
       onResource: ({ url, kind }: ResourceRequest) => {
+        if (options.held && kind === 'stylesheet') {
+          return options.held.ask(url.slice(url.lastIndexOf('/') + 1));
+        }
         const text = options.sheets?.[url.slice(url.lastIndexOf('/') + 1)];
         // a moment later, as over a network
         return kind === 'stylesheet' && text !== undefined
@@ -145,6 +150,23 @@ async function hosted(
     return el ? textOf(el) : '';
   };
   return out;
+}
+
+/** Stylesheets answered when a test says, by their files' names: with a
+ *  text, or null for one not to be had. */
+class HeldSheets {
+  private _answers = new Map<string, (r: ResourceResult | null) => void>();
+  ask(name: string): Promise<ResourceResult | null> {
+    return new Promise((ok) => this._answers.set(name, ok));
+  }
+  async answer(name: string, text: string | null): Promise<void> {
+    const ok = this._answers.get(name);
+    assert.ok(ok, `${name} was asked for`);
+    await act(async () =>
+      ok(text === null ? null : { kind: 'stylesheet', text }),
+    );
+    await settle();
+  }
 }
 
 function textOf(node: { children?: unknown[]; data?: string }): string {
@@ -1579,6 +1601,8 @@ test("a theme switcher's page: matchMedia reads the reader's scheme, the root's 
         '<body><p id="out"></p><p id="log"></p><script>' +
         "var dark = matchMedia('(prefers-color-scheme: dark)').matches;" +
         "document.documentElement.style.colorScheme = dark ? 'dark' : 'light';" +
+        // read as the page loads: the script waits for the head's sheet
+        "document.getElementById('out').textContent = dark + ' ' + getComputedStyle(document.documentElement).colorScheme;" +
         "var link = document.getElementById('theme'), log = [];" +
         "function sheets() { return [].map.call(document.querySelectorAll('link'), function (l) { return l.getAttribute('href') }).join(' ') }" +
         'function swap(href, then) {' +
@@ -1588,7 +1612,6 @@ test("a theme switcher's page: matchMedia reads the reader's scheme, the root's 
         "  next.onerror = function () { log.push('error ' + href); then() };" +
         '  document.head.appendChild(next) }' +
         'function done() {' +
-        "  document.getElementById('out').textContent = dark + ' ' + getComputedStyle(document.documentElement).colorScheme;" +
         "  document.getElementById('log').textContent = log.join(' | ') }" +
         "swap('b.css', function () { swap('a.css', function () { swap('gone.css', done) }) });" +
         '</script></body></html>',
@@ -1611,5 +1634,72 @@ test("a theme switcher's page: matchMedia reads the reader's scheme, the root's 
     dark.text('log'),
     'b.css | a.css | error gone.css',
     'the first sheet again, already in, is told too',
+  );
+});
+
+test('a script after a <link> the head is still fetching runs once the sheet is in, and reads the document as it styles it; one before the link runs at once', async () => {
+  const held = new HeldSheets();
+  const doc = await hosted(
+    '<html><head><script>' +
+      "function note(s) { var log = document.getElementById('log'); log.textContent = (log.textContent ? log.textContent + ' ' : '') + s }" +
+      "note('early:' + document.readyState);" +
+      "document.addEventListener('DOMContentLoaded', function () { note('ready') });" +
+      '</script><link rel="stylesheet" href="slow.css">' +
+      '<link rel="stylesheet" href="gone.css"></head>' +
+      '<body><p id="log"></p><p id="out">x</p><script>' +
+      "note('late:' + getComputedStyle(document.getElementById('out')).color);" +
+      '</script></body></html>',
+    { held },
+  );
+  assert.equal(doc.text('log'), 'early:loading', 'held for the sheets');
+  await held.answer('gone.css', null);
+  assert.equal(doc.text('log'), 'early:loading', 'one failed, one to come');
+  await held.answer('slow.css', '#out { color: #ff0000 }');
+  assert.equal(
+    await settled(doc, 'log', (t) => t.includes('ready')),
+    'early:loading late:rgb(255, 0, 0) ready',
+  );
+});
+
+test('an async script waits for no sheet, and a deferred one or a module for every one the parser met, after it as well', async () => {
+  const held = new HeldSheets();
+  const note =
+    "function note(s) { var log = document.getElementById('log'); log.textContent = (log.textContent ? log.textContent + ' ' : '') + s }";
+  const color = "getComputedStyle(document.getElementById('log')).color";
+  let doc = await hosted(
+    '<html><head><script>' +
+      note +
+      '</script><link rel="stylesheet" href="slow.css">' +
+      '<script async src="a.js"></script><script>' +
+      `note('inline:' + ${color})` +
+      '</script></head><body><p id="log"></p></body></html>',
+    { held, scripts: { 'https://example.test/dir/a.js': "note('async')" } },
+  );
+  assert.equal(doc.text('log'), 'async');
+  await held.answer('slow.css', '#log { color: #0000ff }');
+  assert.equal(
+    await settled(doc, 'log', (t) => t.includes('inline')),
+    'async inline:rgb(0, 0, 255)',
+  );
+  await cleanup();
+
+  const later = new HeldSheets();
+  doc = await hosted(
+    '<html><head><script>' +
+      note +
+      '</script><script defer src="d.js"></script>' +
+      `<script type="module">note('module:' + ${color})</script>` +
+      '<link rel="stylesheet" href="slow.css"></head>' +
+      '<body><p id="log"></p></body></html>',
+    {
+      held: later,
+      scripts: { 'https://example.test/dir/d.js': `note('defer:' + ${color})` },
+    },
+  );
+  assert.equal(doc.text('log'), '', 'both after the parse, after the sheet');
+  await later.answer('slow.css', '#log { color: #0000ff }');
+  assert.equal(
+    await settled(doc, 'log', (t) => t.includes('module')),
+    'defer:rgb(0, 0, 255) module:rgb(0, 0, 255)',
   );
 });

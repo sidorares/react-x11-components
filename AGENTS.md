@@ -1719,6 +1719,35 @@ host's, from `onResource`: the store asks for a URL once, so a `<link>` put
 in for a sheet already in — a switcher going back to a theme it showed —
 asks for nothing, and was never told. Each is told once an `href`.
 
+**A script the parser met waits for the sheets before it, and `<Html>`
+knows which those are** (`scriptsUnblocked`, `_blocksScripts`): HTML's
+"style sheet that is blocking scripts". The host's runner waits on the
+handle's promise before each such script, and asks with no script for a
+deferred one or a module, which waits for every sheet. It does not ask for
+an `async` one. A sheet holds a script while it is the parser's
+(`_parserSheets`, the ones there when the parse ended), is before the
+script, and has a `media` that holds. A `<link>` holds it until
+`_sheetOutcome` answers, the answer its `load` is told from, and a
+`<style>` until its imports are in. Run at `onParsed`, a script after a
+head's `<link>` read the document while its first rendering was held for
+the sheet, and `getComputedStyle` answered nothing. Three things are
+load-bearing:
+
+- **`_tellSheets` runs before `_wakeScripts`** in `_lifecycle`, so the
+  page hears a sheet's `load` before the script it held runs, as in HTML.
+- **It is not `onParsed`'s timing.** Held for the sheets, a head's theme
+  script ahead of them would run after the first paint, which it is
+  written to precede.
+- **A waiter is woken only from `_lifecycle`**, which every layout and
+  every settled request reaches. Anything new that can let a script go
+  without one has to call `_wakeScripts`, or the page's scripts stop where
+  they were.
+
+A script ahead of the sheets still runs while the first rendering is held,
+and `computedStyle` and `elementRect` answer null there, where a browser
+answers from the sheets it has. A forced style while a rendering is held
+would close that, and it has to keep the paint held as well.
+
 **What the document draws takes the focus through a box mounted over it.**
 A link, a `<button>`, a summary or a `tabindex` element is a drawing, and
 a drawing takes no focus, so `stops.ts` mounts a **stop** over it — a

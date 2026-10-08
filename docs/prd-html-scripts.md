@@ -366,6 +366,7 @@ whether or not scripts land.
 | 6   | `focus(el)`, `blur()`, `activeElement`     | `el.focus()`, `autofocus` on a drawn element, `document.activeElement`                                       | **built**: `focus`, `blur` and `activeElement` on the handle; `activeElement` is read from the window's focus, so it answers for every widget                                                                                                                                    |
 | 7   | Geometry and style on demand               | `getBoundingClientRect` after a mutation, `elementFromPoint`, `getComputedStyle`                             | **built**: `elementRect` and `elementAtPoint` lay out first, and `computedStyle(el, pseudo?)` serializes the properties a script reads (`computed.ts`)                                                                                                                           |
 | 8   | `onParsed`, `onLoaded`                     | `DOMContentLoaded`, `load`, `readyState`                                                                     | **built**: each once a document; `onLoaded` waits for the first complete layout, the store's pending requests and the faces loading                                                                                                                                              |
+| 9   | The sheets that hold a script back         | a script after a `<link>` reads `getComputedStyle` and layout as that sheet has them                         | **built**: `scriptsUnblocked(script?)` settles once the parser's sheets before a script are in — a link at its `load` or `error`, a `<style>` once its imports are — or all of them for a deferred script or a module                                                            |
 
 **1. Scripts handed over whole.** Done: `_sweep` skips a `<script>` the
 parser still has open (`HtmlSource.isOpen`), so it is handed over at its
@@ -486,6 +487,27 @@ backgrounds, fonts and `srcset` choices are asked for late. Without it,
 the host has to approximate `load` from its own `onResource` count, which
 is what the status bubble does now.
 
+**9. Script-blocking sheets.** A browser holds a classic script it meets
+until the style sheets the parser met before it are in (HTML, "has a style
+sheet that is blocking scripts"), and a deferred script or a module until
+all of them are, so a script after a head's `<link>` reads the document as
+the sheet styles it. Run at `onParsed` instead, it ran while `<Html>` held
+its first rendering for that sheet (`_renderBlocked`): no tree had been
+built, and `getComputedStyle` and `getBoundingClientRect` answered nothing.
+Found writing the theme switcher's test, whose read had to wait for a
+callback. The handle's `scriptsUnblocked(script?)` is the seam, a promise
+the runner waits on before each script the parser met. `<Html>` answers it
+because it knows which sheets are in, which were read and what they import,
+and which media hold. A sheet blocks while it is the parser's, is before
+the script, and has its `media` holding: a `<link>` until its `load` or
+`error` is told, after the restyle that applied it, and a `<style>` until
+its `@import`s are in. So a link's `load` reaches the page before the
+script it held runs, as in HTML. A sheet a script inserts holds nothing,
+and nor does an `async` script's: the runner asks for no wait there.
+`onParsed` keeps its moment. Holding it for the sheets would also hold a
+head's theme script that comes before them. That script is written to run
+before the first paint, and it still does.
+
 ## What the example adds
 
 - **`examples/browser/script/`:**
@@ -496,7 +518,8 @@ is what the status bubble does now.
   - `window.ts`: timers, `location`, `history`, `console`, storage, `fetch`.
 - **`page.tsx` wiring:**
   - queue `onScript` per document;
-  - run scripts in document order once the document is complete;
+  - run scripts in document order once the document is complete, each
+    once the sheets before it are in;
   - route `onDomEvent` to `__dispatch`;
   - `refresh()` once per task.
 - **`network.ts`:** a request method with a method, headers, a body and
@@ -515,8 +538,11 @@ is what the status bubble does now.
 
 Two consequences of the "after parse, in order" rule for phase 1:
 
-- **Every classic script runs as if it were `defer`.** `async` scripts
-  run in the same pass.
+- **Every classic script runs as if it were `defer`**, after the parse and
+  in order, and `async` scripts run in the same pass. What one waits for
+  is still a parser-blocking script's: the style sheets before it, so a
+  script ahead of a head's `<link>` runs while the sheet is on its way. A
+  deferred script or a module waits for all of them.
 - **`document.write` is ignored, with a console warning**, as Chrome
   ignores one from an async script.
 
@@ -682,6 +708,8 @@ that either is a change to the bridge and not to the facade.
      runs static imports and refuses `import()`: its runtime hands a page
      a namespace with none of the module's exports, which it is asked once
      (`askDynamicImport`);
+   - scripts held for the style sheets that block them, as a browser holds
+     them (built: `scriptsUnblocked`);
    - the watchdog;
    - a worker per page for a hard stop and a heap bound, with the mirror
      `docs/prd-html.md` describes.
