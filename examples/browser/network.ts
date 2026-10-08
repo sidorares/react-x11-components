@@ -21,7 +21,8 @@
 //     Anything that is not a document, an image, a stylesheet or a font is
 //     not fetched at all — but a script, and a script's own `fetch`, where
 //     the browser's switch runs a page's scripts (`script/`), the `fetch`
-//     only of the page's own origin.
+//     of the page's own origin, or of another where CORS lets the page
+//     read it.
 //   - **A form's POST says where it came from.** Its `Origin` and `Referer`
 //     are the page's, as a browser's are, because a server tells a form's
 //     POST from a forged one by them. What it cannot send is a session: with

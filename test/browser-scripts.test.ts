@@ -411,9 +411,8 @@ test('timers run, and a cleared one does not', async () => {
 test('fetch is the page’s own origin’s, and answers as the network does', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
-      "fetch('data.json', { method: 'POST', body: 'q=1', headers: { 'X-Test': 'yes' } })" +
-      ".then(function (r) { return r.json().then(function (j) { document.getElementById('out').textContent = r.status + ' ' + j.ok; }); });" +
-      "fetch('https://elsewhere.test/x').catch(function (e) { document.getElementById('out').textContent += ' ' + e.name; });" +
+      "fetch('data.json', { method: 'POST', body: 'q=1', headers: { 'X-Test': 'yes', Cookie: 'no' } })" +
+      ".then(function (r) { return r.json().then(function (j) { document.getElementById('out').textContent = r.status + ' ' + j.ok + ' ' + r.type + ' ' + r.headers.get('set-cookie'); }); });" +
       '</script>',
     {
       answer: (request) =>
@@ -423,14 +422,17 @@ test('fetch is the page’s own origin’s, and answers as the network does', as
               status: 200,
               statusText: 'OK',
               redirected: false,
-              headers: [['content-type', 'application/json']],
+              headers: [
+                ['content-type', 'application/json'],
+                ['set-cookie', 'a=1'],
+              ],
               body: '{"ok":"yes"}',
             }
           : null,
     },
   );
   await settle(60);
-  assert.equal(doc.text('out'), '200 yes TypeError');
+  assert.equal(doc.text('out'), '200 yes basic null');
   assert.deepEqual(
     doc.fetched.map((r) => [r.method, r.url, r.body, r.headers]),
     [
@@ -438,10 +440,120 @@ test('fetch is the page’s own origin’s, and answers as the network does', as
         'POST',
         'https://example.test/dir/data.json',
         'q=1',
+        // a page sets no cookie of its own
         [['x-test', 'yes']],
       ],
     ],
-    'the other origin was never asked',
+  );
+});
+
+test('another origin answers a page where CORS lets it: simple requests, preflights, credentials and the modes', async () => {
+  const answers: Record<string, (r: FetchRequest) => [string, string][]> = {
+    // ekazinich.com's chat: JSON posted to the site's API, which allows it
+    'OPTIONS /chat': () => [
+      ['access-control-allow-origin', 'https://example.test'],
+      ['access-control-allow-methods', 'POST, OPTIONS'],
+      ['access-control-allow-headers', 'Content-Type, X-Key'],
+      ['access-control-max-age', '600'],
+    ],
+    'POST /chat': () => [
+      ['access-control-allow-origin', 'https://example.test'],
+      ['content-type', 'application/json'],
+      ['x-hidden', 'h'],
+      ['x-shown', 's'],
+      ['access-control-expose-headers', 'X-Shown'],
+    ],
+    'GET /open': () => [['access-control-allow-origin', '*']],
+    'GET /closed': () => [],
+    'GET /creds': () => [
+      ['access-control-allow-origin', 'https://example.test'],
+      ['access-control-allow-credentials', 'true'],
+    ],
+    'OPTIONS /put': () => [
+      ['access-control-allow-origin', '*'],
+      ['access-control-allow-methods', 'GET'],
+    ],
+  };
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function step(p, name) { return p.then(function (x) { r.push(name + " " + x); }, function (e) { r.push(name + " " + e.name); }); }' +
+      'var api = "https://api.example.test";' +
+      'step(fetch(api + "/chat", { method: "POST", headers: { "Content-Type": "application/json", "X-Key": "k" }, body: "{}" })' +
+      '  .then(function (res) { return res.type + ":" + res.headers.get("x-shown") + ":" + res.headers.get("x-hidden") + ":" + res.headers.get("content-type"); }), "chat")' +
+      '.then(function () { return step(fetch(api + "/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then(function (res) { return res.status; }), "again"); })' +
+      '.then(function () { return step(fetch(api + "/open").then(function (res) { return res.type; }), "open"); })' +
+      '.then(function () { return step(fetch(api + "/closed"), "closed"); })' +
+      '.then(function () { return step(fetch(api + "/open", { credentials: "include" }), "wildcard"); })' +
+      '.then(function () { return step(fetch(api + "/creds", { credentials: "include" }).then(function (res) { return res.status; }), "creds"); })' +
+      '.then(function () { return step(fetch(api + "/put", { method: "PUT" }), "put"); })' +
+      '.then(function () { return step(fetch(api + "/closed", { mode: "no-cors" }).then(function (res) { return res.type + res.status; }), "nocors"); })' +
+      '.then(function () { return step(fetch(api + "/open", { mode: "same-origin" }), "same"); })' +
+      '.then(function () { var x = new XMLHttpRequest(); x.open("GET", api + "/creds"); x.withCredentials = true;' +
+      '  return new Promise(function (done) { x.onload = function () { r.push("xhr " + x.status); done(); }; x.send(); }); })' +
+      ".then(function () { document.getElementById('out').textContent = r.join('|'); });" +
+      '</script>',
+    {
+      answer: (request) => {
+        const url = new URL(request.url);
+        const make = answers[`${request.method} ${url.pathname}`];
+        if (!make) return null;
+        return {
+          url: request.url,
+          status: request.method === 'OPTIONS' ? 204 : 200,
+          statusText: 'OK',
+          redirected: false,
+          headers: make(request),
+          body: request.method === 'OPTIONS' ? '' : '{}',
+        };
+      },
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'chat cors:s:null:application/json',
+      'again 200',
+      'open cors',
+      'closed TypeError',
+      'wildcard TypeError',
+      'creds 200',
+      'put TypeError',
+      'nocors opaque0',
+      'same TypeError',
+      'xhr 200',
+    ].join('|'),
+  );
+  // one preflight, remembered for the second post; the simple requests
+  // were sent, and only their answers withheld
+  assert.deepEqual(
+    doc.fetched.map((r) => `${r.method} ${new URL(r.url).pathname}`),
+    [
+      'OPTIONS /chat',
+      'POST /chat',
+      'POST /chat',
+      'GET /open',
+      'GET /closed',
+      'GET /open',
+      'GET /creds',
+      'OPTIONS /put',
+      'GET /closed',
+      'GET /creds',
+    ],
+  );
+  const preflight = doc.fetched[0];
+  assert.deepEqual(preflight.headers, [
+    ['access-control-request-method', 'POST'],
+    ['access-control-request-headers', 'content-type,x-key'],
+  ]);
+  assert.ok(
+    doc.logs.some((l) =>
+      l.includes(
+        "Access to fetch at 'https://api.example.test/closed' from origin 'https://example.test' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header",
+      ),
+    ),
+    doc.logs.join('\n'),
   );
 });
 
