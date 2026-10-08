@@ -3828,11 +3828,42 @@ export function installDom(bridge: Bridge): void {
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
     new Promise((resolve, reject) => {
       const id = ++fetchSeq;
+      const request = input instanceof Request ? input : null;
       const url =
         typeof input === 'string' ? input : (input?.url ?? str(input));
       const headers = new Headers(init.headers ?? input?.headers ?? {});
-      let body = init.body ?? null;
-      if (body instanceof URLSearchParams) {
+      let body = init.body ?? request?._body ?? null;
+      init = {
+        ...init,
+        method: init.method ?? request?.method,
+        signal: init.signal ?? request?.signal,
+      };
+      if (body instanceof FormData) {
+        // multipart, as a browser sends one (HTML 4.10.21.8); a file's
+        // part is its bytes as UTF-8 text, the bridge carrying text
+        const boundary = `----formdata-${Math.random().toString(36).slice(2)}`;
+        let out = '';
+        for (const [name, value] of body._entries) {
+          const file = value instanceof File;
+          const quoted = (s: string) =>
+            s.replace(/"/g, '%22').replace(/\r?\n|\r/g, '%0D%0A');
+          out += `--${boundary}\r\nContent-Disposition: form-data; name="${quoted(name)}"`;
+          if (file) {
+            out += `; filename="${quoted(value.name)}"\r\nContent-Type: ${value.type || 'application/octet-stream'}`;
+          }
+          out += `\r\n\r\n${file ? new TextDecoder().decode(value._bytes) : value}\r\n`;
+        }
+        body = `${out}--${boundary}--\r\n`;
+        headers.set(
+          'content-type',
+          `multipart/form-data; boundary=${boundary}`,
+        );
+      } else if (body instanceof Blob) {
+        if (body.type && !headers.has('content-type')) {
+          headers.set('content-type', body.type);
+        }
+        body = new TextDecoder().decode(body._bytes);
+      } else if (body instanceof URLSearchParams) {
         body = body.toString();
         if (!headers.has('content-type')) {
           headers.set(
@@ -3864,6 +3895,72 @@ export function installDom(bridge: Bridge): void {
         }),
       );
     });
+
+  /** `Request` (Fetch 6.3): what a page hands `fetch`, or keeps, or
+   *  compares one with. Its body is text, as a response's is. */
+  class Request {
+    readonly url: string;
+    readonly method: string;
+    readonly headers: Any;
+    readonly signal: Any;
+    readonly mode: string;
+    readonly credentials: string;
+    readonly cache: string;
+    readonly redirect: string;
+    readonly referrer = 'about:client';
+    readonly referrerPolicy = '';
+    readonly integrity = '';
+    readonly keepalive: boolean;
+    readonly destination = '';
+    _body: Any;
+    bodyUsed = false;
+    constructor(input: Any, init: Any = {}) {
+      const from = input instanceof Request ? input : null;
+      this.url = new URL(from ? from.url : str(input), location.href).href;
+      this.method = str(init.method ?? from?.method ?? 'GET').toUpperCase();
+      this.headers = new Headers(init.headers ?? from?.headers ?? {});
+      this.signal = init.signal ?? from?.signal ?? new AbortController().signal;
+      this.mode = str(init.mode ?? from?.mode ?? 'cors');
+      this.credentials = str(
+        init.credentials ?? from?.credentials ?? 'same-origin',
+      );
+      this.cache = str(init.cache ?? from?.cache ?? 'default');
+      this.redirect = str(init.redirect ?? from?.redirect ?? 'follow');
+      this.keepalive = !!(init.keepalive ?? from?.keepalive);
+      this._body = init.body ?? from?._body ?? null;
+      if (
+        this._body !== null &&
+        (this.method === 'GET' || this.method === 'HEAD')
+      ) {
+        throw new TypeError(
+          "Failed to construct 'Request': Request with GET/HEAD method cannot have body.",
+        );
+      }
+    }
+    get body(): Any {
+      return this._body === null ? null : new Response(this._body).body;
+    }
+    clone(): Any {
+      return new Request(this);
+    }
+    text(): Promise<string> {
+      if (this.bodyUsed)
+        return Promise.reject(new TypeError('Body has already been consumed.'));
+      this.bodyUsed = true;
+      return new Response(this._body).text();
+    }
+    json(): Promise<Any> {
+      return this.text().then((t) => JSON.parse(t));
+    }
+    arrayBuffer(): Promise<ArrayBuffer> {
+      return this.text().then(
+        (t) => new TextEncoder().encode(t).buffer as ArrayBuffer,
+      );
+    }
+    blob(): Promise<Any> {
+      return this.text().then((t) => new Blob([t]));
+    }
+  }
 
   /** What an `XMLHttpRequest` tells of its progress (XHR 6). */
   class ProgressEvent extends Event {
@@ -6242,6 +6339,7 @@ export function installDom(bridge: Bridge): void {
     Blob,
     File,
     FormData,
+    Request,
     ReadableStream,
     ReadableStreamDefaultReader,
     ReadableStreamDefaultController,
@@ -6275,7 +6373,17 @@ export function installDom(bridge: Bridge): void {
   define('opener', null);
   define('frameElement', null);
   define('document', document);
-  define('location', location);
+  // an address assigned to it is a navigation, as `location.href = …` is:
+  // a data property took the string in place of the location, and every
+  // read of it after was the string's
+  Object.defineProperty(G, 'location', {
+    get: () => location,
+    set: (v: Any) => {
+      location.href = v;
+    },
+    configurable: false,
+    enumerable: true,
+  });
   define('history', history);
   define('navigator', navigator);
   // Bun's context has a `console` of its own that no definition on the
@@ -6301,7 +6409,15 @@ export function installDom(bridge: Bridge): void {
   define('atob', atob);
   define('CSS', {
     escape: (v: Any) => cssEscape(str(v)),
-    supports: () => false,
+    // what `<Html>` answers an `@supports` with: false only where it knows
+    // a property it does not draw, and true for the rest, as the modern
+    // engine a page tests for. vercel.com sent an engine that answered
+    // false to `var()` to its old-browser page.
+    supports: (...args: Any[]): boolean =>
+      call(
+        'supports',
+        args.length >= 2 ? `(${str(args[0])}: ${str(args[1])})` : str(args[0]),
+      ) === true,
   });
   define('customElements', {
     define(name: Any) {

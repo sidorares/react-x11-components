@@ -1119,6 +1119,68 @@ test('a shadow root attached with nothing in it hides the host’s children at t
   assert.equal(doc.view.computedStyle(doc.byId('gone')), null);
 });
 
+test('CSS.supports answers as an @supports does, an address assigned to location navigates, and fetch takes a Request and form data', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      // vercel.com's test for an old browser
+      'r.push(CSS.supports("color", "var(--v)"), CSS.supports("(display: grid) and (gap: 1px)"), CSS.supports("display: flex"), CSS.supports("not (mask: none)"));' +
+      'var req = new Request("api", { method: "post", body: "b", headers: { "X-A": "1" } });' +
+      'r.push(req.url, req.method, req.headers.get("x-a"), req instanceof Request, req.clone().url === req.url);' +
+      'try { new Request("x", { body: "b" }); } catch (e) { r.push(e.name); }' +
+      'var fd = new FormData(); fd.append("a", "1"); fd.append("f", new File(["x"], "f.txt", { type: "text/plain" }));' +
+      'Promise.all([fetch(req), fetch("form", { method: "POST", body: fd })]).then(function () {' +
+      '  window.location = "elsewhere";' +
+      '  r.push(typeof location, location.href);' +
+      "  document.getElementById('out').textContent = r.join('|');" +
+      '});' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [],
+        body: '',
+      }),
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'true',
+      'true',
+      'true',
+      'false',
+      'https://example.test/dir/api',
+      'POST',
+      '1',
+      'true',
+      'true',
+      'TypeError',
+      'object',
+      PAGE,
+    ].join('|'),
+  );
+  assert.deepEqual(doc.links, ['https://example.test/dir/elsewhere']);
+  const [sent, form] = doc.fetched;
+  assert.deepEqual(
+    [sent.method, sent.url, sent.body],
+    ['POST', 'https://example.test/dir/api', 'b'],
+  );
+  const type = form.headers.find(([k]) => k === 'content-type')?.[1] ?? '';
+  const boundary = /boundary=(.+)$/.exec(type)?.[1];
+  assert.ok(boundary, type);
+  assert.equal(
+    form.body,
+    `--${boundary}\r\nContent-Disposition: form-data; name="a"\r\n\r\n1\r\n` +
+      `--${boundary}\r\nContent-Disposition: form-data; name="f"; filename="f.txt"\r\nContent-Type: text/plain\r\n\r\nx\r\n` +
+      `--${boundary}--\r\n`,
+  );
+});
+
 test('a page walks its tree, parses markup into documents of its own, and marks and measures', async () => {
   const doc = await hosted(
     '<div id="root"><p>a<b>b</b></p><!--c--><span>d</span></div><p id="out"></p><script>' +

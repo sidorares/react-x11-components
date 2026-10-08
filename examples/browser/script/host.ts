@@ -38,6 +38,7 @@ import {
   mediaMatches,
   parseDeclarations,
   parseMediaQuery,
+  supportsCondition,
 } from '../../../src/html/css/parse.js';
 import { isDisabled } from '../../../src/html/form.js';
 import type { Bridge, Primitive } from './dom.js';
@@ -716,6 +717,15 @@ export class DomHost {
         state.version = this._sheetVersion += 1;
         this._sheetsChanged.add(el);
         return `${was}\u0000${state.version}`;
+      }
+      // `CSS.supports`: as `<Html>` answers an `@supports`, a condition as
+      // it is written or, where it is no condition, in parentheses
+      case 'supports': {
+        const condition = text(a);
+        const answer = supportsCondition(condition);
+        if (answer !== null || /^\s*\(/.test(condition))
+          return answer !== false;
+        return supportsCondition(`(${condition})`) !== false;
       }
       // the sheets the document adopted, each its text, in order
       case 'adopt': {
