@@ -1025,6 +1025,9 @@ export interface BuildOptions {
    *  image's own pixels. `null` when it has not: the box takes the attribute
    *  size, or a placeholder. */
   imageSize(el: Element): IntrinsicSize | null;
+  /** Whether what an `<object>` or an `<embed>` names is a document, which
+   *  it shows as a frame, rather than its fallback content. */
+  holdsDocument?(el: Element): boolean;
   /** Whether the image an element chose is still on its way, whatever it
    *  shows meanwhile — the one it chose before, where that is in: the box
    *  it is built with waits for it (`BoxTree.awaiting`). */
@@ -1452,15 +1455,18 @@ class Builder {
       return;
     }
 
-    // an `<object>` is its image once it has one, and its content until;
-    // an `<embed>` its image, and a `<video>` its poster, or a frame; an
-    // image button its image, and a button saying what it is for until it
-    // has one, so it can be pressed either way
+    // an `<object>` is its image once it has one, a frame where what it
+    // names is a document, and its content until either; an `<embed>` its
+    // image, and a `<video>` its poster, or a frame; an image button its
+    // image, and a button saying what it is for until it has one, so it can
+    // be pressed either way
     const replaced =
       tag === 'object'
         ? this._options.imageSize(el)
           ? 'image'
-          : 'none'
+          : this._options.holdsDocument?.(el)
+            ? 'frame'
+            : 'none'
         : (tag === 'embed' || tag === 'video') && this._options.imageSize(el)
           ? 'image'
           : isImageButton(el, tag)

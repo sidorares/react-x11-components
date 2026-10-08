@@ -445,6 +445,34 @@ test('an escaped class selector matches its element', async () => {
   assert.deepStrictEqual(d.style.width, { pct: 50 });
 });
 
+test('an escaped space at the end of a selector is part of it: an id that is a space', async () => {
+  // Acid3 hides a FAIL in a `<div id=" ">` with `#\ { color: transparent }`;
+  // the selector was trimmed to `#\`, no selector, and the rule dropped
+  const { node } = await render(
+    '<style>#\\ { color: #00ff00 } #\\  #in, .a\\ , .b { width: 10px }</style>' +
+      '<div id=" " class="a b">space<p id="in">in</p></div>',
+  );
+  const el = view(node);
+  const space = findById(
+    (el as unknown as { _source: { document: Element } })._source.document,
+    ' ',
+  )!;
+  const box = (id: string) =>
+    boxOf(el, id) as LaidBox & { style: { color: string; width: unknown } };
+  assert.ok(space, 'the element');
+  assert.strictEqual(
+    (
+      el as unknown as { computedStyle(e: Element): { color: string } }
+    ).computedStyle(space as Element).color,
+    'rgb(0, 255, 0)',
+  );
+  assert.deepStrictEqual(
+    box('in').style.width,
+    10,
+    'and the id before a combinator',
+  );
+});
+
 test('a url() is read as CSS Syntax reads it, and a bad one drops its declaration', async () => {
   const { node } = await render(
     '<style>' +

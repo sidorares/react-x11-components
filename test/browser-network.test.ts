@@ -5,6 +5,7 @@ import {
   mixedContent,
   Network,
   readDataUrl,
+  resourceResult,
 } from '../examples/browser/network.js';
 
 test('a secure page has none of its stylesheets or fonts over an insecure connection, and its images over a secure one', () => {
@@ -212,4 +213,35 @@ test('the network says why a resource came back as nothing: not asked for, answe
   ]) {
     assert.equal(await text(url), null, `nothing for ${url}`);
   }
+});
+
+test('a sheet served as anything but CSS is no sheet, and a page where an image was asked for is a document', () => {
+  const fetched = (type: string) => ({
+    url: 'https://x.test/a',
+    status: 200,
+    type,
+    charset: null,
+    bytes: new Uint8Array([60, 112, 62]),
+  });
+  // Acid3 links a page served as text/html, which must not style it
+  assert.equal(resourceResult(fetched('text/html'), 'stylesheet'), null);
+  assert.equal(
+    resourceResult(fetched('text/css'), 'stylesheet')?.kind,
+    'stylesheet',
+  );
+  assert.equal(
+    resourceResult(fetched(''), 'stylesheet')?.kind,
+    'stylesheet',
+    'a server that names no type is believed',
+  );
+  // an `<object>` of a page shows it, and not what it holds
+  assert.deepEqual(resourceResult(fetched('text/html'), 'image'), {
+    kind: 'document',
+  });
+  assert.equal(resourceResult(fetched('image/png'), 'image')?.kind, 'image');
+  assert.equal(
+    resourceResult(fetched('application/octet-stream'), 'image')?.kind,
+    'image',
+    'an image a server mislabels is still read as one',
+  );
 });

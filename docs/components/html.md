@@ -119,7 +119,10 @@ WebP lands a moment after the first frame under Node, where its decoder is
 loaded on the first one, and every format does under Bun, decoded off the
 JavaScript thread. Bytes nothing decodes are drawn as a declined image is.
 Return `{ kind: 'image', image, width, height }` instead to hand over an
-image the host decoded itself. A declined or absent resource is an ordinary state:
+image the host decoded itself, and `{ kind: 'document' }` where what an
+`<object>`'s `data` holds is a page or some other document rather than an
+image: the object shows it as a frame does, an empty box here, and not its
+fallback content. A declined or absent resource is an ordinary state:
 images draw as a frame at their attribute size, an `<object>` shows its
 fallback content, linked stylesheets are skipped and text is set in the
 fonts the system has. A resource may arrive whenever it arrives, with two
@@ -1747,8 +1750,11 @@ the default, or at its own ratio, within it, over the whole of it
 an SVG with only a `viewBox` sized from its ratio — and `object-position`
 places it on the pixel grid, in the middle unless it says otherwise, and
 by its lengths even when it is stretched; what falls past the box is cut.
-An `<object>` whose `data` is an image shows it, and its fallback content
-until then or when it is not one; an `<embed>` whose `src` is an image
+An `<object>` whose `data` is an image shows it, one whose `data` the host
+says is a document is a frame, and its fallback content shows until either
+is in, or where nothing is (HTML 4.8.7) — Acid3 nests an object of a page
+in one of a 404, and an object of a picture with the word FAIL in that,
+neither of which shows; an `<embed>` whose `src` is an image
 shows it, and a `<video>` its `poster`, contained in its box as HTML's
 style sheet has it, and core's `<video>` over it where the host gives it
 something to play — see [Video](#video). `<iframe>`, and a `<video>` or an
@@ -2753,7 +2759,9 @@ and `:has()` count the most specific selector in their list, and
 `:nth-child(2n of .a)` a class and the most specific in its list, so a
 library's `.prose :where(p)` is a class and gives way to a page's
 `.intro p`. Escapes are read wherever they stand,
-so a Tailwind class such as `md:flex`, written `.md\:flex`, matches. A
+so a Tailwind class such as `md:flex`, written `.md\:flex`, matches, and a
+space an escape makes part of a name stays part of it at the end of a
+selector: `#\ ` is the element whose id is a space. A
 `class` is split at ASCII white space alone, as HTML splits it, so a name
 with an em space or a no-break space in it is one class, and `.f\2003g`
 matches it — css-select refuses a `~=` word with any of JavaScript's white
@@ -3245,9 +3253,12 @@ in the `<html>` around it, and lays out as the same body does in an
 block's, and its bottom margin with its last block's, only where no
 border, padding or formatting context of its own parts them, and the
 floats in it hang out of it into the document. A document that writes `<html>`
-gets the body element HTML's parser would have made — the first thing in it that is not
-head content opens one — and content before a written `<body>`, or after
-it ends, goes in the body, as a browser puts it there. A `/>` closes an
+gets the head and the body elements HTML's parser would have made — a
+`<head>` round the head content it starts with, empty where it starts with
+none, and then the first thing in it that is not head content opens the body — and content before a written `<body>`, or after
+it ends, goes in the body, as a browser puts it there. So `:first-child +
+*` under `<html>` is the body, as it is in a browser, which Acid3 styles its
+coloured boxes through. A `/>` closes an
 element only where HTML's parser says it does, on a void element and in
 SVG and MathML: a `<div/>` opens a div, as it does in a browser, and XHTML
 that means it closed has to be handed over as HTML, its `/>` written out.

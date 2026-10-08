@@ -185,18 +185,22 @@ test("a written <html> holds its content in a body, as HTML's parser has it", ()
   // the body's, 8px lower than the same page with its `<body>` written.
   assert.strictEqual(
     shapeOf('<html><title>t</title><p>a</p></html>'),
-    'html(title(t) body(p(a)))',
+    'html(head(title(t)) body(p(a)))',
     'the first thing that is not head content opens it',
   );
-  assert.strictEqual(shapeOf('<html>hi</html>'), 'html(body(hi))', 'text too');
+  assert.strictEqual(
+    shapeOf('<html>hi</html>'),
+    'html(head() body(hi))',
+    'text too',
+  );
   assert.strictEqual(
     shapeOf('<html><body><p>a</p></body><p>b</p></html><div>c</div>'),
-    'html(body(p(a) p(b) div(c)))',
+    'html(head() body(p(a) p(b) div(c)))',
     'what comes after the body ends goes back into it',
   );
   assert.strictEqual(
     shapeOf('<html><p>a</p><body class="x"><p>b</p></body></html>'),
-    'html(body(p(a) p(b)))',
+    'html(head() body(p(a) p(b)))',
     'and a second body is its attributes, on the first',
   );
   // with no `<html>`, a body written after content takes that content in
@@ -206,6 +210,38 @@ test("a written <html> holds its content in a body, as HTML's parser has it", ()
   );
   // and a fragment is left as it was written
   assert.strictEqual(shapeOf('<p>a</p>b'), 'p(a) b');
+});
+
+test("a written <html> has the head HTML's parser implies, round the head content it starts with", () => {
+  // Acid3 writes an `<html>` and no `<head>`, and styles its coloured
+  // boxes through `:first-child + * .buckets p`: the body after the head
+  assert.strictEqual(
+    shapeOf(
+      '<html><meta charset="x"><title>t</title><style>p{}</style>' +
+        '<script>s</script><p>a</p></html>',
+    ),
+    'html(head(meta() title(t) style(p{}) script(s)) body(p(a)))',
+  );
+  assert.strictEqual(
+    shapeOf('<html><head><title>t</title></head><body>b</body></html>'),
+    'html(head(title(t)) body(b))',
+    'a written one is the head',
+  );
+  assert.strictEqual(
+    shapeOf('<html><body><p>a</p></body></html>'),
+    'html(head() body(p(a)))',
+    'and one is implied with nothing in it',
+  );
+  assert.strictEqual(
+    shapeOf('<html><title>t</title></html>'),
+    'html(head(title(t)))',
+    'and closed with what holds it',
+  );
+  assert.strictEqual(
+    shapeOf('<title>t</title><p>a</p>'),
+    'title(t) p(a)',
+    'a fragment is left as it was written',
+  );
 });
 
 test("a table's rows go in the row group and the row HTML's parser implies", () => {

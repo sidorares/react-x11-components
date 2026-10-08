@@ -862,6 +862,11 @@ class Handler extends DomHandler {
    *  leaves outside them. */
   private _html: Element | null = null;
   private _body: Element | null = null;
+  /** The `<head>` HTML's parser implies in a written `<html>` that has
+   *  none, while it is open: htmlparser2 never saw it open, so it is closed
+   *  here, before whatever comes that is not head content. */
+  private _impliedHead: Element | null = null;
+  private _headSeen = false;
   /** Whether a `<template shadowrootmode>` attaches a shadow root, as it
    *  does in a document a browser's parser builds, and not in a fragment
    *  parsed for `innerHTML` (HTML 13.2.6.4.4). */
@@ -911,6 +916,8 @@ class Handler extends DomHandler {
    * `<body>` — is left as it was written, and the root box stands in.
    */
   override onopentag(name: string, attribs: Record<string, string>): void {
+    this._closeImpliedHead(name);
+    this._openImpliedHead(name);
     if (name === 'body' && this._body) {
       // a second body is its attributes, on the first; the parser will end
       // it, so what it ends is the body outside one, or else what is open
@@ -929,6 +936,7 @@ class Handler extends DomHandler {
     if (name === 'template' && this._shadowRoot(attribs)) return;
     super.onopentag(name, attribs);
     const opened = this.tagStack[this.tagStack.length - 1] as Element;
+    if (name === 'head') this._headSeen = true;
     if (name === 'html' && !this._html && opened.parent === this.root) {
       this._html = opened;
     } else if (name === 'body' && !this._body) {
@@ -973,6 +981,46 @@ class Handler extends DomHandler {
     this.lastNode = null;
     this._afterPre = false;
     return true;
+  }
+
+  /**
+   * A `<head>` round the head content a written `<html>` starts with, as
+   * HTML's parser implies one (13.2.6.4.3, "before head"): without it the
+   * document's tree was not a browser's, `:first-child + *` was the
+   * `<title>`'s sibling and not the body, and Acid3's coloured boxes,
+   * styled through that selector, were never inline blocks. Implied
+   * once, before the first thing in the `<html>`, and empty where that is
+   * not head content — a `<noscript>` neither, whose content `<Html>` draws
+   * where the parser would have taken it into the body.
+   */
+  private _openImpliedHead(name: string | null): void {
+    if (
+      this._headSeen ||
+      this._body ||
+      !this._html ||
+      this.tagStack[this.tagStack.length - 1] !== this._html ||
+      name === 'head' ||
+      name === 'html'
+    ) {
+      return;
+    }
+    this._headSeen = true;
+    super.onopentag('head', {});
+    this._impliedHead = this.tagStack[this.tagStack.length - 1] as Element;
+    this._closeImpliedHead(name);
+  }
+
+  /** The implied head closed, where what comes next is not head content
+   *  (`name`, an element's, or null for text, a close or the end). */
+  private _closeImpliedHead(name: string | null): void {
+    const head = this._impliedHead;
+    if (!head) return;
+    const stack = this.tagStack;
+    if (stack[stack.length - 1] !== head) return;
+    if (name && HEAD_CONTENT.has(name) && name !== 'noscript') return;
+    stack.pop();
+    this._impliedHead = null;
+    this.lastNode = null;
   }
 
   /** Whether what is open is the top of the document, or the written
@@ -1023,6 +1071,9 @@ class Handler extends DomHandler {
 
   override onclosetag(): void {
     this._afterPre = false;
+    // a close htmlparser2 makes is of what it opened, which the implied
+    // head is not: it closes with it
+    this._closeImpliedHead(null);
     super.onclosetag();
   }
 
@@ -1032,6 +1083,10 @@ class Handler extends DomHandler {
   }
 
   override ontext(data: string): void {
+    if (NOT_SPACE.test(data)) {
+      this._openImpliedHead(null);
+      this._closeImpliedHead(null);
+    }
     if (
       (this._html || this._body) &&
       NOT_SPACE.test(data) &&

@@ -1081,7 +1081,11 @@ export class HtmlViewNode extends Node {
       !tree ||
       this._stale >= Stale.Boxes ||
       this._contentImagesArrived(tree) ||
-      tree.awaitingKind.some((el) => this._imageSize(el))
+      tree.awaitingKind.some(
+        (el) =>
+          this._imageSize(el) ||
+          this._resources.holdsDocument(imageUrlOf(el) ?? ''),
+      )
     ) {
       this._invalidate(Stale.Boxes);
       return;
@@ -2074,6 +2078,8 @@ export class HtmlViewNode extends Node {
             kept,
             scale: this._scale,
             imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
+            holdsDocument: (el) =>
+              this._resources.holdsDocument(imageUrlOf(el) ?? ''),
             imagePending: (el) => this._imagePending(el),
             urlSize: (url) => this._resources.imageSize(url),
             faceAscent: (style) => {

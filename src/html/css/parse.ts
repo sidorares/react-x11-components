@@ -434,7 +434,7 @@ export function parseStylesheet(
       // not one, and the rule goes with it.
       const blockAt = scanTo(source, i, '{');
       if (blockAt >= n) break;
-      const prelude = source.slice(i, blockAt).trim();
+      const prelude = trimSelector(source.slice(i, blockAt));
       const block = readBlock(source, blockAt);
       i = block.end;
       const selectors = rawSelectors(prelude);
@@ -720,15 +720,33 @@ export function splitSelectors(prelude: string): string[] {
   let i = 0;
   while (i < prelude.length) {
     if (prelude[i] === ',') {
-      out.push(prelude.slice(start, i).trim());
+      out.push(trimSelector(prelude.slice(start, i)));
       start = i + 1;
       i += 1;
     } else {
       i = opens(prelude.charCodeAt(i)) ? componentEnd(prelude, i) : i + 1;
     }
   }
-  out.push(prelude.slice(start).trim());
+  out.push(trimSelector(prelude.slice(start)));
   return out.filter(Boolean);
+}
+
+/**
+ * A selector with the white space round it taken off, but for a space an
+ * escape makes part of an identifier: `#\ ` is an id that is one space
+ * (CSS Syntax 3, 4.3.7), which Acid3 hides a `FAIL` with, and trimmed it
+ * was `#\`, no selector, and the rule was dropped.
+ */
+export function trimSelector(text: string): string {
+  const start = text.length - text.trimStart().length;
+  let end = text.length;
+  while (end > start && /\s/.test(text[end - 1])) {
+    let slashes = 0;
+    while (text[end - 2 - slashes] === '\\') slashes += 1;
+    if (slashes % 2 === 1) break;
+    end -= 1;
+  }
+  return text.slice(start, end);
 }
 
 /**
@@ -750,7 +768,7 @@ function rawSelectors(prelude: string): string[] | null {
   let start = 0;
   let i = 0;
   const push = (end: number): boolean => {
-    const selector = prelude.slice(start, end).trim();
+    const selector = trimSelector(prelude.slice(start, end));
     if (!selector || !isSelector(selector)) return false;
     out.push(selector);
     return true;
@@ -1738,7 +1756,7 @@ function splitNested(body: string): {
       const block = readBlock(body, brace);
       nested.push({
         kind: 'rule',
-        prelude: body.slice(i, brace).trim(),
+        prelude: trimSelector(body.slice(i, brace)),
         body: block.body,
       });
       i = block.end;
@@ -1762,7 +1780,7 @@ const CUSTOM_DECLARATION = /^\s*--[\w-]*\s*:/;
 function nestedSelectors(prelude: string, parents: string[]): string[] | null {
   const out: string[] = [];
   for (const part of splitTopLevel(prelude, ',')) {
-    const written = part.trim();
+    const written = trimSelector(part);
     if (!written) return null;
     const own = hasNesting(written) ? written : `& ${written}`;
     for (const parent of parents) {

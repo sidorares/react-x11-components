@@ -217,6 +217,63 @@ test('an object is its image once its data is one, and its content until then', 
   assert.ok(!el.textContent().includes('fallback'), 'not the loaded one');
 });
 
+test('an object whose data is a document is a frame, and what it holds is not drawn; one whose data is nothing is what it holds', async () => {
+  // Acid3's test 16: a 404, holding an object of a page, holding an object
+  // of a picture and the word FAIL. The page shows, so neither does.
+  const later: Array<() => void> = [];
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 400, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>body{margin:0}object{border:0}</style>' +
+          '<object id="a" data="gone.png"><object id="b" data="page.png">' +
+          '<object id="c" data="r.png">FAIL</object></object></object>',
+        partial: false,
+        'data-testname': 'doc',
+        onResource: (r: { url: string; kind: string }) => {
+          const answer =
+            r.url === 'page.png'
+              ? { kind: 'document' as const }
+              : r.url === 'r.png'
+                ? { kind: 'image' as const, bytes: RED_PNG }
+                : null;
+          // the page arrives after the boxes are built
+          return answer && r.url === 'page.png'
+            ? new Promise<typeof answer>((ok) => later.push(() => ok(answer)))
+            : answer;
+        },
+      }),
+    ),
+    { backend: 'mock' },
+  );
+  const el = () => view(screen.getByTestName('doc') as DrawnNode);
+  await waitFor(() => assert.strictEqual(later.length, 1));
+  assert.strictEqual(
+    (boxOf(el(), 'c') as ReplacedBox).replaced,
+    'image',
+    'until the page is in, what the object holds is drawn',
+  );
+  await act(async () => later[0]());
+  await waitFor(() =>
+    assert.strictEqual((boxOf(el(), 'b') as ReplacedBox).replaced, 'frame'),
+  );
+  assert.strictEqual(
+    (boxOf(el(), 'a') as ReplacedBox).replaced,
+    'none',
+    'the object of nothing is what it holds',
+  );
+  const b = boxOf(el(), 'b');
+  assert.deepStrictEqual(
+    [b.width, b.height],
+    [300, 150],
+    'a frame of its size',
+  );
+  assert.throws(() => boxOf(el(), 'c'), /has a box/, 'nor what it holds');
+  assert.ok(!el().textContent().includes('FAIL'));
+});
+
 // An image that arrives after the boxes were built takes its size in place:
 // it builds no boxes, and lays the document out again only where a size
 // moves — an `<img>` its attributes size whatever its image is is painted.
