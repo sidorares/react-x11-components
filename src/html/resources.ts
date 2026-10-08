@@ -60,6 +60,13 @@ export interface ResourceRequest {
  * host with its own cache. A font is the
  * file's bytes: TrueType, OpenType, WOFF or WOFF2 (see `fonts.ts`).
  *
+ * A document is what an `<object>`'s or an `<embed>`'s `data` may be
+ * instead of an image — a page, an XML document — which this does not
+ * draw: the element shows it as a frame shows one, an empty box, and not
+ * its fallback content (HTML 4.8.7, "the object element"). An answer of
+ * none is what has nothing to show, a 404, and the fallback is drawn; an
+ * image request for anything else answered so is no image.
+ *
  * A video is nothing this decodes. It is what core's `<video>` plays: a
  * `src`, a path or URL the platform's player opens itself — where
  * `useSupports('mediaPlayback')` says this display has one — or `frames`,
@@ -73,6 +80,7 @@ export type ResourceResult =
   | { kind: 'image'; bytes: Uint8Array }
   | { kind: 'image'; image: unknown; width: number; height: number }
   | { kind: 'font'; bytes: Uint8Array }
+  | { kind: 'document' }
   | VideoSource;
 
 /** What a `<video>` plays: a host's answer to `kind: 'video'`. */
@@ -100,6 +108,8 @@ interface Entry {
   /** An ntk `Image`, or an `SvgDrawing`. */
   image?: unknown;
   size?: IntrinsicSize;
+  /** Whether the host said what the URL holds is a document. */
+  document?: boolean;
   /** Whether something its size lays out asked for the image — an `<img>`,
    *  a list's marker, generated content — where a background, a border
    *  image or a mask only paints it (`request`'s `paintOnly`). */
@@ -238,6 +248,12 @@ export class ResourceStore {
       }
       return;
     }
+    if (result.kind === 'document') {
+      entry.document = true;
+      entry.state = 'ready';
+      if (!synchronous) this._changed('image', entry.layout !== false);
+      return;
+    }
     if (result.kind === 'stylesheet') {
       entry.url = result.url || url;
       if ('bytes' in result) {
@@ -336,6 +352,14 @@ export class ResourceStore {
     if (!url) return null;
     const entry = this._entries.get(this._key(url));
     return entry?.state === 'ready' ? (entry.image ?? null) : null;
+  }
+
+  /** Whether what a URL holds is a document, as the host said: an
+   *  `<object>` of one is a frame. */
+  holdsDocument(url: string): boolean {
+    if (!url) return false;
+    const entry = this._entries.get(this._key(url));
+    return entry?.state === 'ready' && entry.document === true;
   }
 
   /** A loaded image's intrinsic size, for the box builder. */

@@ -534,6 +534,10 @@ function transient(error: unknown): boolean {
   );
 }
 
+/** What an `<object>` shows as a document of its own. */
+const DOCUMENT_TYPES =
+  /^(?:text\/html|text\/plain|text\/xml|application\/xml|application\/xhtml\+xml)$/;
+
 /**
  * A fetched subresource as `<Html>` takes it back from `onResource`: a
  * stylesheet's bytes with the charset the server named, a font's bytes, an
@@ -547,6 +551,10 @@ export function resourceResult(
   kind: ResourceKind,
 ): ResourceResult | null {
   if (kind === 'stylesheet') {
+    // a sheet served as anything but CSS is no sheet (HTML 4.2.4, "process
+    // the linked resource"; Chrome holds to it outside quirks mode): Acid3
+    // links a page served as text/html, and its heading went red
+    if (fetched.type && fetched.type !== 'text/css') return null;
     return {
       kind: 'stylesheet',
       bytes: fetched.bytes,
@@ -555,6 +563,10 @@ export function resourceResult(
     };
   }
   if (kind === 'font') return { kind: 'font', bytes: fetched.bytes };
+  // a page or text where an image was asked for is a document, which an
+  // `<object>` shows as a frame and not its fallback: Acid3's second object
+  // holds a page, and its third a picture it must not show
+  if (DOCUMENT_TYPES.test(fetched.type)) return { kind: 'document' };
   return { kind: 'image', bytes: fetched.bytes };
 }
 

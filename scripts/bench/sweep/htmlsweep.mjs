@@ -231,6 +231,7 @@ function readCache(dir) {
 function resultOf(kept, kind) {
   if (!kept) return null;
   if (kind === 'stylesheet') {
+    if (kept.type && kept.type !== 'text/css') return null;
     return {
       kind: 'stylesheet',
       bytes: kept.bytes,
@@ -239,7 +240,13 @@ function resultOf(kept, kind) {
     };
   }
   if (kind === 'font') return { kind: 'font', bytes: kept.bytes };
-  if (kind === 'image') return { kind: 'image', bytes: kept.bytes };
+  if (kind === 'image') {
+    return /^(?:text\/html|text\/plain|text\/xml|application\/xml|application\/xhtml\+xml)$/.test(
+      kept.type ?? '',
+    )
+      ? { kind: 'document' }
+      : { kind: 'image', bytes: kept.bytes };
+  }
   return null;
 }
 
