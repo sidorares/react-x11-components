@@ -1704,3 +1704,360 @@ test('an async script waits for no sheet, and a deferred one or a module for eve
     'defer:rgb(0, 0, 255) module:rgb(0, 0, 255)',
   );
 });
+
+test('a range follows the tree it is in, and takes and copies what it holds as DOM’s ranges do', async () => {
+  const doc = await hosted(
+    '<div id="box"><p id="p">12345</p><h1 id="h">Hello <em>Wonderful</em> Kitty</h1><p id="q">How?</p></div>' +
+      '<p id="out"></p><script>' +
+      'var r = []; var p = document.getElementById("p"); var t = p.firstChild;' +
+      'var range = document.createRange();' +
+      'r.push(range.collapsed, range.startContainer === document);' +
+      'range.setStart(t, 2); range.setEnd(t, 3); r.push(range.toString());' +
+      // a split under the range moves its end into the new text
+      'var rest = t.splitText(2);' +
+      'r.push(t.data + "/" + rest.data, range.endContainer === rest, range.endOffset, range.toString());' +
+      // data replaced before the start moves it
+      't.insertData(0, "ab"); r.push(range.startOffset);' +
+      // a removal of what holds an end collapses it to the parent
+      'var box = document.getElementById("box");' +
+      'range.setEnd(box, 2); box.removeChild(p);' +
+      'r.push(range.startContainer === box, range.startOffset, range.endOffset);' +
+      // contents taken across texts and elements
+      'var h = document.getElementById("h"); var em = h.querySelector("em");' +
+      'var x = document.createRange(); x.setStart(em.firstChild, 6); x.setEnd(document.getElementById("q"), 0);' +
+      'r.push(x.toString());' +
+      'var f = x.extractContents();' +
+      'r.push(f.childNodes.length, f.firstChild.outerHTML, h.outerHTML, x.collapsed);' +
+      // insertNode, surroundContents and the boundary comparisons
+      'var y = document.createRange(); y.selectNodeContents(h);' +
+      'var b = document.createElement("b"); b.textContent = "B"; y.insertNode(b);' +
+      'r.push(h.firstChild === b, y.startOffset, y.endOffset);' +
+      'var z = y.cloneRange(); z.collapse(true);' +
+      'r.push(y.compareBoundaryPoints(Range.START_TO_START, z), y.compareBoundaryPoints(Range.END_TO_END, z), z.comparePoint(b, 0), y.intersectsNode(b));' +
+      'var s = document.createRange(); s.selectNodeContents(b); s.surroundContents(document.createElement("i"));' +
+      'r.push(b.innerHTML);' +
+      'var dt = document.implementation.createDocumentType("html", "", "");' +
+      'try { s.setStart(dt, 0); r.push("no throw"); } catch (e) { r.push(e.name, e.code === e.INVALID_NODE_TYPE_ERR); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      'true',
+      'true',
+      '3',
+      // the split: the range's end in the new text
+      '12/345',
+      'true',
+      '1',
+      '3',
+      '4',
+      'true',
+      '0',
+      '1',
+      'ful Kitty',
+      '2',
+      '<h1 id="h"><em>ful</em> Kitty</h1>',
+      '<h1 id="h">Hello <em>Wonder</em></h1>',
+      'true',
+      'true',
+      '0',
+      '3',
+      '0',
+      '1',
+      // a point in the first child is after its parent's start
+      '1',
+      'true',
+      '<i>B</i>',
+      'InvalidNodeTypeError',
+      'true',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('a node iterator steps off the node its filter takes out, and texts merge and split', async () => {
+  const doc = await hosted(
+    '<div id="root"><b id="t1"></b><b id="t2"></b><b id="t3"></b><b id="t4"></b></div><p id="out"></p><script>' +
+      'var r = []; var root = document.getElementById("root");' +
+      'var ids = function (n) { return n ? (n.id || n.localName) : "null"; };' +
+      'var t2 = document.getElementById("t2"), t4 = document.getElementById("t4");' +
+      'var calls = 0;' +
+      // Acid3's test 2, shortened: a filter removes the node it is asked
+      // about, and the iterator steps on from where that node was
+      'var it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT, function (n) {' +
+      '  calls++; if (calls === 6) { root.removeChild(t4); return NodeFilter.FILTER_REJECT; }' +
+      '  if (calls === 8) root.removeChild(t2); return NodeFilter.FILTER_ACCEPT; });' +
+      'for (var i = 0; i < 5; i++) r.push(ids(it.nextNode()));' +
+      'r.push(ids(it.previousNode()), ids(it.referenceNode), it.pointerBeforeReferenceNode);' +
+      'r.push(ids(it.previousNode()), ids(it.previousNode()));' +
+      // normalize, wholeText and splitText
+      'var p = document.createElement("p"); p.append("a", "", "b", document.createElement("i"), "c");' +
+      'r.push(p.childNodes[0].wholeText); p.normalize();' +
+      'r.push(p.childNodes.length, p.firstChild.data, p.firstChild.splitText(1).data, p.childNodes.length);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'root|t1|t2|t3|t4|t3|t3|true|t2|t1|ab|3|ab|b|4',
+    doc.logs.join('\n'),
+  );
+});
+
+test('DOM Core as Acid3 asks it: constants, namespaces, documents of XML, doctypes and node documents', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><p id="out"></p><script>' +
+      'var r = [];' +
+      'try { document.body.appendChild(document.documentElement); } catch (e) {' +
+      '  r.push(e.code, e.HIERARCHY_REQUEST_ERR, DOMException.NAMESPACE_ERR); }' +
+      'r.push(document.DOCUMENT_FRAGMENT_NODE, document.body.COMMENT_NODE, document.createTextNode("").ELEMENT_NODE);' +
+      'var el = document.createElementNS("http://ns.example.com/", "prefix:localname");' +
+      'r.push(el.tagName, el.prefix, el.localName, el.namespaceURI, el instanceof HTMLElement);' +
+      'try { document.createElementNS(null, "a:b"); } catch (e) { r.push(e.name); }' +
+      'var dt = document.implementation.createDocumentType("html", "-//W3C//DTD XHTML 1.0 Strict//EN", "x.dtd");' +
+      'var x = document.implementation.createDocument("http://www.w3.org/1999/xhtml", "html", dt);' +
+      'r.push(x.childNodes.length, x.doctype === dt, dt.ownerDocument === x, dt.publicId, x.contentType, x instanceof XMLDocument);' +
+      'x.documentElement.appendChild(x.createElementNS("http://www.w3.org/1999/xhtml", "head"));' +
+      'x.documentElement.appendChild(x.createElementNS("http://www.w3.org/1999/xhtml", "body"));' +
+      'var title = x.createElementNS("http://www.w3.org/1999/xhtml", "title");' +
+      'x.documentElement.firstChild.appendChild(title); title.textContent = "Sparrow";' +
+      'r.push(x.title, x.body.localName, document.title !== "Sparrow");' +
+      // a document holds one element: another is refused, and text too
+      'try { x.appendChild(x.createElement("p")); } catch (e) { r.push(e.name); }' +
+      'var xml = document.implementation.createDocument(null, null, null);' +
+      'var made = xml.createElement("Mixed"); r.push(made.tagName, made.namespaceURI, made.ownerDocument === xml);' +
+      'var holder = xml.createElement("root"); holder.appendChild(made); r.push(made.parentNode.ownerDocument === xml);' +
+      // adopted into the page's document, its document is the page's
+      'document.body.appendChild(holder); r.push(made.ownerDocument === document);' +
+      'r.push(document.importNode(made, false).ownerDocument === document, document.doctype.name);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      '3',
+      '3',
+      '14',
+      '11',
+      '8',
+      '1',
+      'prefix:localname',
+      'prefix',
+      'localname',
+      'http://ns.example.com/',
+      'false',
+      'NamespaceError',
+      '2',
+      'true',
+      'true',
+      '-//W3C//DTD XHTML 1.0 Strict//EN',
+      'application/xhtml+xml',
+      'true',
+      'Sparrow',
+      'body',
+      'true',
+      'HierarchyRequestError',
+      'Mixed',
+      // null, joined
+      '',
+      'true',
+      'true',
+      'true',
+      'true',
+      'html',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
+test('tables, forms and the rest of HTML’s DOM Acid3 reads: rows and sections, controls by name, a submit button’s click', async () => {
+  const doc = await hosted(
+    '<form id="f" action="javascript:"><input id="i" type="HIDDEN"></form>' +
+      '<table id="t"><tr><td><p></tbody> </table><p id="out"></p><script>' +
+      'var r = [];' +
+      // the parser's tbody, and the whitespace after it the table's
+      'var t = document.getElementById("t");' +
+      'r.push(t.tBodies.length, t.tBodies[0].rows[0].cells[0].firstChild.tagName, t.childNodes.length, JSON.stringify(t.lastChild.data));' +
+      'var u = document.createElement("table");' +
+      'var row = u.insertRow(0); r.push(u.firstChild.localName, row.rowIndex, row.sectionRowIndex);' +
+      'var head = u.createTHead(); head.insertRow(); r.push(u.rows.length, u.rows[0].parentNode === head);' +
+      'var cap = u.createCaption(); r.push(u.firstChild === cap, u.createCaption() === cap, u.childNodes.length);' +
+      'u.createTFoot(); u.deleteTHead(); u.deleteCaption(); r.push(u.tHead, u.tFoot.localName, u.lastChild === u.tFoot);' +
+      'row.insertCell(); row.insertCell(0).id = "c0"; r.push(row.cells.length, row.cells[0].id, row.cells[1].cellIndex);' +
+      'try { u.insertRow(9); } catch (e) { r.push(e.name); }' +
+      // a form's controls, by index and by name, wherever the form is
+      'var f = document.createElement("form"); var i = document.createElement("input");' +
+      'i.name = "first"; f.appendChild(i); r.push(f.elements.length, f.elements.first === i, f.elements.second);' +
+      'r.push(document.forms.f === document.getElementById("f"), document.forms.f.elements[0].type);' +
+      'var s = document.createElement("select"); var o1 = document.createElement("option"); var o2 = document.createElement("option");' +
+      'o2.defaultSelected = true; s.append(o1, o2); r.push(s.selectedIndex, s.options[s.selectedIndex] === o2);' +
+      'var m = document.createElement("meta"); m.setAttribute("http-equiv", "boxes"); r.push(m.httpEquiv, m.hasAttribute("httpEquiv"));' +
+      'document.body.setAttribute("style", "float: right"); r.push(document.body.style.cssFloat);' +
+      'var ev = document.createEvent("UIEvents"); ev.initUIEvent("test", true, false, null, 6);' +
+      'r.push(ev.type, ev.bubbles, ev.detail);' +
+      // the hidden input made a submit button: its click submits its form
+      'var input = document.getElementById("i"); var form = document.getElementById("f"); var heard = 0;' +
+      'form.onsubmit = function (e) { heard++; e.preventDefault(); };' +
+      'input.type = "submit"; input.click(); r.push(heard);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      '1',
+      'P',
+      '2',
+      '" "',
+      'tbody',
+      '0',
+      '0',
+      '2',
+      'true',
+      'true',
+      'true',
+      '3',
+      // null, joined
+      '',
+      'tfoot',
+      'true',
+      '2',
+      'c0',
+      '1',
+      'IndexSizeError',
+      '1',
+      'true',
+      '',
+      'true',
+      'hidden',
+      '1',
+      'true',
+      'boxes',
+      'false',
+      'right',
+      'test',
+      'true',
+      '6',
+      '1',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+  assert.deepEqual(
+    doc.submitted,
+    [],
+    'and a cancelled submission sends nothing',
+  );
+});
+
+test('a box a script checked keeps its checkedness when its attribute changes, and a reset puts its default back', async () => {
+  const doc = await hosted(
+    '<form id="f"><input type="radio" name="g" id="a"><input type="radio" name="g" id="b"></form>' +
+      '<p id="out"></p><script>' +
+      'var r = []; var a = document.getElementById("a"), b = document.getElementById("b");' +
+      'b.click(); a.checked = true; r.push(a.checked, b.checked);' +
+      // the attribute is the default now, and not the state
+      'b.setAttribute("checked", "checked"); r.push(b.checked, b.getAttribute("checked"), b.defaultChecked);' +
+      'r.push(document.querySelector(":checked").id);' +
+      'document.getElementById("f").reset(); r.push(a.checked, b.checked);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'true|false|false|checked|true|a|false|true',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a frame’s document: XML read as XML, a malformed one an error, its scripts run, a new src navigates, and open and write build a tree', async () => {
+  const files: Record<string, [string, string]> = {
+    'svg.xml': [
+      'image/svg+xml',
+      '<svg xmlns="http://www.w3.org/2000/svg" width="100"><text>X</text></svg>',
+    ],
+    'good.xhtml': [
+      'text/xml',
+      '<html xmlns="http://www.w3.org/1999/xhtml"><body><script>parent.notify("good")</script></body></html>',
+    ],
+    'bad.xhtml': [
+      'text/xml',
+      '<html xmlns="http://www.w3.org/1999/xhtml"><body><p><strong/> x </strong></p><script>parent.notify("bad")</script></body></html>',
+    ],
+    'other.xhtml': [
+      'text/xml',
+      '<html xmlns="http://www.w3.org/1999/xhtml#"><body><script>parent.notify("other")</script></body></html>',
+    ],
+    'a.html': ['text/html', '<!DOCTYPE html><title>A</title><p>a</p>'],
+    'b.html': ['text/html', '<title>B</title>'],
+  };
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var told = []; function notify(what) { told.push(what); }' +
+      'var r = []; var frames = {}; var left = 0;' +
+      'function done() {' +
+      '  var svg = frames["svg.xml"].contentDocument;' +
+      '  r.push(svg.documentElement.localName, svg.documentElement.namespaceURI, svg.getElementsByTagName("text").length, svg.contentType);' +
+      '  r.push(frames["svg.xml"].getSVGDocument() === svg, svg.documentElement instanceof SVGSVGElement, svg.documentElement.width.baseVal.value);' +
+      '  r.push(frames["bad.xhtml"].contentDocument.documentElement.localName, told.join(","));' +
+      '  var html = frames["a.html"]; var first = html.contentDocument;' +
+      '  r.push(first.title, first.childNodes.length);' +
+      '  first.open(); first.write("<!DOCTYPE HTML PUBLIC \\"-//W3C//DTD HTML 4.01//EN\\" \\"x.dtd\\"><title></title><span><script><\\/script></span>"); first.close();' +
+      '  r.push(first.childNodes.length, first.firstChild.publicId, first.documentElement.childNodes.length, first.body.firstChild.firstChild.tagName);' +
+      '  html.onload = function () { r.push(html.contentDocument.title, html.contentDocument !== first);' +
+      '    document.getElementById("out").textContent = r.join("|"); };' +
+      '  html.src = "b.html";' +
+      '}' +
+      'Object.keys(' +
+      // a page's script ends at the first `</script>` in it
+      JSON.stringify(files).replace(/<\//g, '<\\/') +
+      ').forEach(function (name) {' +
+      '  var f = document.createElement("iframe"); frames[name] = f; left++;' +
+      '  f.onload = function () { f.onload = null; if (--left === 0) done(); };' +
+      '  f.src = name; document.body.appendChild(f); });' +
+      '</script>',
+    {
+      answer: (request) => {
+        const name = request.url.slice(request.url.lastIndexOf('/') + 1);
+        const file = files[name];
+        if (!file) return null;
+        return {
+          url: request.url,
+          status: 200,
+          statusText: 'OK',
+          redirected: false,
+          headers: [['content-type', file[0]]],
+          body: file[1],
+        };
+      },
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'svg',
+      'http://www.w3.org/2000/svg',
+      '1',
+      'image/svg+xml',
+      'true',
+      'true',
+      '100',
+      // a stray end tag is no well-formed document: an error, and no script
+      'parsererror',
+      // a script in another namespace than XHTML's is none
+      'good',
+      'A',
+      '2',
+      '2',
+      '-//W3C//DTD HTML 4.01//EN',
+      '2',
+      'SCRIPT',
+      'B',
+      'true',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});

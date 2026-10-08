@@ -74,7 +74,15 @@ export function installDom(bridge: Bridge): void {
   const MUTATES = new Set([
     'setText',
     'insert',
+    'replace',
     'remove',
+    'replaceData',
+    'splitText',
+    'adoptNode',
+    'rangeDelete',
+    'rangeContents',
+    'rangeInsert',
+    'rangeSurround',
     'setAttr',
     'delAttr',
     'setStyle',
@@ -87,22 +95,31 @@ export function installDom(bridge: Bridge): void {
 
   // --- errors ------------------------------------------------------------------
 
+  /** The legacy codes (WebIDL 2.8.1), each the name it is the code of,
+   *  and the constant a page compares one with. */
   const CODES: Record<string, number> = {
     IndexSizeError: 1,
     HierarchyRequestError: 3,
     WrongDocumentError: 4,
     InvalidCharacterError: 5,
+    NoModificationAllowedError: 7,
     NotFoundError: 8,
     NotSupportedError: 9,
+    InUseAttributeError: 10,
     InvalidStateError: 11,
     SyntaxError: 12,
+    InvalidModificationError: 13,
+    NamespaceError: 14,
     InvalidAccessError: 15,
     TypeMismatchError: 17,
+    SecurityError: 18,
+    NetworkError: 19,
+    AbortError: 20,
+    URLMismatchError: 21,
     QuotaExceededError: 22,
     TimeoutError: 23,
+    InvalidNodeTypeError: 24,
     DataCloneError: 25,
-    InUseAttributeError: 10,
-    AbortError: 20,
   };
   class DOMException extends Error {
     readonly code: number;
@@ -112,6 +129,37 @@ export function installDom(bridge: Bridge): void {
       this.code = CODES[name] ?? 0;
     }
   }
+  [
+    'INDEX_SIZE_ERR',
+    'DOMSTRING_SIZE_ERR',
+    'HIERARCHY_REQUEST_ERR',
+    'WRONG_DOCUMENT_ERR',
+    'INVALID_CHARACTER_ERR',
+    'NO_DATA_ALLOWED_ERR',
+    'NO_MODIFICATION_ALLOWED_ERR',
+    'NOT_FOUND_ERR',
+    'NOT_SUPPORTED_ERR',
+    'INUSE_ATTRIBUTE_ERR',
+    'INVALID_STATE_ERR',
+    'SYNTAX_ERR',
+    'INVALID_MODIFICATION_ERR',
+    'NAMESPACE_ERR',
+    'INVALID_ACCESS_ERR',
+    'VALIDATION_ERR',
+    'TYPE_MISMATCH_ERR',
+    'SECURITY_ERR',
+    'NETWORK_ERR',
+    'ABORT_ERR',
+    'URL_MISMATCH_ERR',
+    'QUOTA_EXCEEDED_ERR',
+    'TIMEOUT_ERR',
+    'INVALID_NODE_TYPE_ERR',
+    'DATA_CLONE_ERR',
+  ].forEach((name, i) => {
+    for (const on of [DOMException, DOMException.prototype]) {
+      Object.defineProperty(on, name, { value: i + 1, enumerable: true });
+    }
+  });
 
   /** A page's exception, reported as a browser reports one it caught: on
    *  the console, and as an `error` event at the window. */
@@ -233,6 +281,18 @@ export function installDom(bridge: Bridge): void {
       super(type, init);
       this.detail = Number(init.detail ?? 0);
       this.view = init.view ?? null;
+    }
+    /** The legacy initializer a `createEvent('UIEvents')` is set with. */
+    initUIEvent(
+      type: string,
+      bubbles = false,
+      cancelable = false,
+      view: Any = null,
+      detail = 0,
+    ): void {
+      this.initEvent(type, bubbles, cancelable);
+      (this as Any).view = view ?? null;
+      (this as Any).detail = Number(detail) | 0;
     }
   }
   class FocusEvent extends UIEvent {
@@ -515,11 +575,48 @@ export function installDom(bridge: Bridge): void {
     }
   }
 
+  /** The events whose `on…` attribute on `<body>` is the window's handler
+   *  (HTML 8.1.8.2, the window-reflecting body element event handlers):
+   *  Acid3 starts with `<body onload="update()">`. */
+  const WINDOW_REFLECTING = new Set([
+    'afterprint',
+    'beforeprint',
+    'beforeunload',
+    'blur',
+    'error',
+    'focus',
+    'hashchange',
+    'languagechange',
+    'load',
+    'message',
+    'messageerror',
+    'offline',
+    'online',
+    'pagehide',
+    'pageshow',
+    'popstate',
+    'rejectionhandled',
+    'resize',
+    'scroll',
+    'storage',
+    'unhandledrejection',
+    'unload',
+  ]);
   /** The `on<type>` handler of a target, a property's or its attribute's. */
   const handlerOf = (target: Any, type: string): Any => {
     const own = target._handlers[type];
     if (own !== undefined) return own;
+    if (target === windowTarget && WINDOW_REFLECTING.has(type)) {
+      const body = document.body;
+      return body instanceof HTMLBodyElement
+        ? attributeHandler(body, type)
+        : null;
+    }
     if (!(target instanceof Element)) return null;
+    return attributeHandler(target, type);
+  };
+  /** An element's `on<type>` attribute, compiled once for its text. */
+  const attributeHandler = (target: Any, type: string): Any => {
     const text = target.getAttribute(`on${type}`);
     if (text === null) return null;
     let fn = compiled.get(text);
@@ -604,6 +701,11 @@ export function installDom(bridge: Bridge): void {
 
   // --- nodes -------------------------------------------------------------------
 
+  const HTML_NS = 'http://www.w3.org/1999/xhtml';
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const XML_NS = 'http://www.w3.org/XML/1998/namespace';
+  const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
+
   const wrappers = new Map<number, Any>();
 
   /** The wrapper of a node id, made the first time it is asked for. */
@@ -614,28 +716,49 @@ export function installDom(bridge: Bridge): void {
     const info = String(call('info', id));
     const bar = info.indexOf('|');
     const type = Number(info.slice(0, bar));
-    const name = info.slice(bar + 1);
+    let name = info.slice(bar + 1);
+    // an element's namespace where it was made in one (`~` for none), and
+    // an XML document's content type
+    let ns: string | null | undefined;
+    const nul = name.indexOf('\u0000');
+    if (nul >= 0) {
+      ns = name.slice(nul + 1);
+      name = name.slice(0, nul);
+      if (ns === '~') ns = null;
+    }
     const Kind =
       type === 1
-        ? (ELEMENT_CLASSES[name] ??
-          (SVG_TAGS.has(name) ? SVGElement : HTMLElement))
-        : type === 3
-          ? Text
-          : type === 8
-            ? Comment
-            : type === 9
-              ? Document
-              : type === 10
-                ? DocumentType
-                : name === '#shadow-root'
-                  ? ShadowRoot
-                  : DocumentFragment;
+        ? ns === undefined
+          ? (ELEMENT_CLASSES[name] ??
+            (SVG_TAGS.has(name)
+              ? (SVG_CLASSES[name] ?? SVGElement)
+              : HTMLElement))
+          : ns === HTML_NS
+            ? (ELEMENT_CLASSES[name] ?? HTMLElement)
+            : ns === SVG_NS
+              ? (SVG_CLASSES[name.slice(name.indexOf(':') + 1)] ?? SVGElement)
+              : Element
+        : type === 9 && ns
+          ? XMLDocument
+          : type === 3
+            ? Text
+            : type === 8
+              ? Comment
+              : type === 9
+                ? Document
+                : type === 10
+                  ? DocumentType
+                  : name === '#shadow-root'
+                    ? ShadowRoot
+                    : DocumentFragment;
     node = Object.create(Kind.prototype);
     Object.assign(node, new EventTarget());
     node._id = id;
     node._name = name;
+    if (type === 1) node._ns = ns;
+    if (type === 9) node._type = ns ?? null;
     // what a class's fields would have set, which no constructor ran for
-    if (Kind === Document) {
+    if (Kind === Document || Kind === XMLDocument) {
       node._ready = 'loading';
       node._current = null;
     }
@@ -662,6 +785,20 @@ export function installDom(bridge: Bridge): void {
         (n) =>
           n.getAttribute?.('id') === name || n.getAttribute?.('name') === name,
       ) ?? null;
+    return out;
+  };
+
+  /** An `HTMLCollection` (DOM 4.2.10.2): a list whose members are also
+   *  its properties by id and by name, as `document.forms.form` and
+   *  `form.elements.first` read them. Not live: a copy as it was asked
+   *  for. */
+  const collection = (items: Any[]): Any => {
+    const out = list(items);
+    for (const el of items) {
+      for (const key of [el.getAttribute?.('id'), el.getAttribute?.('name')]) {
+        if (key && !(key in out)) out[key] = el;
+      }
+    }
     return out;
   };
 
@@ -696,7 +833,7 @@ export function installDom(bridge: Bridge): void {
       return this._name;
     }
     get ownerDocument(): Any {
-      return this === document ? null : document;
+      return wrap(Number(call('owner', this._id)));
     }
     get parentNode(): Any {
       return wrap(call('parent', this._id));
@@ -779,25 +916,52 @@ export function installDom(bridge: Bridge): void {
       return child;
     }
     replaceChild(child: Any, old: Any): Any {
-      if (old?.parentNode !== this) {
-        throw new DOMException(
-          'The node to be replaced is not a child of this node.',
-          'NotFoundError',
-        );
-      }
-      if (child !== old) {
-        call('insert', this._id, idOf(child), old._id);
-        call('remove', old._id);
-      }
+      call('replace', this._id, idOf(child), idOf(old));
       return old;
     }
     cloneNode(deep = false): Any {
       return wrap(call('clone', this._id, !!deep));
     }
-    normalize(): void {}
+    /** Adjacent texts made one, and empty ones taken out (DOM 4.4). */
+    normalize(): void {
+      const walk = (node: Any): void => {
+        let child = node.firstChild;
+        while (child) {
+          if (child.nodeType !== 3) {
+            walk(child);
+            child = child.nextSibling;
+            continue;
+          }
+          let next = child.nextSibling;
+          if (!child.length) {
+            child.remove();
+            child = next;
+            continue;
+          }
+          let data = '';
+          while (next && next.nodeType === 3) {
+            data += next.data;
+            const after = next.nextSibling;
+            next.remove();
+            next = after;
+          }
+          if (data) child.appendData(data);
+          child = next;
+        }
+      };
+      walk(this);
+    }
     lookupNamespaceURI(): null {
       return null;
     }
+  }
+  // the constants on every node too, as WebIDL puts them on the prototype
+  for (const name of Object.getOwnPropertyNames(Node)) {
+    if (!/^[A-Z_]+$/.test(name)) continue;
+    Object.defineProperty(Node.prototype, name, {
+      value: (Node as Any)[name],
+      enumerable: true,
+    });
   }
   const nodeTypeOf = (n: number) => ({
     get(): number {
@@ -889,7 +1053,7 @@ export function installDom(bridge: Bridge): void {
       return String(call('text', this._id));
     }
     set data(v: Any) {
-      call('setText', this._id, str(v));
+      call('setText', this._id, v === null ? '' : str(v));
     }
     override get nodeValue(): Any {
       return this.data;
@@ -897,14 +1061,51 @@ export function installDom(bridge: Bridge): void {
     override set nodeValue(v: Any) {
       this.data = v;
     }
+    override get textContent(): Any {
+      return this.data;
+    }
+    override set textContent(v: Any) {
+      this.data = v;
+    }
     get length(): number {
       return this.data.length;
     }
+    // what changes the data goes through the host, which moves the ranges
+    // in it as DOM 4.10's "replace data" has them
     appendData(s: Any): void {
-      this.data += str(s);
+      call('replaceData', this._id, this.length, 0, str(s));
     }
-    substringData(offset: number, count: number): string {
-      return this.data.substr(offset, count);
+    insertData(offset: Any, s: Any): void {
+      call('replaceData', this._id, Number(offset) >>> 0, 0, str(s));
+    }
+    deleteData(offset: Any, count: Any): void {
+      call(
+        'replaceData',
+        this._id,
+        Number(offset) >>> 0,
+        Number(count) >>> 0,
+        '',
+      );
+    }
+    replaceData(offset: Any, count: Any, s: Any): void {
+      call(
+        'replaceData',
+        this._id,
+        Number(offset) >>> 0,
+        Number(count) >>> 0,
+        str(s),
+      );
+    }
+    substringData(offset: Any, count: Any): string {
+      const data = this.data;
+      const at = Number(offset) >>> 0;
+      if (at > data.length) {
+        throw new DOMException(
+          `The offset ${at} is greater than the node's length (${data.length}).`,
+          'IndexSizeError',
+        );
+      }
+      return data.substr(at, Number(count) >>> 0);
     }
     get nextElementSibling(): Any {
       return wrap(Number(call('next', this._id, 'element')));
@@ -926,8 +1127,20 @@ export function installDom(bridge: Bridge): void {
     }
   }
   class Text extends CharacterData {
+    /** The text and the texts either side of it, run together. */
     get wholeText(): string {
-      return this.data;
+      let first: Any = this;
+      while (first.previousSibling?.nodeType === 3) {
+        first = first.previousSibling;
+      }
+      let out = '';
+      for (let at = first; at?.nodeType === 3; at = at.nextSibling) {
+        out += at.data;
+      }
+      return out;
+    }
+    splitText(offset: Any): Any {
+      return wrap(Number(call('splitText', this._id, Number(offset) >>> 0)));
     }
   }
   Object.defineProperty(Text.prototype, 'nodeType', nodeTypeOf(3));
@@ -943,8 +1156,29 @@ export function installDom(bridge: Bridge): void {
   Object.defineProperty(Comment.prototype, 'nodeType', nodeTypeOf(8));
 
   class DocumentType extends Node {
+    _ids(): string[] {
+      return String(call('doctype', this._id)).split('\u0000');
+    }
     get name(): string {
-      return 'html';
+      return this._ids()[0];
+    }
+    get publicId(): string {
+      return this._ids()[1] ?? '';
+    }
+    get systemId(): string {
+      return this._ids()[2] ?? '';
+    }
+    before(...items: Any[]): void {
+      childBefore(this, items);
+    }
+    after(...items: Any[]): void {
+      childAfter(this, items);
+    }
+    replaceWith(...items: Any[]): void {
+      childReplace(this, items);
+    }
+    remove(): void {
+      call('remove', this._id);
     }
   }
   Object.defineProperty(DocumentType.prototype, 'nodeType', nodeTypeOf(10));
@@ -1108,15 +1342,18 @@ export function installDom(bridge: Bridge): void {
         el.setAttribute('style', str(v));
       },
     } as Any;
+    // `cssFloat` is `float`, a word JavaScript once kept for itself
+    const property = (key: string): string =>
+      key === 'cssFloat' ? 'float' : kebab(key);
     return new Proxy(target, {
       get(t, key) {
         if (typeof key !== 'string' || key in t) return t[key as Any];
-        return t.getPropertyValue(kebab(key));
+        return t.getPropertyValue(property(key));
       },
       set(t, key, value) {
         if (typeof key !== 'string') return false;
         if (key === 'cssText') t.cssText = value;
-        else t.setProperty(kebab(key), value);
+        else t.setProperty(property(key), value);
         return true;
       },
     });
@@ -1371,20 +1608,30 @@ export function installDom(bridge: Bridge): void {
     _classList: Any;
     _dataset: Any;
     _style: Any;
+    /** The namespace the element was made in, where one was named: none
+     *  is HTML's, as the parser makes every element here. */
+    _ns: string | null | undefined;
+    /** Its qualified name, upper-cased where it is HTML's in an HTML
+     *  document (DOM 4.9). */
     get tagName(): string {
-      return this._name.toUpperCase();
+      if (this._ns === undefined) return this._name.toUpperCase();
+      return this._ns === HTML_NS && !this.ownerDocument?._type
+        ? this._name.toUpperCase()
+        : this._name;
     }
     override get nodeName(): string {
       return this.tagName;
     }
     get localName(): string {
-      return this._name;
+      if (this._ns === undefined) return this._name;
+      return this._name.slice(this._name.indexOf(':') + 1);
     }
-    get namespaceURI(): string {
-      return 'http://www.w3.org/1999/xhtml';
+    get namespaceURI(): string | null {
+      return this._ns === undefined ? HTML_NS : this._ns;
     }
-    get prefix(): null {
-      return null;
+    get prefix(): string | null {
+      const colon = this._ns === undefined ? -1 : this._name.indexOf(':');
+      return colon < 0 ? null : this._name.slice(0, colon);
     }
     get id(): string {
       return this.getAttribute('id') ?? '';
@@ -1725,13 +1972,84 @@ export function installDom(bridge: Bridge): void {
     get dataset(): Any {
       return (this._dataset ??= datasetOf(this));
     }
-    override get namespaceURI(): string {
-      return 'http://www.w3.org/2000/svg';
+    override get namespaceURI(): string | null {
+      return this._ns === undefined ? SVG_NS : this._ns;
     }
     override get tagName(): string {
       return this._name;
     }
   }
+  /** An SVG length an element's attribute is (SVG 2, 4.6.10), read from
+   *  the attribute each time: nothing animates one here, so its animated
+   *  value is its base one. */
+  const animatedLength = (el: Any, name: string): Any => {
+    const length = (): Any => {
+      const raw = el.getAttribute(name) ?? '0';
+      const value = parseFloat(raw) || 0;
+      return {
+        value,
+        valueInSpecifiedUnits: value,
+        valueAsString: raw,
+        unitType: /^\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?\s*$/i.test(raw)
+          ? 1
+          : 0,
+      };
+    };
+    return {
+      get baseVal(): Any {
+        return length();
+      },
+      get animVal(): Any {
+        return length();
+      },
+    };
+  };
+  const lengths = (Kind: Any, names: string[]): void => {
+    for (const name of names) {
+      Object.defineProperty(Kind.prototype, name, {
+        get(this: Any) {
+          return animatedLength(this, name);
+        },
+        configurable: true,
+      });
+    }
+  };
+  class SVGGraphicsElement extends SVGElement {
+    getBBox(): Any {
+      const r = this.getBoundingClientRect();
+      return new DOMRect(0, 0, r.width, r.height);
+    }
+  }
+  class SVGSVGElement extends SVGGraphicsElement {}
+  lengths(SVGSVGElement, ['x', 'y', 'width', 'height']);
+  class SVGRectElement extends SVGGraphicsElement {}
+  lengths(SVGRectElement, ['x', 'y', 'width', 'height', 'rx', 'ry']);
+  class SVGCircleElement extends SVGGraphicsElement {}
+  lengths(SVGCircleElement, ['cx', 'cy', 'r']);
+  /** Text's: what it holds counted, and nothing measured, since no layout
+   *  here sets a drawing's text. */
+  class SVGTextContentElement extends SVGGraphicsElement {
+    getNumberOfChars(): number {
+      return this.textContent.length;
+    }
+  }
+  class SVGTextElement extends SVGTextContentElement {}
+  class SVGTSpanElement extends SVGTextContentElement {}
+  const SVG_CLASSES: Record<string, Any> = {
+    svg: SVGSVGElement,
+    rect: SVGRectElement,
+    circle: SVGCircleElement,
+    text: SVGTextElement,
+    tspan: SVGTSpanElement,
+    g: SVGGraphicsElement,
+    path: SVGGraphicsElement,
+    line: SVGGraphicsElement,
+    polyline: SVGGraphicsElement,
+    polygon: SVGGraphicsElement,
+    ellipse: SVGGraphicsElement,
+    use: SVGGraphicsElement,
+    image: SVGGraphicsElement,
+  };
   const SVG_TAGS = new Set([
     'svg',
     'g',
@@ -1854,6 +2172,21 @@ export function installDom(bridge: Bridge): void {
   }
   class HTMLAreaElement extends HTMLAnchorElement {}
 
+  /** An image's width or height: as it is drawn, in the document; as its
+   *  style says, in a frame's, which nothing here draws; and its
+   *  attribute's elsewhere (HTML 4.8.4.3.15, the `width` IDL attribute). */
+  const imageSize = (img: Any, side: 'width' | 'height'): number => {
+    if (img.isConnected) {
+      return side === 'width' ? img.offsetWidth : img.offsetHeight;
+    }
+    const doc = img.ownerDocument;
+    if (doc && doc !== document && img.getRootNode() === doc) {
+      const style = getComputedStyle(img);
+      const px = /^([\d.]+)px$/.exec(style?.[side] ?? '');
+      if (px) return Math.round(Number(px[1]));
+    }
+    return Number(img.getAttribute(side)) >>> 0;
+  };
   class HTMLImageElement extends HTMLElement {
     get complete(): boolean {
       return true;
@@ -1865,13 +2198,13 @@ export function installDom(bridge: Bridge): void {
       return this.offsetHeight;
     }
     get width(): number {
-      return this.offsetWidth;
+      return imageSize(this, 'width');
     }
     set width(v: Any) {
       this.setAttribute('width', v);
     }
     get height(): number {
-      return this.offsetHeight;
+      return imageSize(this, 'height');
     }
     set height(v: Any) {
       this.setAttribute('height', v);
@@ -2204,6 +2537,9 @@ export function installDom(bridge: Bridge): void {
     get defaultSelected(): boolean {
       return this.hasAttribute('selected');
     }
+    set defaultSelected(v: Any) {
+      this.toggleAttribute('selected', !!v);
+    }
     get index(): number {
       const select = this.closest('select');
       return select ? Array.from(select.options).indexOf(this) : 0;
@@ -2219,6 +2555,7 @@ export function installDom(bridge: Bridge): void {
   );
 
   class HTMLSelectElement extends FormControl {
+    declare multiple: boolean;
     get type(): string {
       return this.hasAttribute('multiple') ? 'select-multiple' : 'select-one';
     }
@@ -2235,17 +2572,24 @@ export function installDom(bridge: Bridge): void {
       return this.options.length;
     }
     get value(): string {
-      const v = controlValue(this);
-      return typeof v === 'string' ? v : '';
+      return this.selectedOptions[0]?.value ?? '';
     }
     set value(v: Any) {
       call('setValue', this._id, str(v));
     }
+    /** The options chosen: those `selected`, as `<Html>` keeps them, and
+     *  in a list of one the last of those, or else the first that can be
+     *  (HTML 4.10.7, "selectedness setting algorithm"). */
     get selectedOptions(): Any {
-      const value = this.value;
       const options = Array.from(this.querySelectorAll('option')) as Any[];
-      const first = options.find((o) => o.value === value);
-      return list(first ? [first] : []);
+      const marked = options.filter((o) => o.hasAttribute('selected'));
+      if (this.multiple) return list(marked);
+      const chosen =
+        marked[marked.length - 1] ??
+        (Number(this.getAttribute('size')) > 1
+          ? null
+          : options.find((o) => !o.disabled));
+      return list(chosen ? [chosen] : []);
     }
     get selectedIndex(): number {
       const options = Array.from(this.querySelectorAll('option')) as Any[];
@@ -2298,16 +2642,20 @@ export function installDom(bridge: Bridge): void {
   const CONTROLS = 'button,fieldset,input,object,output,select,textarea';
 
   class HTMLFormElement extends HTMLElement {
+    /** The controls the form owns: those in it, and those in its tree
+     *  that name it by its `form` attribute, in tree order — an image
+     *  button not among them (HTML 4.10.18.1). */
     get elements(): Any {
-      const own = Array.from(document.querySelectorAll(CONTROLS)).filter(
-        (el: Any) => el.form === this,
-      ) as Any[];
-      const out: Any = list(own);
-      for (const el of own) {
-        const name = el.getAttribute('name') || el.getAttribute('id');
-        if (name && !(name in out)) out[name] = el;
-      }
-      return out;
+      const root = this.getRootNode();
+      const scope = root.querySelectorAll ? root : this;
+      const own = (
+        Array.from(scope.querySelectorAll(CONTROLS)) as Any[]
+      ).filter(
+        (el) =>
+          el.form === this &&
+          !(el.localName === 'input' && el.type === 'image'),
+      );
+      return collection(own);
     }
     get length(): number {
       return this.elements.length;
@@ -2362,13 +2710,70 @@ export function installDom(bridge: Bridge): void {
     flag('novalidate'),
   );
 
+  /** A frame's document, the page's own origin's, and null for another's
+   *  (`frameDocument`). */
+  const frameDocumentOf = (frame: Any): Any => {
+    const id = Number(call('frameDocument', frame._id));
+    return id ? wrap(id) : null;
+  };
+  /** The window of a frame's document, which nothing here draws: its
+   *  document, its styles, where it is. One for each document. */
+  const frameWindows = new WeakMap<object, Any>();
+  const frameWindowOf = (doc: Any): Any => {
+    let win = frameWindows.get(doc);
+    if (!win) {
+      win = {
+        document: doc,
+        getComputedStyle,
+        get frameElement(): Any {
+          return wrap(Number(call('frameElement', doc._id)));
+        },
+        parent: G,
+        top: G,
+        opener: null,
+        closed: false,
+        length: 0,
+        setTimeout: G.setTimeout,
+        clearTimeout: G.clearTimeout,
+        addEventListener(): void {},
+        removeEventListener(): void {},
+        postMessage(): void {},
+      };
+      win.window = win;
+      win.self = win;
+      frameWindows.set(doc, win);
+    }
+    return win;
+  };
   class HTMLIFrameElement extends HTMLElement {
-    get contentWindow(): null {
-      return null;
+    get contentDocument(): Any {
+      return frameDocumentOf(this);
     }
-    get contentDocument(): null {
-      return null;
+    get contentWindow(): Any {
+      const doc = frameDocumentOf(this);
+      return doc ? frameWindowOf(doc) : null;
     }
+    /** SVG 1.1's `GetSVGDocument`, which every engine kept: the document
+     *  the frame holds. */
+    getSVGDocument(): Any {
+      return this.contentDocument;
+    }
+  }
+  Object.defineProperty(HTMLIFrameElement.prototype, 'src', urlProperty('src'));
+  for (const name of [
+    'srcdoc',
+    'name',
+    'width',
+    'height',
+    'allow',
+    'loading',
+    'referrerPolicy',
+  ]) {
+    Object.defineProperty(
+      HTMLIFrameElement.prototype,
+      name,
+      reflect(name === 'referrerPolicy' ? 'referrerpolicy' : name),
+    );
   }
   class HTMLCanvasElement extends HTMLElement {
     getContext(): null {
@@ -2535,7 +2940,6 @@ export function installDom(bridge: Bridge): void {
   );
   class HTMLQuoteElement extends HTMLElement {}
   class HTMLDListElement extends HTMLElement {}
-  class HTMLTableSectionElement extends HTMLElement {}
   class HTMLTableCaptionElement extends HTMLElement {}
   class HTMLTableColElement extends HTMLElement {}
   class HTMLLegendElement extends HTMLElement {}
@@ -2544,7 +2948,26 @@ export function installDom(bridge: Bridge): void {
   class HTMLProgressElement extends HTMLElement {}
   class HTMLMeterElement extends HTMLElement {}
   class HTMLOutputElement extends HTMLElement {}
-  class HTMLObjectElement extends HTMLElement {}
+  class HTMLObjectElement extends HTMLElement {
+    get contentDocument(): Any {
+      return this.hasAttribute('data') ? frameDocumentOf(this) : null;
+    }
+    getSVGDocument(): Any {
+      return this.contentDocument;
+    }
+    get contentWindow(): Any {
+      const doc = this.contentDocument;
+      return doc ? frameWindowOf(doc) : null;
+    }
+  }
+  Object.defineProperty(
+    HTMLObjectElement.prototype,
+    'data',
+    urlProperty('data'),
+  );
+  for (const name of ['type', 'name', 'width', 'height']) {
+    Object.defineProperty(HTMLObjectElement.prototype, name, reflect(name));
+  }
   class HTMLEmbedElement extends HTMLElement {}
   class HTMLSlotElement extends HTMLElement {
     assignedNodes(): Any[] {
@@ -2555,6 +2978,16 @@ export function installDom(bridge: Bridge): void {
     }
   }
   class HTMLBodyElement extends HTMLElement {}
+  // `document.body.onload` is the window's `onload`, and so are its kin
+  for (const type of WINDOW_REFLECTING) {
+    Object.defineProperty(HTMLBodyElement.prototype, `on${type}`, {
+      get: () => handlerOf(windowTarget, type),
+      set: (fn: Any) => {
+        windowTarget._handlers[type] = typeof fn === 'function' ? fn : null;
+      },
+      configurable: true,
+    });
+  }
   class HTMLHeadElement extends HTMLElement {}
   class HTMLHtmlElement extends HTMLElement {}
   class HTMLDivElement extends HTMLElement {}
@@ -2564,9 +2997,237 @@ export function installDom(bridge: Bridge): void {
   class HTMLUListElement extends HTMLElement {}
   class HTMLOListElement extends HTMLElement {}
   class HTMLLIElement extends HTMLElement {}
-  class HTMLTableElement extends HTMLElement {}
-  class HTMLTableRowElement extends HTMLElement {}
-  class HTMLTableCellElement extends HTMLElement {}
+  // --- tables (HTML 4.9): what a table's parts say of each other, worked
+  // out from its children each time it is asked
+
+  /** An element's HTML children of the names given. */
+  const childrenNamed = (el: Any, names: string[]): Any[] =>
+    Array.from(el.children as Any[]).filter(
+      (k) => k.namespaceURI === HTML_NS && names.includes(k.localName),
+    );
+  const indexError = (index: number): DOMException =>
+    new DOMException(
+      `The index provided (${index}) is outside the range.`,
+      'IndexSizeError',
+    );
+  /** A `long` from what a page passed, as WebIDL converts one. */
+  const long = (v: Any, otherwise: number): number =>
+    v === undefined ? otherwise : Number(v) | 0;
+  /** `insertRow` and `insertCell`: a new child made where `index` says,
+   *  of the ones `items` lists — at the end for -1. */
+  const insertAt = (
+    owner: Any,
+    items: Any[],
+    index: number,
+    tag: string,
+  ): Any => {
+    if (index < -1 || index > items.length) throw indexError(index);
+    const made = owner.ownerDocument.createElement(tag);
+    if (index === -1 || index === items.length) owner.appendChild(made);
+    else owner.insertBefore(made, items[index]);
+    return made;
+  };
+  const deleteAt = (items: Any[], index: number): void => {
+    if (index === -1) {
+      items[items.length - 1]?.remove();
+      return;
+    }
+    if (index < 0 || index >= items.length) throw indexError(index);
+    items[index].remove();
+  };
+
+  class HTMLTableElement extends HTMLElement {
+    get caption(): Any {
+      return childrenNamed(this, ['caption'])[0] ?? null;
+    }
+    set caption(v: Any) {
+      this.deleteCaption();
+      if (v) this.insertBefore(v, this.firstChild);
+    }
+    createCaption(): Any {
+      return (
+        this.caption ??
+        this.insertBefore(
+          this.ownerDocument.createElement('caption'),
+          this.firstChild,
+        )
+      );
+    }
+    deleteCaption(): void {
+      this.caption?.remove();
+    }
+    /** Where a head goes: before the first child that is neither a
+     *  caption nor a column group. */
+    _headPlace(): Any {
+      return (
+        (Array.from(this.children) as Any[]).find(
+          (k) => k.localName !== 'caption' && k.localName !== 'colgroup',
+        ) ?? null
+      );
+    }
+    _section(v: Any, name: string): void {
+      if (v !== null && v?.localName !== name) {
+        throw new DOMException(
+          `The element provided is not a <${name}>.`,
+          'HierarchyRequestError',
+        );
+      }
+    }
+    get tHead(): Any {
+      return childrenNamed(this, ['thead'])[0] ?? null;
+    }
+    set tHead(v: Any) {
+      this._section(v, 'thead');
+      this.deleteTHead();
+      if (v) this.insertBefore(v, this._headPlace());
+    }
+    createTHead(): Any {
+      return (
+        this.tHead ??
+        this.insertBefore(
+          this.ownerDocument.createElement('thead'),
+          this._headPlace(),
+        )
+      );
+    }
+    deleteTHead(): void {
+      this.tHead?.remove();
+    }
+    get tFoot(): Any {
+      return childrenNamed(this, ['tfoot'])[0] ?? null;
+    }
+    set tFoot(v: Any) {
+      this._section(v, 'tfoot');
+      this.deleteTFoot();
+      if (v) this.appendChild(v);
+    }
+    createTFoot(): Any {
+      return (
+        this.tFoot ??
+        this.appendChild(this.ownerDocument.createElement('tfoot'))
+      );
+    }
+    deleteTFoot(): void {
+      this.tFoot?.remove();
+    }
+    get tBodies(): Any {
+      return collection(childrenNamed(this, ['tbody']));
+    }
+    createTBody(): Any {
+      const bodies = childrenNamed(this, ['tbody']);
+      const last = bodies[bodies.length - 1];
+      return this.insertBefore(
+        this.ownerDocument.createElement('tbody'),
+        last ? last.nextSibling : null,
+      );
+    }
+    /** The rows of the head, then the body's and the table's own, then
+     *  the foot's, each in tree order. */
+    get rows(): Any {
+      const kids = Array.from(this.children) as Any[];
+      const out: Any[] = [];
+      for (const k of kids) {
+        if (k.localName === 'thead') out.push(...childrenNamed(k, ['tr']));
+      }
+      for (const k of kids) {
+        if (k.localName === 'tr') out.push(k);
+        else if (k.localName === 'tbody') {
+          out.push(...childrenNamed(k, ['tr']));
+        }
+      }
+      for (const k of kids) {
+        if (k.localName === 'tfoot') out.push(...childrenNamed(k, ['tr']));
+      }
+      return collection(out);
+    }
+    insertRow(index?: Any): Any {
+      const at = long(index, -1);
+      const rows = this.rows;
+      if (at < -1 || at > rows.length) throw indexError(at);
+      const tr = this.ownerDocument.createElement('tr');
+      if (!rows.length) {
+        const bodies = childrenNamed(this, ['tbody']);
+        if (bodies.length) bodies[bodies.length - 1].appendChild(tr);
+        else {
+          const tbody = this.ownerDocument.createElement('tbody');
+          tbody.appendChild(tr);
+          this.appendChild(tbody);
+        }
+      } else if (at === -1 || at === rows.length) {
+        rows[rows.length - 1].parentNode.appendChild(tr);
+      } else rows[at].parentNode.insertBefore(tr, rows[at]);
+      return tr;
+    }
+    deleteRow(index: Any): void {
+      deleteAt(this.rows, long(index, 0));
+    }
+  }
+  class HTMLTableSectionElement extends HTMLElement {
+    get rows(): Any {
+      return collection(childrenNamed(this, ['tr']));
+    }
+    insertRow(index?: Any): Any {
+      return insertAt(this, this.rows, long(index, -1), 'tr');
+    }
+    deleteRow(index: Any): void {
+      deleteAt(this.rows, long(index, 0));
+    }
+  }
+  class HTMLTableRowElement extends HTMLElement {
+    /** Where the row is in its table's `rows`, or -1 in none. */
+    get rowIndex(): number {
+      let table = this.parentNode;
+      if (table && ['thead', 'tbody', 'tfoot'].includes(table.localName)) {
+        table = table.parentNode;
+      }
+      if (!(table instanceof HTMLTableElement)) return -1;
+      return Array.from(table.rows).indexOf(this);
+    }
+    get sectionRowIndex(): number {
+      const parent = this.parentNode;
+      if (!(
+        parent instanceof HTMLTableElement ||
+        parent instanceof HTMLTableSectionElement
+      )) {
+        return -1;
+      }
+      return Array.from(parent.rows).indexOf(this);
+    }
+    get cells(): Any {
+      return collection(childrenNamed(this, ['td', 'th']));
+    }
+    insertCell(index?: Any): Any {
+      return insertAt(this, this.cells, long(index, -1), 'td');
+    }
+    deleteCell(index: Any): void {
+      deleteAt(this.cells, long(index, 0));
+    }
+  }
+  class HTMLTableCellElement extends HTMLElement {
+    get cellIndex(): number {
+      const row = this.parentNode;
+      return row instanceof HTMLTableRowElement
+        ? Array.from(row.cells).indexOf(this)
+        : -1;
+    }
+    get colSpan(): number {
+      const n = parseInt(this.getAttribute('colspan') ?? '', 10);
+      return n >= 1 ? Math.min(n, 1000) : 1;
+    }
+    set colSpan(v: Any) {
+      this.setAttribute('colspan', String(Number(v) >>> 0));
+    }
+    get rowSpan(): number {
+      const n = parseInt(this.getAttribute('rowspan') ?? '', 10);
+      return n >= 0 ? Math.min(n, 65534) : 1;
+    }
+    set rowSpan(v: Any) {
+      this.setAttribute('rowspan', String(Number(v) >>> 0));
+    }
+  }
+  for (const name of ['headers', 'abbr', 'scope']) {
+    Object.defineProperty(HTMLTableCellElement.prototype, name, reflect(name));
+  }
   // --- CSSOM ---------------------------------------------------------------------
   //
   // A sheet is its rules' text. A `<style>`'s are the host's (`sheetRules`):
@@ -3017,6 +3678,14 @@ export function installDom(bridge: Bridge): void {
     configurable: true,
   });
   class HTMLMetaElement extends HTMLElement {}
+  Object.defineProperty(
+    HTMLMetaElement.prototype,
+    'httpEquiv',
+    reflect('http-equiv'),
+  );
+  for (const name of ['name', 'content', 'media', 'scheme']) {
+    Object.defineProperty(HTMLMetaElement.prototype, name, reflect(name));
+  }
   class HTMLUnknownElement extends HTMLElement {}
 
   const ELEMENT_CLASSES: Record<string, Any> = {
@@ -3129,6 +3798,31 @@ export function installDom(bridge: Bridge): void {
       return go;
     }
     if (!go) return false;
+    // a submit button submits its form and a reset button resets it
+    // (HTML 4.10.6, 4.10.5.1.19): here, since a button the page made a
+    // moment ago is none `<Html>` has drawn yet
+    const role =
+      target instanceof HTMLButtonElement ||
+      (target instanceof HTMLInputElement &&
+        ['submit', 'image', 'reset'].includes(target.type))
+        ? target.type
+        : '';
+    if (role && !isDisabled(target)) {
+      const form = target.form;
+      if (form && role === 'reset') form.reset();
+      else if (form && role !== 'button') {
+        if (form.noValidate || target.hasAttribute('formnovalidate')) {
+          const ev = new SubmitEvent('submit', {
+            bubbles: true,
+            cancelable: true,
+            submitter: target,
+          });
+          ev.isTrusted = true;
+          if (dispatch(form, ev)) call('submit', form._id, target._id);
+        } else form.requestSubmit(target);
+      }
+      return true;
+    }
     // the element whose activation it is: the target, or the nearest
     // element around it that has one
     for (let at: Any = target; at instanceof Element; at = at.parentNode) {
@@ -3157,6 +3851,11 @@ export function installDom(bridge: Bridge): void {
   class Document extends ParentNode {
     _ready = 'loading';
     _current: Any = null;
+    /** An XML document's content type; null for an HTML one. */
+    _type: string | null = null;
+    /** What `document.write` has written since `open`, where a page
+     *  opened a document of its own: parsed at `close`. */
+    _written: string | null = null;
     get documentElement(): Any {
       return wrap(Number(call('root', this._id)));
     }
@@ -3164,13 +3863,15 @@ export function installDom(bridge: Bridge): void {
       return this.querySelector('head');
     }
     get body(): Any {
-      return this.querySelector('body') ?? this.documentElement;
+      return (
+        this.querySelector('body') ?? (this._type ? null : this.documentElement)
+      );
     }
     get title(): string {
-      return String(call('title'));
+      return String(call('title', this._id));
     }
     set title(v: Any) {
-      call('setTitle', str(v));
+      call('setTitle', str(v), this._id);
     }
     get readyState(): string {
       return this._ready;
@@ -3190,9 +3891,7 @@ export function installDom(bridge: Bridge): void {
     }
     get styleSheets(): Any {
       const list = new StyleSheetList();
-      // a document a page made of its own draws nothing, and has no sheet
-      if (this !== document) return list;
-      const ids = String(call('sheets'));
+      const ids = String(call('sheets', this._id));
       for (const id of ids ? ids.split(',') : []) {
         list.push(sheetOf(wrap(Number(id))));
       }
@@ -3223,8 +3922,11 @@ export function installDom(bridge: Bridge): void {
       return '';
     }
     set cookie(_v: Any) {}
+    /** The window: the page's for its document, a frame's for a frame's
+     *  document, and none for one a page made of its own. */
     get defaultView(): Any {
-      return G;
+      if (this === document) return G;
+      return call('frameElement', this._id) ? frameWindowOf(this) : null;
     }
     get characterSet(): string {
       return 'UTF-8';
@@ -3233,7 +3935,7 @@ export function installDom(bridge: Bridge): void {
       return 'UTF-8';
     }
     get contentType(): string {
-      return 'text/html';
+      return this._type ?? 'text/html';
     }
     get compatMode(): string {
       return 'CSS1Compat';
@@ -3251,32 +3953,25 @@ export function installDom(bridge: Bridge): void {
       return this.documentElement;
     }
     get forms(): Any {
-      return this.getElementsByTagName('form');
+      return collection(Array.from(this.getElementsByTagName('form')));
     }
     get images(): Any {
-      return this.getElementsByTagName('img');
+      return collection(Array.from(this.getElementsByTagName('img')));
     }
     get links(): Any {
-      return this.querySelectorAll('a[href],area[href]');
+      return collection(
+        Array.from(this.querySelectorAll('a[href],area[href]')),
+      );
     }
     get scripts(): Any {
       return this.getElementsByTagName('script');
     }
     get doctype(): Any {
+      for (const kid of this.childNodes) if (kid.nodeType === 10) return kid;
       return null;
     }
     get implementation(): Any {
-      return {
-        hasFeature: () => true,
-        // a document of its own, out of the one drawn: what a sanitizer
-        // parses markup into, whose scripts nothing runs
-        createHTMLDocument: (title?: Any) =>
-          wrap(
-            Number(
-              call('newDocument', title === undefined ? null : str(title)),
-            ),
-          ),
-      };
+      return implementationOf(this);
     }
     get fonts(): Any {
       return {
@@ -3289,19 +3984,21 @@ export function installDom(bridge: Bridge): void {
       return true;
     }
     getElementById(id: Any): Any {
-      return wrap(Number(call('byId', str(id))));
+      return wrap(Number(call('byId', str(id), this._id)));
     }
     getElementsByName(name: Any): Any {
       return this.querySelectorAll(`[name="${cssEscape(str(name))}"]`);
     }
     createElement(tag: Any): Any {
-      const name = str(tag).toLowerCase();
+      // an XML document keeps the name's case, and makes it in no
+      // namespace but XHTML's (DOM 4.5, `createElement`)
+      const name = this._type ? str(tag) : str(tag).toLowerCase();
       // a valid element local name (DOM 4.9): one that starts with a
       // letter and has no white space, NUL, `/` or `>` in it, or one that
       // starts with `:`, `_` or past ASCII and has nothing in it but
       // those, letters, digits, `-` and `.` — `_` is one
       if (
-        !/^[a-z][^\s\0/>]*$/.test(name) &&
+        !/^[A-Za-z][^\s\0/>]*$/.test(name) &&
         !/^[:_\u0080-\uffff][\w\-.:\u0080-\uffff]*$/.test(name)
       ) {
         throw new DOMException(
@@ -3309,13 +4006,50 @@ export function installDom(bridge: Bridge): void {
           'InvalidCharacterError',
         );
       }
-      return wrap(Number(call('create', 'element', name)));
+      const ns = !this._type
+        ? ''
+        : this._type === 'application/xhtml+xml'
+          ? HTML_NS
+          : '~';
+      return wrap(Number(call('create', 'element', name, this._id, ns)));
     }
-    createElementNS(_ns: Any, tag: Any): Any {
-      return this.createElement(String(tag).replace(/^.*:/, ''));
+    /** An element in a namespace, its name a qualified one (DOM 4.5,
+     *  "validate and extract"). */
+    createElementNS(namespace: Any, qualifiedName: Any): Any {
+      const ns =
+        namespace === null || namespace === undefined || namespace === ''
+          ? null
+          : str(namespace);
+      const qualified = str(qualifiedName);
+      const colon = qualified.indexOf(':');
+      const prefix = colon < 0 ? null : qualified.slice(0, colon);
+      const local = colon < 0 ? qualified : qualified.slice(colon + 1);
+      if (
+        (prefix !== null && !/^[^\s\0/>]+$/.test(prefix)) ||
+        (!/^[A-Za-z][^\s\0/>]*$/.test(local) &&
+          !/^[:_\u0080-\uffff][\w\-.:\u0080-\uffff]*$/.test(local))
+      ) {
+        throw new DOMException(
+          `The qualified name provided ('${qualified}') contains the invalid name-start character.`,
+          'InvalidCharacterError',
+        );
+      }
+      if (
+        (prefix !== null && ns === null) ||
+        (prefix === 'xml' && ns !== XML_NS) ||
+        (qualified === 'xmlns' || prefix === 'xmlns') !== (ns === XMLNS_NS)
+      ) {
+        throw new DOMException(
+          `The namespace and the qualified name ('${qualified}') do not go together.`,
+          'NamespaceError',
+        );
+      }
+      return wrap(
+        Number(call('create', 'element', qualified, this._id, ns ?? '~')),
+      );
     }
     createTextNode(data: Any): Any {
-      return wrap(Number(call('create', 'text', str(data))));
+      return wrap(Number(call('create', 'text', str(data), this._id)));
     }
     createAttribute(name: Any): Any {
       const n = str(name).toLowerCase();
@@ -3331,10 +4065,10 @@ export function installDom(bridge: Bridge): void {
       return this.createAttribute(String(name).replace(/^.*:/, ''));
     }
     createComment(data: Any): Any {
-      return wrap(Number(call('create', 'comment', str(data))));
+      return wrap(Number(call('create', 'comment', str(data), this._id)));
     }
     createDocumentFragment(): Any {
-      return wrap(Number(call('create', 'fragment', '')));
+      return wrap(Number(call('create', 'fragment', '', this._id)));
     }
     createEvent(kind: Any): Any {
       const k = str(kind).toLowerCase();
@@ -3350,21 +4084,7 @@ export function installDom(bridge: Bridge): void {
       return new Kind('');
     }
     createRange(): Any {
-      return {
-        selectNodeContents() {},
-        setStart() {},
-        setEnd() {},
-        collapse() {},
-        getBoundingClientRect: () => new DOMRect(),
-        getClientRects: () => list([]),
-        createContextualFragment: (html: Any) => {
-          const fragment = document.createDocumentFragment();
-          const holder = document.createElement('div');
-          holder.innerHTML = html;
-          while (holder.firstChild) fragment.appendChild(holder.firstChild);
-          return fragment;
-        },
-      };
+      return rangeIn(this);
     }
     createTreeWalker(root: Any, whatToShow?: Any, filter?: Any): Any {
       idOf(
@@ -3381,9 +4101,10 @@ export function installDom(bridge: Bridge): void {
       return new NodeIterator(root, whatToShow, filter);
     }
     importNode(node: Any, deep = false): Any {
-      return node.cloneNode(deep);
+      return wrap(Number(call('import', idOf(node), !!deep, this._id)));
     }
     adoptNode(node: Any): Any {
+      call('adoptNode', idOf(node), this._id);
       return node;
     }
     elementFromPoint(x: number, y: number): Any {
@@ -3398,22 +4119,272 @@ export function installDom(bridge: Bridge): void {
     getSelection(): Any {
       return G.getSelection();
     }
-    write(..._parts: Any[]): void {
+    /** `document.write`: what a script the parser met writes goes in after
+     *  it, as the parser would have read it there. Anywhere else — a script
+     *  that runs once the parse has ended, which in a browser would replace
+     *  the document — it is refused. */
+    write(...parts: Any[]): void {
+      const text = parts.map((p) => str(p)).join('');
+      if (this !== document) {
+        // a document of the page's own, a frame's among them: what is
+        // written since `open` is its markup at `close`, and a write to
+        // one not opened opens it, as HTML's has it
+        if (this._written == null) this.open();
+        this._written += text;
+        return;
+      }
+      if (call('write', text) === true) return;
       bridge(
         'log',
         'warn',
-        'document.write was ignored: this browser runs scripts after the document is parsed.',
+        'document.write was ignored: only a script the parser runs as it meets it writes into the document here.',
       );
     }
     writeln(...parts: Any[]): void {
-      this.write(...parts);
+      this.write(...parts, '\n');
     }
     open(): Any {
+      // `== null`: a wrapper is made without its class's fields
+      if (this !== document && this._written == null) this._written = '';
       return this;
     }
-    close(): void {}
+    close(): void {
+      if (this === document || this._written == null) return;
+      const markup = this._written;
+      this._written = null;
+      call('fillDocument', this._id, markup);
+    }
   }
+  /** A document made of XML's rules: `createDocument`'s. */
+  class XMLDocument extends Document {}
   Object.defineProperty(Document.prototype, 'nodeType', nodeTypeOf(9));
+
+  // --- ranges -------------------------------------------------------------------
+  //
+  // A live range is the host's (`ranges.ts`), which moves it as the tree
+  // changes; a `Range` holds its id, and lets it go when the page does.
+
+  const rangesHeld =
+    typeof FinalizationRegistry === 'function'
+      ? new FinalizationRegistry((id: number) => {
+          bridge('rangeDrop', id);
+        })
+      : null;
+  /** The document a `Range` being made starts in: `createRange`'s, or the
+   *  page's for `new Range()`. */
+  let rangeDocument: Any = null;
+  const rangeIn = (doc: Any): Any => {
+    rangeDocument = doc;
+    try {
+      return new Range();
+    } finally {
+      rangeDocument = null;
+    }
+  };
+  const held = (range: Any, id: number): Any => {
+    range._id = id;
+    rangesHeld?.register(range, id);
+    return range;
+  };
+
+  class AbstractRange {
+    _id = 0;
+    /** The two boundary points, as the host has them now. */
+    _points(): [Any, number, Any, number] {
+      const [a, b, c, d] = String(call('rangeGet', this._id)).split(',');
+      return [wrap(Number(a)), Number(b), wrap(Number(c)), Number(d)];
+    }
+    get startContainer(): Any {
+      return this._points()[0];
+    }
+    get startOffset(): number {
+      return this._points()[1];
+    }
+    get endContainer(): Any {
+      return this._points()[2];
+    }
+    get endOffset(): number {
+      return this._points()[3];
+    }
+    get collapsed(): boolean {
+      const [a, b, c, d] = String(call('rangeGet', this._id)).split(',');
+      return a === c && b === d;
+    }
+  }
+  class Range extends AbstractRange {
+    static readonly START_TO_START = 0;
+    static readonly START_TO_END = 1;
+    static readonly END_TO_END = 2;
+    static readonly END_TO_START = 3;
+    constructor() {
+      super();
+      held(this, Number(call('rangeNew', (rangeDocument ?? document)._id)));
+    }
+    get commonAncestorContainer(): Any {
+      return wrap(Number(call('rangeCommon', this._id)));
+    }
+    setStart(node: Any, offset: Any): void {
+      call('rangeSet', this._id, idOf(node), Number(offset) >>> 0, true);
+    }
+    setEnd(node: Any, offset: Any): void {
+      call('rangeSet', this._id, idOf(node), Number(offset) >>> 0, false);
+    }
+    setStartBefore(node: Any): void {
+      call('rangeBeside', this._id, idOf(node), 'startBefore');
+    }
+    setStartAfter(node: Any): void {
+      call('rangeBeside', this._id, idOf(node), 'startAfter');
+    }
+    setEndBefore(node: Any): void {
+      call('rangeBeside', this._id, idOf(node), 'endBefore');
+    }
+    setEndAfter(node: Any): void {
+      call('rangeBeside', this._id, idOf(node), 'endAfter');
+    }
+    collapse(toStart = false): void {
+      call('rangeCollapse', this._id, !!toStart);
+    }
+    selectNode(node: Any): void {
+      call('rangeSelect', this._id, idOf(node), false);
+    }
+    selectNodeContents(node: Any): void {
+      call('rangeSelect', this._id, idOf(node), true);
+    }
+    compareBoundaryPoints(how: Any, source: Any): number {
+      if (!(source instanceof Range)) {
+        throw new TypeError("parameter 2 is not of type 'Range'.");
+      }
+      return Number(
+        call(
+          'rangeCompare',
+          this._id,
+          (Number(how) >>> 0) & 0xffff,
+          source._id,
+        ),
+      );
+    }
+    deleteContents(): void {
+      call('rangeDelete', this._id);
+    }
+    extractContents(): Any {
+      return wrap(Number(call('rangeContents', this._id, true)));
+    }
+    cloneContents(): Any {
+      return wrap(Number(call('rangeContents', this._id, false)));
+    }
+    insertNode(node: Any): void {
+      call('rangeInsert', this._id, idOf(node));
+    }
+    surroundContents(node: Any): void {
+      call('rangeSurround', this._id, idOf(node));
+    }
+    cloneRange(): Any {
+      return held(
+        Object.create(Range.prototype),
+        Number(call('rangeClone', this._id)),
+      );
+    }
+    detach(): void {}
+    isPointInRange(node: Any, offset: Any): boolean {
+      return !!call(
+        'rangePoint',
+        this._id,
+        idOf(node),
+        Number(offset) >>> 0,
+        false,
+      );
+    }
+    comparePoint(node: Any, offset: Any): number {
+      return Number(
+        call('rangePoint', this._id, idOf(node), Number(offset) >>> 0, true),
+      );
+    }
+    intersectsNode(node: Any): boolean {
+      return !!call('rangeIntersects', this._id, idOf(node));
+    }
+    override toString(): string {
+      return String(call('rangeText', this._id));
+    }
+    /** The box of the element the range is in: no layout here answers for
+     *  a run of text alone. */
+    getBoundingClientRect(): Any {
+      let at = this.commonAncestorContainer;
+      while (at && !(at instanceof Element)) at = at.parentNode;
+      return at ? at.getBoundingClientRect() : new DOMRect();
+    }
+    getClientRects(): Any {
+      return list([this.getBoundingClientRect()]);
+    }
+    createContextualFragment(html: Any): Any {
+      let context = this.startContainer;
+      while (context && !(context instanceof Element)) {
+        context = context.parentNode;
+      }
+      const doc = context?.ownerDocument ?? document;
+      const fragment = doc.createDocumentFragment();
+      const holder = doc.createElement(context?.localName ?? 'div');
+      holder.innerHTML = html;
+      while (holder.firstChild) fragment.appendChild(holder.firstChild);
+      return fragment;
+    }
+  }
+  for (const name of Object.getOwnPropertyNames(Range)) {
+    if (!/^[A-Z_]+$/.test(name)) continue;
+    Object.defineProperty(Range.prototype, name, {
+      value: (Range as Any)[name],
+      enumerable: true,
+    });
+  }
+
+  /** A document's `implementation` (DOM 4.5.1): the documents and the
+   *  doctypes a page makes, each of the document asked. */
+  const implementationOf = (doc: Any): Any => ({
+    hasFeature: () => true,
+    // a document of its own, out of the one drawn: what a sanitizer
+    // parses markup into, whose scripts nothing runs
+    createHTMLDocument: (title?: Any) =>
+      wrap(
+        Number(call('newDocument', title === undefined ? null : str(title))),
+      ),
+    createDocumentType(name: Any, publicId: Any, systemId: Any): Any {
+      const n = str(name);
+      if (/[\t\n\f\r \0>]/.test(n)) {
+        throw new DOMException(
+          `The doctype name provided ('${n}') is not valid.`,
+          'InvalidCharacterError',
+        );
+      }
+      return wrap(
+        Number(call('createDoctype', n, str(publicId), str(systemId), doc._id)),
+      );
+    },
+    createDocument(namespace: Any, qualifiedName: Any, doctype?: Any): Any {
+      const ns =
+        namespace === null || namespace === undefined ? '' : str(namespace);
+      const made = wrap(
+        Number(
+          call(
+            'newXml',
+            ns === HTML_NS
+              ? 'application/xhtml+xml'
+              : ns === SVG_NS
+                ? 'image/svg+xml'
+                : 'application/xml',
+          ),
+        ),
+      );
+      const qualified =
+        qualifiedName === null || qualifiedName === undefined
+          ? ''
+          : str(qualifiedName);
+      const root = qualified
+        ? made.createElementNS(namespace, qualified)
+        : null;
+      if (doctype) made.appendChild(doctype);
+      if (root) made.appendChild(root);
+      return made;
+    },
+  });
   Object.defineProperty(Document.prototype, 'nodeName', {
     get: () => '#document',
   });
@@ -4391,47 +5362,44 @@ export function installDom(bridge: Bridge): void {
     }
   }
 
+  const iteratorsHeld =
+    typeof FinalizationRegistry === 'function'
+      ? new FinalizationRegistry((id: number) => {
+          bridge('iterDrop', id);
+        })
+      : null;
+
   /** `NodeIterator` (DOM 6.1): the tree in document order from `root`,
    *  with a reference node it is before or after. */
   class NodeIterator extends Traversal {
-    referenceNode: Any;
-    pointerBeforeReferenceNode = true;
+    _id: number;
     constructor(root: Any, whatToShow: Any, filter: Any) {
       super(root, whatToShow, filter);
-      this.referenceNode = root;
+      // where it is is the host's, which moves it off a node a removal
+      // takes (`ranges.ts`, `NodeIterators`)
+      this._id = Number(call('iterNew', idOf(root)));
+      iteratorsHeld?.register(this, this._id);
     }
-    _following(node: Any): Any {
-      if (node.firstChild) return node.firstChild;
-      for (let at = node; at && at !== this.root; at = at.parentNode) {
-        if (at.nextSibling) return at.nextSibling;
-      }
-      return null;
+    get referenceNode(): Any {
+      return wrap(Number(String(call('iterGet', this._id)).split(',')[0]));
     }
-    _preceding(node: Any): Any {
-      if (node === this.root) return null;
-      let at = node.previousSibling;
-      if (!at) return node.parentNode;
-      while (at.lastChild) at = at.lastChild;
-      return at;
+    get pointerBeforeReferenceNode(): boolean {
+      return String(call('iterGet', this._id)).endsWith(',true');
     }
     _traverse(next: boolean): Any {
-      let node = this.referenceNode;
-      let before = this.pointerBeforeReferenceNode;
-      for (;;) {
-        if (next) {
-          if (!before) {
-            node = this._following(node);
-            if (!node) return null;
-          } else before = false;
-        } else if (before) {
-          node = this._preceding(node);
+      let accepted = false;
+      try {
+        for (;;) {
+          const node = wrap(Number(call('iterStep', this._id, next)));
           if (!node) return null;
-        } else before = true;
-        if (this._accept(node) === 1) break;
+          if (this._accept(node) === 1) {
+            accepted = true;
+            return node;
+          }
+        }
+      } finally {
+        call('iterEnd', this._id, accepted);
       }
-      this.referenceNode = node;
-      this.pointerBeforeReferenceNode = before;
-      return node;
     }
     nextNode(): Any {
       return this._traverse(true);
@@ -7561,9 +8529,19 @@ export function installDom(bridge: Bridge): void {
     ShadowRoot,
     Document,
     HTMLDocument: Document,
+    XMLDocument,
+    AbstractRange,
+    Range,
     Element,
     HTMLElement,
     SVGElement,
+    SVGGraphicsElement,
+    SVGSVGElement,
+    SVGRectElement,
+    SVGCircleElement,
+    SVGTextContentElement,
+    SVGTextElement,
+    SVGTSpanElement,
     HTMLAnchorElement,
     HTMLAreaElement,
     HTMLImageElement,
@@ -8114,7 +9092,7 @@ export function installDom(bridge: Bridge): void {
     'offline',
   ]) {
     Object.defineProperty(G, `on${type}`, {
-      get: () => windowTarget._handlers[type] ?? null,
+      get: () => handlerOf(windowTarget, type),
       set: (fn: Any) => {
         windowTarget._handlers[type] = typeof fn === 'function' ? fn : null;
       },
@@ -8350,6 +9328,32 @@ export function installDom(bridge: Bridge): void {
       dispatch(windowTarget, ev);
     }
     return true;
+  });
+
+  // a script of a frame's document, the page's own origin's: run here, in
+  // the page's realm, with the frame's window and document for the names a
+  // script reaches them by — a frame has no realm of its own here, so what
+  // it declares is its function's and not a window's (`_frameScripts`)
+  entry('__frameScript', () => {
+    const [id, code, url] = input();
+    const doc = wrap(id);
+    if (!doc) return false;
+    const win = frameWindowOf(doc);
+    try {
+      new Function(
+        'window',
+        'self',
+        'document',
+        'parent',
+        'top',
+        'frames',
+        `${code}\n//# sourceURL=${String(url).replace(/\s/g, '%20')}`,
+      ).call(win, win, win, doc, win.parent, win.top, win);
+      return true;
+    } catch (error) {
+      report(error);
+      return false;
+    }
   });
 
   // a plain event at an element: a script's `load` or `error`

@@ -145,7 +145,7 @@ export class ScriptRunner {
       if (this._disposed) return;
       await this._unblocked(queued);
       if (this._disposed) return;
-      await this._run(queued, code);
+      await this._run(queued, code, true);
     }
     this._queue = [];
     this._advance('interactive');
@@ -197,7 +197,13 @@ export class ScriptRunner {
     );
   }
 
-  private async _run(queued: Queued, code: string | null): Promise<void> {
+  /** A script run: `parser` where the parse met it, which is a script
+   *  whose `document.write` goes in after it. */
+  private async _run(
+    queued: Queued,
+    code: string | null,
+    parser = false,
+  ): Promise<void> {
     if (this._disposed) return;
     const { request } = queued;
     const element = this.host.idOf(request.element);
@@ -221,7 +227,21 @@ export class ScriptRunner {
       return;
     }
     const url = request.src ?? `${this.host.url} (inline)`;
-    this.engine.exec(code, url, element);
+    // where what it writes goes: after it, as the parser would have read it
+    // there, for a script the parser met and that is not `async` or `defer`
+    const { attribs } = request.element;
+    const writes =
+      parser &&
+      !(
+        request.src &&
+        (attribs.async !== undefined || attribs.defer !== undefined)
+      );
+    this.host.writing = writes ? request.element : null;
+    try {
+      this.engine.exec(code, url, element);
+    } finally {
+      this.host.writing = null;
+    }
     // a loader waits for a script it put in on its `load`
     if (request.src) this.engine.call('__fire', [element, 'load']);
   }

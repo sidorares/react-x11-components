@@ -208,6 +208,52 @@ test("a written <html> holds its content in a body, as HTML's parser has it", ()
   assert.strictEqual(shapeOf('<p>a</p>b'), 'p(a) b');
 });
 
+test("a table's rows go in the row group and the row HTML's parser implies", () => {
+  // htmlparser2 opens none, so a table's rows were its children, and
+  // `table.tBodies`, `tbody > tr` and a walk of the tree found another
+  // tree than a browser's
+  assert.strictEqual(
+    shapeOf('<table><tr><td>a</td></tr><tr><td>b</td></tr></table>'),
+    'table(tbody(tr(td(a)) tr(td(b))))',
+    'one tbody, for both rows',
+  );
+  assert.strictEqual(
+    shapeOf('<table><td>a<td>b</table>'),
+    'table(tbody(tr(td(a) td(b))))',
+    'a cell opens the row as well',
+  );
+  assert.strictEqual(
+    shapeOf('<table><thead><th>h</th></thead><tbody><td>c</tbody></table>'),
+    'table(thead(tr(th(h))) tbody(tr(td(c))))',
+    'a written section is used, a row opened in it',
+  );
+  assert.strictEqual(
+    shapeOf('<table><col><tr><td>x</table>'),
+    'table(colgroup(col()) tbody(tr(td(x))))',
+    'a column opens its group',
+  );
+  // and an end tag closes what was implied: Acid3's table ends its body
+  // from inside a cell, and the space after it is the table's
+  const [table] = parseFragment(
+    '<table><tr><td><p></tbody> </table>',
+  ) as Element[];
+  assert.strictEqual(
+    table.children
+      .map(
+        (k) =>
+          (k as Element).name ??
+          JSON.stringify((k as unknown as { data: string }).data),
+      )
+      .join(' '),
+    'tbody " "',
+  );
+  // nothing is implied in SVG, whose names these are not
+  assert.strictEqual(
+    shapeOf('<svg><table><tr></tr></table></svg>'),
+    'svg(table(tr()))',
+  );
+});
+
 test('a fragment can be parsed and spliced in', () => {
   const nodes = parseFragment('<em>hi</em>');
   assert.strictEqual(nodes.length, 1);
