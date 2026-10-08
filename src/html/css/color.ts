@@ -1073,6 +1073,28 @@ export function usedColorScheme(
 }
 
 /**
+ * A `color-scheme` as `getComputedStyle` reads it: `normal`, or the schemes
+ * it names in order — `light` and `dark` lower-cased, a custom name as
+ * written — and `only` last, wherever it was written, as Chrome serialises
+ * it. For a value `usedColorScheme` takes.
+ */
+export function colorSchemeKeywords(value: string): string {
+  const words = value.trim().split(/\s+/);
+  if (words.length === 1 && words[0].toLowerCase() === 'normal') {
+    return 'normal';
+  }
+  let only = false;
+  const out: string[] = [];
+  for (const word of words) {
+    const lower = word.toLowerCase();
+    if (lower === 'only') only = true;
+    else out.push(lower === 'light' || lower === 'dark' ? lower : word);
+  }
+  if (only) out.push('only');
+  return out.join(' ');
+}
+
+/**
  * A browser's own colours in each scheme — the system colours `Canvas`,
  * `CanvasText` and `LinkText` (CSS Color 4, 6.2), as Chrome has them, and
  * the grey its UA sheet draws a `::placeholder` in, the same in both: what

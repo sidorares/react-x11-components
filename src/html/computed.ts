@@ -100,6 +100,7 @@ export function cssomStyle(
     'pointer-events': style.pointerEvents,
     'user-select': style.userSelect,
     color: cssomColor(color, color),
+    'color-scheme': style.colorSchemeKeywords,
     'background-color': cssomColor(style.backgroundColor, color),
     'font-family': style.fontFamily,
     'font-size': px(style.fontSize, scale),

@@ -4973,17 +4973,25 @@ export class Cascade {
     if (this._scoped) this._scopedInto(el, '', out, matched);
 
     const hints = presentationHints(el, this.dimensionSource);
-    // the page's colour schemes are its root's where no rule sets them
+    // the page's colour schemes are its root's where no rule sets them —
+    // the scheme it is drawn in, and not its computed `color-scheme`, which
+    // stays `normal` (CSS Color Adjust 1, 3), as `getComputedStyle` reads it
     if (
       this.pageColorScheme &&
       el.name === 'html' &&
       tree.root === null &&
       !(el.parent && isTag(el.parent as Element))
     ) {
+      const scheme = usedColorScheme(
+        this.pageColorScheme,
+        this.look.colorScheme,
+        this.initial.colorScheme,
+      );
       hints.push({
         prop: 'color-scheme',
         value: this.pageColorScheme,
         important: false,
+        ...(scheme && { computed: { colorScheme: scheme } }),
       });
     }
     if (hints.length) {

@@ -13,14 +13,19 @@ import {
   screen,
   userEvent,
 } from 'react-x11/test';
+import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 import { XK_RETURN } from 'react-x11/keysyms';
+import { appendChild, findOne } from 'domutils';
+import { Element as DomElement } from 'domhandler';
 import { Html, useHtmlHandle } from '../../src/html/index.js';
 import type {
   FormSubmission,
   HtmlDomEvent,
   HtmlHandle,
   HtmlViewNode,
+  ResourceRequest,
+  ResourceResult,
 } from '../../src/html/index.js';
 import type { Element as DocElement } from '../../src/html/dom.js';
 import { FONTS, boxOf, findById, h, metric, render, view } from './harness.js';
@@ -496,6 +501,95 @@ test('onParsed is once the parse ends, and onLoaded once what it asked for has c
   assert.deepStrictEqual(seen, ['parsed', 'loaded'], 'once a document');
 });
 
+test("a <link>'s sheet is told as a load once it and what it imports are applied, and as an error where it is not to be had", async () => {
+  // each sheet answered when the test says, by its file's name
+  const answers = new Map<string, (r: ResourceResult | null) => void>();
+  const onResource = (r: ResourceRequest) =>
+    new Promise<ResourceResult | null>((ok) =>
+      answers.set(r.url.slice(r.url.lastIndexOf('/') + 1), ok),
+    );
+  const sheet = (name: string, text: string | null) =>
+    answers.get(name)!(text === null ? null : { kind: 'stylesheet', text });
+  const doc = await hosted(
+    '<html><head><link id="a" rel="stylesheet" href="a.css">' +
+      '<link id="b" rel="stylesheet" href="b.css">' +
+      '<link id="c" rel="stylesheet" href="c.css"></head>' +
+      '<body><p id="p">x</p></body></html>',
+    { onResource },
+  );
+  const settle = async () => {
+    for (let i = 0; i < 4; i += 1) await act();
+  };
+  const sheets = () => doc.told(['load', 'error']);
+  assert.deepStrictEqual(sheets(), [], 'all three on their way');
+  // what the document is drawn in when it hears a sheet loaded: a page
+  // takes the sheet before out then, and must not show neither
+  let drawnAtLoad: string | null = null;
+  doc.state.cancel = (e) => {
+    if (e.type === 'load' && e.target.attribs.id === 'a') {
+      const drawn = (doc.el as unknown as { _tree: unknown })._tree;
+      drawnAtLoad = drawn
+        ? (boxOf(doc.el, 'p') as unknown as { style: { color: string } }).style
+            .color
+        : 'nothing drawn';
+    }
+    return false;
+  };
+
+  await act(async () => {
+    sheet('a.css', '@import "i.css"; #p { color: #ff0000 }');
+    sheet('b.css', null);
+    sheet('c.css', '');
+  });
+  await settle();
+  assert.deepStrictEqual(
+    sheets(),
+    ['error:b', 'load:c'],
+    'a declined sheet is an error and an empty one is in; one whose import is on its way is not',
+  );
+
+  await act(async () => sheet('i.css', '#p { background: #00ff00 }'));
+  await settle();
+  assert.deepStrictEqual(sheets(), ['error:b', 'load:c', 'load:a']);
+  assert.strictEqual(drawnAtLoad, '#ff0000', 'told once its rules are drawn');
+  const p = doc.el.computedStyle(doc.byId('p'))!;
+  assert.strictEqual(p.color, 'rgb(255, 0, 0)');
+  assert.strictEqual(p['background-color'], 'rgb(0, 255, 0)');
+
+  doc.el.touchDocument();
+  await settle();
+  assert.strictEqual(sheets().length, 3, 'each told once');
+
+  // A link put in for a sheet the document has already is told once a
+  // restyle reads it, with nothing asked; one whose import fails is an
+  // error; and one given another `href` is told again, for that one.
+  const head = findOne((e) => e.name === 'head', doc.el.document.children)!;
+  appendChild(
+    head,
+    new DomElement('link', { id: 'd', rel: 'stylesheet', href: 'a.css' }),
+  );
+  appendChild(
+    head,
+    new DomElement('link', { id: 'e', rel: 'stylesheet', href: 'e.css' }),
+  );
+  doc.el.touchDocument();
+  await settle();
+  assert.deepStrictEqual(sheets().slice(3), ['load:d']);
+  await act(async () => sheet('e.css', '@import "gone.css";'));
+  await settle();
+  await act(async () => sheet('gone.css', null));
+  await settle();
+  assert.deepStrictEqual(sheets().slice(3), ['load:d', 'error:e']);
+  doc.byId('b').attribs.href = 'c.css';
+  doc.el.touchDocument();
+  await settle();
+  assert.deepStrictEqual(sheets().slice(3), ['load:d', 'error:e', 'load:b']);
+  assert.ok(
+    doc.events.every((e) => !e.cancelable),
+    'told after the fact: nothing to cancel',
+  );
+});
+
 // --- computed style ----------------------------------------------------------
 
 test('computedStyle answers in CSS pixels and rgb(), the box as laid out', async () => {
@@ -533,7 +627,72 @@ test('computedStyle answers in CSS pixels and rgb(), the box as laid out', async
   assert.strictEqual(inside?.display, 'inline', 'one with no box has one');
 });
 
+test('computedStyle reads color-scheme as Chrome does: the schemes as written, inherited, and normal where none is', async () => {
+  const { node } = await render(
+    '<style>#a { color-scheme: Light   DARK } #b { color-scheme: only dark }' +
+      ' #c { color-scheme: dark Foo }</style>' +
+      '<div id="a"><span id="in">x</span></div><div id="b"></div>' +
+      '<div id="c"></div><div id="n"></div>',
+  );
+  const el = view(node);
+  const scheme = (id: string) =>
+    el.computedStyle(findById(el.document, id) as DocElement)?.['color-scheme'];
+  assert.strictEqual(scheme('a'), 'light dark');
+  assert.strictEqual(scheme('in'), 'light dark', 'inherited');
+  assert.strictEqual(scheme('b'), 'dark only', '`only` last');
+  assert.strictEqual(scheme('c'), 'dark Foo', 'a name as written');
+  assert.strictEqual(scheme('n'), 'normal');
+});
+
+test("a <meta name=color-scheme> draws the page in its scheme and leaves the root's color-scheme normal", async () => {
+  const { node } = await render(
+    '<html><head><meta name="color-scheme" content="dark">' +
+      '<style>p { color: light-dark(#000000, #ffffff) }</style></head>' +
+      '<body><p id="p">x</p></body></html>',
+  );
+  const el = view(node);
+  const root = findOne((e) => e.name === 'html', el.document.children)!;
+  assert.strictEqual(el.computedStyle(root)?.['color-scheme'], 'normal');
+  const p = el.computedStyle(findById(el.document, 'p') as DocElement)!;
+  assert.strictEqual(p['color-scheme'], 'normal');
+  assert.strictEqual(p.color, 'rgb(255, 255, 255)', 'drawn in dark');
+});
+
 // --- the handle ---------------------------------------------------------------
+
+test("matchMedia answers as the document's @media rules do: its width in CSS pixels, the palette's scheme, the motion it is asked for, and scripting", async () => {
+  let handle!: HtmlHandle;
+  function App() {
+    const own = useHtmlHandle();
+    handle = own;
+    return h(
+      ThemeProvider,
+      { colorScheme: 'dark' } as Record<string, unknown>,
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source: '<p>x</p>',
+          partial: false,
+          ref: own.ref,
+          reducedMotion: true,
+          scripting: true,
+        }),
+      ),
+    );
+  }
+  await renderX11(h(App), { backend: 'mock', scale: 2 });
+  await act();
+  const holds = (query: string) => handle.matchMedia(query);
+  assert.strictEqual(holds('(prefers-color-scheme: dark)'), true);
+  assert.strictEqual(holds('(prefers-color-scheme: light)'), false);
+  assert.strictEqual(holds('(prefers-reduced-motion: reduce)'), true);
+  assert.strictEqual(holds('(scripting: enabled)'), true);
+  assert.strictEqual(holds('(min-width: 400px)'), true, 'CSS pixels at 2x');
+  assert.strictEqual(holds('(min-width: 401px)'), false);
+  assert.strictEqual(holds('(min-resolution: 2dppx)'), true);
+  assert.strictEqual(holds('screen and (max-width: 500px)'), true);
+});
 
 metric('the handle reaches all of it', async () => {
   let handle!: HtmlHandle;

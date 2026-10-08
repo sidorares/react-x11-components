@@ -1710,6 +1710,15 @@ the hooks' state through one object made once and a ref every render sets
 (`documentInteraction`), so a host calling it between renders is answered
 from the last one.
 
+**A `<link>`'s `load` and `error` are told after the fact, by the element**
+(`_tellSheets`, through `onSheet`): `load` once the restyle that reads the
+sheet, and everything it imports, has run (`_sheetsInForce`), not when the
+sheet arrives, so a theme switcher that takes the old `<link>` out on the
+new one's `load` never shows the page under neither. It cannot be the
+host's, from `onResource`: the store asks for a URL once, so a `<link>` put
+in for a sheet already in — a switcher going back to a theme it showed —
+asks for nothing, and was never told. Each is told once an `href`.
+
 **What the document draws takes the focus through a box mounted over it.**
 A link, a `<button>`, a summary or a `tabindex` element is a drawing, and
 a drawing takes no focus, so `stops.ts` mounts a **stop** over it — a
