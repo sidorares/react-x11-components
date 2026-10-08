@@ -64,6 +64,7 @@ import type { Animations, Transitions } from './animation.js';
 import {
   LIGHT_DARK,
   SYSTEM_COLOR,
+  colorSchemeKeywords,
   lightDark,
   systemColors,
   usedColorScheme,
@@ -482,6 +483,11 @@ export interface ComputedStyle {
    * unless the host names another (`RootLook.normalScheme`).
    */
   colorScheme: 'light' | 'dark';
+  /** The `color-scheme` as computed, which `getComputedStyle` reads:
+   *  `normal`, or the schemes it names (`colorSchemeKeywords`). Not what
+   *  anything is drawn by — that is `colorScheme` — and not the page's
+   *  `<meta name=color-scheme>`, which leaves the root's `normal`. */
+  colorSchemeKeywords: string;
   fontFamily: string;
   fontSize: number;
   /** What `fontSize` is worked out from — an absolute-size keyword, a size
@@ -1043,6 +1049,7 @@ export interface ComputedStyle {
 export const INHERITED = [
   'color',
   'colorScheme',
+  'colorSchemeKeywords',
   'textFillColor',
   'fontFamily',
   'fontSize',
@@ -1197,6 +1204,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     color: look.color,
     // what the root has where no rule sets one: `normal`'s
     colorScheme: look.normalScheme ?? look.colorScheme,
+    colorSchemeKeywords: 'normal',
     fontFamily: look.fontFamily,
     fontSize: look.fontSize,
     // the host's font is a browser's standard font, which is no generic
@@ -1486,6 +1494,7 @@ export function inherit(
   // computed name costing thirty times one through a written one
   out.color = parent.color;
   out.colorScheme = parent.colorScheme;
+  out.colorSchemeKeywords = parent.colorSchemeKeywords;
   out.textFillColor = parent.textFillColor;
   out.fontFamily = parent.fontFamily;
   out.fontSize = parent.fontSize;
@@ -1801,7 +1810,10 @@ export function applyDeclaration(
         ctx.paletteScheme ?? ctx.initial?.colorScheme,
         ctx.initial?.colorScheme,
       );
-      if (scheme) style.colorScheme = scheme;
+      if (scheme) {
+        style.colorScheme = scheme;
+        style.colorSchemeKeywords = colorSchemeKeywords(value);
+      }
       return;
     }
 
@@ -6555,7 +6567,7 @@ const MASK_LISTS: Record<string, keyof MaskLayers> = {
 
 const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   color: ['color'],
-  'color-scheme': ['colorScheme'],
+  'color-scheme': ['colorScheme', 'colorSchemeKeywords'],
   '-webkit-text-fill-color': ['textFillColor'],
   'background-clip': [
     'backgroundClipText',

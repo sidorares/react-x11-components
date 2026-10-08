@@ -79,6 +79,7 @@ handle.refresh();
 | `title`                                                                                 | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                           |
 | `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours as `rgb()`, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'`.                                                                                                                                                                                                                                         |
+| `matchMedia(query)`                                                                     | Whether a media query holds, as `matchMedia` answers: from the same width, viewport height, scale, colour scheme, preference for motion and scripting the document's own `@media` rules are matched against, so a page's script and its sheets never disagree.                                                                                                                                                                                                           |
 | `controlValue(el)`                                                                      | What a control holds: typed text, or its markup's value where nothing was typed; the option a `<select>` shows; whether a box or a radio is checked. Null for what is no control.                                                                                                                                                                                                                                                                                        |
 | `setControlValue(el, v)`                                                                | Set it, as a script sets `value` or `checked`: no event, and a field's widget shows it in place, its focus and caret kept.                                                                                                                                                                                                                                                                                                                                               |
 | `focus(el)` / `blur()`                                                                  | Give an element the focus, as Tab would — a control, a link, a button, a `tabindex` — or take it off the document. `focus` answers false where the element takes none.                                                                                                                                                                                                                                                                                                   |
@@ -917,6 +918,7 @@ behaviour onto a document with `domutils` — dispatches them, and answers.
 | `reset`                | A reset button pressed                                                    | nothing is put back                              |
 | `focusin`, `focusout`  | The focus moved, with the other element as `relatedTarget`                | —                                                |
 | `toggle`               | A `<details>` opened or closed                                            | —                                                |
+| `load`, `error`        | A `<link rel=stylesheet>`'s sheet applied, or not to be had               | —                                                |
 
 The order is HTML's and UI Events', and three places in it are worth knowing:
 
@@ -933,6 +935,13 @@ The order is HTML's and UI Events', and three places in it are worth knowing:
   capture phase, before a field does, so a `keydown` cancelled is never
   typed, and a cancelled Tab moves nothing. A key a composition takes is the
   composition's, and is told nothing.
+- **A `<link>`'s `load` is told after the restyle that applied its sheet**,
+  and what the sheet imports, so a page that takes its old theme's
+  `<link>` out on the new one's `load` never shows the document under
+  neither; `error` where the host declined it, it failed, or an import of
+  it did. Once an `href`: a link given another is told again, and one put
+  in for a sheet the document already has is told once a restyle reads it,
+  though nothing is asked for.
 
 A click on a control's widget — a checkbox, a radio, a button — is the
 widget's to tell, as it ticks or presses; a click on what the document draws
@@ -945,8 +954,10 @@ A host that runs a page's scripts has what it needs from the handle as well:
 `controlValue` and `setControlValue` for `value` and `checked`, `focus`,
 `blur` and `activeElement`, `activate` for a script's `el.click()` once its
 own click went on, `submitForm`, `reportValidity` and `resetForm` for a
-form's methods, and `computedStyle` for `getComputedStyle`. `onParsed` is
-`DOMContentLoaded`'s moment and `onLoaded` `load`'s.
+form's methods, `computedStyle` for `getComputedStyle` — `color-scheme`
+read as Chrome reads it, the schemes as written, or `normal` — and
+`matchMedia` for `matchMedia`. `onParsed` is `DOMContentLoaded`'s moment
+and `onLoaded` `load`'s.
 
 **A checkbox, a `<select>` and a button's widget tell no `focusin`.** Core's
 widgets take an `onFocus` that replaces their own rather than one beside it,

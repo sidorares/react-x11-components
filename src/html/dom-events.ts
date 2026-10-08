@@ -36,7 +36,11 @@ export type HtmlDomEventType =
   | 'reset'
   | 'focusin'
   | 'focusout'
-  | 'toggle';
+  | 'toggle'
+  // told after the fact: a `<link rel=stylesheet>`'s sheet applied, or not
+  // to be had
+  | 'load'
+  | 'error';
 
 /**
  * Something that happened to a document, before `<Html>` does what it does
@@ -103,7 +107,8 @@ export function modifiersOf(
 }
 
 /** What a page may cancel (UI Events, HTML): what has a default to stop.
- *  `input`, `change`, the focus's and `toggle` report what is done. */
+ *  `input`, `change`, the focus's, `toggle`, `load` and `error` report
+ *  what is done. */
 const CANCELABLE = new Set<HtmlDomEventType>([
   'click',
   'dblclick',

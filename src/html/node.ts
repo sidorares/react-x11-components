@@ -88,7 +88,7 @@ import type {
   ShadowSheets,
   ViewportOverflow,
 } from './css/cascade.js';
-import { mediaMatches, parseStylesheet } from './css/parse.js';
+import { mediaMatches, parseMediaQuery, parseStylesheet } from './css/parse.js';
 import type { MediaCondition, Stylesheet } from './css/parse.js';
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
@@ -333,6 +333,10 @@ export interface HtmlViewProps {
   /** Everything the document asked for has arrived or failed, counted
    *  from its first complete layout, once a document. */
   onLoaded?: () => void;
+  /** A `<link rel=stylesheet>`'s sheet came to something: `load` once a
+   *  restyle has applied it and what it imports, `error` where it, or an
+   *  import of it, is not to be had (`_tellSheets`). Once an `href`. */
+  onSheet?: (element: Element, outcome: 'load' | 'error') => void;
   style?: Style | Style[];
 }
 
@@ -451,6 +455,12 @@ export class HtmlViewNode extends Node {
   private _webFonts: WebFonts;
   /** The sheets the last restyle read, and the cascade built from them. */
   private _sheetsRead: SheetsRead | null = null;
+  /** Each `<link>` whose sheet the cascade in force read, with the `href`
+   *  it was read from and what the sheet imports (`_noteSheetsInForce`). */
+  private _sheetsInForce = new Map<Element, SheetInForce>();
+  /** The `href` each `<link>` was last told a `load` or an `error` for
+   *  (`_tellSheets`). */
+  private _sheetTold = new WeakMap<Element, string>();
   /** Each sheet text a shadow tree has read as, by a number
    *  (`_sheetsKey`). */
   private _sheetIds = new Map<string, number>();
@@ -1185,6 +1195,7 @@ export class HtmlViewNode extends Node {
         text,
         encoding,
         element: ref.element,
+        ...(ref.kind === 'link' && { href: ref.href }),
         base,
         media: ref.media,
       });
@@ -1228,11 +1239,13 @@ export class HtmlViewNode extends Node {
     // card of a page — are one set of rules, parsed and indexed once.
     const shadowKeys = new Map<ShadowRoot, string>();
     const shadowRead = new Map<string, SheetText[]>();
+    const shadowOwn: [string, SheetText[]][] = [];
     for (const { root, sheets } of facts.shadows) {
       const own = this._readSheets(sheets);
       const key = this._sheetsKey(own);
       shadowKeys.set(root, key);
       if (own.length && !shadowRead.has(key)) shadowRead.set(key, own);
+      if (own.length) shadowOwn.push([key, own]);
     }
     const extra = props.stylesheet;
     const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
@@ -1367,6 +1380,7 @@ export class HtmlViewNode extends Node {
         cascade: this._cascade,
       };
     }
+    this._noteSheetsInForce(read, shadowOwn);
     // the trees as they are now, which a kept cascade was made for others of
     this._cascade.bindShadows(shadowKeys);
     // Set on a kept cascade as on a new one: a change of it is a restyle
@@ -1664,6 +1678,7 @@ export class HtmlViewNode extends Node {
         });
       }
     }
+    this._tellSheets();
     if (
       this._loadedOf === doc ||
       !this._tree ||
@@ -1681,6 +1696,97 @@ export class HtmlViewNode extends Node {
         this._props().onLoaded?.();
       }
     });
+  }
+
+  /**
+   * Note which `<link>`s the cascade just made or kept read, each with the
+   * `href` it was read from and what its sheet imports: what a `load` is
+   * told from (`_tellSheets`). Every shadow tree's, not only the one its
+   * set of sheets was read for: they read alike and are other elements.
+   */
+  private _noteSheetsInForce(
+    read: readonly SheetText[],
+    shadows: readonly [string, SheetText[]][],
+  ): void {
+    const kept = this._sheetsRead;
+    const inForce = new Map<Element, SheetInForce>();
+    const note = (
+      own: readonly SheetText[],
+      imports: readonly ImportRead[][] | undefined,
+    ) => {
+      for (let i = 0; i < own.length; i += 1) {
+        const { element, href } = own[i];
+        if (href === undefined) continue;
+        inForce.set(element, { href, imports: imports?.[i] ?? [] });
+      }
+    };
+    note(read, kept?.imports);
+    for (const [key, own] of shadows) note(own, kept?.shadows.get(key));
+    this._sheetsInForce = inForce;
+  }
+
+  /**
+   * Tell the host of each `<link rel=stylesheet>` whose sheet came to
+   * something since it was told last (HTML, "fetching and processing a
+   * resource from a link element"): a `load` once the cascade in force
+   * has read it and nothing it imports is on its way — after the restyle
+   * that applied it, so a page that takes an old sheet out on the new
+   * one's `load` never shows the document under neither — and an `error`
+   * where the host declined it, it failed, or an import of it did. Once an
+   * `href`: a link given another is told again. A microtask later, as
+   * `onParsed` is: this runs inside a layout.
+   */
+  private _tellSheets(): void {
+    if (!this._props().onSheet) return;
+    const facts = this._source.facts();
+    let told: [Element, 'load' | 'error'][] | null = null;
+    const ask = (refs: readonly SheetRef[]) => {
+      for (const ref of refs) {
+        if (ref.kind !== 'link') continue;
+        if (this._sheetTold.get(ref.element) === ref.href) continue;
+        const outcome = this._sheetOutcome(ref.element, ref.href);
+        if (!outcome) continue;
+        this._sheetTold.set(ref.element, ref.href);
+        (told ??= []).push([ref.element, outcome]);
+      }
+    };
+    ask(facts.sheets);
+    for (const { sheets } of facts.shadows) ask(sheets);
+    if (!told) return;
+    const events: [Element, 'load' | 'error'][] = told;
+    const doc = this._source.document;
+    void Promise.resolve().then(() => {
+      if (this._source.document !== doc || this.destroyed) return;
+      for (const [element, outcome] of events) {
+        this._props().onSheet?.(element, outcome);
+      }
+    });
+  }
+
+  /** What a `<link>`'s sheet came to: `load`, `error`, or null while it,
+   *  or the restyle that reads it, or an import of it is on its way. */
+  private _sheetOutcome(
+    element: Element,
+    href: string,
+  ): 'load' | 'error' | null {
+    const state = this._resources.state(href);
+    if (state === 'failed') return 'error';
+    if (state !== 'ready') return null;
+    const read = this._sheetsInForce.get(element);
+    if (read?.href !== href) {
+      // not read yet — but for a sheet that is nothing, which no cascade
+      // reads, and which has loaded all there is of it
+      return this._resources.stylesheet(href)?.text ? null : 'load';
+    }
+    // an import read as nothing failed, or is on its way, or arrived since
+    // and waits for the restyle that reads it
+    let failed = false;
+    for (const { url, text } of read.imports) {
+      if (text !== null) continue;
+      if (this._resources.state(url) !== 'failed') return null;
+      failed = true;
+    }
+    return failed ? 'error' : 'load';
   }
 
   /**
@@ -3070,6 +3176,28 @@ export class HtmlViewNode extends Node {
   elementRect(element: Element): Rect | null {
     this._prepare(this.abs.width || 1);
     return this._rectOf(element);
+  }
+
+  /**
+   * Whether a media query holds for the document, as `matchMedia` asks:
+   * answered from what its own `@media` rules are — its width, the
+   * viewport's height, the scale, the palette's colour scheme, the
+   * preference for motion and whether it is scripted — so a page's script
+   * and its sheets never disagree about which side of a query it is on.
+   */
+  matchMedia(query: string): boolean {
+    const props = this._props();
+    const s = this._scale;
+    const width = this.abs.width || this._cascade?.viewportWidth || 1;
+    return mediaMatches(
+      [parseMediaQuery(query)],
+      Math.max(1, Math.floor(width)) / s,
+      props.look.colorScheme,
+      this._viewportHeight() / s,
+      s,
+      props.reducedMotion ?? false,
+      props.scripting ?? false,
+    );
   }
 
   /**
@@ -5716,6 +5844,8 @@ interface SheetText {
   text: string;
   encoding?: string;
   element: Element;
+  /** A `<link>`'s `href` as it was read, which its `load` is told for. */
+  href?: string;
   base: string | null;
   /** What its `media` attribute puts it under (`SheetRef.media`). */
   media: MediaCondition[] | null;
@@ -5726,6 +5856,12 @@ interface ImportRead {
   url: string;
   text: string | null;
   base: string | null;
+}
+
+/** A `<link>`'s sheet as the cascade in force read it. */
+interface SheetInForce {
+  href: string;
+  imports: readonly ImportRead[];
 }
 
 /** What a cascade was built from, to tell whether the next would be the

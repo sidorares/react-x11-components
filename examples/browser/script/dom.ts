@@ -5864,12 +5864,14 @@ export function installDom(bridge: Bridge): void {
   }
 
   /** `matchMedia`: answered by the host from `<Html>`'s own media queries,
-   *  once — no listener hears it change. */
+   *  each time `matches` is read — no listener hears it change. */
   const matchMedia = (query: Any): Any => {
     const media = str(query);
     return {
       media,
-      matches: !!call('media', media),
+      get matches() {
+        return !!call('media', media);
+      },
       onchange: null,
       addListener() {},
       removeListener() {},
@@ -6938,6 +6940,10 @@ export function installDom(bridge: Bridge): void {
         );
       case 'toggle':
         return dispatch(target, trusted(new Event('toggle')));
+      // a `<link>`'s sheet applied, or not to be had: neither bubbles
+      case 'load':
+      case 'error':
+        return dispatch(target, trusted(new Event(e.type)));
       default:
         return true;
     }

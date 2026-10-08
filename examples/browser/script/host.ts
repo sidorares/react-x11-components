@@ -35,9 +35,7 @@ import {
 } from '../../../src/html/index.js';
 import { ShadowRoot } from '../../../src/html/dom.js';
 import {
-  mediaMatches,
   parseDeclarations,
-  parseMediaQuery,
   supportsCondition,
 } from '../../../src/html/css/parse.js';
 import { isDisabled } from '../../../src/html/form.js';
@@ -852,22 +850,14 @@ export class DomHost {
           Math.max(0, Number(b) || 0),
         );
         return null;
-      case 'media': {
-        const v = this._seams.viewport();
+      // as the document's own `@media` rules are matched: its width, its
+      // scheme, its preference for motion
+      case 'media':
         try {
-          return mediaMatches(
-            [parseMediaQuery(text(a))],
-            v.width,
-            'light',
-            v.height,
-            v.dpr,
-            false,
-            true,
-          );
+          return this._seams.handle.matchMedia(text(a));
         } catch {
           return false;
         }
-      }
 
       // --- controls and the focus, which are `<Html>`'s
       case 'value':

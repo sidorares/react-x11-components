@@ -14,6 +14,7 @@ import {
   screen,
   userEvent,
 } from 'react-x11/test';
+import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
 import { Html, shadowRootOf, useHtmlHandle } from '../src/html/index.js';
@@ -21,6 +22,8 @@ import type {
   FormSubmission,
   HtmlHandle,
   HtmlViewNode,
+  ResourceRequest,
+  ResourceResult,
 } from '../src/html/index.js';
 import type { Element as DocElement } from '../src/html/dom.js';
 import { useScripts } from '../examples/browser/script/index.js';
@@ -51,12 +54,15 @@ interface Hosted {
 }
 
 /** A page whose scripts run, with stand-ins for the network and the pane:
- *  `scripts` answers a script's URL, `answer` a `fetch`. */
+ *  `scripts` answers a script's URL, `answer` a `fetch`, `sheets` a
+ *  stylesheet's, by its file's name; `scheme` is the palette's. */
 async function hosted(
   source: string,
   options: {
     scripts?: Record<string, string>;
     answer?: (request: FetchRequest) => FetchResponse | null;
+    sheets?: Record<string, string>;
+    scheme?: 'light' | 'dark';
   } = {},
 ): Promise<Hosted> {
   const out = {
@@ -107,12 +113,25 @@ async function hosted(
       baseUrl: PAGE,
       onLink: (href: string) => void out.links.push(href),
       onSubmit: (s: FormSubmission) => void out.submitted.push(s),
+      onResource: ({ url, kind }: ResourceRequest) => {
+        const text = options.sheets?.[url.slice(url.lastIndexOf('/') + 1)];
+        // a moment later, as over a network
+        return kind === 'stylesheet' && text !== undefined
+          ? new Promise<ResourceResult>((ok) =>
+              setTimeout(() => ok({ kind, text }), 5),
+            )
+          : null;
+      },
       'data-testname': 'doc',
       ...scripts,
     });
   }
   await renderX11(
-    h('box', { style: { width: 400, flexDirection: 'column' } }, h(Page)),
+    h(
+      ThemeProvider,
+      { colorScheme: options.scheme ?? 'light' } as Record<string, unknown>,
+      h('box', { style: { width: 400, flexDirection: 'column' } }, h(Page)),
+    ),
     FONTS ? { width: 440, height: 400, fonts: FONTS } : { backend: 'mock' },
   );
   await settle();
@@ -1356,4 +1375,47 @@ metric('layout is asked of the document as the script left it', async () => {
       '</script>',
   );
   assert.equal(doc.text('out'), '150 rgb(255, 0, 0) true');
+});
+
+test("a theme switcher's page: matchMedia reads the reader's scheme, the root's color-scheme reads back, and a new <link> loads before the old one goes", async () => {
+  // what melbcss.com's theme picker does
+  const page = (scheme: 'light' | 'dark') =>
+    hosted(
+      '<html><head><link id="theme" rel="stylesheet" href="a.css"></head>' +
+        '<body><p id="out"></p><p id="log"></p><script>' +
+        "var dark = matchMedia('(prefers-color-scheme: dark)').matches;" +
+        "document.documentElement.style.colorScheme = dark ? 'dark' : 'light';" +
+        "var link = document.getElementById('theme'), log = [];" +
+        "function sheets() { return [].map.call(document.querySelectorAll('link'), function (l) { return l.getAttribute('href') }).join(' ') }" +
+        'function swap(href, then) {' +
+        "  var next = document.createElement('link');" +
+        "  next.rel = 'stylesheet'; next.href = href;" +
+        '  next.onload = function () { link.remove(); link = next; log.push(sheets()); then() };' +
+        "  next.onerror = function () { log.push('error ' + href); then() };" +
+        '  document.head.appendChild(next) }' +
+        'function done() {' +
+        "  document.getElementById('out').textContent = dark + ' ' + getComputedStyle(document.documentElement).colorScheme;" +
+        "  document.getElementById('log').textContent = log.join(' | ') }" +
+        "swap('b.css', function () { swap('a.css', function () { swap('gone.css', done) }) });" +
+        '</script></body></html>',
+      {
+        scheme,
+        sheets: { 'a.css': 'p { color: red }', 'b.css': 'p { color: blue }' },
+      },
+    );
+  const loaded = async (doc: Hosted) => {
+    for (let i = 0; i < 20 && !doc.text('log'); i += 1) await settle(20);
+    return doc;
+  };
+  const light = await loaded(await page('light'));
+  assert.equal(light.text('out'), 'false light');
+  await cleanup();
+
+  const dark = await loaded(await page('dark'));
+  assert.equal(dark.text('out'), 'true dark');
+  assert.equal(
+    dark.text('log'),
+    'b.css | a.css | error gone.css',
+    'the first sheet again, already in, is told too',
+  );
 });

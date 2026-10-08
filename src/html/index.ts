@@ -375,6 +375,13 @@ export interface HtmlHandle {
     pseudo?: 'before' | 'after' | null,
   ): Record<string, string> | null;
   /**
+   * Whether a media query holds for the document, as `matchMedia` answers:
+   * from the same width, viewport height, scale, colour scheme, preference
+   * for motion and scripting its own `@media` rules are matched against.
+   * False with no document.
+   */
+  matchMedia(query: string): boolean;
+  /**
    * What a form control holds, as a script reads it: what was typed into a
    * field or its markup's value where nothing was, the option a `<select>`
    * shows, whether a checkbox or a radio is checked. Null for what is no
@@ -597,6 +604,14 @@ export function Html(props: HtmlProps): ReactElement {
     setControls(rects);
   }, []);
 
+  // a `<link>`'s sheet applied, or not to be had: told as the page's
+  // `load` or `error` at the element, after the fact
+  const handleSheet = React.useCallback(
+    (element: Element, outcome: 'load' | 'error') =>
+      void fireDomEvent(onDomEvent, outcome, element),
+    [onDomEvent],
+  );
+
   const selectionColor =
     props.selectionColor ?? tint(String(theme.accent ?? '#2980b9'), 0.35);
 
@@ -622,6 +637,7 @@ export function Html(props: HtmlProps): ReactElement {
     scripting: props.scripting ?? false,
     onParsed: props.onParsed,
     onLoaded: props.onLoaded,
+    onSheet: onDomEvent ? handleSheet : undefined,
     ref: viewRef as React.Ref<unknown>,
     // grown with the component, where an application grows it: the root's
     // background covers the whole of it, as a page's covers the window
@@ -749,6 +765,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.elementRect(element) ?? null,
       computedStyle: (element: Element, pseudo?: 'before' | 'after' | null) =>
         nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
+      matchMedia: (query: string) =>
+        nodeRef.current?.matchMedia(query) ?? false,
       controlValue: (element: Element) =>
         nodeRef.current?.interactive?.controlValue(element) ?? null,
       setControlValue: (element: Element, value: string | boolean) =>
