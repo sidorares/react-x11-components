@@ -62,6 +62,7 @@ import {
   isDoctype,
 } from './ranges.js';
 import type { CharacterData } from './ranges.js';
+import { navigableFor } from '../target.js';
 
 /** A request a page's `fetch` makes, and what it came to. */
 export interface FetchRequest {
@@ -69,6 +70,11 @@ export interface FetchRequest {
   method: string;
   headers: [string, string][];
   body: string | null;
+}
+/** A form's POST into a frame its target names (`navigateFrame`). */
+export interface FramePost {
+  body: string;
+  contentType: string;
 }
 export interface FetchResponse {
   url: string;
@@ -1591,15 +1597,9 @@ export class DomHost {
         this._frameDocument(frame);
         return this._frameAt.get(frame) ?? 'about:blank';
       }
-      case 'frameNavigate': {
-        const frame = this._element(a);
-        if (!this._inDocument(frame)) return null;
-        this._frameDocument(frame);
-        const url = text(b);
-        this._frameSent.set(frame, url === 'about:blank' ? null : url);
-        this._loadFrame(frame, true);
+      case 'frameNavigate':
+        this.navigateFrame(this._element(a), text(b), null);
         return null;
-      }
       // a frame document's viewport, its window's `innerWidth`
       case 'frameSize': {
         const size = this._frameSize(this._node(a) as Document);
@@ -1816,9 +1816,15 @@ export class DomHost {
       case 'navigate':
         this._seams.navigate(text(a), b ? 'replace' : 'here');
         return null;
-      case 'open':
-        this._seams.navigate(text(a), 'tab');
+      // `window.open`, to where its name says (`navigableFor`): a frame of
+      // the page's, the page's own tab, or a new one
+      case 'open': {
+        const to = navigableFor(this.document, text(b));
+        if (to === 'here') this._seams.navigate(text(a), 'here');
+        else if (to === 'tab') this._seams.navigate(text(a), 'tab');
+        else this.navigateFrame(to, text(a), null);
         return null;
+      }
       case 'reload':
         this._seams.reload();
         return null;
@@ -2255,6 +2261,21 @@ export class DomHost {
   // the page, and hears `load` all the same. Acid3's tests make their
   // documents in its `selectors` frame.
 
+  /**
+   * A frame sent to an address, which its `src` does not say until it
+   * changes: by its window's `location`, or by a link or a form whose
+   * target names it (`navigableFor`), with the form's POST where it posts.
+   * A frame of another origin is sent there and nothing of it is loaded, as
+   * no frame of another origin's is here, so a tracking pixel's POST into a
+   * hidden frame is never sent.
+   */
+  navigateFrame(frame: Element, url: string, post: FramePost | null): void {
+    if (!this._inDocument(frame)) return;
+    this._frameDocument(frame);
+    this._frameSent.set(frame, url === 'about:blank' ? null : url);
+    this._loadFrame(frame, true, post);
+  }
+
   /** A frame's document, made where it has none: null where it is another
    *  origin's, which the page may not read. */
   private _frameDocument(frame: Element): Document | null {
@@ -2308,7 +2329,11 @@ export class DomHost {
    * navigation and not the frame's first document (`navigated`), and one
    * to another origin is there at once, since nothing of it is loaded.
    */
-  private _loadFrame(frame: Element, navigated = false): void {
+  private _loadFrame(
+    frame: Element,
+    navigated = false,
+    post: FramePost | null = null,
+  ): void {
     const serial = (this._frameLoads.get(frame) ?? 0) + 1;
     this._frameLoads.set(frame, serial);
     const loaded = (): void => {
@@ -2325,7 +2350,14 @@ export class DomHost {
     }
     this._seams
       .fetch(
-        { url: src, method: 'GET', headers: [], body: null },
+        post
+          ? {
+              url: src,
+              method: 'POST',
+              headers: [['content-type', post.contentType]],
+              body: post.body,
+            }
+          : { url: src, method: 'GET', headers: [], body: null },
         new AbortController().signal,
       )
       .then((response) => {

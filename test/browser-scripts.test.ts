@@ -34,6 +34,7 @@ import {
 import { DomHost } from '../examples/browser/script/host.js';
 import { HtmlSource } from '../src/html/dom.js';
 import type { ScriptsOptions } from '../examples/browser/script/index.js';
+import { linkTarget, navigableFor } from '../examples/browser/target.js';
 import type {
   FetchRequest,
   FetchResponse,
@@ -123,7 +124,20 @@ async function hosted(
       ref: handle.ref,
       baseUrl: PAGE,
       onLink: (href: string) => void out.links.push(href),
-      onSubmit: (s: FormSubmission) => void out.submitted.push(s),
+      // where the page sends it: a frame its target names, or the tab
+      onSubmit: (s: FormSubmission) => {
+        const to = navigableFor(handle.document, s.target);
+        if (typeof to === 'string') out.submitted.push(s);
+        else {
+          scripts.navigateFrame?.(
+            to,
+            s.url,
+            s.body === null
+              ? null
+              : { body: s.body, contentType: s.contentType ?? '' },
+          );
+        }
+      },
       onResource: ({ url, kind }: ResourceRequest) => {
         if (options.held && kind === 'stylesheet') {
           return options.held.ask(url.slice(url.lastIndexOf('/') + 1));
@@ -2187,4 +2201,111 @@ test('a frame’s window is one for the frame wherever it goes: its location sen
     ].join('|'),
     doc.logs.join('\n'),
   );
+});
+
+test('a form whose target names a frame posts into the frame, and the tab stays where it is', async () => {
+  // Facebook's pixel: a hidden form posting into a frame inside it, named
+  // as the form's target, submitted once the frame has loaded, and taken
+  // out once it loads again — and the tab went to facebook.com/tr/
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var left = 2;' +
+      'function send(action, name) {' +
+      '  var form = document.createElement("form"); form.method = "post";' +
+      '  form.action = action; form.target = name; form.style.display = "none";' +
+      '  var frame = document.createElement("iframe"); frame.src = "about:blank";' +
+      '  frame.id = name; frame.name = name; form.appendChild(frame);' +
+      '  frame.addEventListener("load", function first() {' +
+      '    frame.removeEventListener("load", first);' +
+      '    var input = document.createElement("input"); input.name = "ev"; input.value = "PageView"; form.appendChild(input);' +
+      '    frame.addEventListener("load", function () {' +
+      '      r.push(name + ":" + (frame.contentDocument ? frame.contentDocument.title : "elsewhere"));' +
+      '      form.parentNode.removeChild(form);' +
+      '      if (--left === 0) document.getElementById("out").textContent = r.sort().join("|") + "|" + document.forms.length;' +
+      '    });' +
+      '    form.submit();' +
+      '  });' +
+      '  document.body.appendChild(form);' +
+      '}' +
+      'send("https://www.facebook.com/tr/", "fb1");' +
+      'send("collect.html", "fb2");' +
+      '</script>',
+    {
+      answer: (request) =>
+        request.url.endsWith('/collect.html')
+          ? {
+              url: request.url,
+              status: 200,
+              statusText: 'OK',
+              redirected: false,
+              headers: [['content-type', 'text/html']],
+              body: `<title>${request.method} ${request.body}</title>`,
+            }
+          : null,
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    // another origin's frame is sent there and nothing of it loaded, so
+    // nothing is posted to it
+    'fb1:elsewhere|fb2:POST ev=PageView|0',
+    doc.logs.join('\n'),
+  );
+  assert.deepEqual(doc.submitted, []);
+  assert.deepEqual(doc.links, []);
+  assert.deepEqual(
+    doc.fetched.map((r) => `${r.method} ${r.url}`),
+    ['POST https://example.test/dir/collect.html'],
+  );
+});
+
+test('a target is a keyword, a frame’s name, or a new tab; window.open goes where its name says', async () => {
+  const doc = await hosted(
+    '<base target="_top"><iframe name="side"></iframe><iframe name="Side"></iframe>' +
+      '<a id="own" target="side" href="a.html">a</a><a id="based" href="b.html">b</a>' +
+      '<p id="out"></p><script>' +
+      'var side = document.getElementsByName("side")[0];' +
+      'side.onload = function () { side.onload = null;' +
+      '  document.getElementById("out").textContent = side.contentWindow.location.pathname; };' +
+      'window.open("a.html", "side"); window.open("c.html", "_self"); window.open("d.html");' +
+      '</script>',
+    {
+      answer: (request) => ({
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [['content-type', 'text/html']],
+        body: '<title>t</title>',
+      }),
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(text, '/dir/a.html');
+  // the tab went nowhere for the frame, and here and to a new one for the rest
+  assert.deepEqual(doc.links, [
+    'https://example.test/dir/c.html',
+    'https://example.test/dir/d.html',
+  ]);
+  const document = doc.handle.document!;
+  const by = (id: string) => doc.byId(id);
+  for (const [target, expected] of [
+    ['', 'here'],
+    ['_SELF', 'here'],
+    ['_parent', 'here'],
+    ['_top', 'here'],
+    ['_Blank', 'tab'],
+    ['nowhere', 'tab'],
+  ] as const) {
+    assert.equal(navigableFor(document, target), expected, target);
+  }
+  // a name is matched as it is written, and the first frame of it wins
+  const side = navigableFor(document, 'side');
+  assert.ok(typeof side !== 'string' && side.attribs.name === 'side');
+  const upper = navigableFor(document, 'Side');
+  assert.ok(typeof upper !== 'string' && upper.attribs.name === 'Side');
+  // a link's own target, else the document's `<base target>`
+  assert.equal(linkTarget(by('own'), document), 'side');
+  assert.equal(linkTarget(by('based'), document), '_top');
 });

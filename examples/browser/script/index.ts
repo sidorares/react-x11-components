@@ -20,6 +20,7 @@
 // `import()` in its context is the one that makes `vm.SourceTextModule`
 // (`SCRIPTS_CONTAINED`), and where it is not given, nothing runs.
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Element } from 'domhandler';
 
 import type {
   Document,
@@ -29,7 +30,7 @@ import type {
 } from '../../../src/html/index.js';
 import { SCRIPTS_CONTAINED, ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
-import type { HostSeams } from './host.js';
+import type { FramePost, HostSeams } from './host.js';
 
 /** How long a script, a listener or a timer may run before it is stopped:
  *  long enough for any page that is working, short enough that one that is
@@ -256,7 +257,9 @@ export class ScriptRunner {
 /**
  * The props that run a document's scripts, for `<Html>`: `scripting`, and
  * the seams. Off, nothing but `onDocument` is handed back, and `<Html>` runs
- * nothing, as it never does.
+ * nothing, as it never does. `navigateFrame` is the page's own, not a prop:
+ * what a link or a form whose target names a frame calls (`navigableFor`),
+ * which `<Html>` leaves alone where it is spread with the rest.
  */
 export function useScripts(
   enabled: boolean,
@@ -271,6 +274,9 @@ export function useScripts(
   onLoaded?: () => void;
   onDomEvent?: (event: HtmlDomEvent) => boolean | void;
   stylesheet?: string[];
+  /** A frame of the page's sent somewhere by a link or a form whose target
+   *  names it, where scripts run: absent where nothing loads a frame. */
+  navigateFrame?: (frame: Element, url: string, post: FramePost | null) => void;
 } {
   const runner = useRef<ScriptRunner | null>(null);
   // the sheets the page adopted, applied after the document's own
@@ -320,6 +326,11 @@ export function useScripts(
     const go = runner.current?.dispatch(event) ?? true;
     return go ? undefined : false;
   }, []);
+  const navigateFrame = useCallback(
+    (frame: Element, to: string, post: FramePost | null) =>
+      runner.current?.host.navigateFrame(frame, to, post),
+    [],
+  );
 
   // the document's scripts stop when the page goes
   useEffect(() => () => runner.current?.dispose(), []);
@@ -344,6 +355,7 @@ export function useScripts(
     onParsed,
     onLoaded,
     onDomEvent,
+    navigateFrame,
     ...(adopted.length ? { stylesheet: adopted } : {}),
   };
 }
