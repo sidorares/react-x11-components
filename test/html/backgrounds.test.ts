@@ -836,7 +836,9 @@ test('a stop with no alpha is drawn in the colour beside it, and one of another 
 test('a radial gradient that changes slowly is drawn from a raster of it made small and kept, on a context that draws through a matrix', async () => {
   // CoreGraphics shades a radial gradient a pixel at a time: six orbs the
   // size of the window an animation moves were 65 ms of every frame on a
-  // Mac. Two stops 400px apart are smooth to a sample every 16 pixels
+  // Mac. Two stops 400px apart are smooth to a sample every 16 pixels, and
+  // drawn from a raster a quarter of the tile each way, since CoreGraphics
+  // shades one smaller unevenly and drawn up it was a mottle of squares
   const big =
     '<style>body{margin:0}</style><div style="width:1000px;height:600px;' +
     'background:radial-gradient(#ff0000, #0000ff)"></div>';
@@ -856,8 +858,8 @@ test('a radial gradient that changes slowly is drawn from a raster of it made sm
   await fillsOf(view(node), ops, { scalesText: true, cached });
   assert.deepStrictEqual(
     kept.map((k) => [k.width, k.height]),
-    [[63, 38]],
-    'a sixteenth of the tile each way',
+    [[250, 150]],
+    'a quarter of the tile each way, however smooth it is',
   );
   const images = ops.filter((o) => o.op === 'image');
   assert.deepStrictEqual(
@@ -908,7 +910,7 @@ test('a canvas of slowly changing radial gradients over a colour is painted smal
     canvas: { x: 0, y: 0, width: 1000, height: 600 },
     viewport: { x: 0, y: 0, width: 1000, height: 600 },
   });
-  assert.deepStrictEqual(made, [[63, 38]], 'one surface, a sixteenth');
+  assert.deepStrictEqual(made, [[250, 150]], 'one surface, a quarter');
   const images = ops.filter((o) => o.op === 'image');
   assert.deepStrictEqual(
     images.map((o) => (o.op === 'image' ? [o.x, o.y, o.w, o.h] : null)),
