@@ -219,9 +219,18 @@ interface Lent {
   readonly ctx: ClipContext;
   /** The saves the drawing has made on it and not restored. */
   open: number;
+  /** The context's alpha as it was lent, which every alpha the drawing
+   *  sets is a fraction of. */
+  alpha: number;
 }
 
 const LENT = new WeakMap<object, Lent>();
+
+/** A context's alpha, where it has one to read. */
+function alphaOf(ctx: ClipContext): number {
+  const alpha = (ctx as { globalAlpha?: unknown }).globalAlpha;
+  return typeof alpha === 'number' && alpha >= 0 && alpha <= 1 ? alpha : 1;
+}
 
 /**
  * The context a drawing is lent: the same context, keeping count of the
@@ -236,6 +245,14 @@ const LENT = new WeakMap<object, Lent>();
  * context: everything a later paint drew, in that frame and every frame
  * after, was cut to a sixteen-pixel icon. nextjs.org's blog drew its
  * heading, the icon beside it, and nothing more.
+ *
+ * And keeping the alpha it was lent at. `SvgView` sets `globalAlpha` to
+ * each mark's own, from 1 at its root, so a drawing in an element that
+ * fades a thing at a time — a native context, where no group goes on a
+ * surface — came out whole: reactmelbourne.com's grain, a full-window
+ * `<rect>` at `opacity: .025`, drew the window black on macOS. What the
+ * drawing sets is a fraction of the alpha it was lent at, and what it
+ * reads is what it set.
  */
 function lend(ctx: ClipContext): Lent {
   const known = LENT.get(ctx);
@@ -252,10 +269,15 @@ function lend(ctx: ClipContext): Lent {
   };
   const lent: Lent = {
     open: 0,
+    alpha: 1,
     ctx: new Proxy(ctx, {
       get(target, key) {
         if (key === 'save') return save;
         if (key === 'restore') return restore;
+        if (key === 'globalAlpha') {
+          const now = Reflect.get(target, key) as number;
+          return lent.alpha > 0 ? now / lent.alpha : now;
+        }
         // on the context itself: an accessor, a method and a private field
         // all see the context they belong to
         const value: unknown = Reflect.get(target, key);
@@ -267,7 +289,12 @@ function lend(ctx: ClipContext): Lent {
         }
         return method;
       },
-      set: (target, key, value) => Reflect.set(target, key, value),
+      set: (target, key, value) =>
+        Reflect.set(
+          target,
+          key,
+          key === 'globalAlpha' ? Number(value) * lent.alpha : value,
+        ),
     }),
   };
   LENT.set(ctx, lent);
@@ -436,10 +463,13 @@ export class SvgDrawing {
       : this._viewFor(vw, vh, paint, shapes);
     if (!view) return;
     ctx.save();
-    // the view draws on the context lent, which counts its saves
+    // the view draws on the context lent, which counts its saves and keeps
+    // its alpha
     const lent = lend(ctx);
     const outer = lent.open;
+    const outerAlpha = lent.alpha;
     lent.open = 0;
+    lent.alpha = alphaOf(ctx);
     try {
       ctx.beginPath();
       ctx.rect(x, y, w, h);
@@ -495,6 +525,7 @@ export class SvgDrawing {
       // this one's clip been left on the window's context (`lend`)
       for (; lent.open > 0; lent.open -= 1) ctx.restore();
       lent.open = outer;
+      lent.alpha = outerAlpha;
       ctx.restore();
     }
   }
