@@ -2970,10 +2970,32 @@ export function installDom(bridge: Bridge): void {
   /** A frame's WindowProxy: the window of the document it holds now where
    *  that is the page's origin's, and else what may be reached across
    *  origins, the rest of it a `SecurityError`. */
+  /**
+   * The frames whose documents the browser runs in realms of their own
+   * (`ScriptEngine.link`), by the frame element's id: each one's global,
+   * which the frame's window here is while it is linked — a same-origin
+   * frame's window, as a browser's is, its `document` the one its own
+   * scripts write to.
+   */
+  const linkedFrames = new Map<number, Any>();
+  /** Where this realm is a frame's: the global of the realm it is in, the
+   *  window that stands for that here, and its frame's id there. */
+  let parentLink: { global: Any; window: Any; frame: number } | null = null;
+  /** A message posted to another page realm's window (`__message`), where
+   *  it is cloned and told with the window that stands for this one there:
+   *  `from` is 0 for a frame's parent, or this realm's frame there. */
+  const deliverInto =
+    (global: Any, from: number) =>
+    (message: Any, options?: Any): void => {
+      if (!originAllowed(options)) return;
+      global.__message(message, location.origin, from);
+    };
   const frameProxyOf = (frame: Any): Any => {
     let proxy = frameProxies.get(frame);
     if (proxy) return proxy;
     const current = (): Any => {
+      const linked = linkedFrames.get(frame._id);
+      if (linked) return linked;
       const doc = frameDocumentOf(frame);
       return doc ? frameWindowOf(doc, frame) : null;
     };
@@ -2991,6 +3013,9 @@ export function installDom(bridge: Bridge): void {
       {
         get(_t, key) {
           const win = current();
+          if (win && key === 'postMessage' && linkedFrames.has(frame._id)) {
+            return deliverInto(win, 0);
+          }
           if (win) return Reflect.get(win, key, win);
           const others = across();
           if (Object.prototype.hasOwnProperty.call(others, key)) {
@@ -3109,7 +3134,9 @@ export function installDom(bridge: Bridge): void {
   };
   class HTMLIFrameElement extends HTMLElement {
     get contentDocument(): Any {
-      return this.isConnected ? frameDocumentOf(this) : null;
+      if (!this.isConnected) return null;
+      const linked = linkedFrames.get(this._id);
+      return linked ? linked.document : frameDocumentOf(this);
     }
     get contentWindow(): Any {
       return this.isConnected ? frameProxyOf(this) : null;
@@ -9486,28 +9513,34 @@ export function installDom(bridge: Bridge): void {
   define('blur', () => {});
   define('print', () => {});
   define('stop', () => {});
-  // a message to a window, this one's or a frame's: a task of its own,
-  // after this one, where the origin it is meant for is this one's (HTML
-  // 9.4.3), from the page, whose code is all that runs here
-  const postTo = (to: Any, message: Any, options?: Any): void => {
+  /** Whether a message may go where `options` says it is meant for: any
+   *  origin, this one, or one written as this one is (HTML 9.4.3). Every
+   *  realm a message goes to here is this page's origin's. */
+  function originAllowed(options?: Any): boolean {
     const target =
       options && typeof options === 'object'
         ? (options.targetOrigin ?? '/')
         : options === undefined
           ? '/'
           : str(options);
-    if (target !== '*' && target !== '/') {
-      let origin: string;
-      try {
-        origin = new URL(target).origin;
-      } catch {
-        throw new DOMException(
-          `Invalid target origin '${target}' in a call to 'postMessage'.`,
-          'SyntaxError',
-        );
-      }
-      if (origin !== location.origin) return;
+    if (target === '*' || target === '/') return true;
+    let origin: string;
+    try {
+      origin = new URL(target).origin;
+    } catch {
+      throw new DOMException(
+        `Invalid target origin '${target}' in a call to 'postMessage'.`,
+        'SyntaxError',
+      );
     }
+    return origin === location.origin;
+  }
+
+  // a message to a window, this one's or a frame's: a task of its own,
+  // after this one, where the origin it is meant for is this one's (HTML
+  // 9.4.3), from the page, whose code is all that runs here
+  const postTo = (to: Any, message: Any, options?: Any): void => {
+    if (!originAllowed(options)) return;
     const data = cloneOf(message);
     setTimer(
       () => {
@@ -9852,6 +9885,115 @@ export function installDom(bridge: Bridge): void {
     const ev = new Event('scroll', { bubbles: true });
     ev.isTrusted = true;
     return dispatch(document, ev);
+  });
+
+  // --- realms linked: a frame's and the page it is in ------------------
+  //
+  // The browser runs a frame's document in a realm of its own and hands
+  // each realm the other's global through a data slot (`ScriptEngine.link`)
+  // — two page realms of one origin, which reach each other as a browser's
+  // same-origin frames do.
+
+  Object.defineProperty(G, '__handed', {
+    value: undefined,
+    writable: true,
+    configurable: false,
+    enumerable: false,
+  });
+  const handed = (): Any => {
+    const value = G.__handed;
+    G.__handed = undefined;
+    return value;
+  };
+  // a frame of this page's runs in its own realm: its window here is that
+  // realm's global from now on
+  entry('__linkFrame', () => {
+    const [id] = input();
+    linkedFrames.set(Number(id), handed());
+    return true;
+  });
+  entry('__unlinkFrame', () => {
+    const [id] = input();
+    linkedFrames.delete(Number(id));
+    return true;
+  });
+  // this realm is a frame's: its parent and its top are the page's, behind
+  // a window that posts to it with this one as the source
+  entry('__linkParent', () => {
+    const [id] = input();
+    const global = handed();
+    const frame = Number(id);
+    const window: Any = new Proxy(
+      {},
+      {
+        get(_t, key) {
+          if (key === 'postMessage') return deliverInto(global, frame);
+          return Reflect.get(global, key, global);
+        },
+        set: (_t, key, value) => Reflect.set(global, key, value, global),
+        has: (_t, key) => key in global,
+        ownKeys: () => Reflect.ownKeys(global),
+        // every property a configurable one, as `frameProxyOf`'s are
+        getOwnPropertyDescriptor(_t, key) {
+          const found = Reflect.getOwnPropertyDescriptor(global, key);
+          if (found) found.configurable = true;
+          return found;
+        },
+        defineProperty: (_t, key, descriptor) =>
+          Reflect.defineProperty(global, key, {
+            ...descriptor,
+            configurable: true,
+          }),
+        deleteProperty: (_t, key) => Reflect.deleteProperty(global, key),
+        getPrototypeOf: () => Object.getPrototypeOf(global),
+        preventExtensions: () => false,
+      },
+    );
+    proxiedFrames.set(window, null);
+    parentLink = { global, window, frame };
+    const top = Reflect.get(global, 'top', global);
+    define('parent', window);
+    define('top', top === global ? window : top);
+    Object.defineProperty(G, 'frameElement', {
+      get: () => global.__frameElement(frame),
+      configurable: true,
+    });
+    return true;
+  });
+  // A message from another realm of this page: cloned here, as it is
+  // posted, and told as a task of its own, its source the window that
+  // stands for the realm it came from — `from` 0 for this realm's parent,
+  // else the frame of this realm's it is.
+  Object.defineProperty(G, '__message', {
+    value: (message: Any, origin: Any, from: Any) => {
+      const data = cloneOf(message);
+      const source =
+        from === 0 ? (parentLink?.window ?? null) : frameProxyOf(wrap(from));
+      setTimer(
+        () => {
+          const ev = new MessageEvent('message', {
+            data,
+            origin: str(origin),
+            source,
+          });
+          ev.isTrusted = true;
+          dispatch(windowTarget, ev);
+        },
+        0,
+        [],
+        false,
+      );
+    },
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+  // the element a frame of this page's is, for that frame's `frameElement`
+  Object.defineProperty(G, '__frameElement', {
+    value: (id: Any) => wrap(Number(id)),
+    writable: false,
+    configurable: false,
+    enumerable: false,
   });
 
   // a plain event at an element: a script's `load` or `error`

@@ -124,6 +124,14 @@ export interface HtmlProps {
   /** The HTML. Append to it as chunks stream in. */
   source: string;
   /**
+   * A document to draw in place of parsing `source`, which is then not
+   * read: one a host holds and changes, as a browser holds a frame's
+   * document a page writes into. Its changes are told through the handle's
+   * `refresh`, as a script's are. A browser draws an `<iframe>` with it
+   * (`renderEmbedded`).
+   */
+  document?: Document;
+  /**
    * Whether more source may still arrive (default true, matching
    * `<Markdown partial>`). While true the parser is left open and a `source`
    * that extends the last one is written as a delta, so the nodes already
@@ -646,6 +654,7 @@ export function Html(props: HtmlProps): ReactElement {
 
   const viewProps: HtmlViewProps & { ref?: React.Ref<unknown> } = {
     source,
+    ...(props.document && { document: props.document }),
     complete: !partial,
     stylesheet,
     charset,

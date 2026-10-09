@@ -13,6 +13,7 @@ import {
   renderX11,
   screen,
   userEvent,
+  waitForPixel,
 } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
@@ -25,8 +26,12 @@ import type {
   ResourceRequest,
   ResourceResult,
 } from '../src/html/index.js';
-import type { Element as DocElement } from '../src/html/dom.js';
+import type {
+  Document as HtmlDocument,
+  Element as DocElement,
+} from '../src/html/dom.js';
 import { useScripts } from '../examples/browser/script/index.js';
+import type { ScriptRunner } from '../examples/browser/script/index.js';
 import {
   SCRIPTS_CONTAINED,
   ScriptEngine,
@@ -35,6 +40,8 @@ import { DomHost } from '../examples/browser/script/host.js';
 import { HtmlSource } from '../src/html/dom.js';
 import type { ScriptsOptions } from '../examples/browser/script/index.js';
 import { linkTarget, navigableFor } from '../examples/browser/target.js';
+import { FrameHolder, frameMounts } from '../examples/browser/frame.js';
+import type { FrameContext } from '../examples/browser/frame.js';
 import type {
   FetchRequest,
   FetchResponse,
@@ -2425,3 +2432,288 @@ test('an IntersectionObserver hands entries of the interface a page asks for, so
   const text = await settled(doc, 'out', (t) => t !== '');
   assert.equal(text, 'true|true|true|t|true|1');
 });
+
+/** A page whose frames run in realms of their own, as the browser runs
+ *  them (`drawsFrames`, `frame.tsx`): each frame's document drawn by an
+ *  `<Html>` of its own over the frame's box, or held where the page lays
+ *  out none, its scripts its own runner's, linked to the page's. */
+async function hostedFrames(
+  source: string,
+  files: Record<string, string>,
+): Promise<{
+  text: (where: string, id: string) => string;
+  logs: string[];
+  runner: () => ScriptRunner;
+  result: Awaited<ReturnType<typeof renderX11>>;
+}> {
+  const logs: string[] = [];
+  const seams: ScriptsOptions = {
+    userAgent: 'test',
+    language: 'en-US',
+    viewport: () => ({
+      width: 400,
+      height: 300,
+      scrollX: 0,
+      scrollY: 0,
+      zoom: 1,
+      dpr: 1,
+      left: 0,
+      top: 0,
+    }),
+    scrollTo: () => {},
+    navigate: () => {},
+    reload: () => {},
+    go: () => {},
+    log: (level, text) => void logs.push(`${level}: ${text}`),
+    title: () => {},
+    fetch: async (request) => {
+      const name = request.url.slice(request.url.lastIndexOf('/') + 1);
+      const body = files[name];
+      if (body === undefined) throw new Error('no answer');
+      return {
+        url: request.url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [['content-type', 'text/html']],
+        body,
+      };
+    },
+    load: async () => null,
+    onTimeout: () => {},
+    drawsFrames: true,
+  };
+  let runner: (() => ScriptRunner | null) | undefined;
+  function Page() {
+    const handle = useHtmlHandle();
+    const scripts = useScripts(true, handle, PAGE, seams);
+    runner = scripts.runner;
+    const frames = (): FrameContext | null => {
+      const parent = scripts.runner?.();
+      return parent
+        ? { parent, seams, onResource: () => null, onLink: () => {} }
+        : null;
+    };
+    const holder = frames();
+    return h(
+      'box',
+      { style: { flexDirection: 'column' } },
+      h(Html, {
+        source,
+        partial: false,
+        ref: handle.ref,
+        baseUrl: PAGE,
+        'data-testname': 'page',
+        ...scripts,
+        renderEmbedded: frameMounts(frames),
+      }),
+      holder ? h(FrameHolder, { context: holder }) : null,
+    );
+  }
+  const result = await renderX11(
+    h('box', { style: { width: 400, flexDirection: 'column' } }, h(Page)),
+    FONTS ? { width: 440, height: 400, fonts: FONTS } : { backend: 'mock' },
+  );
+  await settle();
+  const page = () => runner!()!;
+  const text = (where: string, id: string): string => {
+    let document: HtmlDocument | undefined;
+    if (where === 'page') {
+      const root = screen.getByTestName('page') as unknown as {
+        children: HtmlViewNode[];
+      };
+      document = root.children[0].document;
+    } else {
+      document = page()
+        .host.frames()
+        .find((f) => f.frame.attribs.id === where)?.document;
+    }
+    const el = document && findById(document, id);
+    return el ? textOf(el) : '';
+  };
+  return { text, logs, runner: page, result };
+}
+
+/** What `read` answers once `done` holds of it, or by three seconds. */
+async function until(
+  read: () => string,
+  done: (text: string) => boolean,
+): Promise<string> {
+  const end = Date.now() + 3000;
+  let text = read();
+  while (!done(text) && Date.now() < end) {
+    await settle(20);
+    text = read();
+  }
+  return text;
+}
+
+test('a frame runs in a realm of its own, linked to the page: its window, its parent and messages both ways', async () => {
+  const frame =
+    '<!DOCTYPE html><p id="got">-</p><script type="module">' +
+    'const r = [location.pathname, window.parent !== window, window.top === window.parent,' +
+    '  frameElement && frameElement.id, typeof parent.notify];' +
+    'parent.postMessage({ type: "ready", r: r.join(",") }, "*");' +
+    'addEventListener("message", (e) => {' +
+    '  document.getElementById("got").textContent = e.data.n + ":" + (e.source === window.parent) + ":" + e.origin;' +
+    '  e.source.postMessage({ type: "echo", n: e.data.n * 2 }, "*");' +
+    '});' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f"); var r = [];' +
+      'function notify() {}' +
+      'f.onload = function () { r.push("load"); };' +
+      'addEventListener("message", function (e) {' +
+      '  r.push(e.data.type + ":" + (e.source === f.contentWindow) + (e.data.r ? ":" + e.data.r : ""));' +
+      '  if (e.data.type === "ready") {' +
+      '    r.push(f.contentDocument === f.contentWindow.document, f.contentWindow.Array !== Array,' +
+      '      f.contentDocument.getElementById("got") !== null);' +
+      '    f.contentWindow.postMessage({ n: 21 }, "*");' +
+      '  }' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t.includes('echo'),
+  );
+  // the frame's `load` is told in the page once its document has loaded,
+  // whenever that falls between the messages
+  assert.ok(page.split('|').includes('load'), page);
+  assert.equal(
+    page
+      .split('|')
+      .filter((p) => p !== 'load')
+      .join('|'),
+    [
+      'ready:true:/dir/frame.html,true,true,f,function',
+      'true',
+      'true',
+      'true',
+      'echo:true',
+    ].join('|'),
+    logs.join('\n'),
+  );
+  assert.equal(text('f', 'got'), '21:true:https://example.test');
+});
+
+test('a frame the page lays out no box for runs all the same, and keeps its realm once it has one', async () => {
+  const { text, logs, runner } = await hostedFrames(
+    '<iframe id="f" src="frame.html" style="display:none"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'f.onload = function () {' +
+      '  document.getElementById("out").textContent = "load:" + window.runs;' +
+      '  f.style.display = "block";' +
+      '  setTimeout(function () {' +
+      '    document.getElementById("out").textContent +=' +
+      '      "|" + window.runs + ":" + f.contentWindow.mark;' +
+      '  }, 300);' +
+      '};' +
+      '</script>',
+    {
+      'frame.html':
+        '<p id="n">-</p><script>' +
+        'parent.runs = (parent.runs || 0) + 1; var mark = 1;' +
+        'document.getElementById("n").textContent = "ran " + parent.runs;' +
+        '</script>',
+    },
+  );
+  // run held, with no box: its scripts ran and its `load` came
+  assert.match(
+    await until(
+      () => text('page', 'out'),
+      (t) => t.startsWith('load:'),
+    ),
+    /^load:1/,
+    logs.join('\n'),
+  );
+  // and drawn once it has one, in the realm it ran in: its script ran once
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t.includes('|'),
+    ),
+    'load:1|1:1',
+  );
+  const shown = runner()
+    .host.frames()
+    .find((f) => f.frame.attribs.id === 'f')!;
+  assert.ok(runner().frameDrawn(shown.document), 'drawn over its box');
+  assert.equal(text('f', 'n'), 'ran 1');
+});
+
+metric(
+  "a frame's document is drawn over the frame's box, and drawn again as its scripts change it",
+  async () => {
+    const { result, logs, runner } = await hostedFrames(
+      '<style>body{margin:0}iframe{display:block;border:0}</style>' +
+        '<iframe id="f" src="frame.html" width="100" height="50"></iframe>' +
+        '<script>addEventListener("message", function () {' +
+        '  document.getElementById("f").contentWindow.postMessage("go", "*");' +
+        '});</script>',
+      {
+        'frame.html':
+          '<style>body{margin:0;background:#00ff00}</style><script>' +
+          'addEventListener("message", function () {' +
+          '  document.body.style.background = "#0000ff";' +
+          '});' +
+          '</script>',
+      },
+    );
+    await waitForPixel(result.ctx, 50, 25, '#00ff00', {
+      message: `the frame's green over its box\n${logs.join('\n')}`,
+    });
+    // the page asks the frame to change, through its realm's window
+    runner().engine.exec('postMessage("ask", "*")', 'test', 0);
+    await waitForPixel(result.ctx, 50, 25, '#0000ff', {
+      message: "the frame's script's blue",
+    });
+    // and the page's own white below it
+    await waitForPixel(result.ctx, 50, 75, '#ffffff');
+  },
+);
+
+metric(
+  'a frame with no script in it is drawn, and is the page realm’s, which draws what the page writes into it',
+  async () => {
+    const { result, text, logs, runner } = await hostedFrames(
+      '<style>body{margin:0}iframe{display:block;border:0}</style>' +
+        '<iframe id="f" src="static.html" width="100" height="50"></iframe>' +
+        '<p id="out"></p><script>' +
+        'var f = document.getElementById("f");' +
+        'f.onload = function () {' +
+        '  document.getElementById("out").textContent =' +
+        '    "load:" + (f.contentWindow.Array === Array);' +
+        '};' +
+        'addEventListener("message", function () {' +
+        '  f.contentDocument.body.style.background = "#0000ff";' +
+        '});' +
+        '</script>',
+      {
+        'static.html':
+          '<style>body{margin:0;background:#00ff00}</style><p>static</p>',
+      },
+    );
+    // its `load` is the page host's, and its window holds the page's globals
+    assert.equal(
+      await until(
+        () => text('page', 'out'),
+        (t) => t !== '',
+      ),
+      'load:true',
+      logs.join('\n'),
+    );
+    await waitForPixel(result.ctx, 50, 25, '#00ff00', {
+      message: "the frame's green over its box",
+    });
+    // what the page's realm writes into it is told to the frame's <Html>
+    runner().engine.exec('postMessage("go", "*")', 'test', 0);
+    await waitForPixel(result.ctx, 50, 25, '#0000ff', {
+      message: "the page's blue in the frame",
+    });
+  },
+);

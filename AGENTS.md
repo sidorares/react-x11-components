@@ -1912,6 +1912,38 @@ closes a way out a DOM binding opens by accident:
   The engine feature-detects the first; a change to the engine is checked
   by running the browser under `bun` before it is believed.
 
+**A frame the browser loads as HTML is drawn over its box, and one with a
+script in it runs in a realm of its own, which is the frame's**
+(`examples/browser/frame.tsx`).
+Each realm is a host and an engine over one tree of nodes (`DomShared`),
+and the page's engine and the frame's are linked (`ScriptEngine.link`): the
+page's `contentWindow` is the frame's global and the frame's `parent` the
+page's, so a message, an object and a function cross between them as they
+do between a browser's frames, and nothing crosses to the host that did
+not before. Three things are load-bearing:
+
+- **The realm outlives the view.** A frame's `<Html>` is mounted where the
+  page lays its box out (`renderEmbedded`) and goes where it stops — a
+  `display: none`, a layout that set it aside — and a frame with no box is
+  run in a holder that draws nothing (`FrameHolder`). So the page's runner
+  keeps the frame's, by document (`FrameSeat`), and a view only lends it
+  its seams and its handle: a view made again finds the realm it ran in,
+  and a script the parser met runs once, whichever view met it (`inert`,
+  HTML's "already started"). Made by the view, the realm was made again
+  each time a frame was shown, and a page that kept a frame hidden until
+  it was ready lost everything the frame had set up.
+- **Only a document loaded as HTML with a script in it has a realm**
+  (`DomShared.realms`). A frame's first `about:blank`, what a script writes
+  into one and a document with no script are the page realm's: a page
+  reaches into them at once, and a realm answers only once React has
+  mounted its view. Acid3 drives its static frames from the page that way,
+  and with a realm each it scored 92 where it scores 96. Such a frame is
+  drawn, and told of what the page's scripts change in it, and runs nothing
+  of its own.
+- **A change is told to the `<Html>` that draws its document, whichever
+  realm made it** (`_tell`, `DomShared.changes`). What a realm's
+  `MutationObserver` sees is still only what that realm changed.
+
 **A document's fonts are registered under names nothing else has.**
 `@font-face` faces go through `onResource` as `kind: 'font'` and into
 react-x11's font manager with `loadFont` — the application's manager, so

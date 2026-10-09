@@ -672,24 +672,34 @@ standards moved from what Acid3 expected):
   its `checked` attribute is its default from then on (HTML's dirty
   checkedness), kept beside the element, where `<Html>` keeps a box's state
   in the attribute itself.
-- **Frames.** A same-origin frame is a document of its own, which nothing
-  draws: loaded as it goes into the document and again when its `src`
-  changes — a new document each time — HTML parsed, XML parsed as XML with
-  its namespaces, and one that is not well-formed the error and nothing of
-  it, as Firefox shows it. Its scripts run, but in the page's realm, with
-  the frame's window and document for the names a script reaches them by:
-  what one declares is its function's and not a window's — enough for a
-  frame that tells its parent it loaded, short of an application built in
-  one. Its styles are worked out with `<Html>`'s cascade for the frame's
-  content box, so its media queries see the frame's size.
+- **Frames.** A same-origin frame is a document of its own: loaded as it
+  goes into the document and again when its `src` changes — a new document
+  each time — HTML parsed, XML parsed as XML with its namespaces, and one
+  that is not well-formed the error and nothing of it, as Firefox shows it.
+  Where the browser draws frames (`drawsFrames`), an HTML one is drawn over
+  its box by an `<Html>` of its own, and one with a script in it runs in a
+  realm of its own, linked to the page's: its `parent`, `top` and `frameElement`, the page's
+  `contentWindow` and `contentDocument` for it, and `postMessage` both
+  ways, each message with its `source`. That is how a page talks to a
+  runner in a frame, as the react-x11 playground's does. A frame the page
+  lays out no box for runs all the same, drawn nowhere, and keeps its realm
+  once it has one. Elsewhere — an XML frame, a host that draws none — a
+  frame's scripts run in the page's realm, with the frame's window and document
+  for the names a script reaches them by, enough for a frame that tells
+  its parent it loaded, as Acid3's do. A frame's style asked from the page
+  is worked out with `<Html>`'s cascade for the frame's content box, so its
+  media queries see the frame's size. What a realm's `MutationObserver`
+  sees is what that realm changed: one a frame made does not see the page
+  write into the frame's document.
 - **A frame's window.** `contentWindow` is a WindowProxy: one for the
   frame, whatever it has gone on to, which is the window of the document
   it holds now, and there for another origin's frame too with only what
   crosses origins (`location` to send it, `postMessage`, its relations;
   the rest a `SecurityError`). Its `location` sends the frame elsewhere
   without its `src` saying so, as Sandpack sends its frame to the bundler.
-  A frame has no realm of its own, so its window holds the page's globals
-  as they were before any page code ran: scripts take a "clean" `RegExp`,
+  A frame with no realm of its own — its first `about:blank`, which a
+  page reaches into as it makes it — has a window that holds the page's
+  globals as they were before any page code ran: scripts take a "clean" `RegExp`,
   `JSON`, `fetch` or `Node.prototype` accessor from a hidden frame —
   Contentsquare's pure window, Sentry's unwrapped `fetch` — and get the
   page's own, unwrapped, which is what they wanted. What they get is the

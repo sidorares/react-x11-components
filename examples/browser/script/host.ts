@@ -71,6 +71,16 @@ export interface FetchRequest {
   headers: [string, string][];
   body: string | null;
 }
+/** A frame a browser that draws frames mounts a view for (`frames`). */
+export interface FrameShown {
+  frame: Element;
+  document: Document;
+  url: string;
+  /** Whether its document runs in a realm of its own (`DomShared.realms`),
+   *  or is the page realm's, drawn and nothing more. */
+  realm: boolean;
+}
+
 /** A form's POST into a frame its target names (`navigateFrame`). */
 export interface FramePost {
   body: string;
@@ -138,6 +148,14 @@ export interface HostSeams {
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;
+  /**
+   * Whether the browser draws the page's frames and runs each one's scripts
+   * in a realm of its own (`ScriptRunner`'s frames): a frame's document is
+   * still loaded here, and its scripts are not run here, nor its `load`
+   * told, which its own runner does. Absent, a frame is a document nothing
+   * draws, its inline scripts run in the page's realm (`__frameScript`).
+   */
+  drawsFrames?: boolean;
 }
 
 /** An error the facade throws by name: `DOMException`'s. */
@@ -192,6 +210,19 @@ const XML_TYPES = /^(?:text\/xml|application\/xml|[\w.+-]+\/[\w.-]+\+xml)$/;
 const JS_TYPES =
   /^(?:|text\/javascript|application\/javascript|text\/ecmascript|application\/ecmascript|application\/x-javascript|text\/jscript)$/i;
 const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+
+/** Whether an HTML document has a script that runs: a classic one or a
+ *  module, inline or not. */
+function hasScripts(doc: Document): boolean {
+  return !!DomUtils.findOne(
+    (el) =>
+      el.name === 'script' &&
+      !el.namespace &&
+      (JS_TYPES.test((el.attribs.type ?? '').trim()) ||
+        (el.attribs.type ?? '').trim().toLowerCase() === 'module'),
+    doc.children,
+  );
+}
 
 /** What `_xmlTree` reads of htmlparser2's parser beyond its typed surface:
  *  the names open, top first, and a tag's name. */
@@ -599,6 +630,60 @@ export interface Entries {
   call(entry: string, input: unknown): Primitive;
 }
 
+/**
+ * What the hosts of one page's documents share: the page's and each of its
+ * frames', a realm and a host each (`ScriptRunner`), over one tree of
+ * nodes. Everything kept by a node is here — a frame's script and the
+ * page's reach the same nodes, the page through `contentDocument` — and
+ * so are the changes waiting to be told, by document, since what one
+ * realm changes may be drawn by another's `<Html>`. What is a realm's own
+ * — its ids, its timers, its observers, its address — stays its host's.
+ */
+export class DomShared {
+  readonly inert = new WeakSet<Element>();
+  readonly frames = new WeakMap<Element, Document>();
+  readonly frameOf = new WeakMap<Document, Element>();
+  readonly frameStyles = new WeakMap<
+    Document,
+    { key: string; cascade: Cascade }
+  >();
+  readonly checkedDefaults = new WeakMap<Element, string | null>();
+  readonly frameLoads = new WeakMap<Element, number>();
+  readonly frameAt = new WeakMap<Element, string>();
+  readonly frameSent = new WeakMap<Element, string | null>();
+  readonly written = new WeakMap<Element, ChildNode>();
+  readonly sheets = new WeakMap<Element, SheetState>();
+  readonly sheetsChanged = new Set<Element>();
+  sheetVersion = 0;
+  readonly documents = new WeakSet<Document>();
+  readonly xml = new WeakMap<Document, string>();
+  readonly owners = new WeakMap<AnyNode, Document>();
+  readonly doctypes = new WeakMap<AnyNode, [string, string, string]>();
+  /** Changes made to documents nothing draws, counted (`_frameStyle`). */
+  foreignChanges = 0;
+  /** The `<Html>` each frame's document is drawn by, where one is: what a
+   *  change to it is told to, whichever realm made it. */
+  readonly drawn = new WeakMap<Document, HtmlHandle>();
+  /** The changes made to each drawn frame's document since its `<Html>`
+   *  was last told. */
+  readonly changes = new Map<Document, HtmlChange[]>();
+  /** The frames that have a document, which a browser that draws frames
+   *  mounts one for each of (`frames`), and who is told as that changes. */
+  readonly frameList = new Set<Element>();
+  readonly frameListeners = new Set<() => void>();
+  /** The frames' documents that run in a realm of their own: those loaded
+   *  as HTML, with a script in them, where the browser draws frames. A
+   *  frame's first `about:blank`, what a script writes into one and a
+   *  document with no script are the page realm's, since a page reaches
+   *  into them at once, before a realm could be made. */
+  readonly realms = new WeakSet<Document>();
+
+  /** The frames' documents changed: one came, or went on to another. */
+  framesChanged(): void {
+    for (const listener of [...this.frameListeners]) listener();
+  }
+}
+
 export class DomHost {
   private _ids = new WeakMap<AnyNode, number>();
   private _nodes = new Map<number, AnyNode>();
@@ -615,16 +700,16 @@ export class DomHost {
   url: string;
   /** Scripts that are never run: what `innerHTML` and
    *  `insertAdjacentHTML` put in, which HTML does not run either. */
-  readonly inert = new WeakSet<Element>();
+  readonly inert: WeakSet<Element>;
   /** A frame's document — an `<iframe>`'s, an `<object>`'s — and the frame
    *  each document is, and the cascade its styles were last worked out
    *  with, by its sheets' texts (`_frameStyle`). */
-  private _frames = new WeakMap<Element, Document>();
-  private _frameOf = new WeakMap<Document, Element>();
-  private _frameStyles = new WeakMap<
+  private readonly _frames: WeakMap<Element, Document>;
+  private readonly _frameOf: WeakMap<Document, Element>;
+  private readonly _frameStyles: WeakMap<
     Document,
     { key: string; cascade: Cascade }
-  >();
+  >;
   /** The script the parser met that is running, whose `document.write`
    *  goes in after it (`write`), and the last node each wrote. */
   writing: Element | null = null;
@@ -634,40 +719,39 @@ export class DomHost {
    *  the attribute, where `<Html>` keeps the box's state in the attribute
    *  itself. Acid3's test 43 sets the attribute of a radio a click checked
    *  and a script unchecked, and looks to see it stay unchecked. */
-  private _checkedDefaults = new WeakMap<Element, string | null>();
+  private readonly _checkedDefaults: WeakMap<Element, string | null>;
   /** Each frame's navigations, counted: a load answers only the last. */
-  private _frameLoads = new WeakMap<Element, number>();
+  private readonly _frameLoads: WeakMap<Element, number>;
   /** Where each frame's document is from, which its window's `location`
    *  reads and whose origin says whether the page may read the document:
    *  `about:blank` until a load is in, and another origin's address at
    *  once, since nothing of one is loaded (`_frameDocument`). */
-  private _frameAt = new WeakMap<Element, string>();
+  private readonly _frameAt: WeakMap<Element, string>;
   /** Where a frame's window was sent (`location.replace`, `href = …`),
    *  which its `src` does not say, until its `src` changes: null for
    *  `about:blank`. */
-  private _frameSent = new WeakMap<Element, string | null>();
-  private _written = new WeakMap<Element, ChildNode>();
+  private readonly _frameSent: WeakMap<Element, string | null>;
+  private readonly _written: WeakMap<Element, ChildNode>;
   /** The rules of each `<style>` a page asked the sheet of, and those a
    *  page changed since the last `flush` (`_writeSheets`). */
-  private _sheets = new WeakMap<Element, SheetState>();
-  private _sheetsChanged = new Set<Element>();
-  private _sheetVersion = 0;
+  private readonly _sheets: WeakMap<Element, SheetState>;
+  private readonly _sheetsChanged: Set<Element>;
   /** A change no list says the reach of — a shadow tree attached — so
    *  the next flush refreshes the whole document. */
   private _refreshAll = false;
   /** The documents a page made of its own (`_documentOf`), which are
    *  documents and not fragments, though the tree has one kind of root. */
-  private _documents = new WeakSet<Document>();
+  private readonly _documents: WeakSet<Document>;
   /** The XML documents a page made (`createDocument`), by their content
    *  type: an element's name keeps its case in one. */
-  private _xml = new WeakMap<Document, string>();
+  private readonly _xml: WeakMap<Document, string>;
   /** A node's document where its tree does not say (DOM 4.4, "node
    *  document"): one a page made in another document, or took out of one.
    *  A node in a tree is its root's, where the root is a document; the
    *  entry nearest it up the tree says otherwise. */
-  private _owners = new WeakMap<AnyNode, Document>();
+  private readonly _owners: WeakMap<AnyNode, Document>;
   /** A doctype's name and its two ids. */
-  private _doctypes = new WeakMap<AnyNode, [string, string, string]>();
+  private readonly _doctypes: WeakMap<AnyNode, [string, string, string]>;
   /** The live ranges (`ranges.ts`), which every change below moves. */
   private _ranges = new Ranges({
     error: (kind, message) => new DomError(kind, message),
@@ -693,20 +777,41 @@ export class DomHost {
   /** Changes made to a page's own documents, counted, and the count a
    *  frame's styles were last worked out at: a selector's kept answers
    *  are good only while its tree holds still (`_frameStyle`). */
-  private _foreignChanges = 0;
   private _foreignSeen = -1;
   /** Where timers and fetches call back into the page. */
   entries: Entries | null = null;
   private _disposed = false;
 
+  /** What every realm's host over one page's documents shares
+   *  (`DomShared`). */
+  private readonly _s: DomShared;
+
   constructor(
     readonly document: Document,
     private readonly _seams: HostSeams,
     url: string,
+    shared: DomShared = new DomShared(),
   ) {
     this.url = url;
     this._ids.set(document, 1);
     this._nodes.set(1, document);
+    this._s = shared;
+    this.inert = shared.inert;
+    this._frames = shared.frames;
+    this._frameOf = shared.frameOf;
+    this._frameStyles = shared.frameStyles;
+    this._checkedDefaults = shared.checkedDefaults;
+    this._frameLoads = shared.frameLoads;
+    this._frameAt = shared.frameAt;
+    this._frameSent = shared.frameSent;
+    this._written = shared.written;
+    this._sheets = shared.sheets;
+    this._sheetsChanged = shared.sheetsChanged;
+    this._documents = shared.documents;
+    this._xml = shared.xml;
+    this._owners = shared.owners;
+    this._doctypes = shared.doctypes;
+    shared.drawn.set(document, _seams.handle);
   }
 
   /** The bridge the facade is handed: never throws, never answers an
@@ -740,6 +845,16 @@ export class DomHost {
    *  of the document as the page left it. */
   flush(): void {
     if (this._sheetsChanged.size) this._writeSheets();
+    if (this._s.changes.size && !this._disposed) {
+      // what this realm, or another, changed in another realm's document
+      const pending = [...this._s.changes];
+      this._s.changes.clear();
+      for (const [doc, changes] of pending) {
+        this._s.drawn
+          .get(doc)
+          ?.refresh(changes.length > CHANGES_TOLD ? undefined : changes);
+      }
+    }
     if (this._refreshAll && !this._disposed) {
       // a shadow tree came: every element is styled again
       this._refreshAll = false;
@@ -779,8 +894,60 @@ export class DomHost {
     return answer !== false;
   }
 
+  /** What the realms of this page share, for a frame's host to be made
+   *  over (`ScriptRunner`'s frames). */
+  get shared(): DomShared {
+    return this._s;
+  }
+
+  /**
+   * The frames in this realm's document that have an HTML document of their
+   * own to show, each with it, its address and whether it runs in a realm
+   * of its own (`DomShared.realms`): what a browser that draws frames mounts
+   * a frame for (`drawsFrames`). Another origin's is left out, since
+   * nothing of it is loaded, and an XML one, which `<Html>` does not draw.
+   */
+  frames(): FrameShown[] {
+    const out: FrameShown[] = [];
+    for (const frame of this._s.frameList) {
+      if (!this._inDocument(frame)) continue;
+      const document = this._frames.get(frame);
+      const url = this._frameAt.get(frame) ?? 'about:blank';
+      if (!document || !this._sameOrigin(url) || this._xml.has(document)) {
+        continue;
+      }
+      out.push({ frame, document, url, realm: this._s.realms.has(document) });
+    }
+    return out;
+  }
+
+  /** Load the frames the document has, as a browser loads a frame as the
+   *  parser meets it: those its markup has, where the browser draws frames
+   *  and nothing has asked for them yet. */
+  loadFrames(): void {
+    if (this._disposed) return;
+    this._framesIn(this.document.children);
+  }
+
+  /** Be told when a frame's document comes or goes; answers the way to
+   *  stop. */
+  onFrames(listener: () => void): () => void {
+    this._s.frameListeners.add(listener);
+    return () => this._s.frameListeners.delete(listener);
+  }
+
+  /** A frame's document has come to the end of its load in its own realm
+   *  (`drawsFrames`): the frame's `load`, in this one. */
+  frameLoaded(frame: Element): void {
+    if (this._disposed || !this.entries) return;
+    this.entries.call('__fire', [this.idOf(frame), 'load']);
+  }
+
   dispose(): void {
     this._disposed = true;
+    if (this._s.drawn.get(this.document) === this._seams.handle) {
+      this._s.drawn.delete(this.document);
+    }
     for (const timer of this._timers.values()) clearTimeout(timer);
     this._timers.clear();
     for (const fetch of this._fetches.values()) fetch.abort();
@@ -1528,7 +1695,7 @@ export class DomHost {
         }
         const was = state.version;
         state.rules.splice(index, 0, rules[0]);
-        state.version = this._sheetVersion += 1;
+        state.version = this._s.sheetVersion += 1;
         this._sheetsChanged.add(el);
         return `${was}\u0000${state.version}\u0000${rules[0]}`;
       }
@@ -1544,7 +1711,7 @@ export class DomHost {
         }
         const was = state.version;
         state.rules.splice(index, 1);
-        state.version = this._sheetVersion += 1;
+        state.version = this._s.sheetVersion += 1;
         this._sheetsChanged.add(el);
         return `${was}\u0000${state.version}`;
       }
@@ -2052,18 +2219,15 @@ export class DomHost {
     name: string | null,
     oldValue: string | null,
   ): void {
-    const drawn = this._drawn(target);
     if (type === 'attributes') {
-      if (drawn) {
-        this._changes.push({
-          type,
-          target: target as Element,
-          attributeName: name!,
-          oldValue,
-        });
-      }
+      this._tell(target, {
+        type,
+        target: target as Element,
+        attributeName: name!,
+        oldValue,
+      });
     } else {
-      if (drawn) this._changes.push({ type, target });
+      this._tell(target, { type, target });
       if (target.parent) this._sheetText(target.parent);
     }
     if (this._observers.size) {
@@ -2148,14 +2312,12 @@ export class DomHost {
     previous: AnyNode | null,
     next: AnyNode | null,
   ): void {
-    if (this._drawn(parent)) {
-      this._changes.push({
-        type: 'childList',
-        target: parent,
-        addedNodes: added,
-        removedNodes: removed,
-      });
-    }
+    this._tell(parent, {
+      type: 'childList',
+      target: parent,
+      addedNodes: added,
+      removedNodes: removed,
+    });
     this._sheetText(parent);
     if (this._observers.size) {
       this._queue(parent, {
@@ -2171,17 +2333,36 @@ export class DomHost {
     }
   }
 
-  /** Whether a change to a node is one `<Html>` is told of: anywhere but
-   *  in a document a page made, a frame's among them, which nothing here
-   *  draws. Those are counted instead, for the styles a frame works out. */
-  private _drawn(node: AnyNode): boolean {
+  /**
+   * A change, for the `<Html>` that draws the node's document: this realm's
+   * own, at the next flush; another realm's — a frame's document the page
+   * wrote into, or the page's a frame's script did — through what the
+   * realms share, which any realm's flush tells. A node in no document is
+   * this realm's, and one in a document a page made that nothing draws is
+   * counted instead, for the styles a frame works out (`_frameStyle`).
+   */
+  private _tell(node: AnyNode, change: HtmlChange): void {
     let at: AnyNode = node;
     while (at.parent) at = at.parent;
-    if (at === this.document || !this._documents.has(at as Document)) {
-      return true;
+    const doc = at as Document;
+    if (doc === this.document) {
+      this._changes.push(change);
+      return;
     }
-    this._foreignChanges += 1;
-    return false;
+    if (this._s.drawn.has(doc)) {
+      let list = this._s.changes.get(doc);
+      if (!list) this._s.changes.set(doc, (list = []));
+      list.push(change);
+      // and a frame's style worked out here for the page realm reads it
+      // (`_frameStyle`) as it reads one nothing draws
+      this._s.foreignChanges += 1;
+      return;
+    }
+    if (!this._documents.has(doc)) {
+      this._changes.push(change);
+      return;
+    }
+    this._s.foreignChanges += 1;
   }
 
   /** A record queued for each observer interested in it: one watching the
@@ -2219,7 +2400,7 @@ export class DomHost {
     if (!state) {
       state = {
         rules: cssRulesOf(DomUtils.textContent(el)),
-        version: (this._sheetVersion += 1),
+        version: (this._s.sheetVersion += 1),
       };
       this._sheets.set(el, state);
     }
@@ -2251,7 +2432,7 @@ export class DomHost {
       for (const kid of removed) DomUtils.removeElement(kid);
       const written = new Text(state.rules.join('\n'));
       DomUtils.appendChild(el, written);
-      this._changes.push({
+      this._tell(el, {
         type: 'childList',
         target: el,
         addedNodes: [written],
@@ -2307,6 +2488,8 @@ export class DomHost {
     this._frames.set(frame, doc);
     this._frameOf.set(doc, frame);
     this._frameAt.set(frame, 'about:blank');
+    this._s.frameList.add(frame);
+    this._s.framesChanged();
     return doc;
   }
 
@@ -2380,8 +2563,13 @@ export class DomHost {
           .toLowerCase();
         let doc: Document;
         let scripts = true;
-        if (type === 'text/html') doc = this._documentOf(response.body, true);
-        else if (XML_TYPES.test(type)) {
+        if (type === 'text/html') {
+          doc = this._documentOf(
+            response.body,
+            true,
+            !!this._seams.drawsFrames,
+          );
+        } else if (XML_TYPES.test(type)) {
           const xml = this._xmlTree(response.body);
           // one that is not well-formed is the error and nothing of it, as
           // Firefox shows it: Acid3's test 70 looks for what came after a
@@ -2402,9 +2590,20 @@ export class DomHost {
           );
           scripts = false;
         }
+        // a frame the browser draws runs its own scripts, and tells its own
+        // `load` once they have, in a realm of its own — where it has any:
+        // a document with none has no code to want globals of its own, and
+        // the page's realm reaches into it at once, as Acid3's do into
+        // theirs, where a realm would answer once React had mounted it
+        const realm =
+          !!this._seams.drawsFrames && type === 'text/html' && hasScripts(doc);
+        if (realm) this._s.realms.add(doc);
         this._frames.set(frame, doc);
         this._frameOf.set(doc, frame);
         this._frameAt.set(frame, response.url || src);
+        this._s.frameList.add(frame);
+        this._s.framesChanged();
+        if (realm) return;
         if (scripts) this._frameScripts(doc, response.url || src);
         loaded();
       })
@@ -2511,13 +2710,17 @@ export class DomHost {
 
   /** Markup read as a document is, by the parser `<Html>` reads one with,
    *  and made a document's tree; its scripts never run where it goes. */
-  private _htmlTree(markup: string): ChildNode[] {
+  private _htmlTree(markup: string, live = false): ChildNode[] {
     const source = new HtmlSource();
     source.setSource(markup, true);
     const kids = source.document.children.slice();
     for (const kid of kids) DomUtils.removeElement(kid);
-    for (const el of DomUtils.findAll((e) => e.name === 'script', kids)) {
-      this.inert.add(el);
+    // a frame's document the browser runs keeps its scripts, which its own
+    // realm runs as its parser met them
+    if (!live) {
+      for (const el of DomUtils.findAll((e) => e.name === 'script', kids)) {
+        this.inert.add(el);
+      }
     }
     return documentTree(kids);
   }
@@ -2583,8 +2786,8 @@ export class DomHost {
     }
     const { cascade } = kept;
     // what css-select kept of a tree is good while no tree changed
-    if (this._foreignSeen !== this._foreignChanges) {
-      this._foreignSeen = this._foreignChanges;
+    if (this._foreignSeen !== this._s.foreignChanges) {
+      this._foreignSeen = this._s.foreignChanges;
       treesChanged();
     }
     const styleOf = (e: Element): ComputedStyle =>
@@ -2642,12 +2845,17 @@ export class DomHost {
   /** A document of its own made of markup, as `DOMParser` and
    *  `createHTMLDocument` make one: with an `<html>`, a `<head>` and a
    *  `<body>` where the markup has none, as HTML's parser makes them, and
-   *  none of its scripts ever run. */
-  private _documentOf(markup: string, document = false): Document {
+   *  none of its scripts ever run — but a frame's the browser runs in a
+   *  realm of its own (`live`). */
+  private _documentOf(
+    markup: string,
+    document = false,
+    live = false,
+  ): Document {
     // what a frame loads is a document's markup, and `DOMParser`'s is read
     // as a fragment is, attaching no shadow root a template declares
     const tree = document
-      ? this._htmlTree(markup)
+      ? this._htmlTree(markup, live)
       : documentTree(this._parse(markup));
     const doc = new Document([]);
     for (const kid of tree) DomUtils.appendChild(doc, kid);

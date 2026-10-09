@@ -80,6 +80,8 @@ import {
   schemeOf,
   videoSource,
 } from './network.js';
+import { FrameHolder, frameMounts } from './frame.js';
+import type { FrameContext } from './frame.js';
 import { useScripts } from './script/index.js';
 import { linkTarget, navigableFor } from './target.js';
 import type { ScriptsOptions } from './script/index.js';
@@ -472,8 +474,23 @@ export default function Page(props: PageProps): ReactElement {
       ((cocoa ? event.metaKey : event.ctrlKey) ||
         (event.altKey && /^Arrow(Left|Right)$/.test(event.key ?? '')) ||
         /^F[56]$/.test(event.key ?? '')),
+    // a frame's document is drawn over its box and run in a realm of its
+    // own (`frame.tsx`)
+    drawsFrames: true,
   };
   const scripts = useScripts(props.scripts, handle, url, scriptSeams);
+  const frames = (): FrameContext | null => {
+    const runner = scripts.runner?.();
+    return runner
+      ? {
+          parent: runner,
+          seams: scriptSeams,
+          onResource,
+          onLink: (to, how) => live.current.onLink(to, how, null),
+        }
+      : null;
+  };
+  const holder = frames();
 
   useEffect(() => {
     if (!notice) return;
@@ -594,6 +611,8 @@ export default function Page(props: PageProps): ReactElement {
               onParsed={scripts.onParsed}
               onLoaded={scripts.onLoaded}
               onDomEvent={scripts.onDomEvent}
+              stylesheet={scripts.stylesheet}
+              renderEmbedded={frameMounts(frames)}
               onDocument={(document: Document) => {
                 scripts.onDocument?.(document);
                 onDocument(document);
@@ -603,6 +622,7 @@ export default function Page(props: PageProps): ReactElement {
               }
               style={{ flexGrow: 1 }}
             />
+            {holder ? <FrameHolder context={holder} /> : null}
           </box>
         ) : null}
       </box>
