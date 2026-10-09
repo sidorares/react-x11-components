@@ -28,6 +28,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | Prop                 | Type                                             | What it does                                                                                                                                                                                                                      |
 | -------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `source`             | `string`                                         | The HTML. Required.                                                                                                                                                                                                               |
+| `document`           | `Document`                                       | A tree to draw in place of parsing `source`, which is then not read: one the host holds and changes, a frame's — see [Embedded content](#embedded-content).                                                                       |
 | `partial`            | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming).                                                      |
 | `selectable`         | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                                                          |
 | `animate`            | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                                                                        |
@@ -869,6 +870,15 @@ mounted is over the whole document: an element the document paints
 something after, over its box, is given nothing, and so is one a transform
 turns or scales, a `clip-path` or a mask cuts, or that is fixed to the
 viewport. Answering null leaves the box the empty one the document laid out.
+
+**What a host mounts over a frame is usually another `<Html>`, handed the
+frame's document rather than a source.** `document` draws a tree the host
+holds and changes, in place of parsing `source`, which is then not read: a
+frame's, which the page's scripts write into. It is complete as it is
+handed over, and what changes in it is told through the handle's `refresh`,
+as a script's changes are. The browser example draws a page's frames so,
+each running its scripts in a realm of its own
+(`examples/browser/frame.tsx`).
 
 ## Focus and the keyboard
 

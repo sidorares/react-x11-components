@@ -5,7 +5,9 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, expectPixel, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
-import { Html } from '../../src/html/index.js';
+import { parseDocument } from 'htmlparser2';
+import { Html, useHtmlHandle } from '../../src/html/index.js';
+import type { Element } from '../../src/html/index.js';
 import type { EmbeddedRect } from '../../src/html/index.js';
 import { FONTS, h, metric } from './harness.js';
 
@@ -131,6 +133,43 @@ metric(
     );
     await expectPixel(result.ctx, 50, 25, '#ff0000', {
       message: 'the host’s red in the frame',
+    });
+  },
+);
+
+metric(
+  'a document handed over is drawn in place of the source, and drawn again as the host changes it',
+  async () => {
+    // a frame's document, which a browser holds and a page's scripts write
+    // into: drawn as it is, and told of a change through the handle
+    const document = parseDocument(
+      '<style>body{margin:0}div{width:100px;height:50px}</style>' +
+        '<div id="d" style="background:#00ff00"></div>',
+    );
+    let handle: ReturnType<typeof useHtmlHandle> | null = null;
+    function Frame() {
+      handle = useHtmlHandle();
+      return h(Html, {
+        source: '<p>not read</p>',
+        document,
+        partial: false,
+        ref: handle.ref,
+      });
+    }
+    const result = await renderX11(
+      h('box', { style: { width: 200, height: 100 } }, h(Frame)),
+      { width: 200, height: 100, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    assert.strictEqual(handle!.document, document, 'the tree it was handed');
+    await expectPixel(result.ctx, 50, 25, '#00ff00');
+    const div = (document.children as Element[])
+      .flatMap((n) => (n.type === 'tag' ? [n] : []))
+      .find((n) => n.attribs.id === 'd')!;
+    div.attribs.style = 'background:#0000ff';
+    await act(() => handle!.refresh());
+    await expectPixel(result.ctx, 50, 25, '#0000ff', {
+      message: 'the change drawn',
     });
   },
 );

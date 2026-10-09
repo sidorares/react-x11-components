@@ -418,6 +418,8 @@ export class ScriptEngine {
    *  failed `import()` rejects with is the page's, never a host error, whose
    *  `constructor.constructor` is the host's `Function`. */
   private readonly _TypeError: new (message: string) => object;
+  /** The context's global, the page's window (`global`). */
+  private readonly _global: object;
 
   constructor(
     bridge: Bridge,
@@ -451,6 +453,7 @@ export class ScriptEngine {
     (this._context as Record<string, unknown>).__bridge = bridge;
     run(INSTALL);
     this._promises = run('Promise.prototype') as object;
+    this._global = run('globalThis') as object;
     this._TypeError = run('TypeError') as new (message: string) => object;
     ENGINES.set(this._promises, this);
     watchRejections();
@@ -802,6 +805,40 @@ export class ScriptEngine {
       this._depth -= 1;
       if (!this._depth && !this._disposed) this._options.settled();
     }
+  }
+
+  /**
+   * This realm's global, for another page realm of the same page to reach
+   * it as a browser's same-origin frames reach each other's windows
+   * (`link`). A page's object, never handed to anything of the host's.
+   */
+  get global(): object {
+    return this._global;
+  }
+
+  /**
+   * Join this realm and another page realm, a frame's and the page it is
+   * in: each handed the other's global through a data slot, and told
+   * through an entry (`__linkFrame`, `__linkParent`) to make the window
+   * that stands for it there. Both are page realms: what one reaches of the
+   * other is what a same-origin frame reaches of its parent. Nothing of the
+   * host's is handed to either.
+   */
+  link(frame: ScriptEngine, frameId: number): void {
+    if (this._broken || this._disposed) return;
+    const into = (engine: ScriptEngine, value: object): void => {
+      (engine._context as Record<string, unknown>).__handed = value;
+    };
+    into(this, frame._global);
+    this.call('__linkFrame', [frameId]);
+    into(frame, this._global);
+    frame.call('__linkParent', [frameId]);
+  }
+
+  /** A frame's realm is gone, or has gone on to another document: the
+   *  page's window for it stands for nothing of it any more. */
+  unlink(frameId: number): void {
+    this.call('__unlinkFrame', [frameId]);
   }
 
   /** A promise of the page's rejected and nothing caught it: told in the

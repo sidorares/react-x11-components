@@ -279,6 +279,8 @@ export interface ScriptRequest {
 
 export interface HtmlViewProps {
   source: string;
+  /** A tree to draw in place of parsing `source` (`HtmlSource.adopt`). */
+  document?: Document;
   /** False while more source may still arrive. */
   complete?: boolean;
   /** Author stylesheets applied after the document's own. */
@@ -920,10 +922,9 @@ export class HtmlViewNode extends Node {
    *  an append when the new source extends the old — see `HtmlSource`. */
   private _read(): void {
     const props = this._props();
-    const changed = this._source.setSource(
-      props.source ?? '',
-      props.complete !== false,
-    );
+    const changed = props.document
+      ? this._source.adopt(props.document)
+      : this._source.setSource(props.source ?? '', props.complete !== false);
     if (changed) {
       this._invalidate(Stale.Style);
       props.onDocument?.(this._source.document);

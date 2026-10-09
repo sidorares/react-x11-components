@@ -646,6 +646,9 @@ export class HtmlSource {
   private _handler: Handler;
   private _written = '';
   private _facts: ScannedFacts = freshFacts();
+  /** Whether `document` is a tree handed over (`adopt`), which nothing is
+   *  written to here. */
+  private _adopted = false;
 
   constructor() {
     const { parser, handler } = createParser();
@@ -659,7 +662,14 @@ export class HtmlSource {
    *  cannot. */
   setSource(source: string, complete: boolean): boolean {
     let changed = false;
-    if (source === this._written) {
+    if (this._adopted) {
+      // a source after a tree handed over is a document of its own
+      this._adopted = false;
+      this.reset();
+      this._parser.write(source);
+      this._written = source;
+      changed = true;
+    } else if (source === this._written) {
       changed = false;
     } else if (!this.complete && source.startsWith(this._written)) {
       // The append path is open only while the parser is. `end()` runs the
@@ -690,6 +700,26 @@ export class HtmlSource {
       treesChanged();
     }
     return changed;
+  }
+
+  /**
+   * Draw a tree that is not parsed here: a frame's document, which the host
+   * that runs the page holds and changes, telling of each change as a
+   * script's is told (`touch`). Complete as it is handed over, since
+   * nothing is written to it here. True where it is another tree than the
+   * one drawn.
+   */
+  adopt(document: Document): boolean {
+    if (this._adopted && this.document === document) return false;
+    this._parser.reset();
+    this._adopted = true;
+    this.document = document;
+    this._written = '';
+    this.complete = true;
+    this.revision += 1;
+    this._facts = freshFacts();
+    treesChanged();
+    return true;
   }
 
   /** Start over — a source that is not an extension of what was written. */
