@@ -448,6 +448,17 @@ function corsCheck(
   }
 }
 
+/** A node's shadow-including root (DOM 4.2.2): the root of its tree, and
+ *  of its shadow host's tree where that is a shadow root. */
+function shadowIncludingRoot(node: AnyNode): AnyNode {
+  let at = node;
+  for (;;) {
+    while (at.parent) at = at.parent;
+    if (!(at instanceof ShadowRoot)) return at;
+    at = at.host;
+  }
+}
+
 /** A URL's origin, or '' where it is none. */
 function originOf(url: string): string {
   try {
@@ -608,6 +619,15 @@ export class DomHost {
   private _checkedDefaults = new WeakMap<Element, string | null>();
   /** Each frame's navigations, counted: a load answers only the last. */
   private _frameLoads = new WeakMap<Element, number>();
+  /** Where each frame's document is from, which its window's `location`
+   *  reads and whose origin says whether the page may read the document:
+   *  `about:blank` until a load is in, and another origin's address at
+   *  once, since nothing of one is loaded (`_frameDocument`). */
+  private _frameAt = new WeakMap<Element, string>();
+  /** Where a frame's window was sent (`location.replace`, `href = …`),
+   *  which its `src` does not say, until its `src` changes: null for
+   *  `about:blank`. */
+  private _frameSent = new WeakMap<Element, string | null>();
   private _written = new WeakMap<Element, ChildNode>();
   /** The rules of each `<style>` a page asked the sheet of, and those a
    *  page changed since the last `flush` (`_writeSheets`). */
@@ -967,11 +987,10 @@ export class DomHost {
         } while (at && b === 'element' && !(at instanceof Element));
         return this.idOf(at);
       }
-      case 'connected': {
-        let at: AnyNode = this._node(a);
-        while (at.parent) at = at.parent;
-        return at === this.document;
-      }
+      // whether its shadow-including root is a document (DOM 4.4): a frame's
+      // and one a page made are documents as much as the one drawn is
+      case 'connected':
+        return this._isDocument(shadowIncludingRoot(this._node(a)));
       case 'contains': {
         const outer = this._node(a);
         for (let at: AnyNode | null = this._node(b); at; at = at.parent) {
@@ -1245,7 +1264,8 @@ export class DomHost {
           name === (el.name === 'object' ? 'data' : 'src') &&
           this._inDocument(el)
         ) {
-          this._loadFrame(el);
+          this._frameSent.delete(el);
+          this._loadFrame(el, true);
         }
         return null;
       }
@@ -1563,6 +1583,27 @@ export class DomHost {
       case 'frameElement': {
         const frame = this._frameOf.get(this._node(a) as Document);
         return frame ? this.idOf(frame) : 0;
+      }
+      // where a frame's document is from, another origin's as well: its
+      // window's `location`, which the page may set whoever's it is
+      case 'frameLocation': {
+        const frame = this._element(a);
+        this._frameDocument(frame);
+        return this._frameAt.get(frame) ?? 'about:blank';
+      }
+      case 'frameNavigate': {
+        const frame = this._element(a);
+        if (!this._inDocument(frame)) return null;
+        this._frameDocument(frame);
+        const url = text(b);
+        this._frameSent.set(frame, url === 'about:blank' ? null : url);
+        this._loadFrame(frame, true);
+        return null;
+      }
+      // a frame document's viewport, its window's `innerWidth`
+      case 'frameSize': {
+        const size = this._frameSize(this._node(a) as Document);
+        return `${size.width} ${size.height}`;
       }
 
       // --- the document
@@ -2220,21 +2261,41 @@ export class DomHost {
     let doc = this._frames.get(frame);
     if (!doc) {
       // `about:blank`'s, until what it loads is in
-      doc = this._documentOf('');
-      this._frames.set(frame, doc);
-      this._frameOf.set(doc, frame);
+      doc = this._blankFrame(frame);
       this._loadFrame(frame);
     }
-    const src = this._frameSrc(frame);
-    return src && originOf(src) !== this._origin() ? null : doc;
+    return this._sameOrigin(this._frameAt.get(frame)!) ? doc : null;
   }
 
-  /** The address a frame loads, or null for `about:blank`. */
+  /** A frame given a new `about:blank` document: its first, or where it
+   *  is sent to that address. */
+  private _blankFrame(frame: Element): Document {
+    const doc = this._documentOf('');
+    this._frames.set(frame, doc);
+    this._frameOf.set(doc, frame);
+    this._frameAt.set(frame, 'about:blank');
+    return doc;
+  }
+
+  /** Whether an address is the page's own origin's: `about:blank` is the
+   *  origin of the document that made it (HTML 7.1.1). */
+  private _sameOrigin(url: string): boolean {
+    return url === 'about:blank' || originOf(url) === this._origin();
+  }
+
+  /** The address a frame loads — where its window sent it, else its `src`
+   *  — or null for `about:blank`. A `javascript:` one is `about:blank`
+   *  too, whose script is not run: core-js's and Tealium's frames are
+   *  `javascript:` ones, for a blank document of the page's origin. */
   private _frameSrc(frame: Element): string | null {
-    const raw =
-      (frame.name === 'object' ? frame.attribs.data : frame.attribs.src) ?? '';
-    if (!raw.trim() || raw.trim() === 'about:blank') return null;
-    return this._resolve(raw.trim());
+    if (this._frameSent.has(frame)) return this._frameSent.get(frame)!;
+    const raw = (
+      (frame.name === 'object' ? frame.attribs.data : frame.attribs.src) ?? ''
+    ).trim();
+    if (!raw || raw === 'about:blank' || /^javascript:/i.test(raw)) {
+      return null;
+    }
+    return this._resolve(raw);
   }
 
   /**
@@ -2243,9 +2304,11 @@ export class DomHost {
    * image in an `<img>`, text in a `<pre>`, as a browser shows each — its
    * scripts run, and its `load` told. A navigation is a new document, put
    * in the frame once it is in; one the frame has gone on from by then is
-   * dropped.
+   * dropped. One to `about:blank` is a new blank document, where it is a
+   * navigation and not the frame's first document (`navigated`), and one
+   * to another origin is there at once, since nothing of it is loaded.
    */
-  private _loadFrame(frame: Element): void {
+  private _loadFrame(frame: Element, navigated = false): void {
     const serial = (this._frameLoads.get(frame) ?? 0) + 1;
     this._frameLoads.set(frame, serial);
     const loaded = (): void => {
@@ -2254,7 +2317,9 @@ export class DomHost {
       this.entries.call('__fire', [this.idOf(frame), 'load']);
     };
     const src = this._frameSrc(frame);
-    if (!src || originOf(src) !== this._origin()) {
+    if (!src || !this._sameOrigin(src)) {
+      if (src) this._frameAt.set(frame, src);
+      else if (navigated) this._blankFrame(frame);
       setTimeout(loaded, 0);
       return;
     }
@@ -2295,6 +2360,7 @@ export class DomHost {
         }
         this._frames.set(frame, doc);
         this._frameOf.set(doc, frame);
+        this._frameAt.set(frame, response.url || src);
         if (scripts) this._frameScripts(doc, response.url || src);
         loaded();
       })
@@ -2428,11 +2494,10 @@ export class DomHost {
     }
   }
 
-  /** Whether a node is in the document drawn. */
+  /** Whether a node is in the document drawn, or in a shadow tree that is:
+   *  Contentsquare keeps its frame in a closed one. */
   private _inDocument(node: AnyNode): boolean {
-    let at: AnyNode = node;
-    while (at.parent) at = at.parent;
-    return at === this.document;
+    return shadowIncludingRoot(node) === this.document;
   }
 
   /**
