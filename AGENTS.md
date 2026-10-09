@@ -1917,6 +1917,21 @@ closes a way out a DOM binding opens by accident:
   and the host is told what changed once a task (`markCanvas`,
   `canvasPut`). Anything new that draws on a canvas marks the rectangle it
   changed, or the browser shows the canvas as it was.
+- **A worker is a thread, and a string is all that reaches it.** Each
+  `Worker` is a `worker_threads` thread with an engine, a host over an
+  empty document and the facade made a worker's global
+  (`__becomeWorker`); a message is serialized where it is posted
+  (`serializeClone`) and made again where it lands. The thread's network
+  is the page process's, and `importScripts` waits for its answer on a
+  shared word (`Atomics.wait`, `receiveMessageOnPort`), which blocks the
+  worker and never the page.
+- **Another origin's frame is linked as another origin.** Its realm and
+  the page's hand each other their globals, as same-origin frames do, and
+  the facade keeps what either reaches to what crosses origins
+  (`crossLinked`, the cross-origin `parent`): a cross-origin frame's global
+  never answers a property read from the other realm. `postMessage`'s
+  `targetOrigin` is held to the window posted to (`__origin`), which is
+  not the sender's once two origins are linked.
 - **Run it on Bun too.** `test/browser-scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its

@@ -730,8 +730,8 @@ standards moved from what Acid3 expected):
   document, bubbling to the window. CodeMirror measures its lines when it
   comes into view, and an editor below the fold kept a 14px default line
   height in its gutter until something told it. Sandpack's editors on
-  react.dev still update without end, since the bundler they wait for is
-  another origin's frame, which nothing here runs.
+  react.dev updated without end while the bundler they wait for was another
+  origin's frame that nothing ran; it runs now (see below).
 
 - **WebAssembly is compiled in the page's context, at once.** The context
   is made with wasm code generation on, and the facade replaces
@@ -769,6 +769,33 @@ standards moved from what Acid3 expected):
   pane from scrolling. What the browser mounts over a canvas lets the
   pointer through to the element, so the playground's X server, which
   listens on its canvas, is pressed, and its window counts.
+
+- **A dedicated worker is a thread of its own.** `new Worker` starts a
+  `worker_threads` thread (`workers.ts`, `worker-thread.ts`) with an engine
+  and a host of its own over an empty document, and the same facade made a
+  worker's global (`__becomeWorker`): no `window`, no `document`, no
+  elements' interfaces, and `postMessage`, `close`, `importScripts`, a
+  `WorkerGlobalScope` and its location. A message is serialized in the
+  realm that posts it and made again in the one it is posted to, since a
+  string is what crosses into a thread and into a realm. A worker's
+  network is the page's, asked from the page process. `importScripts` is
+  the one call that needs its answer before it returns: the thread asks
+  on a port of its own and waits on a shared word (`Atomics.wait`) while
+  the page process fetches, then reads the answer off the port
+  (`receiveMessageOnPort`), so the thread blocks and the page does not.
+  A worker is started from a URL of the page's origin, or from a blob URL
+  this realm made (`URL.createObjectURL`), whose script is handed over —
+  which is how Parcel starts one, and so Sandpack's bundler.
+- **A frame of another origin runs at its own origin.** Where the browser
+  draws frames, an HTML frame of another origin is fetched and drawn as a
+  same-origin one is, in a realm of its own where it has a script, at its
+  own origin. The two realms are linked, but each reaches the other only
+  as a window of another origin: `postMessage`, with each message's
+  `origin` and `source`, and `targetOrigin` held to the window it is
+  posted to; `contentDocument` is null, `frameElement` null, and anything
+  else a `SecurityError`. react.dev's Sandpack runs so: its bundler, in a
+  frame of `sandpack-bundler-4bw.pages.dev`, compiles in its Babel worker
+  and draws the example's preview.
 
 ## What core would be asked
 

@@ -825,18 +825,19 @@ export class ScriptEngine {
    * in: each handed the other's global through a data slot, and told
    * through an entry (`__linkFrame`, `__linkParent`) to make the window
    * that stands for it there. Both are page realms: what one reaches of the
-   * other is what a same-origin frame reaches of its parent. Nothing of the
-   * host's is handed to either.
+   * other is what a same-origin frame reaches of its parent, or, where they
+   * are of two origins (`crossOrigin`), what crosses origins — `postMessage`
+   * and little else. Nothing of the host's is handed to either.
    */
-  link(frame: ScriptEngine, frameId: number): void {
+  link(frame: ScriptEngine, frameId: number, crossOrigin = false): void {
     if (this._broken || this._disposed) return;
     const into = (engine: ScriptEngine, value: object): void => {
       (engine._context as Record<string, unknown>).__handed = value;
     };
     into(this, frame._global);
-    this.call('__linkFrame', [frameId]);
+    this.call('__linkFrame', [frameId, crossOrigin]);
     into(frame, this._global);
-    frame.call('__linkParent', [frameId]);
+    frame.call('__linkParent', [frameId, crossOrigin]);
   }
 
   /** A frame's realm is gone, or has gone on to another document: the

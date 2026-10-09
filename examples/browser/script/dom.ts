@@ -188,7 +188,17 @@ export function installDom(bridge: Bridge): void {
     if (reporting) return;
     reporting = true;
     try {
-      const ev = new ErrorEvent('error', { message, error, cancelable: true });
+      // where it was thrown, as its stack's first frame says
+      const stack = typeof error?.stack === 'string' ? error.stack : '';
+      const at = /\n\s+at (?:[^\n]*?\()?([^\s()]+?):(\d+):(\d+)\)?/.exec(stack);
+      const ev = new ErrorEvent('error', {
+        message: `Uncaught ${message}`,
+        error,
+        cancelable: true,
+        filename: at ? at[1] : '',
+        lineno: at ? Number(at[2]) : 0,
+        colno: at ? Number(at[3]) : 0,
+      });
       dispatch(windowTarget, ev);
     } catch {
     } finally {
@@ -3003,13 +3013,19 @@ export function installDom(bridge: Bridge): void {
   const deliverInto =
     (global: Any, from: number) =>
     (message: Any, options?: Any): void => {
-      if (!originAllowed(options)) return;
+      // the origin a message is meant for is the window's it is posted to
+      // (HTML 9.4.3), which another origin's frame is not this one's
+      if (!originAllowed(options, str(global.__origin()))) return;
       global.__message(message, location.origin, from);
     };
+  /** The frames whose realms are another origin's (`__linkFrame`): what is
+   *  reached of their windows is what crosses origins, and no more. */
+  const crossLinked = new Set<number>();
   const frameProxyOf = (frame: Any): Any => {
     let proxy = frameProxies.get(frame);
     if (proxy) return proxy;
     const current = (): Any => {
+      if (crossLinked.has(frame._id)) return null;
       const linked = linkedFrames.get(frame._id);
       if (linked) return linked;
       const doc = frameDocumentOf(frame);
@@ -3028,10 +3044,9 @@ export function installDom(bridge: Bridge): void {
       {},
       {
         get(_t, key) {
+          const linked = linkedFrames.get(frame._id);
+          if (linked && key === 'postMessage') return deliverInto(linked, 0);
           const win = current();
-          if (win && key === 'postMessage' && linkedFrames.has(frame._id)) {
-            return deliverInto(win, 0);
-          }
           if (win) return Reflect.get(win, key, win);
           const others = across();
           if (Object.prototype.hasOwnProperty.call(others, key)) {
@@ -3151,6 +3166,8 @@ export function installDom(bridge: Bridge): void {
   class HTMLIFrameElement extends HTMLElement {
     get contentDocument(): Any {
       if (!this.isConnected) return null;
+      // another origin's document is none of this one's to read
+      if (crossLinked.has(this._id)) return null;
       const linked = linkedFrames.get(this._id);
       return linked ? linked.document : frameDocumentOf(this);
     }
@@ -5646,6 +5663,21 @@ export function installDom(bridge: Bridge): void {
     static canParse(url: Any, base?: Any): boolean {
       return !!call('url', str(url), base === undefined ? '' : str(base));
     }
+    /** A URL for a blob, this realm's (W3C File API 8.3). */
+    static createObjectURL(blob: Any): string {
+      if (!(blob instanceof Blob)) {
+        throw new TypeError(
+          "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.",
+        );
+      }
+      const origin = str(location.origin);
+      const url = `blob:${origin === 'null' ? 'null' : origin}/${str(call('uuid'))}`;
+      blobUrls.set(url, blob);
+      return url;
+    }
+    static revokeObjectURL(url: Any): void {
+      blobUrls.delete(str(url));
+    }
     get href(): string {
       return this._href;
     }
@@ -5940,6 +5972,22 @@ export function installDom(bridge: Bridge): void {
       const request = input instanceof Request ? input : null;
       const url =
         typeof input === 'string' ? input : (input?.url ?? str(input));
+      // a blob URL is this realm's, read here
+      if (url.startsWith('blob:')) {
+        const blob = blobUrls.get(url);
+        if (!blob) {
+          reject(new TypeError('Failed to fetch'));
+          return;
+        }
+        const response = new Response(blob, {
+          status: 200,
+          headers: blob.type ? { 'content-type': blob.type } : {},
+          url,
+          type: 'basic',
+        });
+        resolve(response);
+        return;
+      }
       const headers = new Headers(init.headers ?? input?.headers ?? {});
       let body = init.body ?? request?._body ?? null;
       init = {
@@ -7039,6 +7087,174 @@ export function installDom(bridge: Bridge): void {
   /** A message as it crosses: a copy, the page's structured clone. */
   const cloneOf = (value: Any): Any => structuredCopy(value, new Map());
 
+  /**
+   * A value as text, for a message to a worker, which runs in a thread of
+   * its own that only a string reaches: structured clone's types, kept
+   * apart by a tag, and an object met twice met as the first (HTML 2.7.3,
+   * "StructuredSerialize"). `deserializeClone` makes it again in this
+   * realm.
+   */
+  const serializeClone = (value: Any): string => {
+    const seen = new Map<Any, number>();
+    const bytesOf = (b: Uint8Array): string => base64OfBytes(b);
+    const walk = (v: Any): Any => {
+      if (v === undefined) return { u: 1 };
+      if (v === null || typeof v === 'boolean' || typeof v === 'string') {
+        return v;
+      }
+      if (typeof v === 'number') {
+        return Number.isFinite(v) && !Object.is(v, -0) ? v : { n: String(v) };
+      }
+      if (typeof v === 'bigint') return { g: v.toString() };
+      if (typeof v !== 'object') {
+        throw new DOMException(
+          `${String(typeof v === 'symbol' ? 'Symbol()' : v).slice(0, 40)} could not be cloned.`,
+          'DataCloneError',
+        );
+      }
+      const at = seen.get(v);
+      if (at !== undefined) return { r: at };
+      const index = seen.size;
+      seen.set(v, index);
+      const tag = Object.prototype.toString.call(v).slice(8, -1);
+      if (v instanceof Blob) {
+        return { i: index, t: 'L', b: bytesOf(v._bytes), y: v.type };
+      }
+      if (v instanceof EventTarget || v instanceof Event) {
+        throw new DOMException(
+          `${v.constructor?.name ?? 'The object'} object could not be cloned.`,
+          'DataCloneError',
+        );
+      }
+      if (tag === 'Date') return { i: index, t: 'D', v: v.getTime() };
+      if (tag === 'RegExp') {
+        return { i: index, t: 'R', s: v.source, f: v.flags };
+      }
+      if (tag === 'ArrayBuffer') {
+        return { i: index, t: 'B', b: bytesOf(new Uint8Array(v)) };
+      }
+      if (ArrayBuffer.isView(v)) {
+        return {
+          i: index,
+          t: 'V',
+          c: tag,
+          b: walk(v.buffer),
+          o: v.byteOffset,
+          l: tag === 'DataView' ? v.byteLength : (v as Any).length,
+        };
+      }
+      if (tag === 'Map') {
+        return {
+          i: index,
+          t: 'M',
+          e: [...v].map(([k, x]) => [walk(k), walk(x)]),
+        };
+      }
+      if (tag === 'Set') {
+        return { i: index, t: 'S', e: [...v].map((x) => walk(x)) };
+      }
+      if (tag === 'Error') {
+        return {
+          i: index,
+          t: 'E',
+          n: str(v.name),
+          m: str(v.message),
+          k: v.stack === undefined ? undefined : str(v.stack),
+        };
+      }
+      if (
+        tag === 'Boolean' ||
+        tag === 'Number' ||
+        tag === 'String' ||
+        tag === 'BigInt'
+      ) {
+        return { i: index, t: 'P', v: walk(v.valueOf()) };
+      }
+      if (Array.isArray(v)) {
+        const e: Any[] = [];
+        for (const key of Object.keys(v)) e.push([key, walk(v[key as Any])]);
+        return { i: index, t: 'A', l: v.length, e };
+      }
+      if (tag !== 'Object') {
+        throw new DOMException(
+          `${tag} object could not be cloned.`,
+          'DataCloneError',
+        );
+      }
+      const e: Any[] = [];
+      for (const key of Object.keys(v)) e.push([key, walk(v[key])]);
+      return { i: index, t: 'O', e };
+    };
+    return JSON.stringify(walk(value));
+  };
+  const deserializeClone = (text: string): Any => {
+    const made: Any[] = [];
+    const make = (v: Any): Any => {
+      if (v === null || typeof v !== 'object') return v;
+      if ('u' in v) return undefined;
+      if ('n' in v) return Number(v.n === '-0' ? -0 : v.n);
+      if ('g' in v) return BigInt(v.g);
+      if ('r' in v) return made[v.r];
+      let out: Any;
+      switch (v.t) {
+        case 'L':
+          out = new Blob([bytesOfBase64(v.b)], { type: v.y });
+          break;
+        case 'D':
+          out = new Date(v.v);
+          break;
+        case 'R':
+          out = new RegExp(v.s, v.f);
+          break;
+        case 'B':
+          out = bytesOfBase64(v.b).buffer;
+          break;
+        case 'V': {
+          made[v.i] = null;
+          const buffer = make(v.b);
+          const View = v.c === 'DataView' ? DataView : (G as Any)[v.c];
+          out = new View(buffer, v.o, v.l);
+          break;
+        }
+        case 'M':
+          out = new Map();
+          made[v.i] = out;
+          for (const [k, x] of v.e) out.set(make(k), make(x));
+          return out;
+        case 'S':
+          out = new Set();
+          made[v.i] = out;
+          for (const x of v.e) out.add(make(x));
+          return out;
+        case 'E': {
+          const Kind = (G as Any)[v.n];
+          out =
+            typeof Kind === 'function' && Kind.prototype instanceof Error
+              ? new Kind(v.m)
+              : new Error(v.m);
+          if (v.k !== undefined) out.stack = v.k;
+          break;
+        }
+        case 'P':
+          out = Object(make(v.v));
+          break;
+        case 'A':
+          out = new Array(v.l);
+          made[v.i] = out;
+          for (const [k, x] of v.e) out[k] = make(x);
+          return out;
+        default:
+          out = {};
+          made[v.i] = out;
+          for (const [k, x] of v.e) out[k] = make(x);
+          return out;
+      }
+      made[v.i] = out;
+      return out;
+    };
+    return make(JSON.parse(text));
+  };
+
   /** One end of a `MessageChannel` (HTML 9.4.4): what is posted to it is a
    *  task of its own, after the one that posted it, once it is started —
    *  which setting `onmessage` does. React's scheduler is one of these. */
@@ -7158,6 +7374,120 @@ export function installDom(bridge: Bridge): void {
     bytes(): Promise<Uint8Array> {
       return Promise.resolve(this._bytes.slice());
     }
+  }
+  /** A worker's location (WorkerLocation, HTML 10.3.4), which `location`
+   *  answers in a realm that is a worker's (`__becomeWorker`). */
+  let workerLocation: Any = null;
+
+  /** What a page's window has that a worker's global does not
+   *  (`__becomeWorker`). */
+  const WINDOW_ONLY = new Set([
+    'window',
+    'document',
+    'parent',
+    'top',
+    'frames',
+    'opener',
+    'frameElement',
+    'history',
+    'localStorage',
+    'sessionStorage',
+    'customElements',
+    'getComputedStyle',
+    'matchMedia',
+    'alert',
+    'confirm',
+    'prompt',
+    'print',
+    'open',
+    'requestAnimationFrame',
+    'cancelAnimationFrame',
+    'Document',
+    'XMLDocument',
+    'Element',
+    'Node',
+    'Text',
+    'Comment',
+    'CharacterData',
+    'DocumentFragment',
+    'DocumentType',
+    'ShadowRoot',
+    'Window',
+  ]);
+
+  /** The blob URLs this realm made (`URL.createObjectURL`), to what they
+   *  name: what a worker is started from where a library bundles one, as
+   *  Parcel does, and what `fetch` reads. */
+  const blobUrls = new Map<string, Any>();
+
+  /**
+   * A dedicated worker (HTML 10.2.6.3): a script in a realm of its own, in
+   * a thread of its own (`workers.ts`), that the page talks to by messages.
+   * Started from a URL of the page's origin or a blob URL this realm made,
+   * whose script the host is handed as it is; a message is the value
+   * serialized (`serializeClone`), since only a string reaches the thread.
+   */
+  const workers = new Map<number, Any>();
+  class Worker extends EventTarget {
+    _id = 0;
+    constructor(url: Any, options: Any = {}) {
+      super();
+      const href = str(url);
+      let source: string | null = null;
+      let resolved: string;
+      if (href.startsWith('blob:')) {
+        const blob = blobUrls.get(href);
+        if (!blob) {
+          throw new DOMException(
+            `Failed to construct 'Worker': Script at '${href}' cannot be accessed from origin '${location.origin}'.`,
+            'SecurityError',
+          );
+        }
+        source = new TextDecoder().decode(blob._bytes);
+        resolved = href;
+      } else {
+        resolved = new URL(href, location.href).href;
+        if (new URL(resolved).origin !== location.origin) {
+          throw new DOMException(
+            `Failed to construct 'Worker': Script at '${resolved}' cannot be accessed from origin '${location.origin}'.`,
+            'SecurityError',
+          );
+        }
+      }
+      const id = call(
+        'workerStart',
+        JSON.stringify({
+          url: resolved,
+          type: options?.type === 'module' ? 'module' : 'classic',
+          name: str(options?.name ?? ''),
+        }),
+        source,
+      );
+      this._id = Number(id);
+      workers.set(this._id, this);
+    }
+    postMessage(message: Any): void {
+      if (!this._id) return;
+      call('workerPost', this._id, serializeClone(message));
+    }
+    terminate(): void {
+      if (!this._id) return;
+      call('workerEnd', this._id);
+      workers.delete(this._id);
+      this._id = 0;
+    }
+  }
+  for (const type of ['message', 'messageerror', 'error']) {
+    Object.defineProperty(Worker.prototype, `on${type}`, {
+      get(this: Any): Any {
+        return this._handlers?.[type] ?? null;
+      },
+      set(this: Any, fn: Any) {
+        this._handlers ??= {};
+        this._handlers[type] = typeof fn === 'function' ? fn : null;
+      },
+      configurable: true,
+    });
   }
   class File extends Blob {
     readonly name: string;
@@ -9861,6 +10191,7 @@ export function installDom(bridge: Bridge): void {
     URLSearchParams,
     Headers,
     WheelEvent,
+    Worker,
     ImageData,
     CanvasRenderingContext2D,
     Response,
@@ -9942,9 +10273,9 @@ export function installDom(bridge: Bridge): void {
   // a data property took the string in place of the location, and every
   // read of it after was the string's
   Object.defineProperty(G, 'location', {
-    get: () => location,
+    get: () => workerLocation ?? location,
     set: (v: Any) => {
-      location.href = v;
+      if (!workerLocation) location.href = v;
     },
     configurable: false,
     enumerable: true,
@@ -10346,7 +10677,7 @@ export function installDom(bridge: Bridge): void {
   /** Whether a message may go where `options` says it is meant for: any
    *  origin, this one, or one written as this one is (HTML 9.4.3). Every
    *  realm a message goes to here is this page's origin's. */
-  function originAllowed(options?: Any): boolean {
+  function originAllowed(options?: Any, to: string = location.origin): boolean {
     const target =
       options && typeof options === 'object'
         ? (options.targetOrigin ?? '/')
@@ -10363,7 +10694,7 @@ export function installDom(bridge: Bridge): void {
         'SyntaxError',
       );
     }
-    return origin === location.origin;
+    return origin === to;
   }
 
   // a message to a window, this one's or a frame's: a task of its own,
@@ -10755,6 +11086,130 @@ export function installDom(bridge: Bridge): void {
     return true;
   });
 
+  // a message a worker posted, to its `Worker` here; or, in a worker, one
+  // the page posted to it, to the worker's global (id 0)
+  entry('__workerMessage', () => {
+    const [id, text] = input();
+    const target = id === 0 ? windowTarget : workers.get(id);
+    if (!target) return false;
+    let data: Any;
+    try {
+      data = deserializeClone(str(text));
+    } catch {
+      const ev = new MessageEvent('messageerror', {});
+      ev.isTrusted = true;
+      dispatch(target, ev);
+      return true;
+    }
+    const ev = new MessageEvent('message', { data, origin: '' });
+    ev.isTrusted = true;
+    dispatch(target, ev);
+    return true;
+  });
+
+  // what a worker's script threw that nothing there caught, to its `Worker`
+  entry('__workerError', () => {
+    const [id, message, filename, lineno, colno] = input();
+    const target = workers.get(id);
+    if (!target) return false;
+    const ev = new ErrorEvent('error', {
+      message: str(message),
+      filename: str(filename),
+      lineno: Number(lineno) || 0,
+      colno: Number(colno) || 0,
+      cancelable: true,
+    });
+    ev.isTrusted = true;
+    dispatch(target, ev);
+    return true;
+  });
+
+  /**
+   * This realm is a dedicated worker's (`worker-thread.ts`): what a page's
+   * window has and a worker's global does not goes — the document, the
+   * window and what a window is in, the storage, the dialogs and the
+   * elements' interfaces, which a library looks for to tell where it runs —
+   * and what a worker's has comes: `postMessage`, `close`, `importScripts`,
+   * its location and its name.
+   */
+  entry('__becomeWorker', () => {
+    const { url, name } = input();
+    for (const key of Object.getOwnPropertyNames(G)) {
+      if (
+        /^(HTML|SVG)/.test(key) ||
+        WINDOW_ONLY.has(key) ||
+        key.startsWith('webkit')
+      ) {
+        try {
+          delete (G as Any)[key];
+        } catch {}
+      }
+    }
+    const here = new URL(str(url));
+    workerLocation = {
+      href: here.href,
+      origin: here.origin,
+      protocol: here.protocol,
+      host: here.host,
+      hostname: here.hostname,
+      port: here.port,
+      pathname: here.pathname,
+      search: here.search,
+      hash: here.hash,
+      toString: () => here.href,
+    };
+    const scope = (label: string): Any => {
+      const fn: Any = function () {
+        throw new TypeError('Illegal constructor');
+      };
+      Object.defineProperty(fn, 'name', { value: label });
+      Object.defineProperty(fn, Symbol.hasInstance, {
+        value: (v: Any) => v === G,
+      });
+      return fn;
+    };
+    define('WorkerGlobalScope', scope('WorkerGlobalScope'));
+    define('DedicatedWorkerGlobalScope', scope('DedicatedWorkerGlobalScope'));
+    define('name', str(name));
+    define('postMessage', function postMessage(message: Any): void {
+      call('workerPostOut', serializeClone(message));
+    });
+    define('close', function close(): void {
+      call('workerClose');
+    });
+    // each script fetched and run in turn, before this returns (HTML
+    // 10.3.4): the host waits for it, the thread it is in being the
+    // worker's own
+    define('importScripts', function importScripts(...urls: Any[]): void {
+      for (const u of urls) {
+        const href = new URL(str(u), workerLocation!.href).href;
+        const code = call('importScript', href);
+        if (typeof code !== 'string') {
+          throw new DOMException(
+            `Failed to execute 'importScripts' on 'WorkerGlobalScope': The script at '${href}' failed to load.`,
+            'NetworkError',
+          );
+        }
+        (0, eval)(`${code}\n//# sourceURL=${href}`);
+      }
+    });
+    // an error nothing here caught is the `Worker`'s too, where the page
+    // hears it
+    windowTarget.addEventListener('error', (ev: Any) => {
+      if (ev.defaultPrevented) return;
+      call(
+        'workerErrorOut',
+        JSON.stringify([
+          str(ev.message),
+          str(ev.filename),
+          Number(ev.lineno) || 0,
+          Number(ev.colno) || 0,
+        ]),
+      );
+    });
+    return true;
+  });
+
   // what came of a `fetch`
   entry('__fetched', () => {
     const [id, answer] = input();
@@ -10860,21 +11315,106 @@ export function installDom(bridge: Bridge): void {
   // a frame of this page's runs in its own realm: its window here is that
   // realm's global from now on
   entry('__linkFrame', () => {
-    const [id] = input();
+    const [id, cross] = input();
     linkedFrames.set(Number(id), handed());
+    if (cross) crossLinked.add(Number(id));
+    else crossLinked.delete(Number(id));
     return true;
   });
   entry('__unlinkFrame', () => {
     const [id] = input();
     linkedFrames.delete(Number(id));
+    crossLinked.delete(Number(id));
     return true;
   });
   // this realm is a frame's: its parent and its top are the page's, behind
   // a window that posts to it with this one as the source
   entry('__linkParent', () => {
-    const [id] = input();
+    const [id, cross] = input();
     const global = handed();
     const frame = Number(id);
+    if (cross) {
+      // a parent of another origin's: what crosses origins and no more
+      // (HTML 7.2.3), and no element it is in
+      const blocked = (): Any =>
+        new DOMException(
+          `Blocked a frame with origin "${location.origin}" from accessing a cross-origin frame.`,
+          'SecurityError',
+        );
+      const allowed: Any = {
+        postMessage: deliverInto(global, frame),
+        closed: false,
+        length: 0,
+        opener: null,
+        close() {},
+        focus() {},
+        blur() {},
+      };
+      const window: Any = new Proxy(
+        {},
+        {
+          get(_t, key) {
+            if (key === 'window' || key === 'self' || key === 'frames') {
+              return window;
+            }
+            if (key === 'parent' || key === 'top') return window;
+            if (key === 'location') {
+              return {
+                set href(_v: Any) {},
+                replace() {},
+                assign() {},
+              };
+            }
+            if (Object.prototype.hasOwnProperty.call(allowed, key)) {
+              return allowed[key as string];
+            }
+            if (
+              key === 'then' ||
+              key === Symbol.toStringTag ||
+              key === Symbol.hasInstance ||
+              key === Symbol.isConcatSpreadable
+            ) {
+              return undefined;
+            }
+            throw blocked();
+          },
+          set(_t, key) {
+            if (key === 'location') return true;
+            throw blocked();
+          },
+          has: (_t, key) =>
+            key in allowed ||
+            key === 'window' ||
+            key === 'self' ||
+            key === 'parent' ||
+            key === 'top' ||
+            key === 'location',
+          ownKeys: () => Reflect.ownKeys(allowed),
+          getOwnPropertyDescriptor(_t, key) {
+            const found = Reflect.getOwnPropertyDescriptor(allowed, key);
+            if (found) found.configurable = true;
+            return found;
+          },
+          defineProperty() {
+            throw blocked();
+          },
+          deleteProperty() {
+            throw blocked();
+          },
+          getPrototypeOf: () => null,
+          preventExtensions: () => false,
+        },
+      );
+      proxiedFrames.set(window, null);
+      parentLink = { global, window, frame };
+      define('parent', window);
+      define('top', window);
+      Object.defineProperty(G, 'frameElement', {
+        get: () => null,
+        configurable: true,
+      });
+      return true;
+    }
     const window: Any = new Proxy(
       {},
       {
@@ -10936,6 +11476,14 @@ export function installDom(bridge: Bridge): void {
         false,
       );
     },
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+  // this realm's origin, which a message posted to it from another realm
+  // is held to (`deliverInto`)
+  Object.defineProperty(G, '__origin', {
+    value: () => str(G.location?.origin ?? location.origin),
     writable: false,
     configurable: false,
     enumerable: false,

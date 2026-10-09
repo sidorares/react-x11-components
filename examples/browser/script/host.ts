@@ -92,6 +92,35 @@ export interface FetchRequest {
   headers: [string, string][];
   body: string | null;
 }
+/** A dedicated worker the page asked for (`new Worker`), as the host
+ *  starts it: its script's address, its kind and its name, the script
+ *  itself where it is a blob URL's, and the origin it is of. */
+export interface WorkerInit {
+  url: string;
+  type: 'classic' | 'module';
+  name: string;
+  source: string | null;
+  origin: string;
+}
+
+/** Where a page's workers run (`workers.ts`): each started, posted to and
+ *  ended by the number `start` answered. */
+export interface PageWorkersLike {
+  start(init: WorkerInit): number;
+  post(id: number, data: string): void;
+  end(id: number): void;
+}
+
+/** What a realm that is a worker's reaches its page by
+ *  (`worker-thread.ts`). */
+export interface WorkerScope {
+  post(data: string): void;
+  close(): void;
+  /** A script's source, fetched before this returns, or null. */
+  importScript(url: string): string | null;
+  error(message: string, filename: string, line: number, column: number): void;
+}
+
 /** A frame a browser that draws frames mounts a view for (`frames`). */
 export interface FrameShown {
   frame: Element;
@@ -810,6 +839,10 @@ export class DomHost {
   private _foreignSeen = -1;
   /** Where timers and fetches call back into the page. */
   entries: Entries | null = null;
+  /** Where this page's workers run, where it may start them. */
+  workers: PageWorkersLike | null = null;
+  /** The page this realm is the worker of, where it is one. */
+  workerScope: WorkerScope | null = null;
   private _disposed = false;
 
   /** What every realm's host over one page's documents shares
@@ -937,8 +970,9 @@ export class DomHost {
    * The frames in this realm's document that have an HTML document of their
    * own to show, each with it, its address and whether it runs in a realm
    * of its own (`DomShared.realms`): what a browser that draws frames mounts
-   * a frame for (`drawsFrames`). Another origin's is left out, since
-   * nothing of it is loaded, and an XML one, which `<Html>` does not draw.
+   * a frame for (`drawsFrames`), another origin's among them, which runs
+   * at its own origin; an XML one, which `<Html>` does not draw, is left
+   * out.
    */
   frames(): FrameShown[] {
     const out: FrameShown[] = [];
@@ -946,9 +980,7 @@ export class DomHost {
       if (!this._inDocument(frame)) continue;
       const document = this._frames.get(frame);
       const url = this._frameAt.get(frame) ?? 'about:blank';
-      if (!document || !this._sameOrigin(url) || this._xml.has(document)) {
-        continue;
-      }
+      if (!document || this._xml.has(document)) continue;
       out.push({ frame, document, url, realm: this._s.realms.has(document) });
     }
     return out;
@@ -1767,6 +1799,45 @@ export class DomHost {
       }
       // `CSS.supports`: as `<Html>` answers an `@supports`, a condition as
       // it is written or, where it is no condition, in parentheses
+      // a dedicated worker, started, posted to and ended: the page's side
+      case 'workerStart': {
+        if (!this.workers) {
+          throw new DomError(
+            'NotSupportedError',
+            "Failed to construct 'Worker': workers are not supported here.",
+          );
+        }
+        const init = JSON.parse(text(a)) as Omit<
+          WorkerInit,
+          'source' | 'origin'
+        >;
+        return this.workers.start({
+          ...init,
+          source: typeof b === 'string' ? b : null,
+          origin: this._origin(),
+        });
+      }
+      case 'workerPost':
+        this.workers?.post(Number(a), text(b));
+        return null;
+      case 'workerEnd':
+        this.workers?.end(Number(a));
+        return null;
+      // and the worker's
+      case 'workerPostOut':
+        this.workerScope?.post(text(a));
+        return null;
+      case 'workerClose':
+        this.workerScope?.close();
+        return null;
+      case 'importScript':
+        return this.workerScope?.importScript(text(a)) ?? null;
+      case 'workerErrorOut': {
+        const [message, filename, line, column] = JSON.parse(text(a));
+        this.workerScope?.error(message, filename, line, column);
+        return null;
+      }
+
       // a canvas's pixels, the rectangle a task changed: its bitmap's
       // size, where the rectangle is in it, and its rows as base64
       case 'canvasPut': {
@@ -2621,7 +2692,15 @@ export class DomHost {
       this.entries.call('__fire', [this.idOf(frame), 'load']);
     };
     const src = this._frameSrc(frame);
-    if (!src || !this._sameOrigin(src)) {
+    // another origin's frame is loaded where the browser draws frames, to
+    // run in a realm of its own, at its own origin, which reaches this one
+    // as one window of another origin reaches another; elsewhere nothing of
+    // it is
+    const foreign = !!src && !this._sameOrigin(src);
+    if (
+      !src ||
+      (foreign && !(this._seams.drawsFrames && /^https?:/i.test(src)))
+    ) {
       if (src) this._frameAt.set(frame, src);
       else if (navigated) this._blankFrame(frame);
       setTimeout(loaded, 0);
@@ -2674,6 +2753,8 @@ export class DomHost {
           );
           scripts = false;
         }
+        // another origin's scripts never run in this realm
+        if (foreign) scripts = false;
         // a frame the browser draws runs its own scripts, and tells its own
         // `load` once they have, in a realm of its own — where it has any:
         // a document with none has no code to want globals of its own, and

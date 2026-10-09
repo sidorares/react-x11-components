@@ -30,6 +30,7 @@ import type {
 } from '../../../src/html/index.js';
 import { SCRIPTS_CONTAINED, ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
+import { PageWorkers } from './workers.js';
 import type { FramePost, HostSeams } from './host.js';
 
 /** A frame of the page's clock, which `scroll` is told at most once in. */
@@ -120,6 +121,7 @@ interface FrameSeat {
 export class ScriptRunner {
   readonly host: DomHost;
   readonly engine: ScriptEngine;
+  private readonly _workers: PageWorkers;
   private _queue: Queued[] = [];
   private _parsed = false;
   private _loaded = false;
@@ -156,8 +158,36 @@ export class ScriptRunner {
       base: () => this.host.url,
     });
     this.host.entries = this.engine;
+    // the page's workers, each in a thread of its own, their network the
+    // page's
+    this._workers = new PageWorkers({
+      fetch: (request, signal) => this._options.fetch(request, signal),
+      log: (level, text) => this._options.log(level, text),
+      get userAgent() {
+        return _options.userAgent;
+      },
+      get language() {
+        return _options.language;
+      },
+      message: (id, data) => this.engine.call('__workerMessage', [id, data]),
+      error: (id, message, filename, line, column) =>
+        this.engine.call('__workerError', [
+          id,
+          message,
+          filename,
+          line,
+          column,
+        ]),
+    });
+    this.host.workers = this._workers;
     if (_link) {
-      _link.parent.engine.link(this.engine, this._frameId());
+      _link.parent.engine.link(
+        this.engine,
+        this._frameId(),
+        // `about:blank` is the origin of the document that opened it
+        url !== 'about:blank' &&
+          originOf(url) !== originOf(_link.parent.host.url),
+      );
     }
   }
 
@@ -348,6 +378,7 @@ export class ScriptRunner {
     for (const seat of this._seats.values()) seat.runner.dispose();
     this._seats.clear();
     this._seatsWatched?.();
+    this._workers.dispose();
     this._disposed = true;
     if (this._link) this._link.parent.engine.unlink(this._frameId());
     if (this._scrollOwed) clearTimeout(this._scrollOwed);
@@ -592,6 +623,15 @@ export function useScripts(
     runner: getRunner,
     ...(adopted.length ? { stylesheet: adopted } : {}),
   };
+}
+
+/** An address's origin, as a realm's is held to. */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return 'null';
+  }
 }
 
 /** No sheet adopted: one array, so that a page that adopts none renders
