@@ -2046,6 +2046,13 @@ the document was laid out and painted as it should have been. `lend`
 its saves, restores what it left open, and makes none of the restores it
 makes past its own. **Anything else that hands the context to code that
 may throw — a callback, a library's painter — lends it the same way.**
+The proxy keeps the alpha it was lent at as well: `SvgView` sets
+`globalAlpha` to each mark's own, from 1 at its root, so where an element
+is faded a thing at a time rather than as a group on a surface — macOS —
+a drawing came out whole. reactmelbourne.com's grain, a full-window rect at
+`opacity: .025`, drew the window black there and nothing on X11, where a
+group took the fade. Every alpha the drawing sets is a fraction of the one
+it was lent at, and what it reads back is what it set.
 
 **A pointer move costs what it changed, and a scroll costs no hover at
 all.** Three things, and each is a rule for whatever is added to the

@@ -16,6 +16,7 @@ import { parseDocument } from 'htmlparser2';
 import { Html } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import { decodesImageType } from '../../src/html/image-types.js';
+import { inlineDrawing } from '../../src/html/svg.js';
 import {
   allowsAutoSizes,
   normalize,
@@ -1950,6 +1951,52 @@ metric(
     });
   },
 );
+
+test('a drawing on a context lent at an alpha is drawn at a fraction of it', (t) => {
+  // SvgView sets `globalAlpha` to each mark's own, from 1 at its root, and
+  // a native context fades an element a thing at a time where no group
+  // goes on a surface: reactmelbourne.com's grain, a full-window rect at
+  // `opacity: .025`, drew the whole window black on macOS
+  const SvgView = (
+    ntk as unknown as {
+      SvgView: { prototype: { draw(ctx: unknown): void } };
+    }
+  ).SvgView;
+  const seen: number[] = [];
+  const raw = {
+    globalAlpha: 0.25,
+    stack: [] as number[],
+    save() {
+      this.stack.push(this.globalAlpha);
+    },
+    restore() {
+      this.globalAlpha = this.stack.pop() ?? this.globalAlpha;
+    },
+    beginPath() {},
+    rect() {},
+    clip() {},
+    fill() {
+      seen.push(this.globalAlpha);
+    },
+  };
+  t.mock.method(SvgView.prototype, 'draw', (ctx: typeof raw) => {
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    seen.push(ctx.globalAlpha);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fill();
+    ctx.restore();
+  });
+  const svg = parseDocument(
+    '<svg viewBox="0 0 10 10" width="10" height="10"><rect width="10" height="10"/></svg>',
+  ).children[0] as Element;
+  inlineDrawing(svg).draw(raw, 0, 0, 10, 10, 1);
+  // what it reads is what it set, and what it draws is a fraction of what
+  // it was lent at; and the alpha is the lender's again after it
+  assert.deepStrictEqual(seen, [0.5, 0.125, 0.25]);
+  assert.strictEqual(raw.globalAlpha, 0.25);
+});
 
 metric('a drawing restores none of what it did not save', async (t) => {
   // A restore past a drawing's own saves would take its caller's: the
