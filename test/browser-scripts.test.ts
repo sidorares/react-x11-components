@@ -61,6 +61,8 @@ interface Hosted {
   fetched: FetchRequest[];
   byId(id: string): DocElement;
   text(id: string): string;
+  /** The pane the page is in scrolled, as the browser's tells it. */
+  scrolled(): void;
 }
 
 /** A page whose scripts run, with stand-ins for the network and the pane:
@@ -118,6 +120,7 @@ async function hosted(
     const handle = useHtmlHandle();
     out.handle = handle;
     const scripts = useScripts(true, handle, PAGE, seams);
+    out.scrolled = () => scripts.scrolled?.();
     return h(Html, {
       source,
       partial: false,
@@ -2308,4 +2311,117 @@ test('a target is a keyword, a frame’s name, or a new tab; window.open goes wh
   // a link's own target, else the document's `<base target>`
   assert.equal(linkTarget(by('own'), document), 'side');
   assert.equal(linkTarget(by('based'), document), '_top');
+});
+
+test('what the DOM lets a page assign, a strict script assigns without a throw', async () => {
+  // CodeMirror sets `contentEditable` on every widget it draws, as strict
+  // mode code, and react.dev's examples threw where it was only read
+  const doc = await hosted(
+    '<p id="out"></p><a id="a" href="https://example.test/dir/x.html?q=1">a</a>' +
+      '<svg id="s"></svg><select><option id="o">O</option></select><script>' +
+      '"use strict";' +
+      'var r = []; var p = document.createElement("div");' +
+      'p.contentEditable = "false"; r.push(p.contentEditable, p.getAttribute("contenteditable"));' +
+      'p.contentEditable = "inherit"; r.push(p.contentEditable, p.hasAttribute("contenteditable"));' +
+      'try { p.contentEditable = "maybe"; } catch (e) { r.push(e.name); }' +
+      'p.draggable = true; p.accessKey = "k"; p.slot = "s"; p.classList = "x y";' +
+      'r.push(p.getAttribute("draggable"), p.getAttribute("accesskey"), p.slot, p.classList.length);' +
+      'var a = document.getElementById("a");' +
+      'a.pathname = "/other/y.html"; a.search = "?q=2"; a.hash = "h"; a.text = "b";' +
+      'r.push(a.getAttribute("href"), a.textContent);' +
+      'var s = document.getElementById("s"); s.style = "fill: red"; r.push(s.style.fill);' +
+      'var o = document.getElementById("o"); o.label = "L"; r.push(o.label);' +
+      'document.domain = document.domain;' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>' +
+      // a classic script's `var` over a window attribute HTML lets a page
+      // replace: the page's value, where the window's was read on
+      '<p id="vars"></p><script>var length = 5; var origin = "mine"; var innerWidth = 7;' +
+      'document.getElementById("vars").textContent = [length, origin, innerWidth, window.closed].join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      'false',
+      'false',
+      'inherit',
+      'false',
+      'SyntaxError',
+      'true',
+      'k',
+      's',
+      '2',
+      'https://example.test/other/y.html?q=2#h',
+      'b',
+      'red',
+      'L',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+  assert.equal(doc.text('vars'), '5|mine|7|false');
+});
+
+test('style.cssText is the block serialized, each declaration ended, so what a page appends to it is a declaration of its own', async () => {
+  // CodeMirror's gutter spacer: `height: 0px`, then `cssText +=
+  // "visibility: hidden"` — appended to a text with no `;`, both were lost
+  const doc = await hosted(
+    '<p id="out"></p><div id="d" style="color:red"></div><script>' +
+      'var d = document.getElementById("d"); var r = [d.style.cssText];' +
+      'd.style.height = "0px"; d.style.cssText += "visibility: hidden; pointer-events: none";' +
+      'r.push(d.style.height, d.style.visibility, d.style.color, d.style.cssText);' +
+      'd.style.setProperty("width", "1px", "important"); r.push(d.getAttribute("style"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      'color: red;',
+      '0px',
+      'hidden',
+      'red',
+      'color: red; height: 0px; visibility: hidden; pointer-events: none;',
+      'color: red; height: 0px; visibility: hidden; pointer-events: none; width: 1px !important;',
+    ].join('|'),
+  );
+});
+
+test('the pane scrolling is a scroll at the document, which reaches the window, once a frame', async () => {
+  // CodeMirror measures its lines once it scrolls into view, and heard
+  // nothing: its gutter kept a default line height under taller lines
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var heard = []; function out() { document.getElementById("out").textContent = heard.join("|"); }' +
+      'document.addEventListener("scroll", function (e) { heard.push("document:" + (e.target === document) + ":" + e.bubbles + ":" + e.isTrusted); out(); });' +
+      'window.addEventListener("scroll", function (e) { heard.push("window:" + (e.currentTarget === window) + ":" + (this === window)); out(); });' +
+      '</script>',
+  );
+  // three moves in one frame are one scroll
+  await act(async () => {
+    doc.scrolled();
+    doc.scrolled();
+    doc.scrolled();
+  });
+  await settled(doc, 'out', (t) => t !== '');
+  await settle(60);
+  assert.equal(doc.text('out'), 'document:true:true:true|window:true:true');
+});
+
+test('an IntersectionObserver hands entries of the interface a page asks for, so a polyfill keeps it', async () => {
+  // Next.js installs the W3C polyfill where `intersectionRatio` is not on
+  // `IntersectionObserverEntry.prototype`, and the polyfill measured every
+  // target again at every mutation of react.dev's tutorial, without end
+  const doc = await hosted(
+    '<p id="out"></p><div id="t"></div><script>' +
+      'var r = ["intersectionRatio" in IntersectionObserverEntry.prototype, "isIntersecting" in IntersectionObserverEntry.prototype];' +
+      'new IntersectionObserver(function (entries) {' +
+      '  var e = entries[0];' +
+      '  r.push(e instanceof IntersectionObserverEntry, e.target.id, e.isIntersecting, e.intersectionRatio);' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '}).observe(document.getElementById("t"));' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(text, 'true|true|true|t|true|1');
 });

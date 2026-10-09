@@ -633,13 +633,16 @@ export function installDom(bridge: Bridge): void {
   };
 
   const invoke = (target: Any, event: Any, phase: number): void => {
-    event.currentTarget = target;
+    // the window's listeners are kept on a target of their own, and hear
+    // the window as what they are on, as `this` and `currentTarget`
+    const self = target === windowTarget ? G : target;
+    event.currentTarget = self;
     event.eventPhase = phase;
     if (phase !== CAPTURING_PHASE) {
       const handler = handlerOf(target, event.type);
       if (typeof handler === 'function') {
         try {
-          const result = handler.call(target, event);
+          const result = handler.call(self, event);
           if (result === false) event.preventDefault();
         } catch (error) {
           report(error);
@@ -656,7 +659,7 @@ export function installDom(bridge: Bridge): void {
       if (l.once) list.splice(list.indexOf(l), 1);
       event._passive = l.passive;
       try {
-        if (typeof l.fn === 'function') l.fn.call(target, event);
+        if (typeof l.fn === 'function') l.fn.call(self, event);
         else if (typeof l.fn?.handleEvent === 'function') {
           l.fn.handleEvent(event);
         }
@@ -1336,7 +1339,7 @@ export function installDom(bridge: Bridge): void {
           .filter(Boolean).length;
       },
       get cssText(): string {
-        return el.getAttribute('style') ?? '';
+        return String(call('styleText', el._id) ?? '');
       },
       set cssText(v: Any) {
         el.setAttribute('style', str(v));
@@ -1648,8 +1651,15 @@ export function installDom(bridge: Bridge): void {
     get classList(): Any {
       return (this._classList ??= new DOMTokenList(this, 'class'));
     }
+    // `[PutForwards=value]`: the list's value, which is the attribute
+    set classList(v: Any) {
+      this.setAttribute('class', v);
+    }
     get slot(): string {
       return this.getAttribute('slot') ?? '';
+    }
+    set slot(v: Any) {
+      this.setAttribute('slot', v);
     }
     get attributes(): Any {
       return namedNodeMapOf(this);
@@ -1913,11 +1923,40 @@ export function installDom(bridge: Bridge): void {
     get accessKey(): string {
       return this.getAttribute('accesskey') ?? '';
     }
+    set accessKey(v: Any) {
+      this.setAttribute('accesskey', v);
+    }
     get draggable(): boolean {
       return this.getAttribute('draggable') === 'true';
     }
+    set draggable(v: Any) {
+      this.setAttribute('draggable', v ? 'true' : 'false');
+    }
+    /** The attribute's state (HTML 6.8.1): CodeMirror sets `false` on every
+     *  widget it draws, and a page whose script is strict mode code threw
+     *  where it could not. */
     get contentEditable(): string {
-      return this.getAttribute('contenteditable') ?? 'inherit';
+      const value = this.getAttribute('contenteditable')?.toLowerCase();
+      if (value === '' || value === 'true') return 'true';
+      return value === 'false' || value === 'plaintext-only'
+        ? value
+        : 'inherit';
+    }
+    set contentEditable(v: Any) {
+      const value = str(v).toLowerCase();
+      if (value === 'inherit') this.removeAttribute('contenteditable');
+      else if (
+        value === 'true' ||
+        value === 'false' ||
+        value === 'plaintext-only'
+      ) {
+        this.setAttribute('contenteditable', value);
+      } else {
+        throw new DOMException(
+          `The value provided ('${str(v)}') is not one of 'true', 'false', 'plaintext-only', or 'inherit'.`,
+          'SyntaxError',
+        );
+      }
     }
     get isContentEditable(): boolean {
       return false;
@@ -1930,6 +1969,9 @@ export function installDom(bridge: Bridge): void {
     }
     get outerText(): string {
       return this.innerText;
+    }
+    set outerText(v: Any) {
+      this.replaceWith(document.createTextNode(str(v)));
     }
     get offsetWidth(): number {
       return Math.round(docRect(this)?.[2] ?? 0);
@@ -1968,6 +2010,10 @@ export function installDom(bridge: Bridge): void {
   class SVGElement extends Element {
     get style(): Any {
       return (this._style ??= styleOf(this));
+    }
+    // `[PutForwards=cssText]`, as an HTML element's is
+    set style(v: Any) {
+      this.style.cssText = v;
     }
     get dataset(): Any {
       return (this._dataset ??= datasetOf(this));
@@ -2150,6 +2196,9 @@ export function installDom(bridge: Bridge): void {
     get text(): string {
       return this.textContent;
     }
+    set text(v: Any) {
+      this.textContent = v;
+    }
     override toString(): string {
       return (this as Any).href;
     }
@@ -2162,11 +2211,21 @@ export function installDom(bridge: Bridge): void {
   for (const name of ['target', 'rel', 'download', 'hreflang', 'type']) {
     Object.defineProperty(HTMLAnchorElement.prototype, name, reflect(name));
   }
+  // each part but the origin set as well, which sets the `href` to the
+  // address with it, and nothing where the link has none (HTML 4.6.6)
   for (const part of URL_PARTS) {
     Object.defineProperty(HTMLAnchorElement.prototype, part, {
       get(this: Any): string {
         return urlParts(this.href)?.[part] ?? '';
       },
+      ...(part !== 'origin' && {
+        set(this: Any, v: Any) {
+          const json = call('setUrl', this.href, part, str(v));
+          if (typeof json === 'string' && json) {
+            this.href = JSON.parse(json).href;
+          }
+        },
+      }),
       configurable: true,
     });
   }
@@ -2400,12 +2459,15 @@ export function installDom(bridge: Bridge): void {
     select(): void {}
     setSelectionRange(): void {}
     setRangeText(): void {}
+    // the caret is the widget's, as `setSelectionRange` leaves it
     get selectionStart(): number {
       return this.value.length;
     }
+    set selectionStart(_v: Any) {}
     get selectionEnd(): number {
       return this.value.length;
     }
+    set selectionEnd(_v: Any) {}
     stepUp(): void {}
     stepDown(): void {}
     showPicker(): void {}
@@ -2522,6 +2584,9 @@ export function installDom(bridge: Bridge): void {
     }
     get label(): string {
       return this.getAttribute('label') ?? this.text;
+    }
+    set label(v: Any) {
+      this.setAttribute('label', v);
     }
     get selected(): boolean {
       const select = this.closest('select');
@@ -3635,6 +3700,8 @@ export function installDom(bridge: Bridge): void {
     get cssText(): string {
       return this._text;
     }
+    // setting it does nothing (CSSOM 6.4.1)
+    set cssText(_v: Any) {}
     get type(): number {
       return this._type;
     }
@@ -3646,6 +3713,9 @@ export function installDom(bridge: Bridge): void {
     }
     get style(): Any {
       return declarationsOf(blockOf(this._text));
+    }
+    set style(v: Any) {
+      this.style.cssText = v;
     }
   }
   class CSSGroupingRule extends CSSRule {
@@ -3706,6 +3776,9 @@ export function installDom(bridge: Bridge): void {
     override _type = 5;
     get style(): Any {
       return declarationsOf(blockOf(this._text));
+    }
+    set style(v: Any) {
+      this.style.cssText = v;
     }
   }
   class CSSKeyframesRule extends CSSRule {
@@ -4217,6 +4290,9 @@ export function installDom(bridge: Bridge): void {
     get domain(): string {
       return location.hostname;
     }
+    // what a tag manager sets to share a document with its frames, which
+    // here are all the page's origin's or nothing of the page's
+    set domain(_v: Any) {}
     get cookie(): string {
       return '';
     }
@@ -8544,6 +8620,36 @@ export function installDom(bridge: Bridge): void {
   /** Observers a page makes at its start. `IntersectionObserver` and
    *  `ResizeObserver` report what they observe once, as in view and at its
    *  size — what a lazy loader waits for. `MutationObserver` is below. */
+  /** What an `IntersectionObserver` hands its callback. A page tells the
+   *  native interface from none by this one: Next.js installs the W3C
+   *  polyfill where it is missing, and the polyfill measures every target
+   *  again at every mutation of the document, a whole layout a time —
+   *  react.dev's tutorial ran it without end. */
+  class IntersectionObserverEntry {
+    _init: Any;
+    constructor(init: Any) {
+      this._init = init;
+    }
+  }
+  // on the prototype, as the native interface's are: a polyfill asks
+  // `'intersectionRatio' in IntersectionObserverEntry.prototype`
+  for (const name of [
+    'time',
+    'target',
+    'rootBounds',
+    'boundingClientRect',
+    'intersectionRect',
+    'isIntersecting',
+    'intersectionRatio',
+  ]) {
+    Object.defineProperty(IntersectionObserverEntry.prototype, name, {
+      get(this: Any) {
+        return this._init[name];
+      },
+      configurable: true,
+      enumerable: true,
+    });
+  }
   class IntersectionObserver {
     _fn: Any;
     constructor(fn: Any) {
@@ -8554,7 +8660,7 @@ export function installDom(bridge: Bridge): void {
         () =>
           this._fn(
             [
-              {
+              new IntersectionObserverEntry({
                 target: el,
                 isIntersecting: true,
                 intersectionRatio: 1,
@@ -8562,7 +8668,7 @@ export function installDom(bridge: Bridge): void {
                 intersectionRect: el.getBoundingClientRect(),
                 rootBounds: null,
                 time: now(),
-              },
+              }),
             ],
             this,
           ),
@@ -8845,9 +8951,24 @@ export function installDom(bridge: Bridge): void {
       enumerable: false,
     });
   };
+  /** A window attribute, `[Replaceable]` where HTML says so: what a page
+   *  assigns takes its place, as a classic script's top-level `var length`
+   *  does, where it was dropped and the name went on reading the window's.
+   *  `closed` and `isSecureContext` are only read. */
   const getter = (name: string, get: () => Any): void => {
+    const replaceable = name !== 'closed' && name !== 'isSecureContext';
     Object.defineProperty(G, name, {
       get,
+      ...(replaceable && {
+        set(v: Any) {
+          Object.defineProperty(G, name, {
+            value: v,
+            writable: true,
+            configurable: true,
+            enumerable: true,
+          });
+        },
+      }),
       configurable: true,
       enumerable: false,
     });
@@ -8968,6 +9089,7 @@ export function installDom(bridge: Bridge): void {
     AbortController,
     AbortSignal,
     IntersectionObserver,
+    IntersectionObserverEntry,
     ResizeObserver,
     MutationObserver,
     MutationRecord,
@@ -9721,6 +9843,15 @@ export function installDom(bridge: Bridge): void {
       report(error);
       return false;
     }
+  });
+
+  // the viewport scrolled: `scroll` at the document, which bubbles to the
+  // window (CSSOM View 13.1, run the scroll steps) — what CodeMirror
+  // measures its lines again on once it has come into view
+  entry('__scrolled', () => {
+    const ev = new Event('scroll', { bubbles: true });
+    ev.isTrusted = true;
+    return dispatch(document, ev);
   });
 
   // a plain event at an element: a script's `load` or `error`
