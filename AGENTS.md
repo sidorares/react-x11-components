@@ -753,6 +753,19 @@ it up. **The floor is a running one and moves often** — every move since
   its first stop and out past its last, where the host cycled its own focus
   as well and on X11 Tab never left the pane, so the browser's Tab goes
   toolbar, page, strip.
+- `^2.47.1` — `filter: blur()` on the native context (react-x11#926, in
+  2.47.0), which `<Html>` draws a `backdrop-filter`'s surface through
+  (`makeBackdrop`): reactmelbourne.com's sticky nav, `blur(10px)` over a
+  tint, drew the heading scrolled under it sharp on macOS. The same release
+  draws `createRadialGradient` through @windowkit/appkit's
+  `ctxFillRadialGradient`, where every radial gradient a page drew on macOS
+  came out flat; its range, `^0.27.0`, admitted no bridge with the verb, and
+  2.47.1 widens it to `^0.28.0` (react-x11#928), which is why the floor is
+  the patch. Both are read at run time, so an older core draws the backdrop
+  sharp and the gradient flat. 2.47.0 also ends a `<Frame>` pane that stops
+  answering for 15 seconds (#924), which reaches the browser example's
+  `fallback` as any failure of its page's process does: the tab says its
+  page stopped and offers Reload.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

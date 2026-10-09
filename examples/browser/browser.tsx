@@ -14,9 +14,10 @@
 // `page.tsx` is that pane, and everything a page needs is in it. A page that
 // throws, or grows past its heap (`PANE_FLAGS`), costs its own tab — which
 // says so, and offers to reload — and never the strip, the toolbar or
-// another tab. One that wedges its event loop is not noticed yet: nothing
-// in `<Frame>` asks a pane whether it is still answering. This file is the rest: the history, the strip, the toolbar
-// and the keys. Where no pane can be shown, the same page runs in this
+// another tab. So does one that wedges its event loop: `<Frame>` asks its
+// pane about once a second, and ends one that has not answered in 15
+// seconds. This file is the rest: the history, the strip, the toolbar and
+// the keys. Where no pane can be shown, the same page runs in this
 // process instead, and `BROWSER_INLINE=1` asks for that anywhere.
 //
 // Nothing a page contains runs unless you say so. `<Html>` hands scripts to

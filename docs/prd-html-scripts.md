@@ -744,8 +744,10 @@ standards moved from what Acid3 expected):
    and offers to reload". Today it does not. A timed-out script cannot
    wedge the pane, but the engine is not the only thing that can. What is
    wanted is a heartbeat and a `FrameError` phase for a pane that stopped
-   answering. Until then, the header says what is true: that nothing
-   notices.
+   answering. **Done** in react-x11 2.47.0 (react-x11#924): a pane is asked
+   about once a second, and one that has not answered in 15 seconds fails
+   with phase `'unresponsive'` and is ended, which the browser's `fallback`
+   shows as it shows a page whose process died, with Reload.
 3. **A frame clock a pane can reach.** `requestAnimationFrame` is on
    core's window (`NtkWindow.requestAnimationFrame`). In a pane, though,
    that window is made by core's child bridge, and a `DrawnNode` does not
