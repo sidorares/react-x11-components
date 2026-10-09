@@ -537,6 +537,55 @@ test('a script that runs away is stopped, and the page goes on', async () => {
   assert.equal(doc.text('out'), 'after');
 });
 
+test('a worker runs in a thread of its own, started from a blob URL as Parcel starts one, and messages go both ways as structured clones', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><p id="err"></p><script>' +
+      'var shim = "importScripts(" + JSON.stringify(new URL("worker.js", location.href).href) + ");";' +
+      'var w = new Worker(URL.createObjectURL(new Blob([shim], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { var d = e.data;' +
+      '  document.getElementById("out").textContent = [d.sum, d.when instanceof Date, d.when.getTime(),' +
+      '    d.bytes instanceof Uint8Array, d.bytes.join("."), d.map.get("k"), d.global, d.noDocument].join("|"); };' +
+      'w.postMessage({ a: 2, b: 3, when: new Date(5), bytes: new Uint8Array([1, 2, 3]), map: new Map([["k", "v"]]) });' +
+      'var bad = new Worker("bad.js");' +
+      'bad.onerror = function (e) { document.getElementById("err").textContent = e.message + "@" + /bad.js$/.test(e.filename); };' +
+      '</script>',
+    {
+      answer: (request) => {
+        const name = request.url.slice(request.url.lastIndexOf('/') + 1);
+        const body =
+          name === 'worker.js'
+            ? 'self.onmessage = function (e) { var d = e.data;' +
+              '  postMessage({ sum: d.a + d.b, when: d.when, bytes: d.bytes, map: d.map,' +
+              '    global: typeof importScripts + ":" + (self instanceof WorkerGlobalScope) + ":" + name,' +
+              '    noDocument: typeof document + ":" + typeof window }); };'
+            : name === 'bad.js'
+              ? 'throw new TypeError("no good");'
+              : null;
+        if (body === null) return null;
+        return {
+          url: request.url,
+          status: 200,
+          statusText: 'OK',
+          redirected: false,
+          headers: [['content-type', 'text/javascript']],
+          body,
+        };
+      },
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '', 15000);
+  assert.equal(
+    text,
+    '5|true|5|true|1.2.3|v|function:true:|undefined:undefined',
+    doc.logs.join('\n'),
+  );
+  assert.equal(
+    await settled(doc, 'err', (t) => t !== '', 15000),
+    'Uncaught TypeError: no good@true',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a WebAssembly module that runs away is stopped as a script is, and the page goes on', async () => {
   // Node's timeout reaches into the module; Bun's does not, and there the
   // pane's watchdog ends the tab
@@ -2713,6 +2762,53 @@ test('a frame runs in a realm of its own, linked to the page: its window, its pa
     logs.join('\n'),
   );
   assert.equal(text('f', 'got'), '21:true:https://example.test');
+});
+
+test('a frame of another origin runs at its own origin, and the two reach each other only by messages', async () => {
+  const frame =
+    '<!DOCTYPE html><p id="got">-</p><script>' +
+    'var blocked = "";' +
+    'try { parent.document; } catch (e) { blocked = e.name; }' +
+    'parent.postMessage({ type: "ready", r: [location.origin, parent !== window, blocked, String(frameElement)].join(":") }, "*");' +
+    'var heard = 0;' +
+    'addEventListener("message", function (e) {' +
+    '  heard += 1;' +
+    '  document.getElementById("got").textContent = heard + ":" + e.origin;' +
+    '  e.source.postMessage({ type: "echo", n: heard }, e.origin);' +
+    '});' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="https://other.test/frame.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f"); var r = [];' +
+      'addEventListener("message", function (e) {' +
+      '  r.push(e.data.type + ":" + e.origin + (e.data.r ? ":" + e.data.r : "") + (e.data.n ? ":" + e.data.n : ""));' +
+      '  if (e.data.type === "ready") {' +
+      '    var b = ""; try { f.contentWindow.document; } catch (x) { b = x.name; }' +
+      '    r.push(String(f.contentDocument), b);' +
+      // meant for this page's origin, which the frame is not: dropped
+      '    f.contentWindow.postMessage("lost", location.origin);' +
+      '    f.contentWindow.postMessage("kept", "https://other.test");' +
+      '  }' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t.includes('echo'),
+  );
+  assert.equal(
+    page,
+    [
+      'ready:https://other.test:https://other.test:true:SecurityError:null',
+      'null',
+      'SecurityError',
+      'echo:https://other.test:1',
+    ].join('|'),
+    logs.join('\n'),
+  );
+  assert.equal(text('f', 'got'), '1:https://example.test');
 });
 
 test('a frame the page lays out no box for runs all the same, and keeps its realm once it has one', async () => {
