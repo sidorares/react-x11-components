@@ -28,6 +28,12 @@ export type HtmlDomEventType =
   | 'dblclick'
   | 'mousedown'
   | 'mouseup'
+  // the pointer's moves over what the document draws, the wheel turned
+  // over it, and the menu a secondary press asks for — what a page drawing
+  // on a `<canvas>` listens for
+  | 'mousemove'
+  | 'wheel'
+  | 'contextmenu'
   | 'keydown'
   | 'keyup'
   | 'input'
@@ -60,6 +66,12 @@ export interface HtmlDomEvent {
   y?: number;
   /** The DOM's numbering: 0 the main button, 1 the middle, 2 the other. */
   button?: number;
+  /** The buttons held, as the DOM's mask: 1 the main, 2 the other, 4 the
+   *  middle. */
+  buttons?: number;
+  /** A wheel's turn, in pixels: positive right and down. */
+  deltaX?: number;
+  deltaY?: number;
   /** A click's count: 1, 2 for the second of a double click, 0 for one the
    *  keyboard or the page made. */
   detail?: number;
@@ -114,6 +126,8 @@ const CANCELABLE = new Set<HtmlDomEventType>([
   'dblclick',
   'mousedown',
   'mouseup',
+  'wheel',
+  'contextmenu',
   'keydown',
   'keyup',
   'submit',
@@ -152,6 +166,14 @@ export function fireDomEvent(
  *  DOM's 0, 1, 2 (UI Events 5.2.3). */
 export function domButton(button: number): number {
   return button === 2 ? 1 : button === 3 ? 2 : 0;
+}
+
+/** The buttons an X state mask holds, as the DOM's mask: X's Button1Mask,
+ *  Button2Mask and Button3Mask are the main, the middle and the other. */
+export function domButtons(state: number): number {
+  return (
+    (state & 0x100 ? 1 : 0) | (state & 0x400 ? 2 : 0) | (state & 0x200 ? 4 : 0)
+  );
 }
 
 /** A mouse event's point in a document's coordinates: the window's logical

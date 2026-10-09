@@ -40,7 +40,7 @@ import { DomHost } from '../examples/browser/script/host.js';
 import { HtmlSource } from '../src/html/dom.js';
 import type { ScriptsOptions } from '../examples/browser/script/index.js';
 import { linkTarget, navigableFor } from '../examples/browser/target.js';
-import { FrameHolder, frameMounts } from '../examples/browser/frame.js';
+import { FrameHolder, embeddedMounts } from '../examples/browser/frame.js';
 import type { FrameContext } from '../examples/browser/frame.js';
 import type {
   FetchRequest,
@@ -284,6 +284,109 @@ test('nothing of the host is reachable from a page', async () => {
   );
 });
 
+/** The smallest modules: `add`, two i32s summed, and `spin`, a loop with
+ *  no end. */
+const ADD_WASM = [
+  0, 97, 115, 109, 1, 0, 0, 0, 1, 7, 1, 96, 2, 127, 127, 1, 127, 3, 2, 1, 0, 7,
+  7, 1, 3, 97, 100, 100, 0, 0, 10, 9, 1, 7, 0, 32, 0, 32, 1, 106, 11,
+];
+const SPIN_WASM = [
+  0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 7, 8, 1, 4, 115,
+  112, 105, 110, 0, 0, 10, 9, 1, 7, 0, 3, 64, 12, 0, 11, 11,
+];
+
+/** A response of bytes, as the browser's network answers: `body` is the
+ *  text the host reads, which the page must not be handed in their place. */
+function bytesAnswer(
+  request: FetchRequest,
+  type: string,
+  bytes: Uint8Array,
+): FetchResponse {
+  return {
+    url: request.url,
+    status: 200,
+    statusText: 'OK',
+    redirected: false,
+    headers: [['content-type', type]],
+    body: 'not the bytes',
+    bytes,
+  };
+}
+
+test('a page compiles WebAssembly, streamed from its fetch, reads a body as its bytes, and is refused with errors of its own', async () => {
+  const every = new Uint8Array(256).map((_, i) => i);
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function own(e) { return e.constructor.constructor("return typeof process")(); }' +
+      'fetch("add.wasm").then(function (res) { return WebAssembly.instantiateStreaming(res, {}); })' +
+      '.then(function (m) { r.push(m.instance.exports.add(2, 3));' +
+      // the runtime's own streaming compile refused this with the host's
+      // TypeError, whose constructor's constructor is the host's Function
+      '  return WebAssembly.compileStreaming({}); })' +
+      '.catch(function (e) { r.push(e instanceof TypeError, own(e)); })' +
+      '.then(function () { return WebAssembly.compileStreaming(fetch("every.bin")); })' +
+      '.catch(function (e) { r.push(e instanceof TypeError); })' +
+      '.then(function () { return WebAssembly.compile(new Uint8Array([1, 2, 3])); })' +
+      '.catch(function (e) { r.push(e instanceof WebAssembly.CompileError, own(e)); })' +
+      '.then(function () { return fetch("every.bin"); })' +
+      '.then(function (res) { return res.arrayBuffer(); })' +
+      '.then(function (b) { var u = new Uint8Array(b); r.push(u.length, u[0], u[128], u[255]);' +
+      '  return fetch("text.txt"); })' +
+      '.then(function (res) { return res.text(); })' +
+      '.then(function (t) { r.push(t);' +
+      '  var x = new XMLHttpRequest(); x.responseType = "arraybuffer"; x.open("GET", "every.bin");' +
+      '  x.onload = function () { var u = new Uint8Array(x.response); r.push(u.length, u[200]);' +
+      '    document.getElementById("out").textContent = r.join("|"); };' +
+      '  x.send(); })' +
+      '.catch(function (e) { document.getElementById("out").textContent = "failed: " + e; });' +
+      '</script>',
+    {
+      answer: (request) => {
+        const name = request.url.slice(request.url.lastIndexOf('/') + 1);
+        if (name === 'add.wasm') {
+          return bytesAnswer(
+            request,
+            'application/wasm',
+            Uint8Array.from(ADD_WASM),
+          );
+        }
+        if (name === 'every.bin') {
+          return bytesAnswer(request, 'application/octet-stream', every);
+        }
+        if (name === 'text.txt') {
+          return bytesAnswer(
+            request,
+            'text/plain',
+            new TextEncoder().encode('héllo ✓'),
+          );
+        }
+        return null;
+      },
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      5,
+      true,
+      'undefined',
+      true,
+      true,
+      'undefined',
+      256,
+      0,
+      128,
+      255,
+      'héllo ✓',
+      256,
+      200,
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
 nodeTest(
   'where a page’s import() would reach the host, no engine is made',
   () => {
@@ -429,6 +532,18 @@ test('a script that runs away is stopped, and the page goes on', async () => {
   const doc = await hosted(
     '<p id="out">-</p><script>for (;;) {}</script>' +
       "<script>document.getElementById('out').textContent = 'after';</script>",
+  );
+  assert.equal(doc.timeouts, 1);
+  assert.equal(doc.text('out'), 'after');
+});
+
+test('a WebAssembly module that runs away is stopped as a script is, and the page goes on', async () => {
+  // Node's timeout reaches into the module; Bun's does not, and there the
+  // pane's watchdog ends the tab
+  const doc = await hosted(
+    '<p id="out">-</p><script>' +
+      `new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array([${SPIN_WASM}]))).exports.spin();` +
+      "</script><script>document.getElementById('out').textContent = 'after';</script>",
   );
   assert.equal(doc.timeouts, 1);
   assert.equal(doc.text('out'), 'after');
@@ -2505,7 +2620,7 @@ async function hostedFrames(
         baseUrl: PAGE,
         'data-testname': 'page',
         ...scripts,
-        renderEmbedded: frameMounts(frames),
+        renderEmbedded: embeddedMounts(frames),
       }),
       holder ? h(FrameHolder, { context: holder }) : null,
     );
@@ -2715,5 +2830,84 @@ metric(
     await waitForPixel(result.ctx, 50, 25, '#0000ff', {
       message: "the page's blue in the frame",
     });
+  },
+);
+
+metric(
+  "a canvas's script draws pixels the page reads back at once, and the browser shows them over the canvas's box",
+  async () => {
+    const { result, text, logs } = await hostedFrames(
+      '<style>body{margin:0}canvas{display:block;width:80px;height:40px}</style>' +
+        '<canvas id="c" width="4" height="2"></canvas><p id="out"></p><script>' +
+        'var c = document.getElementById("c"); var x = c.getContext("2d");' +
+        'var img = x.createImageData(2, 2);' +
+        'for (var i = 0; i < 16; i += 4) { img.data[i] = 255; img.data[i + 3] = 255; }' +
+        'x.putImageData(img, 0, 0);' +
+        'x.fillStyle = "#0000ff"; x.fillRect(2, 0, 2, 2);' +
+        'var back = x.getImageData(0, 0, 4, 1).data;' +
+        'document.getElementById("out").textContent = [x === c.getContext("2d"),' +
+        '  back[0], back[2], back[10], back[11], c.getContext("webgl"), c.width].join("|");' +
+        '</script>',
+      {},
+    );
+    assert.equal(
+      await until(
+        () => text('page', 'out'),
+        (t) => t !== '',
+      ),
+      'true|255|0|255|255||4',
+      logs.join('\n'),
+    );
+    // the bitmap stretched over the box, its left half red, its right blue
+    await waitForPixel(result.ctx, 20, 20, '#ff0000', {
+      message: 'the put pixels',
+    });
+    await waitForPixel(result.ctx, 60, 20, '#0000ff', {
+      message: 'the filled rectangle',
+    });
+  },
+);
+
+metric(
+  "the pointer's moves, the wheel and a secondary press over a canvas reach its listeners, through what the browser draws over it",
+  async () => {
+    const { text, logs } = await hostedFrames(
+      '<style>body{margin:0}canvas{display:block;width:100px;height:50px}</style>' +
+        '<canvas id="c" width="10" height="5"></canvas><p id="out"></p><script>' +
+        'var c = document.getElementById("c"); var r = [];' +
+        'var x = c.getContext("2d"); x.fillStyle = "red"; x.fillRect(0, 0, 10, 5);' +
+        '["pointerover", "mouseenter", "mousemove", "wheel", "contextmenu"].forEach(function (t) {' +
+        '  c.addEventListener(t, function (e) {' +
+        '    var said = t + (t === "wheel" ? ":" + (e.deltaY > 0) + ":" + (e instanceof WheelEvent) : "")' +
+        '      + (t === "mousemove" ? ":" + Math.round(e.offsetX) : "");' +
+        '    if (r.indexOf(said) < 0) r.push(said);' +
+        '    if (t === "wheel" || t === "contextmenu") e.preventDefault();' +
+        '    document.getElementById("out").textContent = r.join(",");' +
+        '  }, { passive: false });' +
+        '});' +
+        '</script>',
+      {},
+    );
+    const root = screen.getByTestName('page') as unknown as {
+      children: DrawnNode[];
+    };
+    const node = root.children[0];
+    // the canvas's middle, 50 by 25 in the document
+    const dx = 50 - node.abs.width / 2;
+    const dy = 25 - node.abs.height / 2;
+    await act(async () => fireEvent.mouseMove(node, { dx, dy }));
+    await act(async () => fireEvent.wheel(node, { dx, dy, deltaY: 1 }));
+    await act(async () => {
+      fireEvent.mouseDown(node, { dx, dy, button: 3 });
+      fireEvent.mouseUp(node, { dx, dy, button: 3 });
+    });
+    assert.equal(
+      await until(
+        () => text('page', 'out'),
+        (t) => t.includes('contextmenu'),
+      ),
+      'pointerover,mouseenter,mousemove:50,wheel:true:true,contextmenu',
+      logs.join('\n'),
+    );
   },
 );

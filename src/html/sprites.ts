@@ -65,11 +65,15 @@ import type { Box, BoxTree } from './layout/boxes.js';
 import {
   FIXED_BOXES,
   clipFor,
+  clipsOverflow,
   cornersOf,
   drawnAtViewport,
   drawsAgainstViewport,
+  drawsNothing,
+  hasRect,
   holds,
   ownBounds,
+  shadowOutsets,
   paintedAfter,
   spreadCorners,
 } from './paint.js';
@@ -509,7 +513,17 @@ const overlaps = (a: Rect, b: Rect): boolean =>
  * puts ink within `extent`, in the document's coordinates — or an ancestor
  * draws an outline, which goes over what it holds: painted before the box
  * or after it, for a box whose place in the paint order `paintedAfter`
- * cannot tell. A subtree whose ink misses the extent is passed over whole.
+ * cannot tell. A subtree whose ink misses the extent is passed over whole,
+ * and one whose ink meets it is looked into rather than taken at its word:
+ * a subtree's ink is the union of all it holds, and CodeMirror parks an
+ * element ten thousand pixels above an editor while Docusaurus keeps its
+ * menu's backdrop over the whole viewport, hidden, so the ink of a
+ * playground's editor and of its navbar met the frame beside them. So
+ * what counts is a box's own ink, where it is visible; nothing under an
+ * opacity of 0; and nothing a box that clips what it holds cuts away from
+ * the extent. A box's own ink is its border box with its shadows and its
+ * outline; one with no rectangle of its own, an inline box, is taken at
+ * its ink, as before.
  */
 export function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
   const path = new Set<Box>();
@@ -531,7 +545,50 @@ export function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
       width: at.boundsWidth,
       height: at.boundsHeight,
     };
-    if (overlaps(ink, extent)) return true;
+    if (!overlaps(ink, extent)) continue;
+    const style = at.style;
+    // nothing it or what it holds draws shows
+    if (drawsNothing(at)) continue;
+    // taken at its ink: an inline box, whose rect no layout sets, and a box
+    // drawn through a matrix or a filter, whose rect is not where it draws
+    if (!hasRect(at) || placedMatrix(at) || style.filter !== null) return true;
+    // its own: the border box, and the shadows and the outline past it
+    if (style.visibility === 'visible') {
+      let { x, y, width, height } = at;
+      if (style.boxShadow) {
+        const out = shadowOutsets(style.boxShadow);
+        x -= out.left;
+        y -= out.top;
+        width += out.left + out.right;
+        height += out.top + out.bottom;
+      }
+      if (style.outlineStyle !== 'none' && style.outlineWidth > 0) {
+        const grow = Math.max(0, style.outlineOffset + style.outlineWidth);
+        x -= grow;
+        y -= grow;
+        width += 2 * grow;
+        height += 2 * grow;
+      }
+      if (overlaps({ x, y, width, height }, extent)) return true;
+    }
+    // what it holds, where a box that clips it leaves it within reach
+    if (
+      clipsOverflow(at) &&
+      style.overflowX !== 'visible' &&
+      style.overflowY !== 'visible' &&
+      !overlaps(
+        {
+          x: at.x + at.borderLeft,
+          y: at.y + at.borderTop,
+          width: at.width - at.borderLeft - at.borderRight,
+          height: at.height - at.borderTop - at.borderBottom,
+        },
+        extent,
+      )
+    ) {
+      continue;
+    }
+    for (const child of at.children) stack.push(child);
   }
   return false;
 }

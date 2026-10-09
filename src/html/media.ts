@@ -53,6 +53,7 @@ import {
   clipFor,
   contentCorners,
   drawnAtViewport,
+  drawsNothing,
   paintedAfter,
 } from './paint.js';
 import type { VideoSource } from './resources.js';
@@ -300,6 +301,7 @@ export function cutByFixed(
   const dy = shift?.y ?? 0;
   for (const box of fixed) {
     if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
+    if (drawsNothing(box)) continue;
     const z = box.style.zIndex;
     if (typeof z === 'number' && z < 0) continue;
     const bx0 = box.boundsX + dx;

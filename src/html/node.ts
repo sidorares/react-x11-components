@@ -200,6 +200,7 @@ import {
   containingBlockOf,
   coverersAfter,
   drawnAtViewport,
+  drawsNothing,
   FIXED_BOXES,
   fixedToViewport,
   forgetCasts,
@@ -8206,6 +8207,7 @@ function fixedWithin(
   const dy = shift?.y ?? 0;
   for (const box of part.fixed) {
     if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
+    if (drawsNothing(box)) continue;
     const x = box.boundsX + dx;
     const y = box.boundsY + dy;
     if (

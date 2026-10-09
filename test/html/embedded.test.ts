@@ -110,6 +110,31 @@ test('a mount is cut where the document clips the element', async () => {
   );
 });
 
+test('what reaches a mount only where nothing of it is drawn takes nothing from it', async () => {
+  // a pane beside the frame whose content runs on under a box that clips
+  // it, as an editor's does, and a menu's backdrop fixed over the whole
+  // viewport, hidden, as Docusaurus keeps one: the frame is mounted, uncut
+  const { asked } = await renderEmbedded(
+    '<style>body{margin:0}.row{display:flex}' +
+      '.pane{width:100px;height:60px;overflow:hidden}' +
+      '.wide{width:600px;height:10px;background:#00f}' +
+      '.backdrop{position:fixed;inset:0;visibility:hidden;opacity:0;background:#000}' +
+      'iframe{border:0;margin-left:50px}</style>' +
+      '<div class="backdrop"></div>' +
+      '<div class="row"><div class="pane"><div class="wide"></div></div>' +
+      '<iframe id="f" width="120" height="60"></iframe></div>',
+  );
+  const frame = asked.at(-1);
+  assert.ok(frame, 'the frame was asked about');
+  assert.deepStrictEqual(
+    [frame.x, frame.y, frame.width, frame.height],
+    [150, 0, 120, 60],
+  );
+  assert.strictEqual(frame.clip, undefined, 'nothing cuts it');
+  assert.ok(!frame.hidden, 'nor hides it');
+  assert.ok(mounted('f'), 'mounted');
+});
+
 test('a mount stays the same node as a layout moves its element', async () => {
   // a new node would be a new document in an iframe, its scripts started
   // again; a new source is a new document, and a new node is right there

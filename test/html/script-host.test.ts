@@ -134,7 +134,13 @@ metric(
       '<style>body{margin:0}</style><p><a id="a" href="/next">a <b id="b">link</b></a></p>',
     );
     await clickOn(doc.el, doc.byId('b'));
-    assert.deepStrictEqual(doc.told(), ['mousedown:b', 'mouseup:b', 'click:b']);
+    // the pointer moved onto it first, which is told too
+    assert.deepStrictEqual(doc.told(), [
+      'mousemove:b',
+      'mousedown:b',
+      'mouseup:b',
+      'click:b',
+    ]);
     assert.deepStrictEqual(doc.links, ['https://example.test/next']);
     const click = doc.events.find((e) => e.type === 'click')!;
     assert.strictEqual(click.button, 0, "the DOM's numbering");
@@ -155,6 +161,50 @@ metric(
       'click:b',
     ]);
     assert.strictEqual(doc.links.length, 1, 'cancelled: no link followed');
+  },
+);
+
+metric(
+  'the wheel over the document is told with its turn, and one cancelled scrolls nothing',
+  async () => {
+    const events: HtmlDomEvent[] = [];
+    let cancel = true;
+    await renderX11(
+      h(
+        'box',
+        {
+          'data-testname': 'pane',
+          style: { width: 300, height: 100, overflow: 'scroll' },
+        },
+        h(Html, {
+          source:
+            '<style>body{margin:0}</style><div id="tall" style="height:600px"></div>',
+          partial: false,
+          'data-testname': 'doc',
+          onDomEvent: (e: HtmlDomEvent) => {
+            events.push(e);
+            return e.type === 'wheel' && cancel ? false : undefined;
+          },
+        }),
+      ),
+      { width: 340, height: 140, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    const pane = screen.getByTestName('pane') as unknown as DrawnNode & {
+      scrollY: number;
+    };
+    const node = screen.getByTestName('doc') as DrawnNode;
+    // the wheel turns where the pointer is, in what the pane shows
+    const at = { dx: 0, dy: 50 - node.abs.height / 2 };
+    await act(async () => fireEvent.mouseMove(node, at));
+    await act(async () => fireEvent.wheel(node, { ...at, deltaY: 1 }));
+    const wheel = events.find((e) => e.type === 'wheel')!;
+    assert.strictEqual(wheel.target.attribs.id, 'tall');
+    assert.ok(wheel.deltaY! > 0, 'down');
+    assert.strictEqual(pane.scrollY, 0, 'cancelled: the pane stayed');
+    cancel = false;
+    await act(async () => fireEvent.wheel(node, { ...at, deltaY: 1 }));
+    assert.ok(pane.scrollY > 0, 'not cancelled: the pane scrolled');
   },
 );
 

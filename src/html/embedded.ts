@@ -98,6 +98,10 @@ function mount(rect: EmbeddedRect, id: string, content: ReactNode): ReactNode {
             borderRadius: rect.radius,
             overflow: 'hidden',
           }),
+          // what takes the pointer is what the host mounted: a canvas's
+          // picture lets it through to the element in the document, which
+          // the page hears of
+          pointerEvents: 'box-none',
         },
       },
       content,

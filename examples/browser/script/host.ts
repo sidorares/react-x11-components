@@ -63,6 +63,27 @@ import {
 } from './ranges.js';
 import type { CharacterData } from './ranges.js';
 import { navigableFor } from '../target.js';
+import * as ntk from 'react-x11/ntk';
+
+/** ntk's CSS colour parser, straight RGBA from 0 to 1: on the module, and
+ *  not in `ntk.d.ts`'s named list (AGENTS.md, "Affordance glyphs"). */
+const cssColorStraight = (
+  ntk as unknown as {
+    cssColorStraight?: (
+      color: string,
+    ) => [number, number, number, number] | null;
+  }
+).cssColorStraight;
+
+/** A `<canvas>`'s pixels as the page's script drew them (`canvasPut`):
+ *  straight RGBA, and a count of the changes, which a view that draws them
+ *  re-renders on. */
+export interface CanvasPixels {
+  width: number;
+  height: number;
+  data: Uint8ClampedArray;
+  version: number;
+}
 
 /** A request a page's `fetch` makes, and what it came to. */
 export interface FetchRequest {
@@ -94,6 +115,10 @@ export interface FetchResponse {
   headers: [string, string][];
   /** The body, decoded as the response says. */
   body: string;
+  /** Its bytes, where the network has them: what a page's `fetch` is
+   *  handed, so a binary body — a `.wasm`, an image, a font — reaches it as
+   *  it came, and `text()` decodes it as Fetch says, as UTF-8. */
+  bytes?: Uint8Array;
   /** What the page may read of it (Fetch 2.2.6): `basic` its own
    *  origin's, `cors` another's that let it, `opaque` none of it. */
   type?: 'basic' | 'cors' | 'opaque';
@@ -678,6 +703,11 @@ export class DomShared {
    *  into them at once, before a realm could be made. */
   readonly realms = new WeakSet<Document>();
 
+  /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
+   *  is told as they change. */
+  readonly canvases = new WeakMap<Element, CanvasPixels>();
+  readonly canvasListeners = new Set<(canvas: Element) => void>();
+
   /** The frames' documents changed: one came, or went on to another. */
   framesChanged(): void {
     for (const listener of [...this.frameListeners]) listener();
@@ -881,6 +911,9 @@ export class DomHost {
       x: event.x,
       y: event.y,
       button: event.button,
+      buttons: event.buttons,
+      deltaX: event.deltaX,
+      deltaY: event.deltaY,
       detail: event.detail,
       key: event.key,
       code: event.code,
@@ -927,6 +960,23 @@ export class DomHost {
   loadFrames(): void {
     if (this._disposed) return;
     this._framesIn(this.document.children);
+  }
+
+  /** A `<canvas>`'s pixels, where a script drew any. */
+  canvas(element: Element): CanvasPixels | null {
+    return this._s.canvases.get(element) ?? null;
+  }
+
+  /** Be told when a canvas's pixels change; answers the way to stop. */
+  onCanvas(listener: (canvas: Element) => void): () => void {
+    this._s.canvasListeners.add(listener);
+    return () => this._s.canvasListeners.delete(listener);
+  }
+
+  /** An element's computed style, as `<Html>` has it: what a view over
+   *  the element reads its `object-fit` from. */
+  styleOf(element: Element): Record<string, string> | null {
+    return this._seams.handle.computedStyle(element, null) ?? null;
   }
 
   /** Be told when a frame's document comes or goes; answers the way to
@@ -1717,6 +1767,40 @@ export class DomHost {
       }
       // `CSS.supports`: as `<Html>` answers an `@supports`, a condition as
       // it is written or, where it is no condition, in parentheses
+      // a canvas's pixels, the rectangle a task changed: its bitmap's
+      // size, where the rectangle is in it, and its rows as base64
+      case 'canvasPut': {
+        const canvas = this._element(a);
+        const [width, height, x, y, w, h] = text(b).split(',').map(Number);
+        if (![width, height, x, y, w, h].every(Number.isInteger)) return null;
+        let pixels = this._s.canvases.get(canvas);
+        if (!pixels || pixels.width !== width || pixels.height !== height) {
+          pixels = {
+            width,
+            height,
+            data: new Uint8ClampedArray(width * height * 4),
+            version: 0,
+          };
+          this._s.canvases.set(canvas, pixels);
+        }
+        const rows = Buffer.from(text(c), 'base64');
+        for (let row = 0; row < h && y + row < height; row += 1) {
+          const line = rows.subarray(row * w * 4, (row + 1) * w * 4);
+          pixels.data.set(
+            line.subarray(0, Math.max(0, Math.min(w, width - x)) * 4),
+            ((y + row) * width + x) * 4,
+          );
+        }
+        pixels.version += 1;
+        for (const listener of [...this._s.canvasListeners]) listener(canvas);
+        return null;
+      }
+      // a colour a page names, as straight RGBA bytes
+      case 'color': {
+        const rgba = cssColorStraight?.(text(a).trim());
+        return rgba ? rgba.map((v) => Math.round(v * 255)).join(',') : '';
+      }
+
       case 'supports': {
         const condition = text(a);
         const answer = supportsCondition(condition);
@@ -2952,7 +3036,24 @@ export class DomHost {
   private _fetch(id: number, json: string): void {
     const answer = (value: FetchResponse | string) => {
       if (!this._fetches.delete(id) || this._disposed) return;
-      this.entries?.call('__fetched', [id, value]);
+      // what crosses is primitives: the bytes as base64, where there are
+      // bytes, and the decoded text where there are none
+      let crossing: unknown = value;
+      if (typeof value !== 'string') {
+        const { bytes, ...rest } = value;
+        crossing = bytes
+          ? {
+              ...rest,
+              body: '',
+              base64: Buffer.from(
+                bytes.buffer,
+                bytes.byteOffset,
+                bytes.byteLength,
+              ).toString('base64'),
+            }
+          : rest;
+      }
+      this.entries?.call('__fetched', [id, crossing]);
     };
     let request: PageRequest;
     try {

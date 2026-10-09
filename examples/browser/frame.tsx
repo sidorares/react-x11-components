@@ -24,6 +24,7 @@ import type {
   ResourceRequest,
   ResourceResult,
 } from '../../src/html/index.js';
+import { CanvasView } from './canvas.js';
 import { useScripts } from './script/index.js';
 import type { FramePost } from './script/host.js';
 import type { ScriptRunner, ScriptsOptions } from './script/index.js';
@@ -44,15 +45,21 @@ export interface FrameContext {
 }
 
 /** What a page mounts over its embedded elements: a frame's document over
- *  an `<iframe>`, where its scripts run; nothing over the rest. The context
- *  is asked as the frame is mounted, since `<Html>` asks again as its
- *  frames move, with the props of the page's last render. */
-export function frameMounts(
+ *  an `<iframe>`, where its scripts run, and a `<canvas>`'s pixels over the
+ *  canvas (`canvas.tsx`); nothing over an `<embed>`. The context is asked
+ *  as each is mounted, since `<Html>` asks again as they move, with the
+ *  props of the page's last render. */
+export function embeddedMounts(
   context: () => FrameContext | null,
 ): (rect: EmbeddedRect) => ReactElement | null {
   return (rect) => {
-    const known = rect.kind === 'iframe' ? context() : null;
-    return known ? <FramePage frame={rect.element} context={known} /> : null;
+    const known = rect.kind === 'embed' ? null : context();
+    if (!known) return null;
+    return rect.kind === 'iframe' ? (
+      <FramePage frame={rect.element} context={known} />
+    ) : (
+      <CanvasView canvas={rect.element} host={known.parent.host} />
+    );
   };
 }
 
@@ -277,7 +284,7 @@ function FrameDocument({
         onDomEvent={scripts.onDomEvent}
         onDocument={scripts.onDocument}
         stylesheet={scripts.stylesheet}
-        renderEmbedded={frameMounts(inner)}
+        renderEmbedded={embeddedMounts(inner)}
         style={{ flexGrow: 1 }}
       />
       {holder ? <FrameHolder context={holder} /> : null}
