@@ -81,6 +81,7 @@ import {
   videoSource,
 } from './network.js';
 import { useScripts } from './script/index.js';
+import { linkTarget, navigableFor } from './target.js';
 import type { ScriptsOptions } from './script/index.js';
 import type { DocumentResponse, PostData, ResourceKind } from './network.js';
 import {
@@ -381,25 +382,26 @@ export default function Page(props: PageProps): ReactElement {
       return;
     }
     const modifier = cocoa ? ev.metaKey : ev.ctrlKey;
-    let target = handle.elementAt(ev.x, ev.y);
-    while (target && target.name !== 'a' && target.name !== 'area') {
-      target =
-        target.parent?.type === 'tag' ? (target.parent as Element) : null;
+    let link = handle.elementAt(ev.x, ev.y);
+    while (link && link.name !== 'a' && link.name !== 'area') {
+      link = link.parent?.type === 'tag' ? (link.parent as Element) : null;
     }
-    live.current.onLink(
-      href,
-      modifier
-        ? 'background'
-        : target?.attribs.target === '_blank'
-          ? 'tab'
-          : 'here',
-      null,
-    );
+    if (modifier) {
+      live.current.onLink(href, 'background', null);
+      return;
+    }
+    const to = navigableFor(handle.document, linkTarget(link, handle.document));
+    if (typeof to === 'string') live.current.onLink(href, to, null);
+    else scripts.navigateFrame?.(to, href, null);
   };
 
   // A form is a link it writes itself: a GET is one to `submission.url`,
   // which has the entries in its query, and a POST one with a body. Where
-  // it goes is decided as a link's is, `_blank` a new tab.
+  // it goes is decided as a link's is (`navigableFor`): `_blank` a new tab,
+  // and a name one of the page's frames has that frame, which the page's
+  // scripts load where they run and nothing does where they do not. The
+  // tab stays where it is either way, as Chrome's does when Facebook's
+  // pixel posts into its hidden frame.
   const onSubmit = (submission: FormSubmission) => {
     const { url: action, method, body, contentType, target } = submission;
     if (!/^(?:https?|file|data):/i.test(action)) {
@@ -412,7 +414,9 @@ export default function Page(props: PageProps): ReactElement {
       method === 'post' && /^https?:/i.test(action)
         ? { body: body ?? '', contentType: contentType ?? '', from: url }
         : null;
-    live.current.onLink(action, target === '_blank' ? 'tab' : 'here', post);
+    const to = navigableFor(handle.document, target);
+    if (typeof to === 'string') live.current.onLink(action, to, post);
+    else scripts.navigateFrame?.(to, action, post);
   };
 
   // The page's scripts, where they run: the engine reads the pane it is

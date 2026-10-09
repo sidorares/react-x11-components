@@ -9353,8 +9353,10 @@ export function installDom(bridge: Bridge): void {
     );
     return null;
   });
-  define('open', (url?: Any) => {
-    if (url) call('open', String(call('resolve', str(url))));
+  // to where its name says, a new tab where it names none (HTML 7.2.2.1)
+  define('open', (url?: Any, target?: Any) => {
+    const name = target === undefined || target === '' ? '_blank' : str(target);
+    if (url) call('open', String(call('resolve', str(url))), name);
     return null;
   });
   define('close', () => {});

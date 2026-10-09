@@ -696,6 +696,14 @@ standards moved from what Acid3 expected):
   page's, so one that changes a prototype it took from a frame changes the
   page's; core-js's, which would, deletes from it only from a script it
   writes into the frame, and a written script does not run.
+- **A target that names a frame sends the frame.** A link, a form or
+  `window.open` goes where HTML's rules for choosing a navigable say
+  (`navigableFor`, `examples/browser/target.ts`): the keywords, else the
+  first frame of that name, else a new tab. A form's POST goes with it,
+  and to another origin's frame nothing is sent. Every submission but a
+  `_blank` one used to go to the tab, so Facebook's pixel, which posts
+  into a hidden frame its form names whenever `sendBeacon` declines, sent
+  officeworks.com.au's tab to `facebook.com/tr/`.
 
 ## What core would be asked
 
