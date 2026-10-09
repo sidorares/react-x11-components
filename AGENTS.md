@@ -2819,6 +2819,17 @@ new element is a new player, and the video starts again. The boxes fixed to
 the viewport are asked about at each paint (`_publishMedia`), since a scroll
 brings a header over a player and lays nothing out.
 
+**What an `<iframe>`, a `<canvas>` or an `<embed>` shows is the host's,
+mounted over its box** (`renderEmbedded`, `embedded.ts`). The document
+lays each out as an empty box of its size and loads and runs nothing for
+it; the host is handed the content box (`EmbeddedRect`) and what it returns
+is mounted beside the document as a player is, held to the same rules
+(`placementOf` in `media.ts`, shared with `mediaRectsOf`). **A mount is
+keyed by its element**, so a layout or a scroll that moves an `<iframe>`
+keeps the document in it and its scripts: anything new that reports these
+rects keeps the element as the key. The browser example mounts another
+`<Html>` with the frame's document in it.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

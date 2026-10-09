@@ -47,6 +47,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                                                         |
 | `onSubmit`           | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                                                                 |
 | `onViewportOverflow` | `(overflow: ViewportOverflow) => void`           | The `overflow` the root, or the `<body>`, gave the viewport, `{ x, y }` of `'auto' \| 'hidden' \| 'scroll'`, for the host's scroll pane — see [What renders](#what-renders).                                                      |
+| `renderEmbedded`     | `(rect: EmbeddedRect) => ReactNode \| null`      | What to show in an `<iframe>`, a `<canvas>` or an `<embed>`, mounted at its content box — see [Embedded content](#embedded-content). Absent, each is an empty box.                                                                |
 | `fontSize`           | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                                                                              |
 | `fontFamily`         | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                                                                        |
 | `monoFamily`         | `string`                                         | Code font, and a `<textarea>`'s: the generic `monospace` where the UA sheet names it — see [Fonts](#fonts). Default `'monospace'` — there is no theme token for it.                                                               |
@@ -833,6 +834,41 @@ arrow rather than the document's I-beam; a press on one without goes to the
 document, so a drag across it selects the text around it. A transport bar
 is an application's to draw, around the document. `<audio>` is not a
 video, and plays nothing.
+
+## Embedded content
+
+```jsx
+<Html
+  source={page}
+  baseUrl={url}
+  renderEmbedded={(e) =>
+    e.kind === 'iframe' ? <FramePage frame={e.element} /> : null
+  }
+/>
+```
+
+**An `<iframe>`, a `<canvas>` or an `<embed>` shows what the host mounts
+over it.** The document lays each out as a box of its size and draws
+nothing in it, since nothing is loaded or run here. `renderEmbedded` is
+called with where the element's content box is, in this component's space,
+and what it returns is mounted there, filling it, beside the document, as a
+[video](#video)'s player is. The rect carries the `element`, its `kind`, the
+content box, and, where they apply, the `clip` the boxes around it cut it
+to, the `radius` of its corners, its `opacity` and `hidden`. They are cut,
+rounded and faded by the boxes around it, and cut by a box fixed to the
+viewport as the pane scrolls, as a player is.
+
+**What is mounted stays the same node while the element moves**: it is
+keyed by the element, so a layout that moves an `<iframe>`, or a scroll
+that cuts it, keeps the document in it and its scripts running. A new
+`source` is a new document, its elements new, and is mounted again, as a
+browser loads a page's frames again with the page.
+
+The rules a player is held to hold here too, for the same reason — what is
+mounted is over the whole document: an element the document paints
+something after, over its box, is given nothing, and so is one a transform
+turns or scales, a `clip-path` or a mask cuts, or that is fixed to the
+viewport. Answering null leaves the box the empty one the document laid out.
 
 ## Focus and the keyboard
 
@@ -1760,7 +1796,8 @@ style sheet has it, and core's `<video>` over it where the host gives it
 something to play — see [Video](#video). `<iframe>`, and a `<video>` or an
 `<embed>` with no image, are boxes of their `width` and `height` — 300×150
 without them, as HTML sizes them — with nothing in them, because nothing is
-loaded.
+loaded, and what a host mounts over them where it gives one — see [Embedded
+content](#embedded-content).
 
 **Intrinsic sizes:** `width`, `min-width` and `max-width` take
 `fit-content`, `max-content` and `min-content` — Tailwind's `w-fit`, `w-max`

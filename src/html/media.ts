@@ -156,52 +156,19 @@ export function mediaRectsOf(
 ): MediaRect[] {
   const out: MediaRect[] = [];
   for (const box of tree.media) {
-    const el = box.el;
-    if (!el) continue;
-    // set aside by a layout that stopped short of it (`heldBack`)
-    if (heldBack(tree, box)) continue;
-    if (box.style.visibility !== 'visible') continue;
-    if (!mountable(box)) continue;
-    const picture = pixelsOf(box);
-    if (!(picture.width > 0 && picture.height > 0)) continue;
-    const radius = radiusOf(box);
-    if (radius === null) continue;
-    // the boxes around it that clip it: to a rectangle, or to one with
-    // round corners where they are one circle's and nothing else cuts it
-    const cut = clipFor(box, picture, scale);
-    if (cut === null) continue;
-    const clip = cut?.rect;
-    const round = cut ? cut.radius : 0;
-    const shows = clip ? between(clip, picture) : picture;
-    const reach = inset(shows, OVERLAP);
-    if (
-      reach.width > 0 &&
-      reach.height > 0 &&
-      (paintedAfter(box, reach) ?? crowded(tree, box, reach))
-    ) {
-      continue;
-    }
+    const placed = placementOf(tree, box, scale);
+    if (!placed) continue;
+    const el = placed.element;
     // asked last, and only of what can be mounted: a host is not asked for
     // a video nothing would show
     const chosen = sourceOf(el);
     if (!chosen) continue;
-    let opacity = 1;
-    for (let at: Box | null = box; at; at = at.parent) {
-      opacity *= at.style.opacity;
-    }
     const label = attr(el, 'aria-label') || attr(el, 'title');
     out.push({
-      element: el,
+      ...placed,
       source: chosen.source,
       url: chosen.url,
-      ...picture,
       fit: box.style.objectFit,
-      ...(radius > 0 && { radius }),
-      // a rounded clip is the box it is the edge of, corners and all
-      ...(round > 0
-        ? { clip: clip!, clipRadius: round }
-        : clip && !covers(clip, picture) && { clip: shows }),
-      ...(opacity < 1 && { opacity: Math.max(0, opacity) }),
       autoPlay: attr(el, 'autoplay') !== undefined,
       loop: attr(el, 'loop') !== undefined,
       muted: attr(el, 'muted') !== undefined,
@@ -210,6 +177,107 @@ export function mediaRectsOf(
     });
   }
   return out;
+}
+
+/**
+ * Where what a host mounts over an embedded element goes (`renderEmbedded`):
+ * an `<iframe>`, a `<canvas>` or an `<embed>`, each a box of its size that
+ * the document draws nothing in. Held to what a player is (`placementOf`),
+ * since it is a sibling over the document the same way.
+ */
+export interface EmbeddedRect {
+  element: Element;
+  /** Which embedded element it is. */
+  kind: EmbeddedKind;
+  /** Its content box, which what is mounted fills. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** As a player's (`MediaRect`). */
+  radius?: number;
+  clip?: Rect;
+  clipRadius?: number;
+  opacity?: number;
+  hidden?: boolean;
+}
+
+export type EmbeddedKind = 'iframe' | 'canvas' | 'embed';
+
+/** The embedded elements a laid-out document mounts what a host gives
+ *  over, as `mediaRectsOf` mounts players. */
+export function embeddedRectsOf(tree: BoxTree, scale: number): EmbeddedRect[] {
+  const out: EmbeddedRect[] = [];
+  for (const box of tree.embedded) {
+    const placed = placementOf(tree, box, scale);
+    if (!placed) continue;
+    out.push({ ...placed, kind: tagOf(placed.element) as EmbeddedKind });
+  }
+  return out;
+}
+
+/**
+ * Where a sibling over the document stands for a replaced box, in device
+ * pixels: its content box, its corners, what the boxes around it cut it to,
+ * and how faded it is. Null for one a rectangle mounted over the document
+ * cannot show as the document would: invisible, set aside, drawn through a
+ * matrix, cut to what is no rectangle, or with something the document
+ * paints after it over it.
+ */
+function placementOf(
+  tree: BoxTree,
+  box: Box,
+  scale: number,
+): {
+  element: Element;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  radius?: number;
+  clip?: Rect;
+  clipRadius?: number;
+  opacity?: number;
+} | null {
+  const el = box.el;
+  if (!el) return null;
+  // set aside by a layout that stopped short of it (`heldBack`)
+  if (heldBack(tree, box)) return null;
+  if (box.style.visibility !== 'visible') return null;
+  if (!mountable(box)) return null;
+  const picture = pixelsOf(box);
+  if (!(picture.width > 0 && picture.height > 0)) return null;
+  const radius = radiusOf(box);
+  if (radius === null) return null;
+  // the boxes around it that clip it: to a rectangle, or to one with
+  // round corners where they are one circle's and nothing else cuts it
+  const cut = clipFor(box, picture, scale);
+  if (cut === null) return null;
+  const clip = cut?.rect;
+  const round = cut ? cut.radius : 0;
+  const shows = clip ? between(clip, picture) : picture;
+  const reach = inset(shows, OVERLAP);
+  if (
+    reach.width > 0 &&
+    reach.height > 0 &&
+    (paintedAfter(box, reach) ?? crowded(tree, box, reach))
+  ) {
+    return null;
+  }
+  let opacity = 1;
+  for (let at: Box | null = box; at; at = at.parent) {
+    opacity *= at.style.opacity;
+  }
+  return {
+    element: el,
+    ...picture,
+    ...(radius > 0 && { radius }),
+    // a rounded clip is the box it is the edge of, corners and all
+    ...(round > 0
+      ? { clip: clip!, clipRadius: round }
+      : clip && !covers(clip, picture) && { clip: shows }),
+    ...(opacity < 1 && { opacity: Math.max(0, opacity) }),
+  };
 }
 
 /**

@@ -924,6 +924,10 @@ export interface BoxTree {
   /** Every `<video>`'s box, in document order: what a player may be
    *  mounted over (`media.ts`). */
   media: Box[];
+  /** Every `<iframe>`'s, `<canvas>`'s and `<embed>`'s box, in document
+   *  order: what a host may mount its own content over (`renderEmbedded`,
+   *  `media.ts`). */
+  embedded: Box[];
   /** Every box carrying an `href`, for click and hover. */
   links: Box[];
   /** Every box of an element whose markup makes it focusable — a link, a
@@ -1128,6 +1132,7 @@ class Builder {
   private _lastTextStyle: ComputedStyle | null = null;
   private _controls: Box[] = [];
   private _media: Box[] = [];
+  private _embedded: Box[] = [];
   private _links: Box[] = [];
   private _focusables: Box[] = [];
   private _backgrounds: Box[] = [];
@@ -1217,6 +1222,7 @@ class Builder {
       styles: this._styles,
       controls: this._controls,
       media: this._media,
+      embedded: this._embedded,
       links: this._links,
       focusables: this._focusables,
       backgrounds: this._backgrounds,
@@ -1645,6 +1651,9 @@ class Builder {
     box.replaced = replaced;
     into.append(box);
     if (tag === 'video') this._media.push(box);
+    else if (tag === 'iframe' || tag === 'canvas' || tag === 'embed') {
+      this._embedded.push(box);
+    }
     if (focusableElement(el, tag)) this._focusables.push(box);
     if (namesImages(style)) this._backgrounds.push(box);
     if (style.position === 'absolute' || style.position === 'fixed')
