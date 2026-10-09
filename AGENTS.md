@@ -1905,6 +1905,18 @@ closes a way out a DOM binding opens by accident:
   page builds on it: `cssText +=` needs the trailing `;`. Listing the
   getter-only accessors on the facade's interfaces, and checking each
   against the IDL, is a quick way to find the next one.
+- **Nothing the runtime settles from a task of its own may be a page's
+  promise.** The context runs its microtasks only when the engine enters
+  it (`afterEvaluate`), so a promise V8 resolves from a platform task —
+  WebAssembly's asynchronous compile — is heard at the page's next timer,
+  or never. The facade compiles a module at once, in the promise, and
+  replaces the streaming forms, which on Node are the host's and refuse a
+  page's `Response` with an error of the host's realm: a way out of the
+  context, which the escape test reads.
+- **A canvas's pixels are the page realm's** (`CanvasState` in `dom.ts`),
+  and the host is told what changed once a task (`markCanvas`,
+  `canvasPut`). Anything new that draws on a canvas marks the rectangle it
+  changed, or the browser shows the canvas as it was.
 - **Run it on Bun too.** `test/browser-scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its
@@ -2872,7 +2884,15 @@ is mounted beside the document as a player is, held to the same rules
 (`placementOf` in `media.ts`, shared with `mediaRectsOf`). **A mount is
 keyed by its element**, so a layout or a scroll that moves an `<iframe>`
 keeps the document in it and its scripts: anything new that reports these
-rects keeps the element as the key. The browser example mounts another
+rects keeps the element as the key. **Only what draws something covers a mount,
+or a player** (`drawsNothing`, `crowded`): a box faded to nothing or
+hidden all through — Docusaurus's menu backdrop, fixed over the viewport —
+and the overflow of a pane beside it that a box clipping it cuts away
+neither cut a mount nor refuse it. They had: a subtree's ink is the union
+of all it holds, CodeMirror parks an element ten thousand pixels up, and
+the react-x11 playground's frame was refused, then cut to the strip below
+the window. Anything new that asks what is over a box looks into a subtree
+whose ink meets it, and passes over what draws nothing. The browser example mounts another
 `<Html>` with the frame's document in it.
 
 **The isolated mode is designed and not built.** `<Html isolated>` — a child

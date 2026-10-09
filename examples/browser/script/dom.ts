@@ -368,6 +368,22 @@ export function installDom(bridge: Bridge): void {
       this.isPrimary = init.isPrimary ?? true;
     }
   }
+  class WheelEvent extends MouseEvent {
+    static readonly DOM_DELTA_PIXEL = 0;
+    static readonly DOM_DELTA_LINE = 1;
+    static readonly DOM_DELTA_PAGE = 2;
+    readonly deltaX: number;
+    readonly deltaY: number;
+    readonly deltaZ: number;
+    readonly deltaMode: number;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this.deltaX = Number(init.deltaX ?? 0);
+      this.deltaY = Number(init.deltaY ?? 0);
+      this.deltaZ = Number(init.deltaZ ?? 0);
+      this.deltaMode = Number(init.deltaMode ?? 0);
+    }
+  }
   class KeyboardEvent extends UIEvent {
     readonly key: string;
     readonly code: string;
@@ -3163,12 +3179,679 @@ export function installDom(bridge: Bridge): void {
       reflect(name === 'referrerPolicy' ? 'referrerpolicy' : name),
     );
   }
-  class HTMLCanvasElement extends HTMLElement {
-    getContext(): null {
+  // --- <canvas> --------------------------------------------------------------
+
+  /** Pixels a page holds: straight RGBA, as a canvas reads them out. */
+  class ImageData {
+    readonly data: Uint8ClampedArray;
+    readonly width: number;
+    readonly height: number;
+    readonly colorSpace = 'srgb';
+    constructor(a: Any, b: Any, c?: Any) {
+      if (a instanceof Uint8ClampedArray) {
+        const width = Number(b) >>> 0;
+        if (!width || a.length % (4 * width)) {
+          throw new DOMException(
+            "Failed to construct 'ImageData': The input data length is not a multiple of (4 * width).",
+            'IndexSizeError',
+          );
+        }
+        const height = a.length / (4 * width);
+        if (c !== undefined && Number(c) >>> 0 !== height) {
+          throw new DOMException(
+            "Failed to construct 'ImageData': The input data length is not equal to (4 * width * height).",
+            'IndexSizeError',
+          );
+        }
+        this.data = a;
+        this.width = width;
+        this.height = height;
+      } else {
+        const width = Math.abs(Math.trunc(Number(a)));
+        const height = Math.abs(Math.trunc(Number(b)));
+        if (!width || !height) {
+          throw new DOMException(
+            `Failed to construct 'ImageData': The source ${width ? 'height' : 'width'} is zero or not a number.`,
+            'IndexSizeError',
+          );
+        }
+        this.data = new Uint8ClampedArray(width * height * 4);
+        this.width = width;
+        this.height = height;
+      }
+    }
+  }
+
+  /**
+   * What a 2d canvas holds: its bitmap, straight RGBA, in this realm, so
+   * that what a page reads back is what it wrote, at once; and the part of
+   * it that changed since the host last had it, which goes to the host once
+   * a task (`flushCanvases`) for the browser to draw over the canvas's box,
+   * as the tree's changes go to `<Html>` once a task.
+   */
+  interface CanvasState {
+    width: number;
+    height: number;
+    data: Uint8ClampedArray;
+    /** What changed, as x0, y0, x1, y1, or null. */
+    dirty: number[] | null;
+    context: Any;
+  }
+  const canvases = new WeakMap<object, CanvasState>();
+  const dirtyCanvases = new Set<Any>();
+  let canvasFlush = false;
+  /** A canvas's `width` or `height` attribute (HTML 4.12.5): a valid
+   *  non-negative integer, or its default. */
+  const canvasSize = (canvas: Any, name: string, fallback: number): number => {
+    const v = canvas.getAttribute(name);
+    const m = v === null ? null : /^[\t\n\f\r ]*\+?(\d+)/.exec(v);
+    return m ? Number(m[1]) : fallback;
+  };
+  /** A canvas's bitmap, made anew — cleared — where its size changed. */
+  const canvasState = (canvas: Any): CanvasState => {
+    const width = canvasSize(canvas, 'width', 300);
+    const height = canvasSize(canvas, 'height', 150);
+    let state = canvases.get(canvas);
+    if (!state) {
+      state = {
+        width,
+        height,
+        data: new Uint8ClampedArray(width * height * 4),
+        dirty: null,
+        context: null,
+      };
+      canvases.set(canvas, state);
+    } else if (state.width !== width || state.height !== height) {
+      // setting either is a new bitmap, and the context's state as it
+      // starts (HTML 4.12.5.1)
+      state.width = width;
+      state.height = height;
+      state.data = new Uint8ClampedArray(width * height * 4);
+      state.context?._reset();
+      markCanvas(canvas, state, 0, 0, width, height);
+    }
+    return state;
+  };
+  const markCanvas = (
+    canvas: Any,
+    state: CanvasState,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+  ): void => {
+    x0 = Math.max(0, Math.floor(x0));
+    y0 = Math.max(0, Math.floor(y0));
+    x1 = Math.min(state.width, Math.ceil(x1));
+    y1 = Math.min(state.height, Math.ceil(y1));
+    if (x1 <= x0 || y1 <= y0) {
+      // a bitmap made anew with nothing drawn is a change all the same
+      if (!(state.width === 0 || state.height === 0)) return;
+    }
+    const d = state.dirty;
+    state.dirty = d
+      ? [
+          Math.min(d[0], x0),
+          Math.min(d[1], y0),
+          Math.max(d[2], x1),
+          Math.max(d[3], y1),
+        ]
+      : [x0, y0, x1, y1];
+    dirtyCanvases.add(canvas);
+    if (!canvasFlush) {
+      canvasFlush = true;
+      queueMicrotask(flushCanvases);
+    }
+  };
+  /** What changed in each canvas, to the host: the rectangle and its
+   *  pixels as base64, since a string is what crosses. */
+  const flushCanvases = (): void => {
+    canvasFlush = false;
+    for (const canvas of dirtyCanvases) {
+      const state = canvases.get(canvas);
+      if (!state?.dirty) continue;
+      const [x0, y0, x1, y1] = state.dirty;
+      state.dirty = null;
+      const w = Math.max(0, x1 - x0);
+      const h = Math.max(0, y1 - y0);
+      const rows = new Uint8Array(w * h * 4);
+      for (let y = 0; y < h; y += 1) {
+        const from = ((y0 + y) * state.width + x0) * 4;
+        rows.set(state.data.subarray(from, from + w * 4), y * w * 4);
+      }
+      call(
+        'canvasPut',
+        idOf(canvas),
+        [state.width, state.height, x0, y0, w, h].join(','),
+        base64OfBytes(rows),
+      );
+    }
+    dirtyCanvases.clear();
+  };
+  /** Bytes as base64, a table and a chunk at a time. */
+  function base64OfBytes(bytes: Uint8Array): string {
+    const letters =
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const parts: string[] = [];
+    const chunk: number[] = [];
+    const flush = () => {
+      parts.push(String.fromCharCode.apply(null, chunk));
+      chunk.length = 0;
+    };
+    let i = 0;
+    for (; i + 2 < bytes.length; i += 3) {
+      const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+      chunk.push(
+        letters.charCodeAt(n >> 18),
+        letters.charCodeAt((n >> 12) & 63),
+        letters.charCodeAt((n >> 6) & 63),
+        letters.charCodeAt(n & 63),
+      );
+      if (chunk.length >= 8192) flush();
+    }
+    if (i < bytes.length) {
+      const n = (bytes[i] << 16) | ((bytes[i + 1] ?? 0) << 8);
+      chunk.push(
+        letters.charCodeAt(n >> 18),
+        letters.charCodeAt((n >> 12) & 63),
+        i + 1 < bytes.length ? letters.charCodeAt((n >> 6) & 63) : 61,
+        61,
+      );
+    }
+    flush();
+    return parts.join('');
+  }
+  /** A colour a page names, as straight RGBA bytes, or null where it is not
+   *  one: the host's CSS parser's answer, kept by its text. */
+  const colours = new Map<string, number[] | null>();
+  const colourOf = (value: string): number[] | null => {
+    let rgba = colours.get(value);
+    if (rgba === undefined) {
+      const answer = call('color', value);
+      rgba =
+        typeof answer === 'string' && answer
+          ? answer.split(',').map(Number)
+          : null;
+      colours.set(value, rgba);
+    }
+    return rgba;
+  };
+
+  /** The state `save` and `restore` keep (HTML 4.12.5.1.2). */
+  const CONTEXT_STATE = {
+    fillStyle: '#000000',
+    strokeStyle: '#000000',
+    globalAlpha: 1,
+    globalCompositeOperation: 'source-over',
+    lineWidth: 1,
+    lineCap: 'butt',
+    lineJoin: 'miter',
+    miterLimit: 10,
+    lineDashOffset: 0,
+    shadowBlur: 0,
+    shadowColor: 'rgba(0, 0, 0, 0)',
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    font: '10px sans-serif',
+    textAlign: 'start',
+    textBaseline: 'alphabetic',
+    direction: 'inherit',
+    letterSpacing: '0px',
+    wordSpacing: '0px',
+    filter: 'none',
+    imageSmoothingEnabled: true,
+    imageSmoothingQuality: 'low',
+  };
+
+  /**
+   * A canvas's 2d context, over the bitmap this realm holds. Pixels in and
+   * out — `getImageData`, `putImageData`, `createImageData` — are exact, and
+   * so are rectangles filled or cleared with a colour, and another canvas
+   * drawn, where the transform keeps a rectangle one. A path, a stroke,
+   * text, a gradient and an image are kept as state and drawn as nothing,
+   * which a page that composes its own pixels — the react-x11 playground's
+   * X server — does not miss.
+   */
+  class CanvasRenderingContext2D {
+    _canvas: Any;
+    _state: Any = { ...CONTEXT_STATE };
+    _stack: Any[] = [];
+    _matrix: number[] = [1, 0, 0, 1, 0, 0];
+    _dash: number[] = [];
+    constructor(canvas: Any) {
+      this._canvas = canvas;
+    }
+    get canvas(): Any {
+      return this._canvas;
+    }
+    _reset(): void {
+      this._state = { ...CONTEXT_STATE };
+      this._stack = [];
+      this._matrix = [1, 0, 0, 1, 0, 0];
+      this._dash = [];
+    }
+    getContextAttributes(): Any {
+      return {
+        alpha: true,
+        colorSpace: 'srgb',
+        desynchronized: false,
+        willReadFrequently: false,
+      };
+    }
+    save(): void {
+      this._stack.push({
+        state: { ...this._state },
+        matrix: this._matrix.slice(),
+        dash: this._dash.slice(),
+      });
+    }
+    restore(): void {
+      const was = this._stack.pop();
+      if (!was) return;
+      this._state = was.state;
+      this._matrix = was.matrix;
+      this._dash = was.dash;
+    }
+    reset(): void {
+      this._reset();
+      const state = canvasState(this._canvas);
+      state.data.fill(0);
+      markCanvas(this._canvas, state, 0, 0, state.width, state.height);
+    }
+    // the transform
+    setTransform(a: Any = 1, b = 0, c = 0, d = 1, e = 0, f = 0): void {
+      if (typeof a === 'object' && a !== null) {
+        this._matrix = [
+          a.a ?? a.m11 ?? 1,
+          a.b ?? a.m12 ?? 0,
+          a.c ?? a.m21 ?? 0,
+          a.d ?? a.m22 ?? 1,
+          a.e ?? a.m41 ?? 0,
+          a.f ?? a.m42 ?? 0,
+        ];
+        return;
+      }
+      const m = [a, b, c, d, e, f].map(Number);
+      if (m.every(Number.isFinite)) this._matrix = m;
+    }
+    resetTransform(): void {
+      this._matrix = [1, 0, 0, 1, 0, 0];
+    }
+    transform(a: Any, b: Any, c: Any, d: Any, e: Any, f: Any): void {
+      const n = [a, b, c, d, e, f].map(Number);
+      if (!n.every(Number.isFinite)) return;
+      const [ma, mb, mc, md, me, mf] = this._matrix;
+      this._matrix = [
+        ma * n[0] + mc * n[1],
+        mb * n[0] + md * n[1],
+        ma * n[2] + mc * n[3],
+        mb * n[2] + md * n[3],
+        ma * n[4] + mc * n[5] + me,
+        mb * n[4] + md * n[5] + mf,
+      ];
+    }
+    translate(x: Any, y: Any): void {
+      this.transform(1, 0, 0, 1, x, y);
+    }
+    scale(x: Any, y: Any): void {
+      this.transform(x, 0, 0, y, 0, 0);
+    }
+    rotate(angle: Any): void {
+      const a = Number(angle);
+      this.transform(Math.cos(a), Math.sin(a), -Math.sin(a), Math.cos(a), 0, 0);
+    }
+    getTransform(): Any {
+      const [a, b, c, d, e, f] = this._matrix;
+      return {
+        a,
+        b,
+        c,
+        d,
+        e,
+        f,
+        is2D: true,
+        isIdentity: a === 1 && !b && !c && d === 1 && !e && !f,
+      };
+    }
+    /** A rectangle in the canvas's pixels, where the transform keeps it
+     *  one: null where it turns or skews it. */
+    _rect(x: Any, y: Any, w: Any, h: Any): number[] | null {
+      const [a, b, c, d, e, f] = this._matrix;
+      if (b !== 0 || c !== 0) return null;
+      const n = [x, y, w, h].map(Number);
+      if (!n.every(Number.isFinite)) return null;
+      const x0 = a * n[0] + e;
+      const x1 = a * (n[0] + n[2]) + e;
+      const y0 = d * n[1] + f;
+      const y1 = d * (n[1] + n[3]) + f;
+      return [
+        Math.min(x0, x1),
+        Math.min(y0, y1),
+        Math.max(x0, x1),
+        Math.max(y0, y1),
+      ];
+    }
+    /** Pixels whose centres a rectangle covers, clipped to the bitmap. */
+    _pixels(r: number[], state: CanvasState): number[] {
+      return [
+        Math.max(0, Math.round(r[0])),
+        Math.max(0, Math.round(r[1])),
+        Math.min(state.width, Math.round(r[2])),
+        Math.min(state.height, Math.round(r[3])),
+      ];
+    }
+    clearRect(x: Any, y: Any, w: Any, h: Any): void {
+      const r = this._rect(x, y, w, h);
+      if (!r) return;
+      const state = canvasState(this._canvas);
+      const [x0, y0, x1, y1] = this._pixels(r, state);
+      for (let py = y0; py < y1; py += 1) {
+        state.data.fill(
+          0,
+          (py * state.width + x0) * 4,
+          (py * state.width + x1) * 4,
+        );
+      }
+      markCanvas(this._canvas, state, x0, y0, x1, y1);
+    }
+    fillRect(x: Any, y: Any, w: Any, h: Any): void {
+      const style = this._state.fillStyle;
+      const rgba = typeof style === 'string' ? colourOf(style) : null;
+      const r = this._rect(x, y, w, h);
+      if (!rgba || !r) return;
+      const state = canvasState(this._canvas);
+      const [x0, y0, x1, y1] = this._pixels(r, state);
+      const alpha =
+        (rgba[3] / 255) * Math.min(1, Math.max(0, this._state.globalAlpha));
+      const copy = this._state.globalCompositeOperation === 'copy';
+      const data = state.data;
+      for (let py = y0; py < y1; py += 1) {
+        for (let px = x0; px < x1; px += 1) {
+          const o = (py * state.width + px) * 4;
+          if (copy || alpha >= 1 || data[o + 3] === 0) {
+            data[o] = rgba[0];
+            data[o + 1] = rgba[1];
+            data[o + 2] = rgba[2];
+            data[o + 3] = alpha * 255;
+            continue;
+          }
+          // source-over, straight colours
+          const da = data[o + 3] / 255;
+          const oa = alpha + da * (1 - alpha);
+          for (let k = 0; k < 3; k += 1) {
+            data[o + k] =
+              (rgba[k] * alpha + data[o + k] * da * (1 - alpha)) / oa;
+          }
+          data[o + 3] = oa * 255;
+        }
+      }
+      markCanvas(this._canvas, state, x0, y0, x1, y1);
+    }
+    strokeRect(): void {}
+    createImageData(a: Any, b?: Any): Any {
+      if (a instanceof ImageData) return new ImageData(a.width, a.height);
+      return new ImageData(a, b);
+    }
+    getImageData(sx: Any, sy: Any, sw: Any, sh: Any): Any {
+      let x = Math.trunc(Number(sx));
+      let y = Math.trunc(Number(sy));
+      let w = Math.trunc(Number(sw));
+      let h = Math.trunc(Number(sh));
+      if (!w || !h) {
+        throw new DOMException(
+          `Failed to execute 'getImageData' on 'CanvasRenderingContext2D': The source ${w ? 'height' : 'width'} is 0.`,
+          'IndexSizeError',
+        );
+      }
+      if (w < 0) {
+        x += w;
+        w = -w;
+      }
+      if (h < 0) {
+        y += h;
+        h = -h;
+      }
+      const state = canvasState(this._canvas);
+      const out = new ImageData(w, h);
+      const fromX = Math.max(0, x);
+      const toX = Math.min(state.width, x + w);
+      for (let row = 0; row < h; row += 1) {
+        const py = y + row;
+        if (py < 0 || py >= state.height || toX <= fromX) continue;
+        out.data.set(
+          state.data.subarray(
+            (py * state.width + fromX) * 4,
+            (py * state.width + toX) * 4,
+          ),
+          (row * w + (fromX - x)) * 4,
+        );
+      }
+      return out;
+    }
+    putImageData(
+      image: Any,
+      dx: Any,
+      dy: Any,
+      dirtyX: Any = 0,
+      dirtyY: Any = 0,
+      dirtyWidth: Any = image?.width,
+      dirtyHeight: Any = image?.height,
+    ): void {
+      if (!(image instanceof ImageData)) {
+        throw new TypeError(
+          "Failed to execute 'putImageData' on 'CanvasRenderingContext2D': parameter 1 is not of type 'ImageData'.",
+        );
+      }
+      // HTML 4.12.5.1.15, the dirty rectangle made positive and cut to the
+      // image, then put without the transform, the alpha or the clip
+      let [x, y, w, h] = [dirtyX, dirtyY, dirtyWidth, dirtyHeight].map((v) =>
+        Math.trunc(Number(v)),
+      );
+      const ox = Math.trunc(Number(dx));
+      const oy = Math.trunc(Number(dy));
+      if (![x, y, w, h, ox, oy].every(Number.isFinite)) return;
+      if (w < 0) {
+        x += w;
+        w = -w;
+      }
+      if (h < 0) {
+        y += h;
+        h = -h;
+      }
+      if (x < 0) {
+        w += x;
+        x = 0;
+      }
+      if (y < 0) {
+        h += y;
+        y = 0;
+      }
+      w = Math.min(w, image.width - x);
+      h = Math.min(h, image.height - y);
+      const state = canvasState(this._canvas);
+      const x0 = Math.max(x, -ox);
+      const y0 = Math.max(y, -oy);
+      const x1 = Math.min(x + w, state.width - ox);
+      const y1 = Math.min(y + h, state.height - oy);
+      if (x1 <= x0 || y1 <= y0) return;
+      for (let row = y0; row < y1; row += 1) {
+        state.data.set(
+          image.data.subarray(
+            (row * image.width + x0) * 4,
+            (row * image.width + x1) * 4,
+          ),
+          ((row + oy) * state.width + x0 + ox) * 4,
+        );
+      }
+      markCanvas(this._canvas, state, x0 + ox, y0 + oy, x1 + ox, y1 + oy);
+    }
+    drawImage(source: Any, ...args: Any[]): void {
+      // another canvas, an `ImageData`'s pixels being no source: what this
+      // realm has the pixels of
+      const from =
+        source instanceof HTMLCanvasElement ? canvasState(source) : null;
+      if (!from || !from.width || !from.height) return;
+      let [sx, sy, sw, sh] = [0, 0, from.width, from.height];
+      let dx: number;
+      let dy: number;
+      let dw: number;
+      let dh: number;
+      if (args.length >= 8) {
+        [sx, sy, sw, sh, dx, dy, dw, dh] = args.map(Number);
+      } else if (args.length >= 4) {
+        [dx, dy, dw, dh] = args.map(Number);
+      } else {
+        [dx, dy] = args.map(Number);
+        dw = sw;
+        dh = sh;
+      }
+      const r = this._rect(dx, dy, dw, dh);
+      if (!r || !sw || !sh) return;
+      const state = canvasState(this._canvas);
+      const [x0, y0, x1, y1] = this._pixels(r, state);
+      const alpha = Math.min(1, Math.max(0, this._state.globalAlpha));
+      const copy = this._state.globalCompositeOperation === 'copy';
+      const data = state.data;
+      for (let py = y0; py < y1; py += 1) {
+        const fy = Math.floor(sy + ((py + 0.5 - r[1]) / (r[3] - r[1])) * sh);
+        if (fy < 0 || fy >= from.height) continue;
+        for (let px = x0; px < x1; px += 1) {
+          const fx = Math.floor(sx + ((px + 0.5 - r[0]) / (r[2] - r[0])) * sw);
+          if (fx < 0 || fx >= from.width) continue;
+          const i = (fy * from.width + fx) * 4;
+          const o = (py * state.width + px) * 4;
+          const sa = (from.data[i + 3] / 255) * alpha;
+          const da = data[o + 3] / 255;
+          const oa = copy ? sa : sa + da * (1 - sa);
+          for (let k = 0; k < 3; k += 1) {
+            data[o + k] = oa
+              ? (from.data[i + k] * sa +
+                  (copy ? 0 : data[o + k] * da * (1 - sa))) /
+                oa
+              : 0;
+          }
+          data[o + 3] = oa * 255;
+        }
+      }
+      markCanvas(this._canvas, state, x0, y0, x1, y1);
+    }
+    // what is kept and drawn as nothing: a path, a stroke, text
+    beginPath(): void {}
+    closePath(): void {}
+    moveTo(): void {}
+    lineTo(): void {}
+    rect(): void {}
+    roundRect(): void {}
+    arc(): void {}
+    arcTo(): void {}
+    ellipse(): void {}
+    quadraticCurveTo(): void {}
+    bezierCurveTo(): void {}
+    fill(): void {}
+    stroke(): void {}
+    clip(): void {}
+    isPointInPath(): boolean {
+      return false;
+    }
+    isPointInStroke(): boolean {
+      return false;
+    }
+    fillText(): void {}
+    strokeText(): void {}
+    /** A width as a sans-serif's average character, the text being drawn
+     *  as nothing yet. */
+    measureText(text: Any): Any {
+      const size = parseFloat(
+        /(\d+(?:\.\d+)?)px/.exec(this._state.font)?.[1] ?? '10',
+      );
+      const width = str(text).length * size * 0.55;
+      return {
+        width,
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: width,
+        actualBoundingBoxAscent: size * 0.8,
+        actualBoundingBoxDescent: size * 0.2,
+        fontBoundingBoxAscent: size * 0.9,
+        fontBoundingBoxDescent: size * 0.25,
+      };
+    }
+    setLineDash(segments: Any): void {
+      this._dash = Array.from(segments ?? [], Number);
+    }
+    getLineDash(): number[] {
+      return this._dash.slice();
+    }
+    createLinearGradient(): Any {
+      return { addColorStop() {} };
+    }
+    createRadialGradient(): Any {
+      return { addColorStop() {} };
+    }
+    createConicGradient(): Any {
+      return { addColorStop() {} };
+    }
+    createPattern(): Any {
       return null;
+    }
+    drawFocusIfNeeded(): void {}
+  }
+  for (const name of Object.keys(CONTEXT_STATE)) {
+    Object.defineProperty(CanvasRenderingContext2D.prototype, name, {
+      get(this: Any) {
+        return this._state[name];
+      },
+      set(this: Any, v: Any) {
+        const was = this._state[name];
+        // what a style is set to is kept as text, and one that is not a
+        // colour, nor a gradient or a pattern, is ignored
+        if (name === 'fillStyle' || name === 'strokeStyle') {
+          if (typeof v === 'string') {
+            if (colourOf(v)) this._state[name] = v;
+          } else if (v && typeof v === 'object') this._state[name] = v;
+          return;
+        }
+        this._state[name] =
+          typeof was === 'number'
+            ? Number.isFinite(Number(v))
+              ? Number(v)
+              : was
+            : typeof was === 'boolean'
+              ? !!v
+              : str(v);
+      },
+      configurable: true,
+      enumerable: true,
+    });
+  }
+
+  class HTMLCanvasElement extends HTMLElement {
+    get width(): number {
+      return canvasSize(this, 'width', 300);
+    }
+    set width(v: Any) {
+      this.setAttribute('width', String(Number(v) >>> 0));
+      canvasState(this);
+    }
+    get height(): number {
+      return canvasSize(this, 'height', 150);
+    }
+    set height(v: Any) {
+      this.setAttribute('height', String(Number(v) >>> 0));
+      canvasState(this);
+    }
+    /** A 2d context, the same each time; no other kind here — no WebGL —
+     *  which a page tests for by the null. */
+    getContext(type: Any): Any {
+      if (str(type) !== '2d') return null;
+      const state = canvasState(this);
+      state.context ??= new CanvasRenderingContext2D(this);
+      return state.context;
     }
     toDataURL(): string {
       return 'data:,';
+    }
+    toBlob(callback: Any): void {
+      setTimeout(() => callback?.(null), 0);
     }
   }
   class HTMLMediaElement extends HTMLElement {
@@ -5127,6 +5810,31 @@ export function installDom(bridge: Bridge): void {
     }
   }
 
+  /** Bytes from base64, a loop over a table: what the network's bytes
+   *  cross the bridge as (`__fetched`), where `atob` would build a string a
+   *  character at a time. */
+  function bytesOfBase64(text: string): Uint8Array {
+    const table = new Uint8Array(128);
+    const letters =
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    for (let i = 0; i < 64; i += 1) table[letters.charCodeAt(i)] = i;
+    let end = text.length;
+    while (end > 0 && text.charCodeAt(end - 1) === 61) end -= 1;
+    const out = new Uint8Array(Math.floor((end * 3) / 4));
+    let o = 0;
+    let n = 0;
+    let bits = 0;
+    for (let i = 0; i < end; i += 1) {
+      n = ((n << 6) | table[text.charCodeAt(i) & 127]) & 0xffff;
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        out[o++] = (n >> bits) & 255;
+      }
+    }
+    return out;
+  }
+
   class Response {
     readonly status: number;
     readonly statusText: string;
@@ -5136,10 +5844,23 @@ export function installDom(bridge: Bridge): void {
     /** `basic` for the page's own origin, `cors` for another's that let it
      *  read, `opaque` for a `no-cors` request's, which it may not. */
     readonly type: string;
+    /** The body as text, where it was given as text, */
     _body: string;
+    /** or its bytes, where it was given as bytes — a buffer, a view or a
+     *  `Blob`, and what the network answered (`__fetched`): a `.wasm`, an
+     *  image, a font, which no text decoding may pass through. */
+    _raw: Uint8Array | null = null;
     bodyUsed = false;
     constructor(body: Any = '', init: Any = {}) {
-      this._body = body === null ? '' : str(body);
+      this._body = '';
+      if (body instanceof ArrayBuffer)
+        this._raw = new Uint8Array(body.slice(0));
+      else if (ArrayBuffer.isView(body)) {
+        this._raw = new Uint8Array(
+          body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
+        );
+      } else if (body instanceof Blob) this._raw = body._bytes;
+      else this._body = body === null ? '' : str(body);
       this.type = init.type === undefined ? 'default' : str(init.type);
       this.status = Number(init.status ?? 200);
       this.statusText = String(init.statusText ?? '');
@@ -5150,8 +5871,15 @@ export function installDom(bridge: Bridge): void {
     get ok(): boolean {
       return this.status >= 200 && this.status < 300;
     }
+    /** The body's bytes, read once, as every method reads it. */
+    _bytes(): Uint8Array {
+      if (this.bodyUsed) throw new TypeError('Body has already been consumed.');
+      this.bodyUsed = true;
+      return this._raw ?? new TextEncoder().encode(this._body);
+    }
     _read(): string {
       if (this.bodyUsed) throw new TypeError('Body has already been consumed.');
+      if (this._raw) return new TextDecoder().decode(this._bytes());
       this.bodyUsed = true;
       return this._body;
     }
@@ -5165,16 +5893,20 @@ export function installDom(bridge: Bridge): void {
     json(): Promise<Any> {
       return this.text().then((t) => JSON.parse(t));
     }
+    bytes(): Promise<Uint8Array> {
+      try {
+        return Promise.resolve(new Uint8Array(this._bytes()));
+      } catch (e) {
+        return Promise.reject(e);
+      }
+    }
     arrayBuffer(): Promise<ArrayBuffer> {
-      return this.text().then((t) => {
-        const bytes = new Uint8Array(t.length);
-        for (let i = 0; i < t.length; i += 1) bytes[i] = t.charCodeAt(i) & 255;
-        return bytes.buffer;
-      });
+      return this.bytes().then((bytes) => bytes.buffer as ArrayBuffer);
     }
     blob(): Promise<Any> {
-      return this.text().then(
-        (t) => new Blob([t], { type: this.headers.get('content-type') ?? '' }),
+      return this.bytes().then(
+        (bytes) =>
+          new Blob([bytes], { type: this.headers.get('content-type') ?? '' }),
       );
     }
     /** The body as a stream of its bytes, read once, as the methods read
@@ -5184,8 +5916,8 @@ export function installDom(bridge: Bridge): void {
       const response = this;
       this._stream = new ReadableStream({
         pull(controller: Any) {
-          const text = response._read();
-          if (text) controller.enqueue(new TextEncoder().encode(text));
+          const bytes = response._bytes();
+          if (bytes.length) controller.enqueue(new Uint8Array(bytes));
           controller.close();
         },
       });
@@ -5193,7 +5925,8 @@ export function installDom(bridge: Bridge): void {
     }
     _stream: Any = null;
     clone(): Any {
-      return new Response(this._body, this);
+      if (this.bodyUsed) throw new TypeError('Response body is already used');
+      return new Response(this._raw ?? this._body, this);
     }
   }
 
@@ -5407,6 +6140,7 @@ export function installDom(bridge: Bridge): void {
       this._headers = new Headers();
       this._response = null;
       this._text = '';
+      this._raw = new Uint8Array(0);
       this._sent = false;
       this.status = 0;
       this.statusText = '';
@@ -5463,14 +6197,15 @@ export function installDom(bridge: Bridge): void {
           this.statusText = response.statusText;
           this.responseURL = response.url;
           this._state(2);
-          return response.text().then((text: string) => {
+          return response.bytes().then((bytes: Uint8Array) => {
             if (attempt !== this._attempt) return;
-            this._text = text;
+            this._raw = bytes;
+            this._text = this._decode(bytes);
             this._state(3);
             const size = {
               lengthComputable: true,
-              loaded: text.length,
-              total: text.length,
+              loaded: bytes.length,
+              total: bytes.length,
             };
             this._progress('progress', size);
             clearTimer(timer);
@@ -5531,14 +6266,26 @@ export function installDom(bridge: Bridge): void {
           return null;
         }
       }
-      if (type === 'arraybuffer') {
-        const bytes = new Uint8Array(this._text.length);
-        for (let i = 0; i < this._text.length; i += 1) {
-          bytes[i] = this._text.charCodeAt(i) & 255;
-        }
-        return bytes.buffer;
+      if (type === 'arraybuffer') return this._raw.slice().buffer;
+      if (type === 'blob') {
+        return new Blob([this._raw], {
+          type: this._response?.headers.get('content-type') ?? '',
+        });
       }
       return null;
+    }
+    /** The body's bytes, which `arraybuffer` and `blob` are made of. */
+    _raw: Uint8Array = new Uint8Array(0);
+    /** A text response (XHR 3.6.9): the bytes decoded as the response's
+     *  charset says, and as UTF-8 where it names none this decodes. */
+    _decode(bytes: Uint8Array): string {
+      const type = this._response?.headers.get('content-type') ?? '';
+      const charset = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(type)?.[1];
+      try {
+        return new TextDecoder(charset ?? 'utf-8').decode(bytes);
+      } catch {
+        return new TextDecoder().decode(bytes);
+      }
     }
     get responseXML(): null {
       return null;
@@ -5549,6 +6296,7 @@ export function installDom(bridge: Bridge): void {
       this.statusText = '';
       this._response = null;
       this._text = '';
+      this._raw = new Uint8Array(0);
       this._state(4);
       this._progress(type);
       this._progress('loadend');
@@ -9112,6 +9860,9 @@ export function installDom(bridge: Bridge): void {
     URL,
     URLSearchParams,
     Headers,
+    WheelEvent,
+    ImageData,
+    CanvasRenderingContext2D,
     Response,
     AbortController,
     AbortSignal,
@@ -9218,6 +9969,85 @@ export function installDom(bridge: Bridge): void {
   define('localStorage', storage('local'));
   define('sessionStorage', storage('session'));
   define('fetch', fetch);
+  // WebAssembly's compile, as the page's. The runtime's asynchronous one
+  // settles its promise from a task of the host's, in a context that runs
+  // its microtasks only when the engine enters it, so what waited on it
+  // waited for the next timer or event: a module is compiled at once
+  // instead, in the promise, and what waits on it runs before the entry
+  // that asked ends. And its streaming compile is the host's: Node's takes
+  // only its own `Response`, and what it refuses anything else with is an
+  // error of the host's realm, whose `constructor.constructor` is the
+  // host's `Function`. Both are replaced before any page code runs, and
+  // nothing keeps the runtime's after.
+  const wasm = G.WebAssembly;
+  if (wasm && typeof wasm === 'object') {
+    const Module = wasm.Module;
+    const Instance = wasm.Instance;
+    const method = (name: string, fn: Any) =>
+      Object.defineProperty(wasm, name, {
+        value: fn,
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
+    const compile = (bytes: Any): Promise<Any> =>
+      new Promise((ok) => ok(new Module(bytes)));
+    const instantiate = (source: Any, imports?: Any): Promise<Any> =>
+      new Promise((ok) => {
+        if (source instanceof Module) ok(new Instance(source, imports));
+        else {
+          const module = new Module(source);
+          ok({ module, instance: new Instance(module, imports) });
+        }
+      });
+    const bytesOf = async (source: Any, name: string): Promise<Any> => {
+      const response = await source;
+      if (!(response instanceof Response)) {
+        throw new TypeError(
+          `WebAssembly.${name}(): Argument 0 must be provided and must be a Response or Response promise`,
+        );
+      }
+      const type = (response.headers.get('content-type') ?? '')
+        .split(';')[0]
+        .trim()
+        .toLowerCase();
+      if (type !== 'application/wasm') {
+        throw new TypeError(
+          `WebAssembly.${name}(): Incorrect response MIME type. Expected 'application/wasm'.`,
+        );
+      }
+      if (!response.ok) {
+        throw new TypeError(
+          `WebAssembly.${name}(): HTTP status code is not ok`,
+        );
+      }
+      return response.arrayBuffer();
+    };
+    method('compile', function compile_(bytes: Any) {
+      return compile(bytes);
+    });
+    method('instantiate', function instantiate_(source: Any, imports?: Any) {
+      return instantiate(source, imports);
+    });
+    method('compileStreaming', async function compileStreaming(source: Any) {
+      return compile(await bytesOf(source, 'compileStreaming'));
+    });
+    method(
+      'instantiateStreaming',
+      async function instantiateStreaming(source: Any, imports?: Any) {
+        const module = await compile(
+          await bytesOf(source, 'instantiateStreaming'),
+        );
+        return { module, instance: new Instance(module, imports) };
+      },
+    );
+    for (const [name, fn] of [
+      ['compile', 'compile'],
+      ['instantiate', 'instantiate'],
+    ]) {
+      Object.defineProperty(wasm[name], 'name', { value: fn });
+    }
+  }
   define('matchMedia', matchMedia);
   define('getComputedStyle', getComputedStyle);
   define('btoa', btoa);
@@ -9678,6 +10508,9 @@ export function installDom(bridge: Bridge): void {
 
   // an event `<Html>` was told of, dispatched as the browser would, and
   // whether its default goes on
+  /** The element the pointer is over, as its moves were told: what it
+   *  leaves when it moves onto another (UI Events 4.3.3). */
+  let hovered: Any = null;
   entry('__event', () => {
     const e = input();
     const target = wrap(e.target);
@@ -9718,6 +10551,118 @@ export function installDom(bridge: Bridge): void {
           ),
         );
       }
+      case 'mousemove': {
+        const at = {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: G,
+          clientX: (e.x ?? 0) - v.scrollX,
+          clientY: (e.y ?? 0) - v.scrollY,
+          button: 0,
+          buttons: e.buttons ?? 0,
+          ...mods,
+        };
+        const was = hovered?.isConnected ? hovered : null;
+        if (was !== target) {
+          // out of the one, over the other, and left and entered every
+          // element between them and the nearest both are in, which hear
+          // it without bubbling
+          const elementsUp = (n: Any): Any[] => {
+            const out: Any[] = [];
+            for (let at = n; at && at.nodeType === 1; at = at.parentNode) {
+              out.push(at);
+            }
+            return out;
+          };
+          const left = was ? elementsUp(was) : [];
+          const entered = elementsUp(target);
+          const both = new Set(left.filter((n) => entered.includes(n)));
+          const leaving = left.filter((n) => !both.has(n));
+          const entering = entered.filter((n) => !both.has(n)).reverse();
+          for (const [Kind, prefix] of [
+            [PointerEvent, 'pointer'],
+            [MouseEvent, 'mouse'],
+          ] as const) {
+            if (was) {
+              dispatch(
+                was,
+                trusted(
+                  new Kind(`${prefix}out`, { ...at, relatedTarget: target }),
+                ),
+              );
+            }
+            for (const n of leaving) {
+              dispatch(
+                n,
+                trusted(
+                  new Kind(`${prefix}leave`, {
+                    ...at,
+                    bubbles: false,
+                    cancelable: false,
+                    relatedTarget: target,
+                  }),
+                ),
+              );
+            }
+            dispatch(
+              target,
+              trusted(new Kind(`${prefix}over`, { ...at, relatedTarget: was })),
+            );
+            for (const n of entering) {
+              dispatch(
+                n,
+                trusted(
+                  new Kind(`${prefix}enter`, {
+                    ...at,
+                    bubbles: false,
+                    cancelable: false,
+                    relatedTarget: was,
+                  }),
+                ),
+              );
+            }
+          }
+          hovered = target;
+        }
+        dispatch(target, trusted(new PointerEvent('pointermove', at)));
+        return dispatch(target, trusted(new MouseEvent('mousemove', at)));
+      }
+      case 'wheel':
+        return dispatch(
+          target,
+          trusted(
+            new WheelEvent('wheel', {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              view: G,
+              clientX: (e.x ?? 0) - v.scrollX,
+              clientY: (e.y ?? 0) - v.scrollY,
+              deltaX: e.deltaX ?? 0,
+              deltaY: e.deltaY ?? 0,
+              deltaMode: 0,
+              ...mods,
+            }),
+          ),
+        );
+      case 'contextmenu':
+        return dispatch(
+          target,
+          trusted(
+            new PointerEvent('contextmenu', {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              view: G,
+              clientX: (e.x ?? 0) - v.scrollX,
+              clientY: (e.y ?? 0) - v.scrollY,
+              button: 2,
+              buttons: 2,
+              ...mods,
+            }),
+          ),
+        );
       case 'keydown':
       case 'keyup':
         return dispatch(
@@ -9818,16 +10763,23 @@ export function installDom(bridge: Bridge): void {
     fetches.delete(id);
     if (typeof answer === 'string') pending.reject(new TypeError(answer));
     else {
-      pending.resolve(
-        new Response(answer.body, {
+      // the network's bytes, which cross as base64: a string is all that
+      // crosses, and one of raw bytes is mostly escapes once it is JSON
+      const response = new Response(
+        typeof answer.base64 === 'string' ? '' : answer.body,
+        {
           status: answer.status,
           statusText: answer.statusText,
           headers: answer.headers,
           url: answer.url,
           redirected: answer.redirected,
           type: answer.type ?? 'basic',
-        }),
+        },
       );
+      if (typeof answer.base64 === 'string') {
+        response._raw = bytesOfBase64(answer.base64);
+      }
+      pending.resolve(response);
     }
     return true;
   });

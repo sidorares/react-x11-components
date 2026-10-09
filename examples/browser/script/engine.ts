@@ -343,8 +343,12 @@ const CONTEXT_OPTIONS: vm.CreateContextOptions = {
   name: 'page',
   microtaskMode: 'afterEvaluate',
   // a page's own `eval` and `new Function` are the context's, and an
-  // `on…` attribute is compiled with one; WebAssembly is not phase 1's
-  codeGeneration: { strings: true, wasm: false },
+  // `on…` attribute is compiled with one. WebAssembly is compiled in it
+  // too — yoga's layout in the react-x11 playground is — and its streaming
+  // compile is the facade's (`installDom`), since the runtime's is the
+  // host's. Node's timeout stops a module that runs away as it stops a
+  // script; Bun's does not, and the pane's watchdog ends that tab.
+  codeGeneration: { strings: true, wasm: true },
 };
 
 /** Whether a context's global keeps a script's `var`s: Bun 1.4's

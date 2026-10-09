@@ -3856,7 +3856,8 @@ interface Outsets {
 
 const OUTSETS = new WeakMap<readonly BoxShadow[], Outsets>();
 
-function shadowOutsets(shadows: readonly BoxShadow[]): Outsets {
+/** How far a box's outer shadows reach past its border box, each side. */
+export function shadowOutsets(shadows: readonly BoxShadow[]): Outsets {
   let out = OUTSETS.get(shadows);
   if (out) return out;
   out = { left: 0, top: 0, right: 0, bottom: 0 };
@@ -5136,6 +5137,20 @@ export const DOCUMENT_FLOW = new WeakMap<
 /** Whether a box is fixed to the viewport: `position: fixed` with no
  *  transformed or contained box around it, which would be its containing
  *  block instead (CSS Transforms 1, CSS Containment 2, 3.3). */
+/**
+ * Whether a box and all it holds draw nothing: faded to nothing, or hidden
+ * with nothing in it made visible again. What asks what is over something
+ * — a player, a frame, a layer — passes such a box over: Docusaurus keeps
+ * its menu's sidebar and backdrop fixed over the whole viewport, hidden,
+ * and they cut a frame beside them to the strip below the window.
+ */
+export function drawsNothing(box: Box): boolean {
+  if (box.style.opacity === 0) return true;
+  if (box.style.visibility === 'visible') return false;
+  for (const child of box.children) if (!drawsNothing(child)) return false;
+  return true;
+}
+
 export function fixedToViewport(box: Box): boolean {
   if (box.style.position !== 'fixed') return false;
   for (let at = box.parent; at?.parent; at = at.parent) {
@@ -6130,6 +6145,7 @@ function walkPaintedAfter(
       const fixed = fixedToViewport(later);
       if (fixed && !fixedExtent) continue;
       if (!(later.boundsWidth > 0 && later.boundsHeight > 0)) continue;
+      if (drawsNothing(later)) continue;
       const ink = {
         x: later.boundsX,
         y: later.boundsY,

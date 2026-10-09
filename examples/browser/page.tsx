@@ -80,7 +80,7 @@ import {
   schemeOf,
   videoSource,
 } from './network.js';
-import { FrameHolder, frameMounts } from './frame.js';
+import { FrameHolder, embeddedMounts } from './frame.js';
 import type { FrameContext } from './frame.js';
 import { useScripts } from './script/index.js';
 import { linkTarget, navigableFor } from './target.js';
@@ -454,7 +454,11 @@ export default function Page(props: PageProps): ReactElement {
     title: (title) => live.current.onMeta(doc, title, undefined),
     fetch: async (request, signal) => {
       const response = await network.request(request, pageUrl, signal);
-      return { ...response, body: decode(response.bytes, response.charset) };
+      return {
+        ...response,
+        body: decode(response.bytes, response.charset),
+        bytes: response.bytes,
+      };
     },
     load: async (src) => {
       const fetched = await network.resource(
@@ -612,7 +616,7 @@ export default function Page(props: PageProps): ReactElement {
               onLoaded={scripts.onLoaded}
               onDomEvent={scripts.onDomEvent}
               stylesheet={scripts.stylesheet}
-              renderEmbedded={frameMounts(frames)}
+              renderEmbedded={embeddedMounts(frames)}
               onDocument={(document: Document) => {
                 scripts.onDocument?.(document);
                 onDocument(document);

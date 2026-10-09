@@ -733,6 +733,43 @@ standards moved from what Acid3 expected):
   react.dev still update without end, since the bundler they wait for is
   another origin's frame, which nothing here runs.
 
+- **WebAssembly is compiled in the page's context, at once.** The context
+  is made with wasm code generation on, and the facade replaces
+  `WebAssembly.compile`, `instantiate` and both streaming forms before any
+  page code runs. The runtime's asynchronous compile settles its promise
+  from a task of the host's, in a context that runs its microtasks only
+  when the engine enters it, so a page waited on it until its next timer;
+  compiled in the promise, what waits runs before the entry ends. And
+  Node's streaming compile is the host's: it takes only its own `Response`,
+  and refuses anything else with an error of the host's realm, whose
+  `constructor.constructor` is the host's `Function`. Node's timeout stops
+  a module that runs away as it stops a script. Bun's does not, and there
+  the pane's watchdog (react-x11 2.47.0) ends the tab after 15 seconds.
+- **A response's body reaches the page as its bytes.** The browser hands
+  the host the bytes as well as the decoded text (`FetchResponse.bytes`),
+  and they cross as base64: `arrayBuffer()`, `blob()` and an `arraybuffer`
+  XHR read them as they came, and `text()` decodes them as UTF-8, as Fetch
+  has it, where every body was text decoded by its charset and a `.wasm`
+  or a font came out of `arrayBuffer()` mangled.
+- **A `<canvas>`'s pixels are the page realm's.** A 2d context draws on a
+  bitmap the facade holds, so `getImageData` reads back what was put at
+  once, and the rectangle a task changed goes to the host at its end
+  (`canvasPut`), for the browser to draw over the canvas's box with core's
+  `<image>` (`examples/browser/canvas.tsx`). Pixels in and out, rectangles
+  filled and cleared with a colour, and another canvas drawn, where the
+  transform keeps a rectangle one, are drawn; a path, a stroke, text, a
+  gradient and an image are kept as state and drawn as nothing. There is
+  no WebGL context. The react-x11 playground's runner composes its own
+  pixels and puts them, which is all it asks.
+- **The pointer's moves, the wheel and a secondary press are the
+  page's.** `<Html>` tells `mousemove`, `wheel` and `contextmenu`
+  (`onDomEvent`), and the facade dispatches a move as `pointermove` and
+  `mousemove`, with the `over`, `out`, `enter` and `leave` of both where
+  the pointer came onto another element. A cancelled `wheel` keeps the
+  pane from scrolling. What the browser mounts over a canvas lets the
+  pointer through to the element, so the playground's X server, which
+  listens on its canvas, is pressed, and its window counts.
+
 ## What core would be asked
 
 1. **Options for a pane's process.** `<Frame>` forks its child with the

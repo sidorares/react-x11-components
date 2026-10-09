@@ -20,6 +20,7 @@ import type {
   KeyboardEvent as X11KeyboardEvent,
   MouseEvent as X11MouseEvent,
   Rect,
+  WheelEvent as X11WheelEvent,
 } from 'react-x11';
 import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
@@ -40,6 +41,7 @@ import type {
 import {
   documentPoint,
   domButton,
+  domButtons,
   domKey,
   fireDomEvent,
   modifiersOf,
@@ -734,6 +736,8 @@ export function Html(props: HtmlProps): ReactElement {
       onMouseUpCapture: events.onMouseUpCapture,
       onKeyDownCapture: events.onKeyDownCapture,
       onKeyUpCapture: events.onKeyUpCapture,
+      onMouseMoveCapture: events.onMouseMoveCapture,
+      onWheelCapture: events.onWheelCapture,
       onMouseDown: (ev: X11MouseEvent<DrawnNode>) => {
         links.onMouseDown(ev);
         forms.onMouseDown(ev);
@@ -988,6 +992,11 @@ function useDocumentEvents(
       if (!target) return;
       pressed.current = target;
       if (!fire('mousedown', target, mouse(ev))) ev.preventDefault();
+      // the menu a secondary press asks for, as X11 and macOS ask on the
+      // press
+      if (ev.button === 3 && !fire('contextmenu', target, mouse(ev))) {
+        ev.preventDefault();
+      }
     },
     onMouseUpCapture: (ev: X11MouseEvent<DrawnNode>) => {
       released.current = null;
@@ -1000,6 +1009,30 @@ function useDocumentEvents(
     },
     onKeyDownCapture: key('keydown'),
     onKeyUpCapture: key('keyup'),
+    onMouseMoveCapture: (ev: X11MouseEvent<DrawnNode>) => {
+      if (!onDomEvent) return;
+      const target = pointedAt(ev);
+      if (!target) return;
+      fire('mousemove', target, {
+        ...mouse(ev),
+        button: 0,
+        buttons: domButtons(ev.nativeEvent?.buttons ?? 0),
+      });
+    },
+    onWheelCapture: (ev: X11WheelEvent<DrawnNode>) => {
+      if (!onDomEvent) return;
+      const target = pointedAt(ev as unknown as X11MouseEvent<DrawnNode>);
+      if (!target) return;
+      // a page that takes the wheel for itself keeps the pane from
+      // scrolling with it, as a canvas does
+      const go = fire('wheel', target, {
+        ...documentPoint(ev, view.current?.getClientRects()[0]),
+        ...modifiersOf(ev as unknown as Partial<X11MouseEvent<DrawnNode>>),
+        deltaX: ev.deltaX,
+        deltaY: ev.deltaY,
+      });
+      if (!go) ev.preventDefault();
+    },
     clicked: (ev: X11MouseEvent<DrawnNode>): boolean => {
       const down = pressed.current;
       const up = released.current;

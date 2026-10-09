@@ -871,6 +871,17 @@ something after, over its box, is given nothing, and so is one a transform
 turns or scales, a `clip-path` or a mask cuts, or that is fixed to the
 viewport. Answering null leaves the box the empty one the document laid out.
 
+**What a mount stands for decides where the pointer goes.** The boxes a
+mount is cut and placed by take no pointer of their own: a press lands on
+what the host mounted, or goes through it, where that lets it, to the
+element in the document — a canvas's picture does, so the page hears the
+press on its `<canvas>`. And **only what draws something covers a mount**:
+a box faded to nothing or hidden all through, as a menu's backdrop kept
+fixed over the viewport often is, neither cuts one nor keeps one from
+being mounted, and neither does the overflow of a box beside it that a
+box which clips it cuts away (the same holds for a [video](#video)'s
+player).
+
 **What a host mounts over a frame is usually another `<Html>`, handed the
 frame's document rather than a source.** `document` draws a tree the host
 holds and changes, in place of parsing `source`, which is then not read: a
@@ -957,18 +968,21 @@ no listeners, since nothing runs in it. A host that has some — a script
 engine over the DOM, as the browser example's is, or an application wiring
 behaviour onto a document with `domutils` — dispatches them, and answers.
 
-| `type`                 | When                                                                      | Cancelling it                                    |
-| ---------------------- | ------------------------------------------------------------------------- | ------------------------------------------------ |
-| `mousedown`, `mouseup` | A press and a release, on the element under them or a control's element   | a press neither focuses nor starts a selection   |
-| `click`, `dblclick`    | The two together, on the nearest element both were on; or Enter on a link | no link followed, no button pressed, no box kept |
-| `keydown`, `keyup`     | A key, at the control or the stop with the focus, or the `<body>`         | the key is not typed, nor does Tab move          |
-| `input`                | A field typed into, a box ticked, an option chosen                        | —                                                |
-| `change`               | A field left, or submitted from, with another value; a box; an option     | —                                                |
-| `submit`               | A form validated and about to be sent, with its `submitter`               | nothing is sent                                  |
-| `reset`                | A reset button pressed                                                    | nothing is put back                              |
-| `focusin`, `focusout`  | The focus moved, with the other element as `relatedTarget`                | —                                                |
-| `toggle`               | A `<details>` opened or closed                                            | —                                                |
-| `load`, `error`        | A `<link rel=stylesheet>`'s sheet applied, or not to be had               | —                                                |
+| `type`                 | When                                                                        | Cancelling it                                    |
+| ---------------------- | --------------------------------------------------------------------------- | ------------------------------------------------ |
+| `mousedown`, `mouseup` | A press and a release, on the element under them or a control's element     | a press neither focuses nor starts a selection   |
+| `click`, `dblclick`    | The two together, on the nearest element both were on; or Enter on a link   | no link followed, no button pressed, no box kept |
+| `mousemove`            | The pointer moved over the element, with the `buttons` held                 | —                                                |
+| `wheel`                | The wheel turned over the element, its `deltaX` and `deltaY` in pixels      | the pane the document is in does not scroll      |
+| `contextmenu`          | A secondary press, after its `mousedown`, as X11 and macOS ask on the press | the press starts nothing                         |
+| `keydown`, `keyup`     | A key, at the control or the stop with the focus, or the `<body>`           | the key is not typed, nor does Tab move          |
+| `input`                | A field typed into, a box ticked, an option chosen                          | —                                                |
+| `change`               | A field left, or submitted from, with another value; a box; an option       | —                                                |
+| `submit`               | A form validated and about to be sent, with its `submitter`                 | nothing is sent                                  |
+| `reset`                | A reset button pressed                                                      | nothing is put back                              |
+| `focusin`, `focusout`  | The focus moved, with the other element as `relatedTarget`                  | —                                                |
+| `toggle`               | A `<details>` opened or closed                                              | —                                                |
+| `load`, `error`        | A `<link rel=stylesheet>`'s sheet applied, or not to be had                 | —                                                |
 
 The order is HTML's and UI Events', and three places in it are worth knowing:
 
@@ -992,6 +1006,14 @@ The order is HTML's and UI Events', and three places in it are worth knowing:
   it did. Once an `href`: a link given another is told again, and one put
   in for a sheet the document already has is told once a restyle reads it,
   though nothing is asked for.
+
+A `mousemove` is told at every move the pointer makes over what the
+document draws, a hit test each, which is why a host decides what crossing
+it into a page costs: the browser example dispatches it as a page has it —
+`pointermove` and `mousemove`, and the `over`, `out`, `enter` and `leave`
+of each where the pointer came onto another element — and a page drawing
+its own picture on a `<canvas>` takes its input from these, as the
+react-x11 playground's X server does.
 
 A click on a control's widget — a checkbox, a radio, a button — is the
 widget's to tell, as it ticks or presses; a click on what the document draws
