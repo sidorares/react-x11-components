@@ -1202,8 +1202,9 @@ function paintCanvasLayers(
  * smoothed. CoreGraphics draws an image scaled up at some 2 ns a pixel, so
  * a page of six orbs the size of the window, each drawn from a raster of
  * its own (`gradientRaster`), was still 43 ms of every frame of the
- * animation moving them on a Mac at 2x; drawn small, the six are a few
- * thousand pixels each, and the window is drawn once. Only on a context
+ * animation moving them on a Mac at 2x; drawn small, the six are shaded
+ * at a quarter of the window each way (`SMOOTH_MOST`), and the window is
+ * drawn once. Only on a context
  * that draws through a matrix as it draws anything (`scalesText`), and not
  * in one painted through a matrix already. False where it is not painted
  * so.
@@ -6984,11 +6985,21 @@ function gradientStrip(
   }
 }
 
-/** How many device pixels apart two stops of other colours are, at least,
- *  for each pixel of a smooth gradient's raster (`gradientRaster`), and
- *  the most it is made smaller than its tile. */
+/**
+ * How many device pixels apart two stops of other colours are, at least,
+ * for each pixel of a smooth gradient's raster (`gradientRaster`), and the
+ * most it is made smaller than its tile. A quarter each way, and no less:
+ * CoreGraphics shades a gradient a raster that small is not smooth in —
+ * along one radius its steps went 7, 8, 13, 7, 7, 7, 7, 14 levels, and a
+ * row and the next were a level apart — and drawn back up eight times,
+ * each of its pixels was a blotch of the window's: a glow on a dark page
+ * was a mottle of squares. A quarter is as smooth as the gradient shaded
+ * where it is, and six orbs the size of a 2560 by 1600 window cost 6.2 ms
+ * to shade at it where a sixteenth cost 0.4 (`smoothCanvas`, which shades
+ * them every frame an animation moves them).
+ */
 const SMOOTH_PX = 24;
-const SMOOTH_MOST = 16;
+const SMOOTH_MOST = 4;
 
 /**
  * How much smaller than its tile, `w` by `h`, a radial gradient may be drawn
