@@ -454,6 +454,18 @@ function corsCheck(
   }
 }
 
+/** A declaration block as CSSOM serializes one (6.7.2), which is what a
+ *  browser writes into a `style` attribute it changes: each declaration
+ *  ended with a `;`, so that text appended to it is a declaration of its
+ *  own. */
+function serializeDeclarations(
+  declarations: readonly { prop: string; value: string; important: boolean }[],
+): string {
+  return declarations
+    .map((d) => `${d.prop}: ${d.value}${d.important ? ' !important' : ''};`)
+    .join(' ');
+}
+
 /** A node's shadow-including root (DOM 4.2.2): the root of its tree, and
  *  of its shadow host's tree where that is a shadow root. */
 function shadowIncludingRoot(node: AnyNode): AnyNode {
@@ -1301,6 +1313,10 @@ export class DomHost {
         return this._declarations(this._element(a))
           .map((d) => d.prop)
           .join(',');
+      // `style.cssText`, serialized as CSSOM serializes a block, each
+      // declaration ended: CodeMirror appends `visibility: hidden` to it
+      case 'styleText':
+        return serializeDeclarations(this._declarations(this._element(a)));
       case 'setStyle': {
         const el = this._element(a);
         const name = text(b);
@@ -1312,11 +1328,7 @@ export class DomHost {
             important: d === 'important',
           });
         }
-        const written = kept
-          .map(
-            (x) => `${x.prop}: ${x.value}${x.important ? ' !important' : ''}`,
-          )
-          .join('; ');
+        const written = serializeDeclarations(kept);
         const oldValue = el.attribs.style ?? null;
         if (written) el.attribs.style = written;
         else delete el.attribs.style;

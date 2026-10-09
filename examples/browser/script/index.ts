@@ -32,6 +32,9 @@ import { SCRIPTS_CONTAINED, ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import type { FramePost, HostSeams } from './host.js';
 
+/** A frame of the page's clock, which `scroll` is told at most once in. */
+const FRAME_MS = 16;
+
 /** How long a script, a listener or a timer may run before it is stopped:
  *  long enough for any page that is working, short enough that one that is
  *  not leaves the tab answering. */
@@ -90,6 +93,9 @@ export class ScriptRunner {
   private _loaded = false;
   private _ready: 'loading' | 'interactive' | 'complete' = 'loading';
   private _disposed = false;
+  /** A `scroll` owed the page, told once a frame however often the pane
+   *  moved in it, as a browser runs the scroll steps once a frame. */
+  private _scrollOwed: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     document: Document,
@@ -170,8 +176,18 @@ export class ScriptRunner {
     return go;
   }
 
+  /** The pane the document is shown in scrolled. */
+  scrolled(): void {
+    if (this._disposed || this._scrollOwed) return;
+    this._scrollOwed = setTimeout(() => {
+      this._scrollOwed = null;
+      if (!this._disposed) this.engine.call('__scrolled', null);
+    }, FRAME_MS);
+  }
+
   dispose(): void {
     this._disposed = true;
+    if (this._scrollOwed) clearTimeout(this._scrollOwed);
     this.host.dispose();
     this.engine.dispose();
   }
@@ -257,9 +273,10 @@ export class ScriptRunner {
 /**
  * The props that run a document's scripts, for `<Html>`: `scripting`, and
  * the seams. Off, nothing but `onDocument` is handed back, and `<Html>` runs
- * nothing, as it never does. `navigateFrame` is the page's own, not a prop:
- * what a link or a form whose target names a frame calls (`navigableFor`),
- * which `<Html>` leaves alone where it is spread with the rest.
+ * nothing, as it never does. `navigateFrame` and `scrolled` are the page's
+ * own, not props — what a link or a form whose target names a frame calls
+ * (`navigableFor`), and what the pane calls as it scrolls — which `<Html>`
+ * leaves alone where they are spread with the rest.
  */
 export function useScripts(
   enabled: boolean,
@@ -277,6 +294,9 @@ export function useScripts(
   /** A frame of the page's sent somewhere by a link or a form whose target
    *  names it, where scripts run: absent where nothing loads a frame. */
   navigateFrame?: (frame: Element, url: string, post: FramePost | null) => void;
+  /** The pane the page is shown in scrolled, which the page hears as
+   *  `scroll`; the page's own too, not a prop. */
+  scrolled?: () => void;
 } {
   const runner = useRef<ScriptRunner | null>(null);
   // the sheets the page adopted, applied after the document's own
@@ -331,6 +351,7 @@ export function useScripts(
       runner.current?.host.navigateFrame(frame, to, post),
     [],
   );
+  const scrolled = useCallback(() => runner.current?.scrolled(), []);
 
   // the document's scripts stop when the page goes
   useEffect(() => () => runner.current?.dispose(), []);
@@ -356,6 +377,7 @@ export function useScripts(
     onLoaded,
     onDomEvent,
     navigateFrame,
+    scrolled,
     ...(adopted.length ? { stylesheet: adopted } : {}),
   };
 }

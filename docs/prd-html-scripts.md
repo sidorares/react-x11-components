@@ -704,6 +704,24 @@ standards moved from what Acid3 expected):
   `_blank` one used to go to the tab, so Facebook's pixel, which posts
   into a hidden frame its form names whenever `sendBeacon` declines, sent
   officeworks.com.au's tab to `facebook.com/tr/`.
+- **What a page feature-detects or assigns is the IDL's.** react.dev's
+  tutorial found three ways a facade that reads right still fails a page.
+  `contentEditable` had a getter alone, and CodeMirror, as strict mode
+  code, threw where it set one on every widget. `style.cssText` was the
+  attribute as written, with no `;` after its last declaration, so
+  CodeMirror's `cssText += "visibility: hidden"` lost both declarations;
+  a block is serialized now, as CSSOM serializes one. And the facade had
+  `IntersectionObserver` with no `IntersectionObserverEntry`, so Next.js
+  installed the W3C polyfill, which measures every target again at every
+  mutation of the document, a whole layout a time, and ran without end.
+  The window's `[Replaceable]` attributes take what a page assigns, so a
+  classic script's top-level `var length` holds its own value.
+- **The pane's scroll is the page's `scroll`.** Once a frame, at the
+  document, bubbling to the window. CodeMirror measures its lines when it
+  comes into view, and an editor below the fold kept a 14px default line
+  height in its gutter until something told it. Sandpack's editors on
+  react.dev still update without end, since the bundler they wait for is
+  another origin's frame, which nothing here runs.
 
 ## What core would be asked
 

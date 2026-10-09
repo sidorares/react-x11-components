@@ -1883,6 +1883,15 @@ closes a way out a DOM binding opens by accident:
   an `import()` drains the context once it settles (`_drainLater`). And
   **the host never reads what a page threw**: a module's error goes to the
   page through `__thrown` to be reported there, under the timeout.
+- **What a page feature-detects or assigns is the IDL's, not the facade's
+  reading of it.** A missing interface brings a polyfill: Next.js's
+  IntersectionObserver polyfill re-measured every target at every
+  mutation, because `IntersectionObserverEntry` was missing. A getter with
+  no setter throws in strict code, as `contentEditable` did for
+  CodeMirror. A serialization that is close but not exact breaks what a
+  page builds on it: `cssText +=` needs the trailing `;`. Listing the
+  getter-only accessors on the facade's interfaces, and checking each
+  against the IDL, is a quick way to find the next one.
 - **Run it on Bun too.** `test/browser-scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its

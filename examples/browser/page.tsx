@@ -540,6 +540,7 @@ export default function Page(props: PageProps): ReactElement {
         }}
         onScroll={(ev) => {
           if (entryId) scrolls.current.set(entryId, ev.scrollY);
+          scripts.scrolled?.();
         }}
         onMouseMove={(ev: X11MouseEvent<DrawnNode>) => {
           const href = handle.hrefAt(ev.x, ev.y);
