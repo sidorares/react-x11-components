@@ -57,6 +57,8 @@ import type { ControlRect } from './controls.js';
 import type { FormSubmission } from './form.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
+import { useEmbedded } from './embedded.js';
+import type { RenderEmbedded } from './embedded.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
@@ -77,7 +79,8 @@ export type {
   VideoSource,
 } from './resources.js';
 export type { BareField, ControlRect } from './controls.js';
-export type { MediaRect } from './media.js';
+export type { EmbeddedKind, EmbeddedRect, MediaRect } from './media.js';
+export type { RenderEmbedded } from './embedded.js';
 export type {
   FormEnctype,
   FormMethod,
@@ -301,6 +304,17 @@ export interface HtmlProps {
    * hidden }` asks of it.
    */
   onViewportOverflow?: (overflow: ViewportOverflow) => void;
+  /**
+   * What to show in an `<iframe>`, a `<canvas>` or an `<embed>`: called with
+   * where the element's content box is, in this component's space, and what
+   * it returns is mounted there, filling it, beside the document as a
+   * `<video>`'s player is — cut by what clips the element, faded as it is
+   * faded, and kept mounted, the same node, while the element moves.
+   * Nothing is loaded or drawn for one by this component: absent, or
+   * answering null, the box is the empty one the document lays out. A
+   * browser mounts another `<Html>` with the frame's document in it.
+   */
+  renderEmbedded?: RenderEmbedded;
   /** Base text style. Defaults: theme `fontSize` (14), `sans-serif`. */
   fontSize?: number;
   fontFamily?: string;
@@ -598,6 +612,8 @@ export function Html(props: HtmlProps): ReactElement {
   // core's `<video>` over each video the document can show one over
   // (`videos.ts`)
   const videos = useVideos(viewNode);
+  // what the host shows in the iframes, canvases and embeds (`embedded.ts`)
+  const embedded = useEmbedded(props.renderEmbedded);
   live.current = { forms, stops, onLink };
   const events = useDocumentEvents(onDomEvent, viewNode, forms, stops);
 
@@ -641,6 +657,7 @@ export function Html(props: HtmlProps): ReactElement {
     onDocument: handleDocument,
     onControls: handleControls,
     onMedia: videos.onMedia,
+    onEmbedded: props.renderEmbedded ? embedded.onEmbedded : undefined,
     onFocusStops: stops.onFocusStops,
     watchStops: stops.watch,
     onViewportOverflow,
@@ -662,6 +679,7 @@ export function Html(props: HtmlProps): ReactElement {
     // over the document and under its widgets: a video a control is drawn
     // over is no video a player is mounted for
     ...videos.render(),
+    ...embedded.render(),
   ];
   // The widgets and the stops in the document's order, which is the order
   // core's Tab goes through a subtree in where the document hands it on:

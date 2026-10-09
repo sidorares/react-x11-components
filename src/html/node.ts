@@ -240,8 +240,13 @@ import type {
 import { ImageSources } from './srcset.js';
 import type { SourceChanges } from './srcset.js';
 import { atDensity } from './svg.js';
-import { cutByFixed, mediaRectsOf, videoCandidates } from './media.js';
-import type { MediaRect } from './media.js';
+import {
+  cutByFixed,
+  embeddedRectsOf,
+  mediaRectsOf,
+  videoCandidates,
+} from './media.js';
+import type { EmbeddedRect, MediaRect } from './media.js';
 import type { IntrinsicSize } from './svg.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace } from './fonts.js';
@@ -301,6 +306,12 @@ export interface HtmlViewProps {
    * is asked for, and every video is its poster.
    */
   onMedia?: (rects: MediaRect[]) => void;
+  /**
+   * Where an `<iframe>`, a `<canvas>` or an `<embed>` is, for what a host
+   * mounts over it (`renderEmbedded`), in the same space and at the same
+   * moments as `onMedia`.
+   */
+  onEmbedded?: (rects: EmbeddedRect[]) => void;
   /**
    * The document's focusable areas, in the order Tab reaches them
    * (`focus.ts`): reported after a layout or a restyle that changed which
@@ -728,6 +739,9 @@ export class HtmlViewNode extends Node {
    *  for the paint. */
   private _mediaLaid: MediaRect[] = [];
   private _media: MediaRect[] = [];
+  /** The same of what a host mounts over the embedded elements. */
+  private _embeddedLaid: EmbeddedRect[] = [];
+  private _embedded: EmbeddedRect[] = [];
   private _mounted: ReadonlySet<Element> = new Set();
   /** Each video's size once its player knows it, in CSS pixels: its
    *  intrinsic size from then on, where its poster's was (HTML 4.8.11.6). */
@@ -2205,6 +2219,7 @@ export class HtmlViewNode extends Node {
         }
         this._reportControls();
         this._reportMedia();
+        this._reportEmbedded();
         this._reportStops();
         this._reportViewport();
       }
@@ -2769,38 +2784,72 @@ export class HtmlViewNode extends Node {
     const report = this._props().onMedia;
     if (!tree || !report) return;
     const fixed = FIXED_BOXES.get(tree);
-    const shift = fixed ? this._fixedShift() : null;
-    const s = this._scale;
-    const rects = this._mediaLaid.map((laid) => {
-      let r = laid;
-      if (fixed) {
-        const shows = laid.clip ?? laid;
-        const cut = cutByFixed(shows, fixed, shift);
-        if (cut === 'hidden') r = { ...laid, hidden: true };
-        else if (!sameClip(cut, shows)) r = { ...laid, clip: cut };
-      }
-      if (s === 1) return r;
-      return {
-        ...r,
-        x: r.x / s,
-        y: r.y / s,
-        width: r.width / s,
-        height: r.height / s,
-        ...(r.radius !== undefined && { radius: r.radius / s }),
-        ...(r.clipRadius !== undefined && { clipRadius: r.clipRadius / s }),
-        ...(r.clip && {
-          clip: {
-            x: r.clip.x / s,
-            y: r.clip.y / s,
-            width: r.clip.width / s,
-            height: r.clip.height / s,
-          },
-        }),
-      };
-    });
+    const rects = this._mediaLaid.map((laid) =>
+      this._viewportRect(laid, fixed),
+    );
     if (sameMedia(rects, this._media)) return;
     this._media = rects;
     report(rects);
+  }
+
+  /** What a host mounts over the embedded elements, to `onEmbedded` where
+   *  it changed (`_reportMedia`'s, for an `<iframe>`'s or a `<canvas>`'s
+   *  box rather than a video's). */
+  private _reportEmbedded(): void {
+    const tree = this._tree;
+    if (!tree || !this._props().onEmbedded) return;
+    this._embeddedLaid = tree.embedded.length
+      ? embeddedRectsOf(tree, this._scale)
+      : [];
+    this._publishEmbedded();
+  }
+
+  /** The embedded elements' rects as they are now, cut by the boxes fixed
+   *  to the viewport, in logical pixels (`_publishMedia`'s). */
+  private _publishEmbedded(): void {
+    const tree = this._tree;
+    const report = this._props().onEmbedded;
+    if (!tree || !report) return;
+    const rects = this._embeddedLaid.map((laid) =>
+      this._viewportRect(laid, FIXED_BOXES.get(tree)),
+    );
+    if (sameEmbedded(rects, this._embedded)) return;
+    this._embedded = rects;
+    report(rects);
+  }
+
+  /** A mounted rect as it shows now: cut by the boxes fixed to the
+   *  viewport where the scroll has them, and in logical pixels. */
+  private _viewportRect<R extends EmbeddedRect | MediaRect>(
+    laid: R,
+    fixed: readonly Box[] | undefined,
+  ): R {
+    let r = laid;
+    if (fixed) {
+      const shows = laid.clip ?? laid;
+      const cut = cutByFixed(shows, fixed, this._fixedShift());
+      if (cut === 'hidden') r = { ...laid, hidden: true };
+      else if (!sameClip(cut, shows)) r = { ...laid, clip: cut };
+    }
+    const s = this._scale;
+    if (s === 1) return r;
+    return {
+      ...r,
+      x: r.x / s,
+      y: r.y / s,
+      width: r.width / s,
+      height: r.height / s,
+      ...(r.radius !== undefined && { radius: r.radius / s }),
+      ...(r.clipRadius !== undefined && { clipRadius: r.clipRadius / s }),
+      ...(r.clip && {
+        clip: {
+          x: r.clip.x / s,
+          y: r.clip.y / s,
+          width: r.clip.width / s,
+          height: r.clip.height / s,
+        },
+      }),
+    };
   }
 
   /** The source a `<video>` plays: the first of its sources the host
@@ -4229,6 +4278,7 @@ export class HtmlViewNode extends Node {
     if (moved.length || widgets) this._reportControls();
     // a player over what moved, faded or came over it
     if (tree.media.length) this._reportMedia();
+    if (tree.embedded.length) this._reportEmbedded();
     // which areas are visible, and where the watched ones are
     this._reportStops();
     if (reoffer) this.spritesChanged();
@@ -5674,6 +5724,9 @@ export class HtmlViewNode extends Node {
     // a scroll moves the boxes fixed to the viewport over the players and
     // lays nothing out: where they are is asked as it is painted
     if (this._mediaLaid.length && FIXED_BOXES.has(tree)) this._publishMedia();
+    if (this._embeddedLaid.length && FIXED_BOXES.has(tree)) {
+      this._publishEmbedded();
+    }
     const range = this.selectionRange;
     // Culling against the damage is what makes an expose of a strip cost the
     // strip rather than the document. `paintDamage()` is null when the whole
@@ -6369,6 +6422,29 @@ function sameMedia(a: MediaRect[], b: MediaRect[]): boolean {
       p.muted !== q.muted ||
       p.controls !== q.controls ||
       p.label !== q.label ||
+      !sameClip(p.clip, q.clip)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameEmbedded(a: EmbeddedRect[], b: EmbeddedRect[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const p = a[i];
+    const q = b[i];
+    if (
+      p.element !== q.element ||
+      p.x !== q.x ||
+      p.y !== q.y ||
+      p.width !== q.width ||
+      p.height !== q.height ||
+      p.radius !== q.radius ||
+      p.clipRadius !== q.clipRadius ||
+      p.opacity !== q.opacity ||
+      p.hidden !== q.hidden ||
       !sameClip(p.clip, q.clip)
     ) {
       return false;
