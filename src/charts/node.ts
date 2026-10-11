@@ -37,6 +37,7 @@ import type {
 } from './data.js';
 import {
   buildStackTops,
+  columnVersion,
   isChartDataLike,
   minMaxRange,
   nearestIndex,
@@ -208,7 +209,7 @@ interface Layout {
 }
 
 interface StackEntry {
-  /** identity key of the member columns + their epochs */
+  /** the member columns' ids and versions (`columnVersion`) */
   epochKey: string;
   builtN: number;
   layers: Float64Array[];
@@ -315,15 +316,16 @@ export class ChartPlotNode extends Node {
   // --- data plumbing -------------------------------------------------------
 
   private _dataVersion(spec: PlotSpec, data: ChartSourceData): string {
-    // cheap and exact: every column's (epoch, n) — appends and window
-    // shifts both land here, so the layout memo can key on it
+    // cheap and exact: every column's (host, epoch, n) — appends, window
+    // shifts and a new array in place of the old all land here, so the
+    // layout memo can key on it
     const parts: string[] = [];
     const seen = new Set<string>();
     const push = (key: string | null) => {
       if (!key || seen.has(key)) return;
       seen.add(key);
       const col = resolveColumn(data, key);
-      parts.push(col ? `${key}=${col.epoch}:${col.n}` : `${key}=∅`);
+      parts.push(col ? `${key}=${columnVersion(col)}:${col.n}` : `${key}=∅`);
     };
     push(spec.x.key);
     for (const s of spec.series) push(s.id);
@@ -354,7 +356,9 @@ export class ChartPlotNode extends Node {
     stackId: string,
     members: { id: string; col: NumericColumn }[],
   ): StackEntry {
-    const epochKey = members.map((m) => `${m.id}:${m.col.epoch}`).join('|');
+    const epochKey = members
+      .map((m) => `${m.id}:${columnVersion(m.col)}`)
+      .join('|');
     const n = members.reduce((min, m) => Math.min(min, m.col.n), Infinity);
     let entry = this._stacks.get(stackId);
     if (!entry || entry.epochKey !== epochKey) {

@@ -23,6 +23,7 @@
 
 import type { NumericColumn, MinMax, XIndex } from './data.js';
 import {
+  columnVersion,
   lowerBound,
   minMaxRange,
   pyramidFor,
@@ -933,7 +934,12 @@ export function renderScatter(env: SeriesEnv, g: SeriesGeometry): void {
   const xScale = env.xScale;
   const domKey =
     xScale.kind === 'band' ? `b${xScale.count}` : `${xScale.d0},${xScale.d1}`;
-  const key = `${cell}|${gw}|${gh}|${domKey}|${yScale.d0},${yScale.d1}|${g.y.epoch}`;
+  // the columns' versions, not their epochs alone: a new array of the same
+  // domain would otherwise keep the old one's counts, and add to them
+  const cols = g.x
+    ? `${columnVersion(g.y)}/${columnVersion(g.x)}`
+    : columnVersion(g.y);
+  const key = `${cell}|${gw}|${gh}|${domKey}|${yScale.d0},${yScale.d1}|${cols}`;
   const grid = env.host.scatterGrid(g.spec.id, key, n);
 
   if (grid.consumedN < n) {

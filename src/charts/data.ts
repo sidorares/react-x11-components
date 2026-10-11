@@ -71,6 +71,24 @@ export interface ResolvedColumn {
   numeric: boolean;
 }
 
+const hostIds = new WeakMap<object, number>();
+let nextHostId = 0;
+
+/**
+ * A column's version as a string: which host it is, then its epoch. The
+ * WeakMap caches above compare hosts by identity, but a cache keyed on a
+ * string — the plot's layout, a stack's tops, a scatter grid — cannot hold
+ * an object, and `{epoch, n}` alone does not tell two hosts apart: every
+ * rows array and every columnar array starts at epoch 0, so a new array of
+ * the same length read as the old one and the chart kept drawing it.
+ * Append `n` where the cache extends on growth.
+ */
+export function columnVersion(col: ResolvedColumn): string {
+  let id = hostIds.get(col.host);
+  if (id === undefined) hostIds.set(col.host, (id = ++nextHostId));
+  return `${id}.${col.epoch}`;
+}
+
 /** A resolved numeric column, which is what every renderer consumes. */
 export interface NumericColumn extends ResolvedColumn {
   values: ArrayLike<number>;

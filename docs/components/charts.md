@@ -52,7 +52,9 @@ kinds — bars under a line — works in any of them.
 
 - **Rows** — `[{ month: 'Jan', desktop: 186, mobile: 80 }, …]`, the shadcn
   shape. Normalised to columns once per array identity and cached, so pass
-  the same array while nothing changed.
+  the same array while nothing changed, and a new one when something did —
+  whatever its length. The one change made in place that the chart sees is
+  rows pushed onto the end.
 - **Columns** — `{ length, columns: { t: Float64Array, cpu: Float64Array } }`.
   The fast path: a million points never materialise row objects. Plain
   arrays work too; typed arrays skip the copy.

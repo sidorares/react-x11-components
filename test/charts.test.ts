@@ -736,6 +736,38 @@ test('a scatter whose data moved paints its first frame by the crossover again',
   assert.ok(ctx.batches.length > 0, 'rects instead');
 });
 
+test('a dense scatter handed a new column of the same length counts it, not the old one', () => {
+  const w = 80;
+  const hgt = 60;
+  const n = 4_000;
+  const xs = Float64Array.from({ length: n }, (_, i) => i % w);
+  const xCol = column(xs);
+  const cloud = (ys: Float64Array): SeriesGeometry => ({
+    spec: seriesSpec({ id: 'cloud', type: 'scatter', size: 1 }),
+    y: column(ys),
+    base: 0,
+    x: xCol,
+    xIdx: xIndexFor(xCol),
+    group: { index: 0, count: 1 },
+    color: '#336699',
+  });
+  // the same domain both ways, so nothing but the column says it moved
+  const low = Float64Array.from({ length: n }, (_, i) =>
+    i === 0 ? hgt - 1 : 5,
+  );
+  const high = Float64Array.from({ length: n }, (_, i) => (i === 0 ? 0 : 50));
+
+  const ctx = fakeCtx();
+  const env = makeEnv(ctx, w, hgt, [0, w - 1], [0, hgt - 1]);
+  renderScatter(env, cloud(low));
+  ctx.rects.length = 0;
+  renderScatter(env, cloud(high));
+
+  const fresh = fakeCtx();
+  renderScatter(makeEnv(fresh, w, hgt, [0, w - 1], [0, hgt - 1]), cloud(high));
+  assert.deepStrictEqual(ctx.rects, fresh.rects);
+});
+
 test('the density image draws the opacities the rects do', () => {
   const w = 80;
   const hgt = 60;
@@ -1155,6 +1187,77 @@ test('band bars from row keys, stacked, one batch per series', async () => {
     rows[hit.index].b,
     'tooltip shows the raw value',
   );
+});
+
+test('a new rows array of the same length draws its rows, not the last ones (#759)', async () => {
+  const hits = () => {
+    const node = plotNode();
+    const plot = node.plotRect()!;
+    return [0, 1, 2].map((i) => {
+      const hit = node.hitAt(plot.x + ((i + 0.5) * plot.width) / 3);
+      assert.ok(hit);
+      return hit.points.map((p) => [p.id, p.value, p.py]);
+    });
+  };
+  const line = (rows: { i: number; v: number }[]) =>
+    h(
+      ChartContainer,
+      null,
+      h(
+        LineChart,
+        { data: rows, style: { width: 300, height: 160 } },
+        h(XAxis, { dataKey: 'i' }),
+        h(YAxis, null),
+        h(LineSeries, { dataKey: 'v' }),
+      ),
+    );
+  const bars = (rows: { month: string; a: number; b: number }[]) =>
+    h(
+      ChartContainer,
+      null,
+      h(
+        BarChart,
+        { data: rows, style: { width: 300, height: 160 } },
+        h(XAxis, { dataKey: 'month' }),
+        h(BarSeries, { dataKey: 'a', stackId: 's' }),
+        h(BarSeries, { dataKey: 'b', stackId: 's' }),
+      ),
+    );
+  const cases: [React.ReactElement, React.ReactElement][] = [
+    [
+      line(Array.from({ length: 48 }, (_, i) => ({ i, v: i }))),
+      line(Array.from({ length: 48 }, (_, i) => ({ i, v: 100 - i * 2 }))),
+    ],
+    [
+      bars([
+        { month: 'Jan', a: 3, b: 2 },
+        { month: 'Feb', a: 5, b: 1 },
+        { month: 'Mar', a: 2, b: 4 },
+      ]),
+      // the same scale either way, so only the stack's tops can differ
+      bars([
+        { month: 'Jan', a: 1, b: 4 },
+        { month: 'Feb', a: 4, b: 2 },
+        { month: 'Mar', a: 5, b: 1 },
+      ]),
+    ],
+  ];
+  for (const [before, after] of cases) {
+    const r = await renderX11(before, { backend: 'mock' });
+    await act();
+    const first = hits();
+    await r.rerender(after);
+    await act();
+    const replaced = hits();
+    await cleanup();
+
+    await renderX11(after, { backend: 'mock' });
+    await act();
+    const fresh = hits();
+    await cleanup();
+    assert.notDeepStrictEqual(first, fresh, 'the two data sets differ');
+    assert.deepStrictEqual(replaced, fresh);
+  }
 });
 
 test('degenerate inputs stay standing', async () => {
