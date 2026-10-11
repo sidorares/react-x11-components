@@ -406,7 +406,10 @@ codec for what the built-in one cannot say.
 Markdown out is written to be read back as the same document — the model
 test round-trips a generated corpus and fails on any document that loses
 text or changes on a second trip. What markdown cannot express at all is
-dropped rather than mangled.
+dropped rather than mangled. A bracket is escaped only where a reader could
+take it for part of a link — inside a link's text, or where it would finish
+one (`[a\](b)`) — so `[[wiki links]]` and `[x]` are written as they were
+typed.
 
 ## Decorations
 
