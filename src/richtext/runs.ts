@@ -139,6 +139,13 @@ function warnSpanless(): void {
  * caller that placed this line itself passes where it placed it. `scale` is
  * the display scale: the chip's two-pixel inset is a logical length that
  * never passes through a style, and grows with it.
+ *
+ * A chip is filled a stretch at a time and not a run, as a rule is
+ * (`paintRunRules`): a layout hands back a run a word, and a chip padded
+ * past each one overlapped its neighbour by twice the pad, which under a
+ * translucent fill is a darker band at every space of `npm run dev`
+ * (#763). Runs that touch and fill the same colour share one chip, padded
+ * at its two ends, as tall as the tallest face in it.
  */
 export function paintRunBackgrounds(
   ctx: FillContext,
@@ -148,6 +155,23 @@ export function paintRunBackgrounds(
   scale = 1,
 ): void {
   const inset = Math.round(2 * scale);
+  // the chip being gathered: its fill, its ends and its ink's extent
+  let chip: string | null = null;
+  let from = 0;
+  let to = 0;
+  let ascent = 0;
+  let descent = 0;
+  const fillChip = (): void => {
+    if (chip === null) return;
+    ctx.fillStyle = chip;
+    ctx.fillRect(
+      Math.round(dx + line.x + from - inset),
+      Math.round(dy + line.baseline - ascent),
+      Math.ceil(to - from + inset * 2),
+      Math.ceil(ascent + descent),
+    );
+    chip = null;
+  };
   for (const r of line.runs) {
     const span = r.span;
     if (!span) {
@@ -156,8 +180,10 @@ export function paintRunBackgrounds(
     }
     const bg = span.bg;
     if (!bg) continue;
-    ctx.fillStyle = bg;
     if (span.bgFill === 'line') {
+      // painted in the order the runs come, so a chip before it goes first
+      fillChip();
+      ctx.fillStyle = bg;
       // Both edges are rounded from absolute positions rather than the left
       // being rounded and the width ceiled, so two adjacent runs agree on the
       // pixel between them: no seam, and no overlap either.
@@ -172,13 +198,26 @@ export function paintRunBackgrounds(
       continue;
     }
     const m = inkExtent(r, line);
-    ctx.fillRect(
-      Math.round(dx + line.x + r.x - inset),
-      Math.round(dy + line.baseline - m.ascent),
-      Math.ceil(r.width + inset * 2),
-      Math.ceil(m.ascent + m.descent),
-    );
+    const end = r.x + r.width;
+    if (
+      chip === bg &&
+      // on either side: a right-to-left stretch's runs come last first
+      (Math.abs(r.x - to) <= 0.5 || Math.abs(end - from) <= 0.5)
+    ) {
+      from = Math.min(from, r.x);
+      to = Math.max(to, end);
+      ascent = Math.max(ascent, m.ascent);
+      descent = Math.max(descent, m.descent);
+      continue;
+    }
+    fillChip();
+    chip = bg;
+    from = r.x;
+    to = end;
+    ascent = m.ascent;
+    descent = m.descent;
   }
+  fillChip();
 }
 
 /** The rules drawn with a run: its underline and its strikethrough. A rule

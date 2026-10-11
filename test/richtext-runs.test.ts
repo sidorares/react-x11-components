@@ -116,6 +116,124 @@ test('a run with its span but not its face takes its extent from the line', () =
   assert.deepStrictEqual(box.fills[0], ['#eee', 2, 0, 44, 16]);
 });
 
+test('runs that touch and share a chip are filled as one chip (#763)', () => {
+  // A layout hands back a run a word, and a chip padded past each of them
+  // overlapped its neighbour by twice the pad: under a translucent fill —
+  // `<Markdown>`'s is — a darker band at every space of `npm run dev`.
+  const code = { text: 'npm run dev', bg: '#eee' };
+  const words = line(
+    [
+      { x: 10, width: 31.2, start: 0, end: 4, span: code },
+      { x: 41.2, width: 31.2, start: 4, end: 8, span: code },
+      { x: 72.4, width: 23.4, start: 8, end: 11, span: code },
+    ],
+    { ascent: 10, descent: 3 },
+  );
+  const one = recorder();
+  paintRunBackgrounds(one.ctx, words, 0, 0);
+  // from the first run less the pad to the last run's end and the pad
+  assert.deepStrictEqual(one.fills, [['#eee', 8, 2, 90, 13]]);
+
+  // at 2x the pad is four device pixels, at the stretch's ends only
+  const twice = recorder();
+  paintRunBackgrounds(twice.ctx, words, 5, 0, 2);
+  assert.deepStrictEqual(twice.fills, [['#eee', 11, 2, 94, 13]]);
+
+  // a right-to-left stretch's runs come last first
+  const rtl = line(
+    [
+      { x: 30, width: 20, start: 0, end: 4, span: code },
+      { x: 0, width: 30, start: 4, end: 9, span: code },
+    ],
+    { ascent: 10, descent: 3 },
+  );
+  const back = recorder();
+  paintRunBackgrounds(back.ctx, rtl, 0, 0);
+  assert.deepStrictEqual(back.fills, [['#eee', -2, 2, 54, 13]]);
+});
+
+test('a chip is ended by another fill, a gap or a run without one (#763)', () => {
+  const code = { text: 'a b', bg: '#eee' };
+  // another span of the same fill — a bold word inside the code — is the
+  // same chip; another colour is a chip of its own
+  const bold = { text: 'c', bg: '#eee', weight: 'bold' as const };
+  const mark = { text: 'd', bg: '#ff0' };
+  const plain = { text: ' e ' };
+  const runs = line(
+    [
+      { x: 0, width: 10, start: 0, end: 2, span: code },
+      { x: 10, width: 10, start: 2, end: 3, span: bold },
+      { x: 20, width: 10, start: 3, end: 4, span: mark },
+      { x: 30, width: 10, start: 4, end: 7, span: plain },
+      { x: 40, width: 10, start: 7, end: 9, span: code },
+    ],
+    { ascent: 10, descent: 3 },
+  );
+  const { ctx, fills } = recorder();
+  paintRunBackgrounds(ctx, runs, 0, 0);
+  assert.deepStrictEqual(fills, [
+    ['#eee', -2, 2, 24, 13],
+    ['#ff0', 18, 2, 14, 13],
+    ['#eee', 38, 2, 14, 13],
+  ]);
+
+  // a terminal's cells are filled a run at a time, exactly, and never
+  // joined to a chip beside them
+  const cell = { text: 'f', bg: '#eee', bgFill: 'line' as const };
+  const mixed = line(
+    [
+      { x: 0, width: 10, start: 0, end: 1, span: code },
+      { x: 10, width: 10, start: 1, end: 2, span: cell },
+      { x: 20, width: 10, start: 2, end: 3, span: cell },
+    ],
+    { ascent: 10, descent: 3 },
+  );
+  const cells = recorder();
+  paintRunBackgrounds(cells.ctx, mixed, 0, 0);
+  assert.deepStrictEqual(cells.fills, [
+    ['#eee', -2, 2, 14, 13],
+    ['#eee', 10, 0, 10, 16],
+    ['#eee', 20, 0, 10, 16],
+  ]);
+});
+
+test('a chip over runs of two faces is as tall as the tallest of them (#763)', () => {
+  // a glyph the code face lacks is set in another, and the chip does not
+  // step for it
+  const code = { text: 'x→y', bg: '#eee' };
+  const mono = { metrics: () => ({ ascent: 9, descent: 2 }) };
+  const fallback = { metrics: () => ({ ascent: 11, descent: 4 }) };
+  const runs = line([
+    {
+      x: 0,
+      width: 8,
+      start: 0,
+      end: 1,
+      span: code,
+      run: { font: mono, size: 14 },
+    },
+    {
+      x: 8,
+      width: 8,
+      start: 1,
+      end: 2,
+      span: code,
+      run: { font: fallback, size: 14 },
+    },
+    {
+      x: 16,
+      width: 8,
+      start: 2,
+      end: 3,
+      span: code,
+      run: { font: mono, size: 14 },
+    },
+  ]);
+  const { ctx, fills } = recorder();
+  paintRunBackgrounds(ctx, runs, 0, 0);
+  assert.deepStrictEqual(fills, [['#eee', -2, 1, 28, 15]]);
+});
+
 test('an underline and a line through can be drawn in two passes', () => {
   // CSS 2.1 Appendix E: an underline under the glyphs, a line through over
   // them. `<Html>` draws the rules in two passes around its text; one pass

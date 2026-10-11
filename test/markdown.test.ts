@@ -892,6 +892,83 @@ test('a code chip at the start of a line is claimed with the pad past the box', 
   }
 });
 
+test('inline code with spaces is one chip, with no darker band at a space (#763)', async () => {
+  // The layout hands `npm run dev` back a run a word, and each run's chip
+  // was padded two pixels past it, so under the translucent fill two
+  // neighbours overlapped in a band four pixels wide, darker, at each
+  // space. Down each column of the chip the lightest pixel is the chip's
+  // own fill — no glyph covers a column top to bottom — and it is the same
+  // fill across the chip.
+  const { ctx } = await renderX11(
+    h(
+      'box',
+      { style: { width: 320, padding: 10, backgroundColor: '#ffffff' } },
+      h(Markdown, { source: 'run `npm run dev` now' }),
+    ),
+    { backend: 'xserver', width: 340, height: 60 },
+  );
+  await act();
+  const [para] = mdNodes();
+  type Run = {
+    x: number;
+    width: number;
+    span?: { bg?: string };
+    run?: {
+      font: { metrics(size: number): { ascent: number; descent: number } };
+      size: number;
+    };
+  };
+  const layout = (
+    para as unknown as {
+      paintLayout(): { lines: { baseline: number; runs: Run[] }[] };
+    }
+  ).paintLayout();
+  const [first] = layout.lines;
+  const chipped = first.runs.filter((r) => r.span?.bg);
+  assert.ok(chipped.length > 1, 'the code is laid out a run a word');
+  const { ascent, descent } = chipped[0].run!.font.metrics(
+    chipped[0].run!.size,
+  );
+  const { x, y } = para.abs;
+  // inside the chip's edges, a pixel clear of each
+  const left = Math.ceil(x + chipped[0].x - 2) + 1;
+  const last = chipped[chipped.length - 1];
+  const right = Math.floor(x + last.x + last.width + 2) - 1;
+  const top = Math.ceil(y + first.baseline - ascent) + 1;
+  const bottom = Math.floor(y + first.baseline + descent) - 1;
+  const w = right - left;
+  const rows = bottom - top;
+  const data = (
+    await (
+      ctx as unknown as {
+        getImageData(
+          x: number,
+          y: number,
+          w: number,
+          h: number,
+        ): Promise<{ data: Uint8ClampedArray }>;
+      }
+    ).getImageData(left, top, w, rows)
+  ).data;
+  const fills = new Map<number, number[]>();
+  for (let col = 0; col < w; col++) {
+    let lightest = 0;
+    for (let row = 0; row < rows; row++) {
+      lightest = Math.max(lightest, data[(row * w + col) * 4]);
+    }
+    const at = fills.get(lightest) ?? [];
+    at.push(left + col);
+    fills.set(lightest, at);
+  }
+  assert.strictEqual(
+    fills.size,
+    1,
+    `one chip fill across x ${left}–${right}: ${[...fills]
+      .map(([red, xs]) => `red ${red} at ${xs.join(',')}`)
+      .join('; ')}`,
+  );
+});
+
 /** A line of code longer than any viewport these tests give it. */
 const LONG_LINE =
   'const answer = someFunctionWithAVeryLongName(argumentNumberOne, ' +
