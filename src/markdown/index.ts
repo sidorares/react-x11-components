@@ -134,10 +134,11 @@ export interface MarkdownProps {
    * the image source, so they arrive here too.
    */
   onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
-  /** Base text style. Defaults: theme `fontSize` (14), `sans-serif`. */
+  /** Base text style. Defaults: the theme's `fontSize` (14) and
+   *  `fontFamily`. */
   fontSize?: number;
   fontFamily?: string;
-  /** Code font. Default `'monospace'` — there is no theme token for it. */
+  /** Code font, inline and fenced. Default: the theme's `monoFamily`. */
   monoFamily?: string;
   /** Selection band fill. Default: theme accent at 35% opacity. */
   selectionColor?: string;
@@ -259,8 +260,10 @@ function deriveLook(
   const border = String(theme.border ?? '#b2bec3');
   const background = String(theme.background ?? 'white');
   const size = props.fontSize ?? Number(theme.fontSize ?? 14);
-  const family = props.fontFamily ?? 'sans-serif';
-  const monoFamily = props.monoFamily ?? 'monospace';
+  // the theme's two faces, as a `<text>` beside the document takes them
+  const family = props.fontFamily ?? String(theme.fontFamily ?? 'sans-serif');
+  const monoFamily =
+    props.monoFamily ?? String(theme.monoFamily ?? 'monospace');
   const highlight = props.highlight !== false;
   const inline: InlineStyles = {
     family,
@@ -866,17 +869,6 @@ export function Markdown(props: MarkdownProps): ReactElement {
   // same widening `hx.ts` documents for the `theme` prop.
   const theme = useTheme() as unknown as Record<string, unknown>;
   const app = useApp() as { fonts?: FontsMeasureLike } | null;
-  // a document with code in it sets that code in the mono family, and its
-  // render is the head start (a fence or a code span needs a backtick or a
-  // tilde fence; an indented block is rare enough to find its own way)
-  useFontPrewarm(
-    source.includes('`') || source.includes('~~~')
-      ? (props.monoFamily ?? 'monospace')
-      : null,
-  );
-
-  const links = useLinkClicks(onLink);
-  const menu = useSelectionMenu(selectable);
 
   const look = React.useMemo(
     () => deriveLook(theme, props),
@@ -888,6 +880,17 @@ export function Markdown(props: MarkdownProps): ReactElement {
       props.highlight,
     ],
   );
+  // a document with code in it sets that code in the mono family, and its
+  // render is the head start (a fence or a code span needs a backtick or a
+  // tilde fence; an indented block is rare enough to find its own way)
+  useFontPrewarm(
+    source.includes('`') || source.includes('~~~')
+      ? look.inline.monoFamily
+      : null,
+  );
+
+  const links = useLinkClicks(onLink);
+  const menu = useSelectionMenu(selectable);
 
   // The gate the parser asks. Memoised on the map's identity so that a
   // stable `components` prop keeps one function, and the parse memo below
