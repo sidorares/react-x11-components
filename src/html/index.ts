@@ -56,6 +56,7 @@ import { inputType, isDisabled } from './form.js';
 import type { RootLook } from './css/style.js';
 import type { ViewportOverflow } from './css/cascade.js';
 import type { ControlRect } from './controls.js';
+import type { ScrollState as ElementScroll } from './layout/scroll.js';
 import type { FormSubmission } from './form.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
@@ -70,6 +71,7 @@ export {
   registerHtmlView,
 } from './node.js';
 export type { HtmlViewProps, ScriptRequest } from './node.js';
+export type { ScrollState as ElementScroll } from './layout/scroll.js';
 export type {
   DomEventHandler,
   HtmlDomEvent,
@@ -315,6 +317,13 @@ export interface HtmlProps {
    */
   onViewportOverflow?: (overflow: ViewportOverflow) => void;
   /**
+   * A scroll container in the document scrolled — under the wheel, or by
+   * the handle's `scrollElementTo` — told once it is drawn where it went:
+   * what a page hears as the element's `scroll`. See [Scroll
+   * containers](docs/components/html.md#scroll-containers).
+   */
+  onElementScroll?: (element: Element) => void;
+  /**
    * What to show in an `<iframe>`, a `<canvas>` or an `<embed>`: called with
    * where the element's content box is, in this component's space, and what
    * it returns is mounted there, filling it, beside the document as a
@@ -385,6 +394,25 @@ export interface HtmlHandle {
    * tall as its lines. Null for an element with no box.
    */
   elementRect(element: Element): Rect | null;
+  /**
+   * Where a scroll container in the document is scrolled to, how far it can
+   * be and its scrollport, in CSS pixels, laid out first — `scrollTop`,
+   * `scrollHeight`, `clientHeight` and their kin. Null for an element that
+   * is no scroll container: one whose `overflow` is `visible` or `clip`,
+   * or that has no box.
+   */
+  scrollState(element: Element): ElementScroll | null;
+  /**
+   * Scroll a scroll container to an offset in CSS pixels, either axis left
+   * where it is where it is left out, kept within how far it can be — as a
+   * script sets `scrollTop` or calls `scrollTo`. Answers where it came to,
+   * or null for an element that is no scroll container. `onElementScroll`
+   * is told where it moved.
+   */
+  scrollElementTo(
+    element: Element,
+    to: { x?: number; y?: number },
+  ): { x: number; y: number } | null;
   /** The document's `<title>`, if it had one. */
   readonly title: string | null;
   /** The URL the document's relative URLs resolve against — its
@@ -672,6 +700,7 @@ export function Html(props: HtmlProps): ReactElement {
     onFocusStops: stops.onFocusStops,
     watchStops: stops.watch,
     onViewportOverflow,
+    onElementScroll: props.onElementScroll,
     domRevision,
     animate,
     reducedMotion,
@@ -807,6 +836,10 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.hrefAtPoint(x, y) ?? null,
       elementRect: (element: Element) =>
         nodeRef.current?.elementRect(element) ?? null,
+      scrollState: (element: Element) =>
+        nodeRef.current?.scrollStateOf(element) ?? null,
+      scrollElementTo: (element: Element, to: { x?: number; y?: number }) =>
+        nodeRef.current?.scrollElementTo(element, to) ?? null,
       computedStyle: (element: Element, pseudo?: 'before' | 'after' | null) =>
         nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
       matchMedia: (query: string) =>
@@ -1020,6 +1053,11 @@ function useDocumentEvents(
       });
     },
     onWheelCapture: (ev: X11WheelEvent<DrawnNode>) => {
+      // where it turned, for the scroll container under it to take it
+      // (`canScroll`), where it turned over what the document draws
+      view.current?.wheelAt(
+        ev.target === (view.current as unknown) ? { x: ev.x, y: ev.y } : null,
+      );
       if (!onDomEvent) return;
       const target = pointedAt(ev as unknown as X11MouseEvent<DrawnNode>);
       if (!target) return;

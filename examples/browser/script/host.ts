@@ -1025,6 +1025,15 @@ export class DomHost {
     this.entries.call('__fire', [this.idOf(frame), 'load']);
   }
 
+  /** Scroll containers in the document scrolled: each one's `scroll`,
+   *  which does not bubble (CSSOM View, "run the scroll steps"). */
+  elementsScrolled(elements: Iterable<Element>): void {
+    if (this._disposed || !this.entries) return;
+    for (const el of elements) {
+      this.entries.call('__fire', [this.idOf(el), 'scroll']);
+    }
+  }
+
   dispose(): void {
     this._disposed = true;
     if (this._s.drawn.get(this.document) === this._seams.handle) {
@@ -2032,6 +2041,36 @@ export class DomHost {
       case 'viewport': {
         const v = this._seams.viewport();
         return `${v.width},${v.height},${v.scrollX},${v.scrollY},${v.dpr}`;
+      }
+      // a scroll container in the document: where it is scrolled to, how
+      // far it can be and its scrollport, in CSS pixels, or '' for an
+      // element that is none (`HtmlHandle.scrollState`)
+      case 'scrollState': {
+        this.flush();
+        const s = this._seams.handle.scrollState(this._element(a));
+        return s
+          ? [
+              s.x,
+              s.y,
+              s.width,
+              s.height,
+              s.clientWidth,
+              s.clientHeight,
+              s.clientTop,
+              s.clientLeft,
+            ].join(',')
+          : '';
+      }
+      // and scrolled, an axis left where it is where it is not a number
+      case 'scrollElement': {
+        this.flush();
+        const x = typeof b === 'number' && Number.isFinite(b) ? b : undefined;
+        const y = typeof c === 'number' && Number.isFinite(c) ? c : undefined;
+        const to = this._seams.handle.scrollElementTo(this._element(a), {
+          x,
+          y,
+        });
+        return to ? `${to.x},${to.y}` : '';
       }
       case 'scrollTo':
         this._seams.scrollTo(

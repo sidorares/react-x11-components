@@ -130,6 +130,10 @@ export class ScriptRunner {
   /** A `scroll` owed the page, told once a frame however often the pane
    *  moved in it, as a browser runs the scroll steps once a frame. */
   private _scrollOwed: ReturnType<typeof setTimeout> | null = null;
+  /** The scroll containers in the document that scrolled since their
+   *  `scroll` was last told, told once a frame as the pane's is. */
+  private _scrolledElements = new Set<Element>();
+  private _elementScrollOwed: ReturnType<typeof setTimeout> | null = null;
   /** The runners of the frames' documents in this one (`FrameSeat`). */
   private _seats = new Map<Document, FrameSeat>();
   private _seatsWatched: (() => void) | null = null;
@@ -373,8 +377,21 @@ export class ScriptRunner {
     }, FRAME_MS);
   }
 
+  /** A scroll container in the document scrolled (`onElementScroll`). */
+  elementScrolled(element: Element): void {
+    if (this._disposed) return;
+    this._scrolledElements.add(element);
+    this._elementScrollOwed ??= setTimeout(() => {
+      this._elementScrollOwed = null;
+      const scrolled = [...this._scrolledElements];
+      this._scrolledElements.clear();
+      if (!this._disposed) this.host.elementsScrolled(scrolled);
+    }, FRAME_MS);
+  }
+
   dispose(): void {
     if (this._disposed) return;
+    if (this._elementScrollOwed) clearTimeout(this._elementScrollOwed);
     for (const seat of this._seats.values()) seat.runner.dispose();
     this._seats.clear();
     this._seatsWatched?.();
@@ -496,6 +513,8 @@ export function useScripts(
   /** The pane the page is shown in scrolled, which the page hears as
    *  `scroll`; the page's own too, not a prop. */
   scrolled?: () => void;
+  /** `<Html>`'s `onElementScroll`: a scroll container's `scroll`. */
+  onElementScroll?: (element: Element) => void;
   /** The document's runner, where its scripts run: what a frame in it is
    *  run as a frame of (`FrameLink`). Not a prop. */
   runner?: () => ScriptRunner | null;
@@ -592,6 +611,10 @@ export function useScripts(
     [],
   );
   const scrolled = useCallback(() => runner.current?.scrolled(), []);
+  const onElementScroll = useCallback(
+    (element: Element) => runner.current?.elementScrolled(element),
+    [],
+  );
   const getRunner = useCallback(() => runner.current, []);
 
   // the document's scripts stop when the page goes, and a frame's view
@@ -620,6 +643,7 @@ export function useScripts(
     onDomEvent,
     navigateFrame,
     scrolled,
+    onElementScroll,
     runner: getRunner,
     ...(adopted.length ? { stylesheet: adopted } : {}),
   };

@@ -2926,6 +2926,30 @@ empties is kept inside the box that emptied it (`clipFor`'s `cut`), and a
 mount and a stop are placed inside their clips (`shownBy`); anything new
 mounted beside the document goes through one or the other.
 
+**A scroll container scrolls by moving its content, as `position:
+relative` does** (`layout/scroll.ts`). After layout, `applyScrollOffsets`
+moves each container's lines and boxes by the offset its element is
+scrolled to, kept by the node in CSS pixels across builds and layouts, and
+its clip cuts them as before. So nothing that reads a box knows there is a
+scroll, and that is the design: the hit test, the selection, `elementRect`
+and every mount were right the first time they ran. Four things are
+load-bearing. **What a container moves is what it is the containing block
+of** (`translate`'s `stays`): an absolute box positioned against something
+outside it, and a fixed one, stay, as they are not clipped by it either.
+**A scroll without a layout recomputes the ink bounds of the whole tree**
+(`_scrollBox`), since they and the culling indexes built with them hold
+document coordinates; it moves the boxes, then reports the controls, the
+media, the embedded rects and the stops again. Anything new that keeps a
+box's position past a layout is redone there too, or a scroll leaves it
+where the content was. **A layout that stops where the viewport ends does
+not stop inside a scroll container** (`laidWholeAround`, and `keepIn`
+returns at one): what a container holds is where it is scrolled to, and a
+drag's partial layout set aside what a scrolled `main` was showing. And
+**a layout puts the boxes back where no scroll has them**, so the offset a
+box was moved by is cleared for every box the layout visits
+(`APPLIED`), or the next scroll moves it by the difference from an offset
+it no longer has.
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would
