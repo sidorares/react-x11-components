@@ -758,9 +758,25 @@ standards moved from what Acid3 expected):
   `<image>` (`examples/browser/canvas.tsx`). Pixels in and out, rectangles
   filled and cleared with a colour, and another canvas drawn, where the
   transform keeps a rectangle one, are drawn; a path, a stroke, text, a
-  gradient and an image are kept as state and drawn as nothing. There is
-  no WebGL context. The react-x11 playground's runner composes its own
-  pixels and puts them, which is all it asks.
+  gradient and an image are kept as state and drawn as nothing. The
+  react-x11 playground's runner composes its own pixels and puts them,
+  which is all it asks.
+- **A WebGL context answers and draws nothing** (`webgl.ts`, source text
+  as `dom.ts` is). Every interface of WebGL 1 and 2 is the page's, with
+  Chrome's constants; a context keeps the state a page sets and reads it
+  back, a shader compiles and a program links with nothing active in it,
+  a framebuffer is complete, a fence and a query are done at once,
+  `readPixels` reads zeros and no extension is offered. A browser has
+  WebGL wherever it has a canvas — Chrome draws it in software where
+  there is no GPU — so a page is written for a context that is there:
+  with none, up.com.au's react-three-fiber scene threw from its first
+  commit and React took the whole page down, as Chrome does with WebGL
+  turned off. The cost is a page that tests for WebGL and has a fallback,
+  which shows the empty canvas rather than its picture.
+- **A response may be made of a stream**, which its body methods read to
+  the end, a `Uint8Array` a chunk. three.js's loaders hand a fetch's body
+  on through one to count the download, and a body taken as its text was
+  `[object Object]` — up.com.au's phone model with it.
 - **The pointer's moves, the wheel and a secondary press are the
   page's.** `<Html>` tells `mousemove`, `wheel` and `contextmenu`
   (`onDomEvent`), and the facade dispatches a move as `pointermove` and

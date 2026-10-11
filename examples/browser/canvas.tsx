@@ -5,7 +5,7 @@
 // document beneath, so what the page hears of the pointer and the keys is
 // what `<Html>` tells it of the canvas element (`onDomEvent`): the react-x11
 // playground's X server takes its input from the canvas it draws on.
-import { useEffect, useMemo, useReducer } from 'react';
+import { useEffect, useMemo, useReducer, useState } from 'react';
 import type { ReactElement } from 'react';
 
 import type { Element } from '../../src/html/index.js';
@@ -29,6 +29,14 @@ export function CanvasView({
   host: DomHost;
 }): ReactElement | null {
   const [, redraw] = useReducer((n: number) => n + 1, 0);
+  // the element's `object-fit`, read after a render and not in one: the
+  // document lays itself out to answer a computed style, and tells the
+  // page of what it laid out, which is a state of the `<Html>` beside this
+  const [fit, setFit] = useState<Fit>('fill');
+  useEffect(() => {
+    const read = host.styleOf(canvas)?.['object-fit'] ?? 'fill';
+    setFit(FITS.has(read) ? (read as Fit) : 'fill');
+  });
   useEffect(() => {
     // once a turn of the event loop, however many tasks drew in it
     let queued = false;
@@ -56,14 +64,13 @@ export function CanvasView({
     [pixels, version],
   );
   if (!src || !src.width || !src.height) return null;
-  const fit = host.styleOf(canvas)?.['object-fit'] ?? 'fill';
   return (
     <image
       src={src}
       style={{
         width: '100%',
         height: '100%',
-        objectFit: (FITS.has(fit) ? fit : 'fill') as Fit,
+        objectFit: fit,
         pointerEvents: 'none',
       }}
     />

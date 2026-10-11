@@ -1917,6 +1917,15 @@ closes a way out a DOM binding opens by accident:
   and the host is told what changed once a task (`markCanvas`,
   `canvasPut`). Anything new that draws on a canvas marks the rectangle it
   changed, or the browser shows the canvas as it was.
+- **A WebGL context answers and draws nothing** (`webgl.ts`, source text
+  handed to `installDom`). Chrome has WebGL wherever it has a canvas, in
+  software where there is no GPU, so a null context is a page that
+  crashes — up.com.au's react-three-fiber scene took React's whole tree
+  down with it — where a context that keeps state and draws nothing is a
+  page with an empty box. What a context answers is Chrome's: its
+  constants and limits, its version strings, a value read back as the
+  typed array Chrome hands back; an answer that a real context could not
+  give sends a page down a path no browser takes.
 - **A worker is a thread, and a string is all that reaches it.** Each
   `Worker` is a `worker_threads` thread with an engine, a host over an
   empty document and the facade made a worker's global
@@ -2908,7 +2917,14 @@ of all it holds, CodeMirror parks an element ten thousand pixels up, and
 the react-x11 playground's frame was refused, then cut to the strip below
 the window. Anything new that asks what is over a box looks into a subtree
 whose ink meets it, and passes over what draws nothing. The browser example mounts another
-`<Html>` with the frame's document in it.
+`<Html>` with the frame's document in it. **Nothing mounted beside the
+document may sit where its clips leave nothing of it**: core's scroll pane
+reaches as far as a box under it does, clipped or not, so a mount or a
+focus stop at its own place in a scroll container's hidden overflow made
+the page that much taller — up.com.au's, nine thousand pixels. A clip that
+empties is kept inside the box that emptied it (`clipFor`'s `cut`), and a
+mount and a stop are placed inside their clips (`shownBy`); anything new
+mounted beside the document goes through one or the other.
 
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,

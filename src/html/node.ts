@@ -195,6 +195,7 @@ import {
 } from './layout/inline.js';
 import { lineBands as bandsFor } from '../richtext/runs.js';
 import {
+  clipFor,
   clipsOverflow,
   computePaintBounds,
   containingBlockOf,
@@ -227,7 +228,12 @@ import {
   stacksLayers,
 } from './paint.js';
 import type { PaintContext, PaintOptions, SpriteSource } from './paint.js';
-import { controlRectsOf, measureControl, styledField } from './controls.js';
+import {
+  controlRectsOf,
+  measureControl,
+  shownBy,
+  styledField,
+} from './controls.js';
 import { isInert, isTabbable } from './focus.js';
 import type { FocusStop } from './focus.js';
 import type { BareField, ControlRect } from './controls.js';
@@ -2958,7 +2964,7 @@ export class HtmlViewNode extends Node {
       changed = true;
     }
     for (const el of this._props().watchStops ?? []) {
-      const rect = this._rectOf(el);
+      const rect = this._stopRectOf(el);
       if (!sameRect(rect, this._watchedRects.get(el) ?? null)) changed = true;
       this._watchedRects.set(el, rect);
     }
@@ -3075,7 +3081,7 @@ export class HtmlViewNode extends Node {
       this._watchedRects = new Map(
         (next.watchStops ?? []).map((el) => [
           el,
-          this._watchedRects.get(el) ?? this._rectOf(el),
+          this._watchedRects.get(el) ?? this._stopRectOf(el),
         ]),
       );
     }
@@ -3444,7 +3450,22 @@ export class HtmlViewNode extends Node {
    * `onFocusStops` renders again when the layout moves it.
    */
   stopRect(element: Element): Rect | null {
-    return this._rectOf(element);
+    return this._stopRectOf(element);
+  }
+
+  /** `_rectOf`, cut by the boxes that clip the element and kept inside
+   *  them where they show none of it (`shownBy`): a stop is mounted beside
+   *  the document, and one at a link a scroll container holds out of sight
+   *  would make the box that scrolls the document reach down to it. */
+  private _stopRectOf(element: Element): Rect | null {
+    const rect = this._rectOf(element);
+    const tree = this._tree;
+    if (!rect || !tree) return rect;
+    const box =
+      CANDIDATES.get(tree)?.byElement.get(element) ??
+      boxFor(tree.root, element);
+    const cut = box && clipFor(box, rect, this._scale);
+    return cut ? shownBy(cut.rect, rect) : rect;
   }
 
   /** The link an element is — its `href`, resolved as a click on it is

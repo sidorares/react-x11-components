@@ -857,7 +857,12 @@ and what it returns is mounted there, filling it, beside the document, as a
 content box, and, where they apply, the `clip` the boxes around it cut it
 to, the `radius` of its corners, its `opacity` and `hidden`. They are cut,
 rounded and faded by the boxes around it, and cut by a box fixed to the
-viewport as the pane scrolls, as a player is.
+viewport as the pane scrolls, as a player is. One they cut away entirely
+has a `clip` of no size inside them: the box that scrolls the document
+reaches as far as anything mounted beside it, so a canvas a scroll
+container holds out of sight, mounted at its own place, made the page that
+much taller. The boxes that take the focus for links are placed the same
+way.
 
 **What is mounted stays the same node while the element moves**: it is
 keyed by the element, so a layout that moves an `<iframe>`, or a scroll

@@ -30,6 +30,8 @@
 // `MutationObserver` and `XMLHttpRequest`. Shadow DOM, custom elements,
 // workers, canvas and `document.write` are not here.
 
+import type { installWebGL } from './webgl.js';
+
 /** What crosses the bridge: nothing that has a `constructor`. */
 export type Primitive = string | number | boolean | null | undefined;
 
@@ -44,7 +46,7 @@ export type Bridge = (
 
 // Everything below runs in the page's context and is typed loosely: what it
 // is handed and what it hands a page are the page's to shape.
-export function installDom(bridge: Bridge): void {
+export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
   // this one's on its way up the stack
   'use strict';
@@ -3239,6 +3241,9 @@ export function installDom(bridge: Bridge): void {
     }
   }
 
+  /** WebGL's interfaces and a canvas's context of it (`webgl.ts`). */
+  const WEBGL = webgl(Event);
+
   /**
    * What a 2d canvas holds: its bitmap, straight RGBA, in this realm, so
    * that what a page reads back is what it wrote, at once; and the part of
@@ -3253,6 +3258,8 @@ export function installDom(bridge: Bridge): void {
     /** What changed, as x0, y0, x1, y1, or null. */
     dirty: number[] | null;
     context: Any;
+    /** The kind of context it has, where it has one. */
+    kind: string | null;
   }
   const canvases = new WeakMap<object, CanvasState>();
   const dirtyCanvases = new Set<Any>();
@@ -3276,6 +3283,7 @@ export function installDom(bridge: Bridge): void {
         data: new Uint8ClampedArray(width * height * 4),
         dirty: null,
         context: null,
+        kind: null,
       };
       canvases.set(canvas, state);
     } else if (state.width !== width || state.height !== height) {
@@ -3284,7 +3292,9 @@ export function installDom(bridge: Bridge): void {
       state.width = width;
       state.height = height;
       state.data = new Uint8ClampedArray(width * height * 4);
-      state.context?._reset();
+      if (state.context instanceof CanvasRenderingContext2D) {
+        state.context._reset();
+      }
       markCanvas(canvas, state, 0, 0, width, height);
     }
     return state;
@@ -3856,12 +3866,20 @@ export function installDom(bridge: Bridge): void {
       this.setAttribute('height', String(Number(v) >>> 0));
       canvasState(this);
     }
-    /** A 2d context, the same each time; no other kind here — no WebGL —
-     *  which a page tests for by the null. */
-    getContext(type: Any): Any {
-      if (str(type) !== '2d') return null;
+    /** A context of a kind, the same each time, and none of another kind
+     *  once the canvas has one (HTML 4.12.5): a 2d context, or a WebGL
+     *  one that draws nothing (`webgl.ts`). */
+    getContext(type: Any, options?: Any): Any {
+      let kind = str(type);
+      if (kind === 'experimental-webgl') kind = 'webgl';
+      if (kind !== '2d' && kind !== 'webgl' && kind !== 'webgl2') return null;
       const state = canvasState(this);
-      state.context ??= new CanvasRenderingContext2D(this);
+      if (state.context) return state.kind === kind ? state.context : null;
+      state.kind = kind;
+      state.context =
+        kind === '2d'
+          ? new CanvasRenderingContext2D(this)
+          : WEBGL.context(this, kind, options);
       return state.context;
     }
     toDataURL(): string {
@@ -5885,7 +5903,10 @@ export function installDom(bridge: Bridge): void {
     bodyUsed = false;
     constructor(body: Any = '', init: Any = {}) {
       this._body = '';
-      if (body instanceof ArrayBuffer)
+      // a stream is read as it is asked for: three.js's loaders hand a
+      // fetch's body on through one, to count its progress
+      if (body instanceof ReadableStream) this._stream = body;
+      else if (body instanceof ArrayBuffer)
         this._raw = new Uint8Array(body.slice(0));
       else if (ArrayBuffer.isView(body)) {
         this._raw = new Uint8Array(
@@ -5915,7 +5936,37 @@ export function installDom(bridge: Bridge): void {
       this.bodyUsed = true;
       return this._body;
     }
+    /** A body given as a stream, read to its end: the bytes of each chunk,
+     *  which has to be a view of them (Fetch, "extract a body"). */
+    async _drain(): Promise<Uint8Array> {
+      if (this.bodyUsed) throw new TypeError('Body has already been consumed.');
+      this.bodyUsed = true;
+      const reader = this._stream.getReader();
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array)) {
+          throw new TypeError(
+            'Failed to read the stream: the chunk is not a Uint8Array.',
+          );
+        }
+        chunks.push(value);
+        length += value.length;
+      }
+      const out = new Uint8Array(length);
+      let at = 0;
+      for (const chunk of chunks) {
+        out.set(chunk, at);
+        at += chunk.length;
+      }
+      return out;
+    }
     text(): Promise<string> {
+      if (this._given()) {
+        return this._drain().then((bytes) => new TextDecoder().decode(bytes));
+      }
       try {
         return Promise.resolve(this._read());
       } catch (e) {
@@ -5926,11 +5977,17 @@ export function installDom(bridge: Bridge): void {
       return this.text().then((t) => JSON.parse(t));
     }
     bytes(): Promise<Uint8Array> {
+      if (this._given()) return this._drain();
       try {
         return Promise.resolve(new Uint8Array(this._bytes()));
       } catch (e) {
         return Promise.reject(e);
       }
+    }
+    /** Whether the body is a stream the page gave, rather than one this
+     *  made of the bytes it holds. */
+    _given(): boolean {
+      return !!this._stream && !this._made;
     }
     arrayBuffer(): Promise<ArrayBuffer> {
       return this.bytes().then((bytes) => bytes.buffer as ArrayBuffer);
@@ -5946,6 +6003,7 @@ export function installDom(bridge: Bridge): void {
     get body(): Any {
       if (this._stream) return this._stream;
       const response = this;
+      this._made = true;
       this._stream = new ReadableStream({
         pull(controller: Any) {
           const bytes = response._bytes();
@@ -5956,8 +6014,14 @@ export function installDom(bridge: Bridge): void {
       return this._stream;
     }
     _stream: Any = null;
+    _made = false;
     clone(): Any {
       if (this.bodyUsed) throw new TypeError('Response body is already used');
+      if (this._given()) {
+        const [mine, theirs] = this._stream.tee();
+        this._stream = mine;
+        return new Response(theirs, this);
+      }
       return new Response(this._raw ?? this._body, this);
     }
   }
@@ -10194,6 +10258,7 @@ export function installDom(bridge: Bridge): void {
     Worker,
     ImageData,
     CanvasRenderingContext2D,
+    ...WEBGL.classes,
     Response,
     AbortController,
     AbortSignal,

@@ -43,7 +43,7 @@
 // turn, as HTML's `<source>` list goes.
 import type { Element } from 'domhandler';
 
-import { between, covers } from './controls.js';
+import { covers, shownBy } from './controls.js';
 import { attr, isElement, tagOf } from './dom.js';
 import type { ComputedStyle } from './css/style.js';
 import { masked } from './css/style.js';
@@ -256,7 +256,7 @@ function placementOf(
   if (cut === null) return null;
   const clip = cut?.rect;
   const round = cut ? cut.radius : 0;
-  const shows = clip ? between(clip, picture) : picture;
+  const shows = clip ? shownBy(clip, picture) : picture;
   const reach = inset(shows, OVERLAP);
   if (
     reach.width > 0 &&
