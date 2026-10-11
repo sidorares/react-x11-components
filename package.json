@@ -263,6 +263,6 @@
   },
   "optionalDependencies": {
     "@xterm/headless": "^6.0.0",
-    "katex": "^0.18.4"
+    "katex": "^0.19.0"
   }
 }
