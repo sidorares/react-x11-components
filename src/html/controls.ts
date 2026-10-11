@@ -258,6 +258,27 @@ export function between(a: Rect, b: Rect): Rect {
   };
 }
 
+/**
+ * What of a rectangle a clip shows, kept inside the clip where it shows
+ * none: the box that scrolls the document reaches as far as a box mounted
+ * beside it does, whatever cuts it, so a mount of what a scroll container
+ * holds out of sight, at its own place, made the page that far taller —
+ * up.com.au's canvases and its last link, in a `main` a viewport tall,
+ * gave the page nine thousand pixels of nothing below it.
+ */
+export function shownBy(clip: Rect, rect: Rect): Rect {
+  const shown = between(clip, rect);
+  if (shown.width > 0 && shown.height > 0) return shown;
+  const inside = (v: number, from: number, size: number) =>
+    Math.min(Math.max(v, from), from + size);
+  return {
+    x: inside(shown.x, clip.x, clip.width),
+    y: inside(shown.y, clip.y, clip.height),
+    width: 0,
+    height: 0,
+  };
+}
+
 /** Whether a clip leaves a rectangle whole. */
 export function covers(clip: Rect, rect: Rect): boolean {
   return (

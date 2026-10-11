@@ -2908,7 +2908,14 @@ of all it holds, CodeMirror parks an element ten thousand pixels up, and
 the react-x11 playground's frame was refused, then cut to the strip below
 the window. Anything new that asks what is over a box looks into a subtree
 whose ink meets it, and passes over what draws nothing. The browser example mounts another
-`<Html>` with the frame's document in it.
+`<Html>` with the frame's document in it. **Nothing mounted beside the
+document may sit where its clips leave nothing of it**: core's scroll pane
+reaches as far as a box under it does, clipped or not, so a mount or a
+focus stop at its own place in a scroll container's hidden overflow made
+the page that much taller — up.com.au's, nine thousand pixels. A clip that
+empties is kept inside the box that emptied it (`clipFor`'s `cut`), and a
+mount and a stop are placed inside their clips (`shownBy`); anything new
+mounted beside the document goes through one or the other.
 
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,

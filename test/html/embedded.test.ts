@@ -110,6 +110,61 @@ test('a mount is cut where the document clips the element', async () => {
   );
 });
 
+test('a mount and a focus stop a scroll container holds out of sight make the document no taller', async () => {
+  // up.com.au: the whole page in a `main` a viewport tall that scrolls,
+  // with a canvas in a section that clips it and a link at the end, far
+  // below; mounted at their own places beside the document, the box that
+  // scrolls it reached down to them
+  const asked: EmbeddedRect[] = [];
+  await renderX11(
+    h(
+      'box',
+      {
+        'data-testname': 'pane',
+        style: { width: 300, height: 200, overflow: 'scroll' },
+      },
+      h(Html, {
+        source:
+          '<style>body{margin:0}main{height:150px;overflow-y:scroll}' +
+          'section{overflow:hidden;height:80px}</style>' +
+          '<main><div style="height:400px"></div>' +
+          '<section><canvas id="c" width="50" height="40"></canvas></section>' +
+          '<div style="height:400px"></div><a href="#end">end</a></main>',
+        partial: false,
+        renderEmbedded: (rect: EmbeddedRect) => {
+          asked.push(rect);
+          return h('box', { style: { flexGrow: 1 } });
+        },
+      }),
+    ),
+    { width: 340, height: 240, ...(FONTS && { fonts: FONTS }) },
+  );
+  await act();
+  const rect = asked.at(-1)!;
+  assert.deepStrictEqual(
+    [rect.y, rect.height],
+    [400, 40],
+    'the canvas, where it is laid out',
+  );
+  assert.ok(rect.clip, 'cut');
+  assert.deepStrictEqual(
+    [rect.clip.width, rect.clip.height],
+    [0, 0],
+    'to nothing',
+  );
+  assert.ok(
+    rect.clip.y >= 0 && rect.clip.y <= 150,
+    `inside the main that clips it: ${JSON.stringify(rect.clip)}`,
+  );
+  const pane = screen.getByTestName('pane') as unknown as {
+    contentHeight: number;
+  };
+  assert.ok(
+    pane.contentHeight <= 150,
+    `the pane reaches as far as the main: ${pane.contentHeight}`,
+  );
+});
+
 test('what reaches a mount only where nothing of it is drawn takes nothing from it', async () => {
   // a pane beside the frame whose content runs on under a box that clips
   // it, as an editor's does, and a menu's backdrop fixed over the whole

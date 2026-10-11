@@ -5290,10 +5290,17 @@ export function clipFor(
   const space: ClipSpace = { originX: 0, originY: 0, scale, damage: null };
   let clip: Rect | undefined;
   const cut = (r: { x: number; y: number; w: number; h: number }): void => {
-    const x = Math.max(r.x, clip ? clip.x : -Infinity);
-    const y = Math.max(r.y, clip ? clip.y : -Infinity);
+    let x = Math.max(r.x, clip ? clip.x : -Infinity);
+    let y = Math.max(r.y, clip ? clip.y : -Infinity);
     const right = Math.min(r.x + r.w, clip ? clip.x + clip.width : Infinity);
     const bottom = Math.min(r.y + r.h, clip ? clip.y + clip.height : Infinity);
+    // a clip that leaves nothing is kept inside the box that emptied it, and
+    // so inside every clip around: it shows nothing wherever it is, and a
+    // mount cut by it is placed by it (`shownBy`)
+    if (right <= x || bottom <= y) {
+      x = Math.min(Math.max(x, r.x), r.x + r.w);
+      y = Math.min(Math.max(y, r.y), r.y + r.h);
+    }
     clip = {
       x,
       y,
