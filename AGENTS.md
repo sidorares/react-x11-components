@@ -1917,6 +1917,15 @@ closes a way out a DOM binding opens by accident:
   and the host is told what changed once a task (`markCanvas`,
   `canvasPut`). Anything new that draws on a canvas marks the rectangle it
   changed, or the browser shows the canvas as it was.
+- **A WebGL context answers and draws nothing** (`webgl.ts`, source text
+  handed to `installDom`). Chrome has WebGL wherever it has a canvas, in
+  software where there is no GPU, so a null context is a page that
+  crashes — up.com.au's react-three-fiber scene took React's whole tree
+  down with it — where a context that keeps state and draws nothing is a
+  page with an empty box. What a context answers is Chrome's: its
+  constants and limits, its version strings, a value read back as the
+  typed array Chrome hands back; an answer that a real context could not
+  give sends a page down a path no browser takes.
 - **A worker is a thread, and a string is all that reaches it.** Each
   `Worker` is a `worker_threads` thread with an engine, a host over an
   empty document and the facade made a worker's global

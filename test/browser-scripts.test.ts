@@ -1435,6 +1435,84 @@ test('streams read, pipe, tee and transform, and a response’s body is one', as
   assert.equal(text, 'ab|123|123|€!|no|héllo|true|function|TypeError');
 });
 
+test('a response made of a stream reads it to its end, as three.js’s loaders make one to count a download', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'function parts(chunks) { return new ReadableStream({ start: function (c) {' +
+      '  chunks.forEach(function (x) { c.enqueue(x); }); c.close(); } }); }' +
+      // FileLoader: the fetched body, read through a stream of its own
+      'var glb = new Response(parts([new Uint8Array([103, 108]), new Uint8Array([84, 70, 2])]));' +
+      'var twin = glb.clone();' +
+      'var odd = new Response(parts(["text"]));' +
+      'Promise.all([' +
+      '  glb.arrayBuffer().then(function (b) { return [b instanceof ArrayBuffer, b.byteLength, new TextDecoder().decode(new Uint8Array(b, 0, 4))].join(","); }),' +
+      '  twin.text(),' +
+      '  glb.text().catch(function (e) { return e.name; }),' +
+      '  odd.arrayBuffer().catch(function (e) { return e.name; }),' +
+      '  new Response(parts([new Uint8Array([123, 125])])).json().then(function (j) { return typeof j; }),' +
+      ']).then(function (got) {' +
+      '  got.push(glb.bodyUsed);' +
+      '  document.getElementById("out").textContent = got.join("|");' +
+      '});' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(text, 'true,5,glTF|glTF\u0002|TypeError|TypeError|object|true');
+});
+
+test('a canvas has a WebGL context of either version, which keeps what a page sets and draws nothing', async () => {
+  const doc = await hosted(
+    '<canvas id="a" width="30" height="20"></canvas><canvas id="b"></canvas><p id="out"></p><script>' +
+      'var r = []; var a = document.getElementById("a"); var b = document.getElementById("b");' +
+      'var gl = a.getContext("webgl2", { alpha: false, antialias: false });' +
+      'r.push(gl instanceof WebGL2RenderingContext, gl instanceof WebGLRenderingContext,' +
+      '  gl === a.getContext("webgl2"), a.getContext("2d"), a.getContext("webgl"));' +
+      'r.push(gl.canvas === a, gl.drawingBufferWidth, gl.drawingBufferHeight,' +
+      '  gl.TEXTURE_2D, WebGL2RenderingContext.RGBA8, gl.getParameter(gl.VERSION).slice(0, 9));' +
+      'r.push(gl.getContextAttributes().alpha, gl.getContextAttributes().depth, gl.isContextLost(), gl.getError(), gl.getExtension("EXT_color_buffer_float"));' +
+      // what three.js reads before it sets it
+      'var vp = gl.getParameter(gl.VIEWPORT); r.push(vp instanceof Int32Array, Array.from(vp).join(" "));' +
+      'gl.viewport(1, 2, 3, 4); gl.enable(gl.DEPTH_TEST); gl.clearColor(1, 0.5, 0, 1);' +
+      'r.push(Array.from(gl.getParameter(gl.VIEWPORT)).join(" "), gl.isEnabled(gl.DEPTH_TEST), gl.getParameter(gl.COLOR_CLEAR_VALUE)[1]);' +
+      // a shader compiles and a program links, with nothing active in it
+      'var vs = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(vs, "void main() {}"); gl.compileShader(vs);' +
+      'var prog = gl.createProgram(); gl.attachShader(prog, vs); gl.linkProgram(prog);' +
+      'r.push(gl.getShaderParameter(vs, gl.COMPILE_STATUS), gl.getShaderSource(vs), gl.getProgramParameter(prog, gl.LINK_STATUS),' +
+      '  gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS), gl.getProgramParameter(prog, gl.ATTACHED_SHADERS), gl.getUniformLocation(prog, "u"));' +
+      'var p = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT); r.push(p.precision, p instanceof WebGLShaderPrecisionFormat);' +
+      // an object bound is read back, and unbound as it is deleted
+      'var tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);' +
+      'r.push(gl.getParameter(gl.TEXTURE_BINDING_2D) === tex, gl.isTexture(tex), Object.keys(tex).length);' +
+      'gl.deleteTexture(tex); r.push(gl.isTexture(tex), gl.getParameter(gl.TEXTURE_BINDING_2D));' +
+      'r.push(gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE, gl.clientWaitSync(gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0), 0, 0) === gl.ALREADY_SIGNALED);' +
+      'var px = new Uint8Array([9, 9, 9, 9]); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); r.push(px.join(""));' +
+      'try { new WebGLTexture(); } catch (e) { r.push(e.name); }' +
+      'try { WebGL2RenderingContext.prototype.getParameter.call({}, 0); } catch (e) { r.push(e.name); }' +
+      'var one = b.getContext("experimental-webgl");' +
+      'r.push(one instanceof WebGLRenderingContext, one === b.getContext("webgl"), b.getContext("webgl2"), one.getParameter(one.VERSION).slice(0, 9), typeof one.createVertexArray);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      'true|false|true||',
+      'true|30|20|3553|32856|WebGL 2.0',
+      'false|true|false|0|',
+      'true|0 0 30 20',
+      '1 2 3 4|true|0.5',
+      'true|void main() {}|true|0|1|',
+      '23|true',
+      'true|true|0',
+      'false|',
+      'true|true',
+      '0000',
+      'TypeError|TypeError',
+      'true|true||WebGL 1.0|undefined',
+    ].join('|'),
+  );
+});
+
 test('attribute nodes are the element’s, one each, in a map that is live', async () => {
   const doc = await hosted(
     '<div id="d" class="c" title="t" data-x="1"></div><p id="out"></p><script>' +

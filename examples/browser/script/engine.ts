@@ -39,6 +39,7 @@ import { types } from 'node:util';
 import vm from 'node:vm';
 
 import { installDom } from './dom.js';
+import { installWebGL } from './webgl.js';
 import type { Bridge, Primitive } from './dom.js';
 
 export interface EngineOptions {
@@ -148,9 +149,10 @@ const INSTALL = `(function () {
     return target;
   };
   const install = (${installDom.toString()});
+  const webgl = (${installWebGL.toString()});
   const bridge = globalThis.__bridge;
   delete globalThis.__bridge;
-  install(bridge);
+  install(bridge, webgl);
 })()`;
 
 /**
