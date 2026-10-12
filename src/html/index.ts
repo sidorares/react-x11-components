@@ -22,6 +22,17 @@ import type {
   Rect,
   WheelEvent as X11WheelEvent,
 } from 'react-x11';
+import {
+  XK_DOWN,
+  XK_END,
+  XK_HOME,
+  XK_LEFT,
+  XK_PAGE_DOWN,
+  XK_PAGE_UP,
+  XK_RIGHT,
+  XK_SPACE,
+  XK_UP,
+} from 'react-x11/keysyms';
 import { tint } from 'react-x11/style';
 import type { Style } from 'react-x11/style';
 
@@ -780,6 +791,8 @@ export function Html(props: HtmlProps): ReactElement {
       onMouseMoveCapture: events.onMouseMoveCapture,
       onWheelCapture: events.onWheelCapture,
       onMouseDown: (ev: X11MouseEvent<DrawnNode>) => {
+        if (events.onBar()) return;
+        viewNode.current?.pressedAt(ev.x, ev.y);
         links.onMouseDown(ev);
         forms.onMouseDown(ev);
         stops.onMouseDown(ev);
@@ -797,8 +810,27 @@ export function Html(props: HtmlProps): ReactElement {
           ev.preventDefault();
         }
       },
-      onKeyDown: stops.onKeyDown,
+      onKeyDown: (ev: X11KeyboardEvent<DrawnNode>) => {
+        stops.onKeyDown(ev);
+        if (ev.defaultPrevented) return;
+        // the scroll keys, where the focus is on the document or a link of
+        // it — a field's widget keeps its arrows
+        const view = viewNode.current;
+        const key =
+          ev.keysym === undefined ? undefined : SCROLL_KEYS[ev.keysym];
+        if (!view || !key || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+        const target = ev.target as DrawnNode;
+        const on = stops.elementOf(target);
+        if (!on && target !== rootNode.current && target !== (view as unknown))
+          return;
+        const [axis, how, sign] = key;
+        const back = ev.keysym === XK_SPACE && ev.shiftKey;
+        if (view.scrollForKey(axis, how, back ? -1 : sign, on ?? null)) {
+          ev.preventDefault();
+        }
+      },
       onMouseUp: (ev: X11MouseEvent<DrawnNode>) => {
+        if (events.onBar()) return;
         // the click the press and the release made, which the page may
         // cancel: then no link is followed and no button pressed
         if (!events.clicked(ev)) return;
@@ -884,6 +916,23 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
 }
 
 // --- what happens to the document --------------------------------------------
+
+/** The keys that scroll a document's scroll containers, and how: the
+ *  axis, a line, a page or to the end, and which way (`scrollForKey`). */
+const SCROLL_KEYS: Record<
+  number,
+  ['x' | 'y', 'line' | 'page' | 'end', 1 | -1]
+> = {
+  [XK_DOWN]: ['y', 'line', 1],
+  [XK_UP]: ['y', 'line', -1],
+  [XK_RIGHT]: ['x', 'line', 1],
+  [XK_LEFT]: ['x', 'line', -1],
+  [XK_PAGE_DOWN]: ['y', 'page', 1],
+  [XK_PAGE_UP]: ['y', 'page', -1],
+  [XK_SPACE]: ['y', 'page', 1],
+  [XK_HOME]: ['y', 'end', -1],
+  [XK_END]: ['y', 'end', 1],
+};
 
 /** What the handle reaches through `interactive`, as this render has it. */
 interface Live {
@@ -984,6 +1033,9 @@ function useDocumentEvents(
 ) {
   const pressed = React.useRef<Element | null>(null);
   const released = React.useRef<Element | null>(null);
+  /** Whether the press was on a scroll container's bar: no click, no
+   *  link, no event of the page's comes of it. */
+  const barPress = React.useRef(false);
   const fire = (
     type: HtmlDomEventType,
     target: Element,
@@ -1034,6 +1086,17 @@ function useDocumentEvents(
   return {
     onMouseDownCapture: (ev: X11MouseEvent<DrawnNode>) => {
       pressed.current = null;
+      // a press on a scroll container's bar is the bar's (`defaultMouseDown`)
+      const node = view.current;
+      if (
+        node &&
+        ev.target === (node as unknown) &&
+        node.scrollBarAt(ev.x, ev.y)
+      ) {
+        barPress.current = true;
+        return;
+      }
+      barPress.current = false;
       if (!onDomEvent) return;
       const target = pointedAt(ev);
       if (!target) return;
@@ -1047,6 +1110,7 @@ function useDocumentEvents(
     },
     onMouseUpCapture: (ev: X11MouseEvent<DrawnNode>) => {
       released.current = null;
+      if (barPress.current) return;
       if (!onDomEvent) return;
       const target = pointedAt(ev);
       if (!target) return;
@@ -1085,6 +1149,8 @@ function useDocumentEvents(
       });
       if (!go) ev.preventDefault();
     },
+    /** Whether the press now under way is a scroll bar's. */
+    onBar: () => barPress.current,
     clicked: (ev: X11MouseEvent<DrawnNode>): boolean => {
       const down = pressed.current;
       const up = released.current;

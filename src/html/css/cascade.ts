@@ -493,6 +493,9 @@ class RuleIndex {
   }
 }
 
+/** Both bars, hidden by nothing (`scrollbarHidden`). */
+const SHOWN = { x: false, y: false };
+
 /** The pseudo-elements a rule can style here. */
 type PseudoElement =
   | 'before'
@@ -501,7 +504,8 @@ type PseudoElement =
   | 'first-line'
   | 'marker'
   | 'selection'
-  | 'placeholder';
+  | 'placeholder'
+  | 'scrollbar';
 
 /** A selector's trailing `::before`, `::after`, `::first-letter`,
  *  `::first-line`, `::marker`, `::selection` or `::placeholder`, or CSS 2's
@@ -510,7 +514,7 @@ type PseudoElement =
  *  Chrome and Safari still take, and pages written before the standard
  *  name still use. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|-webkit-input-placeholder)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|-webkit-input-placeholder|-webkit-scrollbar)$/i;
 
 /**
  * What a `::selection` makes of the text it covers (CSS Pseudo 4, 3.2): the
@@ -545,7 +549,9 @@ function splitPseudoElement(
   return {
     which: (name === '-webkit-input-placeholder'
       ? 'placeholder'
-      : name) as PseudoElement,
+      : name === '-webkit-scrollbar'
+        ? 'scrollbar'
+        : name) as PseudoElement,
     rule: { ...rule, selector },
   };
 }
@@ -1932,6 +1938,7 @@ export class Cascade {
     marker: new RuleIndex(true),
     selection: new RuleIndex(true),
     placeholder: new RuleIndex(true),
+    scrollbar: new RuleIndex(true),
   };
   /** The author's rules that could style a shape in a drawing: the ones
    *  that declare a property a shape has (`shapes.ts`) and whose subject
@@ -3813,6 +3820,40 @@ export class Cascade {
     this._placeholders.set(el, { from: style, key, style: out });
     return out;
   }
+
+  /**
+   * Which of a scroll container's bars its `::-webkit-scrollbar` hides:
+   * both at `display: none`, and the vertical one at `width: 0` and the
+   * horizontal one at `height: 0`, as Chrome and Safari have it. Pages
+   * hide a carousel's bar so, often beside `scrollbar-width: none`, which
+   * the computed style holds. Kept by element, as a placeholder's is.
+   */
+  scrollbarHidden(
+    el: Element,
+    style: ComputedStyle,
+  ): { x: boolean; y: boolean } {
+    const index = this._pseudo.scrollbar;
+    if (!index.size || !index.reaches(el)) return SHOWN;
+    const candidates: Candidate[] = [];
+    const matched: number[] = [];
+    this._matchInto(index, el, candidates, matched);
+    if (!candidates.length) return SHOWN;
+    const key = matched.join(',');
+    const kept = this._scrollbars.get(el);
+    if (kept?.from === style && kept.key === key) return kept.hidden;
+    candidates.sort(byCascade);
+    const out = this._computeStyle(el, style, false, candidates);
+    const none = out.display === 'none';
+    const hidden = { x: none || out.height === 0, y: none || out.width === 0 };
+    this._scrollbars.set(el, { from: style, key, hidden });
+    return hidden;
+  }
+
+  /** What `scrollbarHidden` keeps, by element. */
+  private _scrollbars = new WeakMap<
+    Element,
+    { from: ComputedStyle; key: string; hidden: { x: boolean; y: boolean } }
+  >();
 
   /** What `placeholderStyle` keeps, by element. */
   private _placeholders = new WeakMap<

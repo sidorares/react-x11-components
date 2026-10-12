@@ -726,6 +726,12 @@ export interface ComputedStyle {
   objectPositionY: Len;
   overflowX: 'visible' | 'hidden' | 'scroll' | 'auto' | 'clip';
   overflowY: 'visible' | 'hidden' | 'scroll' | 'auto' | 'clip';
+  /** `scrollbar-width`: whether a scroll container draws its bars, and how
+   *  wide (CSS Scrollbars 1, 3). Not inherited. */
+  scrollbarWidth: 'auto' | 'thin' | 'none';
+  /** `scrollbar-color`'s thumb colour, null for `auto` (CSS Scrollbars 1,
+   *  2): the track is an overlay bar's, which draws none. Inherited. */
+  scrollbarThumbColor: string | null;
   /** `clip: rect(…)`: the part of an absolutely positioned box that shows,
    *  its edges measured from the border box's top left, a null edge the
    *  border box's own (CSS 2.1 11.1.2). Null for `auto`. */
@@ -1054,6 +1060,7 @@ export interface ComputedStyle {
  *  same list. */
 export const INHERITED = [
   'color',
+  'scrollbarThumbColor',
   'colorScheme',
   'colorSchemeKeywords',
   'textFillColor',
@@ -1308,6 +1315,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     objectPositionY: { pct: 50 },
     overflowX: 'visible',
     overflowY: 'visible',
+    scrollbarWidth: 'auto',
+    scrollbarThumbColor: null,
     clip: null,
     clipPath: null,
     opacity: 1,
@@ -1500,6 +1509,7 @@ export function inherit(
   // quarters of the cost of every element's style, a store through a
   // computed name costing thirty times one through a written one
   out.color = parent.color;
+  out.scrollbarThumbColor = parent.scrollbarThumbColor;
   out.colorScheme = parent.colorScheme;
   out.colorSchemeKeywords = parent.colorSchemeKeywords;
   out.textFillColor = parent.textFillColor;
@@ -2182,6 +2192,25 @@ export function applyDeclaration(
       if (!pair) return;
       style.objectPositionX = pair[0];
       style.objectPositionY = pair[1];
+      return;
+    }
+    case 'scrollbar-width': {
+      const v = value.trim().toLowerCase();
+      if (v === 'auto' || v === 'thin' || v === 'none')
+        style.scrollbarWidth = v;
+      return;
+    }
+    case 'scrollbar-color': {
+      if (value.trim().toLowerCase() === 'auto') {
+        style.scrollbarThumbColor = null;
+        return;
+      }
+      // a thumb and a track: an overlay bar draws no track
+      const parts = splitValue(value);
+      if (parts.length !== 2) return;
+      const thumb = parseColor(parts[0]);
+      if (thumb === null || parseColor(parts[1]) === null) return;
+      style.scrollbarThumbColor = thumb;
       return;
     }
     case 'overflow':
@@ -6376,6 +6405,7 @@ function camel(name: string): string {
 
 const INHERITED_NAMES = new Set<string>([
   'color',
+  'scrollbar-color',
   'color-scheme',
   '-webkit-text-fill-color',
   'font',
@@ -6931,6 +6961,8 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   '-webkit-clip-path': ['clipPath'],
   'overflow-x': ['overflowX'],
   'overflow-y': ['overflowY'],
+  'scrollbar-width': ['scrollbarWidth'],
+  'scrollbar-color': ['scrollbarThumbColor'],
   opacity: ['opacity'],
   filter: ['filter'],
   'backdrop-filter': ['backdropFilter'],

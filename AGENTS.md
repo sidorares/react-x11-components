@@ -2956,6 +2956,21 @@ box was moved by is cleared for every box the layout visits
 (`APPLIED`), or the next scroll moves it by the difference from an offset
 it no longer has.
 
+Three things sit on that. **A sticky box is placed again at every scroll
+of its container and after every layout** (`restickWithin`,
+`restickAll`), from where the flow has it: `STUCK` holds how far it was
+moved, and a container's reach is measured with every sticky box taken
+back by it, or a footer stuck at `bottom: 0` makes the container shorter
+by its height. **The scroll keys are `<Html>`'s root's**, since clicking a
+document focuses it and core runs `defaultKeyDown` on the focused node
+alone: `scrollForKey` chains from the focused link or the last press out
+to the pane. And **the bars are a pass of their own at the end of
+`paintDocument`** (`paintScrollBars`): a container that is no stacking
+context is painted in its context's flow passes, and nothing of its own
+paints after what it scrolls. A press on one is the node's
+(`defaultMouseDown`), and `<Html>`'s capture handlers keep it from the
+links and the page (`scrollBarAt`).
+
 **The isolated mode is designed and not built.** `<Html isolated>` — a child
 process rendering into an XEmbed window — is specified in `docs/prd-html.md`,
 including why the seams stay the parent's and why `handle.document` would

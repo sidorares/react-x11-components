@@ -94,6 +94,7 @@ import {
   placedMatrix,
   holdsOutOfFlow,
 } from './layout/block.js';
+import { isScroller, scrollBarsOf, thumbRect } from './layout/scroll.js';
 import {
   BOX_RAISES,
   LINE_BOX_RAISES,
@@ -358,6 +359,9 @@ export interface PaintOptions {
   selectionColor: string | null;
   /** A decoded image for an element, when the host has one. */
   imageFor(box: Box): unknown | null;
+  /** Which of a scroll container's bars a page's `::-webkit-scrollbar`
+   *  hides (`Cascade.scrollbarHidden`). */
+  scrollbarHidden?(box: Box): { x: boolean; y: boolean };
   /** The `<video>`s a player is mounted over (`media.ts`), which draw no
    *  frame where they have no poster: the player's picture is what goes
    *  there. */
@@ -987,6 +991,9 @@ export function paintDocument(
     shapeStyler: tree.shapeStyler,
     backdrop,
   });
+  // the scroll containers' bars over everything, but in a backdrop, which
+  // is the page under a box
+  if (!options.backdrop) paintScrollBars(ctx, tree, options);
   ctx.restore();
   if (!options.backdrop) {
     for (const made of backdrop.made.values()) made?.surface.destroy?.();
@@ -3702,6 +3709,119 @@ function paintContent(
   if (box.style.outlineStyle !== 'none' && box.kind !== 'inline') {
     paintOutline(ctx, box, options);
   }
+}
+
+/**
+ * The bars of the document's scroll containers (`scrollBarsOf`), over all
+ * of it, as an overlay bar is drawn over the page: a thumb in core's look,
+ * in `scrollbar-color`'s thumb colour or core's grey — lightened on a dark
+ * scheme, where it would not show — cut by the boxes that clip its
+ * container, and drawn where the viewport is for one fixed to it. A
+ * container is painted in the flow passes of the context it is in, and
+ * nothing of its own paints after what it scrolls; so the bars are a pass
+ * of their own, at the end, through the boxes whose ink meets the damage.
+ * A container drawn through a matrix has none.
+ */
+function paintScrollBars(
+  ctx: PaintContext,
+  tree: BoxTree,
+  options: PaintOptions,
+): void {
+  if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip) {
+    return;
+  }
+  const scale = options.scale ?? 1;
+  const damage = options.damage;
+  const stack: [Box, number, number, boolean][] = [
+    [tree.root, options.originX, options.originY, false],
+  ];
+  while (stack.length) {
+    const entry = stack.pop()!;
+    const box = entry[0];
+    let [, ox, oy, fixed] = entry;
+    if (!fixed && options.viewport && fixedToViewport(box)) {
+      ox = options.viewport.x;
+      oy = options.viewport.y;
+      fixed = true;
+    }
+    if (box.boundsY === Infinity) continue;
+    if (
+      damage &&
+      !(
+        box.boundsX + ox < damage.x + damage.width &&
+        damage.x < box.boundsX + ox + box.boundsWidth &&
+        box.boundsY + oy < damage.y + damage.height &&
+        damage.y < box.boundsY + oy + box.boundsHeight
+      )
+    ) {
+      continue;
+    }
+    if (isScroller(box) && box.style.visibility === 'visible') {
+      paintBarsOf(ctx, box, ox, oy, scale, options);
+    }
+    for (let i = box.children.length - 1; i >= 0; i -= 1) {
+      const child = box.children[i];
+      if (child.kind === 'text' || child.kind === 'break') continue;
+      stack.push([child, ox, oy, fixed]);
+    }
+  }
+}
+
+function paintBarsOf(
+  ctx: PaintContext,
+  box: Box,
+  ox: number,
+  oy: number,
+  scale: number,
+  options: PaintOptions,
+): void {
+  const bars = scrollBarsOf(
+    box,
+    scale,
+    options.scrollbarHidden?.(box) ?? { x: false, y: false },
+  );
+  if (!bars.length) return;
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (placedMatrix(at)) return;
+  }
+  const cut = clipFor(
+    box,
+    { x: box.x, y: box.y, width: box.width, height: box.height },
+    scale,
+  );
+  if (cut === null) return;
+  const style = box.style;
+  const own = style.scrollbarThumbColor;
+  ctx.save!();
+  if (cut) {
+    ctx.beginPath!();
+    ctx.rect!(
+      cut.rect.x + ox,
+      cut.rect.y + oy,
+      cut.rect.width,
+      cut.rect.height,
+    );
+    ctx.clip!();
+  }
+  ctx.fillStyle =
+    own === null
+      ? style.colorScheme === 'dark'
+        ? 'rgba(255, 255, 255, 0.3)'
+        : 'rgba(0, 0, 0, 0.25)'
+      : own.toLowerCase() === 'currentcolor'
+        ? style.color
+        : own;
+  for (const bar of bars) {
+    const r = thumbRect(bar);
+    const x = r.x + ox;
+    const y = r.y + oy;
+    if (ctx.roundRect && ctx.fill) {
+      ctx.beginPath!();
+      ctx.roundRect(x, y, r.width, r.height, [bar.thickness / 2]);
+      ctx.fill();
+    } else ctx.fillRect(x, y, r.width, r.height);
+  }
+  ctx.restore!();
 }
 
 /** A box's own background, background image and borders, and a table's

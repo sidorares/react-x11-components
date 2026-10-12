@@ -1112,15 +1112,16 @@ taller than itself sits on its bottom edge, and one with `overflow: clip`,
 which is no scroll container, on its line. A `<button>` sits on
 its content's baseline whether it clips or not, and on the bottom edge of
 its content box where its content has none, as it does in Blink: a button
-of an icon is no taller on its line than it is. A sticky box is placed
-at rest: moved only as far as keeps it inside its scroll container's
-scrollport, scrolled to its start, less its insets, and its margin box
-inside its containing block. Nothing here scrolls a box the document
-holds, so that is where one inside such a box stays; the viewport does
-scroll, and against it only `top` and the start side are kept — a sticky
-box is where a browser starts it, and scrolls away with the page rather
-than following it, where a `bottom: 0` footer would otherwise be pinned to
-the middle of it. A float, an inline-block and an absolute box of `width: auto`
+of an icon is no taller on its line than it is. A sticky box inside a
+scroll container keeps to it where it is scrolled to: moved only as far as
+keeps it inside the container's scrollport less its insets, and its margin
+box inside its containing block — all the container scrolls, where that is
+the container — placed again at every scroll (see [Scroll
+containers](#scroll-containers)). One kept to the viewport is placed at
+rest: against the viewport only `top` and the start side are kept — a
+sticky box is where a browser starts it, and scrolls away with the page
+rather than following it, where a `bottom: 0` footer would otherwise be
+pinned to the middle of it. A float, an inline-block and an absolute box of `width: auto`
 shrink to fit the room their margins leave, and an absolute box the room
 its offset or its static position leaves: at `left: 50%` it has half the
 width. None is narrower than its longest word. A relatively positioned inline box moves its text, its
@@ -3040,9 +3041,36 @@ difference, the ink bounds worked out again, the scrollport repainted and
 what is mounted beside the document told where it went — 7 ms a step on a
 page of 3,000 paragraphs in one container. `onElementScroll` is told after
 each, once a move; the browser example fires the element's `scroll` from
-it, once a frame. A sticky box in a scroll container sticks to the
-viewport, not to the container, and the keys scroll the box around the
-document, not one inside it.
+it, once a frame.
+
+**A sticky box keeps to the container it is in**, placed again at every
+scroll of it and after every layout, as Chrome places one: a header at
+`top: 0` held at the top of a list, a section's title until its section
+leaves, a footer at `bottom: 0` at its foot. Where it is in the flow is
+what the container's reach is measured by, not where it is stuck.
+
+**The scroll keys scroll a container** — the arrows a line of 40 CSS
+pixels, Page Up, Page Down and Space seven eighths of the scrollport, Home
+and End to its ends, as Chrome steps them — where the focus is on the
+document or on one of its links: the innermost container around the link,
+or else around the last press, that can move that way, and on out to the
+pane around the document, which takes the key once none can, but where the
+root gave the viewport `overflow: hidden`. A field's widget keeps its
+arrows, and a key a page's script cancels scrolls nothing.
+
+**A container draws core's bar**: a thumb 6 pixels thick, 2 in from its
+edge, over the content as an overlay bar is, on each axis whose `overflow`
+is `auto` or `scroll` and whose content overflows — the bar the pane
+around the document draws, in its colour, lightened on a dark scheme.
+`scrollbar-width: thin` draws it 4 thick and `none` hides it, and so does
+a page's `::-webkit-scrollbar` at `display: none` — or the vertical one at
+`width: 0`, the horizontal at `height: 0` — which is how carousels hide
+theirs; `scrollbar-color`'s thumb colour is the thumb's. A drag of the
+thumb scrolls, and a press on its track pages toward the press; neither is
+a click, a link followed or an event of the page's. The bars are drawn in
+a pass of their own over the whole document, cut by the boxes that clip
+their container, so a box positioned over a container's edge is under its
+bar.
 
 ## Shadow DOM
 
