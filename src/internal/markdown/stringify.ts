@@ -334,6 +334,9 @@ class InlineWriter {
   /** The next character starts a line — the top of the text, or just after
    *  a hard break — which is where block syntax lives. */
   private lineStart = true;
+  /** How many link or image texts the output is inside. In one, every
+   *  bracket is escaped: a bare one would pair with the link's own. */
+  private linkDepth = 0;
 
   constructor(private readonly mode: InlineMode) {}
 
@@ -494,7 +497,7 @@ class InlineWriter {
     );
     if (node.image) {
       this.raw('![');
-      this.nodes(node.children, ']');
+      this.linkText(node.children);
       this.raw(tail);
       return;
     }
@@ -504,8 +507,14 @@ class InlineWriter {
       return;
     }
     this.raw('[');
-    this.nodes(node.children, ']');
+    this.linkText(node.children);
     this.raw(tail);
+  }
+
+  private linkText(children: readonly InlineNode[]): void {
+    this.linkDepth++;
+    this.nodes(children, ']');
+    this.linkDepth--;
   }
 
   /** `after` is the character the output continues with past this text, so
@@ -534,9 +543,10 @@ class InlineWriter {
   /**
    * The first character of a line, when it would open a block: `# ` a
    * heading, `>` a quote, `-`/`+`/`=`/`:`/`|`/`~` a list, a setext underline,
-   * a table's delimiter row or a fence, `12.` an ordered list, and leading
-   * whitespace an indented code block (or nothing, after a trim). The last is
-   * spelled as a character reference, which no block rule looks at.
+   * a table's delimiter row or a fence, `12.` an ordered list, `[ ]` or `[x]`
+   * a task (when the line is a list item's first), and leading whitespace an
+   * indented code block (or nothing, after a trim). The last is spelled as a
+   * character reference, which no block rule looks at.
    */
   private lineLead(
     text: string,
@@ -547,6 +557,9 @@ class InlineWriter {
     if (ch === '\t') return { text: '&#9;', consumed: 1 };
     if (this.mode !== 'block') return null;
     if ('#>-+=:|~'.includes(ch)) return { text: `\\${ch}`, consumed: 1 };
+    if (/^\[[ xX]\][ \t]/.test(text.slice(i))) {
+      return { text: '\\[', consumed: 1 };
+    }
     const ordered = /^(\d{1,9})([.)])/.exec(text.slice(i));
     if (ordered) {
       const after = text[i + ordered[0].length];
@@ -568,9 +581,21 @@ class InlineWriter {
       case '\\':
       case '`':
       case '*':
-      case '[':
-      case ']':
         return `\\${ch}`;
+      case '[':
+        // Half a link, and the `]` that would finish one is escaped below —
+        // so a bare `[` stays, and `[[Note]]` is written as it was typed.
+        // In a link's text it would pair with the link's own `]`, and before
+        // `^` it is a footnote to the readers that have them.
+        return this.linkDepth > 0 || next === '^' ? `\\${ch}` : ch;
+      case ']':
+        // A `]` finishes a link only before a destination `(…)`, a label
+        // `[…]` or, in a definition, `:`. Nothing written here defines a
+        // reference, so `[x]` alone is text to every reader.
+        return this.linkDepth > 0 ||
+          (next !== undefined && '([:'.includes(next))
+          ? `\\${ch}`
+          : ch;
       case '_':
         // intraword `_` is never emphasis — snake_case needs nothing
         return WORD.test(prev ?? '') && WORD.test(next ?? '') ? ch : `\\${ch}`;

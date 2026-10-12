@@ -762,6 +762,92 @@ test('markdown out: what cannot be said is dropped, not mangled', () => {
   assert.strictEqual(markdownFromDoc(glued), '"q"s');
 });
 
+test('markdown out: a bracket is escaped only where it could be part of a link (#761)', () => {
+  // brackets no reader takes for a link come back as they were written, so
+  // a wiki link survives a save
+  const trip = (s: string): string =>
+    markdownFromDoc(docFromMarkdown(schema, s));
+  for (const s of [
+    '[[A]]',
+    '[x]',
+    'a [b] c',
+    'Link to [[A]] and [[B|alias]]',
+    '[[A]] at the start, then [x] after a break\\\n[[B]]',
+    '# [[A]] heading',
+    '- [[A]]\n- [ ] [[B]]',
+    '| [[A]] | [x] |\n| --- | --- |\n| a [b] c | ]] |',
+    '[text](url) and ![alt](i.png) beside [[A]]',
+  ]) {
+    assert.strictEqual(trip(s), s, s);
+  }
+
+  // text that would read as a link, a reference, a definition, a footnote
+  // or a task is still escaped — and reads back as the text it was
+  const link = (text: string): PMNode =>
+    schema.text(text, [M.link.create({ href: 'u' })]);
+  const image = (alt: string): PMNode => N.image.create({ src: 'i.png', alt });
+  const item = (...content: PMNode[]): PMNode =>
+    N.bullet_list.create({ tight: true }, [
+      N.list_item.create({ checked: null }, [p(...content)]),
+    ]);
+  const cases: [PMNode, string][] = [
+    [doc(p('[a](b)')), '[a\\](b)'],
+    [doc(p('[a][b]')), '[a\\][b]'],
+    [doc(p('[foo]: http://x')), '[foo\\]: http://x'],
+    [doc(p('[^1]')), '\\[^1]'],
+    [doc(p('![x](y)')), '\\![x\\](y)'],
+    [doc(p('\\[x]')), '\\\\[x]'],
+    [doc(item(schema.text('[ ] not a task'))), '- \\[ ] not a task'],
+    [doc(item(schema.text('[x] done'))), '- \\[x] done'],
+    [doc(p(link('a]b'))), '[a\\]b](u)'],
+    [doc(p(link('[x]'))), '[\\[x\\]](u)'],
+    [doc(p(link('[[A]]'))), '[\\[\\[A\\]\\]](u)'],
+    [doc(p(image('a]b'))), '![a\\]b](i.png)'],
+    [doc(p('[', link('b'), '](c)')), '[[b](u)\\](c)'],
+    [doc(p('x [', link('b'), '] y')), 'x [[b](u)] y'],
+  ];
+  for (const [d, md] of cases) {
+    assert.strictEqual(markdownFromDoc(d), md, md);
+    assert.ok(docFromMarkdown(schema, md).eq(d), `reads back: ${md}`);
+  }
+
+  // and over generated bracket-heavy text, plain and linked, what is read
+  // back is the document written — not only its text
+  let seed = 761;
+  const rnd = (): number => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x80000000;
+  };
+  const PARTS = [
+    '[',
+    ']',
+    '[[',
+    ']]',
+    '(',
+    ')',
+    ':',
+    '^',
+    'a b',
+    '[ ] a',
+    '[x] a',
+    '!',
+    '\\',
+  ];
+  const text = (): string =>
+    Array.from(
+      { length: 1 + Math.floor(rnd() * 8) },
+      () => PARTS[Math.floor(rnd() * PARTS.length)],
+    ).join('');
+  for (let i = 0; i < 2000; i++) {
+    const content = Array.from({ length: 1 + Math.floor(rnd() * 3) }, () =>
+      rnd() < 0.3 ? link(text()) : schema.text(text()),
+    );
+    const d = doc(rnd() < 0.3 ? item(...content) : p(...content));
+    const md = markdownFromDoc(d);
+    assert.ok(docFromMarkdown(schema, md).eq(d), JSON.stringify(md));
+  }
+});
+
 // --- HTML --------------------------------------------------------------------------
 
 test('HTML in: a browser clipboard, read by the schema’s own rules', () => {
