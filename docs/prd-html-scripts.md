@@ -754,13 +754,24 @@ standards moved from what Acid3 expected):
 - **A `<canvas>`'s pixels are the page realm's.** A 2d context draws on a
   bitmap the facade holds, so `getImageData` reads back what was put at
   once, and the rectangle a task changed goes to the host at its end
-  (`canvasPut`), for the browser to draw over the canvas's box with core's
-  `<image>` (`examples/browser/canvas.tsx`). Pixels in and out, rectangles
-  filled and cleared with a colour, and another canvas drawn, where the
-  transform keeps a rectangle one, are drawn; a path, a stroke, text, a
-  gradient and an image are kept as state and drawn as nothing. The
-  react-x11 playground's runner composes its own pixels and puts them,
-  which is all it asks.
+  (`canvasPut`), for `<Html>` to draw in the canvas's box as an image
+  (`canvasImage`), in its place in the paint order. Pixels in and out,
+  another canvas drawn where the transform keeps a rectangle one, and
+  paths — the context's and `Path2D`'s, an SVG path's data included —
+  filled, stroked, dashed and clipped to, with colours, gradients and
+  patterns of a canvas, through every compositing operator and the
+  separable blend modes (`raster.ts`), are drawn. A path is rasterized in
+  the page's realm, since a host context reads its pixels back a round
+  trip late: five lines through each row of pixels, a span's ends covered
+  by the part of a pixel they reach. Text and an image are kept as state
+  and drawn as nothing: a font's outlines and an image's pixels are the
+  host's.
+- **A resize observer is told each size its targets come to**: as one is
+  observed, where it has a size, and again whenever its content box
+  changes, looked at a tenth of a second apart while any observes, since
+  nothing tells the page's realm a layout came out otherwise. Rive's React
+  component sizes its canvas to its container, which has a size only once
+  the stylesheet is in, and was told 0 by 0 for good.
 - **A WebGL context answers and draws nothing** (`webgl.ts`, source text
   as `dom.ts` is). Every interface of WebGL 1 and 2 is the page's, with
   Chrome's constants; a context keeps the state a page sets and reads it

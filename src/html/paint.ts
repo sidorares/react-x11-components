@@ -3646,6 +3646,10 @@ function paintContent(
   if (visible) {
     if (box.replaced === 'image') paintImage(ctx, box, options);
     else if (box.replaced === 'svg') paintSvg(ctx, box, options);
+    // a canvas the host has a picture of, drawn as an image is
+    else if (box.replaced === 'frame' && options.imageFor(box)) {
+      paintImage(ctx, box, options);
+    }
   }
 
   // A box that does not let its content overflow clips it to its padding
@@ -4719,7 +4723,7 @@ function pushEntered(
 /** Whether a box draws anything of its own in the first pass, as far as its
  *  style says (`paintOwnBackground`): a background, a border or a shadow,
  *  and a table its parts' backgrounds. */
-function drawsOwn(box: Box): boolean {
+export function drawsOwn(box: Box): boolean {
   const style = box.style;
   return (
     !isTransparent(style.backgroundColor) ||

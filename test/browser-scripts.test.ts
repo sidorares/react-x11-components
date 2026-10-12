@@ -1562,6 +1562,23 @@ test('a scroll container scrolls as a script sets it, reads back where it is, an
   );
 });
 
+test('a resize observer is told a size as its target is observed and again each time its content box changes', async () => {
+  const doc = await hosted(
+    '<style>#box{width:100px;height:20px;padding:5px;border:2px solid}</style>' +
+      '<div id="box"></div><div id="none" style="display:none"></div><p id="out"></p><script>' +
+      'var seen = []; var box = document.getElementById("box");' +
+      'var ro = new ResizeObserver(function (entries) { entries.forEach(function (e) {' +
+      '  seen.push([e.target.id, e.contentRect.width, e.contentRect.height, e.contentRect.x, e.borderBoxSize[0].inlineSize].join(":")); }); });' +
+      'ro.observe(box); ro.observe(document.getElementById("none"));' +
+      'setTimeout(function () { box.style.height = "40px"; }, 150);' +
+      'setTimeout(function () { document.getElementById("out").textContent = seen.join(",") + "|" + (typeof ResizeObserverEntry); }, 600);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  // nothing for what has no size, and nothing again for what did not move
+  assert.equal(text, 'box:100:20:5:114,box:100:40:5:114|function');
+});
+
 test('attribute nodes are the element’s, one each, in a map that is live', async () => {
   const doc = await hosted(
     '<div id="d" class="c" title="t" data-x="1"></div><p id="out"></p><script>' +
@@ -3057,7 +3074,7 @@ metric(
 );
 
 metric(
-  "a canvas's script draws pixels the page reads back at once, and the browser shows them over the canvas's box",
+  "a canvas's script draws pixels the page reads back at once, and the document draws them in the canvas's box",
   async () => {
     const { result, text, logs } = await hostedFrames(
       '<style>body{margin:0}canvas{display:block;width:80px;height:40px}</style>' +
@@ -3091,8 +3108,83 @@ metric(
   },
 );
 
+test("a canvas's paths are filled, stroked and clipped to in the page's pixels, with gradients and the compositing operators", async () => {
+  const doc = await hosted(
+    '<canvas id="c" width="100" height="100"></canvas><p id="out"></p><script>' +
+      'var x = document.getElementById("c").getContext("2d"); var r = [];' +
+      'function px(a, b) { var d = x.getImageData(a, b, 1, 1).data; return [d[0], d[1], d[2], d[3]].join(","); }' +
+      'function clear() { x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = "source-over"; x.clearRect(0, 0, 100, 100); }' +
+      // a circle: in, out, and its edge between
+      'x.fillStyle = "#ff0000"; x.beginPath(); x.arc(50, 50, 20, 0, Math.PI * 2); x.fill();' +
+      'r.push(px(50, 50), px(5, 5)); var edge = x.getImageData(64, 64, 1, 1).data[3]; r.push(edge > 0 && edge < 255);' +
+      'r.push(x.isPointInPath(50, 50), x.isPointInPath(5, 5));' +
+      // a ring by the even-odd rule, from an SVG path
+      'clear(); var ring = new Path2D("M10 10 h80 v80 h-80 Z M30 30 h40 v40 h-40 Z");' +
+      'x.fillStyle = "#0000ff"; x.fill(ring, "evenodd"); r.push(px(20, 20), px(50, 50));' +
+      'x.fill(ring); r.push(px(50, 50));' +
+      // a stroke, 10px wide, square-capped
+      'clear(); x.strokeStyle = "#00ff00"; x.lineWidth = 10; x.lineCap = "square"; x.beginPath(); x.moveTo(20, 50); x.lineTo(80, 50); x.stroke();' +
+      'r.push(px(50, 46), px(50, 40), px(17, 50), x.isPointInStroke(50, 53), x.isPointInStroke(50, 60));' +
+      // a dashed line: on, off
+      'clear(); x.setLineDash([10, 10]); x.lineCap = "butt"; x.beginPath(); x.moveTo(0, 10); x.lineTo(100, 10); x.stroke(); x.setLineDash([]);' +
+      'r.push(px(5, 10), px(15, 10));' +
+      // a linear gradient, black to white across
+      'clear(); var g = x.createLinearGradient(0, 0, 100, 0); g.addColorStop(0, "#000"); g.addColorStop(1, "#fff");' +
+      'x.fillStyle = g; x.fillRect(0, 0, 100, 100); r.push(x.getImageData(50, 50, 1, 1).data[0] > 120 && x.getImageData(50, 50, 1, 1).data[0] < 135, x.getImageData(0, 0, 1, 1).data[0] < 4);' +
+      // a clip: a fill cut to the left half
+      'clear(); x.save(); x.beginPath(); x.rect(0, 0, 50, 100); x.clip(); x.fillStyle = "#ff00ff"; x.fillRect(0, 0, 100, 100); x.restore();' +
+      'r.push(px(25, 50), px(75, 50)); x.fillRect(75, 50, 1, 1); r.push(px(75, 50) !== "0,0,0,0");' +
+      // a rectangle turned a quarter about the canvas's middle
+      'clear(); x.fillStyle = "#000000"; x.translate(50, 50); x.rotate(Math.PI / 4); x.fillRect(-10, -10, 20, 20);' +
+      'x.setTransform(1, 0, 0, 1, 0, 0); r.push(px(50, 37), px(37, 37));' +
+      // destination-out cuts a hole
+      'clear(); x.fillStyle = "#ff0000"; x.fillRect(0, 0, 100, 100); x.globalCompositeOperation = "destination-out";' +
+      'x.beginPath(); x.arc(50, 50, 10, 0, Math.PI * 2); x.fill(); r.push(px(50, 50), px(5, 5));' +
+      // copy clears what the shape does not cover
+      'x.globalCompositeOperation = "copy"; x.fillStyle = "#00ff00"; x.fillRect(0, 0, 10, 10); r.push(px(5, 5), px(50, 90));' +
+      'r.push(typeof Path2D, x.createRadialGradient(0, 0, 0, 0, 0, 1) instanceof CanvasGradient);' +
+      'try { x.createLinearGradient(0, 0, NaN, 0); } catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      '255,0,0,255',
+      '0,0,0,0',
+      'true',
+      'true',
+      'false',
+      '0,0,255,255',
+      '0,0,0,0',
+      '0,0,255,255',
+      '0,255,0,255',
+      '0,0,0,0',
+      '0,255,0,255',
+      'true',
+      'false',
+      '0,255,0,255',
+      '0,0,0,0',
+      'true',
+      'true',
+      '255,0,255,255',
+      '0,0,0,0',
+      'true',
+      '0,0,0,255',
+      '0,0,0,0',
+      '0,0,0,0',
+      '255,0,0,255',
+      '0,255,0,255',
+      '0,0,0,0',
+      'function',
+      'true',
+      'TypeError',
+    ].join('|'),
+  );
+});
+
 metric(
-  "the pointer's moves, the wheel and a secondary press over a canvas reach its listeners, through what the browser draws over it",
+  "the pointer's moves, the wheel and a secondary press over a canvas reach its listeners",
   async () => {
     const { text, logs } = await hostedFrames(
       '<style>body{margin:0}canvas{display:block;width:100px;height:50px}</style>' +
