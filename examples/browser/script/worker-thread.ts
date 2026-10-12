@@ -139,7 +139,7 @@ engine.call('__becomeWorker', { url: init.url, name: init.name });
 
 port.on('message', (m: ToWorker) => {
   if (m.kind === 'message') {
-    engine.call('__workerMessage', [0, m.data]);
+    engine.call('__workerMessage', [0], m.data);
   } else if (m.kind === 'fetched') {
     const pending = fetches.get(m.id);
     if (!pending) return;

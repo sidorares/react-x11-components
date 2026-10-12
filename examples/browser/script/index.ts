@@ -174,7 +174,7 @@ export class ScriptRunner {
       get language() {
         return _options.language;
       },
-      message: (id, data) => this.engine.call('__workerMessage', [id, data]),
+      message: (id, data) => this.engine.call('__workerMessage', [id], data),
       error: (id, message, filename, line, column) =>
         this.engine.call('__workerError', [
           id,

@@ -586,6 +586,43 @@ test('a worker runs in a thread of its own, started from a blob URL as Parcel st
   );
 });
 
+test('buffers cross to a worker and back whole: views of one buffer still share it, and a megabyte arrives as it went', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var w = new Worker("echo.js");' +
+      'var big = new Uint8Array(1 << 20); for (var i = 0; i < big.length; i++) big[i] = (i * 31) & 255;' +
+      'var shared = new ArrayBuffer(16); var f = new Float32Array(shared, 4, 2); f[0] = 1.5; f[1] = -2;' +
+      'var d = new DataView(shared); d.setUint8(0, 7);' +
+      'w.onmessage = function (e) { var m = e.data; var ok = true;' +
+      '  for (var i = 0; i < m.big.length; i++) if (m.big[i] !== ((i * 31) & 255)) { ok = false; break; }' +
+      '  m.view.setUint8(1, 9);' +
+      '  m.blob.text().then(function (t) { document.getElementById("out").textContent = [ok, m.big.length,' +
+      '    m.f instanceof Float32Array, m.f.byteOffset, m.f[0], m.f[1], m.view.buffer === m.f.buffer,' +
+      '    new Uint8Array(m.f.buffer)[1], m.view.getUint8(0), t, m.empty.byteLength].join("|"); }); };' +
+      'w.postMessage({ big: big, f: f, view: d, blob: new Blob(["héllo"]), empty: new ArrayBuffer(0) });' +
+      '</script>',
+    {
+      answer: (request) =>
+        request.url.endsWith('/echo.js')
+          ? {
+              url: request.url,
+              status: 200,
+              statusText: 'OK',
+              redirected: false,
+              headers: [['content-type', 'text/javascript']],
+              body: 'self.onmessage = function (e) { postMessage(e.data); };',
+            }
+          : null,
+    },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '', 15000);
+  assert.equal(
+    text,
+    'true|1048576|true|4|1.5|-2|true|9|7|héllo|0',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a WebAssembly module that runs away is stopped as a script is, and the page goes on', async () => {
   // Node's timeout reaches into the module; Bun's does not, and there the
   // pane's watchdog ends the tab

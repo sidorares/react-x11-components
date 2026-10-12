@@ -1936,8 +1936,14 @@ closes a way out a DOM binding opens by accident:
   `Worker` is a `worker_threads` thread with an engine, a host over an
   empty document and the facade made a worker's global
   (`__becomeWorker`); a message is serialized where it is posted
-  (`serializeClone`) and made again where it lands. The thread's network
-  is the page process's, and `importScripts` waits for its answer on a
+  (`serializeClone`) and made again where it lands. Its buffers go after
+  its structure, as base64, and the message reaches the realm through the
+  entry's raw slot (`ScriptEngine.call`'s `raw`, `__raw`), so no JSON
+  scans, escapes or parses the bytes: three.js's texture worker hands a
+  page hundreds of megabytes of pixels, and a message's JSON inside the
+  entry's JSON was most of up.com.au's first ten seconds. Anything new
+  that hands a realm a large string uses the raw slot. The thread's
+  network is the page process's, and `importScripts` waits for its answer on a
   shared word (`Atomics.wait`, `receiveMessageOnPort`), which blocks the
   worker and never the page.
 - **Another origin's frame is linked as another origin.** Its realm and

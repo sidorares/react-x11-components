@@ -7629,7 +7629,11 @@ export function installDom(
    */
   const serializeClone = (value: Any): string => {
     const seen = new Map<Any, number>();
-    const bytesOf = (b: Uint8Array): string => base64OfBytes(b);
+    // the bytes of each buffer, as base64, after the structure rather
+    // than in it: no JSON scans or escapes them on either side, and a
+    // texture a worker hands back is megabytes
+    const blobs: string[] = [];
+    const bytesOf = (b: Uint8Array): number => blobs.push(base64OfBytes(b)) - 1;
     const walk = (v: Any): Any => {
       if (v === undefined) return { u: 1 };
       if (v === null || typeof v === 'boolean' || typeof v === 'string') {
@@ -7718,10 +7722,27 @@ export function installDom(
       for (const key of Object.keys(v)) e.push([key, walk(v[key])]);
       return { i: index, t: 'O', e };
     };
-    return JSON.stringify(walk(value));
+    const structure = JSON.stringify(walk(value));
+    if (!blobs.length) return structure;
+    // `\u0001`, the structure's length and each buffer's, `;`, the
+    // structure, and the buffers one after another
+    return `\u0001${[structure.length, ...blobs.map((b) => b.length)].join(',')};${structure}${blobs.join('')}`;
   };
   const deserializeClone = (text: string): Any => {
     const made: Any[] = [];
+    // the buffers after the structure, where there are any
+    const blobs: string[] = [];
+    if (text.charCodeAt(0) === 1) {
+      const head = text.indexOf(';');
+      const [length, ...sizes] = text.slice(1, head).split(',').map(Number);
+      let at = head + 1 + length;
+      for (const size of sizes) {
+        blobs.push(text.slice(at, at + size));
+        at += size;
+      }
+      text = text.slice(head + 1, head + 1 + length);
+    }
+    const blob = (x: Any): Uint8Array => bytesOfBase64(blobs[x] ?? '');
     const make = (v: Any): Any => {
       if (v === null || typeof v !== 'object') return v;
       if ('u' in v) return undefined;
@@ -7731,7 +7752,7 @@ export function installDom(
       let out: Any;
       switch (v.t) {
         case 'L':
-          out = new Blob([bytesOfBase64(v.b)], { type: v.y });
+          out = new Blob([blob(v.b)], { type: v.y });
           break;
         case 'D':
           out = new Date(v.v);
@@ -7740,7 +7761,7 @@ export function installDom(
           out = new RegExp(v.s, v.f);
           break;
         case 'B':
-          out = bytesOfBase64(v.b).buffer;
+          out = blob(v.b).buffer;
           break;
         case 'V': {
           made[v.i] = null;
@@ -11422,6 +11443,18 @@ export function installDom(
     G.__in = '';
     return typeof raw === 'string' && raw ? JSON.parse(raw) : null;
   };
+  // and a string handed in as it is (`ScriptEngine.call`'s `raw`)
+  Object.defineProperty(G, '__raw', {
+    value: '',
+    writable: true,
+    configurable: false,
+    enumerable: false,
+  });
+  const rawInput = (): string => {
+    const raw = G.__raw;
+    G.__raw = '';
+    return typeof raw === 'string' ? raw : '';
+  };
   const entry = (name: string, fn: () => Primitive): void => {
     Object.defineProperty(G, name, {
       value: () => {
@@ -11713,7 +11746,8 @@ export function installDom(
   // a message a worker posted, to its `Worker` here; or, in a worker, one
   // the page posted to it, to the worker's global (id 0)
   entry('__workerMessage', () => {
-    const [id, text] = input();
+    const [id] = input();
+    const text = rawInput();
     const target = id === 0 ? windowTarget : workers.get(id);
     if (!target) return false;
     let data: Any;

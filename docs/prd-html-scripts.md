@@ -804,7 +804,10 @@ standards moved from what Acid3 expected):
   elements' interfaces, and `postMessage`, `close`, `importScripts`, a
   `WorkerGlobalScope` and its location. A message is serialized in the
   realm that posts it and made again in the one it is posted to, since a
-  string is what crosses into a thread and into a realm. A worker's
+  string is what crosses into a thread and into a realm: its structure as
+  JSON, and its buffers after it as base64 — the runtime's own codec where
+  it has one, Node 26 and Bun — handed to the realm as it is, through the
+  entry's raw slot, so no JSON scans or escapes megabytes of pixels. A worker's
   network is the page's, asked from the page process. `importScripts` is
   the one call that needs its answer before it returns: the thread asks
   on a port of its own and waits on a shared word (`Atomics.wait`) while

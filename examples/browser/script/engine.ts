@@ -9,8 +9,9 @@
 //      `this.constructor.constructor` is the context's `Function`.
 //   2. No host object is ever handed in. The bridge is a host function, and
 //      it is in the facade's closure and nowhere a page can reach; what goes
-//      in is strings, through `__in`, a data property the facade defines
-//      and a page cannot turn into a setter; what comes back is primitives.
+//      in is strings, through `__in` and `__raw`, data properties the facade
+//      defines and a page cannot turn into setters; what comes back is
+//      primitives.
 //   3. `Error.prepareStackTrace` is locked before any page code runs, so no
 //      call site hands a page a function of the host's.
 //   4. Every function of the host's that calls into the context is strict
@@ -773,10 +774,16 @@ export class ScriptEngine {
 
   /** Run an entry of the facade's with its input, and answer what it
    *  answered: a primitive, or undefined where it was stopped or failed. */
-  call(name: string, input: unknown): Primitive {
+  /** Run an entry, handed `input` as JSON and `raw`, a string that may be
+   *  megabytes — a worker's message — as it is, which no JSON escapes and
+   *  parses again on the way in. */
+  call(name: string, input: unknown, raw?: string): Primitive {
     if (this._broken || this._disposed) return undefined;
     try {
       (this._context as Record<string, unknown>).__in = JSON.stringify(input);
+      if (raw !== undefined) {
+        (this._context as Record<string, unknown>).__raw = raw;
+      }
     } catch {
       // the page made the slot read-only: it has stopped listening
       this._broken = true;
