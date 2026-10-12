@@ -177,6 +177,45 @@ test('a mount and a focus stop a scroll container holds out of sight make the do
   );
 });
 
+test('a focus stop a clip holds out of sight is placed inside the clip at 2x as well', async () => {
+  // the Zen Garden's 214: a link a clipping box hides had its stop placed
+  // by the clip's device pixels as though they were logical ones, twice as
+  // far out, and the pane around the document scrolled sideways into
+  // nothing to reach it
+  await renderX11(
+    h(
+      'box',
+      {
+        'data-testname': 'pane',
+        style: { width: 300, height: 200, overflow: 'scroll' },
+      },
+      h(Html, {
+        source:
+          '<style>body{margin:0}main{height:150px;overflow:hidden}' +
+          'nav{width:200px;overflow:hidden;white-space:nowrap}</style>' +
+          '<main><nav><span style="display:inline-block;width:400px"></span>' +
+          '<a href="#side">side</a></nav>' +
+          '<div style="height:400px"></div><a href="#end">end</a></main>',
+        partial: false,
+      }),
+    ),
+    { width: 340, height: 240, scale: 2, ...(FONTS && { fonts: FONTS }) },
+  );
+  await act();
+  const pane = screen.getByTestName('pane') as unknown as {
+    contentWidth: number;
+    contentHeight: number;
+  };
+  assert.ok(
+    pane.contentWidth <= 300 * 2,
+    `the pane reaches across no further than the page: ${pane.contentWidth}`,
+  );
+  assert.ok(
+    pane.contentHeight <= 150 * 2,
+    `the pane reaches down as far as the main: ${pane.contentHeight}`,
+  );
+});
+
 test('what reaches a mount only where nothing of it is drawn takes nothing from it', async () => {
   // a pane beside the frame whose content runs on under a box that clips
   // it, as an editor's does, and a menu's backdrop fixed over the whole

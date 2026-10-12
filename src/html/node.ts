@@ -3493,7 +3493,11 @@ export class HtmlViewNode extends Node {
   /** `_rectOf`, cut by the boxes that clip the element and kept inside
    *  them where they show none of it (`shownBy`): a stop is mounted beside
    *  the document, and one at a link a scroll container holds out of sight
-   *  would make the box that scrolls the document reach down to it. */
+   *  would make the box that scrolls the document reach down to it. The
+   *  rect is logical and `clipFor` speaks device pixels, so the clip is
+   *  asked in device pixels and brought back: mixed, a stop a clip hid was
+   *  placed at twice its distance at 2x, and the Zen Garden's 214 scrolled
+   *  sideways into nothing to reach it. */
   private _stopRectOf(element: Element): Rect | null {
     const rect = this._rectOf(element);
     const tree = this._tree;
@@ -3501,8 +3505,25 @@ export class HtmlViewNode extends Node {
     const box =
       CANDIDATES.get(tree)?.byElement.get(element) ??
       boxFor(tree.root, element);
-    const cut = box && clipFor(box, rect, this._scale);
-    return cut ? shownBy(cut.rect, rect) : rect;
+    const s = this._scale;
+    const cut =
+      box &&
+      clipFor(
+        box,
+        {
+          x: rect.x * s,
+          y: rect.y * s,
+          width: rect.width * s,
+          height: rect.height * s,
+        },
+        s,
+      );
+    if (!cut) return rect;
+    const c = cut.rect;
+    return shownBy(
+      { x: c.x / s, y: c.y / s, width: c.width / s, height: c.height / s },
+      rect,
+    );
   }
 
   /** The link an element is — its `href`, resolved as a click on it is
