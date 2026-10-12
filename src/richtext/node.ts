@@ -91,6 +91,9 @@ export interface TextRun {
   /**
    * How `bg` is painted. `'chip'` (the default) insets the fill to the run's
    * ink and pads it slightly, which is what an inline-code background wants.
+   * Runs that touch and fill the same colour share one chip, padded at its
+   * ends only, so a code span the layout hands back a word at a time is not
+   * a row of overlapping chips.
    *
    * `'line'` fills the run's exact width and the line's full height instead,
    * so adjacent runs abut with no seam and no bleed — what a terminal's

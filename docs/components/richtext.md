@@ -79,7 +79,11 @@ background wants. `'line'` fills the run's exact width and the line's full
 height, so adjacent runs abut with no seam and no bleed — which is what a
 captured terminal session needs, where a two-pixel overhang paints over the
 neighbouring cell and a fill that stops at the descender leaves a gap between
-rows. `<TerminalOutput>` is why the field exists.
+rows. `<TerminalOutput>` is why the field exists. A chip is filled a stretch
+at a time, not a run: runs that touch and fill the same colour — the words of
+one code span, which a layout hands back apart — share one chip, padded at its
+two ends and as tall as the tallest face in it, so a translucent fill has no
+darker band at a space where two pads overlapped.
 
 `underlineStyle` names SGR 4's sub-parameters, and `strikeStyle` takes the
 same five. All five are drawn from 1px rectangles rather than a stroked path,
