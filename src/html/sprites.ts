@@ -70,6 +70,7 @@ import {
   drawnAtViewport,
   drawsAgainstViewport,
   drawsNothing,
+  drawsOwn,
   hasRect,
   holds,
   ownBounds,
@@ -552,8 +553,20 @@ export function crowded(tree: BoxTree, box: Box, extent: Rect): boolean {
     // taken at its ink: an inline box, whose rect no layout sets, and a box
     // drawn through a matrix or a filter, whose rect is not where it draws
     if (!hasRect(at) || placedMatrix(at) || style.filter !== null) return true;
-    // its own: the border box, and the shadows and the outline past it
-    if (style.visibility === 'visible') {
+    // its own: the border box, and the shadows and the outline past it —
+    // where it draws something there: a background, a border, a picture or
+    // text. A box that is only a frame for what it holds is no more over
+    // the element than the frame's empty middle is: up.com.au keeps its
+    // menu's overlay fixed over the whole viewport, transparent until the
+    // menu opens, and its hero's canvas was mounted nowhere
+    const outlined = style.outlineStyle !== 'none' && style.outlineWidth > 0;
+    if (
+      style.visibility === 'visible' &&
+      (outlined ||
+        drawsOwn(at) ||
+        at.kind === 'replaced' ||
+        (at.lines?.length ?? 0) > 0)
+    ) {
       let { x, y, width, height } = at;
       if (style.boxShadow) {
         const out = shadowOutsets(style.boxShadow);

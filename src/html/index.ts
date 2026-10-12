@@ -324,6 +324,15 @@ export interface HtmlProps {
    */
   onElementScroll?: (element: Element) => void;
   /**
+   * What a `<canvas>` shows, drawn in its content box as an `<img>` is, in
+   * its place in the paint order: an image the context's `drawImage`
+   * takes — an ntk `Image` of the canvas's pixels — or null for nothing.
+   * Nothing runs a page's script here, so the pixels are the host's; the
+   * handle's `canvasChanged` says when they change. See [Embedded
+   * content](docs/components/html.md#embedded-content).
+   */
+  canvasImage?: (element: Element) => unknown | null;
+  /**
    * What to show in an `<iframe>`, a `<canvas>` or an `<embed>`: called with
    * where the element's content box is, in this component's space, and what
    * it returns is mounted there, filling it, beside the document as a
@@ -402,6 +411,8 @@ export interface HtmlHandle {
    * or that has no box.
    */
   scrollState(element: Element): ElementScroll | null;
+  /** A `<canvas>`'s picture changed (`canvasImage`): repaint it. */
+  canvasChanged(element: Element): void;
   /**
    * Scroll a scroll container to an offset in CSS pixels, either axis left
    * where it is where it is left out, kept within how far it can be — as a
@@ -701,6 +712,7 @@ export function Html(props: HtmlProps): ReactElement {
     watchStops: stops.watch,
     onViewportOverflow,
     onElementScroll: props.onElementScroll,
+    canvasImage: props.canvasImage,
     domRevision,
     animate,
     reducedMotion,
@@ -838,6 +850,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.elementRect(element) ?? null,
       scrollState: (element: Element) =>
         nodeRef.current?.scrollStateOf(element) ?? null,
+      canvasChanged: (element: Element) =>
+        nodeRef.current?.canvasChanged(element),
       scrollElementTo: (element: Element, to: { x?: number; y?: number }) =>
         nodeRef.current?.scrollElementTo(element, to) ?? null,
       computedStyle: (element: Element, pseudo?: 'before' | 'after' | null) =>

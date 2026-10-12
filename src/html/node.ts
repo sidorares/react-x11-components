@@ -349,6 +349,10 @@ export interface HtmlViewProps {
    *  `scrollElementTo` — told after it is drawn where it went: what a page
    *  hears as the element's `scroll`. */
   onElementScroll?: (element: Element) => void;
+  /** What a `<canvas>` shows: an image `ctx.drawImage` takes — an ntk
+   *  `Image` of the canvas's pixels — or null for nothing, drawn in its
+   *  content box as an `<img>` is. `canvasChanged` says it changed. */
+  canvasImage?: (element: Element) => unknown | null;
   /** The parsed document, once per parse — the DOM handle. */
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
@@ -5849,6 +5853,21 @@ export class HtmlViewNode extends Node {
     return offset;
   }
 
+  /**
+   * A `<canvas>`'s picture changed (`canvasImage`): its box repainted where
+   * it is, and the surfaces kept for the boxes around it, which hold it as
+   * it was, given up.
+   */
+  canvasChanged(element: Element): void {
+    const tree = this._tree;
+    if (!tree) return;
+    const box = this._firstBoxesOf(tree).get(element);
+    if (!box || box.replaced !== 'frame') return;
+    this._dropSprites(box, true);
+    const ink = this._inkOf(box);
+    if (ink) this._repaintInk([ink]);
+  }
+
   // --- pointer defaults -----------------------------------------------------
   //
   // `:hover` is wired at the element rather than through React: the cascade
@@ -6143,6 +6162,11 @@ export class HtmlViewNode extends Node {
         : null,
       selectionColor: this.selectionColor,
       imageFor: (box) => {
+        if (box.replaced === 'frame') {
+          return box.el && tagOf(box.el) === 'canvas'
+            ? (this._props().canvasImage?.(box.el) ?? null)
+            : null;
+        }
         const url = box.el ? this._imageUrl(box.el) : CONTENT_IMAGES.get(box);
         return url === undefined ? null : this._resources.image(url);
       },

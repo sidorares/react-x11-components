@@ -6,8 +6,9 @@ import assert from 'node:assert';
 import { act, cleanup, expectPixel, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { parseDocument } from 'htmlparser2';
+import { Image } from 'react-x11/ntk';
 import { Html, useHtmlHandle } from '../../src/html/index.js';
-import type { Element } from '../../src/html/index.js';
+import type { Element, HtmlViewNode } from '../../src/html/index.js';
 import type { EmbeddedRect } from '../../src/html/index.js';
 import { FONTS, h, metric } from './harness.js';
 
@@ -53,6 +54,17 @@ async function renderEmbedded(
     rerender: (src: string, w?: number) =>
       act(() => result.rerender(tree(src, w))),
   };
+}
+
+/** An element of a document, by its id. */
+function byId(node: Element, id: string): Element {
+  const all = (n: Element): Element[] => [
+    n,
+    ...((n.children ?? []) as Element[]).flatMap(all),
+  ];
+  const found = all(node).find((n) => n.attribs?.id === id);
+  assert.ok(found, `#${id}`);
+  return found;
 }
 
 const mounted = (id: string): DrawnNode | null => {
@@ -188,6 +200,75 @@ test('what reaches a mount only where nothing of it is drawn takes nothing from 
   assert.strictEqual(frame.clip, undefined, 'nothing cuts it');
   assert.ok(!frame.hidden, 'nor hides it');
   assert.ok(mounted('f'), 'mounted');
+});
+
+metric(
+  'a canvas the host has a picture of is drawn in its box, in its place in the paint order, and again when it changes',
+  async () => {
+    // a 4 by 1 picture, red then blue, stretched over a canvas 40 by 20,
+    // under a box positioned over its right half
+    const picture = (left: number[], right: number[]) =>
+      new Image({
+        width: 4,
+        height: 1,
+        data: new Uint8Array([
+          ...left,
+          255,
+          ...left,
+          255,
+          ...right,
+          255,
+          ...right,
+          255,
+        ]),
+      });
+    let image = picture([255, 0, 0], [0, 0, 255]);
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 200, height: 100 } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}canvas{display:block;width:40px;height:20px}' +
+            '#over{position:absolute;left:30px;top:0;width:20px;height:20px;background:#00ff00}</style>' +
+            '<canvas id="c" width="4" height="1"></canvas><div id="over"></div>',
+          partial: false,
+          'data-testname': 'doc',
+          canvasImage: () => image,
+        }),
+      ),
+      { width: 240, height: 140, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    await expectPixel(result.ctx, 10, 10, '#ff0000', { message: 'its left' });
+    await expectPixel(result.ctx, 25, 10, '#0000ff', { message: 'its right' });
+    await expectPixel(result.ctx, 35, 10, '#00ff00', {
+      message: 'and what the document paints after it, over it',
+    });
+    image = picture([255, 255, 0], [0, 0, 255]);
+    const view = (
+      screen.getByTestName('doc') as unknown as { children: HtmlViewNode[] }
+    ).children[0];
+    const canvas = byId(view.document as unknown as Element, 'c');
+    await act(async () => view.canvasChanged(canvas));
+    await expectPixel(result.ctx, 10, 10, '#ffff00', {
+      message: 'drawn again as it changes',
+    });
+  },
+);
+
+test('a box over the viewport that draws nothing of its own keeps no frame from being mounted under it', async () => {
+  // up.com.au's menu overlay: fixed over the whole viewport, transparent
+  // until the menu opens, with the menu's button inside it at its foot
+  const { asked } = await renderEmbedded(
+    '<style>body{margin:0}iframe{border:0}' +
+      '.overlay{position:fixed;inset:0;z-index:10;background:transparent;pointer-events:none}' +
+      '.overlay button{position:absolute;bottom:0;left:0}</style>' +
+      '<iframe id="f" width="120" height="60"></iframe>' +
+      '<div class="overlay"><button>Menu</button></div>',
+  );
+  assert.ok(mounted('f'), 'mounted');
+  assert.ok(!asked.at(-1)?.hidden, 'and shown');
 });
 
 test('a mount stays the same node as a layout moves its element', async () => {
