@@ -20,6 +20,7 @@
 // `import()` in its context is the one that makes `vm.SourceTextModule`
 // (`SCRIPTS_CONTAINED`), and where it is not given, nothing runs.
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { Image as NtkImage } from 'react-x11/ntk';
 import type { Element } from 'domhandler';
 
 import type {
@@ -515,6 +516,8 @@ export function useScripts(
   scrolled?: () => void;
   /** `<Html>`'s `onElementScroll`: a scroll container's `scroll`. */
   onElementScroll?: (element: Element) => void;
+  /** `<Html>`'s `canvasImage`: what a page's script drew on a canvas. */
+  canvasImage?: (element: Element) => unknown | null;
   /** The document's runner, where its scripts run: what a frame in it is
    *  run as a frame of (`FrameLink`). Not a prop. */
   runner?: () => ScriptRunner | null;
@@ -564,7 +567,29 @@ export function useScripts(
   // a render once there is a runner, for what is drawn from it: the frames
   const [, ran] = useReducer((n: number) => n + 1, 0);
 
+  // a canvas's pixels as an image `<Html>` draws, one a change of them,
+  // and the document told to draw it again as they change
+  const pictures = useRef(
+    new WeakMap<Element, { version: number; image: unknown }>(),
+  );
+  const canvasImage = useCallback((element: Element) => {
+    const pixels = runner.current?.host.canvas(element);
+    if (!pixels || !pixels.width || !pixels.height) return null;
+    const kept = pictures.current.get(element);
+    if (kept?.version === pixels.version) return kept.image;
+    const image = new NtkImage({
+      width: pixels.width,
+      height: pixels.height,
+      data: pixels.data,
+    });
+    pictures.current.set(element, { version: pixels.version, image });
+    return image;
+  }, []);
+  const unwatch = useRef<(() => void) | null>(null);
+
   const release = useCallback(() => {
+    unwatch.current?.();
+    unwatch.current = null;
     const was = runner.current;
     runner.current = null;
     if (!was) return;
@@ -593,6 +618,10 @@ export function useScripts(
         seams.current,
       );
     }
+    unwatch.current =
+      runner.current?.host.onCanvas((canvas) =>
+        seams.current.handle.canvasChanged(canvas),
+      ) ?? null;
     ran();
   }, []);
   const onScript = useCallback(
@@ -644,6 +673,7 @@ export function useScripts(
     navigateFrame,
     scrolled,
     onElementScroll,
+    canvasImage,
     runner: getRunner,
     ...(adopted.length ? { stylesheet: adopted } : {}),
   };

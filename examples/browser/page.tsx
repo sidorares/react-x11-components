@@ -617,6 +617,7 @@ export default function Page(props: PageProps): ReactElement {
               onDomEvent={scripts.onDomEvent}
               stylesheet={scripts.stylesheet}
               renderEmbedded={embeddedMounts(frames)}
+              canvasImage={scripts.canvasImage}
               onDocument={(document: Document) => {
                 scripts.onDocument?.(document);
                 onDocument(document);

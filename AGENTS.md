@@ -1916,7 +1916,13 @@ closes a way out a DOM binding opens by accident:
 - **A canvas's pixels are the page realm's** (`CanvasState` in `dom.ts`),
   and the host is told what changed once a task (`markCanvas`,
   `canvasPut`). Anything new that draws on a canvas marks the rectangle it
-  changed, or the browser shows the canvas as it was.
+  changed, or the browser shows the canvas as it was. Paths are
+  rasterized there too (`raster.ts`, source text handed to `installDom`
+  as `webgl.ts` is), since a host context reads back a round trip late.
+  `<Html>` draws the pixels in the canvas's box (`canvasImage`), in its
+  place in the paint order, where a mount over the document had to be
+  refused wherever anything was painted over it: up.com.au's logo, fixed
+  over the top of its mascot's canvas, hid all of it.
 - **A WebGL context answers and draws nothing** (`webgl.ts`, source text
   handed to `installDom`). Chrome has WebGL wherever it has a canvas, in
   software where there is no GPU, so a null context is a page that

@@ -30,6 +30,7 @@
 // `MutationObserver` and `XMLHttpRequest`. Shadow DOM, custom elements,
 // workers, canvas and `document.write` are not here.
 
+import type { installRaster, PathData } from './raster.js';
 import type { installWebGL } from './webgl.js';
 
 /** What crosses the bridge: nothing that has a `constructor`. */
@@ -46,7 +47,11 @@ export type Bridge = (
 
 // Everything below runs in the page's context and is typed loosely: what it
 // is handed and what it hands a page are the page's to shape.
-export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
+export function installDom(
+  bridge: Bridge,
+  webgl: typeof installWebGL,
+  raster: typeof installRaster,
+): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
   // this one's on its way up the stack
   'use strict';
@@ -3468,6 +3473,10 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
   };
   /** Bytes as base64, a table and a chunk at a time. */
   function base64OfBytes(bytes: Uint8Array): string {
+    // the runtime's own where it has one (Node 26, Bun): native, and a
+    // canvas's or a worker's megabytes are many
+    const native = (bytes as Any).toBase64;
+    if (typeof native === 'function') return native.call(bytes);
     const letters =
       'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
     const parts: string[] = [];
@@ -3515,6 +3524,11 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
     return rgba;
   };
 
+  /** Paths, their fills and strokes, gradients and patterns, rasterized
+   *  into the bitmap this realm holds (`raster.ts`). */
+  const RASTER = raster(colourOf);
+  const IDENTITY = [1, 0, 0, 1, 0, 0];
+
   /** The state `save` and `restore` keep (HTML 4.12.5.1.2). */
   const CONTEXT_STATE = {
     fillStyle: '#000000',
@@ -3543,12 +3557,12 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
 
   /**
    * A canvas's 2d context, over the bitmap this realm holds. Pixels in and
-   * out — `getImageData`, `putImageData`, `createImageData` — are exact, and
-   * so are rectangles filled or cleared with a colour, and another canvas
-   * drawn, where the transform keeps a rectangle one. A path, a stroke,
-   * text, a gradient and an image are kept as state and drawn as nothing,
-   * which a page that composes its own pixels — the react-x11 playground's
-   * X server — does not miss.
+   * out — `getImageData`, `putImageData`, `createImageData` — are exact;
+   * paths are filled, stroked and clipped to with colours, gradients and
+   * patterns of another canvas, through every compositing operator
+   * (`raster.ts`); and another canvas is drawn where the transform keeps a
+   * rectangle one. Text and an image are kept as state and drawn as
+   * nothing: a font's outlines and an image's pixels are the host's.
    */
   class CanvasRenderingContext2D {
     _canvas: Any;
@@ -3556,6 +3570,12 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
     _stack: Any[] = [];
     _matrix: number[] = [1, 0, 0, 1, 0, 0];
     _dash: number[] = [];
+    /** The current path, in the canvas's pixels: each point mapped by the
+     *  transform there was as it was added. */
+    _path: PathData = RASTER.newPath();
+    /** What the clips there are leave of each pixel, 0 to 1, or null for
+     *  none: `save` keeps it, and a clip makes a new one. */
+    _clip: Float32Array | null = null;
     constructor(canvas: Any) {
       this._canvas = canvas;
     }
@@ -3567,6 +3587,8 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
       this._stack = [];
       this._matrix = [1, 0, 0, 1, 0, 0];
       this._dash = [];
+      this._path = RASTER.newPath();
+      this._clip = null;
     }
     getContextAttributes(): Any {
       return {
@@ -3581,6 +3603,7 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
         state: { ...this._state },
         matrix: this._matrix.slice(),
         dash: this._dash.slice(),
+        clip: this._clip,
       });
     }
     restore(): void {
@@ -3589,6 +3612,7 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
       this._state = was.state;
       this._matrix = was.matrix;
       this._dash = was.dash;
+      this._clip = was.clip;
     }
     reset(): void {
       this._reset();
@@ -3680,7 +3704,22 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
     }
     clearRect(x: Any, y: Any, w: Any, h: Any): void {
       const r = this._rect(x, y, w, h);
-      if (!r) return;
+      if (!r || this._clip) {
+        // turned, or cut by a clip: what the rectangle covers, cleared
+        const path = RASTER.newPath();
+        path.rect(Number(x), Number(y), Number(w), Number(h), this._matrix);
+        this._paint(
+          (target, draw) =>
+            RASTER.fill(target, path, IDENTITY, 'nonzero', draw),
+          {
+            paint: RASTER.solid([0, 0, 0, 255]),
+            alpha: 1,
+            op: 'destination-out',
+            clip: this._clip,
+          },
+        );
+        return;
+      }
       const state = canvasState(this._canvas);
       const [x0, y0, x1, y1] = this._pixels(r, state);
       for (let py = y0; py < y1; py += 1) {
@@ -3696,17 +3735,25 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
       const style = this._state.fillStyle;
       const rgba = typeof style === 'string' ? colourOf(style) : null;
       const r = this._rect(x, y, w, h);
-      if (!rgba || !r) return;
+      const op = this._state.globalCompositeOperation;
+      if (!rgba || !r || this._clip || op !== 'source-over') {
+        // anything but a colour over what is there in a rectangle of
+        // pixels is a path: `copy` among them, which clears what the
+        // rectangle leaves
+        const path = RASTER.newPath();
+        path.rect(Number(x), Number(y), Number(w), Number(h), this._matrix);
+        this._fillPath(path, 'nonzero');
+        return;
+      }
       const state = canvasState(this._canvas);
       const [x0, y0, x1, y1] = this._pixels(r, state);
       const alpha =
         (rgba[3] / 255) * Math.min(1, Math.max(0, this._state.globalAlpha));
-      const copy = this._state.globalCompositeOperation === 'copy';
       const data = state.data;
       for (let py = y0; py < y1; py += 1) {
         for (let px = x0; px < x1; px += 1) {
           const o = (py * state.width + px) * 4;
-          if (copy || alpha >= 1 || data[o + 3] === 0) {
+          if (alpha >= 1 || data[o + 3] === 0) {
             data[o] = rgba[0];
             data[o + 1] = rgba[1];
             data[o + 2] = rgba[2];
@@ -3725,7 +3772,11 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
       }
       markCanvas(this._canvas, state, x0, y0, x1, y1);
     }
-    strokeRect(): void {}
+    strokeRect(x: Any, y: Any, w: Any, h: Any): void {
+      const path = RASTER.newPath();
+      path.rect(Number(x), Number(y), Number(w), Number(h), this._matrix);
+      this._strokePath(path);
+    }
     createImageData(a: Any, b?: Any): Any {
       if (a instanceof ImageData) return new ImageData(a.width, a.height);
       return new ImageData(a, b);
@@ -3873,26 +3924,245 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
       }
       markCanvas(this._canvas, state, x0, y0, x1, y1);
     }
-    // what is kept and drawn as nothing: a path, a stroke, text
-    beginPath(): void {}
-    closePath(): void {}
-    moveTo(): void {}
-    lineTo(): void {}
-    rect(): void {}
-    roundRect(): void {}
-    arc(): void {}
-    arcTo(): void {}
-    ellipse(): void {}
-    quadraticCurveTo(): void {}
-    bezierCurveTo(): void {}
-    fill(): void {}
-    stroke(): void {}
-    clip(): void {}
-    isPointInPath(): boolean {
-      return false;
+    // the current path, its points mapped by the transform as they are added
+    beginPath(): void {
+      this._path = RASTER.newPath();
     }
-    isPointInStroke(): boolean {
-      return false;
+    closePath(): void {
+      this._path.close();
+    }
+    moveTo(x: Any, y: Any): void {
+      this._path.moveTo(Number(x), Number(y), this._matrix);
+    }
+    lineTo(x: Any, y: Any): void {
+      this._path.lineTo(Number(x), Number(y), this._matrix);
+    }
+    rect(x: Any, y: Any, w: Any, h: Any): void {
+      this._path.rect(Number(x), Number(y), Number(w), Number(h), this._matrix);
+    }
+    roundRect(x: Any, y: Any, w: Any, h: Any, radii?: Any): void {
+      this._path.roundRect(
+        Number(x),
+        Number(y),
+        Number(w),
+        Number(h),
+        radii,
+        this._matrix,
+      );
+    }
+    arc(x: Any, y: Any, r: Any, a0: Any, a1: Any, ccw?: Any): void {
+      this._path.ellipse(
+        Number(x),
+        Number(y),
+        Number(r),
+        Number(r),
+        0,
+        Number(a0),
+        Number(a1),
+        !!ccw,
+        this._matrix,
+      );
+    }
+    arcTo(x1: Any, y1: Any, x2: Any, y2: Any, r: Any): void {
+      this._path.arcTo(
+        Number(x1),
+        Number(y1),
+        Number(x2),
+        Number(y2),
+        Number(r),
+        this._matrix,
+      );
+    }
+    ellipse(
+      x: Any,
+      y: Any,
+      rx: Any,
+      ry: Any,
+      rot: Any,
+      a0: Any,
+      a1: Any,
+      ccw?: Any,
+    ): void {
+      this._path.ellipse(
+        Number(x),
+        Number(y),
+        Number(rx),
+        Number(ry),
+        Number(rot),
+        Number(a0),
+        Number(a1),
+        !!ccw,
+        this._matrix,
+      );
+    }
+    quadraticCurveTo(cx: Any, cy: Any, x: Any, y: Any): void {
+      this._path.quadTo(
+        Number(cx),
+        Number(cy),
+        Number(x),
+        Number(y),
+        this._matrix,
+      );
+    }
+    bezierCurveTo(
+      c1x: Any,
+      c1y: Any,
+      c2x: Any,
+      c2y: Any,
+      x: Any,
+      y: Any,
+    ): void {
+      this._path.cubicTo(
+        Number(c1x),
+        Number(c1y),
+        Number(c2x),
+        Number(c2y),
+        Number(x),
+        Number(y),
+        this._matrix,
+      );
+    }
+    /** The path a call names, mapped into the canvas's pixels: a `Path2D`
+     *  through the transform there is now, or the current path, which is
+     *  in them already — and the fill rule after it. */
+    _pathArgs(a: Any, b: Any): [PathData, number[], string] {
+      const given = RASTER.pathOf(a);
+      if (given) return [given, this._matrix, str(b ?? 'nonzero')];
+      return [this._path, IDENTITY, str(a ?? 'nonzero')];
+    }
+    /** How a fill or a stroke with a style is drawn, or null for a style
+     *  that paints nothing. */
+    _drawOf(style: Any): Any {
+      const paint =
+        typeof style === 'string'
+          ? (() => {
+              const rgba = colourOf(style);
+              return rgba ? RASTER.solid(rgba) : null;
+            })()
+          : RASTER.paintOf(style, this._matrix);
+      if (!paint) return null;
+      return {
+        paint,
+        alpha: this._state.globalAlpha,
+        op: this._state.globalCompositeOperation,
+        clip: this._clip,
+      };
+    }
+    /** Draw into the bitmap and mark what changed. */
+    _paint(draw: (target: Any, how: Any) => number[] | null, how: Any): void {
+      if (!how) return;
+      const state = canvasState(this._canvas);
+      const changed = draw(state, how);
+      if (changed) {
+        markCanvas(
+          this._canvas,
+          state,
+          changed[0],
+          changed[1],
+          changed[2],
+          changed[3],
+        );
+      }
+    }
+    _fillPath(path: PathData, rule: string, m: number[] = IDENTITY): void {
+      this._paint(
+        (target, how) => RASTER.fill(target, path, m, rule, how),
+        this._drawOf(this._state.fillStyle),
+      );
+    }
+    _strokeStyle(): Any {
+      return {
+        width: this._state.lineWidth,
+        cap: this._state.lineCap,
+        join: this._state.lineJoin,
+        miterLimit: this._state.miterLimit,
+        dash: this._dash,
+        dashOffset: this._state.lineDashOffset,
+      };
+    }
+    /** The scale the transform gives a pen's width. */
+    _penScale(): number {
+      const m = this._matrix;
+      return Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
+    }
+    _strokePath(path: PathData, m: number[] = IDENTITY): void {
+      // the pen is the transform's now: a path already in the canvas's
+      // pixels is stroked with a width the transform scales
+      const style = this._strokeStyle();
+      const s = this._penScale();
+      const pen =
+        m === IDENTITY
+          ? {
+              ...style,
+              width: style.width * s,
+              dash: style.dash.map((d: number) => d * s),
+              dashOffset: style.dashOffset * s,
+            }
+          : style;
+      this._paint(
+        (target, how) => RASTER.stroke(target, path, m, pen, how),
+        this._drawOf(this._state.strokeStyle),
+      );
+    }
+    fill(a?: Any, b?: Any): void {
+      const [path, m, rule] = this._pathArgs(a, b);
+      this._fillPath(path, rule, m);
+    }
+    stroke(a?: Any): void {
+      const given = RASTER.pathOf(a);
+      if (given) this._strokePath(given, this._matrix);
+      else this._strokePath(this._path);
+    }
+    clip(a?: Any, b?: Any): void {
+      const [path, m, rule] = this._pathArgs(a, b);
+      const state = canvasState(this._canvas);
+      this._clip = RASTER.clipMask(
+        state.width,
+        state.height,
+        path,
+        m,
+        rule,
+        this._clip,
+      );
+    }
+    isPointInPath(a: Any, b: Any, c?: Any, d?: Any): boolean {
+      const given = RASTER.pathOf(a);
+      if (given) {
+        return RASTER.contains(
+          given,
+          this._matrix,
+          Number(b),
+          Number(c),
+          str(d ?? 'nonzero'),
+        );
+      }
+      return RASTER.contains(
+        this._path,
+        IDENTITY,
+        Number(a),
+        Number(b),
+        str(c ?? 'nonzero'),
+      );
+    }
+    isPointInStroke(a: Any, b: Any, c?: Any): boolean {
+      const given = RASTER.pathOf(a);
+      const style = this._strokeStyle();
+      if (given) {
+        return RASTER.strokeContains(
+          given,
+          this._matrix,
+          style,
+          Number(b),
+          Number(c),
+        );
+      }
+      return RASTER.strokeContains(
+        this._path,
+        IDENTITY,
+        { ...style, width: style.width * this._penScale() },
+        Number(a),
+        Number(b),
+      );
     }
     fillText(): void {}
     strokeText(): void {}
@@ -3919,20 +4189,69 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
     getLineDash(): number[] {
       return this._dash.slice();
     }
-    createLinearGradient(): Any {
-      return { addColorStop() {} };
+    createLinearGradient(x0: Any, y0: Any, x1: Any, y1: Any): Any {
+      const [a, b, c, d] = finiteArgs('createLinearGradient', [x0, y0, x1, y1]);
+      return RASTER.makeLinear(a, b, c, d);
     }
-    createRadialGradient(): Any {
-      return { addColorStop() {} };
+    createRadialGradient(
+      x0: Any,
+      y0: Any,
+      r0: Any,
+      x1: Any,
+      y1: Any,
+      r1: Any,
+    ): Any {
+      const [a, b, c, d, e, f] = finiteArgs('createRadialGradient', [
+        x0,
+        y0,
+        r0,
+        x1,
+        y1,
+        r1,
+      ]);
+      return RASTER.makeRadial(a, b, c, d, e, f);
     }
-    createConicGradient(): Any {
-      return { addColorStop() {} };
+    createConicGradient(angle: Any, x: Any, y: Any): Any {
+      const [a, b, c] = finiteArgs('createConicGradient', [angle, x, y]);
+      return RASTER.makeConic(a, b, c);
     }
-    createPattern(): Any {
-      return null;
+    /** A pattern of another canvas, as it is now: an image's pixels are
+     *  the host's, and one is no pattern here. */
+    createPattern(source: Any, repetition: Any): Any {
+      const rep =
+        repetition === null || repetition === '' ? 'repeat' : str(repetition);
+      if (!['repeat', 'repeat-x', 'repeat-y', 'no-repeat'].includes(rep)) {
+        throw new DOMException(
+          `The provided type ('${rep}') is not one of 'repeat', 'no-repeat', 'repeat-x', or 'repeat-y'.`,
+          'SyntaxError',
+        );
+      }
+      if (!(source instanceof HTMLCanvasElement)) return null;
+      const from = canvasState(source);
+      if (!from.width || !from.height) {
+        throw new DOMException(
+          "Failed to execute 'createPattern' on 'CanvasRenderingContext2D': The image argument is a canvas element with a width or height of 0.",
+          'InvalidStateError',
+        );
+      }
+      return RASTER.makePattern(
+        { data: from.data.slice(), width: from.width, height: from.height },
+        rep,
+      );
     }
     drawFocusIfNeeded(): void {}
   }
+  /** Numbers a gradient is made from, each finite or a `TypeError`. */
+  const finiteArgs = (method: string, args: Any[]): number[] =>
+    args.map((v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) {
+        throw new TypeError(
+          `Failed to execute '${method}' on 'CanvasRenderingContext2D': The provided double value is non-finite.`,
+        );
+      }
+      return n;
+    });
   for (const name of Object.keys(CONTEXT_STATE)) {
     Object.defineProperty(CanvasRenderingContext2D.prototype, name, {
       get(this: Any) {
@@ -3946,6 +4265,13 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
           if (typeof v === 'string') {
             if (colourOf(v)) this._state[name] = v;
           } else if (v && typeof v === 'object') this._state[name] = v;
+          return;
+        }
+        // a width and a miter limit of none, or less, are ignored
+        if (
+          (name === 'lineWidth' || name === 'miterLimit') &&
+          !(Number(v) > 0)
+        ) {
           return;
         }
         this._state[name] =
@@ -5971,26 +6297,58 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
     }
   }
 
-  /** Bytes from base64, a loop over a table: what the network's bytes
-   *  cross the bridge as (`__fetched`), where `atob` would build a string a
-   *  character at a time. */
+  /** Bytes from base64: what the network's bytes and a worker's buffers
+   *  cross the bridge as (`__fetched`, `deserializeClone`). The runtime's
+   *  own decoder where it has one (Node 26, Bun), and elsewhere a loop over
+   *  a table four letters at a time, where `atob` would build a string a
+   *  character at a time: three.js's texture worker hands a page hundreds
+   *  of megabytes of pixels, and a letter at a time was ten seconds of
+   *  up.com.au's first half minute. */
+  const B64 = new Uint8Array(128);
+  for (let i = 0; i < 64; i += 1) {
+    B64[
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.charCodeAt(
+        i,
+      )
+    ] = i;
+  }
   function bytesOfBase64(text: string): Uint8Array {
-    const table = new Uint8Array(128);
-    const letters =
-      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    for (let i = 0; i < 64; i += 1) table[letters.charCodeAt(i)] = i;
+    const native = (Uint8Array as Any).fromBase64;
+    if (typeof native === 'function') {
+      try {
+        return native.call(Uint8Array, text);
+      } catch {
+        // not padded as the runtime's wants: the loop takes it
+      }
+    }
+    const table = B64;
     let end = text.length;
     while (end > 0 && text.charCodeAt(end - 1) === 61) end -= 1;
     const out = new Uint8Array(Math.floor((end * 3) / 4));
     let o = 0;
-    let n = 0;
-    let bits = 0;
-    for (let i = 0; i < end; i += 1) {
-      n = ((n << 6) | table[text.charCodeAt(i) & 127]) & 0xffff;
-      bits += 6;
-      if (bits >= 8) {
-        bits -= 8;
-        out[o++] = (n >> bits) & 255;
+    let i = 0;
+    for (; i + 4 <= end; i += 4) {
+      const n =
+        (table[text.charCodeAt(i) & 127] << 18) |
+        (table[text.charCodeAt(i + 1) & 127] << 12) |
+        (table[text.charCodeAt(i + 2) & 127] << 6) |
+        table[text.charCodeAt(i + 3) & 127];
+      out[o] = n >> 16;
+      out[o + 1] = (n >> 8) & 255;
+      out[o + 2] = n & 255;
+      o += 3;
+    }
+    // the last two or three letters, two or one byte
+    if (i < end) {
+      let n = 0;
+      let bits = 0;
+      for (; i < end; i += 1) {
+        n = (n << 6) | table[text.charCodeAt(i) & 127];
+        bits += 6;
+        if (bits >= 8) {
+          bits -= 8;
+          out[o++] = (n >> bits) & 255;
+        }
       }
     }
     return out;
@@ -9897,9 +10255,10 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
     return out;
   };
 
-  /** Observers a page makes at its start. `IntersectionObserver` and
-   *  `ResizeObserver` report what they observe once, as in view and at its
-   *  size — what a lazy loader waits for. `MutationObserver` is below. */
+  /** Observers a page makes at its start. `IntersectionObserver` reports
+   *  what it observes once, as in view — what a lazy loader waits for —
+   *  and `ResizeObserver` each size its targets come to. `MutationObserver`
+   *  is below. */
   /** What an `IntersectionObserver` hands its callback. A page tells the
    *  native interface from none by this one: Next.js installs the W3C
    *  polyfill where it is missing, and the polyfill measures every target
@@ -9963,33 +10322,119 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
       return [];
     }
   }
+  /** An element's border box and its content box, in CSS pixels, or null
+   *  where it has no box. */
+  const boxSizesOf = (el: Any): number[] | null => {
+    const r = docRect(el);
+    if (!r) return null;
+    const e = call('edges', el._id);
+    const [pt, pr, pb, pl, bt, br, bb, bl] =
+      typeof e === 'string' && e
+        ? e.split(',').map(Number)
+        : [0, 0, 0, 0, 0, 0, 0, 0];
+    return [
+      r[2],
+      r[3],
+      Math.max(0, r[2] - pl - pr - bl - br),
+      Math.max(0, r[3] - pt - pb - bt - bb),
+      pl,
+      pt,
+    ];
+  };
+  class ResizeObserverSize {
+    readonly inlineSize: number;
+    readonly blockSize: number;
+    constructor(inline: number, block: number) {
+      this.inlineSize = inline;
+      this.blockSize = block;
+    }
+  }
+  class ResizeObserverEntry {
+    readonly target: Any;
+    readonly contentRect: Any;
+    readonly contentBoxSize: Any;
+    readonly borderBoxSize: Any;
+    readonly devicePixelContentBoxSize: Any;
+    constructor(target: Any, sizes: number[]) {
+      const [bw, bh, cw, ch, x, y] = sizes;
+      const dpr = viewport().dpr || 1;
+      this.target = target;
+      this.contentRect = new DOMRect(x, y, cw, ch);
+      this.contentBoxSize = [new ResizeObserverSize(cw, ch)];
+      this.borderBoxSize = [new ResizeObserverSize(bw, bh)];
+      this.devicePixelContentBoxSize = [
+        new ResizeObserverSize(Math.round(cw * dpr), Math.round(ch * dpr)),
+      ];
+    }
+  }
+  /** The observers observing something, and whether their sizes are to
+   *  be looked at again: a tenth of a second after the last look, while
+   *  any observes, as nothing tells this realm a layout came out
+   *  otherwise. */
+  const resizing = new Set<Any>();
+  let resizeLook = false;
+  const lookAgain = (ms: number): void => {
+    if (resizeLook || !resizing.size) return;
+    resizeLook = true;
+    setTimer(
+      () => {
+        resizeLook = false;
+        for (const observer of [...resizing]) observer._look();
+        lookAgain(100);
+      },
+      ms,
+      [],
+      false,
+    );
+  };
+  /**
+   * Told each size its targets come to (Resize Observer 1): once as one is
+   * observed, where it has a size, and again whenever its content box
+   * changes — React components that size a canvas to its container, as
+   * Rive's do, wait for a size their container has only once the
+   * stylesheet is in, and were told 0 by 0 for good.
+   */
   class ResizeObserver {
     _fn: Any;
+    /** The size last told for each target, content box width and height,
+     *  0 by 0 to start with, which is told only where it changes. */
+    _told = new Map<Any, number[]>();
     constructor(fn: Any) {
+      if (typeof fn !== 'function') {
+        throw new TypeError(
+          "Failed to construct 'ResizeObserver': parameter 1 is not of type 'Function'.",
+        );
+      }
       this._fn = fn;
     }
     observe(el: Any): void {
-      setTimer(
-        () => {
-          const r = el.getBoundingClientRect();
-          this._fn(
-            [
-              {
-                target: el,
-                contentRect: r,
-                borderBoxSize: [{ inlineSize: r.width, blockSize: r.height }],
-              },
-            ],
-            this,
-          );
-        },
-        0,
-        [],
-        false,
-      );
+      if (!this._told.has(el)) this._told.set(el, [0, 0]);
+      resizing.add(this);
+      lookAgain(0);
     }
-    unobserve(): void {}
-    disconnect(): void {}
+    unobserve(el: Any): void {
+      this._told.delete(el);
+      if (!this._told.size) resizing.delete(this);
+    }
+    disconnect(): void {
+      this._told.clear();
+      resizing.delete(this);
+    }
+    _look(): void {
+      const entries: Any[] = [];
+      for (const [el, told] of this._told) {
+        const sizes = boxSizesOf(el) ?? [0, 0, 0, 0, 0, 0];
+        if (sizes[2] === told[0] && sizes[3] === told[1]) continue;
+        this._told.set(el, [sizes[2], sizes[3]]);
+        entries.push(new ResizeObserverEntry(el, sizes));
+      }
+      if (!entries.length) return;
+      try {
+        this._fn.call(this, entries, this);
+      } catch (e) {
+        report(e);
+      }
+    }
   }
   /** What a `MutationObserver` is handed (DOM 4.3.4). */
   class MutationRecord {
@@ -10369,6 +10814,7 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
     Worker,
     ImageData,
     CanvasRenderingContext2D,
+    ...RASTER.classes,
     ...WEBGL.classes,
     Response,
     AbortController,
@@ -10376,6 +10822,8 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
     IntersectionObserver,
     IntersectionObserverEntry,
     ResizeObserver,
+    ResizeObserverEntry,
+    ResizeObserverSize,
     MutationObserver,
     MutationRecord,
     XMLHttpRequest,

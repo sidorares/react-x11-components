@@ -39,6 +39,7 @@ import { types } from 'node:util';
 import vm from 'node:vm';
 
 import { installDom } from './dom.js';
+import { installRaster } from './raster.js';
 import { installWebGL } from './webgl.js';
 import type { Bridge, Primitive } from './dom.js';
 
@@ -150,9 +151,10 @@ const INSTALL = `(function () {
   };
   const install = (${installDom.toString()});
   const webgl = (${installWebGL.toString()});
+  const raster = (${installRaster.toString()});
   const bridge = globalThis.__bridge;
   delete globalThis.__bridge;
-  install(bridge, webgl);
+  install(bridge, webgl, raster);
 })()`;
 
 /**

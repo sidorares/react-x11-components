@@ -1005,12 +1005,6 @@ export class DomHost {
     return () => this._s.canvasListeners.delete(listener);
   }
 
-  /** An element's computed style, as `<Html>` has it: what a view over
-   *  the element reads its `object-fit` from. */
-  styleOf(element: Element): Record<string, string> | null {
-    return this._seams.handle.computedStyle(element, null) ?? null;
-  }
-
   /** Be told when a frame's document comes or goes; answers the way to
    *  stop. */
   onFrames(listener: () => void): () => void {
@@ -2009,6 +2003,25 @@ export class DomHost {
         return isDisabled(this._element(a));
 
       // --- layout, which answers from the tree as the page left it
+      // an element's padding and border widths, top, right, bottom, left
+      // each, in CSS pixels: what its content box is less than its border
+      // box (`ResizeObserver`)
+      case 'edges': {
+        this.flush();
+        const style = this._seams.handle.computedStyle(this._element(a), null);
+        if (!style) return '';
+        const n = (name: string) => parseFloat(style[name] ?? '0') || 0;
+        return [
+          n('padding-top'),
+          n('padding-right'),
+          n('padding-bottom'),
+          n('padding-left'),
+          n('border-top-width'),
+          n('border-right-width'),
+          n('border-bottom-width'),
+          n('border-left-width'),
+        ].join(',');
+      }
       case 'rect': {
         this.flush();
         const rect = this._seams.handle.elementRect(this._element(a));
