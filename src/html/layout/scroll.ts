@@ -67,6 +67,13 @@ const OFFSETS = new WeakMap<
   { offsets: ReadonlyMap<Element, ScrollOffset>; scale: number }
 >();
 
+/** How far each sticky box was moved from where the flow has it, by
+ *  `applyRelativeOffsets` and since by `restick` (`block.ts`): a new place
+ *  for it is that far less from where it is, and how far a scroll
+ *  container reaches is measured where the flow has it, as a browser's
+ *  scrollable overflow is. */
+export const STUCK = new WeakMap<Box, [number, number]>();
+
 /** The offset each scroll container's content is moved by now. A layout
  *  puts every box it lays out back where no scroll has it, and clears its
  *  entry as it moves it again. */
@@ -256,27 +263,49 @@ function extentOf(
       bottom = Math.max(bottom, y2);
     }
   };
-  const linesOf = (lines: readonly LineBox[] | null, outOfFlow: boolean) => {
+  // `dx` and `dy` take a sticky box, and what is in it, back to where the
+  // flow has it
+  const linesOf = (
+    lines: readonly LineBox[] | null,
+    outOfFlow: boolean,
+    dx: number,
+    dy: number,
+  ) => {
     for (const line of lines ?? []) {
       let x2 = line.x + line.width;
       for (const text of line.texts) {
         const natural = text.layout.lines[text.layoutLine];
         if (natural) x2 = Math.max(x2, text.drawX + natural.x + natural.width);
       }
-      take(x2, line.y + line.height, outOfFlow);
+      take(x2 + dx, line.y + line.height + dy, outOfFlow);
     }
   };
-  const walk = (child: Box, outOfFlow: boolean, margins: boolean) => {
+  const walk = (
+    child: Box,
+    outOfFlow: boolean,
+    margins: boolean,
+    dx: number,
+    dy: number,
+  ) => {
     if (child.kind === 'text' || child.kind === 'break') return;
     if (child.outOfFlow) {
       if (escapes(child, box)) return;
       outOfFlow = true;
       margins = false;
     }
+    const stuck = child.style.position === 'sticky' ? STUCK.get(child) : null;
+    if (stuck) {
+      dx -= stuck[0];
+      dy -= stuck[1];
+    }
     if (hasRect(child) && child.width + child.height > 0) {
       take(
-        child.x + child.width + (margins ? Math.max(0, child.marginRight) : 0),
+        child.x +
+          dx +
+          child.width +
+          (margins ? Math.max(0, child.marginRight) : 0),
         child.y +
+          dy +
           child.height +
           (margins ? Math.max(0, child.marginBottom) : 0),
         outOfFlow,
@@ -284,11 +313,11 @@ function extentOf(
     }
     // what a box clips is its own to scroll
     if (clipsOverflow(child)) return;
-    linesOf(child.lines, outOfFlow);
-    for (const inner of child.children) walk(inner, outOfFlow, false);
+    linesOf(child.lines, outOfFlow, dx, dy);
+    for (const inner of child.children) walk(inner, outOfFlow, false, dx, dy);
   };
-  linesOf(box.lines, false);
-  for (const child of box.children) walk(child, false, true);
+  linesOf(box.lines, false, 0, 0);
+  for (const child of box.children) walk(child, false, true, 0, 0);
   const shift = { x: at?.x ?? 0, y: at?.y ?? 0 };
   // the end padding is past the in-flow content, and the out-of-flow boxes
   // reach as far as they reach
@@ -303,4 +332,149 @@ function extentOf(
   extent = { width, height };
   extents.set(box, extent);
   return extent;
+}
+
+/**
+ * A scroll container's bar on one axis, in the device pixels its boxes are
+ * laid out in: the track it runs in and the thumb, which is drawn over the
+ * content as an overlay bar is, the way core draws a pane's
+ * (`scrollbarGeometry`), so a document's lists and the pane around it look
+ * alike.
+ */
+export interface ScrollBar {
+  axis: 'x' | 'y';
+  trackStart: number;
+  trackLength: number;
+  thumbStart: number;
+  thumbLength: number;
+  /** Where the bar is across the axis, and how thick. */
+  crossStart: number;
+  thickness: number;
+  /** How far the thumb and the content can travel. */
+  travel: number;
+  range: number;
+}
+
+/** Core's bar: 6 logical pixels thick (4 where `scrollbar-width: thin`),
+ *  2 in from the edge, its thumb no shorter than 20. */
+const BAR = 6;
+const THIN_BAR = 4;
+const BAR_INSET = 2;
+const MIN_THUMB = 20;
+/** How far past the drawn bar a press still takes it: the bar is thin,
+ *  the pointer's target is not (core's `SCROLLBAR_SLOP`). */
+const BAR_SLOP = 4;
+
+/**
+ * The bars a scroll container draws: on each axis whose `overflow` the user
+ * may scroll (`auto`, `scroll`) and whose content overflows, but where
+ * `scrollbar-width: none` or a page's `::-webkit-scrollbar` (`hidden`)
+ * hides it. Each stops short of the other's corner where both show.
+ */
+export function scrollBarsOf(
+  box: Box,
+  scale: number,
+  hidden: { x: boolean; y: boolean },
+): ScrollBar[] {
+  if (!isScroller(box) || box.style.scrollbarWidth === 'none') return [];
+  const state = scrollStateOf(box);
+  const shows = (axis: 'x' | 'y') =>
+    wheelScrolls(box, axis) &&
+    !hidden[axis] &&
+    (axis === 'x'
+      ? state.width > state.clientWidth + 0.5
+      : state.height > state.clientHeight + 0.5);
+  const x = shows('x');
+  const y = shows('y');
+  const thickness =
+    (box.style.scrollbarWidth === 'thin' ? THIN_BAR : BAR) * scale;
+  const inset = BAR_INSET * scale;
+  const left = box.x + box.borderLeft;
+  const top = box.y + box.borderTop;
+  const bars: ScrollBar[] = [];
+  const bar = (axis: 'x' | 'y'): ScrollBar | null => {
+    const horizontal = axis === 'x';
+    const viewport = horizontal ? state.clientWidth : state.clientHeight;
+    const content = horizontal ? state.width : state.height;
+    const crossSize = horizontal ? state.clientHeight : state.clientWidth;
+    if (crossSize < thickness + inset) return null;
+    const shorten = (horizontal ? y : x) ? thickness + inset : 0;
+    const length = viewport - shorten;
+    if (length <= 0) return null;
+    const thumbLength = Math.min(
+      length,
+      Math.max(MIN_THUMB * scale, (length * length) / content),
+    );
+    const range = content - viewport;
+    const travel = Math.max(0, length - thumbLength);
+    const scroll = horizontal ? state.x : state.y;
+    const trackStart = horizontal ? left : top;
+    return {
+      axis,
+      trackStart,
+      trackLength: length,
+      thumbStart: trackStart + (range > 0 ? (scroll / range) * travel : 0),
+      thumbLength,
+      crossStart: (horizontal ? top : left) + crossSize - thickness - inset,
+      thickness,
+      travel,
+      range,
+    };
+  };
+  if (y) {
+    const b = bar('y');
+    if (b) bars.push(b);
+  }
+  if (x) {
+    const b = bar('x');
+    if (b) bars.push(b);
+  }
+  return bars;
+}
+
+/** A bar's thumb as a rectangle. */
+export function thumbRect(bar: ScrollBar): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} {
+  return bar.axis === 'x'
+    ? {
+        x: bar.thumbStart,
+        y: bar.crossStart,
+        width: bar.thumbLength,
+        height: bar.thickness,
+      }
+    : {
+        x: bar.crossStart,
+        y: bar.thumbStart,
+        width: bar.thickness,
+        height: bar.thumbLength,
+      };
+}
+
+/** Whether a point is on a bar, within a slop of it, and on its thumb or
+ *  its track. */
+export function scrollBarHit(
+  bar: ScrollBar,
+  x: number,
+  y: number,
+  scale: number,
+): 'thumb' | 'track' | null {
+  const across = bar.axis === 'x' ? y : x;
+  const along = bar.axis === 'x' ? x : y;
+  const slop = BAR_SLOP * scale;
+  if (
+    across < bar.crossStart - slop ||
+    across > bar.crossStart + bar.thickness + slop
+  ) {
+    return null;
+  }
+  if (along < bar.trackStart || along > bar.trackStart + bar.trackLength) {
+    return null;
+  }
+  return along >= bar.thumbStart && along <= bar.thumbStart + bar.thumbLength
+    ? 'thumb'
+    : 'track';
 }

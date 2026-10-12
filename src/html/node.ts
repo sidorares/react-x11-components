@@ -139,17 +139,23 @@ import {
   heldBack,
   layoutDocument,
   placedMatrix,
+  restickWithin,
   retranslate,
   translate,
 } from './layout/block.js';
 import {
   isScroller,
+  scrollBarHit,
+  scrollBarsOf,
   scrollContent,
   scrollStateOf,
   setScrollOffsets,
   wheelScrolls,
 } from './layout/scroll.js';
-import type { ScrollOffset, ScrollState } from './layout/scroll.js';
+import type { ScrollBar, ScrollOffset, ScrollState } from './layout/scroll.js';
+
+/** Both of a scroll container's bars, hidden by nothing. */
+const BARS_SHOWN = { x: false, y: false };
 import { layoutShape, shapesEqual } from './layout/shape.js';
 import {
   invert,
@@ -5767,6 +5773,85 @@ export class HtmlViewNode extends Node {
     );
   }
 
+  /** A press at a logical window point: where the scroll keys start from
+   *  until the focus is somewhere of the document's (`scrollForKey`). */
+  pressedAt(x: number, y: number): void {
+    this._pressed = this._drawnAt(x, y);
+  }
+  private _pressed: Element | null = null;
+
+  /**
+   * A scroll key, pressed with the focus on the document or on one of its
+   * links: scroll the innermost container around `from` — the element the
+   * focus is on, or else the one last pressed — that the user may scroll
+   * on the axis and that can move that way, and on out to the pane around
+   * the document, as a browser chains the keys. A line is 40 CSS pixels
+   * and a page seven eighths of the scrollport, as Chrome has them, and
+   * `end` goes to the end. Answers whether anything scrolled. The pane is
+   * left alone where the document's root gave the viewport `overflow:
+   * hidden` on the axis.
+   */
+  scrollForKey(
+    axis: 'x' | 'y',
+    how: 'line' | 'page' | 'end',
+    sign: 1 | -1,
+    from: Element | null,
+  ): boolean {
+    this._prepare(this.abs.width || 1);
+    const s = this._scale;
+    const step = (at: number, max: number, client: number): number => {
+      const by =
+        how === 'line' ? 40 : how === 'page' ? client * 0.875 : Infinity;
+      return Math.min(max, Math.max(0, at + sign * by));
+    };
+    for (let el = from ?? this._pressed; el; el = flatParentOf(el)) {
+      const box = this._scrollerOf(el);
+      if (!box || !wheelScrolls(box, axis)) continue;
+      const state = scrollStateOf(box);
+      const x = state.x / s;
+      const y = state.y / s;
+      const at = axis === 'x' ? x : y;
+      const max =
+        (axis === 'x'
+          ? state.width - state.clientWidth
+          : state.height - state.clientHeight) / s;
+      const client =
+        (axis === 'x' ? state.clientWidth : state.clientHeight) / s;
+      const to = step(at, max, client);
+      if (Math.abs(to - at) < 0.5) continue;
+      this._scrollBox(box, axis === 'x' ? to : x, axis === 'y' ? to : y);
+      return true;
+    }
+    // the pane around the document, where the document lets it scroll
+    const overflow = this._tree?.viewportOverflow;
+    if ((axis === 'x' ? overflow?.x : overflow?.y) === 'hidden') return false;
+    for (let node = this.parent; node; node = node.parent) {
+      const pane = node as unknown as {
+        isScroller?: () => boolean;
+        scrollX: number;
+        scrollY: number;
+        scale: number;
+        contentWidth: number;
+        contentHeight: number;
+        scrollTo(to: { x?: number; y?: number }): void;
+      };
+      if (!pane.isScroller?.()) continue;
+      const ps = pane.scale || 1;
+      const box = node.contentBox();
+      const at = (axis === 'x' ? pane.scrollX : pane.scrollY) / ps;
+      const client = (axis === 'x' ? box.width : box.height) / ps;
+      const max = Math.max(
+        0,
+        (axis === 'x' ? pane.contentWidth : pane.contentHeight) / ps - client,
+      );
+      const to = step(at, max, client);
+      if (Math.abs(to - at) < 0.5) return false;
+      pane.scrollTo(axis === 'x' ? { x: to } : { y: to });
+      return true;
+    }
+    return false;
+  }
+
   /** The innermost scroll container under where the wheel turned that the
    *  wheel scrolls and that has room to move the way a delta goes. */
   private _wheelScroller(dx: number, dy: number): Box | null {
@@ -5822,6 +5907,8 @@ export class HtmlViewNode extends Node {
     const s = this._scale;
     const was = scrollStateOf(box);
     const to = scrollContent(box, x * s, y * s, translate);
+    // its sticky boxes where it is scrolled to now
+    if (to.x !== was.x || to.y !== was.y) restickWithin(box);
     const offset = { x: to.x / s, y: to.y / s };
     const el = box.el!;
     if (offset.x || offset.y) this._scrollOffsets.set(el, offset);
@@ -5868,6 +5955,115 @@ export class HtmlViewNode extends Node {
   // the same reason; so does this, for `HOVER_REST_MS` after the content
   // last moved. What was hovered stays hovered as it scrolls away, as it
   // does there. A move of the pointer itself is answered at once.
+
+  /** The thumb a press took, and how far along it: dragged until the
+   *  release (`defaultMouseDrag`). */
+  private _barDrag: { box: Box; axis: 'x' | 'y'; grab: number } | null = null;
+
+  /** Whether a logical window point is on a bar of a scroll container in
+   *  the document: a press there is the bar's, and no link's, no
+   *  selection's and not the page's (`<Html>`'s `onMouseDownCapture`). */
+  scrollBarAt(x: number, y: number): boolean {
+    return this._barAt(x, y) !== null;
+  }
+
+  /** Whether a bar's thumb is being dragged: the release that ends it is
+   *  the bar's too. */
+  get draggingScrollBar(): boolean {
+    return this._barDrag !== null;
+  }
+
+  /** The bar under a logical window point, of the innermost scroll
+   *  container there, and the part of it: what a press on it does. */
+  private _barAt(
+    x: number,
+    y: number,
+  ): { box: Box; bar: ScrollBar; part: 'thumb' | 'track' } | null {
+    if (!this._tree) return null;
+    const local = this._toDocument(x, y);
+    for (let el = this._drawnAt(x, y); el; el = flatParentOf(el)) {
+      const box = this._scrollerOf(el);
+      if (!box) continue;
+      for (const bar of this._barsOf(box)) {
+        const part = scrollBarHit(bar, local.x, local.y, this._scale);
+        if (part) return { box, bar, part };
+      }
+    }
+    return null;
+  }
+
+  private _barsOf(box: Box): ScrollBar[] {
+    const hidden =
+      box.el && this._cascade
+        ? this._cascade.scrollbarHidden(box.el, box.style)
+        : BARS_SHOWN;
+    return scrollBarsOf(box, this._scale, hidden);
+  }
+
+  /** A press on a bar: its thumb taken to drag, as core's pane takes its
+   *  own, or its track paging toward the press; anywhere else, the
+   *  selection's. */
+  override defaultMouseDown(ev: X11MouseEvent): void {
+    const hit = ev.button === 1 ? this._barAt(ev.x, ev.y) : null;
+    if (!hit) {
+      super.defaultMouseDown?.(ev);
+      return;
+    }
+    const local = this._toDocument(ev.x, ev.y);
+    const along = hit.bar.axis === 'x' ? local.x : local.y;
+    if (hit.part === 'thumb') {
+      this._barDrag = {
+        box: hit.box,
+        axis: hit.bar.axis,
+        grab: along - hit.bar.thumbStart,
+      };
+      ev.capturePointer();
+      return;
+    }
+    const s = this._scale;
+    const state = scrollStateOf(hit.box);
+    const page =
+      (hit.bar.axis === 'x' ? state.clientWidth : state.clientHeight) / s;
+    const by = along < hit.bar.thumbStart ? -page : page;
+    this._scrollBox(
+      hit.box,
+      state.x / s + (hit.bar.axis === 'x' ? by : 0),
+      state.y / s + (hit.bar.axis === 'y' ? by : 0),
+    );
+  }
+
+  override defaultMouseDrag(ev: X11MouseEvent): void {
+    const drag = this._barDrag;
+    if (!drag) {
+      super.defaultMouseDrag?.(ev);
+      return;
+    }
+    const bar = this._barsOf(drag.box).find((b) => b.axis === drag.axis);
+    if (!bar || bar.travel <= 0) return;
+    const local = this._toDocument(ev.x, ev.y);
+    const at =
+      (drag.axis === 'x' ? local.x : local.y) - drag.grab - bar.trackStart;
+    const s = this._scale;
+    // whole device pixels, as core's thumb moves a pane
+    const to =
+      Math.round(
+        (Math.min(bar.travel, Math.max(0, at)) / bar.travel) * bar.range,
+      ) / s;
+    const state = scrollStateOf(drag.box);
+    this._scrollBox(
+      drag.box,
+      drag.axis === 'x' ? to : state.x / s,
+      drag.axis === 'y' ? to : state.y / s,
+    );
+  }
+
+  override defaultMouseUp(ev: X11MouseEvent): void {
+    if (this._barDrag) {
+      this._barDrag = null;
+      return;
+    }
+    super.defaultMouseUp?.(ev);
+  }
 
   override defaultMouseMove(ev: X11MouseEvent): void {
     super.defaultMouseMove?.(ev);
@@ -6142,6 +6338,10 @@ export class HtmlViewNode extends Node {
           }
         : null,
       selectionColor: this.selectionColor,
+      scrollbarHidden: (box) =>
+        box.el && this._cascade
+          ? this._cascade.scrollbarHidden(box.el, box.style)
+          : BARS_SHOWN,
       imageFor: (box) => {
         const url = box.el ? this._imageUrl(box.el) : CONTENT_IMAGES.get(box);
         return url === undefined ? null : this._resources.image(url);

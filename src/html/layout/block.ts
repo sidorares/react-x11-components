@@ -47,7 +47,12 @@ import {
   transformed,
   translation4,
 } from '../css/transform.js';
-import { applyScrollOffsets, isScroller } from './scroll.js';
+import {
+  STUCK,
+  applyScrollOffsets,
+  isScroller,
+  scrollStateOf,
+} from './scroll.js';
 import type { Placed } from '../css/transform.js';
 import {
   affineOf,
@@ -770,6 +775,10 @@ export function layoutDocument(
   // and a scroll container moves what it holds by where it is scrolled to,
   // the same way: everything else reads the boxes where they are drawn
   applyScrollOffsets(tree, translate);
+  // and a sticky box keeps to the scroll container it is in where it is
+  // scrolled to, which it was placed in as though it were scrolled to its
+  // start
+  if (tree.relative) restickAll(root);
   const reach = computePaintBounds(root, tree.movedInline);
   if (tree.negative) hoistNegative(root);
   stackLayers(root);
@@ -5428,6 +5437,7 @@ export function applyRelativeOffsets(
     style.position === 'sticky'
       ? stickyOffset(box, viewportWidth, viewportHeight)
       : relativeOffset(box);
+  if (style.position === 'sticky') STUCK.set(box, [dx, dy]);
   if (!(dx || dy)) return;
   translate(box, dx, dy);
   if (box.kind !== 'inline') {
@@ -5735,6 +5745,109 @@ function stuck(
     if (over > 0) byEnd = -Math.max(0, Math.min(over, room));
   }
   return startWins ? byStart || byEnd : byEnd || byStart;
+}
+
+/**
+ * Place the sticky boxes a scroll container keeps again, where it is
+ * scrolled to (CSS Positioned Layout 3, 3.4): each one whose nearest scroll
+ * container it is. Answers whether one moved. A scroll moves the content,
+ * sticky boxes with it (`scroll.ts`), and this moves them back as far as
+ * their insets say: a header stuck to the top of a scrolling list stays at
+ * its top until its containing block leaves.
+ */
+export function restickWithin(scroller: Box): boolean {
+  let moved = false;
+  const visit = (box: Box): void => {
+    for (const child of box.children) {
+      if (child.style.position === 'sticky' && child.kind !== 'inline') {
+        if (restick(child, scroller)) moved = true;
+      }
+      // a scroll container inside keeps its own
+      if (!isScroller(child)) visit(child);
+    }
+  };
+  visit(scroller);
+  return moved;
+}
+
+/** `restickWithin` for every scroll container in a tree: after a layout,
+ *  which placed each sticky box as though its container were scrolled to
+ *  its start. */
+function restickAll(root: Box): void {
+  const visit = (box: Box, port: Box | null): void => {
+    for (const child of box.children) {
+      if (
+        port &&
+        child.style.position === 'sticky' &&
+        child.kind !== 'inline'
+      ) {
+        restick(child, port);
+      }
+      visit(child, isScroller(child) ? child : port);
+    }
+  };
+  visit(root, null);
+}
+
+/** A sticky box placed again against the scrollport of its scroll
+ *  container, as `stickyOffset` places it, where the container is
+ *  scrolled to; whether it moved. */
+function restick(box: Box, port: Box): boolean {
+  const was = STUCK.get(box) ?? [0, 0];
+  let cb = box.parent;
+  while (cb && cb.kind === 'inline') cb = cb.parent;
+  if (!cb) return false;
+  const style = box.style;
+  const px = port.x + port.borderLeft;
+  const py = port.y + port.borderTop;
+  const pw = port.width - port.borderLeft - port.borderRight;
+  const ph = port.height - port.borderTop - port.borderBottom;
+  // the containing block where it is the scroll container is all it
+  // scrolls, from where the scroll has its start
+  let cbx = cb.contentX;
+  let cby = cb.contentY;
+  let cbw = cb.contentWidth;
+  let cbh = cb.contentHeight;
+  if (cb === port) {
+    const state = scrollStateOf(port);
+    cbx -= state.x;
+    cby -= state.y;
+    cbw = Math.max(cbw, state.width - port.padLeft - port.padRight);
+    cbh = Math.max(cbh, state.height - port.padTop - port.padBottom);
+  }
+  const dx = stuck(
+    box.x - was[0],
+    box.width,
+    box.marginLeft,
+    box.marginRight,
+    cbx,
+    cbw,
+    px,
+    pw,
+    resolveOrNull(style.left, pw),
+    resolveOrNull(style.right, pw),
+    cb.style.direction !== 'rtl',
+  );
+  const dy = stuck(
+    box.y - was[1],
+    box.height,
+    box.marginTop,
+    box.marginBottom,
+    cby,
+    cbh,
+    py,
+    ph,
+    resolveOrNull(style.top, ph),
+    resolveOrNull(style.bottom, ph),
+    true,
+  );
+  const mx = dx - was[0];
+  const my = dy - was[1];
+  STUCK.set(box, [dx, dy]);
+  if (!mx && !my) return false;
+  translate(box, mx, my);
+  movedOffLine(box);
+  return true;
 }
 
 /**

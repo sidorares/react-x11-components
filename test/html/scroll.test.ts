@@ -10,7 +10,15 @@ import {
   fireEvent,
   renderX11,
   screen,
+  userEvent,
 } from 'react-x11/test';
+import {
+  XK_DOWN,
+  XK_END,
+  XK_HOME,
+  XK_PAGE_DOWN,
+  XK_SPACE,
+} from 'react-x11/keysyms';
 import type { DrawnNode } from 'react-x11';
 
 import { Html } from '../../src/html/index.js';
@@ -280,3 +288,109 @@ test('a scroll is told once it is drawn, by the element that scrolled', async ()
   node.scrollElementTo(el(node, 's'), { y: 0 });
   assert.deepEqual(told, ['s', 's'], 'once for each move, none for no move');
 });
+
+test("a scroll container's sticky boxes keep to it where it is scrolled to, as Chrome places them", async () => {
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}#s{height:100px;overflow:auto}' +
+      '#h{position:sticky;top:0;height:20px}section{height:150px}' +
+      '.t{position:sticky;top:5px;height:10px}#f{position:sticky;bottom:0;height:10px}</style>' +
+      '<div id="s"><div id="h">head</div>' +
+      '<section><div class="t" id="ta"></div></section>' +
+      '<section><div class="t" id="tb"></div></section>' +
+      '<div style="height:100px"></div><div id="f"></div></div>',
+    300,
+  );
+  const tops = () =>
+    ['h', 'ta', 'tb', 'f'].map(
+      (id) => Math.round(node.elementRect(el(node, id))!.y * 10) / 10,
+    );
+  // Chrome 154: the header held at the top all the way, each section's
+  // title at 5px until its section leaves, the footer at the bottom
+  const chrome: [number, number[]][] = [
+    [0, [0, 20, 170, 90]],
+    [50, [0, 5, 120, 90]],
+    [160, [0, 0, 10, 90]],
+    [400, [0, -170, -20, 90]],
+  ];
+  for (const [y, want] of chrome) {
+    node.scrollElementTo(el(node, 's'), { y });
+    await act();
+    assert.deepEqual(tops(), want, `scrolled to ${y}`);
+  }
+  // and as it was through a layout at another width
+  node.scrollElementTo(el(node, 's'), { y: 50 });
+  await act();
+  await act(async () => node.touchDocument(null));
+  await act();
+  assert.deepEqual(tops(), [0, 5, 120, 90], 'laid out again');
+});
+
+test('the scroll keys scroll the container the document was last pressed in, and the pane around it once that is at its end', async () => {
+  const tall =
+    LIST.replace('#foot{height:20px', '#foot{height:600px') + '<p>after</p>';
+  const { el: node } = await renderScrolled(tall, 300);
+  const list = el(node, 's');
+  const dx = 50 - node.abs.width / 2;
+  const dy = 50 - node.abs.height / 2;
+  await act(async () => {
+    fireEvent.mouseDown(node as unknown as DrawnNode, { dx, dy });
+    fireEvent.mouseUp(node as unknown as DrawnNode, { dx, dy });
+  });
+  await userEvent.key(XK_DOWN);
+  assert.equal(node.scrollStateOf(list)?.y, 40, 'a line');
+  await userEvent.key(XK_PAGE_DOWN);
+  assert.equal(node.scrollStateOf(list)?.y, 40 + 87.5, 'seven eighths of it');
+  await userEvent.key(XK_END);
+  assert.equal(node.scrollStateOf(list)?.y, 300, 'its end');
+  assert.equal(paneOf(node).scrollY, 0, 'and the pane stays');
+  await userEvent.key(XK_SPACE);
+  assert.equal(node.scrollStateOf(list)?.y, 300);
+  assert.ok(paneOf(node).scrollY > 0, 'the pane takes the key it cannot');
+  await userEvent.key(XK_HOME);
+  assert.equal(node.scrollStateOf(list)?.y, 0, 'the list, from its end');
+});
+
+metric(
+  "a scroll container draws core's thumb over what it scrolls, which a drag moves and a press on its track pages, and a page's rules hide",
+  async () => {
+    const { el: node, result } = await renderScrolled(LIST, 300);
+    const list = el(node, 's');
+    // 6px thick, 2px in from the right, as long as the scrollport is of the
+    // content: 100 of 400 is 25px, over the first row's red
+    await expectPixel(result.ctx, 395, 30, '#bf0000', { message: 'the thumb' });
+    await expectPixel(result.ctx, 395, 52, '#ff0000', { message: 'its track' });
+    const press = async (x: number, y: number, to?: [number, number]) => {
+      const at = (px: number, py: number) => ({
+        dx: px - node.abs.width / 2,
+        dy: py - node.abs.height / 2,
+      });
+      const target = node as unknown as DrawnNode;
+      await act(async () => fireEvent.mouseDown(target, at(x, y)));
+      if (to) await act(async () => fireEvent.mouseMove(target, at(...to)));
+      await act(async () => fireEvent.mouseUp(target, at(...(to ?? [x, y]))));
+    };
+    // dragged 25px down its 75px of travel: a third of 300
+    await press(395, 30, [395, 55]);
+    assert.equal(node.scrollStateOf(list)?.y, 100);
+    await expectPixel(result.ctx, 395, 30, '#ff0000', {
+      message: 'the thumb moved off the third row, red',
+    });
+    await expectPixel(result.ctx, 395, 50, '#0000bf', {
+      message: 'and is a third of the way down',
+    });
+    // a press below the thumb pages down
+    await press(395, 110);
+    assert.equal(node.scrollStateOf(list)?.y, 200);
+    // and the page may hide it, either way
+    for (const rule of [
+      '#s{scrollbar-width:none}',
+      '#s::-webkit-scrollbar{display:none}',
+    ]) {
+      const { result: hid } = await renderScrolled(
+        LIST.replace('</style>', `${rule}</style>`),
+        300,
+      );
+      await expectPixel(hid.ctx, 395, 30, '#ff0000', { message: rule });
+    }
+  },
+);
