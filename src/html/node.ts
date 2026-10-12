@@ -140,7 +140,16 @@ import {
   layoutDocument,
   placedMatrix,
   retranslate,
+  translate,
 } from './layout/block.js';
+import {
+  isScroller,
+  scrollContent,
+  scrollStateOf,
+  setScrollOffsets,
+  wheelScrolls,
+} from './layout/scroll.js';
+import type { ScrollOffset, ScrollState } from './layout/scroll.js';
 import { layoutShape, shapesEqual } from './layout/shape.js';
 import {
   invert,
@@ -336,6 +345,10 @@ export interface HtmlViewProps {
    *  (`BoxTree.viewportOverflow`): reported after the first layout, and
    *  after a build that changed it. */
   onViewportOverflow?: (overflow: ViewportOverflow) => void;
+  /** A scroll container in the document scrolled — by the wheel, or by
+   *  `scrollElementTo` — told after it is drawn where it went: what a page
+   *  hears as the element's `scroll`. */
+  onElementScroll?: (element: Element) => void;
   /** The parsed document, once per parse — the DOM handle. */
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
@@ -759,6 +772,15 @@ export class HtmlViewNode extends Node {
    *  watched ones were. */
   private _stops: readonly FocusStop[] = [];
   private _watchedRects = new Map<Element, Rect | null>();
+  /** Where each scroll container in the document is scrolled to, by its
+   *  element, in CSS pixels (`layout/scroll.ts`): kept across builds and
+   *  layouts, each of which moves the boxes it lays out by them again, and
+   *  for the document they are elements of. */
+  private _scrollOffsets = new Map<Element, ScrollOffset>();
+  private _scrollOffsetsOf: Document | null = null;
+  /** Where the wheel last turned over the document, in logical window
+   *  pixels: what `canScroll` finds a scroll container under. */
+  private _wheelAt: { x: number; y: number } | null = null;
   private _widgets: ReadonlySet<Element> = new Set();
   private _widgetsOf: ControlRect[] | null = null;
   private _reportedDomRevision = -1;
@@ -2167,6 +2189,11 @@ export class HtmlViewNode extends Node {
           question || this._questioned
             ? undefined
             : this._stopAt(target, viewportMoved, crossing);
+        if (this._scrollOffsetsOf !== this._source.document) {
+          this._scrollOffsets.clear();
+          this._scrollOffsetsOf = this._source.document;
+        }
+        setScrollOffsets(this._tree, this._scrollOffsets, this._scale);
         const result = layoutDocument(
           this._tree,
           this._layoutFonts(),
@@ -5655,6 +5682,171 @@ export class HtmlViewNode extends Node {
   private _toDocument(x: number, y: number): { x: number; y: number } {
     const s = this._scale;
     return { x: x * s - this.abs.x, y: y * s - this.abs.y };
+  }
+
+  // --- scroll containers ---------------------------------------------------
+  //
+  // A box that clips what overflows it with an `overflow` that scrolls is
+  // scrolled by moving what it holds (`layout/scroll.ts`), so everything
+  // that reads a box finds it where it is drawn. A scroll here moves the
+  // boxes by the difference, works out the ink again, repaints the
+  // scrollport and tells what is mounted beside the document where its
+  // element went; a layout moves the boxes it lays out by the offsets kept
+  // here.
+
+  /**
+   * Where a scroll container is scrolled to, how far it can be and its
+   * scrollport — `scrollTop`, `scrollHeight`, `clientHeight` and their
+   * kin, in CSS pixels — laid out first; null for an element that is no
+   * scroll container, or has no box.
+   */
+  scrollStateOf(element: Element): ScrollState | null {
+    this._prepare(this.abs.width || 1);
+    const box = this._scrollerOf(element);
+    if (!box) return null;
+    const state = scrollStateOf(box);
+    const s = this._scale;
+    return {
+      x: state.x / s,
+      y: state.y / s,
+      width: state.width / s,
+      height: state.height / s,
+      clientWidth: state.clientWidth / s,
+      clientHeight: state.clientHeight / s,
+      clientTop: state.clientTop / s,
+      clientLeft: state.clientLeft / s,
+    };
+  }
+
+  /**
+   * Scroll a scroll container to an offset, in CSS pixels, kept within how
+   * far it can be — as `scrollTop` is set, or `scrollTo` called — laid out
+   * first. Answers where it came to, or null for an element that is no
+   * scroll container.
+   */
+  scrollElementTo(
+    element: Element,
+    to: { x?: number; y?: number },
+  ): ScrollOffset | null {
+    this._prepare(this.abs.width || 1);
+    const box = this._scrollerOf(element);
+    if (!box) return null;
+    const state = scrollStateOf(box);
+    const s = this._scale;
+    return this._scrollBox(box, to.x ?? state.x / s, to.y ?? state.y / s);
+  }
+
+  /** The wheel turned at a logical window point: what `canScroll` finds a
+   *  scroll container under (`<Html>`'s `onWheelCapture`). */
+  wheelAt(point: { x: number; y: number } | null): void {
+    this._wheelAt = point;
+  }
+
+  /**
+   * Core's wheel asks each node out from the one under the pointer whether
+   * it has room to move on the axis a delta names, and scrolls the first
+   * that does: this element does where a scroll container under the
+   * pointer can move that way, the innermost first, and the box around the
+   * document has its turn where none can — a list scrolled to its end
+   * hands the wheel on to the page, as a browser's does.
+   */
+  canScroll(dx: number, dy: number): boolean {
+    return this._wheelScroller(dx, dy) !== null;
+  }
+
+  /** Scroll the scroll container `canScroll` found, by logical pixels. */
+  scrollBy(by: { x?: number; y?: number }): void {
+    const box = this._wheelScroller(by.x ?? 0, by.y ?? 0);
+    if (!box) return;
+    const state = scrollStateOf(box);
+    const s = this._scale;
+    this._scrollBox(
+      box,
+      state.x / s + (wheelScrolls(box, 'x') ? (by.x ?? 0) : 0),
+      state.y / s + (wheelScrolls(box, 'y') ? (by.y ?? 0) : 0),
+    );
+  }
+
+  /** The innermost scroll container under where the wheel turned that the
+   *  wheel scrolls and that has room to move the way a delta goes. */
+  private _wheelScroller(dx: number, dy: number): Box | null {
+    const at = this._wheelAt;
+    const tree = this._tree;
+    if (!at || !tree || (!dx && !dy)) return null;
+    const local = this._toDocument(at.x, at.y);
+    for (let el = this._drawnAt(at.x, at.y); el; el = flatParentOf(el)) {
+      const box = this._scrollerOf(el);
+      if (!box) continue;
+      // the point inside its scrollport: an element positioned out of a
+      // scroll container is no part of what it scrolls
+      const left = box.x + box.borderLeft;
+      const top = box.y + box.borderTop;
+      const state = scrollStateOf(box);
+      if (
+        local.x < left ||
+        local.y < top ||
+        local.x >= left + state.clientWidth ||
+        local.y >= top + state.clientHeight
+      ) {
+        continue;
+      }
+      const room = (v: number, max: number, d: number) =>
+        d > 0 ? v < max - 0.5 : d < 0 ? v > 0.5 : false;
+      if (
+        (wheelScrolls(box, 'x') &&
+          room(state.x, state.width - state.clientWidth, dx)) ||
+        (wheelScrolls(box, 'y') &&
+          room(state.y, state.height - state.clientHeight, dy))
+      ) {
+        return box;
+      }
+    }
+    return null;
+  }
+
+  /** An element's box, where it is a scroll container. */
+  private _scrollerOf(element: Element): Box | null {
+    const tree = this._tree;
+    if (!tree) return null;
+    const box = this._firstBoxesOf(tree).get(element) ?? null;
+    return box && isScroller(box) ? box : null;
+  }
+
+  /**
+   * Scroll a scroll container's content to an offset in CSS pixels: the
+   * boxes moved by the difference, the ink worked out again, the
+   * scrollport repainted, and what is mounted beside the document told
+   * where its element went. Answers where it came to.
+   */
+  private _scrollBox(box: Box, x: number, y: number): ScrollOffset {
+    const s = this._scale;
+    const was = scrollStateOf(box);
+    const to = scrollContent(box, x * s, y * s, translate);
+    const offset = { x: to.x / s, y: to.y / s };
+    const el = box.el!;
+    if (offset.x || offset.y) this._scrollOffsets.set(el, offset);
+    else this._scrollOffsets.delete(el);
+    if (to.x === was.x && to.y === was.y) return offset;
+    const tree = this._tree!;
+    computePaintBounds(tree.root, tree.movedInline);
+    // what a read of the pixels or a layer holds of what moved
+    this._filtered?.staleAll();
+    this._spriteGen += 1;
+    this.spritesChanged();
+    this._repaintInk([
+      {
+        x: box.x + box.borderLeft,
+        y: box.y + box.borderTop,
+        width: was.clientWidth,
+        height: was.clientHeight,
+      },
+    ]);
+    this._reportControls();
+    this._reportMedia();
+    this._reportEmbedded();
+    this._reportStops();
+    this._props().onElementScroll?.(el);
+    return offset;
   }
 
   // --- pointer defaults -----------------------------------------------------

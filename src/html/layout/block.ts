@@ -47,6 +47,7 @@ import {
   transformed,
   translation4,
 } from '../css/transform.js';
+import { applyScrollOffsets, isScroller } from './scroll.js';
 import type { Placed } from '../css/transform.js';
 import {
   affineOf,
@@ -341,10 +342,14 @@ function probeWhole(box: Box, ctx: LayoutContext, floats: FloatContext): void {
   }
 }
 
-/** Whether a box is a multicol container, or in one. */
-function multicolAround(box: Box): boolean {
+/** Whether a box is a multicol container or a scroll container, or in
+ *  one: laid out whole. A multicol container's content is one strip its
+ *  columns balance, and what a scroll container holds is where it is
+ *  scrolled to, not where the document's viewport is, so neither stops
+ *  where the viewport ends nor keeps what is above it. */
+function laidWholeAround(box: Box): boolean {
   for (let at: Box | null = box; at; at = at.parent) {
-    if (at.style.columns) return true;
+    if (at.style.columns || isScroller(at)) return true;
   }
   return false;
 }
@@ -464,6 +469,8 @@ function keepIn(
 ): void {
   if (depth > MAX_KEEP_DEPTH) return;
   if (box.style.columns || box.style.lineClamp !== null) return;
+  // what a scroll container holds is where it is scrolled to
+  if (isScroller(box)) return;
   if (box.kind === 'flex' || box.kind === 'table') {
     // placed by their container's algorithm, and laid out with it
     for (const item of box.children) {
@@ -760,6 +767,9 @@ export function layoutDocument(
   // and the ink bounds are computed after that, so culling sees where boxes
   // ended up rather than where they were laid out.
   if (tree.relative) applyRelativeOffsets(root, viewportWidth, viewportHeight);
+  // and a scroll container moves what it holds by where it is scrolled to,
+  // the same way: everything else reads the boxes where they are drawn
+  applyScrollOffsets(tree, translate);
   const reach = computePaintBounds(root, tree.movedInline);
   if (tree.negative) hoistNegative(root);
   stackLayers(root);
@@ -1342,9 +1352,9 @@ function layoutChildren(
     box.children = children = whole;
   }
   let stopped = false;
-  /** Whether this flow is a multicol container's, or in one: laid out as
-   *  one strip, all of it, and balanced in its columns (`layoutColumns`),
-   *  it is laid out whole. Asked once, where the layout would stop. */
+  /** Whether this flow is a multicol container's or a scroll
+   *  container's, or in one, which is laid out whole (`laidWholeAround`).
+   *  Asked once, where the layout would stop. */
   let inColumns: boolean | null = null;
   // The places this flow puts its children in are kept against this
   // layout of it (`FLOW_PLACE`); a probe's are no place at all
@@ -1363,7 +1373,7 @@ function layoutChildren(
     keeps < children.length &&
     clamp === null &&
     PROBED.get(box) !== ctx.pass &&
-    !(inColumns ??= multicolAround(box))
+    !(inColumns ??= laidWholeAround(box))
   ) {
     const last = FLOW_PLACE.get(children[keeps - 1]);
     if (last) {
@@ -1394,7 +1404,7 @@ function layoutChildren(
       ctx.until !== undefined &&
       y > ctx.until &&
       ctx.reach === undefined &&
-      !(inColumns ??= multicolAround(box))
+      !(inColumns ??= laidWholeAround(box))
     ) {
       // the rest as tall as it was, after the margin hanging above it
       y += marginOf(pendingMargin) + setAside(box, children, index, ctx);
@@ -5191,7 +5201,15 @@ function moveStatics(parent: Box, block: Box, dy: number): void {
   }
 }
 
-function translate(box: Box, dx: number, dy: number): void {
+/** Move a box and all it holds, its lines and their text with it — but for
+ *  the boxes `stays` names, and what they hold: what a scroll container
+ *  scrolls is what it is the containing block of (`scroll.ts`). */
+export function translate(
+  box: Box,
+  dx: number,
+  dy: number,
+  stays?: (box: Box) => boolean,
+): void {
   if (!dx && !dy) return;
   box.x += dx;
   box.y += dy;
@@ -5226,7 +5244,9 @@ function translate(box: Box, dx: number, dy: number): void {
       for (const edge of line.edges ?? []) edge.x += dx;
     }
   }
-  for (const child of box.children) translate(child, dx, dy);
+  for (const child of box.children) {
+    if (!stays?.(child)) translate(child, dx, dy, stays);
+  }
 }
 
 /** Resolve the margin, border and padding edges against a containing width.

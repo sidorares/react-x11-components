@@ -48,6 +48,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                                                         |
 | `onSubmit`           | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                                                                 |
 | `onViewportOverflow` | `(overflow: ViewportOverflow) => void`           | The `overflow` the root, or the `<body>`, gave the viewport, `{ x, y }` of `'auto' \| 'hidden' \| 'scroll'`, for the host's scroll pane — see [What renders](#what-renders).                                                      |
+| `onElementScroll`    | `(element: Element) => void`                     | A scroll container in the document scrolled, under the wheel or by `scrollElementTo`, told once it is drawn where it went: what a page hears as the element's `scroll`. See [Scroll containers](#scroll-containers).              |
 | `renderEmbedded`     | `(rect: EmbeddedRect) => ReactNode \| null`      | What to show in an `<iframe>`, a `<canvas>` or an `<embed>`, mounted at its content box — see [Embedded content](#embedded-content). Absent, each is an empty box.                                                                |
 | `fontSize`           | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                                                                              |
 | `fontFamily`         | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                                                                        |
@@ -78,6 +79,8 @@ handle.refresh();
 | `elementAt(x, y)`                                                                       | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry — in the document as it is now: one changed since the last paint is laid out first, as `elementRect` lays it out. In whichever tree it is: one in a shadow tree is that element, not its host.                                                                                                                                                                   |
 | `hrefAt(x, y)`                                                                          | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                                                                                                                                                                                                                                                                                                                                                      |
 | `elementRect(element)`                                                                  | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. Null for an element with no box. |
+| `scrollState(element)`                                                                  | Where a scroll container is scrolled to, how far it can be and its scrollport, in CSS pixels — `{ x, y, width, height, clientWidth, clientHeight, clientTop, clientLeft }`, what `scrollLeft`, `scrollTop`, `scrollWidth`, `scrollHeight` and their kin answer — laid out first. Null for an element that is no scroll container.                                                                                                                                        |
+| `scrollElementTo(element, { x?, y? })`                                                  | Scroll a scroll container to an offset in CSS pixels, an axis left out left where it is, kept within how far it can be, as a script sets `scrollTop`. Answers where it came to, or null.                                                                                                                                                                                                                                                                                 |
 | `title`                                                                                 | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                           |
 | `computedStyle(el, pseudo?)`                                                            | An element's style as `getComputedStyle` reads it, laid out first: the properties a script reads, lengths in CSS pixels, colours as `rgb()`, and the size and edges of its box as laid out. `pseudo` is `'before'` or `'after'`.                                                                                                                                                                                                                                         |
@@ -1716,9 +1719,9 @@ so an avatar is a round photograph, and a background to its box's — at the
 cost on X11 of a clip the size of the window, which only a rounded box
 pays. A box whose `overflow` is not `visible`
 clips what it holds to its padding box, rounded where the box is — all of
-it but a positioned box whose containing block is outside — and `scroll`
-and `auto` clip the same, with no scroll bars: the element around the
-document is what scrolls. `clip` clips as `hidden` does and makes no
+it but a positioned box whose containing block is outside — and one whose
+`overflow` scrolls is a scroll container (see [Scroll
+containers](#scroll-containers)). `clip` clips as `hidden` does and makes no
 scroll container, so it makes no formatting context and leaves a flex or
 grid item its automatic minimum; beside a value that scrolls, a `visible`
 axis is `auto` and a `clip` one `hidden`. `clip` on one axis cuts only that
@@ -2976,6 +2979,55 @@ rather than dragging a fixed header along with the text; a fixed
 background, behind the whole viewport, makes every scroll a repaint. A fragment has no
 root element, and its blocks have the body's `auto` height to resolve
 against.
+
+## Scroll containers
+
+A box whose `overflow` is other than `visible` and `clip` is a scroll
+container (CSS Overflow 3, 3), and scrolls what it holds: under the wheel
+where its `overflow` is `auto` or `scroll` on that axis, and through the
+handle (`scrollElementTo`) on any, `hidden` included, as a script scrolls
+one. A page that puts itself in a `main` a viewport tall that scrolls —
+up.com.au does — scrolls in it, where everything below its first screen
+was out of reach.
+
+**A scroll moves the content and nothing else**, the way `position:
+relative` does: after layout, the boxes and lines a scroll container holds
+are moved by its offset (`layout/scroll.ts`), and its clip cuts them as it
+cut them before. Everything that reads a box — paint and its culling, the
+hit test, the selection, `elementRect`, the controls, frames and players
+mounted beside the document — finds it where it is drawn, and none of them
+knows there is a scroll. What a container moves is what it is the scroll
+container of: its lines, its in-flow boxes and the out-of-flow boxes
+positioned against it or inside it. A box positioned against something
+outside it stays where it is, as it is not clipped by it either: a fixed
+header in a scrolling `main` stays at the top.
+
+**The offsets are the element's**, kept by the element through every
+layout and build: a resize lays the content out again and moves it by
+where its container is scrolled to, and a restyle that builds the boxes
+again keeps it. A new document starts at none.
+
+**The wheel goes to the innermost scroll container under the pointer
+that can move the way it turns**, and on out: one scrolled to its end
+hands the wheel on to the next around it, and then to the box around the
+document — core's chain, which the element answers (`canScroll`,
+`scrollBy`). A notch is core's, 48px.
+
+**How far one reaches is Chrome's `scrollHeight`**: its in-flow children's
+margin boxes and the boxes and lines in them, with its end padding past
+them, the out-of-flow boxes positioned against it by their border boxes,
+and nothing a box inside it clips. Its scrollport is its padding box: no
+room is taken for a scroll bar, and none is drawn, as an overlay scroll bar
+is not at rest. An RTL container scrolls as an LTR one does, from its left.
+
+**A scroll is a move and no layout**: the boxes are moved by the
+difference, the ink bounds worked out again, the scrollport repainted and
+what is mounted beside the document told where it went — 7 ms a step on a
+page of 3,000 paragraphs in one container. `onElementScroll` is told after
+each, once a move; the browser example fires the element's `scroll` from
+it, once a frame. A sticky box in a scroll container sticks to the
+viewport, not to the container, and the keys scroll the box around the
+document, not one inside it.
 
 ## Shadow DOM
 

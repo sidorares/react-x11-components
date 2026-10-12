@@ -1513,6 +1513,55 @@ test('a canvas has a WebGL context of either version, which keeps what a page se
   );
 });
 
+test('a scroll container scrolls as a script sets it, reads back where it is, and is told its scroll', async () => {
+  const doc = await hosted(
+    '<style>body{margin:0}#s{height:100px;overflow:auto;border:2px solid;padding:3px}' +
+      '.row{height:40px}#t{height:50px;overflow:hidden}</style>' +
+      '<div id="s"><div class="row" id="r0"></div><div class="row"></div><div class="row"></div>' +
+      '<div class="row"></div><div class="row" id="r4"></div><div class="row" id="r5"></div></div>' +
+      '<div id="t"><div style="height:200px"></div><p id="deep">deep</p></div>' +
+      '<p id="out"></p><script>' +
+      'var r = []; var s = document.getElementById("s"); var heard = [];' +
+      's.addEventListener("scroll", function (e) { heard.push(e.target.id + ":" + s.scrollTop + ":" + e.bubbles); });' +
+      'document.addEventListener("scroll", function (e) { if (e.target !== document) heard.push("bubbled"); });' +
+      'r.push(s.scrollTop, s.scrollHeight, s.clientHeight, s.clientTop);' +
+      's.scrollTop = 50; r.push(s.scrollTop, Math.round(document.getElementById("r0").getBoundingClientRect().top));' +
+      's.scrollTop = 9999; r.push(s.scrollTop);' +
+      's.scrollTo({ top: 10 }); s.scrollBy(0, 5); r.push(s.scrollTop);' +
+      // the row brought into view through the box it is in
+      'document.getElementById("r5").scrollIntoView(); r.push(s.scrollTop);' +
+      // as far down as the box it is in goes, which stops short of its top
+      'var t = document.getElementById("t");' +
+      'document.getElementById("deep").scrollIntoView(); r.push(Math.abs(t.scrollTop - (t.scrollHeight - t.clientHeight)) < 0.5);' +
+      'r.push(document.getElementById("out").scrollTop, document.documentElement.scrollTop);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      'setTimeout(function () { setTimeout(function () { document.getElementById("out").textContent += "|" + heard.join(",") + "|" + s.clientWidth; }, 50); }, 50);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t.split('|').length > 13);
+  // 6 rows of 40 and 3 of padding each side; a scrollport of 106 inside a
+  // border of 2
+  assert.equal(
+    text,
+    [
+      0,
+      246,
+      106,
+      2,
+      50,
+      2 + 3 - 50,
+      140,
+      15,
+      140,
+      true,
+      0,
+      0,
+      's:140:false',
+      396,
+    ].join('|'),
+  );
+});
+
 test('attribute nodes are the element’s, one each, in a map that is live', async () => {
   const doc = await hosted(
     '<div id="d" class="c" title="t" data-x="1"></div><p id="out"></p><script>' +

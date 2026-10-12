@@ -1461,6 +1461,14 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
     const r = call('rect', el._id);
     return typeof r === 'string' && r ? r.split(',').map(Number) : null;
   };
+  /** Where a scroll container is scrolled to, how far it can be and its
+   *  scrollport, in CSS pixels — x, y, width, height, clientWidth,
+   *  clientHeight, clientTop, clientLeft — or null for an element that is
+   *  none (`HtmlHandle.scrollState`). */
+  const scrollStateOf = (el: Any): number[] | null => {
+    const r = call('scrollState', el._id);
+    return typeof r === 'string' && r ? r.split(',').map(Number) : null;
+  };
 
   // --- attribute nodes ---------------------------------------------------------------
   //
@@ -1823,39 +1831,142 @@ export function installDom(bridge: Bridge, webgl: typeof installWebGL): void {
       const r = docRect(this);
       return list(r ? [this.getBoundingClientRect()] : []);
     }
+    // A scroll container's are its scrollport's and its content's
+    // (`scrollState`); the viewport's are the document's scrolling
+    // element's, as `scrollingElement` is the root (CSSOM View 7). An
+    // element that is neither answers with its border box and scrolls
+    // nothing.
     get clientWidth(): number {
+      const s = scrollStateOf(this);
+      if (s) return Math.round(s[4]);
+      if (this._viewport()) return viewport().width;
       return Math.round(docRect(this)?.[2] ?? 0);
     }
     get clientHeight(): number {
+      const s = scrollStateOf(this);
+      if (s) return Math.round(s[5]);
+      if (this._viewport()) return viewport().height;
       return Math.round(docRect(this)?.[3] ?? 0);
     }
     get clientTop(): number {
-      return 0;
+      return Math.round(scrollStateOf(this)?.[6] ?? 0);
     }
     get clientLeft(): number {
-      return 0;
+      return Math.round(scrollStateOf(this)?.[7] ?? 0);
     }
     get scrollWidth(): number {
+      const s = scrollStateOf(this);
+      if (s) return Math.round(s[2]);
+      if (this._viewport()) {
+        return Math.max(viewport().width, Math.round(docRect(this)?.[2] ?? 0));
+      }
       return this.clientWidth;
     }
     get scrollHeight(): number {
+      const s = scrollStateOf(this);
+      if (s) return Math.round(s[3]);
+      if (this._viewport()) {
+        return Math.max(viewport().height, Math.round(docRect(this)?.[3] ?? 0));
+      }
       return this.clientHeight;
     }
     get scrollTop(): number {
-      return 0;
+      if (this._viewport()) return viewport().scrollY;
+      return scrollStateOf(this)?.[1] ?? 0;
     }
-    set scrollTop(_v: number) {}
+    set scrollTop(v: Any) {
+      this._scrollTo(undefined, Number(v));
+    }
     get scrollLeft(): number {
-      return 0;
+      if (this._viewport()) return viewport().scrollX;
+      return scrollStateOf(this)?.[0] ?? 0;
     }
-    set scrollLeft(_v: number) {}
-    scrollIntoView(): void {
+    set scrollLeft(v: Any) {
+      this._scrollTo(Number(v), undefined);
+    }
+    /** Whether this element's scrolling is the viewport's: the root's. */
+    _viewport(): boolean {
+      return this === document.documentElement;
+    }
+    /** Scroll this element, an axis left where it is where it is not a
+     *  number: the viewport for the root. */
+    _scrollTo(x: number | undefined, y: number | undefined): void {
+      const ok = (v: number | undefined) =>
+        v !== undefined && Number.isFinite(v);
+      if (this._viewport()) {
+        const v = viewport();
+        call('scrollTo', ok(x) ? x : v.scrollX, ok(y) ? y : v.scrollY);
+        return;
+      }
+      call(
+        'scrollElement',
+        this._id,
+        ok(x) ? x : undefined,
+        ok(y) ? y : undefined,
+      );
+    }
+    scroll(a?: Any, b?: Any): void {
+      this.scrollTo(a, b);
+    }
+    scrollTo(a?: Any, b?: Any): void {
+      if (a && typeof a === 'object') {
+        this._scrollTo(
+          a.left === undefined ? undefined : Number(a.left),
+          a.top === undefined ? undefined : Number(a.top),
+        );
+      } else if (a !== undefined) this._scrollTo(Number(a), Number(b));
+    }
+    scrollBy(a?: Any, b?: Any): void {
+      const by =
+        a && typeof a === 'object'
+          ? { x: Number(a.left ?? 0), y: Number(a.top ?? 0) }
+          : { x: Number(a ?? 0), y: Number(b ?? 0) };
+      this._scrollTo(
+        this.scrollLeft + (Number.isFinite(by.x) ? by.x : 0),
+        this.scrollTop + (Number.isFinite(by.y) ? by.y : 0),
+      );
+    }
+    /** Brought into view through every scroll container around it, the
+     *  innermost first, and then the viewport (CSSOM View 7.1): its top
+     *  at the top of each, or its middle, its end or as little as shows
+     *  it, as `block` asks. */
+    scrollIntoView(arg?: Any): void {
+      const block =
+        arg && typeof arg === 'object'
+          ? str(arg.block ?? 'start')
+          : arg === false
+            ? 'end'
+            : 'start';
+      const place = (top: number, height: number, port: number) => {
+        if (block === 'center') return top - (port - height) / 2;
+        if (block === 'end') return top - (port - height);
+        if (block === 'nearest') {
+          if (top < 0) return top;
+          if (top + height > port) return top + height - port;
+          return 0;
+        }
+        return top;
+      };
+      for (let at = this.parentElement; at; at = at.parentElement) {
+        if (at === document.documentElement) break;
+        const s = scrollStateOf(at);
+        if (!s) continue;
+        const me = docRect(this);
+        const port = docRect(at);
+        if (!me || !port) return;
+        const top = me[1] - (port[1] + s[6]);
+        const by = place(top, me[3], s[5]);
+        if (by) call('scrollElement', at._id, undefined, s[1] + by);
+      }
       const r = docRect(this);
-      if (r) call('scrollTo', viewport().scrollX, r[1]);
+      if (!r) return;
+      const v = viewport();
+      call(
+        'scrollTo',
+        v.scrollX,
+        v.scrollY + place(r[1] - v.scrollY, r[3], v.height),
+      );
     }
-    scroll(): void {}
-    scrollTo(): void {}
-    scrollBy(): void {}
     /** A shadow root `<Html>` draws, as it draws a declarative one: the
      *  host's boxes are the tree's, with the host's children in its
      *  slots. */
