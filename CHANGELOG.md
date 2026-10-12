@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.23.0](https://github.com/sidorares/react-x11-components/compare/v0.22.0...v0.23.0) (2026-10-12)
+
+
+### Features
+
+* canvas paths, Path2D and gradients in the browser example; &lt;Html&gt; draws a canvas in its box ([#771](https://github.com/sidorares/react-x11-components/issues/771)) ([a90421e](https://github.com/sidorares/react-x11-components/commit/a90421ea50a2a96431d54ea8ede1b38667196fe6))
+* **html:** a box whose overflow scrolls is a scroll container, under the wheel and a page's scripts, so a page set in a scrolling main can be read past its first screen ([#770](https://github.com/sidorares/react-x11-components/issues/770)) ([3e537e1](https://github.com/sidorares/react-x11-components/commit/3e537e15a7fdc77d7a174452809a4f96cb4a9587))
+* **html:** a scroll container keeps its sticky boxes, takes the scroll keys and draws core's bar, which a drag moves ([#772](https://github.com/sidorares/react-x11-components/issues/772)) ([6946447](https://github.com/sidorares/react-x11-components/commit/6946447afdc1a777a6cd5ea64c0dbc151804d018))
+
+
+### Bug Fixes
+
+* **markdown:** a document's prose and code are set in the theme's fontFamily and monoFamily, and &lt;Code&gt;'s in its monoFamily, where they were set in sans-serif and monospace under any theme ([#762](https://github.com/sidorares/react-x11-components/issues/762)) ([#768](https://github.com/sidorares/react-x11-components/issues/768)) ([e1a0e03](https://github.com/sidorares/react-x11-components/commit/e1a0e03dc42d80d74e933c769e798d9b74ed09f1))
+* **rich-text-editor:** a bracket is escaped only where it could be part of a link, so [[wiki links]] and [x] are saved as they were typed, where every bracket came back escaped ([#761](https://github.com/sidorares/react-x11-components/issues/761)) ([#767](https://github.com/sidorares/react-x11-components/issues/767)) ([2e797ce](https://github.com/sidorares/react-x11-components/commit/2e797ce441f5eb8d1b97247894a8d533b96a69cb))
+* **richtext:** the words of an inline code span share one chip, where each word's chip was padded past its neighbour and a translucent fill showed a darker band at every space ([#763](https://github.com/sidorares/react-x11-components/issues/763)) ([#769](https://github.com/sidorares/react-x11-components/issues/769)) ([1fbdad1](https://github.com/sidorares/react-x11-components/commit/1fbdad1d1488346a85ecd7e1f4944f739cd82f06))
+* up.com.au loads in the browser example: WebGL context, stream bodies, clipped mounts ([#765](https://github.com/sidorares/react-x11-components/issues/765)) ([7809057](https://github.com/sidorares/react-x11-components/commit/7809057b655523c97d1a6f1a1f81a68a6cd36fed))
+
 ## [0.22.0](https://github.com/sidorares/react-x11-components/compare/v0.21.0...v0.22.0) (2026-10-11)
 
 
