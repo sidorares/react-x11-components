@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs';
 import React from 'react';
 
 import { renderX11, cleanup, screen, fireEvent, act } from 'react-x11/test';
+import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
 import { Code, RichTextNode } from '../src/index.js';
@@ -108,6 +109,24 @@ test('the tokenizer coloured the runs', async () => {
     SOURCE,
     'runs concatenate to the source',
   );
+});
+
+// The theme's `monoFamily` is the face every code surface reaches for; the
+// block was set in a literal 'monospace' under any theme (#762).
+test('the code is set in the theme monoFamily, unless the prop names one', async () => {
+  const code = (props: Record<string, unknown>) =>
+    h(
+      ThemeProvider,
+      { value: { monoFamily: 'Courier' } },
+      h(Code, { source: SOURCE, lang: 'js', ...props }),
+    );
+  const families = () => [
+    ...new Set(runsOf(richNodes()[0]).map((r) => r.family)),
+  ];
+  const { rerender } = await renderX11(code({}), { backend: 'mock' });
+  assert.deepStrictEqual(families(), ['Courier']);
+  await act(() => rerender(code({ monoFamily: 'Mono' })));
+  assert.deepStrictEqual(families(), ['Mono']);
 });
 
 test(

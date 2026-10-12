@@ -58,7 +58,7 @@ export interface CodeProps {
   selectable?: boolean;
   /** Default: 0.9 × the theme `fontSize`, matching `<Markdown>`'s blocks. */
   fontSize?: number;
-  /** Default `'monospace'` — there is no theme token for it. */
+  /** Default: the theme's `monoFamily`. */
   monoFamily?: string;
   /** Token palette override; the default follows the theme background,
    *  and `'$token'` colours in it resolve against the theme. */

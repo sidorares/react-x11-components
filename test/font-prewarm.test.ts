@@ -7,7 +7,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
 import React from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { useApp } from 'react-x11';
+import { useApp, ThemeProvider } from 'react-x11';
 import { renderX11, cleanup, act } from 'react-x11/test';
 
 import { Code } from '../src/code/index.js';
@@ -77,6 +77,16 @@ test('a code block and a captured session warm the mono family', async () => {
     'monospace',
   ]);
   assert.deepStrictEqual(
+    await asked(
+      h(
+        ThemeProvider,
+        { value: { monoFamily: 'Courier' } },
+        h(Code, { source: 'x = 1' }),
+      ),
+    ),
+    ['Courier'],
+  );
+  assert.deepStrictEqual(
     await asked(h(TerminalOutput, { data: 'ok\n', monoFamily: 'Fira Code' })),
     ['Fira Code'],
   );
@@ -94,6 +104,17 @@ test('a document warms the mono family only when it has code', async () => {
   assert.deepStrictEqual(
     await asked(h(Markdown, { source: '# a heading\n\nprose, no code' })),
     [],
+  );
+  // the face the theme names, which is the one the code is set in (#762)
+  assert.deepStrictEqual(
+    await asked(
+      h(
+        ThemeProvider,
+        { value: { monoFamily: 'Courier' } },
+        h(Markdown, { source: 'a line with `code` in it' }),
+      ),
+    ),
+    ['Courier'],
   );
 });
 

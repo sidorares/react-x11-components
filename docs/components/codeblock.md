@@ -27,7 +27,7 @@ Resolves everything the paint needs from the theme and a few overrides:
 interface CodeBlockLookOptions {
   fontSize?: number; // the mono size outright — <Code>'s `fontSize`
   baseSize?: number; // the document's base text size; mono is 0.9 of it
-  monoFamily?: string; // default 'monospace' — there is no theme token
+  monoFamily?: string; // default: the theme's `monoFamily`
   tokenStyles?: TokenStyles; // palette override
 }
 ```

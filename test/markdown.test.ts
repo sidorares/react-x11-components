@@ -10,11 +10,12 @@ import React from 'react';
 import { renderX11, cleanup, screen, fireEvent, act } from 'react-x11/test';
 import type { RenderX11Options } from 'react-x11/test';
 import { drawnKinds, registeredElements } from 'react-x11/host';
+import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
 import { Markdown, RichTextNode, parseMarkdown } from '../src/index.js';
 import { parseInline } from '../src/markdown/index.js';
-import type { BlockNode, InlineNode } from '../src/index.js';
+import type { BlockNode, InlineNode, TextRun } from '../src/index.js';
 import { cocoaShapedLayout } from './cocoa-shaped.js';
 import type { ShapedLayout } from './cocoa-shaped.js';
 
@@ -276,6 +277,53 @@ test('it mounts on the mock backend, where there are no font metrics', async () 
   assert.equal(root.length, 1);
   const texts = screen.all((n) => n instanceof RichTextNode);
   assert.ok(texts.length >= 5, `expected blocks, got ${texts.length}`);
+});
+
+/** The face the run holding `text` was handed, across every block. */
+function fontOf(text: string): { family?: string; size?: number } {
+  const run = screen
+    .all((n) => n instanceof RichTextNode)
+    .flatMap((n) => (n as unknown as { props: { runs: TextRun[] } }).props.runs)
+    .find((r) => r.text.includes(text));
+  return { family: run?.family, size: run?.size };
+}
+
+// The theme names the app's two faces, `fontFamily` and `monoFamily`, and
+// the document took its size from the theme but set its text in a literal
+// 'sans-serif' and its code in a literal 'monospace' (#762).
+const FONTS_SOURCE = 'hello `code` here\n\n```js\nx = 1\n```';
+
+test('prose is set in the theme fontFamily, code in its monoFamily', async () => {
+  await renderX11(
+    h(
+      ThemeProvider,
+      { value: { fontFamily: 'Menlo', monoFamily: 'Courier', fontSize: 16 } },
+      h(Markdown, { source: FONTS_SOURCE }),
+    ),
+    { backend: 'mock' },
+  );
+  // the sizes it already took from the theme: code is set at 0.9 of it
+  assert.deepStrictEqual(fontOf('hello'), { family: 'Menlo', size: 16 });
+  assert.deepStrictEqual(fontOf('code'), { family: 'Courier', size: 14 });
+  assert.deepStrictEqual(fontOf('x'), { family: 'Courier', size: 14 });
+});
+
+test('fontFamily and monoFamily props still win over the theme', async () => {
+  await renderX11(
+    h(
+      ThemeProvider,
+      { value: { fontFamily: 'Menlo', monoFamily: 'Courier' } },
+      h(Markdown, {
+        source: FONTS_SOURCE,
+        fontFamily: 'Prose',
+        monoFamily: 'Mono',
+      }),
+    ),
+    { backend: 'mock' },
+  );
+  assert.equal(fontOf('hello').family, 'Prose');
+  assert.equal(fontOf('code').family, 'Mono');
+  assert.equal(fontOf('x').family, 'Mono');
 });
 
 // --- with real metrics: layout, selection, clipboard -----------------------

@@ -29,7 +29,7 @@ line's start, and is copied as the tab it is.
 | `wrap`            | `boolean`                   | Wrap long lines instead of scrolling horizontally. Default false.                                                                 |
 | `selectable`      | `boolean`                   | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                          |
 | `fontSize`        | `number`                    | Default: 0.9 × the theme `fontSize`, matching `<Markdown>`'s blocks.                                                              |
-| `monoFamily`      | `string`                    | Default `'monospace'` — there is no theme token for it.                                                                           |
+| `monoFamily`      | `string`                    | Default: the theme's `monoFamily`.                                                                                                |
 | `tokenStyles`     | `TokenStyles`               | Palette override. The default follows the theme background, and `'$token'` colours in a custom palette resolve against the theme. |
 | `selectionColor`  | `string`                    | Selection band fill. Default: the theme accent at 35% opacity.                                                                    |
 | `style`           | `Style \| Style[]`          | The root box — width, margins, `flexGrow`.                                                                                        |

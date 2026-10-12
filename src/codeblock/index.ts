@@ -56,7 +56,7 @@ export interface CodeBlockLookOptions {
   /** The document's base text size, when there is one: the mono size is
    *  0.9 of it. Ignored when `fontSize` is given. */
   baseSize?: number;
-  /** Default `'monospace'` — there is no theme token for it. */
+  /** Default: the theme's `monoFamily`. */
   monoFamily?: string;
   /** Token palette override. */
   tokenStyles?: TokenStyles;
@@ -91,7 +91,7 @@ export function codeBlockLook(
   const size = options.fontSize ?? Math.round(base * 0.9);
   return {
     size,
-    family: options.monoFamily ?? 'monospace',
+    family: options.monoFamily ?? String(theme.monoFamily ?? 'monospace'),
     color,
     dim: String(theme.textMuted ?? '#7f8c8d'),
     fill: tint(color, 0.06),
