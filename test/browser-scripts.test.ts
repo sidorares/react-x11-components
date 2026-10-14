@@ -3184,6 +3184,70 @@ test("a canvas's paths are filled, stroked and clipped to in the page's pixels, 
 });
 
 metric(
+  'an element that takes the pointer has its moves and its release wherever the pointer goes, until the buttons are let go',
+  async () => {
+    // a slider's track, which asks on every move whether it has the pointer:
+    // `hasPointerCapture` was missing, and every move over it threw
+    const { text, logs } = await hostedFrames(
+      '<style>body{margin:0}div{height:20px}#other{height:40px}</style>' +
+        '<div id="track"></div><div id="gap"></div><div id="other"></div><p id="out"></p><script>' +
+        'var t = document.getElementById("track"); var r = [];' +
+        'function say(s) { r.push(s); document.getElementById("out").textContent = r.join(","); }' +
+        't.addEventListener("pointerdown", function (e) {' +
+        '  say("down:" + t.hasPointerCapture(e.pointerId) + ":" + e.buttons);' +
+        '  t.setPointerCapture(e.pointerId); say("set:" + t.hasPointerCapture(e.pointerId));' +
+        '});' +
+        't.addEventListener("gotpointercapture", function () { say("got"); });' +
+        't.addEventListener("lostpointercapture", function () { say("lost"); });' +
+        't.addEventListener("pointermove", function (e) {' +
+        '  if (t.hasPointerCapture(e.pointerId)) say("move:" + Math.round(e.clientY) + ":" + e.buttons);' +
+        '});' +
+        't.addEventListener("pointerup", function (e) { say("up:" + t.hasPointerCapture(e.pointerId)); });' +
+        't.addEventListener("mouseup", function () { say("mouseup"); });' +
+        'document.getElementById("other").addEventListener("pointermove", function () {' +
+        '  if (r.indexOf("other") < 0) say("other");' +
+        '});' +
+        'try { t.setPointerCapture(1); say("idle:" + t.hasPointerCapture(1)); } catch (e) { say(e.name); }' +
+        'try { t.setPointerCapture(7); } catch (e) { say(e.name); }' +
+        '</script>',
+      {},
+    );
+    const root = screen.getByTestName('page') as unknown as {
+      children: DrawnNode[];
+    };
+    const node = root.children[0];
+    const dx = 50 - node.abs.width / 2;
+    const onTrack = 10 - node.abs.height / 2;
+    const onOther = 60 - node.abs.height / 2;
+    await act(async () => fireEvent.mouseMove(node, { dx, dy: onTrack }));
+    await act(async () => fireEvent.mouseDown(node, { dx, dy: onTrack }));
+    await act(async () => fireEvent.mouseMove(node, { dx, dy: onOther }));
+    await act(async () => fireEvent.mouseUp(node, { dx, dy: onOther }));
+    await act(async () => fireEvent.mouseMove(node, { dx, dy: onOther + 1 }));
+    assert.equal(
+      await until(
+        () => text('page', 'out'),
+        (t) => t.includes('other'),
+      ),
+      [
+        'idle:false',
+        'NotFoundError',
+        'down:false:1',
+        'set:true',
+        'got',
+        'move:60:1',
+        'up:true',
+        'mouseup',
+        'lost',
+        'other',
+      ].join(','),
+      logs.join('\n'),
+    );
+    assert.ok(!logs.some((l) => l.includes('TypeError')), logs.join('\n'));
+  },
+);
+
+metric(
   "the pointer's moves, the wheel and a secondary press over a canvas reach its listeners",
   async () => {
     const { text, logs } = await hostedFrames(

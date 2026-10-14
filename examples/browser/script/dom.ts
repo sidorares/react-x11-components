@@ -378,11 +378,18 @@ export function installDom(
     readonly pointerId: number;
     readonly pointerType: string;
     readonly isPrimary: boolean;
+    readonly width: number;
+    readonly height: number;
+    readonly pressure: number;
     constructor(type: string, init: Any = {}) {
       super(type, init);
       this.pointerId = Number(init.pointerId ?? 1);
       this.pointerType = String(init.pointerType ?? 'mouse');
       this.isPrimary = init.isPrimary ?? true;
+      this.width = Number(init.width ?? 1);
+      this.height = Number(init.height ?? 1);
+      // a mouse's is half with a button held and none without (4.1.3)
+      this.pressure = Number(init.pressure ?? (this.buttons ? 0.5 : 0));
     }
   }
   class WheelEvent extends MouseEvent {
@@ -733,6 +740,19 @@ export function installDom(
     event.eventPhase = NONE;
     event.currentTarget = null;
     return !event.defaultPrevented;
+  };
+
+  /** The mouse, the one pointer there is (Pointer Events 3): the buttons
+   *  held, as the DOM's mask, kept from the presses and releases told
+   *  rather than from a move's, which carry none on macOS; and its capture,
+   *  the element asked for (`pending`) and the one its events go to; and
+   *  whether a cancelled pointerdown keeps the mouse's events back. */
+  const MOUSE_ID = 1;
+  const pointer: { held: number; pending: Any; target: Any; quiet: boolean } = {
+    held: 0,
+    pending: null,
+    target: null,
+    quiet: false,
   };
 
   // --- nodes -------------------------------------------------------------------
@@ -1835,6 +1855,37 @@ export function installDom(
     getClientRects(): Any {
       const r = docRect(this);
       return list(r ? [this.getBoundingClientRect()] : []);
+    }
+    // Pointer Events 3, 10.1: the pointer's events go to this element until
+    // it lets go or the buttons are released. A pointer with no button held
+    // is not captured, as Chrome has it, and the capture changes hands
+    // before the pointer's next event (`takeCapture`).
+    setPointerCapture(pointerId: Any): void {
+      if (Number(pointerId) !== MOUSE_ID) {
+        throw new DOMException(
+          'No active pointer with that id',
+          'NotFoundError',
+        );
+      }
+      if (!this.isConnected) {
+        throw new DOMException(
+          'The element is not in a document',
+          'InvalidStateError',
+        );
+      }
+      if (pointer.held) pointer.pending = this;
+    }
+    releasePointerCapture(pointerId: Any): void {
+      if (Number(pointerId) !== MOUSE_ID) {
+        throw new DOMException(
+          'No active pointer with that id',
+          'NotFoundError',
+        );
+      }
+      if (pointer.pending === this) pointer.pending = null;
+    }
+    hasPointerCapture(pointerId: Any): boolean {
+      return Number(pointerId) === MOUSE_ID && pointer.pending === this;
     }
     // A scroll container's are its scrollport's and its content's
     // (`scrollState`); the viewport's are the document's scrolling
@@ -5975,6 +6026,13 @@ export function installDom(
     'wheel',
     'pointerdown',
     'pointerup',
+    'pointermove',
+    'pointerover',
+    'pointerout',
+    'pointerenter',
+    'pointerleave',
+    'gotpointercapture',
+    'lostpointercapture',
   ]) {
     const property = {
       get(this: Any): Any {
@@ -11468,7 +11526,7 @@ export function installDom(
   let hovered: Any = null;
   entry('__event', () => {
     const e = input();
-    const target = wrap(e.target);
+    let target = wrap(e.target);
     if (!target) return true;
     const v = viewport();
     const mods = {
@@ -11482,11 +11540,40 @@ export function installDom(
       return ev;
     };
     const related = e.relatedTarget ? wrap(e.relatedTarget) : null;
+    /** Pointer Events 3, 10.4, "process pending pointer capture": the
+     *  capture changes hands, each side told, before the pointer's next
+     *  event. An element taken out of the document has lost it, which the
+     *  document is told (10.5). */
+    const takeCapture = (at: Any): void => {
+      if (pointer.pending && !pointer.pending.isConnected) {
+        pointer.pending = null;
+      }
+      if (pointer.target === pointer.pending) return;
+      const was = pointer.target;
+      pointer.target = pointer.pending;
+      const told = {
+        ...at,
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+        relatedTarget: null,
+      };
+      if (was) {
+        dispatch(
+          was.isConnected ? was : document,
+          trusted(new PointerEvent('lostpointercapture', told)),
+        );
+      }
+      if (pointer.target) {
+        dispatch(
+          pointer.target,
+          trusted(new PointerEvent('gotpointercapture', told)),
+        );
+      }
+    };
     switch (e.type) {
       case 'click':
-      case 'dblclick':
-      case 'mousedown':
-      case 'mouseup': {
+      case 'dblclick': {
         const Kind = e.type === 'click' ? PointerEvent : MouseEvent;
         return dispatch(
           target,
@@ -11500,11 +11587,75 @@ export function installDom(
               clientX: (e.x ?? 0) - v.scrollX,
               clientY: (e.y ?? 0) - v.scrollY,
               button: e.button ?? 0,
-              buttons: e.type === 'mousedown' ? 1 : 0,
+              buttons: 0,
               ...mods,
             }),
           ),
         );
+      }
+      case 'mousedown':
+      case 'mouseup': {
+        // the DOM's mask bit of the DOM's button
+        const bit = [1, 4, 2, 8, 16][e.button ?? 0] ?? 0;
+        const down = e.type === 'mousedown';
+        // a press of a button held is a release that was never told, off
+        // the document: the earlier press is over
+        if (down && pointer.held & bit) {
+          pointer.held = 0;
+          pointer.pending = null;
+          pointer.quiet = false;
+        }
+        const wasHeld = pointer.held;
+        pointer.held = down ? wasHeld | bit : wasHeld & ~bit;
+        const at = {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: G,
+          detail: e.detail ?? 1,
+          clientX: (e.x ?? 0) - v.scrollX,
+          clientY: (e.y ?? 0) - v.scrollY,
+          button: e.button ?? 0,
+          buttons: pointer.held,
+          ...mods,
+        };
+        // a release of a button the document never saw pressed is a
+        // mouse's alone
+        if (!down && !(wasHeld & bit)) {
+          return dispatch(target, trusted(new MouseEvent(e.type, at)));
+        }
+        takeCapture(at);
+        const to = pointer.target ?? target;
+        // the first button pressed is a pointerdown and the last released
+        // a pointerup; a button between is a move (Pointer Events 3, 4.1.3)
+        const first = down ? !wasHeld : !pointer.held;
+        const type = first
+          ? down
+            ? 'pointerdown'
+            : 'pointerup'
+          : 'pointermove';
+        const pointerGo = dispatch(
+          to,
+          trusted(
+            new PointerEvent(type, {
+              ...at,
+              cancelable: type !== 'pointermove',
+            }),
+          ),
+        );
+        // a cancelled pointerdown keeps the mouse's events back until the
+        // release, and its default with them (11.2), as Chrome has it
+        if (type === 'pointerdown') pointer.quiet = !pointerGo;
+        const mouseGo = pointer.quiet
+          ? true
+          : dispatch(to, trusted(new MouseEvent(e.type, at)));
+        if (type === 'pointerup') {
+          // the capture is let go once the buttons are (10.2)
+          pointer.quiet = false;
+          pointer.pending = null;
+          takeCapture(at);
+        }
+        return pointerGo && mouseGo;
       }
       case 'mousemove': {
         const at = {
@@ -11515,9 +11666,14 @@ export function installDom(
           clientX: (e.x ?? 0) - v.scrollX,
           clientY: (e.y ?? 0) - v.scrollY,
           button: 0,
-          buttons: e.buttons ?? 0,
+          // a move's own buttons are none on macOS: the presses told are
+          buttons: (e.buttons ?? 0) | pointer.held,
           ...mods,
         };
+        takeCapture(at);
+        // a captured pointer is over the element that took it, for its
+        // moves and its boundary events alike (10.1)
+        target = pointer.target ?? target;
         const was = hovered?.isConnected ? hovered : null;
         if (was !== target) {
           // out of the one, over the other, and left and entered every
@@ -11580,7 +11736,11 @@ export function installDom(
           }
           hovered = target;
         }
-        dispatch(target, trusted(new PointerEvent('pointermove', at)));
+        const go = dispatch(
+          target,
+          trusted(new PointerEvent('pointermove', { ...at, button: -1 })),
+        );
+        if (pointer.quiet) return go;
         return dispatch(target, trusted(new MouseEvent('mousemove', at)));
       }
       case 'wheel':

@@ -796,6 +796,19 @@ standards moved from what Acid3 expected):
   pane from scrolling. What the browser mounts over a canvas lets the
   pointer through to the element, so the playground's X server, which
   listens on its canvas, is pressed, and its window counts.
+- **A press is a pointer's before it is a mouse's, and an element can
+  take the pointer.** The facade dispatches a press as `pointerdown`
+  then `mousedown` and a release as `pointerup` then `mouseup`, and keeps
+  the buttons held from them, since a move's carry none on macOS. An
+  element has `setPointerCapture`, `releasePointerCapture` and
+  `hasPointerCapture` (Pointer Events 3, 10): while it holds the pointer
+  its moves and its release go to it wherever the pointer is, with
+  `gotpointercapture` and `lostpointercapture` as the capture changes
+  hands, and the release lets it go. A cancelled `pointerdown` keeps the
+  mouse's events back until the release, and the press's default with
+  them, as Chrome has it. A slider's track that asked
+  `hasPointerCapture` at every move threw a `TypeError` at every move
+  before it.
 
 - **A dedicated worker is a thread of its own.** `new Worker` starts a
   `worker_threads` thread (`workers.ts`, `worker-thread.ts`) with an engine
