@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.23.1](https://github.com/sidorares/react-x11-components/compare/v0.23.0...v0.23.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **examples:** an element in the browser example can take the pointer, so a slider's track that asks hasPointerCapture at every move no longer throws, and a press is a pointerdown before it is a mousedown ([#775](https://github.com/sidorares/react-x11-components/issues/775)) ([5ffb099](https://github.com/sidorares/react-x11-components/commit/5ffb099b149f79fd01a48515e934831a7398d30d))
+* **html:** a focus stop a clip hides is placed inside the clip at 2x as well, so the Zen Garden's home page no longer scrolls sideways into blank space ([#773](https://github.com/sidorares/react-x11-components/issues/773)) ([b7ea48f](https://github.com/sidorares/react-x11-components/commit/b7ea48f54fbe0ad95b9544b2f5c495b983551ad0))
+
 ## [0.23.0](https://github.com/sidorares/react-x11-components/compare/v0.22.0...v0.23.0) (2026-10-12)
 
 
