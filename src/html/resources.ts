@@ -37,8 +37,10 @@ export interface ResourceRequest {
   url: string;
   /** An `<img>`, an `<object>`, a background or a list marker; a
    *  `<link rel=stylesheet>` or an `@import`; an `@font-face` source; a
-   *  `<video>`'s `src`, or one of its `<source>`s. */
-  kind: 'image' | 'stylesheet' | 'font' | 'video';
+   *  `<video>`'s `src`, or one of its `<source>`s; a `<script src>`, or a
+   *  module one imports — asked for only where the document's scripts run
+   *  (`<Html scripts>`). */
+  kind: 'image' | 'stylesheet' | 'font' | 'video' | 'script';
   /**
    * A video's: the type its `<source>` says it is (`video/mp4`, and maybe
    * its `codecs`), for a host that knows what its player plays. Absent
@@ -46,7 +48,8 @@ export interface ResourceRequest {
    */
   type?: string;
   /** The element that referred to it, for a host that wants the context:
-   *  for a font, the `<style>` or `<link>` whose sheet declared it. */
+   *  for a font, the `<style>` or `<link>` whose sheet declared it; for a
+   *  module a script imports, the document's root element. */
   element: Element;
 }
 
@@ -67,6 +70,11 @@ export interface ResourceRequest {
  * none is what has nothing to show, a 404, and the fallback is drawn; an
  * image request for anything else answered so is no image.
  *
+ * A script is its source, as text or as bytes decoded with the `charset`
+ * the protocol named, else as UTF-8. It is asked for only where the
+ * document's scripts run, and never kept here: the engine asks once a
+ * script.
+ *
  * A video is nothing this decodes. It is what core's `<video>` plays: a
  * `src`, a path or URL the platform's player opens itself — where
  * `useSupports('mediaPlayback')` says this display has one — or `frames`,
@@ -80,6 +88,8 @@ export type ResourceResult =
   | { kind: 'image'; bytes: Uint8Array }
   | { kind: 'image'; image: unknown; width: number; height: number }
   | { kind: 'font'; bytes: Uint8Array }
+  | { kind: 'script'; text: string }
+  | { kind: 'script'; bytes: Uint8Array; charset?: string }
   | { kind: 'document' }
   | VideoSource;
 
@@ -236,7 +246,12 @@ export class ResourceStore {
     if (this._destroyed) return;
     // a font is `fonts.ts`'s to ask for, and never comes through here; a
     // video is `requestVideo`'s, and no answer for anything else
-    if (!result || result.kind === 'font' || result.kind === 'video') {
+    if (
+      !result ||
+      result.kind === 'font' ||
+      result.kind === 'video' ||
+      result.kind === 'script'
+    ) {
       entry.state = 'failed';
       // A sheet that will not come holds nothing back, and what was held
       // for it has to hear so: a first rendering waits on the sheets the

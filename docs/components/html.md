@@ -21,7 +21,9 @@ It registers one host element, `<htmlview>`, which owns the whole pipeline —
 parse, cascade, box tree, layout, paint — and draws the document itself. The
 form controls are the exception: those are core widgets mounted beside it.
 
-Nothing here fetches or executes anything. See [The seams](#the-seams).
+Nothing here fetches anything, and nothing executes unless `scripts` turns
+a document's scripts on. See [The seams](#the-seams) and
+[Scripts](#scripts).
 
 ## Props
 
@@ -38,6 +40,7 @@ Nothing here fetches or executes anything. See [The seams](#the-seams).
 | `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                                                                                                                               |
 | `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                                                                                                               |
 | `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.**                                                                                                           |
+| `scripts`            | `boolean \| HtmlScripts`                         | Run the document's scripts in this package's engine, loaded only then. Default off. `true` takes a default for every seam; an object overrides any — see [Scripts](#scripts).                                                                                                                       |
 | `onScript`           | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                                                                                                                                       |
 | `scripting`          | `boolean`                                        | Whether the host runs the document's scripts — this runs none either way. True draws a `<noscript>` as nothing, asks for nothing in it and makes `@media (scripting: enabled)` hold — see [The seams](#the-seams). Default false.                                                                   |
 | `onDomEvent`         | `(event: HtmlDomEvent) => boolean \| void`       | Something happened to the document, told before this does anything about it; `false` cancels it — see [Events before their defaults](#events-before-their-defaults).                                                                                                                                |
@@ -190,19 +193,21 @@ then UTF-8. The referrer is a `<link charset>` and the `charset` prop for a
 linked sheet, and the importing sheet's encoding for an `@import`. A host
 that decodes its stylesheets itself hands over text and is not second-guessed.
 
-**`onScript` never runs anything.** It is handed the `type`, the `src` —
+**`onScript` runs nothing.** It is handed the `type`, the `src` —
 resolved against the document's base where it has one, as every other URL
 is (see [Base URLs](#base-urls)) — the element and its text verbatim, and
 nothing in this package reads any of it —
 there is no parser, no sandbox and no partial evaluation, because a renderer
 that half-runs a script is one nobody can reason about. An application that
-wants scripting brings its own engine, and drives the result through the DOM
-handle. Each script is handed over once, whole: in a streamed document, a
+wants scripting turns on `scripts`, which runs them whole in an engine of
+its own (see [Scripts](#scripts)), or brings its own engine and drives the
+result through the DOM handle. Each script is handed over once, whole: in a streamed document, a
 `<script>` that a chunk ended inside waits for its end tag, or for the end of
 the parse, since what it holds before then is not the script.
 
 Inline event attributes (`onclick="…"`) are likewise left in the DOM as
-attributes and never invoked.
+attributes, and invoked only by an engine — `scripts`'s compiles them as a
+browser does.
 
 **So `<noscript>` is drawn** — unless the host says it runs scripts, with
 `scripting`. Then a noscript represents nothing, as it does where a browser
@@ -634,6 +639,117 @@ application's is the font manager's fallback chain: a registered face can
 supply a glyph that no other face has to text anywhere in the app, and
 nothing is ever unregistered, which react-x11's `loadFont` documents.
 
+## Scripts
+
+```jsx
+import { Html, useHtmlNetwork } from '@react-x11/components/html';
+
+const net = useHtmlNetwork(url);
+<box style={{ overflow: 'scroll', flexGrow: 1 }}>
+  <Html
+    source={source}
+    baseUrl={url}
+    onResource={net.onResource}
+    scripts={{ fetch: net.fetch }}
+  />
+</box>;
+```
+
+`scripts` runs a document's scripts: classic scripts and modules, an import
+map, `on…` attributes, timers, `fetch` and `XMLHttpRequest`, the DOM, a
+canvas a script draws on, frames running in realms of their own and
+dedicated workers on threads of their own. It is the engine the example
+browser was built over — a `node:vm` context a document, a DOM inside it
+over the tree drawn here, and only primitives crossing between the two —
+and [the PRD](../prd-html-scripts.md) is its design. **Off unless it is
+turned on**, and then nothing more than `true` is needed; every seam has a
+default, and an object overrides any of them.
+
+**What is fetched is still the application's.** `scripts` makes no request
+of its own:
+
+- a `<script src>`, and a module a script imports, is asked for through
+  `onResource` as `kind: 'script'`, beside the document's images and sheets,
+  answered with `{ kind: 'script', text }` or `{ kind: 'script', bytes,
+charset }` — the `<script>` is the request's `element`, and the root
+  element is a module's;
+- a page's own requests — `fetch`, `XMLHttpRequest`, a frame's document, a
+  worker's script — go through `scripts.fetch`, a request of any method and
+  the response whatever its status, after the engine has held the page to
+  what its origin and CORS let it read. **With none, they fail** as a
+  request with no network does, a `TypeError` in the page.
+
+`useHtmlNetwork(url)` is both, from one line: `onResource` and a `fetch` for
+the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, a
+cache, six requests a host at a time, `file:` only for a `file:` page, no
+mixed content, no cookies — shared by every document in the process
+(`defaultHtmlNetwork`), or one handed in. `new HtmlNetwork(options)` takes
+its own User-Agent, cache size, transport — a proxy, a cache on disk, a
+test's answers — and log, and its `html(url)` fetches a document whole,
+decoded, for `source`. Nothing about it is required: any `onResource` that
+answers `'script'` and any `fetch` of the same shape will do.
+
+**Where the page is shown is read from where it is.** Its viewport —
+`innerWidth`, `scrollY`, `scrollTo`, its `scroll` events — is the scroll pane around the `<Html>`, the host's, and its zoom is core's
+`scale` between the two, so an `<Html>` in a `<box scale={1.25}>` is a page
+at 125%. Its scripts run once the document has first been laid out, since a
+page measures what it reads.
+
+**What leaves the document is handed back**, and goes nowhere by default,
+since this component navigates nowhere by itself:
+
+| Seam        | Default                   | What it is                                                                                                              |
+| ----------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `fetch`     | none: every request fails | A page's requests, as above.                                                                                            |
+| `load`      | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                 |
+| `navigate`  | nothing                   | An address assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).                        |
+| `reload`    | nothing                   | `location.reload()`.                                                                                                    |
+| `go`        | nothing                   | `history.go`, `back` and `forward` past the page's own `pushState` steps.                                               |
+| `title`     | nothing                   | `document.title` was set.                                                                                               |
+| `log`       | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                 |
+| `timeout`   | 2000                      | Milliseconds a script, a listener or a timer may run before it is stopped; the page goes on after.                      |
+| `onTimeout` | nothing                   | One was.                                                                                                                |
+| `userAgent` | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends.                                                                        |
+| `language`  | the runtime's locale      | `navigator.language`.                                                                                                   |
+| `frames`    | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box. |
+| `workers`   | true                      | Dedicated workers, each a thread. Off, `new Worker` throws `NotSupportedError`.                                         |
+| `viewport`  | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                 |
+| `scrollTo`  | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                       |
+| `reserved`  | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                      |
+
+A link or a form whose `target` names one of the page's frames is loaded
+there; every other one still reaches `onLink` and `onSubmit`, which with
+scripts on are told a link or a form only once the page's own `click` and
+`submit` listeners have let it go. `onDocument`, `onDomEvent`, `onScript`,
+`onParsed`, `onLoaded`, `onElementScroll`, `canvasImage`, `stylesheet` and
+`renderEmbedded` are still called or applied, beside the engine's own; a
+`false` from either `onDomEvent` cancels.
+
+Three decisions that look like gaps and are not:
+
+- **It needs a runtime that keeps a page in.** A page's `import()` reaches
+  the host's realm unless the runtime calls the context's own callback,
+  which Node does only with `--experimental-vm-modules`, and Node 21 to 23
+  not even then. So scripts run on Bun, and on Node 20, or 24 and later,
+  started with the flag; elsewhere the document is drawn as a browser with
+  JavaScript off draws it, and a warning says why. `await
+preloadHtmlScripts()` answers which, and loads the engine before the
+  first document asks for it.
+- **The engine is a chunk of its own.** It is twelve thousand lines of DOM,
+  a rasterizer and the rest, reached by a dynamic `import()` the first
+  time a document turns it on, so an application whose documents run no
+  scripts bundles none of it. What a document reports before it is in —
+  its scripts, the end of its parse, its `load` — is kept and run in order.
+- **It is not a sandbox against a hostile page.** Node says so of `vm`, and
+  [the PRD's threat model](../prd-html-scripts.md) says what is: the
+  process. A runaway loop is stopped; a page that sets out to exhaust
+  memory or attack the machine is the process's to bound — the example
+  browser runs each tab in a `<Frame>` pane with a heap of its own. Turn
+  scripts on for documents the application would run the code of anyway.
+
+Turning `scripts` on or off makes a new document, as a browser reloads a
+page for its switch.
+
 ## Forms
 
 ```jsx
@@ -910,9 +1026,10 @@ frame's document rather than a source.** `document` draws a tree the host
 holds and changes, in place of parsing `source`, which is then not read: a
 frame's, which the page's scripts write into. It is complete as it is
 handed over, and what changes in it is told through the handle's `refresh`,
-as a script's changes are. The browser example draws a page's frames so,
-each running its scripts in a realm of its own
-(`examples/browser/frame.tsx`).
+as a script's changes are. `scripts` draws a page's frames so, each running
+its scripts in a realm of its own (`src/html/scripts/frames.ts`): a host
+that turns scripts on gets them with no `renderEmbedded` of its own, and
+one that has one is asked first.
 
 ## Focus and the keyboard
 
@@ -4133,14 +4250,11 @@ a step of the history that Reload sends again. A tab shows the page's
 component's policy — nothing fetched, nothing
 run — meets an application's: the browser fetches what a page asks for, and
 runs a page's scripts only where its toolbar's **JS** switch is on for the
-site, every site with `BROWSER_SCRIPTS=1`. Then `examples/browser/script/` is
-the engine those seams were made for: a `node:vm` context a document,
-hardened as [the PRD](../prd-html-scripts.md) says, a DOM in it over this
-component's tree, and `scripting`, `onDomEvent`, the handle and the
-lifecycle as its way to the page — classic scripts and module scripts,
-`MutationObserver` and `XMLHttpRequest` among what it gives them. A script
-that runs past two seconds is stopped and the page goes on; it is no boundary against a page that sets
-out to attack the machine, which is why the switch is off by default.
+site, every site with `BROWSER_SCRIPTS=1` — `<Html scripts>`, with the
+browser's own seams for each of [Scripts](#scripts)' defaults it fills in:
+its network, its history, its title and its chords. Its network is
+`HtmlNetwork`, made with the browser's User-Agent; a script that runs past
+two seconds is stopped and the page goes on, and the bubble says so.
 
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils

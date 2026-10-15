@@ -288,6 +288,34 @@ test('the GL map renderer is a lazy chunk, not part of <Map>', async () => {
 });
 
 /**
+ * `<Html>` must not cost its script engine. A document runs scripts only
+ * where `scripts` turns them on, and the engine — the `node:vm` context, a
+ * DOM facade of twelve thousand lines, the canvas rasterizer, WebGL's
+ * stand-in, the workers and the frames — is brought in by dynamic
+ * `import()` then (`src/html/scripts/hook.ts`). The markers are a constant
+ * only the engine reads and an entry only the facade defines.
+ */
+test('the script engine is a lazy chunk, not part of <Html>', async () => {
+  const chunks = await bundleChunks(
+    "import { Html } from './dist/html/index.js';\n" +
+      'globalThis.__keep = Html;\n',
+  );
+  const eager = staticClosure(chunks);
+  for (const marker of ['DONT_CONTEXTIFY', '__becomeWorker']) {
+    const holder = eager.find((chunk) => chunk.text.includes(marker));
+    assert.ok(
+      !holder,
+      `loading <Html> should not load the script engine (${marker} is in ` +
+        `${holder?.path.split('/').pop()}, which the entry imports statically)`,
+    );
+  }
+  assert.ok(
+    chunks.some((chunk) => chunk.text.includes('__becomeWorker')),
+    'and the engine should still be reachable, in a chunk of its own',
+  );
+});
+
+/**
  * Every chunk the entry loads *statically*, the entry included — following
  * `import … from "./chunk"` and bare `import "./chunk"`, never `import()`.
  *

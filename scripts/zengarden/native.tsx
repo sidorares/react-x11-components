@@ -36,7 +36,7 @@ import type { Root } from 'react-x11';
 
 import { Html } from '../../src/html/index.js';
 import type { ResourceRequest, ResourceResult } from '../../src/html/index.js';
-import { resourceResult } from '../../examples/browser/network.js';
+import { resourceResult } from '../../src/html/network.js';
 import type { Capture, Image, Rect } from './chrome.js';
 import {
   blinkMetrics,

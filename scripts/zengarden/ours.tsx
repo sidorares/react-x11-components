@@ -1,7 +1,7 @@
 // Our side of the comparison: a page through <Html> in react-x11's
 // in-process X server, laid out the way the browser example lays it out —
 // a scroll pane the size of the viewport, the document in it — with its
-// resources through the example's network (examples/browser/network.ts),
+// resources through the example's network (src/html/network.ts),
 // the seams the browser has. A disk cache sits under the network, so a
 // rerun asks the site for nothing and a page compares against the bytes it
 // was first compared against.
@@ -42,10 +42,10 @@ import { Html } from '../../src/html/index.js';
 import type { ResourceRequest, ResourceResult } from '../../src/html/index.js';
 import {
   mixedContent,
-  Network,
+  HtmlNetwork,
   resourceResult,
-} from '../../examples/browser/network.js';
-import type { Fetched, ResourceKind } from '../../examples/browser/network.js';
+} from '../../src/html/network.js';
+import type { Fetched, ResourceKind } from '../../src/html/network.js';
 import type { Capture, Image, Rect } from './chrome.js';
 
 const h = React.createElement;
@@ -187,14 +187,14 @@ type Missing = { status: number } | { refused: true };
  * nineteen designs were never compared.
  *
  * A 200 is not an answer until its body is here, and the network says
- * which of these it was (`Network.load`). Told only that nothing came, the
+ * which of these it was (`HtmlNetwork.load`). Told only that nothing came, the
  * cache asked the server for a status, had a 200, fetched again and was
  * given nothing again: nextjs.org's main stylesheet, 580 KB under a load
  * average above 100, was kept as missing, and the blog was laid out
  * without it in every run after.
  */
 export class CachedNetwork {
-  private _network = new Network();
+  private _network = new HtmlNetwork();
   /** The URLs no answer came for, since they were last taken. */
   private _dropped: string[] = [];
   constructor(private readonly _dir: string) {

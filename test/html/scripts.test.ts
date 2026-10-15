@@ -1,4 +1,4 @@
-// The browser example's script engine (examples/browser/script/): a page's
+// `<Html>`'s script engine (src/html/scripts/): a page's
 // scripts run in a `node:vm` context over `<Html>`'s DOM, and nothing of
 // the host's is reachable from them. docs/prd-html-scripts.md is the
 // design; these run it against an `<Html>` in the in-process X server, with
@@ -18,37 +18,41 @@ import {
 import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
-import { Html, shadowRootOf, useHtmlHandle } from '../src/html/index.js';
+import { Html, shadowRootOf, useHtmlHandle } from '../../src/html/index.js';
 import type {
   FormSubmission,
   HtmlHandle,
   HtmlViewNode,
   ResourceRequest,
   ResourceResult,
-} from '../src/html/index.js';
+} from '../../src/html/index.js';
 import type {
   Document as HtmlDocument,
   Element as DocElement,
-} from '../src/html/dom.js';
-import { useScripts } from '../examples/browser/script/index.js';
-import type { ScriptRunner } from '../examples/browser/script/index.js';
+} from '../../src/html/dom.js';
+import { preloadHtmlScripts, useScripts } from '../../src/html/scripts/hook.js';
+import type { ScriptRunner } from '../../src/html/scripts/runner.js';
 import {
   SCRIPTS_CONTAINED,
   ScriptEngine,
-} from '../examples/browser/script/engine.js';
-import { DomHost } from '../examples/browser/script/host.js';
-import { HtmlSource } from '../src/html/dom.js';
-import type { ScriptsOptions } from '../examples/browser/script/index.js';
-import { linkTarget, navigableFor } from '../examples/browser/target.js';
-import { FrameHolder, embeddedMounts } from '../examples/browser/frame.js';
-import type { FrameContext } from '../examples/browser/frame.js';
+} from '../../src/html/scripts/engine.js';
+import { DomHost } from '../../src/html/scripts/host.js';
+import { HtmlSource } from '../../src/html/dom.js';
+import type { ScriptsOptions } from '../../src/html/scripts/runner.js';
+import { linkTarget, navigableFor } from '../../src/html/scripts/target.js';
+import { FrameHolder, embeddedMounts } from '../../src/html/scripts/frames.js';
+import type { FrameContext } from '../../src/html/scripts/frames.js';
 import type {
   FetchRequest,
   FetchResponse,
-} from '../examples/browser/script/host.js';
-import { FONTS, findById, h, metric as fontMetric } from './html/harness.js';
+} from '../../src/html/scripts/host.js';
+import { FONTS, findById, h, metric as fontMetric } from './harness.js';
 
 afterEach(cleanup);
+
+// the engine's chunk, loaded before the first page rather than by it, so
+// that no test's first page waits on its transpile (`./hook.ts`)
+await preloadHtmlScripts();
 
 /** Tests that run a page's scripts, skipped where this runtime runs none:
  *  Node 21 to 23 hand a page's `import()` a promise of the host's realm, so
@@ -399,7 +403,7 @@ nodeTest(
         'tsx',
         '--input-type=module',
         '-e',
-        "import { SCRIPTS_CONTAINED, ScriptEngine } from './examples/browser/script/engine.ts';" +
+        "import { SCRIPTS_CONTAINED, ScriptEngine } from './src/html/scripts/engine.ts';" +
           'let made = true;' +
           'try { new ScriptEngine(() => null, { timeout: 1, onTimeout() {}, log() {}, settled() {} }); }' +
           'catch { made = false; }' +
@@ -621,7 +625,7 @@ test('a listener there before the engine hears the host’s rejections and none 
       'tsx',
       '--input-type=module',
       '-e',
-      "import { ScriptEngine } from './examples/browser/script/engine.ts';" +
+      "import { ScriptEngine } from './src/html/scripts/engine.ts';" +
         'const heard = []; const logged = [];' +
         "process.on('unhandledRejection', (reason) => heard.push(reason.message));" +
         'const engine = new ScriptEngine(' +
@@ -2741,8 +2745,8 @@ test('an IntersectionObserver hands entries of the interface a page asks for, so
   assert.equal(text, 'true|true|true|t|true|1');
 });
 
-/** A page whose frames run in realms of their own, as the browser runs
- *  them (`drawsFrames`, `frame.tsx`): each frame's document drawn by an
+/** A page whose frames run in realms of their own, as `<Html scripts>`
+ *  runs them (`drawsFrames`, `frames.ts`): each frame's document drawn by an
  *  `<Html>` of its own over the frame's box, or held where the page lays
  *  out none, its scripts its own runner's, linked to the page's. */
 async function hostedFrames(
@@ -2799,7 +2803,7 @@ async function hostedFrames(
     const frames = (): FrameContext | null => {
       const parent = scripts.runner?.();
       return parent
-        ? { parent, seams, onResource: () => null, onLink: () => {} }
+        ? { parent, seams, look: { onResource: () => null } }
         : null;
     };
     const holder = frames();

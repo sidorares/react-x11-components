@@ -355,6 +355,11 @@ export interface HtmlViewProps {
    *  `scrollElementTo` — told after it is drawn where it went: what a page
    *  hears as the element's `scroll`. */
   onElementScroll?: (element: Element) => void;
+  /** The pane that scrolls the element — the nearest scroll container
+   *  around it, the host's — scrolled: noticed as the element paints, which
+   *  a scroll that moves the document under the pane's viewport makes it
+   *  do. What a page's scripts hear as the window's `scroll`. */
+  onViewportScroll?: () => void;
   /** What a `<canvas>` shows: an image `ctx.drawImage` takes — an ntk
    *  `Image` of the canvas's pixels — or null for nothing, drawn in its
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
@@ -419,7 +424,7 @@ export function registerHtmlView(): void {
     ],
     // what the component watches is no part of the picture: a new window of
     // stops after each Tab is no repaint of the document
-    selfDamagedProps: ['watchStops'],
+    selfDamagedProps: ['watchStops', 'onViewportScroll'],
     childrenAllowed: false,
   });
 }
@@ -6155,6 +6160,30 @@ export class HtmlViewNode extends Node {
     super.paint(ctx); // background, border, clip to `abs`
     this._counted(() => this._paintContent(ctx));
     this._noteFrame();
+    this._notePaneScroll();
+  }
+
+  /** Where the pane around the element was scrolled to at the last paint
+   *  (`onViewportScroll`), or null before the first. */
+  private _paneScroll: string | null = null;
+
+  /** Tell `onViewportScroll` the pane moved since the last paint. */
+  private _notePaneScroll(): void {
+    const tell = this._props().onViewportScroll;
+    if (!tell) return;
+    for (let node = this.parent; node; node = node.parent) {
+      const pane = node as unknown as {
+        isScroller?: () => boolean;
+        scrollX: number;
+        scrollY: number;
+      };
+      if (!pane.isScroller?.()) continue;
+      const at = `${pane.scrollX},${pane.scrollY}`;
+      const was = this._paneScroll;
+      this._paneScroll = at;
+      if (was !== null && was !== at) tell();
+      return;
+    }
   }
 
   /** The document, over what core painted for the element (`paint`). */

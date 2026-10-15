@@ -4,7 +4,7 @@
 // can render. Every one is HTML handed to the same component as a page from
 // the web, so it is styled with CSS like one, including the dark scheme,
 // which `<Html>` answers from the palette in force.
-import { escapeHtml } from './network.js';
+import { escapeHtml } from '../../src/html/index.js';
 
 export const HOME = 'about:home';
 export const BLANK = 'about:blank';

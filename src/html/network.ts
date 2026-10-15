@@ -1,12 +1,13 @@
-// The browser's network: everything `<Html>` deliberately does not do.
+// A network for `<Html>`: everything `<Html>` deliberately does not do, for
+// a host that wants the web's answers without writing its own fetching.
 //
-// `<Html>` asks for each resource a page needs through `onResource` and
-// fetches nothing itself (docs/components/html.md, "The seams"). This is the
-// other side of that seam — the host — and it is where the policy lives:
+// `<Html>` asks for each resource a document needs through `onResource`,
+// and a page's scripts for theirs through `scripts.fetch`, and fetches
+// nothing itself (docs/components/html.md, "The seams"). This is one host's
+// side of those seams — the example browser's, which it was written for —
+// and it is where a policy lives, which an application takes or leaves:
 //
-//   - **One cache for the process**, keyed by absolute URL: a tab's own,
-//     where each tab's page is a process of its own (page.tsx), and every
-//     tab's where the pages run inline. Back, or a second page from the
+//   - **One cache**, keyed by absolute URL. Back, or a second page from the
 //     same site, costs no request for anything already here. It is bounded
 //     by bytes and forgets the oldest first.
 //   - **A few requests at a time**, six per host, the way browsers pace a
@@ -14,44 +15,119 @@
 //   - **`file:` only for `file:` pages.** A page from the web naming
 //     `file:///etc/passwd` as an image gets nothing; a local page gets its
 //     local images.
-//   - **No mixed content.** A secure page's stylesheets and fonts come over
-//     a secure connection or not at all, and its images are asked for over
-//     one (`mixedContent`), as a browser has it.
+//   - **No mixed content.** A secure page's stylesheets, fonts and scripts
+//     come over a secure connection or not at all, and its images are
+//     asked for over one (`mixedContent`), as a browser has it.
 //   - **No cookies, no downloads.** Nothing is stored between requests.
-//     Anything that is not a document, an image, a stylesheet or a font is
-//     not fetched at all — but a script, and a script's own `fetch`, where
-//     the browser's switch runs a page's scripts (`script/`), the `fetch`
-//     of the page's own origin, or of another where CORS lets the page
-//     read it.
+//     Anything that is not a document, an image, a stylesheet, a font or a
+//     script is not fetched at all — but a script's own `fetch`, of the
+//     page's own origin, or of another where CORS lets the page read it
+//     (the engine keeps to that; this keeps the host's headers on it).
 //   - **A form's POST says where it came from.** Its `Origin` and `Referer`
 //     are the page's, as a browser's are, because a server tells a form's
-//     POST from a forged one by them. What it cannot send is a session: with
-//     no cookies, a form that needs one — a sign-in, most that carry a CSRF
-//     token — is refused by its site. A search form, DuckDuckGo Lite's
-//     among them, needs none.
+//     POST from a forged one by them.
 //
-// The User-Agent says what this is. Sites that sniff for a browser they
-// know send what they send to an unknown one, which is usually the simpler
-// page — and it is why Google Fonts answers with TrueType, one file a
-// weight, which the text engines of both backends read.
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
-import { extname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+// The transport is the runtime's `fetch` — Node's and Bun's — unless the
+// application hands it another, and `file:` is read through `node:fs`,
+// reached as `src/embed/host.ts` reaches it. Nothing happens as this module
+// is imported: an application that does not make an `HtmlNetwork` pays for
+// none of it.
+import { useEffect, useMemo } from 'react';
+import { useSupports } from 'react-x11';
 
-import type { ResourceResult } from '../../src/html/index.js';
+import type { ResourceRequest, ResourceResult } from './resources.js';
+import type { FetchRequest, FetchResponse } from './scripts/host.js';
+import { nodeModule } from './scripts/platform.js';
+import type {
+  AbortControllerClass,
+  AbortSignalLike,
+  SetTimeout,
+  UrlClass,
+} from './scripts/platform.js';
 
-// Happy Eyeballs (RFC 8305) gives each address family 250 ms in Node. A page
-// being laid out holds the event loop longer than that, and a connection
-// whose handshake came back meanwhile is counted as timed out when the loop
-// gets to it: every stylesheet Wikipedia's article asked for failed with
-// ETIMEDOUT while the article was laying itself out. A browser allows a
-// connection seconds, and this one is an application that may say so.
-setDefaultAutoSelectFamilyAttemptTimeout(2500);
+declare const setTimeout: SetTimeout;
+declare const URL: UrlClass;
+declare const AbortController: AbortControllerClass;
+declare const AbortSignal: {
+  timeout(ms: number): AbortSignalLike & { readonly aborted: boolean };
+  any(signals: AbortSignalLike[]): AbortSignalLike;
+};
+declare const TextEncoder: new () => { encode(text: string): Uint8Array };
+declare const TextDecoder: new (label?: string) => {
+  decode(bytes: Uint8Array): string;
+};
+declare const atob: (data: string) => string;
 
-export const USER_AGENT =
-  'Mozilla/5.0 (X11; Linux x86_64) react-x11-components/0.9 ' +
-  '(example browser; +https://github.com/sidorares/react-x11-components)';
+/** The slice of a `fetch` response read here. */
+interface ResponseLike {
+  readonly url: string;
+  readonly status: number;
+  readonly statusText: string;
+  readonly redirected: boolean;
+  readonly headers: {
+    get(name: string): string | null;
+    entries(): IterableIterator<[string, string]>;
+  };
+  readonly body: {
+    getReader(): {
+      read(): Promise<{ done: boolean; value?: Uint8Array }>;
+      cancel(): Promise<void>;
+    };
+  } | null;
+}
+
+/** A transport: the runtime's `fetch`, or one that goes somewhere else — a
+ *  proxy, a cache on disk, a test's answers. */
+export type HtmlTransport = (
+  url: string,
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+    signal: AbortSignalLike;
+    redirect: 'follow';
+  },
+) => Promise<ResponseLike>;
+
+/** What an `HtmlNetwork` is made with. Every field has a default. */
+export interface HtmlNetworkOptions {
+  /** The `User-Agent` every request carries. Default `HTML_USER_AGENT`. */
+  userAgent?: string;
+  /** How many bytes the cache keeps before it forgets the oldest. Default
+   *  256 MB. */
+  cacheBytes?: number;
+  /** What makes the requests. Default the runtime's `fetch`. */
+  fetch?: HtmlTransport;
+  /** Whether a `file:` page may read its own `file:` resources, and a
+   *  `file:` URL be opened as a document. Default true. */
+  files?: boolean;
+  /**
+   * How long Node gives each address family to connect, in milliseconds
+   * (`net.setDefaultAutoSelectFamilyAttemptTimeout`), set the first time
+   * this network makes a request — a setting of the process, which is why
+   * it is an option. Node's own 250 ms is shorter than a long layout holds
+   * the event loop, and a connection whose handshake came back meanwhile
+   * is counted as timed out: every stylesheet Wikipedia's article asked
+   * for failed with ETIMEDOUT while the article was laying itself out.
+   * Default 2500; null leaves Node's alone.
+   */
+  connectTimeout?: number | null;
+  /** Where each request and what came of it is told: a line of words a
+   *  request. Default nowhere. */
+  log?: (...parts: unknown[]) => void;
+}
+
+/**
+ * The User-Agent an `HtmlNetwork` sends, and `<Html scripts>`' pages read
+ * as `navigator.userAgent`, unless told another. It says what this is.
+ * Sites that sniff for a browser they know send what they send to an
+ * unknown one, which is usually the simpler page — and it is why Google
+ * Fonts answers with TrueType, one file a weight, which the text engines of
+ * every backend read.
+ */
+export const HTML_USER_AGENT =
+  'Mozilla/5.0 (X11; Linux x86_64) react-x11-components ' +
+  '(+https://github.com/sidorares/react-x11-components)';
 
 const ACCEPT = {
   document: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -64,9 +140,9 @@ const ACCEPT = {
   script: '*/*',
 } as const;
 
-/** What a page asks for. A script is asked for only where the browser runs
- *  the page's scripts (`script/`), and is blocked on a secure page over an
- *  insecure connection, as a stylesheet is. */
+/** What a page asks for. A script is asked for only where the page's
+ *  scripts run, and is blocked on a secure page over an insecure
+ *  connection, as a stylesheet is. */
 export type ResourceKind = 'image' | 'stylesheet' | 'font' | 'script';
 
 /** A response's body, and what the server said about it. */
@@ -135,12 +211,6 @@ export class NetworkError extends Error {
   }
 }
 
-/** `BROWSER_DEBUG=1` logs every request and what came of it. */
-const DEBUG = !!process.env.BROWSER_DEBUG;
-const log = (...parts: unknown[]): void => {
-  if (DEBUG) console.error('[browser]', ...parts);
-};
-
 const MAX_DOCUMENT = 32 * 1024 * 1024;
 const MAX_RESOURCE = 16 * 1024 * 1024;
 const TIMEOUT = 30_000;
@@ -150,7 +220,14 @@ interface Queued {
   start: () => void;
 }
 
-export class Network {
+/**
+ * A network for `<Html>`: a cache, a pace, and a browser's rules about what
+ * a page may have (see the top). `resources(page)` is an `onResource` for
+ * the document at `page`, `fetcher(page)` its scripts' `fetch`, and
+ * `useHtmlNetwork` both, for a component. One is enough for an application:
+ * every document it shows shares the cache.
+ */
+export class HtmlNetwork {
   private _cache = new Map<string, Promise<Loaded>>();
   private _sizes = new Map<string, number>();
   private _bytes = 0;
@@ -159,10 +236,53 @@ export class Network {
   private _perHost = new Map<string, number>();
   private _queue: Queued[] = [];
   private _language: string;
+  private readonly _userAgent: string;
+  private readonly _transport: HtmlTransport | null;
+  private readonly _files: boolean;
+  private _connectTimeout: number | null;
+  private readonly _log: (...parts: unknown[]) => void;
 
-  constructor(options: { cacheBytes?: number } = {}) {
+  constructor(options: HtmlNetworkOptions = {}) {
     this._limit = options.cacheBytes ?? 256 * 1024 * 1024;
     this._language = acceptLanguage();
+    this._userAgent = options.userAgent ?? HTML_USER_AGENT;
+    this._transport = options.fetch ?? null;
+    this._files = options.files ?? true;
+    this._connectTimeout =
+      options.connectTimeout === undefined ? 2500 : options.connectTimeout;
+    this._log = options.log ?? (() => {});
+  }
+
+  /** The User-Agent this network's requests carry. */
+  get userAgent(): string {
+    return this._userAgent;
+  }
+
+  /** What makes a request: the transport this was given, or the runtime's
+   *  `fetch`, Node's told how long a connection may take first. */
+  private async _send(
+    url: string,
+    init: Parameters<HtmlTransport>[1],
+  ): Promise<ResponseLike> {
+    if (this._transport) return this._transport(url, init);
+    if (this._connectTimeout !== null) {
+      const ms = this._connectTimeout;
+      this._connectTimeout = null;
+      try {
+        const net = await nodeModule<{
+          setDefaultAutoSelectFamilyAttemptTimeout?(ms: number): void;
+        }>('net');
+        net.setDefaultAutoSelectFamilyAttemptTimeout?.(ms);
+      } catch {
+        // a runtime with no `node:net` connects as it does
+      }
+    }
+    const runtimeFetch = (globalThis as unknown as { fetch?: HtmlTransport })
+      .fetch;
+    if (!runtimeFetch) {
+      throw new NetworkError('This runtime has no fetch.', 'ERR_FAILED');
+    }
+    return runtimeFetch(url, init);
   }
 
   /** How many requests are waiting or running. */
@@ -186,7 +306,7 @@ export class Network {
     url: string,
     kind: ResourceKind,
     page: string,
-    signal?: AbortSignal,
+    signal?: AbortSignalLike,
   ): Promise<Fetched | null> {
     return this.load(url, kind, page, signal).then((loaded) =>
       'fetched' in loaded ? loaded.fetched : null,
@@ -198,14 +318,16 @@ export class Network {
     url: string,
     kind: ResourceKind,
     page: string,
-    signal?: AbortSignal,
+    signal?: AbortSignalLike,
   ): Promise<Loaded> {
     const refused = Promise.resolve<Loaded>({ refused: true });
     const allowed = mixedContent(url, kind, page);
     if (allowed === null) return refused;
     if (allowed !== url) return this.load(allowed, kind, page, signal);
     const scheme = schemeOf(url);
-    if (scheme === 'file' && schemeOf(page) !== 'file') return refused;
+    if (scheme === 'file' && (!this._files || schemeOf(page) !== 'file')) {
+      return refused;
+    }
     if (!['http', 'https', 'data', 'file'].includes(scheme)) return refused;
     const hit = this._cache.get(url);
     if (hit) {
@@ -231,16 +353,22 @@ export class Network {
     const promise = made.then(
       (fetched): Loaded => {
         if (!fetched || fetched.status < 200 || fetched.status >= 300) {
-          log(kind, fetched ? fetched.status : 'nothing to read', url);
+          this._log(kind, fetched ? fetched.status : 'nothing to read', url);
           this._cache.delete(url);
           return fetched ? { status: fetched.status } : { refused: true };
         }
-        log(kind, fetched.status, fetched.type, fetched.bytes.length, url);
+        this._log(
+          kind,
+          fetched.status,
+          fetched.type,
+          fetched.bytes.length,
+          url,
+        );
         this._remember(url, fetched.bytes.length);
         return { fetched };
       },
       (error): Loaded => {
-        log(
+        this._log(
           kind,
           'failed',
           url,
@@ -277,11 +405,19 @@ export class Network {
    */
   async document(
     url: string,
-    signal: AbortSignal,
+    signal: AbortSignalLike,
     post: PostData | null = null,
   ): Promise<DocumentResponse> {
     const scheme = schemeOf(url);
-    if (scheme === 'file') return localDocument(url);
+    if (scheme === 'file') {
+      if (!this._files) {
+        throw new NetworkError(
+          'This network opens no file: URLs.',
+          'ERR_ACCESS_DENIED',
+        );
+      }
+      return localDocument(url);
+    }
     if (scheme === 'data') {
       const read = readDataUrl(url);
       if (!read) {
@@ -300,7 +436,7 @@ export class Network {
     }
     const timer = AbortSignal.timeout(TIMEOUT);
     const headers: Record<string, string> = {
-      'user-agent': USER_AGENT,
+      'user-agent': this._userAgent,
       accept: ACCEPT.document,
       'accept-language': this._language,
     };
@@ -310,11 +446,11 @@ export class Network {
       headers.origin = originOf(post.from);
       const referrer = referrerFor(post.from, url);
       if (referrer) headers.referer = referrer;
-      log('POST', url, post.contentType, post.body.length);
+      this._log('POST', url, post.contentType, post.body.length);
     }
-    let response: Response;
+    let response: ResponseLike;
     try {
-      response = await fetch(url, {
+      response = await this._send(url, {
         method: posting ? 'POST' : 'GET',
         body: posting ? post.body : undefined,
         signal: AbortSignal.any([signal, timer]),
@@ -350,7 +486,7 @@ export class Network {
       body: string | null;
     },
     page: string,
-    signal: AbortSignal,
+    signal: AbortSignalLike,
   ): Promise<{
     url: string;
     status: number;
@@ -379,7 +515,7 @@ export class Network {
       }
       headers[name.toLowerCase()] = value;
     }
-    headers['user-agent'] = USER_AGENT;
+    headers['user-agent'] = this._userAgent;
     headers['accept-language'] ??= this._language;
     headers.accept ??= '*/*';
     headers.origin = originOf(page);
@@ -387,9 +523,9 @@ export class Network {
     if (referrer) headers.referer = referrer;
     const method = request.method.toUpperCase();
     const timer = AbortSignal.timeout(TIMEOUT);
-    log('fetch', method, request.url);
+    this._log('fetch', method, request.url);
     const response = await this._paced(request.url, signal, () =>
-      fetch(request.url, {
+      this._send(request.url, {
         method,
         headers,
         body:
@@ -415,6 +551,85 @@ export class Network {
     };
   }
 
+  /**
+   * An `onResource` for the document at `page`: each image, stylesheet,
+   * font and script it asks for through this network, under the rules at
+   * the top, and handed back as `<Html>` takes it (`resourceResult`). A
+   * `<video>`'s source is handed to the platform's player where `video` says
+   * there is one (`videoSource`), and declined where not. `signal` stops
+   * what the document asked for, for a host that lets it go.
+   */
+  resources(
+    page: string,
+    options: { signal?: AbortSignalLike; video?: boolean } = {},
+  ): (request: ResourceRequest) => Promise<ResourceResult | null> | null {
+    return (request) => {
+      if (request.kind === 'video') {
+        const src = options.video
+          ? videoSource(request.url, request.type, page)
+          : null;
+        return src ? Promise.resolve({ kind: 'video', src }) : null;
+      }
+      const kind = request.kind;
+      return this.resource(request.url, kind, page, options.signal).then(
+        (fetched) => (fetched ? resourceResult(fetched, kind) : null),
+      );
+    };
+  }
+
+  /**
+   * The `fetch` a page's scripts make their requests through, for the
+   * document at `page` (`<Html scripts={{ fetch }}>`): a page's `fetch` and
+   * `XMLHttpRequest`, a frame's document, a worker's script. The engine
+   * keeps a page to what its origin and CORS let it read; this sends the
+   * request as the page's, with its `Origin` and `Referer`.
+   */
+  fetcher(
+    page: string,
+  ): (
+    request: FetchRequest,
+    signal: AbortSignalLike,
+  ) => Promise<FetchResponse> {
+    return async (request, signal) => {
+      const { charset, ...answer } = await this.request(request, page, signal);
+      return { ...answer, body: decodeText(answer.bytes, charset) };
+    };
+  }
+
+  /**
+   * A document, all of it, as text: where the address ended up after
+   * redirects, its status, its type and the encoding it was decoded from —
+   * the response's, a `<meta>`'s in its first kilobyte, or UTF-8. What a
+   * host that shows one page hands `<Html source baseUrl>`; one that wants
+   * a page to appear as it arrives streams it from `document`. Throws a
+   * `NetworkError` where there is no response at all; an HTTP error is a
+   * response, and its page is answered.
+   */
+  async html(
+    url: string,
+    options: { signal?: AbortSignalLike; post?: PostData | null } = {},
+  ): Promise<{
+    url: string;
+    status: number;
+    type: string;
+    charset: string;
+    source: string;
+  }> {
+    const signal = options.signal ?? new AbortController().signal;
+    const response = await this.document(url, signal, options.post ?? null);
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of response.body) chunks.push(chunk);
+    const bytes = concat(chunks);
+    const charset = response.charset ?? sniffCharset(bytes) ?? 'utf-8';
+    return {
+      url: response.url,
+      status: response.status,
+      type: response.type,
+      charset,
+      source: decodeText(bytes, charset),
+    };
+  }
+
   private _remember(url: string, size: number): void {
     const before = this._sizes.get(url) ?? 0;
     this._sizes.set(url, size);
@@ -434,7 +649,7 @@ export class Network {
    *  made, and fails with the page's reason. */
   private _paced<T>(
     url: string,
-    signal: AbortSignal | undefined,
+    signal: AbortSignalLike | undefined,
     run: () => Promise<T>,
   ): Promise<T> {
     const host = hostOf(url);
@@ -482,7 +697,7 @@ export class Network {
       return await this._fetchOnce(url, options);
     } catch (error) {
       if (!transient(error)) throw error;
-      log('retrying', url);
+      this._log('retrying', url);
       await new Promise((resolve) => setTimeout(resolve, 250));
       return this._fetchOnce(url, options);
     }
@@ -493,12 +708,13 @@ export class Network {
     options: { accept: string; referrer: string | null; limit: number },
   ): Promise<Fetched> {
     const headers: Record<string, string> = {
-      'user-agent': USER_AGENT,
+      'user-agent': this._userAgent,
       accept: options.accept,
       'accept-language': this._language,
     };
     if (options.referrer) headers.referer = options.referrer;
-    const response = await fetch(url, {
+    const response = await this._send(url, {
+      method: 'GET',
       headers,
       signal: AbortSignal.timeout(TIMEOUT),
       redirect: 'follow',
@@ -563,6 +779,13 @@ export function resourceResult(
     };
   }
   if (kind === 'font') return { kind: 'font', bytes: fetched.bytes };
+  if (kind === 'script') {
+    return {
+      kind: 'script',
+      bytes: fetched.bytes,
+      charset: fetched.charset ?? undefined,
+    };
+  }
   // a page or text where an image was asked for is a document, which an
   // `<object>` shows as a frame and not its fallback: Acid3's second object
   // holds a page, and its third a picture it must not show
@@ -780,7 +1003,7 @@ export function contentType(header: string | null): {
 
 /** A response's body, a chunk at a time, cut off at `limit` bytes. */
 async function* bodyOf(
-  response: Response,
+  response: ResponseLike,
   limit: number,
 ): AsyncIterable<Uint8Array> {
   if (!response.body) return;
@@ -789,7 +1012,7 @@ async function* bodyOf(
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) return;
+      if (done || !value) return;
       total += value.length;
       if (total > limit) {
         yield value.subarray(0, value.length - (total - limit));
@@ -886,27 +1109,58 @@ const TEXT = new Set([
   '.py',
 ]);
 
+/** The slice of `node:fs/promises` and `node:url` read here. */
+interface FileSystem {
+  stat(path: string): Promise<{
+    isFile(): boolean;
+    isDirectory(): boolean;
+    size: number;
+  }>;
+  readFile(path: string): Promise<Uint8Array>;
+  readdir(
+    path: string,
+    options: { withFileTypes: true },
+  ): Promise<{ name: string; isDirectory(): boolean }[]>;
+}
+interface UrlModule {
+  fileURLToPath(url: string): string;
+  pathToFileURL(path: string): { href: string };
+}
+
+const fileSystem = (): Promise<FileSystem> =>
+  nodeModule<FileSystem>('fs/promises');
+const urlModule = (): Promise<UrlModule> => nodeModule<UrlModule>('url');
+
 function localType(path: string): string {
-  const ext = extname(path).toLowerCase();
+  const dot = path.lastIndexOf('.');
+  const ext = dot > path.lastIndexOf('/') ? path.slice(dot).toLowerCase() : '';
   return (
     TYPES[ext] ?? (TEXT.has(ext) ? 'text/plain' : 'application/octet-stream')
   );
 }
 
 async function readLocal(url: string, limit: number): Promise<Fetched | null> {
+  const [fs, { fileURLToPath }] = await Promise.all([
+    fileSystem(),
+    urlModule(),
+  ]);
   const path = fileURLToPath(url);
-  const info = await stat(path);
+  const info = await fs.stat(path);
   if (!info.isFile() || info.size > limit) return null;
   return {
     url,
     status: 200,
     type: localType(path),
     charset: null,
-    bytes: new Uint8Array(await readFile(path)),
+    bytes: new Uint8Array(await fs.readFile(path)),
   };
 }
 
 async function localDocument(url: string): Promise<DocumentResponse> {
+  const [fs, { fileURLToPath }] = await Promise.all([
+    fileSystem(),
+    urlModule(),
+  ]);
   let path: string;
   try {
     path = fileURLToPath(url);
@@ -915,7 +1169,7 @@ async function localDocument(url: string): Promise<DocumentResponse> {
   }
   let info;
   try {
-    info = await stat(path);
+    info = await fs.stat(path);
   } catch {
     throw new NetworkError(
       `There is no file at ${path}.`,
@@ -946,13 +1200,17 @@ async function* once(bytes: Uint8Array): AsyncIterable<Uint8Array> {
 
 /** A directory, as the page a browser makes of one. */
 async function directoryPage(path: string): Promise<string> {
-  const entries = await readdir(path, { withFileTypes: true });
+  const [fs, { pathToFileURL }] = await Promise.all([
+    fileSystem(),
+    urlModule(),
+  ]);
+  const entries = await fs.readdir(path, { withFileTypes: true });
   entries.sort(
     (a, b) =>
       Number(b.isDirectory()) - Number(a.isDirectory()) ||
       a.name.localeCompare(b.name),
   );
-  const base = pathToFileURL(path.endsWith('/') ? path : `${path}/`);
+  const base = pathToFileURL(path.endsWith('/') ? path : `${path}/`).href;
   const rows = entries
     .filter((e) => !e.name.startsWith('.'))
     .map((e) => {
@@ -983,5 +1241,83 @@ export function escapeHtml(text: string): string {
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[
         c
       ]!,
+  );
+}
+
+/** The encoding a document names in its first kilobyte: a byte order mark,
+ *  or a `<meta charset>` or its `http-equiv` spelling (HTML 13.2.3.2). */
+export function sniffCharset(bytes: Uint8Array): string | null {
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    return 'utf-8';
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be';
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le';
+  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
+  const m = /<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)/i.exec(head);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** Bytes as text in an encoding by its label, or UTF-8 where it names none
+ *  the runtime knows. */
+export function decodeText(bytes: Uint8Array, charset: string | null): string {
+  try {
+    return new TextDecoder(charset ?? 'utf-8').decode(bytes);
+  } catch {
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+}
+
+// --- for a component -----------------------------------------------------------
+
+let shared: HtmlNetwork | null = null;
+
+/** The network `useHtmlNetwork` uses where it is handed none: one a
+ *  process, made the first time it is asked for. */
+export function defaultHtmlNetwork(): HtmlNetwork {
+  return (shared ??= new HtmlNetwork());
+}
+
+/** What `useHtmlNetwork` hands a component: `<Html onResource>`, and
+ *  `<Html scripts={{ fetch }}>`. */
+export interface HtmlNetworkSeams {
+  onResource: (
+    request: ResourceRequest,
+  ) => Promise<ResourceResult | null> | null;
+  fetch: (
+    request: FetchRequest,
+    signal: AbortSignalLike,
+  ) => Promise<FetchResponse>;
+}
+
+/**
+ * A document's network, for a component: `onResource` and a scripts'
+ * `fetch` for the document at `page`, through `network` or the process's
+ * (`defaultHtmlNetwork`). What the document asked for is let go when
+ * `page` changes or the component unmounts. A `<video>` is played by the
+ * platform's player where it has one (`useSupports('mediaPlayback')`).
+ *
+ * ```tsx
+ * const net = useHtmlNetwork(url);
+ * <Html source={source} baseUrl={url} onResource={net.onResource}
+ *   scripts={{ fetch: net.fetch }} />
+ * ```
+ */
+export function useHtmlNetwork(
+  page: string | null | undefined,
+  network?: HtmlNetwork,
+): HtmlNetworkSeams {
+  const net = network ?? defaultHtmlNetwork();
+  const plays = useSupports('mediaPlayback');
+  const address = (page ?? '').split('#')[0];
+  const controller = useMemo(() => new AbortController(), [net, address]);
+  useEffect(() => () => controller.abort(), [controller]);
+  return useMemo(
+    () => ({
+      onResource: net.resources(address, {
+        signal: controller.signal,
+        video: plays,
+      }),
+      fetch: net.fetcher(address),
+    }),
+    [net, address, plays, controller],
   );
 }

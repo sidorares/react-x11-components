@@ -12,22 +12,36 @@
 // document loaded as HTML has a realm (`DomShared.realms`): a frame's first
 // `about:blank`, and what a script writes into it, are the page realm's,
 // which reaches into them as it makes them, and are drawn and no more.
-import { useEffect, useRef, useState } from 'react';
+//
+// Part of the engine's chunk (`./runtime.ts`): nothing here is reached
+// before a page's scripts run.
+import React, { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import type { ScrollableNode } from 'react-x11';
 
-import { Html, useHtmlHandle } from '../../src/html/index.js';
-import type {
-  Document,
-  Element,
-  EmbeddedRect,
-  ResourceRequest,
-  ResourceResult,
-} from '../../src/html/index.js';
-import { useScripts } from './script/index.js';
-import type { FramePost } from './script/host.js';
-import type { ScriptRunner, ScriptsOptions } from './script/index.js';
+import { Html, useHtmlHandle } from '../index.js';
+import type { Document, Element, EmbeddedRect, HtmlProps } from '../index.js';
+import { hx } from '../hx.js';
+import { useScripts } from './hook.js';
+import type { FramePost } from './host.js';
+import type { ScriptRunner, ScriptsOptions } from './runner.js';
 import { linkTarget, navigableFor } from './target.js';
+
+const h = React.createElement;
+
+/** What a frame takes of the page's `<Html>`: how its documents look and
+ *  move, and where their resources come from. */
+export type FrameLook = Pick<
+  HtmlProps,
+  | 'onResource'
+  | 'fontSize'
+  | 'fontFamily'
+  | 'monoFamily'
+  | 'defaultColorScheme'
+  | 'animate'
+  | 'reducedMotion'
+  | 'selectionColor'
+>;
 
 /** What the page a frame is in gives it. */
 export interface FrameContext {
@@ -35,12 +49,9 @@ export interface FrameContext {
   parent: ScriptRunner;
   /** The page's script seams, which a frame's are made from. */
   seams: ScriptsOptions;
-  /** A frame's document's resources, fetched as the page's are. */
-  onResource: (
-    request: ResourceRequest,
-  ) => ResourceResult | null | Promise<ResourceResult | null>;
-  /** A link out of a frame to the tab the page is in, or to a new one. */
-  onLink: (url: string, how: 'here' | 'tab') => void;
+  /** The page's look, and its `onResource`, which a frame's document is
+   *  drawn with. */
+  look: FrameLook;
 }
 
 /** What a page mounts over its embedded elements: a frame's document over
@@ -54,7 +65,7 @@ export function embeddedMounts(
   return (rect) => {
     const known = rect.kind === 'iframe' ? context() : null;
     if (!known) return null;
-    return <FramePage frame={rect.element} context={known} />;
+    return h(FramePage, { frame: rect.element, context: known });
   };
 }
 
@@ -82,9 +93,10 @@ export function FrameHolder({
     };
     // the holder is its parent's for its life
   }, [parent]);
-  return (
-    <box
-      style={{
+  return hx(
+    'box',
+    {
+      style: {
         position: 'absolute',
         left: 0,
         top: 0,
@@ -92,20 +104,19 @@ export function FrameHolder({
         height: 0,
         overflow: 'hidden',
         pointerEvents: 'none',
-      }}
-    >
-      {frames.map((f) => (
-        <FrameDocument
-          key={keyOf(f.document)}
-          frame={f.frame}
-          document={f.document}
-          url={f.url}
-          realm
-          context={context}
-          undrawn
-        />
-      ))}
-    </box>
+      },
+    },
+    ...frames.map((f) =>
+      h(FrameDocument, {
+        key: keyOf(f.document),
+        frame: f.frame,
+        document: f.document,
+        url: f.url,
+        realm: true,
+        context,
+        undrawn: true,
+      }),
+    ),
   );
 }
 
@@ -139,16 +150,14 @@ function FramePage({
     // the frame and its host are the view's for its life
   }, [host, frame]);
   if (!shown) return null;
-  return (
-    <FrameDocument
-      key={keyOf(shown.document)}
-      frame={frame}
-      document={shown.document}
-      url={shown.url}
-      realm={shown.realm}
-      context={context}
-    />
-  );
+  return h(FrameDocument, {
+    key: keyOf(shown.document),
+    frame,
+    document: shown.document,
+    url: shown.url,
+    realm: shown.realm,
+    context,
+  });
 }
 
 function FrameDocument({
@@ -225,65 +234,64 @@ function FrameDocument({
   const holder = inner();
   // Where a link or a form in the frame sends what it asks for: the frame,
   // a frame its target names in the frame's document, a new tab, or the
-  // tab — `_top`, and `_parent`, which in a frame in a frame is the frame
-  // around it and is taken for the tab here.
+  // page — `_top`, and `_parent`, which in a frame in a frame is the frame
+  // around it and is taken for the page here.
   const send = (target: string, to: string, post: FramePost | null) => {
     const keyword = target.toLowerCase();
     if (keyword === '_top' || keyword === '_parent') {
-      context.onLink(to, 'here');
+      outer.navigate(to, 'here');
       return;
     }
     const where = navigableFor(document, target);
-    if (where === 'tab') context.onLink(to, 'tab');
+    if (where === 'tab') outer.navigate(to, 'tab');
     else if (where === 'here') host.navigateFrame(frame, to, post);
     else scripts.navigateFrame?.(where, to, post);
   };
-  return (
-    <box
-      ref={scroller}
-      style={{ flexGrow: 1, overflow: 'scroll' }}
-      onScroll={() => scripts.scrolled?.()}
-    >
-      <Html
-        source=""
-        document={document}
-        partial={false}
-        baseUrl={url}
-        ref={handle.ref}
-        fontSize={16}
-        defaultColorScheme="light"
-        onResource={context.onResource}
-        onLink={(href, ev) => {
-          let link = handle.elementAt(ev.x, ev.y);
-          while (link && link.name !== 'a' && link.name !== 'area') {
-            link =
-              link.parent?.type === 'tag' ? (link.parent as Element) : null;
-          }
-          send(linkTarget(link, document), href, null);
-        }}
-        onSubmit={(submission) => {
-          const { url: to, method, body, contentType, target } = submission;
-          if (!/^(?:https?|file|data):/i.test(to)) return;
-          send(
-            target,
-            to,
-            method === 'post'
-              ? { body: body ?? '', contentType: contentType ?? '' }
-              : null,
-          );
-        }}
-        scripting={scripts.scripting}
-        onScript={scripts.onScript}
-        onParsed={scripts.onParsed}
-        onLoaded={scripts.onLoaded}
-        onDomEvent={scripts.onDomEvent}
-        onDocument={scripts.onDocument}
-        stylesheet={scripts.stylesheet}
-        renderEmbedded={embeddedMounts(inner)}
-        canvasImage={scripts.canvasImage}
-        style={{ flexGrow: 1 }}
-      />
-      {holder ? <FrameHolder context={holder} /> : null}
-    </box>
+  const { look } = context;
+  return hx(
+    'box',
+    {
+      ref: scroller,
+      style: { flexGrow: 1, overflow: 'scroll' },
+      onScroll: () => scripts.scrolled?.(),
+    },
+    h(Html, {
+      source: '',
+      document,
+      partial: false,
+      baseUrl: url,
+      ref: handle.ref,
+      ...look,
+      onLink: (href, ev) => {
+        let link = handle.elementAt(ev.x, ev.y);
+        while (link && link.name !== 'a' && link.name !== 'area') {
+          link = link.parent?.type === 'tag' ? (link.parent as Element) : null;
+        }
+        send(linkTarget(link, document), href, null);
+      },
+      onSubmit: (submission) => {
+        const { url: to, method, body, contentType, target } = submission;
+        if (!/^(?:https?|file|data):/i.test(to)) return;
+        send(
+          target,
+          to,
+          method === 'post'
+            ? { body: body ?? '', contentType: contentType ?? '' }
+            : null,
+        );
+      },
+      scripting: scripts.scripting,
+      onScript: scripts.onScript,
+      onParsed: scripts.onParsed,
+      onLoaded: scripts.onLoaded,
+      onDomEvent: scripts.onDomEvent,
+      onDocument: scripts.onDocument,
+      onElementScroll: scripts.onElementScroll,
+      stylesheet: scripts.stylesheet,
+      renderEmbedded: embeddedMounts(inner),
+      canvasImage: scripts.canvasImage,
+      style: { flexGrow: 1 },
+    }),
+    holder ? h(FrameHolder, { context: holder }) : null,
   );
 }

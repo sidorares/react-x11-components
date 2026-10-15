@@ -3,10 +3,10 @@ import { test } from 'node:test';
 
 import {
   mixedContent,
-  Network,
+  HtmlNetwork,
   readDataUrl,
   resourceResult,
-} from '../examples/browser/network.js';
+} from '../../src/html/network.js';
 
 test('a secure page has none of its stylesheets or fonts over an insecure connection, and its images over a secure one', () => {
   // W3C Mixed Content: a stylesheet or a font is blockable, an image is
@@ -93,7 +93,7 @@ test("a data: URL is read as Fetch's data: URL processor reads it", () => {
 });
 
 test('the network reads a data: URL itself, for a resource and a page', async () => {
-  const network = new Network();
+  const network = new HtmlNetwork();
   const real = globalThis.fetch;
   globalThis.fetch = () => Promise.reject(new Error('asked the network'));
   try {
@@ -163,7 +163,7 @@ test('the network says why a resource came back as nothing: not asked for, answe
       }),
     });
   });
-  const network = new Network();
+  const network = new HtmlNetwork();
   const why = async (url: string, signal?: AbortSignal) => {
     const loaded = await network.load(url, 'stylesheet', page, signal);
     if ('fetched' in loaded) {
@@ -198,7 +198,7 @@ test('the network says why a resource came back as nothing: not asked for, answe
   }
 
   // and a page is told what it always was: the body, or nothing
-  const browser = new Network();
+  const browser = new HtmlNetwork();
   const text = async (url: string) => {
     const fetched = await browser.resource(url, 'stylesheet', page);
     return fetched && new TextDecoder().decode(fetched.bytes);

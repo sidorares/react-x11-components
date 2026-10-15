@@ -226,7 +226,7 @@ function readCache(dir) {
   };
 }
 
-/** What `examples/browser/network.ts`'s `resourceResult` makes of a kept
+/** What `src/html/network.ts`'s `resourceResult` makes of a kept
  *  response. */
 function resultOf(kept, kind) {
   if (!kept) return null;

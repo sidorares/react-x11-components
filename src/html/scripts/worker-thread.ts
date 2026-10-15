@@ -4,18 +4,24 @@
 // posts arrives as text and is made again here; what this posts, and what
 // it fetches, goes to the page process, whose network the browser's policy
 // is kept by.
-import {
-  parentPort,
-  receiveMessageOnPort,
-  workerData,
-} from 'node:worker_threads';
 import { Document } from 'domhandler';
 
-import type { HtmlHandle } from '../../../src/html/index.js';
+import type { HtmlHandle } from '../index.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import type { FetchRequest, FetchResponse, HostSeams } from './host.js';
 import type { FromWorker, ToWorker, WorkerThreadData } from './workers.js';
+import { nodeModule } from './platform.js';
+import type {
+  AbortControllerClass,
+  AbortSignalLike,
+  WorkerThreadsModule,
+} from './platform.js';
+
+declare const AbortController: AbortControllerClass;
+
+const { parentPort, receiveMessageOnPort, workerData } =
+  await nodeModule<WorkerThreadsModule>('worker_threads');
 
 /** How long one entry into a worker may run. Longer than a page's: a
  *  worker is where a page puts work that takes a while, and its thread
@@ -54,7 +60,7 @@ const fetches = new Map<
 let fetchSeq = 0;
 const fetchThrough = (
   request: FetchRequest,
-  signal: AbortSignal,
+  signal: AbortSignalLike,
 ): Promise<FetchResponse> =>
   new Promise((resolve, reject) => {
     const id = ++fetchSeq;

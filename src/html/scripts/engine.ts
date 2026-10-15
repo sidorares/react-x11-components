@@ -35,13 +35,28 @@
 // **Not a boundary against a hostile page.** Node says so of `vm`, and the
 // PRD's threat model says what is: the process, which is a weak one today.
 // This is why scripts are off unless a switch turns them on.
-import { types } from 'node:util';
-import vm from 'node:vm';
-
 import { installDom } from './dom.js';
+import { nodeModule, runtimeProcess } from './platform.js';
+import type {
+  SetTimeout,
+  UrlClass,
+  UtilModule,
+  VmContext,
+  VmCreateContextOptions,
+  VmModule,
+  VmScript,
+} from './platform.js';
 import { installRaster } from './raster.js';
 import { installWebGL } from './webgl.js';
 import type { Bridge, Primitive } from './dom.js';
+
+declare const setTimeout: SetTimeout;
+declare const URL: UrlClass;
+
+// The runtime's `vm` and `util`, loaded as this module is: it is reached
+// only once a document's scripts are turned on (`./load.ts`).
+const vm = await nodeModule<VmModule>('vm');
+const { types } = await nodeModule<UtilModule>('util');
 
 export interface EngineOptions {
   /** How long any one entry may run, in milliseconds. */
@@ -83,7 +98,7 @@ interface PageModule {
 type ModuleClass = new (
   source: string,
   options: {
-    context: vm.Context;
+    context: VmContext;
     identifier: string;
     initializeImportMeta(
       meta: Record<string, unknown>,
@@ -95,8 +110,7 @@ type ModuleClass = new (
     ): Promise<object>;
   },
 ) => PageModule;
-const SourceTextModule = (vm as unknown as { SourceTextModule?: ModuleClass })
-  .SourceTextModule;
+const SourceTextModule = vm.SourceTextModule as ModuleClass | undefined;
 
 /**
  * Whether an `import()` in a context hands the page a promise of its own
@@ -319,7 +333,7 @@ const onRejection: RejectionListener = (reason, promise) => {
   }
   if (!LISTENED_BEFORE.length) throw reason;
   for (const listener of LISTENED_BEFORE) {
-    listener.call(process, reason, promise);
+    listener.call(runtimeProcess(), reason, promise);
   }
 };
 
@@ -333,6 +347,8 @@ const onRejection: RejectionListener = (reason, promise) => {
  * engine.
  */
 function watchRejections(): void {
+  const process = runtimeProcess();
+  if (!process) return;
   for (const listener of process.listeners('unhandledRejection')) {
     if (listener === onRejection) continue;
     process.off('unhandledRejection', listener);
@@ -343,7 +359,7 @@ function watchRejections(): void {
   }
 }
 
-const CONTEXT_OPTIONS: vm.CreateContextOptions = {
+const CONTEXT_OPTIONS: VmCreateContextOptions = {
   name: 'page',
   microtaskMode: 'afterEvaluate',
   // a page's own `eval` and `new Function` are the context's, and an
@@ -372,12 +388,10 @@ let dontContextifyKeepsVars: boolean | null = null;
 function createPageContext(
   global: 'auto' | 'own' | 'object',
   importer: (specifier: string) => Promise<unknown>,
-): vm.Context {
+): VmContext {
   // an `import()` in code no script of the host's is found from is the
   // context's own to answer
-  const make = (
-    sandbox: object | typeof vm.constants.DONT_CONTEXTIFY,
-  ): vm.Context =>
+  const make = (sandbox: unknown): VmContext =>
     vm.createContext(sandbox, {
       ...CONTEXT_OPTIONS,
       importModuleDynamically: importer as never,
@@ -399,7 +413,7 @@ function createPageContext(
 }
 
 export class ScriptEngine {
-  private readonly _context: vm.Context;
+  private readonly _context: VmContext;
   private readonly _promises: object;
   private _depth = 0;
   private _broken = false;
@@ -418,7 +432,7 @@ export class ScriptEngine {
   private readonly _evaluated = new WeakMap<PageModule, Promise<void>>();
   /** The entries, compiled for this context, so that an `import()` in what
    *  they run is this document's (`_dynamic`). */
-  private readonly _entries = new Map<string, vm.Script>();
+  private readonly _entries = new Map<string, VmScript>();
   /** The callback every script compiled into the context has, and the
    *  context itself: a page's `import()`, resolved against the document. */
   private readonly _importer: (specifier: string) => Promise<object>;
@@ -468,7 +482,7 @@ export class ScriptEngine {
   }
 
   /** An entry's script, compiled once for this context. */
-  private _entry(name: string): vm.Script {
+  private _entry(name: string): VmScript {
     let script = this._entries.get(name);
     if (!script) {
       script = new vm.Script(`${name}()`, {
