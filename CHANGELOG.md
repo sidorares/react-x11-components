@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/sidorares/react-x11-components/compare/v0.23.1...v0.24.0) (2026-10-15)
+
+
+### Features
+
+* **html:** &lt;Html scripts&gt; runs a document's scripts with one prop, the engine and the network moved out of the browser example into src/html ([#776](https://github.com/sidorares/react-x11-components/issues/776)) ([51882d4](https://github.com/sidorares/react-x11-components/commit/51882d45063782249ac87db7890f8ba20cf0b8be))
+
 ## [0.23.1](https://github.com/sidorares/react-x11-components/compare/v0.23.0...v0.23.1) (2026-10-14)
 
 
