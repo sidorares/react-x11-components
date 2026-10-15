@@ -12,9 +12,16 @@
 // on a shared word (`Atomics.wait`) while this side fetches, then reads the
 // answer off the port (`receiveMessageOnPort`). The thread blocks; the page
 // does not.
-import { MessageChannel, Worker as Thread } from 'node:worker_threads';
-import type { MessagePort } from 'node:worker_threads';
-
+import { isBun, nodeModule, runtimeProcess } from './platform.js';
+import type {
+  AbortControllerClass,
+  AbortSignalLike,
+  MessagePortLike as MessagePort,
+  UrlClass,
+  UrlLike,
+  WorkerLike,
+  WorkerThreadsModule,
+} from './platform.js';
 import type {
   FetchRequest,
   FetchResponse,
@@ -22,9 +29,16 @@ import type {
   WorkerInit,
 } from './host.js';
 
+declare const URL: UrlClass;
+declare const AbortController: AbortControllerClass;
+type AbortController = InstanceType<AbortControllerClass>;
+
+const { MessageChannel, Worker: Thread } =
+  await nodeModule<WorkerThreadsModule>('worker_threads');
+
 /** What a page's workers are given by the page they are the workers of. */
 export interface PageWorkersSeams {
-  fetch(request: FetchRequest, signal: AbortSignal): Promise<FetchResponse>;
+  fetch(request: FetchRequest, signal: AbortSignalLike): Promise<FetchResponse>;
   log(level: string, text: string): void;
   userAgent: string;
   language: string;
@@ -70,8 +84,13 @@ export type ToWorker =
   | { kind: 'message'; data: string }
   | { kind: 'fetched'; id: number; response?: FetchResponse; error?: string };
 
-/** The thread's module, which is TypeScript. */
-const ENTRY = new URL('./worker-thread.ts', import.meta.url);
+/** Where this module is, and so the thread's: `dist/`'s JavaScript, or —
+ *  run from the source, as the suite runs it — the TypeScript beside it. */
+const HERE = (import.meta as { url: string }).url;
+const ENTRY = new URL(
+  HERE.endsWith('.ts') ? './worker-thread.ts' : './worker-thread.js',
+  HERE,
+);
 
 /**
  * How a thread is started where the runtime does not hand a thread the
@@ -81,14 +100,16 @@ const ENTRY = new URL('./worker-thread.ts', import.meta.url);
  * a Node that does not, the thread registers tsx's hooks itself before it
  * imports the entry, where tsx is to be had.
  */
-function threadSource(): URL | string {
-  const node = (globalThis as { Bun?: unknown }).Bun
+function threadSource(): UrlLike | string {
+  const node = isBun()
     ? null
-    : Number(process.versions.node.split('.')[0]);
-  if (node === null || node >= 22) return ENTRY;
+    : Number(runtimeProcess()?.versions.node?.split('.')[0] ?? 0);
+  if (node === null || node >= 22 || !HERE.endsWith('.ts')) return ENTRY;
   let tsx: string | null = null;
   try {
-    tsx = import.meta.resolve('tsx/esm/api');
+    tsx = (import.meta as { resolve(specifier: string): string }).resolve(
+      'tsx/esm/api',
+    );
   } catch {
     return ENTRY;
   }
@@ -100,7 +121,7 @@ function threadSource(): URL | string {
 }
 
 interface Running {
-  thread: Thread;
+  thread: WorkerLike;
   url: string;
   sync: MessagePort;
   fetches: Map<number, AbortController>;

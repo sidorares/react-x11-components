@@ -19,8 +19,6 @@
 // engine is made on has modules: the flag that makes Node keep a page's
 // `import()` in its context is the one that makes `vm.SourceTextModule`
 // (`SCRIPTS_CONTAINED`), and where it is not given, nothing runs.
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { Image as NtkImage } from 'react-x11/ntk';
 import type { Element } from 'domhandler';
 
 import type {
@@ -28,11 +26,17 @@ import type {
   HtmlDomEvent,
   HtmlHandle,
   ScriptRequest,
-} from '../../../src/html/index.js';
-import { SCRIPTS_CONTAINED, ScriptEngine } from './engine.js';
+} from '../index.js';
+import { ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import { PageWorkers } from './workers.js';
-import type { FramePost, HostSeams } from './host.js';
+import type { HostSeams } from './host.js';
+import type { ClearTimeout, SetTimeout, UrlClass } from './platform.js';
+
+declare const setTimeout: SetTimeout;
+declare const clearTimeout: ClearTimeout;
+declare const queueMicrotask: (fn: () => void) => void;
+declare const URL: UrlClass;
 
 /** A frame of the page's clock, which `scroll` is told at most once in. */
 const FRAME_MS = 16;
@@ -44,23 +48,30 @@ export const SCRIPT_TIMEOUT_MS = 2000;
 
 /** What the page around a document gives its scripts. */
 export interface ScriptsOptions extends Omit<HostSeams, 'handle' | 'adopt'> {
-  /** A script's source, by its URL — through the browser's network — or
-   *  null where there is none. */
-  load(url: string): Promise<string | null>;
-  /** A script ran past `SCRIPT_TIMEOUT_MS` and was stopped. */
+  /** A script's source, by its URL — through the host's network — or null
+   *  where there is none: a `<script src>`'s, with its element, or a
+   *  module's an import names, with none. */
+  load(url: string, element: Element | null): Promise<string | null>;
+  /** A script ran past the timeout and was stopped. */
   onTimeout(): void;
-  /** Whether a key the page is told of is the browser's own chord, which
-   *  the page cannot keep from the browser. */
+  /** How long a script, a listener or a timer may run before it is
+   *  stopped. Default `SCRIPT_TIMEOUT_MS`. */
+  timeout?: number;
+  /** Whether the page may start dedicated workers, each a thread of its
+   *  own. Default true. */
+  workers?: boolean;
+  /** Whether a key the page is told of is the host's own chord, which the
+   *  page cannot keep from the host. */
   reserved?(event: HtmlDomEvent): boolean;
-  /** A frame's view that draws nothing of it: the browser's holder for a
-   *  frame the page lays out no box for, whose seams its document is run
-   *  with only where no view draws it (`FrameSeat`). */
+  /** A frame's view that draws nothing of it: the holder for a frame the
+   *  page lays out no box for, whose seams its document is run with only
+   *  where no view draws it (`FrameSeat`). */
   undrawn?: boolean;
 }
 
 /** What a runner is made with: the options, the handle, and where the
  *  sheets the page adopts go. */
-type RunnerSeams = ScriptsOptions & Pick<HostSeams, 'handle' | 'adopt'>;
+export type RunnerSeams = ScriptsOptions & Pick<HostSeams, 'handle' | 'adopt'>;
 
 /** The MIME types a classic script is (HTML 4.12.1.1, "JavaScript MIME
  *  type essence match"), and no type at all. */
@@ -122,7 +133,7 @@ interface FrameSeat {
 export class ScriptRunner {
   readonly host: DomHost;
   readonly engine: ScriptEngine;
-  private readonly _workers: PageWorkers;
+  private readonly _workers: PageWorkers | null;
   private _queue: Queued[] = [];
   private _parsed = false;
   private _loaded = false;
@@ -155,35 +166,39 @@ export class ScriptRunner {
   ) {
     this.host = new DomHost(document, _options, url, _link?.parent.host.shared);
     this.engine = new ScriptEngine(this.host.bridge, {
-      timeout: SCRIPT_TIMEOUT_MS,
+      timeout: _options.timeout ?? SCRIPT_TIMEOUT_MS,
       onTimeout: _options.onTimeout,
       log: _options.log,
       settled: () => this.host.flush(),
-      load: (url) => _options.load(url).catch(() => null),
+      load: (url) => _options.load(url, null).catch(() => null),
       base: () => this.host.url,
     });
     this.host.entries = this.engine;
     // the page's workers, each in a thread of its own, their network the
-    // page's
-    this._workers = new PageWorkers({
-      fetch: (request, signal) => this._options.fetch(request, signal),
-      log: (level, text) => this._options.log(level, text),
-      get userAgent() {
-        return _options.userAgent;
-      },
-      get language() {
-        return _options.language;
-      },
-      message: (id, data) => this.engine.call('__workerMessage', [id, data]),
-      error: (id, message, filename, line, column) =>
-        this.engine.call('__workerError', [
-          id,
-          message,
-          filename,
-          line,
-          column,
-        ]),
-    });
+    // page's — where the page may have them at all
+    this._workers =
+      _options.workers === false
+        ? null
+        : new PageWorkers({
+            fetch: (request, signal) => this._options.fetch(request, signal),
+            log: (level, text) => this._options.log(level, text),
+            get userAgent() {
+              return _options.userAgent;
+            },
+            get language() {
+              return _options.language;
+            },
+            message: (id, data) =>
+              this.engine.call('__workerMessage', [id, data]),
+            error: (id, message, filename, line, column) =>
+              this.engine.call('__workerError', [
+                id,
+                message,
+                filename,
+                line,
+                column,
+              ]),
+          });
     this.host.workers = this._workers;
     if (_link) {
       _link.parent.engine.link(
@@ -324,7 +339,7 @@ export class ScriptRunner {
     // a browser with modules runs no `nomodule` script (HTML 4.12.1)
     if (!module && request.element.attribs.nomodule !== undefined) return;
     const source = request.src
-      ? this._options.load(request.src).catch(() => null)
+      ? this._options.load(request.src, request.element).catch(() => null)
       : Promise.resolve(request.text);
     const queued = { request, source, module };
     if (!this._parsed) this._queue.push(queued);
@@ -396,7 +411,7 @@ export class ScriptRunner {
     for (const seat of this._seats.values()) seat.runner.dispose();
     this._seats.clear();
     this._seatsWatched?.();
-    this._workers.dispose();
+    this._workers?.dispose();
     this._disposed = true;
     if (this._link) this._link.parent.engine.unlink(this._frameId());
     if (this._scrollOwed) clearTimeout(this._scrollOwed);
@@ -486,199 +501,6 @@ export class ScriptRunner {
   }
 }
 
-/**
- * The props that run a document's scripts, for `<Html>`: `scripting`, and
- * the seams. Off, nothing but `onDocument` is handed back, and `<Html>` runs
- * nothing, as it never does. `navigateFrame` and `scrolled` are the page's
- * own, not props — what a link or a form whose target names a frame calls
- * (`navigableFor`), and what the pane calls as it scrolls — which `<Html>`
- * leaves alone where they are spread with the rest.
- */
-export function useScripts(
-  enabled: boolean,
-  handle: HtmlHandle,
-  url: string,
-  options: ScriptsOptions,
-  link: FrameLink | null = null,
-): {
-  scripting: boolean;
-  onDocument?: (document: Document) => void;
-  onScript?: (request: ScriptRequest) => void;
-  onParsed?: () => void;
-  onLoaded?: () => void;
-  onDomEvent?: (event: HtmlDomEvent) => boolean | void;
-  stylesheet?: string[];
-  /** A frame of the page's sent somewhere by a link or a form whose target
-   *  names it, where scripts run: absent where nothing loads a frame. */
-  navigateFrame?: (frame: Element, url: string, post: FramePost | null) => void;
-  /** The pane the page is shown in scrolled, which the page hears as
-   *  `scroll`; the page's own too, not a prop. */
-  scrolled?: () => void;
-  /** `<Html>`'s `onElementScroll`: a scroll container's `scroll`. */
-  onElementScroll?: (element: Element) => void;
-  /** `<Html>`'s `canvasImage`: what a page's script drew on a canvas. */
-  canvasImage?: (element: Element) => unknown | null;
-  /** The document's runner, where its scripts run: what a frame in it is
-   *  run as a frame of (`FrameLink`). Not a prop. */
-  runner?: () => ScriptRunner | null;
-} {
-  const runner = useRef<ScriptRunner | null>(null);
-  // the sheets the page adopted, applied after the document's own
-  const [adopted, setAdopted] = useState<string[]>(NO_SHEETS);
-  const latest = useRef(options);
-  latest.current = options;
-  const address = useRef(url);
-  address.current = url;
-
-  // the seams the host is made with read the latest options, so a render
-  // that made new callbacks reaches a document already running
-  const seams = useRef<RunnerSeams>({
-    handle,
-    adopt: (sheets) => setAdopted(sheets.length ? sheets : NO_SHEETS),
-    get userAgent() {
-      return latest.current.userAgent;
-    },
-    get language() {
-      return latest.current.language;
-    },
-    viewport: () => latest.current.viewport(),
-    scrollTo: (x, y) => latest.current.scrollTo(x, y),
-    navigate: (to, how) => latest.current.navigate(to, how),
-    reload: () => latest.current.reload(),
-    go: (delta) => latest.current.go(delta),
-    log: (level, text) => latest.current.log(level, text),
-    title: (title) => latest.current.title(title),
-    fetch: (request, signal) => latest.current.fetch(request, signal),
-    load: (src) => latest.current.load(src),
-    onTimeout: () => latest.current.onTimeout(),
-    reserved: (event) => latest.current.reserved?.(event) ?? false,
-    get drawsFrames() {
-      return latest.current.drawsFrames;
-    },
-    get undrawn() {
-      return latest.current.undrawn;
-    },
-  });
-  const linked = useRef(link);
-  linked.current = link;
-  // the runner of a frame's document is the frame's, which this view is
-  // bound to and hands back (`FrameSeat`); a page's is this view's own
-  const bound = useRef<ScriptRunner | null>(null);
-  // a render once there is a runner, for what is drawn from it: the frames
-  const [, ran] = useReducer((n: number) => n + 1, 0);
-
-  // a canvas's pixels as an image `<Html>` draws, one a change of them,
-  // and the document told to draw it again as they change
-  const pictures = useRef(
-    new WeakMap<Element, { version: number; image: unknown }>(),
-  );
-  const canvasImage = useCallback((element: Element) => {
-    const pixels = runner.current?.host.canvas(element);
-    if (!pixels || !pixels.width || !pixels.height) return null;
-    const kept = pictures.current.get(element);
-    if (kept?.version === pixels.version) return kept.image;
-    const image = new NtkImage({
-      width: pixels.width,
-      height: pixels.height,
-      data: pixels.data,
-    });
-    pictures.current.set(element, { version: pixels.version, image });
-    return image;
-  }, []);
-  const unwatch = useRef<(() => void) | null>(null);
-
-  const release = useCallback(() => {
-    unwatch.current?.();
-    unwatch.current = null;
-    const was = runner.current;
-    runner.current = null;
-    if (!was) return;
-    if (bound.current) {
-      bound.current.releaseFrame(was.host.document, seams.current);
-    } else was.dispose();
-    bound.current = null;
-  }, []);
-  const onDocument = useCallback((document: Document) => {
-    if (runner.current?.host.document === document) return;
-    release();
-    setAdopted(NO_SHEETS);
-    const link = linked.current;
-    if (link) {
-      runner.current = link.parent.bindFrame(
-        document,
-        address.current,
-        link.frame,
-        seams.current,
-      );
-      bound.current = runner.current && link.parent;
-    } else {
-      runner.current = new ScriptRunner(
-        document,
-        address.current,
-        seams.current,
-      );
-    }
-    unwatch.current =
-      runner.current?.host.onCanvas((canvas) =>
-        seams.current.handle.canvasChanged(canvas),
-      ) ?? null;
-    ran();
-  }, []);
-  const onScript = useCallback(
-    (request: ScriptRequest) => runner.current?.add(request),
-    [],
-  );
-  const onParsed = useCallback(() => void runner.current?.parsed(), []);
-  const onLoaded = useCallback(() => runner.current?.loaded(), []);
-  const onDomEvent = useCallback((event: HtmlDomEvent) => {
-    const go = runner.current?.dispatch(event) ?? true;
-    return go ? undefined : false;
-  }, []);
-  const navigateFrame = useCallback(
-    (frame: Element, to: string, post: FramePost | null) =>
-      runner.current?.host.navigateFrame(frame, to, post),
-    [],
-  );
-  const scrolled = useCallback(() => runner.current?.scrolled(), []);
-  const onElementScroll = useCallback(
-    (element: Element) => runner.current?.elementScrolled(element),
-    [],
-  );
-  const getRunner = useCallback(() => runner.current, []);
-
-  // the document's scripts stop when the page goes, and a frame's view
-  // hands its document's back
-  useEffect(() => release, []);
-
-  // where a page's `import()` would reach the host, nothing of the page's
-  // runs, and the page is one with scripts off (`SCRIPTS_CONTAINED`)
-  const refused = enabled && !SCRIPTS_CONTAINED;
-  useEffect(() => {
-    if (refused) {
-      latest.current.log(
-        'warn',
-        "This page's scripts are not run: in this process its import() would reach the browser. Node 20, or 24 or later, runs them with --experimental-vm-modules, and Bun runs them as it is.",
-      );
-    }
-  }, [refused]);
-
-  if (!enabled || refused) return { scripting: false };
-  return {
-    scripting: true,
-    onDocument,
-    onScript,
-    onParsed,
-    onLoaded,
-    onDomEvent,
-    navigateFrame,
-    scrolled,
-    onElementScroll,
-    canvasImage,
-    runner: getRunner,
-    ...(adopted.length ? { stylesheet: adopted } : {}),
-  };
-}
-
 /** An address's origin, as a realm's is held to. */
 function originOf(url: string): string {
   try {
@@ -690,4 +512,4 @@ function originOf(url: string): string {
 
 /** No sheet adopted: one array, so that a page that adopts none renders
  *  nothing again. */
-const NO_SHEETS: string[] = [];
+export const NO_SHEETS: string[] = [];

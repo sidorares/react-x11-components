@@ -1553,14 +1553,26 @@ answers `justifies` as the engine does** — `withLayout` forwards what an
 engine has, and the layout cache and the recorder say it themselves: a
 wrapper that dropped it would send every paragraph back to the spacing.
 
-**Nothing is fetched and nothing is executed, by construction.**
-`onResource` is the only way anything loads and `onScript` never runs
-anything. Both are the same call the desktop calendar makes about
-credentials: the host already did the work of knowing its policy, and a
-component that silently made requests would turn "render this HTML" into
-"make these requests". A declined resource is an ordinary state, not an
-error. **Do not add a convenience default that fetches**; the absence is the
-feature.
+**Nothing is fetched, by construction, and nothing is executed unless the
+application turns it on.** `onResource` is the only way anything loads —
+the same call the desktop calendar makes about credentials: the host
+already did the work of knowing its policy, and a component that silently
+made requests would turn "render this HTML" into "make these requests". A
+declined resource is an ordinary state, not an error. **Do not add a
+convenience default that fetches**; the absence is the feature.
+`HtmlNetwork` and `useHtmlNetwork` (`network.ts`) are a policy an
+application _hands in_ — the example browser's, moved here so that the
+common case is one line — and never a default `<Html>` reaches for.
+
+`scripts` is the one switch that executes anything, and it keeps the same
+rule: it is off unless an application turns it on, and what a page loads
+goes through the application's seams — a script's source through
+`onResource` as `kind: 'script'`, a page's own requests through
+`scripts.fetch`, which fails every request where it is not given. **Every
+new seam the engine needs gets a default that does nothing or reads what
+is already there**, never one that fetches, navigates or writes outside the
+document. `onScript` still runs nothing, for an application with an engine
+of its own.
 
 **What arrives late is answered by what it changes.** A stylesheet the head
 links to, or one it imports, holds the first rendering until it is in
@@ -1838,10 +1850,11 @@ at the size the window last held still at, not the size it is now: one that
 followed the window laid its page out again at every step of a drag, as
 often as the tab showing, for pixels nobody sees.
 
-**The browser runs a page's scripts in a context of their own, and what
-keeps them there is a few rules** (`examples/browser/script/`,
-docs/prd-html-scripts.md). `<Html>` runs nothing; the example's engine is a
-`node:vm` context a document, behind the toolbar's JS switch. Each rule
+**`<Html scripts>` runs a page's scripts in a context of their own, and
+what keeps them there is a few rules** (`src/html/scripts/`,
+docs/prd-html-scripts.md). The engine is a `node:vm` context a document —
+the example browser's, which runs it behind the toolbar's JS switch, and
+which moved here so that a document's scripts are one prop. Each rule
 closes a way out a DOM binding opens by accident:
 
 - **The facade is source text.** `installDom` (`dom.ts`) is handed to the
@@ -1947,16 +1960,45 @@ closes a way out a DOM binding opens by accident:
   never answers a property read from the other realm. `postMessage`'s
   `targetOrigin` is held to the window posted to (`__origin`), which is
   not the sender's once two origins are linked.
-- **Run it on Bun too.** `test/browser-scripts.test.ts` runs on Node, and
+- **Run it on Bun too.** `test/html/scripts.test.ts` runs on Node, and
   Bun's `vm` differs in ways no probe found until the whole browser ran
   there: its `DONT_CONTEXTIFY` context drops a script's `var`s, its
   `console` cannot be replaced, and its error stacks have no message line.
   The engine feature-detects the first; a change to the engine is checked
   by running the browser under `bun` before it is believed.
 
-**A frame the browser loads as HTML is drawn over its box, and one with a
-script in it runs in a realm of its own, which is the frame's**
-(`examples/browser/frame.tsx`).
+**The engine is half lazy, and the line between the halves is a rule.**
+`<Html>` imports `scripts/scripted.ts` and `scripts/hook.ts` whether or not a
+document runs scripts, so those two hold the props, the defaults and the
+buffering and nothing heavy; everything else — the engine, the DOM facade,
+the runner, the workers, the frames — is `scripts/runtime.ts`'s chunk,
+reached by one dynamic `import()` (`loadScriptRuntime`), and
+`test/treeshake.test.ts` fails if `<Html>` alone reaches it. **A light
+module imports a heavy one by `import type` only.** What `<Html>` reports
+before the chunk is in — the document, its scripts, the end of its parse,
+its `load` — is kept and handed to the runner in that order, and the
+parse's scripts wait for the element's first layout, since a document
+mounted with its source is parsed before core has laid anything out. Three
+more things:
+
+- **The engine's Node is written out** (`scripts/platform.ts`): `node:vm`,
+  `node:util` and `node:worker_threads` are loaded with a specifier the
+  compiler cannot see, at the top of the module that needs them — top-level
+  `await`, which only the lazy chunk has — and the globals each module
+  uses are `declare const` in that module, never in a declaration file,
+  which would declare them for every component the build compiles.
+- **`dom.ts`, `raster.ts` and `webgl.ts` declare page globals, not host
+  ones**: they run in the page's context by `toString()`, so a
+  `queueMicrotask` or a `DOMException` there is the context's, and an
+  import of a helper is unreachable at run time.
+- **A worker's entry is found beside the module that starts it**, as
+  `worker-thread.js` in `dist/` and `worker-thread.ts` in the source the
+  suite runs (`workers.ts`'s `ENTRY`); a bundler that moves the engine has
+  to carry that file with it.
+
+**A frame a page's scripts load as HTML is drawn over its box, and one
+with a script in it runs in a realm of its own, which is the frame's**
+(`src/html/scripts/frames.ts`).
 Each realm is a host and an engine over one tree of nodes (`DomShared`),
 and the page's engine and the frame's are linked (`ScriptEngine.link`): the
 page's `contentWindow` is the frame's global and the frame's `parent` the

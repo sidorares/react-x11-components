@@ -16,8 +16,6 @@
 // `fetch` is its own origin's, or another's that lets it by CORS, through
 // the browser's network; storage is memory, per origin, gone with the
 // process; a navigation is a link the browser follows.
-import { randomBytes, randomUUID } from 'node:crypto';
-import { performance } from 'node:perf_hooks';
 import * as DomUtils from 'domutils';
 import { Parser } from 'htmlparser2';
 import { is, selectAll, selectOne } from 'css-select';
@@ -31,28 +29,20 @@ import {
 } from 'domhandler';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 
-import type {
-  HtmlChange,
-  HtmlDomEvent,
-  HtmlHandle,
-} from '../../../src/html/index.js';
-import {
-  attachShadow,
-  parseFragment,
-  shadowRootOf,
-} from '../../../src/html/index.js';
-import { HtmlSource, ShadowRoot, treesChanged } from '../../../src/html/dom.js';
-import { Cascade } from '../../../src/html/css/cascade.js';
-import { uaStylesheet } from '../../../src/html/css/ua.js';
-import { cssomStyle } from '../../../src/html/computed.js';
-import type { ComputedStyle, RootLook } from '../../../src/html/css/style.js';
-import type { Stylesheet } from '../../../src/html/css/parse.js';
+import type { HtmlChange, HtmlDomEvent, HtmlHandle } from '../index.js';
+import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
+import { HtmlSource, ShadowRoot, treesChanged } from '../dom.js';
+import { Cascade } from '../css/cascade.js';
+import { uaStylesheet } from '../css/ua.js';
+import { cssomStyle } from '../computed.js';
+import type { ComputedStyle, RootLook } from '../css/style.js';
+import type { Stylesheet } from '../css/parse.js';
 import {
   parseDeclarations,
   parseStylesheet,
   supportsCondition,
-} from '../../../src/html/css/parse.js';
-import { isDisabled } from '../../../src/html/form.js';
+} from '../css/parse.js';
+import { isDisabled } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
 import {
   LiveRange,
@@ -62,8 +52,30 @@ import {
   isDoctype,
 } from './ranges.js';
 import type { CharacterData } from './ranges.js';
-import { navigableFor } from '../target.js';
+import { navigableFor } from './target.js';
 import * as ntk from 'react-x11/ntk';
+import type {
+  AbortControllerClass,
+  AbortSignalLike,
+  BufferClass,
+  ClearTimeout,
+  SetTimeout,
+  UrlClass,
+} from './platform.js';
+
+declare const setTimeout: SetTimeout;
+declare const clearTimeout: ClearTimeout;
+declare const setInterval: SetTimeout;
+declare const clearInterval: ClearTimeout;
+declare const URL: UrlClass;
+declare const AbortController: AbortControllerClass;
+declare const Buffer: BufferClass;
+/** The runtime's Web Crypto and its clock, which Node and Bun both have. */
+declare const crypto: {
+  getRandomValues(array: Uint8Array): Uint8Array;
+  randomUUID(): string;
+};
+declare const performance: { now(): number };
 
 /** ntk's CSS colour parser, straight RGBA from 0 to 1: on the module, and
  *  not in `ntk.d.ts`'s named list (AGENTS.md, "Affordance glyphs"). */
@@ -196,7 +208,7 @@ export interface HostSeams {
   log(level: string, text: string): void;
   /** The document's title changed. */
   title(title: string | null): void;
-  fetch(request: FetchRequest, signal: AbortSignal): Promise<FetchResponse>;
+  fetch(request: FetchRequest, signal: AbortSignalLike): Promise<FetchResponse>;
   userAgent: string;
   language: string;
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
@@ -210,6 +222,13 @@ export interface HostSeams {
    * draws, its inline scripts run in the page's realm (`__frameScript`).
    */
   drawsFrames?: boolean;
+}
+
+/** Bytes as lowercase hex, two digits a byte. */
+function hex(bytes: Uint8Array): string {
+  let out = '';
+  for (const byte of bytes) out += byte.toString(16).padStart(2, '0');
+  return out;
 }
 
 /** An error the facade throws by name: `DOMException`'s. */
@@ -748,7 +767,7 @@ export class DomHost {
   private _nodes = new Map<number, AnyNode>();
   private _next = 2;
   private _timers = new Map<number, ReturnType<typeof setTimeout>>();
-  private _fetches = new Map<number, AbortController>();
+  private _fetches = new Map<number, InstanceType<AbortControllerClass>>();
   private _contents = new Map<number, number>();
   /** The changes since `<Html>` was last told, as `refresh` takes them. */
   private _changes: HtmlChange[] = [];
@@ -2295,11 +2314,13 @@ export class DomHost {
 
       // a page's randomness, `crypto`'s: hex, a primitive
       case 'random':
-        return randomBytes(
-          Math.min(65536, Math.max(0, Number(a) || 0)),
-        ).toString('hex');
+        return hex(
+          crypto.getRandomValues(
+            new Uint8Array(Math.min(65536, Math.max(0, Number(a) || 0))),
+          ),
+        );
       case 'uuid':
-        return randomUUID();
+        return crypto.randomUUID();
       case 'fetch':
         this._fetch(Number(a), text(b));
         return null;
@@ -3246,7 +3267,7 @@ export class DomHost {
    */
   private async _fetchFor(
     request: PageRequest,
-    signal: AbortSignal,
+    signal: AbortSignalLike,
   ): Promise<FetchResponse> {
     const page = this._origin();
     let target: string;
@@ -3340,7 +3361,7 @@ export class DomHost {
     request: PageRequest,
     unsafe: string[],
     page: string,
-    signal: AbortSignal,
+    signal: AbortSignalLike,
   ): Promise<void> {
     const include = request.credentials === 'include';
     const key = `${request.url}\u0000${include}`;

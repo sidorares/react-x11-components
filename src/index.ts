@@ -380,7 +380,13 @@ export type {
 // `HtmlView` and core's `<html>` element; see docs/prd-html.md. The DOM
 // helpers are qualified on the way through the barrel — `createElement` and
 // `Element` are names an application already has several of.
-export { Html, useHtmlHandle } from './html/index.js';
+export {
+  Html,
+  HtmlNetwork,
+  preloadHtmlScripts,
+  useHtmlHandle,
+  useHtmlNetwork,
+} from './html/index.js';
 export {
   appendChild as htmlAppendChild,
   attachShadow as attachHtmlShadow,
@@ -400,7 +406,11 @@ export type {
   HtmlDomEvent,
   HtmlDomEventType,
   HtmlHandle,
+  HtmlNetworkOptions,
   HtmlProps,
+  HtmlScripts,
+  FetchRequest as HtmlFetchRequest,
+  FetchResponse as HtmlFetchResponse,
   MediaRect as HtmlMediaRect,
   ResourceRequest as HtmlResourceRequest,
   ResourceResult as HtmlResourceResult,

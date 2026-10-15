@@ -17,6 +17,10 @@
 // shape. Text is still drawn as nothing: it needs a font's outlines, which
 // are the host's.
 
+/** The page context's `DOMException`, by name: this runs there
+ *  (`dom.ts`), and `src/` declares no runtime's globals. */
+declare const DOMException: new (message: string, name: string) => Error;
+
 /** A path's commands, in the coordinates they were added in. */
 export interface PathData {
   readonly cmds: number[];

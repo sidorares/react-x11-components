@@ -6,7 +6,8 @@
 // A tabbed web browser, made of this package's components and nothing
 // else: `<Tabs>` is the strip, `<Html>` draws each page, core's `<textinput>`
 // is the address bar. What `<Html>` leaves to its host — every request a
-// page makes — is `network.ts`: the document, streamed into `<Html>` as it
+// page makes — is `HtmlNetwork` (`src/html/network.ts`), with this
+// browser's User-Agent: the document, streamed into `<Html>` as it
 // arrives, and each stylesheet, image and `@font-face` font the page asks
 // for through `onResource`, resolved against the page's URL by `baseUrl`.
 //
@@ -20,10 +21,10 @@
 // the keys. Where no pane can be shown, the same page runs in this
 // process instead, and `BROWSER_INLINE=1` asks for that anywhere.
 //
-// Nothing a page contains runs unless you say so. `<Html>` hands scripts to
-// `onScript` and executes none; this browser has an engine to give them
-// (`script/`, docs/prd-html-scripts.md) and runs it only on a site whose JS
-// switch, in the toolbar, is on — every site with `BROWSER_SCRIPTS=1`. The
+// Nothing a page contains runs unless you say so. `<Html>` runs a page's
+// scripts only with `scripts` (`src/html/scripts/`, docs/prd-html-scripts.md),
+// and this browser turns it on only on a site whose JS switch, in the
+// toolbar, is on — every site with `BROWSER_SCRIPTS=1`. The
 // engine keeps a page's scripts in a `vm` context of their own and stops
 // one that runs away, but it is no boundary against a page that sets out
 // to attack the machine: the tab's process is, and it is a weak one. A page
@@ -71,7 +72,7 @@ import { displayUrl, urlFromInput } from './address.js';
 import type { TabIcon } from './favicon.js';
 import Page from './page.js';
 import type { LinkTarget, PageProps } from './page.js';
-import type { PostData } from './network.js';
+import type { PostData } from '../../src/html/index.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import { HOME, fileName } from './pages.js';

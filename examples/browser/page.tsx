@@ -13,10 +13,11 @@
 // the page and a host can draw nothing over a pane.
 //
 // A page's scripts run here too where the browser's switch says so for its
-// site (`scripts`): `script/` is the engine, one `node:vm` context a
-// document over `<Html>`'s DOM, and the process is what bounds it — a page
-// that runs away is stopped by a timeout and says so in the bubble, and one
-// that grows without bound costs this tab.
+// site (`scripts`): `<Html scripts>` is the engine, one `node:vm` context a
+// document over `<Html>`'s DOM, and this hands it the browser's seams — its
+// network, its history, its title and its chords. The process is what
+// bounds it: a page that runs away is stopped by a timeout and says so in
+// the bubble, and one that grows without bound costs this tab.
 //
 // What crosses the boundary is small on purpose. In: which history step to
 // show, what to load, the zoom, whether scripts run — numbers, strings and a
@@ -59,11 +60,27 @@ import {
   XK_UP,
 } from 'react-x11/keysyms';
 
-import { Html, useHtmlHandle } from '../../src/html/index.js';
+import {
+  Html,
+  HtmlNetwork,
+  NetworkError,
+  decodeText as decode,
+  linkTarget,
+  navigableFor,
+  resourceResult,
+  schemeOf,
+  sniffCharset,
+  useHtmlHandle,
+  videoSource,
+} from '../../src/html/index.js';
 import type {
   Document,
+  DocumentResponse,
   Element,
   FormSubmission,
+  HtmlScripts,
+  PostData,
+  ResourceKind,
   ResourceRequest,
   ResourceResult,
   ViewportOverflow,
@@ -72,20 +89,6 @@ import { decodeIcon, iconCandidates } from './favicon.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
-import {
-  Network,
-  NetworkError,
-  USER_AGENT,
-  resourceResult,
-  schemeOf,
-  videoSource,
-} from './network.js';
-import { FrameHolder, embeddedMounts } from './frame.js';
-import type { FrameContext } from './frame.js';
-import { useScripts } from './script/index.js';
-import { linkTarget, navigableFor } from './target.js';
-import type { ScriptsOptions } from './script/index.js';
-import type { DocumentResponse, PostData, ResourceKind } from './network.js';
 import {
   BLANK,
   HOME,
@@ -110,8 +113,19 @@ const VERTICAL_SCROLL_KEYS = new Set<number>([
   XK_SPACE,
 ]);
 
-/** One process's network: a tab's own cache, where each tab is a process. */
-const network = new Network();
+/** What this browser says it is, to servers and to a page's scripts. */
+const USER_AGENT =
+  'Mozilla/5.0 (X11; Linux x86_64) react-x11-components/0.9 ' +
+  '(example browser; +https://github.com/sidorares/react-x11-components)';
+
+/** One process's network: a tab's own cache, where each tab is a process.
+ *  `BROWSER_DEBUG=1` logs every request and what came of it. */
+const network = new HtmlNetwork({
+  userAgent: USER_AGENT,
+  log: process.env.BROWSER_DEBUG
+    ? (...parts) => console.error('[browser]', ...parts)
+    : undefined,
+});
 
 /** Where a followed link goes: this tab, a new one, or one behind this. */
 export type LinkTarget = 'here' | 'tab' | 'background';
@@ -392,17 +406,18 @@ export default function Page(props: PageProps): ReactElement {
       live.current.onLink(href, 'background', null);
       return;
     }
+    // one whose target names a frame of the page's is loaded there by
+    // `<Html scripts>` before it gets here, and goes nowhere without them
     const to = navigableFor(handle.document, linkTarget(link, handle.document));
     if (typeof to === 'string') live.current.onLink(href, to, null);
-    else scripts.navigateFrame?.(to, href, null);
   };
 
   // A form is a link it writes itself: a GET is one to `submission.url`,
   // which has the entries in its query, and a POST one with a body. Where
   // it goes is decided as a link's is (`navigableFor`): `_blank` a new tab,
-  // and a name one of the page's frames has that frame, which the page's
-  // scripts load where they run and nothing does where they do not. The
-  // tab stays where it is either way, as Chrome's does when Facebook's
+  // and a name one of the page's frames has that frame, which `<Html
+  // scripts>` loads before this is called, and nothing does without them.
+  // The tab stays where it is either way, as Chrome's does when Facebook's
   // pixel posts into its hidden frame.
   const onSubmit = (submission: FormSubmission) => {
     const { url: action, method, body, contentType, target } = submission;
@@ -418,30 +433,15 @@ export default function Page(props: PageProps): ReactElement {
         : null;
     const to = navigableFor(handle.document, target);
     if (typeof to === 'string') live.current.onLink(action, to, post);
-    else scripts.navigateFrame?.(to, action, post);
   };
 
-  // The page's scripts, where they run: the engine reads the pane it is
-  // shown in and the network through these, the latest of each.
-  const scriptSeams: ScriptsOptions = {
+  // The page's scripts, where they run: the browser's seams, the latest of
+  // each. Where the page is shown — the pane, its scroll and the zoom — is
+  // `<Html>`'s to read, from the scroller around it and the `scale` between;
+  // a script's source comes through `onResource` like any other resource.
+  const scripts: HtmlScripts | false = props.scripts && {
     userAgent: USER_AGENT,
     language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
-    viewport: () => {
-      const pane = scroller.current;
-      const box = pane?.getClientRects()[0];
-      return {
-        width: (box?.width ?? 0) / zoom,
-        height: (box?.height ?? 0) / zoom,
-        scrollX: (pane?.scrollX ?? 0) / zoom,
-        scrollY: (pane?.scrollY ?? 0) / zoom,
-        zoom,
-        dpr: (pane?.scale ?? 1) * zoom,
-        left: box?.x ?? 0,
-        top: box?.y ?? 0,
-      };
-    },
-    scrollTo: (x, y) =>
-      scroller.current?.scrollTo({ x: x * zoom, y: y * zoom }),
     navigate: (to, how) =>
       live.current.onLink(to, how === 'tab' ? 'tab' : 'here', null),
     reload: () => live.current.onCommand('reload'),
@@ -452,23 +452,7 @@ export default function Page(props: PageProps): ReactElement {
       if (process.env.BROWSER_DEBUG) console.error(`[page ${level}]`, text);
     },
     title: (title) => live.current.onMeta(doc, title, undefined),
-    fetch: async (request, signal) => {
-      const response = await network.request(request, pageUrl, signal);
-      return {
-        ...response,
-        body: decode(response.bytes, response.charset),
-        bytes: response.bytes,
-      };
-    },
-    load: async (src) => {
-      const fetched = await network.resource(
-        src,
-        'script',
-        pageUrl,
-        requests.signal,
-      );
-      return fetched ? decode(fetched.bytes, fetched.charset) : null;
-    },
+    fetch: (request, signal) => network.fetcher(pageUrl)(request, signal),
     onTimeout: () =>
       setNotice('A script on this page ran too long, and was stopped.'),
     // the browser's own chords stay the browser's, whatever a page's
@@ -478,23 +462,7 @@ export default function Page(props: PageProps): ReactElement {
       ((cocoa ? event.metaKey : event.ctrlKey) ||
         (event.altKey && /^Arrow(Left|Right)$/.test(event.key ?? '')) ||
         /^F[56]$/.test(event.key ?? '')),
-    // a frame's document is drawn over its box and run in a realm of its
-    // own (`frame.tsx`)
-    drawsFrames: true,
   };
-  const scripts = useScripts(props.scripts, handle, url, scriptSeams);
-  const frames = (): FrameContext | null => {
-    const runner = scripts.runner?.();
-    return runner
-      ? {
-          parent: runner,
-          seams: scriptSeams,
-          onResource,
-          onLink: (to, how) => live.current.onLink(to, how, null),
-        }
-      : null;
-  };
-  const holder = frames();
 
   useEffect(() => {
     if (!notice) return;
@@ -561,7 +529,6 @@ export default function Page(props: PageProps): ReactElement {
         }}
         onScroll={(ev) => {
           if (entryId) scrolls.current.set(entryId, ev.scrollY);
-          scripts.scrolled?.();
         }}
         onMouseMove={(ev: X11MouseEvent<DrawnNode>) => {
           const href = handle.hrefAt(ev.x, ev.y);
@@ -610,24 +577,13 @@ export default function Page(props: PageProps): ReactElement {
               onResource={onResource}
               onLink={onLink}
               onSubmit={onSubmit}
-              scripting={scripts.scripting}
-              onScript={scripts.onScript}
-              onParsed={scripts.onParsed}
-              onLoaded={scripts.onLoaded}
-              onDomEvent={scripts.onDomEvent}
-              stylesheet={scripts.stylesheet}
-              renderEmbedded={embeddedMounts(frames)}
-              canvasImage={scripts.canvasImage}
-              onDocument={(document: Document) => {
-                scripts.onDocument?.(document);
-                onDocument(document);
-              }}
+              scripts={scripts}
+              onDocument={onDocument}
               onViewportOverflow={(next) =>
                 setViewport({ doc, overflow: next })
               }
               style={{ flexGrow: 1 }}
             />
-            {holder ? <FrameHolder context={holder} /> : null}
           </box>
         ) : null}
       </box>
@@ -832,26 +788,6 @@ function kindOf(
   // no type at all: what the address says, and HTML where it says nothing
   if (!type) return /\.(txt|md|json|css|js)$/i.test(url) ? 'text' : 'html';
   return 'other';
-}
-
-/** The encoding a document names in its first kilobyte: a byte order mark,
- *  or a `<meta charset>` or its `http-equiv` spelling (HTML 13.2.3.2). */
-function sniffCharset(bytes: Uint8Array): string | null {
-  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
-    return 'utf-8';
-  if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be';
-  if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le';
-  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
-  const m = /<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)/i.exec(head);
-  return m ? m[1].toLowerCase() : null;
-}
-
-function decode(bytes: Uint8Array, charset: string | null): string {
-  try {
-    return new TextDecoder(charset ?? 'utf-8').decode(bytes);
-  } catch {
-    return new TextDecoder('utf-8').decode(bytes);
-  }
 }
 
 async function readAll(

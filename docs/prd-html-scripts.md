@@ -10,9 +10,10 @@ and form controls. It leaves out shadow DOM, modules, workers, canvas and
 
 Status: investigation, 2026-10-04; phase 0 built, 2026-10-07; phase 1
 built, 2026-10-08, and core's pane options released in react-x11 2.46.0;
-phase 2 under way (see "Phases"). The engine
-is `examples/browser/script/`, behind the toolbar's JS switch and
-`BROWSER_SCRIPTS=1`. The probes it quotes ran on Node
+phase 2 under way (see "Phases"); promoted out of the example, 2026-10-15.
+The engine is `src/html/scripts/`, turned on by `<Html scripts>` (see
+"Promoted" below), and the browser runs it behind the toolbar's JS switch
+and `BROWSER_SCRIPTS=1`. The probes it quotes ran on Node
 26.0.0 and Bun 1.4.0 on macOS; they were scratch scripts and are not in the
 repository.
 
@@ -62,7 +63,9 @@ document with `domutils`:
 
 The engine, the facade and the bridge go in the example first, as
 `examples/browser/script/`. They would be promoted to `src/html-script/`
-when a second host wants them. That would be a shared module with a
+when a second host wants them. (They were, to `src/html/scripts/` — see
+"Promoted" below — as part of `<Html>` rather than a shared module of
+their own, behind a `scripts` prop rather than a `ScriptEngine` seam.) That would be a shared module with a
 `ScriptEngine` seam shaped like `ProcessHost` and `PtyHost`, because "run
 the page's scripts in a worker, in QuickJS, over a remote engine" is a real
 thing to want. That is the promotion path AGENTS.md describes for
@@ -520,7 +523,39 @@ and nor does an `async` script's: the runner asks for no wait there.
 head's theme script that comes before them. That script is written to run
 before the first paint, and it still does.
 
+## Promoted
+
+Every application that wanted a document's scripts had to copy the
+browser's wiring: the engine, the runner and its hook, the frames, a
+network, a viewport read off a pane, a scroll told by hand. So the engine
+moved to `src/html/scripts/` and `<Html scripts>` is the wiring, with a
+default for every seam (docs/components/html.md, "Scripts"):
+
+- **Off unless turned on.** `scripts={true}` or an object of overrides;
+  absent, `<Html>` runs nothing, as it always has, and `onScript` is still
+  there for an application with its own engine.
+- **What is fetched stays the application's.** A script's source is asked
+  for through `onResource` as `kind: 'script'`; a page's own requests go
+  through `scripts.fetch`, and fail without one. `HtmlNetwork` and
+  `useHtmlNetwork` are `network.ts`, moved from the example, as a policy an
+  application hands in.
+- **Lazy.** The engine is one chunk behind a dynamic `import()`
+  (`scripts/runtime.ts`); what `<Html>` reports before it lands is kept and
+  replayed in order (`scripts/hook.ts`).
+- **The viewport is the pane around `<Html>`**, its zoom core's `scale`
+  between them, and its `scroll` is noticed as the element paints
+  (`onViewportScroll`), so a host scrolls nothing by hand.
+- **Frames and workers are on**, each a flag away from off; a link or a
+  form whose target names a frame loads it before `onLink` or `onSubmit`
+  is asked.
+
+The example keeps what is a browser's: its history, its tabs, its chords,
+its User-Agent, and the documents it streams in.
+
 ## What the example adds
+
+The record below is of the example as it was built; the files it names
+are `src/html/scripts/` and `src/html/network.ts` now.
 
 - **`examples/browser/script/`:**
   - `engine.ts`: the hardened context, the timed `Script` entries, the
@@ -708,7 +743,7 @@ standards moved from what Acid3 expected):
   writes into the frame, and a written script does not run.
 - **A target that names a frame sends the frame.** A link, a form or
   `window.open` goes where HTML's rules for choosing a navigable say
-  (`navigableFor`, `examples/browser/target.ts`): the keywords, else the
+  (`navigableFor`, now `src/html/scripts/target.ts`): the keywords, else the
   first frame of that name, else a new tab. A form's POST goes with it,
   and to another origin's frame nothing is sent. Every submission but a
   `_blank` one used to go to the tab, so Facebook's pixel, which posts

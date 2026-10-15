@@ -7,11 +7,14 @@
 // document rather than composing it out of `<box>`es, and `docs/components/
 // html.md` for the reference.
 //
-// **What it is not.** It does not fetch anything, it does not execute
-// anything, and it never will: `onResource` and `onScript` are how an
-// application supplies both, and a document rendered without them cannot
-// reach the network or the disk. That is the whole security posture, and it
-// is a property of the design rather than a setting.
+// **What it is not.** It does not fetch anything, and it never will:
+// `onResource` is how an application supplies what a document asks for, and
+// a document rendered without it cannot reach the network or the disk. It
+// executes nothing either, unless the application says so: `scripts` runs
+// a document's scripts in the engine under `scripts/`, loaded only then,
+// and what they fetch still goes through the application's seams. Off, which
+// is the default, that is the whole security posture, and it is a property
+// of the design rather than a setting.
 import React from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { useSystemAppearance, useTheme } from 'react-x11';
@@ -74,6 +77,8 @@ import { useVideos } from './videos.js';
 import { useEmbedded } from './embedded.js';
 import type { RenderEmbedded } from './embedded.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
+import { useScriptedHtml } from './scripts/scripted.js';
+import type { HtmlScripts, InternalHtmlProps } from './scripts/scripted.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
 export {
@@ -103,6 +108,37 @@ export type {
   SubmitContext,
 } from './form.js';
 export { formSubmission } from './form.js';
+export type { HtmlScripts, ScriptViewport } from './scripts/scripted.js';
+export type { FetchRequest, FetchResponse } from './scripts/host.js';
+export type { AbortSignalLike } from './scripts/platform.js';
+export { preloadHtmlScripts } from './scripts/hook.js';
+export { linkTarget, navigableFor } from './scripts/target.js';
+export type { Navigable } from './scripts/target.js';
+export {
+  HTML_USER_AGENT,
+  HtmlNetwork,
+  NetworkError,
+  decodeText,
+  defaultHtmlNetwork,
+  escapeHtml,
+  mixedContent,
+  readDataUrl,
+  resourceResult,
+  schemeOf,
+  sniffCharset,
+  useHtmlNetwork,
+  videoSource,
+} from './network.js';
+export type {
+  DocumentResponse,
+  Fetched,
+  HtmlNetworkOptions,
+  HtmlNetworkSeams,
+  HtmlTransport,
+  Loaded,
+  PostData,
+  ResourceKind,
+} from './network.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
 export type { ViewportOverflow } from './css/cascade.js';
 export type {
@@ -256,6 +292,26 @@ export interface HtmlProps {
    * before it are in — rather than in the callback.
    */
   onScript?: (script: ScriptRequest) => void;
+  /**
+   * Run the document's scripts, in an engine of this package's — a
+   * `node:vm` context a document, with a DOM over the one drawn here,
+   * frames, workers, a canvas and `fetch` — loaded the first time a
+   * document turns it on. `true` takes a default for every seam; an object
+   * overrides any of them (`HtmlScripts`). **Default off**, and nothing runs.
+   *
+   * What the scripts load still goes through the application: a `<script
+   * src>` and the modules it imports through `onResource`, as `kind:
+   * 'script'`; a page's own requests through `scripts.fetch`, and nowhere
+   * without one. `useHtmlNetwork(url)` supplies both.
+   *
+   * It runs where a page's `import()` stays in its context: Bun, and Node
+   * 20, or 24 and later, started with `--experimental-vm-modules`.
+   * Elsewhere the document is drawn as with JavaScript off, and a warning
+   * says why (`preloadHtmlScripts`). **Not a sandbox against a hostile
+   * page** — see "Scripts" in the docs. Turning it on or off makes a new
+   * document, as a browser reloads a page for its switch.
+   */
+  scripts?: boolean | HtmlScripts;
   /**
    * Whether the host runs the document's scripts: an application that
    * brings an engine says so, and the document is drawn as a browser draws
@@ -583,6 +639,28 @@ function useCodeFamily(source: string, family: string): string | null {
  * ```
  */
 export function Html(props: HtmlProps): ReactElement {
+  return props.scripts
+    ? h(ScriptedHtml, props)
+    : h(HtmlDocument, props as InternalHtmlProps);
+}
+
+/** `<Html scripts>`: the document with its scripts' seams filled in
+ *  (`scripts/scripted.ts`), and the engine's own handle on it. */
+function ScriptedHtml(props: HtmlProps): ReactElement {
+  const handle = useHtmlHandle();
+  const outer = props.ref;
+  const ref = React.useCallback(
+    (node: unknown) => {
+      (handle.ref as React.RefObject<unknown>).current = node;
+      if (typeof outer === 'function') outer(node);
+      else if (outer) (outer as React.RefObject<unknown>).current = node;
+    },
+    [outer, handle],
+  );
+  return h(HtmlDocument, { ...useScriptedHtml(props, handle), ref });
+}
+
+function HtmlDocument(props: InternalHtmlProps): ReactElement {
   const {
     source,
     partial = true,
@@ -723,6 +801,7 @@ export function Html(props: HtmlProps): ReactElement {
     watchStops: stops.watch,
     onViewportOverflow,
     onElementScroll: props.onElementScroll,
+    onViewportScroll: props._onViewportScroll,
     canvasImage: props.canvasImage,
     domRevision,
     animate,
@@ -762,6 +841,8 @@ export function Html(props: HtmlProps): ReactElement {
   });
   while (next < boxes.length) children.push(boxes[next++].node);
   children.push(message);
+  if (props._frames)
+    children.push(h(React.Fragment, { key: 'frames' }, props._frames));
 
   const rootStyle: Style = { flexDirection: 'column', position: 'relative' };
   return hx(

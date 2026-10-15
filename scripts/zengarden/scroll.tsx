@@ -33,7 +33,7 @@ import { WindowNode } from 'react-x11/node';
 
 import { Html } from '../../src/html/index.js';
 import type { ResourceRequest } from '../../src/html/index.js';
-import { resourceResult } from '../../examples/browser/network.js';
+import { resourceResult } from '../../src/html/network.js';
 import { CachedNetwork } from './ours.js';
 
 const h = React.createElement;

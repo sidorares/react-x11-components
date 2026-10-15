@@ -33,6 +33,12 @@
 import type { installRaster, PathData } from './raster.js';
 import type { installWebGL } from './webgl.js';
 
+// The page context's own built-ins this reaches by name, for the type
+// checker alone: they are the context's at run time (see above), and
+// `src/` compiles with no runtime's globals declared (`./platform.ts`).
+declare const queueMicrotask: (fn: () => void) => void;
+declare const setTimeout: (fn: () => void, ms?: number) => unknown;
+
 /** What crosses the bridge: nothing that has a `constructor`. */
 export type Primitive = string | number | boolean | null | undefined;
 
