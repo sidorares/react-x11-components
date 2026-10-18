@@ -27,6 +27,7 @@ import {
   assignedSlot,
   attr,
   flatParentOf,
+  isDefinedElement,
   isElement,
   mutationGeneration,
   shadowRootAround,
@@ -361,7 +362,7 @@ interface IndexedRule {
  * attribute value, or the `~=` operator, costs sharing and nothing else.
  */
 const UNSHAREABLE =
-  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:(?:checked|selected|disabled|enabled|parent)\b|:i?contains\(/;
+  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:(?:checked|selected|disabled|enabled|parent|defined)\b|:i?contains\(/;
 
 /**
  * Rules bucketed by the key of their rightmost compound selector. An element
@@ -1561,7 +1562,9 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   focus: [],
   'focus-visible': [],
   'focus-within': [],
-  defined: [],
+  // an upgrade, which the script engine tells as a change of this
+  // attribute nothing has (`DomHost`'s `ceDefined`)
+  defined: ['a:-rx-defined'],
   modal: [],
   fullscreen: [],
   autofill: [],
@@ -5275,6 +5278,9 @@ const PSEUDOS = {
         k.type === 'directive' ||
         (k.type === 'text' && (k as unknown as { data: string }).data === ''),
     ),
+  // a custom element's to be that no definition has made one yet: a
+  // page's scripts upgrade it (`isDefinedElement`)
+  defined: (el: Element) => isDefinedElement(el),
   focus: (_el: Element) => false,
   'focus-visible': (_el: Element) => false,
   'focus-within': (_el: Element) => false,

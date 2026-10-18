@@ -1659,6 +1659,220 @@ test('a shadow root attached with nothing in it hides the host’s children at t
   assert.equal(doc.view.computedStyle(doc.byId('gone')), null);
 });
 
+// --- custom elements ---------------------------------------------------------
+
+test('a custom element defined after the parse upgrades the ones in the document, in tree order, and its callbacks run as the tree changes', async () => {
+  const doc = await hosted(
+    '<x-one id="a" mode="m" other="o"><x-one id="b"></x-one></x-one>' +
+      '<div id="host"></div><template id="t"><x-one id="inert"></x-one></template>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'class XOne extends HTMLElement {' +
+      '  static observedAttributes = ["mode"];' +
+      '  constructor() { super(); r.push("new " + this.id + ":" + (this instanceof XOne)); }' +
+      '  connectedCallback() { r.push("in " + this.id); }' +
+      '  disconnectedCallback() { r.push("out " + this.id); }' +
+      '  attributeChangedCallback(n, was, now) { r.push(this.id + "." + n + ":" + was + ">" + now); }' +
+      '}' +
+      'var a = document.getElementById("a");' +
+      'r.push(a instanceof XOne, customElements.get("x-one"));' +
+      'customElements.whenDefined("x-one").then(function (c) { r.push("defined " + (c === XOne)); out(); });' +
+      'customElements.define("x-one", XOne);' +
+      'r.push(a instanceof XOne, customElements.get("x-one") === XOne, customElements.getName(XOne));' +
+      'a.setAttribute("mode", "n"); a.setAttribute("other", "p");' +
+      'var c = document.createElement("x-one"); c.id = "c";' +
+      'r.push(c instanceof XOne, c.isConnected);' +
+      'document.getElementById("host").appendChild(c);' +
+      'c.remove();' +
+      'document.getElementById("host").innerHTML = "<x-one id=d></x-one>";' +
+      'r.push(document.getElementById("t").content.firstChild instanceof XOne);' +
+      'function out() { document.getElementById("out").textContent = r.join("|"); }' +
+      '</script>',
+  );
+  await settle();
+  assert.equal(
+    doc.text('out'),
+    [
+      'false',
+      '', // `get` of a name no one defined
+      // the constructor first, then what its upgrade queued
+      'new a:true',
+      'a.mode:null>m',
+      'in a',
+      'new b:true',
+      'in b',
+      'true',
+      'true',
+      'x-one',
+      'a.mode:m>n',
+      'new :true',
+      'true',
+      'false',
+      'in c',
+      'out c',
+      'new d:true',
+      'in d',
+      'false',
+      'defined true',
+    ].join('|'),
+  );
+});
+
+test('an element put into the document by markup is upgraded only as it is connected, and a copy into the document at once', async () => {
+  const doc = await hosted(
+    '<div id="host"></div><p id="out"></p><script>' +
+      'var r = [];' +
+      'class XTwo extends HTMLElement { connectedCallback() { r.push("in " + this.id); } }' +
+      'customElements.define("x-two", XTwo);' +
+      'var held = document.createElement("div");' +
+      'held.innerHTML = "<x-two id=a></x-two>";' +
+      'r.push(held.firstChild instanceof XTwo);' +
+      'document.getElementById("host").appendChild(held);' +
+      'r.push(held.firstChild instanceof XTwo);' +
+      'var copy = held.cloneNode(true);' +
+      'r.push(copy.firstChild instanceof XTwo, copy.firstChild.isConnected);' +
+      'var t = document.createElement("template"); t.innerHTML = "<x-two id=b></x-two>";' +
+      'var own = t.content.cloneNode(true);' +
+      'r.push(own.firstChild instanceof XTwo);' +
+      'var imported = document.importNode(t.content, true);' +
+      'r.push(imported.firstChild instanceof XTwo);' +
+      'var made = new XTwo(); made.id = "e";' +
+      'document.body.append(made);' +
+      'class Stray extends HTMLElement {}' +
+      'try { new Stray(); } catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'false|in a|true|true|false|false|true|in e|TypeError',
+  );
+});
+
+test('a definition is checked as a browser checks it, and an element whose constructor throws is reported and left failed', async () => {
+  const doc = await hosted(
+    '<x-bad id="bad"></x-bad><p id="out"></p><script>' +
+      'var r = [];' +
+      'function name(f) { try { f(); r.push("ok"); } catch (e) { r.push(e.name); } }' +
+      'class A extends HTMLElement {}' +
+      'name(function () { customElements.define("nohyphen", A); });' +
+      'name(function () { customElements.define("Up-per", A); });' +
+      'name(function () { customElements.define("font-face", A); });' +
+      'name(function () { customElements.define("x-a", function () {}.bind(null)); });' +
+      'name(function () { customElements.define("x-a", () => {}); });' +
+      'name(function () { customElements.define("x-a", A); });' +
+      'name(function () { customElements.define("x-a", class extends HTMLElement {}); });' +
+      'name(function () { customElements.define("x-b", A); });' +
+      'name(function () { customElements.define("x-c", class extends HTMLElement {}, { extends: "x-a" }); });' +
+      'customElements.whenDefined("nope").catch(function (e) { r.push("when " + e.name); out(); });' +
+      'window.addEventListener("error", function (e) { r.push("reported " + e.error.message); });' +
+      'class Bad extends HTMLElement { constructor() { super(); throw new Error("no"); } connectedCallback() { r.push("never"); } }' +
+      'customElements.define("x-bad", Bad);' +
+      'var bad = document.getElementById("bad");' +
+      'r.push(bad instanceof Bad);' +
+      'customElements.upgrade(document.body);' +
+      'class Loud extends HTMLElement { constructor() { super(); this.setAttribute("a", "b"); } }' +
+      'customElements.define("x-loud", Loud);' +
+      'var loud = document.createElement("x-loud");' +
+      'r.push(loud instanceof Loud, loud instanceof HTMLUnknownElement);' +
+      'function out() { document.getElementById("out").textContent = r.join("|"); }' +
+      '</script>',
+  );
+  await settle();
+  assert.equal(
+    doc.text('out'),
+    [
+      'SyntaxError',
+      'SyntaxError',
+      'SyntaxError',
+      // a bound function is a constructor with no prototype
+      'TypeError',
+      'TypeError',
+      'ok',
+      'NotSupportedError',
+      'NotSupportedError',
+      'NotSupportedError',
+      'reported no',
+      // its `super()` had given it the class's prototype before it threw
+      'true',
+      "reported Failed to execute 'createElement' on 'Document': The result must not have attributes",
+      'false',
+      'true',
+      'when SyntaxError',
+    ].join('|'),
+  );
+  assert.ok(
+    doc.logs.some((l) => l.startsWith('error: Uncaught Error: no')),
+    doc.logs.join('\n'),
+  );
+});
+
+test('a customized built-in is upgraded from its is, and attachInternals is a custom element’s once', async () => {
+  const doc = await hosted(
+    '<button is="x-press" id="b">b</button><p id="out"></p><script>' +
+      'var r = [];' +
+      'class Press extends HTMLButtonElement { connectedCallback() { r.push("in " + this.localName); } }' +
+      'customElements.define("x-press", Press, { extends: "button" });' +
+      'var b = document.getElementById("b");' +
+      'r.push(b instanceof Press, b instanceof HTMLButtonElement);' +
+      'var made = document.createElement("button", { is: "x-press" });' +
+      'r.push(made instanceof Press);' +
+      'class Field extends HTMLElement {' +
+      '  static formAssociated = true;' +
+      '  constructor() { super(); this.internals = this.attachInternals(); }' +
+      '}' +
+      'customElements.define("x-field", Field);' +
+      'var f = document.createElement("x-field");' +
+      'f.internals.states.add("on");' +
+      'r.push(f.internals instanceof ElementInternals, f.internals.states.has("on"), f.internals.willValidate);' +
+      'try { f.attachInternals(); } catch (e) { r.push(e.name); }' +
+      'try { document.createElement("div").attachInternals(); } catch (e) { r.push(e.name); }' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'in button|true|true|true|true|true|true|NotSupportedError|NotSupportedError',
+  );
+});
+
+test('querySelector and matches answer the pseudo-classes a browser does, where css-select threw', async () => {
+  const doc = await hosted(
+    '<p id="t">t</p><x-not id="x"></x-not><details id="d" open><summary>s</summary></details>' +
+      '<form id="f"><input id="req" required placeholder="p"><input id="ok" value="v"></form>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'history.replaceState(null, "", "#t");' +
+      'r.push(document.querySelector(":target").id);' +
+      'r.push(document.querySelectorAll("x-not:not(:defined)").length, document.getElementById("t").matches(":defined"));' +
+      'r.push(document.querySelector("details:open").id);' +
+      'r.push(document.getElementById("req").matches(":invalid"), document.getElementById("ok").matches(":valid"));' +
+      'r.push(document.querySelector(":placeholder-shown").id);' +
+      'r.push(document.querySelectorAll(":popover-open, :modal, :state(on), :fullscreen").length);' +
+      'customElements.define("x-not", class extends HTMLElement {});' +
+      'r.push(document.getElementById("x").matches(":defined"));' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(doc.text('out'), 't|1|true|d|true|true|req|0|true');
+});
+
+test(':defined is false for a custom element no definition has upgraded, and restyles as one does', async () => {
+  const doc = await hosted(
+    '<style>x-late:not(:defined) { display: none } x-late:defined { color: rgb(1, 2, 3) }</style>' +
+      '<x-late id="late">late</x-late><p id="plain">plain</p><p id="out"></p>' +
+      '<input type="button" id="go" value="go"><script>' +
+      'document.getElementById("go").addEventListener("click", function () {' +
+      '  customElements.define("x-late", class extends HTMLElement {});' +
+      '});</script>',
+  );
+  assert.equal(doc.view.computedStyle(doc.byId('late'))?.display, 'none');
+  assert.ok(doc.view.computedStyle(doc.byId('plain')));
+  await userEvent.click(screen.getByRole('button') as DrawnNode);
+  await settle();
+  assert.equal(doc.view.computedStyle(doc.byId('late'))?.color, 'rgb(1, 2, 3)');
+});
+
 test('CSS.supports answers as an @supports does, an address assigned to location navigates, and fetch takes a Request and form data', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

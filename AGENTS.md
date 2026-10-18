@@ -1907,6 +1907,19 @@ closes a way out a DOM binding opens by accident:
   hands out is the page's own, so a script that changes what it took from
   a frame changes the page: a frame's script that is written into it never
   runs (core-js's would empty `Object.prototype`).
+- **A custom element's state is the facade's; what happens to it in the
+  tree is the host's.** The registry, and each element's state, definition
+  and reaction queue by its wrapper (`customOf`), are in the page's realm,
+  where its class and its callbacks are. Once a name is defined the host
+  notes each element that may be one as it is connected, disconnected,
+  adopted, given another attribute value or copied into the document
+  (`_custom…`), and the facade takes the notes after the op that made them
+  and runs the reactions (`takeReactions`), before the method returns.
+  **Anything new that puts a node into the tree, takes one out or changes
+  an attribute goes through `_childList`, `_adopt` or `_changed`**, or its
+  custom elements hear nothing of it. `:defined` is the cascade's
+  (`isDefinedElement`), told of an upgrade as a change of `-rx-defined`, an
+  attribute no element has.
 - **A module is linked once and evaluated once** (`_linked`, `_evaluated`),
   however many `import()`s wait on it — the runtime allows each only once,
   and two concurrent imports handed a module mid-evaluation read its

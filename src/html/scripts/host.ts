@@ -31,7 +31,15 @@ import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 
 import type { HtmlChange, HtmlDomEvent, HtmlHandle } from '../index.js';
 import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
-import { HtmlSource, ShadowRoot, treesChanged } from '../dom.js';
+import {
+  HtmlSource,
+  ShadowRoot,
+  indicatedElement,
+  isCustomized,
+  isDefinedElement,
+  markCustomized,
+  treesChanged,
+} from '../dom.js';
 import { Cascade } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
 import { cssomStyle } from '../computed.js';
@@ -42,7 +50,7 @@ import {
   parseStylesheet,
   supportsCondition,
 } from '../css/parse.js';
-import { isDisabled } from '../form.js';
+import { isDisabled, validationMessage } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
 import {
   LiveRange,
@@ -774,6 +782,15 @@ export class DomHost {
   /** The page's `MutationObserver`s, by id in the order they were made: the
    *  nodes each watches and how, and the records queued for it. */
   private _observers = new Map<number, Observer>();
+  /** The names the page's custom elements were defined under, and what has
+   *  happened since the facade last asked to the elements that may be
+   *  theirs (`_custom…`): null until the first definition, so a page that
+   *  makes none pays nothing for it. */
+  private _custom: { names: Set<string>; log: Primitive[][] } | null = null;
+  /** The `<template>`s' contents (`content`), whose node document is an
+   *  inert one in a browser: nothing in them is a custom element, and a
+   *  copy of them none either, until it is put in the document. */
+  private _templateContents = new WeakSet<AnyNode>();
   /** The address the document is at, which `history.pushState` moves. */
   url: string;
   /** Scripts that are never run: what `innerHTML` and
@@ -1104,6 +1121,12 @@ export class DomHost {
 
   /** A node, and all it holds, made `doc`'s (DOM 4.5, "adopt"). */
   private _adopt(node: AnyNode, doc: Document): void {
+    if (this._custom) {
+      const old = this._ownerOf(node);
+      if (old !== doc) {
+        this._customLog('a', node, [this.idOf(old), this.idOf(doc)]);
+      }
+    }
     const forget = (at: AnyNode): void => {
       for (const kid of (at as ParentNode).children ?? []) {
         this._owners.delete(kid);
@@ -1399,6 +1422,7 @@ export class DomHost {
         }
         const clone = this._clone(node, !!b);
         this._adopt(clone, this._node(c) as Document);
+        if (this._custom) this._customMade(clone);
         return this.idOf(clone);
       }
 
@@ -1516,8 +1540,12 @@ export class DomHost {
         if (node.parent) this._take(node);
         return null;
       }
-      case 'clone':
-        return this.idOf(this._clone(this._node(a), !!b));
+      case 'clone': {
+        const node = this._node(a);
+        const clone = this._clone(node, !!b);
+        if (this._custom && !this._inTemplate(node)) this._customMade(clone);
+        return this.idOf(clone);
+      }
 
       // --- attributes
       case 'attr': {
@@ -1641,6 +1669,59 @@ export class DomHost {
       case 'shadowDelegates':
         return (this._node(a) as ShadowRoot).delegatesFocus;
 
+      // --- custom elements (`_custom…`)
+      // a name defined, local name `b` (its own, or the element an `is`
+      // extends), and the elements in the document it upgrades, in
+      // shadow-including tree order (HTML 4.13.4, `define()`)
+      case 'ceDefine': {
+        const name = text(a);
+        const local = text(b);
+        (this._custom ??= { names: new Set(), log: [] }).names.add(name);
+        const found: number[] = [];
+        this._customWalk(this.document, (el) => {
+          if (
+            el.name !== local ||
+            (el.namespace && el.namespace !== HTML_NAMESPACE)
+          ) {
+            return;
+          }
+          if (local === name || el.attribs.is === name)
+            found.push(this.idOf(el));
+        });
+        return found.join(',');
+      }
+      // the elements in a node that may be custom elements, for
+      // `customElements.upgrade()`
+      case 'ceCandidates': {
+        const found: number[] = [];
+        if (!this._custom) return '';
+        this._customWalk(this._node(a), (el) => {
+          if (this._customCandidate(el)) found.push(this.idOf(el));
+        });
+        return found.join(',');
+      }
+      // what happened to them since the last time, as JSON
+      case 'ceTake': {
+        const custom = this._custom;
+        if (!custom?.log.length) return '';
+        const log = custom.log;
+        custom.log = [];
+        return JSON.stringify(log);
+      }
+      // an element a definition made a custom element: `:defined` from now
+      case 'ceDefined': {
+        const el = this._element(a);
+        markCustomized(el);
+        if (this._inDocument(el)) {
+          this._tell(el, {
+            type: 'attributes',
+            target: el,
+            attributeName: '-rx-defined',
+          });
+        }
+        return null;
+      }
+
       // `document.write` from a script the parser met: the markup goes into
       // the document after the script and after what it wrote before, as
       // the parser would have read it there (HTML 8.4.3). Its scripts run,
@@ -1695,6 +1776,7 @@ export class DomHost {
             template.children.map((k) => k.cloneNode(true) as ChildNode),
           );
           for (const kid of holder.children) kid.parent = holder;
+          this._templateContents.add(holder);
           fragment = this.idOf(holder);
           this._contents.set(id, fragment);
         }
@@ -1704,13 +1786,14 @@ export class DomHost {
       // --- selectors
       case 'query': {
         const root = this._node(a);
+        const options = this._selectOptions();
         try {
           if (c) {
-            return selectAll(text(b), root as Element)
+            return selectAll(text(b), root as Element, options)
               .map((el) => this.idOf(el))
               .join(',');
           }
-          return this.idOf(selectOne(text(b), root as Element));
+          return this.idOf(selectOne(text(b), root as Element, options));
         } catch (error) {
           throw new DomError(
             'SyntaxError',
@@ -1720,7 +1803,7 @@ export class DomHost {
       }
       case 'matches':
         try {
-          return is(this._element(a), text(b));
+          return is(this._element(a), text(b), this._selectOptions());
         } catch {
           throw new DomError(
             'SyntaxError',
@@ -1728,9 +1811,12 @@ export class DomHost {
           );
         }
       case 'closest': {
+        const options = this._selectOptions();
         try {
           for (let at: AnyNode | null = this._element(a); at; at = at.parent) {
-            if (at instanceof Element && is(at, text(b))) return this.idOf(at);
+            if (at instanceof Element && is(at, text(b), options)) {
+              return this.idOf(at);
+            }
           }
         } catch {
           throw new DomError(
@@ -2454,6 +2540,15 @@ export class DomHost {
         attributeName: name!,
         oldValue,
       });
+      if (this._custom && this._customCandidate(target)) {
+        this._custom.log.push([
+          't',
+          this.idOf(target),
+          name,
+          oldValue,
+          target.attribs[name!] ?? null,
+        ]);
+      }
     } else {
       this._tell(target, { type, target });
       if (target.parent) this._sheetText(target.parent);
@@ -2547,6 +2642,10 @@ export class DomHost {
       removedNodes: removed,
     });
     this._sheetText(parent);
+    if (this._custom && this._inDocument(parent)) {
+      for (const node of removed) this._customLog('d', node);
+      for (const node of added) this._customLog('c', node);
+    }
     if (this._observers.size) {
       this._queue(parent, {
         type: 'childList',
@@ -2559,6 +2658,151 @@ export class DomHost {
         oldValue: null,
       });
     }
+  }
+
+  // --- custom elements --------------------------------------------------------
+  //
+  // The page's registry is the facade's (`customElements`), and so are an
+  // element's custom element state and its reactions (HTML 4.13.6). What
+  // the host does is say what happened to the elements that may be custom
+  // elements — those named, or `is`-given, a name the page defined, and
+  // those a definition made — as the changes that happen to them: put into
+  // the document, taken out of it, moved to another document, an attribute
+  // changed, or copied into the document (`ceTake`). The facade runs their
+  // callbacks, and upgrades the ones it has a definition for, after the op
+  // that made the change, as `[CEReactions]` runs them before a DOM method
+  // returns.
+
+  /** Whether an element may be a custom element, or become one. */
+  private _customCandidate(node: AnyNode): node is Element {
+    if (!(node instanceof Element)) return false;
+    const names = this._custom!.names;
+    if (names.has(node.name)) return true;
+    const is = node.attribs.is;
+    return (is !== undefined && names.has(is)) || isCustomized(node);
+  }
+
+  /** Each element in `node`, itself first, in shadow-including tree order
+   *  (DOM 4.2.2): a shadow tree straight after its host, before the host's
+   *  children. A `<template>`'s content is no part of it. */
+  private _customWalk(node: AnyNode, each: (el: Element) => void): void {
+    const stack: AnyNode[] = [node];
+    while (stack.length) {
+      const at = stack.pop()!;
+      if (!(at instanceof Element)) {
+        if (at instanceof Document) {
+          for (let i = at.children.length - 1; i >= 0; i -= 1) {
+            stack.push(at.children[i]);
+          }
+        }
+        continue;
+      }
+      each(at);
+      if (at.name === 'template') continue;
+      for (let i = at.children.length - 1; i >= 0; i -= 1) {
+        stack.push(at.children[i]);
+      }
+      const root = shadowRootOf(at);
+      if (root) stack.push(root);
+    }
+  }
+
+  /** What happened to each element in `node` that may be a custom
+   *  element, noted for the facade, as `kind` and its id and `more`. */
+  private _customLog(
+    kind: 'c' | 'd' | 'a' | 'u',
+    node: AnyNode,
+    more: Primitive[] = [],
+  ): void {
+    const log = this._custom!.log;
+    this._customWalk(node, (el) => {
+      if (this._customCandidate(el)) log.push([kind, this.idOf(el), ...more]);
+    });
+  }
+
+  /** A copy made in the document, whose custom elements a definition the
+   *  page has upgrades, connected or not (DOM 4.5, "clone", which creates
+   *  each element as `createElement` does). */
+  private _customMade(node: AnyNode): void {
+    if (this._ownerOf(node) === this.document) this._customLog('u', node);
+  }
+
+  /**
+   * What `querySelector`, `matches` and `closest` are asked with: the
+   * pseudo-classes css-select has no answer of its own for, answered as
+   * the document stands. It threw on each, where a browser answers, and a
+   * page's script that asked one stopped there: GitHub's ask `:target` as
+   * they load. One answered from something no script can see here — the
+   * pointer's history, a popover, a full screen — matches nothing.
+   */
+  private _selectOptions(): {
+    pseudos: Record<string, (el: Element, arg?: string | null) => boolean>;
+  } {
+    if (this._pseudos) return this._pseudos;
+    const handle = () => this._seams.handle;
+    const focused = (el: Element): boolean => handle().activeElement === el;
+    const nothing = (_el: Element): boolean => false;
+    const live = (el: Element): string | undefined => {
+      const value = handle().controlValue(el);
+      return typeof value === 'string' ? value : undefined;
+    };
+    const invalid = (el: Element): boolean =>
+      validationMessage(el, live) !== null;
+    const pseudos: Record<
+      string,
+      (el: Element, arg?: string | null) => boolean
+    > = {
+      defined: (el) => isDefinedElement(el),
+      target: (el) => {
+        let fragment = '';
+        try {
+          fragment = new URL(this.url).hash.slice(1);
+        } catch {}
+        return indicatedElement(this.document, fragment) === el;
+      },
+      focus: focused,
+      'focus-visible': focused,
+      'focus-within': (el) => {
+        let at: AnyNode | null = handle().activeElement as AnyNode | null;
+        while (at) {
+          if (at === el) return true;
+          at = at instanceof ShadowRoot ? at.host : at.parent;
+        }
+        return false;
+      },
+      open: (el) =>
+        (el.name === 'details' || el.name === 'dialog') &&
+        el.attribs.open !== undefined,
+      valid: (el) => !invalid(el),
+      invalid,
+      'placeholder-shown': (el) =>
+        (el.name === 'input' || el.name === 'textarea') &&
+        el.attribs.placeholder !== undefined &&
+        !(live(el) ?? el.attribs.value ?? ''),
+      // one that takes an argument has a second parameter, as css-select
+      // counts them
+      state: (_el, _name) => false,
+      modal: nothing,
+      'popover-open': nothing,
+      fullscreen: nothing,
+      autofill: nothing,
+      '-webkit-autofill': nothing,
+      'user-valid': nothing,
+      'user-invalid': nothing,
+      indeterminate: nothing,
+      playing: nothing,
+      paused: nothing,
+      host: nothing,
+    };
+    return (this._pseudos = { pseudos });
+  }
+  private _pseudos: ReturnType<DomHost['_selectOptions']> | null = null;
+
+  /** Whether a node is in a `<template>`'s content. */
+  private _inTemplate(node: AnyNode): boolean {
+    let at = node;
+    while (at.parent) at = at.parent;
+    return this._templateContents.has(at);
   }
 
   /**

@@ -641,7 +641,7 @@ it.
 
 **Out:**
 
-- custom elements (phase 3); shadow DOM came in phase 2 — see below;
+- custom elements (phase 3 — built, see below); shadow DOM came in phase 2;
 - modules: `vm.SourceTextModule` needs a flag on Node (phase 2 — built);
 - workers;
 - `MutationObserver` (phase 2, from the same dirty set — built);
@@ -681,6 +681,39 @@ stores, key paths and generators, indexes, cursors, key ranges, and
 transactions that commit once a round leaves no request queued after the
 microtasks its callbacks queued, which is where a promise wrapper's next
 request comes from.
+
+**And custom elements** (HTML 4.13), which GitHub starts its React apps
+from: a `<react-app>`'s `connectedCallback` hydrates the page, and a
+Primer page keeps its server-drawn content clipped away until a script
+reveals it, so with no registry github.com/features drew its sub-nav and
+nothing under it. `customElements` is the window's registry — `define`
+checked as a browser checks it, `get`, `getName`, `whenDefined` and
+`upgrade` — and a defined name's elements are upgraded in shadow-including
+tree order: its constructor run over each, through `HTMLElement`'s own
+(`[HTMLConstructor]`), which hands `super()` the element being upgraded, or
+a new one for `new` and `createElement`. Customized built-ins are upgraded
+from their `is`, and `attachInternals` answers a custom element's
+`ElementInternals` once, its states a set and its form value kept, which no
+form reads yet. Each element's state, definition and reaction queue are the
+facade's, by its wrapper; what happens to it in the tree is the host's to
+say, so once a name is defined the host notes each element of a defined
+name put into the document, taken out, moved to another document, given
+another attribute value, or copied into it, and the facade runs the
+callbacks and the upgrades those come to after the op that made them,
+before the DOM method returns, as `[CEReactions]` has it. Markup parsed
+into an element is upgraded as it is connected, and a copy made into the
+document at once — the difference `importNode` and `innerHTML` have in a
+browser. `:defined` is `<Html>`'s and holds for an element a page upgraded,
+and `querySelector`, `matches` and `closest` answer it, `:target`,
+`:focus`, `:focus-within`, `:open`, `:valid` and `:invalid` as the
+document stands, where css-select threw on every one.
+
+Upgrading GitHub's `<tool-tip>` brought the first shadow tree of `:host()`
+rules to most pages, and `refresh(changes)` restyled the whole document for
+any change while a rule crossed a tree's edge: at 300 ms a restyle, React's
+work loop ran past the timeout, was stopped half way, and never committed
+again. A rule at an edge is read for what it tests now, each key reaching
+across the edge below where it is tested (`MutationRules.noteEdge`).
 
 **And what Acid3 asks of the DOM**, which takes it to 96 of 100, the four
 Chrome fails as well (22, 23, 25 and 35, where today's DOM and Selectors
@@ -961,4 +994,5 @@ that either is a change to the bridge and not to the facade.
      `docs/prd-html.md` describes.
 3. **The rest, each its own question:** canvas over core's context,
    shadow DOM (`<Html>` already draws declarative shadow trees), and
-   custom elements.
+   custom elements (built: the registry, upgrades and reactions, and
+   `:defined`).
