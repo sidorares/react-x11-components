@@ -2680,6 +2680,9 @@ a table: the body table of a mail stands in the middle of its
 `<td align="center">` with its text where the mail wrote it. A table with
 auto margins is centred once it has shrunk to its columns, so a mail's
 button, a one-cell `<table align="center">`, stands in the middle.
+A header cell is centred where its row's `text-align` is the initial
+value, and takes its row's otherwise (HTML 15.3.8), so a table set
+`text-align: left` has its header row at the left with the rows under it.
 
 **Text:** `font` and its longhands (the generic `monospace`, as the whole
 of a family list, at the smaller size a browser sets it at: see

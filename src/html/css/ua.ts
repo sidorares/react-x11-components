@@ -226,11 +226,13 @@ tr { display: table-row; }
    so a <tr valign="top"> sets its cells at the top */
 thead, tbody, tfoot, tr { vertical-align: middle; }
 td { display: table-cell; padding: 1px; vertical-align: inherit; }
+/* centred where the row's is the initial value, and the row's otherwise
+   (HTML 15.3.8) */
 th {
   display: table-cell;
   padding: 1px;
   font-weight: bold;
-  text-align: center;
+  text-align: -internal-th-center;
   vertical-align: inherit;
 }
 colgroup { display: table-column-group; }
