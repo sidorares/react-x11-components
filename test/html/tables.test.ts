@@ -2167,6 +2167,46 @@ test("a table in an aligned cell keeps its cells' text at their start", async ()
   assert.strictEqual(align('c3'), 'center', "the author's own centring");
 });
 
+test("a header cell is centred where its row's alignment is the initial value, and takes its row's otherwise", async () => {
+  // HTML 15.3.8: github.blog sets its tables `text-align: left`, and Chrome
+  // sets their header rows at the left with the rows under them, where a
+  // header cell set `center` was centred whatever its table said. Chrome
+  // 154, Firefox and WebKit give each of these the same value.
+  const { node } = await render(
+    '<table><tr><th id="a">a</th></tr></table>' +
+      '<table style="text-align:left"><tr><th id="b">b</th></tr></table>' +
+      '<table><tr style="text-align:right"><th id="c">c</th></tr></table>' +
+      '<div style="text-align:right"><table><tr><th id="d">d</th></tr>' +
+      '</table></div>' +
+      '<table style="text-align:left"><tr><th id="e" style="text-align:center">' +
+      'e</th></tr></table>' +
+      '<table style="text-align:start"><tr><th id="f">f</th></tr></table>' +
+      '<table style="text-align:end"><tr><th id="g">g</th></tr></table>' +
+      '<table style="text-align:justify"><tr><th id="h">h</th></tr></table>' +
+      '<table><tr><th id="i"><div id="j">j</div></th></tr></table>',
+    400,
+  );
+  const el = view(node);
+  const align = (id: string) =>
+    (boxOf(el, id) as unknown as { style: { textAlign: string } }).style
+      .textAlign;
+  assert.deepStrictEqual(
+    ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'].map(align),
+    [
+      'center',
+      'left',
+      'right',
+      'right',
+      'center',
+      'center',
+      'end',
+      'justify',
+      'center',
+      'center',
+    ],
+  );
+});
+
 metric('a cell whose width adds a percentage to a length is auto', async () => {
   const { el } = await renderWithBytes(
     '<html><head><style>table { table-layout: fixed; width: 500px; ' +

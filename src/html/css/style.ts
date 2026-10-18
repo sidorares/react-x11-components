@@ -2986,6 +2986,19 @@ export function applyDeclaration(
         style.tableTextAlignSet = true;
         return;
       }
+      // A header cell's, from the user agent sheet: centred where its
+      // parent's is the initial value, and its parent's otherwise (HTML
+      // 15.3.8), as Blink's `-internal-center` and Gecko's
+      // `-moz-center-or-inherit` have it. Set `center`, a table set
+      // `text-align: left` had its header row centred over a body at the
+      // left: github.blog's
+      if (v === '-internal-th-center') {
+        const initial =
+          parent.textAlign === 'start' && parent.alignBlocks === null;
+        style.textAlign = initial ? 'center' : parent.textAlign;
+        style.alignBlocks = initial ? null : parent.alignBlocks;
+        return;
+      }
       // every line justified, the last as well (CSS Text 3, 7.1)
       if (v === 'justify-all') {
         style.textAlign = 'justify';
