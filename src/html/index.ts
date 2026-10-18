@@ -57,6 +57,7 @@ import {
   domButton,
   domButtons,
   domKey,
+  isModifierKey,
   fireDomEvent,
   modifiersOf,
   NO_MODIFIERS,
@@ -1054,7 +1055,10 @@ function documentInteraction(
     focus: (el) => {
       const now = live.current;
       if (!now) return false;
-      return now.forms.focusControl(el) || now.stops.focus(el);
+      now.forms.scriptFocus(el);
+      const took = now.forms.focusControl(el) || now.stops.focus(el);
+      if (!took) now.forms.scriptFocus(null);
+      return took;
     },
     blur: () => {
       const node = focusedNode(view.current);
@@ -1164,8 +1168,10 @@ function useDocumentEvents(
       });
       if (!go) ev.preventDefault();
     };
+  const keyDown = key('keydown');
   return {
     onMouseDownCapture: (ev: X11MouseEvent<DrawnNode>) => {
+      forms.userInput('pointer');
       pressed.current = null;
       // a press on a scroll container's bar is the bar's (`defaultMouseDown`)
       const node = view.current;
@@ -1199,7 +1205,14 @@ function useDocumentEvents(
       // nothing to keep from happening: a cancelled release still clicks
       fire('mouseup', target, mouse(ev));
     },
-    onKeyDownCapture: key('keydown'),
+    onKeyDownCapture: (ev: X11KeyboardEvent<DrawnNode>) => {
+      // a modifier alone, or a chord, is no move through the document:
+      // Ctrl+C after a click leaves a script's focus without its ring
+      if (!(ev.ctrlKey || ev.altKey || ev.metaKey || isModifierKey(ev))) {
+        forms.userInput('keyboard');
+      }
+      keyDown(ev);
+    },
     onKeyUpCapture: key('keyup'),
     onMouseMoveCapture: (ev: X11MouseEvent<DrawnNode>) => {
       if (!onDomEvent) return;

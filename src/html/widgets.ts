@@ -114,6 +114,18 @@ export interface Forms {
    * change to the document.
    */
   focused(el: Element, on: boolean): void;
+  /** What the user last did in the document, heard before anything else
+   *  hears it: a press, or a key that is not a modifier's or a chord's. */
+  userInput(kind: 'pointer' | 'keyboard'): void;
+  /**
+   * A script asks for `el` to take the focus (`HtmlHandle.focus`), or,
+   * given null, takes back an ask that came to nothing. The focus it gives
+   * shows, `:focus-visible`, where the user's last input in the document
+   * was not a press, as Chrome, Firefox and WebKit decide it: a menu a
+   * click opens and a script focuses the first link of draws no ring
+   * round it, where Tab and Enter, or no input at all, draw one.
+   */
+  scriptFocus(el: Element | null): void;
   /** What a control holds, as a script reads `value` or `checked`: typed
    *  text, the option a `<select>` shows, whether a box is ticked. Null for
    *  what is no control. */
@@ -187,6 +199,10 @@ export function useForms(options: FormsOptions): Forms {
   // another value than it took it with has a `change` (HTML 4.10.5.5).
   const blurred = React.useRef<Element | null>(null);
   const holder = React.useRef<Element | null>(null);
+  // the user's last input in the document, and the element a script last
+  // asked to focus with whether its focus shows (`scriptFocus`)
+  const lastInput = React.useRef<'pointer' | 'keyboard' | null>(null);
+  const asked = React.useRef<{ el: Element; visible: boolean } | null>(null);
   const leave = (el: Element, to: Element | null) => {
     commit(el);
     fire('focusout', el, { relatedTarget: to });
@@ -201,7 +217,12 @@ export function useForms(options: FormsOptions): Forms {
         if (isTextField(el)) values.current.set(el, forms.value(el));
         fire('focusin', el, { relatedTarget: was });
       }
-      view.current?.setFocus(el, true);
+      // what accepts typing shows however it took the focus (Selectors 4,
+      // 9.4); what a script focused, as its ask said
+      const ask = asked.current;
+      if (ask?.el === el) asked.current = null;
+      const visible = isTextField(el) || ask?.el !== el || ask.visible;
+      view.current?.setFocus(el, visible);
       return;
     }
     blurred.current = el;
@@ -565,6 +586,14 @@ export function useForms(options: FormsOptions): Forms {
       return false;
     },
     focused,
+    userInput: (kind) => {
+      lastInput.current = kind;
+    },
+    scriptFocus: (el) => {
+      asked.current = el
+        ? { el, visible: lastInput.current !== 'pointer' }
+        : null;
+    },
   };
 }
 

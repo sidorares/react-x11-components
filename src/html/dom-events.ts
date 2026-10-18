@@ -252,6 +252,19 @@ const PUNCTUATION: Record<number, string> = {
   0x2f: 'Slash',
 };
 
+/** Whether a key is a modifier's alone — Shift, Control, Caps Lock, Alt,
+ *  Meta, Super, Hyper, AltGr and its ISO kin, Mode_switch: X's keysyms for
+ *  them, which the DOM names `Shift`, `Control` and the rest. */
+export function isModifierKey(
+  ev: Pick<X11KeyboardEvent<DrawnNode>, 'keysym'>,
+): boolean {
+  const k = ev.keysym;
+  if (k === undefined) return false;
+  return (
+    (k >= 0xffe1 && k <= 0xffee) || (k >= 0xfe01 && k <= 0xfe0f) || k === 0xff7e
+  );
+}
+
 /** A core key event's `key` and `code` as the DOM names them. A key the
  *  DOM has no name for is `Unidentified`, as it says. */
 export function domKey(

@@ -14,7 +14,7 @@ import {
 import { Button } from 'react-x11';
 import type { DrawnNode, MouseEvent as X11MouseEvent, Rect } from 'react-x11';
 import type { Context2D } from 'react-x11/node';
-import { XK_RETURN, XK_SPACE } from 'react-x11/keysyms';
+import { XK_RETURN, XK_RIGHT, XK_SHIFT_L, XK_SPACE } from 'react-x11/keysyms';
 import { Html } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import { elementsIn, parseFragment } from '../../src/html/dom.js';
@@ -283,6 +283,54 @@ metric(
     assert.strictEqual(focused(), 'after');
     assert.strictEqual(outlineOf(el, 'c')[0], 'none');
     assert.strictEqual(el.focusedElement, null);
+  },
+);
+
+metric(
+  "a script's focus is ringed where the user's last input in the document was no press, as browsers decide it",
+  async () => {
+    // github.blog's header menus: a click opens one, and its script
+    // focuses the menu's first link. Chrome, Firefox and WebKit give that
+    // link `:focus` and not `:focus-visible`, and Primer draws no ring
+    // round it, where the document ringed it as though Tab had.
+    const { el } = await renderBetween(
+      '<p id="p">text to press on</p><p><a id="a" href="#a">a</a> ' +
+        '<a id="b" href="#b">b</a> <a id="c" href="#c">c</a> ' +
+        '<a id="d" href="#d">d</a></p>',
+    );
+    const byId = (id: string) =>
+      [...elementsIn(el.document as unknown as DocElement)].find(
+        (e) => e.attribs.id === id,
+      )!;
+    const focus = async (id: string) => {
+      await act(async () => {
+        // what `HtmlHandle.focus` asks, and a script's `focus()` through it
+        assert.ok(el.interactive!.focus(byId(id)), `${id} takes the focus`);
+      });
+      await act();
+      assert.strictEqual(el.focusedElement?.attribs.id, id);
+      return outlineOf(el, id)[0];
+    };
+    const press = async () => {
+      const p = boxOf(el, 'p');
+      const at = {
+        dx: p.x + 5 - el.abs.width / 2,
+        dy: p.y + 5 - el.abs.height / 2,
+      };
+      await act(async () => {
+        fireEvent.mouseDown(el as unknown as DrawnNode, at);
+        fireEvent.mouseUp(el as unknown as DrawnNode, at);
+      });
+    };
+    // before any input, as a page that focuses something as it loads
+    assert.strictEqual(await focus('a'), 'auto', 'no input yet: ringed');
+    await press();
+    assert.strictEqual(await focus('b'), 'none', 'after a press: not');
+    // a modifier alone is no keyboard input
+    await userEvent.key(XK_SHIFT_L);
+    assert.strictEqual(await focus('c'), 'none', 'after Shift alone: not');
+    await userEvent.key(XK_RIGHT);
+    assert.strictEqual(await focus('d'), 'auto', 'after a key: ringed');
   },
 );
 
