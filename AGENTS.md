@@ -3003,7 +3003,13 @@ of its container and after every layout** (`restickWithin`,
 `restickAll`), from where the flow has it: `STUCK` holds how far it was
 moved, and a container's reach is measured with every sticky box taken
 back by it, or a footer stuck at `bottom: 0` makes the container shorter
-by its height. **The scroll keys are `<Html>`'s root's**, since clicking a
+by its height. One the viewport keeps (`VIEWPORT_STICKY`) is the
+element's to place, since the pane's scroll lays nothing out
+(`_followViewport`, `restickToViewport`): **anything new that reads where
+a box is follows the viewport first**, as a paint, a hit test, a layout
+and `elementRect` do, and the pane's blit is told where each was drawn
+held and where it is held now (`viewportFixedRects`), or its copy drags a
+held box with the text. **The scroll keys are `<Html>`'s root's**, since clicking a
 document focuses it and core runs `defaultKeyDown` on the focused node
 alone: `scrollForKey` chains from the focused link or the last press out
 to the pane. And **the bars are a pass of their own at the end of

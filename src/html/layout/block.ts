@@ -777,8 +777,11 @@ export function layoutDocument(
   applyScrollOffsets(tree, translate);
   // and a sticky box keeps to the scroll container it is in where it is
   // scrolled to, which it was placed in as though it were scrolled to its
-  // start
-  if (tree.relative) restickAll(root);
+  // start; the ones the viewport keeps are the element's to place again
+  // where the pane around it is scrolled to (`restickToViewport`)
+  const viewportSticky = tree.relative ? restickAll(root) : null;
+  if (viewportSticky) VIEWPORT_STICKY.set(tree, viewportSticky);
+  else VIEWPORT_STICKY.delete(tree);
   const reach = computePaintBounds(root, tree.movedInline);
   if (tree.negative) hoistNegative(root);
   stackLayers(root);
@@ -5649,12 +5652,13 @@ function relativeOffset(box: Box): [number, number] {
  * start, less its insets — and no further than keeps its margin box in its
  * containing block, `top` winning over `bottom` and the start side over the
  * end. Nothing here scrolls a box the document holds, so for one of those
- * this is where the box stays. The viewport does scroll, and the document
- * with it, and a sticky box does not follow: against the viewport only its
- * `top` and its start side are kept, which at rest put a box as a browser
- * does, while a `bottom: 0` would pin a footer to the middle of the page
- * once it was scrolled. Taken as `relative`, a box stood its `top` below
- * where a browser starts it: Wikipedia's contents, 24px low.
+ * this is where the box stays until `restickAll` places it again. Against
+ * the viewport only its `top` and its start side are kept, which put a box
+ * where a browser starts it, scrolled to the top: the element places it
+ * again where the pane around it is scrolled to (`restickToViewport`), and
+ * where nothing scrolls the element, this is where it stays. Taken as
+ * `relative`, a box stood its `top` below where a browser starts it:
+ * Wikipedia's contents, 24px low.
  */
 function stickyOffset(
   box: Box,
@@ -5772,36 +5776,78 @@ export function restickWithin(scroller: Box): boolean {
 
 /** `restickWithin` for every scroll container in a tree: after a layout,
  *  which placed each sticky box as though its container were scrolled to
- *  its start. */
-function restickAll(root: Box): void {
-  const visit = (box: Box, port: Box | null): void => {
+ *  its start. Answers the sticky boxes the viewport keeps, in tree order,
+ *  an outer one ahead of one in it — but for one in a box fixed to the
+ *  viewport, which no scroll of it moves. */
+function restickAll(root: Box): Box[] | null {
+  let viewport: Box[] | null = null;
+  const visit = (box: Box, port: Box | null, fixed: boolean): void => {
     for (const child of box.children) {
-      if (
-        port &&
-        child.style.position === 'sticky' &&
-        child.kind !== 'inline'
-      ) {
-        restick(child, port);
+      if (child.style.position === 'sticky' && child.kind !== 'inline') {
+        if (port) restick(child, port);
+        else if (!fixed) (viewport ??= []).push(child);
       }
-      visit(child, isScroller(child) ? child : port);
+      visit(
+        child,
+        isScroller(child) ? child : port,
+        fixed || (port === null && fixedToViewport(child)),
+      );
     }
   };
-  visit(root, null);
+  visit(root, null, false);
+  return viewport;
+}
+
+/** The sticky boxes each tree's viewport keeps (`restickAll`): placed at
+ *  rest by the layout (`stickyOffset`), and again by the element where the
+ *  pane around it is scrolled to (`restickToViewport`). */
+export const VIEWPORT_STICKY = new WeakMap<object, readonly Box[]>();
+
+/**
+ * Place the sticky boxes the viewport keeps (`VIEWPORT_STICKY`) against
+ * its scrollport where the pane around the element has scrolled the
+ * document to — `port`, in the document's coordinates — as `restick`
+ * places one against a scroll container in the document. A layout placed
+ * them as though the document were at its top, and the pane's scroll moves
+ * no box, so without this a contents list `top: 80px` scrolled away with
+ * the article beside it, where a browser keeps it below the page's header.
+ * Both insets of an axis hold here, as they do in a scroll container: the
+ * scroll is known, so a `bottom: 0` keeps a footer at the foot of what is
+ * seen, and goes with its containing block. Answers the boxes that moved.
+ */
+export function restickToViewport(
+  boxes: readonly Box[],
+  port: { x: number; y: number; width: number; height: number },
+): Box[] | null {
+  let moved: Box[] | null = null;
+  for (const box of boxes) {
+    let cb = box.parent;
+    while (cb && cb.kind === 'inline') cb = cb.parent;
+    if (!cb) continue;
+    const at = placeSticky(
+      box,
+      cb,
+      port.x,
+      port.y,
+      port.width,
+      port.height,
+      cb.contentX,
+      cb.contentY,
+      cb.contentWidth,
+      cb.contentHeight,
+    );
+    if (at) (moved ??= []).push(box);
+  }
+  return moved;
 }
 
 /** A sticky box placed again against the scrollport of its scroll
  *  container, as `stickyOffset` places it, where the container is
  *  scrolled to; whether it moved. */
 function restick(box: Box, port: Box): boolean {
-  const was = STUCK.get(box) ?? [0, 0];
   let cb = box.parent;
   while (cb && cb.kind === 'inline') cb = cb.parent;
   if (!cb) return false;
-  const style = box.style;
-  const px = port.x + port.borderLeft;
-  const py = port.y + port.borderTop;
-  const pw = port.width - port.borderLeft - port.borderRight;
-  const ph = port.height - port.borderTop - port.borderBottom;
   // the containing block where it is the scroll container is all it
   // scrolls, from where the scroll has its start
   let cbx = cb.contentX;
@@ -5815,6 +5861,37 @@ function restick(box: Box, port: Box): boolean {
     cbw = Math.max(cbw, state.width - port.padLeft - port.padRight);
     cbh = Math.max(cbh, state.height - port.padTop - port.padBottom);
   }
+  return placeSticky(
+    box,
+    cb,
+    port.x + port.borderLeft,
+    port.y + port.borderTop,
+    port.width - port.borderLeft - port.borderRight,
+    port.height - port.borderTop - port.borderBottom,
+    cbx,
+    cby,
+    cbw,
+    cbh,
+  );
+}
+
+/** A sticky box placed against a scrollport (`px`…`ph`) within its
+ *  containing block (`cbx`…`cbh`), from where the flow has it: that far
+ *  less from where it is now (`STUCK`). Whether it moved. */
+function placeSticky(
+  box: Box,
+  cb: Box,
+  px: number,
+  py: number,
+  pw: number,
+  ph: number,
+  cbx: number,
+  cby: number,
+  cbw: number,
+  cbh: number,
+): boolean {
+  const was = STUCK.get(box) ?? [0, 0];
+  const style = box.style;
   const dx = stuck(
     box.x - was[0],
     box.width,
