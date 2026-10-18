@@ -1526,24 +1526,117 @@ export const CHANGES_BELOW = 2;
 /** …its later siblings and what is in them: tested in a compound a sibling
  *  combinator follows. */
 export const CHANGES_LATER = 4;
-/** Through a `:has()`, an element around it whose answer to the `:has()`
- *  changed — any ancestor — and that element itself… */
-export const CHANGES_HAS_SELF = 8;
-/** …what is in that one… */
-export const CHANGES_HAS_BELOW = 16;
-/** …and that one's later siblings and what is in them. */
-export const CHANGES_HAS_LATER = 32;
-/** Elements this cannot say: a `:has()` whose argument starts at a sibling,
- *  or what `:nth-child(… of …)` counts by. */
+/** Elements this cannot say: what `:nth-child(… of …)` counts by, which
+ *  is any sibling's. */
 export const CHANGES_ANYWHERE = 64;
 
-/** The `:has()` bits for a `:has()` in a compound at `bits`. */
-function hasBitsOf(bits: number): number {
-  if (bits & CHANGES_ANYWHERE) return CHANGES_ANYWHERE;
-  // a `:has()` inside another's argument: the outer one's anchor is around
-  // the inner one's, so the outer's are what it reaches
-  if (bits >= CHANGES_HAS_SELF) return bits;
-  return bits << 3;
+/**
+ * An element a change can change the answer to a `:has()` of, as the
+ * change finds it (`HtmlViewNode._scopeOf`): one that matches `compound`,
+ * among the elements around what changed. A `:has()` asks what is below
+ * its element, or after it where its argument starts at a sibling, so the
+ * element whose answer changed is an ancestor of what changed, or with
+ * `siblings` an earlier sibling of it or of an ancestor. What changes with
+ * its answer is what its compound's place in its selector (`at`,
+ * `CHANGES_*`) says.
+ *
+ * The compound is the `:has()`'s, with nothing in it a change to the tree
+ * can change the answer to (`stableCompound`): its type, classes, ids and
+ * attribute tests, which are the element's own. So an element whose answer
+ * changed matches it before the change and after, and it is asked after.
+ * Where one of those is what changed, the element's own test of it
+ * reaches as far as the anchor would (`CHANGES_*` on its key).
+ */
+export interface HasAnchor {
+  readonly compound: string;
+  readonly at: number;
+  readonly siblings: boolean;
+}
+
+/** A `:has()` somewhere a change reaches elements no compound names —
+ *  inside `:nth-child(… of …)`, or one every element is the anchor of
+ *  that reaches past itself: what it reaches is noted `CHANGES_ANYWHERE`. */
+const ANYWHERE_ANCHOR: HasAnchor = {
+  compound: '*',
+  at: CHANGES_ANYWHERE,
+  siblings: true,
+};
+
+/** The anchor of a `:has()` in a compound at `at` whose element matches
+ *  `stable` (`stableCompound`), its argument starting at a sibling where
+ *  `siblings` says. */
+function anchorOf(stable: string, at: number, siblings: boolean): HasAnchor {
+  if (at & CHANGES_ANYWHERE) return ANYWHERE_ANCHOR;
+  const compound = stable || '*';
+  // every element's answer, past which what changes is everything
+  if (compound === '*' && at & (CHANGES_BELOW | CHANGES_LATER)) {
+    return ANYWHERE_ANCHOR;
+  }
+  return { compound, at, siblings };
+}
+
+/** An anchor whose argument starts at a sibling: its own, or a `:has()`'s
+ *  around it in whose argument it is. */
+function withSiblings(anchor: HasAnchor): HasAnchor {
+  return anchor.siblings ? anchor : { ...anchor, siblings: true };
+}
+
+/** What an element matching both of two stable compounds matches. */
+function bothOf(a: string, b: string): string {
+  if (!a || a === '*') return b;
+  if (!b || b === '*') return a;
+  return `${a}:is(${b})`;
+}
+
+/**
+ * What of a compound no change to the tree can change an element's answer
+ * to (`HasAnchor`): its type, classes, ids and attribute selectors, and an
+ * `:is()`, a `:where()` or a `:not()` of compounds of only those — each the
+ * element's own name or attributes. A pseudo-class reads the element's
+ * place among its siblings, what it holds, the pointer or the focus, and
+ * goes. '' where nothing is left.
+ */
+function stableCompound(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '\\') {
+      const end = escapeEnd(text, i);
+      out += text.slice(i, end);
+      i = end;
+    } else if (c === '[') {
+      const close = bracketEnd(text, i);
+      out += text.slice(i, close + 1);
+      i = close + 1;
+    } else if (c === ':') {
+      const fn = FUNCTION_AT.exec(text.slice(i));
+      if (fn) {
+        const open = i + fn[0].length - 1;
+        const close = closeOf(text, open);
+        if (MATCHES_ANY.test(fn[1])) {
+          const entries = selectorsOf(text.slice(open + 1, close));
+          const stable = entries.every((entry) => {
+            const one = entry.trim();
+            return (
+              one !== '' &&
+              compoundsOf(one).length === 1 &&
+              stableCompound(one) === one
+            );
+          });
+          if (stable) out += text.slice(i, close + 1);
+        }
+        i = close + 1;
+      } else {
+        const m = /^::?[\w-]*/.exec(text.slice(i));
+        i += Math.max(1, m ? m[0].length : 1);
+      }
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out.trim();
 }
 
 /**
@@ -1628,42 +1721,53 @@ const PSEUDO_INHERITED = new Set([
 ]);
 
 /** A selector's keys and where each is tested, as `MutationRules.note`
- *  takes them. */
-type NoteChange = (key: string, bits: number) => void;
+ *  takes them: at `bits`, or in a `:has()`'s argument, through `anchor`. */
+type NoteChange = (key: string, bits: number, anchor: HasAnchor | null) => void;
 
 /**
  * The keys a complex selector tests, each with where (`CHANGES_*`): `at`
- * for its subject compound, and `has` in place of every position where the
- * selector is a `:has()`'s argument, which reaches only that `:has()`'s
- * anchor whatever compound tests it.
+ * for its subject compound, or `has` for every compound where the selector
+ * is a `:has()`'s argument, which reaches only the elements whose answer
+ * to that `:has()` changed whatever compound tests it. `outer` is what the
+ * subject's element matches besides, where the selector is an entry of an
+ * `:is()` or a `:not()` in a compound (`stableCompound` of it).
  */
 function scanChanges(
   selector: string,
   at: number,
-  has: number | null,
+  has: HasAnchor | null,
   note: NoteChange,
+  outer = '',
 ): void {
   const parts = compoundsOf(selector);
   for (let i = 0; i < parts.length; i += 1) {
     const { text, next } = parts[i];
     const bits =
-      has ??
-      (i === parts.length - 1
+      i === parts.length - 1
         ? at
         : next === '+' || next === '~'
           ? CHANGES_LATER
-          : CHANGES_BELOW);
-    if (has === null && (next === '+' || next === '~')) note('+', bits);
-    scanCompoundChanges(text, bits, has, note);
+          : CHANGES_BELOW;
+    if (has === null && (next === '+' || next === '~')) note('+', bits, null);
+    scanCompoundChanges(
+      text,
+      bits,
+      has,
+      note,
+      i === parts.length - 1 ? outer : '',
+    );
   }
 }
 
-/** The keys one compound tests (`scanChanges`). */
+/** The keys one compound tests (`scanChanges`). An attribute selector is a
+ *  key of its own (`v:`), whose answer for the values an attribute had and
+ *  has says whether a change of it is one (`MutationRules.tests`). */
 function scanCompoundChanges(
   text: string,
   bits: number,
-  has: number | null,
+  has: HasAnchor | null,
   note: NoteChange,
+  outer = '',
 ): void {
   let i = 0;
   while (i < text.length) {
@@ -1672,11 +1776,12 @@ function scanCompoundChanges(
       i = escapeEnd(text, i);
     } else if (c === '.' || c === '#') {
       const name = readIdent(text, i + 1);
-      note(`${c === '.' ? 'c' : 'i'}:${name.value}`, bits);
+      note(`${c === '.' ? 'c' : 'i'}:${name.value}`, bits, has);
       i = Math.max(name.end, i + 1);
     } else if (c === '[') {
       const close = bracketEnd(text, i);
-      note(`a:${attributeNameOf(text.slice(i + 1, close))}`, bits);
+      const name = attributeNameOf(text.slice(i + 1, close));
+      note(`v:${name}\u0000${text.slice(i, close + 1)}`, bits, has);
       i = close + 1;
     } else if (c === ':' && text[i + 1] === ':') {
       // a pseudo-element left in a compound — `::slotted()`, `::part()` —
@@ -1692,6 +1797,7 @@ function scanCompoundChanges(
         scanFunctionChanges(
           fn[1].toLowerCase(),
           text.slice(open + 1, close),
+          bothOf(outer, stableCompound(text)),
           bits,
           has,
           note,
@@ -1702,11 +1808,15 @@ function scanCompoundChanges(
       const m = /^:([\w-]+)/.exec(text.slice(i));
       const name = (m?.[1] ?? '').toLowerCase();
       const reads = PSEUDO_READS[name] ?? [];
-      const reach =
-        has === null && PSEUDO_INHERITED.has(name)
-          ? bits | CHANGES_BELOW
-          : bits;
-      for (const key of reads) note(key, reach);
+      // What is inside the element takes the answer too, and in a
+      // `:has()`'s argument so does the element whose answer it changes,
+      // which is inside it too: no attribute one of these reads is a
+      // style-only one, and a change of any other restyles its element
+      // and everything in it (`HtmlViewNode._scopeOf`).
+      const inherited = has === null && PSEUDO_INHERITED.has(name);
+      for (const key of reads) {
+        note(key, inherited ? bits | CHANGES_BELOW : bits, has);
+      }
       i += m ? m[0].length : 1;
     } else {
       // a type, `*`, or what is between: no change to the DOM can make an
@@ -1716,49 +1826,61 @@ function scanCompoundChanges(
   }
 }
 
-/** The keys a functional pseudo-class tests (`scanCompoundChanges`). */
+/** The keys a functional pseudo-class tests (`scanCompoundChanges`), in a
+ *  compound whose element matches `stable` (`stableCompound`). */
 function scanFunctionChanges(
   name: string,
   arg: string,
+  stable: string,
   bits: number,
-  has: number | null,
+  has: HasAnchor | null,
   note: NoteChange,
 ): void {
   if (name === 'has') {
-    const anchored = has ?? hasBitsOf(bits);
+    // a `:has()` inside another's argument: the outer one's element is the
+    // one whose answer changes with the inner one's, and is around it
+    const anchored = has ?? anchorOf(stable, bits, false);
     for (const entry of selectorsOf(arg)) {
-      // one that starts at a sibling has anchors before the element
-      // changed, which this does not look for
+      // one that starts at a sibling asks what is after its element
       const sibling = /^\s*[+~]/.test(entry);
-      const at = sibling ? CHANGES_ANYWHERE : anchored;
-      scanChanges(entry.replace(/^\s*[>+~]\s*/, ''), at, at, note);
+      const at = sibling ? withSiblings(anchored) : anchored;
+      scanChanges(entry.replace(/^\s*[>+~]\s*/, ''), bits, at, note);
       // and what an element holds is what a `:has()` asks
-      note('s', at);
+      note('s', bits, at);
     }
   } else if (MATCHES_ANY.test(name)) {
-    // the element it is written on, as the compound it is in
-    for (const entry of selectorsOf(arg)) scanChanges(entry, bits, has, note);
+    // the element it is written on, as the compound it is in — whose
+    // element the subject of each entry is, so a `:has()` there is that
+    // element's: `.b:not(:has(> .c))`'s is a `.b`
+    for (const entry of selectorsOf(arg)) {
+      scanChanges(entry, bits, has, note, stable);
+    }
   } else if (name === 'lang' || name === 'dir') {
     // what the nearest element up that says one says: a change to one
-    // reaches what is in it
-    const reach = has ?? bits | CHANGES_BELOW;
-    if (name === 'lang') {
-      note('a:lang', reach);
-      note('a:xml:lang', reach);
-    } else note('a:dir', reach);
+    // reaches what is in it, and in a `:has()`'s argument the element
+    // whose answer it changes is in it, as for `PSEUDO_INHERITED`
+    const keys = name === 'lang' ? ['a:lang', 'a:xml:lang'] : ['a:dir'];
+    for (const key of keys) {
+      note(key, has ? bits : bits | CHANGES_BELOW, has);
+    }
   } else if (/^nth-(?:last-)?(?:child|of-type)$/.test(name)) {
-    note('s', bits);
+    note('s', bits, has);
     // `of S`: what S tests decides where an element's siblings count it
     const of = /\bof\b/i.exec(arg);
     if (of) {
       const list = arg.slice(of.index + 2);
       for (const entry of selectorsOf(list)) {
-        scanChanges(entry, CHANGES_ANYWHERE, CHANGES_ANYWHERE, note);
+        scanChanges(entry, CHANGES_ANYWHERE, ANYWHERE_ANCHOR, note);
       }
     }
   } else if (name === 'contains' || name === 'icontains') {
-    // the text of everything in the element
-    note('t', has ?? bits | hasBitsOf(bits));
+    // the text of everything in the element: the element's own, and that
+    // of every element around it, as a `:has()` asks
+    if (has) note('t', bits, has);
+    else {
+      note('t', bits, null);
+      note('t', bits, anchorOf(stable, bits, false));
+    }
   }
   // `:host()` and `:host-context()` are a shadow tree's, which a document
   // with one restyles whole; any other css-select refuses
@@ -1782,6 +1904,12 @@ function bracketEnd(text: string, open: number): number {
  *  attribute names are, and without a namespace: `[xlink|href]` tests
  *  `href`, and `[lang|=en]` tests `lang`. */
 function attributeNameOf(body: string): string {
+  return asciiLower(attributeNameAsWritten(body));
+}
+
+/** `attributeNameOf` as the selector spells it, which is the name
+ *  css-select asks an element for. */
+function attributeNameAsWritten(body: string): string {
   let name = '';
   for (let i = 0; i < body.length; i += 1) {
     const c = body[i];
@@ -1795,7 +1923,7 @@ function attributeNameOf(body: string): string {
     }
     name += c;
   }
-  return asciiLower(name);
+  return name;
 }
 
 /** The white space a `class` lists names between: HTML's, which is ASCII's
@@ -1814,21 +1942,35 @@ const ATTR_FUNCTION = /\battr\(\s*([^\s,)]+)/gi;
 /**
  * Every rule's selector, read for what a change to the DOM can make another
  * answer for (`Cascade.attributeChange`, `treeChange`): by key — `c:` a
- * class, `i:` an id, `a:` an attribute, `s` what an element holds, `t` its
- * text — where it is tested, and the pseudo-elements whose rules test it.
+ * class, `i:` an id, `a:` an attribute a pseudo-class or an `attr()` reads,
+ * `v:` an attribute selector, `s` what an element holds, `t` its text —
+ * where it is tested, the `:has()`s whose answer it can change, and the
+ * pseudo-elements whose rules test it.
  */
 class MutationRules {
   private _bits = new Map<string, number>();
   private _pseudo = new Map<string, 0 | 1 | 2>();
+  private _anchors = new Map<string, Set<HasAnchor>>();
+  /** Each attribute's selectors (`v:` keys), by the attribute's name. */
+  private _tests = new Map<string, Set<string>>();
+  /** One anchor for each compound, place and kind, so that a set of them
+   *  holds each once. */
+  private _interned = new Map<string, HasAnchor>();
   /** Every class's, and every id's, for a change whose old value is not
    *  known: what any class a selector tests can reach. */
   anyClass = 0;
   anyId = 0;
   anyClassPseudo: 0 | 1 | 2 = 0;
   anyIdPseudo: 0 | 1 | 2 = 0;
-  /** Every `:has()`'s, for a change to what an element holds, which any of
-   *  them may ask of whatever was added or taken away. */
-  hasBits = 0;
+  readonly anyClassAnchors = new Set<HasAnchor>();
+  readonly anyIdAnchors = new Set<HasAnchor>();
+  /** Every `:has()`'s anchor, for a change to what an element holds, which
+   *  any of them may ask of whatever was added or taken away. */
+  readonly everyAnchor = new Set<HasAnchor>();
+  /** Whether a `:has()` is in any rule, and whether one is where what a
+   *  change reaches cannot be said (`ANYWHERE_ANCHOR`). */
+  asksHas = false;
+  hasAnywhere = false;
   /** Whether a sibling combinator is in a selector outside a `:has()`: a
    *  child added or taken away is another element's earlier sibling. */
   siblings = false;
@@ -1879,25 +2021,50 @@ class MutationRules {
     );
   }
 
-  /** `note`, every key's bits widened by `wider`. */
+  /** `note`, every key's bits, and every anchor's place, widened by
+   *  `wider`. */
   private _scan(
     selector: string,
     pseudo: 0 | 1 | 2,
     declarations: readonly Declaration[],
     wider: number,
   ): void {
-    const note: NoteChange = (key, narrow) => {
-      const bits = narrow | wider;
+    const note: NoteChange = (key, narrow, anchor) => {
       if (key === '+') {
         this.siblings = true;
         return;
       }
-      this._bits.set(key, (this._bits.get(key) ?? 0) | bits);
-      if (bits >= CHANGES_HAS_SELF) this.hasBits |= bits;
-      if (key[0] === 'c' && key[1] === ':') {
+      if (key[0] === 'v' && key[1] === ':') {
+        const name = key.slice(2, key.indexOf('\u0000'));
+        let tests = this._tests.get(name);
+        if (!tests) this._tests.set(name, (tests = new Set()));
+        tests.add(key);
+      }
+      const isClass = key[0] === 'c' && key[1] === ':';
+      const isId = key[0] === 'i' && key[1] === ':';
+      // in a `:has()`'s argument, a key reaches the elements whose answer
+      // to it changed, and where it is in the argument says nothing
+      let bits = wider | (anchor ? 0 : narrow);
+      if (anchor) {
+        this.asksHas = true;
+        if (anchor.at & CHANGES_ANYWHERE) {
+          this.hasAnywhere = true;
+          bits |= CHANGES_ANYWHERE;
+        } else {
+          const one = this._intern(anchor, wider);
+          let set = this._anchors.get(key);
+          if (!set) this._anchors.set(key, (set = new Set()));
+          set.add(one);
+          this.everyAnchor.add(one);
+          if (isClass) this.anyClassAnchors.add(one);
+          else if (isId) this.anyIdAnchors.add(one);
+        }
+      }
+      if (bits) this._bits.set(key, (this._bits.get(key) ?? 0) | bits);
+      if (isClass) {
         this.anyClass |= bits;
         if (pseudo > this.anyClassPseudo) this.anyClassPseudo = pseudo;
-      } else if (key[0] === 'i' && key[1] === ':') {
+      } else if (isId) {
         this.anyId |= bits;
         if (pseudo > this.anyIdPseudo) this.anyIdPseudo = pseudo;
       }
@@ -1907,9 +2074,21 @@ class MutationRules {
     for (const declaration of declarations) {
       if (!declaration.value.includes('attr(')) continue;
       for (const m of declaration.value.matchAll(ATTR_FUNCTION)) {
-        note(`a:${asciiLower(m[1])}`, CHANGES_SELF);
+        note(`a:${asciiLower(m[1])}`, CHANGES_SELF, null);
       }
     }
+  }
+
+  /** The one anchor like `anchor`, its place widened by `wider`. */
+  private _intern(anchor: HasAnchor, wider: number): HasAnchor {
+    const at = anchor.at | wider;
+    const id = `${at} ${+anchor.siblings} ${anchor.compound}`;
+    let one = this._interned.get(id);
+    if (!one) {
+      one = { ...anchor, at };
+      this._interned.set(id, one);
+    }
+    return one;
   }
 
   /** Where a key is tested, as `CHANGES_*` bits; 0 for nowhere. */
@@ -1917,11 +2096,139 @@ class MutationRules {
     return this._bits.get(key) ?? 0;
   }
 
+  /** The anchors of the `:has()`s whose argument tests a key. */
+  anchors(key: string): ReadonlySet<HasAnchor> | undefined {
+    return this._anchors.get(key);
+  }
+
+  /** The attribute selectors that test an attribute, as `v:` keys. */
+  tests(name: string): ReadonlySet<string> | undefined {
+    return this._tests.get(name);
+  }
+
   /** The pseudo-elements whose rules test a key: 0 none, 1 a `::before`
    *  or an `::after` only, 2 another. */
   pseudo(key: string): 0 | 1 | 2 {
     return this._pseudo.get(key) ?? 0;
   }
+}
+
+/**
+ * The `:has()`s a change can change the answer to (`Cascade.
+ * attributeChange`, `treeChange`), for the elements around it to be asked
+ * whether they are one's (`at`), and whether any asks what is after its
+ * element (`siblings`), which says which elements those are
+ * (`HtmlViewNode`'s `spreadAnchors`). An element is asked only about the
+ * anchors its id or one of its classes could match (`anchorKey`), and
+ * those that need neither: a treeChange asks every `:has()` in the sheets.
+ */
+export class ChangeAnchors {
+  readonly siblings: boolean;
+  /** Each anchor's matcher and place, by the id or the class an element
+   *  has to have to match it, compiled when an element is first asked
+   *  about; null where one cannot be. */
+  private _byKey: Map<string, AnchorMatcher[]> | null | undefined = undefined;
+  private _rest: AnchorMatcher[] = [];
+
+  constructor(
+    private readonly _anchors: readonly HasAnchor[],
+    private readonly _compile: (
+      anchor: HasAnchor,
+    ) => ((el: Element) => boolean) | null,
+  ) {
+    this.siblings = _anchors.some((a) => a.siblings);
+  }
+
+  /** The places (`CHANGES_*`) of the anchors whose compound `el` matches:
+   *  0 for none, null where a compound cannot be asked. */
+  at(el: Element): number | null {
+    if (this._byKey === undefined) this._prepare();
+    const byKey = this._byKey;
+    if (!byKey) return null;
+    let bits = 0;
+    const ask = (list: readonly AnchorMatcher[] | undefined): void => {
+      if (!list) return;
+      for (const { match, at } of list) {
+        if ((bits | at) !== bits && match(el)) bits |= at;
+      }
+    };
+    const id = el.attribs.id;
+    if (id) ask(byKey.get(`#${id}`));
+    for (const name of classesOf(el.attribs.class ?? null)) {
+      ask(byKey.get(`.${name}`));
+    }
+    ask(this._rest);
+    return bits;
+  }
+
+  private _prepare(): void {
+    const byKey = new Map<string, AnchorMatcher[]>();
+    for (const anchor of this._anchors) {
+      const match = this._compile(anchor);
+      if (!match) {
+        this._byKey = null;
+        return;
+      }
+      const key = anchorKey(anchor.compound);
+      const one = { match, at: anchor.at };
+      if (!key) {
+        this._rest.push(one);
+        continue;
+      }
+      let list = byKey.get(key);
+      if (!list) byKey.set(key, (list = []));
+      list.push(one);
+    }
+    this._byKey = byKey;
+  }
+}
+
+interface AnchorMatcher {
+  match: (el: Element) => boolean;
+  at: number;
+}
+
+/** What a change to an element's attribute reaches, from the element
+ *  (`Cascade.attributeChange`). */
+export interface AttributeReach {
+  bits: number;
+  pseudo: 0 | 1 | 2;
+  anchors: ChangeAnchors | null;
+}
+
+/** What a change to what an element holds reaches, from the element
+ *  (`Cascade.treeChange`). */
+export interface TreeReach {
+  bits: number;
+  anchors: ChangeAnchors | null;
+}
+
+/** An element of one attribute, under each of `names`, or of none, for an
+ *  attribute selector to be asked about (`Cascade._flips`). */
+function holding(names: readonly string[], value: string | null): Element {
+  const attribs: Record<string, string> = {};
+  if (value !== null) for (const name of names) attribs[name] = value;
+  return new DomElement('div', attribs);
+}
+
+/** An id (`#…`) or a class (`.…`) an element has to have to match a
+ *  compound — its id where it names one — or '' where it needs neither. */
+function anchorKey(compound: string): string {
+  let found = '';
+  let i = 0;
+  while (i < compound.length) {
+    const c = compound[i];
+    if (c === '\\') i = escapeEnd(compound, i);
+    else if (c === '[') i = bracketEnd(compound, i) + 1;
+    else if (c === '(') i = closeOf(compound, i) + 1;
+    else if (c === '#' || c === '.') {
+      const name = readIdent(compound, i + 1);
+      if (name.value && c === '#') return `#${name.value}`;
+      if (name.value && !found) found = `.${name.value}`;
+      i = Math.max(name.end, i + 1);
+    } else i += 1;
+  }
+  return found;
 }
 
 /**
@@ -2015,6 +2322,17 @@ export class Cascade {
   /** …and the ones that test what a change to the DOM can change
    *  (`attributeChange`, `treeChange`). */
   private _changeRules = new MutationRules();
+  /** What `attributeChange` asks: each attribute selector compiled alone
+   *  (`_flips`), each anchor's compound, and each set of anchors as one. */
+  private _attributeTests = new Map<
+    string,
+    ((el: Element) => boolean) | null
+  >();
+  private _anchorMatchers = new Map<
+    HasAnchor,
+    ((el: Element) => boolean) | null
+  >();
+  private _anchorSets = new WeakMap<ReadonlySet<HasAnchor>, ChangeAnchors>();
   private _pointer: PointerState = NO_POINTER;
   private _focus: FocusState = NO_FOCUS;
   private _target: Element | null = null;
@@ -2494,9 +2812,10 @@ export class Cascade {
   }
 
   /**
-   * What a change to an element's attribute can restyle (`CHANGES_*`), and
-   * which pseudo-elements' rules test it — or null where that cannot be
-   * said: where a selector tests the attribute somewhere a change reaches
+   * What a change to an element's attribute can restyle (`CHANGES_*`, from
+   * the element), the `:has()`s whose answer it can change, and which
+   * pseudo-elements' rules test it — or null where that cannot be said:
+   * where a selector tests the attribute somewhere a change reaches
    * elements no compound names (`CHANGES_ANYWHERE`).
    *
    * A document with shadow trees is answered as one without: every tree's
@@ -2511,26 +2830,42 @@ export class Cascade {
    * A class's or an id's change is the tokens that came or went, where the
    * old value is known (`was`), and every class's or id's where it is not
    * (`undefined`): a class a selector tests that the element lost is as
-   * much a change as one it took.
+   * much a change as one it took. An attribute selector is a change where
+   * it answers otherwise for the value the attribute had than for the one
+   * it has (`_flips`): Primer's `[class*=PricingOptions__item]` is no
+   * change of a heading's class, and made every one of them unscopable.
    */
   attributeChange(
     name: string,
     was: string | null | undefined,
     now: string | null,
-  ): { bits: number; pseudo: 0 | 1 | 2 } | null {
+  ): AttributeReach | null {
     const rules = this._changeRules;
     let bits = 0;
     let pseudo: 0 | 1 | 2 = 0;
+    const found: ReadonlySet<HasAnchor>[] = [];
     const add = (key: string): void => {
       bits |= rules.bits(key);
       const p = rules.pseudo(key);
       if (p > pseudo) pseudo = p;
+      const anchors = rules.anchors(key);
+      if (anchors) found.push(anchors);
     };
     add(`a:${name}`);
+    const tests = rules.tests(name);
+    if (tests) {
+      // an element with the value it had and one with the value it has, by
+      // how a selector spells the attribute's name
+      const holders = new Map<string, [Element, Element]>();
+      for (const key of tests) {
+        if (was === undefined || this._flips(key, was, now, holders)) add(key);
+      }
+    }
     if (name === 'class') {
       if (was === undefined) {
         bits |= rules.anyClass;
         if (rules.anyClassPseudo > pseudo) pseudo = rules.anyClassPseudo;
+        found.push(rules.anyClassAnchors);
       } else {
         const before = new Set(classesOf(was));
         const after = new Set(classesOf(now));
@@ -2541,12 +2876,74 @@ export class Cascade {
       if (was === undefined) {
         bits |= rules.anyId;
         if (rules.anyIdPseudo > pseudo) pseudo = rules.anyIdPseudo;
+        found.push(rules.anyIdAnchors);
       } else {
         if (was) add(`i:${was}`);
         if (now) add(`i:${now}`);
       }
     }
-    return bits & CHANGES_ANYWHERE ? null : { bits, pseudo };
+    if (bits & CHANGES_ANYWHERE) return null;
+    return { bits, pseudo, anchors: this._changeAnchors(found) };
+  }
+
+  /**
+   * Whether an attribute selector (a `v:` key) answers otherwise for the
+   * value its attribute had (`was`, null for none) than for the one it has
+   * (`now`): asked of an element with that attribute alone, which is all
+   * one reads, by css-select, so its case rules and its operators are the
+   * matcher's own. True where css-select refuses it.
+   */
+  private _flips(
+    key: string,
+    was: string | null,
+    now: string | null,
+    holders: Map<string, [Element, Element]>,
+  ): boolean {
+    let test = this._attributeTests.get(key);
+    if (test === undefined) {
+      test = this._compile(key.slice(key.indexOf('\u0000') + 1));
+      this._attributeTests.set(key, test);
+    }
+    if (!test) return true;
+    const written = attributeNameAsWritten(
+      key.slice(key.indexOf('\u0000') + 2, -1),
+    );
+    let pair = holders.get(written);
+    if (!pair) {
+      const names = [written, asciiLower(written)];
+      pair = [holding(names, was), holding(names, now)];
+      holders.set(written, pair);
+    }
+    return test(pair[0]) !== test(pair[1]);
+  }
+
+  /** The anchors in `sets`, as one set to ask elements about; null for
+   *  none. A set a key keeps is kept as it is, and asked as one set for
+   *  as long as the cascade lives. */
+  private _changeAnchors(
+    sets: readonly ReadonlySet<HasAnchor>[],
+  ): ChangeAnchors | null {
+    const full = sets.filter((set) => set.size > 0);
+    if (!full.length) return null;
+    let set: ReadonlySet<HasAnchor> = full[0];
+    if (full.length > 1) {
+      const union = new Set<HasAnchor>();
+      for (const one of full) for (const a of one) union.add(a);
+      set = union;
+    }
+    let anchors = this._anchorSets.get(set);
+    if (!anchors) {
+      anchors = new ChangeAnchors([...set], (anchor) => {
+        let match = this._anchorMatchers.get(anchor);
+        if (match === undefined) {
+          match = this._compile(anchor.compound);
+          this._anchorMatchers.set(anchor, match);
+        }
+        return match;
+      });
+      this._anchorSets.set(set, anchors);
+    }
+    return anchors;
   }
 
   /** Whether a rule reaches across a shadow tree's edge, so that a
@@ -2559,23 +2956,26 @@ export class Cascade {
   /** Whether a `:has()` is in any rule: what an element holds, wherever it
    *  is — inside a drawing too — may be what one asks. */
   get asksWhatElementsHold(): boolean {
-    return this._changeRules.hasBits !== 0;
+    return this._changeRules.asksHas;
   }
 
   /**
    * What a change to what an element holds can restyle, from that element
    * (`CHANGES_*`): the selectors that read what an element holds —
    * `:empty`, `:first-child` and their kin — or its text, `:contains()`,
-   * where `text` says the change was a text's; every `:has()`, which may
-   * ask anything of what came or went; and its children's later siblings,
-   * where a sibling combinator is in play. Null as `attributeChange`.
+   * where `text` says the change was a text's; and its children's later
+   * siblings, where a sibling combinator is in play. And every `:has()`,
+   * which may ask anything of what came or went. Null as
+   * `attributeChange`.
    */
-  treeChange(text = false): number | null {
+  treeChange(text = false): TreeReach | null {
     const rules = this._changeRules;
-    let bits = rules.bits('s') | rules.hasBits;
+    if (rules.hasAnywhere) return null;
+    let bits = rules.bits('s');
     if (text) bits |= rules.bits('t');
     if (rules.siblings) bits |= CHANGES_LATER;
-    return bits & CHANGES_ANYWHERE ? null : bits;
+    if (bits & CHANGES_ANYWHERE) return null;
+    return { bits, anchors: this._changeAnchors([rules.everyAnchor]) };
   }
 
   /** A selector compiled as a rule's is, or null where css-select refuses
