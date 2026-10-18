@@ -1942,6 +1942,17 @@ closes a way out a DOM binding opens by accident:
   nothing: github.blog's menus open by `ariaHidden`. Listing the
   getter-only accessors on the facade's interfaces, and checking each
   against the IDL, is a quick way to find the next one.
+- **A page's geometry is in two places, and a read takes the one its
+  attribute names.** `getBoundingClientRect` is `elementRect`, drawn
+  through every transform and moved by every scroll; `offsetLeft` and its
+  kin are `offsetRect`, where layout put the box before either, from the
+  offset parent's padding edge. Primer's `<Tabs>` slides a pill under a
+  tab in a strip that scrolls by its `offsetLeft`, and the document's x
+  answered for it put the pill as far past its tab as the strip is from
+  the page's edge. A custom property's name keeps
+  its case wherever the facade carries one: `el.style` lowercased
+  `--brand-Tabs-slider-width`, a property Primer's sheet never reads, and
+  the pill came out as wide as its borders.
 - **Nothing the runtime settles from a task of its own may be a page's
   promise.** The context runs its microtasks only when the engine enters
   it (`afterEvaluate`), so a promise V8 resolves from a platform task —

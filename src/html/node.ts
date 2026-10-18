@@ -137,6 +137,7 @@ import type {
 import {
   anchorAt,
   containmentApplies,
+  containsOutOfFlow,
   heldBack,
   layoutDocument,
   placedMatrix,
@@ -144,6 +145,7 @@ import {
   restickWithin,
   retranslate,
   translate,
+  translationOf,
   VIEWPORT_STICKY,
 } from './layout/block.js';
 import {
@@ -151,6 +153,7 @@ import {
   scrollBarHit,
   scrollBarsOf,
   scrollContent,
+  scrolledBy,
   scrollStateOf,
   setScrollOffsets,
   STUCK,
@@ -391,6 +394,18 @@ export interface HtmlViewProps {
    *  import of it, is not to be had (`_tellSheets`). Once an `href`. */
   onSheet?: (element: Element, outcome: 'load' | 'error') => void;
   style?: Style | Style[];
+}
+
+/** Where an element is as `offsetParent`, `offsetLeft`, `offsetTop`,
+ *  `offsetWidth` and `offsetHeight` measure it (`offsetRect`): from its
+ *  offset parent's padding edge, in logical pixels, unrounded. */
+export interface OffsetRect {
+  /** Its `offsetParent`, or null where it has none. */
+  parent: Element | null;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /**
@@ -3540,6 +3555,27 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * A custom property's computed value, by its name, case and all: every
+   * `var()` in it replaced, and the empty string where nothing sets it
+   * (`HtmlHandle.customProperty`). Not in `computedStyle`'s record, which
+   * would carry every one a theme sets on the root to every element. Null
+   * as `computedStyle` is.
+   */
+  customProperty(
+    element: Element,
+    name: string,
+    pseudo: 'before' | 'after' | null = null,
+  ): string | null {
+    this._prepare(this.abs.width || 1);
+    const style = this._styleOf(element);
+    const own =
+      style && pseudo
+        ? (this._cascade?.pseudoStyleFor(element, pseudo, style) ?? null)
+        : style;
+    return own ? (own.custom?.get(name) ?? '') : null;
+  }
+
+  /**
    * An element's computed style: the build's, or where the build gave it
    * none — it is inside an element that is `display: none` — the cascade's
    * for it, from the nearest element around it that has one, as a
@@ -3641,77 +3677,15 @@ export class HtmlViewNode extends Node {
   /** `elementRect`, in the layout there is — or its first fragment's. */
   private _rectOf(element: Element, first = false): Rect | null {
     const tree = this._tree;
-    if (!tree) return null;
-    // a focusable area's without a walk of the tree
-    const box =
-      CANDIDATES.get(tree)?.byElement.get(element) ??
-      boxFor(tree.root, element);
-    if (!box) return null;
-    let rect: Rect | null = null;
-    if (box.kind !== 'inline' && box.kind !== 'text') {
-      rect = { x: box.x, y: box.y, width: box.width, height: box.height };
-    } else {
-      const bands: Rect[] = [];
-      const fonts = this._layouts?.fonts ?? null;
-      // an inline box broken around the blocks in it is its pieces, a box
-      // of the element's each (CSS 2.1 9.2.1.1), and its fragments are
-      // theirs; and on the lines between them it has a fragment around each
-      // block, across the box the block is in and as tall as its border
-      // box, as a browser's has — Blink's block-in-inline, Gecko's split
-      // inline's anonymous block. A list item made inline around a block
-      // link measured as the empty edge after it
-      for (const piece of piecesOf(tree.root, box)) {
-        inlineBands(tree.root, piece, fonts, bands);
-      }
-      for (const block of (box.cut ? CUT_BLOCKS.get(box) : null) ?? []) {
-        const around = block.parent;
-        if (!around) continue;
-        // from where clearance moved it down from, as Blink's line around
-        // a block in an inline box starts there: the Zen Garden's 214
-        // makes its content an inline box of floats and a footer that
-        // clears them, and Chrome measures it from the floats' top
-        const top = Math.min(block.y, CLEARED_FROM.get(block) ?? block.y);
-        bands.push({
-          x: around.contentX,
-          y: top,
-          width: around.contentWidth,
-          height: block.y + block.height - top,
-        });
-      }
-      if (first && bands.length) rect = bands[0];
-      else for (const band of bands) rect = rect ? unionRect(rect, band) : band;
-      if (!rect) {
-        // on no line, where its block has none: text set at no size takes
-        // no room and gets no box, and CSS puts it on lines of no height
-        // at the block's top (9.4.2), as a browser measures it — nothing,
-        // where the block's content starts. Where the text after it
-        // starts was the next text that took room, elsewhere in the
-        // document: the Zen Garden's 170 hides a heading at `font-size:
-        // 0`, and an `<abbr>` in it measured as the end of the paragraph
-        // above it
-        let block = box.parent;
-        while (block && block.kind === 'inline') block = block.parent;
-        if (block && !block.lines?.length) {
-          const rtl = block.style.direction === 'rtl';
-          rect = {
-            x: rtl ? block.contentX + block.contentWidth : block.contentX,
-            y: block.contentY,
-            width: 0,
-            height: 0,
-          };
-        }
-      }
-      if (!rect) {
-        // an empty subtree's range is `[0, 0)`, wherever it stands: where
-        // its text would be is where the text after it starts
-        const caret = caretAt(tree.root, textAfter(tree.root, box));
-        if (!caret) return null;
-        rect = { x: caret.x, y: caret.y, width: 0, height: caret.height };
-      }
-    }
+    const box = tree ? boxOf(tree, element) : null;
+    const fragments = tree && box ? this._fragmentsOf(tree, box) : null;
+    if (!box || !fragments) return null;
     // where it is drawn: the rectangle around it, turned and scaled as the
     // boxes it is in are, and itself (`getBoundingClientRect`, CSSOM View)
-    rect = throughTransforms(rect, box);
+    const rect = throughTransforms(
+      first ? fragments.first : fragments.all,
+      box,
+    );
     const s = this._scale;
     return {
       x: rect.x / s,
@@ -3719,6 +3693,176 @@ export class HtmlViewNode extends Node {
       width: rect.width / s,
       height: rect.height / s,
     };
+  }
+
+  /**
+   * Where a box's fragments are, in device pixels, as layout placed them
+   * and before a turn or a scale draws them elsewhere: the first, and the
+   * rectangle around all of them — a block's border box, both. Null for an
+   * inline box on no line with no text after it.
+   */
+  private _fragmentsOf(
+    tree: BoxTree,
+    box: Box,
+  ): { first: Rect; all: Rect } | null {
+    if (box.kind !== 'inline' && box.kind !== 'text') {
+      const rect = { x: box.x, y: box.y, width: box.width, height: box.height };
+      return { first: rect, all: rect };
+    }
+    const bands: Rect[] = [];
+    const fonts = this._layouts?.fonts ?? null;
+    // an inline box broken around the blocks in it is its pieces, a box
+    // of the element's each (CSS 2.1 9.2.1.1), and its fragments are
+    // theirs; and on the lines between them it has a fragment around each
+    // block, across the box the block is in and as tall as its border
+    // box, as a browser's has — Blink's block-in-inline, Gecko's split
+    // inline's anonymous block. A list item made inline around a block
+    // link measured as the empty edge after it
+    for (const piece of piecesOf(tree.root, box)) {
+      inlineBands(tree.root, piece, fonts, bands);
+    }
+    for (const block of (box.cut ? CUT_BLOCKS.get(box) : null) ?? []) {
+      const around = block.parent;
+      if (!around) continue;
+      // from where clearance moved it down from, as Blink's line around
+      // a block in an inline box starts there: the Zen Garden's 214
+      // makes its content an inline box of floats and a footer that
+      // clears them, and Chrome measures it from the floats' top
+      const top = Math.min(block.y, CLEARED_FROM.get(block) ?? block.y);
+      bands.push({
+        x: around.contentX,
+        y: top,
+        width: around.contentWidth,
+        height: block.y + block.height - top,
+      });
+    }
+    if (bands.length) {
+      let all = bands[0];
+      for (let i = 1; i < bands.length; i += 1) {
+        all = unionRect(all, bands[i]);
+      }
+      return { first: bands[0], all };
+    }
+    // on no line, where its block has none: text set at no size takes
+    // no room and gets no box, and CSS puts it on lines of no height
+    // at the block's top (9.4.2), as a browser measures it — nothing,
+    // where the block's content starts. Where the text after it
+    // starts was the next text that took room, elsewhere in the
+    // document: the Zen Garden's 170 hides a heading at `font-size:
+    // 0`, and an `<abbr>` in it measured as the end of the paragraph
+    // above it
+    let block = box.parent;
+    while (block && block.kind === 'inline') block = block.parent;
+    let rect: Rect | null = null;
+    if (block && !block.lines?.length) {
+      const rtl = block.style.direction === 'rtl';
+      rect = {
+        x: rtl ? block.contentX + block.contentWidth : block.contentX,
+        y: block.contentY,
+        width: 0,
+        height: 0,
+      };
+    } else {
+      // an empty subtree's range is `[0, 0)`, wherever it stands: where
+      // its text would be is where the text after it starts
+      const caret = caretAt(tree.root, textAfter(tree.root, box));
+      if (!caret) return null;
+      rect = { x: caret.x, y: caret.y, width: 0, height: caret.height };
+    }
+    return { first: rect, all: rect };
+  }
+
+  /**
+   * Where an element is as CSSOM View's offset attributes measure it (7):
+   * its `offsetParent`, the first of its fragments' border edge from that
+   * one's padding edge, and the size of the rectangle around all of them —
+   * as layout put them, before any transform turns, scales or moves them
+   * and any scroll moves them, in logical pixels, unrounded. Where Blink
+   * parts from the spec's words, as Blink: a `<body>` it is measured from
+   * is measured from its border edge where it is positioned and from the
+   * root's corner where it is not, and an inline element from its first
+   * fragment's border edge; and an offset parent in a shadow tree that is
+   * not around the element, open or closed, is passed over, the element
+   * measured from it and it from its own (`shadowHidden`). An element no
+   * offset parent holds is measured from the document's corner, or a box
+   * fixed to the viewport from the viewport's. A `<body>` is at 0, 0, and
+   * has none. Null for an element with no box.
+   */
+  offsetRect(element: Element): OffsetRect | null {
+    this._prepare(this.abs.width || 1);
+    this._followViewport();
+    const tree = this._tree;
+    const box = tree ? boxOf(tree, element) : null;
+    const own = tree && box ? this._laidOutAt(tree, box) : null;
+    if (!tree || !box || !own) return null;
+    const s = this._scale;
+    const width = own.all.width / s;
+    const height = own.all.height / s;
+    if (tagOf(element) === 'body') {
+      return { parent: null, x: 0, y: 0, width, height };
+    }
+    let parent = offsetParentOf(box, element);
+    const at = this._offsetFrom(tree, parent);
+    let x = own.first.x - at.x;
+    let y = own.first.y - at.y;
+    while (parent?.el && shadowHidden(parent.el, element)) {
+      const next = offsetParentOf(parent, parent.el);
+      const from = this._laidOutAt(tree, parent);
+      const to = this._offsetFrom(tree, next);
+      if (from) {
+        x += from.first.x - to.x;
+        y += from.first.y - to.y;
+      }
+      parent = next;
+    }
+    return { parent: parent?.el ?? null, x: x / s, y: y / s, width, height };
+  }
+
+  /** The point an offset parent measures the offsets from, in device
+   *  pixels as layout put it (`offsetRect`): the document's corner for
+   *  none. */
+  private _offsetFrom(
+    tree: BoxTree,
+    parent: Box | null,
+  ): { x: number; y: number } {
+    const from = parent && this._laidOutAt(tree, parent);
+    if (!parent || !from) return { x: 0, y: 0 };
+    const { x, y } = from.first;
+    if (tagOf(parent.el!) !== 'body') {
+      // its padding edge, but an inline box's border edge, as Blink
+      // measures from its first line box's corner
+      return parent.kind === 'inline'
+        ? { x, y }
+        : { x: x + parent.borderLeft, y: y + parent.borderTop };
+    }
+    if (parent.style.position !== 'static') return { x, y };
+    // the corner of the box the body is in, as Blink adds the body's place
+    // in it
+    let root = parent.parent;
+    while (root && !root.el) root = root.parent;
+    const around = root && this._laidOutAt(tree, root);
+    return around ? { x: around.first.x, y: around.first.y } : { x: 0, y: 0 };
+  }
+
+  /** `_fragmentsOf`, where layout had them before any transform or any
+   *  scroll moved them: what the offset attributes measure. */
+  private _laidOutAt(
+    tree: BoxTree,
+    box: Box,
+  ): { first: Rect; all: Rect } | null {
+    const fragments = this._fragmentsOf(tree, box);
+    if (!fragments) return null;
+    let [dx, dy] = scrolledBy(box);
+    // what each transform moved it by (`applyRelativeOffsets`)
+    for (let at: Box | null = box; at; at = at.parent) {
+      if (at.kind === 'inline' || !transformed(at.style)) continue;
+      const [tx, ty] = translationOf(at);
+      dx -= tx;
+      dy -= ty;
+    }
+    if (!dx && !dy) return fragments;
+    const move = (r: Rect): Rect => ({ ...r, x: r.x + dx, y: r.y + dy });
+    return { first: move(fragments.first), all: move(fragments.all) };
   }
 
   /**
@@ -6701,6 +6845,75 @@ function inBody(element: Element): boolean {
     }
   }
   return false;
+}
+
+/** The first box an element made: a focusable area's without a walk of
+ *  the tree. */
+function boxOf(tree: BoxTree, element: Element): Box | null {
+  return (
+    CANDIDATES.get(tree)?.byElement.get(element) ?? boxFor(tree.root, element)
+  );
+}
+
+/**
+ * An element's `offsetParent` (CSSOM View 7), by its first box: up the
+ * boxes around it, as Blink walks its layout objects, so a box with no
+ * element of its own is passed over, and so is an element with no box —
+ * `display: contents`. The first that is the containing block of a fixed
+ * box, for a fixed one; for any other, the first that is one of an
+ * absolute box, or the `<body>`, or a `<td>`, a `<th>` or a `<table>` where
+ * the element is not positioned. Whichever tree that one is in: a shadow
+ * tree's is the caller's to pass over (`shadowHidden`). Null for the root,
+ * the `<body>`, a box fixed to the viewport and an element nothing around
+ * holds.
+ */
+function offsetParentOf(box: Box, element: Element): Box | null {
+  // the root element
+  // the root, and the body
+  const above = element.parent;
+  if (
+    !box.parent ||
+    !above ||
+    (above.type === 'root' && !(above instanceof ShadowRoot)) ||
+    tagOf(element) === 'body'
+  ) {
+    return null;
+  }
+  const position = box.style.position;
+  const fixed = position === 'fixed';
+  if (fixed && !containingBlockOf(box)) return null;
+  for (let at: Box | null = box.parent; at; at = at.parent) {
+    const el = at.el;
+    if (!el) continue;
+    if (containsOutOfFlow(at, fixed)) return at;
+    if (fixed) continue;
+    const tag = tagOf(el);
+    if (tag === 'body') return at;
+    if (
+      position === 'static' &&
+      (tag === 'td' || tag === 'th' || tag === 'table')
+    ) {
+      return at;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a node is in a shadow tree that is not around another, open or
+ * closed: one DOM's retargeting would hand the other its host for (DOM
+ * 4.8). What `offsetParent` passes over, as Blink does — the spec's words
+ * pass over a closed one alone (CSSOM View 7).
+ */
+function shadowHidden(node: AnyNode, from: AnyNode): boolean {
+  let root = node;
+  while (root.parent) root = root.parent;
+  if (!(root instanceof ShadowRoot)) return false;
+  for (let at: AnyNode | null = from; at;) {
+    if (at === root) return false;
+    at = at.parent ?? (at instanceof ShadowRoot ? at.host : null);
+  }
+  return true;
 }
 
 /** The first box an element made, depth first. */

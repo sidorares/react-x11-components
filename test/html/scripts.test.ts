@@ -2184,6 +2184,263 @@ metric('layout is asked of the document as the script left it', async () => {
   assert.equal(doc.text('out'), '150 rgb(255, 0, 0) true');
 });
 
+/** A page's script reporting what the offset attributes answer of the
+ *  elements it names: `id:offsetParent left top width height`, the parent
+ *  by its id or its tag. */
+const OFFSETS =
+  'function offsets(ids) { return ids.map(function (id) {' +
+  '  var e = document.getElementById(id), p = e.offsetParent;' +
+  "  return id + ':' + (p ? p.id || p.tagName : null) + ' ' + [e.offsetLeft, e.offsetTop, e.offsetWidth, e.offsetHeight].join(' ');" +
+  "}).join('|') }";
+
+/** A whole document, as Chrome's page is: a fragment's root box only
+ *  stands in for a `<body>` the document does not have. */
+const whole = (style: string, body: string) =>
+  `<!doctype html><html><head><style>${style}</style></head><body>${body}</body></html>`;
+
+/** A click on the document's corner, and the turns after it: what a page
+ *  that measures on a click measures at, once `<Html>` is laid out at its
+ *  width rather than the probe a script run in the parse can see. */
+async function clickCorner(doc: Hosted) {
+  const node = doc.view as unknown as DrawnNode;
+  await act(async () => {
+    const dx = 2 - node.abs.width / 2;
+    const dy = node.abs.height / 2 - 2;
+    fireEvent.mouseDown(node, { dx, dy });
+    fireEvent.mouseUp(node, { dx, dy });
+  });
+  await settle();
+}
+
+metric(
+  'offsetParent is the nearest positioned element, a cell or a table, or the body, and the offsets are from its padding edge',
+  async () => {
+    // what Chrome answers of the same page (CSSOM View 7)
+    const doc = await hosted(
+      whole(
+        '#rel { position: relative; margin: 10px 0 0 20px; border: 3px solid; padding: 5px 7px }' +
+          '.in { margin-left: 11px; width: 50px; height: 10px }' +
+          'table { border-spacing: 2px; border: 4px solid }' +
+          'td { padding: 6px; border: 1px solid }' +
+          '#fix { position: fixed; top: 30px; left: 40px; width: 10px; height: 10px }' +
+          '#none { display: none }',
+        '<div id="rel"><div class="in" id="relIn"></div>' +
+          '<div class="in" id="relAbs" style="position: absolute; left: 13px; top: 17px"></div></div>' +
+          '<table id="tbl"><tr><td id="td">' +
+          '<div id="inTd" style="margin-left: 3px; width: 4px; height: 5px"></div>' +
+          '<div id="relInTd" style="position: relative; width: 7px; height: 5px"></div>' +
+          '</td></tr></table>' +
+          '<div id="fix"></div><div id="none"><div id="noneKid"></div></div>' +
+          '<div id="dc" style="display: contents; position: relative"><div id="inDc" style="height: 3px"></div></div>' +
+          '<p id="out"></p><script>' +
+          OFFSETS +
+          "document.addEventListener('click', function () { document.getElementById('out').textContent = offsets(['rel', 'relIn', 'relAbs', 'tbl', 'td', 'inTd', 'relInTd', 'fix', 'none', 'noneKid', 'dc', 'inDc'])" +
+          " + '|body:' + document.body.offsetParent + ' ' + document.body.offsetLeft + ' ' + document.body.offsetTop + ' ' + document.body.offsetWidth" +
+          " + '|html:' + document.documentElement.offsetParent });" +
+          '</script>',
+      ),
+    );
+    await clickCorner(doc);
+    assert.deepEqual(doc.text('out').split('|'), [
+      // the body is not positioned: from the document's corner
+      'rel:BODY 28 10 364 26',
+      // from the padding edge, inside the border
+      'relIn:rel 18 5 50 10',
+      'relAbs:rel 24 17 50 10',
+      'tbl:BODY 8 36 33 36',
+      'td:tbl 2 2 21 24',
+      'inTd:td 9 6 4 5',
+      // a positioned element passes over the cell and the table
+      'relInTd:BODY 21 54 7 5',
+      // fixed to the viewport: none, and from the viewport's corner
+      'fix:null 40 30 10 10',
+      'none:null 0 0 0 0',
+      'noneKid:null 0 0 0 0',
+      // no box, so no offsets, and passed over as no containing block
+      'dc:null 0 0 0 0',
+      'inDc:BODY 8 72 384 3',
+      'body:null 0 0 384',
+      'html:null',
+    ]);
+  },
+);
+
+metric(
+  'the offsets are where layout put a box, before a transform turned, scaled or moved it or a scroll moved it',
+  async () => {
+    const doc = await hosted(
+      whole(
+        '#tr { transform: translate(15px, 5px); width: 30px; height: 10px }' +
+          '#sc { transform: scale(2); transform-origin: 0 0; width: 50px; height: 10px; border: 1px solid }' +
+          '#scroller { overflow: auto; height: 40px; border: 2px solid }' +
+          '#scroller div { height: 30px }' +
+          '#tf { transform: translateX(10px); border: 2px solid; padding: 1px; height: 60px }' +
+          '#rel { position: relative; margin-left: 6px; border: 1px solid; height: 30px }' +
+          '#fx { position: fixed; top: 4px; left: 5px; width: 5px; height: 5px }',
+        '<div id="tr"></div>' +
+          '<div id="sc"><div id="inSc" style="height: 3px; margin-left: 2px"></div></div>' +
+          '<div id="scroller"><div></div><div id="inScroll"></div><div></div><div></div></div>' +
+          '<div id="tf"><div id="rel"><div id="fx"></div></div></div>' +
+          '<p id="out"></p><script>' +
+          OFFSETS +
+          "var tr = document.getElementById('tr'), sc = document.getElementById('sc');" +
+          "var s = document.getElementById('scroller'), inScroll = document.getElementById('inScroll');" +
+          'var r = tr.getBoundingClientRect(), before = inScroll.offsetTop, top0 = inScroll.getBoundingClientRect().top;' +
+          's.scrollTop = 25;' +
+          "document.getElementById('out').textContent = [" +
+          "  (r.left - tr.offsetLeft) + ',' + (r.top - tr.offsetTop)," +
+          '  sc.getBoundingClientRect().width,' +
+          "  offsets(['tr', 'sc', 'inSc'])," +
+          "  (inScroll.offsetTop - before) + ',' + (top0 - inScroll.getBoundingClientRect().top)," +
+          // a fixed box's is its containing block, past the positioned
+          // element between
+          "  offsets(['fx'])].join('|');" +
+          '</script>',
+      ),
+    );
+    assert.deepEqual(doc.text('out').split('|'), [
+      '15,5',
+      '104',
+      'tr:BODY 8 8 30 10',
+      'sc:BODY 8 18 52 12',
+      'inSc:sc 2 0 48 3',
+      '0,25',
+      'fx:tf 5 4 5 5',
+    ]);
+  },
+);
+
+metric(
+  'an offset parent in a shadow tree the element is not in is passed over, open or closed, and the element is measured through it',
+  async () => {
+    // Chrome's answers, where the spec's words pass over a closed one alone
+    const tree = (mode: string, id: string) =>
+      `<div><template shadowrootmode="${mode}">` +
+      '<div style="position: relative; padding: 5px; border: 2px solid"><slot></slot></div>' +
+      `</template><div id="${id}" style="height: 4px"></div></div>`;
+    const doc = await hosted(
+      whole(
+        '',
+        tree('closed', 'closed') +
+          tree('open', 'open') +
+          '<p id="out"></p><script>' +
+          OFFSETS +
+          "document.addEventListener('click', function () { document.getElementById('out').textContent = offsets(['closed', 'open']) });" +
+          '</script>',
+      ),
+    );
+    await clickCorner(doc);
+    assert.equal(
+      doc.text('out'),
+      'closed:BODY 13 13 370 4|open:BODY 13 31 370 4',
+    );
+  },
+);
+
+test("a custom property keeps its name's case, in an element's style and in its computed style", async () => {
+  // as Chrome reads them: `--Pad` and `--pad` are two properties
+  const doc = await hosted(
+    '<style>:root { --Pad:  .25rem } #e { --own: 3px; --b: var(--own) }</style>' +
+      '<div id="e"></div><p id="out"></p><script>' +
+      "var e = document.getElementById('e');" +
+      "e.style.setProperty('--Slider-X', '5px'); e.style.setProperty('COLOR', 'red');" +
+      'var cs = getComputedStyle(e);' +
+      "document.getElementById('out').textContent = JSON.stringify([" +
+      "  e.getAttribute('style'), e.style.getPropertyValue('--Slider-X'), e.style.getPropertyValue('--slider-x')," +
+      "  e.style.getPropertyValue('Color'), cs.getPropertyValue('--Pad'), cs.getPropertyValue('--pad')," +
+      "  cs.getPropertyValue('--b'), cs.getPropertyValue('--own'), cs.getPropertyValue('--Slider-X')," +
+      "  cs.getPropertyValue('--nope'), cs['--Pad']]);" +
+      '</script>',
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    '--Slider-X: 5px; color: red;',
+    '5px',
+    '',
+    'red',
+    '.25rem',
+    '',
+    // its `var()` replaced, by the element's own `--own`
+    '3px',
+    '3px',
+    '5px',
+    '',
+    null,
+  ]);
+});
+
+metric(
+  "a tab strip measures its selected tab to size and place its pill, and slides it to the one pressed, as Primer's <Tabs> does",
+  async () => {
+    // Primer Brand's: the pill is placed from the selected tab's
+    // `offsetLeft`, less the strip's padding as a custom property gives it
+    // in rem, and sized from its `offsetWidth`, through custom properties
+    // named in camel case; the strip scrolls the tab to its middle
+    const doc = await hosted(
+      '<style>' +
+        // a browser's 16px to the rem, which Primer's script takes for granted
+        '* { box-sizing: border-box } :root { font-size: 16px; --Tabs-container-padding: .25rem }' +
+        '#wrap { margin-left: 30px; width: 260px }' +
+        '#list { display: flex; gap: 4px; padding: var(--Tabs-container-padding); position: relative; width: fit-content; max-width: 100%; overflow: auto hidden }' +
+        '.tab { padding: 8px 24px; white-space: nowrap; border: 0; z-index: 1 }' +
+        '#pill { position: absolute; top: 4px; bottom: 4px; width: var(--Tabs-slider-width); transform: translateX(var(--Tabs-slider-x, 0px)); border: 1px solid }' +
+        '</style>' +
+        '<div id="wrap"><div id="list" role="tablist">' +
+        '<button class="tab" role="tab" aria-selected="true" id="t0">Delegate to agents</button>' +
+        '<button class="tab" role="tab" aria-selected="false" id="t1">Review</button>' +
+        '<button class="tab" role="tab" aria-selected="false" id="t2">Ship it</button>' +
+        '<div id="pill"></div></div></div><script>' +
+        "var list = document.getElementById('list'), pill = document.getElementById('pill');" +
+        "function pad() { return 16 * parseFloat(getComputedStyle(list).getPropertyValue('--Tabs-container-padding')) }" +
+        'function selected() { return list.querySelector(\'[aria-selected="true"]\') }' +
+        'function place() {' +
+        '  var e = selected();' +
+        "  pill.style.setProperty('--Tabs-slider-x', (e.offsetLeft - pad()) + 'px');" +
+        "  pill.style.setProperty('--Tabs-slider-width', e.offsetWidth + 'px') }" +
+        'function reveal() {' +
+        '  var e = selected();' +
+        '  var t = Math.max(0, Math.min(e.offsetLeft - pad() + e.offsetWidth / 2 - list.clientWidth / 2, list.scrollWidth - list.clientWidth));' +
+        "  list.scrollTo({ left: t, behavior: 'smooth' }) }" +
+        "list.addEventListener('click', function (ev) {" +
+        "  var tab = ev.target.closest('[role=tab]'); if (!tab) return;" +
+        "  [].forEach.call(list.querySelectorAll('[role=tab]'), function (t) { t.setAttribute('aria-selected', String(t === tab)) });" +
+        // measured again once the strip scrolled, as Primer's
+        // ResizeObserver does: an offset is where layout put the tab
+        '  place(); reveal(); place() });' +
+        'place(); reveal();' +
+        '</script>',
+    );
+    const rect = (id: string) => doc.view.elementRect(doc.byId(id))!;
+    const lined = (tab: string) => {
+      const pill = rect('pill');
+      const of = rect(tab);
+      assert.ok(
+        Math.abs(pill.x - of.x) <= 0.5 &&
+          Math.abs(pill.width - of.width) <= 0.5,
+        `the pill ${JSON.stringify(pill)} is over ${tab} ${JSON.stringify(of)}`,
+      );
+    };
+    lined('t0');
+    assert.ok(rect('t0').width > 100, 'the pill is as wide as the tab');
+
+    // the second tab, past the strip's middle, which it scrolls to
+    const node = doc.view as unknown as DrawnNode;
+    const t1 = rect('t1');
+    await act(async () => {
+      const dx = t1.x + 10 - node.abs.width / 2;
+      const dy = t1.y + t1.height / 2 - node.abs.height / 2;
+      fireEvent.mouseDown(node, { dx, dy });
+      fireEvent.mouseUp(node, { dx, dy });
+    });
+    await settle();
+    assert.equal(doc.byId('t1').attribs['aria-selected'], 'true');
+    assert.ok(
+      doc.handle.scrollState(doc.byId('list'))!.x > 0,
+      'the strip scrolled the tab toward its middle',
+    );
+    lined('t1');
+  },
+);
+
 test("a theme switcher's page: matchMedia reads the reader's scheme, the root's color-scheme reads back, and a new <link> loads before the old one goes", async () => {
   // what melbcss.com's theme picker does
   const page = (scheme: 'light' | 'dark') =>

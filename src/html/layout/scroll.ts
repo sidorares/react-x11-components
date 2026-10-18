@@ -175,6 +175,35 @@ export function scrollContent(
   return to;
 }
 
+/**
+ * How far the scroll containers around a box moved it from where layout
+ * put it, across and down, in the device pixels its boxes are laid out in:
+ * the offsets of those that move it, which a box positioned against
+ * something outside one is not (`escapes`). What CSSOM View's offset
+ * attributes add back, since they measure a box where it is laid out
+ * (`offsetTop`, 7).
+ */
+export function scrolledBy(box: Box): [number, number] {
+  let x = 0;
+  let y = 0;
+  for (let scroller = box.parent; scroller; scroller = scroller.parent) {
+    const at = APPLIED.get(scroller);
+    if (!at) continue;
+    let moved = true;
+    for (let b: Box | null = box; b && b !== scroller; b = b.parent) {
+      if (escapes(b, scroller)) {
+        moved = false;
+        break;
+      }
+    }
+    if (moved) {
+      x += at.x;
+      y += at.y;
+    }
+  }
+  return [x, y];
+}
+
 /** A scroll offset within `[0, max]`, in whole hundredths: a script's
  *  `scrollTop = 10.004` moves nothing a pixel would show. */
 function clampOffset(v: number, max: number): number {

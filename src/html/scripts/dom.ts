@@ -1418,23 +1418,30 @@ export function installDom(
     name
       .replace(/^-(webkit|moz|ms)-/, '$1-')
       .replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  /** A property's name as a declaration keeps it: a custom property's as
+   *  written, since `--Tabs-x` and `--tabs-x` are two (CSS Variables 1,
+   *  2), and any other's in lower case. */
+  const cssName = (name: Any): string => {
+    const n = str(name);
+    return n.startsWith('--') ? n : n.toLowerCase();
+  };
   const styleOf = (el: Any): Any => {
     const target = {
       getPropertyValue: (name: Any) =>
-        String(call('style', el._id, str(name).toLowerCase()) ?? ''),
+        String(call('style', el._id, cssName(name)) ?? ''),
       getPropertyPriority: (name: Any) =>
-        String(call('stylePriority', el._id, str(name).toLowerCase()) ?? ''),
+        String(call('stylePriority', el._id, cssName(name)) ?? ''),
       setProperty: (name: Any, value: Any, priority: Any = '') =>
         void call(
           'setStyle',
           el._id,
-          str(name).toLowerCase(),
+          cssName(name),
           value === null || value === undefined ? '' : str(value),
           str(priority),
         ),
       removeProperty: (name: Any) => {
         const was = target.getPropertyValue(name);
-        call('setStyle', el._id, str(name).toLowerCase(), '', '');
+        call('setStyle', el._id, cssName(name), '', '');
         return was;
       },
       item: (i: number) =>
@@ -1541,6 +1548,18 @@ export function installDom(
     const r = call('rect', el._id);
     return typeof r === 'string' && r ? r.split(',').map(Number) : null;
   };
+  /** Where an element is as the offset attributes measure it, from one
+   *  walk up its boxes: its `offsetParent`'s id, then x, y, width and
+   *  height in CSS pixels, from that one's padding edge, as layout put it
+   *  before a transform or a scroll moved it (CSSOM View 7,
+   *  `HtmlHandle.offsetRect`). Null where it has no box. */
+  const offsetOf = (el: Any): number[] | null => {
+    const r = call('offset', el._id);
+    return typeof r === 'string' && r ? r.split(',').map(Number) : null;
+  };
+  /** A `long` from layout's pixels: rounded, as Blink rounds its layout
+   *  units, and never -0. */
+  const rounded = (v: number | undefined): number => Math.round(v ?? 0) + 0;
   /** Where a scroll container is scrolled to, how far it can be and its
    *  scrollport, in CSS pixels — x, y, width, height, clientWidth,
    *  clientHeight, clientTop, clientLeft — or null for an element that is
@@ -2302,20 +2321,23 @@ export function installDom(
     set outerText(v: Any) {
       this.replaceWith(document.createTextNode(str(v)));
     }
+    // CSSOM View 7: the border box as laid out, which no transform turns
+    // or scales, placed from the offset parent's padding edge
     get offsetWidth(): number {
-      return Math.round(docRect(this)?.[2] ?? 0);
+      return rounded(offsetOf(this)?.[3]);
     }
     get offsetHeight(): number {
-      return Math.round(docRect(this)?.[3] ?? 0);
+      return rounded(offsetOf(this)?.[4]);
     }
     get offsetLeft(): number {
-      return Math.round(docRect(this)?.[0] ?? 0);
+      return rounded(offsetOf(this)?.[1]);
     }
     get offsetTop(): number {
-      return Math.round(docRect(this)?.[1] ?? 0);
+      return rounded(offsetOf(this)?.[2]);
     }
     get offsetParent(): Any {
-      return docRect(this) ? document.body : null;
+      const r = offsetOf(this);
+      return r ? wrap(r[0]) : null;
     }
     focus(): void {
       call('focus', this._id);
@@ -5019,10 +5041,7 @@ export function installDom(
       if (colon < 0) continue;
       const name = part.slice(0, colon).trim();
       if (!name) continue;
-      values.set(
-        name.startsWith('--') ? name : name.toLowerCase(),
-        part.slice(colon + 1).trim(),
-      );
+      values.set(cssName(name), part.slice(colon + 1).trim());
     }
     const names = [...values.keys()];
     const plain = (name: string): string =>
@@ -5031,9 +5050,11 @@ export function installDom(
       cssText: block.trim(),
       length: names.length,
       item: (i: Any) => names[Number(i)] ?? '',
-      getPropertyValue: (name: Any) => plain(str(name)),
+      getPropertyValue: (name: Any) => plain(cssName(name)),
       getPropertyPriority: (name: Any) =>
-        /!\s*important$/i.test(values.get(str(name)) ?? '') ? 'important' : '',
+        /!\s*important$/i.test(values.get(cssName(name)) ?? '')
+          ? 'important'
+          : '',
     };
     names.forEach((name, i) => {
       style[i] = name;
@@ -10393,14 +10414,22 @@ export function installDom(
   };
 
   /** `getComputedStyle`: the host's `computedStyle`, a declaration that
-   *  answers by a property's name, either spelling. */
+   *  answers by a property's name, either spelling — and a custom
+   *  property's by its name alone, asked for as it is read, since a theme
+   *  sets hundreds of them on the root. */
   const getComputedStyle = (el: Any, pseudo?: Any): Any => {
     const which = pseudo ? String(pseudo).replace(/^:+/, '') : '';
-    const json = call('computed', idOf(el, 'element'), which);
+    const id = idOf(el, 'element');
+    const json = call('computed', id, which);
     const values: Record<string, string> =
       typeof json === 'string' && json ? JSON.parse(json) : {};
     const out: Any = {
-      getPropertyValue: (name: Any) => values[str(name).toLowerCase()] ?? '',
+      getPropertyValue: (name: Any) => {
+        const n = cssName(name);
+        if (!n.startsWith('--')) return values[n] ?? '';
+        if (!json) return '';
+        return String(call('customProperty', id, which, n) ?? '');
+      },
       getPropertyPriority: () => '',
       length: Object.keys(values).length,
       item: (i: number) => Object.keys(values)[i] ?? '',
