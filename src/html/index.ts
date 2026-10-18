@@ -268,8 +268,9 @@ export interface HtmlProps {
    * `charset` the protocol named, if the host passes it on, and its `url`,
    * if the host passes that, is where it came from after redirects.
    *
-   * A `<video>`'s source is asked for as `kind: 'video'`, with the `type`
-   * its `<source>` gives: answer `{ kind: 'video', src }` for core's
+   * A `<video>`'s source is asked for as `kind: 'video'` — its `src`, or
+   * each `<source>` whose `media` holds — with the `type` its `<source>`
+   * gives: answer `{ kind: 'video', src }` for core's
    * `<video>` to play with the platform's player — where
    * `useSupports('mediaPlayback')` says there is one — or `{ kind: 'video',
    * frames }` with a `VideoFrames` sink the host decodes it into. Declined,

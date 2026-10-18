@@ -2972,15 +2972,27 @@ for each source as `kind: 'video'`, and answers with a `src` the platform's
 player opens or a `VideoFrames` sink it feeds. The document lays the box
 out and paints its poster as before, and the player, transparent until it
 has a frame, goes over it, so nothing in the paint changes but the frame a
-mounted video with no poster is not drawn in. Two things are
-load-bearing. **A player is mounted only where nothing the document paints
-after the video reaches its picture**, the sprite test (`paintedAfter`,
-`crowded`), because a sibling over the document hides what is drawn over
-the video — so a page's overlay keeps the poster, by design. And **a
-mounted player is one React element for its element and source**, cut,
-rounded and faded by the boxes around it (`renderVideo`'s three boxes): a
-new element is a new player, and the video starts again. The boxes fixed to
-the viewport are asked about at each paint (`_publishMedia`), since a scroll
+mounted video with no poster is not drawn in. Four things are
+load-bearing. **What the document paints after the video over its picture
+is painted again over the player, or no player is mounted**, the sprite
+test (`paintedAfter`, `crowded`), because a sibling over the document hides
+what is drawn over the video. Up to four such boxes, laid out where they
+draw and cut by a rectangle, nothing fading, turning or filtering them, go
+on a `<canvas>` after the player (`coversOf`, `paintCovers`), as a sprite's
+coverers go on layers of their own (`overLiftOf`): GitHub's hero has a play
+button in its video's corner. A video under anything else keeps its poster,
+by design. **The walk asks what a later layer draws over the picture, not
+how far it reaches** (`inkMeets`, the rule the next paragraph states):
+taking a layer at its ink bounds, GitHub's empty box over its hero's video
+and its header's hidden mega menu each kept the video its poster. **A
+video's sources are chosen once** (`_videoChoice`), by their `media` where
+the video is first shown, and again only where its sources change, as
+HTML's resource selection runs once: chosen at each layout, a window
+dragged across a breakpoint would start the video again. And **a mounted
+player is one React element for its element and source**, cut, rounded and
+faded by the boxes around it (`renderVideo`'s three boxes): a new element
+is a new player, and the video starts again. The boxes fixed to the
+viewport are asked about at each paint (`_publishMedia`), since a scroll
 brings a header over a player and lays nothing out.
 
 **What an `<iframe>`, a `<canvas>` or an `<embed>` shows is the host's,
@@ -2992,7 +3004,7 @@ is mounted beside the document as a player is, held to the same rules
 keyed by its element**, so a layout or a scroll that moves an `<iframe>`
 keeps the document in it and its scripts: anything new that reports these
 rects keeps the element as the key. **Only what draws something covers a mount,
-or a player** (`drawsNothing`, `crowded`): a box faded to nothing or
+or a player** (`drawsNothing`, `inkMeets`): a box faded to nothing or
 hidden all through — Docusaurus's menu backdrop, fixed over the viewport —
 and the overflow of a pane beside it that a box clipping it cuts away
 neither cut a mount nor refuse it. They had: a subtree's ink is the union

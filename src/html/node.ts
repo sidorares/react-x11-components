@@ -274,8 +274,14 @@ import {
   embeddedRectsOf,
   mediaRectsOf,
   videoCandidates,
+  videoSignature,
 } from './media.js';
-import type { EmbeddedRect, MediaRect } from './media.js';
+import type {
+  Cover,
+  EmbeddedRect,
+  MediaRect,
+  VideoCandidate,
+} from './media.js';
 import type { IntrinsicSize } from './svg.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace } from './fonts.js';
@@ -795,6 +801,9 @@ export class HtmlViewNode extends Node {
    *  for the paint. */
   private _mediaLaid: MediaRect[] = [];
   private _media: MediaRect[] = [];
+  /** What the document paints over each player, as the last layout left
+   *  it (`coversOf`, `paintCovers`). */
+  private _covers = new Map<Element, Cover[]>();
   /** The same of what a host mounts over the embedded elements. */
   private _embeddedLaid: EmbeddedRect[] = [];
   private _embedded: EmbeddedRect[] = [];
@@ -802,6 +811,12 @@ export class HtmlViewNode extends Node {
   /** Each video's size once its player knows it, in CSS pixels: its
    *  intrinsic size from then on, where its poster's was (HTML 4.8.11.6). */
   private _videoSizes = new WeakMap<Element, IntrinsicSize>();
+  /** The sources each video chose between, and what it chose them from
+   *  (`_videoChoice`). */
+  private _videoChoices = new WeakMap<
+    Element,
+    { signature: string; candidates: VideoCandidate[] }
+  >();
   /** The focusable areas last reported (`_reportStops`), and where the
    *  watched ones were. */
   private _stops: readonly FocusStop[] = [];
@@ -2907,8 +2922,9 @@ export class HtmlViewNode extends Node {
   private _reportMedia(): void {
     const tree = this._tree;
     if (!tree || !this._props().onMedia) return;
+    this._covers = new Map();
     this._mediaLaid = tree.media.length
-      ? mediaRectsOf(tree, this._scale, (el) => this._videoOf(el))
+      ? mediaRectsOf(tree, this._scale, (el) => this._videoOf(el), this._covers)
       : [];
     const mounted = new Set(this._mediaLaid.map((r) => r.element));
     if (!sameElements(mounted, this._mounted)) {
@@ -2995,7 +3011,57 @@ export class HtmlViewNode extends Node {
           height: r.clip.height / s,
         },
       }),
+      ...('over' in r &&
+        r.over && {
+          over: {
+            x: r.over.x / s,
+            y: r.over.y / s,
+            width: r.over.width / s,
+            height: r.over.height / s,
+          },
+        }),
     };
+  }
+
+  /**
+   * Paint over a video's player what the document paints after the video
+   * and reaches it (`coversOf`): each box and all it holds, as the
+   * document paints it, cut to what of the player it reaches. `ctx` is a
+   * sibling's mounted after the player, at its origin, which is `at` in
+   * the window — `videos.ts`'s `<canvas>`.
+   */
+  paintCovers(
+    element: Element,
+    ctx: unknown,
+    at: { x: number; y: number },
+  ): void {
+    const tree = this._tree;
+    const covers = this._covers.get(element);
+    const c = ctx as PaintContext;
+    if (!tree || !covers || !c.save || !c.beginPath || !c.rect || !c.clip) {
+      return;
+    }
+    const options: PaintOptions = {
+      ...this._paintOptions(this.selectionRange, null),
+      originX: this.abs.x - at.x,
+      originY: this.abs.y - at.y,
+    };
+    for (const { box, rect } of covers) {
+      c.save();
+      c.beginPath();
+      c.rect(
+        rect.x + options.originX,
+        rect.y + options.originY,
+        rect.width,
+        rect.height,
+      );
+      c.clip();
+      try {
+        paintLiftedBox(c, tree, box, options);
+      } finally {
+        c.restore!();
+      }
+    }
   }
 
   /** The source a `<video>` plays: the first of its sources the host
@@ -3003,7 +3069,7 @@ export class HtmlViewNode extends Node {
    *  while one ahead of it is still being answered, and where none is
    *  left. */
   private _videoOf(el: Element): { source: VideoSource; url: string } | null {
-    for (const { url, type } of videoCandidates(el)) {
+    for (const { url, type } of this._videoChoice(el)) {
       if (this._resources.video(url) === undefined) {
         this._resources.requestVideo(url, type, el);
       }
@@ -3013,6 +3079,25 @@ export class HtmlViewNode extends Node {
       return { source: answer, url };
     }
     return null;
+  }
+
+  /**
+   * The sources a `<video>` chooses between: those whose `media` holds for
+   * the document where it is first asked (`_mediaHolds`), and the same
+   * ones from then on, as HTML's resource selection algorithm runs once —
+   * a window narrowed past a `<source media>` goes on playing what it
+   * played, in Chrome as here. Chosen again only where the video's sources
+   * change.
+   */
+  private _videoChoice(el: Element): VideoCandidate[] {
+    const signature = videoSignature(el);
+    const kept = this._videoChoices.get(el);
+    if (kept?.signature === signature) return kept.candidates;
+    const candidates = videoCandidates(el, (media) =>
+      this._mediaHolds([parseMediaQuery(media)]),
+    );
+    this._videoChoices.set(el, { signature, candidates });
+    return candidates;
   }
 
   /**
@@ -7235,7 +7320,8 @@ function sameMedia(a: MediaRect[], b: MediaRect[]): boolean {
       p.muted !== q.muted ||
       p.controls !== q.controls ||
       p.label !== q.label ||
-      !sameClip(p.clip, q.clip)
+      !sameClip(p.clip, q.clip) ||
+      !sameClip(p.over, q.over)
     ) {
       return false;
     }
