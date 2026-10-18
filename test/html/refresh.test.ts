@@ -510,6 +510,9 @@ function random(seed: number): () => number {
 }
 
 const CLASSES = ['a', 'b', 'c', 'd'];
+/** The classes only rules at trees' edges test, so that what such a rule
+ *  reaches is not one an ordinary rule's test of the class reaches too. */
+const EDGE_CLASSES = ['x', 'y'];
 const TAGS = ['div', 'p', 'span', 'li', 'section'];
 const INKS = ['#ff0000', '#00aa00', '#0000ff', '#aa00aa'];
 
@@ -567,14 +570,55 @@ function rulesFor(next: () => number, around = true): string {
   return rules.join('\n');
 }
 
-function markupFor(next: () => number, shadows = false): string {
+/** Rules at a shadow tree's edge: of its host, of what its slots are
+ *  given, or — `outside` — of the parts of a tree from the document. */
+function edgeRulesFor(next: () => number, outside: boolean): string {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const c = () => pick(next() < 0.6 ? EDGE_CLASSES : CLASSES);
+  const shapes: (() => string)[] = outside
+    ? [
+        () => `.${c()}::part(p)`,
+        () => `.${c()} div::part(p)`,
+        () => `[data-x=y]::part(p)`,
+        () => `::part(p)`,
+      ]
+    : [
+        () => `:host(.${c()})`,
+        () => `:host(.${c()}) .${c()}`,
+        () => `:host(.${c()}) > *`,
+        () => `:host([data-x]) .${c()}`,
+        () => `:host-context(.${c()}) .${c()}`,
+        () => `:host`,
+        () => `::slotted(.${c()})`,
+        () => `::slotted(*)`,
+        () => `slot[name=n]::slotted(.${c()})`,
+        () => `.${c()} ::slotted(*)`,
+      ];
+  const rules: string[] = [];
+  for (let i = 1 + Math.floor(next() * 3); i > 0; i -= 1) {
+    rules.push(`${pick(shapes)()} { color: ${pick(INKS)} }`);
+  }
+  return rules.join('\n');
+}
+
+function markupFor(next: () => number, shadows = false, edges = false): string {
   let id = 0;
   const element = (depth: number): string => {
-    // a host: a shadow tree of its own, with sheets that stay inside it,
-    // a slot for its children and one named, and its light children
+    // a host: a shadow tree of its own, with sheets that stay inside it —
+    // or, `edges`, that reach across its edge too — a slot for its
+    // children and one named, and its light children
     if (shadows && depth === 0 && next() < 0.6) {
-      let tree = `<style>${rulesFor(next, false)}</style>`;
-      tree += element(1) + '<slot></slot>' + element(1);
+      let css = rulesFor(next, false);
+      if (edges) css += `\n${edgeRulesFor(next, false)}`;
+      let tree = `<style>${css}</style>`;
+      const inTree = () => {
+        const markup = element(1);
+        return edges && next() < 0.4
+          ? markup.replace(/^<(\w+)/, '<$1 part="p"')
+          : markup;
+      };
+      tree += inTree() + '<slot></slot>' + inTree();
       if (next() < 0.5) tree += '<slot name="n"></slot>';
       let light = '';
       for (let i = Math.floor(next() * 3); i >= 0; i -= 1) {
@@ -636,6 +680,7 @@ function changeOne(
   next: () => number,
   body: Element,
   forgetOld: boolean,
+  parts = false,
 ): HtmlChange[] {
   const all = elementsIn(body);
   const pick = <T>(list: readonly T[]): T =>
@@ -643,11 +688,23 @@ function changeOne(
   const inside = all.slice(1);
   const kind = Math.floor(next() * 8);
   if (kind === 0 || kind === 1) {
-    // a class toggled
-    const target = pick(all);
+    // a class toggled — where rules cross trees' edges, a host's or one of
+    // its light children's two times in three, which is what a `:host()`,
+    // a `::part()` and a `::slotted()` test
+    const hosts = parts ? all.filter((e) => shadowRootOf(e)) : [];
+    const light = hosts.flatMap((h) =>
+      h.children.filter((k): k is Element => !!(k as Element).attribs),
+    );
+    const roll = next();
+    const target =
+      hosts.length && roll < 1 / 3
+        ? pick(hosts)
+        : light.length && roll < 2 / 3
+          ? pick(light)
+          : pick(all);
     const was = target.attribs.class ?? null;
     const has = new Set((was ?? '').split(' ').filter(Boolean));
-    const c = pick(CLASSES);
+    const c = pick(parts && next() < 0.5 ? EDGE_CLASSES : CLASSES);
     if (has.has(c)) has.delete(c);
     else has.add(c);
     target.attribs.class = [...has].join(' ');
@@ -658,6 +715,16 @@ function changeOne(
         attributeName: 'class',
         ...(forgetOld ? {} : { oldValue: was }),
       },
+    ];
+  }
+  if (kind === 2 && parts && next() < 0.3) {
+    // a part given or taken away
+    const target = pick(all);
+    const was = target.attribs.part ?? null;
+    if (was !== null) delete target.attribs.part;
+    else target.attribs.part = 'p';
+    return [
+      { type: 'attributes', target, attributeName: 'part', oldValue: was },
     ];
   }
   if (kind === 2) {
@@ -834,21 +901,37 @@ test('a host’s colour reaches its shadow tree in place, and what its top holds
   assert.ok(scope, 'the change was a refresh of everything');
 });
 
-test('a rule across a shadow tree’s edge makes every change a refresh of everything', async () => {
-  const { node } = await render(
-    '<div class="a"><template shadowrootmode="open">' +
-      '<style>:host(.on) p { color: #ff0000 }</style><p>p</p></template></div>',
+test('a rule across a shadow tree’s edge reaches what is below its host across the edge, and nothing makes it a refresh of everything', async () => {
+  const { result, node } = await render(
+    '<div class="a" id="h"><template shadowrootmode="open">' +
+      '<style>:host(.on) p { color: #ff0000 }</style><p>p</p></template></div>' +
+      '<p id="other">o</p>',
     300,
   );
   const el = view(node);
-  await act();
-  const host = el.document.children
-    .flatMap((n) => elementsIn(n as Element))
-    .find((e) => e.attribs?.class === 'a')!;
+  await snapshot(result, el);
+  const host = byId(el, 'h');
+  const inner = shadowRootOf(host)!.children.find(
+    (n) => (n as Element).name === 'p',
+  ) as Element;
+  const change = setClass(host, 'a on');
   const scope = (
-    el as unknown as { _changeScope(c: HtmlChange[]): unknown }
-  )._changeScope([setClass(host, 'a on')]);
-  assert.strictEqual(scope, null);
+    el as unknown as {
+      _changeScope(c: HtmlChange[]): { own: Set<Element> } | null;
+    }
+  )._changeScope([change]);
+  assert.ok(scope, 'the change was a refresh of everything');
+  assert.ok(scope.own.has(inner), 'the tree’s paragraph is not restyled');
+  assert.ok(!scope.own.has(byId(el, 'other')), 'the whole page is restyled');
+  el.touchDocument([change]);
+  await snapshot(result, el);
+  assert.equal(el.computedStyle(inner)?.color, 'rgb(255, 0, 0)');
+});
+
+test('in a document with rules across shadow trees’ edges — :host, :host-context, ::slotted, ::part — a refresh told what changed comes to the same styles', async () => {
+  const ways = await refreshesAgree(60, true, true);
+  const scoped = ways.inPlace + ways.frame + ways.build;
+  assert.ok(scoped > ways.whole, `${JSON.stringify(ways)}`);
 });
 
 /** Random documents, each changed a step at a time, its styles after a
@@ -859,12 +942,14 @@ test('a rule across a shadow tree’s edge makes every change a refresh of every
 async function refreshesAgree(
   seeds: number,
   shadows: boolean,
+  edges = false,
 ): Promise<{ whole: number; inPlace: number; frame: number; build: number }> {
   const ways = { whole: 0, inPlace: 0, frame: 0, build: 0 };
   for (let seed = 1; seed <= seeds; seed += 1) {
     const next = random(seed);
-    const css = rulesFor(next);
-    const source = `<style>body{margin:0}\n${css}</style><body>${markupFor(next, shadows)}</body>`;
+    let css = rulesFor(next);
+    if (edges) css += `\n${edgeRulesFor(next, true)}`;
+    const source = `<style>body{margin:0}\n${css}</style><body>${markupFor(next, shadows, edges)}</body>`;
     // real fonts where the machine has them: the mock backend lays out no
     // text, and a restyle in place remakes the text it inks
     const { result, node } = await render(source, 320);
@@ -877,7 +962,7 @@ async function refreshesAgree(
       const changes: HtmlChange[] = [];
       const batch = 1 + Math.floor(next() * 3);
       for (let i = 0; i < batch; i += 1) {
-        changes.push(...changeOne(next, bodyEl, next() < 0.25));
+        changes.push(...changeOne(next, bodyEl, next() < 0.25, edges));
       }
       const node = el as unknown as Record<
         string,
