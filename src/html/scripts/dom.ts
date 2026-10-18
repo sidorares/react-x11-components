@@ -234,21 +234,34 @@ export function installDom(
   const AT_TARGET = 2;
   const BUBBLING_PHASE = 3;
 
+  /** An event's attributes are accessors on `Event.prototype`, as WebIDL
+   *  makes every attribute, over state of the event's own that only the
+   *  dispatch writes. GitHub's delegated-events, which its sites' click
+   *  analytics run under, takes `currentTarget`'s descriptor off the
+   *  prototype to shadow it on the event while a delegated handler runs,
+   *  and puts the prototype's getter back on the event after. With the
+   *  attribute a field there was no descriptor to take, the handler read
+   *  the document it listens on, and every click on github.blog threw on
+   *  `document.tagName`. The accessor it leaves on the event has no
+   *  setter, which is why the dispatch writes the state and never the
+   *  attribute. */
   class Event {
     static readonly NONE = NONE;
     static readonly CAPTURING_PHASE = CAPTURING_PHASE;
     static readonly AT_TARGET = AT_TARGET;
     static readonly BUBBLING_PHASE = BUBBLING_PHASE;
-    readonly type: string;
-    readonly bubbles: boolean;
-    readonly cancelable: boolean;
-    readonly composed: boolean;
-    readonly timeStamp: number;
+    /** The event's own, not the prototype's: `[LegacyUnforgeable]`. */
     isTrusted = false;
-    target: Any = null;
-    currentTarget: Any = null;
-    eventPhase = NONE;
-    defaultPrevented = false;
+    _type: string;
+    _bubbles: boolean;
+    _cancelable: boolean;
+    _composed: boolean;
+    _timeStamp: number;
+    _target: Any = null;
+    _currentTarget: Any = null;
+    _phase = NONE;
+    /** DOM's canceled flag, which `defaultPrevented` reads. */
+    _canceled = false;
     _stop = false;
     _stopNow = false;
     _passive = false;
@@ -257,17 +270,44 @@ export function installDom(
       if (arguments.length === 0) {
         throw new TypeError("Failed to construct 'Event': 1 argument required");
       }
-      this.type = String(type);
-      this.bubbles = !!init.bubbles;
-      this.cancelable = !!init.cancelable;
-      this.composed = !!init.composed;
-      this.timeStamp = now();
+      this._type = String(type);
+      this._bubbles = !!init.bubbles;
+      this._cancelable = !!init.cancelable;
+      this._composed = !!init.composed;
+      this._timeStamp = now();
+    }
+    get type(): string {
+      return this._type;
+    }
+    get target(): Any {
+      return this._target;
+    }
+    get currentTarget(): Any {
+      return this._currentTarget;
+    }
+    get eventPhase(): number {
+      return this._phase;
+    }
+    get bubbles(): boolean {
+      return this._bubbles;
+    }
+    get cancelable(): boolean {
+      return this._cancelable;
+    }
+    get composed(): boolean {
+      return this._composed;
+    }
+    get defaultPrevented(): boolean {
+      return this._canceled;
+    }
+    get timeStamp(): number {
+      return this._timeStamp;
     }
     get srcElement(): Any {
-      return this.target;
+      return this._target;
     }
     get returnValue(): boolean {
-      return !this.defaultPrevented;
+      return !this._canceled;
     }
     set returnValue(v: boolean) {
       if (!v) this.preventDefault();
@@ -279,7 +319,7 @@ export function installDom(
       if (v) this._stop = true;
     }
     preventDefault(): void {
-      if (this.cancelable && !this._passive) this.defaultPrevented = true;
+      if (this._cancelable && !this._passive) this._canceled = true;
     }
     stopPropagation(): void {
       this._stop = true;
@@ -289,12 +329,12 @@ export function installDom(
       this._stopNow = true;
     }
     composedPath(): Any[] {
-      return this.eventPhase === NONE ? [] : this._path.slice();
+      return this._phase === NONE ? [] : this._path.slice();
     }
     initEvent(type: string, bubbles = false, cancelable = false): void {
-      (this as Any).type = String(type);
-      (this as Any).bubbles = !!bubbles;
-      (this as Any).cancelable = !!cancelable;
+      this._type = String(type);
+      this._bubbles = !!bubbles;
+      this._cancelable = !!cancelable;
     }
   }
   class UIEvent extends Event {
@@ -682,10 +722,10 @@ export function installDom(
     // the window's listeners are kept on a target of their own, and hear
     // the window as what they are on, as `this` and `currentTarget`
     const self = target === windowTarget ? G : target;
-    event.currentTarget = self;
-    event.eventPhase = phase;
+    event._currentTarget = self;
+    event._phase = phase;
     if (phase !== CAPTURING_PHASE) {
-      const handler = handlerOf(target, event.type);
+      const handler = handlerOf(target, event._type);
       if (typeof handler === 'function') {
         try {
           const result = handler.call(self, event);
@@ -696,7 +736,7 @@ export function installDom(
         if (event._stopNow) return;
       }
     }
-    const list = target._listeners[event.type];
+    const list = target._listeners[event._type];
     if (!list?.length) return;
     for (const l of list.slice()) {
       if (phase === CAPTURING_PHASE && !l.capture) continue;
@@ -726,11 +766,11 @@ export function installDom(
       for (let at = parentFor(target, event); at; at = parentFor(at, event)) {
         path.push(at);
       }
-      if (path[path.length - 1] === document && event.type !== 'load') {
+      if (path[path.length - 1] === document && event._type !== 'load') {
         path.push(windowTarget);
       }
     }
-    event.target = target === windowTarget ? G : target;
+    event._target = target === windowTarget ? G : target;
     event._path = path.map((t) => (t === windowTarget ? G : t));
     event._stop = false;
     event._stopNow = false;
@@ -738,14 +778,14 @@ export function installDom(
       invoke(path[i], event, CAPTURING_PHASE);
     }
     if (!event._stop) invoke(path[0], event, AT_TARGET);
-    if (event.bubbles) {
+    if (event._bubbles) {
       for (let i = 1; i < path.length && !event._stop; i += 1) {
         invoke(path[i], event, BUBBLING_PHASE);
       }
     }
-    event.eventPhase = NONE;
-    event.currentTarget = null;
-    return !event.defaultPrevented;
+    event._phase = NONE;
+    event._currentTarget = null;
+    return !event._canceled;
   };
 
   /** The mouse, the one pointer there is (Pointer Events 3): the buttons
@@ -1284,7 +1324,7 @@ export function installDom(
    *  to its host where the event is composed, as most a user makes are. */
   const parentFor = (node: Any, event: Any): Any =>
     node instanceof ShadowRoot
-      ? event.composed
+      ? event._composed
         ? node.host
         : null
       : node.parentNode;
@@ -2079,6 +2119,73 @@ export function installDom(
     }
   }
   Object.defineProperty(Element.prototype, 'nodeType', nodeTypeOf(1));
+
+  // WAI-ARIA's ARIAMixin, which every element has: `role` and each
+  // `aria-*` attribute reflected as a nullable string, null where the
+  // attribute is absent and null set removing it. github.blog opens a
+  // header menu with `toggle.ariaExpanded = "true"; menu.ariaHidden =
+  // "false"` and shows it by the attribute, `.dropdown[aria-hidden=true]
+  // { visibility: hidden }`: an expando took what the script set, and the
+  // menu stayed hidden. The element references (`ariaControlsElements`
+  // and the rest) are not here.
+  for (const name of [
+    'role',
+    'ariaAtomic',
+    'ariaAutoComplete',
+    'ariaBrailleLabel',
+    'ariaBrailleRoleDescription',
+    'ariaBusy',
+    'ariaChecked',
+    'ariaColCount',
+    'ariaColIndex',
+    'ariaColIndexText',
+    'ariaColSpan',
+    'ariaCurrent',
+    'ariaDescription',
+    'ariaDisabled',
+    'ariaExpanded',
+    'ariaHasPopup',
+    'ariaHidden',
+    'ariaInvalid',
+    'ariaKeyShortcuts',
+    'ariaLabel',
+    'ariaLevel',
+    'ariaLive',
+    'ariaModal',
+    'ariaMultiLine',
+    'ariaMultiSelectable',
+    'ariaOrientation',
+    'ariaPlaceholder',
+    'ariaPosInSet',
+    'ariaPressed',
+    'ariaReadOnly',
+    'ariaRelevant',
+    'ariaRequired',
+    'ariaRoleDescription',
+    'ariaRowCount',
+    'ariaRowIndex',
+    'ariaRowIndexText',
+    'ariaRowSpan',
+    'ariaSelected',
+    'ariaSetSize',
+    'ariaSort',
+    'ariaValueMax',
+    'ariaValueMin',
+    'ariaValueNow',
+    'ariaValueText',
+  ]) {
+    const attr = name === 'role' ? name : `aria-${name.slice(4).toLowerCase()}`;
+    Object.defineProperty(Element.prototype, name, {
+      get(this: Any): string | null {
+        return this.getAttribute(attr);
+      },
+      set(this: Any, v: Any) {
+        if (v === null) this.removeAttribute(attr);
+        else this.setAttribute(attr, v);
+      },
+      configurable: true,
+    });
+  }
 
   class HTMLElement extends Element {
     get style(): Any {
@@ -8963,19 +9070,19 @@ export function installDom(
    *  nothing cancelled it. */
   const fireAt = (targets: Any[], event: Any): boolean => {
     event.isTrusted = true;
-    event.target = targets[0];
+    event._target = targets[0];
     event._path = targets;
     event._stop = false;
     event._stopNow = false;
     invoke(targets[0], event, AT_TARGET);
-    if (event.bubbles) {
+    if (event._bubbles) {
       for (let i = 1; i < targets.length && !event._stop; i += 1) {
         if (targets[i]) invoke(targets[i], event, BUBBLING_PHASE);
       }
     }
-    event.eventPhase = NONE;
-    event.currentTarget = null;
-    return !event.defaultPrevented;
+    event._phase = NONE;
+    event._currentTarget = null;
+    return !event._canceled;
   };
   /** `on…` properties for the events a class fires. */
   const handlers = (Class: Any, types: string[]): void => {

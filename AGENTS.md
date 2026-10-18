@@ -1915,7 +1915,12 @@ closes a way out a DOM binding opens by accident:
   mutation, because `IntersectionObserverEntry` was missing. A getter with
   no setter throws in strict code, as `contentEditable` did for
   CodeMirror. A serialization that is close but not exact breaks what a
-  page builds on it: `cssText +=` needs the trailing `;`. Listing the
+  page builds on it: `cssText +=` needs the trailing `;`. An attribute is
+  an accessor on its interface's prototype, never a field of the
+  instance: GitHub's delegated-events takes `currentTarget`'s descriptor
+  off `Event.prototype` to shadow it on the event, and found none. And a
+  reflected attribute the facade leaves out is an expando that changes
+  nothing: github.blog's menus open by `ariaHidden`. Listing the
   getter-only accessors on the facade's interfaces, and checking each
   against the IDL, is a quick way to find the next one.
 - **Nothing the runtime settles from a task of its own may be a page's
