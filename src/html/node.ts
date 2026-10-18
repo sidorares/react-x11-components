@@ -3554,8 +3554,9 @@ export class HtmlViewNode extends Node {
    * it holds, and its own padding and border where it starts or ends — its
    * border box across, as `getBoundingClientRect` is (CSSOM View 6.1) — and
    * as tall as its lines; or where its text would start when it has none,
-   * as `<a name>` has none. Null for an element with no box — `display:
-   * none`, or not in the document.
+   * as `<a name>` has none. A box fixed to the viewport, and what is in it,
+   * where the pane's scroll draws it (`_moveToViewport`). Null for an
+   * element with no box — `display: none`, or not in the document.
    */
   elementRect(element: Element): Rect | null {
     this._prepare(this.abs.width || 1);
@@ -3703,36 +3704,23 @@ export class HtmlViewNode extends Node {
    *  them where they show none of it (`shownBy`): a stop is mounted beside
    *  the document, and one at a link a scroll container holds out of sight
    *  would make the box that scrolls the document reach down to it. The
-   *  rect is logical and `clipFor` speaks device pixels, so the clip is
-   *  asked in device pixels and brought back: mixed, a stop a clip hid was
+   *  clip is asked in device pixels where the element was laid out, as
+   *  `clipFor`'s boxes are, and both are brought back and moved to the
+   *  viewport after (`_moveToViewport`): mixed, a stop a clip hid was
    *  placed at twice its distance at 2x, and the Zen Garden's 214 scrolled
    *  sideways into nothing to reach it. */
   private _stopRectOf(element: Element): Rect | null {
-    const rect = this._rectOf(element);
     const tree = this._tree;
-    if (!rect || !tree) return rect;
+    const at = tree ? boxOf(tree, element) : null;
+    const drawn = tree && at ? this._drawnRect(tree, at, false) : null;
+    if (!tree || !at || !drawn) return null;
+    const rect = this._moveToViewport(at, drawn);
     const box =
       CANDIDATES.get(tree)?.byElement.get(element) ??
       boxFor(tree.root, element);
-    const s = this._scale;
-    const cut =
-      box &&
-      clipFor(
-        box,
-        {
-          x: rect.x * s,
-          y: rect.y * s,
-          width: rect.width * s,
-          height: rect.height * s,
-        },
-        s,
-      );
+    const cut = box && clipFor(box, drawn, this._scale);
     if (!cut) return rect;
-    const c = cut.rect;
-    return shownBy(
-      { x: c.x / s, y: c.y / s, width: c.width / s, height: c.height / s },
-      rect,
-    );
+    return shownBy(this._moveToViewport(at, cut.rect), rect);
   }
 
   /** The link an element is — its `href`, resolved as a click on it is
@@ -3763,18 +3751,38 @@ export class HtmlViewNode extends Node {
   private _rectOf(element: Element, first = false): Rect | null {
     const tree = this._tree;
     const box = tree ? boxOf(tree, element) : null;
-    const fragments = tree && box ? this._fragmentsOf(tree, box) : null;
-    if (!box || !fragments) return null;
-    // where it is drawn: the rectangle around it, turned and scaled as the
-    // boxes it is in are, and itself (`getBoundingClientRect`, CSSOM View)
-    const rect = throughTransforms(
-      first ? fragments.first : fragments.all,
-      box,
-    );
+    const rect = tree && box ? this._drawnRect(tree, box, first) : null;
+    return rect && this._moveToViewport(box!, rect);
+  }
+
+  /**
+   * Where a box is drawn, in device pixels in the coordinates it was laid
+   * out in: the rectangle around its fragments, or its first, turned and
+   * scaled as the boxes it is in are, and itself (`getBoundingClientRect`,
+   * CSSOM View). Null where it has none (`_fragmentsOf`).
+   */
+  private _drawnRect(tree: BoxTree, box: Box, first: boolean): Rect | null {
+    const fragments = this._fragmentsOf(tree, box);
+    if (!fragments) return null;
+    return throughTransforms(first ? fragments.first : fragments.all, box);
+  }
+
+  /**
+   * A rectangle `_drawnRect` measured, in the document's logical pixels as
+   * the element is painted now: moved by the scroll of the pane that
+   * scrolls the element where the box is fixed to the viewport or in one
+   * that is, as paint draws it where the viewport is (`atViewport`) and
+   * the hit test finds it there (`_fixedShift`). Measured where it was
+   * laid out, a fixed header `top: 30px` on a page scrolled 500px read
+   * -470 to a script's `getBoundingClientRect`, where Chrome reads 30.
+   */
+  private _moveToViewport(box: Box, rect: Rect): Rect {
+    const shift = this._fixedShift();
+    const moved = shift && drawnAtViewport(box);
     const s = this._scale;
     return {
-      x: rect.x / s,
-      y: rect.y / s,
+      x: (rect.x + (moved ? shift.x : 0)) / s,
+      y: (rect.y + (moved ? shift.y : 0)) / s,
       width: rect.width / s,
       height: rect.height / s,
     };

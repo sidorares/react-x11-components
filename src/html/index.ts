@@ -470,7 +470,9 @@ export interface HtmlHandle {
    * to `#section` is `scroller.scrollTo({ y: handle.elementRect(el).y })`.
    * A block's border box; an inline element's across its fragments, padding
    * and border included, as `getBoundingClientRect` measures it, and as
-   * tall as its lines. Null for an element with no box.
+   * tall as its lines. A box fixed to the viewport, and what is in it, is
+   * where the scroll of the pane around the element draws it. Null for an
+   * element with no box.
    */
   elementRect(element: Element): Rect | null;
   /**
