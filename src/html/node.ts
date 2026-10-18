@@ -60,6 +60,7 @@ import {
   isElement,
   isText,
   ShadowRoot,
+  shadowRootOf,
   tagOf,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
@@ -5693,7 +5694,13 @@ export class HtmlViewNode extends Node {
       }
       if (!quiet) scope.boxes = true;
       if (reach.pseudo > scope.pseudo) scope.pseudo = reach.pseudo;
-      return spreadChange(el, bits, false, scope.own);
+      return spreadChange(
+        el,
+        bits,
+        false,
+        scope.own,
+        cascade.changesCrossTrees,
+      );
     }
     // What an element holds: its children, or a text's data. A comment is
     // nothing a selector counts — not an element, and no text — and draws
@@ -5726,15 +5733,16 @@ export class HtmlViewNode extends Node {
     const holder = root ? root.host : (parent as Element);
     if (!(bits & CHANGES_AROUND) && undrawn(holder, tree)) return true;
     if (drawn) scope.boxes = true;
+    const crossing = cascade.changesCrossTrees;
     if (change.type === 'childList') {
       // what came in is styled whole, and so is what moved here from
       // elsewhere, under parents it was not styled under
       for (const node of change.addedNodes) {
-        if (isElement(node)) addSubtree(node, scope.own);
+        if (isElement(node)) addSubtree(node, scope.own, crossing);
       }
     }
-    if (root) return spreadRootChange(root, bits, scope.own);
-    return spreadChange(parent as Element, bits, true, scope.own);
+    if (root) return spreadRootChange(root, bits, scope.own, crossing);
+    return spreadChange(parent as Element, bits, true, scope.own, crossing);
   }
 
   /**
@@ -8184,12 +8192,43 @@ function undrawn(el: Element, tree: BoxTree): boolean {
 }
 
 /** An element and everything in it into `into`. */
-function addSubtree(el: Element, into: Set<Element>): void {
+function addSubtree(el: Element, into: Set<Element>, crossing = false): void {
+  if (crossing) {
+    addFlatSubtree(el, into);
+    return;
+  }
   const stack: Element[] = [el];
   while (stack.length) {
     const at = stack.pop()!;
     into.add(at);
     for (const child of at.children) if (isElement(child)) stack.push(child);
+  }
+}
+
+/** `addSubtree` across shadow trees' edges, where a rule reaches across
+ *  one (`Cascade.changesCrossTrees`): what is in an element in its tree,
+ *  in the shadow tree it hosts, and, for a slot, what is assigned to it,
+ *  which a `::slotted()` past the slot's own compound tests. */
+function addFlatSubtree(el: Element, into: Set<Element>): void {
+  const seen = new Set<Element>();
+  const stack: Element[] = [el];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (seen.has(at)) continue;
+    seen.add(at);
+    into.add(at);
+    for (const child of at.children) if (isElement(child)) stack.push(child);
+    const root = shadowRootOf(at);
+    if (root) {
+      for (const child of root.children) {
+        if (isElement(child)) stack.push(child);
+      }
+    }
+    if (tagOf(at) === 'slot') {
+      for (const child of flatChildrenOf(at)) {
+        if (isElement(child)) stack.push(child);
+      }
+    }
   }
 }
 
@@ -8230,6 +8269,7 @@ function spreadChange(
   bits: number,
   holder: boolean,
   own: Set<Element>,
+  crossing = false,
 ): boolean {
   if (bits & (CHANGES_HAS_BELOW | CHANGES_HAS_LATER)) return false;
   if (bits & CHANGES_SELF) {
@@ -8238,14 +8278,16 @@ function spreadChange(
       for (const child of el.children) if (isElement(child)) own.add(child);
     }
   }
-  if (bits & CHANGES_BELOW) addSubtree(el, own);
+  if (bits & CHANGES_BELOW) addSubtree(el, own, crossing);
   if (bits & CHANGES_LATER) {
     if (holder) {
       for (const child of el.children) {
-        if (isElement(child)) addSubtree(child, own);
+        if (isElement(child)) addSubtree(child, own, crossing);
       }
     }
-    for (let s = el.next; s; s = s.next) if (isElement(s)) addSubtree(s, own);
+    for (let s = el.next; s; s = s.next) {
+      if (isElement(s)) addSubtree(s, own, crossing);
+    }
   }
   if (bits & CHANGES_HAS_SELF) {
     // the anchors are around what changed: an attribute's element is no
@@ -8263,12 +8305,14 @@ function spreadRootChange(
   root: ShadowRoot,
   bits: number,
   own: Set<Element>,
+  crossing = false,
 ): boolean {
   if (bits & (CHANGES_HAS_BELOW | CHANGES_HAS_LATER)) return false;
   for (const child of root.children) {
     if (!isElement(child)) continue;
-    if (bits & (CHANGES_BELOW | CHANGES_LATER)) addSubtree(child, own);
-    else if (bits & CHANGES_SELF) own.add(child);
+    if (bits & (CHANGES_BELOW | CHANGES_LATER)) {
+      addSubtree(child, own, crossing);
+    } else if (bits & CHANGES_SELF) own.add(child);
   }
   return true;
 }

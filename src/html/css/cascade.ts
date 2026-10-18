@@ -1829,6 +1829,10 @@ class MutationRules {
   /** Whether a sibling combinator is in a selector outside a `:has()`: a
    *  child added or taken away is another element's earlier sibling. */
   siblings = false;
+  /** Whether a rule reaches across a shadow tree's edge (`noteEdge`), so
+   *  that what a change reaches below an element is what is below it in
+   *  its shadow tree and in its slots too (`HtmlViewNode._scopeOf`). */
+  crossesTrees = false;
 
   /** A rule's selector — its origin's, for a pseudo-element's (`pseudo`
    *  1 for a `::before`'s or an `::after`'s, 2 for any other's) — and the
@@ -1838,7 +1842,49 @@ class MutationRules {
     pseudo: 0 | 1 | 2,
     declarations: readonly Declaration[],
   ): void {
-    const note: NoteChange = (key, bits) => {
+    this._scan(selector, pseudo, declarations, 0);
+  }
+
+  /**
+   * A rule at a shadow tree's edge (`Cascade._addScoped`): a `:host`, a
+   * `:host()` or a `:host-context()`, which a tree's rule tests of the host
+   * and of what is around it, a `::slotted()`, of what the host's slots
+   * are given, and a `::part()`, which a rule outside a tree tests of what
+   * is in it. Where each compound is tested is across an edge from where
+   * the rule's subject is, so every key it tests is taken to reach the
+   * element it is tested of and everything below it, across those edges
+   * as well — more than it may, never less — and each function read as
+   * the `:is()` its argument is matched as.
+   */
+  noteEdge(
+    selector: string,
+    pseudo: 0 | 1 | 2,
+    declarations: readonly Declaration[],
+  ): void {
+    this.crossesTrees = true;
+    const read = selector.replace(
+      /::?(?:host-context|host|slotted)\(/gi,
+      ':is(',
+    );
+    // a `::part()`'s names are its element's `part`, which no style-only
+    // attribute is: a change of it restyles its element and what is in it
+    this._scan(
+      read.replace(/::part\([^)]*\)/gi, ''),
+      pseudo,
+      declarations,
+      CHANGES_SELF | CHANGES_BELOW,
+    );
+  }
+
+  /** `note`, every key's bits widened by `wider`. */
+  private _scan(
+    selector: string,
+    pseudo: 0 | 1 | 2,
+    declarations: readonly Declaration[],
+    wider: number,
+  ): void {
+    const note: NoteChange = (key, narrow) => {
+      const bits = narrow | wider;
       if (key === '+') {
         this.siblings = true;
         return;
@@ -2013,7 +2059,6 @@ export class Cascade {
   /** Whether a rule says something across a shadow tree's edge — `:host`,
    *  `::slotted()`, `::part()` — which the change index does not hold, so
    *  what a change reaches cannot be said (`attributeChange`). */
-  private _edgeRules = false;
   /** The ids of the rules of the trees' edges in a sharing key, below
    *  every index's. */
   private _scopedId = -1;
@@ -2258,7 +2303,16 @@ export class Cascade {
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
         if (rule.media) this._mediaOutsideRules = true;
-        this._edgeRules = true;
+        const split = splitPseudoElement(rule);
+        this._changeRules.noteEdge(
+          (split?.rule ?? rule).selector,
+          !split
+            ? 0
+            : split.which === 'before' || split.which === 'after'
+              ? 1
+              : 2,
+          rule.declarations,
+        );
         continue;
       }
       const pseudo = splitPseudoElement(rule);
@@ -2439,16 +2493,17 @@ export class Cascade {
   /**
    * What a change to an element's attribute can restyle (`CHANGES_*`), and
    * which pseudo-elements' rules test it — or null where that cannot be
-   * said: where a rule reaches across a shadow tree's edge (`_edgeRules`),
-   * which no index here reads, or where a selector tests the attribute
-   * somewhere a change reaches elements no compound names
-   * (`CHANGES_ANYWHERE`).
+   * said: where a selector tests the attribute somewhere a change reaches
+   * elements no compound names (`CHANGES_ANYWHERE`).
    *
-   * A document with shadow trees whose rules stay inside them is answered
-   * as one without: every tree's other rules are noted in the one index,
-   * so what a change reaches is said of all of them at once, and a tree's
-   * element is restyled by its tree's rules alone. Next.js mounts one such
-   * tree on every page, its route announcer, which no sheet styles.
+   * A document with shadow trees is answered as one without: every tree's
+   * rules are noted in the one index, so what a change reaches is said of
+   * all of them at once, and a tree's element is restyled by its tree's
+   * rules alone. Next.js mounts one tree on every page, its route
+   * announcer, which no sheet styles. A rule at a tree's edge is noted
+   * as reaching below across it (`MutationRules.noteEdge`): GitHub's
+   * `<tool-tip>` brings a tree of `:host()` rules, and every change
+   * restyled the whole page while one did.
    *
    * A class's or an id's change is the tokens that came or went, where the
    * old value is known (`was`), and every class's or id's where it is not
@@ -2460,7 +2515,6 @@ export class Cascade {
     was: string | null | undefined,
     now: string | null,
   ): { bits: number; pseudo: 0 | 1 | 2 } | null {
-    if (this._edgeRules) return null;
     const rules = this._changeRules;
     let bits = 0;
     let pseudo: 0 | 1 | 2 = 0;
@@ -2492,6 +2546,13 @@ export class Cascade {
     return bits & CHANGES_ANYWHERE ? null : { bits, pseudo };
   }
 
+  /** Whether a rule reaches across a shadow tree's edge, so that a
+   *  change reaches across one below the element it is made to
+   *  (`MutationRules.crossesTrees`). */
+  get changesCrossTrees(): boolean {
+    return this._changeRules.crossesTrees;
+  }
+
   /** Whether a `:has()` is in any rule: what an element holds, wherever it
    *  is — inside a drawing too — may be what one asks. */
   get asksWhatElementsHold(): boolean {
@@ -2507,7 +2568,6 @@ export class Cascade {
    * where a sibling combinator is in play. Null as `attributeChange`.
    */
   treeChange(text = false): number | null {
-    if (this._edgeRules) return null;
     const rules = this._changeRules;
     let bits = rules.bits('s') | rules.hasBits;
     if (text) bits |= rules.bits('t');

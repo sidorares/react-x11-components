@@ -1638,7 +1638,13 @@ label, a hint whose style reaches the element's descendants — and builds
 the boxes, restyling the element and what is in it. And **a `:has()` that
 reaches past its anchors, a shadow tree, or a sheet, a `<meta>` or a
 `<base>` changing is a refresh of everything**: the scope says null, and
-nothing is skipped. `test/html/refresh.test.ts` holds a refresh told what
+nothing is skipped. A shadow tree attached is one; a rule at a tree's edge
+— `:host()`, `:host-context()`, `::slotted()`, `::part()` — is not: every
+key it tests is read as reaching the element it is tested of and all below
+it (`MutationRules.noteEdge`), and while one is in the cascade a change
+spreads across shadow trees and into slots (`addFlatSubtree`). It had made
+every change a refresh of everything, and GitHub's `<tool-tip>` brings
+such a tree to every page that upgrades it. `test/html/refresh.test.ts` holds a refresh told what
 changed to one of everything, computed style by computed style, over
 random documents, rules and changes, and fails if none of them went in
 place, through a frame or through a build; every way a reach was dropped
