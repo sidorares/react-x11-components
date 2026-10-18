@@ -2681,6 +2681,83 @@ test('what the DOM lets a page assign, a strict script assigns without a throw',
   assert.equal(doc.text('vars'), '5|mine|7|false');
 });
 
+test("an event's attributes are the prototype's, so a delegating library shadows currentTarget on the event and puts it back", async () => {
+  // GitHub's delegated-events, under its sites' click analytics: with the
+  // attribute a field there was no descriptor to take, the handler read
+  // the document as its currentTarget, and github.blog threw on its tagName
+  const doc = await hosted(
+    '<p id="out"></p><ul><li id="li"><span id="s">go</span></li></ul><script>' +
+      '"use strict";' +
+      'var r = []; var H = Object.getOwnPropertyDescriptor(Event.prototype, "currentTarget");' +
+      'r.push(["type", "target", "currentTarget", "eventPhase", "bubbles", "cancelable", "defaultPrevented", "composed", "timeStamp"]' +
+      '  .every(function (n) { var d = Object.getOwnPropertyDescriptor(Event.prototype, n); return d && typeof d.get === "function" && !d.set; }));' +
+      'document.addEventListener("click", function (e) {' +
+      '  var li = e.target.closest("li");' +
+      '  Object.defineProperty(e, "currentTarget", { configurable: true, enumerable: true, get: function () { return li; } });' +
+      '  r.push(e.currentTarget.tagName.toLowerCase(), e.eventPhase);' +
+      '  Object.defineProperty(e, "currentTarget", { configurable: true, enumerable: true, get: H.get });' +
+      '});' +
+      // the dispatch goes on past the accessor the page left on the event
+      'window.addEventListener("click", function (e) {' +
+      '  r.push(e.currentTarget === window, e.target.id, e.eventPhase);' +
+      '  try { e.target = null; } catch (err) { r.push(err.name); }' +
+      '});' +
+      'var ev = new MouseEvent("click", { bubbles: true });' +
+      'document.getElementById("s").dispatchEvent(ev);' +
+      'r.push(ev.currentTarget, ev.eventPhase);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    'true|li|3|true|s|3|TypeError||0',
+    doc.logs.join('\n'),
+  );
+});
+
+test('aria attributes reflect as nullable strings, so a menu a script opens by its ariaHidden is shown', async () => {
+  // github.blog's header menus: `toggle.ariaExpanded = "true"` and
+  // `menu.ariaHidden = "false"` were expandos, and the menu, shown by its
+  // attribute, stayed hidden
+  const doc = await hosted(
+    '<style>.menu[aria-hidden=true] { visibility: hidden }</style>' +
+      '<p id="out"></p><a id="t" role="button" aria-expanded="false">Menu</a>' +
+      '<ul class="menu" id="m" aria-hidden="true"><li>Item</li></ul><script>' +
+      '"use strict";' +
+      'var t = document.getElementById("t"), m = document.getElementById("m"), r = [];' +
+      'r.push(t.role, t.ariaExpanded, m.ariaHidden, String(t.ariaLabel));' +
+      't.ariaExpanded = "true"; t.ariaHasPopup = "menu"; t.ariaLabel = "Open";' +
+      'r.push(t.getAttribute("aria-expanded"), t.getAttribute("aria-haspopup"), t.getAttribute("aria-label"));' +
+      't.ariaLabel = null; t.role = null;' +
+      'r.push(t.hasAttribute("aria-label"), String(t.ariaLabel), t.hasAttribute("role"));' +
+      // every element's, an SVG one's too
+      'var g = document.createElementNS("http://www.w3.org/2000/svg", "g"); g.ariaHidden = "true";' +
+      'r.push(g.getAttribute("aria-hidden"));' +
+      'm.ariaHidden = "false";' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    doc.text('out'),
+    [
+      'button',
+      'false',
+      'true',
+      'null',
+      'true',
+      'menu',
+      'Open',
+      'false',
+      'null',
+      'false',
+      'true',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+  assert.equal(doc.byId('m').attribs['aria-hidden'], 'false');
+  assert.equal(doc.view.computedStyle(doc.byId('m'))?.visibility, 'visible');
+});
+
 test('style.cssText is the block serialized, each declaration ended, so what a page appends to it is a declaration of its own', async () => {
   // CodeMirror's gutter spacer: `height: 0px`, then `cssText +=
   // "visibility: hidden"` — appended to a text with no `;`, both were lost
