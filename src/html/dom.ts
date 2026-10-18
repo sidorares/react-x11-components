@@ -482,13 +482,17 @@ const RESERVED_NAMES = new Set([
   'missing-glyph',
 ]);
 
-/** Whether an element can host a shadow root: one of `SHADOW_HOSTS`, or a
- *  name that is a valid custom element name — a lower-case ASCII letter
- *  first, a hyphen somewhere, and no ASCII upper case, white space or
- *  colon (HTML 4.13.2; the parser has lowered the case already). */
+/** Whether an element can host a shadow root: one of `SHADOW_HOSTS`, or an
+ *  autonomous custom element's. */
 export function canHostShadow(el: Element): boolean {
-  const name = el.name;
-  if (SHADOW_HOSTS.has(name)) return true;
+  return SHADOW_HOSTS.has(el.name) || isCustomElementName(el.name);
+}
+
+/** Whether a name is a valid custom element name — a lower-case ASCII
+ *  letter first, a hyphen somewhere, and no ASCII upper case, white space
+ *  or colon — and none HTML keeps for itself (4.13.2; the parser has
+ *  lowered the case already). */
+export function isCustomElementName(name: string): boolean {
   return (
     name.includes('-') &&
     CUSTOM_ELEMENT_NAME.test(name) &&
@@ -496,6 +500,44 @@ export function canHostShadow(el: Element): boolean {
   );
 }
 const CUSTOM_ELEMENT_NAME = /^[a-z][^\s\0/>:A-Z]*$/;
+
+// --- custom elements ------------------------------------------------------------
+//
+// A page's custom elements are its scripts' (HTML 4.13): the registry, an
+// element's state and its reactions are the script engine's
+// (`scripts/dom.ts`). What a stylesheet reads of them is `:defined`, and that
+// is this: the elements the engine upgraded or made from a definition, and
+// every element that was never to be a custom element.
+
+/** The elements a page's scripts made custom elements of. */
+const CUSTOMIZED = new WeakSet<Element>();
+
+/** An element made a custom element: its definition's constructor ran. */
+export function markCustomized(el: Element): void {
+  CUSTOMIZED.add(el);
+}
+
+/** Whether an element is a custom element: `markCustomized`. */
+export function isCustomized(el: Element): boolean {
+  return CUSTOMIZED.has(el);
+}
+
+/**
+ * Whether `:defined` matches an element (HTML 4.16.3): an element whose
+ * custom element state is "uncustomized" or "custom". One whose name is a
+ * custom element's, or that was given an `is`, is "undefined" until a
+ * definition upgrades it, and with no scripts, which define nothing, it
+ * stays so, as a browser with scripting off has it.
+ */
+export function isDefinedElement(el: Element): boolean {
+  if (CUSTOMIZED.has(el)) return true;
+  // made in another namespace, or none (`''`): never a custom element
+  if (el.namespace !== undefined && el.namespace !== HTML_NAMESPACE) {
+    return true;
+  }
+  return !(isCustomElementName(el.name) || el.attribs.is !== undefined);
+}
+const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
 
 /**
  * Attach a shadow root to `host` (DOM 4.9, `attachShadow()`), for an

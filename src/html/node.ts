@@ -8094,8 +8094,10 @@ const CASCADE_TAGS = new Set(['style', 'link', 'meta', 'base']);
 /** The attributes nothing reads but the cascade, where a selector tests
  *  them, and an inline style: a change of one builds no box where it
  *  changes no style. Everything else may be read by the boxes, a widget, a
- *  focus stop or a presentational hint. */
-const STYLE_ONLY_ATTRIBUTE = /^(?:class|id|style|data-[^]*|on[a-z]+)$/;
+ *  focus stop or a presentational hint. `-rx-defined` is no attribute: it
+ *  is a custom element's upgrade, which only `:defined` reads. */
+const STYLE_ONLY_ATTRIBUTE =
+  /^(?:class|id|style|data-[^]*|on[a-z]+|-rx-defined)$/;
 
 /**
  * The attribute changes in a list that changed nothing: an attribute set to

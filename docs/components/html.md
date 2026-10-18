@@ -717,6 +717,14 @@ since this component navigates nowhere by itself:
 | `scrollTo`  | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                       |
 | `reserved`  | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                      |
 
+**A page's custom elements are its own** (HTML 4.13): `customElements`
+defines them, upgrades the ones already in the document and runs their
+callbacks as elements are put in, taken out, moved or given another
+attribute value, as a browser runs them, before the DOM method that made the
+change returns. GitHub's pages start their React apps from a `<react-app>`'s
+`connectedCallback`, and draw their content clipped away until the app
+reveals it.
+
 A link or a form whose `target` names one of the page's frames is loaded
 there; every other one still reaches `onLink` and `onSubmit`, which with
 scripts on are told a link or a form only once the page's own `click` and
@@ -3257,6 +3265,11 @@ slot`. The host is featureless in its own tree, so `:host.dark` and `* >
   inside — those passed on to it from a tree inside it among them, as the
   spec has it and Chrome does not.
 - **`:has-slotted`** matches a slot something is assigned to.
+- **`:defined`** matches every element but a custom element's to be — one
+  of a custom element's name, or given an `is` — that no definition has
+  upgraded. Only a page's scripts define one, so with none `<my-card>` stays
+  undefined, as in a browser with JavaScript off, and a sheet's
+  `my-card:not(:defined) { display: none }` hides it.
 
 **Between trees, context decides before specificity** (CSS Cascade 5,
 6.1): an outer tree's normal declaration over an inner one's — a page's

@@ -79,9 +79,18 @@ export function installDom(
       const parts = r.split('\u0001');
       throw new DOMException(parts[2] ?? '', parts[1] || 'Error');
     }
-    if (MUTATES.has(op)) mutated();
+    if (MUTATES.has(op)) {
+      mutated();
+      if (customElementsDefined) takeReactions();
+    } else if (customElementsDefined && (op === 'clone' || op === 'import')) {
+      takeReactions();
+    }
     return r;
   };
+  /** Whether the page has defined a custom element, after which an op that
+   *  changes the tree may have custom element reactions to run
+   *  (`takeReactions`). */
+  let customElementsDefined = false;
   /** The ops that change the tree, which the host records
    *  (`host.ts`, "what changed"). */
   const MUTATES = new Set([
@@ -2188,6 +2197,18 @@ export function installDom(
   }
 
   class HTMLElement extends Element {
+    /** A custom element's `super()` (HTML 3.2.3, `[HTMLConstructor]`): the
+     *  element its upgrade is constructing, or a new one, as its definition
+     *  says (`constructCustom`). Anything else is an illegal constructor,
+     *  as every interface's here is. */
+    constructor() {
+      const made = constructCustom(new.target);
+      if (!made) super();
+      return made;
+    }
+    attachInternals(): Any {
+      return attachInternals(this);
+    }
     get style(): Any {
       return (this._style ??= styleOf(this));
     }
@@ -5710,7 +5731,7 @@ export function installDom(
     getElementsByName(name: Any): Any {
       return this.querySelectorAll(`[name="${cssEscape(str(name))}"]`);
     }
-    createElement(tag: Any): Any {
+    createElement(tag: Any, options?: Any): Any {
       // an XML document keeps the name's case, and makes it in no
       // namespace but XHTML's (DOM 4.5, `createElement`)
       const name = this._type ? str(tag) : str(tag).toLowerCase();
@@ -5732,11 +5753,15 @@ export function installDom(
         : this._type === 'application/xhtml+xml'
           ? HTML_NS
           : '~';
+      if (ns === '' && this === document && customElementsDefined) {
+        const made = createCustom(name, isOption(options));
+        if (made) return made;
+      }
       return wrap(Number(call('create', 'element', name, this._id, ns)));
     }
     /** An element in a namespace, its name a qualified one (DOM 4.5,
      *  "validate and extract"). */
-    createElementNS(namespace: Any, qualifiedName: Any): Any {
+    createElementNS(namespace: Any, qualifiedName: Any, options?: Any): Any {
       const ns =
         namespace === null || namespace === undefined || namespace === ''
           ? null
@@ -5764,6 +5789,15 @@ export function installDom(
           `The namespace and the qualified name ('${qualified}') do not go together.`,
           'NamespaceError',
         );
+      }
+      if (
+        ns === HTML_NS &&
+        prefix === null &&
+        this === document &&
+        customElementsDefined
+      ) {
+        const made = createCustom(local, isOption(options));
+        if (made) return made;
       }
       return wrap(
         Number(call('create', 'element', qualified, this._id, ns ?? '~')),
@@ -10837,6 +10871,607 @@ export function installDom(
     }
   }
 
+  // --- custom elements -----------------------------------------------------------
+  //
+  // HTML 4.13. The registry is the window's, and so is each element's custom
+  // element state, definition and reaction queue: kept here by its wrapper
+  // (`customOf`), where no page reads it. GitHub's pages start their React
+  // apps from an element's `connectedCallback`, so a page that defines none
+  // draws only what its server sent, and a Primer page hides that until a
+  // script reveals it.
+  //
+  // What happens to an element in the tree is the host's to say: once a name
+  // is defined, it notes each element that may be a custom element as it is
+  // put into the document, taken out, moved to another document, given
+  // another attribute value or copied into the document (`DomHost`'s
+  // `_custom…`). After each op that can do one of those the facade takes the
+  // notes (`takeReactions`) and runs the callbacks and upgrades they come to,
+  // as `[CEReactions]` runs them: before the DOM method that made the change
+  // returns. A method that is several ops runs them after each, where HTML
+  // runs them once at its end — which a page sees only from a callback that
+  // reads the tree half way through such a method.
+
+  interface CustomDefinition {
+    name: string;
+    /** Its own name, or the element an `is` extends. */
+    localName: string;
+    ctor: Any;
+    observed: Set<string>;
+    callbacks: Record<string, Any>;
+    /** The elements its upgrades are constructing (HTML 4.13.4), each
+     *  `CONSTRUCTED` once its constructor's `super()` has returned it. */
+    stack: Any[];
+    formAssociated: boolean;
+    disableInternals: boolean;
+    disableShadow: boolean;
+  }
+  /** An element's custom element state, definition and reaction queue:
+   *  each reaction an upgrade or a callback with its arguments. */
+  interface CustomState {
+    state: 'undefined' | 'failed' | 'precustomized' | 'custom';
+    def: CustomDefinition | null;
+    queue: ({ upgrade: CustomDefinition } | { fn: Any; args: Any[] })[];
+    internals: Any;
+  }
+  const customOf = new WeakMap<Any, CustomState>();
+  const customFor = (el: Any): CustomState => {
+    let custom = customOf.get(el);
+    if (!custom) {
+      custom = { state: 'undefined', def: null, queue: [], internals: null };
+      customOf.set(el, custom);
+    }
+    return custom;
+  };
+  const definitions = new Map<string, CustomDefinition>();
+  const definitionOf = new Map<Any, CustomDefinition>();
+  /** `whenDefined`'s promises, by name, until the name is defined. */
+  const waitingFor = new Map<string, { promise: Any; resolve: Any }>();
+  let defining = false;
+  const CONSTRUCTED = {};
+  const RESERVED_NAMES = new Set([
+    'annotation-xml',
+    'color-profile',
+    'font-face',
+    'font-face-src',
+    'font-face-uri',
+    'font-face-format',
+    'font-face-name',
+    'missing-glyph',
+  ]);
+  /** A valid custom element name (HTML 4.13.2), as `<Html>` reads one. */
+  const customName = (name: string): boolean =>
+    /^[a-z][^\s\0/>:A-Z]*$/.test(name) &&
+    name.includes('-') &&
+    !RESERVED_NAMES.has(name);
+  /** `createElement`'s `{ is }`. */
+  const isOption = (options: Any): string | null =>
+    options && typeof options === 'object' && options.is != null
+      ? str(options.is)
+      : null;
+
+  /** The definition for a local name and an `is` value in this window's
+   *  document (HTML 4.13.4, "look up a custom element definition"). */
+  const lookUp = (
+    local: string,
+    is: string | null,
+  ): CustomDefinition | null => {
+    const own = definitions.get(local);
+    if (own && own.localName === local) return own;
+    if (is === null) return null;
+    const extending = definitions.get(is);
+    return extending?.localName === local ? extending : null;
+  };
+  /** The definition an element would be upgraded with: its own name's, or
+   *  its `is`'s, where it is an HTML element of this window's document. */
+  const definitionFor = (el: Any): CustomDefinition | null => {
+    if (el.namespaceURI !== HTML_NS || el.ownerDocument !== document) {
+      return null;
+    }
+    return lookUp(el.localName, el.getAttribute('is'));
+  };
+
+  // the custom element reactions stack (HTML 4.13.6): an element queue a
+  // `[CEReactions]` method's steps fill, whose reactions run as it ends, and
+  // the backup queue for what is enqueued outside one, run at a microtask
+  const reactionStack: Any[][] = [];
+  let backupQueue: Any[] | null = null;
+  const enqueueElement = (el: Any): void => {
+    const top = reactionStack[reactionStack.length - 1];
+    if (top) {
+      top.push(el);
+      return;
+    }
+    if (!backupQueue) {
+      const queue: Any[] = (backupQueue = []);
+      Promise.resolve().then(() => {
+        backupQueue = null;
+        invokeReactions(queue);
+      });
+    }
+    backupQueue.push(el);
+  };
+  const enqueueCallback = (el: Any, name: string, args: Any[]): void => {
+    const custom = customOf.get(el);
+    const def = custom?.def;
+    const fn = def?.callbacks[name];
+    if (!fn) return;
+    if (name === 'attributeChangedCallback' && !def!.observed.has(args[0])) {
+      return;
+    }
+    custom!.queue.push({ fn, args });
+    enqueueElement(el);
+  };
+  const enqueueUpgrade = (el: Any, def: CustomDefinition): void => {
+    customFor(el).queue.push({ upgrade: def });
+    enqueueElement(el);
+  };
+  const invokeReactions = (queue: Any[]): void => {
+    for (const el of queue) {
+      const custom = customOf.get(el);
+      if (!custom) continue;
+      while (custom.queue.length) {
+        const reaction = custom.queue.shift()!;
+        try {
+          if ('upgrade' in reaction) upgrade(el, reaction.upgrade);
+          else reaction.fn.apply(el, reaction.args);
+        } catch (error) {
+          report(error);
+        }
+      }
+    }
+  };
+  /** `steps` run as a `[CEReactions]` method's are: the reactions they
+   *  enqueue run as they end, thrown or not. */
+  const withReactions = <T>(steps: () => T): T => {
+    reactionStack.push([]);
+    try {
+      return steps();
+    } finally {
+      invokeReactions(reactionStack.pop()!);
+    }
+  };
+
+  /** What happened to the elements that may be custom elements, as the
+   *  host noted it, run: a custom element's callbacks, and an element put
+   *  into the document or copied into it upgraded where it has a
+   *  definition (DOM 4.2.3, "insert", and 4.5, "clone"). */
+  const takeReactions = (): void => {
+    const raw = bridge('ceTake');
+    if (typeof raw !== 'string' || !raw) return;
+    const log: Any[][] = JSON.parse(raw);
+    withReactions(() => {
+      for (const [kind, id, a, b, c] of log) {
+        const el = wrap(id);
+        if (!el) continue;
+        const custom = customOf.get(el);
+        if (custom?.state === 'custom') {
+          if (kind === 'c') enqueueCallback(el, 'connectedCallback', []);
+          else if (kind === 'd') {
+            enqueueCallback(el, 'disconnectedCallback', []);
+          } else if (kind === 'a') {
+            enqueueCallback(el, 'adoptedCallback', [wrap(a), wrap(b)]);
+          } else if (kind === 't') {
+            enqueueCallback(el, 'attributeChangedCallback', [a, b, c, null]);
+          }
+        } else if (
+          (kind === 'c' || kind === 'u') &&
+          (!custom || custom.state === 'undefined')
+        ) {
+          const def = definitionFor(el);
+          if (def) enqueueUpgrade(el, def);
+        }
+      }
+    });
+  };
+
+  /** An element made a custom element by its definition (HTML 4.13.5,
+   *  "upgrade an element"): the callbacks for the attributes it observes
+   *  and for its being in the document queued, and its constructor run
+   *  over it. One that throws is left failed, and never upgraded again. */
+  const upgrade = (el: Any, def: CustomDefinition): void => {
+    const custom = customFor(el);
+    if (custom.state !== 'undefined') return;
+    custom.def = def;
+    custom.state = 'failed';
+    for (const name of el.getAttributeNames()) {
+      if (def.observed.has(name)) {
+        enqueueCallback(el, 'attributeChangedCallback', [
+          name,
+          null,
+          el.getAttribute(name),
+          null,
+        ]);
+      }
+    }
+    if (el.isConnected) enqueueCallback(el, 'connectedCallback', []);
+    def.stack.push(el);
+    try {
+      if (def.disableShadow && el.shadowRoot) {
+        throw new DOMException(
+          'The element has a shadow root its definition disables.',
+          'NotSupportedError',
+        );
+      }
+      custom.state = 'precustomized';
+      const made = new def.ctor();
+      if (made !== el) {
+        throw new TypeError(
+          "Failed to construct 'CustomElement': The result must be the element being upgraded.",
+        );
+      }
+    } catch (error) {
+      custom.def = null;
+      custom.state = 'failed';
+      custom.queue.length = 0;
+      throw error;
+    } finally {
+      def.stack.pop();
+    }
+    custom.state = 'custom';
+    call('ceDefined', el._id);
+  };
+
+  /** A custom element's `super()` (HTML 3.2.3, `[HTMLConstructor]`): the
+   *  element being upgraded, given the constructor's prototype, or, where
+   *  none is, a new element of the definition — `new` called on its
+   *  class, and `createElement`. Null for a constructor with no
+   *  definition, whose construction is illegal. */
+  const constructCustom = (target: Any): Any => {
+    const def = target ? definitionOf.get(target) : undefined;
+    if (!def) return null;
+    const stack = def.stack;
+    if (!stack.length) {
+      const el = wrap(
+        Number(call('create', 'element', def.localName, document._id, '')),
+      );
+      Object.setPrototypeOf(el, target.prototype);
+      customOf.set(el, { state: 'custom', def, queue: [], internals: null });
+      call('ceDefined', el._id);
+      return el;
+    }
+    const el = stack[stack.length - 1];
+    if (el === CONSTRUCTED) {
+      throw new DOMException(
+        "Failed to construct 'HTMLElement': This instance is already constructed",
+        'InvalidStateError',
+      );
+    }
+    Object.setPrototypeOf(el, target.prototype);
+    stack[stack.length - 1] = CONSTRUCTED;
+    return el;
+  };
+
+  /** An element `createElement` makes with a definition (DOM 4.9, "create
+   *  an element", its custom elements synchronous): an autonomous one by
+   *  its constructor, which has to hand back an element as a parser would
+   *  make it — no attributes, no children, no parent — or is reported and
+   *  an `HTMLUnknownElement` made in its place; a customized built-in made
+   *  and upgraded at once. Null where the name has no definition. */
+  const createCustom = (local: string, is: string | null): Any => {
+    const def = lookUp(local, is);
+    if (!def) return null;
+    if (def.localName === def.name) {
+      try {
+        const made = new def.ctor();
+        if (!(made instanceof HTMLElement)) {
+          throw new TypeError(
+            "Failed to execute 'createElement' on 'Document': The result must implement HTMLElement interface",
+          );
+        }
+        const wrong = made.hasAttributes()
+          ? 'The result must not have attributes'
+          : made.hasChildNodes()
+            ? 'The result must not have children'
+            : made.parentNode
+              ? 'The result must not have a parent'
+              : made.ownerDocument !== document
+                ? 'The result must be in the same document'
+                : made.localName !== local
+                  ? 'The result must have the same localName'
+                  : null;
+        if (wrong) {
+          throw new DOMException(
+            `Failed to execute 'createElement' on 'Document': ${wrong}`,
+            'NotSupportedError',
+          );
+        }
+        return made;
+      } catch (error) {
+        report(error);
+        const el = wrap(
+          Number(call('create', 'element', local, document._id, '')),
+        );
+        Object.setPrototypeOf(el, HTMLUnknownElement.prototype);
+        customFor(el).state = 'failed';
+        return el;
+      }
+    }
+    const el = wrap(Number(call('create', 'element', local, document._id, '')));
+    try {
+      upgrade(el, def);
+    } catch (error) {
+      report(error);
+    }
+    return el;
+  };
+
+  /** Whether a value is a constructor, asked without calling it. */
+  const isConstructor = (value: Any): boolean => {
+    if (typeof value !== 'function') return false;
+    try {
+      Reflect.construct(String, [], value);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const callbacksOf = (proto: Any, names: string[]): Record<string, Any> => {
+    const out: Record<string, Any> = {};
+    for (const name of names) {
+      const value = proto[name];
+      if (value === undefined) continue;
+      if (typeof value !== 'function') {
+        throw new TypeError(
+          `Failed to execute 'define' on 'CustomElementRegistry': The '${name}' property on the prototype is not a function.`,
+        );
+      }
+      out[name] = value;
+    }
+    return out;
+  };
+  const stringsOf = (value: Any): string[] =>
+    value === undefined || value === null ? [] : Array.from(value, str);
+
+  class CustomElementRegistry {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    /** HTML 4.13.4, `define()`. */
+    define(name: Any, ctor: Any, options?: Any): void {
+      const n = str(name);
+      const fail = (message: string, kind: string): never => {
+        throw new DOMException(
+          `Failed to execute 'define' on 'CustomElementRegistry': ${message}`,
+          kind,
+        );
+      };
+      if (!isConstructor(ctor)) {
+        throw new TypeError(
+          "Failed to execute 'define' on 'CustomElementRegistry': The provided value is not of type 'CustomElementConstructor'.",
+        );
+      }
+      if (!customName(n)) {
+        fail(`"${n}" is not a valid custom element name`, 'SyntaxError');
+      }
+      if (definitions.has(n)) {
+        fail(
+          `the name "${n}" has already been used with this registry`,
+          'NotSupportedError',
+        );
+      }
+      if (definitionOf.has(ctor)) {
+        fail(
+          'this constructor has already been used with this registry',
+          'NotSupportedError',
+        );
+      }
+      let local = n;
+      const extending = options?.extends;
+      if (extending !== undefined && extending !== null) {
+        local = str(extending);
+        if (customName(local) || !/^[a-z][a-z0-9]*$/.test(local)) {
+          fail(
+            `"${local}" is not an HTML element to extend`,
+            'NotSupportedError',
+          );
+        }
+      }
+      if (defining) {
+        fail(
+          'this registry is already defining an element',
+          'NotSupportedError',
+        );
+      }
+      defining = true;
+      let def: CustomDefinition;
+      try {
+        const proto = ctor.prototype;
+        if (
+          proto === null ||
+          (typeof proto !== 'object' && typeof proto !== 'function')
+        ) {
+          throw new TypeError(
+            "Failed to execute 'define' on 'CustomElementRegistry': The prototype of the constructor is not an object.",
+          );
+        }
+        const callbacks = callbacksOf(proto, [
+          'connectedCallback',
+          'disconnectedCallback',
+          'adoptedCallback',
+          'attributeChangedCallback',
+        ]);
+        const observed = new Set(
+          callbacks.attributeChangedCallback
+            ? stringsOf(ctor.observedAttributes)
+            : [],
+        );
+        const disabled = new Set(stringsOf(ctor.disabledFeatures));
+        const formAssociated = !!ctor.formAssociated;
+        if (formAssociated) {
+          Object.assign(
+            callbacks,
+            callbacksOf(proto, [
+              'formAssociatedCallback',
+              'formResetCallback',
+              'formDisabledCallback',
+              'formStateRestoreCallback',
+            ]),
+          );
+        }
+        def = {
+          name: n,
+          localName: local,
+          ctor,
+          observed,
+          callbacks,
+          stack: [],
+          formAssociated,
+          disableInternals: disabled.has('internals'),
+          disableShadow: disabled.has('shadow'),
+        };
+      } finally {
+        defining = false;
+      }
+      definitions.set(n, def);
+      definitionOf.set(ctor, def);
+      customElementsDefined = true;
+      withReactions(() => {
+        for (const id of idList(call('ceDefine', n, local))) {
+          enqueueUpgrade(wrap(id), def);
+        }
+        const waiting = waitingFor.get(n);
+        if (waiting) {
+          waitingFor.delete(n);
+          waiting.resolve(ctor);
+        }
+      });
+    }
+    get(name: Any): Any {
+      return definitions.get(str(name))?.ctor;
+    }
+    getName(ctor: Any): string | null {
+      return definitionOf.get(ctor)?.name ?? null;
+    }
+    whenDefined(name: Any): Promise<Any> {
+      const n = str(name);
+      if (!customName(n)) {
+        return Promise.reject(
+          new DOMException(
+            `Failed to execute 'whenDefined' on 'CustomElementRegistry': "${n}" is not a valid custom element name`,
+            'SyntaxError',
+          ),
+        );
+      }
+      const def = definitions.get(n);
+      if (def) return Promise.resolve(def.ctor);
+      let waiting = waitingFor.get(n);
+      if (!waiting) {
+        let resolve: Any;
+        const promise = new Promise((ok) => (resolve = ok));
+        waitingFor.set(n, (waiting = { promise, resolve }));
+      }
+      return waiting.promise;
+    }
+    /** Every element in `root` that has a definition and was not upgraded,
+     *  upgraded, in shadow-including tree order. */
+    upgrade(root: Any): void {
+      const id = idOf(root);
+      if (!customElementsDefined) return;
+      withReactions(() => {
+        for (const found of idList(call('ceCandidates', id))) {
+          const el = wrap(found);
+          const custom = customOf.get(el);
+          if (custom && custom.state !== 'undefined') continue;
+          const def = definitionFor(el);
+          if (def) enqueueUpgrade(el, def);
+        }
+      });
+    }
+  }
+  const customElements = Object.create(CustomElementRegistry.prototype);
+
+  /** A custom element's states, which `:state()` would read: a set of
+   *  strings. */
+  class CustomStateSet extends Set<string> {
+    override add(value: Any): this {
+      return super.add(str(value));
+    }
+  }
+  /** What a custom element is given to say what a built-in says of itself
+   *  (HTML 4.13.7): its states, and a form value and validity that no form
+   *  reads here. */
+  class ElementInternals {
+    _el: Any;
+    _states = new CustomStateSet();
+    _value: Any = null;
+    _valid = true;
+    _message = '';
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get shadowRoot(): Any {
+      return this._el.shadowRoot;
+    }
+    get states(): Any {
+      return this._states;
+    }
+    get form(): Any {
+      return customOf.get(this._el)?.def?.formAssociated
+        ? this._el.closest('form')
+        : null;
+    }
+    get labels(): Any {
+      return list([]);
+    }
+    get willValidate(): boolean {
+      return !!customOf.get(this._el)?.def?.formAssociated;
+    }
+    get validationMessage(): string {
+      return this._message;
+    }
+    get validity(): Any {
+      return { valid: this._valid };
+    }
+    setFormValue(value: Any): void {
+      this._value = value;
+    }
+    setValidity(flags?: Any, message?: Any): void {
+      this._valid = !flags || !Object.values(flags).some(Boolean);
+      this._message = this._valid ? '' : str(message ?? '');
+    }
+    checkValidity(): boolean {
+      return this._valid;
+    }
+    reportValidity(): boolean {
+      return this._valid;
+    }
+  }
+  /** HTML 4.13.7.1, `attachInternals()`. */
+  const attachInternals = (el: Any): Any => {
+    const custom = customOf.get(el);
+    const fail = (message: string): never => {
+      throw new DOMException(
+        `Failed to execute 'attachInternals' on 'HTMLElement': ${message}`,
+        'NotSupportedError',
+      );
+    };
+    const def = custom?.def ?? definitionFor(el);
+    if (!def || def.localName !== def.name) {
+      fail('Unable to attach ElementInternals to non-custom elements.');
+    }
+    if (def!.disableInternals) {
+      fail('ElementInternals is disabled by disabledFeature static field.');
+    }
+    if (custom?.internals) {
+      fail('ElementInternals for the specified element was already attached.');
+    }
+    if (custom?.state !== 'precustomized' && custom?.state !== 'custom') {
+      fail(
+        'The attachInternals() function cannot be called prior to the execution of the custom element constructor.',
+      );
+    }
+    const internals = Object.create(ElementInternals.prototype);
+    Object.assign(internals, {
+      _el: el,
+      _states: new CustomStateSet(),
+      _value: null,
+      _valid: true,
+      _message: '',
+    });
+    custom!.internals = internals;
+    return internals;
+  };
+
   // --- the global ------------------------------------------------------------------
 
   const define = (name: string, value: Any): void => {
@@ -10903,6 +11538,9 @@ export function installDom(
     Range,
     Element,
     HTMLElement,
+    CustomElementRegistry,
+    CustomStateSet,
+    ElementInternals,
     SVGElement,
     SVGGraphicsElement,
     SVGSVGElement,
@@ -11190,18 +11828,7 @@ export function installDom(
         args.length >= 2 ? `(${str(args[0])}: ${str(args[1])})` : str(args[0]),
       ) === true,
   });
-  define('customElements', {
-    define(name: Any) {
-      bridge(
-        'log',
-        'warn',
-        `customElements.define('${str(name)}') was ignored: custom elements are not supported here.`,
-      );
-    },
-    get: () => undefined,
-    whenDefined: () => new Promise(() => {}),
-    upgrade() {},
-  });
+  define('customElements', customElements);
   const timeOrigin = Date.now() - now();
   define('performance', {
     now,
@@ -11597,6 +12224,8 @@ export function installDom(
     Object.defineProperty(G, name, {
       value: () => {
         try {
+          // what the host changed on its own since the page last did
+          if (customElementsDefined) takeReactions();
           return fn();
         } catch (error) {
           report(error);
