@@ -1234,11 +1234,12 @@ scroll container keeps to it where it is scrolled to: moved only as far as
 keeps it inside the container's scrollport less its insets, and its margin
 box inside its containing block — all the container scrolls, where that is
 the container — placed again at every scroll (see [Scroll
-containers](#scroll-containers)). One kept to the viewport is placed at
-rest: against the viewport only `top` and the start side are kept — a
-sticky box is where a browser starts it, and scrolls away with the page
-rather than following it, where a `bottom: 0` footer would otherwise be
-pinned to the middle of it. A float, an inline-block and an absolute box of `width: auto`
+containers](#scroll-containers)). One kept to the viewport keeps to the
+pane around the element the same way, placed again as the pane scrolls
+the document: a contents list at `top: 80px` held under a page's header
+until its sidebar ends, a `bottom: 0` footer at the foot of what is seen.
+Where nothing scrolls the element it is placed at rest, where a browser
+starts it, against the viewport's `top` and start side alone. A float, an inline-block and an absolute box of `width: auto`
 shrink to fit the room their margins leave, and an absolute box the room
 its offset or its static position leaves: at `left: 50%` it has half the
 width. None is narrower than its longest word. A relatively positioned inline box moves its text, its
@@ -3068,8 +3069,7 @@ preserve-3d`, a multicol container's `column-rule`,
 a table in one broken
 between its rows — it goes to the next column whole, and a box a break
 falls inside casts no shadow — conic and repeating
-gradients, a sticky box that follows the viewport as it scrolls, and the font
-properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
+gradients, and the font properties of `::first-line`. A `<col>`'s or a `<colgroup>`'s borders are
 drawn only where the table's collapse. A percentage `height` resolves where
 the containing block's height is set, and on an absolutely positioned box.
 The initial containing block is the viewport: the box that scrolls the
@@ -3164,7 +3164,11 @@ it, once a frame.
 scroll of it and after every layout, as Chrome places one: a header at
 `top: 0` held at the top of a list, a section's title until its section
 leaves, a footer at `bottom: 0` at its foot. Where it is in the flow is
-what the container's reach is measured by, not where it is stuck.
+what the container's reach is measured by, not where it is stuck. One the
+viewport keeps is placed again as the pane around the document scrolls it,
+and the pane is told where it is held (`viewportFixedRects`), as it is told
+where a fixed box is, so its copy of a step does not drag the box with the
+text.
 
 **The scroll keys scroll a container** — the arrows a line of 40 CSS
 pixels, Page Up, Page Down and Space seven eighths of the scrollport, Home

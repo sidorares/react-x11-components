@@ -139,9 +139,11 @@ import {
   heldBack,
   layoutDocument,
   placedMatrix,
+  restickToViewport,
   restickWithin,
   retranslate,
   translate,
+  VIEWPORT_STICKY,
 } from './layout/block.js';
 import {
   isScroller,
@@ -150,6 +152,7 @@ import {
   scrollContent,
   scrollStateOf,
   setScrollOffsets,
+  STUCK,
   wheelScrolls,
 } from './layout/scroll.js';
 import type { ScrollBar, ScrollOffset, ScrollState } from './layout/scroll.js';
@@ -1625,20 +1628,19 @@ export class HtmlViewNode extends Node {
    * it, for that pane's scroll blit to repaint rather than copy with the
    * text (react-x11's `viewportFixedRects`): the whole viewport where a
    * fixed background shows through it, which makes a scroll a repaint, and
-   * where each fixed box is drawn. Null for a document with neither, and
-   * where nothing scrolls the element.
+   * where each fixed box is drawn, and each sticky box the viewport holds
+   * where it was drawn held and where it is held now. Null for a document
+   * with none of them, and where nothing scrolls the element.
    */
   override viewportFixedRects(): Rect[] | null {
     const tree = this._tree;
     const viewport = tree && this._viewport();
     if (!tree || !viewport) return null;
     if (hasFixedBackground(tree)) return [viewport];
-    const boxes = FIXED_BOXES.get(tree);
-    if (!boxes) return null;
+    const out: Rect[] = [];
     // laid out against the viewport at the document's top, and drawn at the
     // viewport (`atViewport`)
-    const out: Rect[] = [];
-    for (const box of boxes) {
+    for (const box of FIXED_BOXES.get(tree) ?? NO_BOXES) {
       if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
       out.push({
         x: viewport.x + box.boundsX,
@@ -1647,7 +1649,82 @@ export class HtmlViewNode extends Node {
         height: box.boundsHeight,
       });
     }
+    // A sticky box held to the viewport stays where it is on screen as the
+    // pane scrolls, as a fixed one does, until its containing block takes
+    // it away, so the copy would drag it with the text. Core repaints each
+    // rect here where it is and where the copy put what was there: where a
+    // box was drawn held, which takes in where the copy put it, and where
+    // the scroll has it now (`_followViewport`), which takes in what the
+    // copy put where it lands as it is caught or let go.
+    if (VIEWPORT_STICKY.has(tree)) {
+      this._followViewport();
+      out.push(...this._stuckDrawn);
+      for (const rect of this._heldRects(tree)) {
+        if (!this._stuckDrawn.some((was) => sameRect(was, rect))) {
+          out.push(rect);
+        }
+      }
+    }
     return out.length ? out : null;
+  }
+
+  /**
+   * Where each sticky box the viewport keeps (`VIEWPORT_STICKY`) and holds
+   * away from where the flow has it is drawn, in window pixels: none of the
+   * ones that only scroll with the text, which the copy moves as it should.
+   */
+  private _heldRects(tree: BoxTree): Rect[] {
+    const boxes = VIEWPORT_STICKY.get(tree);
+    if (!boxes) return NO_RECTS;
+    let out: Rect[] | null = null;
+    for (const box of boxes) {
+      const stuck = STUCK.get(box);
+      if (!stuck || !(stuck[0] || stuck[1])) continue;
+      const ink = this._inkOf(box);
+      if (!ink || !(ink.width > 0 && ink.height > 0)) continue;
+      (out ??= []).push({
+        x: this.abs.x + ink.x,
+        y: this.abs.y + ink.y,
+        width: ink.width,
+        height: ink.height,
+      });
+    }
+    return out ?? NO_RECTS;
+  }
+
+  /**
+   * Place the sticky boxes the viewport keeps again where the pane around
+   * the element has scrolled the document to (`restickToViewport`): the
+   * layout placed them as though it were at its top, and a scroll of the
+   * pane lays nothing out. Their ink is worked out again and the surfaces
+   * kept for the boxes around them given up, as a scroll inside the
+   * document does (`_scrollBox`). Asked before anything reads where a box
+   * is — a paint, a hit test, a scroll blit's question — and a few
+   * comparisons where nothing moved; where nothing scrolls the element, they
+   * stay where the layout put them.
+   */
+  private _followViewport(): void {
+    const tree = this._tree;
+    const boxes = tree && VIEWPORT_STICKY.get(tree);
+    if (!boxes) return;
+    const viewport = this._viewport();
+    if (!viewport) return;
+    const moved = restickToViewport(boxes, {
+      x: viewport.x - this.abs.x,
+      y: viewport.y - this.abs.y,
+      width: viewport.width,
+      height: viewport.height,
+    });
+    if (!moved) return;
+    computePaintBounds(tree.root, tree.movedInline);
+    for (const box of moved) this._dropSprites(box, false);
+    // a layer may now be over a box that moved, or hold one
+    if (this._lifted.size) {
+      this._spriteGen += 1;
+      this.spritesChanged();
+    }
+    // what is mounted beside the document is told at the paint
+    this._stickyMoved = true;
   }
 
   private _viewportHeight(): number {
@@ -2220,6 +2297,9 @@ export class HtmlViewNode extends Node {
           stop?.reach,
         );
         this._questioned = question;
+        // the sticky boxes the viewport keeps, where the pane is scrolled to
+        this._followViewport();
+        this._stickyMoved = false;
         // what was at the top of what can be seen stays there on screen
         if (!question) this._keepAnchor();
         // A tree a crossing built and laid out down to where the layout
@@ -3268,6 +3348,7 @@ export class HtmlViewNode extends Node {
   }
 
   override textIndexAt(x: number, y: number): number {
+    this._followViewport();
     this._followLifted();
     const tree = this._tree;
     if (!tree) return 0;
@@ -3377,6 +3458,7 @@ export class HtmlViewNode extends Node {
    */
   elementRect(element: Element): Rect | null {
     this._prepare(this.abs.width || 1);
+    this._followViewport();
     return this._rectOf(element);
   }
 
@@ -3647,6 +3729,7 @@ export class HtmlViewNode extends Node {
    * pressed with a paragraph selected does not take the selection away.
    */
   startsSelectionAt(x: number, y: number): boolean {
+    this._followViewport();
     this._followLifted();
     const tree = this._tree;
     if (!tree) return true;
@@ -3679,6 +3762,7 @@ export class HtmlViewNode extends Node {
    * (react-x11#793), which brings it up to the tree that frame drew.
    */
   private _drawnAt(x: number, y: number): Element | null {
+    this._followViewport();
     this._followLifted();
     const tree = this._tree;
     if (!tree) return null;
@@ -3707,6 +3791,7 @@ export class HtmlViewNode extends Node {
    * I-beam on a selectable surface, and every `<Html>` is one.
    */
   override cursorAt(x: number, y: number): string | null {
+    this._followViewport();
     this._followLifted();
     const tree = this._tree;
     if (!tree) return null;
@@ -6166,6 +6251,13 @@ export class HtmlViewNode extends Node {
   /** Where the pane around the element was scrolled to at the last paint
    *  (`onViewportScroll`), or null before the first. */
   private _paneScroll: string | null = null;
+  /** Where the sticky boxes the viewport held were drawn at the last paint,
+   *  in window pixels (`_heldRects`): what a scroll blit of the pane drags
+   *  with the text, for it to repair (`viewportFixedRects`). */
+  private _stuckDrawn: Rect[] = NO_RECTS;
+  /** Whether `_followViewport` moved a box since what is mounted beside the
+   *  document was last told where its element is. */
+  private _stickyMoved = false;
 
   /** Tell `onViewportScroll` the pane moved since the last paint. */
   private _notePaneScroll(): void {
@@ -6198,6 +6290,17 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
     if (!tree) return;
+    // the sticky boxes the viewport keeps, where the pane has scrolled the
+    // document to, and the widgets and players in them with them
+    this._followViewport();
+    if (this._stickyMoved) {
+      this._stickyMoved = false;
+      this._reportControls();
+      this._reportMedia();
+      this._reportEmbedded();
+      this._reportStops();
+    }
+    this._stuckDrawn = this._heldRects(tree);
     // what is at the top of the viewport as it is drawn, for a layout at
     // another width to keep it there (`_anchorFrame`)
     this._noteShown(tree);
@@ -7928,6 +8031,7 @@ function deepestAt(
 
 const NO_TEXTS: LineText[] = [];
 const NO_BOXES: readonly Box[] = [];
+const NO_RECTS: Rect[] = [];
 
 /** The boxes a tree's boxes fixed to the viewport are in, from their
  *  parents up: what a hit test walks into past their reach once the

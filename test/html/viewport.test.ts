@@ -11,8 +11,10 @@ import {
   FONTS,
   boxOf,
   fillsOf,
+  findById,
   h,
   metric,
+  pixelsIn,
   render,
   renderScrolled,
   treeOf,
@@ -841,6 +843,128 @@ metric(
       null,
       'and nothing where nothing is fixed',
     );
+  },
+);
+
+/** A page whose sticky boxes the viewport keeps: a header held at the
+ *  top, a title in each of two sections held below it, and a footer held
+ *  at the bottom. */
+const STICKY =
+  '<style>body{margin:0}#head{position:sticky;top:0;height:20px;' +
+  'background:#0000ff}section{height:300px}.t{position:sticky;top:30px;' +
+  'height:20px;background:#ff0000}#foot{position:sticky;bottom:0;' +
+  'height:20px;background:#00ff00}</style><div id="head"></div>' +
+  '<section><div class="t" id="t1"></div></section>' +
+  '<section><div class="t" id="t2"></div></section>' +
+  '<div style="height:600px"></div><div id="foot"></div>';
+
+/** The pane around a document: what scrolls it. */
+function paneOf(node: HtmlViewNode): { scrollTo(y: number): void } {
+  type Up = { parent: Up | null; props?: { style?: { overflow?: string } } };
+  let at = (node as unknown as Up).parent;
+  while (at && at.props?.style?.overflow !== 'scroll') at = at.parent;
+  assert.ok(at, 'a pane');
+  return at as unknown as { scrollTo(y: number): void };
+}
+
+test('a sticky box the viewport keeps holds to it as the pane scrolls the document, until its containing block takes it away, as browsers place it', async () => {
+  // Placed once by the layout, as though the document were at its top, and
+  // never again, since the pane's scroll lays nothing out: github.blog's
+  // contents list, `top: 80px` beside its article, scrolled away with the
+  // article where a browser holds it under the page's header
+  const { el } = await renderScrolled(STICKY, 200);
+  const pane = paneOf(el);
+  const tops = () =>
+    ['head', 't1', 't2', 'foot'].map(
+      (id) => el.elementRect(findById(el.document, id)!)!.y,
+    );
+  // Chrome 154, Firefox and WebKit alike: the header at the top all the
+  // way, each title 30px down until its section leaves, the footer at the
+  // bottom until it is where the flow has it
+  const browsers: [number, number[]][] = [
+    [0, [0, 30, 320, 180]],
+    [100, [100, 130, 320, 280]],
+    [290, [290, 300, 320, 470]],
+    [450, [450, 300, 480, 630]],
+    [1040, [1040, 300, 600, 1220]],
+  ];
+  for (const [y, want] of browsers) {
+    await act(async () => pane.scrollTo(y));
+    assert.deepStrictEqual(tops(), want, `scrolled to ${y}`);
+  }
+  // and a point is the box held there, not what scrolled under it
+  await act(async () => pane.scrollTo(450));
+  assert.strictEqual(el.elementAtPoint(50, 10)?.attribs.id, 'head');
+  assert.strictEqual(el.elementAtPoint(50, 40)?.attribs.id, 't2');
+  assert.strictEqual(el.elementAtPoint(50, 190)?.attribs.id, 'foot');
+});
+
+metric(
+  'a pane scrolled a step at a time draws the sticky boxes the viewport holds where a repaint of all of it does',
+  async () => {
+    // A step of a pane's scroll copies what it shows and paints the strip
+    // it exposed, and the copy drags a held box with the text. The document
+    // tells the pane where each was drawn held and where it is held now
+    // (`viewportFixedRects`), and the pane repaints both: without them, the
+    // title caught on the way down left a copy of itself every step
+    const W = 400;
+    const H = 200;
+    const mount = async () => {
+      const pane = React.createRef<DrawnNode & { scrollTo(y: number): void }>();
+      const result = await renderX11(
+        h(
+          'box',
+          { ref: pane, style: { width: W, height: H, overflow: 'scroll' } },
+          h(Html, { source: STICKY, partial: false }),
+        ),
+        { width: W, height: H, fonts: FONTS! },
+      );
+      await act();
+      return { result, pane: pane.current! };
+    };
+    // left of the bar, whose thumb fades on a clock of its own
+    const region = { x: 0, y: 0, width: W - 20, height: H };
+    const stepped = await mount();
+    // down to the step that catches the second title, which was where the
+    // flow had it the step before; on, past where it is let go; and back
+    // up past where it is caught again
+    const path = [
+      ...Array.from({ length: 30 }, (_, i) => 10 + i * 10),
+      ...Array.from({ length: 30 }, (_, i) => 310 + i * 10),
+      ...Array.from({ length: 15 }, (_, i) => 590 - i * 10),
+    ];
+    const stops = new Map<number, Uint8ClampedArray>();
+    for (const [i, y] of path.entries()) {
+      await act(async () => stepped.pane.scrollTo(y));
+      if (y === 300 || i === path.length - 1) {
+        stops.set(y, await pixelsIn(stepped.result.ctx, region));
+      }
+    }
+    await stepped.result.unmount();
+    for (const [y, after] of stops) {
+      const whole = await mount();
+      await act(async () => whole.pane.scrollTo(y));
+      const want = await pixelsIn(whole.result.ctx, region);
+      await whole.result.unmount();
+      let wrong = 0;
+      let first = -1;
+      for (let i = 0; i < want.length; i += 4) {
+        if (
+          after[i] !== want[i] ||
+          after[i + 1] !== want[i + 1] ||
+          after[i + 2] !== want[i + 2]
+        ) {
+          wrong += 1;
+          if (first < 0) first = i / 4;
+        }
+      }
+      assert.strictEqual(
+        wrong,
+        0,
+        `at ${y}: ${wrong} pixels off, the first at ` +
+          `${first % region.width},${Math.floor(first / region.width)}`,
+      );
+    }
   },
 );
 
