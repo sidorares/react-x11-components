@@ -212,6 +212,48 @@ test("a written <html> holds its content in a body, as HTML's parser has it", ()
   assert.strictEqual(shapeOf('<p>a</p>b'), 'p(a) b');
 });
 
+test("an <html>, a <head> and a doctype inside the document are no nodes, as HTML's parser has them", () => {
+  // WordPress saves a post through PHP's DOM, which writes a whole document
+  // round it: on github.blog an `<html>` inside the article's column held
+  // its blocks, and `.is-layout-constrained > *` reached none of them, so
+  // a table's figure kept the 40px side margins Chrome's has taken away.
+  // Chrome 154 builds each of these trees.
+  const markup =
+    '<!doctype html><html lang="en"><body class="a"><section>' +
+    '<!DOCTYPE html PUBLIC "x"><html lang="fr" data-x="1">' +
+    '<body class="b" id="i"><p>a</p><figure>f</figure></body></html>' +
+    '<p>b</p></section></body></html>';
+  assert.strictEqual(
+    shapeOf(markup),
+    '!doctype() html(head() body(section(p(a) figure(f) p(b))))',
+  );
+  // and their attributes go on the ones there are, where those have none
+  const source = new HtmlSource();
+  source.setSource(markup, true);
+  type E = { name?: string; attribs?: Record<string, string>; children?: E[] };
+  const html = (source.document.children as unknown as E[]).find(
+    (n) => n.name === 'html',
+  )!;
+  const body = html.children!.find((n) => n.name === 'body')!;
+  assert.deepStrictEqual(html.attribs, { lang: 'en', 'data-x': '1' });
+  assert.deepStrictEqual(body.attribs, { class: 'a', id: 'i' });
+  assert.strictEqual(
+    shapeOf(
+      '<!doctype html><html><head></head><body><div><head><title>t</title>' +
+        '</head><p>a</p></div></body></html>',
+    ),
+    '!doctype() html(head() body(div(title(t) p(a))))',
+    'a head once the head is behind it',
+  );
+  assert.strictEqual(
+    shapeOf(
+      '<!doctype html><html><body><div><html><p>a</p></div><p>b</p></body></html>',
+    ),
+    '!doctype() html(head() body(div(p(a)) p(b)))',
+    'one never closed, closed with what holds it',
+  );
+});
+
 test("a written <html> has the head HTML's parser implies, round the head content it starts with", () => {
   // Acid3 writes an `<html>` and no `<head>`, and styles its coloured
   // boxes through `:first-child + * .buckets p`: the body after the head
