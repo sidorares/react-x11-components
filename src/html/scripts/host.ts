@@ -2132,6 +2132,16 @@ export class DomHost {
         const rect = this._seams.handle.elementRect(this._element(a));
         return rect ? `${rect.x},${rect.y},${rect.width},${rect.height}` : '';
       }
+      // `offsetParent` and the offsets from it, in one walk up the boxes:
+      // the parent's id, then x, y, width and height in CSS pixels, or ''
+      // for an element with no box (`HtmlHandle.offsetRect`)
+      case 'offset': {
+        this.flush();
+        const r = this._seams.handle.offsetRect(this._element(a));
+        return r
+          ? `${this.idOf(r.parent)},${r.x},${r.y},${r.width},${r.height}`
+          : '';
+      }
       case 'computed': {
         this.flush();
         const pseudo = b === 'before' || b === 'after' ? b : null;
@@ -2145,6 +2155,17 @@ export class DomHost {
           pseudo,
         );
         return style ? JSON.stringify(style) : '';
+      }
+      // one custom property's, by its name: a theme's hundreds are no part
+      // of what `computed` sends
+      case 'customProperty': {
+        this.flush();
+        const el = this._element(a);
+        const pseudo = b === 'before' || b === 'after' ? b : null;
+        if (!this._inDocument(el)) {
+          return this._frameComputed(el, pseudo)?.custom?.get(text(c)) ?? '';
+        }
+        return this._seams.handle.customProperty(el, text(c), pseudo) ?? '';
       }
       case 'at': {
         this.flush();
@@ -3241,6 +3262,15 @@ export class DomHost {
     el: Element,
     pseudo: 'before' | 'after' | null,
   ): Record<string, string> | null {
+    const style = this._frameComputed(el, pseudo);
+    return style ? cssomStyle(style, 1, null) : null;
+  }
+
+  /** `_frameStyle`, as the cascade computed it. */
+  private _frameComputed(
+    el: Element,
+    pseudo: 'before' | 'after' | null,
+  ): ComputedStyle | null {
     let top: AnyNode = el;
     while (top.parent) top = top.parent;
     const doc = top as Document;
@@ -3279,11 +3309,7 @@ export class DomHost {
         false,
       );
     const style = styleOf(el);
-    if (pseudo) {
-      const own = cascade.pseudoStyleFor(el, pseudo, style);
-      return own ? cssomStyle(own, 1, null) : null;
-    }
-    return cssomStyle(style, 1, null);
+    return pseudo ? cascade.pseudoStyleFor(el, pseudo, style) : style;
   }
 
   /** The size of a frame's viewport: its element's content box in the

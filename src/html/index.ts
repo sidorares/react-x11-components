@@ -50,6 +50,7 @@ import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
 import type {
   DocumentInteraction,
   HtmlViewProps,
+  OffsetRect,
   ScriptRequest,
 } from './node.js';
 import {
@@ -87,7 +88,7 @@ export {
   HtmlViewNode,
   registerHtmlView,
 } from './node.js';
-export type { HtmlViewProps, ScriptRequest } from './node.js';
+export type { HtmlViewProps, OffsetRect, ScriptRequest } from './node.js';
 export type { ScrollState as ElementScroll } from './layout/scroll.js';
 export type {
   DomEventHandler,
@@ -472,6 +473,16 @@ export interface HtmlHandle {
    */
   elementRect(element: Element): Rect | null;
   /**
+   * Where an element is as `offsetParent`, `offsetLeft`, `offsetTop`,
+   * `offsetWidth` and `offsetHeight` measure it (CSSOM View 7), laid out
+   * first: its offset parent — the nearest positioned or transformed
+   * element around it, or a `<td>`, a `<th>` or a `<table>` around one
+   * that is not positioned, or the `<body>` — and its border edge from that
+   * one's padding edge, in logical pixels, where layout put it before any
+   * transform or scroll moved it. Null for an element with no box.
+   */
+  offsetRect(element: Element): OffsetRect | null;
+  /**
    * Where a scroll container in the document is scrolled to, how far it can
    * be and its scrollport, in CSS pixels, laid out first — `scrollTop`,
    * `scrollHeight`, `clientHeight` and their kin. Null for an element that
@@ -507,6 +518,18 @@ export interface HtmlHandle {
     element: Element,
     pseudo?: 'before' | 'after' | null,
   ): Record<string, string> | null;
+  /**
+   * A custom property's computed value, as `getComputedStyle` reads it by
+   * its name, case and all: every `var()` in it replaced, and the empty
+   * string where nothing sets it. Asked by its name because a theme sets
+   * hundreds of them on the root, which every element inherits. Null for
+   * an element the document has not styled.
+   */
+  customProperty(
+    element: Element,
+    name: string,
+    pseudo?: 'before' | 'after' | null,
+  ): string | null;
   /**
    * Whether a media query holds for the document, as `matchMedia` answers:
    * from the same width, viewport height, scale, colour scheme, preference
@@ -962,6 +985,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.hrefAtPoint(x, y) ?? null,
       elementRect: (element: Element) =>
         nodeRef.current?.elementRect(element) ?? null,
+      offsetRect: (element: Element) =>
+        nodeRef.current?.offsetRect(element) ?? null,
       scrollState: (element: Element) =>
         nodeRef.current?.scrollStateOf(element) ?? null,
       canvasChanged: (element: Element) =>
@@ -970,6 +995,12 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.scrollElementTo(element, to) ?? null,
       computedStyle: (element: Element, pseudo?: 'before' | 'after' | null) =>
         nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
+      customProperty: (
+        element: Element,
+        name: string,
+        pseudo?: 'before' | 'after' | null,
+      ) =>
+        nodeRef.current?.customProperty(element, name, pseudo ?? null) ?? null,
       matchMedia: (query: string) =>
         nodeRef.current?.matchMedia(query) ?? false,
       scriptsUnblocked: (script?: Element | null) =>

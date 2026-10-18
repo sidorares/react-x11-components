@@ -5044,24 +5044,31 @@ function staticAlignment(
  *  between is transparent — which is what the spec means by "the nearest
  *  positioned ancestor". */
 function containingBlockFor(box: Box): Box | null {
-  // a fixed box's is the viewport, whatever is positioned around it — but
-  // a transformed box is one for it too, and one with layout or paint
-  // containment (CSS Containment 2, 3.3)
   const fixed = box.style.position === 'fixed';
   let node = box.parent;
   while (node) {
-    if (
-      (!fixed && node.style.position !== 'static') ||
-      transformed(node.style) ||
-      contained(node, CONTAIN_LAYOUT | CONTAIN_PAINT) ||
-      holdsOutOfFlow(node, fixed) ||
-      node.parent === null
-    ) {
-      return node;
-    }
+    if (containsOutOfFlow(node, fixed) || node.parent === null) return node;
     node = node.parent;
   }
   return null;
+}
+
+/**
+ * Whether a box is the containing block of the boxes in it positioned out
+ * of the flow: of the fixed ones (`fixed`), or of the absolute ones. A
+ * fixed box's is the viewport, whatever is positioned around it — but a
+ * transformed box is one for it too, and one with layout or paint
+ * containment (CSS Containment 2, 3.3), and one a filter or `will-change`
+ * makes one (`holdsOutOfFlow`). The initial containing block aside, which
+ * is no box's.
+ */
+export function containsOutOfFlow(box: Box, fixed: boolean): boolean {
+  return (
+    (!fixed && box.style.position !== 'static') ||
+    transformed(box.style) ||
+    contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT) ||
+    holdsOutOfFlow(box, fixed)
+  );
 }
 
 /** The size containments that hold a box's width: `size` and
@@ -5461,7 +5468,7 @@ export { transformed };
  *  its `transform` comes to with its turns and scales: a percentage is of
  *  its own border box (CSS Transforms 1, 7). The rest of the transform is
  *  paint's (`placedMatrix`). */
-function translationOf(box: Box, style = box.style): [number, number] {
+export function translationOf(box: Box, style = box.style): [number, number] {
   if (!transformed(style)) return [0, 0];
   const m = matrixOf(style, box.width, box.height);
   return [m[4], m[5]];
