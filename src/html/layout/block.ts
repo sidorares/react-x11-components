@@ -5705,7 +5705,7 @@ function stickyOffset(
     box.y,
     box.height,
     box.marginTop,
-    box.marginBottom,
+    ownMarginBottom(box, cb),
     cb.contentY,
     cb.contentHeight,
     py,
@@ -5715,6 +5715,20 @@ function stickyOffset(
     true,
   );
   return [dx, dy];
+}
+
+/**
+ * A sticky box's own bottom margin, which every engine keeps it inside its
+ * containing block by: not the margin a last child takes through its foot
+ * (`bottomStrut`), which the box carries for its next sibling to collapse
+ * with. github.blog's contents list ends on an item with a 64px bottom
+ * margin, and held by it the list stopped 64px above the end of its
+ * sidebar.
+ */
+function ownMarginBottom(box: Box, cb: Box): number {
+  return box.bottomStrut
+    ? edge(box.style.marginBottom, cb.contentWidth)
+    : box.marginBottom;
 }
 
 /**
@@ -5909,7 +5923,7 @@ function placeSticky(
     box.y - was[1],
     box.height,
     box.marginTop,
-    box.marginBottom,
+    ownMarginBottom(box, cb),
     cby,
     cbh,
     py,
