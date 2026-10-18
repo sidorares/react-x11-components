@@ -899,6 +899,34 @@ test('a sticky box the viewport keeps holds to it as the pane scrolls the docume
   assert.strictEqual(el.elementAtPoint(50, 190)?.attribs.id, 'foot');
 });
 
+test('a sticky box keeps inside its containing block by its own margins, not by those its children take through its edges', async () => {
+  // github.blog's contents list ends on an item whose 64px bottom margin
+  // collapses through the list's foot: held by that margin, it stopped
+  // 64px above the end of its sidebar, where Chrome takes it to the end
+  const { el } = await renderScrolled(
+    '<style>body{margin:0}#cb{height:1000px}#s{position:sticky;top:0}' +
+      '#s p{margin:20px 0 50px;height:20px}#u{position:sticky;bottom:0}' +
+      '#u p{margin:40px 0 0;height:20px}</style><div id="cb">' +
+      '<div style="height:300px"></div><div id="s"><p></p></div>' +
+      '<div style="height:300px"></div><div id="u"><p></p></div></div>' +
+      '<div style="height:1000px"></div>',
+    200,
+  );
+  const pane = paneOf(el);
+  const tops = () =>
+    ['s', 'u'].map((id) => el.elementRect(findById(el.document, id)!)!.y);
+  // Chrome 154, Firefox and WebKit alike
+  const browsers: [number, number[]][] = [
+    [0, [320, 180]],
+    [990, [980, 730]],
+    [1500, [980, 730]],
+  ];
+  for (const [y, want] of browsers) {
+    await act(async () => pane.scrollTo(y));
+    assert.deepStrictEqual(tops(), want, `scrolled to ${y}`);
+  }
+});
+
 metric(
   'a pane scrolled a step at a time draws the sticky boxes the viewport holds where a repaint of all of it does',
   async () => {

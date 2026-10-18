@@ -1231,8 +1231,9 @@ its content's baseline whether it clips or not, and on the bottom edge of
 its content box where its content has none, as it does in Blink: a button
 of an icon is no taller on its line than it is. A sticky box inside a
 scroll container keeps to it where it is scrolled to: moved only as far as
-keeps it inside the container's scrollport less its insets, and its margin
-box inside its containing block — all the container scrolls, where that is
+keeps it inside the container's scrollport less its insets, and its own
+margin box inside its containing block — not a margin a last child takes
+through its foot, as every engine has it — all the container scrolls, where that is
 the container — placed again at every scroll (see [Scroll
 containers](#scroll-containers)). One kept to the viewport keeps to the
 pane around the element the same way, placed again as the pane scrolls
