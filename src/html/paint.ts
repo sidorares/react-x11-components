@@ -5258,9 +5258,6 @@ export const DOCUMENT_FLOW = new WeakMap<
   { width: number; height: number }
 >();
 
-/** Whether a box is fixed to the viewport: `position: fixed` with no
- *  transformed or contained box around it, which would be its containing
- *  block instead (CSS Transforms 1, CSS Containment 2, 3.3). */
 /**
  * Whether a box and all it holds draw nothing: faded to nothing, or hidden
  * with nothing in it made visible again. What asks what is over something
@@ -5275,6 +5272,107 @@ export function drawsNothing(box: Box): boolean {
   return true;
 }
 
+/**
+ * Whether a box, or anything it holds, puts ink within `extent`, in the
+ * document's coordinates: what asks whether something is over a player, a
+ * frame or a layer asks it of each box that could be. A subtree whose ink
+ * misses the extent is passed over whole, and one whose ink meets it is
+ * looked into rather than taken at its word: a subtree's ink is the union
+ * of all it holds, and CodeMirror parks an element ten thousand pixels
+ * above an editor, Docusaurus keeps its menu's backdrop over the whole
+ * viewport, hidden, and GitHub's header holds a mega menu, hidden, as tall
+ * as the hero under it. So what counts is a box's own ink, where it is
+ * visible; nothing under an opacity of 0; and nothing a box that clips
+ * what it holds cuts away from the extent. A box's own ink is its border
+ * box with its shadows and its outline, where it draws something there: a
+ * background, a border, a picture or text. A box that is only a frame for
+ * what it holds is no more over what is under it than the frame's empty
+ * middle is: up.com.au keeps its menu's overlay fixed over the whole
+ * viewport, transparent until the menu opens, and GitHub lays an empty box
+ * over its hero's video for a script to draw a gradient where it is. A box
+ * with no rectangle of its own, an inline box, one drawn through a matrix
+ * or a filter, and one with a list marker are taken at their ink.
+ */
+export function inkMeets(root: Box, extent: Rect): boolean {
+  const stack: Box[] = [root];
+  while (stack.length) {
+    const at = stack.pop()!;
+    if (!(at.boundsWidth > 0 && at.boundsHeight > 0)) continue;
+    if (!meets(inkOf(at), extent)) continue;
+    const style = at.style;
+    // nothing it or what it holds draws shows
+    if (drawsNothing(at)) continue;
+    // taken at its ink: an inline box, whose rect no layout sets, a box
+    // drawn through a matrix or a filter, whose rect is not where it draws,
+    // and a marker, which an outside one draws outside it
+    if (
+      !hasRect(at) ||
+      placedMatrix(at) ||
+      style.filter !== null ||
+      at.marker
+    ) {
+      return true;
+    }
+    const outlined = style.outlineStyle !== 'none' && style.outlineWidth > 0;
+    if (
+      style.visibility === 'visible' &&
+      (outlined ||
+        drawsOwn(at) ||
+        at.kind === 'replaced' ||
+        (at.lines?.length ?? 0) > 0)
+    ) {
+      let { x, y, width, height } = at;
+      if (style.boxShadow) {
+        const out = shadowOutsets(style.boxShadow);
+        x -= out.left;
+        y -= out.top;
+        width += out.left + out.right;
+        height += out.top + out.bottom;
+      }
+      if (outlined) {
+        const grow = Math.max(0, style.outlineOffset + style.outlineWidth);
+        x -= grow;
+        y -= grow;
+        width += 2 * grow;
+        height += 2 * grow;
+      }
+      if (meets({ x, y, width, height }, extent)) return true;
+    }
+    // what it holds, where a box that clips it leaves it within reach
+    if (
+      clipsOverflow(at) &&
+      style.overflowX !== 'visible' &&
+      style.overflowY !== 'visible' &&
+      !meets(
+        {
+          x: at.x + at.borderLeft,
+          y: at.y + at.borderTop,
+          width: at.width - at.borderLeft - at.borderRight,
+          height: at.height - at.borderTop - at.borderBottom,
+        },
+        extent,
+      )
+    ) {
+      continue;
+    }
+    for (const child of at.children) stack.push(child);
+  }
+  return false;
+}
+
+/** A box's ink bounds, as a rect. */
+function inkOf(box: Box): Rect {
+  return {
+    x: box.boundsX,
+    y: box.boundsY,
+    width: box.boundsWidth,
+    height: box.boundsHeight,
+  };
+}
+
+/** Whether a box is fixed to the viewport: `position: fixed` with no
+ *  transformed or contained box around it, which would be its containing
+ *  block instead (CSS Transforms 1, CSS Containment 2, 3.3). */
 export function fixedToViewport(box: Box): boolean {
   if (box.style.position !== 'fixed') return false;
   for (let at = box.parent; at?.parent; at = at.parent) {
@@ -6207,12 +6305,13 @@ function gatherLayers(box: Box, context: Box, into: Box[]): void {
  * as one of its context's layers come the layers after it in that list,
  * the context's outline, and then the same of the context in the one
  * around it, up to the root. The flow it is over and every layer before it
- * are under it wherever it goes. A box fixed to the viewport is left out,
- * since where it is drawn turns on the scroll, which the caller asks about
- * itself (`FIXED_BOXES`). Null where `box`, or a context on the way up,
- * is not painted from a list of layers — a box in the flow, one below it
- * (`NEGATIVE`), one an inline box paints on its lines — and the caller has
- * to ask of every box instead.
+ * are under it wherever it goes. A layer after it is asked what it draws
+ * within the extent, and not how far it reaches (`inkMeets`). A box fixed
+ * to the viewport is left out, since where it is drawn turns on the
+ * scroll, which the caller asks about itself (`FIXED_BOXES`). Null where
+ * `box`, or a context on the way up, is not painted from a list of layers
+ * — a box in the flow, one below it (`NEGATIVE`), one an inline box paints
+ * on its lines — and the caller has to ask of every box instead.
  */
 export function paintedAfter(
   box: Box,
@@ -6275,15 +6374,8 @@ function walkPaintedAfter(
       // which it keeps its place against
       const fixed = fixedToViewport(later);
       if (fixed && !fixedExtent) continue;
-      if (!(later.boundsWidth > 0 && later.boundsHeight > 0)) continue;
-      if (drawsNothing(later)) continue;
-      const ink = {
-        x: later.boundsX,
-        y: later.boundsY,
-        width: later.boundsWidth,
-        height: later.boundsHeight,
-      };
-      if (meets(ink, fixed ? fixedExtent! : extent) && meet(later)) {
+      // what it and all it holds draw there, not how far all of it reaches
+      if (inkMeets(later, fixed ? fixedExtent! : extent) && meet(later)) {
         return true;
       }
     }

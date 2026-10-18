@@ -15,6 +15,11 @@
 //  - the **video**, filling the frame, the picture fitted into it by the
 //    element's `object-fit`.
 //
+// And after the port, where the document paints over the video — a play
+// button in its corner — a `<canvas>` it is painted on again
+// (`HtmlViewNode.paintCovers`), cut to the port: a sibling after the player
+// is over it, as the box is over the video in the document.
+//
 // A press goes through to the document — a drag across a video selects the
 // text around it — unless the page asked for `controls`. There is no bar of
 // them: a press plays and pauses, as a browser's video does, and the rest is
@@ -56,8 +61,46 @@ export function useVideos(view: {
       setRects(reported);
     }, []),
     render: () =>
-      rects.map((rect) => renderVideo(rect, `${idOf(rect.element)}`, view)),
+      rects.flatMap((rect) => {
+        const id = `${idOf(rect.element)}`;
+        const over = renderCovers(rect, id, view);
+        const video = renderVideo(rect, id, view);
+        return over ? [video, over] : [video];
+      }),
   };
+}
+
+/** The `<canvas>` what the document paints over a player is painted on
+ *  again, where it shows: over what the player shows, and nowhere a press
+ *  stops, which is the document's. */
+function renderCovers(
+  rect: MediaRect,
+  id: string,
+  view: { readonly current: HtmlViewNode | null },
+): ReactNode {
+  if (!rect.over || rect.hidden) return null;
+  const el = rect.element;
+  const port = rect.clip ?? rect;
+  const x = Math.max(rect.over.x, port.x);
+  const y = Math.max(rect.over.y, port.y);
+  const width =
+    Math.min(rect.over.x + rect.over.width, port.x + port.width) - x;
+  const height =
+    Math.min(rect.over.y + rect.over.height, port.y + port.height) - y;
+  if (!(width > 0 && height > 0)) return null;
+  return hx('canvas', {
+    key: `over:${id}`,
+    style: {
+      position: 'absolute',
+      left: x,
+      top: y,
+      width,
+      height,
+      pointerEvents: 'none',
+      ...(rect.opacity !== undefined && { opacity: rect.opacity }),
+    },
+    onDraw: (ctx, info) => view.current?.paintCovers(el, ctx, info.node.abs),
+  });
 }
 
 function renderVideo(

@@ -21,12 +21,19 @@
 // What decides whether a player is mounted at all is what a sibling mounted
 // over the document can and cannot be:
 //
-//  - **Nothing the document paints after the video may reach its picture.**
-//    A player is above the whole document, so a caption laid across a
-//    video, a play button over it or a gradient on top of a hero would be
-//    hidden under it. Such a video stays its poster (`paintedAfter`, and
-//    `crowded` where its place in the paint order cannot be told) — the same
-//    test a sprite's layer is held to (`sprites.ts`).
+//  - **What the document paints after the video is painted over it
+//    again.** A player is above the whole document, so a caption laid
+//    across a video, a play button in its corner or a gradient on top of a
+//    hero would be hidden under it. A few such boxes (`MAX_COVERS`), each
+//    where a rectangle stands for what clips it and nothing turns, filters
+//    or fades it, are painted a second time, over the player, by a sibling
+//    mounted after it (`coversOf`, `HtmlViewNode.paintCovers`). A video
+//    with any other over it stays its poster (`paintedAfter`, and `crowded`
+//    where its place in the paint order cannot be told) — the test a
+//    sprite's layer is held to (`sprites.ts`). What is asked of a box is
+//    what it draws there, and not how far it reaches (`inkMeets`): GitHub
+//    lays an empty box over its hero's video, and its header holds a menu,
+//    hidden, that reaches as far.
 //  - **A box fixed to the viewport is asked about as the pane scrolls**
 //    (`cutByFixed`): a header that comes over a playing video cuts the
 //    player where it reaches it, and one that reaches into its middle hides
@@ -52,6 +59,7 @@ import type { Box, BoxTree } from './layout/boxes.js';
 import {
   clipFor,
   contentCorners,
+  coverersAfter,
   drawnAtViewport,
   drawsNothing,
   paintedAfter,
@@ -109,6 +117,13 @@ export interface MediaRect {
    * under it shows.
    */
   hidden?: boolean;
+  /**
+   * Where the document paints over the player, in the same space as `x`:
+   * around what of the boxes painted after the video reaches the part of
+   * it that shows — a play button in its corner. A sibling mounted after
+   * the player paints them there again (`HtmlViewNode.paintCovers`).
+   */
+  over?: Rect;
   /** HTML's attributes, as the element has them. */
   autoPlay: boolean;
   loop: boolean;
@@ -122,10 +137,15 @@ export interface MediaRect {
 /**
  * The sources a `<video>` names, in the order it would try them: its `src`
  * alone where it has one — an empty one is none — and its `<source>`
- * children otherwise (HTML 4.8.11.5, the resource selection algorithm).
- * A `<source media>` is not evaluated.
+ * children otherwise, but those whose `media` does not hold (`holds`; HTML
+ * 4.8.11.5, the resource selection algorithm). GitHub's heroes name a
+ * portrait recording for a phone and a landscape one for anything wider,
+ * and a desktop window played the phone's.
  */
-export function videoCandidates(el: Element): VideoCandidate[] {
+export function videoCandidates(
+  el: Element,
+  holds: (media: string) => boolean,
+): VideoCandidate[] {
   const src = attr(el, 'src');
   if (src !== undefined) {
     const url = src.trim();
@@ -136,8 +156,21 @@ export function videoCandidates(el: Element): VideoCandidate[] {
     if (!isElement(child) || tagOf(child) !== 'source') continue;
     const url = (attr(child, 'src') ?? '').trim();
     if (!url) continue;
+    const media = attr(child, 'media');
+    if (media !== undefined && !holds(media)) continue;
     const type = attr(child, 'type')?.trim();
     out.push(type ? { url, type } : { url });
+  }
+  return out;
+}
+
+/** What a `<video>`'s choice of source is made from, as one string: its
+ *  `src`, and each `<source>`'s `src`, `type` and `media`. */
+export function videoSignature(el: Element): string {
+  let out = attr(el, 'src') ?? '\u0000';
+  for (const child of el.children) {
+    if (!isElement(child) || tagOf(child) !== 'source') continue;
+    out += `\u0001${attr(child, 'src') ?? ''}\u0002${attr(child, 'type') ?? ''}\u0002${attr(child, 'media') ?? '\u0000'}`;
   }
   return out;
 }
@@ -154,10 +187,14 @@ export function mediaRectsOf(
   tree: BoxTree,
   scale: number,
   sourceOf: (el: Element) => { source: VideoSource; url: string } | null,
+  /** Filled with what the document paints over each player (`coversOf`),
+   *  by its element. */
+  covers: Map<Element, Cover[]>,
 ): MediaRect[] {
   const out: MediaRect[] = [];
   for (const box of tree.media) {
-    const placed = placementOf(tree, box, scale);
+    const over: Cover[] = [];
+    const placed = placementOf(tree, box, scale, over);
     if (!placed) continue;
     const el = placed.element;
     // asked last, and only of what can be mounted: a host is not asked for
@@ -165,8 +202,10 @@ export function mediaRectsOf(
     const chosen = sourceOf(el);
     if (!chosen) continue;
     const label = attr(el, 'aria-label') || attr(el, 'title');
+    if (over.length) covers.set(el, over);
     out.push({
       ...placed,
+      ...(over.length && { over: around(over.map((c) => c.rect)) }),
       source: chosen.source,
       url: chosen.url,
       fit: box.style.objectFit,
@@ -229,6 +268,10 @@ function placementOf(
   tree: BoxTree,
   box: Box,
   scale: number,
+  /** Where given, the boxes painted after it that reach its picture are
+   *  painted over it again where they can be (`coversOf`), and pushed
+   *  here; where not, they keep it from being mounted. */
+  drawnOver: Cover[] | null = null,
 ): {
   element: Element;
   x: number;
@@ -258,12 +301,15 @@ function placementOf(
   const round = cut ? cut.radius : 0;
   const shows = clip ? shownBy(clip, picture) : picture;
   const reach = inset(shows, OVERLAP);
-  if (
-    reach.width > 0 &&
-    reach.height > 0 &&
-    (paintedAfter(box, reach) ?? crowded(tree, box, reach))
-  ) {
-    return null;
+  if (reach.width > 0 && reach.height > 0) {
+    const after = paintedAfter(box, reach);
+    if (after === null) {
+      if (crowded(tree, box, reach)) return null;
+    } else if (after) {
+      const over = drawnOver && coversOf(tree, box, reach, shows, scale);
+      if (!over) return null;
+      drawnOver!.push(...over);
+    }
   }
   let opacity = 1;
   for (let at: Box | null = box; at; at = at.parent) {
@@ -278,6 +324,107 @@ function placementOf(
       ? { clip: clip!, clipRadius: round }
       : clip && !covers(clip, picture) && { clip: shows }),
     ...(opacity < 1 && { opacity: Math.max(0, opacity) }),
+  };
+}
+
+/** A box the document paints after a video, which reaches its picture,
+ *  and the part of the picture it reaches, in device pixels: what a sibling
+ *  after the player paints over it again. */
+export interface Cover {
+  box: Box;
+  rect: Rect;
+}
+
+/** As many boxes painted after a video as are painted over its player
+ *  again: more is a page laid over the video, which keeps the poster. */
+const MAX_COVERS = 4;
+
+/**
+ * The boxes the document paints after a video whose ink reaches `reach`
+ * (`coverersAfter`), each with the part of what the video `shows` it
+ * reaches, where a sibling over the player can paint them as the document
+ * does: no more than `MAX_COVERS`, and each laid out where it is drawn —
+ * no matrix, filter, mask or clip path on it or around it, nothing fading
+ * it, nothing holding it back, not fixed to the viewport — and cut, where
+ * the boxes around it cut it, to a rectangle. Null where any is not, and
+ * the video keeps its poster. GitHub's hero has a play button in the
+ * corner of its video.
+ */
+function coversOf(
+  tree: BoxTree,
+  box: Box,
+  reach: Rect,
+  shows: Rect,
+  scale: number,
+): Cover[] | null {
+  const found = coverersAfter(box, reach);
+  if (!found || found.length > MAX_COVERS) return null;
+  const out: Cover[] = [];
+  for (const cover of found) {
+    if (heldBack(tree, cover) || drawnAtViewport(cover)) return null;
+    for (let at: Box | null = cover; at; at = at.parent) {
+      const style = at.style;
+      if (
+        placedMatrix(at) ||
+        style.filter !== null ||
+        style.clipPath ||
+        masked(style) ||
+        style.opacity < 1
+      ) {
+        return null;
+      }
+    }
+    const ink = {
+      x: cover.boundsX,
+      y: cover.boundsY,
+      width: cover.boundsWidth,
+      height: cover.boundsHeight,
+    };
+    const cut = clipFor(cover, ink, scale);
+    if (cut === null || (cut && cut.radius > 0)) return null;
+    const over = within(within(ink, shows), cut?.rect ?? ink);
+    if (!(over.width > 0 && over.height > 0)) continue;
+    out.push({ box: cover, rect: pixelsAround(over) });
+  }
+  return out;
+}
+
+/** Where two rects meet: none of either where they do not. */
+function within(a: Rect, b: Rect): Rect {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  return {
+    x,
+    y,
+    width: Math.max(0, Math.min(a.x + a.width, b.x + b.width) - x),
+    height: Math.max(0, Math.min(a.y + a.height, b.y + b.height) - y),
+  };
+}
+
+/** The least rect that holds all of `rects`. */
+function around(rects: readonly Rect[]): Rect {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const r of rects) {
+    x0 = Math.min(x0, r.x);
+    y0 = Math.min(y0, r.y);
+    x1 = Math.max(x1, r.x + r.width);
+    y1 = Math.max(y1, r.y + r.height);
+  }
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+/** The whole pixels a rect touches. */
+function pixelsAround(rect: Rect): Rect {
+  const x = Math.floor(rect.x);
+  const y = Math.floor(rect.y);
+  return {
+    x,
+    y,
+    width: Math.ceil(rect.x + rect.width) - x,
+    height: Math.ceil(rect.y + rect.height) - y,
   };
 }
 

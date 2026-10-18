@@ -131,13 +131,69 @@ test('a video plays its src, and its <source>s in order where it has none', () =
     };
     return find(source.document.children)!;
   };
-  assert.deepStrictEqual(videoCandidates(byId('a')), [{ url: 'a.mp4' }]);
+  const all = () => true;
+  assert.deepStrictEqual(videoCandidates(byId('a'), all), [{ url: 'a.mp4' }]);
   // an empty src is no source, and the <source>s are not looked at
-  assert.deepStrictEqual(videoCandidates(byId('b')), []);
-  assert.deepStrictEqual(videoCandidates(byId('c')), [
+  assert.deepStrictEqual(videoCandidates(byId('b'), all), []);
+  assert.deepStrictEqual(videoCandidates(byId('c'), all), [
     { url: 'c.webm', type: 'video/webm; codecs=vp9' },
     { url: 'c.mp4', type: 'video/mp4' },
   ]);
+});
+
+test('a <source> whose media does not hold is passed over, and the choice is kept as the window narrows', async () => {
+  // GitHub's heroes: a portrait recording for a phone, a landscape one for
+  // anything wider
+  const asked: ResourceRequest[] = [];
+  const source =
+    '<style>body{margin:0}</style>' +
+    '<video style="display:block;width:100%;height:50px">' +
+    '<source src="phone.mp4" media="(max-width: 199px)">' +
+    '<source src="still.mp4" media="(prefers-reduced-motion: reduce)">' +
+    '<source src="wide.mp4"></video>';
+  function Host({ width, still }: { width: number; still: boolean }) {
+    const app = useApp();
+    return h(
+      'box',
+      { style: { width, flexDirection: 'column' } },
+      h(Html, {
+        source,
+        partial: false,
+        reducedMotion: still,
+        onResource: (request: ResourceRequest) => {
+          if (request.kind !== 'video') return null;
+          asked.push(request);
+          return {
+            kind: 'video' as const,
+            frames: createVideoFrames(app, { width: 16, height: 16 }),
+          };
+        },
+      }),
+    );
+  }
+  const result = await renderX11(h(Host, { width: 300, still: false }), {
+    width: 340,
+    height: 120,
+    ...(FONTS && { fonts: FONTS }),
+  });
+  await act();
+  assert.deepStrictEqual(
+    asked.map((r) => r.url),
+    ['wide.mp4'],
+  );
+  const [video] = videos();
+  assert.ok(video, 'a player is mounted');
+  // HTML's resource selection runs once, and Chrome keeps what it chose:
+  // neither the phone's width nor a preference for less motion now
+  // changes the video
+  await act(() => result.rerender(h(Host, { width: 150, still: true })));
+  await act();
+  await waitFor(() => assert.strictEqual(videos()[0]?.abs.width, 150));
+  assert.strictEqual(videos()[0], video, 'the same player');
+  assert.deepStrictEqual(
+    asked.map((r) => r.url),
+    ['wide.mp4'],
+  );
 });
 
 test('with no host, a video is its poster, and no player is mounted', async () => {
@@ -329,6 +385,106 @@ test('a video something is painted over keeps its poster', async () => {
       .width,
     16,
   );
+});
+
+test('a box over a video that draws nothing there leaves it mounted', async () => {
+  // github.com/features/ai/github-app's hero: an empty box laid over the
+  // video for a script to draw a gradient where it is, and a header whose
+  // hidden menu is as tall as the hero under it
+  const asked: ResourceRequest[] = [];
+  await renderVideo(
+    '<style>body{margin:0}</style>' +
+      '<header style="position:relative;z-index:32;height:20px">' +
+      '<div style="position:absolute;top:20px;left:0;width:200px;' +
+      'height:200px;visibility:hidden;opacity:0;background:#fff">menu</div>' +
+      '</header>' +
+      '<div style="position:relative;overflow:hidden">' +
+      '<video src="a.mp4" style="display:block;width:100px;height:50px;' +
+      'position:relative"></video>' +
+      '<div style="position:absolute;top:0;left:0;width:100%;height:100%">' +
+      '</div></div>',
+    (_, app) => ({
+      kind: 'video',
+      frames: createVideoFrames(app, { width: 16, height: 16 }),
+    }),
+    { asked },
+  );
+  assert.deepStrictEqual(
+    asked.map((r) => r.url),
+    ['a.mp4'],
+  );
+  assert.strictEqual(videos().length, 1);
+});
+
+for (const scale of [1, 2]) {
+  test(`a box the document paints over a video is painted over its player again, at a scale of ${scale}`, async () => {
+    // GitHub's hero: a play button in the corner of a positioned video, in
+    // a box that clips them both
+    const { result, el } = await renderVideo(
+      '<style>body{margin:0;background:#fff}</style>' +
+        '<div style="position:relative;overflow:hidden;width:80px">' +
+        '<video src="a.mp4" style="display:block;position:relative;' +
+        'width:80px;height:40px"></video>' +
+        '<div id="b" style="position:absolute;z-index:1;right:4px;' +
+        'bottom:4px;width:24px;height:24px;background:#f00"></div></div>',
+      // the box's ratio, which the picture fills
+      (_, app) => ({ kind: 'video', frames: solid(app, 16, 8, [0, 255, 0]) }),
+      { scale },
+    );
+    const [video] = videos();
+    assert.ok(video, 'a player is mounted');
+    const over = screen.all((n) => n.kind === 'canvas');
+    assert.strictEqual(over.length, 1, 'and a canvas after it');
+    // device pixels, both: the box laid out at the scale, the canvas
+    // placed at it
+    const button = boxOf(el, 'b');
+    assert.deepStrictEqual(
+      [
+        over[0].abs.x - el.abs.x,
+        over[0].abs.y - el.abs.y,
+        over[0].abs.width,
+        over[0].abs.height,
+      ],
+      [button.x, button.y, 24 * scale, 24 * scale],
+    );
+    await act();
+    await expectPixel(result.ctx, 10 * scale, 10 * scale, '#00ff00', {
+      message: 'the frame',
+    });
+    await expectPixel(
+      result.ctx,
+      button.x + 12 * scale,
+      button.y + 12 * scale,
+      '#ff0000',
+      { message: 'the box over it' },
+    );
+  });
+}
+
+test('a video under a box it cannot be painted again over keeps its poster', async () => {
+  const asked: ResourceRequest[] = [];
+  await renderVideo(
+    '<div style="position:relative;width:80px">' +
+      '<video src="a.mp4" style="display:block;position:relative;' +
+      'width:80px;height:40px"></video>' +
+      // faded: the document paints it as one group, which a second paint
+      // over the player is not
+      '<div style="position:absolute;z-index:1;right:0;bottom:0;' +
+      'width:20px;height:20px;background:#f00;opacity:.5"></div></div>' +
+      '<div style="position:relative;width:80px">' +
+      '<video src="b.mp4" style="display:block;position:relative;' +
+      'width:80px;height:40px"></video>' +
+      '<div style="position:absolute;z-index:1;right:0;bottom:0;' +
+      'width:20px;height:20px;background:#f00;transform:rotate(10deg)">' +
+      '</div></div>',
+    (_, app) => ({
+      kind: 'video',
+      frames: createVideoFrames(app, { width: 16, height: 16 }),
+    }),
+    { asked },
+  );
+  assert.deepStrictEqual(asked, [], 'a host is not asked');
+  assert.strictEqual(videos().length, 0);
 });
 
 test('a video turned, cut to a path or fixed to the viewport keeps its poster', async () => {

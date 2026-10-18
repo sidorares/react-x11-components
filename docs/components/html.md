@@ -916,8 +916,8 @@ has a frame, and the picture from then on.
 
 **What it plays is the host's to answer**, through `onResource`, because
 nothing is fetched here: each source is asked for as `kind: 'video'` — the
-`src`, or else each `<source>` in turn with the `type` it gives — and the
-answer is one of
+`src`, or else each `<source>` whose `media` holds, in turn, with the `type`
+it gives — and the answer is one of
 
 | answer                      | what plays                                                                                                                                                                                                                            |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -927,7 +927,11 @@ answer is one of
 
 A `src` the player then fails on — a container it has no reader for, a URL
 that does not answer — is the next source's turn too, as HTML's `<source>`
-list goes. Handing over a `src` is the host letting the player make the
+list goes. **Which sources those are is decided once**, for the document as
+it is when the video is first shown, as HTML's resource selection runs
+once: a window narrowed past a `<source media>` goes on playing what it
+played, in Chrome as here, and only a change to the video's sources chooses
+again. Handing over a `src` is the host letting the player make the
 request: the player fetches it, not this component, and with whatever
 policy the platform's player has.
 
@@ -939,12 +943,21 @@ sets a side takes its ratio, where it was its poster's, or 300×150.
 **A player is only mounted where one can stand for the video**, and the
 rest keep their posters:
 
-- **Nothing the document paints after the video may reach its picture.** A
-  player is over the whole document, so a caption laid across a video, a
-  play button over it or a gradient over a hero would be hidden under it.
-  The test is the one a [lifted animation](#what-renders)'s layer is held
-  to. A page that lays text over an autoplaying background video keeps that
-  video's poster.
+- **What the document paints after the video is painted over the player
+  again.** A player is over the whole document, so a caption laid across a
+  video, a play button in its corner or a gradient over a hero would be
+  hidden under it. Up to four such boxes are painted a second time, on a
+  `<canvas>` mounted after the player, where each is laid out where it is
+  drawn — nothing turns, filters, masks or fades it or a box around it —
+  and what clips it is a rectangle. A video under any other keeps its
+  poster, and so does one in the flow under a positioned box, whose place
+  among what is painted around it is not one the test can tell. The test is
+  the one a [lifted animation](#what-renders)'s layer is held to, and what
+  it asks of a box is what it draws over the picture, not how far what it
+  holds reaches: an empty box laid over a video, or a header whose hidden
+  menu hangs over it, is over nothing. On macOS a player with a box over it
+  is drawn into the window, as core draws one with anything over it, rather
+  than on a layer of its own.
 - **A box fixed to the viewport is asked about as the pane scrolls**: a
   header that comes over a playing video cuts the player where it reaches
   it, and one that reaches into its middle hides it for as long as it is
