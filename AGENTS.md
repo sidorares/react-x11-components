@@ -1956,7 +1956,10 @@ closes a way out a DOM binding opens by accident:
   against the IDL, is a quick way to find the next one.
 - **A page's geometry is in two places, and a read takes the one its
   attribute names.** `getBoundingClientRect` is `elementRect`, drawn
-  through every transform and moved by every scroll; `offsetLeft` and its
+  through every transform and moved by every scroll, a box fixed to the
+  viewport and what is in it moved where the pane's scroll draws them
+  (`_moveToViewport`), as paint and the hit test move them; a header fixed
+  `top: 30px` read -470 on a page scrolled 500px. `offsetLeft` and its
   kin are `offsetRect`, where layout put the box before either, from the
   offset parent's padding edge. Primer's `<Tabs>` slides a pill under a
   tab in a strip that scrolls by its `offsetLeft`, and the document's x

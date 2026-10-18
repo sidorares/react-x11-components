@@ -473,6 +473,51 @@ metric('the link Tab reaches is scrolled into view', async () => {
   );
 });
 
+for (const scale of [1, 2]) {
+  metric(
+    `a link in a box fixed to the viewport takes the focus where it is drawn, and the pane stays where it was scrolled to, at scale ${scale}`,
+    async () => {
+      // Its stop was placed where layout put the link, at the document's
+      // top, and core scrolled the pane back up to it: Tab into a page's
+      // fixed header half way down took the reader to the page's start,
+      // where Chrome scrolls nothing
+      const source =
+        '<style>body{margin:0}#bar{position:fixed;top:10px;left:0;' +
+        'height:20px}</style><div id="bar"><a id="head" href="#">top</a></div>' +
+        '<div style="height:2000px"></div>';
+      await renderX11(
+        h(
+          'box',
+          {
+            'data-testname': 'pane',
+            style: { width: 400, height: 200, overflow: 'scroll' },
+          },
+          h(Html, { source, partial: false, 'data-testname': 'doc' }),
+        ),
+        { width: 440, height: 300, fonts: FONTS!, scale },
+      );
+      await act();
+      const el = view(screen.getByTestName('doc') as DrawnNode);
+      const pane = screen.getByTestName('pane') as DrawnNode & {
+        scrollY: number;
+        scrollTo(y: number): void;
+      };
+      await act(async () => pane.scrollTo(500));
+      await userEvent.tab();
+      await userEvent.tab();
+      assert.strictEqual(el.focusedElement?.attribs.id, 'head');
+      await act();
+      // a pane's offsets are device pixels, as core keeps them
+      assert.strictEqual(pane.scrollY, 500 * scale, 'the pane where it was');
+      assert.strictEqual(
+        el.elementRect(el.focusedElement!)!.y,
+        510,
+        'and the link where it is drawn',
+      );
+    },
+  );
+}
+
 metric(
   "a Tab between two links in view repaints their rows, not the pane's viewport",
   async (t) => {

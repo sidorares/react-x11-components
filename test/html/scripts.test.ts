@@ -74,12 +74,23 @@ interface Hosted {
   text(id: string): string;
   /** The pane the page is in scrolled, as the browser's tells it. */
   scrolled(): void;
+  /** The scroll pane around the page, where `pane` asked for one. */
+  pane: ScrollPane | null;
+}
+
+/** A scroll pane of core's, as `hosted` puts a page in one. */
+interface ScrollPane {
+  scrollTo(to: number | { x?: number; y?: number }): void;
+  scrollX: number;
+  scrollY: number;
 }
 
 /** A page whose scripts run, with stand-ins for the network and the pane:
  *  `scripts` answers a script's URL, `answer` a `fetch`, `sheets` a
  *  stylesheet's, by its file's name, or `held` when the test lets it go;
- *  `videos` a video's, with a sink; `scheme` is the palette's. */
+ *  `videos` a video's, with a sink; `scheme` is the palette's. `pane`
+ *  puts the page in a scroll pane that tall, as the browser's is, whose
+ *  scroll the page's viewport is. */
 async function hosted(
   source: string,
   options: {
@@ -89,6 +100,7 @@ async function hosted(
     held?: HeldSheets;
     videos?: boolean;
     scheme?: 'light' | 'dark';
+    pane?: number;
   } = {},
 ): Promise<Hosted> {
   const out = {
@@ -97,21 +109,22 @@ async function hosted(
     submitted: [] as FormSubmission[],
     timeouts: 0,
     fetched: [] as FetchRequest[],
+    pane: null,
   } as Hosted;
   const seams: ScriptsOptions = {
     userAgent: 'test',
     language: 'en-US',
     viewport: () => ({
       width: 400,
-      height: 300,
-      scrollX: 0,
-      scrollY: 0,
+      height: options.pane ?? 300,
+      scrollX: out.pane?.scrollX ?? 0,
+      scrollY: out.pane?.scrollY ?? 0,
       zoom: 1,
       dpr: 1,
       left: 0,
       top: 0,
     }),
-    scrollTo: () => {},
+    scrollTo: (x, y) => out.pane?.scrollTo({ x, y }),
     navigate: (url) => void out.links.push(url),
     reload: () => {},
     go: () => {},
@@ -180,7 +193,23 @@ async function hosted(
     h(
       ThemeProvider,
       { colorScheme: options.scheme ?? 'light' } as Record<string, unknown>,
-      h('box', { style: { width: 400, flexDirection: 'column' } }, h(Page)),
+      h(
+        'box',
+        {
+          style: {
+            width: 400,
+            flexDirection: 'column',
+            ...(options.pane !== undefined && {
+              height: options.pane,
+              overflow: 'scroll',
+            }),
+          },
+          ref: (node: ScrollPane | null) => {
+            if (options.pane !== undefined) out.pane = node;
+          },
+        },
+        h(Page),
+      ),
     ),
     FONTS ? { width: 440, height: 400, fonts: FONTS } : { backend: 'mock' },
   );
@@ -2290,6 +2319,52 @@ metric('layout is asked of the document as the script left it', async () => {
   );
   assert.equal(doc.text('out'), '150 rgb(255, 0, 0) true');
 });
+
+metric(
+  'a box fixed to the viewport, and what is in it, is measured where it is drawn however far the pane has scrolled the page',
+  async () => {
+    // What Chrome answers of the same page, scrolled 0 and 500px (CSSOM
+    // View 6.1): a fixed box stays where the viewport is, and one a
+    // transformed box holds scrolls with the document. Measured where
+    // layout put it, at the document's top, the header read -470 at 500
+    const doc = await hosted(
+      whole(
+        '.tall { height: 2000px }' +
+          '#bar { position: fixed; top: 30px; left: 40px; width: 100px; height: 20px; padding: 2px }' +
+          '#in { margin-left: 5px; width: 10px; height: 4px }' +
+          '#tf { transform: translateX(7px); position: absolute; top: 600px; left: 0 }' +
+          '#held { position: fixed; top: 3px; left: 4px; width: 6px; height: 6px }',
+        '<div class="tall"></div>' +
+          '<div id="bar"><div id="in"></div><span id="sp">x</span></div>' +
+          '<div id="flow" style="position: absolute; top: 520px; left: 9px; width: 8px; height: 8px"></div>' +
+          '<div id="tf"><div id="held"></div></div>' +
+          '<p id="out"></p><script>' +
+          'var seen = [];' +
+          "window.addEventListener('scroll', function () {" +
+          "  seen.push(scrollY + ' ' + ['bar', 'in', 'flow', 'held'].map(function (id) {" +
+          '    var r = document.getElementById(id).getBoundingClientRect();' +
+          "    return id + ':' + [r.left, r.top, r.width, r.height].join(' ');" +
+          "  }).join(',') + ' sp:' + Math.round(document.getElementById('sp').getBoundingClientRect().top)" +
+          "    + ' at:' + document.elementFromPoint(45, 35).id);" +
+          "  document.getElementById('out').textContent = seen.join('|');" +
+          '});' +
+          '</script>',
+      ),
+      { pane: 300 },
+    );
+    await act(async () => doc.scrolled());
+    await settled(doc, 'out', (t) => t !== '');
+    await act(async () => doc.pane!.scrollTo(500));
+    await act(async () => doc.scrolled());
+    assert.deepEqual(
+      (await settled(doc, 'out', (t) => t.includes('|'))).split('|'),
+      [
+        '0 bar:40 30 104 24,in:47 32 10 4,flow:9 520 8 8,held:11 603 6 6 sp:36 at:bar',
+        '500 bar:40 30 104 24,in:47 32 10 4,flow:9 20 8 8,held:11 103 6 6 sp:36 at:bar',
+      ],
+    );
+  },
+);
 
 /** A page's script reporting what the offset attributes answer of the
  *  elements it names: `id:offsetParent left top width height`, the parent
