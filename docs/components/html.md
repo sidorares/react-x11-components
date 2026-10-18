@@ -1064,7 +1064,12 @@ document, whose selection Ctrl+A and Ctrl+C belong to, and a click on a
 link follows it. Tab after a press goes on from where it landed, as from a
 link pressed or from text between links, which is HTML's sequential focus
 navigation starting point (6.6.4). The element focused is scrolled into
-view, by the box around the document that scrolls.
+view, by the box around the document that scrolls. An element a page's
+script focuses is `:focus-visible` only where the user's last input in the
+document was not a press, as Chrome, Firefox and WebKit decide it: a menu a
+click opens, whose script focuses its first link, draws no ring round it,
+where Tab and Enter, or no input yet, draw one. A modifier alone, and a
+chord with Ctrl, Alt or Meta, is no input that changes the answer.
 
 **Enter follows a link, with a click.** A browser activates a link from the
 keyboard with a `click` (HTML 6.5.6), and so does this: `onLink` is handed
