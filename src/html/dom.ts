@@ -946,6 +946,7 @@ class Handler extends DomHandler {
    * `<body>` — is left as it was written, and the root box stands in.
    */
   override onopentag(name: string, attribs: Record<string, string>): void {
+    if (this._ignored(name, attribs)) return;
     this._closeImpliedHead(name);
     this._openImpliedHead(name);
     if (name === 'body' && this._body) {
@@ -978,6 +979,56 @@ class Handler extends DomHandler {
     }
     this._afterPre =
       name === 'pre' || name === 'listing' || name === 'textarea';
+  }
+
+  /**
+   * A start tag HTML's parser makes no element of (13.2.6.4.7, "in body"):
+   * an `<html>` once the document has one, or past where it would start,
+   * whose attributes go on the `<html>` there is where it has none of its
+   * own; and a `<head>` once the head is behind it. WordPress saves a post
+   * through PHP's DOM, which writes a whole document, `<!DOCTYPE>`,
+   * `<html>` and `<body>`, round the post: on github.blog the article's
+   * blocks were the children of an `<html>` inside the content column, and
+   * `.is-layout-constrained > *`, which takes a figure's side margins away,
+   * reached none of them. True where it is ignored, and stood in for on the
+   * stack by what is open, which the parser then closes at its end tag, or
+   * with what holds it, as it would close the element.
+   */
+  private _ignored(name: string, attribs: Record<string, string>): boolean {
+    const stack = this.tagStack;
+    const top = stack[stack.length - 1];
+    if (name === 'html') {
+      if (top === this.root && !this._html && !this._body) return false;
+      if (this._html) {
+        for (const key in attribs) this._html.attribs[key] ??= attribs[key];
+      }
+    } else if (name === 'head') {
+      if (
+        !this._headSeen &&
+        !this._body &&
+        (top === this.root || top === this._html)
+      ) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+    stack.push(top);
+    this._afterPre = false;
+    return true;
+  }
+
+  /** A doctype past the start of the document, which HTML's parser leaves
+   *  out (13.2.6.4.7, "a DOCTYPE token"): it is the document's only where
+   *  no element has been opened before it. */
+  override onprocessinginstruction(name: string, data: string): void {
+    if (
+      name === '!doctype' &&
+      (this.tagStack.length > 1 || this.root.children.some(isElement))
+    ) {
+      return;
+    }
+    super.onprocessinginstruction(name, data);
   }
 
   /**

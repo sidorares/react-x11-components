@@ -3734,6 +3734,16 @@ script's walk of the tree found another tree than a browser's. They go on
 the parser's own stack, so its end tags close them — a `</tbody>` in a cell
 ends the cell and the row, as Acid3's table has it.
 
+**An `<html>` or a `<head>` inside the document is no element.** HTML's
+parser ignores an `<html>` once the document has one, and a `<head>` once
+the head is behind it, as it ignores a second `<body>`: the attributes of
+an `<html>` or a `<body>` go on the ones there are, where those have none,
+and a doctype past the document's start is left out (HTML 13.2.6.4.7).
+WordPress saves a post through PHP's DOM, which writes a whole document
+round it, so a blog's article can hold an `<html>` and a `<body>` of its
+own; made elements, they parted the article's blocks from the column
+whose `> *` rules space and centre them.
+
 **Nesting is capped at 256 elements, as Blink's parser caps it at 512.**
 Everything from the cascade to paint recurses on tree depth, so a
 degenerately nested document — a few hundred unclosed `<div>`s, a runaway
