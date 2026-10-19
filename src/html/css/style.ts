@@ -116,6 +116,18 @@ export interface GridTemplate {
     /** `auto-fit`, whose repetitions no item is in collapse. */
     fit: boolean;
   } | null;
+  /** `subgrid` (CSS Grid 2, 9), with no tracks of its own: its parent
+   *  grid's over the lines it spans. These are the names it gives those
+   *  lines, a group a line: the ones before a `repeat(auto-fill, …)`, the
+   *  groups that repeats, and the ones after it, which the span the box
+   *  has counts out (`subgridNames` in `layout/css-grid.ts`). */
+  subgrid?: SubgridNames;
+}
+
+/** A subgrid's `<line-name-list>`, a group of names a line. */
+export interface SubgridNames {
+  names: string[][];
+  fill: { names: string[][]; after: string[][] } | null;
 }
 
 /** `grid-template-areas` (CSS Grid 1, 7.3): how many rows and columns its
@@ -1017,6 +1029,9 @@ export interface ComputedStyle {
   order: number;
   /** A length or a percentage of the box's content size along it. */
   rowGap: Len;
+  /** Whether `row-gap` is `normal`: nothing in a flex box or a grid, and
+   *  in a subgrid its parent grid's gap (CSS Grid 2, 9). */
+  rowGapNormal: boolean;
   columnGap: Len;
 
   // grid (CSS Grid 1): a grid container is a flex box to the box tree, and
@@ -1438,6 +1453,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     flexBasis: AUTO,
     order: 0,
     rowGap: 0,
+    rowGapNormal: true,
     columnGap: 0,
     grid: false,
     gridColumns: null,
@@ -3534,7 +3550,10 @@ export function applyDeclaration(
       const row = gap(parts[0]);
       const col = parts.length > 1 ? gap(parts[1]) : row;
       if (row === null || col === null) return;
-      if (which !== 'column-gap') style.rowGap = row;
+      if (which !== 'column-gap') {
+        style.rowGap = row;
+        style.rowGapNormal = parts[0].toLowerCase() === 'normal';
+      }
       if (which !== 'row-gap') {
         style.columnGap = col;
         const word = parts[parts.length - 1].toLowerCase();
@@ -5769,6 +5788,10 @@ function parseGridTemplate(
   value: string,
   ctx: UnitContext,
 ): GridTemplate | undefined {
+  if (/^\s*subgrid\b/i.test(value)) {
+    const names = parseSubgrid(value.trim().slice('subgrid'.length));
+    return names && { tracks: [], names: [[]], repeat: null, subgrid: names };
+  }
   const out: GridTemplate = { tracks: [], names: [[]], repeat: null };
   // where a group of names goes: the line after the last track, or the
   // line after an auto repeat until a track follows it
@@ -5835,6 +5858,46 @@ function parseGridTemplate(
   const parts = trackParts(value);
   if (!parts || !read(parts, out.tracks, out.names, true)) return undefined;
   if (!out.tracks.length && !out.repeat) return undefined;
+  return out;
+}
+
+/**
+ * What follows `subgrid` (CSS Grid 2, 7.2): groups of line names, and
+ * `repeat()`s of them, by a count or one by `auto-fill`. Undefined for
+ * anything else.
+ */
+function parseSubgrid(value: string): SubgridNames | undefined {
+  const out: SubgridNames = { names: [], fill: null };
+  const parts = value.trim() ? trackParts(value) : [];
+  if (!parts) return undefined;
+  let into = out.names;
+  for (const part of parts) {
+    const group = lineNames(part);
+    if (group) {
+      into.push(group);
+      continue;
+    }
+    const repeat = /^repeat\((.*)\)$/is.exec(part);
+    if (!repeat) return undefined;
+    const [count, ...rest] = splitCommas(repeat[1]);
+    const inner = trackParts(rest.join(','));
+    const groups = inner?.map(lineNames);
+    if (!groups?.length || !groups.every((g) => g !== undefined)) {
+      return undefined;
+    }
+    const n = count.trim().toLowerCase();
+    if (n === 'auto-fill') {
+      if (out.fill) return undefined;
+      out.fill = { names: groups as string[][], after: [] };
+      into = out.fill.after;
+      continue;
+    }
+    const times = Number(n);
+    if (!Number.isInteger(times) || times < 1 || times > 1000) return undefined;
+    for (let i = 0; i < times; i += 1) {
+      for (const g of groups as string[][]) into.push([...g]);
+    }
+  }
   return out;
 }
 
@@ -6867,11 +6930,11 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'flex-shrink': ['flexShrink'],
   'flex-basis': ['flexBasis'],
   order: ['order'],
-  gap: ['rowGap', 'columnGap', 'columnGapNormal'],
-  'row-gap': ['rowGap'],
+  gap: ['rowGap', 'rowGapNormal', 'columnGap', 'columnGapNormal'],
+  'row-gap': ['rowGap', 'rowGapNormal'],
   'column-gap': ['columnGap', 'columnGapNormal'],
-  'grid-gap': ['rowGap', 'columnGap', 'columnGapNormal'],
-  'grid-row-gap': ['rowGap'],
+  'grid-gap': ['rowGap', 'rowGapNormal', 'columnGap', 'columnGapNormal'],
+  'grid-row-gap': ['rowGap', 'rowGapNormal'],
   'grid-column-gap': ['columnGap', 'columnGapNormal'],
   'grid-template-columns': ['gridColumns'],
   'grid-template-rows': ['gridRows'],

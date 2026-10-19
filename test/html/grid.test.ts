@@ -1196,3 +1196,213 @@ test("a grid item's intrinsic minimum wins over a smaller maximum", async () => 
   );
   assert.strictEqual(boxOf(view(node), 'a').width, 141);
 });
+
+/** Each element's box with an id, `[x, y, width, height]` from the
+ *  document's corner — what a page of subgrids is compared by. */
+async function boxesOf(source: string, width = 800) {
+  const { node } = await render(
+    '<style>body{margin:0}i{display:block}</style>' + source,
+    width,
+  );
+  const el = view(node);
+  return (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y, b.width, b.height].map((v) => Math.round(v * 100) / 100);
+  };
+}
+
+test("a subgrid's items size its parent's rows, so the parts of a row of cards line up", async () => {
+  // CSS Grid 2, 9: an item with `grid-template-rows: subgrid` lays its
+  // items out on the rows of the grid it spans, which they size with
+  // everything else in them, its margin, border and padding taken as more
+  // margin for the items at its edges. Primer's pricing cards are each a
+  // subgrid down the rows a grid names with its areas, its `@supports not`
+  // fallback beside it; each card sized its own rows, and the "Get
+  // started" buttons of github.com/features/ai/github-app were at four
+  // heights. The numbers are Chrome's, Firefox's and Safari's alike.
+  const box = await boxesOf(
+    '<div id="a" style="display:grid;grid-template-columns:repeat(3,200px);' +
+      'grid-template-rows:auto auto auto">' +
+      '<div id="a1" style="grid-row:span 3;display:grid;' +
+      'grid-template-rows:subgrid;padding:20px 0 30px;border-top:5px solid">' +
+      '<i id="a1h" style="height:30px"></i><i id="a1d" style="height:10px">' +
+      '</i><i id="a1b" style="height:40px"></i></div>' +
+      '<div style="grid-row:span 3;display:grid;grid-template-rows:subgrid">' +
+      '<i style="height:60px"></i><i style="height:50px"></i>' +
+      '<i style="height:20px"></i></div>' +
+      '<div id="a3" style="grid-row:span 3;display:grid;' +
+      'grid-template-rows:subgrid;margin-top:7px">' +
+      '<i id="a3h" style="height:10px"></i><i id="a3d" style="height:10px">' +
+      '</i><i id="a3b" style="height:10px"></i></div></div>' +
+      '<style>' +
+      '.b{display:grid;grid-template-areas:"labels" "lead" "header" "desc" ' +
+      '"price" "actions" "list" "foot";' +
+      'grid-template-columns:repeat(3,minmax(0,1fr));width:600px}' +
+      '.bi{grid-template-areas:"labels" "lead" "header" "desc" "price" ' +
+      '"actions" "list" "foot";display:grid;grid-row:header/foot;' +
+      'grid-template-rows:subgrid;padding-block:40px}' +
+      '@supports not (grid-template-rows:subgrid){' +
+      '.bi{grid-template-rows:auto}}' +
+      '.h{grid-area:header}.d{grid-area:desc}.p{grid-area:price}' +
+      '.a{grid-row:actions}.l{grid-area:list}.f{grid-area:foot}</style>' +
+      '<div class="b" id="b">' +
+      '<div class="bi" id="b1"><i class="h" id="b1h" style="height:20px">' +
+      '</i><i class="d" style="height:40px"></i>' +
+      '<i class="p" style="height:20px"></i>' +
+      '<i class="a" id="b1a" style="height:30px"></i>' +
+      '<i class="l" style="height:60px"></i>' +
+      '<i class="f" id="b1f" style="height:15px"></i></div>' +
+      '<div class="bi"><i class="h" style="height:20px"></i>' +
+      '<i class="d" style="height:20px"></i>' +
+      '<i class="p" style="height:20px"></i>' +
+      '<i class="a" id="b2a" style="height:30px"></i>' +
+      '<i class="l" style="height:100px"></i></div>' +
+      '<div class="bi"><i class="h" style="height:40px"></i>' +
+      '<i class="d" style="height:60px"></i>' +
+      '<i class="p" style="height:20px"></i>' +
+      '<i class="a" id="b3a" style="height:30px"></i>' +
+      '<i class="l" style="height:30px"></i></div></div>',
+  );
+  // the rows are 60, 50 and 70: the first card's padding and border are
+  // its first item's margin, and the third card's margin is too
+  assert.deepStrictEqual(box('a'), [0, 0, 800, 180]);
+  assert.deepStrictEqual(box('a1'), [0, 0, 200, 180]);
+  assert.deepStrictEqual(box('a1h'), [0, 25, 200, 30]);
+  assert.deepStrictEqual(box('a1d'), [0, 60, 200, 10]);
+  assert.deepStrictEqual(box('a1b'), [0, 110, 200, 40]);
+  assert.deepStrictEqual(box('a3'), [400, 7, 200, 173]);
+  assert.deepStrictEqual(box('a3h'), [400, 7, 200, 10]);
+  assert.deepStrictEqual(box('a3d'), [400, 60, 200, 10]);
+  assert.deepStrictEqual(box('a3b'), [400, 110, 200, 10]);
+  // the cards' buttons line up; the last two cards hold nothing in the
+  // last row, and their padding stays in it all the same
+  assert.deepStrictEqual(box('b'), [0, 180, 600, 345]);
+  assert.deepStrictEqual(box('b1'), [0, 180, 200, 345]);
+  assert.deepStrictEqual(box('b1h'), [0, 220, 200, 20]);
+  assert.deepStrictEqual(box('b1a'), [0, 340, 200, 30]);
+  assert.deepStrictEqual(box('b2a'), [200, 340, 200, 30]);
+  assert.deepStrictEqual(box('b3a'), [400, 340, 200, 30]);
+  assert.deepStrictEqual(box('b1f'), [0, 470, 200, 15]);
+});
+
+test("a subgrid's lines take its parent's names, and its gaps are its own", async () => {
+  // CSS Grid 2, 9: a subgrid's lines have the names its parent's have, and
+  // its parent's areas over them, an area it only partly covers ending or
+  // starting at its edge; the names it lists after `subgrid` too; and an
+  // item placed past its last line is pulled back into its last track. A
+  // gap of its own moves the items either side of one by half what it is
+  // more than its parent's; `normal` is its parent's.
+  const box = await boxesOf(
+    '<div id="c" style="display:grid;grid-template-columns:repeat(2,200px);' +
+      'row-gap:10px">' +
+      '<div style="grid-row:span 3;display:grid;grid-template-rows:subgrid;' +
+      'row-gap:30px"><i style="height:20px"></i>' +
+      '<i id="c1y" style="height:20px"></i>' +
+      '<i id="c1z" style="height:20px"></i></div>' +
+      '<div style="grid-row:span 3;display:grid;grid-template-rows:subgrid">' +
+      '<i style="height:20px"></i><i id="c2y" style="height:20px"></i>' +
+      '<i id="c2z" style="height:20px"></i></div></div>' +
+      '<div id="e" style="display:grid;grid-template-columns:' +
+      '[p] 100px [q] 100px [r] 100px [s] 100px">' +
+      '<div style="grid-column:q/s;display:grid;' +
+      'grid-template-columns:subgrid [x] [y] [z]">' +
+      '<i id="e1a" style="grid-column:y;height:10px"></i>' +
+      '<i id="e1b" style="grid-column:r/s;height:10px"></i>' +
+      '<i id="e1c" style="grid-column:2/span 3;height:10px"></i>' +
+      '<i id="e1d" style="grid-column:5;height:10px"></i></div></div>' +
+      '<div style="display:grid;grid-template-columns:repeat(4,100px);' +
+      "grid-template-areas:'a a b b'\">" +
+      '<div style="grid-column:2/4;display:grid;' +
+      'grid-template-columns:subgrid">' +
+      '<i id="pa" style="grid-column:a;height:10px"></i>' +
+      '<i id="pb" style="grid-column:b;height:10px"></i></div></div>' +
+      '<div style="display:grid;grid-template-columns:repeat(4,100px)">' +
+      '<div style="grid-column:span 2;display:grid;grid-template-columns:' +
+      'subgrid [a] repeat(auto-fill,[b]) [c]">' +
+      '<i id="qa" style="grid-column:b;height:10px"></i></div>' +
+      '<div style="grid-column:span 2;display:grid;' +
+      'grid-template-columns:subgrid repeat(2,[x] [y])">' +
+      '<i id="qb" style="grid-column:y;height:10px"></i></div></div>' +
+      // its own areas name its lines too, past its last
+      '<div style="display:grid;grid-template-rows:auto auto auto;' +
+      'grid-template-columns:200px">' +
+      '<div id="n" style="grid-row:1/3;display:grid;' +
+      "grid-template-rows:subgrid;grid-template-areas:'x' 'y' 'z'\">" +
+      '<i id="nz" style="grid-area:z;height:10px"></i>' +
+      '<i id="nx" style="grid-row:x-start/z-end;height:20px;' +
+      'align-self:start"></i></div></div>',
+  );
+  assert.deepStrictEqual(box('c'), [0, 0, 800, 120]);
+  assert.deepStrictEqual(box('c1y'), [0, 50, 200, 20], 'a 30px gap');
+  assert.deepStrictEqual(box('c1z'), [0, 100, 200, 20]);
+  assert.deepStrictEqual(box('c2y'), [200, 40, 200, 20], 'the parent’s');
+  assert.deepStrictEqual(box('c2z'), [200, 90, 200, 20]);
+  for (const [id, y] of [
+    ['e1a', 120],
+    ['e1b', 130],
+    ['e1c', 140],
+    ['e1d', 150],
+  ] as const) {
+    assert.deepStrictEqual(box(id), [200, y, 100, 10], id);
+  }
+  assert.deepStrictEqual(box('pa'), [100, 160, 100, 10], 'a partly covered');
+  assert.deepStrictEqual(box('pb'), [200, 160, 100, 10]);
+  assert.deepStrictEqual(box('qa'), [100, 170, 100, 10], 'auto-fill');
+  assert.deepStrictEqual(box('qb'), [300, 170, 100, 10], 'cut at its lines');
+  const n = box('n');
+  assert.deepStrictEqual(box('nz'), [0, n[1] + 10, 100, 10], 'pulled back');
+  assert.deepStrictEqual(box('nx'), [100, n[1], 100, 20], 'placed around it');
+});
+
+test("a subgrid's items size its parent's columns, and subgrids nest", async () => {
+  // A form's rows each a subgrid across a grid of `auto 1fr`: the labels
+  // make the first column as wide as the widest of them, the subgrid's
+  // padding as more of its first item's margin; a subgrid on both axes; and
+  // one in another, its items sizing the outer grid's rows through both
+  const box = await boxesOf(
+    '<div id="d" style="display:grid;grid-template-columns:auto 1fr;' +
+      'width:500px;column-gap:12px">' +
+      '<div style="grid-column:1/-1;display:grid;' +
+      'grid-template-columns:subgrid;padding-left:10px">' +
+      '<i id="d1l" style="width:80px;height:20px"></i>' +
+      '<i id="d1i" style="height:20px"></i></div>' +
+      '<div style="grid-column:1/-1;display:grid;' +
+      'grid-template-columns:subgrid">' +
+      '<i id="d2l" style="width:150px;height:20px"></i>' +
+      '<i id="d2i" style="height:20px"></i></div></div>' +
+      '<div id="h" style="display:grid;grid-template-columns:50px auto 50px;' +
+      'grid-template-rows:auto auto">' +
+      '<div style="grid-column:2/4;grid-row:1/3;display:grid;' +
+      'grid-template:subgrid/subgrid">' +
+      '<i id="ha" style="width:120px;height:30px"></i>' +
+      '<i id="hb" style="height:10px"></i>' +
+      '<i id="hc" style="height:44px"></i></div></div>' +
+      '<div id="f" style="display:grid;grid-template-rows:auto auto auto;' +
+      'grid-template-columns:300px">' +
+      '<div style="grid-row:1/4;display:grid;grid-template-rows:subgrid;' +
+      'padding-top:10px"><i id="fa" style="height:15px"></i>' +
+      '<div id="f2" style="grid-row:2/4;display:grid;' +
+      'grid-template-rows:subgrid;padding-bottom:20px">' +
+      '<i id="f2a" style="height:25px"></i>' +
+      '<i id="f2b" style="height:35px"></i></div></div></div>' +
+      // and none where its parent is no grid: its rows are its own
+      '<div><div style="display:grid;grid-template-rows:subgrid">' +
+      '<i style="height:10px"></i><i id="g" style="height:10px"></i>' +
+      '</div></div>',
+  );
+  assert.deepStrictEqual(box('d'), [0, 0, 500, 40]);
+  assert.deepStrictEqual(box('d1l'), [10, 0, 80, 20]);
+  assert.deepStrictEqual(box('d1i'), [162, 0, 338, 20]);
+  assert.deepStrictEqual(box('d2l'), [0, 20, 150, 20]);
+  assert.deepStrictEqual(box('d2i'), [162, 20, 338, 20]);
+  assert.deepStrictEqual(box('h'), [0, 40, 800, 74]);
+  assert.deepStrictEqual(box('ha'), [50, 40, 120, 30]);
+  assert.deepStrictEqual(box('hb'), [750, 40, 50, 10]);
+  assert.deepStrictEqual(box('hc'), [50, 70, 700, 44]);
+  assert.deepStrictEqual(box('f'), [0, 114, 800, 105]);
+  assert.deepStrictEqual(box('fa'), [0, 124, 300, 15]);
+  assert.deepStrictEqual(box('f2'), [0, 139, 300, 80]);
+  assert.deepStrictEqual(box('f2a'), [0, 139, 300, 25]);
+  assert.deepStrictEqual(box('f2b'), [0, 164, 300, 35]);
+  assert.deepStrictEqual(box('g'), [0, 229, 800, 10]);
+});

@@ -368,7 +368,9 @@ fieldset { margin: 0 2px; padding: 0.35em 0.75em 0.6em; border: 1px solid ${look
 legend { display: block; padding: 0 2px; }
 label { cursor: pointer; }
 
-details { margin: 0.5em 0; }
+/* no margin: the rendering section of HTML gives a details none, and nor
+   do Chrome, Firefox or Safari — with half an em above and below it, the
+   accordions in GitHub's pricing cards were 16px taller than a browser's */
 summary { display: list-item; counter-increment: list-item 0; list-style: disclosure-closed inside; cursor: pointer; }
 details[open] > summary:first-of-type { list-style-type: disclosure-open; }
 

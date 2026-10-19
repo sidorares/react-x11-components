@@ -2773,10 +2773,24 @@ const ANSWERED = new Set(
 );
 
 /**
+ * The values of a property whose support a `@supports` condition is
+ * answered for where it holds one: `subgrid` for a grid's template on
+ * either axis, which pages test before they lay a card's rows out on the
+ * grid's and keep `grid-template-rows: auto` under `not` for an engine
+ * without it. Entered, the fallback undid the subgrid: Primer's pricing
+ * cards each sized their own rows, and their buttons did not line up.
+ */
+const ANSWERED_VALUES: Record<string, RegExp> = {
+  'grid-template-rows': /^subgrid\b/i,
+  'grid-template-columns': /^subgrid\b/i,
+};
+
+/**
  * Whether a `@supports` condition holds (CSS Conditional 3, 6): true or
  * false where it turns on declarations of the properties this answers for
- * (`ANSWERED`), combined by `not`, `and` and `or`; null where it turns on
- * anything else, or is none, and the block is entered as every one was.
+ * (`ANSWERED`, and `ANSWERED_VALUES` for the values it names), combined by
+ * `not`, `and` and `or`; null where it turns on anything else, or is none,
+ * and the block is entered as every one was.
  * Answering more is not safe without a list of what this draws: Tailwind 4
  * keeps its variables' starting values under a test for engines without
  * `@property`, which this is, and false there would drop every shadow and
@@ -2827,8 +2841,10 @@ export function supportsCondition(prelude: string): boolean | null {
     return supportsCondition(inner);
   }
   const declaration = /^([a-z-]+)\s*:\s*(\S[\s\S]*)$/i.exec(inner);
-  if (!declaration || !ANSWERED.has(declaration[1].toLowerCase())) return null;
-  return true;
+  if (!declaration) return null;
+  const property = declaration[1].toLowerCase();
+  if (ANSWERED.has(property)) return true;
+  return ANSWERED_VALUES[property]?.test(declaration[2].trim()) ? true : null;
 }
 
 /** `aspect-ratio` and the device's, bare or `min-`/`max-`. */

@@ -735,3 +735,20 @@ test('a @supports test of the mask is answered, and every other is entered', () 
     ['.b', '.c'],
   );
 });
+
+test('a @supports test of subgrid is answered', () => {
+  // Primer keeps `grid-template-rows: auto` under `not` for an engine
+  // without subgrids; entered, it undid the subgrid of every pricing card
+  for (const axis of ['rows', 'columns']) {
+    assert.strictEqual(
+      supportsCondition(`(grid-template-${axis}: subgrid)`),
+      true,
+    );
+    assert.strictEqual(
+      supportsCondition(`not (grid-template-${axis}:subgrid [a] [b])`),
+      false,
+    );
+  }
+  // and a template it does not name is entered as before
+  assert.strictEqual(supportsCondition('(grid-template-rows: masonry)'), null);
+});
