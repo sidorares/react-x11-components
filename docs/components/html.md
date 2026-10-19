@@ -3171,7 +3171,11 @@ drawn where it is now, and found there by the pointer. The element tells
 the scroll box what it draws that way (react-x11's `viewportFixedRects`),
 so a scroll that copies the pixels it can repaints those where they are
 rather than dragging a fixed header along with the text; a fixed
-background, behind the whole viewport, makes every scroll a repaint. A fragment has no
+background, behind the whole viewport, makes every scroll a repaint. A form
+control in a fixed box has its widget kept there too, by a position the
+component registers with core (`registerPosition`), which moves it with
+the box in the frame the pane scrolls, as core keeps a sticky header; the
+widget is not mounted again as the pane scrolls. A fragment has no
 root element, and its blocks have the body's `auto` height to resolve
 against.
 

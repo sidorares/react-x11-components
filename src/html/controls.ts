@@ -35,7 +35,16 @@ import { heldBack, placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import { lineHeightOf } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
-import { clipAround } from './paint.js';
+import { clipAround, drawnAtViewport } from './paint.js';
+
+/**
+ * The position the widget of a control drawn where the viewport is goes in
+ * (`ControlRect.atViewport`), registered with core by `registerHtmlView`: a
+ * box of no size, beside the element, that core moves after every layout
+ * pass — the pass a scroll runs included — to where the document draws
+ * what is fixed to the viewport (`HtmlViewNode.viewportOrigin`).
+ */
+export const AT_VIEWPORT = 'react-x11-components-html-viewport';
 
 /** The palette numbers a control's box has to reserve room for. */
 export interface ControlChrome {
@@ -107,6 +116,15 @@ export interface ControlRect {
    * where the field has a placeholder to draw.
    */
   placeholderColor?: string;
+  /**
+   * Set on a control in a box fixed to the viewport, or in one that is
+   * (`drawnAtViewport`): the document draws that box where the viewport of
+   * the pane that scrolls it is, however far the pane has scrolled, and the
+   * rect is where layout put it, at the document's top. The widget goes in
+   * a box core keeps there (`AT_VIEWPORT`), as it keeps a sticky header,
+   * so it stays with the box in the frame the pane scrolls.
+   */
+  atViewport?: true;
 }
 
 /** Where a styled field's widget goes, and how its text looks. */
@@ -155,6 +173,7 @@ export function controlRectsOf(
       fontFamily: box.style.fontFamily,
       fontSize: box.style.fontSize,
       colorScheme: box.style.colorScheme,
+      ...(drawnAtViewport(box) && { atViewport: true as const }),
     };
     let opacity = 1;
     // A box scaled to nothing draws nothing of what it holds (CSS
