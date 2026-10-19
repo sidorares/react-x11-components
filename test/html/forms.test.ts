@@ -25,6 +25,7 @@ import {
   h,
   linesOf,
   metric,
+  pixelsIn,
   render,
   render2x,
   view,
@@ -1937,6 +1938,193 @@ metric(
       [whole.abs.x, whole.abs.y, whole.abs.width, whole.abs.height],
     );
     assert.notStrictEqual(open.style.overflow, 'hidden');
+  },
+);
+
+test('a widget in a box fixed to the viewport stays where the viewport is as the pane scrolls, at a display scale of 1 and of 2', async () => {
+  // Paint and the hit test draw a fixed box where the viewport is
+  // (`atViewport`), and its control's widget is mounted beside the
+  // document, which the pane scrolls: at the place layout gave the box, the
+  // document's top, the search field of a fixed header scrolled away with
+  // the text while the header stayed. Core keeps the widget at the viewport
+  // in the frame the pane scrolls (`AT_VIEWPORT`), and the document tells
+  // its widgets nothing as it scrolls.
+  const source =
+    '<style>body{margin:0}#bar{position:fixed;top:10px;left:0}</style>' +
+    '<div id="bar"><input id="q" placeholder="q"></div>' +
+    '<div style="height:100px"></div><input placeholder="r">' +
+    '<div style="height:2000px"></div>';
+  for (const scale of [1, 2] as const) {
+    let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+    const result = await renderX11(
+      h(
+        'box',
+        {
+          ref: (node: typeof pane) => {
+            pane = node;
+          },
+          style: { width: 400, height: 200, overflow: 'scroll' },
+        },
+        h(Html, { source, partial: false, 'data-testname': 'doc' }),
+      ),
+      {
+        ...(FONTS ? { fonts: FONTS } : { backend: 'mock' as const }),
+        width: 440,
+        height: 240,
+        ...(scale === 2 && { scale: 2 }),
+      },
+    );
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const told = (el as unknown as { _controls: { y: number }[] })._controls;
+    assert.strictEqual(
+      told[0].y,
+      10,
+      `laid out at the document's top, ${scale}x`,
+    );
+    const fixed = (await screen.findByPlaceholder('q')) as DrawnNode;
+    const flowing = screen.getByPlaceholder('r') as DrawnNode;
+    // where a widget is on screen, from the pane's top, in CSS pixels
+    const onScreen = (field: DrawnNode) => (field.abs.y - pane!.abs.y) / scale;
+    const top = onScreen(fixed);
+    const flowTop = onScreen(flowing);
+    // and the pane reaches the document's foot and no further: the box the
+    // widget is kept in is laid out at the element's corner
+    assert.strictEqual(
+      (pane! as unknown as { contentHeight: number }).contentHeight,
+      (el as unknown as DrawnNode).abs.height,
+      `the pane scrolls the document and no more, ${scale}x`,
+    );
+    assert.ok(top >= 10, `under the viewport's top: ${top}`);
+    for (const y of [500, 120, 0, 60]) {
+      // one frame: the widget lands with the header in the one that scrolled
+      await act(async () => pane!.scrollTo(y));
+      assert.strictEqual(
+        onScreen(fixed),
+        top,
+        `scrolled to ${y}, the field is where the header is, ${scale}x`,
+      );
+      assert.strictEqual(
+        onScreen(flowing),
+        flowTop - y,
+        `and one in the flow scrolls with the text, ${scale}x`,
+      );
+    }
+    assert.strictEqual(
+      (el as unknown as { _controls: unknown })._controls,
+      told,
+      `a scroll tells the widgets nothing, ${scale}x`,
+    );
+    // and a press where it is drawn reaches it
+    await userEvent.click(fixed);
+    assert.strictEqual(
+      el.focusedElement,
+      findById(el.document, 'q'),
+      `a press focuses it, ${scale}x`,
+    );
+    await result.unmount();
+    // where nothing scrolls the element, the viewport is its own corner,
+    // and the widget is where layout put it
+    const bare = await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, { source, partial: false, 'data-testname': 'doc' }),
+      ),
+      {
+        ...(FONTS ? { fonts: FONTS } : { backend: 'mock' as const }),
+        width: 440,
+        height: 240,
+        ...(scale === 2 && { scale: 2 }),
+      },
+    );
+    await act();
+    const doc = screen.getByTestName('doc') as DrawnNode;
+    const unscrolled = (await screen.findByPlaceholder('q')) as DrawnNode;
+    assert.strictEqual(
+      (unscrolled.abs.y - doc.abs.y) / scale,
+      top,
+      `with no pane, at the element's corner, ${scale}x`,
+    );
+    await bare.unmount();
+  }
+});
+
+metric(
+  "a pane scrolled a step at a time draws a fixed header's widget where a repaint of all of it does",
+  async () => {
+    // Core moves the box the widget is kept in after the pass a scroll runs
+    // and claims where it was shown and where it goes, so the scroll's copy
+    // of what the pane shows leaves no trace of it under the header
+    const W = 400;
+    const H = 200;
+    const source =
+      '<style>body{margin:0;background:#ffffff}#bar{position:fixed;' +
+      'top:10px;left:0;width:100%;background:#cccccc}p{height:40px;' +
+      'margin:0;border-bottom:1px solid #000000}</style>' +
+      '<div id="bar"><input placeholder="q"></div>' +
+      '<p></p>'.repeat(60);
+    for (const scale of [1, 2] as const) {
+      const mount = async () => {
+        let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+        const result = await renderX11(
+          h(
+            'box',
+            {
+              ref: (node: typeof pane) => {
+                pane = node;
+              },
+              style: { width: W, height: H, overflow: 'scroll' },
+            },
+            h(Html, { source, partial: false }),
+          ),
+          { width: W, height: H, fonts: FONTS!, ...(scale === 2 && { scale }) },
+        );
+        await act();
+        return { result, pane: pane! };
+      };
+      // left of the bar, whose thumb fades on a clock of its own
+      const region = { x: 0, y: 0, width: (W - 20) * scale, height: H * scale };
+      const stepped = await mount();
+      for (let y = 10; y <= 300; y += 10) {
+        await act(async () => stepped.pane.scrollTo(y));
+      }
+      const after = await pixelsIn(stepped.result.ctx, region);
+      await stepped.result.unmount();
+      const whole = await mount();
+      await act(async () => whole.pane.scrollTo(300));
+      const want = await pixelsIn(whole.result.ctx, region);
+      await whole.result.unmount();
+      // the field is drawn on the header, which is the header's grey alone
+      // where it is not
+      const row = (10 + 4) * scale * region.width;
+      let field = 0;
+      for (let x = 0; x < 100 * scale; x += 1) {
+        const i = (row + x) * 4;
+        if (want[i] !== 0xcc || want[i + 1] !== 0xcc || want[i + 2] !== 0xcc) {
+          field += 1;
+        }
+      }
+      assert.ok(field > 0, `${scale}x: the field is under the header`);
+      let wrong = 0;
+      let first = -1;
+      for (let i = 0; i < want.length; i += 4) {
+        if (
+          after[i] !== want[i] ||
+          after[i + 1] !== want[i + 1] ||
+          after[i + 2] !== want[i + 2]
+        ) {
+          wrong += 1;
+          if (first < 0) first = i / 4;
+        }
+      }
+      assert.strictEqual(
+        wrong,
+        0,
+        `${scale}x: ${wrong} pixels off, the first at ` +
+          `${first % region.width},${Math.floor(first / region.width)}`,
+      );
+    }
   },
 );
 

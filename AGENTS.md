@@ -3034,7 +3034,22 @@ focus stop at its own place in a scroll container's hidden overflow made
 the page that much taller — up.com.au's, nine thousand pixels. A clip that
 empties is kept inside the box that emptied it (`clipFor`'s `cut`), and a
 mount and a stop are placed inside their clips (`shownBy`); anything new
-mounted beside the document goes through one or the other.
+mounted beside the document goes through one or the other. **And what is
+mounted for a box fixed to the viewport goes in a box core keeps there**
+(`AT_VIEWPORT`, a position `registerHtmlView` registers with core's
+`registerPosition`): the document draws such a box where the pane's
+viewport is however far it has scrolled, and a widget mounted at its rect,
+at the document's top, scrolled away with the text from a fixed header
+that stayed. Core moves the box in the pass a scroll runs, as it moves a
+sticky header, so the widget lands with the header in the frame that
+scrolled and React hears nothing of the scroll. Reported again at paint,
+as `_publishMedia` re-cuts the players, it landed a frame late and
+rendered every widget at every frame of a scroll. The positioned box is
+inside a box at the element's corner (`atViewport` in `widgets.ts`): a
+position moves a box laid out in the flow, and a pane reaches as far as
+its content is laid out, not as far as it was moved, so in the flow after
+the element it sat at the document's foot and the page scrolled that much
+past its end to the widget.
 
 **A scroll container scrolls by moving its content, as `position:
 relative` does** (`layout/scroll.ts`). After layout, `applyScrollOffsets`

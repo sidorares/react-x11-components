@@ -36,7 +36,13 @@
 // What is reused from `<richtext>` is everything that was not about the
 // element: the `TextRun` vocabulary, the per-run decoration painter, and the
 // bidi-correct selection bands. See `src/richtext/runs.ts`.
-import { registerElement, registeredElements } from 'react-x11/host';
+import {
+  registerElement,
+  registeredElements,
+  registeredPositions,
+  registerPosition,
+} from 'react-x11/host';
+import type { PositionContext } from 'react-x11/host';
 import { Node } from 'react-x11/node';
 import type {
   Context2D,
@@ -251,6 +257,7 @@ import {
 } from './paint.js';
 import type { PaintContext, PaintOptions, SpriteSource } from './paint.js';
 import {
+  AT_VIEWPORT,
   controlRectsOf,
   measureControl,
   shownBy,
@@ -436,6 +443,9 @@ export interface DocumentInteraction {
 }
 
 export function registerHtmlView(): void {
+  if (!registeredPositions().includes(AT_VIEWPORT)) {
+    registerPosition(AT_VIEWPORT, { place: placeAtViewport });
+  }
   if (registeredElements().includes(ELEMENT)) return;
   registerElement(ELEMENT, {
     create: (props, app) => new HtmlViewNode(props, app),
@@ -455,6 +465,28 @@ export function registerHtmlView(): void {
     selfDamagedProps: ['watchStops', 'onViewportScroll'],
     childrenAllowed: false,
   });
+}
+
+/**
+ * How far to move a box in the `AT_VIEWPORT` position from where layout
+ * put it: to where the element it is mounted beside draws its boxes fixed
+ * to the viewport from (`viewportOrigin`) — the element in the nearest box
+ * around it that holds one. Asked by core after every layout pass, the
+ * pass a scroll runs included, so a widget in a fixed header lands with
+ * the header in the frame that scrolled. The element is found by its kind,
+ * not its class, which a hot reload makes another.
+ */
+function placeAtViewport(
+  node: Node,
+  context: PositionContext,
+): { x: number; y: number } | null {
+  for (let at = node.parent; at; at = at.parent) {
+    const view = at.children.find((child) => child.kind === ELEMENT);
+    if (!view) continue;
+    const origin = (view as HtmlViewNode).viewportOrigin();
+    return { x: origin.x - context.laidOut.x, y: origin.y - context.laidOut.y };
+  }
+  return null;
 }
 
 /** How many times a layout's container sizes may build the boxes again
@@ -4034,6 +4066,19 @@ export class HtmlViewNode extends Node {
     return deepestAt(tree, local.x, local.y, undefined, this._fixedShift());
   }
 
+  /**
+   * Where the document draws its boxes fixed to the viewport from, in the
+   * window's device pixels: the viewport of the pane that scrolls the
+   * element, or the element's own top left where nothing does (`_paint`'s
+   * `viewport`, `atViewport`). A box fixed to the viewport is laid out at
+   * the document's top and drawn this far from here. What core keeps the
+   * widgets of the controls in such a box at (`AT_VIEWPORT`).
+   */
+  viewportOrigin(): { x: number; y: number } {
+    const at = this._viewport() ?? this.abs;
+    return { x: at.x, y: at.y };
+  }
+
   /** How far a box fixed to the viewport is drawn from where it was laid
    *  out, in the document's pixels: the scroll of the pane the element is
    *  in (`atViewport`). Null where nothing scrolls it. */
@@ -7322,6 +7367,7 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.colorScheme !== q.colorScheme ||
       p.opacity !== q.opacity ||
       p.placeholderColor !== q.placeholderColor ||
+      p.atViewport !== q.atViewport ||
       !sameClip(p.clip, q.clip) ||
       !sameBare(p.bare, q.bare)
     ) {
