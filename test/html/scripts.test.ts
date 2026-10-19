@@ -15,7 +15,7 @@ import {
   userEvent,
   waitForPixel,
 } from 'react-x11/test';
-import { ThemeProvider } from 'react-x11';
+import { ThemeProvider, createVideoFrames, useApp } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
 import { Html, shadowRootOf, useHtmlHandle } from '../../src/html/index.js';
@@ -79,7 +79,7 @@ interface Hosted {
 /** A page whose scripts run, with stand-ins for the network and the pane:
  *  `scripts` answers a script's URL, `answer` a `fetch`, `sheets` a
  *  stylesheet's, by its file's name, or `held` when the test lets it go;
- *  `scheme` is the palette's. */
+ *  `videos` a video's, with a sink; `scheme` is the palette's. */
 async function hosted(
   source: string,
   options: {
@@ -87,6 +87,7 @@ async function hosted(
     answer?: (request: FetchRequest) => FetchResponse | null;
     sheets?: Record<string, string>;
     held?: HeldSheets;
+    videos?: boolean;
     scheme?: 'light' | 'dark';
   } = {},
 ): Promise<Hosted> {
@@ -128,6 +129,7 @@ async function hosted(
     },
   };
   function Page() {
+    const app = useApp();
     const handle = useHtmlHandle();
     out.handle = handle;
     const scripts = useScripts(true, handle, PAGE, seams);
@@ -153,6 +155,12 @@ async function hosted(
         }
       },
       onResource: ({ url, kind }: ResourceRequest) => {
+        if (options.videos && kind === 'video') {
+          return {
+            kind,
+            frames: createVideoFrames(app, { width: 16, height: 16 }),
+          };
+        }
         if (options.held && kind === 'stylesheet') {
           return options.held.ask(url.slice(url.lastIndexOf('/') + 1));
         }
@@ -1378,6 +1386,105 @@ test('blobs, files, form data and the media a page reads at rest', async () => {
       '0',
       'aé!',
     ].join('|'),
+  );
+});
+
+test("a video's play() and pause() are its player's, and paused, the events and the promise are what the page asked", async () => {
+  const doc = await hosted(
+    '<video id="v" src="clip.mp4" autoplay muted ' +
+      'style="display:block;width:60px;height:30px"></video>' +
+      '<input type="button" id="go" value="go"><p id="out"></p><script>' +
+      'var v = document.getElementById("v"), r = [];' +
+      '["play", "playing", "pause", "timeupdate", "seeking", "seeked", "volumechange"].forEach(function (t) {' +
+      '  v.addEventListener(t, function () { r.push(t) }) });' +
+      // an autoplaying video plays until the page says otherwise
+      'r.push(v.paused); v.pause(); r.push(v.paused);' +
+      'document.getElementById("go").addEventListener("click", function () {' +
+      '  v.play().then(function () {' +
+      '    r.push("kept", v.paused);' +
+      '    v.muted = false; r.push(v.muted, v.defaultMuted);' +
+      '    v.currentTime = 2.5; r.push(v.currentTime);' +
+      '    setTimeout(function () { document.getElementById("out").textContent = r.join(",") }, 0);' +
+      '  }) });' +
+      '</script>',
+    { videos: true },
+  );
+  const player = () =>
+    screen.all((n) => n.kind === 'video')[0] as
+      (DrawnNode & { props: Record<string, unknown> }) | undefined;
+  // mounted once the host's answer is in, after the script asked
+  const end = Date.now() + 3000;
+  while (player()?.props.paused === undefined && Date.now() < end) {
+    await settle();
+  }
+  const video = player();
+  assert.ok(video, 'a player is mounted');
+  assert.equal(video.props.paused, true, 'paused, as the page asked');
+  assert.equal(video.props.autoPlay, true, 'and its markup as it was');
+  const sought: number[] = [];
+  Object.assign(video, { seek: (t: number) => void sought.push(t) });
+  await userEvent.click(screen.getByRole('button') as DrawnNode);
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'false',
+      'true',
+      'timeupdate',
+      'pause',
+      'play',
+      'playing',
+      'kept',
+      'false',
+      'false',
+      'true',
+      '2.5',
+      'volumechange',
+      'seeking',
+      'timeupdate',
+      'seeked',
+    ].join(','),
+  );
+  assert.equal(player(), video, 'the same player, told');
+  assert.equal(video.props.paused, false);
+  assert.equal(video.props.muted, false);
+  assert.deepEqual(sought, [2.5]);
+});
+
+test('a pause() before play()’s task turns its promise down, and volume, playbackRate and currentTime take what WebIDL lets them', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var v = document.createElement("video"), r = [];' +
+      '["play", "playing", "pause", "timeupdate", "volumechange", "ratechange"].forEach(function (t) {' +
+      '  v.addEventListener(t, function () { r.push(t) }) });' +
+      'r.push(v.paused);' +
+      'v.play().then(function () { r.push("kept") }, function (e) { r.push(e.name) });' +
+      'v.pause();' +
+      'try { v.volume = 2 } catch (e) { r.push(e.name) }' +
+      'try { v.currentTime = NaN } catch (e) { r.push(e.name) }' +
+      'v.volume = 0.5; v.playbackRate = 2; v.volume = 0.5;' +
+      'r.push(v.volume, v.playbackRate, typeof v.onplay, typeof v.onvolumechange);' +
+      'setTimeout(function () { document.getElementById("out").textContent = r.join(",") }, 0);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'true',
+      'IndexSizeError',
+      'TypeError',
+      '0.5',
+      '2',
+      'object',
+      'object',
+      'play',
+      'timeupdate',
+      'pause',
+      'AbortError',
+      'volumechange',
+      'ratechange',
+    ].join(','),
   );
 });
 

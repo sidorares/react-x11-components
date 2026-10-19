@@ -2226,6 +2226,26 @@ export class DomHost {
           return false;
         }
 
+      // what a page asked of a media element's player — `paused`, `muted`,
+      // `volume`, `playbackRate`, or `currentTime` for a seek — kept by
+      // `<Html>` for the player it mounts over the element
+      case 'mediaState': {
+        const el = this._element(a);
+        const name = text(b);
+        if (name === 'paused' || name === 'muted') {
+          this._seams.handle.setMediaState(el, { [name]: c === true });
+        } else if (
+          (name === 'volume' ||
+            name === 'playbackRate' ||
+            name === 'currentTime') &&
+          typeof c === 'number' &&
+          Number.isFinite(c)
+        ) {
+          this._seams.handle.setMediaState(el, { [name]: c });
+        }
+        return null;
+      }
+
       // --- controls and the focus, which are `<Html>`'s
       case 'value':
         return this._seams.handle.controlValue(this._element(a));
