@@ -722,6 +722,12 @@ export interface ComputedStyle {
    *  is the page's then and not the palette's (`Cascade`'s
    *  `stylesControl`, `styledField`). Not inherited. */
   styledControl: boolean;
+  /** Whether the element is drawn in its document's top layer (CSS
+   *  Position 4, 3.3): over every stacking context, against the viewport
+   *  or the initial containing block whatever is around it. The cascade's
+   *  to say, for a modal dialog (`Cascade._cascadeStyle`), and no page's:
+   *  `overlay` is the user agent's alone. Not inherited. */
+  overlay: 'none' | 'auto';
   objectPositionX: Len;
   objectPositionY: Len;
   overflowX: 'visible' | 'hidden' | 'scroll' | 'auto' | 'clip';
@@ -1311,6 +1317,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     objectFit: 'fill',
     appearance: 'auto',
     styledControl: false,
+    overlay: 'none',
     objectPositionX: { pct: 50 },
     objectPositionY: { pct: 50 },
     overflowX: 'visible',
@@ -6599,6 +6606,7 @@ const NOT_ALL: ReadonlySet<string> = new Set<keyof ComputedStyle>([
   'lineThroughStyle',
   'lineThroughThickness',
   'styledControl',
+  'overlay',
 ]);
 
 type AllCopier = (to: ComputedStyle, from: ComputedStyle) => void;

@@ -376,9 +376,10 @@ details[open] > summary:first-of-type { list-style-type: disclosure-open; }
    flow, centred across its containing block, and one that is not open is
    not drawn. A page keeps one in the markup, closed and often empty, until
    it is wanted: docs.github.com's search, a card fixed under its header,
-   was drawn over the breadcrumbs. \`showModal()\` opens one as \`show()\`
-   does, into no top layer, so HTML's \`dialog:modal\` rule has nothing to
-   match and is not here */
+   was drawn over the breadcrumbs. One \`showModal()\` opened is in the top
+   layer as well, and centred in the viewport, as large as the viewport
+   leaves room for less its border and padding, scrolling what does not
+   fit */
 dialog:not([open]) { display: none; }
 dialog {
   position: absolute;
@@ -392,6 +393,17 @@ dialog {
   background-color: Canvas;
   color: CanvasText;
 }
+dialog:modal {
+  overflow: auto;
+  position: fixed;
+  inset-block: 0;
+  max-width: calc(100% - 6px - 2em);
+  max-height: calc(100% - 6px - 2em);
+}
+/* what is under an element in the top layer, the whole viewport (CSS
+   Position 4, 3.2), and a dialog's dimmed */
+::backdrop { display: block; position: fixed; inset: 0; }
+dialog::backdrop { background: rgba(0, 0, 0, 0.1); }
 
 /* 'hidden' is an attribute, not a style, and a document that uses it expects
    it to win over the display above. */

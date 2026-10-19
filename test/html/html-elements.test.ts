@@ -1,10 +1,20 @@
 // <Html> — what HTML's own elements and attributes look like.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
-import { cleanup } from 'react-x11/test';
+import { act, cleanup, screen } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
-import { boxOf, render, view } from './harness.js';
-import type { LaidBox } from './harness.js';
+import { setModal } from '../../src/html/dom.js';
+import { isInert } from '../../src/html/focus.js';
+import type { HtmlViewNode } from '../../src/html/index.js';
+import {
+  boxOf,
+  clipsAround,
+  fillsOf,
+  findById,
+  render,
+  view,
+} from './harness.js';
+import type { LaidBox, PaintOp } from './harness.js';
 
 afterEach(cleanup);
 
@@ -177,6 +187,112 @@ test('a closed dialog is not drawn, and an open one is a framed box centred acro
     [131, 20, 138, 68],
   );
   assert.strictEqual(boxOf(el, 'q').y, 20, 'and the flow goes on under it');
+});
+
+/** Make a dialog modal, or not, as `showModal()` and `close()` do through
+ *  the script engine's `modal` op, and tell the document. */
+async function modal(el: HtmlViewNode, id: string, on: boolean): Promise<void> {
+  const d = findById(el.document, id)!;
+  if (on) d.attribs.open = '';
+  else delete d.attribs.open;
+  setModal(d, on);
+  el.touchDocument([
+    { type: 'attributes', target: d, attributeName: '-rx-modal' },
+    { type: 'attributes', target: d, attributeName: 'open' },
+  ] as never);
+  await act();
+}
+
+test('a modal dialog is in the top layer: centred in the viewport over every stacking context, its ::backdrop under it, and out of the box that clips, moves and fades it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0;font-size:16px}</style>' +
+      '<div style="position:relative;z-index:1;transform:scale(2);transform-origin:0 0;' +
+      'overflow:hidden;opacity:.5;width:300px;height:100px;background:blue">' +
+      '<dialog id="d"><div id="in" style="width:100px;height:30px;background:lime"></div></dialog></div>' +
+      '<div id="top" style="position:fixed;z-index:2147483647;left:0;top:0;width:50px;height:50px;background:red"></div>',
+  );
+  const el = view(node);
+  await modal(el, 'd', true);
+  // Chrome 152 in a 400 by 600 viewport: HTML's `dialog:modal` rule
+  // centres it there, whatever it is in
+  const d = boxOf(el, 'd');
+  assert.deepStrictEqual([d.x, d.y, d.width, d.height], [131, 266, 138, 68]);
+  assert.strictEqual(
+    el.computedStyle(findById(el.document, 'd')!)?.position,
+    'fixed',
+  );
+  const ops: PaintOp[] = [];
+  const fills = await fillsOf(el, ops);
+  const at = (color: string) =>
+    fills.findIndex((f) => f.style === parseColor(color));
+  // the backdrop over the box at the greatest `z-index` there is, as wide
+  // and tall as the viewport, and the dialog over it
+  const backdrop = fills.findIndex((f) => f.style === 'rgba(0, 0, 0, 0.1)');
+  assert.ok(at('red') < backdrop && backdrop < at('white'), 'painted last');
+  const { x, y, w, h } = fills[backdrop];
+  assert.deepStrictEqual([x, y, w, h], [0, 0, 400, 600]);
+  // and none of what the box it is in does to what it holds: no matrix,
+  // and no clip but its own padding box, which `overflow: auto` cuts at
+  const lime = fills[at('lime')];
+  assert.strictEqual(lime.matrix, undefined);
+  assert.deepStrictEqual([lime.x, lime.y, lime.w, lime.h], [150, 285, 100, 30]);
+  assert.deepStrictEqual(clipsAround(ops, 'lime'), [
+    [{ op: 'clip', x: 134, y: 269, w: 132, h: 62, radii: null }],
+  ]);
+  // a press anywhere around it is the dialog's
+  const { abs } = el as unknown as { abs: { x: number; y: number } };
+  const hit = (px: number, py: number) =>
+    el.elementAtPoint(abs.x + px, abs.y + py)?.attribs.id;
+  assert.strictEqual(hit(5, 5), 'd', 'over the fixed box, the backdrop');
+  assert.strictEqual(hit(200, 300), 'in');
+  // closed, it is in the box it is in again
+  await modal(el, 'd', false);
+  assert.throws(() => boxOf(el, 'd'));
+  assert.ok(
+    !(await fillsOf(el)).some((f) => f.style === 'rgba(0, 0, 0, 0.1)'),
+    'and its backdrop goes with it',
+  );
+});
+
+test("a modal dialog's ::backdrop is the page's to style, and inherits from its dialog", async () => {
+  // Primer's search dialog sets its own
+  const { node } = await render(
+    '<style>body{margin:0} dialog{color:rgb(4,5,6)}' +
+      '.search::backdrop{background-color:rgba(1,2,3,0.5);border-top:5px solid}</style>' +
+      '<dialog id="d" class="search">x</dialog>',
+  );
+  const el = view(node);
+  await modal(el, 'd', true);
+  const fills = await fillsOf(el);
+  const dim = fills.find((f) => f.style === 'rgba(1, 2, 3, 0.5)');
+  assert.ok(dim, 'its own background');
+  // `currentColor` is the dialog's colour
+  const edge = fills.find(
+    (f) => f.style === parseColor('rgb(4,5,6)') && f.h === 5,
+  );
+  assert.ok(edge, 'a border in the colour it takes from the dialog');
+  assert.deepStrictEqual([edge.x, edge.y, edge.w], [0, 0, 400]);
+});
+
+test('a modal dialog blocks the rest of the document: its controls get no widget, and none of it takes the focus', async () => {
+  const { node } = await render(
+    '<p><input id="page"> <a id="link" href="#x">link</a></p>' +
+      '<dialog id="d"><input id="field"></dialog>',
+  );
+  const el = view(node);
+  const byId = (id: string) => findById(el.document, id)!;
+  assert.strictEqual(screen.getAllByRole('textbox').length, 1);
+  assert.ok(!isInert(byId('link')));
+  await modal(el, 'd', true);
+  await act();
+  // the one in the dialog is its widget, and the page's is not mounted
+  assert.strictEqual(screen.getAllByRole('textbox').length, 1);
+  assert.ok(isInert(byId('page')) && isInert(byId('link')));
+  assert.ok(!isInert(byId('field')));
+  await modal(el, 'd', false);
+  await act();
+  assert.ok(!isInert(byId('link')));
+  assert.strictEqual(screen.getAllByRole('textbox').length, 1);
 });
 
 test("a body's text and link colours, and a background attribute", async () => {

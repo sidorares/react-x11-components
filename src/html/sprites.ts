@@ -362,7 +362,7 @@ export function stillLiftOf(host: SpriteHost, box: Box): Lift | null {
  */
 export function overLiftOf(host: SpriteHost, box: Box): Lift | null {
   const which = box.pseudo;
-  if (which === 'first-letter') return null;
+  if (which === 'first-letter' || which === 'backdrop') return null;
   const pseudo: Pseudo = which ?? '';
   const el = pseudo ? GENERATED_FROM.get(box) : box.el;
   if (!el) return null;
@@ -413,8 +413,10 @@ function liftableBox(
     }
   }
   // up to the box whose layer its own goes in, which carries its fade, its
-  // turn and its animation, and was asked about the rest
-  for (let at: Box | null = box.parent; at && at !== within; at = at.parent) {
+  // turn and its animation, and was asked about the rest — or to a box in
+  // the top layer, which nothing around it fades or turns
+  const above = (b: Box): Box | null => (b.topLayer ? null : b.parent);
+  for (let at = above(box); at && at !== within; at = above(at)) {
     const style = at.style;
     // a `perspective` turns nothing in the plane, and the one a box out of
     // it is seen in is in its layer's matrix (`solidFrames`)

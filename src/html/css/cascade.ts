@@ -29,6 +29,7 @@ import {
   flatParentOf,
   isDefinedElement,
   isElement,
+  isModal,
   mutationGeneration,
   shadowRootAround,
   shadowRootOf,
@@ -362,7 +363,7 @@ interface IndexedRule {
  * attribute value, or the `~=` operator, costs sharing and nothing else.
  */
 const UNSHAREABLE =
-  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:(?:checked|selected|disabled|enabled|parent|defined)\b|:i?contains\(/;
+  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:(?:checked|selected|disabled|enabled|parent|defined|modal)\b|:i?contains\(/;
 
 /**
  * Rules bucketed by the key of their rightmost compound selector. An element
@@ -506,16 +507,18 @@ type PseudoElement =
   | 'marker'
   | 'selection'
   | 'placeholder'
-  | 'scrollbar';
+  | 'scrollbar'
+  | 'backdrop';
 
 /** A selector's trailing `::before`, `::after`, `::first-letter`,
- *  `::first-line`, `::marker`, `::selection` or `::placeholder`, or CSS 2's
+ *  `::first-line`, `::marker`, `::selection`, `::placeholder` or
+ *  `::backdrop`, or CSS 2's
  *  single-colon spelling of any of its first four. `::-webkit-input-
  *  placeholder` is `::placeholder` under the name WebKit gave it, which
  *  Chrome and Safari still take, and pages written before the standard
  *  name still use. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|-webkit-input-placeholder|-webkit-scrollbar)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|-webkit-input-placeholder|-webkit-scrollbar)$/i;
 
 /**
  * What a `::selection` makes of the text it covers (CSS Pseudo 4, 3.2): the
@@ -1658,7 +1661,9 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   // an upgrade, which the script engine tells as a change of this
   // attribute nothing has (`DomHost`'s `ceDefined`)
   defined: ['a:-rx-defined'],
-  modal: [],
+  // a dialog `showModal()` opened, which the script engine tells as a
+  // change of this attribute nothing has (`DomHost`'s `modal`)
+  modal: ['a:-rx-modal'],
   fullscreen: [],
   autofill: [],
   '-webkit-autofill': [],
@@ -2295,6 +2300,7 @@ export class Cascade {
     selection: new RuleIndex(true),
     placeholder: new RuleIndex(true),
     scrollbar: new RuleIndex(true),
+    backdrop: new RuleIndex(true),
   };
   /** The author's rules that could style a shape in a drawing: the ones
    *  that declare a property a shape has (`shapes.ts`) and whose subject
@@ -4147,6 +4153,41 @@ export class Cascade {
   }
 
   /**
+   * The style of the `::backdrop` of an element in its top layer (CSS
+   * Position 4, 3.2): a box fixed to the viewport, all of it, under the
+   * element and over everything before it in the layer, in the UA sheet's
+   * dim — Primer's search dialog sets its own. It inherits from its element
+   * (CSS Position 4 since 2023, and Chrome), so a dialog's `color` is its
+   * backdrop's `currentColor`. Drawn at rest: a backdrop's animations, a
+   * fade in as the dialog opens, run on no clock here.
+   */
+  backdropStyleFor(el: Element, elementStyle: ComputedStyle): ComputedStyle {
+    const index = this._pseudo.backdrop;
+    const candidates: Candidate[] = [];
+    if (index.size > 0 && index.reaches(el)) {
+      this._matchInto(index, el, candidates);
+    }
+    if (this._scoped && this._scopedPseudos.has('backdrop')) {
+      this._scopedInto(el, 'backdrop', candidates);
+    }
+    candidates.sort(byCascade);
+    const style = this._computeStyle(
+      el,
+      elementStyle,
+      false,
+      candidates,
+      false,
+      null,
+    );
+    // in the top layer with its element, and out of the flow as it is
+    if (style.position !== 'absolute' && style.position !== 'fixed') {
+      style.position = 'absolute';
+      blockify(style, false);
+    }
+    return style;
+  }
+
+  /**
    * The rules for an element's `::first-letter`, or null when none reaches
    * it. They are matched against the element here, and its style computed
    * later by `firstLetterStyle`, because the pseudo-element inherits from
@@ -4810,6 +4851,18 @@ export class Cascade {
     settleContentVisibility(style);
     // after the containment, which keeps a body's `overflow` its own
     if (own && el.name.length === 4) propagateOverflow(el, style, parentStyle);
+    // An element in its document's top layer is drawn over all of it
+    // (`overlay`), positioned against the initial containing block or the
+    // viewport whatever is around it, and out of the flow whatever it was
+    // given: `static`, `relative` and `sticky` are `absolute` (CSS Position
+    // 4, 3.1), as Chrome computes them. Only a dialog `showModal()` opened
+    // is in one here.
+    if (own && el.name.length === 6 && isModal(el)) {
+      style.overlay = 'auto';
+      if (style.position !== 'absolute' && style.position !== 'fixed') {
+        style.position = 'absolute';
+      }
+    }
     blockify(style, inFlexContainer);
     // the answer that took the palette's chrome from the control, if it
     // had any (`_candidates`), for what draws its box (`styledField`)
@@ -5681,6 +5734,9 @@ const PSEUDOS = {
   // a custom element's to be that no definition has made one yet: a
   // page's scripts upgrade it (`isDefinedElement`)
   defined: (el: Element) => isDefinedElement(el),
+  // a dialog in its document's top layer, which only a page's scripts put
+  // one in (`isModal`)
+  modal: (el: Element) => isModal(el),
   focus: (_el: Element) => false,
   'focus-visible': (_el: Element) => false,
   'focus-within': (_el: Element) => false,

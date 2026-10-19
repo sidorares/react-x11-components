@@ -16,6 +16,7 @@ import {
   waitForPixel,
 } from 'react-x11/test';
 import { ThemeProvider, createVideoFrames, useApp } from 'react-x11';
+import { XK_ESCAPE } from 'react-x11/keysyms';
 import type { DrawnNode } from 'react-x11';
 
 import { Html, shadowRootOf, useHtmlHandle } from '../../src/html/index.js';
@@ -2012,6 +2013,124 @@ test(':defined is false for a custom element no definition has upgraded, and res
   await userEvent.click(screen.getByRole('button') as DrawnNode);
   await settle();
   assert.equal(doc.view.computedStyle(doc.byId('late'))?.color, 'rgb(1, 2, 3)');
+});
+
+test('showModal puts a dialog in the top layer: :modal matches it, it is centred in the viewport over all of the page, and close takes it out', async () => {
+  const doc = await hosted(
+    '<style>body{margin:0;font-size:16px}</style>' +
+      '<div style="position:relative;z-index:9;transform:translateX(10px);overflow:hidden;width:50px;height:50px">' +
+      '<dialog id="d"><div style="width:100px;height:30px"></div></dialog></div>' +
+      '<p id="out"></p><script>' +
+      'var d = document.getElementById("d"), r = [];' +
+      'd.addEventListener("beforetoggle", function (e) { r.push("before:" + e.oldState + ">" + e.newState); });' +
+      'd.addEventListener("toggle", function (e) { r.push("toggle:" + e.oldState + ">" + e.newState); });' +
+      'd.addEventListener("close", function () { r.push("close:" + d.returnValue); });' +
+      'd.showModal();' +
+      'var b = d.getBoundingClientRect();' +
+      'r.push(d.matches(":modal"), d.open, getComputedStyle(d).position, [b.x, b.y, b.width, b.height].join(","));' +
+      'try { d.show(); } catch (e) { r.push(e.name); }' +
+      'd.showModal();' +
+      'r.push(document.querySelectorAll(":modal").length);' +
+      'setTimeout(function () { d.close("done"); r.push(d.matches(":modal"), d.open, getComputedStyle(d).position);' +
+      // taken out of the document, it is modal no more, and put back it
+      // is open and not modal, as Chrome has it
+      '  setTimeout(function () { d.showModal(); var p = d.parentNode; d.remove(); r.push("out:" + d.matches(":modal"));' +
+      '    p.appendChild(d); r.push("back:" + d.matches(":modal") + ":" + d.open);' +
+      '    setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 0); }, 0); }, 0);' +
+      '</script>',
+    { pane: 300 },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  // Chrome 152 in a 400 by 300 viewport: its padding and border round
+  // what it holds, centred, out of the transformed, clipped box it is in;
+  // `show()` on a modal one throws, and `showModal()` again does nothing;
+  // `toggle` and `close` come in tasks of their own
+  assert.equal(
+    text,
+    [
+      'before:closed>open',
+      'true',
+      'true',
+      'fixed',
+      '131,116,138,68',
+      'InvalidStateError',
+      '1',
+      'toggle:closed>open',
+      'before:open>closed',
+      'false',
+      'false',
+      'absolute',
+      'toggle:open>closed',
+      'close:done',
+      'before:closed>open',
+      'out:false',
+      'back:false:true',
+      'toggle:closed>open',
+    ].join('|'),
+  );
+  assert.equal(doc.view.computedStyle(doc.byId('d'))?.position, 'absolute');
+});
+
+test('Escape the page lets be closes the last modal dialog opened, after a cancel it may cancel, and gives the focus back', async () => {
+  const doc = await hosted(
+    '<input type="button" id="opener" value="open">' +
+      '<dialog id="a"><button id="in-a">a</button></dialog>' +
+      '<dialog id="b"><button id="in-b">b</button></dialog>' +
+      '<p id="out"></p><script>' +
+      'var r = [], a = document.getElementById("a"), b = document.getElementById("b");' +
+      'function push(x) { r.push(x); document.getElementById("out").textContent = r.join("|"); }' +
+      'var keep = true;' +
+      'b.addEventListener("cancel", function (e) { push("cancel:b:" + e.cancelable); if (keep) { keep = false; e.preventDefault(); } });' +
+      'a.addEventListener("cancel", function () { push("cancel:a"); });' +
+      'for (const d of [a, b]) d.addEventListener("close", function () {' +
+      '  push("close:" + d.id + ":" + document.querySelectorAll(":modal").length + ":" + document.activeElement.id);' +
+      '});' +
+      'document.getElementById("opener").addEventListener("click", function () {' +
+      '  a.showModal(); b.showModal(); push(document.activeElement.id);' +
+      '});' +
+      '</script>',
+    { pane: 300 },
+  );
+  await userEvent.click(screen.getByRole('button') as DrawnNode);
+  await settle();
+  const escape = async () => {
+    await userEvent.key(XK_ESCAPE);
+    await settle();
+  };
+  // the first Escape is cancelled, the second closes b, the third a
+  await escape();
+  assert.equal(doc.byId('b').attribs.open, '', 'cancelled, b stays open');
+  await escape();
+  assert.equal(doc.byId('b').attribs.open, undefined);
+  assert.equal(doc.byId('a').attribs.open, '');
+  await escape();
+  assert.equal(doc.byId('a').attribs.open, undefined);
+  assert.equal(
+    doc.text('out'),
+    'in-b|cancel:b:true|cancel:b:true|close:b:1:in-a|cancel:a|close:a:0:opener',
+  );
+});
+
+test('a modal dialog with nothing in it to focus keeps the keys in the document, and Escape closes it', async () => {
+  const doc = await hosted(
+    '<input type="button" id="opener" value="open">' +
+      '<dialog id="d"><p>Loading…</p></dialog><p id="out"></p><script>' +
+      'var d = document.getElementById("d");' +
+      'd.addEventListener("close", function () { document.getElementById("out").textContent = "closed"; });' +
+      'document.getElementById("opener").addEventListener("click", function () { d.showModal(); });' +
+      '</script>',
+    { pane: 300 },
+  );
+  await userEvent.click(screen.getByRole('button') as DrawnNode);
+  await settle();
+  assert.equal(doc.byId('d').attribs.open, '');
+  // the button that opened it is the page's, which the dialog blocks, and
+  // has no widget to hold the focus any more
+  assert.equal(screen.queryAllByRole('button').length, 0);
+  await userEvent.key(XK_ESCAPE);
+  await settle();
+  assert.equal(doc.byId('d').attribs.open, undefined);
+  assert.equal(doc.text('out'), 'closed');
 });
 
 test('CSS.supports answers as an @supports does, an address assigned to location navigates, and fetch takes a Request and form data', async () => {

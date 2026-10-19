@@ -37,7 +37,11 @@ import {
   indicatedElement,
   isCustomized,
   isDefinedElement,
+  isModal,
   markCustomized,
+  setModal,
+  topLayerIn,
+  topLayerOf,
   treesChanged,
 } from '../dom.js';
 import { Cascade } from '../css/cascade.js';
@@ -50,6 +54,7 @@ import {
   parseStylesheet,
   supportsCondition,
 } from '../css/parse.js';
+import { focusableElement } from '../focus.js';
 import { isDisabled, validationMessage } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
 import {
@@ -898,6 +903,9 @@ export class DomHost {
   /** The page this realm is the worker of, where it is one. */
   workerScope: WorkerScope | null = null;
   private _disposed = false;
+  /** An element the page focused that could not take the focus yet, which
+   *  is asked again a frame on (`focus`). */
+  private _focusing: Element | null = null;
 
   /** What every realm's host over one page's documents shares
    *  (`DomShared`). */
@@ -1740,6 +1748,27 @@ export class DomHost {
         return null;
       }
 
+      // a dialog `showModal()` opened (true), or `close()` closed (false):
+      // `:modal` and the top layer from now, told as a change of an
+      // attribute nothing has, which only `:modal` reads. Whether it is
+      // modal, given neither — taken out of the document, it is not.
+      case 'modal': {
+        const el = this._element(a);
+        if (
+          typeof b === 'boolean' &&
+          (!b || this._inDocument(el)) &&
+          setModal(el, b) &&
+          this._inDocument(el)
+        ) {
+          this._tell(el, {
+            type: 'attributes',
+            target: el,
+            attributeName: '-rx-modal',
+          });
+        }
+        return isModal(el);
+      }
+
       // `document.write` from a script the parser met: the markup goes into
       // the document after the script and after what it wrote before, as
       // the parser would have read it there (HTML 8.4.3). Its scripts run,
@@ -2303,20 +2332,37 @@ export class DomHost {
       case 'focus': {
         this.flush();
         const el = this._element(a);
-        // a control just put in has no widget until the render that the
-        // flush asked for: asked again once it has
+        // A control just put in has no widget until the render that the
+        // flush asked for, nor a link shown a stop: asked again once it
+        // has, and until then the element the page has the focus on, as a
+        // browser focuses it at once — a dialog `showModal()` opened
+        // focuses what is in it, and one opened over it gives the focus
+        // back to that as it closes. Not one that can take no focus at
+        // all, which a page focuses to find out whether it can.
+        this._focusing = null;
         if (!this._seams.handle.focus(el)) {
+          const pending = focusableElement(el);
+          if (pending) this._focusing = el;
           setTimeout(() => {
-            if (!this._disposed) this._seams.handle.focus(el);
+            if (this._disposed) return;
+            // focused elsewhere since
+            if (pending && this._focusing !== el) return;
+            if (pending) this._focusing = null;
+            this._seams.handle.focus(el);
           }, 16);
         }
         return null;
       }
       case 'blur':
+        this._focusing = null;
         this._seams.handle.blur();
         return null;
       case 'active':
-        return this.idOf(this._seams.handle.activeElement);
+        return this.idOf(
+          this._focusing?.parent
+            ? this._focusing
+            : this._seams.handle.activeElement,
+        );
       case 'activate': {
         const node = this._node(a);
         return node instanceof Element && this._seams.handle.activate(node);
@@ -2716,6 +2762,16 @@ export class DomHost {
       addedNodes: added,
       removedNodes: removed,
     });
+    // a modal dialog taken out of the document is no longer modal, nor in
+    // the top layer (HTML 4.11.4, the dialog's removing steps)
+    if (removed.length) {
+      const layer = topLayerOf(parent);
+      if (layer.length) {
+        for (const node of removed) {
+          for (const el of topLayerIn(node, layer)) setModal(el, false);
+        }
+      }
+    }
     this._sheetText(parent);
     if (this._custom && this._inDocument(parent)) {
       for (const node of removed) this._customLog('d', node);
@@ -2857,7 +2913,7 @@ export class DomHost {
       // one that takes an argument has a second parameter, as css-select
       // counts them
       state: (_el, _name) => false,
-      modal: nothing,
+      modal: (el) => isModal(el),
       'popover-open': nothing,
       fullscreen: nothing,
       autofill: nothing,

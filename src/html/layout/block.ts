@@ -369,7 +369,7 @@ function laidWholeAround(box: Box): boolean {
 function escapes(tree: BoxTree): boolean {
   for (const box of outOfFlowOf(tree)) {
     if (!heldBack(tree, box)) continue;
-    if (box.style.position === 'fixed') return true;
+    if (box.style.position === 'fixed' || box.topLayer) return true;
     if (box.style.top === AUTO && box.style.bottom === AUTO) continue;
     const containing = containingBlockFor(box);
     if (containing && !heldBack(tree, containing)) return true;
@@ -611,7 +611,7 @@ function placed(
 function escapingHolders(tree: BoxTree): Set<Box> {
   const holders = new Set<Box>();
   for (const box of outOfFlowOf(tree)) {
-    const fixed = box.style.position === 'fixed';
+    const fixed = box.style.position === 'fixed' || box.topLayer;
     if (!fixed && box.style.top === AUTO && box.style.bottom === AUTO) {
       continue;
     }
@@ -4383,7 +4383,9 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     area !== null &&
     box.staticPosition?.inside !== undefined &&
     box.staticPosition.from === containing;
-  const at = inArea ? null : box.staticPosition;
+  // one in the top layer is at the start of its containing block, which
+  // is no box's in the flow it was in (CSS Position 4, 3.1)
+  const at = inArea || box.topLayer ? null : box.staticPosition;
   const rtl = (at?.from ?? containing).style.direction === 'rtl';
   // where the box is as a flex box's or a grid's one item, aligned in it —
   // or in its grid area
@@ -4477,10 +4479,14 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   // wide as its columns between two offsets: `normal` stretches neither
   // (Blink: "Replaced/tables don't stretch in abspos",
   // `out_of_flow_layout_part.cc`), and a table taken to the height its
-  // offsets leave was that tall around rows that were not
+  // offsets leave was that tall around rows that were not. Nor does a
+  // height of its content's, `fit-content` and its kin, which a modal
+  // dialog is between `inset-block: 0`, centred in the viewport by its
+  // `auto` margins
   const stretches =
     !Number.isNaN(fill) &&
     style.height === AUTO &&
+    (style.heightKeyword === null || style.heightKeyword === 'stretch') &&
     (box.kind !== 'replaced' || control) &&
     box.kind !== 'table' &&
     !boxRatio(box);
@@ -5043,10 +5049,15 @@ function staticAlignment(
 /** The nearest positioned ancestor, or null for the initial containing
  *  block. Walks the box tree rather than the DOM, so an anonymous box in
  *  between is transparent — which is what the spec means by "the nearest
- *  positioned ancestor". */
+ *  positioned ancestor". A box in the top layer has the root's, the
+ *  viewport or the initial containing block, whatever is around it. */
 function containingBlockFor(box: Box): Box | null {
   const fixed = box.style.position === 'fixed';
   let node = box.parent;
+  if (box.topLayer) {
+    while (node?.parent) node = node.parent;
+    return node;
+  }
   while (node) {
     if (containsOutOfFlow(node, fixed) || node.parent === null) return node;
     node = node.parent;
@@ -5436,10 +5447,12 @@ export function applyRelativeOffsets(
     applyRelativeOffsets(child, viewportWidth, viewportHeight);
   const style = box.style;
   if (transformed(style) && box.kind !== 'inline') {
-    // a transform moves the box it is on, and an inline box is none
+    // a transform moves the box it is on, and an inline box is none —
+    // and what it holds but for what is in the top layer, which nothing
+    // around it moves
     const [dx, dy] = translationOf(box);
     if (dx || dy) {
-      translate(box, dx, dy);
+      translate(box, dx, dy, inTopLayer);
       movedOffLine(box);
     }
   }
@@ -5462,6 +5475,9 @@ export function applyRelativeOffsets(
   if (blocks) for (const block of blocks) offsetBox(block, dx, dy, sticky);
 }
 
+/** Whether a box is in the top layer, which no box around it moves. */
+const inTopLayer = (box: Box): boolean => box.topLayer;
+
 /**
  * Move what a relative or a sticky offset moves: a box and all it holds,
  * but for a box fixed to something outside it — the viewport, or a
@@ -5474,10 +5490,13 @@ export function applyRelativeOffsets(
  * is asked about: an absolute box in a relative or a sticky one is
  * positioned against it, and in a block that broke an inline box in pieces
  * (`CUT_BLOCKS`) stands outside the box in the tree but not in the flow.
+ * And a box in the top layer, which is at no place in the flow of what
+ * holds it, and is moved by no offset of its (CSS Position 4, 3.1).
  */
 function offsetBox(box: Box, dx: number, dy: number, sticky: boolean): void {
   const fixed: Box[] = [];
   translate(box, dx, dy, (child) => {
+    if (child.topLayer) return true;
     if (child.style.position !== 'fixed') return false;
     if (!positionedOutside(child, box)) return false;
     fixed.push(child);

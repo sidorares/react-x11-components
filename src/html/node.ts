@@ -253,6 +253,7 @@ import {
   selectionRows,
   stackLayers,
   stacksLayers,
+  topLayerBoxes,
 } from './paint.js';
 import type { PaintContext, PaintOptions, SpriteSource } from './paint.js';
 import {
@@ -4126,8 +4127,9 @@ export class HtmlViewNode extends Node {
     const fragments = this._fragmentsOf(tree, box);
     if (!fragments) return null;
     let [dx, dy] = scrolledBy(box);
-    // what each transform moved it by (`applyRelativeOffsets`)
-    for (let at: Box | null = box; at; at = at.parent) {
+    // what each transform moved it by (`applyRelativeOffsets`), up to a
+    // box in the top layer, which none around it moves
+    for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
       if (at.kind === 'inline' || !transformed(at.style)) continue;
       const [tx, ty] = translationOf(at);
       dx -= tx;
@@ -4717,6 +4719,11 @@ export class HtmlViewNode extends Node {
         if (diff.move) movingBoxes.add(box);
         style = made;
         ink = diff.ink;
+      } else if (box.pseudo === 'backdrop') {
+        // a `::backdrop`, which inherits from its element and not from the
+        // box around it: built again where its element was restyled
+        const from = GENERATED_FROM.get(box);
+        if (from && changed.has(from)) return false;
       } else if (box.pseudo) {
         // a first letter, styled from the box its letter is in
         if (above) return false;
@@ -7998,7 +8005,8 @@ function caretAt(
  * nothing but by moving it.
  */
 function throughTransforms(rect: Rect, from: Box | null): Rect {
-  for (let at = from; at; at = at.parent) {
+  // up to a box in the top layer, which nothing around it moves
+  for (let at = from; at; at = at.topLayer ? null : at.parent) {
     const matrix = placedMatrix(at);
     if (matrix) rect = mapRect(matrix, rect.x, rect.y, rect.width, rect.height);
   }
@@ -8266,6 +8274,8 @@ const HIT_BLOCK = 0;
 const HIT_FLOAT = 1;
 const HIT_INLINE = 2;
 const HIT_POSITIONED = 3;
+/** And the top layer's boxes over all of those, in its order. */
+const HIT_TOP_LAYER = 4;
 
 /** The deepest element box containing a document-space point. */
 function deepestAt(
@@ -8563,6 +8573,8 @@ function deepestAt(
       // one on a line is entered there, in its turn among the line's text,
       // unless it is painted with the positioned boxes
       if (onLine(node, child) && !layered(node, child)) continue;
+      // and one in the top layer over everything, after the walk
+      if (child.topLayer) continue;
       enter(child, context, stack, clipped);
     }
     // and the ones the query passed over that hold a box fixed to the
@@ -8578,7 +8590,7 @@ function deepestAt(
     }
     if (!ordered && node.paintIndex && node.positionedPaint) {
       for (const child of node.positionedPaint) {
-        enter(child, context, stack, clipped);
+        if (!child.topLayer) enter(child, context, stack, clipped);
       }
     }
     if (node.lines) {
@@ -8631,6 +8643,15 @@ function deepestAt(
     }
   };
   visit(box, [], [], []);
+  // The top layer over all of it, in its order (`topLayerBoxes`), each box
+  // under none of the document's clips: a `::backdrop` is its dialog's to
+  // the pointer, so a press anywhere around a modal dialog is the dialog's,
+  // as it is in a browser, and nothing of the page under it is hovered.
+  const top = topLayerBoxes(box);
+  for (let k = 0; k < top.length; k += 1) {
+    const key = [HIT_TOP_LAYER, k];
+    enter(top[k], key, key, []);
+  }
   if (hit) hit.text = viaText;
   return found;
 }
@@ -8758,9 +8779,11 @@ function isSheetLink(el: Element): boolean {
  *  them, and an inline style: a change of one builds no box where it
  *  changes no style. Everything else may be read by the boxes, a widget, a
  *  focus stop or a presentational hint. `-rx-defined` is no attribute: it
- *  is a custom element's upgrade, which only `:defined` reads. */
+ *  is a custom element's upgrade, which only `:defined` reads; nor is
+ *  `-rx-modal`, a dialog going into the top layer or out, which only
+ *  `:modal` reads — and the style it gives, which the boxes follow. */
 const STYLE_ONLY_ATTRIBUTE =
-  /^(?:class|id|style|data-[^]*|on[a-z]+|-rx-defined)$/;
+  /^(?:class|id|style|data-[^]*|on[a-z]+|-rx-defined|-rx-modal)$/;
 
 /**
  * The attribute changes in a list that changed nothing: an attribute set to
