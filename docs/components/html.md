@@ -3171,7 +3171,9 @@ drawn where it is now, found there by the pointer, and measured there by
 `elementRect`, so a page's `getBoundingClientRect` reads a header fixed
 `top: 30px` at 30 however far it has scrolled, as Chrome does, and the link
 in it takes the focus where it is without scrolling the page back to its
-top. The element tells
+top. A script's `scrollIntoView` scrolls nothing for such a box or what is
+in it but a scroll container inside it — a fixed sidebar's list brings its
+item into view, and the page stays where it is. The element tells
 the scroll box what it draws that way (react-x11's `viewportFixedRects`),
 so a scroll that copies the pixels it can repaints those where they are
 rather than dragging a fixed header along with the text; a fixed

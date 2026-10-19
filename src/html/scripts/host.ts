@@ -190,10 +190,23 @@ interface PreflightEntry {
   anyHeader: boolean;
 }
 
+/**
+ * What the host asks of the handle `useHtmlHandle` makes beside its public
+ * members, which no other handle owes: the runner's handles forward it,
+ * and one without it — a worker's, which draws nothing — answers as an
+ * element that scrolls with the document.
+ */
+export interface HandleInternals {
+  /** Whether an element is drawn where the viewport is — fixed to it, or
+   *  in a box that is — so that no scroll of the pane around the document
+   *  moves it (`HtmlViewNode.atViewport`). */
+  drawnAtViewport(element: Element): boolean;
+}
+
 /** What the page around the document gives the host: where it is shown,
  *  where it goes, and what it may fetch. */
 export interface HostSeams {
-  handle: HtmlHandle;
+  handle: HtmlHandle & Partial<HandleInternals>;
   /** The pane the document is shown in, in CSS pixels — its size and its
    *  scroll — with the page's zoom and the device's scale, and where its
    *  top left is in the window, in logical pixels. */
@@ -2132,6 +2145,11 @@ export class DomHost {
         const rect = this._seams.handle.elementRect(this._element(a));
         return rect ? `${rect.x},${rect.y},${rect.width},${rect.height}` : '';
       }
+      // whether no scroll of the viewport moves an element: one fixed to
+      // it, or in one that is (`scrollIntoView`)
+      case 'atViewport':
+        this.flush();
+        return this._seams.handle.drawnAtViewport?.(this._element(a)) === true;
       // `offsetParent` and the offsets from it, in one walk up the boxes:
       // the parent's id, then x, y, width and height in CSS pixels, or ''
       // for an element with no box (`HtmlHandle.offsetRect`)
