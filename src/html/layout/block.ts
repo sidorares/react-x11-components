@@ -50,6 +50,7 @@ import {
 import {
   STUCK,
   applyScrollOffsets,
+  escapes as positionedOutside,
   isScroller,
   scrollStateOf,
 } from './scroll.js';
@@ -5447,9 +5448,10 @@ export function applyRelativeOffsets(
     style.position === 'sticky'
       ? stickyOffset(box, viewportWidth, viewportHeight)
       : relativeOffset(box);
-  if (style.position === 'sticky') STUCK.set(box, [dx, dy]);
+  const sticky = style.position === 'sticky';
+  if (sticky) STUCK.set(box, [dx, dy]);
   if (!(dx || dy)) return;
-  translate(box, dx, dy);
+  offsetBox(box, dx, dy, sticky);
   if (box.kind !== 'inline') {
     movedOffLine(box);
     return;
@@ -5457,7 +5459,37 @@ export function applyRelativeOffsets(
   offsetInline(box, dx, dy);
   // the blocks it was broken around move with it (9.2.1.1)
   const blocks = box.cut ? CUT_BLOCKS.get(box) : undefined;
-  if (blocks) for (const block of blocks) translate(block, dx, dy);
+  if (blocks) for (const block of blocks) offsetBox(block, dx, dy, sticky);
+}
+
+/**
+ * Move what a relative or a sticky offset moves: a box and all it holds,
+ * but for a box fixed to something outside it — the viewport, or a
+ * transformed box it is in — which is positioned against that and not
+ * against what holds it. A relative offset moves such a box only along an
+ * axis it has no inset on, where it is at its static position, and a
+ * sticky one along neither, as Chrome has both. Moved with the header it
+ * is in as the header stuck, and to the viewport as well, docs.github.com's
+ * search dialog went down the window as the page went up. Only a fixed box
+ * is asked about: an absolute box in a relative or a sticky one is
+ * positioned against it, and in a block that broke an inline box in pieces
+ * (`CUT_BLOCKS`) stands outside the box in the tree but not in the flow.
+ */
+function offsetBox(box: Box, dx: number, dy: number, sticky: boolean): void {
+  const fixed: Box[] = [];
+  translate(box, dx, dy, (child) => {
+    if (child.style.position !== 'fixed') return false;
+    if (!positionedOutside(child, box)) return false;
+    fixed.push(child);
+    return true;
+  });
+  if (sticky) return;
+  for (const child of fixed) {
+    const style = child.style;
+    const sx = style.left === AUTO && style.right === AUTO ? dx : 0;
+    const sy = style.top === AUTO && style.bottom === AUTO ? dy : 0;
+    if (sx || sy) offsetBox(child, sx, sy, false);
+  }
 }
 
 // what makes a box a containing block and a layer, as a positioned box is,
@@ -5943,7 +5975,7 @@ function placeSticky(
   const my = dy - was[1];
   STUCK.set(box, [dx, dy]);
   if (!mx && !my) return false;
-  translate(box, mx, my);
+  offsetBox(box, mx, my, true);
   movedOffLine(box);
   return true;
 }

@@ -218,8 +218,10 @@ function clampOffset(v: number, max: number): number {
 }
 
 /** Whether an out-of-flow box is positioned against something outside a
- *  scroll container, which then neither moves it nor clips it. */
-function escapes(box: Box, scroller: Box): boolean {
+ *  scroll container, which then neither moves it nor clips it — or
+ *  outside a sticky or a relative box, whose offset moves it no more than
+ *  a scroll does (`applyRelativeOffsets`, `placeSticky`). */
+export function escapes(box: Box, scroller: Box): boolean {
   if (!box.outOfFlow) return false;
   return !holds(scroller, containingBlockOf(box));
 }

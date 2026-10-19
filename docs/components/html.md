@@ -1379,7 +1379,10 @@ suffix has none, as `、` does, and its direction is its own. A string
 `list-style-type` is the marker as it is written, and an outside marker of
 a right-to-left item stands at its right, reading right to left. A `<details>` shows its first `<summary>` and nothing
 more until it is `open`, the summary with the ▸ or ▾ HTML gives it — a
-system font's, where the document's has none.
+system font's, where the document's has none. A `<dialog>` is not drawn
+until it is `open`, and is then HTML's framed box out of the flow, centred
+across its containing block; `showModal()` opens one as `show()` does,
+with no top layer, so `:modal` matches nothing.
 A flex container is laid out by Yoga, the engine react-x11 lays itself out
 with, and each item by this one: an item of `width: auto` is as wide as its
 content, its max-content width, before the row grows or shrinks it, its
@@ -3290,7 +3293,10 @@ and measured there straight after a page's own `scrollTo`, before the frame
 that draws it, as a fixed box is: a header held at `top: 0` reads 0, as in
 Chrome. The pane is told where it is held (`viewportFixedRects`), as it is told
 where a fixed box is, so its copy of a step does not drag the box with the
-text.
+text. What a sticky box holds goes with it but for a box fixed to the
+viewport, which stays where the viewport has it; a relative box's offset
+moves one only along an axis it has no inset on, where it is at its static
+position, as Chrome has both.
 
 **The scroll keys scroll a container** — the arrows a line of 40 CSS
 pixels, Page Up, Page Down and Space seven eighths of the scrollport, Home
