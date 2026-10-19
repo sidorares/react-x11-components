@@ -1145,6 +1145,74 @@ metric(
 );
 
 metric(
+  'an absolute box in a flex box or a grid is in none of its items',
+  async () => {
+    // CSS Flexbox 4.1: it is not a flex item, and so in no anonymous one
+    // either. Primer's accordion trigger is a title, a chevron and an
+    // absolute `::after`, spaced apart; the `::after` was an empty item
+    // of its own, and the chevron stood half way along the row
+    const { node } = await render(
+      '<style>body{margin:0}' +
+        '.row{display:flex;justify-content:space-between;width:300px}' +
+        '#t::after{content:"";position:absolute;width:100%;height:100%}' +
+        '.grid{display:grid;grid-template-columns:100px 100px 100px}' +
+        '.icon{width:22px;height:10px}</style>' +
+        '<div class="row" id="t">Title<span class="icon" id="i"></span></div>' +
+        '<div class="grid" id="g">aaa<span id="a" style="position:absolute">' +
+        'X</span>bbb<span class="icon" id="j"></span></div>',
+    );
+    const el = view(node);
+    const row = boxOf(el, 't');
+    assert.strictEqual(boxOf(el, 'i').x - row.x, 278, 'the chevron at the end');
+    assert.strictEqual(
+      row.children.length,
+      3,
+      'the title, the chevron, ::after',
+    );
+    // the text either side of one is two items, as Chrome makes them
+    const grid = boxOf(el, 'g');
+    const items = grid.children.filter((c) => c.el?.attribs.id !== 'a');
+    assert.deepStrictEqual(
+      items.map((c) => c.x - grid.x),
+      [0, 100, 200],
+      'aaa, bbb and the icon each in a column',
+    );
+    assert.strictEqual(boxOf(el, 'a').x, grid.x, 'at the start, as no item');
+  },
+);
+
+metric('a float in a flex box or a grid is one of its items', async () => {
+  // `float` does not apply to an item (CSS Flexbox 4, CSS Grid 6.1): Chrome
+  // lays a floated child out as any other, where it went in the anonymous
+  // item of the text beside it
+  const { node } = await render(
+    '<style>body{margin:0}' +
+      '.grid{display:grid;grid-template-columns:100px 100px 100px}</style>' +
+      '<div class="grid" id="g">aaa<span id="f" style="float:right">FL</span>' +
+      'bbb</div>' +
+      '<div style="display:flex;justify-content:space-between;width:300px"' +
+      ' id="r">aaa<span id="e" style="float:left;width:50px">FL</span>' +
+      '<span style="width:40px"></span></div>',
+  );
+  const el = view(node);
+  const grid = boxOf(el, 'g');
+  assert.deepStrictEqual(
+    grid.children.map((c) => c.x - grid.x),
+    [0, 100, 200],
+    'aaa, the float and bbb each in a column',
+  );
+  const row = boxOf(el, 'r');
+  const text = row.children[0];
+  assert.strictEqual(row.children.length, 3);
+  assert.ok(
+    Math.abs(
+      boxOf(el, 'e').x - (text.x + text.width + (300 - text.width - 90) / 2),
+    ) < 0.01,
+    'the float spaced apart from the text and the box after it',
+  );
+});
+
+metric(
   "an intrinsic size is a flex item's width, stretched or not",
   async () => {
     const { node } = await render(

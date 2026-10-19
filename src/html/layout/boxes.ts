@@ -1524,9 +1524,7 @@ class Builder {
       }
     }
     if (namesImages(style)) this._backgrounds.push(box);
-    if (style.position === 'absolute' || style.position === 'fixed')
-      box.outOfFlow = true;
-    else if (style.float !== 'none') box.isFloat = true;
+    placeInFlow(box, style, into);
     if (style.overlay === 'auto') box.topLayer = true;
     if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
       this._nestedOutOfLine = true;
@@ -1669,9 +1667,7 @@ class Builder {
     }
     if (focusableElement(el, tag)) this._focusables.push(box);
     if (namesImages(style)) this._backgrounds.push(box);
-    if (style.position === 'absolute' || style.position === 'fixed')
-      box.outOfFlow = true;
-    else if (style.float !== 'none') box.isFloat = true;
+    placeInFlow(box, style, into);
     if (style.overlay === 'auto') box.topLayer = true;
     if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
       this._nestedOutOfLine = true;
@@ -1849,9 +1845,7 @@ class Builder {
       if (written?.flush) box.marker.flush = true;
       marker = '';
     }
-    if (style.position === 'absolute' || style.position === 'fixed')
-      box.outOfFlow = true;
-    else if (style.float !== 'none') box.isFloat = true;
+    placeInFlow(box, style, into);
     if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
       this._nestedOutOfLine = true;
     const pieces = this._generated(style.content as ContentItem[], style, el);
@@ -2857,6 +2851,20 @@ function hasFirstLetter(display: ComputedStyle['display']): boolean {
 }
 
 /**
+ * Whether a box is out of the flow or a float, as its style and the box it
+ * is in have it. `float` does not apply to a flex item or a grid item (CSS
+ * Flexbox 1, 4; CSS Grid 2, 6.1), which Chrome lays out as an item like any
+ * other and whose `float` it still computes as given.
+ */
+function placeInFlow(box: Box, style: ComputedStyle, into: Box): void {
+  if (style.position === 'absolute' || style.position === 'fixed') {
+    box.outOfFlow = true;
+  } else if (style.float !== 'none' && into.kind !== 'flex') {
+    box.isFloat = true;
+  }
+}
+
+/**
  * How a box sits in its parent's inline content, for white space. An inline
  * box's content is its parent's own; an atomic inline — an inline-block, an
  * image — is one piece of it; a block ends the line it interrupts and starts
@@ -3173,8 +3181,16 @@ function fixUpOwn(box: Box, anonymous: AnonymousStyle): void {
   let run: Box[] | null = null;
   for (const child of box.children) {
     // A float or an absolutely positioned box sits in whichever context it
-    // finds itself; it does not force an anonymous block on its own.
-    if (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) {
+    // finds itself; it does not force an anonymous block on its own. In a
+    // flex container or a grid it is in no item (CSS Flexbox 1, 4.1): the
+    // text before it and after it are two, as Chrome makes them, and alone
+    // it is none. Wrapped, Primer's accordion trigger — a title, a chevron
+    // and an absolute `::after` the size of the item, spaced apart — had
+    // three items, and the chevron stood half way along the row.
+    if (
+      (isBlockLevel(child) && !child.outOfFlow && !child.isFloat) ||
+      (wrapAllInline && child.outOfFlow)
+    ) {
       if (run) {
         next.push(anonymousOf(box, 'block', run, anonymous));
         run = null;
