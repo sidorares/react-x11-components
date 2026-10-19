@@ -74,9 +74,9 @@
 //    gesture: a second `dragStarted` on the outer list, and `activeDrag`
 //    overwritten with the column's payload, so the hover channel described
 //    the wrong item. Every source callback here therefore begins by asking
-//    whether the event's target is this item's own drag source (itself, or
-//    its handle) and returns if not. `preventDefault` is not the tool for
-//    that: on this event it cancels the whole drag.
+//    whether the event's target is this item's own box and returns if not.
+//    `preventDefault` is not the tool for that: on this event it cancels the
+//    whole drag.
 //  - **An in-window ghost lifts the whole path, not just its item.**
 //    `zIndex` sorts a node among its *siblings* — `paintOrder()` is per
 //    node, and there is no stacking context to escape — so a ghost lifted
@@ -103,7 +103,15 @@
 //    item records what the press landed on and cancels the drag at the
 //    threshold — `onDragStart`'s `preventDefault()`, which core documents as
 //    "the gesture continues as ordinary mouse events". `dragFromInteractive`
-//    turns it off; a `<ReorderHandle>` makes the question moot.
+//    turns it off.
+//  - **A handle says where a drag may start; the item is still the source.**
+//    With a `<ReorderHandle>` the same refusal covers every press that did
+//    not land on the handle. The handle carries no drag props of its own,
+//    because a drag source has to outlive its gesture: core cancels a drag
+//    whose source leaves the tree, silently, with no `onDragEnd` — and an
+//    item that renders nothing while it is dragged (its row *is* the gap,
+//    `examples/reorder.tsx`) unmounts a handle inside it. That left the
+//    ghost on screen and the item dragging for good.
 //
 // It is pure composition of `<box>`, `<popup>` and core's `<Icon>`, so
 // there is no `registerElement` here and no side effect at import time.
@@ -713,12 +721,11 @@ function useList(part: string): ListShared {
   return list;
 }
 
-/** What an item lends its handle and its content: the drag, the keys, the
- *  look, and the state. */
+/** What an item lends its handle and its content: the keys, the look, and
+ *  the state. Not the drag — that stays on the item, see `ReorderHandle`. */
 interface ItemShared {
   state: ReorderItemState;
   disabled: boolean;
-  dragProps: DragSourceProps;
   onKeyDown: (ev: KeyboardEvent) => void;
   onBlur: () => void;
   styles: ReorderStyles | undefined;
@@ -757,7 +764,6 @@ function inertItem(
   return {
     state,
     disabled: true,
-    dragProps: NO_DRAG,
     onKeyDown: noop,
     onBlur: noop,
     styles,
@@ -827,6 +833,20 @@ const INTERACTIVE_ROLES = new Set([
   'tab',
   'textbox',
 ]);
+
+/** Whether a press on `target` landed inside `node`, looking no further out
+ *  than `stop`. */
+function within(
+  target: DrawnNode | null,
+  node: DrawnNode,
+  stop: DrawnNode | null,
+): boolean {
+  for (let n: DrawnNode | null = target; n; n = n.parent) {
+    if (n === node) return true;
+    if (n === stop) break;
+  }
+  return false;
+}
 
 /** Was this press on a control, somewhere between the hit node and the item
  *  around it? */
@@ -1914,11 +1934,11 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
     [],
   );
 
-  /** Is this event about this item's own drag source — the item box, or the
-   *  handle the drag props were spread on — rather than a descendant's? */
+  /** Is this event about this item's own drag rather than a descendant's —
+   *  a card's, inside a column that is itself an item? The item box is the
+   *  source, handle or none. */
   const ownSource = (ev: { target: DrawnNode }): boolean =>
-    ev.target === nodeRef.current ||
-    ev.target === (handleRef.current?.current ?? null);
+    ev.target === nodeRef.current;
 
   const { dragProps, isDragging, position } = useDragSource({
     data: { [list.type]: () => payload.current, ...dragData },
@@ -1934,6 +1954,14 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
         !hasHandle &&
         pressedControl(pressed.current, nodeRef.current)
       ) {
+        ev.preventDefault();
+        return;
+      }
+      // With a handle, only a press on it drags: the item is still the
+      // source — see `ReorderHandle` — so the rest of it is refused here,
+      // the same way a control is above.
+      const grip = handleRef.current?.current ?? null;
+      if (grip && !within(pressed.current, grip, nodeRef.current)) {
         ev.preventDefault();
         return;
       }
@@ -2064,13 +2092,12 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
     preview: false,
     ids: moving,
   };
-  // A new object per render, deliberately: `dragProps` is new per render
-  // too, and what it keeps current is one handle box and whoever called
-  // `useReorderItem()` — both of which want the state of *this* render.
+  // A new object per render, deliberately: what it keeps current is one
+  // handle box and whoever called `useReorderItem()` — both of which want
+  // the state of *this* render.
   const itemShared: ItemShared = {
     state,
     disabled,
-    dragProps: drag,
     onKeyDown,
     onBlur,
     styles: list.styles,
@@ -2170,8 +2197,9 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
       onMouseDownCapture: (ev: MouseEvent) => {
         pressed.current = ev.target;
       },
-      // without a handle the item is the drag source and the tab stop
-      ...(hasHandle ? {} : drag),
+      // the item is the drag source with a handle or without, and the tab
+      // stop without one
+      ...drag,
       ...(hasHandle
         ? {}
         : {
@@ -2259,8 +2287,10 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
 
 /**
  * `<ReorderHandle>` — the one part of an item that drags it. Rendering one
- * inside a `<ReorderItem>` is the whole opt-in: the item stops being the
- * press target and the tab stop, and this is both.
+ * inside a `<ReorderItem>` is the whole opt-in: the item stops taking a
+ * press anywhere else, and stops being the tab stop, which this becomes.
+ * The drag's source is still the item (see the header), so this may come
+ * and go while the item is dragged.
  */
 export function ReorderHandle(props: ReorderHandleProps): ReactElement {
   const {
@@ -2288,7 +2318,6 @@ export function ReorderHandle(props: ReorderHandleProps): ReactElement {
       'aria-description': item.disabled ? undefined : HINT,
       'data-testname': testname,
       focusable: !item.disabled,
-      ...item.dragProps,
       onKeyDown: item.disabled ? undefined : item.onKeyDown,
       onBlur: item.onBlur,
       style: [

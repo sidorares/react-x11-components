@@ -373,9 +373,11 @@ test('a handle is the only press target, and the tab stop', async () => {
   const a = retained(item('l', 'a'));
   const grip = screen.getByTestName('l-a-handle');
   assert.strictEqual(a.props.focusable, undefined, 'the item gave up its stop');
-  assert.strictEqual(a.props.draggable, undefined);
+  // the item is still the drag's source, so the grip may unmount mid-drag:
+  // the grip only says where a press may start one
+  assert.strictEqual(a.props.draggable, true);
   assert.strictEqual(retained(grip).props.focusable, true);
-  assert.strictEqual(retained(grip).props.draggable, true);
+  assert.strictEqual(retained(grip).props.draggable, undefined);
   assert.strictEqual(retained(grip).props.role, 'button');
 
   // the body: a drag that never starts
@@ -390,6 +392,53 @@ test('a handle is the only press target, and the tab stop', async () => {
   assert.deepStrictEqual(changes, [
     { items: ['b', 'c', 'a'], id: 'a', ids: ['a'], from: 0, to: 2 },
   ]);
+});
+
+test('a handle the item stops rendering while it is dragged does not end the drag', async () => {
+  // a row that *is* the gap while it travels renders nothing, its grip
+  // included — the shape examples/reorder.tsx's cards had, which left the
+  // ghost up and the item dragging for good once core dropped the source
+  const changes: ReorderChange[] = [];
+  await mount(
+    view(
+      h(
+        ReorderList,
+        {
+          'data-testname': 'l',
+          dropAnimation: false,
+          style: { gap: GAP, padding: 10 },
+          onReorder: (c: ReorderChange) => changes.push(c),
+        },
+        ['a', 'b', 'c'].map((id) =>
+          h(ReorderItem, {
+            key: id,
+            id,
+            'data-testname': `l-${id}`,
+            style: { ...ITEM, flexDirection: 'row', alignItems: 'center' },
+            children: (state: ReorderItemState) =>
+              state.dragging && !state.preview
+                ? null
+                : h(
+                    React.Fragment,
+                    null,
+                    h(ReorderHandle, { 'data-testname': `l-${id}-handle` }),
+                    h('text', null, `Item ${id}`),
+                  ),
+          }),
+        ),
+      ),
+    ),
+  );
+  await dragTo(screen.getByTestName('l-a-handle'), item('l', 'c'), { dy: 10 });
+  assert.strictEqual(textOfItem(item('l', 'a')), '', 'the grip is gone');
+  assert.ok(screen.queryByTestName('l-a-preview'), 'and the drag is still up');
+  assert.ok(screen.queryByTestName('l-c-indicator'), 'over c');
+  await release(item('l', 'c'), { dy: 10 });
+  assert.deepStrictEqual(changes, [
+    { items: ['b', 'c', 'a'], id: 'a', ids: ['a'], from: 0, to: 2 },
+  ]);
+  assert.ok(screen.queryByTestName('l-a-preview') === null, 'no ghost left');
+  assert.strictEqual(textOfItem(item('l', 'a')), 'Item a');
 });
 
 test('a disabled item does not drag, but is still a slot others land beside', async () => {
