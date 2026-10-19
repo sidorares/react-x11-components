@@ -1866,10 +1866,21 @@ export class RichEditorView implements EditorHost, ClipboardView {
     return this.dragContent()?.html ?? '';
   }
 
-  /** …and a drop in this app, the slice itself. */
+  /** …and a drop in this app, the slice itself. The copy modifier is read
+   *  at the drop, not here: core may resolve the payload long before it —
+   *  on a Mac as the drag begins, since an app on its worker gives AppKit
+   *  every value up front, and on X11 as the drag leaves for another
+   *  window — and the hand presses the modifier on the way. */
   dragPayload(): DragPayload | null {
     const d = this.draggingNow;
-    return d ? { slice: d.slice, view: this, copy: d.copy } : null;
+    if (!d) return null;
+    return {
+      slice: d.slice,
+      view: this,
+      get copy() {
+        return d.copy;
+      },
+    };
   }
 
   /** Each motion of a drag out of this editor: whether the copy

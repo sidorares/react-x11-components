@@ -613,6 +613,7 @@ export type {
   ReorderEdge,
   ReorderHandleProps,
   ReorderId,
+  ReorderIndicatorState,
   ReorderInput,
   ReorderInsert,
   ReorderItemProps,

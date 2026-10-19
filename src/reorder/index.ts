@@ -74,9 +74,9 @@
 //    gesture: a second `dragStarted` on the outer list, and `activeDrag`
 //    overwritten with the column's payload, so the hover channel described
 //    the wrong item. Every source callback here therefore begins by asking
-//    whether the event's target is this item's own drag source (itself, or
-//    its handle) and returns if not. `preventDefault` is not the tool for
-//    that: on this event it cancels the whole drag.
+//    whether the event's target is this item's own box and returns if not.
+//    `preventDefault` is not the tool for that: on this event it cancels the
+//    whole drag.
 //  - **An in-window ghost lifts the whole path, not just its item.**
 //    `zIndex` sorts a node among its *siblings* — `paintOrder()` is per
 //    node, and there is no stacking context to escape — so a ghost lifted
@@ -103,7 +103,15 @@
 //    item records what the press landed on and cancels the drag at the
 //    threshold — `onDragStart`'s `preventDefault()`, which core documents as
 //    "the gesture continues as ordinary mouse events". `dragFromInteractive`
-//    turns it off; a `<ReorderHandle>` makes the question moot.
+//    turns it off.
+//  - **A handle says where a drag may start; the item is still the source.**
+//    With a `<ReorderHandle>` the same refusal covers every press that did
+//    not land on the handle. The handle carries no drag props of its own,
+//    because a drag source has to outlive its gesture: core cancels a drag
+//    whose source leaves the tree, silently, with no `onDragEnd` — and an
+//    item that renders nothing while it is dragged (its row *is* the gap,
+//    `examples/reorder.tsx`) unmounts a handle inside it. That left the
+//    ghost on screen and the item dragging for good.
 //
 // It is pure composition of `<box>`, `<popup>` and core's `<Icon>`, so
 // there is no `registerElement` here and no side effect at import time.
@@ -336,6 +344,10 @@ export interface ReorderDragStart {
   ids: ReorderId[];
   index: number;
   input: ReorderInput;
+  /** The item's box as it was picked up, in logical pixels — what a list
+   *  that opens a space of its own for the drop opens. `id`'s alone, in a
+   *  drag that carries several. */
+  size: { width: number; height: number };
 }
 
 /** Where the drag is now. Fires on the list the item belongs to, whichever
@@ -423,11 +435,22 @@ export interface ReorderStyles {
    *  the wash a held item wears. */
   item?: (state: ReorderItemState) => StyleInput | null | undefined | false;
   handle?: StyleInput;
-  /** The insertion line, and the outline a combining item wears — the state
-   *  tells them apart. */
-  indicator?: StyleInput;
+  /** The insertion line, and the outline a combining item wears. A function
+   *  is handed which of the two it is styling, so a list can restyle one and
+   *  not the other — hide the line for a gap of its own, and keep the
+   *  outline a merge is drawn with. */
+  indicator?:
+    | StyleInput
+    | ((mark: ReorderIndicatorState) => StyleInput | null | undefined | false);
   /** The card the default preview draws the item's children in. */
   preview?: StyleInput;
+}
+
+/** What `styles.indicator` is handed: which side of the item the line is
+ *  on, or that the item is outlined for a merge instead. */
+export interface ReorderIndicatorState {
+  edge: ReorderEdge;
+  combining: boolean;
 }
 
 /** How big the ghost is. A function is asked once, at the drag's start. */
@@ -553,6 +576,8 @@ interface Payload {
   id: ReorderId;
   ids: ReorderId[];
   index: number;
+  /** What the item's drag offers — whether a list may ask for a move. */
+  actions: readonly string[];
   to?: {
     listUid: string;
     list: string | undefined;
@@ -582,6 +607,15 @@ interface DragOver {
  * gestures. One drag at a time is a property of the pointer, not an
  * assumption this makes.
  *
+ * `report` is the source list's `onDragUpdate`, which the list that wrote
+ * `over` calls as well. Reading it in the source's `onDrag` alone assumed
+ * core asks the target about a point before it tells the source, which the
+ * X11 transport does and AppKit does not: a native drag session reports the
+ * source's motion first and the window's `draggingUpdated:` after it, so
+ * every update described the point before, and the one the pointer came to
+ * rest on was never reported. The gap a list opens from it sat one slot
+ * from where the drop landed.
+ *
  * `source` and `inline` are here for the stacking: an in-window ghost has to
  * be painted over everything between it and the drop, and `zIndex` only
  * sorts siblings, so every list and item that *contains* the drag lifts
@@ -592,6 +626,7 @@ let activeDrag: {
   over: DragOver | null;
   source: DrawnNode | null;
   inline: boolean;
+  report: () => void;
 } | null = null;
 
 /**
@@ -698,12 +733,11 @@ function useList(part: string): ListShared {
   return list;
 }
 
-/** What an item lends its handle and its content: the drag, the keys, the
- *  look, and the state. */
+/** What an item lends its handle and its content: the keys, the look, and
+ *  the state. Not the drag — that stays on the item, see `ReorderHandle`. */
 interface ItemShared {
   state: ReorderItemState;
   disabled: boolean;
-  dragProps: DragSourceProps;
   onKeyDown: (ev: KeyboardEvent) => void;
   onBlur: () => void;
   styles: ReorderStyles | undefined;
@@ -742,7 +776,6 @@ function inertItem(
   return {
     state,
     disabled: true,
-    dragProps: NO_DRAG,
     onKeyDown: noop,
     onBlur: noop,
     styles,
@@ -812,6 +845,20 @@ const INTERACTIVE_ROLES = new Set([
   'tab',
   'textbox',
 ]);
+
+/** Whether a press on `target` landed inside `node`, looking no further out
+ *  than `stop`. */
+function within(
+  target: DrawnNode | null,
+  node: DrawnNode,
+  stop: DrawnNode | null,
+): boolean {
+  for (let n: DrawnNode | null = target; n; n = n.parent) {
+    if (n === node) return true;
+    if (n === stop) break;
+  }
+  return false;
+}
 
 /** Was this press on a control, somewhere between the hit node and the item
  *  around it? */
@@ -964,6 +1011,11 @@ export function ReorderList(props: ReorderListProps): ReactElement {
   const dragging = useRef<ReorderId | null>(null);
   /** What the last `onDragUpdate` said, so one is not sent per motion. */
   const reportedOver = useRef<DragOver | null>(null);
+  /** Where the last `onDragOver` here said a drop would land — the slot the
+   *  indicator was drawn for. The drop lands there; see `onDropHere`. */
+  const hovered = useRef<{ slot: number; combine: ReorderId | null } | null>(
+    null,
+  );
   /** Whether the drag in flight is inside this list and drawing an
    *  in-window ghost — which is what its own stacking depends on. */
   const carrying = useCarryingDrag(rootRef);
@@ -1064,6 +1116,16 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         height: height / scale,
       };
     });
+  };
+
+  /** An item's box, in logical pixels. */
+  const sizeOf = (itemId: ReorderId): { width: number; height: number } => {
+    const node = entries.current.get(itemId)?.node.current ?? null;
+    const scale = scaleOf(node);
+    return {
+      width: (node?.abs.width ?? 0) / scale,
+      height: (node?.abs.height ?? 0) / scale,
+    };
   };
 
   /** Move the indicator: clear the item that had it, set the one that does. */
@@ -1181,6 +1243,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     // or not — so a list has to ask the question `dropAccept` already
     // answered before it promises a slot to a drag it will never be given
     const payload = hoveringPayload(ev);
+    hovered.current = null;
     if (!payload && !foreignAccepted(handlers.current.accept, ev)) {
       mark(null);
       return;
@@ -1190,7 +1253,10 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     const combining = at?.combine ? at.id : null;
     if (!allowed(ev, payload, slot, combining)) {
       mark(null);
-      if (activeDrag?.over?.listUid === uid) activeDrag.over = null;
+      if (activeDrag?.over?.listUid === uid) {
+        activeDrag.over = null;
+        activeDrag.report();
+      }
       // core keeps the node its `dropAccept` matched; what a handler may do
       // is refuse this position, which is what turns the ghost's `accepted`
       // off and what `canDrop` means
@@ -1204,6 +1270,14 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         ? moveManyToSlot(ids, moving, slot, payload!.id)
         : null;
     const settled = !combining && moving.length > 0 && move === null;
+    hovered.current = { slot, combine: combining };
+    // A drop of one of this list's own items is a reorder, which is a move
+    // whatever the drag offers first: an item that offers `['copy', 'move']`
+    // to other applications would otherwise wear the copy cursor — on a Mac
+    // the badge with a plus in it — over its own list.
+    if (moving.length > 0 && payload!.actions.includes('move')) {
+      ev.accept('move');
+    }
     // No line: there is no insertion to point at. But the drag **is** over
     // this list, at a position this list can name, and saying `over: null`
     // for it conflated two different facts — "nowhere" and "here, and
@@ -1228,20 +1302,40 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         combine: combining,
         settled,
       };
+      activeDrag.report();
     }
   };
 
   const onDragLeave = (): void => {
+    hovered.current = null;
     mark(null);
-    if (activeDrag?.over?.listUid === uid) activeDrag.over = null;
+    if (activeDrag?.over?.listUid === uid) {
+      activeDrag.over = null;
+      activeDrag.report();
+    }
   };
 
   const onDropHere = (ev: DropEvent): void => {
     mark(null);
     const payload = payloadOf(ev);
     const moving = payload?.listUid === uid ? payload.ids : [];
-    const { ids, slot, at } = slotFor(ev, moving);
-    const combining = at?.combine ? at.id : null;
+    // The drop lands where the indicator said it would. The pointer has not
+    // moved since the last `onDragOver` — core drops at the point that one
+    // was asked at — but the layout may have: a list that opens a gap for
+    // the drop (`examples/reorder.tsx`), or a row that collapses as it is
+    // picked up, moves the items under a pointer that holds still, and
+    // asked again here the same point named another slot. The rows were
+    // one place off from the gap the user let go over.
+    const hit = hovered.current;
+    hovered.current = null;
+    const fresh = slotFor(ev, moving);
+    const { ids } = fresh;
+    const slot = hit ? hit.slot : fresh.slot;
+    const combining = hit
+      ? hit.combine
+      : fresh.at?.combine
+        ? fresh.at.id
+        : null;
     if (!allowed(ev, payload, slot, combining)) {
       ev.reject();
       return;
@@ -1316,6 +1410,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         ids: moving,
         index: at - 1,
         input: 'keyboard',
+        size: sizeOf(itemId),
       });
       announce(SAY.lifted(labelFor(itemId), at, ids.length, moving.length));
     },
@@ -1469,6 +1564,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         ids: moving,
         index,
         input: 'pointer',
+        size: sizeOf(itemId),
       });
       announce(
         SAY.pickedUp(labelFor(itemId), index + 1, ids.length, moving.length),
@@ -1887,11 +1983,11 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
     [],
   );
 
-  /** Is this event about this item's own drag source — the item box, or the
-   *  handle the drag props were spread on — rather than a descendant's? */
+  /** Is this event about this item's own drag rather than a descendant's —
+   *  a card's, inside a column that is itself an item? The item box is the
+   *  source, handle or none. */
   const ownSource = (ev: { target: DrawnNode }): boolean =>
-    ev.target === nodeRef.current ||
-    ev.target === (handleRef.current?.current ?? null);
+    ev.target === nodeRef.current;
 
   const { dragProps, isDragging, position } = useDragSource({
     data: { [list.type]: () => payload.current, ...dragData },
@@ -1907,6 +2003,14 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
         !hasHandle &&
         pressedControl(pressed.current, nodeRef.current)
       ) {
+        ev.preventDefault();
+        return;
+      }
+      // With a handle, only a press on it drags: the item is still the
+      // source — see `ReorderHandle` — so the rest of it is refused here,
+      // the same way a control is above.
+      const grip = handleRef.current?.current ?? null;
+      if (grip && !within(pressed.current, grip, nodeRef.current)) {
         ev.preventDefault();
         return;
       }
@@ -1931,12 +2035,14 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
         id,
         ids,
         index,
+        actions: dragActions ?? ['move'],
       };
       activeDrag = {
         payload: payload.current,
         over: null,
         source: node,
         inline: ghostMode(list.preview) === 'inline',
+        report: () => list.dragMoved(id),
       };
       setHoldingOwn(true);
       announceDragChanged();
@@ -2037,13 +2143,12 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
     preview: false,
     ids: moving,
   };
-  // A new object per render, deliberately: `dragProps` is new per render
-  // too, and what it keeps current is one handle box and whoever called
-  // `useReorderItem()` — both of which want the state of *this* render.
+  // A new object per render, deliberately: what it keeps current is one
+  // handle box and whoever called `useReorderItem()` — both of which want
+  // the state of *this* render.
   const itemShared: ItemShared = {
     state,
     disabled,
-    dragProps: drag,
     onKeyDown,
     onBlur,
     styles: list.styles,
@@ -2143,8 +2248,9 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
       onMouseDownCapture: (ev: MouseEvent) => {
         pressed.current = ev.target;
       },
-      // without a handle the item is the drag source and the tab stop
-      ...(hasHandle ? {} : drag),
+      // the item is the drag source with a handle or without, and the tab
+      // stop without one
+      ...drag,
       ...(hasHandle
         ? {}
         : {
@@ -2161,7 +2267,12 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
         'data-testname': testname ? `${testname}-indicator` : undefined,
         style: [
           indicatorStyle(mark, list.orientation, theme),
-          list.styles?.indicator,
+          typeof list.styles?.indicator === 'function'
+            ? list.styles.indicator({
+                edge: mark.edge,
+                combining: mark.combine,
+              }) || null
+            : list.styles?.indicator,
         ],
       }),
     inlineAt !== null &&
@@ -2227,8 +2338,10 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
 
 /**
  * `<ReorderHandle>` — the one part of an item that drags it. Rendering one
- * inside a `<ReorderItem>` is the whole opt-in: the item stops being the
- * press target and the tab stop, and this is both.
+ * inside a `<ReorderItem>` is the whole opt-in: the item stops taking a
+ * press anywhere else, and stops being the tab stop, which this becomes.
+ * The drag's source is still the item (see the header), so this may come
+ * and go while the item is dragged.
  */
 export function ReorderHandle(props: ReorderHandleProps): ReactElement {
   const {
@@ -2256,7 +2369,6 @@ export function ReorderHandle(props: ReorderHandleProps): ReactElement {
       'aria-description': item.disabled ? undefined : HINT,
       'data-testname': testname,
       focusable: !item.disabled,
-      ...item.dragProps,
       onKeyDown: item.disabled ? undefined : item.onKeyDown,
       onBlur: item.onBlur,
       style: [

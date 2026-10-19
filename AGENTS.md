@@ -418,8 +418,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.46.0` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.46.0` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.48.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.48.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -766,6 +766,14 @@ it up. **The floor is a running one and moves often** — every move since
   answering for 15 seconds (#924), which reaches the browser example's
   `fallback` as any failure of its page's process does: the tab says its
   page stopped and offers Reload.
+- `^2.48.0` — a drag on a Mac (react-x11#959). An app runs on a worker
+  there by default, and core handed AppKit a `provide` callback on every
+  drag, which @windowkit/appkit refuses off the main thread: a press
+  dragged past the threshold threw from `beginDrag`, so `<ReorderList>`,
+  `<RichTextEditor>` and every other drag source here crashed the app on
+  macOS. On a worker every `dragData` thunk now resolves as the drag
+  begins, which is why `<RichTextEditor>`'s slice payload reads the copy
+  modifier at the drop rather than when its thunk runs.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.

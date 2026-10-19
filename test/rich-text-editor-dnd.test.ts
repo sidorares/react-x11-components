@@ -31,6 +31,10 @@ import type {
   RichTextEditorProps,
 } from '../src/rich-text-editor/index.js';
 import type { EditorTextNode } from '../src/rich-text-editor/nodes.js';
+import { SLICE_TYPE } from '../src/rich-text-editor/drag.js';
+import type { DragPayload } from '../src/rich-text-editor/drag.js';
+
+type DragData = Record<string, () => unknown>;
 
 const h = React.createElement;
 
@@ -256,6 +260,39 @@ test(
     await act();
     assert.strictEqual(editor.state.doc.textContent, 'one two threetwo');
     assert.strictEqual(selected(editor), 'two', 'the copy is selected');
+  },
+);
+
+test(
+  'a payload taken as the drag begins still has the copy modifier pressed after it',
+  { skip: !FONTS },
+  async () => {
+    // core resolves a drag's payload before its drop where it promotes the
+    // drag: on a Mac as it begins, on X11 as it leaves for another window
+    const editor = await mount({ defaultValue: 'one two three' });
+    await selectRange(editor, 5, 8);
+    const [block] = blocks();
+    await dragTo(drawn(block), at(block, 5), drawn(block), at(block, 13));
+    const [root] = screen.all(
+      (n) =>
+        (n as unknown as { props?: Record<string, unknown> }).props
+          ?.draggable === true,
+    );
+    const data = (root as unknown as { props: { dragData: DragData } }).props
+      .dragData;
+    const payload = data[SLICE_TYPE]() as DragPayload;
+    assert.strictEqual(payload.copy, false);
+    const letGo = holdControl();
+    const end = at(block, 13);
+    await act(async () => {
+      fireEvent.mouseMove(drawn(block), { ...end, dx: end.dx + 2 });
+    });
+    await landed();
+    assert.strictEqual(payload.copy, true, 'as the source last saw it');
+    await release(drawn(block), { ...end, dx: end.dx + 2 });
+    letGo();
+    await act();
+    assert.strictEqual(editor.state.doc.textContent, 'one two threetwo');
   },
 );
 
