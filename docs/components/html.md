@@ -36,7 +36,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `animate`            | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                                                                                                                                          |
 | `reducedMotion`      | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                                                                                                                                |
 | `defaultColorScheme` | `'light' \| 'dark'`                              | The scheme a page that names none (`color-scheme: normal`) is drawn in. Default: the palette's. A host that shows the web names `'light'`, as every browser draws one — see [Colours](#what-renders).                                                                                               |
-| `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                                                                                                                                          |
+| `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control. Compared by the sheets it holds: an array made again at each render with the same ones is no change.                                                                                     |
 | `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                                                                                                                               |
 | `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                                                                                                               |
 | `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.**                                                                                                           |
@@ -82,10 +82,11 @@ handle.refresh();
 | `refresh(changes?)`                                                                     | The DOM changed — its nodes, attributes or text: restyle, re-lay-out, repaint, every element read as it is now. Told what changed, shaped as `MutationObserver` records (`HtmlChange`), it restyles only what a selector that tests the change reaches — see [Telling it what changed](#telling-it-what-changed).                                                                                                                                                                                                                                                                                                 |
 | `elementAt(x, y)`                                                                       | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry — in the document as it is now: one changed since the last paint is laid out first, as `elementRect` lays it out. In whichever tree it is: one in a shadow tree is that element, not its host.                                                                                                                                                                                                                                                                                                            |
 | `hrefAt(x, y)`                                                                          | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `elementRect(element)`                                                                  | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. Null for an element with no box.                                                                                                                                          |
+| `elementRect(element)`                                                                  | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. A box fixed to the viewport, and what is in it, is where the scroll draws it. Null for an element with no box.                                                            |
 | `offsetRect(element)`                                                                   | Where an element is as `offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth` and `offsetHeight` measure it, laid out first — `{ parent, x, y, width, height }`: its offset parent, which is the nearest positioned, transformed or contained element around it, or a `<td>`, a `<th>` or a `<table>` around one that is not positioned, or the `<body>`; and its border box from that one's padding edge, in logical pixels, where layout put it before a transform or a scroll moved it. As Chrome has them where it parts from CSSOM View's words: see [Offsets](#offsets). Null for an element with no box. |
 | `scrollState(element)`                                                                  | Where a scroll container is scrolled to, how far it can be and its scrollport, in CSS pixels — `{ x, y, width, height, clientWidth, clientHeight, clientTop, clientLeft }`, what `scrollLeft`, `scrollTop`, `scrollWidth`, `scrollHeight` and their kin answer — laid out first. Null for an element that is no scroll container.                                                                                                                                                                                                                                                                                 |
 | `canvasChanged(element)`                                                                | A `<canvas>`'s picture (`canvasImage`) changed: repaint it where it is.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `setMediaState(el, state)`                                                              | Tell a `<video>`'s player what a script asked of it — `{ paused, muted, volume, playbackRate, currentTime }`, each only where it was set, `currentTime` a seek — as a page's `play()`, `pause()` and setters do. Kept for the element, so a player mounted later is told it too; see [Video](#video).                                                                                                                                                                                                                                                                                                             |
 | `scrollElementTo(element, { x?, y? })`                                                  | Scroll a scroll container to an offset in CSS pixels, an axis left out left where it is, kept within how far it can be, as a script sets `scrollTop`. Answers where it came to, or null.                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `title`                                                                                 | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -936,7 +937,29 @@ request: the player fetches it, not this component, and with whatever
 policy the platform's player has.
 
 `autoplay`, `loop` and `muted` are handed to the player as the markup has
-them. **The video takes its stream's size** once the player knows it, as
+them, until something asks otherwise. **What a page's script asks of a
+video is its player's**: `play()`, `pause()`, `muted`, `volume`,
+`playbackRate`, and a seek through `currentTime`, which [`scripts`](#scripts)
+hands to the handle's `setMediaState` and the player is told as core's
+`<video>` props — the same player, since none of them is in its key. Three
+things about it are decisions:
+
+- **It is kept for the element**, not the player: a video a page paused
+  while it was hidden — a tab's, behind another — is mounted paused when it
+  is shown. A player's `paused` is left to `autoplay` until something says,
+  and is the player's to keep from then on.
+- **The page is told what it asked, as HTML tells it** — `paused` at once,
+  `play`, `playing`, `pause`, `volumechange` and the seek's events in tasks
+  after, and `play()`'s promise kept, or turned down by a `pause()` that
+  came before its task, as Chrome's is. **Nothing comes back from the
+  player**: `currentTime` is where the page last sought, a video that ends
+  is not paused, and a press on one with `controls` is not told to the
+  page. An `autoplay` video reads as playing from the first.
+- **A press on a video with `controls` is kept the same way**, so a script
+  that pauses a video the press played changes what the player was told,
+  and pauses it.
+
+**The video takes its stream's size** once the player knows it, as
 HTML has it: a box that sets neither side is the video's size, and one that
 sets a side takes its ratio, where it was its poster's, or 300×150.
 
@@ -1197,7 +1220,8 @@ own click went on, `submitForm`, `reportValidity` and `resetForm` for a
 form's methods, `computedStyle` for `getComputedStyle` — `color-scheme`
 read as Chrome reads it, the schemes as written, or `normal` — and
 `customProperty` for its custom properties, `offsetRect` for the offset
-attributes, and `matchMedia` for `matchMedia`. `onParsed` is when the parse
+attributes, `setMediaState` for what a media element is asked to do, and
+`matchMedia` for `matchMedia`. `onParsed` is when the parse
 has ended, and `onLoaded` is `load`'s moment.
 
 #### Offsets
@@ -3178,11 +3202,19 @@ the scroll box it is measured by; one that reads none is not laid out again
 when only the height moved. A `position: fixed` box and a
 `background-attachment: fixed` background stay where that viewport is as
 the box scrolls the element: laid out against it at the document's top,
-drawn where it is now, and found there by the pointer. The element tells
+drawn where it is now, found there by the pointer, and measured there by
+`elementRect`, so a page's `getBoundingClientRect` reads a header fixed
+`top: 30px` at 30 however far it has scrolled, as Chrome does, and the link
+in it takes the focus where it is without scrolling the page back to its
+top. The element tells
 the scroll box what it draws that way (react-x11's `viewportFixedRects`),
 so a scroll that copies the pixels it can repaints those where they are
 rather than dragging a fixed header along with the text; a fixed
-background, behind the whole viewport, makes every scroll a repaint. A fragment has no
+background, behind the whole viewport, makes every scroll a repaint. A form
+control in a fixed box has its widget kept there too, by a position the
+component registers with core (`registerPosition`), which moves it with
+the box in the frame the pane scrolls, as core keeps a sticky header; the
+widget is not mounted again as the pane scrolls. A fragment has no
 root element, and its blocks have the body's `auto` height to resolve
 against.
 
@@ -3949,11 +3981,26 @@ combinator, its later siblings; in a `:has()`, the elements around it. Then:
   size went from 59 ms to 27, and a text changed from 66 to 21.
 
 Some changes are refreshes of everything however they are told: a
-stylesheet, a `<meta>` or a `<base>` changing; a document whose sheets
-reach across a shadow tree's edge — `:host`, `::slotted()`, `::part()` —
-which no index of a change reads; and a `:has()` whose element is not
-itself the one restyled — `.card:has(.x) .title`, `:has(+ .x)` — which
-reaches everything around its anchors. A document with shadow trees whose
+stylesheet coming, going or reading otherwise, a `<meta>` or a `<base>`
+changing, and a `:has()` that every element could be the element of and
+that reaches past it — `:has(.x) span`, with nothing else in its
+compound — or one inside `:nth-child(… of …)`. A `<link>` or a `<style>`
+is a stylesheet only as far as the cascade reads it: a bundler's `data-`
+mark on a sheet's `<link>`, an icon's `href`, a `<link rel="preload">`, or
+a sheet's `<link>` put in before its sheet is in — which is a change when
+the sheet comes — restyles what tests it, as any element's attribute
+would. A `:has()` restyles from the elements whose answer to it changed,
+found among those around the change — its ancestors, and where the
+argument starts at a sibling, `:has(+ .x)`, their earlier siblings — by the
+rest of the compound the `:has()` is in: `.card:has(.x) .title` restyles
+the cards around the change and what is in them. An attribute selector is
+a change only where it answers otherwise for the value the attribute had
+than for the one it has: Primer's `[class*=PricingOptions__item]` is no
+change of a heading's class, and made every class change on
+github.com/features a refresh of everything. A rule at a shadow tree's
+edge — `:host()`, `::slotted()`, `::part()` — reaches across it: what it
+tests reaches the element it is tested of and everything below it, in its
+shadow tree and its slots as well. A document with shadow trees whose
 rules stay inside them is told what changed as any other is: Next.js
 mounts one such tree on every page, its route announcer, and a page that
 paid for a refresh of everything at each change for it laid itself out

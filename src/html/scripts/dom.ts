@@ -4533,13 +4533,73 @@ export function installDom(
       setTimeout(() => callback?.(null), 0);
     }
   }
+  /**
+   * What a page asked of a media element, by its wrapper: whether it plays,
+   * whether it is muted, how loud and how fast, where it was sought to, and
+   * the promises `play()` handed out that no task has settled. A field the
+   * page never set is null, and is the markup's.
+   */
+  interface MediaAsk {
+    paused: boolean | null;
+    muted: boolean | null;
+    volume: number;
+    playbackRate: number;
+    time: number;
+    pending: { resolve: (v?: Any) => void; reject: (e: Any) => void }[];
+    /** How many times a `pause()` paused it: a `play()` whose task finds
+     *  another count was paused since. */
+    pauses: number;
+  }
+  const mediaAsks = new WeakMap<Any, MediaAsk>();
+  const askOf = (el: Any): MediaAsk => {
+    let ask = mediaAsks.get(el);
+    if (!ask) {
+      ask = {
+        paused: null,
+        muted: null,
+        volume: 1,
+        playbackRate: 1,
+        time: 0,
+        pending: [],
+        pauses: 0,
+      };
+      mediaAsks.set(el, ask);
+    }
+    return ask;
+  };
+  /** A media element's event, in a task of its own (HTML's "queue a media
+   *  element task"), on a timer of the facade's that no page replaces. */
+  const mediaTask = (fn: () => void): void => {
+    setTimer(fn, 0, [], false);
+  };
+  const fireMedia = (el: Any, type: string): void => {
+    const ev = new Event(type);
+    ev.isTrusted = true;
+    dispatch(el, ev);
+  };
+  /** A WebIDL `double`: a number that is finite, or a `TypeError`. */
+  const mediaNumber = (v: Any, name: string): number => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) {
+      throw new TypeError(
+        `Failed to set the '${name}' property on 'HTMLMediaElement': The provided double value is non-finite.`,
+      );
+    }
+    return n;
+  };
   class HTMLMediaElement extends HTMLElement {
     static readonly NETWORK_EMPTY = 0;
     static readonly HAVE_NOTHING = 0;
-    // a media element here never loads: at rest, before its first frame,
-    // as a browser has one that has not started (HTML 4.8.11)
+    // a media element here never loads (HTML 4.8.11): no data, no duration
+    // and no tracks. What it is told to do is the player's: `<Html>` mounts
+    // core's `<video>` over a video it can show, and hands it what the page
+    // asked here (`mediaState`), so `paused`, `muted`, `volume`,
+    // `playbackRate` and `currentTime` are what the page asked, and the
+    // events are the ones HTML fires as it asks.
+    /** Paused until the page plays it, but for one with `autoplay`, which
+     *  the player plays from the start. */
     get paused(): boolean {
-      return true;
+      return askOf(this).paused ?? !this.hasAttribute('autoplay');
     }
     get ended(): boolean {
       return false;
@@ -4556,18 +4616,64 @@ export function installDom(
     get duration(): number {
       return NaN;
     }
+    /** Where the page last sought to: nothing reports where the player
+     *  has come to since. */
     get currentTime(): number {
-      return 0;
+      return askOf(this).time;
     }
-    set currentTime(_v: Any) {}
-    volume = 1;
-    playbackRate = 1;
+    /** HTML 4.8.11.9, seeking: `seeking`, then `timeupdate` and `seeked`
+     *  once it is there. */
+    set currentTime(v: Any) {
+      const time = Math.max(0, mediaNumber(v, 'currentTime'));
+      askOf(this).time = time;
+      call('mediaState', this._id, 'currentTime', time);
+      mediaTask(() => {
+        fireMedia(this, 'seeking');
+        fireMedia(this, 'timeupdate');
+        fireMedia(this, 'seeked');
+      });
+    }
+    get volume(): number {
+      return askOf(this).volume;
+    }
+    set volume(v: Any) {
+      const volume = mediaNumber(v, 'volume');
+      if (volume < 0 || volume > 1) {
+        throw new DOMException(
+          `Failed to set the 'volume' property on 'HTMLMediaElement': The volume provided (${volume}) is outside the range [0, 1].`,
+          'IndexSizeError',
+        );
+      }
+      const ask = askOf(this);
+      if (ask.volume === volume) return;
+      ask.volume = volume;
+      call('mediaState', this._id, 'volume', volume);
+      mediaTask(() => fireMedia(this, 'volumechange'));
+    }
+    get playbackRate(): number {
+      return askOf(this).playbackRate;
+    }
+    set playbackRate(v: Any) {
+      const rate = mediaNumber(v, 'playbackRate');
+      const ask = askOf(this);
+      if (ask.playbackRate === rate) return;
+      ask.playbackRate = rate;
+      call('mediaState', this._id, 'playbackRate', rate);
+      mediaTask(() => fireMedia(this, 'ratechange'));
+    }
     defaultPlaybackRate = 1;
+    /** Its own state from the first, which the `muted` attribute only
+     *  starts it in (HTML 4.8.11.12): `defaultMuted` is the attribute. */
     get muted(): boolean {
-      return this.hasAttribute('muted');
+      return askOf(this).muted ?? this.hasAttribute('muted');
     }
     set muted(v: Any) {
-      this.toggleAttribute('muted', !!v);
+      const muted = !!v;
+      const was = this.muted;
+      // the page's from now on, whatever the attribute comes to say
+      askOf(this).muted = muted;
+      call('mediaState', this._id, 'muted', muted);
+      if (was !== muted) mediaTask(() => fireMedia(this, 'volumechange'));
     }
     get currentSrc(): string {
       return '';
@@ -4593,15 +4699,56 @@ export function installDom(
     get videoTracks(): Any {
       return trackListOf(this, VideoTrackList);
     }
+    /**
+     * HTML 4.8.11.8, the internal play steps, for media that is ready as
+     * soon as it is asked: playing at once, and in a task `play` where it
+     * was paused, then `playing` and the promise kept — unless a `pause()`
+     * came between, which turns the promise down.
+     */
     play(): Promise<void> {
-      return Promise.reject(
-        new DOMException(
-          'Media does not play from a script here.',
-          'NotSupportedError',
-        ),
-      );
+      const ask = askOf(this);
+      const was = this.paused;
+      const pauses = ask.pauses;
+      ask.paused = false;
+      call('mediaState', this._id, 'paused', false);
+      const promise = new Promise<void>((resolve, reject) => {
+        ask.pending.push({ resolve, reject });
+      });
+      mediaTask(() => {
+        if (was) fireMedia(this, 'play');
+        if (ask.pauses !== pauses) return;
+        if (was) fireMedia(this, 'playing');
+        const pending = ask.pending;
+        ask.pending = [];
+        for (const p of pending) p.resolve();
+      });
+      return promise;
     }
-    pause(): void {}
+    /** The internal pause steps: paused at once, and in a task
+     *  `timeupdate`, `pause` and the promises `play()` handed out before it
+     *  turned down, as Chrome turns them down. */
+    pause(): void {
+      const ask = askOf(this);
+      const was = this.paused;
+      ask.paused = true;
+      call('mediaState', this._id, 'paused', true);
+      if (was) return;
+      ask.pauses += 1;
+      const pending = ask.pending;
+      ask.pending = [];
+      mediaTask(() => {
+        fireMedia(this, 'timeupdate');
+        fireMedia(this, 'pause');
+        for (const p of pending) {
+          p.reject(
+            new DOMException(
+              'The play() request was interrupted by a call to pause().',
+              'AbortError',
+            ),
+          );
+        }
+      });
+    }
     load(): void {}
     canPlayType(): string {
       return '';
@@ -4615,6 +4762,11 @@ export function installDom(
       flag(name.toLowerCase()),
     );
   }
+  Object.defineProperty(
+    HTMLMediaElement.prototype,
+    'defaultMuted',
+    flag('muted'),
+  );
   for (const name of ['preload', 'crossOrigin']) {
     Object.defineProperty(
       HTMLMediaElement.prototype,
@@ -6201,6 +6353,14 @@ export function installDom(
     'pointerleave',
     'gotpointercapture',
     'lostpointercapture',
+    'play',
+    'playing',
+    'pause',
+    'timeupdate',
+    'seeking',
+    'seeked',
+    'volumechange',
+    'ratechange',
   ]) {
     const property = {
       get(this: Any): Any {

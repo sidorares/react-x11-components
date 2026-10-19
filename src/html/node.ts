@@ -36,7 +36,13 @@
 // What is reused from `<richtext>` is everything that was not about the
 // element: the `TextRun` vocabulary, the per-run decoration painter, and the
 // bidi-correct selection bands. See `src/richtext/runs.ts`.
-import { registerElement, registeredElements } from 'react-x11/host';
+import {
+  registerElement,
+  registeredElements,
+  registeredPositions,
+  registerPosition,
+} from 'react-x11/host';
+import type { PositionContext } from 'react-x11/host';
 import { Node } from 'react-x11/node';
 import type {
   Context2D,
@@ -70,9 +76,6 @@ import { cssomStyle } from './computed.js';
 import {
   Cascade,
   CHANGES_BELOW,
-  CHANGES_HAS_BELOW,
-  CHANGES_HAS_LATER,
-  CHANGES_HAS_SELF,
   CHANGES_LATER,
   CHANGES_SELF,
   HOVER_FOLLOWED,
@@ -83,6 +86,7 @@ import {
   NO_FOCUS,
 } from './css/cascade.js';
 import type {
+  ChangeAnchors,
   FocusState,
   HoverTouch,
   KeptStyles,
@@ -251,6 +255,7 @@ import {
 } from './paint.js';
 import type { PaintContext, PaintOptions, SpriteSource } from './paint.js';
 import {
+  AT_VIEWPORT,
   controlRectsOf,
   measureControl,
   shownBy,
@@ -270,6 +275,7 @@ import { ImageSources } from './srcset.js';
 import type { SourceChanges } from './srcset.js';
 import { atDensity } from './svg.js';
 import {
+  askMedia,
   cutByFixed,
   embeddedRectsOf,
   mediaRectsOf,
@@ -279,7 +285,9 @@ import {
 import type {
   Cover,
   EmbeddedRect,
+  MediaAsked,
   MediaRect,
+  MediaState,
   VideoCandidate,
 } from './media.js';
 import type { IntrinsicSize } from './svg.js';
@@ -433,6 +441,9 @@ export interface DocumentInteraction {
 }
 
 export function registerHtmlView(): void {
+  if (!registeredPositions().includes(AT_VIEWPORT)) {
+    registerPosition(AT_VIEWPORT, { place: placeAtViewport });
+  }
   if (registeredElements().includes(ELEMENT)) return;
   registerElement(ELEMENT, {
     create: (props, app) => new HtmlViewNode(props, app),
@@ -452,6 +463,28 @@ export function registerHtmlView(): void {
     selfDamagedProps: ['watchStops', 'onViewportScroll'],
     childrenAllowed: false,
   });
+}
+
+/**
+ * How far to move a box in the `AT_VIEWPORT` position from where layout
+ * put it: to where the element it is mounted beside draws its boxes fixed
+ * to the viewport from (`viewportOrigin`) — the element in the nearest box
+ * around it that holds one. Asked by core after every layout pass, the
+ * pass a scroll runs included, so a widget in a fixed header lands with
+ * the header in the frame that scrolled. The element is found by its kind,
+ * not its class, which a hot reload makes another.
+ */
+function placeAtViewport(
+  node: Node,
+  context: PositionContext,
+): { x: number; y: number } | null {
+  for (let at = node.parent; at; at = at.parent) {
+    const view = at.children.find((child) => child.kind === ELEMENT);
+    if (!view) continue;
+    const origin = (view as HtmlViewNode).viewportOrigin();
+    return { x: origin.x - context.laidOut.x, y: origin.y - context.laidOut.y };
+  }
+  return null;
 }
 
 /** How many times a layout's container sizes may build the boxes again
@@ -811,6 +844,11 @@ export class HtmlViewNode extends Node {
   /** Each video's size once its player knows it, in CSS pixels: its
    *  intrinsic size from then on, where its poster's was (HTML 4.8.11.6). */
   private _videoSizes = new WeakMap<Element, IntrinsicSize>();
+  /** What was asked of each video's player — by the page's scripts, or by
+   *  a press on one with `controls` (`setMediaState`) — laid over what its
+   *  markup says as it is reported. By element, so a player mounted again
+   *  is told it too. */
+  private _mediaAsked = new WeakMap<Element, MediaAsked>();
   /** The sources each video chose between, and what it chose them from
    *  (`_videoChoice`). */
   private _videoChoices = new WeakMap<
@@ -2946,9 +2984,11 @@ export class HtmlViewNode extends Node {
     const report = this._props().onMedia;
     if (!tree || !report) return;
     const fixed = FIXED_BOXES.get(tree);
-    const rects = this._mediaLaid.map((laid) =>
-      this._viewportRect(laid, fixed),
-    );
+    const rects = this._mediaLaid.map((laid) => {
+      const rect = this._viewportRect(laid, fixed);
+      const asked = this._mediaAsked.get(rect.element);
+      return asked ? { ...rect, ...asked } : rect;
+    });
     if (sameMedia(rects, this._media)) return;
     this._media = rects;
     report(rects);
@@ -3098,6 +3138,22 @@ export class HtmlViewNode extends Node {
     );
     this._videoChoices.set(el, { signature, candidates });
     return candidates;
+  }
+
+  /**
+   * What a media element's player is told to do, as a page's script asks
+   * it — `play()` and `pause()`, `muted`, `volume`, `playbackRate`, a seek
+   * through `currentTime` — kept for the element, and reported with its
+   * player at once where it has one, and when it is mounted where not.
+   */
+  setMediaState(element: Element, state: MediaState): void {
+    this._mediaAsked.set(
+      element,
+      askMedia(this._mediaAsked.get(element), state),
+    );
+    if (this._mediaLaid.some((r) => r.element === element)) {
+      this._publishMedia();
+    }
   }
 
   /**
@@ -3276,7 +3332,7 @@ export class HtmlViewNode extends Node {
     if (scripted) this._invalidate(Stale.Style);
     if (
       next.look !== prev.look ||
-      next.stylesheet !== prev.stylesheet ||
+      !sameStylesheets(next.stylesheet, prev.stylesheet) ||
       next.charset !== prev.charset ||
       // a page's `prefers-reduced-motion` rules hold or fail now, as its
       // `prefers-color-scheme` rules do when the palette changes
@@ -3554,8 +3610,9 @@ export class HtmlViewNode extends Node {
    * it holds, and its own padding and border where it starts or ends — its
    * border box across, as `getBoundingClientRect` is (CSSOM View 6.1) — and
    * as tall as its lines; or where its text would start when it has none,
-   * as `<a name>` has none. Null for an element with no box — `display:
-   * none`, or not in the document.
+   * as `<a name>` has none. A box fixed to the viewport, and what is in it,
+   * where the pane's scroll draws it (`_moveToViewport`). Null for an
+   * element with no box — `display: none`, or not in the document.
    */
   elementRect(element: Element): Rect | null {
     this._prepare(this.abs.width || 1);
@@ -3703,36 +3760,23 @@ export class HtmlViewNode extends Node {
    *  them where they show none of it (`shownBy`): a stop is mounted beside
    *  the document, and one at a link a scroll container holds out of sight
    *  would make the box that scrolls the document reach down to it. The
-   *  rect is logical and `clipFor` speaks device pixels, so the clip is
-   *  asked in device pixels and brought back: mixed, a stop a clip hid was
+   *  clip is asked in device pixels where the element was laid out, as
+   *  `clipFor`'s boxes are, and both are brought back and moved to the
+   *  viewport after (`_moveToViewport`): mixed, a stop a clip hid was
    *  placed at twice its distance at 2x, and the Zen Garden's 214 scrolled
    *  sideways into nothing to reach it. */
   private _stopRectOf(element: Element): Rect | null {
-    const rect = this._rectOf(element);
     const tree = this._tree;
-    if (!rect || !tree) return rect;
+    const at = tree ? boxOf(tree, element) : null;
+    const drawn = tree && at ? this._drawnRect(tree, at, false) : null;
+    if (!tree || !at || !drawn) return null;
+    const rect = this._moveToViewport(at, drawn);
     const box =
       CANDIDATES.get(tree)?.byElement.get(element) ??
       boxFor(tree.root, element);
-    const s = this._scale;
-    const cut =
-      box &&
-      clipFor(
-        box,
-        {
-          x: rect.x * s,
-          y: rect.y * s,
-          width: rect.width * s,
-          height: rect.height * s,
-        },
-        s,
-      );
+    const cut = box && clipFor(box, drawn, this._scale);
     if (!cut) return rect;
-    const c = cut.rect;
-    return shownBy(
-      { x: c.x / s, y: c.y / s, width: c.width / s, height: c.height / s },
-      rect,
-    );
+    return shownBy(this._moveToViewport(at, cut.rect), rect);
   }
 
   /** The link an element is — its `href`, resolved as a click on it is
@@ -3763,18 +3807,38 @@ export class HtmlViewNode extends Node {
   private _rectOf(element: Element, first = false): Rect | null {
     const tree = this._tree;
     const box = tree ? boxOf(tree, element) : null;
-    const fragments = tree && box ? this._fragmentsOf(tree, box) : null;
-    if (!box || !fragments) return null;
-    // where it is drawn: the rectangle around it, turned and scaled as the
-    // boxes it is in are, and itself (`getBoundingClientRect`, CSSOM View)
-    const rect = throughTransforms(
-      first ? fragments.first : fragments.all,
-      box,
-    );
+    const rect = tree && box ? this._drawnRect(tree, box, first) : null;
+    return rect && this._moveToViewport(box!, rect);
+  }
+
+  /**
+   * Where a box is drawn, in device pixels in the coordinates it was laid
+   * out in: the rectangle around its fragments, or its first, turned and
+   * scaled as the boxes it is in are, and itself (`getBoundingClientRect`,
+   * CSSOM View). Null where it has none (`_fragmentsOf`).
+   */
+  private _drawnRect(tree: BoxTree, box: Box, first: boolean): Rect | null {
+    const fragments = this._fragmentsOf(tree, box);
+    if (!fragments) return null;
+    return throughTransforms(first ? fragments.first : fragments.all, box);
+  }
+
+  /**
+   * A rectangle `_drawnRect` measured, in the document's logical pixels as
+   * the element is painted now: moved by the scroll of the pane that
+   * scrolls the element where the box is fixed to the viewport or in one
+   * that is, as paint draws it where the viewport is (`atViewport`) and
+   * the hit test finds it there (`_fixedShift`). Measured where it was
+   * laid out, a fixed header `top: 30px` on a page scrolled 500px read
+   * -470 to a script's `getBoundingClientRect`, where Chrome reads 30.
+   */
+  private _moveToViewport(box: Box, rect: Rect): Rect {
+    const shift = this._fixedShift();
+    const moved = shift && drawnAtViewport(box);
     const s = this._scale;
     return {
-      x: rect.x / s,
-      y: rect.y / s,
+      x: (rect.x + (moved ? shift.x : 0)) / s,
+      y: (rect.y + (moved ? shift.y : 0)) / s,
       width: rect.width / s,
       height: rect.height / s,
     };
@@ -3998,6 +4062,19 @@ export class HtmlViewNode extends Node {
     if (!tree) return null;
     const local = this._toDocument(x, y);
     return deepestAt(tree, local.x, local.y, undefined, this._fixedShift());
+  }
+
+  /**
+   * Where the document draws its boxes fixed to the viewport from, in the
+   * window's device pixels: the viewport of the pane that scrolls the
+   * element, or the element's own top left where nothing does (`_paint`'s
+   * `viewport`, `atViewport`). A box fixed to the viewport is laid out at
+   * the document's top and drawn this far from here. What core keeps the
+   * widgets of the controls in such a box at (`AT_VIEWPORT`).
+   */
+  viewportOrigin(): { x: number; y: number } {
+    const at = this._viewport() ?? this.abs;
+    return { x: at.x, y: at.y };
   }
 
   /** How far a box fixed to the viewport is drawn from where it was laid
@@ -5870,6 +5947,7 @@ export class HtmlViewNode extends Node {
       boxes: false,
       drawings: new Set(),
       pseudo: HOVER_PSEUDO_NONE,
+      anchored: new Map(),
     };
     const unchanged = unchangedAttributes(changes);
     for (const change of changes) {
@@ -5901,8 +5979,13 @@ export class HtmlViewNode extends Node {
     }
     if (change.type === 'attributes') {
       const el = change.target;
-      if (CASCADE_TAGS.has(tagOf(el))) return false;
       const name = change.attributeName.toLowerCase();
+      if (
+        changesCascade(el, name) &&
+        !(SHEET_TAGS.has(tagOf(el)) && this._sheetsKept(el, scope))
+      ) {
+        return false;
+      }
       const reach = cascade.attributeChange(
         name,
         change.oldValue,
@@ -5910,26 +5993,24 @@ export class HtmlViewNode extends Node {
       );
       if (!reach) return false;
       let bits = reach.bits;
+      const anchors = reach.anchors;
       // Something the boxes read of the element besides its style — a
       // source, a value, a span, a label — or a hint its style takes, or
       // what is in it takes: a table's `cellpadding` is its cells'.
       const quiet = STYLE_ONLY_ATTRIBUTE.test(name);
       if (!quiet) bits |= CHANGES_SELF | CHANGES_BELOW;
       else if (name === 'style') bits |= CHANGES_SELF;
-      if (!bits) return true;
-      // under an element nothing draws, nothing it reaches is drawn
-      if (!(bits & CHANGES_AROUND) && el.parent && isElement(el.parent)) {
+      if (!bits && !anchors) return true;
+      // under an element nothing draws, nothing it reaches is drawn — but
+      // a `:has()` it changes the answer to is around it
+      if (!anchors && el.parent && isElement(el.parent)) {
         if (undrawn(el.parent, tree)) return true;
       }
       if (!quiet) scope.boxes = true;
       if (reach.pseudo > scope.pseudo) scope.pseudo = reach.pseudo;
-      return spreadChange(
-        el,
-        bits,
-        false,
-        scope.own,
-        cascade.changesCrossTrees,
-      );
+      const crossing = cascade.changesCrossTrees;
+      spreadChange(el, bits, false, scope.own, crossing);
+      return !anchors || spreadAnchors(el, false, anchors, scope, crossing);
     }
     // What an element holds: its children, or a text's data. A comment is
     // nothing a selector counts — not an element, and no text — and draws
@@ -5941,13 +6022,23 @@ export class HtmlViewNode extends Node {
     // with nothing above it in its tree for a selector to read
     const root = parent instanceof ShadowRoot ? parent : null;
     if (!parent || (!root && !isElement(parent))) return false;
-    if (!root && CASCADE_TAGS.has(tagOf(parent as Element))) return false;
+    if (
+      !root &&
+      CASCADE_TAGS.has(tagOf(parent as Element)) &&
+      !(tagOf(parent as Element) === 'style' && this._sheetsKept(parent, scope))
+    ) {
+      return false;
+    }
     let drawn = false;
     if (change.type === 'childList') {
       let counted = false;
       for (const nodes of [change.addedNodes, change.removedNodes]) {
         for (const node of nodes) {
-          if (holdsCascade(node)) return false;
+          const held = cascadeHeld(node);
+          if (held === HELD_PRAGMA) return false;
+          if (held === HELD_SHEET && !this._sheetsKept(parent, scope)) {
+            return false;
+          }
           if (node.type !== 'comment') counted = true;
           if (drawsSomething(node)) drawn = true;
         }
@@ -5956,11 +6047,12 @@ export class HtmlViewNode extends Node {
     } else if (change.target.type === 'comment') {
       return true;
     } else drawn = true;
-    const bits = cascade.treeChange(change.type === 'characterData');
-    if (bits === null) return false;
-    if (!drawn && !bits) return true;
+    const reach = cascade.treeChange(change.type === 'characterData');
+    if (!reach) return false;
+    const { bits, anchors } = reach;
+    if (!drawn && !bits && !anchors) return true;
     const holder = root ? root.host : (parent as Element);
-    if (!(bits & CHANGES_AROUND) && undrawn(holder, tree)) return true;
+    if (!anchors && undrawn(holder, tree)) return true;
     if (drawn) scope.boxes = true;
     const crossing = cascade.changesCrossTrees;
     if (change.type === 'childList') {
@@ -5970,8 +6062,46 @@ export class HtmlViewNode extends Node {
         if (isElement(node)) addSubtree(node, scope.own, crossing);
       }
     }
-    if (root) return spreadRootChange(root, bits, scope.own, crossing);
-    return spreadChange(parent as Element, bits, true, scope.own, crossing);
+    if (root) spreadRootChange(root, bits, scope.own, crossing);
+    else spreadChange(parent as Element, bits, true, scope.own, crossing);
+    return (
+      !anchors ||
+      spreadAnchors(root ?? (parent as Element), true, anchors, scope, crossing)
+    );
+  }
+
+  /**
+   * Whether a change to a sheet's element — a `<style>`, a `<link>` — at
+   * `at`, or one put in or taken away there, leaves the cascade as it is:
+   * where it is in the document's tree and its sheets read as the
+   * cascade's were read (`_sameSheets`, which
+   * `_restyle` asks to keep the cascade). A `<link>` a script puts in for
+   * a sheet that is not in yet is no change until the sheet comes, which
+   * is one then (`ResourceStore._changed`): GitHub's chunks bring their CSS
+   * modules so, five at a time. A shadow tree's sheets are bound to it by
+   * how they read, and a `<meta>` or a `<base>` is no sheet: both are a
+   * change to the cascade whatever they read.
+   */
+  private _sheetsKept(at: AnyNode, scope: ChangeScope): boolean {
+    for (let up: AnyNode | null = at; up; up = up.parent) {
+      if (up instanceof ShadowRoot) return false;
+    }
+    scope.sheetsAsRead ??= this._sheetsAsRead();
+    return scope.sheetsAsRead;
+  }
+
+  /** Whether the document's sheets read as the cascade's were read
+   *  (`_sheetsKept`). */
+  private _sheetsAsRead(): boolean {
+    const kept = this._sheetsRead;
+    if (!kept || kept.cascade !== this._cascade) return false;
+    const extra = this._props().stylesheet;
+    const extras = Array.isArray(extra) ? extra : extra ? [extra] : [];
+    return this._sameSheets(
+      kept,
+      this._readSheets(this._source.facts().sheets),
+      extras,
+    );
   }
 
   /**
@@ -7288,6 +7418,7 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.colorScheme !== q.colorScheme ||
       p.opacity !== q.opacity ||
       p.placeholderColor !== q.placeholderColor ||
+      p.atViewport !== q.atViewport ||
       !sameClip(p.clip, q.clip) ||
       !sameBare(p.bare, q.bare)
     ) {
@@ -7320,6 +7451,10 @@ function sameMedia(a: MediaRect[], b: MediaRect[]): boolean {
       p.muted !== q.muted ||
       p.controls !== q.controls ||
       p.label !== q.label ||
+      p.paused !== q.paused ||
+      p.volume !== q.volume ||
+      p.playbackRate !== q.playbackRate ||
+      p.seek?.count !== q.seek?.count ||
       !sameClip(p.clip, q.clip) ||
       !sameClip(p.over, q.over)
     ) {
@@ -8377,18 +8512,83 @@ function compareKeys(a: readonly number[], b: readonly number[]): number {
  *  that matches a container reaches everything in it. */
 const HOVER_RESTYLE_LIMIT = 300;
 
+/**
+ * Whether two `stylesheet` props hold the same sheets in the same order. An
+ * array made again at each render is no change of them: `<Html scripts>`
+ * merges the sheets a page adopted into the application's at every render,
+ * and github.com, which adopts some, was styled whole at each of the forty
+ * renders of its load, inside its scripts' tasks at their next layout read.
+ */
+function sameStylesheets(
+  a: string | string[] | undefined,
+  b: string | string[] | undefined,
+): boolean {
+  if (a === b) return true;
+  const x = Array.isArray(a) ? a : a ? [a] : [];
+  const y = Array.isArray(b) ? b : b ? [b] : [];
+  return x.length === y.length && x.every((sheet, i) => sheet === y[i]);
+}
+
 /** What a list of changes to the tree can restyle (`_changeScope`). */
 interface ChangeScope {
   own: Set<Element>;
   boxes: boolean;
   drawings: Set<Element>;
   pseudo: 0 | 1 | 2;
+  /** The elements each set of anchors has been asked about, which one
+   *  answers alike for every change of a list (`spreadAnchors`). */
+  anchored: Map<ChangeAnchors, Set<Element>>;
+  /** Whether the document's sheets read as the cascade's were, asked once
+   *  a list where a change is a sheet's element's (`_sheetsAsRead`). */
+  sheetsAsRead?: boolean;
 }
 
 /** The elements whose changes are changes to the cascade: a sheet's, what
  *  the root's colour scheme and the document's language are read from,
  *  and what every URL resolves against. */
 const CASCADE_TAGS = new Set(['style', 'link', 'meta', 'base']);
+
+/**
+ * Whether a change of an attribute of one of `CASCADE_TAGS` is one to the
+ * cascade: one of those its sheets, its pragmas and its base are read from
+ * (`DocumentSource.facts`, `metaColorScheme`, `pragmaLanguage`) — a
+ * `<style>`'s `media`, a sheet's `<link>`'s `href` and `media` and any
+ * `<link>`'s `rel`, a `<meta>`'s, a `<base>`'s `href`. Any other is an
+ * attribute as any element's is: a bundler marks the `<link>` it is
+ * loading (rspack's `data-rspack-loading`), and GitHub sets its icon's
+ * `href` at every change of scheme. Anything new read of these elements
+ * joins this, or a change of it leaves the document as it was.
+ */
+function changesCascade(el: Element, name: string): boolean {
+  switch (tagOf(el)) {
+    case 'style':
+      return name === 'media';
+    case 'link':
+      return (
+        name === 'rel' ||
+        ((name === 'href' || name === 'media') && isSheetLink(el))
+      );
+    case 'meta':
+      return (
+        name === 'name' ||
+        name === 'content' ||
+        name === 'http-equiv' ||
+        name === 'charset'
+      );
+    case 'base':
+      return name === 'href';
+    default:
+      return false;
+  }
+}
+
+/** Whether a `<link>` is a sheet's, as `DocumentSource.facts` reads it. */
+function isSheetLink(el: Element): boolean {
+  return (attr(el, 'rel') ?? '')
+    .toLowerCase()
+    .split(/\s+/)
+    .includes('stylesheet');
+}
 
 /** The attributes nothing reads but the cascade, where a selector tests
  *  them, and an inline style: a change of one builds no box where it
@@ -8433,10 +8633,6 @@ function unchangedAttributes(
   return out;
 }
 
-/** A change's reach through a `:has()`: past what is in the element that
- *  changed and what follows it. */
-const CHANGES_AROUND = CHANGES_HAS_SELF | CHANGES_HAS_BELOW | CHANGES_HAS_LATER;
-
 /** Whether a node is in `document`, or in a shadow tree of an element that
  *  is. */
 function inDocument(node: AnyNode, document: Document): boolean {
@@ -8458,18 +8654,32 @@ function drawingAround(node: AnyNode): Element | null {
   return found;
 }
 
-/** Whether a node is, or holds, an element whose change is the cascade's
- *  (`CASCADE_TAGS`). */
-function holdsCascade(node: AnyNode): boolean {
-  if (!isElement(node)) return false;
+/** What a node is, or holds, of `CASCADE_TAGS`: nothing, a sheet's element
+ *  (`HELD_SHEET`) — a `<style>`, a sheet's `<link>`, and not the `<link
+ *  rel="preload">` a page's scripts put in for every chunk they load — or a
+ *  `<meta>` or a `<base>` (`HELD_PRAGMA`), the most it holds. */
+function cascadeHeld(node: AnyNode): number {
+  if (!isElement(node)) return HELD_NOTHING;
+  let held = HELD_NOTHING;
   const stack: Element[] = [node];
   while (stack.length) {
     const el = stack.pop()!;
-    if (CASCADE_TAGS.has(tagOf(el))) return true;
+    const tag = tagOf(el);
+    if (tag === 'meta' || tag === 'base') return HELD_PRAGMA;
+    if (tag === 'style' || (tag === 'link' && isSheetLink(el))) {
+      held = HELD_SHEET;
+    }
     for (const child of el.children) if (isElement(child)) stack.push(child);
   }
-  return false;
+  return held;
 }
+
+const HELD_NOTHING = 0;
+const HELD_SHEET = 1;
+const HELD_PRAGMA = 2;
+
+/** The elements of `CASCADE_TAGS` a sheet is read from. */
+const SHEET_TAGS = new Set(['style', 'link']);
 
 /** Whether a node coming or going changes what is drawn: anything but a
  *  comment, or an element nothing draws whatever the sheets say. A text
@@ -8562,8 +8772,7 @@ function withDescendants(
  * changed (`CHANGES_*`), into `own`: from `el`, whose attribute changed, or
  * whose children or text did where `holder` — for which a selector's
  * subject is `el` itself (`:empty`) or each of its children
- * (`:first-child`). False where a `:has()` reaches past its anchors, which
- * would be everything around them.
+ * (`:first-child`).
  */
 function spreadChange(
   el: Element,
@@ -8571,8 +8780,7 @@ function spreadChange(
   holder: boolean,
   own: Set<Element>,
   crossing = false,
-): boolean {
-  if (bits & (CHANGES_HAS_BELOW | CHANGES_HAS_LATER)) return false;
+): void {
   if (bits & CHANGES_SELF) {
     own.add(el);
     if (holder) {
@@ -8590,30 +8798,70 @@ function spreadChange(
       if (isElement(s)) addSubtree(s, own, crossing);
     }
   }
-  if (bits & CHANGES_HAS_SELF) {
-    // the anchors are around what changed: an attribute's element is no
-    // `:has()`'s anchor for itself, and a holder is for what it holds
-    if (holder) own.add(el);
-    for (let at = el.parent; at && isElement(at); at = at.parent) own.add(at);
-  }
-  return true;
 }
 
 /** `spreadChange` for what the top of a shadow tree holds changing: each
- *  thing in it is a selector's subject as a holder's children are, and
- *  nothing is above it in its tree for a `:has()` to anchor at. */
+ *  thing in it is a selector's subject as a holder's children are. */
 function spreadRootChange(
   root: ShadowRoot,
   bits: number,
   own: Set<Element>,
   crossing = false,
-): boolean {
-  if (bits & (CHANGES_HAS_BELOW | CHANGES_HAS_LATER)) return false;
+): void {
   for (const child of root.children) {
     if (!isElement(child)) continue;
     if (bits & (CHANGES_BELOW | CHANGES_LATER)) {
       addSubtree(child, own, crossing);
     } else if (bits & CHANGES_SELF) own.add(child);
+  }
+}
+
+/**
+ * What a change reaches through the `:has()`s whose answer it can change
+ * (`anchors`), into `scope.own`: from each element that may be one's, and
+ * matches the compound the `:has()` is in, as that compound's place in its
+ * selector says (`spreadChange`). Those are the elements around `el` —
+ * itself and its ancestors, which a `:has()` looks down from; the earlier
+ * siblings of each, where an argument starts at a sibling; and what a
+ * holder holds, which were the earlier siblings of what came or went.
+ * Where what changed is read inside the element too, as `:lang()` and
+ * `:disabled` read theirs, one inside it may be one's as well, which a
+ * change of such an attribute restyles with everything else in it — none
+ * is style-only. False where a compound cannot be asked.
+ *
+ * A `:has()` asks what is in its element's tree, so the walk up stops at
+ * the top of one. Each element is asked once a list of changes for each
+ * set of anchors (`scope.anchored`), which answers it alike every time.
+ */
+function spreadAnchors(
+  el: Element | ShadowRoot,
+  holder: boolean,
+  anchors: ChangeAnchors,
+  scope: ChangeScope,
+  crossing: boolean,
+): boolean {
+  let asked = scope.anchored.get(anchors);
+  if (!asked) scope.anchored.set(anchors, (asked = new Set()));
+  const from = (at: Element): boolean => {
+    if (asked.has(at)) return true;
+    asked.add(at);
+    const bits = anchors.at(at);
+    if (bits === null) return false;
+    if (bits) spreadChange(at, bits, false, scope.own, crossing);
+    return true;
+  };
+  const top = el instanceof ShadowRoot ? null : el;
+  for (let at: AnyNode | null = top; at && isElement(at); at = at.parent) {
+    if (!from(at)) return false;
+    if (!anchors.siblings) continue;
+    for (let s = at.prev; s; s = s.prev) {
+      if (isElement(s) && !from(s)) return false;
+    }
+  }
+  if (holder && anchors.siblings) {
+    for (const child of el.children) {
+      if (isElement(child) && !from(child)) return false;
+    }
   }
   return true;
 }

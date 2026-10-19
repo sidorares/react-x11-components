@@ -1635,10 +1635,35 @@ one missing there reads nothing, which is right only for one css-select
 refuses, since that drops the rule. **An attribute anything but the
 cascade reads is out of `STYLE_ONLY_ATTRIBUTE`** — a source, a value, a
 label, a hint whose style reaches the element's descendants — and builds
-the boxes, restyling the element and what is in it. And **a `:has()` that
-reaches past its anchors, a shadow tree, or a sheet, a `<meta>` or a
-`<base>` changing is a refresh of everything**: the scope says null, and
-nothing is skipped. A shadow tree attached is one; a rule at a tree's edge
+the boxes, restyling the element and what is in it. **A key in a
+`:has()`'s argument reaches the elements whose answer changed, found by
+the `:has()`'s compound** (`HasAnchor`, `spreadAnchors`): the element that
+changed and its ancestors, their earlier siblings where the argument
+starts at a sibling, and what a holder holds, each asked whether it
+matches the compound with nothing in it a change can change the answer to
+(`stableCompound`: its type, classes, ids and attribute tests). So
+**anything a compound reads besides an element's own name and attributes
+stays out of its anchor** — a pseudo-class reads its place, what it holds
+or the pointer, and the anchor is asked after the change — and **no walk
+goes down**: a key read inside its element too (`PSEUDO_INHERITED`,
+`:lang()`, `:dir()`) is the attribute of none that is style-only, so a
+change of it restyles the element and everything in it, wherever the
+element whose `:has()` it changed is. Make one style-only and that walk is
+owed. **An attribute selector is a key of its own** (`v:`), asked of the
+value its attribute had and has by css-select itself (`Cascade._flips`),
+which made Primer's `[class*=…]` and its `:has(~ …)` no change of every
+class on github.com/features. **A sheet's element is a change to the
+cascade only where the sheets read otherwise** (`_sheetsKept`, over the
+`_sameSheets` that `_restyle` asks to keep the cascade) — a `<link>` put
+in before its sheet is in is a change when the sheet comes — and
+`changesCascade` lists the attributes `DocumentSource.facts` reads of
+them: anything new read there joins it. A `<meta>`, a `<base>`, a sheet in
+a shadow tree, a `:has()` every element could anchor that reaches past it
+(`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)` are refreshes of
+everything: the scope says null, and nothing is skipped. And the
+`stylesheet` prop is compared by the sheets it holds: `<Html scripts>`
+merges a page's adopted sheets into it at every render, and github.com
+was styled whole some sixty times a load. A shadow tree attached is one; a rule at a tree's edge
 — `:host()`, `:host-context()`, `::slotted()`, `::part()` — is not: every
 key it tests is read as reaching the element it is tested of and all below
 it (`MutationRules.noteEdge`), and while one is in the cascade a change
@@ -1920,6 +1945,18 @@ closes a way out a DOM binding opens by accident:
   custom elements hear nothing of it. `:defined` is the cascade's
   (`isDefinedElement`), told of an upgrade as a change of `-rx-defined`, an
   attribute no element has.
+- **What a page asks of a media element is the player's, kept by
+  element.** `play()`, `pause()`, `muted`, `volume`, `playbackRate` and a
+  seek are the facade's state (`mediaAsks`) and one `mediaState` op each;
+  `<Html>` keeps them for the element (`setMediaState`), lays them over
+  the markup's in each `MediaRect`, and `videos.ts` hands them to core's
+  `<video>` as props that tell the player it has — never in the key, which
+  would make a new player. Kept by element, so a hidden video a page paused
+  is mounted paused, and `paused` is left out until something says, so
+  `autoplay` still plays. **Anything new that tells a player what to do
+  goes through `setMediaState`**, a press on `controls` included, or the
+  next prop a script sets is no change and the player is not told.
+  Nothing comes back from the player to the page yet.
 - **A module is linked once and evaluated once** (`_linked`, `_evaluated`),
   however many `import()`s wait on it — the runtime allows each only once,
   and two concurrent imports handed a module mid-evaluation read its
@@ -1944,7 +1981,10 @@ closes a way out a DOM binding opens by accident:
   against the IDL, is a quick way to find the next one.
 - **A page's geometry is in two places, and a read takes the one its
   attribute names.** `getBoundingClientRect` is `elementRect`, drawn
-  through every transform and moved by every scroll; `offsetLeft` and its
+  through every transform and moved by every scroll, a box fixed to the
+  viewport and what is in it moved where the pane's scroll draws them
+  (`_moveToViewport`), as paint and the hit test move them; a header fixed
+  `top: 30px` read -470 on a page scrolled 500px. `offsetLeft` and its
   kin are `offsetRect`, where layout put the box before either, from the
   offset parent's padding edge. Primer's `<Tabs>` slides a pill under a
   tab in a strip that scrolls by its `offsetLeft`, and the document's x
@@ -3025,7 +3065,22 @@ focus stop at its own place in a scroll container's hidden overflow made
 the page that much taller — up.com.au's, nine thousand pixels. A clip that
 empties is kept inside the box that emptied it (`clipFor`'s `cut`), and a
 mount and a stop are placed inside their clips (`shownBy`); anything new
-mounted beside the document goes through one or the other.
+mounted beside the document goes through one or the other. **And what is
+mounted for a box fixed to the viewport goes in a box core keeps there**
+(`AT_VIEWPORT`, a position `registerHtmlView` registers with core's
+`registerPosition`): the document draws such a box where the pane's
+viewport is however far it has scrolled, and a widget mounted at its rect,
+at the document's top, scrolled away with the text from a fixed header
+that stayed. Core moves the box in the pass a scroll runs, as it moves a
+sticky header, so the widget lands with the header in the frame that
+scrolled and React hears nothing of the scroll. Reported again at paint,
+as `_publishMedia` re-cuts the players, it landed a frame late and
+rendered every widget at every frame of a scroll. The positioned box is
+inside a box at the element's corner (`atViewport` in `widgets.ts`): a
+position moves a box laid out in the flow, and a pane reaches as far as
+its content is laid out, not as far as it was moved, so in the flow after
+the element it sat at the document's foot and the page scrolled that much
+past its end to the widget.
 
 **A scroll container scrolls by moving its content, as `position:
 relative` does** (`layout/scroll.ts`). After layout, `applyScrollOffsets`

@@ -15,7 +15,7 @@ import {
   userEvent,
   waitForPixel,
 } from 'react-x11/test';
-import { ThemeProvider } from 'react-x11';
+import { ThemeProvider, createVideoFrames, useApp } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
 
 import { Html, shadowRootOf, useHtmlHandle } from '../../src/html/index.js';
@@ -74,12 +74,23 @@ interface Hosted {
   text(id: string): string;
   /** The pane the page is in scrolled, as the browser's tells it. */
   scrolled(): void;
+  /** The scroll pane around the page, where `pane` asked for one. */
+  pane: ScrollPane | null;
+}
+
+/** A scroll pane of core's, as `hosted` puts a page in one. */
+interface ScrollPane {
+  scrollTo(to: number | { x?: number; y?: number }): void;
+  scrollX: number;
+  scrollY: number;
 }
 
 /** A page whose scripts run, with stand-ins for the network and the pane:
  *  `scripts` answers a script's URL, `answer` a `fetch`, `sheets` a
  *  stylesheet's, by its file's name, or `held` when the test lets it go;
- *  `scheme` is the palette's. */
+ *  `videos` a video's, with a sink; `scheme` is the palette's. `pane`
+ *  puts the page in a scroll pane that tall, as the browser's is, whose
+ *  scroll the page's viewport is. */
 async function hosted(
   source: string,
   options: {
@@ -87,7 +98,9 @@ async function hosted(
     answer?: (request: FetchRequest) => FetchResponse | null;
     sheets?: Record<string, string>;
     held?: HeldSheets;
+    videos?: boolean;
     scheme?: 'light' | 'dark';
+    pane?: number;
   } = {},
 ): Promise<Hosted> {
   const out = {
@@ -96,21 +109,22 @@ async function hosted(
     submitted: [] as FormSubmission[],
     timeouts: 0,
     fetched: [] as FetchRequest[],
+    pane: null,
   } as Hosted;
   const seams: ScriptsOptions = {
     userAgent: 'test',
     language: 'en-US',
     viewport: () => ({
       width: 400,
-      height: 300,
-      scrollX: 0,
-      scrollY: 0,
+      height: options.pane ?? 300,
+      scrollX: out.pane?.scrollX ?? 0,
+      scrollY: out.pane?.scrollY ?? 0,
       zoom: 1,
       dpr: 1,
       left: 0,
       top: 0,
     }),
-    scrollTo: () => {},
+    scrollTo: (x, y) => out.pane?.scrollTo({ x, y }),
     navigate: (url) => void out.links.push(url),
     reload: () => {},
     go: () => {},
@@ -128,6 +142,7 @@ async function hosted(
     },
   };
   function Page() {
+    const app = useApp();
     const handle = useHtmlHandle();
     out.handle = handle;
     const scripts = useScripts(true, handle, PAGE, seams);
@@ -153,6 +168,12 @@ async function hosted(
         }
       },
       onResource: ({ url, kind }: ResourceRequest) => {
+        if (options.videos && kind === 'video') {
+          return {
+            kind,
+            frames: createVideoFrames(app, { width: 16, height: 16 }),
+          };
+        }
         if (options.held && kind === 'stylesheet') {
           return options.held.ask(url.slice(url.lastIndexOf('/') + 1));
         }
@@ -172,7 +193,23 @@ async function hosted(
     h(
       ThemeProvider,
       { colorScheme: options.scheme ?? 'light' } as Record<string, unknown>,
-      h('box', { style: { width: 400, flexDirection: 'column' } }, h(Page)),
+      h(
+        'box',
+        {
+          style: {
+            width: 400,
+            flexDirection: 'column',
+            ...(options.pane !== undefined && {
+              height: options.pane,
+              overflow: 'scroll',
+            }),
+          },
+          ref: (node: ScrollPane | null) => {
+            if (options.pane !== undefined) out.pane = node;
+          },
+        },
+        h(Page),
+      ),
     ),
     FONTS ? { width: 440, height: 400, fonts: FONTS } : { backend: 'mock' },
   );
@@ -1381,6 +1418,105 @@ test('blobs, files, form data and the media a page reads at rest', async () => {
   );
 });
 
+test("a video's play() and pause() are its player's, and paused, the events and the promise are what the page asked", async () => {
+  const doc = await hosted(
+    '<video id="v" src="clip.mp4" autoplay muted ' +
+      'style="display:block;width:60px;height:30px"></video>' +
+      '<input type="button" id="go" value="go"><p id="out"></p><script>' +
+      'var v = document.getElementById("v"), r = [];' +
+      '["play", "playing", "pause", "timeupdate", "seeking", "seeked", "volumechange"].forEach(function (t) {' +
+      '  v.addEventListener(t, function () { r.push(t) }) });' +
+      // an autoplaying video plays until the page says otherwise
+      'r.push(v.paused); v.pause(); r.push(v.paused);' +
+      'document.getElementById("go").addEventListener("click", function () {' +
+      '  v.play().then(function () {' +
+      '    r.push("kept", v.paused);' +
+      '    v.muted = false; r.push(v.muted, v.defaultMuted);' +
+      '    v.currentTime = 2.5; r.push(v.currentTime);' +
+      '    setTimeout(function () { document.getElementById("out").textContent = r.join(",") }, 0);' +
+      '  }) });' +
+      '</script>',
+    { videos: true },
+  );
+  const player = () =>
+    screen.all((n) => n.kind === 'video')[0] as
+      (DrawnNode & { props: Record<string, unknown> }) | undefined;
+  // mounted once the host's answer is in, after the script asked
+  const end = Date.now() + 3000;
+  while (player()?.props.paused === undefined && Date.now() < end) {
+    await settle();
+  }
+  const video = player();
+  assert.ok(video, 'a player is mounted');
+  assert.equal(video.props.paused, true, 'paused, as the page asked');
+  assert.equal(video.props.autoPlay, true, 'and its markup as it was');
+  const sought: number[] = [];
+  Object.assign(video, { seek: (t: number) => void sought.push(t) });
+  await userEvent.click(screen.getByRole('button') as DrawnNode);
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'false',
+      'true',
+      'timeupdate',
+      'pause',
+      'play',
+      'playing',
+      'kept',
+      'false',
+      'false',
+      'true',
+      '2.5',
+      'volumechange',
+      'seeking',
+      'timeupdate',
+      'seeked',
+    ].join(','),
+  );
+  assert.equal(player(), video, 'the same player, told');
+  assert.equal(video.props.paused, false);
+  assert.equal(video.props.muted, false);
+  assert.deepEqual(sought, [2.5]);
+});
+
+test('a pause() before play()’s task turns its promise down, and volume, playbackRate and currentTime take what WebIDL lets them', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var v = document.createElement("video"), r = [];' +
+      '["play", "playing", "pause", "timeupdate", "volumechange", "ratechange"].forEach(function (t) {' +
+      '  v.addEventListener(t, function () { r.push(t) }) });' +
+      'r.push(v.paused);' +
+      'v.play().then(function () { r.push("kept") }, function (e) { r.push(e.name) });' +
+      'v.pause();' +
+      'try { v.volume = 2 } catch (e) { r.push(e.name) }' +
+      'try { v.currentTime = NaN } catch (e) { r.push(e.name) }' +
+      'v.volume = 0.5; v.playbackRate = 2; v.volume = 0.5;' +
+      'r.push(v.volume, v.playbackRate, typeof v.onplay, typeof v.onvolumechange);' +
+      'setTimeout(function () { document.getElementById("out").textContent = r.join(",") }, 0);' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'true',
+      'IndexSizeError',
+      'TypeError',
+      '0.5',
+      '2',
+      'object',
+      'object',
+      'play',
+      'timeupdate',
+      'pause',
+      'AbortError',
+      'volumechange',
+      'ratechange',
+    ].join(','),
+  );
+});
+
 test('a sheet a page constructs and adopts is drawn after the document’s own, and as it is edited', async () => {
   const doc = await hosted(
     '<style>#z { color: rgb(0, 0, 0) }</style><p id="z">z</p>' +
@@ -2183,6 +2319,52 @@ metric('layout is asked of the document as the script left it', async () => {
   );
   assert.equal(doc.text('out'), '150 rgb(255, 0, 0) true');
 });
+
+metric(
+  'a box fixed to the viewport, and what is in it, is measured where it is drawn however far the pane has scrolled the page',
+  async () => {
+    // What Chrome answers of the same page, scrolled 0 and 500px (CSSOM
+    // View 6.1): a fixed box stays where the viewport is, and one a
+    // transformed box holds scrolls with the document. Measured where
+    // layout put it, at the document's top, the header read -470 at 500
+    const doc = await hosted(
+      whole(
+        '.tall { height: 2000px }' +
+          '#bar { position: fixed; top: 30px; left: 40px; width: 100px; height: 20px; padding: 2px }' +
+          '#in { margin-left: 5px; width: 10px; height: 4px }' +
+          '#tf { transform: translateX(7px); position: absolute; top: 600px; left: 0 }' +
+          '#held { position: fixed; top: 3px; left: 4px; width: 6px; height: 6px }',
+        '<div class="tall"></div>' +
+          '<div id="bar"><div id="in"></div><span id="sp">x</span></div>' +
+          '<div id="flow" style="position: absolute; top: 520px; left: 9px; width: 8px; height: 8px"></div>' +
+          '<div id="tf"><div id="held"></div></div>' +
+          '<p id="out"></p><script>' +
+          'var seen = [];' +
+          "window.addEventListener('scroll', function () {" +
+          "  seen.push(scrollY + ' ' + ['bar', 'in', 'flow', 'held'].map(function (id) {" +
+          '    var r = document.getElementById(id).getBoundingClientRect();' +
+          "    return id + ':' + [r.left, r.top, r.width, r.height].join(' ');" +
+          "  }).join(',') + ' sp:' + Math.round(document.getElementById('sp').getBoundingClientRect().top)" +
+          "    + ' at:' + document.elementFromPoint(45, 35).id);" +
+          "  document.getElementById('out').textContent = seen.join('|');" +
+          '});' +
+          '</script>',
+      ),
+      { pane: 300 },
+    );
+    await act(async () => doc.scrolled());
+    await settled(doc, 'out', (t) => t !== '');
+    await act(async () => doc.pane!.scrollTo(500));
+    await act(async () => doc.scrolled());
+    assert.deepEqual(
+      (await settled(doc, 'out', (t) => t.includes('|'))).split('|'),
+      [
+        '0 bar:40 30 104 24,in:47 32 10 4,flow:9 520 8 8,held:11 603 6 6 sp:36 at:bar',
+        '500 bar:40 30 104 24,in:47 32 10 4,flow:9 20 8 8,held:11 103 6 6 sp:36 at:bar',
+      ],
+    );
+  },
+);
 
 /** A page's script reporting what the offset attributes answer of the
  *  elements it names: `id:offsetParent left top width height`, the parent

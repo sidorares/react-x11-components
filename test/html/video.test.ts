@@ -18,7 +18,7 @@ import type { ResourceRequest, ResourceResult } from '../../src/html/index.js';
 import { HtmlSource } from '../../src/html/dom.js';
 import type { Element } from '../../src/html/dom.js';
 import { videoCandidates } from '../../src/html/media.js';
-import { FONTS, boxOf, h, view } from './harness.js';
+import { FONTS, boxOf, findById, h, view } from './harness.js';
 
 afterEach(cleanup);
 
@@ -577,6 +577,101 @@ test('a press on a video with controls is the video’s, and on one without the 
     typeof (video as unknown as { props: { onClick?: unknown } }).props.onClick,
     'function',
   );
+});
+
+/** A player's own state, as a test stands in for it: `src`'s player is
+ *  the platform's, and a sink plays what it is pushed and is never paused
+ *  or playing. */
+function standIn(video: DrawnNode): { calls: string[] } {
+  const calls: string[] = [];
+  let playing = true;
+  Object.assign(video, {
+    play: () => void (calls.push('play'), (playing = true)),
+    pause: () => void (calls.push('pause'), (playing = false)),
+    seek: (t: number) => void calls.push(`seek ${t}`),
+  });
+  Object.defineProperty(video, 'paused', { get: () => !playing });
+  return { calls };
+}
+
+test('what a script asks of a video is its player’s props, kept for the element so a player mounted later is told it', async () => {
+  const { el } = await renderVideo(
+    '<video id="a" src="a.mp4" autoplay muted ' +
+      'style="display:block;width:60px;height:30px"></video>' +
+      '<video id="b" src="b.mp4" style="display:none;width:60px;height:30px">' +
+      '</video>',
+    (_, app) => ({
+      kind: 'video',
+      frames: createVideoFrames(app, { width: 16, height: 16 }),
+    }),
+  );
+  const a = findById(el.document, 'a')!;
+  const b = findById(el.document, 'b')!;
+  const [video] = videos();
+  const props = (video as Mounted).props;
+  // nothing asked: the markup's, and `paused` left to `autoPlay`
+  assert.strictEqual(props.autoPlay, true);
+  assert.strictEqual(props.muted, true);
+  assert.ok(!('paused' in props), 'not controlled until something says');
+  const { calls } = standIn(video);
+  await act(async () => {
+    el.setMediaState(a, { paused: true, muted: false, volume: 0.5 });
+    el.setMediaState(a, { playbackRate: 2, currentTime: 3 });
+    // and one with no player yet
+    el.setMediaState(b, { paused: true, currentTime: 0 });
+  });
+  const after = (videos()[0] as Mounted).props;
+  assert.strictEqual(videos()[0], video, 'the same player, told');
+  assert.deepStrictEqual(
+    [after.paused, after.muted, after.volume, after.playbackRate],
+    [true, false, 0.5, 2],
+  );
+  assert.strictEqual(after.autoPlay, true, 'the markup as it was');
+  assert.deepStrictEqual(calls, ['seek 3'], 'sought once');
+  // the same props again: no seek
+  await act(async () => el.setMediaState(a, { paused: true }));
+  assert.deepStrictEqual(calls, ['seek 3']);
+
+  // shown, the second is mounted as it was asked to be, and sought where
+  // its first player is
+  const seeks: number[] = [];
+  const seek = Object.getPrototypeOf(video).seek;
+  Object.getPrototypeOf(video).seek = function (t: number) {
+    seeks.push(t);
+  };
+  try {
+    b.attribs.style = 'display:block;width:60px;height:30px';
+    await act(async () => el.touchDocument());
+    await waitFor(() => assert.strictEqual(videos().length, 2));
+    const shown = (videos()[1] as Mounted).props;
+    assert.strictEqual(shown.paused, true);
+    assert.deepStrictEqual(seeks, [0]);
+  } finally {
+    Object.getPrototypeOf(video).seek = seek;
+  }
+});
+
+test('a press on a video with controls plays or pauses it at once, and is kept as a script’s ask is', async () => {
+  const { el } = await renderVideo(
+    '<video id="v" src="a.mp4" controls autoplay ' +
+      'style="display:block;width:60px;height:30px"></video>',
+    (_, app) => ({
+      kind: 'video',
+      frames: createVideoFrames(app, { width: 16, height: 16 }),
+    }),
+  );
+  const [video] = videos();
+  const { calls } = standIn(video);
+  await act(async () => fireEvent.click(video));
+  assert.deepStrictEqual(calls, ['pause']);
+  assert.strictEqual((videos()[0] as Mounted).props.paused, true);
+  // a script plays it again: a change of the prop, which tells the player
+  await act(async () =>
+    el.setMediaState(findById(el.document, 'v')!, { paused: false }),
+  );
+  assert.strictEqual((videos()[0] as Mounted).props.paused, false);
+  await act(async () => fireEvent.click(video));
+  assert.deepStrictEqual(calls, ['pause', 'play']);
 });
 
 test('over a video with controls the window shows the arrow, not the document’s I-beam', async () => {

@@ -17,7 +17,7 @@
 // and where it goes is form.ts's too. This is the half that has a React
 // tree.
 import React from 'react';
-import type { ReactNode } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import {
   Button,
   Checkbox,
@@ -43,7 +43,13 @@ import type { Document, Element } from './dom.js';
 import type { HtmlViewNode } from './node.js';
 import { browserSystemColor } from './css/color.js';
 import type { RootLook } from './css/style.js';
-import { between, buttonLabel, optionsOf, selectedOption } from './controls.js';
+import {
+  AT_VIEWPORT,
+  between,
+  buttonLabel,
+  optionsOf,
+  selectedOption,
+} from './controls.js';
 import type { BareField, ControlRect } from './controls.js';
 import { fireDomEvent, modifiersOf } from './dom-events.js';
 import type {
@@ -980,7 +986,7 @@ function renderControl(
   // element's. A widget the document comes to cut, or stops cutting, is
   // the same widget in the same place in the tree, and keeps its focus
   // and its caret.
-  return hx(
+  const mounted = hx(
     'box',
     {
       key,
@@ -1020,7 +1026,58 @@ function renderControl(
         : widget,
     ),
   );
+  return atViewport(rect.atViewport === true, key, mounted);
 }
+
+/**
+ * What is mounted for a control, kept where the document draws it: a
+ * control in a box fixed to the viewport (`ControlRect.atViewport`) has its
+ * rect where layout put it, at the document's top, and the document draws
+ * the box where the viewport is. So its widget goes in a box of no size
+ * that core keeps there (`AT_VIEWPORT`), as it keeps a sticky header, and
+ * lands with the box in the frame the pane scrolls. Mounted at its rect
+ * beside the element, a fixed header's search field scrolled away with the
+ * text and left the header behind.
+ *
+ * A position moves a box laid out in the flow, and a pane reaches as far
+ * as its content is laid out, not as far as it was moved: after the
+ * element in the flow, the box is at the document's foot, and the pane
+ * scrolled that much past it to the widget. In a box at the element's
+ * corner, the widget is laid out where it was.
+ */
+function atViewport(
+  fixed: boolean,
+  key: string,
+  node: ReactElement,
+): ReactElement {
+  if (!fixed) return node;
+  return hx(
+    'box',
+    { key, selectable: false, style: CORNER },
+    hx(
+      'box',
+      {
+        selectable: false,
+        style: {
+          // a position core does not name, registered by `registerHtmlView`;
+          // `Style` takes one only where an app's declarations add it
+          position: AT_VIEWPORT as Style['position'],
+          width: 0,
+          height: 0,
+        },
+      },
+      node,
+    ),
+  );
+}
+
+const CORNER: Style = {
+  position: 'absolute',
+  left: 0,
+  top: 0,
+  width: 0,
+  height: 0,
+};
 
 const FILL: Style = { width: '100%', height: '100%' };
 
@@ -1153,12 +1210,10 @@ function renderMessage(
   view: HtmlViewNode | null,
   look: RootLook,
 ): ReactNode {
-  const rect =
-    rects.find((r) => r.element === invalid.element) ??
-    view?.elementRect(invalid.element) ??
-    null;
+  const control = rects.find((r) => r.element === invalid.element);
+  const rect = control ?? view?.elementRect(invalid.element) ?? null;
   if (!rect) return null;
-  return hx(
+  const message = hx(
     'box',
     {
       key: 'form-message',
@@ -1191,6 +1246,8 @@ function renderMessage(
       invalid.message,
     ),
   );
+  // under a field in a fixed header, where the header is drawn
+  return atViewport(control?.atViewport === true, 'form-message', message);
 }
 
 /**

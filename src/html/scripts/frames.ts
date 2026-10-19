@@ -181,7 +181,9 @@ function FrameDocument({
   const outer = context.seams;
   const seams: ScriptsOptions = {
     ...outer,
-    // the frame's own pane: its size and its scroll, in the page's zoom
+    // the frame's own pane: its size and its scroll, in the page's zoom —
+    // its offsets device pixels, `dpr` of them a CSS pixel, as the page's
+    // are (`viewportOf`)
     viewport: () => {
       const pane = scroller.current;
       const box = pane?.getClientRects()[0];
@@ -189,8 +191,8 @@ function FrameDocument({
       return {
         width: (box?.width ?? 0) / zoom,
         height: (box?.height ?? 0) / zoom,
-        scrollX: (pane?.scrollX ?? 0) / zoom,
-        scrollY: (pane?.scrollY ?? 0) / zoom,
+        scrollX: (pane?.scrollX ?? 0) / dpr,
+        scrollY: (pane?.scrollY ?? 0) / dpr,
         zoom,
         dpr,
         left: box?.x ?? 0,

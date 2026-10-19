@@ -27,6 +27,12 @@
 // press shows the arrow over it, as a browser's does: the boxes it is in say
 // nothing, and the document's root, a selectable surface, would have it
 // show the I-beam.
+//
+// What a page's script asks of a video — `play()`, `pause()`, `muted`,
+// `volume`, `playbackRate` — is in its rect (`HtmlViewNode.setMediaState`),
+// and goes to the player as core's props, which tell the player that is
+// playing rather than make another: none of them is in the key. A seek is
+// a count in the rect, and the player is sought once each time it moves.
 import React from 'react';
 import type { ReactNode } from 'react';
 import type { VideoNode } from 'react-x11';
@@ -56,6 +62,22 @@ export function useVideos(view: {
     if (id === undefined) ids.set(el, (id = ++next.current));
     return id;
   };
+  // each element's player, and the seek it was last sought by: a seek
+  // asked while no player was mounted is the next one's
+  const players = React.useRef(new Map<Element, VideoNode>()).current;
+  const sought = React.useRef(new WeakMap<Element, number>()).current;
+  React.useEffect(() => {
+    for (const { element, seek } of rects) {
+      const node = seek && players.get(element);
+      if (!node || sought.get(element) === seek.count) continue;
+      sought.set(element, seek.count);
+      node.seek(seek.time);
+    }
+  }, [rects, players, sought]);
+  const playerOf = (el: Element) => (node: VideoNode | null) => {
+    if (node) players.set(el, node);
+    else players.delete(el);
+  };
   return {
     onMedia: React.useCallback((reported: MediaRect[]) => {
       setRects(reported);
@@ -64,7 +86,7 @@ export function useVideos(view: {
       rects.flatMap((rect) => {
         const id = `${idOf(rect.element)}`;
         const over = renderCovers(rect, id, view);
-        const video = renderVideo(rect, id, view);
+        const video = renderVideo(rect, id, view, playerOf(rect.element));
         return over ? [video, over] : [video];
       }),
   };
@@ -107,6 +129,7 @@ function renderVideo(
   rect: MediaRect,
   id: string,
   view: { readonly current: HtmlViewNode | null },
+  ref: (node: VideoNode | null) => void,
 ): ReactNode {
   const el = rect.element;
   // on the device pixels the document drew the box on already: rounded
@@ -162,9 +185,16 @@ function renderVideo(
       },
       hx('video', {
         ...source,
+        ref,
         autoPlay: rect.autoPlay,
         loop: rect.loop,
         muted: rect.muted,
+        // controlled once something said, and left to `autoPlay` until
+        ...(rect.paused !== undefined && { paused: rect.paused }),
+        ...(rect.volume !== undefined && { volume: rect.volume }),
+        ...(rect.playbackRate !== undefined && {
+          playbackRate: rect.playbackRate,
+        }),
         style,
         ...(rect.label && { 'aria-label': rect.label }),
         onLoadedMetadata: (ev) =>
@@ -174,8 +204,13 @@ function renderVideo(
           onClick: (ev: { currentTarget: VideoNode | null }) => {
             const node = ev.currentTarget;
             if (!node) return;
-            if (node.paused) node.play();
-            else node.pause();
+            // at once, which plays an ended video from its start, and kept
+            // as what the player was last told: a script's `pause()` after
+            // a press that played it changes the prop again
+            const paused = !node.paused;
+            if (paused) node.pause();
+            else node.play();
+            view.current?.setMediaState(el, { paused });
           },
         }),
       }),

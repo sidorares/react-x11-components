@@ -56,8 +56,13 @@ interface Shown {
 }
 
 /** A document in a scroll pane 300 pixels tall, as an application shows
- *  one: `<Html>` with the props given and nothing else. */
-async function shown(source: string, props: Partial<HtmlProps> = {}) {
+ *  one: `<Html>` with the props given and nothing else, on a display of
+ *  `scale`. */
+async function shown(
+  source: string,
+  props: Partial<HtmlProps> = {},
+  scale = 1,
+) {
   const out = {} as Shown;
   let pane: unknown = null;
   function Page() {
@@ -80,7 +85,9 @@ async function shown(source: string, props: Partial<HtmlProps> = {}) {
   }
   await renderX11(
     h(Page),
-    FONTS ? { width: 440, height: 400, fonts: FONTS } : { backend: 'mock' },
+    FONTS
+      ? { width: 440, height: 400, fonts: FONTS, scale }
+      : { backend: 'mock', scale },
   );
   out.pane = () => pane as ReturnType<Shown['pane']>;
   out.drawn = () =>
@@ -308,6 +315,38 @@ test("a page's scripts measure it at the width it is drawn at from the parse on,
     'ready 384 384 400',
     'timer 384 384 400',
   ]);
+});
+
+test('on a display of scale 2 the page reads the pane in its own pixels: its scroll, and what is at the top of it', async (t) => {
+  // A pane's offsets are device pixels and its rect logical: read as one
+  // unit, a page on a Retina display read a `scrollY` twice the pane's,
+  // and an element at the viewport's top read as far above it as the
+  // pane had scrolled
+  if (!(await preloadHtmlScripts())) return t.skip();
+  const page = await shown(
+    '<style>body{margin:0}</style><p id="out"></p>' +
+      '<div id="d" style="position:absolute;top:600px;width:5px;height:5px"></div>' +
+      '<div style="height:2000px"></div><script>' +
+      'var r = [innerWidth, innerHeight];' +
+      'window.addEventListener("scroll", function () {' +
+      '  r.push(scrollY, document.getElementById("d").getBoundingClientRect().top);' +
+      '  document.getElementById("out").textContent = r.join("|"); });' +
+      'scrollTo(0, 50);' +
+      '</script>',
+    { scripts: true },
+    2,
+  );
+  assert.equal(
+    await until(page, 'out', (s) => s.split('|').length > 2),
+    '400|300|50|550',
+  );
+  // device pixels, as core keeps a pane's offsets
+  assert.equal(page.pane().scrollY, 100);
+  await act(async () => page.pane().scrollTo({ y: 120 }));
+  assert.equal(
+    await until(page, 'out', (s) => s.endsWith('|480')),
+    '400|300|50|550|120|480',
+  );
 });
 
 test("an HtmlNetwork answers a document's scripts and its page's requests", async () => {

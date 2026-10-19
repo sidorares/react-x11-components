@@ -17,11 +17,16 @@ import type {
   Element,
   HtmlChange,
   HtmlViewNode,
+  ResourceRequest,
+  ResourceResult,
 } from '../../src/html/index.js';
+import { ChangeAnchors } from '../../src/html/css/cascade.js';
+import { Html } from '../../src/index.js';
 import {
   FONTS,
   bytesApart,
   findById,
+  h,
   metric,
   rebuilt,
   render,
@@ -488,6 +493,287 @@ metric(
   },
 );
 
+/** What a refresh told of `changes` would restyle by itself, or null where
+ *  it would restyle everything. */
+function scopeOf(el: HtmlViewNode, changes: HtmlChange[]): Set<Element> | null {
+  const node = el as unknown as {
+    _source: { touch(): void };
+    _changeScope(c: HtmlChange[]): { own: Set<Element> } | null;
+  };
+  // the document's facts read again, as `touchDocument` has them
+  node._source.touch();
+  return node._changeScope(changes)?.own ?? null;
+}
+
+/** An attribute set, or taken away for `null`, with its record. */
+function setAttr(
+  target: Element,
+  name: string,
+  value: string | null,
+): HtmlChange {
+  const oldValue = target.attribs[name] ?? null;
+  if (value === null) delete target.attribs[name];
+  else target.attribs[name] = value;
+  return { type: 'attributes', target, attributeName: name, oldValue };
+}
+
+test('a stylesheet prop made again with the sheets it held styles nothing again, and one with other sheets restyles everything', async () => {
+  // what `<Html scripts>` hands down at every render where the page adopted
+  // a sheet: the application's sheets and the page's, in an array made then
+  const doc = '<style>body{margin:0}</style><p id="p">p</p><p id="q">q</p>';
+  const sheets = (extra: string) =>
+    h(
+      'box',
+      { style: { width: 300, flexDirection: 'column' } },
+      h(Html, {
+        source: doc,
+        partial: false,
+        'data-testname': 'doc',
+        stylesheet: ['p { color: #00aa00 }', extra],
+      }),
+    );
+  const { result, node } = await render(doc, 300, {
+    stylesheet: ['p { color: #00aa00 }', '#q { color: #ff0000 }'],
+  });
+  const el = view(node);
+  await act();
+  const computed = await stylesComputed(el, async () => {
+    await act(() => result.rerender(sheets('#q { color: #ff0000 }')));
+  });
+  assert.strictEqual(computed, 0, `${computed} styles worked out again`);
+  await act(() => result.rerender(sheets('#q { color: #0000ff }')));
+  assert.strictEqual(el.computedStyle(byId(el, 'q'))?.color, 'rgb(0, 0, 255)');
+});
+
+test('a change to a <link>, a <style> or a <meta> restyles everything only where it changes what the cascade reads', async () => {
+  // the sheets the host answers with, at once, and one it answers later
+  const sheets: Record<string, string> = {
+    'one.css': '#q { font-weight: bold }',
+    'two.css': '#q { font-style: italic }',
+    'three.css': '#q { text-decoration: underline }',
+  };
+  let arrive: (result: ResourceResult) => void = () => {};
+  const onResource = (r: ResourceRequest) => {
+    if (r.kind !== 'stylesheet') return null;
+    if (r.url === 'late.css') {
+      return new Promise<ResourceResult>((resolve) => (arrive = resolve));
+    }
+    const text = sheets[r.url];
+    return text ? { kind: 'stylesheet' as const, text } : null;
+  };
+  const { node } = await render(
+    '<p id="first">first</p><link rel="icon" id="icon" href="a.svg">' +
+      '<link rel="stylesheet" id="s1" href="one.css" data-rspack-loading="1">' +
+      '<link rel="stylesheet" id="s2" href="two.css">' +
+      '<link rel="stylesheet" id="s3" href="three.css">' +
+      '<style id="st">body{margin:0} link[data-rspack-loading] ~ p{color:#ff0000}</style>' +
+      '<meta id="m" name="x" content="y"><p id="p">p</p><p id="q">q</p>' +
+      '<div id="box"></div><div id="host"><template shadowrootmode="open">' +
+      '<b id="inner">in</b></template></div>',
+    300,
+    { onResource },
+  );
+  const el = view(node);
+  await act();
+  const p = byId(el, 'p');
+  const q = byId(el, 'q');
+  assert.strictEqual(el.computedStyle(p)?.color, 'rgb(255, 0, 0)');
+  assert.strictEqual(el.computedStyle(q)?.['font-style'], 'italic');
+  // a bundler's mark taken off the sheet it loaded: what tests it — the
+  // link's later siblings — is restyled, and nothing else
+  const loaded = setAttr(byId(el, 's1'), 'data-rspack-loading', null);
+  const own = scopeOf(el, [loaded]);
+  assert.ok(own, 'a mark on a <link> was a refresh of everything');
+  assert.ok(own.has(p), 'what tests the mark is not restyled');
+  assert.ok(!own.has(byId(el, 'first')), 'what is before it is restyled');
+  el.touchDocument([loaded]);
+  assert.notStrictEqual(el.computedStyle(p)?.color, 'rgb(255, 0, 0)');
+  // an icon's href, a <style>'s type, a <meta>'s data: the element itself
+  // at most, since a `:link` reads an `href`
+  const quiet = [
+    setAttr(byId(el, 'icon'), 'href', 'b.svg'),
+    setAttr(byId(el, 'st'), 'type', 'text/css'),
+    setAttr(byId(el, 'm'), 'data-x', '1'),
+  ];
+  for (const change of quiet) {
+    const scoped = scopeOf(el, [change]);
+    assert.ok(
+      scoped && scoped.size <= 1,
+      `${change.type === 'attributes' && change.attributeName} restyled`,
+    );
+  }
+  el.touchDocument(quiet);
+  // a <link> put in for a script's chunk, and one for a sheet that is not
+  // in yet, which is a change when it comes
+  const box = byId(el, 'box');
+  const added = (...nodes: Element[]): HtmlChange => {
+    for (const n of nodes) appendChild(box, n);
+    return {
+      type: 'childList',
+      target: box,
+      addedNodes: nodes,
+      removedNodes: [],
+    };
+  };
+  const preload = added(
+    createElement('link', { rel: 'preload', href: 'c.js' }),
+  );
+  assert.ok(scopeOf(el, [preload]), 'a preload was a refresh of everything');
+  el.touchDocument([preload]);
+  const late = added(
+    createElement('link', { rel: 'stylesheet', href: 'late.css' }),
+  );
+  assert.ok(scopeOf(el, [late]), 'a sheet not in yet restyled everything');
+  el.touchDocument([late]);
+  await act();
+  arrive({ kind: 'stylesheet', text: '#q { color: #0000ff }' });
+  await act();
+  assert.strictEqual(el.computedStyle(q)?.color, 'rgb(0, 0, 255)');
+  const style = added(
+    createElement('style', {}, [createText('#q{color:#00aa00}')]),
+  );
+  assert.strictEqual(scopeOf(el, [style]), null, 'a sheet restyled only some');
+  el.touchDocument([style]);
+  await act();
+  const meta = added(createElement('meta', { name: 'color-scheme' }));
+  assert.strictEqual(scopeOf(el, [meta]), null, 'a <meta> restyled only some');
+  el.touchDocument([meta]);
+  await act();
+  // a shadow tree's sheets are its own, bound to it by how they read
+  const root = shadowRootOf(byId(el, 'host'))!;
+  const inTree = createElement('style', {}, [createText('b{color:#00aa00}')]);
+  appendChild(root as unknown as Element, inTree);
+  const treeSheet: HtmlChange = {
+    type: 'childList',
+    target: root as never,
+    addedNodes: [inTree],
+    removedNodes: [],
+  };
+  assert.strictEqual(scopeOf(el, [treeSheet]), null, 'a tree’s sheet');
+  el.touchDocument([treeSheet]);
+  await act();
+  const inner = root.children.find(
+    (n) => (n as Element).name === 'b',
+  ) as Element;
+  assert.strictEqual(el.computedStyle(inner)?.color, 'rgb(0, 170, 0)');
+  // a sheet that goes, by its media, its href or its rel, and a pragma —
+  // each asked with the last refresh of everything laid out, before which
+  // a scope is not asked
+  for (const make of [
+    () => setAttr(byId(el, 's1'), 'media', 'print'),
+    () => setAttr(byId(el, 's2'), 'href', 'none.css'),
+    () => setAttr(byId(el, 's3'), 'rel', 'icon'),
+    () => setAttr(byId(el, 'st'), 'media', 'print'),
+    () => setAttr(byId(el, 'm'), 'content', 'z'),
+  ]) {
+    const change = make();
+    assert.strictEqual(
+      scopeOf(el, [change]),
+      null,
+      `${change.type === 'attributes' && change.attributeName} restyled only some`,
+    );
+    el.touchDocument([change]);
+    await act();
+    assert.ok(scopeOf(el, []), 'the refresh of everything is still due');
+  }
+  assert.notStrictEqual(el.computedStyle(q)?.['font-style'], 'italic');
+});
+
+test('a class that an attribute selector answers alike for before and after restyles nothing it tests, and one it answers otherwise for restyles what it reaches', async () => {
+  // Primer's pricing rules: a `[class*=]` in a `:has()` that starts at a
+  // sibling made every class change on github.com/features a refresh of
+  // everything
+  const { node } = await render(
+    '<style>body{margin:0}' +
+      ' [class*=Options__item]:not(:has(~ [class*=Options__item])){color:#ff0000}</style>' +
+      '<div><p class="Options__item" id="one">1</p><p class="Options__item" id="two">2</p>' +
+      '<p class="x" id="three">3</p></div><h1 class="Animation" id="h">h</h1>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  assert.strictEqual(
+    el.computedStyle(byId(el, 'two'))?.color,
+    'rgb(255, 0, 0)',
+  );
+  const heading = setClass(byId(el, 'h'), 'Animation Animation--active');
+  const own = scopeOf(el, [heading]);
+  assert.ok(own, 'the heading’s class was a refresh of everything');
+  assert.strictEqual(own.size, 0, `${own.size} elements restyled`);
+  el.touchDocument([heading]);
+  // the last item is the third now: the second's answer changes too
+  const item = setClass(byId(el, 'three'), 'x Options__item');
+  assert.ok(scopeOf(el, [item]), 'an item’s class was a refresh of everything');
+  el.touchDocument([item]);
+  assert.notStrictEqual(
+    el.computedStyle(byId(el, 'two'))?.color,
+    'rgb(255, 0, 0)',
+  );
+  assert.strictEqual(
+    el.computedStyle(byId(el, 'three'))?.color,
+    'rgb(255, 0, 0)',
+  );
+});
+
+test('a :has() is restyled from its element, found by its compound: an earlier sibling, an id, a :not() around it', async () => {
+  const { node } = await render(
+    '<style>body{margin:0} .a:has(+ .b) > i{color:#ff0000}' +
+      ' #box:has(.on) em{color:#ff0000} .c:not(:has(> .on)) b{color:#ff0000}</style>' +
+      '<div id="d"><p class="a"><i id="i">i</i></p><p class="b" id="pb">b</p></div>' +
+      '<div id="box"><span id="t">t</span><em id="em">em</em></div>' +
+      '<div class="c"><span id="u">u</span><b id="bold">b</b></div>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const red = 'rgb(255, 0, 0)';
+  const colour = (id: string) => el.computedStyle(byId(el, id))?.color;
+  assert.strictEqual(colour('i'), red);
+  assert.notStrictEqual(colour('em'), red);
+  assert.strictEqual(colour('bold'), red);
+  // what came or went was the next sibling of the element whose answer
+  // changed, which is one of what its parent holds
+  const pb = byId(el, 'pb');
+  removeNode(pb as unknown as ChildNode);
+  const removed: HtmlChange = {
+    type: 'childList',
+    target: byId(el, 'd'),
+    addedNodes: [],
+    removedNodes: [pb],
+  };
+  const changes = [
+    removed,
+    setClass(byId(el, 't'), 'on'),
+    setClass(byId(el, 'u'), 'on'),
+  ];
+  for (const change of changes) {
+    assert.ok(scopeOf(el, [change]), `${change.type} restyled everything`);
+  }
+  el.touchDocument(changes);
+  assert.notStrictEqual(colour('i'), red);
+  assert.strictEqual(colour('em'), red);
+  assert.notStrictEqual(colour('bold'), red);
+});
+
+test('a :has() of what an element takes from one around it, :lang(), is restyled when that one changes', async () => {
+  // what is inside the element changed answers, and the element whose
+  // `:has()` it changes is inside it: no attribute an inherited answer is
+  // read from is a style-only one, and what is in the element is
+  // restyled with it
+  const { node } = await render(
+    '<style>body{margin:0} .x:has(:lang(fr)) > b{color:#ff0000}</style>' +
+      '<div id="l" lang="en"><section class="x"><span><i>i</i></span>' +
+      '<b id="b">b</b></section></div>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const change = setAttr(byId(el, 'l'), 'lang', 'fr');
+  assert.ok(scopeOf(el, [change]), 'the language restyled everything');
+  el.touchDocument([change]);
+  assert.strictEqual(el.computedStyle(byId(el, 'b'))?.color, 'rgb(255, 0, 0)');
+});
+
 // --- every change, held to every element styled again ---------------------
 //
 // Random documents, random rules and random changes, on the mock backend: a
@@ -496,6 +782,11 @@ metric(
 // reach the scope reads — each combinator, `:not()`, `:is()`, `:has()` at
 // a subject and inside one, the structural pseudo-classes, attributes, ids,
 // inherited properties, a `::before` — and the changes each kind of record.
+// A `:has()` reaches the elements whose answer to it changed, found by the
+// compound it is in among those around the change (`spreadAnchors`), and an
+// attribute selector is a change where it answers otherwise for the old
+// value than the new (`Cascade._flips`): the shapes of both are many, and
+// a sheet of them is held to it apart (`anchored`).
 
 /** mulberry32: the same document for the same seed. */
 function random(seed: number): () => number {
@@ -515,8 +806,14 @@ const CLASSES = ['a', 'b', 'c', 'd'];
 const EDGE_CLASSES = ['x', 'y'];
 const TAGS = ['div', 'p', 'span', 'li', 'section'];
 const INKS = ['#ff0000', '#00aa00', '#0000ff', '#aa00aa'];
+const LANGS = ['fr', 'fr-CA', 'en'];
 
-function rulesFor(next: () => number, around = true): string {
+function rulesFor(
+  next: () => number,
+  around = true,
+  anchoredShare = 0.15,
+  holderPlain = true,
+): string {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const c = () => pick(CLASSES);
@@ -541,12 +838,49 @@ function rulesFor(next: () => number, around = true): string {
     () => `#e${Math.floor(next() * 6)} .${c()}`,
     () => `#e${Math.floor(next() * 6)}`,
   ];
-  // what a `:has()` reaches past its anchors, which is everything around
-  // them: such a sheet styles every element again, as one in a few does
-  const reaching: (() => string)[] = [
+  // a `:has()` whose element is found among those around what changed —
+  // its ancestors, their earlier siblings, what is inside it — by the
+  // compound it is in, and attribute selectors whose answer is asked of
+  // the values the attribute had and has
+  const anchored: (() => string)[] = [
     () => `.${c()}:has(+ .${c()})`,
+    () => `.${c()}:has(~ .${c()})`,
+    () => `${pick(TAGS)}:has(+ ${pick(TAGS)})`,
+    () => `.${c()}:has(+ .${c()}) > *`,
+    () => `.${c()}:has(+ *) > *`,
+    () => `${pick(TAGS)}:has(~ ${pick(TAGS)}) .${c()}`,
+    () => `:is(p, span):has(~ div > .${c()})`,
+    () => `#e${Math.floor(next() * 2)}:has(.${c()}) *`,
+    () => `.${c()}:has(~ .${c()} .${c()})`,
     () => `.${c()}:has(.${c()}) span`,
     () => `section:has(.${c()}) + *`,
+    () => `.${c()}:not(:has(> .${c()})) .${c()}`,
+    () => `.${c()}:not(:has(.${c()})) > *`,
+    () => `div:is(:has(> .${c()})) .${c()}`,
+    () => `:is(.${c()}:has(.${c()}) > *, #e9)`,
+    () => `.${c()}:has(.${c()}:has(+ .${c()}))`,
+    () => `[data-x=y]:has(.${c()}) ~ *`,
+    () => `.${c()}:has([data-x=z])`,
+    () => `.${c()}:has(> .${c()}:first-child)`,
+    () => `li:has(+ :empty)`,
+    () => `${pick(TAGS)}:has(${pick(TAGS)}) .${c()}`,
+    () => `.${c()}:has(:lang(fr)) > *`,
+    () => `.${c()}:has(+ [lang|=fr])`,
+    () => `:lang(fr) .${c()}`,
+    () => `[class*=${c()}] .${c()}`,
+    () => `[class~=${c()}] + *`,
+    () => `[class^=${c()}]`,
+    () => `[class|=${c()}] > *`,
+    () => `[data-x^=y] > *`,
+    () => `[data-x=Z i]`,
+    () => `[id*="1"] *`,
+  ];
+  // what a `:has()` reaches where every element is one's, which is
+  // everything around what changed, and what `:nth-child(… of …)` counts
+  // by: such a sheet styles every element again, as one in a few does
+  const reaching: (() => string)[] = [
+    () => `:has(.${c()}) span`,
+    () => `.${c()}:nth-child(odd of .${c()})`,
   ];
   const declarations: (() => string)[] = [
     () => `color: ${pick(INKS)}`,
@@ -561,13 +895,40 @@ function rulesFor(next: () => number, around = true): string {
   for (let i = 0; i < count; i += 1) {
     // in a shadow tree's sheet, none: the index is one for every sheet, and
     // a document of several sheets would have one almost always
-    const shape = next() < 0.04 && around ? pick(reaching) : pick(shapes);
-    rules.push(`${shape()} { ${pick(declarations)()} }`);
+    const roll = next();
+    const shape =
+      roll < 0.04 && around
+        ? pick(reaching)
+        : roll < 0.04 + anchoredShare
+          ? pick(anchored)
+          : pick(shapes);
+    let selector = shape();
+    // a sibling combinator or a structural pseudo-class outside every
+    // `:has()` reaches all of a holder's children, and with one, what came
+    // or went could miss a `:has()` among them and nothing would show it
+    while (!holderPlain && HOLDER_WIDE.test(withoutArguments(selector))) {
+      selector = pick(next() < anchoredShare ? anchored : shapes)();
+    }
+    rules.push(`${selector} { ${pick(declarations)()} }`);
   }
   if (next() < 0.5) {
     rules.push(`.${c()}::before { content: "*"; color: ${pick(INKS)} }`);
   }
   return rules.join('\n');
+}
+
+/** What outside a `:has()` reaches all of a holder's children: a sibling
+ *  combinator, and a pseudo-class that counts them. */
+const HOLDER_WIDE = /[+~]|:(?:first|last|only|nth|empty)/;
+
+/** A selector with what is in its parentheses taken out. */
+function withoutArguments(selector: string): string {
+  let out = selector;
+  for (let was = ''; was !== out;) {
+    was = out;
+    out = out.replace(/\([^()]*\)/g, '');
+  }
+  return out;
 }
 
 /** Rules at a shadow tree's edge: of its host, of what its slots are
@@ -637,6 +998,9 @@ function markupFor(next: () => number, shadows = false, edges = false): string {
     let attrs = classes ? ` class="${classes}"` : '';
     if (next() < 0.3) attrs += ` id="e${id++}"`;
     if (next() < 0.2) attrs += ` data-x="${next() < 0.5 ? 'y' : 'z'}"`;
+    if (next() < 0.1) {
+      attrs += ` lang="${LANGS[Math.floor(next() * LANGS.length)]}"`;
+    }
     let inner = next() < 0.5 ? `t${Math.floor(next() * 9)}` : '';
     if (depth < 3) {
       const kids = Math.floor(next() * 4);
@@ -727,14 +1091,29 @@ function changeOne(
       { type: 'attributes', target, attributeName: 'part', oldValue: was },
     ];
   }
+  if (kind === 2 && next() < 0.3) {
+    // a language said or unsaid, which what is in the element takes
+    const target = pick(all);
+    const was = target.attribs.lang ?? null;
+    if (was !== null && next() < 0.4) delete target.attribs.lang;
+    else target.attribs.lang = pick(LANGS);
+    return [
+      { type: 'attributes', target, attributeName: 'lang', oldValue: was },
+    ];
+  }
   if (kind === 2) {
     // an attribute set or taken away
     const target = pick(all);
     const was = target.attribs['data-x'] ?? null;
     if (was !== null && next() < 0.5) delete target.attribs['data-x'];
-    else target.attribs['data-x'] = next() < 0.5 ? 'y' : 'z';
+    else target.attribs['data-x'] = pick(['y', 'z', 'Z', 'yy']);
     return [
-      { type: 'attributes', target, attributeName: 'data-x', oldValue: was },
+      {
+        type: 'attributes',
+        target,
+        attributeName: 'data-x',
+        ...(forgetOld ? {} : { oldValue: was }),
+      },
     ];
   }
   if (kind === 3) {
@@ -867,6 +1246,25 @@ test('in a document with shadow trees whose rules stay inside them, a refresh to
   }
 });
 
+test('in a document of :has() and attribute selectors, a refresh told what changed comes to the same styles, and finds the elements whose answer changed', async () => {
+  // how many elements a set of anchors found to be one's
+  const at = ChangeAnchors.prototype.at;
+  let found = 0;
+  ChangeAnchors.prototype.at = function (this: ChangeAnchors, el: Element) {
+    const bits = at.call(this, el);
+    if (bits) found += 1;
+    return bits;
+  };
+  try {
+    // no shape here reaches everything, so no refresh is of everything
+    const ways = await refreshesAgree(120, false, false, 0.7, 1000);
+    assert.strictEqual(ways.whole, 0, `${JSON.stringify(ways)}`);
+    assert.ok(found > 1000, `${found} elements found by an anchor`);
+  } finally {
+    ChangeAnchors.prototype.at = at;
+  }
+});
+
 test('a host’s colour reaches its shadow tree in place, and what its top holds is told', async () => {
   const { result, node } = await render(
     '<style>body{margin:0} .on{color:#ff0000}</style>' +
@@ -943,11 +1341,22 @@ async function refreshesAgree(
   seeds: number,
   shadows: boolean,
   edges = false,
+  anchoredShare?: number,
+  firstSeed = 1,
 ): Promise<{ whole: number; inPlace: number; frame: number; build: number }> {
   const ways = { whole: 0, inPlace: 0, frame: 0, build: 0 };
-  for (let seed = 1; seed <= seeds; seed += 1) {
+  for (let seed = firstSeed; seed < firstSeed + seeds; seed += 1) {
     const next = random(seed);
-    let css = rulesFor(next);
+    // a sheet of anchored shapes has none of those that reach everything,
+    // which would make it a refresh of everything and test none of them,
+    // and every other one nothing outside a `:has()` that reaches all of
+    // a holder's children (`HOLDER_WIDE`)
+    let css = rulesFor(
+      next,
+      anchoredShare === undefined,
+      anchoredShare,
+      anchoredShare === undefined || seed % 3 === 0,
+    );
     if (edges) css += `\n${edgeRulesFor(next, true)}`;
     const source = `<style>body{margin:0}\n${css}</style><body>${markupFor(next, shadows, edges)}</body>`;
     // real fonts where the machine has them: the mock backend lays out no

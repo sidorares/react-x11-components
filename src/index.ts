@@ -412,6 +412,7 @@ export type {
   FetchRequest as HtmlFetchRequest,
   FetchResponse as HtmlFetchResponse,
   MediaRect as HtmlMediaRect,
+  MediaState as HtmlMediaState,
   ResourceRequest as HtmlResourceRequest,
   ResourceResult as HtmlResourceResult,
   ScriptRequest as HtmlScriptRequest,

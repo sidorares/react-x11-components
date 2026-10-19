@@ -76,6 +76,7 @@ import type { ScrollState as ElementScroll } from './layout/scroll.js';
 import type { FormSubmission } from './form.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
+import type { MediaState } from './media.js';
 import { useEmbedded } from './embedded.js';
 import type { RenderEmbedded } from './embedded.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
@@ -102,7 +103,12 @@ export type {
   VideoSource,
 } from './resources.js';
 export type { BareField, ControlRect } from './controls.js';
-export type { EmbeddedKind, EmbeddedRect, MediaRect } from './media.js';
+export type {
+  EmbeddedKind,
+  EmbeddedRect,
+  MediaRect,
+  MediaState,
+} from './media.js';
 export type { RenderEmbedded } from './embedded.js';
 export type {
   FormEnctype,
@@ -474,7 +480,9 @@ export interface HtmlHandle {
    * to `#section` is `scroller.scrollTo({ y: handle.elementRect(el).y })`.
    * A block's border box; an inline element's across its fragments, padding
    * and border included, as `getBoundingClientRect` measures it, and as
-   * tall as its lines. Null for an element with no box.
+   * tall as its lines. A box fixed to the viewport, and what is in it, is
+   * where the scroll of the pane around the element draws it. Null for an
+   * element with no box.
    */
   elementRect(element: Element): Rect | null;
   /**
@@ -497,6 +505,14 @@ export interface HtmlHandle {
   scrollState(element: Element): ElementScroll | null;
   /** A `<canvas>`'s picture changed (`canvasImage`): repaint it. */
   canvasChanged(element: Element): void;
+  /**
+   * Tell a `<video>`'s player what a script asked of it: `paused` for
+   * `play()` and `pause()`, `muted`, `volume`, `playbackRate`, and
+   * `currentTime` to seek. Kept for the element, so a player mounted later
+   * is told it too; a field never set is what the markup says — `autoplay`
+   * plays it from the start, and the `muted` attribute mutes it.
+   */
+  setMediaState(element: Element, state: MediaState): void;
   /**
    * Scroll a scroll container to an offset in CSS pixels, either axis left
    * where it is where it is left out, kept within how far it can be — as a
@@ -1004,6 +1020,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.scrollStateOf(element) ?? null,
       canvasChanged: (element: Element) =>
         nodeRef.current?.canvasChanged(element),
+      setMediaState: (element: Element, state: MediaState) =>
+        nodeRef.current?.setMediaState(element, state),
       scrollElementTo: (element: Element, to: { x?: number; y?: number }) =>
         nodeRef.current?.scrollElementTo(element, to) ?? null,
       computedStyle: (element: Element, pseudo?: 'before' | 'after' | null) =>

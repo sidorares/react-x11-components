@@ -715,6 +715,33 @@ work loop ran past the timeout, was stopped half way, and never committed
 again. A rule at an edge is read for what it tests now, each key reaching
 across the edge below where it is tested (`MutationRules.noteEdge`).
 
+That left three kinds of refresh of everything on
+github.com/features/ai/github-app: a class change, since a Primer
+`[class*=…]` sat in a `:has(~ …)`; anything coming or going, since a
+`:has()` started at a sibling; and a `<link>` an attribute changed on or
+put in for a chunk's CSS module before its sheet came. A `:has()` now
+reaches the elements its compound finds around the change, an attribute
+selector is asked of the old value and the new, and a sheet's element is a
+change only where the sheets read otherwise. The page's adopted sheets
+were the fourth: `<Html scripts>` made the `stylesheet` prop again at every
+render, and the page was styled whole some sixty times a load.
+
+**And a media element that is told to play**, which GitHub's hero is: its
+React effect calls `play()` on the tab's video and `pause()` when its button
+is pressed, and both did nothing, so the button's icon changed and the video
+played on under it. A media element's state is the facade's, by its
+wrapper — `paused`, `muted`, `volume`, `playbackRate` and where it was
+sought to — and each change goes to the host as one op of primitives
+(`mediaState`), which `<Html>` keeps for the element and hands to the
+player it mounts over it as core's `<video>` props. The events are the ones
+HTML fires as it is asked, in tasks of their own, and `play()`'s promise is
+kept in its task or turned down by a `pause()` before it, as Chrome's is.
+An `autoplay` video reads as playing until the page says otherwise. Nothing
+comes back from the player yet: `currentTime` is where the page sought, and
+an end or a press on `controls` is not told to the page — that is a channel
+the other way, from core's `onPlay`, `onPause`, `onEnded` and
+`onTimeUpdate`.
+
 **And what Acid3 asks of the DOM**, which takes it to 96 of 100, the four
 Chrome fails as well (22, 23, 25 and 35, where today's DOM and Selectors
 standards moved from what Acid3 expected):
