@@ -155,6 +155,30 @@ test('a closed details shows its summary, and an open one all of it', async () =
   assert.strictEqual(type('s2'), 'disclosure-open');
 });
 
+test('a closed dialog is not drawn, and an open one is a framed box centred across its containing block, out of the flow', async () => {
+  // docs.github.com keeps its search dialog in the page, empty and closed,
+  // styled as a card fixed under the header: with no rule for a dialog it
+  // was drawn there, an empty rounded box over the breadcrumbs
+  const { node } = await render(
+    '<style>body{margin:0;font-size:16px}</style>' +
+      '<div style="position:relative;width:400px;height:300px">' +
+      '<p id="p" style="margin:0;height:20px"></p>' +
+      '<dialog id="closed" style="position:fixed;padding:16px">closed</dialog>' +
+      '<dialog id="open" open><div style="width:100px;height:30px"></div>' +
+      '</dialog><p id="q" style="margin:0;height:20px"></p></div>',
+  );
+  const el = view(node);
+  assert.throws(() => boxOf(el, 'closed'), 'a closed dialog has no box');
+  // Chrome 154: 1em of padding and a medium solid border round what it
+  // holds, at its static position down and centred across
+  const open = boxOf(el, 'open');
+  assert.deepStrictEqual(
+    [open.x, open.y, open.width, open.height],
+    [131, 20, 138, 68],
+  );
+  assert.strictEqual(boxOf(el, 'q').y, 20, 'and the flow goes on under it');
+});
+
 test("a body's text and link colours, and a background attribute", async () => {
   const { node } = await render(
     '<body text="#123456" link="#00ff00">' +

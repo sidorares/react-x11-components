@@ -98,7 +98,7 @@ function uaText(look: RootLook): string {
 html, body, div, p, h1, h2, h3, h4, h5, h6, ol, ul, li, dl, dt, dd,
 blockquote, pre, hr, table, form, fieldset, figure, figcaption, address,
 article, aside, footer, header, hgroup, main, nav, section, details,
-summary, dir, menu, center, marquee {
+summary, dir, menu, center, marquee, dialog {
   display: block;
 }
 /* <map> is inline (HTML 15.3.1), so an <area> in it the author gives a
@@ -371,6 +371,27 @@ label { cursor: pointer; }
 details { margin: 0.5em 0; }
 summary { display: list-item; counter-increment: list-item 0; list-style: disclosure-closed inside; cursor: pointer; }
 details[open] > summary:first-of-type { list-style-type: disclosure-open; }
+
+/* HTML's rendering section (15.3.3): a dialog is a framed box out of the
+   flow, centred across its containing block, and one that is not open is
+   not drawn. A page keeps one in the markup, closed and often empty, until
+   it is wanted: docs.github.com's search, a card fixed under its header,
+   was drawn over the breadcrumbs. \`showModal()\` opens one as \`show()\`
+   does, into no top layer, so HTML's \`dialog:modal\` rule has nothing to
+   match and is not here */
+dialog:not([open]) { display: none; }
+dialog {
+  position: absolute;
+  inset-inline-start: 0;
+  inset-inline-end: 0;
+  width: fit-content;
+  height: fit-content;
+  margin: auto;
+  border: solid;
+  padding: 1em;
+  background-color: Canvas;
+  color: CanvasText;
+}
 
 /* 'hidden' is an attribute, not a style, and a document that uses it expects
    it to win over the display above. */

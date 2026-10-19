@@ -951,6 +951,57 @@ test('a sticky box keeps inside its containing block by its own margins, not by 
   }
 });
 
+test('a box fixed to the viewport stays where the viewport has it, whatever a sticky or a relative box around it is moved by', async () => {
+  // docs.github.com's search dialog is fixed under the header, inside a
+  // header stuck to the top: moved with the header as it stuck and then
+  // to the viewport as well, it went down the window as the page went up
+  const { el } = await renderScrolled(
+    '<style>body{margin:0}div{box-sizing:border-box}' +
+      '.k{width:20px;height:20px}</style><div style="height:100px"></div>' +
+      '<div style="position:relative;top:50px;left:30px;height:40px">' +
+      '<div id="a" class="k" style="position:fixed;top:10px"></div>' +
+      '<div id="b" class="k" style="position:fixed;left:10px"></div>' +
+      '<div id="c" class="k" style="position:fixed;top:10px;left:10px">' +
+      '</div></div><div style="height:100px"></div>' +
+      '<div id="s" style="position:sticky;top:300px;height:40px;' +
+      'margin-left:60px">' +
+      '<div id="d" class="k" style="position:fixed;top:300px;left:300px">' +
+      '</div><div id="e" class="k" style="position:fixed"></div>' +
+      '<div id="f" class="k" style="position:absolute"></div></div>' +
+      '<div style="height:3000px"></div>',
+    400,
+  );
+  const pane = paneOf(el);
+  const at = () =>
+    Object.fromEntries(
+      ['a', 'b', 'c', 'd', 'e', 'f', 's'].map((id) => {
+        const rect = el.elementRect(findById(el.document, id)!)!;
+        return [id, [rect.x, rect.y]];
+      }),
+    );
+  // Chrome 154, in the document's coordinates: a fixed box takes a
+  // relative box's offset on an axis it has no inset on, where its static
+  // position is, and a sticky box's on none; an absolute box is the sticky
+  // box's and goes with it
+  const chrome = (y: number, s: number) => ({
+    a: [30, 10 + y],
+    b: [10, 150 + y],
+    c: [10, 10 + y],
+    d: [300, 300 + y],
+    e: [60, 240 + y],
+    f: [60, s],
+    s: [60, s],
+  });
+  for (const [y, s] of [
+    [0, 300],
+    [100, 400],
+    [500, 800],
+  ]) {
+    await act(async () => pane.scrollTo(y));
+    assert.deepStrictEqual(at(), chrome(y, s), `scrolled to ${y}`);
+  }
+});
+
 metric(
   'a pane scrolled a step at a time draws the sticky boxes the viewport holds where a repaint of all of it does',
   async () => {
