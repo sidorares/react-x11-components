@@ -36,7 +36,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `animate`            | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                                                                                                                                          |
 | `reducedMotion`      | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                                                                                                                                |
 | `defaultColorScheme` | `'light' \| 'dark'`                              | The scheme a page that names none (`color-scheme: normal`) is drawn in. Default: the palette's. A host that shows the web names `'light'`, as every browser draws one — see [Colours](#what-renders).                                                                                               |
-| `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                                                                                                                                          |
+| `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control. Compared by the sheets it holds: an array made again at each render with the same ones is no change.                                                                                     |
 | `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                                                                                                                               |
 | `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                                                                                                               |
 | `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.**                                                                                                           |
@@ -3970,11 +3970,26 @@ combinator, its later siblings; in a `:has()`, the elements around it. Then:
   size went from 59 ms to 27, and a text changed from 66 to 21.
 
 Some changes are refreshes of everything however they are told: a
-stylesheet, a `<meta>` or a `<base>` changing; a document whose sheets
-reach across a shadow tree's edge — `:host`, `::slotted()`, `::part()` —
-which no index of a change reads; and a `:has()` whose element is not
-itself the one restyled — `.card:has(.x) .title`, `:has(+ .x)` — which
-reaches everything around its anchors. A document with shadow trees whose
+stylesheet coming, going or reading otherwise, a `<meta>` or a `<base>`
+changing, and a `:has()` that every element could be the element of and
+that reaches past it — `:has(.x) span`, with nothing else in its
+compound — or one inside `:nth-child(… of …)`. A `<link>` or a `<style>`
+is a stylesheet only as far as the cascade reads it: a bundler's `data-`
+mark on a sheet's `<link>`, an icon's `href`, a `<link rel="preload">`, or
+a sheet's `<link>` put in before its sheet is in — which is a change when
+the sheet comes — restyles what tests it, as any element's attribute
+would. A `:has()` restyles from the elements whose answer to it changed,
+found among those around the change — its ancestors, and where the
+argument starts at a sibling, `:has(+ .x)`, their earlier siblings — by the
+rest of the compound the `:has()` is in: `.card:has(.x) .title` restyles
+the cards around the change and what is in them. An attribute selector is
+a change only where it answers otherwise for the value the attribute had
+than for the one it has: Primer's `[class*=PricingOptions__item]` is no
+change of a heading's class, and made every class change on
+github.com/features a refresh of everything. A rule at a shadow tree's
+edge — `:host()`, `::slotted()`, `::part()` — reaches across it: what it
+tests reaches the element it is tested of and everything below it, in its
+shadow tree and its slots as well. A document with shadow trees whose
 rules stay inside them is told what changed as any other is: Next.js
 mounts one such tree on every page, its route announcer, and a page that
 paid for a refresh of everything at each change for it laid itself out
