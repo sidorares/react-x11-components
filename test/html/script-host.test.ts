@@ -28,7 +28,16 @@ import type {
   ResourceResult,
 } from '../../src/html/index.js';
 import type { Element as DocElement } from '../../src/html/dom.js';
-import { FONTS, boxOf, findById, h, metric, render, view } from './harness.js';
+import {
+  FONTS,
+  boxOf,
+  findById,
+  h,
+  metric,
+  mountBetweenFrames,
+  render,
+  view,
+} from './harness.js';
 import type { LaidBox } from './harness.js';
 
 afterEach(cleanup);
@@ -549,6 +558,58 @@ test('onParsed is once the parse ends, and onLoaded once what it asked for has c
   await act(() => result.rerender(doc(`${head}<img src="i.png">`, false)));
   await act();
   assert.deepStrictEqual(seen, ['parsed', 'loaded'], 'once a document');
+});
+
+test('onParsed is told once core has laid the element out, however long its frame takes, so a host measures the document at the width it is drawn at, and onLoaded after it', async () => {
+  // Told before it, the document was laid out at one pixel to answer: the
+  // block came to its borders. The element finds nothing to wait for in
+  // that layout, so its load is told then, and waits for the parse.
+  const at: (number | string | null)[] = [];
+  function Page() {
+    const handle = useHtmlHandle();
+    return h(
+      'box',
+      { style: { width: 400 } },
+      h(Html, {
+        source: '<div id="d" style="border: 3px solid"></div>',
+        partial: false,
+        ref: handle.ref,
+        onParsed: () => {
+          const d = findById(handle.document, 'd') as DocElement;
+          at.push(handle.elementRect(d)?.width ?? null);
+        },
+        onLoaded: () => void at.push('loaded'),
+      }),
+    );
+  }
+  await mountBetweenFrames(h(Page));
+  for (let i = 0; i < 50 && at.length < 2; i += 1) {
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+  }
+  assert.deepStrictEqual(at, [384, 'loaded']);
+});
+
+test('a document core lays out none of, under display: none, is told its parse without waiting for a layout', async () => {
+  const seen: string[] = [];
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300 } },
+      h(
+        'box',
+        { style: { display: 'none' } },
+        h(Html, {
+          source: '<p>a</p>',
+          partial: false,
+          onParsed: () => seen.push('parsed'),
+        }),
+      ),
+    ),
+    { backend: 'mock' },
+  );
+  await act();
+  await act();
+  assert.deepStrictEqual(seen, ['parsed']);
 });
 
 test("a <link>'s sheet is told as a load once it and what it imports are applied, and as an error where it is not to be had", async () => {

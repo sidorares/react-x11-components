@@ -69,6 +69,43 @@ export async function render(
 
 export const metric = FONTS ? test : test.skip;
 
+/**
+ * Mount `content` in a window whose frames are held to four a second, as a
+ * display's clock holds one a vertical blank away, straight after a frame
+ * has begun: the frame that lays `content` out comes a quarter of a second
+ * after the render that mounts it, which no count of the event loop's turns
+ * waits out. A probe box is laid out again first, and its report is that
+ * frame.
+ */
+export async function mountBetweenFrames(
+  content: React.ReactElement,
+): Promise<void> {
+  let step = (): void => {};
+  let laid = 0;
+  function Held() {
+    const [at, setAt] = React.useState(0);
+    step = () => setAt((n) => n + 1);
+    return h(
+      'window',
+      { width: 440, height: 400, frameRate: 4 },
+      h('box', {
+        style: { width: 1 + at, height: 1 },
+        // the width that frame laid out: core calls the handler of the
+        // render it calls it after, which may be a step on
+        onLayout: (ev: { width: number }) => void (laid = ev.width - 1),
+      }),
+      at >= 2 ? content : null,
+    );
+  }
+  await renderX11(
+    h(Held),
+    FONTS ? { wrap: false, fonts: FONTS } : { wrap: false, backend: 'mock' },
+  );
+  await act(async () => step());
+  while (laid < 1) await act(() => new Promise((r) => setTimeout(r, 5)));
+  await act(async () => step());
+}
+
 /** The text a document's boxes hold, generated content included. */
 export async function documentText(source: string): Promise<string> {
   const { node } = await render(source, 300);

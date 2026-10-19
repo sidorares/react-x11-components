@@ -81,6 +81,7 @@ import type { RenderEmbedded } from './embedded.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
 import type { HtmlScripts, InternalHtmlProps } from './scripts/scripted.js';
+import { useParsedOnceLaidOut } from './parsed.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
 export {
@@ -337,9 +338,12 @@ export interface HtmlProps {
    */
   onDomEvent?: DomEventHandler;
   /** The parse has ended: every element is in the tree. Once a document,
-   *  a microtask after the source that ended it — when a host runs the
-   *  scripts it was handed, each once the sheets before it are in
-   *  (`scriptsUnblocked`), and then tells `DOMContentLoaded`. */
+   *  a microtask after the source that ended it, or after core first lays
+   *  the element out where that is later — when a host runs the scripts it
+   *  was handed, each once the sheets before it are in
+   *  (`scriptsUnblocked`), and then tells `DOMContentLoaded`. Held for the
+   *  layout because a script measures the document, and a browser lays a
+   *  page out at its viewport's width before one does. */
   onParsed?: () => void;
   /** Everything the document asked for has arrived or failed — counted
    *  from its first complete layout, since a background, a font or a
@@ -779,6 +783,10 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   const embedded = useEmbedded(props.renderEmbedded);
   live.current = { forms, stops, onLink };
   const events = useDocumentEvents(onDomEvent, viewNode, forms, stops);
+  // the parse's end, and the load behind it, told once core has laid the
+  // element out: a host runs the page's scripts from them, and they measure
+  // the document (`parsed.ts`)
+  const lifecycle = useParsedOnceLaidOut(props, viewNode);
 
   const handleDocument = React.useCallback(
     (doc: Document) => {
@@ -807,7 +815,10 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   const selectionColor =
     props.selectionColor ?? tint(String(theme.accent ?? '#2980b9'), 0.35);
 
-  const viewProps: HtmlViewProps & { ref?: React.Ref<unknown> } = {
+  const viewProps: HtmlViewProps & {
+    ref?: React.Ref<unknown>;
+    onLayout?: () => void;
+  } = {
     source,
     ...(props.document && { document: props.document }),
     complete: !partial,
@@ -832,8 +843,9 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     animate,
     reducedMotion,
     scripting: props.scripting ?? false,
-    onParsed: props.onParsed,
-    onLoaded: props.onLoaded,
+    onParsed: lifecycle.onParsed,
+    onLoaded: lifecycle.onLoaded,
+    onLayout: lifecycle.onLayout,
     onSheet: onDomEvent ? handleSheet : undefined,
     ref: viewRef as React.Ref<unknown>,
     // grown with the component, where an application grows it: the root's
