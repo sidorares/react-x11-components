@@ -336,6 +336,10 @@ export interface ReorderDragStart {
   ids: ReorderId[];
   index: number;
   input: ReorderInput;
+  /** The item's box as it was picked up, in logical pixels — what a list
+   *  that opens a space of its own for the drop opens. `id`'s alone, in a
+   *  drag that carries several. */
+  size: { width: number; height: number };
 }
 
 /** Where the drag is now. Fires on the list the item belongs to, whichever
@@ -423,11 +427,22 @@ export interface ReorderStyles {
    *  the wash a held item wears. */
   item?: (state: ReorderItemState) => StyleInput | null | undefined | false;
   handle?: StyleInput;
-  /** The insertion line, and the outline a combining item wears — the state
-   *  tells them apart. */
-  indicator?: StyleInput;
+  /** The insertion line, and the outline a combining item wears. A function
+   *  is handed which of the two it is styling, so a list can restyle one and
+   *  not the other — hide the line for a gap of its own, and keep the
+   *  outline a merge is drawn with. */
+  indicator?:
+    | StyleInput
+    | ((mark: ReorderIndicatorState) => StyleInput | null | undefined | false);
   /** The card the default preview draws the item's children in. */
   preview?: StyleInput;
+}
+
+/** What `styles.indicator` is handed: which side of the item the line is
+ *  on, or that the item is outlined for a merge instead. */
+export interface ReorderIndicatorState {
+  edge: ReorderEdge;
+  combining: boolean;
 }
 
 /** How big the ghost is. A function is asked once, at the drag's start. */
@@ -1066,6 +1081,16 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     });
   };
 
+  /** An item's box, in logical pixels. */
+  const sizeOf = (itemId: ReorderId): { width: number; height: number } => {
+    const node = entries.current.get(itemId)?.node.current ?? null;
+    const scale = scaleOf(node);
+    return {
+      width: (node?.abs.width ?? 0) / scale,
+      height: (node?.abs.height ?? 0) / scale,
+    };
+  };
+
   /** Move the indicator: clear the item that had it, set the one that does. */
   const mark = (next: Mark | null): void => {
     const prev = marked.current;
@@ -1316,6 +1341,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         ids: moving,
         index: at - 1,
         input: 'keyboard',
+        size: sizeOf(itemId),
       });
       announce(SAY.lifted(labelFor(itemId), at, ids.length, moving.length));
     },
@@ -1469,6 +1495,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         ids: moving,
         index,
         input: 'pointer',
+        size: sizeOf(itemId),
       });
       announce(
         SAY.pickedUp(labelFor(itemId), index + 1, ids.length, moving.length),
@@ -2161,7 +2188,12 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
         'data-testname': testname ? `${testname}-indicator` : undefined,
         style: [
           indicatorStyle(mark, list.orientation, theme),
-          list.styles?.indicator,
+          typeof list.styles?.indicator === 'function'
+            ? list.styles.indicator({
+                edge: mark.edge,
+                combining: mark.combine,
+              }) || null
+            : list.styles?.indicator,
         ],
       }),
     inlineAt !== null &&

@@ -774,6 +774,39 @@ test('styles: the item seam sees the state, the indicator takes a style', async 
   await release(b, { dy: 10 });
 });
 
+test('styles.indicator as a function restyles the line and keeps the outline', async () => {
+  // a list that draws its own gap hides the line — and a merge still needs
+  // its outline, which one style for both squashed into a bar
+  const seen: string[] = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b', 'c'],
+        combine: true,
+        size: { width: 200, height: 40 },
+        styles: {
+          indicator: (mark) => {
+            seen.push(`${mark.edge}:${mark.combining}`);
+            return mark.combining ? null : { height: 0 };
+          },
+        },
+      }),
+    ),
+  );
+  const c = item('l', 'c');
+  await dragTo(item('l', 'a'), c, { dy: 0 });
+  assert.strictEqual(screen.getByTestName('l-c-indicator').abs.height, 40);
+  await act(async () => {
+    fireEvent.mouseMove(c, { dy: 18 });
+  });
+  await landed();
+  assert.strictEqual(screen.getByTestName('l-c-indicator').abs.height, 0);
+  await release(c, { dy: 18 });
+  assert.ok(seen.includes('after:true') || seen.includes('before:true'));
+  assert.ok(seen.includes('after:false'));
+});
+
 test('at scale 2 the slot is read in the same unit as the pointer', async () => {
   const changes: ReorderChange[] = [];
   await mount(
@@ -998,6 +1031,29 @@ test('the list reports the gesture: start, an update per slot, end', async () =>
 
   await release(item('l', 'c'), { dy: 10 });
   assert.deepStrictEqual(log.at(-1), 'end a drop at todo:2');
+});
+
+test("onDragStart carries the item's size, for a list that opens a space of its own", async () => {
+  const sizes: Array<{ width: number; height: number }> = [];
+  await mount(
+    view(
+      h(List, {
+        name: 'l',
+        items: ['a', 'b'],
+        onDragStart: (e) => sizes.push(e.size),
+      }),
+    ),
+    { scale: 2 },
+  );
+  // logical pixels at scale 2: the item's style, not twice it
+  await dragTo(item('l', 'a'), item('l', 'b'), { dy: 20 }, { dx: 12 });
+  await release(item('l', 'b'), { dy: 20 });
+  assert.deepStrictEqual(sizes, [ITEM]);
+  // …and from the keyboard
+  await userEvent.click(item('l', 'a'));
+  await space();
+  await userEvent.key(XK_ESCAPE);
+  assert.deepStrictEqual(sizes, [ITEM, ITEM]);
 });
 
 test('a drag that leaves the list reports nothing under it, then a cancel', async () => {
