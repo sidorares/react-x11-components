@@ -1635,10 +1635,35 @@ one missing there reads nothing, which is right only for one css-select
 refuses, since that drops the rule. **An attribute anything but the
 cascade reads is out of `STYLE_ONLY_ATTRIBUTE`** — a source, a value, a
 label, a hint whose style reaches the element's descendants — and builds
-the boxes, restyling the element and what is in it. And **a `:has()` that
-reaches past its anchors, a shadow tree, or a sheet, a `<meta>` or a
-`<base>` changing is a refresh of everything**: the scope says null, and
-nothing is skipped. A shadow tree attached is one; a rule at a tree's edge
+the boxes, restyling the element and what is in it. **A key in a
+`:has()`'s argument reaches the elements whose answer changed, found by
+the `:has()`'s compound** (`HasAnchor`, `spreadAnchors`): the element that
+changed and its ancestors, their earlier siblings where the argument
+starts at a sibling, and what a holder holds, each asked whether it
+matches the compound with nothing in it a change can change the answer to
+(`stableCompound`: its type, classes, ids and attribute tests). So
+**anything a compound reads besides an element's own name and attributes
+stays out of its anchor** — a pseudo-class reads its place, what it holds
+or the pointer, and the anchor is asked after the change — and **no walk
+goes down**: a key read inside its element too (`PSEUDO_INHERITED`,
+`:lang()`, `:dir()`) is the attribute of none that is style-only, so a
+change of it restyles the element and everything in it, wherever the
+element whose `:has()` it changed is. Make one style-only and that walk is
+owed. **An attribute selector is a key of its own** (`v:`), asked of the
+value its attribute had and has by css-select itself (`Cascade._flips`),
+which made Primer's `[class*=…]` and its `:has(~ …)` no change of every
+class on github.com/features. **A sheet's element is a change to the
+cascade only where the sheets read otherwise** (`_sheetsKept`, over the
+`_sameSheets` that `_restyle` asks to keep the cascade) — a `<link>` put
+in before its sheet is in is a change when the sheet comes — and
+`changesCascade` lists the attributes `DocumentSource.facts` reads of
+them: anything new read there joins it. A `<meta>`, a `<base>`, a sheet in
+a shadow tree, a `:has()` every element could anchor that reaches past it
+(`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)` are refreshes of
+everything: the scope says null, and nothing is skipped. And the
+`stylesheet` prop is compared by the sheets it holds: `<Html scripts>`
+merges a page's adopted sheets into it at every render, and github.com
+was styled whole some sixty times a load. A shadow tree attached is one; a rule at a tree's edge
 — `:host()`, `:host-context()`, `::slotted()`, `::part()` — is not: every
 key it tests is read as reaching the element it is tested of and all below
 it (`MutationRules.noteEdge`), and while one is in the cascade a change
@@ -1959,15 +1984,24 @@ closes a way out a DOM binding opens by accident:
   through every transform and moved by every scroll, a box fixed to the
   viewport and what is in it moved where the pane's scroll draws them
   (`_moveToViewport`), as paint and the hit test move them; a header fixed
-  `top: 30px` read -470 on a page scrolled 500px. So a rect cannot say
-  whether a scroll moves its box, and what scrolls for an element asks,
-  through `HandleInternals` (which `useHtmlHandle`'s handle has and
-  `HtmlHandle` does not declare): `atViewport` of the viewport, and
-  `scrollMoves`, the rule `applyScrollOffsets` moves boxes by, of each
-  scroll container. `scrollIntoView` scrolled the page 30px on for that
-  header, and a list 300px for a box absolute in a `position: relative`
-  wrapper around it, where Chrome scrolls neither: no scroll moves a box
-  positioned against something outside it. `offsetLeft` and its
+  `top: 30px` read -470 on a page scrolled 500px. And for the offsets the
+  pane has now: a `scrollTo` moves them at once and `abs` at the next
+  pass, so a page that measures straight after its own read -470 again.
+  `elementRect` and `elementAt` measure from `_scrolledOrigin` — `abs`
+  moved by the scroll since a pass placed it, noted where core calls the
+  element only after one, its paint and the blit's `viewportFixedRects`.
+  **Anything new that answers a page in `elementRect`'s coordinates
+  measures from it**, and what core asks — paint, damage, the cursor, the
+  text accessors — keeps `abs`, as core's own nodes do until the pass.
+  So a rect cannot say whether a scroll moves its box, and what scrolls
+  for an element asks, through `HandleInternals` (which
+  `useHtmlHandle`'s handle has and `HtmlHandle` does not declare):
+  `atViewport` of the viewport, and `scrollMoves`, the rule
+  `applyScrollOffsets` moves boxes by, of each scroll container.
+  `scrollIntoView` scrolled the page 30px on for that header, and a list
+  300px for a box absolute in a `position: relative` wrapper around it,
+  where Chrome scrolls neither: no scroll moves a box positioned against
+  something outside it. `offsetLeft` and its
   kin are `offsetRect`, where layout put the box before either, from the
   offset parent's padding edge. Primer's `<Tabs>` slides a pill under a
   tab in a strip that scrolls by its `offsetLeft`, and the document's x

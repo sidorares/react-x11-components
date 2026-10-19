@@ -715,6 +715,17 @@ work loop ran past the timeout, was stopped half way, and never committed
 again. A rule at an edge is read for what it tests now, each key reaching
 across the edge below where it is tested (`MutationRules.noteEdge`).
 
+That left three kinds of refresh of everything on
+github.com/features/ai/github-app: a class change, since a Primer
+`[class*=…]` sat in a `:has(~ …)`; anything coming or going, since a
+`:has()` started at a sibling; and a `<link>` an attribute changed on or
+put in for a chunk's CSS module before its sheet came. A `:has()` now
+reaches the elements its compound finds around the change, an attribute
+selector is asked of the old value and the new, and a sheet's element is a
+change only where the sheets read otherwise. The page's adopted sheets
+were the fourth: `<Html scripts>` made the `stylesheet` prop again at every
+render, and the page was styled whole some sixty times a load.
+
 **And a media element that is told to play**, which GitHub's hero is: its
 React effect calls `play()` on the tab's video and `pause()` when its button
 is pressed, and both did nothing, so the button's icon changed and the video

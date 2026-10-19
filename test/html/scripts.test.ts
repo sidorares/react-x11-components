@@ -90,7 +90,7 @@ interface ScrollPane {
  *  stylesheet's, by its file's name, or `held` when the test lets it go;
  *  `videos` a video's, with a sink; `scheme` is the palette's. `pane`
  *  puts the page in a scroll pane that tall, as the browser's is, whose
- *  scroll the page's viewport is. */
+ *  scroll the page's viewport is, on a display of `scale`. */
 async function hosted(
   source: string,
   options: {
@@ -101,8 +101,10 @@ async function hosted(
     videos?: boolean;
     scheme?: 'light' | 'dark';
     pane?: number;
+    scale?: number;
   } = {},
 ): Promise<Hosted> {
+  const scale = options.scale ?? 1;
   const out = {
     logs: [] as string[],
     links: [] as string[],
@@ -117,10 +119,11 @@ async function hosted(
     viewport: () => ({
       width: 400,
       height: options.pane ?? 300,
-      scrollX: out.pane?.scrollX ?? 0,
-      scrollY: out.pane?.scrollY ?? 0,
+      // a pane's offsets are device pixels, as core keeps them
+      scrollX: (out.pane?.scrollX ?? 0) / scale,
+      scrollY: (out.pane?.scrollY ?? 0) / scale,
       zoom: 1,
-      dpr: 1,
+      dpr: scale,
       left: 0,
       top: 0,
     }),
@@ -211,7 +214,9 @@ async function hosted(
         h(Page),
       ),
     ),
-    FONTS ? { width: 440, height: 400, fonts: FONTS } : { backend: 'mock' },
+    FONTS
+      ? { width: 440, height: 400, fonts: FONTS, scale }
+      : { backend: 'mock', scale },
   );
   await settle();
   const root = screen.getByTestName('doc') as unknown as {
@@ -2363,6 +2368,153 @@ metric(
         '500 bar:40 30 104 24,in:47 32 10 4,flow:9 20 8 8,held:11 103 6 6 sp:36 at:bar',
       ],
     );
+  },
+);
+
+for (const scale of [1, 2]) {
+  test(`a box fixed to the viewport is measured where the page's own scroll has it, before the pane is laid out again, at scale ${scale}`, async () => {
+    // What Chrome 152 answers of the same page at 400x300: a page's
+    // `scrollTo` moves the pane at once, and the next pass moves what is
+    // in it. Measured in between, the header read -470 at 500, where it
+    // had been drawn at the scroll before, and a point read the
+    // document where it had been
+    const doc = await hosted(
+      whole(
+        '.tall { height: 2000px }' +
+          '#bar { position: fixed; top: 30px; left: 40px; width: 100px; height: 20px }' +
+          '#flow { position: absolute; top: 520px; left: 9px; width: 8px; height: 8px }',
+        '<div class="tall"></div><div id="bar"></div><div id="flow"></div>' +
+          '<p id="out"></p><script>' +
+          'var done = false;' +
+          "window.addEventListener('scroll', function () {" +
+          '  if (done) return;' +
+          '  done = true;' +
+          '  scrollTo(0, 500);' +
+          "  var r = document.getElementById('bar').getBoundingClientRect();" +
+          "  document.getElementById('out').textContent = [scrollY, r.left, r.top," +
+          '    document.elementFromPoint(45, 35).id,' +
+          "    document.elementFromPoint(12, 22).id].join(' ');" +
+          '});' +
+          '</script>',
+      ),
+      { pane: 300, scale },
+    );
+    await act(async () => doc.scrolled());
+    assert.equal(
+      await settled(doc, 'out', (t) => t !== ''),
+      '500 40 30 bar flow',
+    );
+    // and the pass after it draws them there
+    assert.equal(doc.pane!.scrollY, 500 * scale);
+    const bar = doc.handle.elementRect(doc.byId('bar'))!;
+    assert.deepEqual([bar.x, bar.y], [40, 530]);
+  });
+}
+
+for (const scale of [1, 2]) {
+  fontMetric(
+    `a box fixed to the viewport of a right-to-left pane is measured where the pane's scroll has it, before and after the pass, at scale ${scale}`,
+    async () => {
+      // A right-to-left pane scrolls from the right: its offset moves what
+      // it holds the other way, and the measure follows it that way too
+      const source =
+        '<style>body{margin:0}#bar{position:fixed;top:10px;left:40px;' +
+        'width:20px;height:20px}</style><div id="bar"></div>' +
+        '<div style="height:2000px"></div>';
+      await renderX11(
+        h(
+          'box',
+          {
+            'data-testname': 'pane',
+            style: {
+              width: 400,
+              height: 200,
+              overflow: 'scroll',
+              flexDirection: 'row',
+              direction: 'rtl',
+            },
+          },
+          h(Html, {
+            source,
+            partial: false,
+            style: { width: 1000, flexShrink: 0 },
+            'data-testname': 'doc',
+          }),
+        ),
+        { width: 440, height: 300, fonts: FONTS!, scale },
+      );
+      await act();
+      const root = screen.getByTestName('doc') as unknown as {
+        children: HtmlViewNode[];
+      };
+      const el = root.children[0];
+      const pane = screen.getByTestName('pane') as DrawnNode & {
+        scrollX: number;
+        scrollTo(to: { x?: number; y?: number }): void;
+      };
+      const bar = () => findById(el.document, 'bar') as DocElement;
+      // at the start, the pane shows the document's right-hand end
+      assert.equal(el.elementRect(bar())!.x, 640);
+      let between: number | undefined;
+      await act(async () => {
+        pane.scrollTo({ x: 200 });
+        between = el.elementRect(bar())!.x;
+      });
+      assert.equal(pane.scrollX, 200 * scale);
+      assert.equal(between, 440, 'measured before the pass');
+      assert.equal(el.elementRect(bar())!.x, 440, 'and after it');
+    },
+  );
+}
+
+fontMetric(
+  'a point is read where the pane has scrolled the document since a pass that only copied it',
+  async () => {
+    // A pane scrolling a document narrower than it copies what it shows
+    // and paints the strip the scroll brought in, which misses the
+    // document: that pass moved it, and only the copy asked it anything
+    // (`viewportFixedRects`). A point read after the next `scrollTo` was
+    // read where the document had been before that one
+    const rows = Array.from({ length: 20 }, (_, i) => `<div id="d${i}"></div>`);
+    await renderX11(
+      h(
+        'box',
+        {
+          'data-testname': 'pane',
+          style: {
+            width: 400,
+            height: 300,
+            overflow: 'scroll',
+            flexDirection: 'column',
+          },
+        },
+        h(Html, {
+          source: `<style>body{margin:0}div{height:10px}</style>${rows.join('')}`,
+          partial: false,
+          style: { width: 200, flexGrow: 0 },
+          'data-testname': 'doc',
+        }),
+        h('box', { style: { height: 2000, flexShrink: 0 } }),
+      ),
+      { width: 440, height: 400, fonts: FONTS! },
+    );
+    await act();
+    const root = screen.getByTestName('doc') as unknown as {
+      children: HtmlViewNode[];
+    };
+    const el = root.children[0];
+    const pane = screen.getByTestName('pane') as DrawnNode & {
+      scrollTo(y: number): void;
+    };
+    await act(async () => pane.scrollTo(10));
+    await act();
+    let between: string | undefined;
+    await act(async () => {
+      pane.scrollTo(100);
+      between = el.elementAtPoint(5, 5)?.attribs.id;
+    });
+    assert.equal(between, 'd10', 'read before the pass');
+    assert.equal(el.elementAtPoint(5, 5)?.attribs.id, 'd10', 'and after it');
   },
 );
 
