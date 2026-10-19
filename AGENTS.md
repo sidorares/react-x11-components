@@ -1959,7 +1959,16 @@ closes a way out a DOM binding opens by accident:
   through every transform and moved by every scroll, a box fixed to the
   viewport and what is in it moved where the pane's scroll draws them
   (`_moveToViewport`), as paint and the hit test move them; a header fixed
-  `top: 30px` read -470 on a page scrolled 500px. `offsetLeft` and its
+  `top: 30px` read -470 on a page scrolled 500px. And for the offsets the
+  pane has now: a `scrollTo` moves them at once and `abs` at the next
+  pass, so a page that measures straight after its own read -470 again.
+  `elementRect` and `elementAt` measure from `_scrolledOrigin` — `abs`
+  moved by the scroll since a pass placed it, noted where core calls the
+  element only after one, its paint and the blit's `viewportFixedRects`.
+  **Anything new that answers a page in `elementRect`'s coordinates
+  measures from it**, and what core asks — paint, damage, the cursor, the
+  text accessors — keeps `abs`, as core's own nodes do until the pass.
+  `offsetLeft` and its
   kin are `offsetRect`, where layout put the box before either, from the
   offset parent's padding edge. Primer's `<Tabs>` slides a pill under a
   tab in a strip that scrolls by its `offsetLeft`, and the document's x

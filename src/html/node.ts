@@ -536,6 +536,23 @@ interface WarmingFonts {
   prewarm?(family: string, faces?: { weight: number; style: string }[]): void;
 }
 
+/** A scroll pane of core's, as `Scrollable` declares one. */
+type ScrollPane = Node & {
+  isScroller(): boolean;
+  scrollX: number;
+  scrollY: number;
+};
+
+/** The pane's offsets where a pass left them, and `abs` where that pass
+ *  put the element (`_notePlaced`). */
+interface PlacedAt {
+  pane: ScrollPane;
+  scrollX: number;
+  scrollY: number;
+  x: number;
+  y: number;
+}
+
 /** What changed, and therefore how far back up the pipeline to go. */
 const enum Stale {
   Nothing = 0,
@@ -1684,14 +1701,79 @@ export class HtmlViewNode extends Node {
    * scrolls it, and the element is its own.
    */
   private _viewport(): Rect | null {
+    const box = this._pane()?.contentBox();
+    return box && box.width > 0 && box.height > 0 ? box : null;
+  }
+
+  /** The pane that scrolls the element: the nearest scroll pane around
+   *  it, or null where nothing scrolls it. */
+  private _pane(): ScrollPane | null {
     for (let node = this.parent; node; node = node.parent) {
       // `Scrollable`'s, and not every node's: asked the way core asks it
-      const scroller = node as { isScroller?: () => boolean };
-      if (!scroller.isScroller?.()) continue;
-      const box = node.contentBox();
-      return box.width > 0 && box.height > 0 ? box : null;
+      const pane = node as Partial<ScrollPane>;
+      if (pane.isScroller?.()) return node as ScrollPane;
     }
     return null;
+  }
+
+  /** The pane's offsets and `abs` as the last pass left them, noted where
+   *  core says a pass is over (`_notePlaced`); null before the first. */
+  private _placedAt: PlacedAt | null = null;
+
+  /**
+   * Note the pane's offsets and where the element is: called where core
+   * calls an element only after a layout pass — its paint, and the
+   * question a scroll the pane blits asks (`viewportFixedRects`) — so the
+   * two are what that pass made of each other (`_scrolledOrigin`).
+   */
+  private _notePlaced(): void {
+    const pane = this._pane();
+    if (!pane) {
+      this._placedAt = null;
+      return;
+    }
+    const at = (this._placedAt ??= {
+      pane,
+      scrollX: 0,
+      scrollY: 0,
+      x: 0,
+      y: 0,
+    });
+    at.pane = pane;
+    at.scrollX = pane.scrollX;
+    at.scrollY = pane.scrollY;
+    at.x = this.abs.x;
+    at.y = this.abs.y;
+  }
+
+  /**
+   * Where the element's corner is for the offsets the pane has now, in
+   * window pixels: `abs`, moved by however far the pane has scrolled since
+   * the pass that put it there. A pane's `scrollTo` moves its offsets at
+   * once and what it holds at the next pass, so measured from `abs` in
+   * between, a header fixed at `top: 30px` read -470 to a page's
+   * `getBoundingClientRect` straight after its `scrollTo(0, 500)`, where
+   * Chrome reads 30, and `elementFromPoint` found what had been under the
+   * point before the scroll. A pane's offsets are device pixels, as `abs`
+   * is, and a right-to-left pane's offset across moves what it holds the
+   * other way (react-x11's `Scrollable`). `abs` as it is where it moved
+   * since the note, or the pane is another: a pass that neither painted
+   * the element nor blitted the pane placed it, at the offsets there are
+   * unless the pane scrolled after it, which nothing here can see.
+   */
+  private _scrolledOrigin(): { x: number; y: number } {
+    const abs = this.abs;
+    const at = this._placedAt;
+    if (!at || at.x !== abs.x || at.y !== abs.y) return abs;
+    const pane = this._pane();
+    if (pane !== at.pane) return abs;
+    const dx = pane.scrollX - at.scrollX;
+    const dy = pane.scrollY - at.scrollY;
+    if (dx === 0 && dy === 0) return abs;
+    return {
+      x: pane.direction === 'rtl' ? abs.x + dx : abs.x - dx,
+      y: abs.y - dy,
+    };
   }
 
   /**
@@ -1704,6 +1786,7 @@ export class HtmlViewNode extends Node {
    * with none of them, and where nothing scrolls the element.
    */
   override viewportFixedRects(): Rect[] | null {
+    this._notePlaced();
     const tree = this._tree;
     const viewport = tree && this._viewport();
     if (!tree || !viewport) return null;
@@ -3832,10 +3915,12 @@ export class HtmlViewNode extends Node {
    * that is, as paint draws it where the viewport is (`atViewport`) and
    * the hit test finds it there (`_fixedShift`). Measured where it was
    * laid out, a fixed header `top: 30px` on a page scrolled 500px read
-   * -470 to a script's `getBoundingClientRect`, where Chrome reads 30.
+   * -470 to a script's `getBoundingClientRect`, where Chrome reads 30. For
+   * the offsets the pane has now, the next pass's as well as the last's
+   * (`_scrolledOrigin`): a page measures straight after its `scrollTo`.
    */
   private _moveToViewport(box: Box, rect: Rect): Rect {
-    const shift = this._fixedShift();
+    const shift = this._fixedShift(this._scrolledOrigin());
     const moved = shift && drawnAtViewport(box);
     const s = this._scale;
     return {
@@ -4042,11 +4127,14 @@ export class HtmlViewNode extends Node {
    * or an image that arrived — is done first, as `elementRect`'s is, so a
    * host that changed the DOM and asks what is under a point before the
    * next paint is answered from the change, as `elementFromPoint` is, and
-   * not with an element the change took out.
+   * not with an element the change took out. And where the pane's offsets
+   * have the document now, as `elementRect` measures it
+   * (`_scrolledOrigin`): a page asks what is under a point straight after
+   * its `scrollTo`.
    */
   elementAtPoint(x: number, y: number): Element | null {
     this._prepare(this.abs.width || 1);
-    return this._drawnAt(x, y);
+    return this._drawnAt(x, y, this._scrolledOrigin());
   }
 
   /**
@@ -4055,15 +4143,26 @@ export class HtmlViewNode extends Node {
    * pointer move between two frames on a page whose hover builds the boxes
    * would build them, where the restyles of all of them are one build at
    * the frame; and core asks the hover again after a frame that laid out
-   * (react-x11#793), which brings it up to the tree that frame drew.
+   * (react-x11#793), which brings it up to the tree that frame drew. With
+   * the element's corner at `origin` (`_fixedShift`'s).
    */
-  private _drawnAt(x: number, y: number): Element | null {
+  private _drawnAt(
+    x: number,
+    y: number,
+    origin: { x: number; y: number } = this.abs,
+  ): Element | null {
     this._followViewport();
     this._followLifted();
     const tree = this._tree;
     if (!tree) return null;
-    const local = this._toDocument(x, y);
-    return deepestAt(tree, local.x, local.y, undefined, this._fixedShift());
+    const local = this._toDocument(x, y, origin);
+    return deepestAt(
+      tree,
+      local.x,
+      local.y,
+      undefined,
+      this._fixedShift(origin),
+    );
   }
 
   /**
@@ -4081,12 +4180,16 @@ export class HtmlViewNode extends Node {
 
   /** How far a box fixed to the viewport is drawn from where it was laid
    *  out, in the document's pixels: the scroll of the pane the element is
-   *  in (`atViewport`). Null where nothing scrolls it. */
-  private _fixedShift(): { x: number; y: number } | null {
+   *  in (`atViewport`), with the element's corner at `origin` — `abs`,
+   *  where the last pass drew it, or the pane's offsets now have it
+   *  (`_scrolledOrigin`). Null where nothing scrolls it. */
+  private _fixedShift(
+    origin: { x: number; y: number } = this.abs,
+  ): { x: number; y: number } | null {
     const tree = this._tree;
     const viewport = tree && FIXED_BOXES.has(tree) && this._viewport();
     if (!tree || !viewport) return null;
-    return { x: viewport.x - this.abs.x, y: viewport.y - this.abs.y };
+    return { x: viewport.x - origin.x, y: viewport.y - origin.y };
   }
 
   /**
@@ -6115,10 +6218,15 @@ export class HtmlViewNode extends Node {
     return this._source.facts().title;
   }
 
-  /** A logical window point in document (device) coordinates. */
-  private _toDocument(x: number, y: number): { x: number; y: number } {
+  /** A logical window point in document (device) coordinates, with the
+   *  element's corner at `origin` (`_fixedShift`'s). */
+  private _toDocument(
+    x: number,
+    y: number,
+    origin: { x: number; y: number } = this.abs,
+  ): { x: number; y: number } {
     const s = this._scale;
-    return { x: x * s - this.abs.x, y: y * s - this.abs.y };
+    return { x: x * s - origin.x, y: y * s - origin.y };
   }
 
   // --- scroll containers ---------------------------------------------------
@@ -6558,6 +6666,7 @@ export class HtmlViewNode extends Node {
   // --- paint ----------------------------------------------------------------
 
   override paint(ctx: Context2D): void {
+    this._notePlaced();
     super.paint(ctx); // background, border, clip to `abs`
     this._counted(() => this._paintContent(ctx));
     this._noteFrame();
