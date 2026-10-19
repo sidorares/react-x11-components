@@ -2412,6 +2412,45 @@ for (const scale of [1, 2]) {
 }
 
 for (const scale of [1, 2]) {
+  test(`a sticky box the viewport holds is measured where the page's own scroll has it, before the pane is laid out again, at scale ${scale}`, async () => {
+    // What Chrome 152 answers of the same page at 400x300: the header is
+    // held at the viewport's top as soon as the page has scrolled, and a
+    // point there finds it. Placed for where the last pass put the
+    // document, it read -492 — where the flow has it, scrolled away — and
+    // the point found nothing
+    const doc = await hosted(
+      whole(
+        '.tall { height: 2000px }' +
+          '#head { position: sticky; top: 0; height: 20px }',
+        '<div id="head"></div><div class="tall" id="tall"></div>' +
+          '<p id="out"></p><script>' +
+          'var done = false;' +
+          "window.addEventListener('scroll', function () {" +
+          '  if (done) return;' +
+          '  done = true;' +
+          '  scrollTo(0, 500);' +
+          "  var r = document.getElementById('head').getBoundingClientRect();" +
+          "  document.getElementById('out').textContent = [scrollY, r.left, r.top," +
+          '    document.elementFromPoint(20, 10).id,' +
+          "    document.elementFromPoint(20, 30).id].join(' ');" +
+          '});' +
+          '</script>',
+      ),
+      { pane: 300, scale },
+    );
+    await act(async () => doc.scrolled());
+    assert.equal(
+      await settled(doc, 'out', (t) => t !== ''),
+      '500 8 0 head tall',
+    );
+    // and the pass after it draws it there
+    assert.equal(doc.pane!.scrollY, 500 * scale);
+    const head = doc.handle.elementRect(doc.byId('head'))!;
+    assert.deepEqual([head.x, head.y], [8, 500]);
+  });
+}
+
+for (const scale of [1, 2]) {
   fontMetric(
     `a box fixed to the viewport of a right-to-left pane is measured where the pane's scroll has it, before and after the pass, at scale ${scale}`,
     async () => {

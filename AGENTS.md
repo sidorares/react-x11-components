@@ -1968,6 +1968,13 @@ closes a way out a DOM binding opens by accident:
   **Anything new that answers a page in `elementRect`'s coordinates
   measures from it**, and what core asks — paint, damage, the cursor, the
   text accessors — keeps `abs`, as core's own nodes do until the pass.
+  The sticky boxes the viewport holds are the exception, since they are
+  one placement and not one per asker: placed from `_scrolledOrigin`
+  whoever asks (`_followViewport`), where a header held at `top: 0` read
+  -492 placed from `abs`. Placed for the next pass when a page asks and
+  for the last when core does, a hover between a page's `scrollTo` and
+  its pass would move them back and forth. So until that pass, a point
+  core asks about finds a held box where the pass will draw it.
   `offsetLeft` and its
   kin are `offsetRect`, where layout put the box before either, from the
   offset parent's padding edge. Primer's `<Tabs>` slides a pill under a
@@ -3091,7 +3098,8 @@ moved, and a container's reach is measured with every sticky box taken
 back by it, or a footer stuck at `bottom: 0` makes the container shorter
 by its height. One the viewport keeps (`VIEWPORT_STICKY`) is the
 element's to place, since the pane's scroll lays nothing out
-(`_followViewport`, `restickToViewport`): **anything new that reads where
+(`_followViewport`, `restickToViewport`), for the offsets the pane has
+now (`_scrolledOrigin`), the next pass's: **anything new that reads where
 a box is follows the viewport first**, as a paint, a hit test, a layout
 and `elementRect` do, and the pane's blit is told where each was drawn
 held and where it is held now (`viewportFixedRects`), or its copy drags a
