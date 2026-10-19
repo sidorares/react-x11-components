@@ -3193,7 +3193,9 @@ when only the height moved. A `position: fixed` box and a
 the box scrolls the element: laid out against it at the document's top,
 drawn where it is now, found there by the pointer, and measured there by
 `elementRect`, so a page's `getBoundingClientRect` reads a header fixed
-`top: 30px` at 30 however far it has scrolled, as Chrome does, and the link
+`top: 30px` at 30 however far it has scrolled, as Chrome does — straight
+after its own `scrollTo` too, before the frame that draws it, as `elementAt`
+reads the document where the scroll has it then — and the link
 in it takes the focus where it is without scrolling the page back to its
 top. The element tells
 the scroll box what it draws that way (react-x11's `viewportFixedRects`),

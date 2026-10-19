@@ -465,7 +465,9 @@ export interface HtmlHandle {
   refresh(changes?: readonly HtmlChange[]): void;
   /** The element under a point, in the window's coordinates — of the
    *  document as it is now: one changed and `refresh()`ed is laid out
-   *  first, as `elementRect` lays it out. */
+   *  first, as `elementRect` lays it out, and one the pane around the
+   *  element has scrolled is read where the scroll has it, before the
+   *  frame that draws it there. */
   elementAt(x: number, y: number): Element | null;
   /** The link under a point, in the window's coordinates — resolved, as
    *  `onLink` is handed one — for a status bar, or a menu on a link. */
@@ -477,7 +479,8 @@ export interface HtmlHandle {
    * A block's border box; an inline element's across its fragments, padding
    * and border included, as `getBoundingClientRect` measures it, and as
    * tall as its lines. A box fixed to the viewport, and what is in it, is
-   * where the scroll of the pane around the element draws it. Null for an
+   * where the scroll of the pane around the element draws it — where the
+   * pane is scrolled now, before the frame that draws it there. Null for an
    * element with no box.
    */
   elementRect(element: Element): Rect | null;
