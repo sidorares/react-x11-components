@@ -3286,7 +3286,9 @@ scroll of it and after every layout, as Chrome places one: a header at
 leaves, a footer at `bottom: 0` at its foot. Where it is in the flow is
 what the container's reach is measured by, not where it is stuck. One the
 viewport keeps is placed again as the pane around the document scrolls it,
-and the pane is told where it is held (`viewportFixedRects`), as it is told
+and measured there straight after a page's own `scrollTo`, before the frame
+that draws it, as a fixed box is: a header held at `top: 0` reads 0, as in
+Chrome. The pane is told where it is held (`viewportFixedRects`), as it is told
 where a fixed box is, so its copy of a step does not drag the box with the
 text.
 

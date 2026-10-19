@@ -2001,7 +2001,14 @@ closes a way out a DOM binding opens by accident:
   `scrollIntoView` scrolled the page 30px on for that header, and a list
   300px for a box absolute in a `position: relative` wrapper around it,
   where Chrome scrolls neither: no scroll moves a box positioned against
-  something outside it. `offsetLeft` and its
+  something outside it. The sticky boxes the viewport holds are placed
+  from `_scrolledOrigin` whoever asks, core included (`_followViewport`),
+  since they are one placement and not one per asker: placed from `abs`,
+  a header held at `top: 0` read -492, and placed for the next pass when
+  a page asks and for the last when core does, a hover between a page's
+  `scrollTo` and its pass would move them back and forth. So until that
+  pass, a point core asks about finds a held box where the pass will draw
+  it. `offsetLeft` and its
   kin are `offsetRect`, where layout put the box before either, from the
   offset parent's padding edge. Primer's `<Tabs>` slides a pill under a
   tab in a strip that scrolls by its `offsetLeft`, and the document's x
@@ -3130,7 +3137,8 @@ moved, and a container's reach is measured with every sticky box taken
 back by it, or a footer stuck at `bottom: 0` makes the container shorter
 by its height. One the viewport keeps (`VIEWPORT_STICKY`) is the
 element's to place, since the pane's scroll lays nothing out
-(`_followViewport`, `restickToViewport`): **anything new that reads where
+(`_followViewport`, `restickToViewport`), for the offsets the pane has
+now (`_scrolledOrigin`), the next pass's: **anything new that reads where
 a box is follows the viewport first**, as a paint, a hit test, a layout
 and `elementRect` do, and the pane's blit is told where each was drawn
 held and where it is held now (`viewportFixedRects`), or its copy drags a

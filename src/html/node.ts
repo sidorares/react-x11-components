@@ -1863,6 +1863,21 @@ export class HtmlViewNode extends Node {
    * is — a paint, a hit test, a scroll blit's question — and a few
    * comparisons where nothing moved; where nothing scrolls the element, they
    * stay where the layout put them.
+   *
+   * For the offsets the pane has now (`_scrolledOrigin`), whoever asks. A
+   * page measures straight after its own `scrollTo`, before the pass that
+   * moves `abs`: placed from `abs`, a header held at `top: 0` read -492 on
+   * a page scrolled 500px, where Chrome reads 0, and a point at the top of
+   * the viewport missed it. They are one placement and not one per asker:
+   * placed for the pass to come when a page asks and for the last when
+   * core does, a hover between a page's `scrollTo` and its pass would move
+   * them back each time, each a walk of the tree's ink and the surfaces
+   * around them given up. So a point core asks about in that window — a
+   * hover, a press — is read where the last pass drew the flow and the
+   * next will draw a held box, for that one frame, and core asks the hover
+   * again after it (react-x11#793). The paint and the blit's question note
+   * the pass first (`_notePlaced`), so they place them from `abs`, and
+   * what they draw and repair is where that pass put it.
    */
   private _followViewport(): void {
     const tree = this._tree;
@@ -1870,9 +1885,10 @@ export class HtmlViewNode extends Node {
     if (!boxes) return;
     const viewport = this._viewport();
     if (!viewport) return;
+    const origin = this._scrolledOrigin();
     const moved = restickToViewport(boxes, {
-      x: viewport.x - this.abs.x,
-      y: viewport.y - this.abs.y,
+      x: viewport.x - origin.x,
+      y: viewport.y - origin.y,
       width: viewport.width,
       height: viewport.height,
     });
