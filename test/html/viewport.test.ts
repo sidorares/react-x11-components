@@ -1002,74 +1002,89 @@ test('a box fixed to the viewport stays where the viewport has it, whatever a st
   }
 });
 
-metric(
-  'a pane scrolled a step at a time draws the sticky boxes the viewport holds where a repaint of all of it does',
-  async () => {
-    // A step of a pane's scroll copies what it shows and paints the strip
-    // it exposed, and the copy drags a held box with the text. The document
-    // tells the pane where each was drawn held and where it is held now
-    // (`viewportFixedRects`), and the pane repaints both: without them, the
-    // title caught on the way down left a copy of itself every step
-    const W = 400;
-    const H = 200;
-    const mount = async () => {
-      const pane = React.createRef<DrawnNode & { scrollTo(y: number): void }>();
-      const result = await renderX11(
-        h(
-          'box',
-          { ref: pane, style: { width: W, height: H, overflow: 'scroll' } },
-          h(Html, { source: STICKY, partial: false }),
-        ),
-        { width: W, height: H, fonts: FONTS! },
-      );
-      await act();
-      return { result, pane: pane.current! };
-    };
-    // left of the bar, whose thumb fades on a clock of its own
-    const region = { x: 0, y: 0, width: W - 20, height: H };
-    const stepped = await mount();
-    // down to the step that catches the second title, which was where the
-    // flow had it the step before; on, past where it is let go; and back
-    // up past where it is caught again
-    const path = [
-      ...Array.from({ length: 30 }, (_, i) => 10 + i * 10),
-      ...Array.from({ length: 30 }, (_, i) => 310 + i * 10),
-      ...Array.from({ length: 15 }, (_, i) => 590 - i * 10),
-    ];
-    const stops = new Map<number, Uint8ClampedArray>();
-    for (const [i, y] of path.entries()) {
-      await act(async () => stepped.pane.scrollTo(y));
-      if (y === 300 || i === path.length - 1) {
-        stops.set(y, await pixelsIn(stepped.result.ctx, region));
-      }
-    }
-    await stepped.result.unmount();
-    for (const [y, after] of stops) {
-      const whole = await mount();
-      await act(async () => whole.pane.scrollTo(y));
-      const want = await pixelsIn(whole.result.ctx, region);
-      await whole.result.unmount();
-      let wrong = 0;
-      let first = -1;
-      for (let i = 0; i < want.length; i += 4) {
-        if (
-          after[i] !== want[i] ||
-          after[i + 1] !== want[i + 1] ||
-          after[i + 2] !== want[i + 2]
-        ) {
-          wrong += 1;
-          if (first < 0) first = i / 4;
+for (const measured of [false, true]) {
+  metric(
+    `a pane scrolled a step at a time draws the sticky boxes the viewport holds where a repaint of all of it does${measured ? ', measured between each scroll and its pass' : ''}`,
+    async () => {
+      // A step of a pane's scroll copies what it shows and paints the strip
+      // it exposed, and the copy drags a held box with the text. The document
+      // tells the pane where each was drawn held and where it is held now
+      // (`viewportFixedRects`), and the pane repaints both: without them, the
+      // title caught on the way down left a copy of itself every step. And
+      // measured between a scroll and its pass, as a page does after its own
+      // `scrollTo` and core does on a move, which places them for the scroll
+      // before the pass that draws it (`_followViewport`)
+      const W = 400;
+      const H = 200;
+      const mount = async () => {
+        const pane = React.createRef<
+          DrawnNode & { scrollTo(y: number): void }
+        >();
+        const result = await renderX11(
+          h(
+            'box',
+            { ref: pane, style: { width: W, height: H, overflow: 'scroll' } },
+            h(Html, { source: STICKY, partial: false, 'data-testname': 'doc' }),
+          ),
+          { width: W, height: H, fonts: FONTS! },
+        );
+        await act();
+        const doc = screen.getByTestName('doc') as unknown as {
+          children: HtmlViewNode[];
+        };
+        return { result, pane: pane.current!, el: doc.children[0] };
+      };
+      // left of the bar, whose thumb fades on a clock of its own
+      const region = { x: 0, y: 0, width: W - 20, height: H };
+      const stepped = await mount();
+      // down to the step that catches the second title, which was where the
+      // flow had it the step before; on, past where it is let go; and back
+      // up past where it is caught again
+      const path = [
+        ...Array.from({ length: 30 }, (_, i) => 10 + i * 10),
+        ...Array.from({ length: 30 }, (_, i) => 310 + i * 10),
+        ...Array.from({ length: 15 }, (_, i) => 590 - i * 10),
+      ];
+      const stops = new Map<number, Uint8ClampedArray>();
+      for (const [i, y] of path.entries()) {
+        await act(async () => {
+          stepped.pane.scrollTo(y);
+          if (!measured) return;
+          stepped.el.elementAtPoint(50, 10);
+          stepped.el.cursorAt(50, 10);
+        });
+        if (y === 300 || i === path.length - 1) {
+          stops.set(y, await pixelsIn(stepped.result.ctx, region));
         }
       }
-      assert.strictEqual(
-        wrong,
-        0,
-        `at ${y}: ${wrong} pixels off, the first at ` +
-          `${first % region.width},${Math.floor(first / region.width)}`,
-      );
-    }
-  },
-);
+      await stepped.result.unmount();
+      for (const [y, after] of stops) {
+        const whole = await mount();
+        await act(async () => whole.pane.scrollTo(y));
+        const want = await pixelsIn(whole.result.ctx, region);
+        await whole.result.unmount();
+        let wrong = 0;
+        let first = -1;
+        for (let i = 0; i < want.length; i += 4) {
+          if (
+            after[i] !== want[i] ||
+            after[i + 1] !== want[i + 1] ||
+            after[i + 2] !== want[i + 2]
+          ) {
+            wrong += 1;
+            if (first < 0) first = i / 4;
+          }
+        }
+        assert.strictEqual(
+          wrong,
+          0,
+          `at ${y}: ${wrong} pixels off, the first at ` +
+            `${first % region.width},${Math.floor(first / region.width)}`,
+        );
+      }
+    },
+  );
+}
 
 test('a box placed against the initial containing block follows the viewport', async () => {
   // nothing positioned around it: `bottom: 0` is the viewport's bottom
