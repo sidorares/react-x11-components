@@ -205,6 +205,52 @@ test('a page with no scripts.fetch has no network: its requests fail, and nothin
   assert.equal(await until(page, 'out', (s) => s !== ''), 'TypeError');
 });
 
+test('a page that adopted a sheet hands the element the same sheets as its scripts change the document, so a change restyles what it reaches and not all of it', async (t) => {
+  if (!(await preloadHtmlScripts())) return t.skip();
+  // Each refresh the page's scripts make renders `<Html>` again, and the
+  // element restyles the whole document when its `stylesheet` is another
+  // array: merged afresh at every render, GitHub's pages, which adopt the
+  // popover polyfill's sheet, were styled whole at each class a script set
+  const page = await shown(
+    '<style>.a { color: rgb(0, 0, 0) }</style>' +
+      '<p id="z" class="a">z</p><p id="out"></p><script>' +
+      'var sheet = new CSSStyleSheet(); sheet.replaceSync(".b { color: rgb(1, 2, 3) }");' +
+      'document.adoptedStyleSheets = [sheet];' +
+      'var z = document.getElementById("z"), out = document.getElementById("out");' +
+      'setTimeout(function () { z.className = "b"; out.textContent = "b";' +
+      '  setTimeout(function () { z.className = "a"; out.textContent = "a";' +
+      '    setTimeout(function () { sheet.insertRule(".a { color: rgb(4, 5, 6) }", 1);' +
+      '      out.textContent = "edited"; }, 200);' +
+      '  }, 200);' +
+      '}, 200);' +
+      '</script>',
+    { scripts: true },
+  );
+  const view = (
+    page.handle as unknown as {
+      ref: { current: { props: { stylesheet?: unknown } } };
+    }
+  ).ref.current;
+  const z = () => findById(page.handle.document, 'z')!;
+  const rest = () => act(() => new Promise((r) => setTimeout(r, 30)));
+  await until(page, 'out', (s) => s === 'b');
+  await rest();
+  assert.equal(page.handle.computedStyle(z())?.color, 'rgb(1, 2, 3)');
+  const sheets = view.props.stylesheet;
+  assert.ok(Array.isArray(sheets), 'the adopted sheet reaches the element');
+  await until(page, 'out', (s) => s === 'a');
+  await rest();
+  assert.equal(page.handle.computedStyle(z())?.color, 'rgb(0, 0, 0)');
+  assert.ok(
+    view.props.stylesheet === sheets,
+    'the same array after the refresh rendered <Html> again',
+  );
+  // and a sheet the page edits is another sheet
+  await until(page, 'out', (s) => s === 'edited');
+  await rest();
+  assert.equal(page.handle.computedStyle(z())?.color, 'rgb(4, 5, 6)');
+});
+
 test('what leaves the document is handed to its seams: location, the title, the console', async (t) => {
   if (!(await preloadHtmlScripts())) return t.skip();
   const went: string[] = [];

@@ -405,13 +405,24 @@ export function useScriptedHtml(
     [scripts.canvasImage],
   );
 
+  // The application's sheets and the ones the page adopted, as one array
+  // for as long as they read the same. The element restyles the whole
+  // document when its `stylesheet` is another array, and every refresh the
+  // page's scripts make renders `<Html>` again: merged afresh at each, a
+  // page that adopted a sheet was styled whole at every change it made.
+  // Every GitHub page adopts one — the popover polyfill's, since the
+  // facade has no popover of its own — and on an article whose contents
+  // list marks the section scrolled to, each section crossed cost 400 ms.
   const own = props.stylesheet;
-  const stylesheet = scripts.stylesheet
+  const merged = scripts.stylesheet
     ? [
         ...(own === undefined ? [] : Array.isArray(own) ? own : [own]),
         ...scripts.stylesheet,
       ]
     : own;
+  const kept = useRef(merged);
+  if (!sameSheets(kept.current, merged)) kept.current = merged;
+  const stylesheet = kept.current;
 
   return {
     ...props,
@@ -434,6 +445,16 @@ export function useScriptedHtml(
         ? h(engine.FrameHolder, { context: holderContext })
         : null,
   };
+}
+
+/** Whether two `stylesheet` props hold the same sheets in the same order. */
+function sameSheets(
+  a: string | string[] | undefined,
+  b: string | string[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  return a.length === b.length && a.every((sheet, i) => sheet === b[i]);
 }
 
 /** A document's root element, which a module's request names. */
