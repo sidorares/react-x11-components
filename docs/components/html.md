@@ -44,7 +44,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `onScript`           | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                                                                                                                                       |
 | `scripting`          | `boolean`                                        | Whether the host runs the document's scripts — this runs none either way. True draws a `<noscript>` as nothing, asks for nothing in it and makes `@media (scripting: enabled)` hold — see [The seams](#the-seams). Default false.                                                                   |
 | `onDomEvent`         | `(event: HtmlDomEvent) => boolean \| void`       | Something happened to the document, told before this does anything about it; `false` cancels it — see [Events before their defaults](#events-before-their-defaults).                                                                                                                                |
-| `onParsed`           | `() => void`                                     | The parse has ended. Once a document, a microtask later.                                                                                                                                                                                                                                            |
+| `onParsed`           | `() => void`                                     | The parse has ended and core has laid the element out. Once a document.                                                                                                                                                                                                                             |
 | `onLoaded`           | `() => void`                                     | Everything the document asked for has arrived or failed, counted from its first complete layout. Once a document.                                                                                                                                                                                   |
 | `onLink`             | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.                                                                                                                                 |
 | `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                                                                                                                          |
@@ -1252,6 +1252,17 @@ pill under it computes with. Three places Chrome parts from the words:
   element is measured from it and it from its own, added up. A light child
   slotted inside a positioned box in a shadow tree has the `<body>` for its
   parent and the offsets the two steps come to.
+
+**A script measures the document at the width it is drawn at.** A browser
+lays a page out at its viewport's width before any script reads it, so an
+inline script, `DOMContentLoaded` and `load` all see the page as it is
+drawn. A document mounted with its source is parsed in the render that
+mounts it, and core lays it out at the window's next frame, which on a
+display's clock is a vertical blank later. So `onParsed` waits for that
+first layout, and a host that runs scripts from it never reads a layout
+made before the element had a width. One under `display: none`, which core
+lays out none of, is told as its parse ends. A load that came first waits
+for it, so `onLoaded` is always told after `onParsed`.
 
 **A script waits for the style sheets before it.** A browser holds a script
 it meets until the sheets the parser met before it are in, so a script

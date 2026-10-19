@@ -2070,8 +2070,14 @@ module imports a heavy one by `import type` only.** What `<Html>` reports
 before the chunk is in — the document, its scripts, the end of its parse,
 its `load` — is kept and handed to the runner in that order, and the
 parse's scripts wait for the element's first layout, since a document
-mounted with its source is parsed before core has laid anything out. Three
-more things:
+mounted with its source is parsed before core has laid anything out.
+`<Html>` holds `onParsed` for it (`parsed.ts`), and `onLoaded` behind it,
+until core's `onLayout` says the element was laid out, so every host waits,
+a frame's view included. **Wait for the layout, never for a count of turns**: the frame is
+the window's clock, a vertical blank away where the display paces it, and
+the eight `setImmediate`s the parse once waited were spent in a millisecond
+of it, so on an X server a page's first scripts measured a document laid
+out at one pixel, with `innerWidth` 0. Three more things:
 
 - **The engine's Node is written out** (`scripts/platform.ts`): `node:vm`,
   `node:util` and `node:worker_threads` are loaded with a specifier the

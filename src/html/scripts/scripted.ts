@@ -37,7 +37,6 @@ import type {
   ScriptRequest,
 } from '../index.js';
 import { HTML_USER_AGENT } from '../network.js';
-import { afterLayout } from '../../internal/timers.js';
 import { useScripts } from './hook.js';
 import type { FetchRequest, FetchResponse } from './host.js';
 import type { AbortSignalLike } from './platform.js';
@@ -234,11 +233,6 @@ const NO_NETWORK = (request: FetchRequest): Promise<FetchResponse> =>
 
 const nothing = (): void => {};
 
-/** How many layout ticks the parse's scripts wait for the element's first
- *  layout before they run without it: a document nothing lays out — one in
- *  a hidden subtree — still runs its scripts. */
-const PARSE_WAITS = 8;
-
 /**
  * `<Html>`'s props with its document's scripts running: the engine's
  * seams, with the application's own callbacks still called beside them,
@@ -378,23 +372,11 @@ export function useScriptedHtml(
     },
     [scripts.onScript],
   );
-  // The parse's scripts run once the document has been laid out, as a
-  // browser lays a page out before they read it: a document mounted with
-  // its source is parsed in the render that mounts it, and core lays out
-  // only at the frame after, so a script run at the parse measured a
-  // viewport of nothing and scrolled a pane with nothing in it.
+  // told once the element has been laid out, as a browser lays a page out
+  // before its scripts read it (`../parsed.ts`)
   const onParsed = useCallback(() => {
-    const run = (): void => {
-      scripts.onParsed?.();
-      latest.current.props.onParsed?.();
-    };
-    let waits = 0;
-    const laidOut = (): void => {
-      const box = node()?.getClientRects()[0];
-      if ((box && box.width > 0) || (waits += 1) > PARSE_WAITS) run();
-      else afterLayout(laidOut);
-    };
-    laidOut();
+    scripts.onParsed?.();
+    latest.current.props.onParsed?.();
   }, [scripts.onParsed]);
   const onLoaded = useCallback(() => {
     scripts.onLoaded?.();
