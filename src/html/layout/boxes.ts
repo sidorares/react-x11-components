@@ -446,8 +446,9 @@ export class Box {
   /** Which of an element's pseudo-elements this box is. Its `el` is null —
    *  it is no element — and its text box's is the element it hangs off, so
    *  a click on a link's generated text or first letter is a click on the
-   *  link. */
-  pseudo: 'before' | 'after' | 'first-letter' | null = null;
+   *  link. A `::backdrop`'s is the sibling before its element's box, and
+   *  holds nothing. */
+  pseudo: 'before' | 'after' | 'first-letter' | 'backdrop' | null = null;
 
   /**
    * The bounds of everything this box and its descendants draw, in document
@@ -500,6 +501,13 @@ export class Box {
   outOfFlow = false;
   /** Set on a float, for the same reason. */
   isFloat = false;
+  /** Set on a box drawn in its document's top layer (CSS Position 4, 3.1):
+   *  an element's whose style says so (`overlay`), and its `::backdrop`'s.
+   *  Out of the flow, and nothing around it reaches it — no clip, matrix,
+   *  opacity or filter, and no containing block but the viewport's or the
+   *  initial one — and painted over everything else, in the order its
+   *  element went into the layer (`topLayerBoxes` in `paint.ts`). */
+  topLayer = false;
   /** Where an out-of-flow box would have been in the flow it was taken
    *  from — its static position (CSS 2.1 10.3.7, 10.6.4). */
   staticPosition: StaticPosition | null = null;
@@ -1461,6 +1469,10 @@ class Builder {
       return;
     }
 
+    // what is under an element in the top layer: a box of its own before
+    // the element's, as Blink lays one out
+    if (style.overlay === 'auto') this._backdrop(el, style, into);
+
     // an `<object>` is its image once it has one, a frame where what it
     // names is a document, and its content until either; an `<embed>` its
     // image, and a `<video>` its poster, or a frame; an image button its
@@ -1515,6 +1527,7 @@ class Builder {
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
+    if (style.overlay === 'auto') box.topLayer = true;
     if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
       this._nestedOutOfLine = true;
 
@@ -1659,6 +1672,7 @@ class Builder {
     if (style.position === 'absolute' || style.position === 'fixed')
       box.outOfFlow = true;
     else if (style.float !== 'none') box.isFloat = true;
+    if (style.overlay === 'auto') box.topLayer = true;
     if (into.kind === 'inline' && (box.outOfFlow || box.isFloat))
       this._nestedOutOfLine = true;
     const flow = flowOf(style, box);
@@ -1748,6 +1762,27 @@ class Builder {
     // A control's value is the widget's, not the document's: putting it in
     // the selection index would make Ctrl+A copy the contents of every text
     // field, which no document viewer does.
+  }
+
+  /**
+   * The `::backdrop` of an element in the top layer (CSS Position 4, 3.2):
+   * a box fixed to the viewport, all of it, before the element's box, in
+   * the layer with it. It holds nothing — no `content` applies to it — and
+   * is its element's to the pointer and to its images (`GENERATED_FROM`).
+   */
+  private _backdrop(el: Element, elementStyle: ComputedStyle, into: Box): void {
+    const style = this._options.cascade.backdropStyleFor(el, elementStyle);
+    if (style.display === 'none') return;
+    if (style.translate || style.transform) this._relative = true;
+    if (outOfPlane(style)) this._tilted = true;
+    const box = new Box(boxKindFor(style.display), null, style);
+    box.pseudo = 'backdrop';
+    box.outOfFlow = true;
+    box.topLayer = true;
+    into.append(box);
+    GENERATED_FROM.set(box, el);
+    if (namesImages(style)) this._backgrounds.push(box);
+    if (into.kind === 'inline') this._nestedOutOfLine = true;
   }
 
   /**

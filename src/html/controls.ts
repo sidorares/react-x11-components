@@ -21,7 +21,7 @@
 // exactly the rectangle layout reserved.
 import type { Element } from 'domhandler';
 
-import { attr, tagOf } from './dom.js';
+import { attr, blockedByModal, tagOf } from './dom.js';
 import {
   optionElements,
   optionLabel,
@@ -163,6 +163,13 @@ export function controlRectsOf(
     if (heldBack(tree, box)) continue;
     // a hidden element draws nothing and takes no press (CSS 2.1 11.2)
     if (box.style.visibility !== 'visible') continue;
+    // A modal dialog blocks what is not in it, which takes no focus and no
+    // press (HTML 6.3) — and a widget is a node of its own over the
+    // document, which would be drawn over the dialog's backdrop, and over
+    // the dialog where the two meet, where the document draws neither
+    // over it. So it is not mounted, and the box shows what the document
+    // draws there, which is the field's frame where the page styled it.
+    if (blockedByModal(box.el)) continue;
     const rect: ControlRect = {
       element: box.el,
       kind: box.replaced,
@@ -182,7 +189,8 @@ export function controlRectsOf(
     // anything else is mounted where the box was laid out, as it is — a
     // widget is a node of its own, which no matrix of the document's reaches.
     let flattened = false;
-    for (let at: Box | null = box; at; at = at.parent) {
+    // up to a box in the top layer, which nothing around it fades or moves
+    for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
       opacity *= at.style.opacity;
       const matrix = placedMatrix(at);
       if (matrix && !invert(matrix)) flattened = true;

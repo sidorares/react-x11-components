@@ -586,6 +586,17 @@ export function installDom(
       this.state = init.state ?? null;
     }
   }
+  /** A dialog's or a popover's `beforetoggle` and `toggle` (HTML 6.12.1):
+   *  the state it was in and the one it is going to. */
+  class ToggleEvent extends Event {
+    readonly oldState: string;
+    readonly newState: string;
+    constructor(type: string, init: Any = {}) {
+      super(type, init);
+      this.oldState = String(init.oldState ?? '');
+      this.newState = String(init.newState ?? '');
+    }
+  }
 
   /** The legacy `keyCode` a page still branches on, from the key. */
   const KEY_CODES: Record<string, number> = {
@@ -2674,15 +2685,186 @@ export function installDom(
 
   class HTMLDetailsElement extends HTMLElement {}
   Object.defineProperty(HTMLDetailsElement.prototype, 'open', flag('open'));
+  // A dialog (HTML 4.11.4). Whether one is modal is the host's (`modal`):
+  // `:modal` reads it, the cascade puts the dialog in the top layer for it,
+  // and taking the dialog out of the document ends it there. What is the
+  // page's is here — its return value, what had the focus before it was
+  // shown, its events, and the order the modal ones were opened in, which
+  // Escape closes the last of (`closeRequest`).
+  interface DialogState {
+    returnValue: string;
+    /** What had the focus as it was shown, given it back as it closes. */
+    previous: Any;
+    /** The state its pending `toggle` started from, while one is. */
+    toggleFrom: string | null;
+  }
+  const dialogStates = new WeakMap<Any, DialogState>();
+  const dialogState = (el: Any): DialogState => {
+    let state = dialogStates.get(el);
+    if (!state) {
+      state = { returnValue: '', previous: null, toggleFrom: null };
+      dialogStates.set(el, state);
+    }
+    return state;
+  };
+  /** The modal dialogs, in the order they were opened: the last one the
+   *  host still says is modal is the top layer's top. */
+  const modalDialogs: Any[] = [];
+  const isModalDialog = (el: Any): boolean => call('modal', el._id) === true;
+  /** `beforetoggle`, as it opens (cancelable) or closes (not). Whether it
+   *  was not cancelled. */
+  const beforeToggle = (el: Any, from: string, to: string): boolean => {
+    const ev = new ToggleEvent('beforetoggle', {
+      cancelable: to === 'open',
+      oldState: from,
+      newState: to,
+    });
+    ev.isTrusted = true;
+    return dispatch(el, ev);
+  };
+  /** `toggle`, in a task of its own, one for any number of changes before
+   *  it runs, from the state the first started from (HTML 4.11.4.1,
+   *  "queue a dialog toggle event task"). */
+  const queueToggle = (el: Any, from: string): void => {
+    const state = dialogState(el);
+    if (state.toggleFrom !== null) return;
+    state.toggleFrom = from;
+    setTimer(
+      () => {
+        const old = state.toggleFrom ?? from;
+        state.toggleFrom = null;
+        const now = el.hasAttribute('open') ? 'open' : 'closed';
+        const ev = new ToggleEvent('toggle', { oldState: old, newState: now });
+        ev.isTrusted = true;
+        dispatch(el, ev);
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  /** What can take the focus in a dialog that has nothing `autofocus`. */
+  const FOCUSABLE_IN_DIALOG =
+    'a[href],area[href],button:not([disabled]),input:not([disabled]):not([type=hidden]),select:not([disabled]),textarea:not([disabled]),iframe,summary,[tabindex],[contenteditable]:not([contenteditable=false])';
+  /** HTML 4.11.4.2, "dialog focusing steps": the dialog where it is
+   *  `autofocus`, else the first focusable area in it with `autofocus`,
+   *  else the first, else the dialog. */
+  const focusDialog = (el: Any): void => {
+    let control: Any = el.hasAttribute('autofocus') ? el : null;
+    if (!control) {
+      const found = Array.from(el.querySelectorAll(FOCUSABLE_IN_DIALOG));
+      control =
+        found.find((c: Any) => c.hasAttribute('autofocus')) ?? found[0] ?? el;
+    }
+    control.focus();
+  };
+  /** HTML 4.11.4.2, "close the dialog": not drawn, not modal, the focus
+   *  given back, and `close` told in a task of its own. */
+  const closeDialog = (el: Any, result: string | null): void => {
+    if (!el.hasAttribute('open')) return;
+    beforeToggle(el, 'open', 'closed');
+    if (!el.hasAttribute('open')) return;
+    queueToggle(el, 'open');
+    el.removeAttribute('open');
+    const wasModal = isModalDialog(el);
+    if (wasModal) {
+      call('modal', el._id, false);
+      const i = modalDialogs.indexOf(el);
+      if (i >= 0) modalDialogs.splice(i, 1);
+    }
+    const state = dialogState(el);
+    if (result !== null) state.returnValue = result;
+    const previous = state.previous;
+    state.previous = null;
+    if (previous?.isConnected && previous !== el) {
+      const active = document.activeElement;
+      if (wasModal || (active && el.contains(active))) previous.focus();
+    }
+    setTimer(
+      () => {
+        const ev = new Event('close');
+        ev.isTrusted = true;
+        dispatch(el, ev);
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  /** A close request (HTML 7.7.2) — Escape, not cancelled — at the top
+   *  modal dialog: `cancel`, which a page may cancel, and then closed. A
+   *  browser groups the dialogs opened with no press between them, and one
+   *  Escape closes them all; this closes one at a time. */
+  const closeRequest = (): void => {
+    while (modalDialogs.length) {
+      const top = modalDialogs[modalDialogs.length - 1];
+      if (isModalDialog(top)) {
+        requestClose(top, null);
+        return;
+      }
+      modalDialogs.pop();
+    }
+  };
+  const requestClose = (el: Any, result: string | null): void => {
+    if (!el.hasAttribute('open')) return;
+    const ev = new Event('cancel', { cancelable: true });
+    ev.isTrusted = true;
+    if (!dispatch(el, ev)) return;
+    closeDialog(el, result);
+  };
   class HTMLDialogElement extends HTMLElement {
+    get returnValue(): string {
+      return dialogState(this).returnValue;
+    }
+    set returnValue(v: Any) {
+      dialogState(this).returnValue = String(v);
+    }
     show(): void {
+      if (this.hasAttribute('open')) {
+        if (!isModalDialog(this)) return;
+        throw new DOMException(
+          "Failed to execute 'show' on 'HTMLDialogElement': The dialog is already open as a modal dialog, and therefore cannot be opened as a non-modal dialog.",
+          'InvalidStateError',
+        );
+      }
+      if (!beforeToggle(this, 'closed', 'open')) return;
+      if (this.hasAttribute('open')) return;
+      queueToggle(this, 'closed');
       this.setAttribute('open', '');
+      dialogState(this).previous = document.activeElement;
+      focusDialog(this);
     }
     showModal(): void {
+      if (this.hasAttribute('open')) {
+        if (isModalDialog(this)) return;
+        throw new DOMException(
+          "Failed to execute 'showModal' on 'HTMLDialogElement': The dialog is already open as a non-modal dialog, and therefore cannot be opened as a modal dialog.",
+          'InvalidStateError',
+        );
+      }
+      if (!this.isConnected) {
+        throw new DOMException(
+          "Failed to execute 'showModal' on 'HTMLDialogElement': The element is not in a Document.",
+          'InvalidStateError',
+        );
+      }
+      if (!beforeToggle(this, 'closed', 'open')) return;
+      if (this.hasAttribute('open') || !this.isConnected) return;
+      queueToggle(this, 'closed');
       this.setAttribute('open', '');
+      call('modal', this._id, true);
+      // last, where one taken out of the document and put back was before
+      const was = modalDialogs.indexOf(this);
+      if (was >= 0) modalDialogs.splice(was, 1);
+      modalDialogs.push(this);
+      dialogState(this).previous = document.activeElement;
+      focusDialog(this);
     }
-    close(): void {
-      this.removeAttribute('open');
+    close(result?: Any): void {
+      closeDialog(this, result === undefined ? null : String(result));
+    }
+    requestClose(result?: Any): void {
+      requestClose(this, result === undefined ? null : String(result));
     }
   }
   Object.defineProperty(HTMLDialogElement.prototype, 'open', flag('open'));
@@ -11717,6 +11899,7 @@ export function installDom(
     ErrorEvent,
     HashChangeEvent,
     PopStateEvent,
+    ToggleEvent,
     EventTarget,
     Node,
     CharacterData,
@@ -12719,8 +12902,8 @@ export function installDom(
           ),
         );
       case 'keydown':
-      case 'keyup':
-        return dispatch(
+      case 'keyup': {
+        const go = dispatch(
           target,
           trusted(
             new KeyboardEvent(e.type, {
@@ -12734,6 +12917,11 @@ export function installDom(
             }),
           ),
         );
+        // Escape the page let be is a close request, at the top modal
+        // dialog (HTML 7.7.2)
+        if (go && e.type === 'keydown' && e.key === 'Escape') closeRequest();
+        return go;
+      }
       case 'input':
         return dispatch(
           target,

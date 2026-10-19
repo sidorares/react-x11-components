@@ -3106,6 +3106,29 @@ its content is laid out, not as far as it was moved, so in the flow after
 the element it sat at the document's foot and the page scrolled that much
 past its end to the widget.
 
+**A box in the top layer is reached by nothing around it**
+(`Box.topLayer`, CSS Position 4): a dialog a page's scripts opened with
+`showModal()`, which the cascade gives `overlay: auto` (`isModal`), and
+its `::backdrop`, a box of its own before it. The box stays where its
+element is in the tree, so every walk from the root — the widgets, the
+stops, the selection, the ink — finds it as it finds any box; but no
+stacking context has it among its layers, `paintDocument` paints the
+tree's (`topLayerBoxes`) after everything else, and the hit test asks
+them first. Two things are load-bearing. **Anything new that walks up
+from a box for what it is under — a clip, a matrix, an opacity, a
+filter, a containing block — stops once it has passed a top-layer box**,
+as `fixedToViewport`, `containingBlockOf`, `clipAround`,
+`throughTransforms`, `controlRectsOf` and `liftableBox` do, and the
+layout's `containingBlockFor` answers as paint's `containingBlockOf`
+does: the viewport for a fixed one and the root for an absolute one,
+whatever transform is around it. A walk that went on past it would draw
+a dialog in a transformed card through the card's matrix, centred in the
+card, which is why `test/html/html-elements.test.ts` scales, clips and
+fades the box its dialog is in. And **what a modal dialog blocks gets no
+widget** (`blockedByModal`): a widget is a node over the document, which
+the backdrop is drawn under, so the page's fields would be drawn over the
+backdrop and over the dialog where the two meet.
+
 **A scroll container scrolls by moving its content, as `position:
 relative` does** (`layout/scroll.ts`). After layout, `applyScrollOffsets`
 moves each container's lines and boxes by the offset its element is

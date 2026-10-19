@@ -11,7 +11,14 @@
 // it (`stops.ts`). So Tab goes from a link to a field to a button in the
 // order the markup has them, into and out of the document as it goes through
 // the rest of the window, and nothing of core's focus model is rebuilt here.
-import { attr, flatChildrenOf, flatParentOf, isElement, tagOf } from './dom.js';
+import {
+  attr,
+  blockedByModal,
+  flatChildrenOf,
+  flatParentOf,
+  isElement,
+  tagOf,
+} from './dom.js';
 import type { ChildNode, Element, ParentNode } from './dom.js';
 import { isDisabled } from './form.js';
 
@@ -99,13 +106,14 @@ export function isSummaryOf(el: Element): boolean {
   return false;
 }
 
-/** Whether an element is `inert`, or inside one that is in the flat tree:
- *  none of it is a focusable area (HTML 6.3). */
+/** Whether an element is `inert`, or inside one that is in the flat tree,
+ *  or a modal dialog blocks it (`blockedByModal`): none of it is a
+ *  focusable area (HTML 6.3). */
 export function isInert(el: Element): boolean {
   for (let at: Element | null = el; at; at = flatParentOf(at)) {
     if (attr(at, 'inert') !== undefined) return true;
   }
-  return false;
+  return blockedByModal(el);
 }
 
 /**

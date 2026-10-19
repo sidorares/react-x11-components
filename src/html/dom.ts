@@ -522,6 +522,113 @@ export function isCustomized(el: Element): boolean {
   return CUSTOMIZED.has(el);
 }
 
+// --- the top layer --------------------------------------------------------------
+//
+// A dialog a page's scripts opened with `showModal()` is modal (HTML
+// 4.11.4.2) and in its document's top layer (CSS Position 4, 3.1): drawn
+// over every stacking context, with a `::backdrop` under it, and the rest of
+// the document inert. Which elements those are is the script engine's to
+// say (`scripts/dom.ts`, the `modal` op); what reads it is `:modal`, the
+// cascade's top-layer style (`overlay`), the box tree's order and the
+// focus. A document with no scripts opens no dialog that way.
+
+/** Each document's top layer, in the order its elements went in: by the
+ *  node at the top of the document, which a shadow tree's host leads up
+ *  to. */
+const TOP_LAYERS = new WeakMap<AnyNode, Element[]>();
+/** Each element in a top layer: when it went in, counted across
+ *  documents, and the top of the document whose layer it is in. */
+const IN_TOP_LAYER = new WeakMap<Element, { order: number; top: AnyNode }>();
+let topLayerCount = 0;
+const NO_ELEMENTS: readonly Element[] = [];
+
+/** The node at the top of the tree a node is in, through the hosts of the
+ *  shadow trees it is in: the document, or a subtree taken out of it. */
+function topOf(node: AnyNode): AnyNode {
+  let at = node;
+  for (;;) {
+    const parent: AnyNode | null =
+      at.parent ?? (at instanceof ShadowRoot ? at.host : null);
+    if (!parent) return at;
+    at = parent;
+  }
+}
+
+/** Make an element modal and the last of its document's top layer, or
+ *  neither (`HTMLDialogElement`'s `showModal()` and `close()`, and its
+ *  removal from the document). False where nothing changed. */
+export function setModal(el: Element, modal: boolean): boolean {
+  const was = IN_TOP_LAYER.get(el);
+  if (!!was === modal) return false;
+  if (modal) {
+    const top = topOf(el);
+    let layer = TOP_LAYERS.get(top);
+    if (!layer) TOP_LAYERS.set(top, (layer = []));
+    layer.push(el);
+    IN_TOP_LAYER.set(el, { order: (topLayerCount += 1), top });
+    return true;
+  }
+  IN_TOP_LAYER.delete(el);
+  // the document's layer, wherever the element is now
+  const layer = TOP_LAYERS.get(was!.top);
+  const i = layer ? layer.indexOf(el) : -1;
+  if (i >= 0) layer!.splice(i, 1);
+  if (layer && !layer.length) TOP_LAYERS.delete(was!.top);
+  return true;
+}
+
+/** Whether `:modal` matches an element: a dialog `showModal()` opened and
+ *  nothing has closed or taken out of the document since. */
+export function isModal(el: Element): boolean {
+  return IN_TOP_LAYER.has(el);
+}
+
+/** Where an element went into its document's top layer: a later one is
+ *  drawn over an earlier one. 0 for one that is in none. */
+export function topLayerOrder(el: Element): number {
+  return IN_TOP_LAYER.get(el)?.order ?? 0;
+}
+
+/** The elements of a document's top layer, first in first, by any node of
+ *  the document — none for one with an empty layer. */
+export function topLayerOf(node: AnyNode): readonly Element[] {
+  return TOP_LAYERS.get(topOf(node)) ?? NO_ELEMENTS;
+}
+
+/**
+ * Whether a modal dialog blocks an element (HTML 6.3, "blocked by a modal
+ * dialog"): its document has one in its top layer, and the element is not
+ * in the last of them, in the flat tree. Such an element is inert — no
+ * focusable area, and nothing a press reaches.
+ */
+export function blockedByModal(el: Element): boolean {
+  const layer = topLayerOf(el);
+  if (!layer.length) return false;
+  const blocker = layer[layer.length - 1];
+  for (let at: Element | null = el; at; at = flatParentOf(at)) {
+    if (at === blocker) return false;
+  }
+  return true;
+}
+
+/** The elements in a top layer that are `node` or in it, which its
+ *  removal from the document takes out of the layer (HTML 4.11.4, the
+ *  dialog's removing steps): the layer of the document `node` is in, or
+ *  the one it was taken out of. */
+export function topLayerIn(
+  node: AnyNode,
+  layer: readonly Element[] = topLayerOf(node),
+): Element[] {
+  if (!layer.length) return [];
+  return layer.filter((el) => {
+    for (let at: AnyNode | null = el as AnyNode; at;) {
+      if (at === node) return true;
+      at = at.parent ?? (at instanceof ShadowRoot ? at.host : null);
+    }
+    return false;
+  });
+}
+
 /**
  * Whether `:defined` matches an element (HTML 4.16.3): an element whose
  * custom element state is "uncustomized" or "custom". One whose name is a

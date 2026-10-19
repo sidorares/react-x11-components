@@ -728,6 +728,31 @@ change returns. GitHub's pages start their React apps from a `<react-app>`'s
 `connectedCallback`, and draw their content clipped away until the app
 reveals it.
 
+**A dialog `showModal()` opened is modal** (HTML 4.11.4): `:modal` matches
+it, and it is in the document's top layer (CSS Position 4) — drawn over
+every stacking context of the page, a box at the greatest `z-index`
+among them, and reached by nothing the boxes around it do: no clip,
+transform, opacity or filter of theirs, and the viewport its containing
+block whatever is around it, so HTML's `dialog:modal` rule centres it
+there, as tall and as wide as the viewport leaves room for and scrolling
+the rest. Under it is its `::backdrop`, the viewport's size over all of
+the page, dimmed a tenth by default and the page's to style — Primer's
+search dialog sets its own — inheriting from the dialog. Nothing outside
+the last one opened takes the focus, a press or a widget while it is
+open: a press around the dialog is its backdrop's, which is the
+dialog's, as in a browser, and a field of the page gets no widget,
+since a widget is a node of its own over the document, which would be
+drawn over the backdrop and the dialog where the document draws neither.
+Escape, where the page lets the key be, fires `cancel` at the last one
+opened and closes it unless that is cancelled; `close()` and
+`requestClose()` close one, `toggle` and `close` come in tasks of their
+own, and the focus goes back to what had it. Taking a modal dialog out of
+the document takes it out of the top layer. Two things are not as a
+browser has them: a browser groups the dialogs opened with no press
+between them and one Escape closes them all, where here each takes an
+Escape of its own and each `cancel` may be cancelled; and a
+`::backdrop`'s animations are drawn at rest.
+
 A link or a form whose `target` names one of the page's frames is loaded
 there; every other one still reaches `onLink` and `onSubmit`, which with
 scripts on are told a link or a form only once the page's own `click` and
@@ -810,7 +835,7 @@ typed into a field is in them, sanitized as its type says — no line breaks
 in a single-line field, no white space around an email, nothing in a number
 field that is not a number. The button's `formaction`, `formmethod`,
 `formenctype` and `formtarget` win over the form's own; `method="dialog"`
-submits nothing.
+submits nothing, and closes no dialog yet.
 
 Enter submits as a browser's does (HTML 4.10.21.2): by the form's first
 submit button, and with none only when the form has at most one text field,
@@ -1382,8 +1407,9 @@ more until it is `open`, the summary with the ▸ or ▾ HTML gives it — a
 system font's, where the document's has none — and has no margin of its
 own, as in a browser. A `<dialog>` is not drawn
 until it is `open`, and is then HTML's framed box out of the flow, centred
-across its containing block; `showModal()` opens one as `show()` does,
-with no top layer, so `:modal` matches nothing.
+across its containing block; one a page's scripts opened with
+`showModal()` is in the top layer, centred in the viewport over all of
+the page (see [Scripts](#scripts)).
 A flex container is laid out by Yoga, the engine react-x11 lays itself out
 with, and each item by this one: an item of `width: auto` is as wide as its
 content, its max-content width, before the row grows or shrinks it, its

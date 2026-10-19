@@ -44,7 +44,7 @@ import type {} from 'react-x11/jsx-runtime';
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
-import { flatParentOf, isElement, tagOf } from './dom.js';
+import { flatParentOf, isElement, isModal, tagOf } from './dom.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
 import type {
@@ -1128,6 +1128,14 @@ function documentInteraction(
       now.forms.scriptFocus(el);
       const took = now.forms.focusControl(el) || now.stops.focus(el);
       if (!took) now.forms.scriptFocus(null);
+      // A modal dialog with nothing in it that takes the focus takes it
+      // itself (HTML 4.11.4.2, the dialog focusing steps), where nothing of
+      // the page around it may keep it: the document does, so the keys —
+      // Escape, which closes the dialog — still reach it.
+      if (!took && isModal(el) && root.current) {
+        root.current.focus();
+        return true;
+      }
       return took;
     },
     blur: () => {

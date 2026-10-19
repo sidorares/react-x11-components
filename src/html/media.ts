@@ -363,7 +363,8 @@ function placementOf(
     }
   }
   let opacity = 1;
-  for (let at: Box | null = box; at; at = at.parent) {
+  // up to a box in the top layer, which nothing around it fades
+  for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
     opacity *= at.style.opacity;
   }
   return {
@@ -546,7 +547,7 @@ function inset(rect: Rect, by: number): Rect {
  */
 function mountable(box: Box): boolean {
   if (drawnAtViewport(box)) return false;
-  for (let at: Box | null = box; at; at = at.parent) {
+  for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
     if (placedMatrix(at)) return false;
     if (at.style.clipPath || masked(at.style)) return false;
     // a filter is run over the pixels the document draws, which a player

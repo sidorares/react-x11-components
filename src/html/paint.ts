@@ -108,6 +108,7 @@ import {
   COLUMN_ROWS,
   columned,
   FADED_BLOCKS,
+  GENERATED_FROM,
   PAINT_ORDER,
   INLINE_OFFSETS,
   MOVED_OFF_LINES,
@@ -131,6 +132,7 @@ import type {
 } from './layout/boxes.js';
 import type { SelectionStyle } from './css/cascade.js';
 import type { Element } from './dom.js';
+import { topLayerOrder } from './dom.js';
 import {
   CLIPPED_TEXT,
   clipBoxOf,
@@ -982,7 +984,7 @@ export function paintDocument(
     matrix: options.matrix,
   };
   if (canvas) paintCanvas(ctx, canvas, tree, { ...options, backdrop });
-  paintBox(ctx, tree.root, {
+  const painted: PaintOptions = {
     ...options,
     canvasSource: canvas?.source,
     negative: tree.negative,
@@ -990,10 +992,18 @@ export function paintDocument(
     selectionStyler: options.selection ? tree.selectionStyler : null,
     shapeStyler: tree.shapeStyler,
     backdrop,
-  });
+  };
+  paintBox(ctx, tree.root, painted);
   // the scroll containers' bars over everything, but in a backdrop, which
   // is the page under a box
   if (!options.backdrop) paintScrollBars(ctx, tree, options);
+  // and the top layer over all of that, a box at a time, each a stacking
+  // context of its own that nothing around it clips, fades or moves (CSS
+  // Position 4, 3.3), with the bars in it over it
+  for (const box of topLayerBoxes(tree.root)) {
+    paintStacked(ctx, box, painted);
+    if (!options.backdrop) paintScrollBars(ctx, tree, options, box);
+  }
   ctx.restore();
   if (!options.backdrop) {
     for (const made of backdrop.made.values()) made?.surface.destroy?.();
@@ -3720,12 +3730,14 @@ function paintContent(
  * container is painted in the flow passes of the context it is in, and
  * nothing of its own paints after what it scrolls; so the bars are a pass
  * of their own, at the end, through the boxes whose ink meets the damage.
- * A container drawn through a matrix has none.
+ * A container drawn through a matrix has none. The ones in a box of the
+ * top layer are drawn over that box, after the document's (`top`).
  */
 function paintScrollBars(
   ctx: PaintContext,
   tree: BoxTree,
   options: PaintOptions,
+  top: Box | null = null,
 ): void {
   if (!ctx.save || !ctx.restore || !ctx.beginPath || !ctx.rect || !ctx.clip) {
     return;
@@ -3733,7 +3745,7 @@ function paintScrollBars(
   const scale = options.scale ?? 1;
   const damage = options.damage;
   const stack: [Box, number, number, boolean][] = [
-    [tree.root, options.originX, options.originY, false],
+    [top ?? tree.root, options.originX, options.originY, false],
   ];
   while (stack.length) {
     const entry = stack.pop()!;
@@ -3762,6 +3774,8 @@ function paintScrollBars(
     for (let i = box.children.length - 1; i >= 0; i -= 1) {
       const child = box.children[i];
       if (child.kind === 'text' || child.kind === 'break') continue;
+      // its own pass, over everything before it
+      if (child.topLayer) continue;
       stack.push([child, ox, oy, fixed]);
     }
   }
@@ -3781,7 +3795,7 @@ function paintBarsOf(
     options.scrollbarHidden?.(box) ?? { x: false, y: false },
   );
   if (!bars.length) return;
-  for (let at: Box | null = box; at; at = at.parent) {
+  for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
     if (placedMatrix(at)) return;
   }
   const cut = clipFor(
@@ -5375,8 +5389,12 @@ function inkOf(box: Box): Rect {
  *  block instead (CSS Transforms 1, CSS Containment 2, 3.3). */
 export function fixedToViewport(box: Box): boolean {
   if (box.style.position !== 'fixed') return false;
+  // and one in the top layer, whatever is around it, and one in such a
+  // box — which nothing above it holds — where nothing between holds it
+  if (box.topLayer) return true;
   for (let at = box.parent; at?.parent; at = at.parent) {
     if (holdsFixed(at)) return false;
+    if (at.topLayer) return true;
   }
   return true;
 }
@@ -5387,6 +5405,8 @@ export function fixedToViewport(box: Box): boolean {
 export function drawnAtViewport(box: Box): boolean {
   for (let at: Box | null = box; at?.parent; at = at.parent) {
     if (at.style.position === 'fixed' && fixedToViewport(at)) return true;
+    // nothing around a box in the top layer places it
+    if (at.topLayer) return false;
   }
   return false;
 }
@@ -5407,12 +5427,22 @@ function holdsFixed(box: Box): boolean {
  * is under (`paintPositioned`, and the hit test's `deepestAt`): its nearest
  * positioned or transformed ancestor, or the root. Null for a box fixed to
  * the viewport, which is under none — one in a transformed box is fixed to
- * that, and under what it is under.
+ * that, and under what it is under. A box in the top layer is under
+ * nothing around it either: fixed, it is fixed to the viewport, and
+ * absolute, positioned in the initial containing block, the root's (CSS
+ * Position 4, 3.1).
  */
 export function containingBlockOf(box: Box): Box | null {
+  if (box.topLayer) {
+    if (box.style.position === 'fixed') return null;
+    let root = box;
+    while (root.parent) root = root.parent;
+    return root;
+  }
   if (box.style.position === 'fixed') {
     for (let at = box.parent; at?.parent; at = at.parent) {
       if (holdsFixed(at)) return at;
+      if (at.topLayer) return null;
     }
     return null;
   }
@@ -5918,7 +5948,8 @@ export function clipAround(box: Box, scale = 1): Rect | null {
     if (outer.outOfFlow && outer.style.clip) under(clipOf(outer, space));
     if (clipsOverflow(outer)) under(clipEdge(outer, space).rect);
   }
-  for (let at: Box | null = box; at; at = at.parent) {
+  // up to a box in the top layer, which nothing around it cuts
+  for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
     if (pathClips(at)) under(clipPathOf(at, space).rect);
   }
   if (!cut) return null;
@@ -6263,12 +6294,45 @@ const STACKED = new WeakMap<Box, Box[]>();
 const CLIPS_BETWEEN = new WeakMap<Box, Box[]>();
 const NO_CLIPS: Box[] = [];
 
+/** Per tree, by its root box, the boxes of its top layer, in the order
+ *  they are painted over everything else (`paintDocument`): each element's
+ *  `::backdrop` and then its own box, the elements in the order they went
+ *  into the layer (CSS Position 4, 3.1). Set by `stackLayers`. */
+const TOP_LAYER = new WeakMap<Box, Box[]>();
+const NO_BOXES: readonly Box[] = [];
+
+/** The boxes of a tree's top layer, by its root box, in paint order. */
+export function topLayerBoxes(root: Box): readonly Box[] {
+  return TOP_LAYER.get(root) ?? NO_BOXES;
+}
+
+/** The boxes in the top layer the gather is finding, in the tree's order. */
+let gatheringTop: Box[] | null = null;
+
 /** Gather each stacking context's positioned boxes (`STACKED`); once per
- *  layout, after `hoistNegative`, whose boxes it leaves where they are. */
+ *  layout, after `hoistNegative`, whose boxes it leaves where they are.
+ *  And the boxes in the top layer, which are in no context's but their
+ *  own (`TOP_LAYER`). */
 export function stackLayers(root: Box): void {
   const list: Box[] = [];
-  if (root.holdsLayers) gatherLayers(root, root, list);
+  const top: Box[] = [];
+  gatheringTop = top;
+  try {
+    if (root.holdsLayers) gatherLayers(root, root, list);
+  } finally {
+    gatheringTop = null;
+  }
   settleLayers(root, list);
+  if (!top.length) {
+    TOP_LAYER.delete(root);
+    return;
+  }
+  // in the order the elements went in, each `::backdrop` under its own
+  const order = (box: Box): number =>
+    2 * topLayerOrder(box.el ?? GENERATED_FROM.get(box)!) +
+    (box.pseudo === 'backdrop' ? 0 : 1);
+  top.sort((a, b) => order(a) - order(b));
+  TOP_LAYER.set(root, top);
 }
 
 function gatherLayers(box: Box, context: Box, into: Box[]): void {
@@ -6278,7 +6342,12 @@ function gatherLayers(box: Box, context: Box, into: Box[]): void {
     if (CLAMPED.has(child)) continue;
     // one below the flow is on its stacking context's list already
     const below = HOISTED.has(child);
-    if (below || layered(box, child)) {
+    if (child.topLayer) {
+      // over every context, under no clip of theirs, and a stacking
+      // context of its own
+      CLIPS_BETWEEN.delete(child);
+      gatheringTop?.push(child);
+    } else if (below || layered(box, child)) {
       const clips = clipsFor(child, context);
       if (clips.length) CLIPS_BETWEEN.set(child, clips);
       else CLIPS_BETWEEN.delete(child);
@@ -6356,8 +6425,29 @@ function walkPaintedAfter(
   above: ReadonlySet<Box> | null,
   meet: (later: Box) => boolean,
 ): boolean | null {
+  const over = (later: Box): boolean => {
+    // a layer of its own over this one's, with all it holds (`above`)
+    if (above?.has(later)) return false;
+    // one fixed to the viewport is asked about at every frame, where the
+    // scroll has it (`fixedWithin`), but by a box at the viewport too,
+    // which it keeps its place against
+    const fixed = fixedToViewport(later);
+    if (fixed && !fixedExtent) return false;
+    // what it and all it holds draw there, not how far all of it reaches
+    return inkMeets(later, fixed ? fixedExtent! : extent) && meet(later);
+  };
   let item = box;
   while (item.parent) {
+    // in the top layer, under the boxes after it there and nothing else
+    if (item.topLayer) {
+      let root = item;
+      while (root.parent) root = root.parent;
+      const top = topLayerBoxes(root);
+      for (let k = top.indexOf(item) + 1; k < top.length; k += 1) {
+        if (over(top[k])) return true;
+      }
+      return false;
+    }
     // its context: the nearest box that paints layers, which has it among
     // them where it is one
     let context: Box | null = item.parent;
@@ -6366,22 +6456,13 @@ function walkPaintedAfter(
     const index = list ? list.indexOf(item) : -1;
     if (!context || index < 0) return null;
     for (let k = index + 1; k < list!.length; k += 1) {
-      const later = list![k];
-      // a layer of its own over this one's, with all it holds (`above`)
-      if (above?.has(later)) continue;
-      // one fixed to the viewport is asked about at every frame, where the
-      // scroll has it (`fixedWithin`), but by a box at the viewport too,
-      // which it keeps its place against
-      const fixed = fixedToViewport(later);
-      if (fixed && !fixedExtent) continue;
-      // what it and all it holds draw there, not how far all of it reaches
-      if (inkMeets(later, fixed ? fixedExtent! : extent) && meet(later)) {
-        return true;
-      }
+      if (over(list![k])) return true;
     }
     if (outlineMeets(context, extent)) return true;
     item = context;
   }
+  // and the whole top layer over the root
+  for (const later of topLayerBoxes(item)) if (over(later)) return true;
   return false;
 }
 
@@ -6396,6 +6477,15 @@ export function paintOrderOf(box: Box): number[] | null {
   const key: number[] = [];
   let item = box;
   while (item.parent) {
+    // the top layer's boxes after all the root's layers, in its order
+    if (item.topLayer) {
+      let root = item;
+      while (root.parent) root = root.parent;
+      const top = topLayerBoxes(root).indexOf(item);
+      if (top < 0) return null;
+      key.push((STACKED.get(root)?.length ?? 0) + top);
+      return key.reverse();
+    }
     let context: Box | null = item.parent;
     while (context && !STACKED.has(context)) context = context.parent;
     const index = context ? STACKED.get(context)!.indexOf(item) : -1;
@@ -6467,6 +6557,8 @@ function settleLayers(box: Box, list: Box[]): void {
 export function stacksLayers(box: Box): boolean {
   const style = box.style;
   if (style.position === 'fixed' || style.position === 'sticky') return true;
+  // and one in the top layer, absolute or not (CSS Position 4, 3.3)
+  if (box.topLayer) return true;
   if (style.opacity < 1) return true;
   // and a filter, which is applied to the group (Filter Effects 1, 2), and
   // a backdrop filter (Filter Effects 2, 2)
@@ -6636,6 +6728,7 @@ function hoistFrom(box: Box, root: boolean): Box[] | null {
     if (
       typeof z === 'number' &&
       z < 0 &&
+      !child.topLayer &&
       (child.style.position !== 'static' || flexItem(child))
     ) {
       (pending ??= []).push(child);

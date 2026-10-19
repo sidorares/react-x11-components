@@ -381,6 +381,7 @@ test('all sets every field a property does, and not direction, unicode-bidi or a
     'lineThrough',
     'lineThroughStyle',
     'lineThroughThickness',
+    'overlay',
     'styledControl',
     'underline',
     'underlineOffset',
