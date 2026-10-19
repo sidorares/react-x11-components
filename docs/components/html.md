@@ -734,7 +734,11 @@ scripts on are told a link or a form only once the page's own `click` and
 `submit` listeners have let it go. `onDocument`, `onDomEvent`, `onScript`,
 `onParsed`, `onLoaded`, `onElementScroll`, `canvasImage`, `stylesheet` and
 `renderEmbedded` are still called or applied, beside the engine's own; a
-`false` from either `onDomEvent` cancels.
+`false` from either `onDomEvent` cancels. The sheets the page adopts
+(`document.adoptedStyleSheets`) go after the application's `stylesheet`,
+and the two reach the element as one array for as long as they read the
+same: another array restyles the whole document, and each change a script
+makes renders `<Html>` again.
 
 Three decisions that look like gaps and are not:
 
