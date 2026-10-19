@@ -89,7 +89,6 @@ Every part takes `style` (`Style | Style[]`) and `data-testname`.
 | `aria-label`          | `string`                            | What a screen reader calls the item. Default: the item's own text.                                                                                       |
 | `dragFromInteractive` | `boolean`                           | Let a press on a control inside the item start a drag anyway. Off by default — see [A press on a control](#a-press-on-a-control-belongs-to-the-control). |
 | `children`            | `ReactNode \| (state) => ReactNode` | The content — or a function of the item's state, for content that reacts to the drag. See [What an item can see](#what-an-item-can-see).                 |
-| `children`            | `ReactNode \| (state) => ReactNode` | The content — or a function of the item's state, for content that reacts to the drag. See [What an item can see](#what-an-item-can-see).                 |
 
 ### `<ReorderHandle>`
 
@@ -144,6 +143,8 @@ interface ReorderDragStart {
   ids: ReorderId[];
   index: number;
   input: 'pointer' | 'keyboard';
+  // the item's box as it was picked up, in logical pixels
+  size: { width: number; height: number };
 }
 interface ReorderDragUpdate {
   id: ReorderId;
@@ -265,15 +266,24 @@ and a component deeper inside calls `useReorderItem()` for the same object
 `preview={false}` leaves only the cursor and the indicator.
 
 **The look.** `styles.item(state)` sees `{ id, dragging, lifted, disabled,
-edge }`; `styles.indicator` restyles the line; `styles.handle` the grip;
-`styles.preview` the card. Each part's `style` merges last.
+edge }`; `styles.indicator` restyles the line and the outline a merge is
+drawn with, or, as a function of `{ edge, combining }`, one and not the
+other; `styles.handle` the grip; `styles.preview` the card. Each part's
+`style` merges last.
+
+```jsx
+// a list that opens a space of its own for the drop hides the line, and
+// keeps the outline a tag dropped on a note still needs
+<ReorderList styles={{ indicator: (m) => (m.combining ? null : { height: 0 }) }}>
+```
 
 ## What an item can see
 
 Three layers, cheapest first.
 
 **Repaint-only states, from core.** `':dragging'` is set on the drag
-source — the item box, or its handle — from the threshold to the release;
+source — the item box, with a handle or without — from the threshold to the
+release;
 `':drag-over'` on the node under the pointer and its ancestors, so the list
 root and the item the pointer is over both wear it, whether or not the drop
 would be taken. Both are style blocks: a repaint, no render, and a
@@ -331,6 +341,20 @@ They are what a bin, a toolbar or a "drop here to delete" strip listens to,
 and they cover the keyboard as well as the pointer — `input` says which.
 `onDragUpdate` fires only when the answer changes, so a pointer moving
 within one slot is silent.
+
+They are also what a list that draws the drop as a **space** instead of a
+line is built from — the first list in `examples/reorder.tsx`: open a box
+the height of `onDragStart`'s `size` at the slot `onDragUpdate` names, and
+flex layout moves the rows below it. `size` is in logical pixels, which is
+what a style takes; a row measured off `abs` is in device pixels, and on a
+Retina display that space came out two rows tall.
+
+`onDragUpdate` is sent as soon as the list under the pointer has answered,
+not when the source next hears the pointer move. The two are a different
+order on different backends: X11's transport asks the target about a point
+and then tells the source, and AppKit tells the source first. Read off the
+source's motion alone, every update on a Mac described the point before,
+and the one the pointer came to rest on was never sent.
 
 A list that has to react to _another_ list's drag — a column greying itself
 out while something is held — reads the source list's `onDragStart` into
@@ -405,8 +429,16 @@ at the threshold when that was a control: a `<textinput>`, a `<textarea>`, a
 continues as ordinary mouse events, which is what the control wanted.
 
 `dragFromInteractive` turns it off for an item whose controls should drag it
-anyway. A `<ReorderHandle>` makes the question moot: the grip is the only
-press target either way.
+anyway.
+
+A `<ReorderHandle>` is the same refusal for everything but the grip: a press
+anywhere else in the item is cancelled at the threshold the same way. The
+grip says where a drag may start, and the item is still the drag's
+**source** — the handle carries no drag props of its own. That matters to a
+render function that empties the item while it travels: core cancels a drag
+whose source leaves the tree, silently and with no `onDragEnd`, so a grip
+that was the source, unmounted by its own drag, left the ghost on screen
+and the item dragging for good. The grip may come and go now.
 
 ## The drop flies home
 
@@ -451,6 +483,19 @@ so an app driving a list from outside does the same arithmetic.
 
 A same-list drag over the item's own gap — its own slot, or the one after
 it — draws nothing and, on release, fires nothing.
+
+**The drop lands where the indicator was.** The slot is the one the last
+pointer position was answered with, not the same point asked again at the
+release. Core drops at that point, so the two differ only when the layout
+moved under a pointer that held still: a list opening a space for the drop,
+or the dragged row collapsing as it travels. Asked again, the point named
+whatever slot had slid under it, and the row landed one place from the
+space the user let go over.
+
+A drag over its own list asks for a **move**, whatever the item offers
+first — a reorder is one. An item with `dragActions={['copy', 'move']}`, so
+that another application takes a copy, would otherwise wear the copy cursor
+over its own list, and on a Mac the badge with a plus in it.
 
 **One gap is one insertion point.** The closest edge names the item the
 pointer is nearest and the half of it the pointer is in, and two of those
@@ -591,115 +636,11 @@ already names.
 > needs `@windowkit/appkit` >= 0.6.0, which react-x11 2.8.2 asks for; an
 > older bridge ignores the option without saying so.
 
-## The ghost looks like the item
-
-By default the ghost is the item: the same padding, the same corners, the
-same ground, at the same size. It adds one thing, and only when the item does
-not bring it — a background, since a ghost with nothing behind it is a
-floating label rather than the thing being dragged.
-
-That is worth stating because the obvious alternative is wrong in a way that
-takes a while to see. A default card of its own — a surface, a hairline, the
-theme's radius — replaces a chip's rounded corners with square-ish ones, and
-the border it adds eats two pixels of content box, which is enough to wrap a
-word: `later` comes out as `late` and `r`. So a lifted-card look is opt-in
-rather than the default:
-
-```jsx
-<ReorderList styles={{ preview: { borderWidth: 1, borderColor: '$border' } }}>
-```
-
-`styles.preview` merges over the item's own style, and `renderPreview`
-replaces the content outright.
-
-## The preview is a fresh instance
-
-The ghost is a `<popup dragPreview>` — a real window following the
-pointer, which is how core says a preview is drawn: it can leave the list
-and the window, and it costs a window move per motion rather than a layout
-pass. It renders the item's `children` again at the item's measured size,
-inside a card, with the press offset kept so it appears under the item
-rather than jumping to the cursor. Because it is a second render of the
-same elements, a control inside the item comes up in its initial state in
-the ghost — a typed-into `<textinput>` shows empty there. That is the trade
-dnd-kit's `DragOverlay` makes too; `renderPreview` is the answer when it
-matters. A `<ReorderHandle>` rendered in the ghost draws its grip and does
-nothing else.
-
-## Keyboard
-
-The item — or its handle — is a tab stop, so a list of ten items is ten
-stops. That is hello-pangea's model rather than the Tree's and Table's
-single stop with a cursor, and deliberately: an item here is arbitrary
-content, often with controls of its own, and a card whose button cannot be
-reached by Tab because the list ate the stop is worse than a longer tab
-order.
-
-| Key                                 | What it does                                                          |
-| ----------------------------------- | --------------------------------------------------------------------- |
-| `Space` / `Enter`                   | Lift the item; lift again to drop it.                                 |
-| `Up` / `Down` (or `Left` / `Right`) | Lifted: move it one slot, firing `onReorder`. Not lifted: focus next. |
-| `Home` / `End`, while lifted        | Move it to an end.                                                    |
-| `Escape`, while lifted              | Put it back where it was — `onReorder` with that order.               |
-
-Every step is announced through core's `announce()` — "Lifted Buy milk,
-position 2 of 5", "Buy milk moved to position 3 of 5", "dropped",
-"cancelled" — which is inert where no assistive technology is listening.
-Focus leaving a lifted item drops it where it is. A pointer drag ends a
-lift.
-
-## Where the ghost is drawn
-
-A `<popup>` is the better ghost: a window of its own, so it follows the
-pointer out of the list, out of the window, and over other applications. It
-is what `'auto'` uses wherever react-x11 tracks the drag itself — the X11
-backend today.
-
-Where the **platform** picks the drop target — the cocoa backend — `'auto'`
-draws the ghost as a box inside the list instead, because a preview window
-there stops the drop reaching the list at all. Two causes are known and only
-one is fixed: before react-x11 2.8.1 the preview registered itself as a
-dragging destination and answered every question with "no"
-([#488](https://github.com/sidorares/react-x11/issues/488)); 2.8.1 stops it
-registering, and a real session still cannot drop, so registering nothing is
-evidently not the same as being invisible to the drag. The in-window ghost
-creates no window at all, and is what drops have been seen to work with
-there.
-
-| `preview`  | The ghost is                                                                        |
-| ---------- | ----------------------------------------------------------------------------------- |
-| `'auto'`   | a `<popup>`, or a box inside the list where the platform picks the target. Default. |
-| `'popup'`  | always a `<popup>`. What `'auto'` becomes everywhere once the above is settled.     |
-| `'inline'` | always a box inside the list.                                                       |
-| `false`    | not drawn. The indicator and the cursor are the whole feedback.                     |
-
-The in-window ghost is the same absolutely positioned box, with
-`pointerEvents: 'none'`, that the [drop flight](#the-drop-flies-home) uses,
-and it accepts one limit a window does not have: it cannot leave the window.
-
-Stacking is handled rather than left to chance. `zIndex` here sorts a node
-among its **siblings**, with no stacking context to escape, so for the length
-of a gesture every `<ReorderList>` and `<ReorderItem>` that _contains_ the
-drag lifts itself: a board's card, the column it is in, and the board all
-come forward together, and the ghost is drawn over the columns beside it.
-What that cannot reach is content outside the outermost list.
-
-The popup is `transparent`, because the card inside it is rounded: on an
-opaque window the four corners the radius gives up show the window's own
-ground rather than the desktop.
-
-**Dragging in and out of other applications** is XDND on X11 and NSDragging
-on cocoa. Files from the Finder arrive as `['files']`, which is what `accept`
-already names.
-
-> Needs react-x11 **2.8.1**. Before 2.8.0 a drag on the cocoa backend had no
-> visible subject at all: AppKit's tracking loop owns the thread, so nothing
-> rendered in response to `onDrag` reached the screen
-> ([#484](https://github.com/sidorares/react-x11/pull/484)).
-
 ## Example
 
-`npm run examples:reorder` renders a todo list, a list of cards with grips
-and a button in each, a three-column board in one group, and an inbox that
-takes files and text from the desktop and whose items can be dragged back
-out into a terminal.
+`npm run examples:reorder` renders a todo list that opens a space for the
+drop and drags a selection picked by its dots, a list of cards with grips
+and a button in each, a three-column board in one group whose columns light
+for a drop they would take, a palette of tags copied onto notes, and an
+inbox that takes files and text from the desktop and whose items can be
+dragged back out into a terminal.

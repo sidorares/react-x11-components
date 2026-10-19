@@ -576,6 +576,8 @@ interface Payload {
   id: ReorderId;
   ids: ReorderId[];
   index: number;
+  /** What the item's drag offers — whether a list may ask for a move. */
+  actions: readonly string[];
   to?: {
     listUid: string;
     list: string | undefined;
@@ -605,6 +607,15 @@ interface DragOver {
  * gestures. One drag at a time is a property of the pointer, not an
  * assumption this makes.
  *
+ * `report` is the source list's `onDragUpdate`, which the list that wrote
+ * `over` calls as well. Reading it in the source's `onDrag` alone assumed
+ * core asks the target about a point before it tells the source, which the
+ * X11 transport does and AppKit does not: a native drag session reports the
+ * source's motion first and the window's `draggingUpdated:` after it, so
+ * every update described the point before, and the one the pointer came to
+ * rest on was never reported. The gap a list opens from it sat one slot
+ * from where the drop landed.
+ *
  * `source` and `inline` are here for the stacking: an in-window ghost has to
  * be painted over everything between it and the drop, and `zIndex` only
  * sorts siblings, so every list and item that *contains* the drag lifts
@@ -615,6 +626,7 @@ let activeDrag: {
   over: DragOver | null;
   source: DrawnNode | null;
   inline: boolean;
+  report: () => void;
 } | null = null;
 
 /**
@@ -999,6 +1011,11 @@ export function ReorderList(props: ReorderListProps): ReactElement {
   const dragging = useRef<ReorderId | null>(null);
   /** What the last `onDragUpdate` said, so one is not sent per motion. */
   const reportedOver = useRef<DragOver | null>(null);
+  /** Where the last `onDragOver` here said a drop would land — the slot the
+   *  indicator was drawn for. The drop lands there; see `onDropHere`. */
+  const hovered = useRef<{ slot: number; combine: ReorderId | null } | null>(
+    null,
+  );
   /** Whether the drag in flight is inside this list and drawing an
    *  in-window ghost — which is what its own stacking depends on. */
   const carrying = useCarryingDrag(rootRef);
@@ -1226,6 +1243,7 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     // or not — so a list has to ask the question `dropAccept` already
     // answered before it promises a slot to a drag it will never be given
     const payload = hoveringPayload(ev);
+    hovered.current = null;
     if (!payload && !foreignAccepted(handlers.current.accept, ev)) {
       mark(null);
       return;
@@ -1235,7 +1253,10 @@ export function ReorderList(props: ReorderListProps): ReactElement {
     const combining = at?.combine ? at.id : null;
     if (!allowed(ev, payload, slot, combining)) {
       mark(null);
-      if (activeDrag?.over?.listUid === uid) activeDrag.over = null;
+      if (activeDrag?.over?.listUid === uid) {
+        activeDrag.over = null;
+        activeDrag.report();
+      }
       // core keeps the node its `dropAccept` matched; what a handler may do
       // is refuse this position, which is what turns the ghost's `accepted`
       // off and what `canDrop` means
@@ -1249,6 +1270,14 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         ? moveManyToSlot(ids, moving, slot, payload!.id)
         : null;
     const settled = !combining && moving.length > 0 && move === null;
+    hovered.current = { slot, combine: combining };
+    // A drop of one of this list's own items is a reorder, which is a move
+    // whatever the drag offers first: an item that offers `['copy', 'move']`
+    // to other applications would otherwise wear the copy cursor — on a Mac
+    // the badge with a plus in it — over its own list.
+    if (moving.length > 0 && payload!.actions.includes('move')) {
+      ev.accept('move');
+    }
     // No line: there is no insertion to point at. But the drag **is** over
     // this list, at a position this list can name, and saying `over: null`
     // for it conflated two different facts — "nowhere" and "here, and
@@ -1273,20 +1302,40 @@ export function ReorderList(props: ReorderListProps): ReactElement {
         combine: combining,
         settled,
       };
+      activeDrag.report();
     }
   };
 
   const onDragLeave = (): void => {
+    hovered.current = null;
     mark(null);
-    if (activeDrag?.over?.listUid === uid) activeDrag.over = null;
+    if (activeDrag?.over?.listUid === uid) {
+      activeDrag.over = null;
+      activeDrag.report();
+    }
   };
 
   const onDropHere = (ev: DropEvent): void => {
     mark(null);
     const payload = payloadOf(ev);
     const moving = payload?.listUid === uid ? payload.ids : [];
-    const { ids, slot, at } = slotFor(ev, moving);
-    const combining = at?.combine ? at.id : null;
+    // The drop lands where the indicator said it would. The pointer has not
+    // moved since the last `onDragOver` — core drops at the point that one
+    // was asked at — but the layout may have: a list that opens a gap for
+    // the drop (`examples/reorder.tsx`), or a row that collapses as it is
+    // picked up, moves the items under a pointer that holds still, and
+    // asked again here the same point named another slot. The rows were
+    // one place off from the gap the user let go over.
+    const hit = hovered.current;
+    hovered.current = null;
+    const fresh = slotFor(ev, moving);
+    const { ids } = fresh;
+    const slot = hit ? hit.slot : fresh.slot;
+    const combining = hit
+      ? hit.combine
+      : fresh.at?.combine
+        ? fresh.at.id
+        : null;
     if (!allowed(ev, payload, slot, combining)) {
       ev.reject();
       return;
@@ -1986,12 +2035,14 @@ export function ReorderItem(props: ReorderItemProps): ReactElement {
         id,
         ids,
         index,
+        actions: dragActions ?? ['move'],
       };
       activeDrag = {
         payload: payload.current,
         over: null,
         source: node,
         inline: ghostMode(list.preview) === 'inline',
+        report: () => list.dragMoved(id),
       };
       setHoldingOwn(true);
       announceDragChanged();

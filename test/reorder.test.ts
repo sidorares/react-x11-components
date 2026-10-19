@@ -76,6 +76,14 @@ function textOfItem(node: DrawnNode): string {
   return parts.join('');
 }
 
+/** The window a node is drawn in — a point in it stays put when the rows
+ *  move. */
+function windowOf(node: DrawnNode): DrawnNode {
+  let n: DrawnNode = node;
+  while (n.parent && n.kind !== 'window') n = n.parent;
+  return n;
+}
+
 /** Widen a query result to the retained node, for `props` and `style`. */
 function retained(node: unknown): RetainedNode {
   return node as RetainedNode;
@@ -1080,6 +1088,34 @@ test('the list reports the gesture: start, an update per slot, end', async () =>
 
   await release(item('l', 'c'), { dy: 10 });
   assert.deepStrictEqual(log.at(-1), 'end a drop at todo:2');
+});
+
+test('an update is reported as the list under the pointer answers, not after the source moves', async () => {
+  // AppKit tells the source about a point before it asks the window under
+  // it, so an update read off the source's own motion described the point
+  // before, and the one the pointer came to rest on was never reported —
+  // a gap opened from it sat a slot away from where the drop landed. Here
+  // the target's answer bubbles: the list's handler runs before its
+  // parent's, and the update has to be out by then.
+  const log: string[] = [];
+  await mount(
+    view(
+      h(
+        'box',
+        { onDragOver: () => log.push('over') },
+        h(List, {
+          name: 'l',
+          items: ['a', 'b', 'c'],
+          onDragUpdate: (e) => log.push(`update ${e.over?.index}`),
+        }),
+      ),
+    ),
+  );
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 10 });
+  const at = log.indexOf('update 2');
+  assert.ok(at >= 0, log.join(' | '));
+  assert.strictEqual(log[at + 1], 'over', log.join(' | '));
+  await release(item('l', 'c'), { dy: 10 });
 });
 
 test("onDragStart carries the item's size, for a list that opens a space of its own", async () => {
@@ -2266,6 +2302,92 @@ test('one gap is one insertion point, wherever in it the pointer is', async () =
   assert.deepStrictEqual(changes, [
     { items: ['b', 'a', 'c', 'd'], id: 'a', ids: ['a'], from: 0, to: 1 },
   ]);
+});
+
+test('a drop lands where the indicator was, though the rows moved under a still pointer', async () => {
+  // the shape of a list that opens a gap for the drop: what it renders on
+  // an update moves the rows, and the pointer has not moved since
+  const changes: ReorderChange[] = [];
+  function Shifting(): ReactElement {
+    const [room, setRoom] = useState(false);
+    return h(
+      ReorderList,
+      {
+        'data-testname': 'l',
+        dropAnimation: false,
+        style: { gap: GAP, padding: 10 },
+        onReorder: (c: ReorderChange) => changes.push(c),
+        onDragUpdate: (e) => setRoom(Boolean(e.over && !e.over.settled)),
+      },
+      room && h('box', { key: 'room', style: { height: 70 } }),
+      ['a', 'b', 'c', 'd'].map((id) =>
+        h(
+          ReorderItem,
+          { key: id, id, 'data-testname': `l-${id}`, style: ITEM },
+          h('text', null, `Item ${id}`),
+        ),
+      ),
+    );
+  }
+  await mount(view(h(Shifting)));
+  // one fixed point in the window, so the release is where the last motion
+  // was however far the rows move
+  const win = windowOf(item('l', 'a'));
+  const c = item('l', 'c');
+  const at = {
+    dx: c.abs.x + c.abs.width / 2 - (win.abs.x + win.abs.width / 2),
+    dy: c.abs.y + c.abs.height / 2 + 8 - (win.abs.y + win.abs.height / 2),
+  };
+  const before = c.abs.y;
+  await dragTo(item('l', 'a'), win, at);
+  // the line after c is drawn on d's top edge
+  assert.ok(screen.queryByTestName('l-d-indicator'), 'the line under c');
+  assert.ok(item('l', 'c').abs.y > before, 'and the rows moved down');
+  await release(win, at);
+  assert.deepStrictEqual(changes, [
+    { items: ['b', 'c', 'a', 'd'], id: 'a', ids: ['a'], from: 0, to: 2 },
+  ]);
+});
+
+test('over its own list an item that offers copy and move is moved', async () => {
+  // a reorder is a move whatever the drag offers first: the action is what
+  // the cursor wears while the pointer is over the list — on a Mac, a plus
+  // badge for a copy — and only the drop said move
+  const list = (name: string, offer: Array<'copy' | 'move'>) =>
+    h(
+      ReorderList,
+      {
+        key: name,
+        'data-testname': name,
+        dropAnimation: false,
+        style: { gap: GAP, padding: 10 },
+      },
+      ['a', 'b', 'c'].map((id) =>
+        h(
+          ReorderItem,
+          {
+            key: id,
+            id,
+            dragActions: offer,
+            'data-testname': `${name}-${id}`,
+            style: ITEM,
+          },
+          h('text', null, `Item ${id}`),
+        ),
+      ),
+    );
+  await mount(view(list('l', ['copy', 'move']), list('p', ['copy'])));
+  // core's own drag session, which no event reports the action of mid-drag
+  const action = (): string | undefined =>
+    (windowOf(item('l', 'a')) as { _dragSession?: { currentAction?: string } })
+      ._dragSession?.currentAction;
+  await dragTo(item('l', 'a'), item('l', 'c'), { dy: 10 });
+  assert.strictEqual(action(), 'move');
+  await release(item('l', 'c'), { dy: 10 });
+  // and a drag that offers no move is not handed one
+  await dragTo(item('p', 'a'), item('p', 'c'), { dy: 10 });
+  assert.strictEqual(action(), 'copy');
+  await release(item('p', 'c'), { dy: 10 });
 });
 
 test('every gap still gets its own mark', async () => {
