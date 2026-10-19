@@ -1379,7 +1379,8 @@ suffix has none, as `、` does, and its direction is its own. A string
 `list-style-type` is the marker as it is written, and an outside marker of
 a right-to-left item stands at its right, reading right to left. A `<details>` shows its first `<summary>` and nothing
 more until it is `open`, the summary with the ▸ or ▾ HTML gives it — a
-system font's, where the document's has none. A `<dialog>` is not drawn
+system font's, where the document's has none — and has no margin of its
+own, as in a browser. A `<dialog>` is not drawn
 until it is `open`, and is then HTML's framed box out of the flow, centred
 across its containing block; `showModal()` opens one as `show()` does,
 with no top layer, so `:modal` matches nothing.
@@ -1628,7 +1629,23 @@ first in its first row that holds one, by where it was placed — and an
 item with no line of its own gives the bottom edge of its border box (CSS
 Grid 1, 10.6): a grid of icons sits on the first icon's bottom edge, and a
 grid with no item has no baseline.
-Baseline alignment of the items and subgrids are not read.
+A subgrid (CSS Grid 2, 9) — a grid item with `subgrid` for its rows, its
+columns or both — has its parent grid's tracks over the ones it spans,
+and its items size them with the parent's own: a row of cards, each a
+subgrid down the rows, has every card's heading, price and button on the
+same line, as GitHub's pricing cards are written to. The subgrid's
+margin, border and padding are more margin for its items at those edges,
+and are kept in the track at an edge it leaves empty; a gap of its own
+moves its items either side of one by half what it is more than its
+parent's, and `normal` is the parent's. Its lines take the parent's names,
+and the edges of the parent's named areas over it, an area it only partly
+covers ending or starting at its edge, with the names it lists after
+`subgrid` — `repeat(auto-fill, …)` among them — and those its own areas
+give. It has no tracks past the ones it spans: an item placed past its
+last line is pulled back into the last track. Subgrids nest. A box with
+layout or paint containment, and an item of a box that is no grid, is no
+subgrid, and its template on that axis is `none`.
+Baseline alignment of the items is not read.
 A table's borders collapse where it asks: one border along each edge of its
 grid, centred on it, chosen from the cells, rows, row groups, columns,
 column groups and the table that meet there as CSS 2.1 17.6.2.1 chooses —
@@ -2749,8 +2766,10 @@ but `add`, are read and not honoured, and a `url(#id)` naming an SVG
 backend has no offscreen surface, the element is drawn unmasked. A
 `@supports` test of a mask property answers that it is supported, so the
 background image a page keeps under `not` for an engine without masks is
-not drawn under the mask; every other `@supports` block is entered, as it
-always was.
+not drawn under the mask, and so does a test of `subgrid` for
+`grid-template-rows` or `grid-template-columns`, so the `auto` rows a page
+keeps under `not` for an engine without subgrids do not undo its subgrid;
+every other `@supports` block is entered, as it always was.
 
 **Outlines:** `outline` and its longhands, and `outline-offset`: a border
 of the outline's width, style and colour round the border box grown by

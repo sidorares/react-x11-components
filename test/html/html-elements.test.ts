@@ -153,6 +153,18 @@ test('a closed details shows its summary, and an open one all of it', async () =
       .listStyleType;
   assert.strictEqual(type('s1'), 'disclosure-closed');
   assert.strictEqual(type('s2'), 'disclosure-open');
+  // and no margin, as HTML's rendering section and every browser have it:
+  // GitHub's pricing accordions were a third of an em taller each side
+  const margins = (id: string) => {
+    const style = (
+      boxOf(el, id) as unknown as {
+        style: { marginTop: unknown; marginBottom: unknown };
+      }
+    ).style;
+    return [style.marginTop, style.marginBottom];
+  };
+  assert.deepStrictEqual(margins('closed'), [0, 0]);
+  assert.deepStrictEqual(margins('open'), [0, 0]);
 });
 
 test('a closed dialog is not drawn, and an open one is a framed box centred across its containing block, out of the flow', async () => {
