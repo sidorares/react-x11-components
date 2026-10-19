@@ -168,7 +168,12 @@ function surroundings(node: PaneNode | null): {
 }
 
 /** The default viewport: the scroll pane around the element, in the zoom
- *  the element is drawn at — core's `scale` between the two. */
+ *  the element is drawn at — core's `scale` between the two. A pane's
+ *  offsets are device pixels, as core keeps them, where its client rect is
+ *  logical, so they are the element's device pixels too and `dpr` of them
+ *  are a CSS pixel: divided by the zoom alone, a page at 2x read a
+ *  `scrollY` twice the pane's, and every `getBoundingClientRect` on a
+ *  scrolled page was off by the scroll. */
 function viewportOf(node: PaneNode | null): ScriptViewport {
   const { pane, top } = surroundings(node);
   const dpr = node?.scale || 1;
@@ -177,8 +182,8 @@ function viewportOf(node: PaneNode | null): ScriptViewport {
   return {
     width: (box?.width ?? 0) / zoom,
     height: (box?.height ?? 0) / zoom,
-    scrollX: (pane?.scrollX ?? 0) / zoom,
-    scrollY: (pane?.scrollY ?? 0) / zoom,
+    scrollX: (pane?.scrollX ?? 0) / dpr,
+    scrollY: (pane?.scrollY ?? 0) / dpr,
     zoom,
     dpr,
     left: box?.x ?? 0,
