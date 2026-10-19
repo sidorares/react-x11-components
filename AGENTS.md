@@ -1993,7 +1993,15 @@ closes a way out a DOM binding opens by accident:
   **Anything new that answers a page in `elementRect`'s coordinates
   measures from it**, and what core asks — paint, damage, the cursor, the
   text accessors — keeps `abs`, as core's own nodes do until the pass.
-  `offsetLeft` and its
+  So a rect cannot say whether a scroll moves its box, and what scrolls
+  for an element asks, through `HandleInternals` (which
+  `useHtmlHandle`'s handle has and `HtmlHandle` does not declare):
+  `atViewport` of the viewport, and `scrollMoves`, the rule
+  `applyScrollOffsets` moves boxes by, of each scroll container.
+  `scrollIntoView` scrolled the page 30px on for that header, and a list
+  300px for a box absolute in a `position: relative` wrapper around it,
+  where Chrome scrolls neither: no scroll moves a box positioned against
+  something outside it. `offsetLeft` and its
   kin are `offsetRect`, where layout put the box before either, from the
   offset parent's padding edge. Primer's `<Tabs>` slides a pill under a
   tab in a strip that scrolls by its `offsetLeft`, and the document's x

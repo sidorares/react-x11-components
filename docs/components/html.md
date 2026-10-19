@@ -3208,7 +3208,9 @@ drawn where it is now, found there by the pointer, and measured there by
 after its own `scrollTo` too, before the frame that draws it, as `elementAt`
 reads the document where the scroll has it then — and the link
 in it takes the focus where it is without scrolling the page back to its
-top. The element tells
+top. A script's `scrollIntoView` scrolls nothing for such a box or what is
+in it but a scroll container inside it — a fixed sidebar's list brings its
+item into view, and the page stays where it is. The element tells
 the scroll box what it draws that way (react-x11's `viewportFixedRects`),
 so a scroll that copies the pixels it can repaints those where they are
 rather than dragging a fixed header along with the text; a fixed
@@ -3244,7 +3246,10 @@ knows there is a scroll. What a container moves is what it is the scroll
 container of: its lines, its in-flow boxes and the out-of-flow boxes
 positioned against it or inside it. A box positioned against something
 outside it stays where it is, as it is not clipped by it either: a fixed
-header in a scrolling `main` stays at the top.
+header in a scrolling `main` stays at the top. A script's `scrollIntoView`
+scrolls only the containers that move the element, so a box absolute in a
+`position: relative` wrapper around a scrolling list is brought into view
+by the page, and the list stays where it is, as in Chrome.
 
 **The offsets are the element's**, kept by the element through every
 layout and build: a resize lays the content out again and moves it by
