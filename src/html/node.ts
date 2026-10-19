@@ -160,6 +160,7 @@ import {
   scrollBarsOf,
   scrollContent,
   scrolledBy,
+  scrollMoves,
   scrollStateOf,
   setScrollOffsets,
   STUCK,
@@ -6167,6 +6168,22 @@ export class HtmlViewNode extends Node {
       clientTop: state.clientTop / s,
       clientLeft: state.clientLeft / s,
     };
+  }
+
+  /**
+   * Whether a scroll container's scroll moves an element: its box is in
+   * the container's and positioned against nothing outside it
+   * (`scrollMoves`), laid out first as `scrollStateOf` is. What a
+   * script's `scrollIntoView` asks of each scroll container around an
+   * element before it scrolls it. False for an element with no box, and
+   * for one that is no scroll container.
+   */
+  scrollMoves(scroller: Element, element: Element): boolean {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    const port = this._scrollerOf(scroller);
+    const box = tree ? boxOf(tree, element) : null;
+    return !!port && !!box && scrollMoves(port, box);
   }
 
   /**

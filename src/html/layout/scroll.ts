@@ -188,20 +188,26 @@ export function scrolledBy(box: Box): [number, number] {
   let y = 0;
   for (let scroller = box.parent; scroller; scroller = scroller.parent) {
     const at = APPLIED.get(scroller);
-    if (!at) continue;
-    let moved = true;
-    for (let b: Box | null = box; b && b !== scroller; b = b.parent) {
-      if (escapes(b, scroller)) {
-        moved = false;
-        break;
-      }
-    }
-    if (moved) {
+    if (at && scrollMoves(scroller, box)) {
       x += at.x;
       y += at.y;
     }
   }
   return [x, y];
+}
+
+/**
+ * Whether a scroll container's scroll moves a box: the box is in it, and
+ * neither the box nor any box between them is positioned against
+ * something outside it (`escapes`), which `scrollContent` leaves where it
+ * is with all it holds. What a script's `scrollIntoView` asks of each
+ * scroll container around an element (CSSOM View 7.1).
+ */
+export function scrollMoves(scroller: Box, box: Box): boolean {
+  for (let b: Box | null = box; b !== scroller; b = b.parent) {
+    if (!b || escapes(b, scroller)) return false;
+  }
+  return box !== scroller;
 }
 
 /** A scroll offset within `[0, max]`, in whole hundredths: a script's

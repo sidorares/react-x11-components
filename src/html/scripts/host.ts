@@ -194,13 +194,18 @@ interface PreflightEntry {
  * What the host asks of the handle `useHtmlHandle` makes beside its public
  * members, which no other handle owes: the runner's handles forward it,
  * and one without it — a worker's, which draws nothing — answers as an
- * element that scrolls with the document.
+ * element that scrolls with the document and with every scroll container
+ * around it.
  */
 export interface HandleInternals {
   /** Whether an element is drawn where the viewport is — fixed to it, or
    *  in a box that is — so that no scroll of the pane around the document
    *  moves it (`HtmlViewNode.atViewport`). */
   drawnAtViewport(element: Element): boolean;
+  /** Whether a scroll container's scroll moves an element: not where the
+   *  element, or a box between them, is positioned against something
+   *  outside it (`HtmlViewNode.scrollMoves`). */
+  scrollMoves(scroller: Element, element: Element): boolean;
 }
 
 /** What the page around the document gives the host: where it is shown,
@@ -2150,6 +2155,17 @@ export class DomHost {
       case 'atViewport':
         this.flush();
         return this._seams.handle.drawnAtViewport?.(this._element(a)) === true;
+      // whether a scroll container's scroll moves an element, which it
+      // does not for one positioned against something outside it
+      // (`scrollIntoView`)
+      case 'scrollMoves':
+        this.flush();
+        return (
+          this._seams.handle.scrollMoves?.(
+            this._element(a),
+            this._element(b),
+          ) !== false
+        );
       // `offsetParent` and the offsets from it, in one walk up the boxes:
       // the parent's id, then x, y, width and height in CSS pixels, or ''
       // for an element with no box (`HtmlHandle.offsetRect`)

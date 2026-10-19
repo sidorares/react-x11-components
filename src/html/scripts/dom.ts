@@ -2056,15 +2056,18 @@ export function installDom(
         this.scrollTop + (Number.isFinite(by.y) ? by.y : 0),
       );
     }
-    /** Brought into view through every scroll container around it, the
-     *  innermost first, and then the viewport (CSSOM View 7.1): its top
-     *  at the top of each, or its middle, its end or as little as shows
-     *  it, as `block` asks. One fixed to the viewport, or in a box that
-     *  is, is moved by no scroll but that of a scroll container inside
-     *  that box, so neither the viewport nor a container outside it is
-     *  scrolled, as Chrome has it: measured where the scroll draws it, a
-     *  bar fixed `top: 30px` on a page scrolled 500px scrolled the page
-     *  30px on. */
+    /** Brought into view through every scroll container around it whose
+     *  scroll moves it, the innermost first, and then the viewport (CSSOM
+     *  View 7.1): its top at the top of each, or its middle, its end or
+     *  as little as shows it, as `block` asks. A container moves no box
+     *  positioned against something outside it, nor what that box holds,
+     *  so it is not scrolled for one: a box absolute in a `position:
+     *  relative` wrapper around a scrolling list scrolled the list as far
+     *  as the box was below its top. One fixed to the viewport, or in a
+     *  box that is, is moved by no scroll but that of a scroll container
+     *  inside that box, so the viewport is not scrolled either, as Chrome
+     *  has it: measured where the scroll draws it, a bar fixed `top:
+     *  30px` on a page scrolled 500px scrolled the page 30px on. */
     scrollIntoView(arg?: Any): void {
       const block =
         arg && typeof arg === 'object'
@@ -2082,13 +2085,10 @@ export function installDom(
         }
         return top;
       };
-      const fixed = call('atViewport', this._id) === true;
       for (let at = this.parentElement; at; at = at.parentElement) {
         if (at === document.documentElement) break;
         const s = scrollStateOf(at);
-        if (!s) continue;
-        // outside the fixed box, and so is everything after it
-        if (fixed && call('atViewport', at._id) !== true) return;
+        if (!s || call('scrollMoves', at._id, this._id) !== true) continue;
         const me = docRect(this);
         const port = docRect(at);
         if (!me || !port) return;
@@ -2096,7 +2096,7 @@ export function installDom(
         const by = place(top, me[3], s[5]);
         if (by) call('scrollElement', at._id, undefined, s[1] + by);
       }
-      if (fixed) return;
+      if (call('atViewport', this._id) === true) return;
       const r = docRect(this);
       if (!r) return;
       const v = viewport();

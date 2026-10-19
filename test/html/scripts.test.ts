@@ -2434,6 +2434,65 @@ metric(
   },
 );
 
+metric(
+  'a box positioned against something outside a scroll container is brought into view without scrolling that container',
+  async () => {
+    // What Chromium 151, Firefox 153 and WebKit 26.5 answer of the same
+    // page at 400 by 300, each step from everything at 0 (CSSOM View 7.1):
+    // a scroll container is scrolled only where its scroll moves the box,
+    // which it does not for one positioned against something outside it,
+    // nor for what that box holds. A container further out that does move
+    // it still scrolls, and so does one that is the box's containing block.
+    // `sc` and `sc2` had been scrolled to 300 for boxes they never move
+    const doc = await hosted(
+      whole(
+        'body { margin: 0 }' +
+          '.tall { height: 2000px }' +
+          '#outer, #outer2 { position: relative }' +
+          '#sc, #sc2 { overflow: auto; height: 100px; width: 100px }' +
+          '.pad { height: 400px }' +
+          '#abs, #abs2, #abs3 { position: absolute; top: 300px; left: 0; width: 5px; height: 5px }' +
+          '#kid { height: 2px }' +
+          '#big { overflow: auto; height: 150px; width: 200px }' +
+          '.after { height: 600px }' +
+          '#sc3 { position: relative; overflow: auto; height: 100px; width: 100px }',
+        '<div id="outer"><div id="sc"><div class="pad"></div><div id="abs"><div id="kid"></div></div></div></div>' +
+          '<div id="big"><div id="outer2"><div id="sc2"><div class="pad"></div><div id="abs2"></div></div></div><div class="after"></div></div>' +
+          '<div id="sc3"><div class="pad"></div><div id="abs3"></div></div>' +
+          '<div class="tall"></div>' +
+          '<p id="out"></p><script>' +
+          'var all = ["sc", "sc2", "big", "sc3"].map(function (id) { return document.getElementById(id); });' +
+          'function into(id, arg) {' +
+          '  scrollTo(0, 0); all.forEach(function (e) { e.scrollTop = 0; });' +
+          '  document.getElementById(id).scrollIntoView(arg);' +
+          '  return id + ":" + [scrollY].concat(all.map(function (e) { return e.scrollTop; })).join(" ");' +
+          '}' +
+          'var steps = [["abs"], ["kid"], ["abs", { block: "end" }], ["abs2"], ["abs3"]], seen = [];' +
+          // a step a scroll, each from a pane the test has laid out at 0
+          'window.addEventListener("scroll", function () {' +
+          '  if (seen.length === steps.length) return;' +
+          '  seen.push(into.apply(null, steps[seen.length]));' +
+          '  document.getElementById("out").textContent = seen.join("|");' +
+          '});' +
+          '</script>',
+      ),
+      { pane: 300 },
+    );
+    for (let i = 1; i <= 5; i += 1) {
+      await act(async () => doc.pane!.scrollTo(0));
+      await act(async () => doc.scrolled());
+      await settled(doc, 'out', (t) => t !== '' && t.split('|').length === i);
+    }
+    assert.deepEqual(doc.text('out').split('|'), [
+      'abs:300 0 0 0 0',
+      'kid:300 0 0 0 0',
+      'abs:5 0 0 0 0',
+      'abs2:100 0 0 300 0',
+      'abs3:250 0 0 0 300',
+    ]);
+  },
+);
+
 /** A page's script reporting what the offset attributes answer of the
  *  elements it names: `id:offsetParent left top width height`, the parent
  *  by its id or its tag. */

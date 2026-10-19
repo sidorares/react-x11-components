@@ -1960,12 +1960,14 @@ closes a way out a DOM binding opens by accident:
   viewport and what is in it moved where the pane's scroll draws them
   (`_moveToViewport`), as paint and the hit test move them; a header fixed
   `top: 30px` read -470 on a page scrolled 500px. So a rect cannot say
-  whether the viewport's scroll moves its box, and what scrolls for an
-  element asks (`atViewport`, through `HandleInternals`, which
-  `useHtmlHandle`'s handle has and `HtmlHandle` does not declare):
-  `scrollIntoView` scrolled the page 30px on for that header, where Chrome
-  scrolls neither the viewport nor a container outside a fixed box for
-  what is in it. `offsetLeft` and its
+  whether a scroll moves its box, and what scrolls for an element asks,
+  through `HandleInternals` (which `useHtmlHandle`'s handle has and
+  `HtmlHandle` does not declare): `atViewport` of the viewport, and
+  `scrollMoves`, the rule `applyScrollOffsets` moves boxes by, of each
+  scroll container. `scrollIntoView` scrolled the page 30px on for that
+  header, and a list 300px for a box absolute in a `position: relative`
+  wrapper around it, where Chrome scrolls neither: no scroll moves a box
+  positioned against something outside it. `offsetLeft` and its
   kin are `offsetRect`, where layout put the box before either, from the
   offset parent's padding edge. Primer's `<Tabs>` slides a pill under a
   tab in a strip that scrolls by its `offsetLeft`, and the document's x
