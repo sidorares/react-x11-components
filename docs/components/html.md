@@ -36,7 +36,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `animate`            | `boolean`                                        | Whether CSS animations run. Default true. False draws each as it stands once it has run — see [Animations](#what-renders).                                                                                                                                                                          |
 | `reducedMotion`      | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                                                                                                                                |
 | `defaultColorScheme` | `'light' \| 'dark'`                              | The scheme a page that names none (`color-scheme: normal`) is drawn in. Default: the palette's. A host that shows the web names `'light'`, as every browser draws one — see [Colours](#what-renders).                                                                                               |
-| `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control.                                                                                                                                                                                          |
+| `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control. Compared by the sheets it holds: an array made again at each render with the same ones is no change.                                                                                     |
 | `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                                                                                                                               |
 | `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                                                                                                               |
 | `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>`, an `@import` or an `@font-face` font wants loading, or a `<video>` playing — see [Video](#video). May return a promise. **Absent, nothing loads.**                                                                                                           |
@@ -44,7 +44,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `onScript`           | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                                                                                                                                       |
 | `scripting`          | `boolean`                                        | Whether the host runs the document's scripts — this runs none either way. True draws a `<noscript>` as nothing, asks for nothing in it and makes `@media (scripting: enabled)` hold — see [The seams](#the-seams). Default false.                                                                   |
 | `onDomEvent`         | `(event: HtmlDomEvent) => boolean \| void`       | Something happened to the document, told before this does anything about it; `false` cancels it — see [Events before their defaults](#events-before-their-defaults).                                                                                                                                |
-| `onParsed`           | `() => void`                                     | The parse has ended. Once a document, a microtask later.                                                                                                                                                                                                                                            |
+| `onParsed`           | `() => void`                                     | The parse has ended and core has laid the element out. Once a document.                                                                                                                                                                                                                             |
 | `onLoaded`           | `() => void`                                     | Everything the document asked for has arrived or failed, counted from its first complete layout. Once a document.                                                                                                                                                                                   |
 | `onLink`             | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.                                                                                                                                 |
 | `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                                                                                                                          |
@@ -734,7 +734,11 @@ scripts on are told a link or a form only once the page's own `click` and
 `submit` listeners have let it go. `onDocument`, `onDomEvent`, `onScript`,
 `onParsed`, `onLoaded`, `onElementScroll`, `canvasImage`, `stylesheet` and
 `renderEmbedded` are still called or applied, beside the engine's own; a
-`false` from either `onDomEvent` cancels.
+`false` from either `onDomEvent` cancels. The sheets the page adopts
+(`document.adoptedStyleSheets`) go after the application's `stylesheet`,
+and the two reach the element as one array for as long as they read the
+same: another array restyles the whole document, and each change a script
+makes renders `<Html>` again.
 
 Three decisions that look like gaps and are not:
 
@@ -1252,6 +1256,17 @@ pill under it computes with. Three places Chrome parts from the words:
   element is measured from it and it from its own, added up. A light child
   slotted inside a positioned box in a shadow tree has the `<body>` for its
   parent and the offsets the two steps come to.
+
+**A script measures the document at the width it is drawn at.** A browser
+lays a page out at its viewport's width before any script reads it, so an
+inline script, `DOMContentLoaded` and `load` all see the page as it is
+drawn. A document mounted with its source is parsed in the render that
+mounts it, and core lays it out at the window's next frame, which on a
+display's clock is a vertical blank later. So `onParsed` waits for that
+first layout, and a host that runs scripts from it never reads a layout
+made before the element had a width. One under `display: none`, which core
+lays out none of, is told as its parse ends. A load that came first waits
+for it, so `onLoaded` is always told after `onParsed`.
 
 **A script waits for the style sheets before it.** A browser holds a script
 it meets until the sheets the parser met before it are in, so a script
@@ -3197,11 +3212,17 @@ drawn where it is now, found there by the pointer, and measured there by
 after its own `scrollTo` too, before the frame that draws it, as `elementAt`
 reads the document where the scroll has it then — and the link
 in it takes the focus where it is without scrolling the page back to its
-top. The element tells
+top. A script's `scrollIntoView` scrolls nothing for such a box or what is
+in it but a scroll container inside it — a fixed sidebar's list brings its
+item into view, and the page stays where it is. The element tells
 the scroll box what it draws that way (react-x11's `viewportFixedRects`),
 so a scroll that copies the pixels it can repaints those where they are
 rather than dragging a fixed header along with the text; a fixed
-background, behind the whole viewport, makes every scroll a repaint. A form
+background, behind the whole viewport, makes every scroll a repaint. A
+fixed box that draws nothing — faded to nothing, or hidden with nothing in
+it shown — is left out, since the copy drags nothing of it: GitHub's
+page-load bar, fixed across the top of every page at `opacity: 0`, made
+every scroll under a contents list stuck at `top: 0` a repaint. A form
 control in a fixed box has its widget kept there too, by a position the
 component registers with core (`registerPosition`), which moves it with
 the box in the frame the pane scrolls, as core keeps a sticky header; the
@@ -3229,7 +3250,10 @@ knows there is a scroll. What a container moves is what it is the scroll
 container of: its lines, its in-flow boxes and the out-of-flow boxes
 positioned against it or inside it. A box positioned against something
 outside it stays where it is, as it is not clipped by it either: a fixed
-header in a scrolling `main` stays at the top.
+header in a scrolling `main` stays at the top. A script's `scrollIntoView`
+scrolls only the containers that move the element, so a box absolute in a
+`position: relative` wrapper around a scrolling list is brought into view
+by the page, and the list stays where it is, as in Chrome.
 
 **The offsets are the element's**, kept by the element through every
 layout and build: a resize lays the content out again and moves it by
@@ -3974,11 +3998,26 @@ combinator, its later siblings; in a `:has()`, the elements around it. Then:
   size went from 59 ms to 27, and a text changed from 66 to 21.
 
 Some changes are refreshes of everything however they are told: a
-stylesheet, a `<meta>` or a `<base>` changing; a document whose sheets
-reach across a shadow tree's edge — `:host`, `::slotted()`, `::part()` —
-which no index of a change reads; and a `:has()` whose element is not
-itself the one restyled — `.card:has(.x) .title`, `:has(+ .x)` — which
-reaches everything around its anchors. A document with shadow trees whose
+stylesheet coming, going or reading otherwise, a `<meta>` or a `<base>`
+changing, and a `:has()` that every element could be the element of and
+that reaches past it — `:has(.x) span`, with nothing else in its
+compound — or one inside `:nth-child(… of …)`. A `<link>` or a `<style>`
+is a stylesheet only as far as the cascade reads it: a bundler's `data-`
+mark on a sheet's `<link>`, an icon's `href`, a `<link rel="preload">`, or
+a sheet's `<link>` put in before its sheet is in — which is a change when
+the sheet comes — restyles what tests it, as any element's attribute
+would. A `:has()` restyles from the elements whose answer to it changed,
+found among those around the change — its ancestors, and where the
+argument starts at a sibling, `:has(+ .x)`, their earlier siblings — by the
+rest of the compound the `:has()` is in: `.card:has(.x) .title` restyles
+the cards around the change and what is in them. An attribute selector is
+a change only where it answers otherwise for the value the attribute had
+than for the one it has: Primer's `[class*=PricingOptions__item]` is no
+change of a heading's class, and made every class change on
+github.com/features a refresh of everything. A rule at a shadow tree's
+edge — `:host()`, `::slotted()`, `::part()` — reaches across it: what it
+tests reaches the element it is tested of and everything below it, in its
+shadow tree and its slots as well. A document with shadow trees whose
 rules stay inside them is told what changed as any other is: Next.js
 mounts one such tree on every page, its route announcer, and a page that
 paid for a refresh of everything at each change for it laid itself out

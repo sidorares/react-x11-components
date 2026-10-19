@@ -2557,6 +2557,133 @@ fontMetric(
   },
 );
 
+metric(
+  'a box fixed to the viewport, and what is in it, is brought into view without scrolling the page, and through a scroll container inside it alone',
+  async () => {
+    // What Chrome 152 answers of the same page at 400 by 300, each step
+    // from 500px down (CSSOM View 7.1): the viewport's scroll moves no box
+    // fixed to it, nor a scroll container outside one, so neither scrolls
+    // for it, and a scroll container inside a fixed box still scrolls what
+    // it holds. A fixed box a transformed box holds scrolls with the
+    // document. The viewport had scrolled for the bar as though it moved
+    // with the page: 530 for its start, 250 for its end
+    const doc = await hosted(
+      whole(
+        '.tall { height: 2000px }' +
+          '#bar { position: fixed; top: 30px; left: 40px; width: 100px; height: 20px }' +
+          '#tf { transform: translateX(7px); position: absolute; top: 600px; left: 0 }' +
+          '#held { position: fixed; top: 3px; left: 4px; width: 6px; height: 6px }' +
+          '#side { position: fixed; top: 0; right: 0; width: 80px; height: 100px; overflow: auto }' +
+          '#side div { height: 50px }' +
+          '#sc { position: absolute; top: 900px; left: 200px; width: 80px; height: 100px; overflow: auto }' +
+          '#fx { position: fixed; top: 60px; left: 300px; width: 5px; height: 5px }' +
+          '.pad { height: 300px }',
+        '<div class="tall"></div>' +
+          '<div id="bar"><div id="in"></div></div>' +
+          '<div id="flow" style="position: absolute; top: 520px; left: 9px; width: 8px; height: 8px"></div>' +
+          '<div id="tf"><div id="held"></div></div>' +
+          '<div id="side"><div></div><div></div><div></div><div id="item"></div><div></div></div>' +
+          '<div id="sc"><div class="pad"></div><div id="fx"></div><div class="pad"></div></div>' +
+          '<p id="out"></p><script>' +
+          'var side = document.getElementById("side"), sc = document.getElementById("sc");' +
+          'function into(id, arg) {' +
+          '  scrollTo(0, 500); side.scrollTop = 0; sc.scrollTop = 100;' +
+          '  document.getElementById(id).scrollIntoView(arg);' +
+          '  return id + ":" + [scrollY, side.scrollTop, sc.scrollTop].join(" ");' +
+          '}' +
+          'var steps = [' +
+          '  ["bar"], ["bar", { block: "nearest" }], ["bar", false],' +
+          '  ["in", { block: "center" }], ["flow"], ["held"],' +
+          '  ["held", { block: "end" }], ["item"], ["fx"]' +
+          '], seen = [];' +
+          // a step a scroll, each from a pane the test has laid out at 500
+          'window.addEventListener("scroll", function () {' +
+          '  if (seen.length === steps.length) return;' +
+          '  seen.push(into.apply(null, steps[seen.length]));' +
+          '  document.getElementById("out").textContent = seen.join("|");' +
+          '});' +
+          '</script>',
+      ),
+      { pane: 300 },
+    );
+    for (let i = 1; i <= 9; i += 1) {
+      await act(async () => doc.pane!.scrollTo(500));
+      await act(async () => doc.scrolled());
+      await settled(doc, 'out', (t) => t !== '' && t.split('|').length === i);
+    }
+    assert.deepEqual(doc.text('out').split('|'), [
+      'bar:500 0 100',
+      'bar:500 0 100',
+      'bar:500 0 100',
+      'in:500 0 100',
+      'flow:520 0 100',
+      'held:603 0 100',
+      'held:309 0 100',
+      'item:500 150 100',
+      'fx:500 0 100',
+    ]);
+  },
+);
+
+metric(
+  'a box positioned against something outside a scroll container is brought into view without scrolling that container',
+  async () => {
+    // What Chromium 151, Firefox 153 and WebKit 26.5 answer of the same
+    // page at 400 by 300, each step from everything at 0 (CSSOM View 7.1):
+    // a scroll container is scrolled only where its scroll moves the box,
+    // which it does not for one positioned against something outside it,
+    // nor for what that box holds. A container further out that does move
+    // it still scrolls, and so does one that is the box's containing block.
+    // `sc` and `sc2` had been scrolled to 300 for boxes they never move
+    const doc = await hosted(
+      whole(
+        'body { margin: 0 }' +
+          '.tall { height: 2000px }' +
+          '#outer, #outer2 { position: relative }' +
+          '#sc, #sc2 { overflow: auto; height: 100px; width: 100px }' +
+          '.pad { height: 400px }' +
+          '#abs, #abs2, #abs3 { position: absolute; top: 300px; left: 0; width: 5px; height: 5px }' +
+          '#kid { height: 2px }' +
+          '#big { overflow: auto; height: 150px; width: 200px }' +
+          '.after { height: 600px }' +
+          '#sc3 { position: relative; overflow: auto; height: 100px; width: 100px }',
+        '<div id="outer"><div id="sc"><div class="pad"></div><div id="abs"><div id="kid"></div></div></div></div>' +
+          '<div id="big"><div id="outer2"><div id="sc2"><div class="pad"></div><div id="abs2"></div></div></div><div class="after"></div></div>' +
+          '<div id="sc3"><div class="pad"></div><div id="abs3"></div></div>' +
+          '<div class="tall"></div>' +
+          '<p id="out"></p><script>' +
+          'var all = ["sc", "sc2", "big", "sc3"].map(function (id) { return document.getElementById(id); });' +
+          'function into(id, arg) {' +
+          '  scrollTo(0, 0); all.forEach(function (e) { e.scrollTop = 0; });' +
+          '  document.getElementById(id).scrollIntoView(arg);' +
+          '  return id + ":" + [scrollY].concat(all.map(function (e) { return e.scrollTop; })).join(" ");' +
+          '}' +
+          'var steps = [["abs"], ["kid"], ["abs", { block: "end" }], ["abs2"], ["abs3"]], seen = [];' +
+          // a step a scroll, each from a pane the test has laid out at 0
+          'window.addEventListener("scroll", function () {' +
+          '  if (seen.length === steps.length) return;' +
+          '  seen.push(into.apply(null, steps[seen.length]));' +
+          '  document.getElementById("out").textContent = seen.join("|");' +
+          '});' +
+          '</script>',
+      ),
+      { pane: 300 },
+    );
+    for (let i = 1; i <= 5; i += 1) {
+      await act(async () => doc.pane!.scrollTo(0));
+      await act(async () => doc.scrolled());
+      await settled(doc, 'out', (t) => t !== '' && t.split('|').length === i);
+    }
+    assert.deepEqual(doc.text('out').split('|'), [
+      'abs:300 0 0 0 0',
+      'kid:300 0 0 0 0',
+      'abs:5 0 0 0 0',
+      'abs2:100 0 0 300 0',
+      'abs3:250 0 0 0 300',
+    ]);
+  },
+);
+
 /** A page's script reporting what the offset attributes answer of the
  *  elements it names: `id:offsetParent left top width height`, the parent
  *  by its id or its tag. */

@@ -37,7 +37,6 @@ import type {
   ScriptRequest,
 } from '../index.js';
 import { HTML_USER_AGENT } from '../network.js';
-import { afterLayout } from '../../internal/timers.js';
 import { useScripts } from './hook.js';
 import type { FetchRequest, FetchResponse } from './host.js';
 import type { AbortSignalLike } from './platform.js';
@@ -234,11 +233,6 @@ const NO_NETWORK = (request: FetchRequest): Promise<FetchResponse> =>
 
 const nothing = (): void => {};
 
-/** How many layout ticks the parse's scripts wait for the element's first
- *  layout before they run without it: a document nothing lays out — one in
- *  a hidden subtree — still runs its scripts. */
-const PARSE_WAITS = 8;
-
 /**
  * `<Html>`'s props with its document's scripts running: the engine's
  * seams, with the application's own callbacks still called beside them,
@@ -378,23 +372,11 @@ export function useScriptedHtml(
     },
     [scripts.onScript],
   );
-  // The parse's scripts run once the document has been laid out, as a
-  // browser lays a page out before they read it: a document mounted with
-  // its source is parsed in the render that mounts it, and core lays out
-  // only at the frame after, so a script run at the parse measured a
-  // viewport of nothing and scrolled a pane with nothing in it.
+  // told once the element has been laid out, as a browser lays a page out
+  // before its scripts read it (`../parsed.ts`)
   const onParsed = useCallback(() => {
-    const run = (): void => {
-      scripts.onParsed?.();
-      latest.current.props.onParsed?.();
-    };
-    let waits = 0;
-    const laidOut = (): void => {
-      const box = node()?.getClientRects()[0];
-      if ((box && box.width > 0) || (waits += 1) > PARSE_WAITS) run();
-      else afterLayout(laidOut);
-    };
-    laidOut();
+    scripts.onParsed?.();
+    latest.current.props.onParsed?.();
   }, [scripts.onParsed]);
   const onLoaded = useCallback(() => {
     scripts.onLoaded?.();
@@ -423,13 +405,24 @@ export function useScriptedHtml(
     [scripts.canvasImage],
   );
 
+  // The application's sheets and the ones the page adopted, as one array
+  // for as long as they read the same. The element restyles the whole
+  // document when its `stylesheet` is another array, and every refresh the
+  // page's scripts make renders `<Html>` again: merged afresh at each, a
+  // page that adopted a sheet was styled whole at every change it made.
+  // Every GitHub page adopts one — the popover polyfill's, since the
+  // facade has no popover of its own — and on an article whose contents
+  // list marks the section scrolled to, each section crossed cost 400 ms.
   const own = props.stylesheet;
-  const stylesheet = scripts.stylesheet
+  const merged = scripts.stylesheet
     ? [
         ...(own === undefined ? [] : Array.isArray(own) ? own : [own]),
         ...scripts.stylesheet,
       ]
     : own;
+  const kept = useRef(merged);
+  if (!sameSheets(kept.current, merged)) kept.current = merged;
+  const stylesheet = kept.current;
 
   return {
     ...props,
@@ -452,6 +445,16 @@ export function useScriptedHtml(
         ? h(engine.FrameHolder, { context: holderContext })
         : null,
   };
+}
+
+/** Whether two `stylesheet` props hold the same sheets in the same order. */
+function sameSheets(
+  a: string | string[] | undefined,
+  b: string | string[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  return a.length === b.length && a.every((sheet, i) => sheet === b[i]);
 }
 
 /** A document's root element, which a module's request names. */

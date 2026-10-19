@@ -843,6 +843,30 @@ metric(
       null,
       'and nothing where nothing is fixed',
     );
+    await plain.result.unmount();
+    // A fixed box that draws nothing is no rect the copy could drag: GitHub's
+    // page-load bar across the top, at `opacity: 0`, met a contents list
+    // stuck at `top: 0`, core merged the two into the box around both, and
+    // every scroll repainted the window. One hidden with something visible
+    // in it still draws that.
+    const unseen = await renderIn(
+      '<style>body{margin:0}.tall{height:2000px}.f{position:fixed;left:0;' +
+        'width:100px;height:20px;background:red}</style>' +
+        '<div class="tall"></div>' +
+        '<div class="f" style="top:0;opacity:0"></div>' +
+        '<div class="f" style="top:40px;visibility:hidden"></div>' +
+        '<div class="f" style="top:80px;visibility:hidden">' +
+        '<span style="visibility:visible">shown</span></div>',
+    );
+    await act(async () => unseen.pane.current!.scrollTo(300));
+    const shown = (
+      unseen.el as unknown as { viewportFixedRects(): FixedRect[] | null }
+    ).viewportFixedRects();
+    assert.deepStrictEqual(
+      shown?.map((rect) => rect.y),
+      [80],
+      `only the box with something visible in it: ${JSON.stringify(shown)}`,
+    );
   },
 );
 

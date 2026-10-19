@@ -1635,10 +1635,35 @@ one missing there reads nothing, which is right only for one css-select
 refuses, since that drops the rule. **An attribute anything but the
 cascade reads is out of `STYLE_ONLY_ATTRIBUTE`** — a source, a value, a
 label, a hint whose style reaches the element's descendants — and builds
-the boxes, restyling the element and what is in it. And **a `:has()` that
-reaches past its anchors, a shadow tree, or a sheet, a `<meta>` or a
-`<base>` changing is a refresh of everything**: the scope says null, and
-nothing is skipped. A shadow tree attached is one; a rule at a tree's edge
+the boxes, restyling the element and what is in it. **A key in a
+`:has()`'s argument reaches the elements whose answer changed, found by
+the `:has()`'s compound** (`HasAnchor`, `spreadAnchors`): the element that
+changed and its ancestors, their earlier siblings where the argument
+starts at a sibling, and what a holder holds, each asked whether it
+matches the compound with nothing in it a change can change the answer to
+(`stableCompound`: its type, classes, ids and attribute tests). So
+**anything a compound reads besides an element's own name and attributes
+stays out of its anchor** — a pseudo-class reads its place, what it holds
+or the pointer, and the anchor is asked after the change — and **no walk
+goes down**: a key read inside its element too (`PSEUDO_INHERITED`,
+`:lang()`, `:dir()`) is the attribute of none that is style-only, so a
+change of it restyles the element and everything in it, wherever the
+element whose `:has()` it changed is. Make one style-only and that walk is
+owed. **An attribute selector is a key of its own** (`v:`), asked of the
+value its attribute had and has by css-select itself (`Cascade._flips`),
+which made Primer's `[class*=…]` and its `:has(~ …)` no change of every
+class on github.com/features. **A sheet's element is a change to the
+cascade only where the sheets read otherwise** (`_sheetsKept`, over the
+`_sameSheets` that `_restyle` asks to keep the cascade) — a `<link>` put
+in before its sheet is in is a change when the sheet comes — and
+`changesCascade` lists the attributes `DocumentSource.facts` reads of
+them: anything new read there joins it. A `<meta>`, a `<base>`, a sheet in
+a shadow tree, a `:has()` every element could anchor that reaches past it
+(`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)` are refreshes of
+everything: the scope says null, and nothing is skipped. And the
+`stylesheet` prop is compared by the sheets it holds: `<Html scripts>`
+merges a page's adopted sheets into it at every render, and github.com
+was styled whole some sixty times a load. A shadow tree attached is one; a rule at a tree's edge
 — `:host()`, `:host-context()`, `::slotted()`, `::part()` — is not: every
 key it tests is read as reaching the element it is tested of and all below
 it (`MutationRules.noteEdge`), and while one is in the cascade a change
@@ -1968,14 +1993,22 @@ closes a way out a DOM binding opens by accident:
   **Anything new that answers a page in `elementRect`'s coordinates
   measures from it**, and what core asks — paint, damage, the cursor, the
   text accessors — keeps `abs`, as core's own nodes do until the pass.
-  The sticky boxes the viewport holds are the exception, since they are
-  one placement and not one per asker: placed from `_scrolledOrigin`
-  whoever asks (`_followViewport`), where a header held at `top: 0` read
-  -492 placed from `abs`. Placed for the next pass when a page asks and
-  for the last when core does, a hover between a page's `scrollTo` and
-  its pass would move them back and forth. So until that pass, a point
-  core asks about finds a held box where the pass will draw it.
-  `offsetLeft` and its
+  So a rect cannot say whether a scroll moves its box, and what scrolls
+  for an element asks, through `HandleInternals` (which
+  `useHtmlHandle`'s handle has and `HtmlHandle` does not declare):
+  `atViewport` of the viewport, and `scrollMoves`, the rule
+  `applyScrollOffsets` moves boxes by, of each scroll container.
+  `scrollIntoView` scrolled the page 30px on for that header, and a list
+  300px for a box absolute in a `position: relative` wrapper around it,
+  where Chrome scrolls neither: no scroll moves a box positioned against
+  something outside it. The sticky boxes the viewport holds are placed
+  from `_scrolledOrigin` whoever asks, core included (`_followViewport`),
+  since they are one placement and not one per asker: placed from `abs`,
+  a header held at `top: 0` read -492, and placed for the next pass when
+  a page asks and for the last when core does, a hover between a page's
+  `scrollTo` and its pass would move them back and forth. So until that
+  pass, a point core asks about finds a held box where the pass will draw
+  it. `offsetLeft` and its
   kin are `offsetRect`, where layout put the box before either, from the
   offset parent's padding edge. Primer's `<Tabs>` slides a pill under a
   tab in a strip that scrolls by its `offsetLeft`, and the document's x
@@ -2044,8 +2077,14 @@ module imports a heavy one by `import type` only.** What `<Html>` reports
 before the chunk is in — the document, its scripts, the end of its parse,
 its `load` — is kept and handed to the runner in that order, and the
 parse's scripts wait for the element's first layout, since a document
-mounted with its source is parsed before core has laid anything out. Three
-more things:
+mounted with its source is parsed before core has laid anything out.
+`<Html>` holds `onParsed` for it (`parsed.ts`), and `onLoaded` behind it,
+until core's `onLayout` says the element was laid out, so every host waits,
+a frame's view included. **Wait for the layout, never for a count of turns**: the frame is
+the window's clock, a vertical blank away where the display paces it, and
+the eight `setImmediate`s the parse once waited were spent in a millisecond
+of it, so on an X server a page's first scripts measured a document laid
+out at one pixel, with `innerWidth` 0. Three more things:
 
 - **The engine's Node is written out** (`scripts/platform.ts`): `node:vm`,
   `node:util` and `node:worker_threads` are loaded with a specifier the
