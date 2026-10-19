@@ -1699,9 +1699,10 @@ export class HtmlViewNode extends Node {
    * it, for that pane's scroll blit to repaint rather than copy with the
    * text (react-x11's `viewportFixedRects`): the whole viewport where a
    * fixed background shows through it, which makes a scroll a repaint, and
-   * where each fixed box is drawn, and each sticky box the viewport holds
-   * where it was drawn held and where it is held now. Null for a document
-   * with none of them, and where nothing scrolls the element.
+   * where each fixed box that draws something is drawn, and each sticky box
+   * the viewport holds where it was drawn held and where it is held now.
+   * Null for a document with none of them, and where nothing scrolls the
+   * element.
    */
   override viewportFixedRects(): Rect[] | null {
     const tree = this._tree;
@@ -1710,9 +1711,16 @@ export class HtmlViewNode extends Node {
     if (hasFixedBackground(tree)) return [viewport];
     const out: Rect[] = [];
     // laid out against the viewport at the document's top, and drawn at the
-    // viewport (`atViewport`)
+    // viewport (`atViewport`) — but for one that draws nothing, which the
+    // copy drags nothing of. A pinned rect costs more than its area: core
+    // merges two that meet into the box around both, and past three
+    // quarters of the viewport the scroll is a repaint. GitHub keeps its
+    // page-load bar fixed across the top of every page at `opacity: 0`, and
+    // with a contents list stuck at `top: 0` the two came to the viewport's
+    // width and the list's height, and every frame repainted the window.
     for (const box of FIXED_BOXES.get(tree) ?? NO_BOXES) {
       if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
+      if (drawsNothing(box)) continue;
       out.push({
         x: viewport.x + box.boundsX,
         y: viewport.y + box.boundsY,

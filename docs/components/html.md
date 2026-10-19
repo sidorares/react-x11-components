@@ -3199,7 +3199,11 @@ top. The element tells
 the scroll box what it draws that way (react-x11's `viewportFixedRects`),
 so a scroll that copies the pixels it can repaints those where they are
 rather than dragging a fixed header along with the text; a fixed
-background, behind the whole viewport, makes every scroll a repaint. A form
+background, behind the whole viewport, makes every scroll a repaint. A
+fixed box that draws nothing — faded to nothing, or hidden with nothing in
+it shown — is left out, since the copy drags nothing of it: GitHub's
+page-load bar, fixed across the top of every page at `opacity: 0`, made
+every scroll under a contents list stuck at `top: 0` a repaint. A form
 control in a fixed box has its widget kept there too, by a position the
 component registers with core (`registerPosition`), which moves it with
 the box in the frame the pane scrolls, as core keeps a sticky header; the
