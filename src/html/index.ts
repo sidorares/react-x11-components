@@ -82,6 +82,7 @@ import type { RenderEmbedded } from './embedded.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
 import type { HtmlScripts, InternalHtmlProps } from './scripts/scripted.js';
+import type { HandleInternals } from './scripts/host.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 
 export {
@@ -981,7 +982,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
   const nodeRef = React.useRef<HtmlViewNode | null>(null);
   const [, force] = React.useReducer((n: number) => n + 1, 0);
   return React.useMemo(
-    () => ({
+    (): HtmlHandle & HandleInternals & { ref: React.Ref<unknown> } => ({
       ref: nodeRef as unknown as React.Ref<unknown>,
       get document() {
         return nodeRef.current?.document ?? null;
@@ -1004,6 +1005,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.elementRect(element) ?? null,
       offsetRect: (element: Element) =>
         nodeRef.current?.offsetRect(element) ?? null,
+      drawnAtViewport: (element: Element) =>
+        nodeRef.current?.atViewport(element) ?? false,
       scrollState: (element: Element) =>
         nodeRef.current?.scrollStateOf(element) ?? null,
       canvasChanged: (element: Element) =>

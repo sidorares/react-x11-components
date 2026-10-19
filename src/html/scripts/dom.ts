@@ -2059,7 +2059,12 @@ export function installDom(
     /** Brought into view through every scroll container around it, the
      *  innermost first, and then the viewport (CSSOM View 7.1): its top
      *  at the top of each, or its middle, its end or as little as shows
-     *  it, as `block` asks. */
+     *  it, as `block` asks. One fixed to the viewport, or in a box that
+     *  is, is moved by no scroll but that of a scroll container inside
+     *  that box, so neither the viewport nor a container outside it is
+     *  scrolled, as Chrome has it: measured where the scroll draws it, a
+     *  bar fixed `top: 30px` on a page scrolled 500px scrolled the page
+     *  30px on. */
     scrollIntoView(arg?: Any): void {
       const block =
         arg && typeof arg === 'object'
@@ -2077,10 +2082,13 @@ export function installDom(
         }
         return top;
       };
+      const fixed = call('atViewport', this._id) === true;
       for (let at = this.parentElement; at; at = at.parentElement) {
         if (at === document.documentElement) break;
         const s = scrollStateOf(at);
         if (!s) continue;
+        // outside the fixed box, and so is everything after it
+        if (fixed && call('atViewport', at._id) !== true) return;
         const me = docRect(this);
         const port = docRect(at);
         if (!me || !port) return;
@@ -2088,6 +2096,7 @@ export function installDom(
         const by = place(top, me[3], s[5]);
         if (by) call('scrollElement', at._id, undefined, s[1] + by);
       }
+      if (fixed) return;
       const r = docRect(this);
       if (!r) return;
       const v = viewport();

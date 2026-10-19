@@ -3623,6 +3623,20 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * Whether an element is drawn where the viewport is — fixed to it, or in
+   * a box that is (`drawnAtViewport`) — so that no scroll of the pane
+   * around the document moves it, laid out first as `elementRect` is. What
+   * a script's `scrollIntoView` asks before it scrolls the viewport for
+   * one. False for an element with no box.
+   */
+  atViewport(element: Element): boolean {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    const box = tree ? boxOf(tree, element) : null;
+    return !!box && drawnAtViewport(box);
+  }
+
+  /**
    * Whether a media query holds for the document, as `matchMedia` asks:
    * answered from what its own `@media` rules are — its width, the
    * viewport's height, the scale, the palette's colour scheme, the
