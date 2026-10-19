@@ -124,7 +124,8 @@ export interface MediaRect {
    * the player paints them there again (`HtmlViewNode.paintCovers`).
    */
   over?: Rect;
-  /** HTML's attributes, as the element has them. */
+  /** HTML's attributes, as the element has them — but `muted`, which is
+   *  what a script set where one did (`MediaState`). */
   autoPlay: boolean;
   loop: boolean;
   muted: boolean;
@@ -132,6 +133,56 @@ export interface MediaRect {
   controls: boolean;
   /** What an assistive technology names it: `aria-label`, or `title`. */
   label?: string;
+  /**
+   * Whether it plays, where something said — a script's `play()` or
+   * `pause()`, or a press on a video with `controls`. Left out, the player
+   * plays it from the start where it has `autoplay`, and is still.
+   */
+  paused?: boolean;
+  /** How loud and how fast, where a script set them. */
+  volume?: number;
+  playbackRate?: number;
+  /** Where a script last sought to, in seconds, and how many times it has
+   *  sought: a player is sought where the count moved. */
+  seek?: { time: number; count: number };
+}
+
+/**
+ * What a page's script asked of a media element's player
+ * (`HtmlHandle.setMediaState`): only the fields it set. `currentTime` is a
+ * seek.
+ */
+export interface MediaState {
+  paused?: boolean;
+  muted?: boolean;
+  volume?: number;
+  playbackRate?: number;
+  currentTime?: number;
+}
+
+/** What is kept of what was asked of a media element's player: the fields
+ *  of a `MediaRect` it sets over what the markup says. */
+export type MediaAsked = Partial<
+  Pick<MediaRect, 'paused' | 'muted' | 'volume' | 'playbackRate' | 'seek'>
+>;
+
+/** What was asked, `state` laid over `was`. */
+export function askMedia(
+  was: MediaAsked | undefined,
+  state: MediaState,
+): MediaAsked {
+  const next: MediaAsked = { ...was };
+  if (state.paused !== undefined) next.paused = state.paused;
+  if (state.muted !== undefined) next.muted = state.muted;
+  if (state.volume !== undefined) next.volume = state.volume;
+  if (state.playbackRate !== undefined) next.playbackRate = state.playbackRate;
+  if (state.currentTime !== undefined) {
+    next.seek = {
+      time: state.currentTime,
+      count: (was?.seek?.count ?? 0) + 1,
+    };
+  }
+  return next;
 }
 
 /**

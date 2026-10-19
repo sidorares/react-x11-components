@@ -1920,6 +1920,18 @@ closes a way out a DOM binding opens by accident:
   custom elements hear nothing of it. `:defined` is the cascade's
   (`isDefinedElement`), told of an upgrade as a change of `-rx-defined`, an
   attribute no element has.
+- **What a page asks of a media element is the player's, kept by
+  element.** `play()`, `pause()`, `muted`, `volume`, `playbackRate` and a
+  seek are the facade's state (`mediaAsks`) and one `mediaState` op each;
+  `<Html>` keeps them for the element (`setMediaState`), lays them over
+  the markup's in each `MediaRect`, and `videos.ts` hands them to core's
+  `<video>` as props that tell the player it has — never in the key, which
+  would make a new player. Kept by element, so a hidden video a page paused
+  is mounted paused, and `paused` is left out until something says, so
+  `autoplay` still plays. **Anything new that tells a player what to do
+  goes through `setMediaState`**, a press on `controls` included, or the
+  next prop a script sets is no change and the player is not told.
+  Nothing comes back from the player to the page yet.
 - **A module is linked once and evaluated once** (`_linked`, `_evaluated`),
   however many `import()`s wait on it — the runtime allows each only once,
   and two concurrent imports handed a module mid-evaluation read its

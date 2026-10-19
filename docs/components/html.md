@@ -86,6 +86,7 @@ handle.refresh();
 | `offsetRect(element)`                                                                   | Where an element is as `offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth` and `offsetHeight` measure it, laid out first — `{ parent, x, y, width, height }`: its offset parent, which is the nearest positioned, transformed or contained element around it, or a `<td>`, a `<th>` or a `<table>` around one that is not positioned, or the `<body>`; and its border box from that one's padding edge, in logical pixels, where layout put it before a transform or a scroll moved it. As Chrome has them where it parts from CSSOM View's words: see [Offsets](#offsets). Null for an element with no box. |
 | `scrollState(element)`                                                                  | Where a scroll container is scrolled to, how far it can be and its scrollport, in CSS pixels — `{ x, y, width, height, clientWidth, clientHeight, clientTop, clientLeft }`, what `scrollLeft`, `scrollTop`, `scrollWidth`, `scrollHeight` and their kin answer — laid out first. Null for an element that is no scroll container.                                                                                                                                                                                                                                                                                 |
 | `canvasChanged(element)`                                                                | A `<canvas>`'s picture (`canvasImage`) changed: repaint it where it is.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `setMediaState(el, state)`                                                              | Tell a `<video>`'s player what a script asked of it — `{ paused, muted, volume, playbackRate, currentTime }`, each only where it was set, `currentTime` a seek — as a page's `play()`, `pause()` and setters do. Kept for the element, so a player mounted later is told it too; see [Video](#video).                                                                                                                                                                                                                                                                                                             |
 | `scrollElementTo(element, { x?, y? })`                                                  | Scroll a scroll container to an offset in CSS pixels, an axis left out left where it is, kept within how far it can be, as a script sets `scrollTop`. Answers where it came to, or null.                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `title`                                                                                 | The document's `<title>`, if it had one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `base`                                                                                  | What the document's relative URLs resolve against — its `<base href>`, or `baseUrl` — or null.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -936,7 +937,29 @@ request: the player fetches it, not this component, and with whatever
 policy the platform's player has.
 
 `autoplay`, `loop` and `muted` are handed to the player as the markup has
-them. **The video takes its stream's size** once the player knows it, as
+them, until something asks otherwise. **What a page's script asks of a
+video is its player's**: `play()`, `pause()`, `muted`, `volume`,
+`playbackRate`, and a seek through `currentTime`, which [`scripts`](#scripts)
+hands to the handle's `setMediaState` and the player is told as core's
+`<video>` props — the same player, since none of them is in its key. Three
+things about it are decisions:
+
+- **It is kept for the element**, not the player: a video a page paused
+  while it was hidden — a tab's, behind another — is mounted paused when it
+  is shown. A player's `paused` is left to `autoplay` until something says,
+  and is the player's to keep from then on.
+- **The page is told what it asked, as HTML tells it** — `paused` at once,
+  `play`, `playing`, `pause`, `volumechange` and the seek's events in tasks
+  after, and `play()`'s promise kept, or turned down by a `pause()` that
+  came before its task, as Chrome's is. **Nothing comes back from the
+  player**: `currentTime` is where the page last sought, a video that ends
+  is not paused, and a press on one with `controls` is not told to the
+  page. An `autoplay` video reads as playing from the first.
+- **A press on a video with `controls` is kept the same way**, so a script
+  that pauses a video the press played changes what the player was told,
+  and pauses it.
+
+**The video takes its stream's size** once the player knows it, as
 HTML has it: a box that sets neither side is the video's size, and one that
 sets a side takes its ratio, where it was its poster's, or 300×150.
 
@@ -1197,7 +1220,8 @@ own click went on, `submitForm`, `reportValidity` and `resetForm` for a
 form's methods, `computedStyle` for `getComputedStyle` — `color-scheme`
 read as Chrome reads it, the schemes as written, or `normal` — and
 `customProperty` for its custom properties, `offsetRect` for the offset
-attributes, and `matchMedia` for `matchMedia`. `onParsed` is when the parse
+attributes, `setMediaState` for what a media element is asked to do, and
+`matchMedia` for `matchMedia`. `onParsed` is when the parse
 has ended, and `onLoaded` is `load`'s moment.
 
 #### Offsets

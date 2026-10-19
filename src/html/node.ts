@@ -270,6 +270,7 @@ import { ImageSources } from './srcset.js';
 import type { SourceChanges } from './srcset.js';
 import { atDensity } from './svg.js';
 import {
+  askMedia,
   cutByFixed,
   embeddedRectsOf,
   mediaRectsOf,
@@ -279,7 +280,9 @@ import {
 import type {
   Cover,
   EmbeddedRect,
+  MediaAsked,
   MediaRect,
+  MediaState,
   VideoCandidate,
 } from './media.js';
 import type { IntrinsicSize } from './svg.js';
@@ -811,6 +814,11 @@ export class HtmlViewNode extends Node {
   /** Each video's size once its player knows it, in CSS pixels: its
    *  intrinsic size from then on, where its poster's was (HTML 4.8.11.6). */
   private _videoSizes = new WeakMap<Element, IntrinsicSize>();
+  /** What was asked of each video's player — by the page's scripts, or by
+   *  a press on one with `controls` (`setMediaState`) — laid over what its
+   *  markup says as it is reported. By element, so a player mounted again
+   *  is told it too. */
+  private _mediaAsked = new WeakMap<Element, MediaAsked>();
   /** The sources each video chose between, and what it chose them from
    *  (`_videoChoice`). */
   private _videoChoices = new WeakMap<
@@ -2946,9 +2954,11 @@ export class HtmlViewNode extends Node {
     const report = this._props().onMedia;
     if (!tree || !report) return;
     const fixed = FIXED_BOXES.get(tree);
-    const rects = this._mediaLaid.map((laid) =>
-      this._viewportRect(laid, fixed),
-    );
+    const rects = this._mediaLaid.map((laid) => {
+      const rect = this._viewportRect(laid, fixed);
+      const asked = this._mediaAsked.get(rect.element);
+      return asked ? { ...rect, ...asked } : rect;
+    });
     if (sameMedia(rects, this._media)) return;
     this._media = rects;
     report(rects);
@@ -3098,6 +3108,22 @@ export class HtmlViewNode extends Node {
     );
     this._videoChoices.set(el, { signature, candidates });
     return candidates;
+  }
+
+  /**
+   * What a media element's player is told to do, as a page's script asks
+   * it — `play()` and `pause()`, `muted`, `volume`, `playbackRate`, a seek
+   * through `currentTime` — kept for the element, and reported with its
+   * player at once where it has one, and when it is mounted where not.
+   */
+  setMediaState(element: Element, state: MediaState): void {
+    this._mediaAsked.set(
+      element,
+      askMedia(this._mediaAsked.get(element), state),
+    );
+    if (this._mediaLaid.some((r) => r.element === element)) {
+      this._publishMedia();
+    }
   }
 
   /**
@@ -7320,6 +7346,10 @@ function sameMedia(a: MediaRect[], b: MediaRect[]): boolean {
       p.muted !== q.muted ||
       p.controls !== q.controls ||
       p.label !== q.label ||
+      p.paused !== q.paused ||
+      p.volume !== q.volume ||
+      p.playbackRate !== q.playbackRate ||
+      p.seek?.count !== q.seek?.count ||
       !sameClip(p.clip, q.clip) ||
       !sameClip(p.over, q.over)
     ) {
