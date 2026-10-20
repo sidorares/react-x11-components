@@ -592,3 +592,47 @@ test('a world pack says where its cards begin, and the lifted layer is drawn rou
   }
   assert.deepStrictEqual(drawn, ['world', 'lifted', 'world', 'lifted']);
 });
+
+test('a frame hands the context back with the vertex array it found bound', async () => {
+  // On macOS every <glarea> in an app shares one context, so a vertex array
+  // left bound is the next surface's — and once the pane deleted it, the
+  // context had none, and a <Canvas> drawn after it put every vertex at one
+  // point.
+  const { FlowGlRenderer } = await import('../src/flow/gl/renderer.js');
+  const { nodes, edges } = graph(6);
+  const { gl: base } = recordingGl();
+  const theirs = 'another surface’s vertex array';
+  let bound: unknown = theirs;
+  const gl = new Proxy(base as Record<string, unknown>, {
+    get(obj, name: string) {
+      if (name === 'getParameter') {
+        return (p: number) => (p === 0x85b5 ? bound : undefined);
+      }
+      if (name === 'bindVertexArray') {
+        return (vao: unknown) => {
+          bound = vao;
+        };
+      }
+      return obj[name];
+    },
+  });
+  const renderer = new FlowGlRenderer(gl);
+  assert.strictEqual(bound, theirs, 'made without taking the binding');
+  const target = { origin: { x: 0, y: 0 }, scale: 1, width: 800, height: 600 };
+  const overlay = buildScene(input([], [], { selection: null }));
+  renderer.drawFrame(
+    {
+      world: buildScene(input(nodes, edges, { selection: null })),
+      offset: { x: 0, y: 0 },
+      zoom: 1,
+      overlay,
+      phase: 0,
+    },
+    target,
+  );
+  assert.strictEqual(bound, theirs, 'a frame puts it back');
+  renderer.draw(overlay, target);
+  assert.strictEqual(bound, theirs, 'and so does a one-off draw');
+  renderer.dispose();
+  assert.strictEqual(bound, theirs, 'and going leaves it bound');
+});
